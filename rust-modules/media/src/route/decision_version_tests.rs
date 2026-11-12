@@ -722,7 +722,7 @@ fn a_qualified_dts_original_lands_from_the_real_resolve_worker_before_feed_decis
     let sid = plx_plex::plex::register_for_test("qualified-dts", "127.0.0.1", port, "token", "qualified-dts-client");
     let mut meta = plx_data::stores::metadata::MetadataStore::default();
     assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid,
-        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None));
+        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None, ""));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     let start = loop {
         if let Some(start) = pump_play(&mut ps, &mut meta) { break start; }
@@ -768,7 +768,7 @@ fn a_certified_av1_uri_original_does_not_inherit_feeds_video_refusal() {
         av1: false, ..plx_platform::devcaps::Caps::assumed()
     });
     assert!(request_play(&mut ps, &mut meta, feed_cannot_decode_av1, sid,
-        "rk-v", "/library/parts/3134/1/file.mkv", "av1", "aac", "Film", "", None));
+        "rk-v", "/library/parts/3134/1/file.mkv", "av1", "aac", "Film", "", None, ""));
     let finished = wait_resolve_workers_for_test(std::time::Duration::from_secs(15));
     let start = pump_play(&mut ps, &mut meta);
     done.send(()).unwrap();
@@ -827,7 +827,7 @@ fn an_accepted_pms_decision_produces_an_owned_uri_offer_from_its_output() {
         "token", "qualified-pms-client");
     let mut meta = plx_data::stores::metadata::MetadataStore::default();
     assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid,
-        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None));
+        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None, ""));
     assert!(wait_resolve_workers_for_test(std::time::Duration::from_secs(15)));
     let start = pump_play(&mut ps, &mut meta).expect("accepted PMS output start");
     assert!(start.uri_offer.is_some(), "the actual resolve must carry its owned URI offer");
@@ -904,7 +904,7 @@ fn viewer_off_re_resolves_a_burned_pms_uri_without_reusing_its_subtitle() {
         av1: false, ..plx_platform::devcaps::Caps::assumed()
     });
     assert!(request_play(&mut ps, &mut meta, feed_cannot_decode_av1, sid,
-        "rk-v", "/library/parts/3134/1/file.mkv", "av1", "dca", "Film", "", None));
+        "rk-v", "/library/parts/3134/1/file.mkv", "av1", "dca", "Film", "", None, ""));
     assert!(wait_resolve_workers_for_test(std::time::Duration::from_secs(15)));
     let first = pump_play(&mut ps, &mut meta).expect("accepted burned PMS output");
     let burned = first.uri_offer.expect("accepted server burn is a qualified URI output");
@@ -966,7 +966,7 @@ fn native_hls_master_offer_requires_the_fetched_multi_variant_response() {
             "token", "native-master-client");
         let mut meta = plx_data::stores::metadata::MetadataStore::default();
         assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid,
-            "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None));
+            "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None, ""));
         assert!(wait_resolve_workers_for_test(std::time::Duration::from_secs(15)));
         let start = pump_play(&mut ps, &mut meta);
         assert_eq!(start.as_ref().is_some_and(|landed| landed.uri_offer.is_some()), qualifies,
@@ -1006,7 +1006,7 @@ fn unknown_uri_qualification_keeps_the_existing_feed_decision_path() {
     let sid = plx_plex::plex::register_for_test("unknown-dts", "127.0.0.1", port, "token", "unknown-dts-client");
     let mut meta = plx_data::stores::metadata::MetadataStore::default();
     assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid,
-        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None));
+        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None, ""));
     let finished = wait_resolve_workers_for_test(std::time::Duration::from_secs(15));
     let start = pump_play(&mut ps, &mut meta);
     done.send(()).unwrap();
@@ -1048,7 +1048,7 @@ fn expired_original_skips_its_spent_recipe_but_qualifies_unspent_pms_uri(backend
         "token", "expiring-dts-client");
     let mut meta = plx_data::stores::metadata::MetadataStore::default();
     assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid,
-        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None));
+        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None, ""));
 
     // This is an existing episode, not a fresh catalog. The both-backend variant has
     // already crossed from Feed to URI; both variants have spent URI Original and learned
@@ -1193,7 +1193,7 @@ fn unknown_pms_output_in_uri_only_retires_the_accepted_encoder_once() {
         "token", "unknown-pms-client");
     let mut meta = plx_data::stores::metadata::MetadataStore::default();
     assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid,
-        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None));
+        "rk-v", "/library/parts/3134/1/file.mkv", "h264", "dca", "Film", "", None, ""));
     assert!(wait_resolve_workers_for_test(std::time::Duration::from_secs(15)));
     assert!(pump_play(&mut ps, &mut meta).is_none());
     assert_eq!(ps.play_verdict, Some(PlayVerdict::NoQualifiedBackend));
@@ -1227,7 +1227,7 @@ fn the_picked_version_rides_the_request_and_the_landing() {
     let _g = fresh_registry(&mut ps);
     let mut meta = plx_data::stores::metadata::MetadataStore::default();
     assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), ServerId::from_raw(0), "rk-v", "/library/parts/3134/1/file.mkv",
-        "h264", "aac", "Episode", "", Some(plx_plex::plex::MediaId(3082))));
+        "h264", "aac", "Episode", "", Some(plx_plex::plex::MediaId(3082)), ""));
     assert_eq!(ps.request.as_ref().and_then(|r| r.version), Some(plx_plex::plex::MediaId(3082)));
     let env = request_env(&ps, meta.view(), ps.request.as_ref().unwrap(), None);
     assert_eq!(env.version, Some(plx_plex::plex::MediaId(3082)));

@@ -1294,6 +1294,10 @@ pub enum PlayIntent {
         context: String,
         /// The version picked on the Play Version panel, `None` for the default (`Media[0]`).
         version: Option<plx_plex::plex::MediaId>,
+        /// The show the item's episode belongs to, `""` for anything that is not an episode (a
+        /// trailer, a movie, an extra). The queue builder keys the PlayQueue off the show so the
+        /// episodes before this one are in it, which is what the HUD's Previous needs.
+        show_rk: String,
     },
     /// The alternative source the page had selected (`route::request_play_movie`). Owned rather
     /// than a `&'static` catalog borrow: it is held inside `PageAction`/`AppFx` across a frame

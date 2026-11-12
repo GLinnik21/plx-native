@@ -505,7 +505,7 @@ pub(crate) fn request_loaded_hero(ps: &mut plx_media::route::PlaybackSession, me
         request_episode(ps, meta, &d, &ep, None).then(|| plx_data::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
     } else {
         plx_media::route::request_play(ps, meta, start_caps(), plx_media::route::item_sid(d.sid), &d.rk, &d.part,
-            &d.vcodec, &d.acodec, &d.title, "", None)
+            &d.vcodec, &d.acodec, &d.title, "", None, d.episodes_show_rk())
             .then(|| plx_data::metadata::resume_ns(d.resume_ms, d.dur_ms))
     }
 }
@@ -528,7 +528,7 @@ fn request_episode(ps: &mut plx_media::route::PlaybackSession, meta: &mut plx_da
     let title = if ep.title.is_empty() { &d.title } else { &ep.title };
     let context = plx_ui::fmt::episode_context(&d.title, ep.season, ep.index);
     plx_media::route::request_play(ps, meta, start_caps(), plx_media::route::item_sid(d.sid), &ep.rk, &ep.part,
-        &ep.vcodec, &ep.acodec, title, &context, version)
+        &ep.vcodec, &ep.acodec, title, &context, version, d.episodes_show_rk())
 }
 
 /// Leaving playback (Stop / BACK / EOS / Info's jump-to-detail): retire every in-player panel.

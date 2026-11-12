@@ -85,7 +85,7 @@ fn long_hud_titles_fit_before_every_control_slot() {
         let compiled = super::loaded::load_classic("test", plx_platform::i18n::current(), measure).compiled;
         let slots = [
             ControlSlot::Discs(Controls::NONE),
-            ControlSlot::Discs(Controls { previous: true, next: true, restart: true }),
+            ControlSlot::Discs(Controls { previous: true, next: true }),
             slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown),
             slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
         ];
@@ -1495,7 +1495,7 @@ fn the_layouts_band_is_classics_in_every_slot() {
     let compiled = super::loaded::classic_for_test();
     let slots = [
         ControlSlot::Discs(Controls::NONE),
-        ControlSlot::Discs(Controls { previous: true, next: true, restart: true }),
+        ControlSlot::Discs(Controls { previous: true, next: true }),
         slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown),
         slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
     ];
@@ -1569,7 +1569,7 @@ mod playback_navigation_tests {
     #[test]
     fn episode_pair_uses_custom_gap_without_moving_existing_discs() {
         let compiled = super::super::loaded::classic_for_test();
-        let pair = Controls::for_item(true, false, true, false);
+        let pair = Controls::for_item(true, false, true);
         let rects = |c: Controls| geometry(&compiled, 0, ControlSlot::Discs(c), false, false).items;
         let (pair_rects, none_rects) = (rects(pair), rects(Controls::NONE));
         for i in BTN_SUBTITLES..=BTN_MORE {
@@ -1586,19 +1586,32 @@ mod playback_navigation_tests {
         assert_eq!(pair.primary(), BTN_NEXT);
         assert_eq!(pair.action(BTN_PREVIOUS), None);
         assert_eq!(pair.icon(BTN_PREVIOUS), Icon::Previous);
-        let restarting = Controls::for_item(true, false, true, true);
-        assert_eq!(restarting.icon(BTN_PREVIOUS), Icon::Restart);
-        assert_eq!(restarting.action(BTN_PREVIOUS), Some(Action::Previous));
+    }
+
+    /// **Previous is the previous episode and nothing else.** Whatever the playhead, the disc is
+    /// enabled exactly when the queue has an episode before the playing one, and it always wears
+    /// the Previous glyph: there is no restart state to wear a different one.
+    #[test]
+    fn previous_is_enabled_by_a_predecessor_alone_and_always_wears_the_previous_glyph() {
+        let middle = Controls::for_item(true, true, true);
+        assert_eq!(middle.action(BTN_PREVIOUS), Some(Action::Previous));
+        assert_eq!(middle.icon(BTN_PREVIOUS), Icon::Previous);
+        let last = Controls::for_item(true, true, false);
+        assert_eq!(last.action(BTN_PREVIOUS), Some(Action::Previous));
+        assert_eq!(last.icon(BTN_PREVIOUS), Icon::Previous);
+        let first = Controls::for_item(true, false, true);
+        assert_eq!(first.action(BTN_PREVIOUS), None, "the first episode of the queue has no Previous");
+        assert!(!first.enabled(BTN_PREVIOUS));
     }
 
     #[test]
     fn episode_pair_is_absent_for_movies_extras_and_single_items() {
-        for controls in [Controls::for_item(false, true, true, true),
-            Controls::for_item(true, false, false, true)] {
+        for controls in [Controls::for_item(false, true, true),
+            Controls::for_item(true, false, false)] {
             assert_eq!(controls, Controls::NONE);
             assert_eq!(controls.primary(), BTN_SUBTITLES);
         }
-        let last = Controls::for_item(true, true, false, false);
+        let last = Controls::for_item(true, true, false);
         assert_eq!(last.primary(), BTN_PREVIOUS);
         assert_eq!(last.action(BTN_NEXT), None);
     }
@@ -1606,8 +1619,8 @@ mod playback_navigation_tests {
 
 /// **Under `builtin:classic`, the row resolved through the compile is the row resolved through `Controls`.**
 /// The page now asks the package's control at an index what a press performs and whether it has a stop;
-/// for classic's five discs that must be exactly classic's table, for every valuation of the pair and of
-/// Previous's restart target, and the cursor parks where `Controls::primary` parks it.
+/// for classic's five discs that must be exactly classic's table, for every valuation of the pair, and the
+/// cursor parks where `Controls::primary` parks it.
 #[test]
 fn classic_resolved_through_the_compile_is_classics_table() {
     use super::command::HudCommand;
@@ -1619,16 +1632,14 @@ fn classic_resolved_through_the_compile_is_classics_table() {
     for episode in [false, true] {
         for previous in [false, true] {
             for next in [false, true] {
-                for restart in [false, true] {
-                    let controls = Controls::for_item(episode, previous, next, restart);
-                    let slot = ControlSlot::Discs(controls);
-                    for i in -1..=BTN_N + 2 {
-                        let want: Option<HudCommand> = controls.command(i);
-                        assert_eq!(row_command(compiled, 0, slot, &model, i), want, "{controls:?} item {i}");
-                        assert_eq!(row_enabled(compiled, 0, slot, &model, i), controls.enabled(i), "{controls:?} item {i}");
-                    }
-                    assert_eq!(row_primary(compiled, 0, slot, &model), controls.primary(), "{controls:?}");
+                let controls = Controls::for_item(episode, previous, next);
+                let slot = ControlSlot::Discs(controls);
+                for i in -1..=BTN_N + 2 {
+                    let want: Option<HudCommand> = controls.command(i);
+                    assert_eq!(row_command(compiled, 0, slot, &model, i), want, "{controls:?} item {i}");
+                    assert_eq!(row_enabled(compiled, 0, slot, &model, i), controls.enabled(i), "{controls:?} item {i}");
                 }
+                assert_eq!(row_primary(compiled, 0, slot, &model), controls.primary(), "{controls:?}");
             }
         }
     }

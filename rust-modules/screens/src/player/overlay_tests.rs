@@ -337,7 +337,7 @@ fn a_folded_row_closes_more_first_and_asks_the_one_performer() {
     .expect("the minimal fixture loads")
     .compiled;
     let model = plx_appkit::player_hud::model::HudModel {
-        controls: plx_appkit::player_hud::Controls::for_item(true, true, true, false),
+        controls: plx_appkit::player_hud::Controls::for_item(true, true, true),
         chapters: true,
         detail: true,
         ..Default::default()

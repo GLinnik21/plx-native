@@ -330,7 +330,9 @@ pub enum FaceRef {
 
 /// A control's `face` as the package wrote it: absent (the command's classic glyph), one glyph, or one per
 /// state of the command (`playing`/`paused`, `default`/`restart`, `on`/`off`, and a `seek by: setting`'s
-/// `default` plus its ladder keyed by seconds).
+/// `default` plus its ladder keyed by seconds). `previous`'s `restart` state is still parsed, because
+/// published packages carry it and the schema is frozen, but the renderer never selects it any more
+/// (`render::face_state`): Previous is always the previous episode.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Face {
     pub single: Option<FaceRef>,

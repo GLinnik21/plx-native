@@ -67,7 +67,7 @@ fn marker(kind: MarkerKind, final_seg: bool) -> Marker {
     Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg }
 }
 
-const PAIR: Controls = Controls { previous: true, next: true, restart: false };
+const PAIR: Controls = Controls { previous: true, next: true };
 
 /// Every field of two geometries that differ, as text; empty when they are equal.
 fn diff(got: &HudGeometry, want: &HudGeometry) -> Vec<String> {
