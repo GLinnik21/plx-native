@@ -297,9 +297,22 @@ pub fn lineup(dvr: &Dvr, channels: &[EpgChannel], on_now: &[Metadata]) -> Vec<Li
             vcn: ch.vcn.clone(), name: channel_name(ch), thumb: ch.thumb.clone(),
             now: String::new(), now_thumb: ch.thumb.clone(), ends_at: 0 }).collect();
     update_on_now(&mut rows, on_now);
-    rows.sort_by(|a, b| a.vcn.parse::<u64>().unwrap_or(u64::MAX)
-        .cmp(&b.vcn.parse::<u64>().unwrap_or(u64::MAX)).then_with(|| a.vcn.cmp(&b.vcn)));
+    rows.sort_by(|a, b| vcn_order(&a.vcn, &b.vcn));
     rows
+}
+
+/// Guide order of two virtual channel numbers: numerically, component by component
+/// ("2" < "2.1" < "2.2" < "10" < "10.1"); a number with a non-numeric component sorts after every
+/// numeric one, then by text.
+pub fn vcn_order(a: &str, b: &str) -> std::cmp::Ordering {
+    let numeric = |vcn: &str| vcn.split('.').map(|part| part.parse::<u64>().ok()).collect::<Option<Vec<u64>>>();
+    let order = match (numeric(a), numeric(b)) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    };
+    order.then_with(|| a.cmp(b))
 }
 
 /// Refresh only the airings of an existing lineup; no channel is added or lost by a grid read.
@@ -543,6 +556,23 @@ mod tests {
         assert_eq!(rows[1].now, "");
         channels[0].vcn.clear();
         assert_eq!(lineup(&dvr, &channels, &[]).len(), 4, "a missing number does not make a valid tune address unusable");
+    }
+
+    #[test]
+    fn livetv_vcn_order_is_numeric_by_component_and_puts_text_last() {
+        let mut numbers = ["10.1", "2", "abc", "2.1", "10", "2.10", "2.2", ""];
+        numbers.sort_by(|a, b| vcn_order(a, b));
+        assert_eq!(numbers, ["2", "2.1", "2.2", "2.10", "10", "10.1", "", "abc"]);
+    }
+
+    #[test]
+    fn livetv_lineup_puts_subchannels_in_guide_order() {
+        let dvr = page(DVRS).dvr.remove(0);
+        let channels: Vec<_> = ["10.1", "2.1", "2"].iter().map(|vcn| EpgChannel {
+            grid_key: format!("C{vcn}"), vcn: (*vcn).into(), title: format!("{vcn} Channel"), ..Default::default()
+        }).collect();
+        let rows = lineup(&dvr, &channels, &[]);
+        assert_eq!(rows.iter().map(|c| c.vcn.as_str()).collect::<Vec<_>>(), ["2", "2.1", "10.1"]);
     }
 
     #[test]

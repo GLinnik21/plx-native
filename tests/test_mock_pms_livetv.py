@@ -1,6 +1,7 @@
 """The mock's Live TV fixture (`--livetv-fixture`; `docs/pms-api.md` §10): the wire shapes the Rust client reads
-(`plex::livetv`), the tune and its tuner budget, the decision each channel gets, and a live playlist that grows.
-With the fixture off the mock answers as it always did. Direct `handle()` calls, no sockets.
+(`plex::livetv`), the tune and its tuner budget, the decision each channel gets, a live playlist that grows, and the
+segment file `--livetv-segment` serves. With the fixture off the mock answers as it always did. Direct `handle()`
+calls, no sockets.
 
 -I drops the script's directory from sys.path, so the module adds it below.
 Run: python3 -I tests/test_mock_pms_livetv.py
@@ -9,6 +10,7 @@ import json
 import pathlib
 import re
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -23,6 +25,7 @@ SESSION_KEY = re.compile(r"^/livetv/sessions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}
 NO_SEGMENT = (404, "text/plain", b"mock_pms: no live segments")
 GONE = "00000000-0000-4000-8000-000000000000"  # a uuid no tune minted
 BUSY = {"error": "All tuners are busy"}
+SEGMENT = bytes(range(256)) * 2  # what --livetv-segment serves, byte for byte
 
 
 def make():
@@ -282,6 +285,61 @@ class LiveTvMock(unittest.TestCase):
         self.assertEqual(call(pms, "GET", "/video/:/transcode/universal/start.m3u8?path=%2Flivetv%2Fsessions%2F"
                                           f"{GONE}&session=pb1")[0], 404)
         self.assertEqual(call(pms, "GET", "/video/:/transcode/universal/session/pb1/base/index.m3u8")[0], 404)
+
+
+class LiveTvSegment(unittest.TestCase):
+    """`--livetv-segment` (module doc): with a segment file set, a segment of a live session, or of a live transcode,
+    answers that file's bytes. Without one, or under a session that is not live, a segment answers 404."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.segment = pathlib.Path(tmp.name) / "seg.ts"
+        self.segment.write_bytes(SEGMENT)
+
+    def live_pms(self, segment=True):
+        pms = make_live()
+        if segment:
+            pms.livetv.segment = self.segment
+        return pms
+
+    def start(self, pms, uuid):
+        """The transcode start of a live session under the session `tx1`, whose segments are `tx1`'s."""
+        return call(pms, "GET", f"/video/:/transcode/universal/start.m3u8?path=%2Flivetv%2Fsessions%2F{uuid}"
+                                "&session=tx1")
+
+    def test_session_segment_is_the_file(self):
+        pms = self.live_pms()
+        uuid = tuned(pms, "C101.242.mock.tv")
+        self.assertEqual(call(pms, "GET", f"/livetv/sessions/{uuid}/pb1/0.ts"), (200, "video/mp2t", SEGMENT))
+
+    def test_transcode_segment_is_the_file(self):
+        pms = self.live_pms()
+        uuid = tuned(pms, "C101.242.mock.tv")
+        self.assertEqual(self.start(pms, uuid)[0], 200)
+        self.assertEqual(call(pms, "GET", "/video/:/transcode/universal/session/tx1/base/0.ts"),
+                         (200, "video/mp2t", SEGMENT))
+
+    def test_unknown_session_segment_404(self):
+        pms = self.live_pms()
+        self.assertEqual(call(pms, "GET", f"/livetv/sessions/{GONE}/pb1/0.ts"), NO_SEGMENT)
+        self.assertEqual(call(pms, "GET", "/video/:/transcode/universal/session/tx9/base/0.ts"), NO_SEGMENT)
+
+    def test_stopped_session_segment_404(self):
+        pms = self.live_pms()
+        uuid = tuned(pms, "C101.242.mock.tv")
+        self.assertEqual(self.start(pms, uuid)[0], 200)
+        self.assertEqual(call(pms, "GET", f"/livetv/sessions/{uuid}/pb1/0.ts")[0], 200)
+        self.assertEqual(call(pms, "POST", f"/:/timeline?key=%2Flivetv%2Fsessions%2F{uuid}&state=stopped")[0], 200)
+        self.assertEqual(call(pms, "GET", f"/livetv/sessions/{uuid}/pb1/0.ts"), NO_SEGMENT)
+        self.assertEqual(call(pms, "GET", "/video/:/transcode/universal/session/tx1/base/0.ts"), NO_SEGMENT)
+
+    def test_live_without_segment_file_404(self):
+        pms = self.live_pms(segment=False)
+        uuid = tuned(pms, "C101.242.mock.tv")
+        self.assertEqual(self.start(pms, uuid)[0], 200)
+        self.assertEqual(call(pms, "GET", f"/livetv/sessions/{uuid}/pb1/0.ts"), NO_SEGMENT)
+        self.assertEqual(call(pms, "GET", "/video/:/transcode/universal/session/tx1/base/0.ts"), NO_SEGMENT)
 
 
 if __name__ == "__main__":

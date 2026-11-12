@@ -105,8 +105,15 @@ with no tuner: one DVR (key 7) on a device of two tuners, five channels in an un
 the half hour `now` falls in on every channel but one, a tune that answers with a live session at
 `/livetv/sessions/<uuid>` and holds a tuner until that session's timeline says `stopped`, the direct-play and the
 transcode decision of each channel's own codecs, and live playlists that grow and carry no `#EXT-X-ENDLIST`. The
-mock models the protocol, not video: a live segment answers 404. `--livetv-busy` is the same with no tuners, so
-every tune answers 503. With both off, every other answer is byte-identical.
+mock models the protocol, not video: a live segment answers 404 unless `--livetv-segment` (below) names a file.
+`--livetv-busy` is the same with no tuners, so every tune answers 503. With these off, every other answer is
+byte-identical.
+
+`--livetv-segment PATH` (default off; implies `--livetv-fixture`) serves that file, an MPEG-TS clip of H.264/AAC,
+as every live segment: `<n>.ts` under a live session or a live transcode answers 200 `video/mp2t` with its bytes, so
+a simulator can play a channel with no real tuner. Without it those segments answer 404 (the mock models the
+protocol, not video). Any short clip of that kind will do, e.g. one cut with
+`ffmpeg -i in.mkv -t 2 -c:v libx264 -bf 0 -g 50 -c:a aac -f mpegts seg.ts`.
 
     python3 tests/mock_pms.py --port 32499              # serve until Ctrl-C
     python3 tests/mock_pms.py --port 32499 --selftest   # prove the shapes without an app
@@ -2956,7 +2963,8 @@ class LiveTvFixture:
     the app reads as Busy; §10 classifies 409 and 503 as Busy by inference, not by a measured answer.
 
     The mock models the protocol, not video. A live media playlist GROWS (a 2 s segment every 2 s, and no
-    `#EXT-X-ENDLIST`), and its segments answer 404: nothing here encodes or serves a segment.
+    `#EXT-X-ENDLIST`), and its segments answer 404 unless `segment` names a file: then every live segment answers
+    that file, and nothing here encodes one.
     """
 
     DVR_KEY = "7"
@@ -2984,6 +2992,8 @@ class LiveTvFixture:
         self.tuners = 2  # `--livetv-busy` sets 0
         self.sessions = {}  # uuid -> {"channel": channel id, "playback": the tune's session id, "at": monotonic}
         self.transcodes = {}  # a transcode session id (the start's `session=`) -> the uuid it serves
+        self.segment = None  # `--livetv-segment`: a pathlib.Path, the MPEG-TS file every live segment answers
+        self.segment_bytes = None  # that file's bytes, read on the first segment it answers
 
     def channel(self, cid):
         return next((c for c in self.CHANNELS if c["id"] == cid), None)
@@ -3332,8 +3342,8 @@ class MockPms:
         # `--decision-delay-ms N`: hold every transcode decision/start request this long before
         # answering, so a flight's PMS half is observably in flight. 0 answers at once.
         self.decision_delay_ms = 0
-        # `--livetv-fixture` / `--livetv-busy` (module doc): the `LiveTvFixture`, or None. Off, every Live TV
-        # route falls through to today's answer.
+        # `--livetv-fixture` / `--livetv-busy` / `--livetv-segment` (module doc): the `LiveTvFixture`, or None.
+        # Off, every Live TV route falls through to today's answer.
         self.livetv = None
         # Every request `handle()` routed, in arrival order: {"method","path","query","session"}.
         # Query keys naming a token are stripped, never just redacted — never send a real value.
@@ -3590,6 +3600,17 @@ class MockPms:
             return (200, "application/vnd.apple.mpegurl", live_media_playlist(live["at"]))
         if reads and p.endswith(".ts") and (segs[:2] == ["livetv", "sessions"]
                                             or segs[:5] == ["video", ":", "transcode", "universal", "session"]):
+            # `--livetv-segment` (module doc): a segment of a live session, or of a live transcode, is the file.
+            # Any other, under a session that is unknown or stopped, stays the 404.
+            with self.lock:
+                if segs[:2] == ["livetv", "sessions"]:
+                    live = lv.sessions.get(live_session_uuid(p))
+                else:
+                    live = lv.sessions.get(lv.transcodes.get(segs[5], ""))  # segs[5]: the transcode session id
+            if live is not None and lv.segment is not None:
+                if lv.segment_bytes is None:
+                    lv.segment_bytes = lv.segment.read_bytes()
+                return (200, "video/mp2t", lv.segment_bytes)
             return (404, "text/plain", b"mock_pms: no live segments")
         return None
 
@@ -4601,7 +4622,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
           media_forced_subtitle=False, smart_collections=False,
           caption_edge_cases=False, multi_version=False, band_fixture=False, extra_media_audio=None,
           extra_media_subtitle=None, cw_art_fixture=None, cw_art_twin=(), livetv_fixture=False,
-          livetv_busy=False):
+          livetv_busy=False, livetv_segment=None):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
     app on the simulator is on this machine, and a LAN-facing listener would be one more thing
     the outbound guard has to reason about. `catalog` serves the demo library instead of a seed.
@@ -4640,9 +4661,12 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     seeded library only). `cw_art_fixture` (`primary` or `twin`) adds the Continue Watching art fixture
     (module doc); `cw_art_twin` lists the loopback ports of twin mocks this one's `/api/v2/resources` names too.
     `livetv_fixture` serves the Live TV fixture (`LiveTvFixture`, module doc); `livetv_busy` is the same with no
-    tuners, so every tune answers 503."""
+    tuners, so every tune answers 503. `livetv_segment` (a path) is the file every live segment answers (module
+    doc); it implies `livetv_fixture`."""
     if transcode_fixture is not None and not pathlib.Path(transcode_fixture).is_file():
         raise ValueError(f"--transcode-fixture file is missing: {transcode_fixture}")
+    if livetv_segment is not None and not pathlib.Path(livetv_segment).is_file():
+        raise ValueError(f"--livetv-segment file is missing: {livetv_segment}")
     if catalog is not None:
         lib = CatalogLibrary(catalog, cache=catalog_cache, hero=hero,
                              loudness_analysis=loudness_analysis)
@@ -4661,10 +4685,12 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     if cw_art_fixture:
         add_cw_art_fixture(pms, cw_art_fixture)
     pms.cw_art_twin_ports = tuple(cw_art_twin)
-    if livetv_fixture or livetv_busy:
+    if livetv_fixture or livetv_busy or livetv_segment is not None:
         pms.livetv = LiveTvFixture()
         if livetv_busy:
             pms.livetv.tuners = 0  # every tune answers 503
+        if livetv_segment is not None:
+            pms.livetv.segment = pathlib.Path(livetv_segment)
     pms.link = link_conditioner.Conditioner(seed=seed)
     for spec in link:
         klass, profile = link_conditioner.parse_spec(spec)
@@ -5634,6 +5660,9 @@ def main():
                          "other answer is byte-identical")
     ap.add_argument("--livetv-busy", action="store_true",
                     help="as --livetv-fixture with no tuners: every tune answers 503 (implies --livetv-fixture)")
+    ap.add_argument("--livetv-segment", type=pathlib.Path, metavar="PATH",
+                    help="every live segment (<n>.ts under a live session or a live transcode) is served as this "
+                         "MPEG-TS file (H.264/AAC); without it those segments answer 404 (implies --livetv-fixture)")
     ap.add_argument("--cw-art-fixture", nargs="?", const="primary", choices=("primary", "twin"),
                     help="five Continue Watching items, one per art path of a 420x236 card (a Discover "
                          "coverArt; a background plus clearLogo; the title in type; a guid-less item), the "
@@ -5690,6 +5719,8 @@ def main():
         ap.error("--home-users must be between 1 and 16")
     if a.authorize_after is not None and a.authorize_after < 1:
         ap.error("--authorize-after must be at least 1")
+    if a.livetv_segment is not None and not a.livetv_segment.is_file():
+        ap.error(f"--livetv-segment file is missing: {a.livetv_segment}")
     if a.selftest:
         selftest()
         return
@@ -5722,7 +5753,7 @@ def main():
                          caption_edge_cases=a.caption_edge_cases, multi_version=a.multi_version,
                          band_fixture=a.band_fixture, cw_art_fixture=a.cw_art_fixture,
                          cw_art_twin=a.cw_art_twin, livetv_fixture=a.livetv_fixture,
-                         livetv_busy=a.livetv_busy)
+                         livetv_busy=a.livetv_busy, livetv_segment=a.livetv_segment)
     except ValueError as e:
         ap.error(str(e))
     what = f"catalog={a.catalog}" if a.catalog else f"seed={a.seed}"

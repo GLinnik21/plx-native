@@ -3275,6 +3275,7 @@ fn build_live_stream(
     env: &ResolveEnv, plan: &mut Plan,
 ) {
     use plx_plex::plex::livetv::TuneOutcome;
+    use plx_playback_contract::demux::hls_accepts_codecs;
     let session = new_sess("");
     plan.sess = session.clone();
     let live = match client.tune(off, &tune.dvr, &tune.channel, &session) {
@@ -3291,10 +3292,11 @@ fn build_live_stream(
         return;
     };
     let video = video_direct_plays(&play.vcodec, play.width, play.height,
-        plx_data::metadata::DvPresentation::NotDv, &env.caps);
+        plx_data::metadata::DvPresentation::NotDv, &env.caps)
+        && hls_accepts_codecs(&play.vcodec, None);
     let audio = audio_direct_plays_with(&env.caps, env.direct_play_mode,
         &play.acodec, play.channels, 0);
-    plan.source_decodable = video && audio;
+    plan.source_decodable = video && audio && hls_accepts_codecs(&play.vcodec, Some(&play.acodec));
     plan.src_vcodec = play.vcodec.clone();
     plan.src_acodec = play.acodec.clone();
     plan.vcodec = play.vcodec;

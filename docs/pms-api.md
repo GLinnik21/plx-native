@@ -1840,8 +1840,10 @@ session remains a generic failure; the UI must not claim a cause that the respon
 The live decision's selected playlist also carries its own `Media.width`, `Media.height` and
 `Media.audioChannels`, parsed with the same lenient numeric handling as library decisions; missing
 values stay 0 (unknown). These output facts allow routing to check the actual stream against the
-attempt's device capabilities instead of assuming the measured H.264/AAC channel represents every
-tuner.
+attempt's device capabilities and the feed HLS reader's H.264/AAC codec contract instead of
+assuming the measured channel represents every tuner. Direct play requires both; other codecs
+take the conversion route below, refusing video copy when the reader cannot accept the source
+video codec.
 
 `TranscodeSpec::source` now supports either a library rating key or the tuned
 `/livetv/sessions/{uuid}` key. Live re-encode requests reuse the **same** universal-transcoder

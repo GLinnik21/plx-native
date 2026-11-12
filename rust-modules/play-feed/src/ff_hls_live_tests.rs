@@ -162,3 +162,87 @@ fn a_live_source_is_named_by_the_transcoder_path_not_by_growth() {
         assert!(!is_live_session_source(library), "{library}");
     }
 }
+
+fn decoded_segment() -> HlsSegmentOutput {
+    HlsSegmentOutput {
+        aus: Vec::new(),
+        transfer: SegmentTransfer { bytes: 0, active_us: 1, total_us: 1, audio_expected: false },
+        video_width: 1920, video_height: 1080, video_tail_ns: 0, audio_tail_ns: None,
+    }
+}
+
+#[test]
+fn a_live_cursor_skips_unprimed_segments_then_starts_and_keeps_later_failures_strict() {
+    let mut net = net(vec![("start.m3u8", MASTER.into()),
+        ("media.m3u8", media(12, "", false)), ("media.m3u8", media(13, "", false))],
+        Arc::new(Observer::default()));
+    let mut aq = crate::aq::aq_new(1024);
+    let mut cursor = open(&mut aq, &mut net, LIVE_ENTRY);
+    let mut read = Vec::new();
+    let result = hls_read_active_with(&mut cursor, &mut net, Default::default(),
+        &mut None, &mut *aq, None, |segment, _, _, _, _| {
+            read.push(segment.sequence);
+            match segment.sequence {
+                9 => Err(HlsExit::Failed("HLS segment has invalid video dimensions")),
+                10 => Err(HlsExit::Failed("HLS segment does not begin with an IDR")),
+                _ => Ok(decoded_segment()),
+            }
+        });
+    let started = result.expect("skip to the first decodable segment").unwrap();
+    assert_eq!(read, [9, 10, 11]);
+    assert_eq!(started.0.sequence, 11);
+    let later = hls_read_active_with(&mut cursor, &mut net, Default::default(),
+        &mut None, &mut *aq, None, |_, _, _, _, _| {
+            Err(HlsExit::Failed("HLS segment does not begin with an IDR"))
+        });
+    assert!(matches!(later, Err(HlsExit::Failed("HLS segment does not begin with an IDR"))));
+    crate::aq::aq_destroy(&mut *aq);
+}
+
+#[test]
+fn a_library_cursor_still_refuses_an_unprimed_first_segment() {
+    for error in ["HLS segment has invalid video dimensions", "HLS segment does not begin with an IDR"] {
+        let mut net = net(vec![("start.m3u8", MASTER.into()), ("media.m3u8", media(12, "", true))],
+            Arc::new(Observer::default()));
+        let mut aq = crate::aq::aq_new(1024);
+        let mut cursor = open(&mut aq, &mut net, LIBRARY_ENTRY);
+        let mut reads = 0;
+        let result = hls_read_active_with(&mut cursor, &mut net, Default::default(),
+            &mut None, &mut *aq, None, |_, _, _, _, _| { reads += 1; Err(HlsExit::Failed(error)) });
+        assert!(matches!(result, Err(HlsExit::Failed(e)) if e == error));
+        assert_eq!(reads, 1);
+        crate::aq::aq_destroy(&mut *aq);
+    }
+}
+
+#[test]
+fn live_start_skipping_is_bounded_and_does_not_hide_other_failures() {
+    for (error, expected_reads) in [("HLS segment does not begin with an IDR", 4),
+        ("HLS segment has invalid video dimensions", 4), ("HLS segment audio is not AAC", 1)] {
+        let mut net = net(vec![("start.m3u8", MASTER.into()),
+            ("media.m3u8", media(12, "", false)), ("media.m3u8", media(13, "", false))],
+            Arc::new(Observer::default()));
+        let mut aq = crate::aq::aq_new(1024);
+        let mut cursor = open(&mut aq, &mut net, LIVE_ENTRY);
+        let mut reads = 0;
+        let result = hls_read_active_with(&mut cursor, &mut net, Default::default(),
+            &mut None, &mut *aq, None, |_, _, _, _, _| { reads += 1; Err(HlsExit::Failed(error)) });
+        assert!(matches!(result, Err(HlsExit::Failed(e)) if e == error));
+        assert_eq!(reads, expected_reads, "{error}");
+        crate::aq::aq_destroy(&mut *aq);
+    }
+}
+
+#[test]
+fn carried_live_state_keeps_segment_failures_strict() {
+    let mut net = net(vec![("start.m3u8", media(12, "", false)),
+        ("start.m3u8", media(12, "", false))], Arc::new(Observer::default()));
+    let mut aq = crate::aq::aq_new(1024);
+    let mut cursor = open(&mut aq, &mut net, LIVE_ENTRY);
+    let segment = hls_cursor_next(&mut cursor, &mut *aq, &mut net, None).unwrap().unwrap();
+    net.carry = Some(SegmentCarry { scope: carry_scope(&segment).to_owned(),
+        raster: (1920, 1080), ..Default::default() });
+    assert!(!cursor.skip_live_start(&segment, &net, HlsExit::Failed(HLS_MISSING_IDR)));
+    assert_eq!(cursor.live_start_skips_left, LIVE_START_SKIP_SEGMENTS);
+    crate::aq::aq_destroy(&mut *aq);
+}

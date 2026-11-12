@@ -4158,12 +4158,14 @@ pub unsafe fn hls_demux_segment(
     }
     let vst = *streams.add(vi as usize);
     let vcp = stream_codecpar(vst);
-    if (*vcp).codec_id != AV_CODEC_ID_H264 {
+    let vcodec = std::ffi::CStr::from_ptr(avcodec_get_name((*vcp).codec_id)).to_string_lossy();
+    if !plx_playback_contract::demux::hls_accepts_codecs(&vcodec, None) {
         return Err(HlsExit::Failed("HLS segment video is not H.264"));
     }
     let aac_adts = if ai >= 0 {
         let acp = stream_codecpar(*streams.add(ai as usize));
-        if (*acp).codec_id != AV_CODEC_ID_AAC {
+        let acodec = std::ffi::CStr::from_ptr(avcodec_get_name((*acp).codec_id)).to_string_lossy();
+        if !plx_playback_contract::demux::hls_accepts_codecs(&vcodec, Some(&acodec)) {
             return Err(HlsExit::Failed("HLS segment audio is not AAC"));
         }
         adts_params(acp)
@@ -4181,7 +4183,7 @@ pub unsafe fn hls_demux_segment(
         // named the raster, and its parameter sets go in front of this one's IDR.
         let (w, h) = carried_raster;
         if w <= 0 || h <= 0 {
-            return Err(HlsExit::Failed("HLS segment has invalid video dimensions"));
+            return Err(HlsExit::Failed(HLS_MISSING_RASTER));
         }
         (video_width, video_height) = (w, h);
         plx_base::eventlog::log(&format!(
@@ -4230,7 +4232,7 @@ pub unsafe fn hls_demux_segment(
             // A continued live segment is a cut of the stream the decoder is already inside.
             if video_packets == 0 && !is_key && !continuing {
                 av_packet_unref(input.pkt);
-                return Err(HlsExit::Failed("HLS segment does not begin with an IDR"));
+                return Err(HlsExit::Failed(HLS_MISSING_IDR));
             }
             let pts = clock.normalize_video(raw_pts).0.saturating_mul(1_000_000);
             aus.push(HlsAu {
@@ -4467,6 +4469,28 @@ pub struct HlsCursor {
     /// ([`is_live_session_source`]). Every open, a reload included, starts
     /// [`LIVE_START_CUSHION_NS`] behind its edge; polled every [`LIVE_POLL`].
     pub live: bool,
+    /// Fresh opens may pass at most this many undecodable cuts before failing closed.
+    pub live_start_skips_left: u8,
+}
+
+const HLS_MISSING_RASTER: &str = "HLS segment has invalid video dimensions";
+const HLS_MISSING_IDR: &str = "HLS segment does not begin with an IDR";
+const LIVE_START_SKIP_SEGMENTS: u8 = 3;
+
+impl HlsCursor {
+    fn skip_live_start(&mut self, segment: &crate::hls::Segment, net: &HlsNet, error: HlsExit) -> bool {
+        let continuing = net.carry.as_ref().is_some_and(|carry|
+            carry.scope == carry_scope(segment) && carry.raster.0 > 0 && carry.raster.1 > 0);
+        if !self.live || self.live_start_skips_left == 0 || continuing
+            || !matches!(error, HlsExit::Failed(HLS_MISSING_RASTER | HLS_MISSING_IDR)) {
+            return false;
+        }
+        if self.live_start_skips_left == LIVE_START_SKIP_SEGMENTS {
+            plx_base::eventlog::log("hls: live start skips undecodable cuts until an SPS/IDR segment (bounded)");
+        }
+        self.live_start_skips_left -= 1;
+        true
+    }
 }
 
 /// How far behind a live recording's edge playback starts. Measured on the TV 2026-10-21: started
@@ -4854,6 +4878,7 @@ pub fn hls_cursor_open(
             target_duration_secs: 1,
             start_applied: false,
             live: true,
+            live_start_skips_left: LIVE_START_SKIP_SEGMENTS,
         });
     }
     let master = crate::hls::parse_master(&master_landed, &master_text).map_err(|e| {
@@ -4875,6 +4900,7 @@ pub fn hls_cursor_open(
         target_duration_secs: 1,
         start_applied: false,
         live: is_live_session_source(path),
+        live_start_skips_left: if is_live_session_source(path) { LIVE_START_SKIP_SEGMENTS } else { 0 },
     })
 }
 
@@ -5359,22 +5385,41 @@ fn hls_read_active(
     prefetched: &mut Option<ActiveMedia>, aq: *mut AuQueue, acodec: &str,
     at_floor: Option<bool>,
 ) -> Result<Option<ActiveMedia>, HlsExit> {
+    hls_read_active_with(cursor, net, timeline, prefetched, aq, at_floor,
+        |segment, auth, clock, net, acquisition| unsafe {
+            hls_demux_segment(segment, auth, clock, aq, net, acodec, acquisition)
+        })
+}
+
+fn hls_read_active_with<F>(
+    cursor: &mut HlsCursor, net: &mut HlsNet, timeline: crate::hls::SegmentTimeline,
+    prefetched: &mut Option<ActiveMedia>, aq: *mut AuQueue, at_floor: Option<bool>,
+    mut demux: F,
+) -> Result<Option<ActiveMedia>, HlsExit>
+where F: FnMut(&crate::hls::Segment, &crate::hls::InheritedAuth,
+    &mut crate::hls::SegmentClock, &mut HlsNet, SegmentAcquisition)
+    -> Result<HlsSegmentOutput, HlsExit>,
+{
     if let Some(round) = prefetched.take() { return Ok(Some(round)); }
-    let Some(segment) = hls_cursor_next(cursor, aq, net, None)? else { return Ok(None); };
-    let mut clock = timeline.begin(segment.duration)
-        .map_err(|_| HlsExit::Failed("HLS content timeline overflow"))?;
-    let acquisition = SegmentAcquisition::for_cursor(at_floor, net.observer.clone())
-        .ok_or(HlsExit::Aborted)?;
-    let stall_reserve_ms = acquisition.stall()
-        .map(|guard| guard.reserve_ms_at_start).unwrap_or(-1);
-    match unsafe { hls_demux_segment(
-        &segment, &cursor.auth, &mut clock, aq, net, acodec, acquisition,
-    ) } {
-        Ok(output) => Ok(Some((segment, output, clock, false))),
-        Err(HlsExit::StallAbort(transfer)) => Ok(Some(hls_stall_abort_outcome(
-            segment, clock, transfer, stall_reserve_ms, cursor,
-        ))),
-        Err(other) => Err(other),
+    loop {
+        let Some(segment) = hls_cursor_next(cursor, aq, net, None)? else { return Ok(None); };
+        let mut clock = timeline.begin(segment.duration)
+            .map_err(|_| HlsExit::Failed("HLS content timeline overflow"))?;
+        let acquisition = SegmentAcquisition::for_cursor(at_floor, net.observer.clone())
+            .ok_or(HlsExit::Aborted)?;
+        let stall_reserve_ms = acquisition.stall()
+            .map(|guard| guard.reserve_ms_at_start).unwrap_or(-1);
+        match demux(&segment, &cursor.auth, &mut clock, net, acquisition) {
+            Ok(output) => {
+                cursor.live_start_skips_left = 0;
+                return Ok(Some((segment, output, clock, false)));
+            }
+            Err(error) if cursor.skip_live_start(&segment, net, error) => continue,
+            Err(HlsExit::StallAbort(transfer)) => return Ok(Some(hls_stall_abort_outcome(
+                segment, clock, transfer, stall_reserve_ms, cursor,
+            ))),
+            Err(other) => return Err(other),
+        }
     }
 }
 

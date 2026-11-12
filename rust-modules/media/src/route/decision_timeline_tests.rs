@@ -1343,10 +1343,21 @@ const LIVE_TUNED: &[u8] = br#"{"MediaContainer":{"size":1,"MediaSubscription":[{
 const LIVE_DECIDED: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"videoCodec":"h264","audioCodec":"aac",
     "Part":[{"key":"/livetv/sessions/9b9fe727-0000-46db-b94c-ef512e3e61d2/cid-live/index.m3u8?offset=-1.000000",
     "decision":"directplay"}]}]}]}}"#;
+const LIVE_TRANSCODED: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{
+    "decision":"transcode","Stream":[{"streamType":1,"codec":"h264"},{"streamType":2,"codec":"aac"}]
+    }]}]}]}}"#;
 
 /// A loopback PMS for the live sequence: answers the tune and the decision with their shapes and
 /// everything else with an empty container, handing each request line down the channel.
 fn live_pms(decision_refused: bool) -> (i32, std::sync::mpsc::Receiver<String>) {
+    live_pms_with_codecs(decision_refused, "h264", "aac")
+}
+
+fn live_pms_with_codecs(decision_refused: bool, video: &str, audio: &str)
+    -> (i32, std::sync::mpsc::Receiver<String>) {
+    let live_decided = String::from_utf8_lossy(LIVE_DECIDED)
+        .replace("\"h264\"", &format!("\"{video}\""))
+        .replace("\"aac\"", &format!("\"{audio}\""));
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     listener.set_nonblocking(true).unwrap();
     let port = listener.local_addr().unwrap().port() as i32;
@@ -1365,7 +1376,11 @@ fn live_pms(decision_refused: bool) -> (i32, std::sync::mpsc::Receiver<String>) 
                         let body = if first.starts_with("POST /livetv/dvrs/7/channels/C101.242.ersatztv.org/tune") {
                             LIVE_TUNED
                         } else if decision {
-                            LIVE_DECIDED
+                            if query_param(&first, "directPlay") == Some("0") {
+                                LIVE_TRANSCODED
+                            } else {
+                                live_decided.as_bytes()
+                            }
                         } else {
                             EMPTY_MC
                         };
@@ -1380,6 +1395,142 @@ fn live_pms(decision_refused: bool) -> (i32, std::sync::mpsc::Receiver<String>) 
         }
     });
     (port, rx)
+}
+
+fn assert_live_conversion(video: &str, audio: &str, no_video_copy: bool) {
+    let mut ps = PlaybackSession::IDLE;
+    let _guard = fresh_registry(&mut ps);
+    let (port, rx) = live_pms_with_codecs(false, video, audio);
+    let sid = plx_plex::plex::register_for_test("live-codecs", "127.0.0.1", port, "tok", "cid");
+    let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "");
+    let mut caps = (*env.caps).clone();
+    caps.hevc = true;
+    caps.audio = "aac,ac3,eac3".into();
+    env.caps = std::sync::Arc::new(caps);
+    env.live = Some(LiveTune { dvr: "7".into(), channel: "C101.242.ersatztv.org".into() });
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "", "", "", "", &env);
+    assert!(!plan.source_decodable, "the HLS reader must accept both source codecs");
+    assert!(plan.url.contains("/start.m3u8?"), "{}", plan.url);
+    assert_eq!(plan.tsession, plan.sess);
+    assert!(!plan.tsession.is_empty());
+    assert_eq!(plan.contract.no_video_copy, no_video_copy);
+    assert_eq!((plan.vcodec.as_str(), plan.acodec.as_str()), ("h264", "aac"));
+    let requests: Vec<_> = (0..3).map(|_| rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap()).collect();
+    let conversion = &requests[2];
+    assert_eq!(query_param(conversion, "path"), Some("%2Flivetv%2Fsessions%2F9b9fe727-0000-46db-b94c-ef512e3e61d2"));
+    assert_eq!(query_param(conversion, "directPlay"), Some("0"));
+    assert_eq!(query_param(conversion, "directStream"), Some("0"));
+    assert_eq!(query_param(conversion, "directStreamAudio"), Some("0"));
+    let profile = query_param(conversion, "X-Plex-Client-Profile-Extra").unwrap();
+    assert!(profile.contains("videoCodec%3Dh264%26audioCodec%3Daac"), "{profile}");
+}
+
+#[test]
+fn live_h264_ac3_converts_to_the_readers_aac_output() {
+    assert_live_conversion("h264", "ac3", false);
+}
+
+#[test]
+fn live_hevc_aac_refuses_video_copy_even_when_the_tv_decodes_hevc() {
+    assert_live_conversion("hevc", "aac", true);
+}
+
+#[test]
+fn live_mpeg2_converts_to_h264_aac() {
+    assert_live_conversion("mpeg2video", "ac3", true);
+}
+
+#[test]
+fn a_live_switch_waits_for_the_abandoned_tune_to_free_its_tuner() {
+    use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+    use std::time::Duration;
+    let mut ps = PlaybackSession::IDLE;
+    let _guard = fresh_registry(&mut ps);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port() as i32;
+    let (wire_tx, wire_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let mut release = Some(release_rx);
+        let mut first_tune = None;
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while done_rx.try_recv().is_err() && std::time::Instant::now() < deadline {
+            let Ok((mut socket, _)) = plx_base::testnet::accept(&listener) else {
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            };
+            let line = drain_http(&mut socket);
+            wire_tx.send(line.clone()).unwrap();
+            if line.starts_with("POST /livetv/") && line.contains("/channels/A/tune?") {
+                let release = release.take().unwrap();
+                first_tune = Some(std::thread::spawn(move || {
+                    release.recv_timeout(Duration::from_secs(10)).unwrap();
+                    write_json(&mut socket, LIVE_TUNED);
+                }));
+            } else if line.starts_with("POST /livetv/") {
+                if stopped.load(Ordering::SeqCst) { write_json(&mut socket, LIVE_TUNED); }
+                else { write_status(&mut socket, 503); }
+            } else {
+                if line.starts_with("POST /:/timeline?") && query_param(&line, "state") == Some("stopped") {
+                    stopped.store(true, Ordering::SeqCst);
+                }
+                write_json(&mut socket, if line.starts_with("GET /video/:/transcode/universal/decision?") {
+                    LIVE_DECIDED
+                } else { EMPTY_MC });
+            }
+        }
+        if let Some(first_tune) = first_tune { first_tune.join().unwrap(); }
+    });
+    let sid = plx_plex::plex::register_for_test("live-switch", "127.0.0.1", port, "tok", "cid");
+    let mut meta = plx_data::stores::metadata::MetadataStore::default();
+    assert!(request_live(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid, "7", "A", "A"));
+    let first = wire_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(first.contains("/channels/A/tune?"), "{first}");
+    cancel_play(&mut ps);
+    assert!(request_live(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid, "7", "B", "B"));
+    let mut requests = vec![first];
+    if let Ok(early) = wire_rx.recv_timeout(Duration::from_millis(200)) { requests.push(early); }
+    release_tx.send(()).unwrap();
+    let finished = wait_resolve_workers_for_test(Duration::from_secs(10));
+    let landing = PLAY_SLOT.lock().unwrap().take();
+    cancel_play(&mut ps);
+    assert!(wait_resolve_workers_for_test(Duration::from_secs(10)));
+    done_tx.send(()).unwrap();
+    server.join().unwrap();
+    requests.extend(wire_rx.try_iter());
+    assert!(finished, "the resolves and their retirement must finish");
+    let plan = landing.expect("B must land").plan;
+    assert!(!plan.url.is_empty(), "B must tune successfully: {:?}", plan.verdict);
+    let order: Vec<_> = requests.iter().filter_map(|line| {
+        if line.contains("/channels/A/tune?") { Some("tune A") }
+        else if line.contains("/channels/B/tune?") { Some("tune B") }
+        else if line.starts_with("POST /:/timeline?") && query_param(line, "state") == Some("stopped") { Some("stopped A") }
+        else { None }
+    }).collect();
+    assert_eq!(order, ["tune A", "stopped A", "tune B"], "{requests:?}");
+}
+
+#[test]
+fn live_resolve_fence_times_out_cancels_and_waits_for_retirement() {
+    use std::time::Duration;
+    let mut ps = PlaybackSession::IDLE;
+    let _guard = fresh_registry(&mut ps);
+    cancel_play(&mut ps);
+    assert!(wait_resolve_workers_for_test(Duration::from_secs(10)));
+    let gen = PLAY_GEN.load(Ordering::SeqCst);
+    let older = ResolveWorker::enter();
+    let current = ResolveWorker::enter();
+    assert!(!current.wait_for_previous(gen, Duration::ZERO), "timeout must refuse another tune");
+    let retirement = ResolveWorker::enter();
+    drop(older);
+    assert!(!current.wait_for_previous(gen, Duration::ZERO), "retirement still holds the tuner");
+    drop(retirement);
+    assert!(current.wait_for_previous(gen, Duration::ZERO));
+    cancel_play(&mut ps);
+    assert!(!current.wait_for_previous(gen, Duration::ZERO), "a canceled worker must not tune");
 }
 
 #[test]

@@ -233,7 +233,7 @@ pub enum PlayerReq {
     /// and the panel stays up. `true` = the key was PLAY, `false` = PAUSE; a PLAYPAUSE toggle is
     /// neither and is carried as `None`.
     Transport(Option<bool>),
-    /// CH+/CH− in the shared paging direction. The app only tunes a Live TV request.
+    /// CH+/CH−: +1 is the next higher channel in the lineup, −1 the next lower. The app only tunes a Live TV request.
     Channel(i32),
     /// Seek to this position in ns and resume if paused — the Chapters strip's OK, and OK or PLAY
     /// taking the scrub's pending key target (a playing film simply seeks and plays on).

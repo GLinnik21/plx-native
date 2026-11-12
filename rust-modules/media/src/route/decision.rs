@@ -10089,8 +10089,7 @@ pub fn playback_preview_with_capability_for_test(
 static PLAY_GEN: AtomicU32 = AtomicU32::new(0);
 static PLAY_BUSY: AtomicBool = AtomicBool::new(false);
 
-/// Resolve workers (the detached `resolve` thread of [`request_play_inner`]) that have not
-/// finished yet, retirement of an abandoned plan included.
+/// Resolve workers and live-session retirement workers that have not finished yet.
 ///
 /// [`cancel_play`] only withdraws the landing: the worker still runs its `build_stream` to the end
 /// and then sends the `stop?closeResourceSession=1` for a plan nobody will play, to the server
@@ -10110,6 +10109,19 @@ impl ResolveWorker {
     fn enter() -> Self {
         RESOLVE_WORKERS.fetch_add(1, Ordering::SeqCst);
         ResolveWorker
+    }
+
+    /// Only the current live resolve waits: superseded waiters leave rather than blocking one
+    /// another. Retirement holds the same count until its stopped request has returned.
+    fn wait_for_previous(&self, gen: u32, limit: std::time::Duration) -> bool {
+        let end = std::time::Instant::now() + limit;
+        while RESOLVE_WORKERS.load(Ordering::SeqCst) > 1 {
+            if PLAY_GEN.load(Ordering::SeqCst) != gen || std::time::Instant::now() >= end {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        PLAY_GEN.load(Ordering::SeqCst) == gen
     }
 }
 
@@ -10151,6 +10163,8 @@ fn retire_plan_resources(resources: AbandonedPlanResources) {
     let Some(client) = plx_plex::plex::client_for(resources.sid) else {
         return;
     };
+    // Transfer live retirement into the resolve fence before the abandoning worker can exit.
+    let worker = resources.live.as_ref().map(|_| ResolveWorker::enter());
     // Thread creation failure is rarer than cancellation and must not turn into a permanent
     // server allocation, so a refused worker stops them inline. The normal path keeps this
     // network work off the main thread.
@@ -10158,6 +10172,7 @@ fn retire_plan_resources(resources: AbandonedPlanResources) {
         "abandon-stop",
         const { &plx_base::task::BlockingLabel::new("abandoned plan stop (worker thread refused)") },
         move || {
+            let _worker = worker;
             // The recording first: it holds a tuner, which nothing else here would give back.
             if let Some((live, session)) = &resources.live {
                 let ok = client.live_timeline(live, plx_plex::plex::TimelineState::Stopped, 0, session);
@@ -10743,6 +10758,12 @@ fn request_play_with_queue(
     let worker = ResolveWorker::enter();
     let spawned = plx_base::task::spawn_off_frame("resolve", move |off| {
         let _worker = worker;
+        let live_ready = env.live.is_none()
+            || _worker.wait_for_previous(gen, std::time::Duration::from_secs(30));
+        if !live_ready {
+            if PLAY_GEN.load(Ordering::SeqCst) != gen { return; }
+            crate::player::log("livetv: previous resolve or retirement timed out; refusing to tune");
+        }
         if drain_previous {
             // The old attempt's `state=stopped` and transcode `/stop` were intentionally moved off
             // the SDL thread.  A user Retry must nevertheless preserve their ordering relative to
@@ -10752,7 +10773,12 @@ fn request_play_with_queue(
         // catch_unwind OUTSIDE the mailbox write, like `metadata::finish_season_job`: a panicking
         // resolve must still land (as !ok) or PLAY_BUSY latches and the screen wedges on a spinner
         // forever.
-        let plan = std::panic::catch_unwind(|| build_stream(off, &rk, &part, &vc, &ac, &env))
+        let plan = std::panic::catch_unwind(|| {
+            if !live_ready || (env.live.is_some() && PLAY_GEN.load(Ordering::SeqCst) != gen) {
+                return Plan { direct_play_mode: env.direct_play_mode, ..Default::default() };
+            }
+            build_stream(off, &rk, &part, &vc, &ac, &env)
+        })
             .unwrap_or_else(|_| Plan { direct_play_mode: env.direct_play_mode, ..Default::default() });
         let landing = PlayLanding {
             gen,

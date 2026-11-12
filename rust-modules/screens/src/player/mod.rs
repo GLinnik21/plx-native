@@ -914,7 +914,8 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                             if *edge == Edge::Down && !at_edge {
                                 self.end_jump_gesture();
                                 self.hud.extend(input.at.ms, input::HUD_LINGER_MS);
-                                Self::ask(fx, PlayerReq::Channel(direction));
+                                // CH+ pages up the screen (-1) but means the next higher channel (+1).
+                                Self::ask(fx, PlayerReq::Channel(-direction));
                             }
                             return Handled::Yes;
                         }
@@ -3613,11 +3614,11 @@ mod step_ladder_tests {
     }
 
     #[test]
-    fn channel_keys_ask_once_in_the_shared_paging_direction_and_wake_the_hud() {
+    fn channel_keys_ask_for_the_next_higher_or_lower_channel_and_wake_the_hud() {
         let _g = plx_base::testlock::serial();
         for (sym, wcode, direction) in [
-            (consts::SDLK_PAGEUP, 0, -1), (consts::SDLK_PAGEDOWN, 0, 1),
-            (0, consts::WCODE_CH_UP_KEY, -1), (0, consts::WCODE_CH_DOWN_KEY, 1),
+            (consts::SDLK_PAGEUP, 0, 1), (consts::SDLK_PAGEDOWN, 0, -1),
+            (0, consts::WCODE_CH_UP_KEY, 1), (0, consts::WCODE_CH_DOWN_KEY, -1),
         ] {
             let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
             page.hud.dismissed = true;

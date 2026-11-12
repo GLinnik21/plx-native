@@ -63,6 +63,15 @@ fn livetv_initial_job_and_ready_publication_keep_the_whole_sorted_lineup() {
 }
 
 #[test]
+fn livetv_subchannel_numbers_publish_in_guide_order() {
+    let mut stores = Stores::default(); let keys = keys(1);
+    stores.livetv_pump(&keys, 100);
+    answer(&mut stores, Some(vec![guide(&["10.1", "2.1", "2"], 200)]));
+    assert!(stores.livetv_pump(&keys, 100));
+    assert_eq!(stores.livetv_view().channels.iter().map(|c| c.vcn.as_str()).collect::<Vec<_>>(), ["2", "2.1", "10.1"]);
+}
+
+#[test]
 fn livetv_answered_no_dvr_is_empty_and_does_not_retry() {
     let mut stores = Stores::default(); let keys = keys(1);
     stores.livetv_pump(&keys, 100);

@@ -255,8 +255,7 @@ impl LiveTvState {
     fn publish(&mut self) -> bool {
         let mut channels: Vec<_> = self.sources.iter().flat_map(|s| s.guides.iter()
             .flat_map(move |g| g.channels.iter().map(move |c| Channel::of(s.sid, c)))).collect();
-        channels.sort_by(|a, b| a.vcn.parse::<u64>().unwrap_or(u64::MAX)
-            .cmp(&b.vcn.parse::<u64>().unwrap_or(u64::MAX)).then_with(|| a.vcn.cmp(&b.vcn)));
+        channels.sort_by(|a, b| livetv::vcn_order(&a.vcn, &b.vcn));
         let status = if !channels.is_empty() { LiveTvStatus::Ready }
             else if self.sources.iter().any(|s| s.failed) { LiveTvStatus::Failed }
             else if self.sources.is_empty() || self.sources.iter().any(|s| !s.answered) { LiveTvStatus::Loading }

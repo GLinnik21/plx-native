@@ -1163,9 +1163,9 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         ) {
             plx_machine::idle::invalidate();
         }
-        // A Live TV channel is not parked: it cannot come back where it was (the server goes on
-        // recording, and a reload would replay from the tune), and the tuner it holds is the
-        // server's. Leave the player as BACK does, so the session's `stopped` frees the tuner.
+        // A Live TV channel is not parked: the server goes on recording while the app is away, and
+        // the tuner it holds is the server's. Leave the player as BACK does, so the session's
+        // `stopped` frees the tuner.
         if plx_media::route::is_live(&app.player.session) {
             log("livetv: background ends the channel");
             super::playback::exit_player(
