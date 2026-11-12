@@ -1,24 +1,36 @@
-//! `assperf:` — what libass costs on the television, one event-log line per second while a
-//! styled-subtitle source is rendering.
+//! `assperf:` — what libass costs on the television, one event-log line per second per worker
+//! while a styled-subtitle source is rendering.
 //!
 //! ```text
-//! assperf: worker tid=1234
-//! assperf: window_ms=1000 calls=3 changed=2 p95_us=1800 max_us=4100 job_p95_us=2100 job_max_us=9000 pub_bytes=123456 up_bytes=123456 jobs=2+1 ahead_hit=1 nwait_p95_us=0 nwait_max_us=0 lib_p95_us=900 comp_p95_us=800 lib_cpu_p95_us=870 comp_cpu_p95_us=790 images_p95=410 img_kpx_p95=620
+//! assperf: worker w=0 tid=1234
+//! assperf: w=0 window_ms=1000 calls=3 changed=2 p95_us=1800 max_us=4100 job_p95_us=2100 job_max_us=9000 pub_bytes=123456 up_bytes=123456 jobs=2+1 ahead_hit=1 shown=0 late=0 stale=0 nwait_p95_us=0 nwait_max_us=0 lib_p95_us=900 comp_p95_us=800 lib_cpu_p95_us=870 comp_cpu_p95_us=790 images_p95=410 img_kpx_p95=620
 //! ```
+//!
+//! `w` is the worker: 0 the primary, 1 and 2 the helpers a moving cue's pipeline starts when one
+//! worker cannot make thirty frames a second (issue #1328); each keeps its own window and writes its
+//! own line, and `tools/tv-sched-trace.sh --tid <tid>` follows one. The counts the UI thread keeps
+//! (`up_bytes`, `ahead_hit`, `shown`, `late`) belong to the primary's line alone: it reads and
+//! restarts them, so a helper's line has zeros there and nothing is counted twice.
 //!
 //! `window_ms` is the span the counts cover: from the previous line (or the session's first job)
 //! to this one. Jobs are rare while a cue is steady, so a line can follow a long idle stretch and
 //! the counts are only comparable as rates over `window_ms`. `calls` is how many times the worker ran `plx_ass_render` (one per job: a frame is rendered
-//! when the screen needs one, and the next boundary is rendered ahead of its time, not once per UI
+//! when the screen needs one, a moving cue's frames are rendered ahead of their playhead by the
+//! pipeline, and the next boundary of a still cue is rendered ahead of its time, not once per UI
 //! frame), `changed` how many of those produced a frame whose pixels differ from the one on screen
-//! (published at once, or held ahead for the next boundary), `p95_us`/`max_us` the wall time
+//! (published at once, or held ahead for the next boundary or playhead), `p95_us`/`max_us` the wall time
 //! of the FFI call alone (nearest-rank 95th percentile over a fixed ring), `job_p95_us`/`job_max_us`
 //! the same for the whole worker job (source load, event append, flush-and-reload, window slide
 //! and the draw call: the cost a cue change or seek pays), `pub_bytes` the RGBA
 //! bytes of the frames published or held ahead, and `up_bytes` the bytes the UI thread uploaded with
 //! `glTexImage2D` in the same window ([`note_upload`]). `jobs=N+A` counts the worker's Normal and
-//! Ahead jobs separately, `ahead_hit` how many times the UI thread promoted an ahead frame
-//! ([`note_ahead_hit`]) and `nwait_*` how long a Normal job waited behind an Ahead job that was
+//! Ahead jobs separately (a frame the pipeline planned is an Ahead one), `ahead_hit` how many
+//! times the UI thread promoted the boundary frame of a still cue ([`note_ahead_hit`]), `shown`
+//! how many times it promoted a frame of the pipeline ([`note_shown`]: the moving cue's updates a
+//! second) and `late` how many of those were promoted more than a tick after their playhead (the
+//! frame had not landed by then), `stale` how many frames this worker rendered that were thrown
+//! away when they landed (the plan had moved on: a seek, an appended event it could not absorb, a
+//! jump of the clock) and `nwait_*` how long a Normal job waited behind an Ahead job that was
 //! already rendering ([`note_nwait`]; native rendering cannot be cancelled). The last six fields
 //! split `p95_us`: the facade times its two phases itself (`clock_gettime` in `src/ass.c`,
 //! `PlxAssStats::last_*`) and the worker reads them after every render. `lib_p95_us` is libass's
@@ -36,7 +48,6 @@
 //! span on `FRAMEDROP spans=` (spans print only on `FRAMEDROP` lines and only while the frame
 //! instrument is armed, `/tmp/plxnative-framedrop`). A window closes on the first job at least a
 //! second after it opened (an idle stretch emits no line, hence `window_ms`), and [`flush`] emits the partial window when the source is deselected.
-//! `tools/tv-sched-trace.sh --tid <tid>` follows the worker.
 //!
 //! Always compiled; the cost is one clock pair per render in Rust, six clock reads in the facade
 //! (three on each of the two clocks) and a fixed 256-slot ring per figure.
@@ -48,17 +59,71 @@ use std::time::{Duration, Instant};
 const RING: usize = 256;
 const WINDOW: Duration = Duration::from_secs(1);
 
-static UPLOADED: AtomicU64 = AtomicU64::new(0);
-static AHEAD_HITS: AtomicU64 = AtomicU64::new(0);
+/// What the UI thread counts between two lines. One owner reads and restarts it (the primary
+/// worker, [`finish_call`]): were every worker to, a window closing on one would take the counts of
+/// them all, and the rest would print zeros for a stretch that had them.
+struct Counters {
+    uploaded: AtomicU64,
+    ahead_hits: AtomicU64,
+    shown: AtomicU64,
+    late: AtomicU64,
+}
+
+impl Counters {
+    const fn new() -> Self {
+        Self {
+            uploaded: AtomicU64::new(0),
+            ahead_hits: AtomicU64::new(0),
+            shown: AtomicU64::new(0),
+            late: AtomicU64::new(0),
+        }
+    }
+
+    fn read(&self) -> Shared {
+        Shared {
+            up_bytes: self.uploaded.load(Ordering::Relaxed),
+            ahead_hits: self.ahead_hits.load(Ordering::Relaxed),
+            shown: self.shown.load(Ordering::Relaxed),
+            late: self.late.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Restart them, after a window that [`Counters::read`] them. Events landing between the read
+    /// and the restart are dropped (a diagnostic line, not an account).
+    fn reset(&self) {
+        for counter in [&self.uploaded, &self.ahead_hits, &self.shown, &self.late] {
+            counter.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// Read and restart in one step: the partial window of a deselected source.
+    fn take(&self) -> Shared {
+        Shared {
+            up_bytes: self.uploaded.swap(0, Ordering::Relaxed),
+            ahead_hits: self.ahead_hits.swap(0, Ordering::Relaxed),
+            shown: self.shown.swap(0, Ordering::Relaxed),
+            late: self.late.swap(0, Ordering::Relaxed),
+        }
+    }
+}
+
+static COUNTERS: Counters = Counters::new();
 
 /// UI thread: RGBA bytes handed to `glTexImage2D` for a styled-subtitle region.
 pub fn note_upload(bytes: usize) {
-    UPLOADED.fetch_add(bytes as u64, Ordering::Relaxed);
+    COUNTERS.uploaded.fetch_add(bytes as u64, Ordering::Relaxed);
 }
 
-/// UI thread: the ahead frame was promoted without a worker job.
+/// UI thread: the ahead frame of a still cue was promoted without a worker job.
 pub fn note_ahead_hit() {
-    AHEAD_HITS.fetch_add(1, Ordering::Relaxed);
+    COUNTERS.ahead_hits.fetch_add(1, Ordering::Relaxed);
+}
+
+/// UI thread: a frame of the moving cue's pipeline was promoted; `late` when it came more than a
+/// tick after its playhead.
+pub fn note_shown(late: bool) {
+    COUNTERS.shown.fetch_add(1, Ordering::Relaxed);
+    COUNTERS.late.fetch_add(u64::from(late), Ordering::Relaxed);
 }
 
 /// Fixed ring of the latest samples with a nearest-rank percentile.
@@ -126,6 +191,8 @@ pub(super) struct Cycle {
     pub pub_bytes: u64,
     /// An Ahead job (rendered early) rather than a Normal one.
     pub ahead: bool,
+    /// The frame it rendered was thrown away when it landed (the plan had moved on).
+    pub stale: bool,
 }
 
 /// Counters other threads keep, read when a window closes.
@@ -133,9 +200,13 @@ pub(super) struct Cycle {
 pub(super) struct Shared {
     pub up_bytes: u64,
     pub ahead_hits: u64,
+    pub shown: u64,
+    pub late: u64,
 }
 
 pub(super) struct Aggregator {
+    /// Which worker this window belongs to; a window restart keeps it.
+    slot: usize,
     started: Option<Instant>,
     render: Ring,
     job: Ring,
@@ -148,6 +219,7 @@ pub(super) struct Aggregator {
     image_kpx: Ring,
     normal_jobs: u32,
     ahead_jobs: u32,
+    stale: u32,
     nwait_max_us: u32,
     calls: u32,
     changed: u32,
@@ -162,6 +234,7 @@ pub(super) struct Aggregator {
 impl Aggregator {
     pub(super) const fn new() -> Self {
         Self {
+            slot: 0,
             started: None,
             render: Ring::new(),
             job: Ring::new(),
@@ -174,6 +247,7 @@ impl Aggregator {
             image_kpx: Ring::new(),
             normal_jobs: 0,
             ahead_jobs: 0,
+            stale: 0,
             nwait_max_us: 0,
             calls: 0,
             changed: 0,
@@ -211,6 +285,7 @@ impl Aggregator {
             self.normal_jobs += 1;
         }
         self.job_max_us = self.job_max_us.max(cycle.job_us);
+        self.stale += u32::from(cycle.stale);
         self.changed += u32::from(cycle.changed);
         self.pub_bytes += cycle.pub_bytes;
         if now.saturating_duration_since(started) < WINDOW {
@@ -239,7 +314,8 @@ impl Aggregator {
             .counting_since
             .map_or(0, |since| now.saturating_duration_since(since).as_millis());
         let line = format!(
-            "assperf: window_ms={} calls={} changed={} p95_us={} max_us={} job_p95_us={} job_max_us={} pub_bytes={} up_bytes={} jobs={}+{} ahead_hit={} nwait_p95_us={} nwait_max_us={} lib_p95_us={} comp_p95_us={} lib_cpu_p95_us={} comp_cpu_p95_us={} images_p95={} img_kpx_p95={}",
+            "assperf: w={} window_ms={} calls={} changed={} p95_us={} max_us={} job_p95_us={} job_max_us={} pub_bytes={} up_bytes={} jobs={}+{} ahead_hit={} shown={} late={} stale={} nwait_p95_us={} nwait_max_us={} lib_p95_us={} comp_p95_us={} lib_cpu_p95_us={} comp_cpu_p95_us={} images_p95={} img_kpx_p95={}",
+            self.slot,
             window_ms,
             self.calls,
             self.changed,
@@ -252,6 +328,9 @@ impl Aggregator {
             self.normal_jobs,
             self.ahead_jobs,
             shared.ahead_hits,
+            shared.shown,
+            shared.late,
+            self.stale,
             self.nwait.p95(),
             self.nwait_max_us,
             self.lib.p95(),
@@ -261,7 +340,9 @@ impl Aggregator {
             self.images.p95(),
             self.image_kpx.p95()
         );
+        let slot = self.slot;
         *self = Self::new();
+        self.slot = slot;
         self.counting_since = Some(now);
         line
     }
@@ -273,6 +354,8 @@ thread_local! {
     static LAST_NATIVE: Cell<Option<NativeCost>> = const { Cell::new(None) };
     static LAST_JOB_US: Cell<Option<u32>> = const { Cell::new(None) };
     static LAST_JOB_AHEAD: Cell<bool> = const { Cell::new(false) };
+    /// The worker this thread is (0 = the primary, which owns the shared counters).
+    static SLOT: Cell<usize> = const { Cell::new(0) };
 }
 
 fn micros(elapsed: Duration) -> u32 {
@@ -307,28 +390,25 @@ pub(super) fn note_nwait(waited: Duration) {
     AGG.with(|a| a.borrow_mut().note_nwait(micros(waited)));
 }
 
-/// Push one cycle and, when its window closes, restart the cross-thread counters. Reset only on
-/// emission; events landing between the load and the store are dropped (a diagnostic line, not
-/// an account).
-fn close_cycle(
-    agg: &mut Aggregator,
-    now: Instant,
-    cycle: Cycle,
-    uploaded: &AtomicU64,
-    ahead_hits: &AtomicU64,
-) -> Option<String> {
-    let shared = Shared {
-        up_bytes: uploaded.load(Ordering::Relaxed),
-        ahead_hits: ahead_hits.load(Ordering::Relaxed),
-    };
+/// Push one cycle and, when its window closes, restart the cross-thread counters: `counters` is
+/// the owner's (the primary worker's); a helper passes `None` and its line reads zeros there.
+fn close_cycle(agg: &mut Aggregator, now: Instant, cycle: Cycle, counters: Option<&Counters>) -> Option<String> {
+    let shared = counters.map_or_else(Shared::default, Counters::read);
     let line = agg.push(now, cycle, shared)?;
-    uploaded.store(0, Ordering::Relaxed);
-    ahead_hits.store(0, Ordering::Relaxed);
+    if let Some(counters) = counters {
+        counters.reset();
+    }
     Some(line)
 }
 
-/// WORKER: close one cycle (if a job was timed) and log the window when due.
-pub(super) fn finish_call(changed: bool, pub_bytes: u64) {
+/// The counters this thread owns: the primary worker's.
+fn owned_counters() -> Option<&'static Counters> {
+    (SLOT.get() == 0).then_some(&COUNTERS)
+}
+
+/// WORKER: close one cycle (if a job was timed) and log the window when due. `stale`: the frame
+/// the job rendered was thrown away when it landed.
+pub(super) fn finish_call(changed: bool, pub_bytes: u64, stale: bool) {
     let Some(job_us) = LAST_JOB_US.take() else {
         return;
     };
@@ -339,10 +419,9 @@ pub(super) fn finish_call(changed: bool, pub_bytes: u64) {
         changed,
         pub_bytes,
         ahead: LAST_JOB_AHEAD.take(),
+        stale,
     };
-    let line = AGG.with(|a| {
-        close_cycle(&mut a.borrow_mut(), Instant::now(), cycle, &UPLOADED, &AHEAD_HITS)
-    });
+    let line = AGG.with(|a| close_cycle(&mut a.borrow_mut(), Instant::now(), cycle, owned_counters()));
     if let Some(line) = line {
         plx_base::eventlog::log(&line);
     }
@@ -351,23 +430,27 @@ pub(super) fn finish_call(changed: bool, pub_bytes: u64) {
 /// WORKER: the source was deselected; emit the partial window and start the next session clean.
 pub(super) fn flush() {
     let line = AGG.with(|a| {
-        a.borrow_mut().take_partial(Instant::now(), Shared {
-            up_bytes: UPLOADED.swap(0, Ordering::Relaxed),
-            ahead_hits: AHEAD_HITS.swap(0, Ordering::Relaxed),
-        })
+        let mut agg = a.borrow_mut();
+        // Only a window with something in it takes the owner's counts: an idle helper's flush must
+        // not leave the primary's partial window without them.
+        let shared = if agg.job.pushed > 0 { owned_counters().map_or_else(Shared::default, Counters::take) } else { Shared::default() };
+        agg.take_partial(Instant::now(), shared)
     });
     if let Some(line) = line {
         plx_base::eventlog::log(&line);
     }
 }
 
-/// WORKER: once, at thread start.
-pub(super) fn log_worker_tid() {
+/// WORKER: once, at thread start: which worker this thread is (`slot`, 0 for the primary) and its
+/// kernel thread id, which `tools/tv-sched-trace.sh --tid` follows.
+pub(super) fn log_worker_tid(slot: usize) {
+    SLOT.set(slot);
+    AGG.with(|a| a.borrow_mut().slot = slot);
     #[cfg(any(target_os = "linux", target_os = "android"))]
     let tid = unsafe { libc::syscall(libc::SYS_gettid) }.to_string();
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     let tid = String::from("na");
-    plx_base::eventlog::log(&format!("assperf: worker tid={tid}"));
+    plx_base::eventlog::log(&format!("assperf: worker w={slot} tid={tid}"));
 }
 
 #[cfg(test)]
@@ -392,11 +475,12 @@ mod tests {
             changed,
             pub_bytes,
             ahead: false,
+            stale: false,
         }
     }
 
     fn up(up_bytes: u64) -> Shared {
-        Shared { up_bytes, ahead_hits: 0 }
+        Shared { up_bytes, ..Shared::default() }
     }
 
     #[test]
@@ -404,17 +488,19 @@ mod tests {
         let t0 = Instant::now();
         let mut a = Aggregator::new();
         for i in 1..=200u32 {
+            let mut call = cycle((i % 100 + 1) * 10, i % 10 == 0, 100);
+            call.stale = i % 50 == 0;
             let line = a.push(
                 t0 + Duration::from_micros((i as u64 - 1) * 5030),
-                cycle((i % 100 + 1) * 10, i % 10 == 0, 100),
-                Shared { up_bytes: 777, ahead_hits: 3 },
+                call,
+                Shared { up_bytes: 777, ahead_hits: 3, shown: 140, late: 9 },
             );
             if i < 200 {
                 assert!(line.is_none());
             } else {
                 assert_eq!(
                     line.as_deref(),
-                    Some("assperf: window_ms=1000 calls=200 changed=20 p95_us=950 max_us=1000 job_p95_us=1900 job_max_us=2000 pub_bytes=20000 up_bytes=777 jobs=200+0 ahead_hit=3 nwait_p95_us=0 nwait_max_us=0 lib_p95_us=475 comp_p95_us=475 lib_cpu_p95_us=237 comp_cpu_p95_us=237 images_p95=91 img_kpx_p95=910")
+                    Some("assperf: w=0 window_ms=1000 calls=200 changed=20 p95_us=950 max_us=1000 job_p95_us=1900 job_max_us=2000 pub_bytes=20000 up_bytes=777 jobs=200+0 ahead_hit=3 shown=140 late=9 stale=4 nwait_p95_us=0 nwait_max_us=0 lib_p95_us=475 comp_p95_us=475 lib_cpu_p95_us=237 comp_cpu_p95_us=237 images_p95=91 img_kpx_p95=910")
                 );
             }
         }
@@ -427,18 +513,18 @@ mod tests {
         let mut a = Aggregator::new();
         assert!(a.push(t0, cycle(10, true, 1), up(0)).is_none());
         let first = a.push(t0 + WINDOW, cycle(10, true, 1), up(0)).unwrap();
-        assert!(first.starts_with("assperf: window_ms=1000 calls=2 "), "{first}");
+        assert!(first.starts_with("assperf: w=0 window_ms=1000 calls=2 "), "{first}");
         // Ten idle seconds, then a job and, a second later, the job that closes the window.
         assert!(a.push(t0 + 11 * WINDOW, cycle(10, true, 1), up(0)).is_none());
         let second = a.push(t0 + 12 * WINDOW, cycle(10, true, 1), up(0)).unwrap();
-        assert!(second.starts_with("assperf: window_ms=11000 calls=2 "), "{second}");
+        assert!(second.starts_with("assperf: w=0 window_ms=11000 calls=2 "), "{second}");
         // A partial window at deselection ends the session: the next one starts its own clock.
         assert!(a.push(t0 + 20 * WINDOW, cycle(10, true, 1), up(0)).is_none());
         let partial = a.take_partial(t0 + 20 * WINDOW + WINDOW / 2, up(0)).unwrap();
-        assert!(partial.starts_with("assperf: window_ms=8500 "), "{partial}");
+        assert!(partial.starts_with("assperf: w=0 window_ms=8500 "), "{partial}");
         assert!(a.push(t0 + 30 * WINDOW, cycle(10, true, 1), up(0)).is_none());
         let next = a.take_partial(t0 + 30 * WINDOW, up(0)).unwrap();
-        assert!(next.starts_with("assperf: window_ms=0 "), "{next}");
+        assert!(next.starts_with("assperf: w=0 window_ms=0 "), "{next}");
     }
 
     #[test]
@@ -466,6 +552,7 @@ mod tests {
             changed: true,
             pub_bytes: 8,
             ahead: true,
+            stale: true,
         };
         assert!(a.push(t0, load, up(0)).is_none());
         a.note_nwait(300);
@@ -473,7 +560,7 @@ mod tests {
         let line = a.take_partial(t0, up(0)).unwrap();
         assert_eq!(
             line,
-            "assperf: window_ms=0 calls=0 changed=1 p95_us=0 max_us=0 job_p95_us=50000 job_max_us=50000 pub_bytes=8 up_bytes=0 jobs=0+1 ahead_hit=0 nwait_p95_us=900 nwait_max_us=900 lib_p95_us=0 comp_p95_us=0 lib_cpu_p95_us=0 comp_cpu_p95_us=0 images_p95=0 img_kpx_p95=0"
+            "assperf: w=0 window_ms=0 calls=0 changed=1 p95_us=0 max_us=0 job_p95_us=50000 job_max_us=50000 pub_bytes=8 up_bytes=0 jobs=0+1 ahead_hit=0 shown=0 late=0 stale=1 nwait_p95_us=900 nwait_max_us=900 lib_p95_us=0 comp_p95_us=0 lib_cpu_p95_us=0 comp_cpu_p95_us=0 images_p95=0 img_kpx_p95=0"
         );
     }
 
@@ -498,6 +585,7 @@ mod tests {
             changed: composed,
             pub_bytes: 0,
             ahead: false,
+            stale: false,
         };
         // Twenty composed frames: libass 100..=2000 us, the composite 5x that, 10..=200 images of
         // 1.5 Mpx..30 Mpx; then an unchanged call, which has no composite and whose stale image
@@ -543,39 +631,74 @@ mod tests {
     #[test]
     fn closing_a_window_restarts_the_upload_counter() {
         let t0 = Instant::now();
-        let uploaded = AtomicU64::new(0);
-        let hits = AtomicU64::new(0);
+        let counters = Counters::new();
         let mut a = Aggregator::new();
-        uploaded.fetch_add(4096, Ordering::Relaxed);
-        assert!(close_cycle(&mut a, t0, cycle(10, true, 1), &uploaded, &hits).is_none());
-        assert_eq!(uploaded.load(Ordering::Relaxed), 4096, "mid-window: kept");
-        let line = close_cycle(&mut a, t0 + WINDOW, cycle(10, false, 0), &uploaded, &hits).unwrap();
+        counters.uploaded.fetch_add(4096, Ordering::Relaxed);
+        assert!(close_cycle(&mut a, t0, cycle(10, true, 1), Some(&counters)).is_none());
+        assert_eq!(counters.read().up_bytes, 4096, "mid-window: kept");
+        let line = close_cycle(&mut a, t0 + WINDOW, cycle(10, false, 0), Some(&counters)).unwrap();
         assert!(line.contains("up_bytes=4096 "), "{line}");
-        assert_eq!(uploaded.load(Ordering::Relaxed), 0, "next window starts at 0");
-        uploaded.fetch_add(7, Ordering::Relaxed);
-        assert!(close_cycle(&mut a, t0 + 3 * WINDOW, cycle(10, false, 0), &uploaded, &hits).is_none());
-        let line = close_cycle(&mut a, t0 + 5 * WINDOW, cycle(10, false, 0), &uploaded, &hits).unwrap();
+        assert_eq!(counters.read().up_bytes, 0, "next window starts at 0");
+        counters.uploaded.fetch_add(7, Ordering::Relaxed);
+        assert!(close_cycle(&mut a, t0 + 3 * WINDOW, cycle(10, false, 0), Some(&counters)).is_none());
+        let line = close_cycle(&mut a, t0 + 5 * WINDOW, cycle(10, false, 0), Some(&counters)).unwrap();
         assert!(line.contains("up_bytes=7 "), "{line}");
     }
 
     #[test]
-    fn closing_a_window_reports_and_restarts_the_ahead_hits() {
+    fn closing_a_window_reports_and_restarts_the_ahead_hits_and_the_shown_frames() {
         let t0 = Instant::now();
-        let (uploaded, hits) = (AtomicU64::new(0), AtomicU64::new(0));
+        let counters = Counters::new();
         let mut a = Aggregator::new();
-        hits.fetch_add(2, Ordering::Relaxed);
-        let line = close_cycle(&mut a, t0, cycle(10, true, 1), &uploaded, &hits);
-        assert!(line.is_none() && hits.load(Ordering::Relaxed) == 2, "mid-window: kept");
-        let line = close_cycle(&mut a, t0 + WINDOW, cycle(10, false, 0), &uploaded, &hits).unwrap();
-        assert!(line.contains("ahead_hit=2 "), "{line}");
-        assert_eq!(hits.load(Ordering::Relaxed), 0);
+        counters.ahead_hits.fetch_add(2, Ordering::Relaxed);
+        counters.shown.fetch_add(30, Ordering::Relaxed);
+        counters.late.fetch_add(4, Ordering::Relaxed);
+        let line = close_cycle(&mut a, t0, cycle(10, true, 1), Some(&counters));
+        assert!(line.is_none() && counters.read().ahead_hits == 2, "mid-window: kept");
+        let line = close_cycle(&mut a, t0 + WINDOW, cycle(10, false, 0), Some(&counters)).unwrap();
+        assert!(line.contains("ahead_hit=2 shown=30 late=4 stale=0 "), "{line}");
+        let after = counters.read();
+        assert_eq!((after.ahead_hits, after.shown, after.late), (0, 0, 0));
+    }
+
+    #[test]
+    fn a_helper_names_its_worker_and_neither_reads_nor_restarts_the_shared_counts() {
+        let t0 = Instant::now();
+        let counters = Counters::new();
+        counters.uploaded.fetch_add(5, Ordering::Relaxed);
+        note_shown_into(&counters, true);
+        let mut helper = Aggregator::new();
+        helper.slot = 2;
+        let mut stale = cycle(10, true, 1);
+        stale.stale = true;
+        assert!(close_cycle(&mut helper, t0, stale, None).is_none());
+        let line = close_cycle(&mut helper, t0 + WINDOW, cycle(10, false, 0), None).unwrap();
+        assert!(line.starts_with("assperf: w=2 window_ms=1000 "), "{line}");
+        assert!(line.contains(" up_bytes=0 jobs=2+0 ahead_hit=0 shown=0 late=0 stale=1 "), "{line}");
+        let owner = counters.read();
+        assert_eq!((owner.up_bytes, owner.shown, owner.late), (5, 1, 1), "left for the owner");
+        // the next window of the helper keeps its number
+        assert!(close_cycle(&mut helper, t0 + 2 * WINDOW, cycle(10, true, 1), None).is_none());
+        let again = close_cycle(&mut helper, t0 + 3 * WINDOW, cycle(10, true, 1), None).unwrap();
+        assert!(again.starts_with("assperf: w=2 "), "{again}");
+        // the owner then takes them with its own line
+        let mut primary = Aggregator::new();
+        assert!(close_cycle(&mut primary, t0, cycle(10, true, 1), Some(&counters)).is_none());
+        let line = close_cycle(&mut primary, t0 + WINDOW, cycle(10, true, 1), Some(&counters)).unwrap();
+        assert!(line.starts_with("assperf: w=0 ") && line.contains(" up_bytes=5 jobs=2+0 ahead_hit=0 shown=1 late=1 "), "{line}");
+    }
+
+    /// `note_shown` against `counters` instead of the process's: the same two counts.
+    fn note_shown_into(counters: &Counters, late: bool) {
+        counters.shown.fetch_add(1, Ordering::Relaxed);
+        counters.late.fetch_add(u64::from(late), Ordering::Relaxed);
     }
 
     #[test]
     fn finish_without_a_job_is_a_no_op() {
         // Idle (nothing ran this cycle): nothing is recorded, nothing logged.
         begin_call();
-        finish_call(true, 99);
+        finish_call(true, 99, false);
         AGG.with(|a| assert_eq!(a.borrow().job.pushed, 0));
     }
 
@@ -593,7 +716,7 @@ mod tests {
             composed: true,
         });
         record_job(Duration::from_micros(2000), false);
-        finish_call(true, 64);
+        finish_call(true, 64, false);
         AGG.with(|a| {
             let a = a.borrow();
             assert_eq!(
@@ -611,7 +734,7 @@ mod tests {
             );
         });
         // The slots were consumed: a second finish does not double count.
-        finish_call(false, 0);
+        finish_call(false, 0, false);
         AGG.with(|a| assert_eq!((a.borrow().calls, a.borrow().lib.pushed), (1, 1)));
     }
 
@@ -625,7 +748,7 @@ mod tests {
         record_job(Duration::from_micros(9), false);
         // Cycle 2 made no native call at all.
         begin_call();
-        finish_call(false, 0);
+        finish_call(false, 0, false);
         AGG.with(|a| {
             let a = a.borrow();
             assert_eq!((a.calls, a.job.pushed, a.lib.pushed, a.comp.pushed), (0, 0, 0, 0));

@@ -1,10 +1,12 @@
-//! Styled subtitles, rendered by our pinned libass on one worker. The SDL thread
+//! Styled subtitles, rendered by our pinned libass on a worker, and on up to two helpers while a
+//! moving cue needs more frames than one worker can make (issue #1328). The SDL thread
 //! only replaces a bounded request slot and reads an immutable RGBA publication;
 //! it never parses fonts/events, rasterizes, or waits for the native renderer.
 use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 mod mailbox;
 use mailbox::{Job, Mailbox, Rendered};
@@ -232,11 +234,29 @@ impl Pace {
     }
 }
 
+/// The most renderers (a worker thread and its own libass instance) that may run at once: the
+/// primary, started with the first request, and helpers started while a moving cue's pipeline can
+/// use them (issue #1328). A renderer is its own copy of the fonts and the events, so each costs
+/// memory as well as a core.
+const MAX_ASS_RENDERERS: usize = 3;
+/// A helper keeps its renderer only while the pipeline keeps it busy: one that found nothing to do
+/// for this long gives the renderer back (and goes out of the mailbox's pacing) and opens it afresh
+/// when it is needed again.
+const HELPER_IDLE: Duration = Duration::from_secs(10);
+
 pub struct Runtime {
     source_id: AtomicU64,
     epoch: AtomicU64,
+    /// Whether the primary worker (slot 0) started: decided once, by the first request.
     started: OnceLock<bool>,
-    worker: OnceLock<std::thread::Thread>,
+    /// Whether the helper of slot `i + 1` started: decided once, when the pipeline first wants it.
+    helpers: [OnceLock<bool>; MAX_ASS_RENDERERS - 1],
+    /// The running workers' threads by slot, to unpark.
+    threads: [OnceLock<std::thread::Thread>; MAX_ASS_RENDERERS],
+    /// Helpers whose renderer is open and has rendered a frame: the mailbox paces a moving cue over
+    /// one more worker for each. A cold helper's first jobs open the source and land late, so it is
+    /// not counted until it has rendered a steady frame.
+    warm_helpers: AtomicUsize,
     mailbox: Mutex<Mailbox>,
 }
 
@@ -246,7 +266,9 @@ impl Runtime {
             source_id: AtomicU64::new(0),
             epoch: AtomicU64::new(1),
             started: OnceLock::new(),
-            worker: OnceLock::new(),
+            helpers: [const { OnceLock::new() }; MAX_ASS_RENDERERS - 1],
+            threads: [const { OnceLock::new() }; MAX_ASS_RENDERERS],
+            warm_helpers: AtomicUsize::new(0),
             mailbox: Mutex::new(Mailbox::new()),
         }
     }
@@ -254,11 +276,39 @@ impl Runtime {
     fn wake(&self) {
         // Unlike a condition-variable notification, this permit survives the
         // gap between checking the mailbox and parking. Before registration,
-        // the worker has not checked the startup mailbox yet.
-        if let Some(worker) = self.worker.get() {
-            worker.unpark();
+        // the worker has not checked the startup mailbox yet. Every worker is
+        // woken: each takes what is there for it (a frame of the plan, or the
+        // cleanup of a source that was cleared) and parks again.
+        for thread in self.threads.iter().filter_map(OnceLock::get) {
+            thread.unpark();
         }
     }
+
+    /// Start the helpers that a pipeline asking for `wanted` workers can use on this device. Off the
+    /// mailbox lock: starting a thread is not work for the lock the workers take their jobs under.
+    fn start_helpers(&self, wanted: usize) {
+        if wanted < 2 {
+            return;
+        }
+        for slot in 1..wanted.min(renderer_slots()) {
+            self.helpers[slot - 1].get_or_init(|| spawn_worker(slot));
+        }
+    }
+}
+
+/// How many renderers this device can run at once: the primary and a helper for every other core,
+/// at most [`MAX_ASS_RENDERERS`]. Read once; a request never asks the OS.
+fn renderer_slots() -> usize {
+    static SLOTS: OnceLock<usize> = OnceLock::new();
+    *SLOTS.get_or_init(|| {
+        let cores = std::thread::available_parallelism().map_or(1, usize::from);
+        1 + cores.saturating_sub(1).min(MAX_ASS_RENDERERS - 1)
+    })
+}
+
+/// The one place a styled-subtitle worker is started, the primary and every helper alike.
+fn spawn_worker(slot: usize) -> bool {
+    plx_base::task::spawn("ass-render", move || worker(slot)).is_some()
 }
 
 #[inline]
@@ -303,21 +353,26 @@ pub fn request(
             height
         },
     };
-    let started = *runtime()
-        .started
-        .get_or_init(|| plx_base::task::spawn("ass-render", worker).is_some());
+    let started = *runtime().started.get_or_init(|| spawn_worker(0));
     let mut mailbox = runtime().mailbox.try_lock().ok()?;
     if !started {
         return Some(mailbox.publish_error(key, error_frame(key, Fault::StartFailed)));
     }
     let requested = mailbox.request(key, now_ms, &source, pace);
     if requested.promoted {
-        super::ass_perf::note_ahead_hit();
+        if requested.piped {
+            super::ass_perf::note_shown(requested.late);
+        } else {
+            super::ass_perf::note_ahead_hit();
+        }
     }
     if requested.wake {
         runtime().wake();
     }
-    mailbox.view(&key)
+    let frame = mailbox.view(&key);
+    drop(mailbox);
+    runtime().start_helpers(requested.workers_wanted);
+    frame
 }
 
 /// MAIN THREAD: the alignment classes (bottom, middle, top) of the cues active in the frame
@@ -374,18 +429,47 @@ fn error_frame(key: Key, message: Fault) -> Arc<Frame> {
     })
 }
 
-fn worker() {
+/// A helper's standing in the mailbox's pacing: counted from its first steady render until it
+/// gives its renderer back, so the plan's frame step is over the workers that deliver.
+#[derive(Default)]
+struct Pacing {
+    counted: bool,
+}
+
+impl Pacing {
+    /// Under the mailbox lock, so a count and the worker number it sets are never read apart.
+    fn set(&mut self, runtime: &Runtime, mailbox: &mut Mailbox, counted: bool) {
+        if self.counted == counted {
+            return;
+        }
+        self.counted = counted;
+        let helpers = if counted {
+            runtime.warm_helpers.fetch_add(1, Ordering::Relaxed) + 1
+        } else {
+            runtime.warm_helpers.fetch_sub(1, Ordering::Relaxed) - 1
+        };
+        mailbox.set_workers(1 + helpers);
+    }
+}
+
+/// One styled-subtitle worker: slot 0 is the primary, the others are helpers. Each owns its own
+/// libass instance (`Engine`), so nothing native is shared between workers; they share only the
+/// mailbox, under its lock.
+fn worker(slot: usize) {
     runtime()
-        .worker
+        .threads[slot]
         .set(std::thread::current())
-        .expect("one styled subtitle worker");
-    super::ass_perf::log_worker_tid();
+        .expect("one styled subtitle worker per slot");
+    super::ass_perf::log_worker_tid(slot);
     let mut engine = Engine::default();
+    let mut pacing = Pacing::default();
+    let mut idle_since = std::time::Instant::now();
     loop {
         let job = {
             let mut mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
             loop {
                 if let Some(retired) = retire_off(runtime(), &mut mailbox, &mut engine) {
+                    pacing.set(runtime(), &mut mailbox, false);
                     // Native destruction can be slow too: release the mailbox first.
                     drop(mailbox);
                     super::ass_perf::flush();
@@ -396,11 +480,29 @@ fn worker() {
                 if let Some(job) = mailbox.take() {
                     break job;
                 }
+                let helper_holds_renderer = slot > 0 && !engine.is_empty();
+                if helper_holds_renderer && idle_since.elapsed() >= HELPER_IDLE {
+                    // Nothing for a helper to do for a while: give the renderer back, and stay
+                    // parked until a plan wants it again. Decided under the lock, so a job
+                    // handed out meanwhile is not missed.
+                    let retired = std::mem::take(&mut engine);
+                    pacing.set(runtime(), &mut mailbox, false);
+                    drop(mailbox);
+                    super::ass_perf::flush();
+                    drop(retired);
+                    mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
+                    continue;
+                }
                 drop(mailbox);
                 // A queue/cancel between the check above and this park leaves a
                 // permit, so it cannot strand native resources until another key.
-                // A truly idle worker needs no periodic wakeup.
-                std::thread::park();
+                // A truly idle worker needs no periodic wakeup; a helper that holds a
+                // renderer wakes once to give it back.
+                if helper_holds_renderer {
+                    std::thread::park_timeout(HELPER_IDLE.saturating_sub(idle_since.elapsed()));
+                } else {
+                    std::thread::park();
+                }
                 mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
             }
         };
@@ -425,11 +527,15 @@ fn worker() {
             // Every exit finishes the job, so the mailbox never believes one is still in flight.
             let outcome = rendered.filter(|_| live());
             let ran = outcome.is_some();
+            if slot > 0 && ran && !engine.resynced {
+                pacing.set(runtime(), &mut mailbox, true);
+            }
             let finished = mailbox.finish(&job, outcome);
             ran.then_some(finished)
         };
+        idle_since = std::time::Instant::now();
         let Some(finished) = finished else { continue };
-        super::ass_perf::finish_call(finished.changed, finished.pub_bytes);
+        super::ass_perf::finish_call(finished.changed, finished.pub_bytes, finished.stale);
         if finished.wake {
             plx_machine::present::wake_from_worker();
         }
@@ -813,28 +919,37 @@ impl Engine {
             self.frame = Some(frame.clone());
             return frame;
         }
-        let previous = self
-            .frame
-            .as_ref()
-            .filter(|frame| {
-                frame.source_id == key.source_id
-                    && frame.width == key.width
-                    && frame.height == key.height
-            })
-            .map_or(&[][..], |frame| frame.rects.as_slice());
+        // The frame this one follows (another worker's, when several take turns) is looked at before
+        // this engine's own last one: a region that draws identically to one of its regions shares
+        // its allocation, so the screen keeps the texture it already uploaded for it (issue #1328).
+        let for_key = |frame: &&Arc<Frame>| {
+            frame.source_id == key.source_id && frame.width == key.width && frame.height == key.height
+        };
+        let reference = request.reference.as_ref().filter(for_key);
+        let previous = [
+            reference.map_or(&[][..], |frame| frame.rects.as_slice()),
+            self.frame.as_ref().filter(for_key).map_or(&[][..], |frame| frame.rects.as_slice()),
+        ];
         let result = self
             .native
             .as_mut()
             .expect("loaded ASS source")
-            .render(key, request.now_ms, previous);
+            .render(key, request.now_ms, &previous);
         let frame = match result {
-            Ok(None) => match &self.frame {
+            Ok(None) => match self.frame.clone() {
                 Some(frame) if frame.error.is_none() => {
                     if frame.source_id == key.source_id
                         && frame.width == key.width
                         && frame.height == key.height
                     {
-                        return frame.clone();
+                        // libass found nothing changed since THIS engine's last frame; the picture
+                        // may still be the reference's, which the screen shows.
+                        let shared = match reference {
+                            Some(reference) => interned(&frame, reference),
+                            None => frame,
+                        };
+                        self.frame = Some(shared.clone());
+                        return shared;
                     }
                     // libass reports "unchanged" against the track the renderer showed before a
                     // reuse (a seek, a track switch with the same header): the pixels stand, but
@@ -848,19 +963,20 @@ impl Engine {
                         error: None,
                     })
                 }
-                Some(frame) => return frame.clone(),
+                Some(frame) => return frame,
                 None => error_frame(key, Fault::RenderFailed),
             },
             Ok(Some(rects)) => {
-                if let Some(old) = &self.frame {
-                    if old.source_id == key.source_id
-                        && old.width == key.width
-                        && old.height == key.height
-                        && old.error.is_none()
-                        && old.rects == rects
-                    {
-                        return old.clone();
-                    }
+                // A picture that is one already known, the reference's or this engine's own last, is
+                // that very frame: the screen keeps its serial and its textures.
+                let identical = reference
+                    .into_iter()
+                    .chain(self.frame.as_ref().filter(for_key))
+                    .find(|old| old.error.is_none() && old.rects == rects)
+                    .cloned();
+                if let Some(old) = identical {
+                    self.frame = Some(old.clone());
+                    return old;
                 }
                 Arc::new(Frame {
                     source_id: key.source_id,
@@ -883,6 +999,58 @@ impl Engine {
         self.frame = Some(frame.clone());
         frame
     }
+}
+
+/// The region among `candidates` that holds exactly these pixels: the one at the same place if there
+/// is one, else any (a translation). Its allocation is what a region drawing the same pixels shares.
+fn shared_region<'a>(
+    mut candidates: impl Iterator<Item = &'a Rect> + Clone,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    pixels: &[u8],
+) -> Option<&'a Rect> {
+    let same = |old: &&Rect| old.width == width && old.height == height && old.rgba.as_ref() == pixels;
+    candidates.clone().filter(|r| r.x == x && r.y == y).find(same).or_else(|| candidates.find(same))
+}
+
+/// `frame` with every region that draws what a region of `reference` draws sharing that region's
+/// allocation; `reference` itself when the two pictures are the same, and `frame` itself when it
+/// shares nothing with it.
+fn interned(frame: &Arc<Frame>, reference: &Arc<Frame>) -> Arc<Frame> {
+    if Arc::ptr_eq(frame, reference) {
+        return frame.clone();
+    }
+    let mut shares = false;
+    let rects: Vec<Rect> = frame
+        .rects
+        .iter()
+        .map(|rect| {
+            let old = shared_region(reference.rects.iter(), rect.x, rect.y, rect.width, rect.height, &rect.rgba);
+            match old {
+                Some(old) if !Arc::ptr_eq(&old.rgba, &rect.rgba) => {
+                    shares = true;
+                    Rect { rgba: old.rgba.clone(), ..rect.clone() }
+                }
+                _ => rect.clone(),
+            }
+        })
+        .collect();
+    if rects == reference.rects {
+        return reference.clone();
+    }
+    if !shares {
+        return frame.clone();
+    }
+    Arc::new(Frame {
+        source_id: frame.source_id,
+        serial: next_serial(),
+        width: frame.width,
+        height: frame.height,
+        rects,
+        error: None,
+    })
 }
 
 #[repr(C)]
@@ -1171,7 +1339,9 @@ impl Native {
         Ok(())
     }
 
-    fn render(&mut self, key: Key, now_ms: i64, previous: &[Rect]) -> Result<Option<Vec<Rect>>, Fault> {
+    /// `previous` are the regions of the frames to share allocations with, in the order they are
+    /// looked at ([`shared_region`]).
+    fn render(&mut self, key: Key, now_ms: i64, previous: &[&[Rect]]) -> Result<Option<Vec<Rect>>, Fault> {
         let mut frame = NativeFrame::default();
         let started = std::time::Instant::now();
         let result = unsafe {
@@ -1243,18 +1413,16 @@ impl Native {
                 return Err(Fault::OverlappingRegions);
             }
             let pixels = unsafe { std::slice::from_raw_parts(bitmap.rgba, bitmap.bytes) };
-            let same_pixels = |old: &&Rect| {
-                old.width == bitmap.width
-                    && old.height == bitmap.height
-                    && old.rgba.as_ref() == pixels
-            };
             // Compare before copying. Static signs retain their immutable pixel allocation
             // while another region animates; translations can reuse it at a new position too.
-            let old = previous
-                .iter()
-                .filter(|r| r.x == bitmap.x && r.y == bitmap.y)
-                .find(same_pixels)
-                .or_else(|| previous.iter().find(same_pixels));
+            let old = shared_region(
+                previous.iter().flat_map(|rects| rects.iter()),
+                bitmap.x,
+                bitmap.y,
+                bitmap.width,
+                bitmap.height,
+                pixels,
+            );
             let rgba = old.map_or_else(|| Arc::from(pixels), |r| r.rgba.clone());
             rects.push(Rect {
                 x: bitmap.x,

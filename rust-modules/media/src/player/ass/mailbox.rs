@@ -71,8 +71,7 @@ pub(super) struct Job {
     pub queued: Option<Instant>,
     /// The newest frame that had landed when the job was taken: the renderer shares the regions it
     /// draws identically with that frame's, so a static sign keeps the allocation the screen has
-    /// already uploaded whichever worker renders the next frame. SCAFFOLD: `None` until implemented.
-    #[allow(dead_code)] // SCAFFOLD: read by the engine when interning lands
+    /// already uploaded whichever worker renders the next frame. Set when a worker takes the job.
     pub reference: Option<Arc<Frame>>,
 }
 
@@ -175,7 +174,6 @@ impl Default for Mailbox {
 
 /// What a `request` did, for the caller to act on outside the lock logic.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // SCAFFOLD: the runtime reads the new fields when the pool lands
 pub(super) struct Requested {
     /// A job was queued: wake the worker.
     pub wake: bool,
@@ -233,7 +231,6 @@ impl Mailbox {
     }
 
     /// How many workers take jobs from this mailbox (at least one).
-    #[allow(dead_code)] // SCAFFOLD: the worker pool (group B) is its caller
     pub fn set_workers(&mut self, workers: usize) {
         self.workers = workers.max(1);
     }
@@ -357,6 +354,13 @@ impl Mailbox {
     /// that shows it. Workers do not change it: one render takes as long whoever does it.
     pub fn lead_ms(&self, pace: Pace) -> i64 {
         ceil_ms((self.cost_ms() * 1.25 + pace.tick_ms as f64) * pace.rate)
+    }
+
+    /// How many workers the plan could use: enough that the frame step reaches the thirty-a-second
+    /// floor at the cost measured (more would render frames the step never asks for).
+    pub fn workers_wanted(&self, pace: Pace) -> usize {
+        let floor = pace.frame_ms.max(STEP_FLOOR_MS) as f64;
+        ((self.cost_ms() * pace.rate / floor) - 1e-6).ceil().max(1.0) as usize
     }
 
     /// The oldest a held or published moving frame may be and still stand for the playhead: a
@@ -586,8 +590,11 @@ impl Mailbox {
             // frames older than the one shown are of no use
             self.held.retain(|f| f.target_ms > frame.target_ms);
             let moving = frame.validity.animated;
+            // a frame is on time when the first tick at or after its playhead shows it
+            out.late = moving && now_ms - frame.target_ms > ceil_ms(pace.tick_ms as f64 * pace.rate);
             self.published = Some(frame);
             out.promoted = true;
+            out.piped = true;
             if !moving {
                 // the cue ended: its still picture is shown, and the boundary logic takes over
                 self.stop_pipe();
@@ -623,6 +630,7 @@ impl Mailbox {
             }
         }
         out.wake = self.wants_job();
+        out.workers_wanted = self.workers_wanted(pace);
         out
     }
 
@@ -676,7 +684,7 @@ impl Mailbox {
     /// job, or a still cue's Ahead job); else, while the pipeline plans, the next frame of the
     /// moving cue. A worker asks only when it is idle, so jobs are never more than workers.
     pub fn take(&mut self) -> Option<Job> {
-        let job = match self.pending.take() {
+        let mut job = match self.pending.take() {
             Some(job) => job,
             None => {
                 let now_ms = self.next_target()?;
@@ -685,6 +693,8 @@ impl Mailbox {
                 Job { kind: Kind::Pipe { run: self.run }, key, now_ms, seq: self.seqs, source, queued: None, reference: None }
             }
         };
+        // The newest picture that has landed: the frame this one follows on screen, or close to it.
+        job.reference = self.held.last().or(self.published.as_ref()).map(|p| p.frame.clone());
         self.in_flight.push(InFlight { kind: job.kind, seq: job.seq, target_ms: job.now_ms, stale_from: i64::MAX });
         Some(job)
     }

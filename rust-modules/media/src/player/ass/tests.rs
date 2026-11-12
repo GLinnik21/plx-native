@@ -148,7 +148,7 @@ fn cancellation_before_worker_parks_is_remembered_and_releases_resources() {
         let observed_idle = observed_idle.clone();
         let may_park = may_park.clone();
         plx_base::task::spawn("ASS cancellation test", move || {
-            runtime.worker.set(std::thread::current()).unwrap();
+            runtime.threads[0].set(std::thread::current()).unwrap();
             let mut engine = Engine {
                 source: Some(source),
                 frame: Some(frame),
@@ -1921,9 +1921,11 @@ fn a_changed_offset_on_a_paused_playhead_publishes_the_frame_of_the_new_clock() 
 // by the frames of one cue coming from different engines.
 
 const SIGN: &str = r"{\an7\pos(20,20)\c&H0000FF&\p1}m 0 0 l 40 0 40 40 0 40";
-const MOVER: &str = r"{\an7\move(100,20,260,20,0,4000)\c&HFF0000&\p1}m 0 0 l 30 0 30 30 0 30";
+/// Moves and changes colour: a square that only moved is the same bitmap in another place, which
+/// the renderer rightly shares between frames, so the test's moving region must change its pixels.
+const MOVER: &str = r"{\an7\move(100,20,260,20,0,4000)\c&HFF0000&\t(0,4000,\c&H00FF00&)\p1}m 0 0 l 30 0 30 30 0 30";
 
-/// A static sign and a square that moves for four seconds.
+/// A static sign and a square that moves and changes colour for four seconds.
 fn sign_and_mover() -> Arc<Source> {
     script(&format!(
         "Dialogue: 0,0:00:00.00,0:00:04.00,Default,,0,0,0,,{SIGN}\nDialogue: 1,0:00:00.00,0:00:04.00,Default,,0,0,0,,{MOVER}\n"
@@ -2004,7 +2006,7 @@ fn a_reference_frame_makes_another_engine_share_the_regions_it_draws_identically
     referred.reference = Some(first.clone());
     let shared = Engine::default().render(&referred).frame;
     assert_eq!(shared.error, None);
-    assert_eq!(shares_one(&shared), 1, "the static sign shares, the moving square does not");
+    assert_eq!(shares_one(&shared), 1, "the static sign shares, the square that changed does not");
     assert_eq!(canvas(&shared), canvas(&alone), "sharing changes no pixel");
 
     // A picture that is the reference's own is that very frame: the screen already knows its serial.
