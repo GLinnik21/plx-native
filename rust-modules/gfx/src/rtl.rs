@@ -12,7 +12,9 @@
 //!
 //! **The engine is the one the subtitles already use.** `libass-plx` (`ci/build-libass.py`) links a
 //! pinned FreeType, HarfBuzz and FriBidi statically and exports only its `plx_ass_*` facade; ABI 4
-//! adds `plx_ass_text_*` (`src/ass_text.c`). This module binds that surface:
+//! added `plx_ass_text_*` (`src/ass_text.c`), and this module binds that surface (the facade is at
+//! ABI 5 now; its changes, `plx_ass_add_font`, `PlxAssStats` and the premultiplied output of
+//! `plx_ass_render`, are all outside the `plx_ass_text_*` calls bound here):
 //!
 //! * [`bidi`]: FriBidi's resolved levels (after rule L1), the visual order (rule L2) and the
 //!   mirrored brackets of one line. `text.rs` groups the line into runs from these.
@@ -45,7 +47,7 @@ struct NativeRun {
 }
 
 /// The facade ABI this file is written against (`PLX_ASS_ABI_VERSION`); any other is not used.
-const NATIVE_ABI: u32 = 4;
+const NATIVE_ABI: u32 = 5;
 /// `plx_ass_text_bidi`'s own bound, mirrored so an over-long line is refused here without a call.
 const BIDI_MAX_CHARS: usize = 16_384;
 

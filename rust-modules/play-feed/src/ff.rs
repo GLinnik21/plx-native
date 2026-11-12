@@ -289,15 +289,16 @@ unsafe fn nth_audio_stream(fmt: *mut AVFormatContext, n: i32) -> Option<c_int> {
 
 pub use plx_media_codecs::SpeedDecoder;
 
-/// Copy the embedded ASS sources before FFmpeg can release them. The codec parameter and
+/// Copy the embedded ASS headers before FFmpeg can release them, and hand over the `fonts` that
+/// `detach_fonts` took out of the format when it was opened (issue #1328). The codec parameter and
 /// dictionary layouts are already compile-asserted against our bundled FFmpeg headers; the
 /// attachment media-type constant is asserted beside them. No firmware layout is inferred.
 unsafe fn begin_ass_sources(
     session: &mut dyn DemuxSession,
     media_key: &str,
-    fmt: *mut AVFormatContext,
     streams: *mut *mut AVStream,
     subs: &SubTracks,
+    fonts: Vec<plx_playback_contract::subtitle::EmbeddedFont>,
 ) -> Option<u64> {
     use plx_media_codecs::subtitle_extract::{collect_manifest, AssTrack};
     let tracks: Vec<AssTrack> = subs.entries().iter().zip(subs.plan()).map(|(info, kind)| AssTrack {
@@ -305,8 +306,7 @@ unsafe fn begin_ass_sources(
         authored: matches!(kind, plx_playback_contract::subtitle::DecodeKind::Ass { .. }),
     }).collect();
     let max_header_bytes = session.subtitle().max_header_bytes();
-    let manifest = collect_manifest(fmt, streams, &tracks, max_header_bytes,
-        |len| session.subtitle().admit_font(len));
+    let manifest = collect_manifest(streams, &tracks, max_header_bytes, fonts);
     session.subtitle().begin_sources(media_key, manifest)
 }
 
@@ -6193,6 +6193,13 @@ pub fn demux(
                     free_avio(avio);
                     break;
                 }
+                // The file's font attachments leave the format's stream table now, into the buffers
+                // the source store shares with every renderer (issue #1328): left in
+                // `codecpar->extradata` they would sit beside the demuxer's own copy (the Matroska
+                // element buffer, the only one left once `find_stream_info` rebuilds the codec
+                // context from the emptied parameters) for the whole playback. Nothing reads an attachment's extradata between here and the
+                // hand-over to `begin_ass_sources` below.
+                let font_attachments = plx_media_codecs::subtitle_extract::detach_fonts(fmt);
                 if avformat_find_stream_info(fmt, std::ptr::null_mut()) < 0 {
                     session.media().record("ff: find_stream_info failed");
                     if !crate::aq::aq_is_aborted(aq_p) {
@@ -6575,9 +6582,11 @@ pub fn demux(
                     SubTracks::open(streams, infos, plan)
                 };
                 let ass_generation = if side_owner {
+                    // The side reader has its own copy of the fonts; this one has no reader.
+                    drop(font_attachments);
                     0
                 } else {
-                    begin_ass_sources(session.as_mut(), &url, fmt, streams, &sub_tracks).unwrap_or(0)
+                    begin_ass_sources(session.as_mut(), &url, streams, &sub_tracks, font_attachments).unwrap_or(0)
                 };
                 if !side_owner { session.subtitle().record_tracks(); }
 

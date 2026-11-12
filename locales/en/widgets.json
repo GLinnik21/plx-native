@@ -880,10 +880,6 @@
     "value": "Couldn’t initialize styled subtitles",
     "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
   },
-  "widgets.ass.font_too_large": {
-    "value": "The installed subtitle font is too large",
-    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
-  },
   "widgets.ass.unreadable": {
     "value": "This styled subtitle file could not be read",
     "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."

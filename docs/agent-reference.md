@@ -1160,7 +1160,8 @@ which the linking section explains is load-bearing rather than tidy.
 
 **Subtitles (summary — `docs/ass-subtitles.md` is the deep-dive; `rust-modules/media/src/player/CLAUDE.md`
 has the producers).** The client draws subtitles itself; the TV's subtitle engine is unreachable in
-buffer-feed. Every TEXT subtitle renders through the one bundled libass worker (`player::ass`),
+buffer-feed. Every TEXT subtitle renders through the one bundled libass renderer (`player::ass`: a
+primary worker, plus up to two helpers while a moving cue is pipelined, each with its own libass instance),
 whether it is authored ASS/SSA, an embedded SubRip/WebVTT/mov_text/SAMI track or a sidecar `.srt`/`.vtt`:
 a text track gets a header `text_ass::header` synthesizes from the viewer's size, position and colour picks, and
 its cues become ASS events (`text_ass::convert`, `ass_source::push_text`). Such a source has
@@ -1617,6 +1618,20 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   Background notifications revoke the borrowed Wayland handles and block presentation, including
   idle keepalives and queued uploads. DID foreground reacquires the handles and invalidates the
   UI before rendering resumes. A failed or non-Wayland query leaves both handles null.
+- **The compositor multiplies our surface by its alpha, so the frame over the bound video plane is
+  straightened** (`rust-modules/gfx/src/gfx/straighten.rs`, the module doc has the measurement, the
+  buffer-age argument and the cost). The framebuffer holds PREMULTIPLIED colour over the player's
+  transparent clear; the platform composites it as `ui.rgb * ui.a + video * (1 - ui.a)`. So the
+  frame's last draw on a frame that drew anything while `Player::video_plane_bound` is `rgb / a`
+  (alpha unchanged, blending off) over the boxes of the surface the frame drew into and nowhere else
+  (every draw call in gfx declares its extent, `Extent`; a draw with none is the whole surface; at
+  most 16 disjoint boxes, because a pixel two quads cover would be divided twice), in place through `GL_ARM_shader_framebuffer_fetch` /
+  `GL_EXT_shader_framebuffer_fetch` and through a copy of the frame when the driver has neither (the
+  simulator): `present_and_swap` calls it after the dev capture's read and before the swap. A bound
+  frame must therefore stay a COMPLETE redraw from a clear: nothing may blend premultiplied colour
+  over pixels a buffer kept. The simulator stands in for the compositor (`draw_under`, straight
+  alpha, over the decoded picture or black) on those frames. The boot log's `straighten:` line says
+  which program the device took.
 - **Deploy uses a tmp+mv dance** (`plxnative.new` → `mv`) so scp succeeds while the old binary is
   still executing (avoids `ETXTBSY`). The TV drops to standby after a few idle minutes, so a deploy
   can die mid-scp — when scripting around `make deploy`, md5-compare local vs on-TV binary after
@@ -2355,7 +2370,9 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   prove.
 - **Screen capture:** `tools/capture-screen.sh [out.png] [DISPLAY|VIDEO|GRAPHIC]` grabs the panel
   output. `DISPLAY` = video plane + UI composited (use this); `VIDEO`-only failing with "no
-  signal state" is itself a diagnostic that nothing is decoded on the video plane.
+  signal state" is itself a diagnostic that nothing is decoded on the video plane. `GRAPHIC` of a
+  frame over the bound video plane holds STRAIGHT colour (the straighten pass divided it by its alpha,
+  so a translucent pixel reads brighter than what the app drew); only `DISPLAY` is the picture.
 - **Perf gates:** `./tests/run.py --fps` runs the UI-tier FPS regression scenes (gates per scene in
   `tests/manifest.json`; `--fps-player` adds the player tier), asserting the app's once/sec
   heartbeat. **Six assertions in three families. Three RATE gates — and picking the wrong one is how a frozen

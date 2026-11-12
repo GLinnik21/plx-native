@@ -764,6 +764,20 @@ pub(crate) fn rig_clear_opaque_region() {
     plx_platform::tv::window::clear_opaque_region();
 }
 
+/// **Simulator only: the television's compositor, over the frame the straighten pass just made.** The
+/// decoded picture under the UI when `plxnative-simvideo` holds one, black otherwise
+/// ([`plx_gfx::gfx::draw_under`]'s straight-alpha mix either way). The pass has no simulator switch, so
+/// this is not optional on a bound frame: a shot of the straight buffer would be the pass's own
+/// intermediate picture.
+#[cfg(feature = "hostsim")]
+fn composite_plane_under() {
+    #[cfg(feature = "play-feed")]
+    if crate::app::adapters::hostsim::composite_under() {
+        return;
+    }
+    plx_gfx::gfx::draw_under_black();
+}
+
 /// One idle iteration's font-warming slice: a key pressed during it waits at most this long more
 /// than the idle poll already makes it wait.
 const FONT_WARM_SLICE_US: u64 = 2_000;
@@ -784,6 +798,8 @@ unsafe fn present_and_swap(
         }
         // the glyph cache's frame serial (phase 11, text.rs's hot window): a drawn frame
         plx_gfx::text::begin_frame();
+        // …and the straighten pass's ledger: nothing drawn yet, the surface not yet straight.
+        plx_gfx::gfx::straighten::frame_begin();
         // A finished underlay-field reduction is read HERE, before framebuffer 0 holds anything
         // of this frame — a read between the page and the surfaces splits its render pass.
         plx_gfx::gfx::field_frame_begin();
@@ -800,11 +816,24 @@ unsafe fn present_and_swap(
             crate::capture::tick(fr.now);
         }
         app.instr.mark(plx_base::diag::heartbeat::Phase::Capture); // capture
-        // `plxnative-simvideo`: the decoded picture goes UNDER the finished UI, as the television's
-        // compositor puts its video plane under ours — before the capture, so shots include it.
-        #[cfg(all(feature = "hostsim", feature = "play-feed"))]
-        if fr.player {
-            crate::app::adapters::hostsim::composite_under();
+        // **THE FRAME'S LAST DRAW over the bound video plane: premultiplied -> straight.** The
+        // television's compositor multiplies our surface by its alpha (`panel = ui.rgb * ui.a + video
+        // * (1 - ui.a)`) and the framebuffer holds premultiplied colour, so every translucent pixel
+        // would be darkened by its own alpha a second time; this divides it back out, in place, on a
+        // frame that drew anything (`gfx/straighten.rs` has the measurement, the buffer-age argument
+        // and the cost). Keyed on the plane's BIT, like the capture above and the opaque region: the
+        // bound trailer preview is as translucent as the player. It is after every read of the
+        // framebuffer the frame makes (the capture tick above, which skips this very frame) and before
+        // the swap and everything that follows it; nothing the loop does after it samples
+        // framebuffer 0 on the television (`video_plane_refuses` shuts every door past it).
+        plx_gfx::gfx::straighten::straighten_surface(app.player.video_plane_bound);
+        // `plxnative-simvideo`, and the simulator's stand-in for the compositor the pass feeds: a
+        // bound frame goes through the television's straight-alpha mix over the decoded picture, or
+        // over black with none, so a shot is the panel and not the straight buffer. Before the
+        // screenshot seam below, so shots include it.
+        #[cfg(feature = "hostsim")]
+        if app.player.video_plane_bound {
+            composite_plane_under();
         }
         // Before the swap, never after: the back buffer is undefined once presented.
         // A dump decides here whether this frame is written (`dev::framedump`); otherwise the
@@ -10113,5 +10142,57 @@ mod wake_input_tests {
         ] {
             assert_eq!(wake_input(press, saved), want, "{press:?} over {saved:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod straighten_wiring_tests {
+    //! `present_and_swap` needs a real SDL/GL context, so the straighten pass's place in the frame is
+    //! pinned from the source text, the idiom `video_plane_gate_tests` and `pump_wiring_tests` use.
+
+    /// **The pass is the frame's last draw before the swap, and every readback is before it.** The
+    /// order in `present_and_swap`: the ledger opens (`frame_begin`), the frame draws, the dev capture
+    /// stream reads the framebuffer (and skips a bound frame, which is the only one the pass runs
+    /// on), THEN the pass, THEN the simulator's compositor stand-in, the simulator's two readers
+    /// (frame dump, screenshot) and the swap. A read between the pass and the compositor would see
+    /// the straight buffer; a pass after the swap would straighten an undefined back buffer.
+    ///
+    /// The pass takes the plane's BIT, unnested (it does its own gating on the bit and on whether the
+    /// frame drew), and the simulator's compositor runs on that same bit, so the two run together or
+    /// not at all: a straightened frame no reader may see uncomposited.
+    #[test]
+    fn the_straighten_pass_is_last_before_the_swap_and_after_every_readback() {
+        let whole = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
+        )
+        .expect("read run.rs");
+        let src = whole.split("\n#[cfg(test)]\nmod ").next().expect("the loop's source");
+        const PASS: &str = "        plx_gfx::gfx::straighten::straighten_surface(app.player.video_plane_bound);";
+        assert_eq!(
+            src.lines().filter(|l| *l == PASS).count(),
+            1,
+            "the pass is called exactly once, at `present_and_swap`'s `if fr.present` depth, handed the plane's bit",
+        );
+        assert!(
+            !src.contains("straighten_surface(fr.player)"),
+            "keyed on the plane's bit, not the route: the bound trailer preview is not the player route",
+        );
+        let at = |needle: &str| src.find(needle).unwrap_or_else(|| panic!("`{needle}` is gone from run.rs"));
+        let begin = at("plx_gfx::gfx::straighten::frame_begin();");
+        let draw = at("let (_vx, _vy, _vw, _vh) = draw(app, fr);");
+        let capture = at("crate::capture::tick(fr.now);");
+        let pass = at(PASS.trim_start());
+        let compositor = at("composite_plane_under();\n        }");
+        let dump = at("crate::dev::framedump::after_draw(");
+        let shot = at("crate::shot::maybe_capture(");
+        let swap = at("SDL_GL_SwapWindow(app.win);");
+        assert!(begin < draw, "the ledger opens before the frame draws");
+        assert!(draw < capture && capture < pass, "the capture stream reads before the pass");
+        assert!(pass < compositor, "the simulator's compositor runs after the pass it models");
+        assert!(compositor < dump && compositor < shot, "no reader sees a straight, uncomposited frame");
+        assert!(shot < swap && dump < swap, "…and the pass is done before the swap");
+        // The compositor stand-in sits behind the same bit the pass is handed.
+        let guard = "        #[cfg(feature = \"hostsim\")]\n        if app.player.video_plane_bound {\n            composite_plane_under();";
+        assert!(src.contains(guard), "the simulator composites on exactly the frames the pass straightened");
     }
 }
