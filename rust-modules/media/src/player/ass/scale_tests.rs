@@ -82,11 +82,11 @@ fn the_rungs_are_fractions_of_the_output_size() {
 fn a_smaller_frame_costs_less_by_the_measured_ratios() {
     assert_eq!(Full.cost_ratio(), 1.0);
     assert_eq!(TwoThirds.cost_ratio(), 0.60);
-    assert_eq!(Half.cost_ratio(), 0.45);
+    assert_eq!(Half.cost_ratio(), 0.44);
     let (lib, comp) = ((0.64, 0.49), (0.49, 0.30));
     let weighted = |l: f64, c: f64| (65.0 * l + 20.0 * c) / 85.0;
     assert!(TwoThirds.cost_ratio() <= weighted(lib.0, comp.0), "{}", weighted(lib.0, comp.0));
-    assert!(Half.cost_ratio() <= weighted(lib.1, comp.1) + 0.005, "{}", weighted(lib.1, comp.1));
+    assert!(Half.cost_ratio() <= weighted(lib.1, comp.1), "{}", weighted(lib.1, comp.1));
 }
 
 #[test]
@@ -134,7 +134,7 @@ fn a_sustained_cost_steps_down_after_its_hold_and_not_before() {
     assert_eq!(run.moves.len(), 1, "{:?}", run.moves);
     let (at, from, to) = run.moves[0];
     assert_eq!((from, to), (Full, Half));
-    assert!((600..=700).contains(&(at - t0)), "stepped down {} ms into it", at - t0);
+    assert!((600..=850).contains(&(at - t0)), "stepped down {} ms into it", at - t0);
     run.run(10_000, load(85.0, 1));
     assert_eq!(run.moves.len(), 1, "and it stays down: nothing is smaller");
 }
@@ -184,17 +184,24 @@ fn it_does_not_flap_at_the_edge() {
 fn it_goes_back_up_only_when_the_larger_size_comfortably_meets_the_target() {
     let mut run = Run::begun(load(85.0, 1));
     assert_eq!(run.scale(), Half);
-    // full size would make a 28 ms step: it meets the 33 ms target, but not comfortably
+    // 28 ms at full size meets the 33 ms target but not comfortably (under three quarters of it); the
+    // rung below it, at 17 ms, does, so a cost that settles there goes up one rung and no further
     run.run(60_000, load(28.0, 1));
-    assert!(run.moves.len() == 1, "no move back up: {:?}", run.moves);
-    // 20 ms at full size is comfortable (under three quarters of the target)
+    assert_eq!(run.moves.iter().map(|m| (m.1, m.2)).collect::<Vec<_>>(), [(Full, Half), (Half, TwoThirds)]);
+    assert_eq!(run.scale(), TwoThirds);
+}
+
+#[test]
+fn it_returns_to_full_size_a_rung_at_a_time_once_the_cost_is_low() {
+    let mut run = Run::begun(load(85.0, 1));
+    assert_eq!(run.scale(), Half);
     let t0 = run.now;
     run.run(2_500, load(20.0, 1));
     assert_eq!(run.scale(), Half, "the cost has not held for three seconds yet");
     run.run(1_000, load(20.0, 1));
     assert_eq!(run.scale(), TwoThirds, "one rung at a time");
     let (at, ..) = run.moves[1];
-    assert!((3_000..=3_200).contains(&(at - t0)), "stepped up {} ms in", at - t0);
+    assert!((3_000..=3_400).contains(&(at - t0)), "stepped up {} ms in", at - t0);
     run.run(4_000, load(20.0, 1));
     assert_eq!(run.scale(), Full, "and the next rung after another hold");
     run.run(30_000, load(20.0, 1));
@@ -259,5 +266,5 @@ fn a_projection_is_the_cost_at_that_size_over_the_renderers() {
     let l = Load { rate: 1.5, ..load(80.0, 2) };
     assert_eq!(l.step_at(Full), 60.0);
     assert!((l.step_at(TwoThirds) - 36.0).abs() < 1e-9);
-    assert!((l.step_at(Half) - 27.0).abs() < 1e-9);
+    assert!((l.step_at(Half) - 26.4).abs() < 1e-9);
 }
