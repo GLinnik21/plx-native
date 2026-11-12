@@ -1500,7 +1500,7 @@ fn a_heavy_stretch_is_drawn_smaller_so_the_renderers_the_pool_has_reach_thirty_f
 }
 
 #[test]
-fn only_the_pipeline_draws_smaller_and_the_first_frame_of_the_stretch_is_full_size() {
+fn the_first_frame_of_a_stretch_is_full_size_and_the_pipeline_then_draws_smaller() {
     let mut rig = pooled(1, 85);
     rig.run(3000);
     assert_eq!(rig.mb.scale(), Half);
@@ -1508,8 +1508,8 @@ fn only_the_pipeline_draws_smaller_and_the_first_frame_of_the_stretch_is_full_si
     assert_eq!(kinds[0], (false, Full), "the stretch's first frame is a Normal job at full size: {kinds:?}");
     assert!(kinds[1..].iter().any(|&(pipe, scale)| pipe && scale == Half), "{kinds:?}");
     assert!(
-        kinds.iter().all(|&(pipe, scale)| pipe || scale == Full),
-        "a job that is not the pipeline's draws at full size: {kinds:?}"
+        kinds.iter().take_while(|&&(pipe, _)| !pipe).all(|&(_, scale)| scale == Full),
+        "what the screen needs before the pipeline plans anything is drawn at full size: {kinds:?}"
     );
 }
 
@@ -1641,4 +1641,40 @@ fn a_model_that_is_wrong_flaps_a_bounded_number_of_times() {
     assert!(rig.changes.len() <= 6, "{} moves in a minute: {:?}", rig.changes.len(), rig.changes);
     let moves = rig.changes.iter().map(|c| c.0).collect::<Vec<_>>();
     assert!(moves.windows(2).all(|w| w[1] - w[0] >= 500), "never twice within half a second: {moves:?}");
+}
+
+/// The rung belongs to the selection it was decided for: a track switched to directly (a new epoch, no
+/// `clear` between) starts at full size again, whatever the track before it was drawn at, and waits for
+/// the pool to say what it has.
+#[test]
+fn a_new_selection_starts_at_full_size_and_waits_for_the_pool() {
+    let mut rig = pooled(1, 85);
+    rig.run(3000);
+    assert_eq!(rig.mb.scale(), Half);
+    // the next selection: the runtime has not heard from the pool for it, and its frames are cheap
+    rig.key = Key { epoch: 2, ..rig.key };
+    rig.mb.set_capacity(None);
+    rig.cost_ms = 12;
+    let (from, moves) = (rig.scales.len(), rig.changes.len());
+    rig.run(3000);
+    assert_eq!(rig.mb.scale(), Full, "the old track's rung is not the new one's");
+    assert!(rig.scales.len() > from + 5, "the new selection plans frames");
+    assert!(rig.scales[from..].iter().all(|&(_, scale)| scale == Full), "{:?}", &rig.scales[from..]);
+    assert_eq!(rig.changes.len(), moves, "no move of its own: {:?}", rig.changes);
+}
+
+/// A hole in a reduced stretch is recovered at the rung the stretch is drawn at: a frame at full size
+/// would make libass empty its caches, and the next frame at the old size would pay for them again.
+#[test]
+fn a_hole_in_a_reduced_stretch_is_recovered_at_its_own_size() {
+    let mut rig = pooled(1, 85);
+    rig.run(3000);
+    assert_eq!(rig.mb.scale(), Half);
+    let (from, normals) = (rig.scales.len(), rig.normals);
+    rig.slow = vec![700];
+    rig.run(4000);
+    assert!(rig.normals > normals, "the stall left a hole, and a Normal job recovered it");
+    let recoveries: Vec<_> = rig.scales[from..].iter().filter(|(kind, _)| *kind == Kind::Normal).collect();
+    assert!(recoveries.iter().all(|(_, scale)| *scale == Half), "{recoveries:?}");
+    assert_eq!(rig.mb.scale(), Half);
 }
