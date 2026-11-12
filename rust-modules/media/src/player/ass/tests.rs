@@ -35,10 +35,10 @@ fn a_heavy_selection_gets_no_helper_and_the_verdict_is_taken_once() {
     let reads = std::cell::Cell::new(0);
     let memory = || {
         reads.set(reads.get() + 1);
-        Some(400u64 << 20)
+        Some(200u64 << 20)
     };
     assert_eq!(runtime.renderers_decided(epoch), None, "the render scale waits for the pool's verdict");
-    assert_eq!(runtime.renderers_for(epoch, memory), 1, "a quarter of 400 MiB holds one renderer of 64 MiB");
+    assert_eq!(runtime.renderers_for(epoch, memory), 1, "a quarter of 200 MiB holds no helper of 64 MiB beside the primary");
     assert!(runtime.helper_barred(1) && runtime.helper_barred(2));
     assert_eq!(runtime.renderers_for(epoch, memory), 1);
     assert_eq!(reads.get(), 1, "the memory is read once for a selection, not on every tick");
