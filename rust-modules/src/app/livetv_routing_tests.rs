@@ -1,202 +1,221 @@
-//! The Live TV page's requests on the Bridge's ordered FIFO (`AppFx::LiveTv`, `Bridge::livetv_deliver`).
-//! A tune reaches the playback owner and is staged for the play runner under its address; the strip's
-//! tabs and BACK navigate through the container; the profile chip leaves for the loop; and the tune's
-//! answer comes back to the asking instance as one addressed `AppMsg::PlayReply`.
-
-use plx_machine::machine::{Addr, RequestId, ScreenEvent, Stamped};
-use plx_plex::plex::ServerId;
-use plx_screens::registry::{LiveTvOut, PlayIntent};
+//! Live TV through the mounted dispatcher and the loop's real request drain. These tests stop at
+//! the accepted playback request: no device backend or PMS client is installed for a channel.
 
 use super::*;
+use crate::app::{run::{lifecycle_regression_tests::app, Frame}, App};
+use plx_data::livetv::{Channel, LiveTvStatus};
+use plx_machine::machine::{InputEvent, Key, Stamped};
+use plx_screens::registry::{ContentReq, HomeReq, PlayIntent};
+use plx_ui::dispatch::Tap;
 
-/// The page that asks: a mounted instance, the only sender a Live TV request may carry.
-const PAGE: MachineId = MachineId::Instance(InstanceId(7));
+fn channel(vcn: &str, name: &str) -> Channel {
+    Channel { sid: plx_plex::plex::ServerId::from_raw(0), dvr: "7".into(),
+        channel: format!("C{vcn}.242.ersatztv.org"), vcn: vcn.into(), name: name.into(),
+        thumb: String::new(), now: "Family Show".into(), now_thumb: String::new(), ends_at: 0 }
+}
 
-/// A channel's typed play, the shape the Live TV page and Home's Live TV row both build.
-fn live() -> PlayIntent {
-    PlayIntent::Live {
-        sid: ServerId::from_raw(0),
-        dvr: "7".into(),
-        channel: "C101.242.ersatztv.org".into(),
-        title: "Family Channel".into(),
+#[derive(Default)]
+struct Observed {
+    plays: Vec<PlayIntent>,
+    enters: usize,
+}
+impl Tap<AppHost> for Observed {
+    fn effect(&mut self, _frame: u64, effect: &Stamped<AppHost>) {
+        match &effect.fx {
+            Fx::App(AppFx::Content(ContentReq::Play { play, .. })) => self.plays.push(play.clone()),
+            Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(_))) => self.enters += 1,
+            _ => {}
+        }
     }
 }
 
-/// The dispatcher's parts for a call that reads no focus and no press.
-fn parts() -> CxParts<u32> {
-    CxParts {
-        tick: Tick::default(),
-        press: Default::default(),
-        focus: Default::default(),
-        owner: InputOwner::Entry(EntryId(0)),
+fn step(app: &mut App, now: &mut u32, inputs: Vec<InputEvent<u32>>) -> Observed {
+    *now += 16;
+    let mut observed = Observed::default();
+    super::frame_with_tap(&mut app.pages, &mut app.bridge,
+        Tick { ms: *now, dt_us: 16_000 }, inputs, &mut observed);
+    let mut frame = Frame::begin(&app.player.session, app.bridge.metadata_view());
+    frame.now = *now;
+    crate::app::content::content_requests(app, &mut frame);
+    app.bridge.assert_no_store_jobs_left_for_test();
+    observed
+}
+
+fn settle(app: &mut App, now: &mut u32) {
+    for _ in 0..24 { step(app, now, Vec::new()); }
+}
+
+fn mounted(app: &App) -> MachineId {
+    MachineId::Instance(app.pages.top_page().expect("the asking page is mounted"))
+}
+
+fn open_live(app: &mut App, now: &mut u32) {
+    app.bridge.stores.livetv.install_for_test(vec![channel("101", "Family Channel"), channel("102", "Cartoons")]);
+    super::nav_root(&mut app.pages, AppArg::LiveTv);
+    settle(app, now);
+    assert!(app.route() == AppArg::LiveTv);
+}
+
+fn activate(app: &mut App, now: &mut u32, key: u32) {
+    let source = mounted(app);
+    app.pages.emit(source, Fx::Deliver(source, Delivery::Screen(ScreenEvent::Activate(key))));
+    settle(app, now);
+}
+
+#[test]
+fn a_channel_ok_reaches_the_real_content_drain_and_live_playback_request() {
+    let _serial = plx_base::testlock::serial();
+    let _session = plx_plex::plex::session::TempSession::new("livetv-content-play");
+    plx_plex::plex::reset_servers_for_test();
+    let mut app = app();
+    let mut now = 0;
+    open_live(&mut app, &mut now);
+    assert!(!plx_media::route::is_live(&app.player.session));
+    assert_eq!(app.pages.focus().map(|k| k.elem), Some(0x1000));
+    let keys = super::script_key(Key::Right, Tick { ms: now + 16, dt_us: 16_000 });
+    step(&mut app, &mut now, keys);
+    settle(&mut app, &mut now);
+    assert_eq!(app.pages.focus().map(|k| k.elem), Some(0x1002));
+    let keys = super::script_key(Key::Ok, Tick { ms: now + 16, dt_us: 16_000 });
+    let mut observed = step(&mut app, &mut now, keys);
+    // The real press machine commits after the release animation, on a later frame.
+    for _ in 0..24 { observed.plays.extend(step(&mut app, &mut now, Vec::new()).plays); }
+    assert_eq!(observed.plays, vec![PlayIntent::Live {
+        sid: plx_plex::plex::ServerId::from_raw(0), dvr: "7".into(),
+        channel: "C102.242.ersatztv.org".into(), title: "Cartoons".into(),
+    }]);
+    assert!(plx_media::route::is_live(&app.player.session), "the loop accepted the channel's real Play request");
+    // SAFETY: the session owns this NUL-terminated HUD title for the duration of the assertion.
+    assert_eq!(unsafe { std::ffi::CStr::from_ptr(plx_media::route::title_cptr(&app.player.session)) }.to_str().unwrap(), "Cartoons");
+}
+
+#[test]
+fn a_covered_live_tv_page_cannot_start_a_delayed_play() {
+    let _serial = plx_base::testlock::serial();
+    let _session = plx_plex::plex::session::TempSession::new("livetv-covered-play");
+    plx_plex::plex::reset_servers_for_test();
+    let mut app = app();
+    let mut now = 0;
+    open_live(&mut app, &mut now);
+    let source = mounted(&app);
+    activate(&mut app, &mut now, plx_ui::widgets::TAB_KEY_CHIP);
+    assert!(super::account_menu_up(&app.pages));
+    let MachineId::Instance(instance) = source else { unreachable!() };
+    let entry = app.pages.nav.entry_of_instance(instance).expect("the covered page stays mounted");
+    assert_ne!(app.pages.nav.input_owner(), Some(InputOwner::Entry(entry)));
+    app.pages.emit(source, Fx::App(AppFx::Content(ContentReq::Play { play: PlayIntent::Live {
+        sid: plx_plex::plex::ServerId::from_raw(0), dvr: "7".into(),
+        channel: "C101.242.ersatztv.org".into(), title: "Family Channel".into(),
+    }, resume_ns: 0 })));
+    let observed = step(&mut app, &mut now, Vec::new());
+    assert_eq!(observed.plays.len(), 1, "the stale request reached the real drain");
+    assert!(!plx_media::route::is_live(&app.player.session));
+    assert!(app.route() == AppArg::LiveTv);
+    assert!(super::account_menu_up(&app.pages));
+}
+
+#[test]
+fn live_tv_uses_the_real_home_request_lane_for_tabs_back_and_the_profile_surface() {
+    use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_LIVETV, TAB_KEY_SEARCH};
+    let _serial = plx_base::testlock::serial();
+    let _session = plx_plex::plex::session::TempSession::new("livetv-home-requests");
+    plx_plex::plex::reset_servers_for_test();
+    let mut app = app();
+    let mut now = 0;
+    open_live(&mut app, &mut now);
+    let live_instance = mounted(&app);
+    activate(&mut app, &mut now, TAB_KEY_LIVETV);
+    assert_eq!(mounted(&app), live_instance, "the current TV pill keeps the mounted page");
+    app.pages.emit(live_instance, Fx::App(AppFx::Home(HomeReq::Tab(HomeTab::LiveTv))));
+    settle(&mut app, &mut now);
+    assert_eq!(mounted(&app), live_instance, "the request drain also treats the current tab as a no-op");
+    activate(&mut app, &mut now, TAB_KEY_SEARCH);
+    assert!(app.route() == AppArg::Search, "a TV strip request is accepted by the loop");
+
+    open_live(&mut app, &mut now);
+    for _ in 0..4 {
+        if app.route() == AppArg::Home { break; }
+        let keys = super::script_key(Key::Back, Tick { ms: now + 16, dt_us: 16_000 });
+        step(&mut app, &mut now, keys);
+        settle(&mut app, &mut now);
+    }
+    assert!(app.route() == AppArg::Home, "BACK leaves through the mounted page's Home request");
+
+    open_live(&mut app, &mut now);
+    activate(&mut app, &mut now, TAB_KEY_CHIP);
+    assert!(super::account_menu_up(&app.pages));
+    assert!(app.route() == AppArg::LiveTv, "the profile is a surface over the same page");
+}
+
+#[test]
+fn home_only_requests_from_live_tv_are_discarded() {
+    let _serial = plx_base::testlock::serial();
+    let _session = plx_plex::plex::session::TempSession::new("livetv-home-only-requests");
+    plx_plex::plex::reset_servers_for_test();
+    let mut app = app();
+    let mut now = 0;
+    open_live(&mut app, &mut now);
+    app.bridge.stores.hubs.seed_for_test(1, plx_data::pms::HubState::Ready);
+    let snapshot = app.bridge.hubs_snapshot();
+    let item = snapshot.view().hub(0).expect("a seeded Home hub").items[0].clone();
+    let source = mounted(&app);
+    for request in [HomeReq::FoldToHero,
+        HomeReq::Play { sid: item.sid, rk: item.rk.clone(), resume_ns: 0 },
+        HomeReq::Detail { sid: item.sid, rk: item.rk.clone() },
+        HomeReq::ItemMenu { sid: item.sid, rk: item.rk.clone() }] {
+        app.pages.emit(source, Fx::App(AppFx::Home(request)));
+        step(&mut app, &mut now, Vec::new());
+        assert!(!app.pages.has_pending_navigation(), "a Home-only request starts no navigation");
+        let after = step(&mut app, &mut now, Vec::new());
+        assert_eq!(after.enters, 0, "Home's fold must not reseat the TV page");
+        assert!(app.route() == AppArg::LiveTv);
+        assert_eq!(mounted(&app), source);
+        assert!(!super::account_menu_up(&app.pages));
+        assert!(!plx_media::route::is_live(&app.player.session));
     }
 }
 
-/// One addressed message to `to`, as the dispatcher delivers it: what the step answered and what it
-/// pushed.
-fn deliver(rig: &mut Bridge, to: MachineId, msg: AppMsg) -> (Handled, Vec<Stamped<AppHost>>) {
-    let mut out = Vec::new();
-    let mut present = Present::default();
-    let handled = {
-        let mut fx = Effects::new(&mut out, MachineId::Nav, &mut present);
-        rig.deliver(to, &msg, &parts(), &mut fx)
-    };
-    (handled, out)
-}
-
-/// One application effect `from` emits, as a screen's step does: what the Bridge pushed for it.
-fn asked(rig: &mut Bridge, from: MachineId, fx: AppFx) -> Vec<Stamped<AppHost>> {
-    let mut out = Vec::new();
-    let mut present = Present::default();
-    {
-        let mut effects = Effects::new(&mut out, MachineId::Nav, &mut present);
-        rig.app_fx(from, fx, &parts(), &mut effects);
-    }
-    out
-}
-
-/// A tune is the playback owner's: it is delivered on the FIFO, and no request is parked on a side
-/// queue of the Bridge (`Bridge::app_effect`'s `LiveTv` arm).
-#[test]
-fn a_live_tv_request_is_delivered_on_the_fifo_and_parked_nowhere() {
-    let _serial = plx_base::testlock::serial();
-    let mut rig = Bridge::for_test(|| 0);
-
-    let out = asked(&mut rig, PAGE, AppFx::LiveTv(LiveTvOut::Tune(live())));
-    assert!(matches!(out.as_slice(), [Stamped {
-        fx: Fx::Deliver(MachineId::Player, Delivery::Machine(AppMsg::LiveTv { from, out: LiveTvOut::Tune(p), .. })),
-        ..
-    }] if *from == PAGE && *p == live()));
-    assert!(rig.take_play_starts().is_empty());
-    assert!(rig.take_reqs().is_empty());
-
-    for req in [LiveTvOut::Tab(HomeTab::Search), LiveTvOut::Back, LiveTvOut::Account] {
-        let out = asked(&mut rig, PAGE, AppFx::LiveTv(req));
-        assert!(matches!(out.as_slice(), [Stamped {
-            fx: Fx::Deliver(MachineId::Nav, Delivery::Machine(AppMsg::LiveTv { .. })),
-            ..
-        }]));
-    }
-    assert!(rig.take_play_starts().is_empty());
-    assert!(rig.take_reqs().is_empty());
-}
-
-/// The playback owner admits a tune under a fresh correlation and stages it for the play runner with
-/// the asking instance as its address. Nothing is emitted for it.
-#[test]
-fn a_tune_reaches_the_playback_owner_and_is_staged_under_its_address() {
-    let _serial = plx_base::testlock::serial();
-    let mut rig = Bridge::for_test(|| 0);
-    let tune = || AppMsg::LiveTv { from: PAGE, out: LiveTvOut::Tune(live()), ret: Default::default() };
-
-    let (handled, out) = deliver(&mut rig, MachineId::Player, tune());
-    assert_eq!(handled, Handled::Yes);
-    assert!(out.is_empty(), "a tune is staged for the play runner, not emitted");
-    let starts = rig.take_play_starts();
-    assert_eq!(starts.len(), 1);
-    assert_eq!(starts[0].to, Addr { to: PAGE, req: RequestId(1) });
-    assert_eq!(starts[0].play, live());
-
-    let (handled, _) = deliver(&mut rig, MachineId::Player, tune());
-    assert_eq!(handled, Handled::Yes);
-    let starts = rig.take_play_starts();
-    assert_eq!(starts.len(), 1);
-    assert_eq!(starts[0].to, Addr { to: PAGE, req: RequestId(2) });
-}
-
-/// Each request has one owner: a tune is the playback owner's and navigation the container's. A
-/// request at the other address is refused, and nothing is staged for it.
-#[test]
-fn a_live_tv_request_at_the_wrong_owner_is_refused() {
-    let _serial = plx_base::testlock::serial();
-    let mut rig = Bridge::for_test(|| 0);
-
-    let tune = AppMsg::LiveTv { from: PAGE, out: LiveTvOut::Tune(live()), ret: Default::default() };
-    let (handled, out) = deliver(&mut rig, MachineId::Nav, tune);
-    assert_eq!(handled, Handled::No);
-    assert!(out.is_empty());
-    assert!(rig.take_play_starts().is_empty());
-
-    let back = AppMsg::LiveTv { from: PAGE, out: LiveTvOut::Back, ret: Default::default() };
-    let (handled, out) = deliver(&mut rig, MachineId::Player, back);
-    assert_eq!(handled, Handled::No);
-    assert!(out.is_empty());
-}
-
-/// BACK and the strip's tabs leave through the container's navigation, on the FIFO. The Live TV pill
-/// is the page already on screen, so it leaves nothing.
-#[test]
-fn back_and_a_strip_tab_navigate_through_the_container_on_the_fifo() {
-    let _serial = plx_base::testlock::serial();
-    let mut rig = Bridge::for_test(|| 0);
-    let step = |out: LiveTvOut| AppMsg::LiveTv { from: PAGE, out, ret: Default::default() };
-
-    let (handled, out) = deliver(&mut rig, MachineId::Nav, step(LiveTvOut::Back));
-    assert_eq!(handled, Handled::Yes);
-    assert!(matches!(out.as_slice(), [Stamped { fx: Fx::Nav(NavOp::SelectTab(AppArg::Home)), .. }]));
-
-    let (handled, out) = deliver(&mut rig, MachineId::Nav, step(LiveTvOut::Tab(HomeTab::Search)));
-    assert_eq!(handled, Handled::Yes);
-    assert!(matches!(out.as_slice(), [Stamped { fx: Fx::Nav(NavOp::SelectTab(AppArg::Search)), .. }]));
-
-    let (handled, out) = deliver(&mut rig, MachineId::Nav, step(LiveTvOut::Tab(HomeTab::LiveTv)));
-    assert_eq!(handled, Handled::Yes);
-    assert!(out.is_empty());
-}
-
-/// A Movies press from the Live TV page reopens the Library page the user left open (a remembered
-/// Recommended) on top of its grid in one commit, as the strip's own `nav_tab` does, so Back still
-/// reveals the grid.
 #[test]
 fn a_library_pill_reopens_a_remembered_library_page_over_its_grid() {
     use plx_plex::plex::session::LibraryPage;
-    let mut w = super::test_support::World::movies_library("livetv-remembered-library-page", false);
-    let key = w.bridge.directory.view().sections()[0].key;
-    w.bridge.remember_library_page("route-own", key, LibraryPage::Recommended);
-    let press = AppMsg::LiveTv { from: PAGE, out: LiveTvOut::Tab(HomeTab::Movies), ret: Default::default() };
-
-    let (handled, out) = deliver(&mut w.bridge, MachineId::Nav, press);
-    assert_eq!(handled, Handled::Yes);
+    let mut world = super::test_support::World::movies_library("livetv-remembered-library-page", false);
+    let key = world.bridge.directory.view().sections()[0].key;
+    world.bridge.remember_library_page("route-own", key, LibraryPage::Recommended);
+    let mut app = app();
+    app.pages = std::mem::take(&mut world.d);
+    std::mem::swap(&mut app.bridge, &mut world.bridge);
+    let mut now = world.frame * 16;
+    open_live(&mut app, &mut now);
+    activate(&mut app, &mut now, plx_ui::widgets::TAB_KEY_MOVIES);
     let want = AppArg::LibraryRecommended { section: u32::try_from(key).unwrap() };
-    assert!(matches!(out.as_slice(),
-        [Stamped { fx: Fx::Nav(NavOp::SelectTabWithChild { tab: AppArg::Library, child }), .. }] if *child == want));
+    assert!(app.route() == want, "the real request drain uses the remembered library destination");
+    let stack = &app.pages.nav.tabs.stack.entries;
+    assert!(stack.len() >= 2);
+    assert!(stack[stack.len() - 2].arg == AppArg::Library);
+    assert!(stack[stack.len() - 1].arg == want);
+    let keys = super::script_key(Key::Back, Tick { ms: now + 16, dt_us: 16_000 });
+    step(&mut app, &mut now, keys);
+    settle(&mut app, &mut now);
+    assert!(app.route() == AppArg::Library, "BACK from the remembered child reveals its grid");
 }
 
-/// The profile chip is the loop's: its surface needs the container's style handshake, so the Bridge
-/// queues the request for the loop and pushes no effect.
 #[test]
-fn the_profile_chip_leaves_for_the_loop() {
+fn the_live_tv_tab_tracks_the_store_and_an_open_empty_page_stays_open() {
     let _serial = plx_base::testlock::serial();
-    let mut rig = Bridge::for_test(|| 0);
-    let chip = AppMsg::LiveTv { from: PAGE, out: LiveTvOut::Account, ret: Default::default() };
-
-    let (handled, out) = deliver(&mut rig, MachineId::Nav, chip);
-    assert_eq!(handled, Handled::Yes);
-    assert!(out.is_empty());
-    assert_eq!(rig.take_reqs(), vec![LoopReq::AccountMenu]);
-}
-
-/// The play runner's answer is one addressed event to the instance that asked, under the correlation
-/// the playback owner gave the start.
-#[test]
-fn the_play_runner_answers_the_asking_instance_with_one_addressed_reply() {
-    let reply = crate::app::content::play_reply(Addr { to: PAGE, req: RequestId(3) }, true);
-    assert!(matches!(reply, Fx::Deliver(MachineId::Instance(InstanceId(7)), Delivery::Screen(
-        ScreenEvent::Async(RequestId(3), AppMsg::PlayReply { correlation: 3, accepted: true })))));
-}
-
-/// The same tune through the real dispatcher: the drain delivers it to the playback owner, which
-/// stages one start for the asking instance.
-#[test]
-fn a_tune_rides_the_dispatcher_drain_to_the_playback_owner() {
-    let _serial = plx_base::testlock::serial();
-    let mut rig = Bridge::for_test(|| 0);
-    let mut d = Dispatcher::<AppHost>::new();
-
-    d.emit(PAGE, Fx::App(AppFx::LiveTv(LiveTvOut::Tune(live()))));
-    d.frame_with(&mut rig, Tick::default(), Vec::new(), Vec::new(), &mut NoTap, false);
-
-    let starts = rig.take_play_starts();
-    assert_eq!(starts.len(), 1);
-    assert_eq!(starts[0].to.to, PAGE);
+    let _session = plx_plex::plex::session::TempSession::new("livetv-store-availability");
+    plx_plex::plex::reset_servers_for_test();
+    let mut app = app();
+    let mut now = 0;
+    assert!(!app.bridge.search_tab_available(HomeTab::LiveTv));
+    open_live(&mut app, &mut now);
+    assert!(app.bridge.search_tab_available(HomeTab::LiveTv));
+    let instance = mounted(&app);
+    app.bridge.stores.livetv.install_for_test(Vec::new());
+    settle(&mut app, &mut now);
+    assert!(!app.bridge.search_tab_available(HomeTab::LiveTv));
+    assert_eq!(app.bridge.livetv_view().status, LiveTvStatus::Empty);
+    assert!(app.route() == AppArg::LiveTv);
+    assert_eq!(mounted(&app), instance, "withdrawing the tab does not evict its open page");
+    app.bridge.livetv_run(plx_data::livetv::LiveTvCmd::Reset);
+    assert!(!app.bridge.search_tab_available(HomeTab::LiveTv));
 }

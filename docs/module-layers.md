@@ -123,7 +123,7 @@ base
 | plex | `plex http` | 26k | 72% |
 | telemetry | `telemetry diag` (the event schema) | 16k | 64% |
 | ui | `ui` (the library) | 51k | 47% |
-| data | `stores browse metadata person collection search subsearch viewstate viewledger pms watchlist catalog hudpacks` | 27k | 56% |
+| data | `stores browse metadata person collection livetv search subsearch viewstate viewledger pms watchlist catalog hudpacks` | 27k | 56% |
 | session | `auth` | 11k | 35% |
 | media | `ff` (a facade over `play_feed`'s demuxer) `abr curlio player route speed_audio`; `aq` and `hls` moved to `play_feed` | 56k | 49% |
 | appkit | `appkit` (the player panels and the Sources row several screens draw) | 13k | 32% |

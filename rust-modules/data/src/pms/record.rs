@@ -126,7 +126,7 @@ mod tests {
             }],
         };
         Landing { gen: 7, seq: 19, sid: m.sid, client: None, token_gen: 5,
-            build: Some(SourceBuild { live: Vec::new(),
+            build: Some(SourceBuild {
                 lane: Default::default(),
                 cw: vec![CwItem { last_viewed_at: i64::MAX, m: Arc::new(m.clone()), position: 0 }],
                 shelves: vec![Shelf { epoch: 0, positions: Vec::new(), title: "Shelf".into(), hub_id: "provider.hub".into(),

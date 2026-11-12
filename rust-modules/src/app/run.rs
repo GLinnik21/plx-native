@@ -87,7 +87,7 @@ pub(crate) struct Frame {
 }
 
 impl Frame {
-    fn begin(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>) -> Frame {
+    pub(crate) fn begin(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::MetadataView<'_>) -> Frame {
         Frame {
             ctrl: plx_appkit::player_hud::slot(ps, meta),
             now: 0,
@@ -2695,9 +2695,6 @@ fn loop_requests(app: &mut App) {
                 super::bridge::execute_session_command(&mut app.pages, plx_session::auth::SessionCmd::SignOut);
                 super::bridge::nav_root(&mut app.pages, AppArg::Login);
             }
-            // The Live TV page's profile chip (`Bridge::livetv_deliver`'s `Account`): the menu the
-            // Library's and Search's chips open, presented by the same door.
-            plx_screens::registry::LoopReq::AccountMenu => super::input::chip_activate(&mut app.pages),
             // The host route does NOT move: Settings is a surface presented over the same page,
             // and its Privacy, Legal and Favourite-libraries children are pages of that surface's
             // own inner stack. The account sheet's dismissal and this presentation are two parked
@@ -3063,6 +3060,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         super::bridge::execute_endpoint_outcomes(&mut app.pages, upgrades);
         app.bridge.person_pump();
         app.bridge.collection_pump();
+        app.bridge.livetv_pump();
         // …and the Detail pages whose item, season or show it just spoke about: re-read from the
         // server's word, wherever on the stack they are (`content::reconcile_details`).
         let landed = app.bridge.take_landed_views();
@@ -3926,7 +3924,7 @@ unsafe fn controlled_key_input(app: &mut App, event: plx_machine::machine::Input
 }
 
 #[cfg(all(test, feature = "hostsim", feature = "play-feed"))]
-mod lifecycle_regression_tests {
+pub(super) mod lifecycle_regression_tests {
     use super::*;
 
     #[test]
@@ -3981,7 +3979,7 @@ mod lifecycle_regression_tests {
     }
 
     // No boot, renderer or device: the real App/event/frame phases with Bridge's host rig.
-    fn app() -> App {
+    pub(crate) fn app() -> App {
         plx_play_feed::ff_test_support::reset_session_for_test(&mut plx_media::player::reset_common_for_test);
         let mut app = App {
             last_input: Default::default(),

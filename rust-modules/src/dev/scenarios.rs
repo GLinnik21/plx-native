@@ -2425,7 +2425,7 @@ pub(crate) fn nav_osc_tick(app: &mut App, now: u32) {
             }
             AppArg::Library => {
                 let origin = crate::app::chrome::pill_at(
-                    app.bridge.browse_directory(), 1);
+                    app.bridge.browse_directory(), app.bridge.livetv_available(), 1);
                 crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge,
                     HomeTab::Home, Some(origin), None);
             }
@@ -2665,7 +2665,7 @@ fn push_bench_close(app: &mut App, opened: bench::PushTarget) {
             crate::app::bridge::nav_pop(&mut app.pages);
         }
         bench::PushTarget::Library => {
-            let origin = crate::app::chrome::pill_at(app.bridge.browse_directory(), 1);
+            let origin = crate::app::chrome::pill_at(app.bridge.browse_directory(), app.bridge.livetv_available(), 1);
             crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::Home, Some(origin), None);
         }
     }

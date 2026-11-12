@@ -59,46 +59,6 @@ pub const KIND_SEASON: c_int = 2;
 pub const KIND_EPISODE: c_int = 3;
 pub const KIND_COLLECTION: c_int = 4;
 
-/// A Live TV channel tile (`plx_plex::plex::livetv`): `title` is the channel, `show_title` what is
-/// on, `thumb`/`still` the channel logo, and `rk` the channel's address ([`live_channel_rk`]). It is
-/// no library item: no detail page, no watch state, no PlayQueue.
-pub const KIND_LIVE_CHANNEL: c_int = 5;
-
-/// The id of the Home row of Live TV channels.
-pub const LIVE_TV_HUB: &str = "home.livetv";
-
-const LIVE_RK_PREFIX: &str = "livetv:";
-
-/// The `rk` of a channel tile: `livetv:{dvr}:{channel}`, the channel being the guide's id that the
-/// tune names. Distinct from every PMS ratingKey (digits), so focus memory and item identity keep a
-/// channel apart from any library row.
-pub fn live_channel_rk(dvr: &str, channel: &str) -> String {
-    format!("{LIVE_RK_PREFIX}{dvr}:{channel}")
-}
-
-/// The `(dvr, channel)` a channel tile tunes, or `None` for every other row.
-pub fn live_channel_of(m: &PmsMovie) -> Option<(&str, &str)> {
-    if m.kind != KIND_LIVE_CHANNEL {
-        return None;
-    }
-    let (dvr, channel) = m.rk.strip_prefix(LIVE_RK_PREFIX)?.split_once(':')?;
-    (!dvr.is_empty() && !channel.is_empty()).then_some((dvr, channel))
-}
-
-/// A Live TV channel as a Home tile of server `sid`.
-pub fn live_channel_tile(ch: &plx_plex::plex::livetv::LiveChannel, sid: ServerId) -> PmsMovie {
-    PmsMovie {
-        sid,
-        kind: KIND_LIVE_CHANNEL,
-        rk: live_channel_rk(&ch.dvr, &ch.channel),
-        title: ch.name.clone(),
-        show_title: ch.now.clone(),
-        thumb: ch.thumb.clone(),
-        still: ch.thumb.clone(),
-        ..PmsMovie::default()
-    }
-}
-
 pub fn listable(type_str: &str) -> bool {
     matches!(type_str, "movie" | "show" | "season" | "episode")
 }
@@ -836,7 +796,7 @@ impl HubsSnapshot {
     }
 
     pub fn view(&self) -> HubsView<'_> {
-        HubsView { data: &self.data, generation: self.generation, state: self.state }
+        HubsView { data: &self.data, generation: self.generation, state: self.state, extra: None }
     }
 }
 
@@ -847,7 +807,11 @@ pub struct HubsView<'a> {
     data: &'a Arc<HomeCatalog>,
     pub generation: u32,
     pub state: HubState,
+    extra: Option<ExtraShelf<'a>>,
 }
+
+#[derive(Clone, Copy)]
+struct ExtraShelf<'a> { at: usize, id: &'a str, title: &'a str, items: &'a [Arc<PmsMovie>], revision: u32 }
 
 #[derive(Clone, Copy)]
 pub struct HubRef<'a> {
@@ -895,9 +859,29 @@ pub struct HeroRef<'a> {
 }
 
 impl<'a> HubsView<'a> {
-    pub fn hub_count(self) -> usize { self.data.hubs.len() }
+    /// Borrow an independently owned shelf without changing the retained catalog or hero pool.
+    pub fn with_shelf(mut self, id: &'a str, title: &'a str, items: &'a [Arc<PmsMovie>], revision: u32) -> Self {
+        self.generation = self.generation.wrapping_add(revision);
+        self.extra = None;
+        if !items.is_empty() {
+            let at = self.data.hubs.iter().position(|h| h.hub_id == "home.continue").map_or(0, |i| i + 1);
+            self.extra = Some(ExtraShelf { at, id, title, items, revision });
+        }
+        self
+    }
+    pub fn hub_count(self) -> usize { self.data.hubs.len() + usize::from(self.extra.is_some()) }
     pub fn hero_count(self) -> usize { self.data.heroes.len() }
     pub fn hub(self, index: usize) -> Option<HubRef<'a>> {
+        let index = if let Some(extra) = self.extra {
+            if index == extra.at {
+                return Some(HubRef {
+                    identity: Some(HubIdentity::Identifier { sid: extra.items[0].sid, id: extra.id, key: "" }),
+                    title: extra.title, source: "", total: extra.items.len(), items: extra.items,
+                    offset: 0, more: false, epoch: extra.revision,
+                });
+            }
+            if index > extra.at { index - 1 } else { index }
+        } else { index };
         let row = self.data.hubs.get(index)?;
         let end = row.start.checked_add(row.len)?;
         Some(HubRef {
@@ -915,7 +899,7 @@ impl<'a> HubsView<'a> {
     /// Server-scoped catalog lookup by `(sid, rk)`, over the retained publication rather than a
     /// global — see [`index_of_rk`]'s doc for why the scan must not compare `rk` alone.
     pub fn find(self, sid: ServerId, rk: &str) -> Option<&'a PmsMovie> {
-        self.data.items.iter().find(|m| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk))).map(|m| &**m)
+        self.data.items.iter().chain(self.extra.into_iter().flat_map(|s| s.items)).find(|m| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk))).map(|m| &**m)
     }
 }
 
@@ -1186,10 +1170,6 @@ struct SourceBuild {
     /// until the row has a listing to read, so an older recording decodes unchanged.
     #[serde(default, skip_serializing_if = "deck::Lane::is_default")]
     lane: deck::Lane,
-    /// This server's Live TV channels as tiles ([`KIND_LIVE_CHANNEL`]), merged with every other
-    /// source's into the one Live TV row. Absent on a server with no usable DVR.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    live: Vec<Arc<PmsMovie>>,
 }
 
 /// A page read the user walked away from whose worker has not landed yet.
@@ -1328,7 +1308,7 @@ fn fetch_row(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimum_e
     let state = current.map(|shelf| shelf.row.clone()).unwrap_or_default();
     let (rows, info, state) = paging::read_row(sid, &ask, current.map(shelf_window), state, minimum_end, list, many)?;
     let (positions, items) = rows.into_iter().unzip();
-    Some(SourceBuild { live: Vec::new(), cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf { epoch: 0,
+    Some(SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf { epoch: 0,
         title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
         total: info.total, offset: info.offset, end: info.end, more: info.more, shown: 0, row: state,
     }] })
@@ -1340,7 +1320,7 @@ fn fetch_kept(sid: ServerId, page: &PageQuery, shelf: &Shelf,
     many: &mut impl FnMut(&[String]) -> Option<plx_plex::plex::MediaContainer>) -> Option<SourceBuild> {
     let items = paging::kept_cards(sid, &shelf.row.kept, &page.hidden, many)?;
     let positions = (shelf.offset..shelf.offset + items.len()).collect();
-    Some(SourceBuild { live: Vec::new(), cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf { epoch: 0,
+    Some(SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf { epoch: 0,
         title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
         total: shelf.total, offset: shelf.offset, end: shelf.end, more: shelf.more, shown: 0,
         row: paging::RowState { kept: Vec::new(), ..shelf.row.clone() },
@@ -1357,7 +1337,7 @@ fn fetch_window(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimu
     let (rows, info) = paging::fetch_window(sid, &ask, current.as_ref().map(|(rows, info)| (rows.as_slice(), *info)),
         minimum_end, fetch)?;
     let (positions, items) = rows.into_iter().unzip();
-    Some(SourceBuild { live: Vec::new(), cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf { epoch: 0,
+    Some(SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf { epoch: 0,
         title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
         total: info.total, offset: info.offset, end: info.end, more: info.more, shown: 0, row: Default::default(),
     }] })
@@ -2000,17 +1980,6 @@ fn fetch_source(c: &plx_plex::plex::Client, sid: ServerId, held: &[(String, Stri
     let (mut build, cw) = (build?, cw?);
     project_deck(&mut build, &cw, sid);
     with_lookahead(&mut build, sid, |start, size| c.continue_watching_page(start as i64, size as i64));
-    // Live TV is an extra, never a reason to fail the source: a server without a DVR, a share that
-    // may not use its tuners or a failed read all leave the row out.
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
-    build.live = c
-        .live_channels(now)
-        .unwrap_or_default()
-        .iter()
-        .map(|ch| Arc::new(live_channel_tile(ch, sid)))
-        .collect();
     Some(build)
 }
 
@@ -2388,27 +2357,6 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
             start: 0,
             len: new_cat.len(),
             offset: deck_offset, more: deck_more, epoch: 0,
-        });
-    }
-
-    // ---- 1b. the Live TV row: every source's channels, in source order ----
-    let live_start = new_cat.len();
-    for (h, b) in &live {
-        for m in b.live.iter().take(MAX_SHELF_ITEMS) {
-            new_cat.push(Arc::clone(m));
-            row_handle.push(h);
-        }
-    }
-    if new_cat.len() > live_start {
-        new_hubs.push(HubRow {
-            title: plx_platform::i18n::msg::browse_home_live_tv().to_string(),
-            hub_id: LIVE_TV_HUB.to_string(),
-            key: String::new(),
-            source: String::new(),
-            total: 0,
-            start: live_start,
-            len: new_cat.len() - live_start,
-            offset: 0, more: false, epoch: 0,
         });
     }
 
@@ -3948,7 +3896,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
 /// that cannot express the app's ordinary state quietly limits what can be tested through it.
 #[cfg(any(test, feature = "test-support"))]
 fn build_test(n: usize) -> SourceBuild {
-    SourceBuild { live: Vec::new(),
+    SourceBuild {
         cw: Vec::new(),
         lane: Default::default(),
         shelves: vec![Shelf { epoch: 0,
@@ -3976,20 +3924,6 @@ fn build_test(n: usize) -> SourceBuild {
 pub fn seed_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, items: usize, hub_state: HubState) {
     plx_base::testlock::assert_held("the pms hub catalog (seed_for_test)");
     seed_with_scope_for_test(state, adapter, ServerId::UNSET, items, hub_state, &BrowseScope::standalone());
-}
-
-/// [`seed_for_test`] with this source's Live TV `channels` too, as tiles of its row.
-#[cfg(any(test, feature = "test-support"))]
-pub fn seed_live_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, items: usize, channels: &[plx_plex::plex::livetv::LiveChannel]) {
-    seed_for_test(state, adapter, items.max(1), HubState::Ready);
-    let scope = BrowseScope::standalone();
-    for src in &mut state.srcs {
-        if let Some(build) = src.last.as_mut() {
-            build.live = channels.iter().map(|ch| Arc::new(live_channel_tile(ch, src.sid))).collect();
-        }
-    }
-    let build = merge_with_scope(&state.srcs, &scope);
-    commit(state, build);
 }
 
 /// Seed a Hubs source that belongs to a real retained Browse directory. Full Bridge fixtures use
@@ -4036,7 +3970,7 @@ pub fn seed_two_library_home_for_test(
     let scope = BrowseScope::retained(directory, &keys);
     let mut source = Src::new(sid, String::new(), &scope.clients);
     source.state = HubState::Ready;
-    source.last = Some(SourceBuild { live: Vec::new(),
+    source.last = Some(SourceBuild {
         cw: Vec::new(),
         lane: Default::default(),
         shelves: vec![Shelf { epoch: 0,
@@ -4237,7 +4171,7 @@ pub fn land_ring_rows_for_test(state: &mut PmsState, items: usize, salt: &dyn Fn
                 ..PmsMovie::default()
             })).collect();
             let page = PageQuery { id, key, start: shelf.offset, before: false, hidden: Vec::new(), reload: true };
-            let build = SourceBuild { live: Vec::new(), cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf {
+            let build = SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf {
                 items: cards, positions: (0..items).collect(), shown: 0, ..shelf }] };
             landed |= land_reload(source, &page, build);
         }
@@ -4367,7 +4301,7 @@ pub fn seed_continue_window_for_test(state: &mut PmsState, adapter: &Arc<PmsAdap
     let mut source = Src::new(sid, String::new(), &registry_keys_for_test());
     source.state = HubState::Ready;
     let lane = deck::Lane::preview("0", &items.saturating_sub(1).to_string(), items, items + usize::from(more), !more);
-    source.last = Some(SourceBuild { live: Vec::new(), cw, lane, shelves: Vec::new() });
+    source.last = Some(SourceBuild { cw, lane, shelves: Vec::new() });
     let mut srcs = vec![source];
     settle_deck(&mut srcs, false);
     let build = merge(&srcs);
@@ -4461,7 +4395,7 @@ pub fn seed_deck_home_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, 
     let mut source = Src::new(ServerId::UNSET, String::new(), &registry_keys_for_test());
     source.state = HubState::Ready;
     source.ledger = state.ledger.clone();
-    source.last = Some(SourceBuild { live: Vec::new(),
+    source.last = Some(SourceBuild {
         cw: (1..=items).map(|i| CwItem { last_viewed_at: (1000 - i) as i64, m: card(i.to_string()), position: 0 }).collect(),
         shelves: vec![recent],
         lane: Default::default(),

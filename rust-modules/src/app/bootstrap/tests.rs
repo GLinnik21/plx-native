@@ -200,7 +200,9 @@ fn committed_replay_initials_remain_canonical_and_hash_bound() {
         let manifest: serde_json::Value = serde_json::from_str(manifest).unwrap();
         let value = manifest["init"]["data"].clone();
         let expected_hash = manifest["init"]["hash"].as_u64().unwrap();
-        let profile = manifest["state_fp"].as_u64().unwrap();
+        // Check the initializer's canonical payload independently of the screen inventory;
+        // recorder's fixture preflight owns the recorded fingerprint's compatibility.
+        let profile = super::super::recorder::FP_V6;
         let decoded = Initial::decode_profile(value, expected_hash, profile)
             .unwrap_or_else(|error| panic!("{name}: {error}"));
         assert_eq!(decoded.hash(), expected_hash, "{name}");

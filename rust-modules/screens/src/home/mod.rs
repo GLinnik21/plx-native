@@ -63,7 +63,7 @@ fn hub_page_cmd(hub: &HubRef<'_>,
 use super::plaintext_question::{self, AlertStep, Near, OfferWatch, PlaintextAlert};
 use super::registry::{
     key_cap, tile_facts, unlive_excess, Compaction, EvictOrder, KEY_PRUNE_BATCH, AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
-    HomeMemory, HomeReq, HomeTab, LiveTvOut, LoopReq, PageMemory, PlayIntent, RowDiff, RowSeats,
+    HomeMemory, HomeReq, HomeTab, LoopReq, PageMemory, PlayIntent, RowDiff, RowSeats,
 };
 
 const HERO_GROUP: GroupId = GroupId(0);
@@ -1603,7 +1603,8 @@ impl HomeScreen {
 
     /// The shelf column's geometry over this page's rows ([`ShelfColumn`]).
     fn column(&self) -> ShelfColumn<impl Fn(usize) -> bool + '_> {
-        ShelfColumn { rows: self.rows.len(), is_deck: move |i| self.rows.get(i).is_some_and(|r| r.identity == HomeHubIdentity::ContinueWatching) }
+        ShelfColumn { rows: self.rows.len(), last_live: self.rows.last().is_some_and(|r| is_live_hub(&r.identity)),
+            is_deck: move |i| self.rows.get(i).is_some_and(|r| r.identity == HomeHubIdentity::ContinueWatching) }
     }
 
     /// **The SETTLED top of shelf `row`** ([`ShelfColumn::top`]). A scroll target and a settled rect
@@ -1628,7 +1629,7 @@ impl HomeScreen {
     /// the Continue Watching deck's is its own ([`shelf_policy`]).
     fn band_open_at(&self, row: Option<usize>) -> f32 {
         row.and_then(|row| self.rows.get(row)).map_or_else(|| band_open_of(false),
-            |hub| band_open_of(hub.identity == HomeHubIdentity::ContinueWatching))
+            |hub| ui_cards::band_open_for(plx_ui::caption_policy::band_h(&hub_policy(&hub.identity))))
     }
 
     fn band_row(&self, focus: Option<FocusKey<u32>>, fallback: usize) -> Option<usize> {
@@ -1699,7 +1700,7 @@ impl HomeScreen {
     /// them out before it adopts them as `self.rows`).
     fn layout_grid_of(&mut self, rows: &[HubProjection]) {
         for (shelf, hub) in self.grid.shelves.iter_mut().zip(rows) {
-            shelf.set_caption_policy(Some(shelf_policy(hub.identity == HomeHubIdentity::ContinueWatching)));
+            shelf.set_caption_policy(Some(hub_policy(&hub.identity)));
         }
         let top = PEEK_Y + (GRID_TOP_Y - PEEK_Y) * self.snap.pos;
         let mut flow = 0.0;
@@ -2044,7 +2045,7 @@ impl HomeScreen {
             return Handled::No;
         };
         // A channel has no item menu: it is no library item (`KIND_LIVE_CHANNEL`).
-        if item.rk.is_empty() || plx_data::pms::live_channel_of(item).is_some() {
+        if item.rk.is_empty() || plx_data::livetv::live_channel_of(item).is_some() {
             return Handled::No;
         }
         fx.push(Fx::App(AppFx::Home(HomeReq::ItemMenu {
@@ -2210,15 +2211,16 @@ impl HomeScreen {
                     return;
                 };
                 // A channel tunes: the typed play is the whole request, and no Home request goes with it.
-                if let Some((dvr, channel)) = plx_data::pms::live_channel_of(item) {
-                    fx.push(Fx::App(AppFx::LiveTv(LiveTvOut::Tune(
-                        PlayIntent::Live {
+                if let Some((dvr, channel)) = plx_data::livetv::live_channel_of(item) {
+                    fx.push(Fx::App(AppFx::Content(ContentReq::Play {
+                        play: PlayIntent::Live {
                             sid: item.sid,
                             dvr: dvr.to_owned(),
                             channel: channel.to_owned(),
-                            title: item.title.clone(),
+                            title: plx_data::livetv::channel_name_of(item).unwrap_or(&item.title).to_owned(),
                         },
-                    ))));
+                        resume_ns: 0,
+                    })));
                     return;
                 }
                 if self
@@ -3340,7 +3342,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 self.tick(*tick, cx, fx);
                 Handled::Yes
             }
-            ScreenEvent::StoreChanged(ord, _) if *ord == StoreId::Hubs.ord() => {
+            ScreenEvent::StoreChanged(ord, _) if *ord == StoreId::Hubs.ord() || *ord == StoreId::LiveTv.ord() => {
                 for shelf in &mut self.grid.shelves { shelf.reset_page_requests(); }
                 self.projected_generation = None;
                 self.sync_catalog(cx);
@@ -3881,6 +3883,13 @@ fn shelf_policy(deck: bool) -> plx_ui::caption_policy::CaptionPolicy {
     if deck { return crate::registry::captions::NOTHING_UNDER_STILLS }
     crate::registry::captions::policy()
 }
+fn is_live_hub(identity: &HomeHubIdentity) -> bool {
+    matches!(identity, HomeHubIdentity::Identifier { id, .. } if id.as_ref() == plx_data::livetv::LIVE_TV_HUB)
+}
+fn hub_policy(identity: &HomeHubIdentity) -> plx_ui::caption_policy::CaptionPolicy {
+    if is_live_hub(identity) { crate::registry::captions::live_tv_policy() }
+    else { shelf_policy(*identity == HomeHubIdentity::ContinueWatching) }
+}
 /// The focused shelf's caption band (0 / 80 / 112 px) under [`shelf_policy`]: the height the shelf
 /// reserves, opens and reveals by (`Shelf::set_caption_policy`).
 fn band_h_of(deck: bool) -> f32 {
@@ -3902,6 +3911,7 @@ const DOCUMENT_END_PAD: f32 = 60.0;
 /// this one type, never a uniform-pitch copy of it.
 struct ShelfColumn<D: Fn(usize) -> bool> {
     rows: usize,
+    last_live: bool,
     is_deck: D,
 }
 
@@ -3955,7 +3965,9 @@ impl<D: Fn(usize) -> bool> ShelfColumn<D> {
     /// The document's end, with the LAST shelf's band open ([`band_open_of`]).
     fn max_scroll(&self) -> f32 {
         let n = self.rows.max(1);
-        let last_open = band_open_of((self.is_deck)(n - 1));
+        let last_open = if self.last_live {
+            ui_cards::band_open_for(plx_ui::caption_policy::band_h(&crate::registry::captions::live_tv_policy()))
+        } else { band_open_of((self.is_deck)(n - 1)) };
         let h = self.top(n, Some(n - 1), last_open);
         (h - (SCR_H - CONTENT_Y) + DOCUMENT_END_PAD).max(0.0)
     }

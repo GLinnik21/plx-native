@@ -34,6 +34,8 @@
 //!   words the tile has: [`label_with_states`] shows them with no part ticked, and the band opens for
 //!   them ([`status_policy`]). The deck's band is per SHELF, so
 //!   it never changes as focus walks the row.
+//! - Live TV uses [`live_tv_policy`]: channel identity and current programming remain visible
+//!   independently of the library poster setting, on Home and on both Live TV shelves.
 //! - The band's height is [`plx_ui::caption_policy::band_h`] of the same policy, everywhere (the deck
 //!   shelf's policy being [`deck_policy`] of the setting): a
 //!   shelf is handed the policy ([`plx_ui::cards::Shelf::set_caption_policy`]) and reserves, opens
@@ -150,6 +152,11 @@ pub fn status_policy(policy: &CaptionPolicy) -> CaptionPolicy {
     deck_policy(policy)
 }
 
+/// A live tile needs its channel identity and programme even when poster details are hidden.
+pub fn live_tv_policy() -> CaptionPolicy {
+    CaptionPolicy::same(true, DetailParts::MOVIE_DEFAULT)
+}
+
 fn build(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>, states_survive: bool) -> TileLabel {
     let [title, details] = caption_lines(policy, facts, plx_platform::i18n::current());
     let details = if policy.details_for(facts.is_show).is_empty() { if states_survive { state } else { None } } else { state.or(details) };
@@ -162,7 +169,7 @@ fn build(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>, st
 }
 
 /// A poster shelf tile's label under `policy`: Home's shelves and the Library's Recommended
-/// shelves. The tile keeps what its caption carries as a STATE: on the Continue Watching deck
+/// shelves. A live channel's current programme is its state. The tile keeps what its caption carries as a STATE: on the Continue Watching deck
 /// (`is_continue`) its time left ("8m left", "S3 · E4 · 8m left", or "S2 · E1 · New episode" for a
 /// next-up episode; an unnumbered episode leads with its show's name instead of the address) is the details line
 /// whatever kind the setting asks for. An
@@ -171,13 +178,16 @@ fn build(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>, st
 /// fallback line under Nothing (the shelf's band stays open, per shelf).
 pub fn shelf_label(policy: &CaptionPolicy, item: &plx_data::pms::PmsMovie, is_continue: bool) -> TileLabel {
     let facts = crate::registry::tile_facts::caption_facts(item);
-    let state = is_continue
-        .then(|| plx_ui::cards::cw_caption(&crate::registry::tile_facts::of(item)))
-        .flatten()
-        .map(|c| c.to_string_lossy().into_owned());
+    let policy = &if plx_data::livetv::live_channel_of(item).is_some() { live_tv_policy() } else { *policy };
+    let state = if plx_data::livetv::live_channel_of(item).is_some() {
+        (!item.show_title.is_empty()).then(|| item.show_title.clone())
+    } else {
+        is_continue.then(|| plx_ui::cards::cw_caption(&crate::registry::tile_facts::of(item)))
+            .flatten().map(|c| c.to_string_lossy().into_owned())
+    };
     // A deck tile with a state is worded by the deck's policy (its progress line shows under
     // Nothing); one with no state to show has nothing to say under Nothing, only the shelf's band.
-    let policy = &if state.is_some() { deck_policy(policy) } else { *policy };
+    let policy = &if is_continue && state.is_some() { deck_policy(policy) } else { *policy };
     label(policy, &facts, state)
 }
 
@@ -257,6 +267,19 @@ mod tests {
         let episode = CaptionFacts { title: Some("Pilot".into()), episode: Some((1, 8)), ..Default::default() };
         let p = CaptionPolicy::same(false, DetailParts::MOVIE_DEFAULT);
         assert_eq!(lines(&label(&p, &episode, None)), [None, Some("S1 \u{b7} E8".into())]);
+    }
+
+    #[test]
+    fn live_channels_share_the_number_name_and_current_programme_caption() {
+        let channel = plx_data::pms::PmsMovie { kind: plx_data::livetv::KIND_LIVE_CHANNEL,
+            rk: "livetv:7:C101".into(), title: "101 Family Channel".into(), show_title: "Family Show".into(),
+            ..Default::default() };
+        assert_eq!(lines(&shelf_label(&CaptionPolicy::same(true, DetailParts::MOVIE_DEFAULT), &channel, false)),
+            [Some("101 Family Channel".into()), Some("Family Show".into())]);
+        assert_eq!(lines(&shelf_label(&CaptionPolicy::same(true, DetailParts::NONE), &channel, false)),
+            [Some("101 Family Channel".into()), Some("Family Show".into())]);
+        assert_eq!(lines(&shelf_label(&CaptionPolicy::same(false, DetailParts::NONE), &channel, false)),
+            [Some("101 Family Channel".into()), Some("Family Show".into())]);
     }
 
     fn deck_episode() -> plx_data::pms::PmsMovie {

@@ -143,11 +143,11 @@ widening recorded the 17 forks that were already there (three in `screens/`: `le
   (`reqs`, `content_reqs`, ...) is a second lane with its own timing, so it is a ledger line, and a
   NEW variant with a side queue fails the gate. An or-pattern arm (`AppFx::A(r) | AppFx::B(r) =>
   ..`) is one site for each variant, and an arm that names no variant (`other => ..`, `_ => ..`) is
-  the site `AppFx::_`. `AppFx::LiveTv` is a page's arm on that lane: the page's tune, a typed
-  `PlayIntent::Live`, is delivered to the playback owner (`MachineId::Player`) and its strip and
-  BACK requests to `MachineId::Nav` (`Bridge::livetv_deliver`); the admitted play is performed by
-  the play runner (`content::run_play_starts`), whose outcome returns as one `AppMsg::PlayReply`
-  addressed to the asking page.
+  the site `AppFx::_`. Live TV uses the already ledgered `AppFx::Content` and `AppFx::Home`
+  arms: tuning is `ContentReq::Play { play: PlayIntent::Live, .. }`, performed by the ordinary
+  content Play drain with its input-owner gate and captured return state. The strip, profile chip
+  and BACK use `HomeReq::Tab` / `HomeReq::Account`, admitted from the Live TV route. These are
+  side lanes with the same timing as other pages; there is no Live-TV-specific queue or reply.
 - A key names the file and the fn's name, and a ledger is a multiset of keys, so a site can move
   between two same-named fns of one file (a `new` in each of two `impl` blocks) without the gate seeing it.
 
@@ -204,10 +204,21 @@ session owner leaves as an `Effects` value; the next section is the rule for the
 
 ## The store job lane
 
+Live TV has its own direct store lane (`data/src/livetv.rs`, `stores/livetv.rs`): the Bridge
+captures client keys and Unix seconds, steps the store, and drains `StoreId::LiveTv` in the same
+call (`livetv_pump` / `livetv_run`). It starts independently of the visible page. Each server gets
+its own source slot, bounded by the shared fan-out gate; the initial read gets DVRs, the complete
+tunable lineup and the current grid. When a shown airing ends, only the grid is read again, with
+one read per source in flight and a per-DVR retry hold-off on grid failure. A partial discovery
+retry never blocks an expired known guide. The last good lineup and airings
+survive a failed refresh. Home borrows an extra shelf from the store's cached channel tiles; the
+Home hubs fetch contains no Live TV read. The strip's availability is the same store's nonempty
+lineup. This lane is `Direct`, not taped: there is no Live TV controlled-record schema.
+
 The Metadata store's detail request (`request_detail`) was the first to stop starting its own
 worker. Its three ledger lines are gone and the shape is the one the other `data/` stores copy.
 The fetch chain behind that job now takes its client as an argument too (Metadata M1), as the
-Collection, Person, Hubs and subtitle-search bodies already do: `StoreRunner::start_detail` resolves
+Collection, Person, Hubs, Live TV and subtitle-search bodies already do: `StoreRunner::start_detail` resolves
 the server's client once, at the admission, and `finish_detail_fetch` hands it to `fetch_full` and
 through it to the GETs of the chain, so the eight `client_for` reads of `fetch_detail`,
 `fetch_item_streams`, `fetch_seasons`, `fetch_primary_trailer`, `fetch_extras_rows`,
@@ -257,6 +268,7 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   keeps its own job enum, request types and port: `plx_data::stores::StoreJob`,
   `MetadataStore::take_jobs`, `plx_data::metadata::{DetailReq, DetailPort}`,
   `plx_data::collection::{CollectionReq, CollectionPort}`,
+  `plx_data::livetv::{LiveTvReq, LiveTvPort}`,
   `plx_data::person::{PersonReq, PersonPort}` and
   `plx_data::stores::catalog::{CatalogReq, CatalogPort}`,
   `plx_data::pms::{HubRequest, HubsPort}`,
@@ -323,6 +335,8 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   (a guard: no landing pump emits a job today, so it finds nothing); `Bridge::person_pump` and
   `Bridge::collection_pump` refill the keys, step, then run
   `Bridge::start_store_jobs_of(StoreId::Person)` and `(StoreId::Collection)`;
+  `Bridge::livetv_run` and `Bridge::livetv_pump` capture keys and Unix seconds, step and drain
+  `(StoreId::LiveTv)`;
   `Bridge::catalog_open` and `Bridge::catalog_pump` step the Catalog store and run
   `(StoreId::Catalog)` (no keys to refill; the pump drains because its retry emits and the profile-switch
   re-open it takes (`CatalogStore::take_reopen`) goes through `Bridge::catalog_open`). `Bridge::search_run` drains `(StoreId::Search)` after every command (a recents
@@ -337,7 +351,7 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   leaves (`StoreJob::ViewWrite`), and `reconcile_pump` drains `RECONCILE_FILLS`
   (`[ViewState, ViewReconcile]`) because an end-of-stream fan-out it queues starts the next write.
   Draining inside each pump, not at the frame's end, keeps every store's
-  admissions in the tape where they were: the frame pumps Person, then Collection, then reconciles
+  admissions in the tape where they were: the frame pumps Person, then Collection, then Live TV, then reconciles
   the Detail page. A caller that holds only the store (`describe_movie` gets a `&mut MetadataStore`, and the
   menu-play wait's season press in `input.rs` runs `LoadSeason` on the bare store)
   drains with `Bridge::start_store_jobs` the moment its call returns. A new store joins by implementing its
@@ -361,7 +375,7 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   `Store(Search(..))` and `StoreWork::Search` arms, `boot.rs`'s reset and `dev/scenarios.rs`'s query
   all reach them through `Bridge::search_run` and `Bridge::search_pump`, which drain in the same call.
 - **Results do not return as FIFO events.** A gated store's result (Detail, Collection, Person,
-  Search, subtitle search, the view-state read-back, the view-state write) goes back through the landing and its gate
+  Search, Live TV, subtitle search, the view-state read-back, the view-state write) goes back through the landing and its gate
   (`landgate`, the `adapter_rank` of the landing key), where the pump takes it by value. This is a
   deliberate exception to "every result returns as one addressed event in the same drain": it is
   kept so that the replay anchors hold, because the landing is where they already record a result.
@@ -377,7 +391,7 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   request still settles, and is counted in the Bridge's `late_store_jobs` and logged as one `stores: WARN` line.
   `Bridge::assert_no_store_jobs_left_for_test` (`#[cfg(test)]`) fails a frame that ends with a job
   still on an outbox or with that count above zero, so a sender that bypassed its store's Bridge
-  drain (`metadata_run`, `person_pump`, `collection_pump`, `catalog_open`, `catalog_pump`,
+  drain (`metadata_run`, `person_pump`, `collection_pump`, `livetv_run`, `livetv_pump`, `catalog_open`, `catalog_pump`,
   `subsearch_pump`, `search_run`, `search_pump`, `reconcile_pump`, `browse_run`, `hubs_run`, `viewstate_run`, `viewstate_pump`, `notify_pump`,
   `start_store_jobs_of`, `start_store_jobs_in`, `start_store_jobs`)
   is red in every rig that makes the check, the one that runs `update()`'s pump included. The rigs
@@ -475,7 +489,7 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   holds the adapter `Arc`, so a job emitted before a `Reset` answers into the adapter it was made
   for. The Hubs read differs from the six before it in four ways.
   - **A third admission family.** `StoreJob::admission()` names `Tape` (Detail, Collection, Person),
-    `Direct` (Catalog, subtitle search, view reconcile, Search's fetches and recents writes, the section
+    `Direct` (Catalog, Live TV, subtitle search, view reconcile, Search's fetches and recents writes, the section
     hubs' read, the Library's directory and page reads, the view-state writes, the Metadata season switch,
     episode-page window and Related window) or `Home` (the Hubs read and the Library's source discovery),
     as one exhaustive match. A `Home`

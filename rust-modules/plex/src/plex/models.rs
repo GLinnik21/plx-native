@@ -725,6 +725,8 @@ pub struct Media {
     /// Unix seconds. Empty / 0 on every library item.
     #[serde(rename = "channelVcn", default, deserialize_with = "de_str")]
     pub channel_vcn: String,
+    #[serde(rename = "channelIdentifier", default, deserialize_with = "de_str")]
+    pub channel_identifier: String,
     #[serde(rename = "beginsAt", default, deserialize_with = "de_i64")]
     pub begins_at: i64,
     #[serde(rename = "endsAt", default, deserialize_with = "de_i64")]

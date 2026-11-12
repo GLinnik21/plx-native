@@ -159,7 +159,7 @@ fn has_home(out: &[Stamped<TestHost>], pred: impl Fn(&HomeReq) -> bool) -> bool 
 fn live_tunes(out: &[Stamped<TestHost>]) -> Vec<PlayIntent> {
     out.iter()
         .filter_map(|stamped| match &stamped.fx {
-            Fx::App(AppFx::LiveTv(LiveTvOut::Tune(play))) => Some(play.clone()),
+            Fx::App(AppFx::Content(ContentReq::Play { play: play @ PlayIntent::Live { .. }, resume_ns: 0 })) => Some(play.clone()),
             _ => None,
         })
         .collect()
@@ -1141,7 +1141,7 @@ fn top_band_bottom() -> f32 {
 /// with the Continue Watching deck of stills on top, which has a pitch of its own. PRODUCTION's
 /// own geometry (`ShelfColumn`), never a copy of it.
 fn column(rows: usize, deck_first: bool) -> ShelfColumn<impl Fn(usize) -> bool> {
-    ShelfColumn { rows, is_deck: move |i| deck_first && i == 0 }
+    ShelfColumn { rows, last_live: false, is_deck: move |i| deck_first && i == 0 }
 }
 fn rest_scroll(row: usize, rows: usize) -> f32 {
     column(rows, false).rest(row)
@@ -2001,23 +2001,30 @@ fn ok_on_a_live_tv_channel_tunes_it_and_holding_it_opens_no_item_menu() {
     let _guard = plx_base::testlock::serial();
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
-    let channel = plx_plex::plex::livetv::LiveChannel {
+    let channel = plx_data::livetv::Channel {
+        sid: plx_plex::plex::ServerId::UNSET,
         dvr: "7".into(),
         channel: "C101.242.ersatztv.org".into(),
         vcn: "101".into(),
         name: "Family Channel".into(),
         thumb: String::new(),
         now: "Family Show".into(),
+        now_thumb: String::new(),
         ends_at: 0,
     };
-    plx_data::pms::seed_live_for_test(&mut state, &adapter, 1, &[channel]);
+    plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Ready);
     let snapshot = plx_data::pms::hubs_snapshot(&state);
-    let mut s = screen(snapshot.view());
+    let mut live = plx_data::stores::livetv::LiveTvStore::default();
+    live.install_for_test(vec![channel]);
+    let lineup = live.view();
+    let view = snapshot.view().with_shelf(plx_data::livetv::LIVE_TV_HUB, plx_platform::i18n::msg::browse_home_live_tv(), lineup.tiles, lineup.revision());
+    let mut s = screen(view);
+    assert_eq!(s.grid.shelves[0].band_h(), plx_ui::caption_policy::band_h(&crate::registry::captions::live_tv_policy()));
     s.snap.jump(1.0);
     s.snap_target = 1.0;
     let card = first_card(&s);
-    let (_, ok, _) = step(&mut s, snapshot.view(), Some(card), &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
-    let sid = s.item_at(snapshot.view(), 0, 0).expect("the channel tile is item 0 of row 0").sid;
+    let (_, ok, _) = step(&mut s, view, Some(card), &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
+    let sid = s.item_at(view, 0, 0).expect("the channel tile is item 0 of row 0").sid;
     assert_eq!(
         live_tunes(&ok),
         [PlayIntent::Live {
@@ -2028,7 +2035,7 @@ fn ok_on_a_live_tv_channel_tunes_it_and_holding_it_opens_no_item_menu() {
         }]
     );
     assert!(!has_home(&ok, |_| true), "a channel's OK asks Home for nothing");
-    let (_, held, _) = step(&mut s, snapshot.view(), Some(card), &ScreenEvent::PressHold(plx_machine::machine::PressId(2)));
+    let (_, held, _) = step(&mut s, view, Some(card), &ScreenEvent::PressHold(plx_machine::machine::PressId(2)));
     assert!(!has_home(&held, |r| matches!(r, HomeReq::ItemMenu { .. })), "a channel is no library item");
 }
 
@@ -6371,4 +6378,15 @@ fn a_hero_backdrop_that_has_dissolved_in_is_drawn_at_one_exact_alpha_from_then_o
     }
     assert!(first.iter().all(|a| *a == 1.0), "a finished dissolve is drawn at exactly 1.0, not {first:?}");
     assert_eq!((s.backdrop.art.pos, s.backdrop.art.vel), (1.0, 0.0), "the reveal spring landed");
+}
+
+#[test]
+fn live_tv_shelf_is_absent_when_there_are_no_channels() {
+    let state = plx_data::pms::PmsState::default();
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let live = plx_data::stores::livetv::LiveTvStore::default();
+    let lineup = live.view();
+    let view = snapshot.view().with_shelf(plx_data::livetv::LIVE_TV_HUB, plx_platform::i18n::msg::browse_home_live_tv(), lineup.tiles, lineup.revision());
+    assert_eq!(view.hub_count(), 0);
+    assert!(screen(view).rows.is_empty());
 }

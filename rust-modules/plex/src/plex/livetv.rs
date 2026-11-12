@@ -33,6 +33,8 @@ pub struct LiveChannel {
     /// What is on now: the show of an episode, the title of anything else. Empty when the guide
     /// has no airing for this channel at this second.
     pub now: String,
+    /// Airing artwork, falling back to the channel logo.
+    pub now_thumb: String,
     /// Unix seconds the current airing ends; 0 when nothing is airing. The row is stale after it.
     pub ends_at: i64,
 }
@@ -63,12 +65,9 @@ pub fn on_now_path(epg: &str, now: i64) -> String {
         .build()
 }
 
-/// The DVRs worth a row: a well-formed provider id and at least one tuner the server last saw
-/// alive. A DVR whose tuners all read `dead` would list channels that cannot be tuned.
+/// Discovery status is historical, not tuner health (§10). Only path-safe DVRs/providers qualify.
 pub fn usable_dvrs(dvrs: &[Dvr]) -> impl Iterator<Item = &Dvr> {
-    dvrs.iter().filter(|d| {
-        is_provider_id(&d.epg_identifier) && d.device.iter().any(|t| t.status == "alive")
-    })
+    dvrs.iter().filter(|d| is_provider_id(&d.epg_identifier) && is_path_id(&d.key))
 }
 
 /// A server-sent id that becomes one path segment of the tune: letters, digits and `._-` only.
@@ -252,34 +251,32 @@ fn airing_label(m: &Metadata) -> &str {
     }
 }
 
-/// Join one DVR's lineup with its airings into rows, in channel-number order.
+/// Join a DVR's complete, tunable lineup with its airings in channel-number order.
 pub fn lineup(dvr: &Dvr, channels: &[EpgChannel], on_now: &[Metadata]) -> Vec<LiveChannel> {
-    let mut rows: Vec<LiveChannel> = channels
-        .iter()
-        .filter(|ch| !ch.vcn.is_empty())
-        .map(|ch| {
-            let airing = on_now.iter().find_map(|m| {
-                m.media
-                    .iter()
-                    .find(|media| media.channel_vcn == ch.vcn)
-                    .map(|media| (m, media.ends_at))
-            });
-            LiveChannel {
-                dvr: dvr.key.clone(),
-                channel: ch.grid_key.clone(),
-                vcn: ch.vcn.clone(),
-                name: channel_name(ch),
-                thumb: ch.thumb.clone(),
-                now: airing.map_or_else(String::new, |(m, _)| airing_label(m).to_owned()),
-                ends_at: airing.map_or(0, |(_, ends)| ends),
-            }
-        })
-        .collect();
-    rows.sort_by(|a, b| {
-        let num = |c: &LiveChannel| c.vcn.parse::<u64>().unwrap_or(u64::MAX);
-        num(a).cmp(&num(b)).then_with(|| a.vcn.cmp(&b.vcn))
-    });
+    if !is_path_id(&dvr.key) || !is_provider_id(&dvr.epg_identifier) { return Vec::new(); }
+    let mut rows: Vec<LiveChannel> = channels.iter()
+        .filter(|ch| is_path_id(&ch.grid_key))
+        .map(|ch| LiveChannel { dvr: dvr.key.clone(), channel: ch.grid_key.clone(),
+            vcn: ch.vcn.clone(), name: channel_name(ch), thumb: ch.thumb.clone(),
+            now: String::new(), now_thumb: ch.thumb.clone(), ends_at: 0 }).collect();
+    update_on_now(&mut rows, on_now);
+    rows.sort_by(|a, b| a.vcn.parse::<u64>().unwrap_or(u64::MAX)
+        .cmp(&b.vcn.parse::<u64>().unwrap_or(u64::MAX)).then_with(|| a.vcn.cmp(&b.vcn)));
     rows
+}
+
+/// Refresh only the airings of an existing lineup; no channel is added or lost by a grid read.
+pub fn update_on_now(rows: &mut [LiveChannel], on_now: &[Metadata]) {
+    for ch in rows {
+        let airing = on_now.iter().find_map(|m| m.media.iter().find(|media| {
+            if media.channel_identifier.is_empty() { media.channel_vcn == ch.vcn }
+            else { media.channel_identifier == ch.channel }
+        }).map(|media| (m, media.ends_at)));
+        ch.now = airing.map_or_else(String::new, |(m, _)| airing_label(m).to_owned());
+        ch.ends_at = airing.map_or(0, |(_, ends)| ends);
+        ch.now_thumb = airing.and_then(|(m, _)| [&m.thumb, &m.grandparent_thumb, &m.art]
+            .into_iter().find(|art| !art.is_empty())).unwrap_or(&ch.thumb).clone();
+    }
 }
 
 impl Client {
@@ -303,21 +300,6 @@ impl Client {
             return None;
         }
         self.get_json(&on_now_path(epg, now)).map(|c| c.metadata)
-    }
-
-    /// Every channel this server can tune right now, with what is on. `None` when the DVR list or
-    /// a lineup could not be read. A failed airing read keeps the channels, with nothing on.
-    pub fn live_channels(&self, now: i64) -> Option<Vec<LiveChannel>> {
-        let dvrs = self.live_tv_dvrs()?;
-        let mut rows = Vec::new();
-        for dvr in usable_dvrs(&dvrs) {
-            let channels = self.epg_channels(&dvr.epg_identifier)?;
-            let on_now = self
-                .epg_on_now(&dvr.epg_identifier, now)
-                .unwrap_or_default();
-            rows.extend(lineup(dvr, &channels, &on_now));
-        }
-        Some(rows)
     }
 
     /// `POST …/tune` — the server starts recording the channel and answers once it streams (4.8 s
@@ -474,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn only_dvrs_with_a_live_tuner_and_a_clean_provider_id_get_a_row() {
+    fn livetv_dead_discovery_status_does_not_hide_a_valid_dvr() {
         let mut dead = page(DVRS).dvr.remove(0);
         dead.device[0].status = "dead".into();
         let mut odd = page(DVRS).dvr.remove(0);
@@ -482,10 +464,50 @@ mod tests {
         let good = page(DVRS).dvr.remove(0);
         let all = [dead, odd, good];
         let usable: Vec<_> = usable_dvrs(&all).collect();
-        assert_eq!(usable.len(), 1);
-        assert!(usable[0].device[0].status == "alive" && is_provider_id(&usable[0].epg_identifier));
+        assert_eq!(usable.len(), 2);
+        assert_eq!(usable[0].device[0].status, "dead");
+        assert!(usable.iter().all(|d| is_provider_id(&d.epg_identifier)));
         assert!(!is_provider_id(""));
         assert!(!is_provider_id("a?b"));
+    }
+
+    #[test]
+    fn livetv_art_falls_back_in_order_and_invalid_tune_ids_are_excluded() {
+        let dvr = page(DVRS).dvr.remove(0);
+        let channels = page(CHANNELS).channel;
+        let mut airings = page(ON_NOW).metadata;
+        airings[0].thumb = "/episode".into();
+        airings[0].grandparent_thumb = "/show".into();
+        airings[0].art = "/art".into();
+        let cases = ["/episode", "/show", "/art", channels[1].thumb.as_str()];
+        for (i, expected) in cases.iter().enumerate() {
+            let rows = lineup(&dvr, &channels, &airings);
+            assert_eq!(&rows[0].now_thumb, expected);
+            match i { 0 => airings[0].thumb.clear(), 1 => airings[0].grandparent_thumb.clear(),
+                2 => airings[0].art.clear(), _ => {} }
+        }
+        let mut invalid = channels[0].clone(); invalid.grid_key = "../bad".into();
+        assert!(lineup(&dvr, &[invalid], &[]).is_empty());
+        let mut invalid = dvr.clone(); invalid.key = "7/8".into();
+        assert!(lineup(&invalid, &channels, &airings).is_empty());
+        assert_eq!(usable_dvrs(&[invalid]).count(), 0);
+    }
+
+    #[test]
+    fn livetv_channel_number_order_is_numeric_then_string_and_identifier_wins() {
+        let dvr = page(DVRS).dvr.remove(0);
+        let mut channels: Vec<_> = ["10", "2", "ABC", "XYZ"].iter().rev().map(|vcn| EpgChannel {
+            grid_key: format!("C{vcn}"), vcn: (*vcn).into(), title: format!("{vcn} Channel"), ..Default::default()
+        }).collect();
+        let mut airing = page(ON_NOW).metadata.remove(0);
+        airing.media[0].channel_vcn = "10".into();
+        airing.media[0].channel_identifier = "C2".into();
+        let rows = lineup(&dvr, &channels, &[airing]);
+        assert_eq!(rows.iter().map(|c| c.vcn.as_str()).collect::<Vec<_>>(), ["2", "10", "ABC", "XYZ"]);
+        assert_eq!(rows[0].now, "Family Show");
+        assert_eq!(rows[1].now, "");
+        channels[0].vcn.clear();
+        assert_eq!(lineup(&dvr, &channels, &[]).len(), 4, "a missing number does not make a valid tune address unusable");
     }
 
     #[test]

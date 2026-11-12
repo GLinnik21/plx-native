@@ -70,8 +70,6 @@ pub enum AppFx {
     /// The Watchlist page's and its Sort & Filter menu's requests (plan §2.4 W45): everything the
     /// page asks of the app that has no existing effect spelling.
     Watchlist(crate::watchlist::page::WatchlistOut),
-    /// The Live TV page's requests (a channel's tune, the strip, BACK), delivered to their owners on the ordered FIFO: see AppMsg::LiveTv.
-    LiveTv(LiveTvOut),
     Catalog(crate::catalog::CatalogOut),
     /// Player-route requests — what an overlay panel on the player's own `ModalStack` asks of the
     /// loop, because the thing being asked for needs the `MainThread` token, the route or the
@@ -320,19 +318,6 @@ pub enum HomeReq {
     FoldToHero,
     Account,
     Tab(HomeTab),
-}
-
-/// What the page asks the app to do. The app owns routing (a screen names no sibling).
-#[derive(Clone, Debug, PartialEq)]
-pub enum LiveTvOut {
-    /// OK on a channel: the typed play the playback owner admits ([`PlayIntent::Live`](crate::registry::PlayIntent::Live)).
-    Tune(crate::registry::PlayIntent),
-    /// BACK from the top of the page.
-    Back,
-    /// A press on the shared strip's other tabs.
-    Tab(HomeTab),
-    /// A press on the profile chip.
-    Account,
 }
 
 /// Stable top-strip destinations; availability changes presentation, never identity.
@@ -1383,6 +1368,11 @@ pub trait HomeLike: AppLike<Memory = PageMemory> + Sized {
     fn hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::pms::HubsView<'a>;
 }
 
+/// A host publishing the Live TV store's retained view for this frame.
+pub trait LiveTvLike: AppLike<Memory = PageMemory> + Sized {
+    fn livetv<'a>(cx: &Cx<'a, Self>) -> plx_data::livetv::LiveTvView<'a>;
+}
+
 /// A host that publishes this frame's playback session (spec §2.3). The player's owned screens
 /// read the Player machine's decisions through it; a change is asked for as an effect
 /// (`AppFx::Player`, `ContentReq::Play`), because the publication is a copy and there is no `&mut`
@@ -1478,19 +1468,6 @@ pub enum AppMsg {
     RestartReply { correlation: u32, accepted: bool },
     SelectionReply { correlation: u32, accepted: bool, flow_epoch: u64 },
     BackReply { correlation: u32, resumed: bool },
-    /// A Live TV request on its way to its owner through the ordered FIFO (`AppFx::LiveTv`, which
-    /// `Bridge::app_effect` delivers instead of parking): `from` is the asking instance and `ret`
-    /// the return state it froze when it asked. A `Tune` goes to `MachineId::Player`, the playback
-    /// owner; everything else to `MachineId::Nav`.
-    LiveTv {
-        from: MachineId,
-        out: LiveTvOut,
-        ret: ReturnState<u32, PageMemory>,
-    },
-    /// The play runner's answer to a [`PlayIntent`] the playback owner admitted, delivered as
-    /// `ScreenEvent::Async(RequestId(correlation), ..)` to the instance that asked: `accepted` is
-    /// false when the start was refused and nothing plays.
-    PlayReply { correlation: u32, accepted: bool },
     Store(StoreCmd),
     StoreWork(StoreWork),
     HubsResult(plx_data::stores::hubs::HubsResult),
@@ -1577,11 +1554,6 @@ pub enum LoopReq {
     /// software, and LG requires the privacy notice to be readable in the app rather than only on
     /// the store listing.
     OpenSettings(SettingsPage),
-    /// The Live TV page's profile chip: present the profile menu over the page. The request, not
-    /// the surface, because the menu's style handshake (`Navigation::next_style`) is the loop's; the
-    /// page's request reached its owner on the FIFO (`AppMsg::LiveTv`) and only this part is left
-    /// for the loop.
-    AccountMenu,
     /// Lab builds only, and it changes no route: the tester stays where they were and the toast
     /// says what happened.
     AccountSendDiagnostics,
@@ -2298,7 +2270,7 @@ pub struct AppMounter {
 /// it for its own host exactly as the dispatcher instantiates everything else.
 impl<H> Mounter<H> for AppMounter
 where
-    H: plx_machine::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike + AuthLike + PersonLike + CollectionLike + MetadataLike,
+    H: plx_machine::machine::Host<Arg = AppArg> + HomeLike + LiveTvLike + LibraryLike + SearchLike + PlayerLike + AuthLike + PersonLike + CollectionLike + MetadataLike,
 {
     fn mount(
         &mut self,
@@ -2434,7 +2406,7 @@ where
             // The list is the store's: the page mounts on "loading" and the application feeds it
             // the rows, the options and the matched facts (`WatchlistIn`) on its first frames.
             AppArg::Watchlist => Box::new(crate::watchlist::page::WatchlistScreen::loading(entry)),
-            // The channels are the Home catalog's: the page reads them through `HomeLike::hubs`.
+            // The page reads the Live TV store independently of Home's catalog.
             AppArg::LiveTv => Box::new(crate::livetv::LiveTvScreen::new(entry)),
             // Phase 9: the player is an OWNED screen — the instance that holds the HUD, the scrub
             // gesture, the held-key timer, the control row's springs and the Up Next countdown,
@@ -2839,7 +2811,9 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // The Library menu retains its parent scroll across a Genre drill-in and the selected library
 // through its closing morph. Live TV: `ARG_SHAPE` gains `LiveTv`, `SCREEN_SHAPES` appends
 // `LiveTvScreen::SHAPE` (its tune-in-flight bit included). Previous pin: 0x1427_1d82_bf6b_e04c.
-const SCREEN_SHAPES_PIN: u64 = 0x3b4c_95c5_a083_ffa1;
+// Live TV now hashes its store status, both shelves and current-airing indices; no tuning guard.
+// Previous pin: 0x3b4c_95c5_a083_ffa1. Re-record the incompatible replay anchors on macOS.
+const SCREEN_SHAPES_PIN: u64 = 0x5173_1e89_1206_fc90;
 
 #[cfg(test)]
 mod arg_tests {

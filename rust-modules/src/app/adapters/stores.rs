@@ -65,6 +65,7 @@ use plx_data::browse::listing_jobs::{
 };
 use plx_data::browse::section_hubs::{finish_browse_hubs_job, BrowseHubsPort, BrowseHubsReq};
 use plx_data::collection::{finish_collection_job, CollectionPort, CollectionReq};
+use plx_data::livetv::{finish_livetv_job, LiveTvPort, LiveTvReq};
 use plx_data::metadata::{
     fetch_full, finish_alt_sources_job, finish_detail_fetch, finish_episodes_job, finish_related_job, finish_season_job, MetaAltSourcesPort, MetaAltSourcesReq, DetailPort,
     DetailReq, MetaEpisodesPort, MetaEpisodesReq, MetaRelatedPort, MetaRelatedReq, MetaSeasonPort, MetaSeasonReq,
@@ -315,6 +316,7 @@ impl StoreRunner {
         match job {
             StoreJob::Detail(job, port) => self.start_detail(job, port),
             StoreJob::Collection(job, port) => self.start_collection(job, port),
+            StoreJob::LiveTv(job, port) => self.start_livetv(job, port),
             StoreJob::Person(job, port) => self.start_person(job, port),
             StoreJob::Hubs(job, port) => self.start_hubs(job, port),
             StoreJob::Catalog(job, port) => self.start_catalog(job, port),
@@ -371,6 +373,7 @@ impl StoreRunner {
             // Not a Home kind: `Admission::Home` routed here only the kinds the arm above names.
             other @ (StoreJob::Detail(..)
                 | StoreJob::Collection(..)
+                | StoreJob::LiveTv(..)
                 | StoreJob::Person(..)
                 | StoreJob::Catalog(..)
                 | StoreJob::SubtitleSearch(..)
@@ -468,6 +471,7 @@ impl StoreRunner {
                 }
                 kept @ (
                     StoreJob::Collection(..)
+                    | StoreJob::LiveTv(..)
                     | StoreJob::Person(..)
                     | StoreJob::Hubs(..)
                     | StoreJob::Catalog(..)
@@ -601,6 +605,26 @@ impl StoreRunner {
                 held.push(StoreJob::Catalog(job, port));
                 true
             }
+        }
+    }
+
+    /// Direct admission: a refused launch returns its claim and tells Live TV to back off.
+    fn start_livetv(&mut self, job: Job<LiveTvReq>, port: LiveTvPort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_livetv(job, port) { refusal.refused(addr); }
+    }
+
+    fn launch_livetv(&mut self, job: Job<LiveTvReq>, port: LiveTvPort) -> bool {
+        let (sid, key) = job.req.server();
+        let Some(client) = resolve(sid, key) else { return false };
+        match self {
+            Self::Live => {
+                let Job { addr, req } = job;
+                plx_base::task::spawn_small("livetv", move || finish_livetv_job(&port, addr, client, req))
+            }
+            #[cfg(test)]
+            Self::Held { parked, .. } => { parked.push(StoreJob::LiveTv(job, port)); true }
         }
     }
 
@@ -1165,6 +1189,13 @@ impl StoreRunner {
                     }
                 }
                 StoreJob::Catalog(job, port) => finish_catalog_job(&port, job.addr, job.req),
+                StoreJob::LiveTv(job, port) => {
+                    let (sid, key) = job.req.server();
+                    match resolve(sid, key) {
+                        Some(client) => finish_livetv_job(&port, job.addr, client, job.req),
+                        None => port.refused(job.addr),
+                    }
+                }
                 StoreJob::SubtitleSearch(job, port) => {
                     // The registry may have moved on since the job was parked: a request whose
                     // client is gone is refused, as the launch would have refused it.

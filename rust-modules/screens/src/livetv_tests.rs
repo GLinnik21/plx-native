@@ -1,7 +1,8 @@
 use super::*;
 
-use plx_data::pms::HubsView;
-use plx_machine::machine::{Chrome, FocusRead, Host, InputOwner, InstanceId, PressId, PressRead, RequestId, ScreenId, Stamped};
+use plx_data::livetv::{Channel, LiveTvView};
+use plx_data::stores::livetv::LiveTvStore;
+use plx_machine::machine::{Chrome, FocusRead, Host, InputOwner, InstanceId, PressId, PressRead, ScreenId, Stamped};
 use plx_ui::fixture::FixtureMeasure;
 use plx_ui::screen::ScreenArg;
 
@@ -39,20 +40,20 @@ impl Host for TestHost {
     type Fx = AppFx;
     type Msg = crate::registry::AppMsg;
     type Elem = u32;
-    type Views<'a> = HubsView<'a>;
+    type Views<'a> = LiveTvView<'a>;
     type Init = crate::registry::NoInit;
     type Memory = crate::registry::PageMemory;
 }
 
-impl HomeLike for TestHost {
-    fn hubs<'a>(cx: &Cx<'a, Self>) -> HubsView<'a> {
+impl LiveTvLike for TestHost {
+    fn livetv<'a>(cx: &Cx<'a, Self>) -> LiveTvView<'a> {
         cx.views
     }
 }
 
 const ENTRY: EntryId = EntryId(7);
 
-fn cx<'a>(view: HubsView<'a>, focus: Option<u32>) -> Cx<'a, TestHost> {
+fn cx<'a>(view: LiveTvView<'a>, focus: Option<u32>) -> Cx<'a, TestHost> {
     static MEASURE: FixtureMeasure = FixtureMeasure;
     Cx {
         views: view,
@@ -64,12 +65,12 @@ fn cx<'a>(view: HubsView<'a>, focus: Option<u32>) -> Cx<'a, TestHost> {
     }
 }
 
-fn step(s: &mut LiveTvScreen, view: HubsView<'_>, focus: Option<u32>, ev: &ScreenEvent<TestHost>) -> Vec<Stamped<TestHost>> {
+fn step(s: &mut LiveTvScreen, view: LiveTvView<'_>, focus: Option<u32>, ev: &ScreenEvent<TestHost>) -> Vec<Stamped<TestHost>> {
     step_handled(s, view, focus, ev).1
 }
 
 /// [`step`], also answering whether the screen handled the event.
-fn step_handled(s: &mut LiveTvScreen, view: HubsView<'_>, focus: Option<u32>, ev: &ScreenEvent<TestHost>) -> (Handled, Vec<Stamped<TestHost>>) {
+fn step_handled(s: &mut LiveTvScreen, view: LiveTvView<'_>, focus: Option<u32>, ev: &ScreenEvent<TestHost>) -> (Handled, Vec<Stamped<TestHost>>) {
     let context = cx(view, focus);
     let mut out = Vec::new();
     let mut present = plx_machine::present::Present::new();
@@ -78,115 +79,96 @@ fn step_handled(s: &mut LiveTvScreen, view: HubsView<'_>, focus: Option<u32>, ev
     (handled, out)
 }
 
-fn asked(out: &[Stamped<TestHost>]) -> Vec<LiveTvOut> {
-    out.iter()
-        .filter_map(|stamped| match &stamped.fx {
-            Fx::App(AppFx::LiveTv(req)) => Some(req.clone()),
-            _ => None,
-        })
-        .collect()
+fn channel(vcn: &str, name: &str) -> Channel {
+    Channel { sid: plx_plex::plex::ServerId::UNSET, dvr: "7".into(), channel: format!("C{vcn}"),
+        vcn: vcn.into(), name: name.into(), thumb: format!("/logos/{vcn}.jpg"), now: "Family Show".into(),
+        now_thumb: format!("/programmes/{vcn}.jpg"), ends_at: 100 }
 }
 
-fn channel(vcn: &str, name: &str) -> plx_plex::plex::livetv::LiveChannel {
-    plx_plex::plex::livetv::LiveChannel {
-        dvr: "7".into(),
-        channel: format!("C{vcn}.242.ersatztv.org"),
-        vcn: vcn.into(),
-        name: name.into(),
-        thumb: format!("http://192.0.2.10:8409/iptv/logos/{vcn}.jpg"),
-        now: "Family Show".into(),
-        ends_at: 0,
+fn seeded() -> (LiveTvStore, LiveTvScreen) {
+    let mut store = LiveTvStore::default();
+    let mut silent = channel("103", "Music");
+    silent.now.clear();
+    store.install_for_test(vec![channel("101", "Family Channel"), channel("102", "Cartoons"), silent]);
+    let mut screen = LiveTvScreen::new(ENTRY);
+    step(&mut screen, store.view(), None, &ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(CHANNELS_GROUP) }));
+    (store, screen)
+}
+
+fn asked_plays(out: &[Stamped<TestHost>]) -> Vec<PlayIntent> {
+    out.iter().filter_map(|s| match &s.fx {
+        Fx::App(AppFx::Content(ContentReq::Play { play, resume_ns: 0 })) => Some(play.clone()), _ => None,
+    }).collect()
+}
+
+#[test]
+fn own_store_supplies_adjacent_channels_and_on_now_shelves_with_distinct_art() {
+    let _policy = captions::PolicyPin::default_setting();
+    let _language = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let (store, screen) = seeded();
+    let context = cx(store.view(), None);
+    let mut sections = Vec::new();
+    StackPage::<TestHost>::sections(&screen.page, &context, &mut sections);
+    assert_eq!(sections.iter().map(|s| s.key).collect::<Vec<_>>(), [Sec::Head, Sec::Channels, Sec::Now, Sec::Status]);
+    assert!(matches!(sections[1].kind, Kind::Shelf { .. }) && matches!(sections[2].kind, Kind::Shelf { .. }));
+    assert_eq!(StackPage::<TestHost>::shelf_foot(&screen.page, &context, Sec::Channels), UNDER_LABEL_AIR);
+    let channels = StackPage::<TestHost>::cards(&screen.page, &context, Sec::Channels).unwrap();
+    let now = StackPage::<TestHost>::cards(&screen.page, &context, Sec::Now).unwrap();
+    assert_eq!(CardSource::<TestHost>::len(&channels), 3, "the whole lineup includes a channel without programme data");
+    assert_eq!(CardSource::<TestHost>::len(&now), 2);
+    let Art::Poster(Some(logo)) = CardSource::<TestHost>::art(&channels, 0) else { panic!("channel logo") };
+    let Art::Poster(Some(airing)) = CardSource::<TestHost>::art(&now, 0) else { panic!("programme artwork") };
+    assert_eq!((logo.thumb, logo.title), ("/logos/101.jpg", "101 Family Channel"));
+    assert_eq!((airing.thumb, airing.title), ("/programmes/101.jpg", "Family Show"));
+    assert_eq!(CardSource::<TestHost>::label(&channels, 0).title.as_ref().unwrap().to_str().unwrap(), "101 Family Channel");
+    assert_eq!(CardSource::<TestHost>::label(&now, 0).caption.as_ref().unwrap().to_str().unwrap(),
+        "Channel 101 · Family Channel");
+}
+
+#[test]
+fn channel_and_airing_ok_use_the_same_content_play_without_a_page_tuning_guard() {
+    let (store, mut screen) = seeded();
+    for (press, elem) in [FIRST_CARD_ELEM + 2, FIRST_CARD_ELEM + 3, FIRST_CARD_ELEM + 3].into_iter().enumerate() {
+        let focus = FocusKey { entry: ENTRY, elem };
+        step(&mut screen, store.view(), Some(elem), &ScreenEvent::FocusMoved { from: None, to: focus, by: plx_ui::screen::By::Dir });
+        let out = step(&mut screen, store.view(), Some(elem), &ScreenEvent::PressCommit(PressId(press as u32 + 1)));
+        assert_eq!(asked_plays(&out), [PlayIntent::Live { sid: store.view().channels[1].sid, dvr: "7".into(), channel: "C102".into(), title: "Cartoons".into() }]);
     }
 }
 
 #[test]
-fn the_page_shows_the_catalogs_channels_and_ok_tunes_the_focused_one() {
-    let _guard = plx_base::testlock::serial();
-    let mut state = plx_data::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
-    plx_data::pms::seed_live_for_test(&mut state, &adapter, 2, &[channel("101", "Family Channel"), channel("102", "Cartoons")]);
-    let snapshot = plx_data::pms::hubs_snapshot(&state);
-    let view = snapshot.view();
-
-    let mut s = LiveTvScreen::new(ENTRY);
-    let seat = step(&mut s, view, None, &ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(GRID_GROUP) }));
-    assert_eq!(
-        s.channels().iter().map(|m| m.title.as_str()).collect::<Vec<_>>(),
-        ["Family Channel", "Cartoons"],
-        "only the channel tiles of the catalog, in its order"
-    );
-    assert!(
-        seat.iter().any(|stamped| matches!(&stamped.fx, Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(_))))),
-        "the arrival is seated in the grid"
-    );
-    step(&mut s, view, Some(FIRST_CARD_ELEM + 1), &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }));
-
-    let ok = step(&mut s, view, Some(FIRST_CARD_ELEM + 1), &ScreenEvent::PressCommit(PressId(1)));
-    assert_eq!(
-        asked(&ok),
-        [LiveTvOut::Tune(PlayIntent::Live {
-            sid: s.channels()[1].sid,
-            dvr: "7".into(),
-            channel: "C102.242.ersatztv.org".into(),
-            title: "Cartoons".into(),
-        })]
-    );
-}
-
-#[test]
-fn the_strip_navigates_and_the_live_tv_pill_is_the_page_itself() {
+fn strip_and_profile_use_home_requests_and_back_at_the_top_selects_home() {
     use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_LIVETV, TAB_KEY_WATCHLIST};
-    assert_eq!(LiveTvScreen::strip_press(TAB_KEY_HOME), Some(Some(LiveTvOut::Tab(HomeTab::Home))));
-    assert_eq!(LiveTvScreen::strip_press(TAB_KEY_WATCHLIST), Some(Some(LiveTvOut::Tab(HomeTab::Watchlist))));
-    assert_eq!(LiveTvScreen::strip_press(TAB_KEY_CHIP), Some(Some(LiveTvOut::Account)));
+    let (store, mut screen) = seeded();
+    for (elem, expected) in [(TAB_KEY_HOME, HomeReq::Tab(HomeTab::Home)), (TAB_KEY_WATCHLIST, HomeReq::Tab(HomeTab::Watchlist)), (TAB_KEY_CHIP, HomeReq::Account)] {
+        let out = step(&mut screen, store.view(), Some(elem), &ScreenEvent::Activate(elem));
+        assert!(out.iter().any(|s| matches!(&s.fx, Fx::App(AppFx::Home(req)) if *req == expected)));
+    }
     assert_eq!(LiveTvScreen::strip_press(TAB_KEY_LIVETV), Some(None));
-    assert_eq!(LiveTvScreen::strip_press(FIRST_CARD_ELEM), None, "a card is not the strip");
+    let back = ScreenEvent::Input(InputEvent { at: Tick::default(), source: plx_machine::machine::Source::Script,
+        kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false } });
+    let out = step(&mut screen, store.view(), Some(FIRST_CARD_ELEM), &back);
+    assert!(out.iter().any(|s| matches!(&s.fx, Fx::App(AppFx::Home(HomeReq::Tab(HomeTab::Home))))));
 }
 
 #[test]
-fn a_second_ok_while_a_tune_is_outstanding_asks_for_nothing_until_the_reply() {
-    let _guard = plx_base::testlock::serial();
-    let mut state = plx_data::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
-    plx_data::pms::seed_live_for_test(&mut state, &adapter, 2, &[channel("101", "Family Channel"), channel("102", "Cartoons")]);
-    let snapshot = plx_data::pms::hubs_snapshot(&state);
-    let view = snapshot.view();
-
-    let mut s = LiveTvScreen::new(ENTRY);
-    step(&mut s, view, None, &ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(GRID_GROUP) }));
-    step(&mut s, view, Some(FIRST_CARD_ELEM), &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }));
-
-    let first = step(&mut s, view, Some(FIRST_CARD_ELEM), &ScreenEvent::PressCommit(PressId(1)));
-    assert_eq!(asked(&first).len(), 1, "the first OK tunes");
-    let second = step(&mut s, view, Some(FIRST_CARD_ELEM), &ScreenEvent::PressCommit(PressId(2)));
-    assert!(asked(&second).is_empty(), "a second OK waits for the first tune's answer");
-    let (handled, _) = step_handled(
-        &mut s,
-        view,
-        Some(FIRST_CARD_ELEM),
-        &ScreenEvent::Async(RequestId(1), AppMsg::PlayReply { correlation: 1, accepted: true }),
-    );
-    assert_eq!(handled, Handled::Yes);
-    let third = step(&mut s, view, Some(FIRST_CARD_ELEM), &ScreenEvent::PressCommit(PressId(3)));
-    assert_eq!(asked(&third).len(), 1, "the reply frees the next tune");
-}
-
-#[test]
-fn uncovering_the_page_forgets_an_unanswered_tune() {
-    let _guard = plx_base::testlock::serial();
-    let mut state = plx_data::pms::PmsState::default();
-    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
-    plx_data::pms::seed_live_for_test(&mut state, &adapter, 2, &[channel("101", "Family Channel"), channel("102", "Cartoons")]);
-    let snapshot = plx_data::pms::hubs_snapshot(&state);
-    let view = snapshot.view();
-
-    let mut s = LiveTvScreen::new(ENTRY);
-    step(&mut s, view, None, &ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(GRID_GROUP) }));
-    step(&mut s, view, Some(FIRST_CARD_ELEM), &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }));
-
-    let first = step(&mut s, view, Some(FIRST_CARD_ELEM), &ScreenEvent::PressCommit(PressId(1)));
-    assert_eq!(asked(&first).len(), 1, "the first OK tunes");
-    step(&mut s, view, Some(FIRST_CARD_ELEM), &ScreenEvent::Uncover);
-    let again = step(&mut s, view, Some(FIRST_CARD_ELEM), &ScreenEvent::PressCommit(PressId(2)));
-    assert_eq!(asked(&again).len(), 1, "a covered page may never get its answer, so uncovering forgets the tune");
+fn store_revisions_and_notices_refresh_programmes_and_status_retry_targets_live_tv() {
+    let (mut store, mut screen) = seeded();
+    let mut changed = channel("101", "Family Channel");
+    changed.now.clear();
+    store.install_for_test(vec![changed]);
+    step(&mut screen, store.view(), None, &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }));
+    assert!(screen.page.airings.is_empty(), "the store revision is read on Tick");
+    for status in [LiveTvStatus::Loading, LiveTvStatus::Empty, LiveTvStatus::Failed] {
+        let view = LiveTvView::for_test(status, &[], &[], 100 + status as u32);
+        step(&mut screen, view, None, &ScreenEvent::StoreChanged(StoreId::LiveTv.ord(), 1));
+        assert_eq!(screen.page.status, status);
+        let overlay = screen.page.status_overlay(0);
+        assert_eq!(overlay.kind, match status { LiveTvStatus::Loading => StatusKind::Working, LiveTvStatus::Empty => StatusKind::Empty, _ => StatusKind::Failed });
+        if status == LiveTvStatus::Empty { assert_eq!(overlay.caption, plx_platform::i18n::msg::browse_livetv_empty_c()); }
+        assert_eq!(overlay.action.is_some(), status == LiveTvStatus::Failed);
+    }
+    let failed = LiveTvView::for_test(LiveTvStatus::Failed, &[], &[], 200);
+    let out = step(&mut screen, failed, Some(RETRY_ELEM), &ScreenEvent::Activate(RETRY_ELEM));
+    assert!(out.iter().any(|s| matches!(&s.fx, Fx::App(AppFx::Store(StoreId::LiveTv, StoreCmd::LiveTv(LiveTvCmd::Retry))))));
 }
