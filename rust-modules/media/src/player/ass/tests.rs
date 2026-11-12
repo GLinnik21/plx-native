@@ -22,6 +22,44 @@ fn source(events: Vec<Event>) -> Source {
     }
 }
 
+// The memory a helper costs (issue #1328): each renderer copies the fonts, so the pool decides once
+// per selection, from the memory available and the fonts the primary holds, how many may run.
+
+#[test]
+fn a_heavy_selection_gets_no_helper_and_the_verdict_is_taken_once() {
+    let runtime = Runtime::new();
+    runtime.font_bytes.store(40 << 20, Ordering::Relaxed);
+    runtime.begin_selection(7);
+    assert!(runtime.helper_barred(1) && runtime.helper_barred(2), "a selection starts with the primary alone");
+    let epoch = runtime.epoch.load(Ordering::Acquire);
+    let reads = std::cell::Cell::new(0);
+    let memory = || {
+        reads.set(reads.get() + 1);
+        Some(400u64 << 20)
+    };
+    assert_eq!(runtime.renderers_for(epoch, memory), 1, "a quarter of 400 MiB holds one renderer of 64 MiB");
+    assert!(runtime.helper_barred(1) && runtime.helper_barred(2));
+    assert_eq!(runtime.renderers_for(epoch, memory), 1);
+    assert_eq!(reads.get(), 1, "the memory is read once for a selection, not on every tick");
+}
+
+#[test]
+fn a_light_selection_lets_the_helpers_the_cores_allow_run_until_the_next_selection() {
+    let runtime = Runtime::new();
+    runtime.font_bytes.store(2 << 20, Ordering::Relaxed);
+    runtime.begin_selection(7);
+    let epoch = runtime.epoch.load(Ordering::Acquire);
+    let slots = renderer_slots();
+    assert_eq!(runtime.renderers_for(epoch, || Some(800u64 << 20)), slots);
+    for slot in 1..MAX_ASS_RENDERERS {
+        assert_eq!(runtime.helper_barred(slot), slot >= slots, "slot {slot} of {slots} renderers");
+    }
+    runtime.begin_selection(8);
+    assert!(runtime.helper_barred(1), "the next selection is decided afresh");
+    let epoch = runtime.epoch.load(Ordering::Acquire);
+    assert_eq!(runtime.renderers_for(epoch, || None), slots, "an unknown memory does not stop a helper");
+}
+
 /// A boundary inside a moving stretch is not its end (`Published::ends_at`): the engine says so from the
 /// timing of the events alone, with no native call. Karaoke syllables overlap, so the frame at the end
 /// of one still has another moving after it; the last one's end leaves a still picture.

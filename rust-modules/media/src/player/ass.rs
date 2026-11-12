@@ -25,6 +25,7 @@ const MAX_REGIONS: usize = 64;
 
 mod aligns;
 mod font_names;
+mod pool;
 pub use aligns::AlignSet;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -262,6 +263,17 @@ pub struct Runtime {
     /// one more worker for each. A cold helper's first jobs open the source and land late, so it is
     /// not counted until it has rendered a steady frame.
     warm_helpers: AtomicUsize,
+    /// The bytes of fonts one renderer holds (the bundled faces and the attached ones the track
+    /// names), as the primary reports them: what a helper would copy again. SCAFFOLD: unread.
+    #[allow(dead_code)]
+    font_bytes: AtomicUsize,
+    /// How many renderers (the primary included) the current selection may hold: 1 from the
+    /// moment a selection begins, until the pool has decided it. SCAFFOLD: unread.
+    #[allow(dead_code)]
+    renderers: AtomicUsize,
+    /// The selection `renderers` was decided for. SCAFFOLD: unread.
+    #[allow(dead_code)]
+    decided_epoch: AtomicU64,
     mailbox: Mutex<Mailbox>,
 }
 
@@ -274,8 +286,33 @@ impl Runtime {
             helpers: [const { OnceLock::new() }; MAX_ASS_RENDERERS - 1],
             threads: [const { OnceLock::new() }; MAX_ASS_RENDERERS],
             warm_helpers: AtomicUsize::new(0),
+            font_bytes: AtomicUsize::new(0),
+            renderers: AtomicUsize::new(1),
+            decided_epoch: AtomicU64::new(0),
             mailbox: Mutex::new(Mailbox::new()),
         }
+    }
+
+    /// MAIN THREAD: a different source is selected: a new epoch, and the helpers withdrawn until the
+    /// pool has decided how many renderers this one may hold. SCAFFOLD: does not withdraw them.
+    fn begin_selection(&self, source_id: u64) {
+        self.epoch.fetch_add(1, Ordering::AcqRel);
+        self.source_id.store(source_id, Ordering::Release);
+    }
+
+    /// How many renderers the selection of `epoch` may hold, decided once from the fonts a renderer
+    /// holds and `mem_available`, which the caller reads. SCAFFOLD: allows every core.
+    #[allow(dead_code)]
+    fn renderers_for(&self, epoch: u64, mem_available: impl FnOnce() -> Option<u64>) -> usize {
+        let _ = (epoch, mem_available);
+        renderer_slots()
+    }
+
+    /// A helper of `slot` may not take jobs: the selection's verdict does not reach it. SCAFFOLD.
+    #[allow(dead_code)]
+    fn helper_barred(&self, slot: usize) -> bool {
+        let _ = slot;
+        false
     }
 
     fn wake(&self) {
@@ -338,8 +375,7 @@ pub fn request(
         return None;
     }
     if runtime().source_id.load(Ordering::Acquire) != source.id {
-        runtime().epoch.fetch_add(1, Ordering::AcqRel);
-        runtime().source_id.store(source.id, Ordering::Release);
+        runtime().begin_selection(source.id);
     }
     let key = Key {
         epoch: runtime().epoch.load(Ordering::Acquire),
