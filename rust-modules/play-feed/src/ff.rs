@@ -6195,8 +6195,9 @@ pub fn demux(
                 }
                 // The file's font attachments leave the format's stream table now, into the buffers
                 // the source store shares with every renderer (issue #1328): left in
-                // `codecpar->extradata` they would sit beside the demuxer's own two copies for the
-                // whole playback. Nothing reads an attachment's extradata between here and the
+                // `codecpar->extradata` they would sit beside the demuxer's own copy (the Matroska
+                // element buffer, the only one left once `find_stream_info` rebuilds the codec
+                // context from the emptied parameters) for the whole playback. Nothing reads an attachment's extradata between here and the
                 // hand-over to `begin_ass_sources` below.
                 let font_attachments = plx_media_codecs::subtitle_extract::detach_fonts(fmt);
                 if avformat_find_stream_info(fmt, std::ptr::null_mut()) < 0 {

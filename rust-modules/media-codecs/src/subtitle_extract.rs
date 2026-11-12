@@ -36,10 +36,12 @@ pub struct AssTrack {
 /// extradata, so the format keeps no copy of its own that the app owns (issue #1328: 17 fonts, 83 MB,
 /// read three times over by libavformat and again by the store).
 ///
-/// libavformat still holds two more copies of every attachment until the context closes: the
-/// Matroska demuxer's own parsed element and the stream's internal codec context, which
-/// `avformat_open_input` fills from the codec parameters before this can run. No API reaches either
-/// without its private structures, so they stay.
+/// libavformat still holds the Matroska demuxer's own parsed element of every attachment until the
+/// context closes; no API reaches it without the demuxer's private structures, so it stays. The
+/// stream's internal codec context also holds a copy (`avformat_open_input` fills it from the codec
+/// parameters before this can run): on the main demuxer `avformat_find_stream_info` rebuilds that
+/// context from the now-empty parameters and the copy goes, while a reader that never calls it
+/// (the side reader) keeps it until close.
 ///
 /// Every font attachment is taken, whole: which of them a renderer is handed is its choice, by the
 /// names a track uses, and no byte budget decides here what a file's own attachments may carry.
