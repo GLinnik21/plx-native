@@ -159,9 +159,10 @@ pub fn fit(rung: LogoRung, src_w: f32, src_h: f32, col_w: f32) -> (f32, f32) {
     (w * scale, h * scale)
 }
 
-/// Bottom-anchor a `w`×`h` logo in `band`: its BOTTOM EDGE lands on the band's bottom edge — the
-/// same line the text fallback puts its BASELINE on, because a logo's bottom edge and a baseline are
-/// the same optical line. Overflow is upward and is paint, never layout.
+/// Bottom-anchor a `w`×`h` logo in `band`: its BOTTOM EDGE lands on the band's bottom edge. The text
+/// fallback's painted box (descenders included) ends on the same line on the Hero rung, with its
+/// baseline `type_lift` above it; on Compact and Card the baseline itself is on the foot, because a
+/// logo's bottom edge and a baseline are the same optical line. Overflow is upward and is paint, never layout.
 pub fn place(band: Rect, w: f32, h: f32, align: HAlign) -> Rect {
     let x = match align {
         HAlign::Left | HAlign::Start => band.x,
@@ -190,14 +191,15 @@ fn title_text_inked(rung: LogoRung, title: &str, ink: [f32; 4]) -> TextView<'_> 
 
 /// The height the title run `tv` paints at in a column `band_w` wide: its measured height less the
 /// leading under its last line, plus the cap band, so the run's LAST BASELINE is what a bottom
-/// anchor lands on. Shared by [`HeroLogo::draw`]'s fallback and [`draw_title`].
+/// anchor lands on (before [`type_lift`] raises it on the Hero rung). Shared by [`HeroLogo::draw`]'s fallback and [`draw_title`].
 fn title_paint_h(tv: &TextView<'_>, rung: LogoRung, band_w: f32, measure: &dyn Measure) -> f32 {
     let (_, _, _, _, sz) = rung.bounds();
     tv.measure_h(band_w) - (sz as f32 * theme::hero::TITLE_LEAD / theme::size::DISPLAY as f32) + measure.cap_h(sz)
 }
 
 /// **Draw a title in type in the slot a logo of `rung` would stand in** (`band`: its column, with
-/// `band.y + band.h` the anchor line the run's last baseline lands on), at `align`. It is the
+/// `band.y + band.h` the anchor line: the run's painted box ends there on the Hero rung (its last baseline
+/// `type_lift` above), and its last baseline lands there on Compact and Card), at `align`. It is the
 /// fallback of [`HeroLogo::draw`] and NOTHING else: no logo texture is looked up, so it is what a
 /// Continue Watching card draws when neither Plex's cover nor our composite exists (`Card`'s Type
 /// rung, `card_art::needs_type_title`), where a live logo must never go up.

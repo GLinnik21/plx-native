@@ -55,11 +55,11 @@ because the overlay's state shape changed on purpose.
   or Off changes nothing about the stream itself.
 - Per active renderer: image -> Size and Position disabled ("Image subtitles keep their
   look; gray only dims."); native ASS/SSA -> the same ("Styled subtitles keep
-  ..."). Color stays pickable in both, but only a gray reaches them (a tint of the bitmap,
-  `player_hud::subtitle_tint`); Yellow is the colour of a synthesized text header and of the client's
-  own drawn text, and in an authored ASS/SSA script it replaces the pure-white primary of every style
-  that has one (`player::ass_ink`; the styled note says "white text follows the color"). It never
-  reaches a picture subtitle. **Where the pick cannot reach the active subtitle** (a picture, or an
+  ..."). Color stays pickable under every renderer: a gray tints any renderer's pixels
+  (`player_hud::subtitle_tint`); Yellow reaches a synthesized text track and the client's own drawn
+  text, and in an authored ASS/SSA script it replaces the pure-white primary of every style that has one
+  (`player::ass_ink`; the styled note says "white follows the color"), but never a picture subtitle.
+  **Where the pick cannot reach the active subtitle** (a picture, or an
   ASS/SSA script with no pure-white-primary style) the Color picker shows the Yellow rung disabled
   (the shared disabled row, grays live) and the reason as its note ("Image subtitles keep their look;
   gray only dims." / "This subtitle sets its own colors; gray only dims."), instead of a checked Yellow

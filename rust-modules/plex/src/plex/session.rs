@@ -976,8 +976,9 @@ impl PlaybackQuality {
 /// [`SubtitleTone::Yellow`] (a viewer asks for it for readability, discussion #1193). The greys
 /// are inks `ui::theme` tints a drawn caption with (`SUBTITLE_INKS`); a COLOUR rung has a text
 /// colour, [`SubtitleTone::text_rgb8`]: a synthesized text-subtitle header takes it as its primary
-/// colour (media cannot name `ui::theme`), so a cue's own inline colours and an authored ASS script
-/// are left alone, while the client's own drawn text takes the same colour from the matching
+/// colour (media cannot name `ui::theme`), and an authored ASS/SSA script takes it in the PrimaryColour of
+/// every pure-white style (`plx_media::player::ass_ink`), so a cue's own inline colours and a script's
+/// other-coloured styles are left alone, while the client's own drawn text takes the same colour from the matching
 /// `ui::theme::SUBTITLE_INKS` entry, which a test ties to it. Adding a colour is one variant, one
 /// `LADDER` rung, one arm of `text_rgb8` and that theme entry.
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]

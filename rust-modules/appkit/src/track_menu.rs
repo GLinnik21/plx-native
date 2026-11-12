@@ -1711,9 +1711,11 @@ impl TrackMenuState {
 
     /// The Style page: one drill-in per field, each reading out its current value. Under an image
     /// or styled subtitle Size and Position are disabled (dim, focusable, inert) and one note names
-    /// why. Color stays pickable under every renderer, but only a gray reaches a picture or styled
-    /// subtitle (it tints the bitmap, `player_hud::subtitle_tint`); Yellow is the colour of a
-    /// synthesized text header only, so there it is inert, and the same note says so.
+    /// why. Color stays pickable under every renderer: a gray tints any of them
+    /// (`player_hud::subtitle_tint`); Yellow reaches a synthesized text track and the pure-white
+    /// primaries of an authored ASS/SSA script (`plx_media::player::ass_ink`), never a picture. Where the
+    /// media fact `takes_colour` says it cannot reach, [`Self::picker_form`] disables the Yellow rung and
+    /// the note on this page says why.
     fn style_form(&self) -> TrackForm {
         let field_row = |field: StyleField| {
             Row::new(field.label()).value(field.rung_label(self.current_rung(field)))

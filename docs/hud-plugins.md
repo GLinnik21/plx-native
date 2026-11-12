@@ -744,10 +744,10 @@ Skip. Edges are app-owned: OK or a click on a `toggle_section` control; BACK (cl
 then hides the HUD; over a Skip or Up Next offer it first retires that segment in the metadata store's
 `skipped` set and returns the slot to Discs); for modal sections, a direction that leaves the section's groups
 (closes it); the slot changes involuntarily with the marker (`slot_for`, F19), and every stand-in slot returns
-to Discs when its marker ends or BACK dismisses it. The Automatic intro and mid-item credits offer is a
-Watch + Skip pair laid out as Up Next's two buttons are (`up_next::layout_at`; Watch is item 0 and cancels,
-the filled Skip is item 1, the initial focus and the countdown's target); pressing Watch there dismisses the
-offer. Watch Credits in the Up Next pair cancels the countdown and leaves Next Episode available. Automatic credits retains that pair and its geometry, using five presented
+to Discs when its marker ends or BACK dismisses it. Every Automatic skip prompt (an intro, a mid-item credits marker, and a final marker with no
+queued successor, or with Next episode set to After credits or Off) is a Watch + Skip pair laid out as
+Up Next's two buttons are (`up_next::layout_at`; Watch is item 0 and cancels, the filled Skip is item 1,
+the initial focus and the countdown's target); pressing Watch there dismisses the offer. Watch Credits in the Up Next pair cancels the countdown and leaves Next Episode available. Automatic credits retains that pair and its geometry, using five presented
 seconds on the primary button instead of the legacy ten-second clock.
 
 - R1. `open_more` is placed, at or above `MIN_CONTROL_SIZE`, in the root state (compact, Discs) under EVERY valuation

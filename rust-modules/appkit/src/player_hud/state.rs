@@ -114,7 +114,7 @@ impl ControlSlot {
     pub fn items(self) -> c_int {
         match self {
             ControlSlot::Discs(_) => BTN_N,
-            // Watch Credits + Next Episode — the one stand-in with a pair
+            // Watch Credits + Next Episode — a pair, like an Automatic skip prompt below
             ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => 2,
             // an Automatic skip is the same two-button prompt: Watch (cancel) beside the filled Skip
             ControlSlot::Skip(pr) if pr.automatic => 2,
