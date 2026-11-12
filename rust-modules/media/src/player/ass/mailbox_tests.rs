@@ -1294,3 +1294,72 @@ fn the_pace_reads_the_players_values_and_clamps_the_odd_ones() {
     assert_eq!(Pace::of(false, 1000, 24.0, 4_000_000_000).tick_ms, 100, "a stall in the caller's ticks");
     assert!(!Pace::of(false, 1000, 24.0, 16).running);
 }
+
+// The workers a pipeline can use, and what the screen and the renderers are told about its frames.
+
+#[test]
+fn a_job_carries_the_newest_landed_frame_as_its_reference() {
+    let pace = playing(1.0, 33);
+    let (mut mb, source, key) = warm(2, 80);
+    mb.request(key, 1100, &source, pace);
+    let reference = |job: &Job| job.reference.as_ref().and_then(|frame| target_of(frame));
+    let (first, second) = (mb.take().unwrap(), mb.take().unwrap());
+    assert_eq!(reference(&first), Some(1000), "the frame on screen, while nothing newer has landed");
+    assert_eq!(reference(&second), Some(1000));
+    let first_target = first.now_ms;
+    mb.finish(&first, Some(moving(&first, 80, END)));
+    let third = mb.take().expect("a third frame is within the horizon of two workers");
+    assert_eq!(reference(&third), Some(first_target), "the newest frame that landed, not the one on screen");
+    // a Normal job after the plan was thrown away refers to what is on screen again
+    mb.request(Key { width: 640, ..key }, 1130, &source, pace);
+    let normal = mb.take().unwrap();
+    assert_eq!(normal.kind, Kind::Normal);
+    assert_eq!(reference(&normal), Some(1000), "the plan's frames were dropped with it");
+}
+
+#[test]
+fn a_still_cues_ahead_job_refers_to_the_frame_it_follows() {
+    let mut sim = Sim::new(vec![cue(1000, 2000, 7), cue(2000, 3000, 8)]);
+    sim.request(1100);
+    let normal = sim.mb.take().unwrap();
+    assert!(normal.reference.is_none(), "nothing was shown before the first frame");
+    sim.complete(normal);
+    let ahead = sim.mb.take().unwrap();
+    assert!(matches!(ahead.kind, Kind::Ahead { .. }));
+    let shown = sim.mb.view(&sim.key).unwrap();
+    assert!(ahead.reference.as_ref().is_some_and(|frame| Arc::ptr_eq(frame, &shown)));
+}
+
+#[test]
+fn the_pipeline_asks_for_the_workers_that_reach_thirty_frames_a_second() {
+    for (cost_ms, rate, wanted) in [(20, 1.0, 1), (50, 1.0, 2), (80, 1.0, 3), (80, 2.0, 5), (500, 1.0, 16)] {
+        let (mut mb, source, key) = warm(1, cost_ms);
+        let out = mb.request(key, 1100, &source, playing(rate, 33));
+        assert_eq!(out.workers_wanted, wanted, "{cost_ms} ms at {rate}x");
+    }
+    let (mut mb, source, key) = warm(1, 80);
+    assert_eq!(mb.request(key, 1100, &source, Pace::PAUSED).workers_wanted, 0, "nothing planned while paused");
+    let mut sim = Sim::new(vec![cue(1000, 200_000, 7)]);
+    sim.pace = playing(1.0, 33);
+    assert_eq!(sim.mb.request(sim.key, 2000, &sim.source, sim.pace).workers_wanted, 0, "a still cue plans nothing");
+}
+
+#[test]
+fn a_promoted_frame_of_the_pipeline_says_it_was_late_only_past_a_tick() {
+    let pace = playing(1.0, 33);
+    for (after, late) in [(0, false), (16, false), (17, true), (60, true)] {
+        let (mut mb, source, key) = warm(1, 80);
+        mb.request(key, 1100, &source, pace);
+        let job = mb.take().unwrap();
+        mb.finish(&job, Some(moving(&job, 80, END)));
+        let out = mb.request(key, job.now_ms + after, &source, pace);
+        assert!(out.promoted && out.piped, "{after} ms after its playhead");
+        assert_eq!(out.late, late, "{after} ms after its playhead, one tick being 16");
+    }
+    // a still cue's frame promoted early is the boundary one, not the pipeline's
+    let mut sim = Sim::new(vec![cue(0, 1000, 1), cue(1000, 2000, 2)]);
+    sim.request(100);
+    sim.drain();
+    let out = sim.mb.request(sim.key, 1100, &sim.source, Pace::PAUSED);
+    assert!(out.promoted && !out.piped && !out.late);
+}

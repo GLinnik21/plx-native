@@ -69,6 +69,11 @@ pub(super) struct Job {
     pub source: Arc<Source>,
     /// A Normal job enqueued while an Ahead job was rendering: when it began waiting (R6).
     pub queued: Option<Instant>,
+    /// The newest frame that had landed when the job was taken: the renderer shares the regions it
+    /// draws identically with that frame's, so a static sign keeps the allocation the screen has
+    /// already uploaded whichever worker renders the next frame. SCAFFOLD: `None` until implemented.
+    #[allow(dead_code)] // SCAFFOLD: read by the engine when interning lands
+    pub reference: Option<Arc<Frame>>,
 }
 
 /// A job a worker holds. The mailbox serves several workers, so these are a set keyed by `seq`.
@@ -170,11 +175,20 @@ impl Default for Mailbox {
 
 /// What a `request` did, for the caller to act on outside the lock logic.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // SCAFFOLD: the runtime reads the new fields when the pool lands
 pub(super) struct Requested {
     /// A job was queued: wake the worker.
     pub wake: bool,
-    /// The held ahead frame was promoted (`ahead_hit`).
+    /// A held frame was promoted: the still cue's boundary frame (`ahead_hit`), or a frame of the
+    /// pipeline (`piped`).
     pub promoted: bool,
+    /// The promoted frame was one the pipeline planned (`shown`).
+    pub piped: bool,
+    /// ... and it was promoted more than a tick after its playhead: it landed late (`late`).
+    pub late: bool,
+    /// How many workers the pipeline could use to reach about thirty frames a second; 0 when it
+    /// plans nothing. The runtime starts helpers up to what the device allows.
+    pub workers_wanted: usize,
 }
 
 /// What finishing a job published, for the worker's accounting.
@@ -274,6 +288,7 @@ impl Mailbox {
             seq: self.seqs,
             source: source.clone(),
             queued,
+            reference: None,
         });
     }
 
@@ -324,6 +339,7 @@ impl Mailbox {
             seq: self.seqs,
             source: source.clone(),
             queued: None,
+            reference: None,
         });
         true
     }
@@ -479,7 +495,7 @@ impl Mailbox {
             self.enqueue_normal(key, now_ms, source);
             self.next = None;
             self.stop_pipe();
-            return Requested { wake: true, promoted: false };
+            return Requested { wake: true, ..Requested::default() };
         }
         if self.piping(&key, pace) {
             return self.request_piping(key, now_ms, source, pace);
@@ -493,7 +509,7 @@ impl Mailbox {
             // The pipeline took revisions in and left no Normal job behind: one frame under this
             // revision hands over to the rules below, which wait for the key's own first frame.
             self.enqueue_normal(key, now_ms, source);
-            return Requested { wake: true, promoted: false };
+            return Requested { wake: true, ..Requested::default() };
         }
         self.request_static(key, now_ms, source)
     }
@@ -666,7 +682,7 @@ impl Mailbox {
                 let now_ms = self.next_target()?;
                 let (key, source) = (self.requested_key()?, self.requested_source.clone()?);
                 self.seqs += 1;
-                Job { kind: Kind::Pipe { run: self.run }, key, now_ms, seq: self.seqs, source, queued: None }
+                Job { kind: Kind::Pipe { run: self.run }, key, now_ms, seq: self.seqs, source, queued: None, reference: None }
             }
         };
         self.in_flight.push(InFlight { kind: job.kind, seq: job.seq, target_ms: job.now_ms, stale_from: i64::MAX });
