@@ -219,8 +219,8 @@ separately, `ahead_hit` the ahead frames the UI thread promoted, `nwait` how lon
 waited behind an Ahead job already rendering; the partial window is written when the source is
 deselected). The last six fields split `p95_us` between the two things `plx_ass_render` does, timed by
 the facade itself with `clock_gettime` (`src/ass.c`, read back through `PlxAssStats.last_*`): `lib_p95_us`
-is libass's own `ass_render_frame`, `comp_p95_us` is everything after it (bounds, regions and our scalar
-per-pixel composite (premultiplied RGBA, published as composed), 0 for a call that found the frame unchanged), both wall time over
+is libass's own `ass_render_frame`, `comp_p95_us` is everything after it (bounds, regions and our
+per-pixel composite (premultiplied RGBA, published as composed; eight pixels at a time with NEON, `src/ass_composite.h`, scalar on a target without it), 0 for a call that found the frame unchanged), both wall time over
 the same calls as `p95_us`; `lib_cpu_p95_us` and `comp_cpu_p95_us` are those two phases on the worker
 thread's CPU clock (`CLOCK_THREAD_CPUTIME_ID`), so a phase whose wall figure is far above its CPU one was
 waiting for the CPU (descheduled, or blocked), not computing; `images_p95` and `img_kpx_p95` are the `ASS_Image`s libass produced for a composed frame and

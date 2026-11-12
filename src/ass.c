@@ -428,6 +428,11 @@ static void place_regions(PlxAss *ctx, const struct Bounds *bounds, size_t count
 #ifndef PLX_ASS_VISIT_ZERO
 #define PLX_ASS_VISIT_ZERO(kind) ((void)0)
 #endif
+/* The same test hook for the NEON row path (ass_composite.h): `pixels` pixels were blended by one
+ * vector operation, which does not pass through ass_blend_pixel. */
+#ifndef PLX_ASS_VISIT_VECTOR
+#define PLX_ASS_VISIT_VECTOR(pixels) ((void)0)
+#endif
 
 /* A pixel of one ASS_Image onto the premultiplied destination: `mask` is libass's coverage of it,
  * coverage[] the image's opacity table (coverage[0] is 0, and so can a nonzero entry be). */
@@ -453,14 +458,34 @@ static inline void blend_four(uint8_t *dst, const uint8_t *mask, const uint8_t *
 
 /* One row of one ASS_Image onto the premultiplied destination: `n` pixels, mask[i] the libass
  * coverage of pixel i. Most of a sign's mask is zero, which draws nothing whatever the opacity, so
- * the row is read four bytes at a time and a word of zeros is passed over whole. The words come
- * from the row's own start and never reach past its end (the stride's padding is not coverage); a
- * word with any coverage is drawn pixel by pixel exactly as before, including the nonzero mask
- * bytes a faint opacity maps to coverage 0. (Eight bytes at a time measured no faster.) */
+ * the row is read a group of bytes at a time and a group of zeros is passed over whole. The groups
+ * come from the row's own start and never reach past its end (the stride's padding is not coverage).
+ *
+ * With NEON the group is eight pixels and one with any coverage is blended as a vector
+ * (ass_blend8: the coverage computed from the image's opacity, which is coverage[255], then the
+ * blend), zero lanes included: they come out as the destination, exactly. The pixels after the last
+ * whole group, and every pixel on a target without NEON, go four at a time: a word of zeros is
+ * passed over whole and a word with any coverage is drawn pixel by pixel, including the nonzero mask
+ * bytes a faint opacity maps to coverage 0. */
 static void blend_row(uint8_t *dst, const uint8_t *mask, int n, const uint8_t *coverage,
                       uint32_t color)
 {
     int x = 0;
+#ifdef PLX_ASS_NEON
+    if (n >= 8) {
+        /* The table maps 255 to the image's own opacity: (255 * o + 127) / 255 is o. */
+        const uint8x8_t opacity = vdup_n_u8(coverage[255]);
+        const AssSource8 source = ass_source8(color);
+        for (; x + 8 <= n; x += 8) {
+            /* Looked at in core registers: a NEON-to-core move stalls the pipeline. */
+            uint64_t group;
+            memcpy(&group, mask + x, sizeof group);
+            if (!group) continue;
+            PLX_ASS_VISIT_VECTOR(8);
+            ass_blend8(dst + 4 * x, vld1_u8(mask + x), opacity, source);
+        }
+    }
+#endif
     for (; x + 4 <= n; x += 4) {
         uint32_t word;
         memcpy(&word, mask + x, sizeof word);

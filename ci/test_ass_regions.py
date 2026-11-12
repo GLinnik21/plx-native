@@ -10,6 +10,10 @@ a frozen copy of the old scalar blend loop on random masks. The published pixels
 PREMULTIPLIED RGBA (each colour channel at most its alpha), drawn with a premultiplied
 blend: the compositor does no straight-alpha conversion pass. No native dependency build
 is needed for this host regression gate.
+
+The whole program is built and run twice: as the host's compiler builds the compositor (where
+`__ARM_NEON` is defined, the eight-pixel NEON row path of src/ass_composite.h) and again with
+`-DPLX_ASS_NO_NEON`, the scalar row path every other target runs, so an arm64 host covers both.
 """
 from pathlib import Path
 import os
@@ -102,13 +106,17 @@ static void reference_compose(const ASS_Image *list, int width, int height, uint
     }
 }
 
-static unsigned blends, zero_blend;
+/* `blends` counts every pixel the compositor blends: one per scalar ass_blend_pixel call and eight
+ * per NEON vector operation (the vector operation does not pass through ass_blend_pixel, and draws
+ * its zero and opaque lanes too). `vectors` counts the vector operations alone. */
+static unsigned blends, zero_blend, vectors;
 static uint32_t counted_blend(uint32_t dst, uint32_t color, unsigned a) {
     ++blends;
     return ass_blend_pixel(dst, color, a);
 }
 #define ass_blend_pixel counted_blend
 #define PLX_ASS_VISIT_ZERO(kind) (++zero_##kind)
+#define PLX_ASS_VISIT_VECTOR(pixels) (blends += (pixels), ++vectors)
 #include "ass.c"
 
 static ASS_Image *input;
@@ -301,6 +309,34 @@ int main(void) {
             return 1;
         }
     }
+    /* The vector path fires on a group of eight pixels with coverage and on no other. Four rows of 40,
+     * every byte zero but one aligned group (bytes 8..15) of coverage 200: a NEON build blends each
+     * row with ONE vector operation (4 operations, 32 pixels), any other build with eight scalar
+     * blends (no vector operation, 32 pixels), and neither steps onto a zero pixel singly. */
+    {
+        uint8_t mask[40 * 4];
+        memset(mask, 0, sizeof mask);
+        for (int y = 0; y < 4; ++y)
+            for (int x = 8; x < 16; ++x) mask[y * 40 + x] = 200;
+        ASS_Image sign = {40, 4, 40, mask, 0x77665500, 20, 10, NULL};
+        input = &sign;
+        PlxAss *ctx = context();
+        uint8_t canvas[CANVAS];
+        blends = vectors = zero_blend = 0;
+        render(ctx, WIDTH, canvas);
+        plx_ass_destroy(ctx);
+#ifdef PLX_ASS_NEON
+        const unsigned want_vectors = 4;
+#else
+        const unsigned want_vectors = 0;
+#endif
+        if (blends != 32 || vectors != want_vectors || zero_blend != 0) {
+            fprintf(stderr, "a group of eight with coverage: %u pixels blended in %u vector operations, "
+                    "%u zero pixels stepped onto (want 32 in %u, none)\n",
+                    blends, vectors, zero_blend, want_vectors);
+            return 1;
+        }
+    }
     random_frames(4000);
     uint8_t masks[2][256];
     for (int i = 0; i < 256; ++i) {
@@ -348,7 +384,11 @@ int main(void) {
     sign.bitmap = masks[0]; masks[0][0] ^= 15;
     check(ctx, WIDTH);
     plx_ass_destroy(ctx);
-    puts("PASS: published pixels are premultiplied; unchanged regions skip blending; zero runs are skipped; 253 frames match fresh composition; 4000 random frames match the scalar loop");
+#ifdef PLX_ASS_NEON
+    puts("PASS (NEON row path): published pixels are premultiplied; unchanged regions skip blending; zero runs are skipped; 253 frames match fresh composition; 4000 random frames match the scalar loop");
+#else
+    puts("PASS (scalar row path): published pixels are premultiplied; unchanged regions skip blending; zero runs are skipped; 253 frames match fresh composition; 4000 random frames match the scalar loop");
+#endif
     return 0;
 }
 '''
@@ -359,8 +399,11 @@ with tempfile.TemporaryDirectory(prefix='plx-ass-regions-') as directory:
     (folder / 'ass' / 'ass.h').write_text(HEADER)
     source, binary = folder / 'test.c', folder / 'test'
     source.write_text(SOURCE)
-    subprocess.run([*shlex.split(os.environ.get('HOST_CC', 'cc')), '-std=gnu99', '-O2',
-                    '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
-                    '-I' + str(folder), '-I' + str(ROOT / 'src'),
-                    str(source), '-o', str(binary)], check=True)
-    subprocess.run([str(binary)], check=True)
+    # The row path the host's compiler selects, then the scalar one (a host without NEON builds the
+    # same program twice).
+    for flags in ([], ['-DPLX_ASS_NO_NEON']):
+        subprocess.run([*shlex.split(os.environ.get('HOST_CC', 'cc')), '-std=gnu99', '-O2',
+                        '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter', *flags,
+                        '-I' + str(folder), '-I' + str(ROOT / 'src'),
+                        str(source), '-o', str(binary)], check=True)
+        subprocess.run([str(binary)], check=True)
