@@ -52,7 +52,7 @@ typedef struct {
  * 32-bit fields come before the 64-bit one, so last_image_pixels sits on its natural 8-byte
  * boundary (offset 32, size 40) on the ARM target and the host alike. */
 typedef struct {
-    uint32_t library_fonts; /* fonts the library holds: added through plx_ass_add_font or extracted */
+    uint32_t library_fonts; /* fonts the library holds: added through plx_ass_add_font or plx_ass_add_font_borrowed, or extracted from [Fonts] */
     uint32_t font_scans;    /* times the renderer opened every font (ass_set_fonts) */
     uint32_t tracks;        /* tracks loaded or replaced */
     uint32_t last_libass_us;

@@ -72,7 +72,8 @@ Attached fonts. A file may attach far more font bytes than a renderer needs (the
 fonts, 83 MB; the opening's five karaoke faces sat after ~32 MB of faces no style names and before
 small faces that still fit, so the old 32 MiB cap dropped exactly the five the opening needed and
 kept twelve it did not), and no byte cap
-decides what a track can draw: the demuxer collects every font attachment (`collect_manifest`), the
+decides what a track can draw: the demuxer takes every font attachment out of the format as it opens (`detach_fonts`, which also frees
+libavformat's `codecpar` copy) and hands them over with the headers (`collect_manifest`), the
 source store keeps the file's list whole (a same-file reopen keeps the `Arc` it holds, so the
 renderer's same-fonts check is a pointer compare), and the renderer hands libass the faces the track
 NAMES. With no font provider libass selects a face by the requested family, then "Inter", then the
