@@ -99,6 +99,16 @@ fn livetv_failure_and_refusal_back_off_and_retry_once() {
         let (job, port) = take(&mut stores);
         assert!(matches!(job.req.work, Work::Discover));
         port.refused(job.addr);
+        // A second failure in a row waits twice as long before the next read.
+        for _ in 0..2 * RETRY_FRAMES {
+            stores.livetv_pump(&keys, 100);
+            assert!(!stores.has_jobs(), "the wait doubles after a second failure");
+        }
+        stores.livetv_pump(&keys, 100);
+        let (job, port) = take(&mut stores);
+        finish_with(&port, job.addr, job.req, |_| Some(complete(vec![guide(&["1"], 200)])));
+        stores.livetv_pump(&keys, 100);
+        assert_eq!(stores.livetv_view().status, LiveTvStatus::Ready);
     }
 }
 
@@ -331,16 +341,6 @@ fn livetv_a_successful_empty_lineup_retires_channels_during_partial_discovery() 
 }
 
 #[test]
-fn livetv_retry_observes_the_owners_landing_gate() {
-    let mut stores = Stores::default(); let keys = keys(1);
-    stores.landgate.arm_recording(); stores.landgate.begin_frame(42);
-    stores.livetv_pump(&keys, 100);
-    answer(&mut stores, Some(vec![guide(&["1"], 200)]));
-    stores.livetv_run(LiveTvCmd::Retry, &keys, 100);
-    assert_eq!(stores.landgate.take_frame_lands(), vec![(StoreId::LiveTv.ord(), 1)]);
-}
-
-#[test]
 fn livetv_partial_discovery_does_not_block_an_expired_known_guide() {
     let mut stores = Stores::default(); let keys = keys(1); let mut io = Script::new();
     io.second_dvr = true; io.fail_lineup.set(true);
@@ -359,4 +359,18 @@ fn livetv_play_title_preserves_the_unnumbered_name_and_stale_guides_do_not_spin(
         assert_eq!(channel_name_of(&channel_tile(&channel)), Some("Family Channel"));
     }
     assert_eq!(Guide::next_refresh(&guide(&["1"], 200).channels, 201), 261);
+}
+
+#[test]
+fn an_armed_landing_gate_asks_no_live_tv_lineup() {
+    // A recording or replay owns the run and its tape carries no Live TV read.
+    let mut stores = Stores::default();
+    stores.landgate.arm_recording();
+    let keys = keys(2);
+    assert!(!stores.livetv_pump(&keys, 100));
+    assert!(stores.take_jobs_of(StoreId::LiveTv).is_empty());
+    assert!(stores.livetv_view().channels.is_empty());
+    stores.landgate.disarm();
+    assert!(!stores.livetv_pump(&keys, 100));
+    assert_eq!(stores.take_jobs_of(StoreId::LiveTv).len(), 2);
 }

@@ -1442,6 +1442,11 @@ fn live_mpeg2_converts_to_h264_aac() {
 }
 
 #[test]
+fn a_live_decision_that_names_no_codecs_converts_instead_of_assuming_h264_aac() {
+    assert_live_conversion("", "", true);
+}
+
+#[test]
 fn a_live_switch_waits_for_the_abandoned_tune_to_free_its_tuner() {
     use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
     use std::time::Duration;
@@ -1678,4 +1683,48 @@ fn a_live_retry_tunes_again_and_starts_at_the_edge_not_at_the_failed_position() 
     }
     scrobble_stop(&mut ps, None, None);
     drain_scrobble();
+}
+
+#[test]
+fn a_channel_change_s_tune_waits_for_the_playing_channel_s_stopped() {
+    use std::time::Duration;
+    let mut ps = PlaybackSession::IDLE;
+    let _guard = fresh_registry(&mut ps);
+    assert!(wait_resolve_workers_for_test(Duration::from_secs(5)), "no earlier worker is left");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port() as i32;
+    let (seen_tx, seen_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while std::time::Instant::now() < deadline {
+            match plx_base::testnet::accept(&listener) {
+                Ok((mut socket, _)) => {
+                    let first = drain_http(&mut socket);
+                    let stopped = first.contains("state=stopped");
+                    let _ = seen_tx.send(stopped);
+                    if stopped {
+                        // One tuner: the server answers the stop only once the test lets it.
+                        let _ = release_rx.recv_timeout(Duration::from_secs(10));
+                        write_json(&mut socket, EMPTY_MC);
+                        return;
+                    }
+                    write_json(&mut socket, EMPTY_MC);
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(4)),
+            }
+        }
+    });
+    let sid = plx_plex::plex::register_for_test("live-ch-change", "127.0.0.1", port, "tok", "cid");
+    ps.cur_sid = sid;
+    ps.cur_live = Some(plx_plex::plex::livetv::LiveSession {
+        key: "/livetv/sessions/9b9fe727-0000-46db-b94c-ef512e3e61d2".into(), rating_key: String::new() });
+    scrobble_stop(&mut ps, None, None);
+    while !seen_rx.recv_timeout(Duration::from_secs(5)).expect("the stopped reaches the server") {}
+    assert!(!wait_resolve_workers_for_test(Duration::from_millis(200)),
+        "the next tune's resolve fence must still see the playing channel's stop in flight");
+    release_tx.send(()).unwrap();
+    assert!(wait_resolve_workers_for_test(Duration::from_secs(5)), "the fence opens once the tuner is freed");
+    server.join().unwrap();
 }

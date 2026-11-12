@@ -3305,7 +3305,9 @@ fn build_live_stream(
         && hls_accepts_codecs(&play.vcodec, None);
     let audio = audio_direct_plays_with(&env.caps, env.direct_play_mode,
         &play.acodec, play.channels, 0);
-    plan.source_decodable = video && audio && hls_accepts_codecs(&play.vcodec, Some(&play.acodec));
+    // A playlist no decision described has unknown codecs: never direct played on a guess.
+    let unknown = play.vcodec.is_empty() || play.acodec.is_empty();
+    plan.source_decodable = !unknown && video && audio && hls_accepts_codecs(&play.vcodec, Some(&play.acodec));
     plan.src_vcodec = play.vcodec.clone();
     plan.src_acodec = play.acodec.clone();
     plan.vcodec = play.vcodec;
@@ -3324,11 +3326,23 @@ fn build_live_stream(
     spec.source = plx_plex::plex::TranscodeSource::Live(&live.key);
     // The decision may register resources even on refusal; both owners must survive for cleanup.
     plan.tsession = session.clone();
-    let Some(decision) = client.transcode_decision(off, &spec) else { return };
-    if let Some(reason) = refusal(&decision) {
-        plan.verdict = Some(PlayVerdict::Server(reason, DecisionCodes::of(&decision)));
+    let decision = client.transcode_decision(off, &spec);
+    let refused = decision.as_ref().map_or(Some(None), |d| refusal(d).map(Some));
+    if let Some(reason) = refused {
+        if unknown {
+            // PMS 1.43.3 refused both decisions on the owner's TV (2026-10-21) while the
+            // session's own playlist played: every measured live session is H.264/AAC, so that
+            // stays the fallback once a conversion cannot be had.
+            crate::player::log("livetv: no conversion for an undescribed playlist; reading it as recorded");
+            plan.vcodec = "h264".into();
+            plan.acodec = "aac".into();
+            plan.url = client.direct_play_url(&play.part, &session).to_url();
+        } else if let (Some(reason), Some(decision)) = (reason, decision.as_ref()) {
+            plan.verdict = Some(PlayVerdict::Server(reason, DecisionCodes::of(decision)));
+        }
         return;
     }
+    let Some(decision) = decision else { return };
     let Some((video, audio)) = decision_codecs(&decision) else { return };
     plan.vcodec = video;
     plan.acodec = audio_declaration(&audio);

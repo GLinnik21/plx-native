@@ -8116,6 +8116,9 @@ struct ScrobbleWork {
     stop_mail: Option<PendingStop>,
     /// The Live TV session to end: its `stopped` frees the server's tuner.
     live: Option<plx_plex::plex::livetv::LiveSession>,
+    /// Holds the resolve fence from the stop until that `stopped` has returned, so a channel
+    /// change's tune cannot reach a one-tuner server before the tuner it plays on is freed.
+    live_fence: Option<ResolveWorker>,
 }
 
 /// The stops whose `stopped` POST has been attempted or abandoned, waiting for the app to take
@@ -8277,6 +8280,7 @@ impl ScrobbleWork {
             };
             plx_base::eventlog::log(&format!("livetv: stopped ok={}", ok as i32));
         }
+        drop(self.live_fence.take());
         // BEFORE the fence completes, so a completed fence implies the record is in the mailbox.
         if let Some(mut mail) = self.stop_mail.take() {
             mail.post(posted);
@@ -8395,6 +8399,7 @@ pub fn scrobble_stop(
         timeline_stop,
         mark_watched,
         stop_mail,
+        live_fence: live.as_ref().map(|_| ResolveWorker::enter()),
         live,
     })));
     let worker = work.clone();

@@ -9,6 +9,9 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
 const RETRY_FRAMES: u32 = 120;
+/// A server that keeps refusing its lineup (a shared server, one with no Live TV grant) is asked
+/// again at a doubling interval: 2 s, then up to 2^5 of that (about a minute at 60 Hz).
+const RETRY_DOUBLINGS: u32 = 5;
 /// A guide with no current airing is sampled again so a later programme can appear.
 const GUIDE_POLL_SECONDS: i64 = 60;
 pub const KIND_LIVE_CHANNEL: i32 = 5;
@@ -129,11 +132,13 @@ struct Source {
     complete: bool,
     failed: bool,
     retry_cd: u32,
+    /// Consecutive failed lineup reads, which set the next wait ([`Source::backoff`]).
+    strikes: u32,
 }
 impl Source {
     fn new(sid: ServerId, key: Option<ClientKey>) -> Self {
         Self { sid, key, adapter: Arc::new(Default::default()), request: 0, guides: Vec::new(),
-            reading_grid: None, answered: false, complete: false, failed: false, retry_cd: 0 }
+            reading_grid: None, answered: false, complete: false, failed: false, retry_cd: 0, strikes: 0 }
     }
     fn work(&self, now: i64) -> Option<Work> {
         self.guides.iter().filter(|g| g.due(now)).min_by_key(|g| g.refresh_at).cloned().map(Work::Grid)
@@ -143,7 +148,11 @@ impl Source {
         self.failed = true;
         if let Some(dvr) = self.reading_grid.take() {
             if let Some(guide) = self.guides.iter_mut().find(|g| g.dvr == dvr) { guide.retry_cd = RETRY_FRAMES; }
-        } else { self.retry_cd = RETRY_FRAMES; }
+        } else { self.backoff(); }
+    }
+    fn backoff(&mut self) {
+        self.retry_cd = RETRY_FRAMES << self.strikes.min(RETRY_DOUBLINGS);
+        self.strikes = self.strikes.saturating_add(1);
     }
     fn standing(&self, now: i64) -> Standing {
         if self.adapter.fetch.busy() { Standing::Running }
@@ -190,6 +199,9 @@ impl LiveTvState {
         changed || (reset && self.publish())
     }
     pub fn pump(&mut self, gate: &plx_machine::landgate::Gate, keys: &ClientKeys, now: i64) -> bool {
+        // A recording, a replay or a dump owns the run, and the tape carries no Live TV read
+        // (Notify stands down the same way): no tuner lineup is asked while the gate is armed.
+        if gate.is_armed() { return false; }
         let slots: Vec<_> = keys.slots().filter(|s| *s != ServerId::UNSET).collect();
         let before = self.sources.len();
         self.sources.retain(|s| slots.contains(&s.sid));
@@ -221,7 +233,9 @@ impl LiveTvState {
                                 else { s.guides.push(guide); }
                             }
                         } else { s.guides = result.guides; }
-                        if result.retry && !mail.answer.grid { s.retry_cd = RETRY_FRAMES; }
+                        if !mail.answer.grid {
+                            if result.retry { s.backoff(); } else { s.strikes = 0; }
+                        }
                         s.answered = true;
                         if !mail.answer.grid { s.complete = result.complete; }
                         s.failed = result.retry;
@@ -237,7 +251,7 @@ impl LiveTvState {
             let Some(key) = s.key else {
                 dirty |= !s.failed;
                 s.failed = true;
-                s.retry_cd = RETRY_FRAMES;
+                s.backoff();
                 turn.finished();
                 continue;
             };

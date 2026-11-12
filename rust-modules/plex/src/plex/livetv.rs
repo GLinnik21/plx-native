@@ -220,24 +220,17 @@ pub const LIVE_PROFILE_EXTRA: &str = "add-transcode-target(type=videoProfile&con
 /// The query the official client reads a live playlist with: completed segments only.
 const LIVE_EDGE: &str = "?offset=-1.000000";
 
-/// The session's own playlist for one playback, the shape every measured part had.
+/// The session's own playlist for one playback, the shape every measured part had. No decision
+/// named its codecs, so they stay unknown and the plan converts rather than guess a direct play.
 pub fn session_playlist(session: &LiveSession, playback: &str) -> Option<LivePlay> {
     is_path_id(playback).then(|| LivePlay {
         part: format!("{}/{playback}/index.m3u8{LIVE_EDGE}", session.key),
-        vcodec: RECORDED_VCODEC.to_owned(),
-        acodec: RECORDED_ACODEC.to_owned(),
+        vcodec: String::new(),
+        acodec: String::new(),
         width: 0,
         height: 0,
         channels: 0,
     })
-}
-
-/// The codecs of every measured recording (`docs/pms-api.md` §10), for a decision that names none.
-const RECORDED_VCODEC: &str = "h264";
-const RECORDED_ACODEC: &str = "aac";
-
-fn or_recorded(codec: &str, recorded: &str) -> String {
-    if codec.is_empty() { recorded } else { codec }.to_owned()
 }
 
 /// The playlist a decision named for this session: under the session's own key and an `.m3u8`,
@@ -260,8 +253,8 @@ pub fn live_part_of(session: &LiveSession, decision: &super::MediaContainer) -> 
             })
             .map(|part| LivePlay {
                 part: format!("{}{LIVE_EDGE}", part.split_once('?').map_or(part, |(path, _)| path)),
-                vcodec: or_recorded(&media.video_codec, RECORDED_VCODEC),
-                acodec: or_recorded(&media.audio_codec, RECORDED_ACODEC),
+                vcodec: media.video_codec.clone(),
+                acodec: media.audio_codec.clone(),
                 width: media.width,
                 height: media.height,
                 channels: media.audio_channels,
@@ -659,8 +652,8 @@ mod tests {
             session_playlist(&session(), "d1f32c49-d8f8-4621-9075-f3d80792824a"),
             Some(LivePlay {
                 part: "/livetv/sessions/9b9fe727-0000-46db-b94c-ef512e3e61d2/d1f32c49-d8f8-4621-9075-f3d80792824a/index.m3u8?offset=-1.000000".into(),
-                vcodec: "h264".into(),
-                acodec: "aac".into(),
+                vcodec: String::new(),
+                acodec: String::new(),
                 width: 0,
                 height: 0,
                 channels: 0,
@@ -687,8 +680,8 @@ mod tests {
         let measured = "/livetv/sessions/9b9fe727-0000-46db-b94c-ef512e3e61d2/clientid/index.m3u8?offset=-1.000000";
         assert_eq!(
             live_part_of(&session(), &decided(measured)),
-            Some(LivePlay { part: measured.into(), vcodec: "hevc".into(), acodec: "aac".into(), width: 0, height: 0, channels: 0 }),
-            "the decision's codecs, the recording's where it names none"
+            Some(LivePlay { part: measured.into(), vcodec: "hevc".into(), acodec: String::new(), width: 0, height: 0, channels: 0 }),
+            "the decision's codecs; one it names none of stays unknown, so the plan converts"
         );
         let incomplete = "/livetv/sessions/9b9fe727-0000-46db-b94c-ef512e3e61d2/clientid/index.m3u8?offset=0.021333&X-Plex-Incomplete-Segments=1";
         assert_eq!(
