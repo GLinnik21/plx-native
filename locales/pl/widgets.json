@@ -170,6 +170,7 @@
   "widgets.tracks.style_position": "Położenie",
   "widgets.tracks.style_image_note": "Wygląd napisów jest stały; szary tylko przyciemnia.",
   "widgets.tracks.style_styled_note": "Wygląd napisów jest stały; biel przyjmuje kolor.",
+  "widgets.tracks.style_fixed_note": "Ten napis ma własne kolory; szary tylko przyciemnia.",
   "widgets.tracks.timing": "Synchronizacja",
   "widgets.tracks.external_badge": "ZEWNĘTRZNE",
   "widgets.tracks.tone_white": "Biały",

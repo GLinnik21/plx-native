@@ -2285,6 +2285,24 @@ pub fn request_subtitle(idx: i32) {
         SHARED.sub_bitmaps.lock().unwrap().clear();
     }
 }
+/// **Does the viewer's colour pick reach the subtitle `codec` names?** The one fact the Subtitles menu's
+/// Color rungs are disabled by, answered here where the track is classified and never re-derived by a
+/// screen. A picture subtitle (PGS, VobSub) never takes a colour (only a gray tint reaches its bitmap);
+/// a text track always does (its header is built from the pick); an ASS/SSA track does when the header
+/// that reaches libass has a style the pick recolours ([`ass_ink::takes_colour`]), read from the
+/// selected sidecar when one is, else from the embedded track the demuxer is feeding. While that header
+/// is not known yet the answer is yes: the menu dims nothing it cannot explain.
+pub fn subtitle_takes_colour(codec: &str) -> bool {
+    if plx_data::metadata::sub_layout::is_image_sub_codec(codec) {
+        return false;
+    }
+    if !(codec.eq_ignore_ascii_case("ass") || codec.eq_ignore_ascii_case("ssa")) {
+        return true;
+    }
+    let known = if sidecar::selected() { sidecar::takes_colour() } else { ass_source::takes_colour(desired_sub_idx()) };
+    known.unwrap_or(true)
+}
+
 /// The tone client-rendered subtitles are drawn in. A [`crate::route::LiveCell`] rather than a field
 /// of [`SHARED`] because it OUTLIVES a playback — it is a preference, not session state
 /// (the same reasoning as the quality cell in `route::prefs`) — and `reset_session` must not put a viewer back on white

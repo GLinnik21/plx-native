@@ -744,6 +744,10 @@
     "value": "Styled subtitles keep their look; white follows the color.",
     "description": "Note under the Style rows when the subtitle on screen is a styled script (ASS/SSA) that positions, sizes and colors its own text and draws some of it in plain white (its default ink): the Size and Position rows are dimmed, the plain-white text follows the chosen color and every other color in the script is kept. No jargon."
   },
+  "widgets.tracks.style_fixed_note": {
+    "value": "This subtitle sets its own colors; gray only dims.",
+    "description": "Note under the Style rows, and under the Color choices, when the subtitle on screen is a styled script (ASS/SSA) that sets all of its own colors and draws none of its text in plain white: the Size and Position rows are dimmed and the color choices such as yellow are dimmed too, because the chosen color cannot reach it; only the gray choices still dim it. No jargon."
+  },
   "widgets.tracks.timing": {
     "value": "Timing",
     "description": "tracks timing"

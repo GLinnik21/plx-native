@@ -57,6 +57,10 @@ struct AuthoredTrack {
     file: Arc<[u8]>,
     /// The pick the held header was built for.
     tone: SubtitleTone,
+    /// Whether the colour pick can reach this track at all: the FILE's header has a style whose primary
+    /// is pure white ([`super::ass_ink::takes_colour`]). Read once here, from the file's bytes (the held
+    /// header reads false under a colour that already took them), so a per-frame poll never parses.
+    takes_colour: bool,
 }
 
 /// A cue as the text track received it, converted: the ASS packet it became and the ReadOrder in it.
@@ -279,6 +283,16 @@ impl Store {
         self.tracks.get(&track).cloned()
     }
 
+    /// Can the viewer's colour pick reach `track`? A text track always takes it (its header is built
+    /// from the pick); an authored one when the file has a style the pick recolours; `None` for a track
+    /// the store does not hold (nothing is known, so the caller must not dim anything).
+    fn takes_colour(&self, track: i32) -> Option<bool> {
+        match self.authored.get(&track) {
+            Some(ink) => Some(ink.takes_colour),
+            None => self.text.contains_key(&track).then_some(true),
+        }
+    }
+
     #[cfg(test)]
     fn selected(&mut self, track: i32) -> Option<Arc<Source>> {
         self.selected_styled(track, TextStyle::current())
@@ -361,7 +375,8 @@ impl Store {
                     // the renderer's header is the file's with the viewer's colour taken into its white styles
                     let file: Arc<[u8]> = header.into();
                     let held = super::ass_ink::recolour(&file, style.tone).map_or_else(|| file.clone(), Arc::from);
-                    self.authored.insert(track, AuthoredTrack { file, tone: style.tone });
+                    let takes_colour = super::ass_ink::takes_colour(&file);
+                    self.authored.insert(track, AuthoredTrack { file, tone: style.tone, takes_colour });
                     (Origin::Authored, held, events)
                 }
                 TrackHeader::Text(dialect) => {
@@ -720,6 +735,12 @@ pub fn font_snapshot() -> (u64, Arc<[Font]>) {
 pub fn selected(track: i32) -> Option<Arc<Source>> {
     let style = TextStyle::current();
     store().selected_styled(track, style)
+}
+
+/// Can the viewer's colour pick reach embedded track `track` ([`Store::takes_colour`])? `None` while the
+/// store holds no such track.
+pub fn takes_colour(track: i32) -> Option<bool> {
+    store().takes_colour(track)
 }
 
 /// Interpolate the sparse native clock only while it is advancing. Limit extrapolation to
@@ -1720,6 +1741,62 @@ mod tests {
         s.begin_styled("f", vec![(0, TrackHeader::Authored(coloured))], vec![], TextStyle::default());
         let before = s.selected_styled(0, TextStyle::default()).unwrap();
         assert!(Arc::ptr_eq(&before, &s.selected_styled(0, yellow).unwrap()), "nothing for the pick to take");
+    }
+
+    /// **Whether the pick reaches a track is a fact of the track, read from the FILE's bytes**: a white
+    /// primary takes it, a coloured-only script does not, a text track always does, a track the store does
+    /// not hold is unknown — and none of that moves with the pick (the held header of a track that took
+    /// yellow has no white style left to find).
+    #[test]
+    fn a_track_knows_whether_the_colour_pick_reaches_it_whatever_the_pick_is() {
+        use plx_plex::plex::session::SubtitleTone;
+        let coloured = String::from_utf8(authored_header()).unwrap().replace("&H00FFFFFF", "&H0000FFFF").into_bytes();
+        let yellow = TextStyle { tone: SubtitleTone::Yellow, ..TextStyle::default() };
+        let mut s = Store::default();
+        s.begin_styled(
+            "f",
+            vec![(0, TrackHeader::Authored(authored_header())), (1, TrackHeader::Authored(coloured)), (2, TrackHeader::Text(TextDialect::Srt))],
+            vec![],
+            yellow,
+        );
+        let answers = |s: &Store| [s.takes_colour(0), s.takes_colour(1), s.takes_colour(2), s.takes_colour(3)];
+        assert_eq!(answers(&s), [Some(true), Some(false), Some(true), None], "opened under yellow");
+        s.selected_styled(0, TextStyle::default());
+        assert_eq!(answers(&s), [Some(true), Some(false), Some(true), None], "the pick moved off the colour");
+        s.selected_styled(0, yellow);
+        assert_eq!(answers(&s), [Some(true), Some(false), Some(true), None], "and back");
+    }
+
+    /// **`player::subtitle_takes_colour` is the one answer the menu reads**: pictures never, text always,
+    /// ASS by the header of the selected sidecar, else of the embedded track being fed, and yes while that
+    /// header is unknown.
+    #[test]
+    fn the_subtitle_takes_colour_fact_follows_the_codec_and_the_selected_track() {
+        let _guard = plx_base::testlock::serial();
+        reset();
+        super::super::sidecar::reset();
+        let coloured = String::from_utf8(authored_header()).unwrap().replace("&H00FFFFFF", "&H0000FFFF").into_bytes();
+        let takes = super::super::subtitle_takes_colour;
+        assert!(!takes("pgs") && !takes("hdmv_pgs_subtitle") && !takes("dvd_subtitle"), "a picture never takes a colour");
+        assert!(takes("srt") && takes("subrip") && takes("webvtt") && takes("mov_text"), "text always does");
+        assert!(takes("ass"), "nothing known yet: nothing is dimmed");
+        begin("fixture", vec![(0, TrackHeader::Authored(authored_header())), (1, TrackHeader::Authored(coloured.clone()))], vec![]);
+        super::super::request_subtitle(0);
+        assert!(takes("ass") && takes("ssa"), "a white-primary style");
+        super::super::request_subtitle(1);
+        assert!(!takes("ass") && !takes("ssa"), "no white-primary style");
+        // a selected sidecar answers instead of the embedded track
+        let with_event = |mut file: Vec<u8>| {
+            file.extend_from_slice(b"Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,Hello\n");
+            file
+        };
+        super::super::sidecar::select_loaded_for_test(7, &with_event(authored_header()));
+        assert!(takes("ass"), "the sidecar has a white style, the embedded track does not");
+        super::super::sidecar::select_loaded_for_test(7, &with_event(coloured));
+        super::super::request_subtitle(0);
+        assert!(!takes("ass"), "the sidecar has none, the embedded track does");
+        super::super::sidecar::reset();
+        reset();
     }
 
     // ---- lazy restyle by style generation (plan §2.5) ----

@@ -103,6 +103,9 @@ struct Content {
 struct AuthoredInk {
     file: Arc<[u8]>,
     tone: plx_plex::plex::session::SubtitleTone,
+    /// The file has a style the colour pick recolours ([`super::ass_ink::takes_colour`]), read once from
+    /// the FILE's bytes.
+    takes_colour: bool,
 }
 
 /// What a converted file needs to be restyled: the script is the synthesized header followed by
@@ -245,6 +248,16 @@ pub fn deselect() {
 /// `player::subtitle_offset_range_ms`), not whether a cue is ready.
 pub fn selected() -> bool {
     state().want.is_some()
+}
+
+/// Can the viewer's colour pick reach the selected sidecar? `None` while its file has not arrived
+/// (nothing is known, so the caller must not dim anything); a converted text file always takes it, an
+/// authored script when it has a style the pick recolours ([`super::ass_ink::takes_colour`]).
+pub fn takes_colour() -> Option<bool> {
+    let st = state();
+    let want = st.want.as_ref()?;
+    let (selection, content) = st.loaded.as_ref()?;
+    (selection == want).then(|| content.ink.as_ref().map_or(true, |ink| ink.takes_colour))
 }
 
 /// Put the test-only sidecar state in place: `stream_id` selected with `codec`, and `script`
@@ -488,7 +501,7 @@ fn decode(bytes: Vec<u8>, codec: &str) -> Result<Content, Failure> {
             }),
             font_generation: None,
             text: None,
-            ink: Some(AuthoredInk { file, tone }),
+            ink: Some(AuthoredInk { takes_colour: super::ass_ink::takes_colour(&file), file, tone }),
         });
     }
     // A server conversion or error must not silently turn an ASS selection into plain text.

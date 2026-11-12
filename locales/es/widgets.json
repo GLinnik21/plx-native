@@ -166,6 +166,7 @@
   "widgets.tracks.style_position": "Posición",
   "widgets.tracks.style_image_note": "Subtítulos de imagen: aspecto propio; el gris los atenúa.",
   "widgets.tracks.style_styled_note": "Subtítulos con estilo: aspecto propio; el blanco sigue el color.",
+  "widgets.tracks.style_fixed_note": "Este subtítulo fija sus colores; el gris los atenúa.",
   "widgets.tracks.timing": "Sincronización",
   "widgets.tracks.external_badge": "EXTERNOS",
   "widgets.tracks.tone_white": "Blanco",

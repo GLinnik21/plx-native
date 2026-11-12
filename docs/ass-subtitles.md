@@ -16,7 +16,9 @@ A style whose primary is any other colour, an inline `\c` override (explicit whi
 outline and shadow colours and the karaoke SecondaryColour (recoloured only when it is itself pure
 white) are left alone, and the grays never rewrite a header (they stay a draw-time tint). A colour
 change restyles the live track once, in place (`ass::restyles`). Cost, known: signs and typesetting
-drawn in white take the colour too. Picture subtitles (PGS, VobSub) are never recoloured.
+drawn in white take the colour too. Picture subtitles (PGS, VobSub) are never recoloured. Whether the pick reaches the active track is one fact,
+`player::subtitle_takes_colour` (an ASS/SSA track: its header has a white-primary style, judged on the file's
+own bytes), which the Subtitles menu's Color page reads to dim the colours that would do nothing.
 
 Embedded TEXT tracks (SubRip, WebVTT, mov_text, SAMI and the other text codecs) render through the same
 libass worker. They have no header in the file, so `player::ass_source` synthesizes one

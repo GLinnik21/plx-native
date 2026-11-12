@@ -162,6 +162,7 @@
   "widgets.tracks.style_position": "Pozíció",
   "widgets.tracks.style_image_note": "Képfelirat: rögzített kinézet; a szürke sötétít.",
   "widgets.tracks.style_styled_note": "Formázott felirat: saját kinézet; a fehér színt kap.",
+  "widgets.tracks.style_fixed_note": "A felirat saját színeket használ; a szürke sötétít.",
   "widgets.tracks.timing": "Időzítés",
   "widgets.tracks.external_badge": "KÜLSŐ",
   "widgets.tracks.tone_white": "Fehér",

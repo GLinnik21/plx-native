@@ -81,8 +81,13 @@
 //! pickable under every renderer: a gray tints any of them (the bitmap tint,
 //! `player_hud::subtitle_tint`); Yellow is the colour of a synthesized text header and of the
 //! client's own drawn text, and in an authored ASS/SSA script it replaces the pure-white primary of
-//! every style that has one (`plx_media::player::ass_ink`), so only a picture subtitle never takes
-//! it, which that renderer's note says ("gray only dims"). Size and Position are
+//! every style that has one (`plx_media::player::ass_ink`). Whether the pick's colours reach the
+//! active subtitle is ONE media fact, `plx_media::player::subtitle_takes_colour` (a picture: never;
+//! text: always; ASS/SSA: when the header that reaches libass has a white-primary style), read into
+//! [`SubSig`] and [`TrackMenuState::takes_colour`]. Where it is false the Color picker shows the Yellow
+//! rung DISABLED (the shared disabled row: dim, focusable, inert; the grays stay live), with the reason
+//! as the page's note and on the Style page ("gray only dims"), and a stored Yellow pick stays the
+//! checked rung and the saved preference: the menu never rewrites the pick. Size and Position are
 //! persisted by `route::select_subtitle_size` / `select_subtitle_position` and Color by
 //! `player::set_subtitle_tone`: all three are one call into the one write door (`route::choose`,
 //! `How::Optimistic`: live value first, the durable write second, never republished).
@@ -401,12 +406,16 @@ impl SubRenderer {
         }
     }
 
-    /// The note under the Style rows, when Size, Position and a colour cannot reach this renderer.
-    fn note(self) -> Option<&'static str> {
+    /// The note under the Style rows, when Size and Position cannot reach this renderer. A styled
+    /// subtitle says which of its colours the pick reaches: `takes_colour` is the media fact
+    /// (`plx_media::player::subtitle_takes_colour`), so its white text follows the pick or none of it does.
+    fn note(self, takes_colour: bool) -> Option<&'static str> {
+        use plx_platform::i18n::msg;
         match self {
             Self::Text => None,
-            Self::Image => Some(plx_platform::i18n::msg::widgets_tracks_style_image_note()),
-            Self::Styled => Some(plx_platform::i18n::msg::widgets_tracks_style_styled_note()),
+            Self::Image => Some(msg::widgets_tracks_style_image_note()),
+            Self::Styled if takes_colour => Some(msg::widgets_tracks_style_styled_note()),
+            Self::Styled => Some(msg::widgets_tracks_style_fixed_note()),
         }
     }
 }
@@ -422,6 +431,10 @@ struct SubSig {
     subs: Vec<(i64, bool)>,
     active: c_int,
     renderer: SubRenderer,
+    /// Whether the Color pick's colours reach the active subtitle
+    /// (`plx_media::player::subtitle_takes_colour`): read once here, so the Color picker's dimmed rungs
+    /// follow it on a live poll (an ASS sidecar's header arrives after the pick).
+    takes_colour: bool,
     transcoding: bool,
     /// who draws the subtitle: what Timing and Style are gated and explained by
     presenter: plx_media::route::SubtitlePresenter,
@@ -495,6 +508,10 @@ pub struct TrackMenuState {
     /// The renderer of the ACTIVE subtitle, captured when the root is (re)built — what the Style
     /// page's Size and Position lock reads.
     renderer: SubRenderer,
+    /// Whether the Color pick's colours reach the ACTIVE subtitle, captured with [`Self::renderer`]
+    /// (the media fact `plx_media::player::subtitle_takes_colour`): the Color picker dims the rungs
+    /// that would not.
+    takes_colour: bool,
     /// What the Subtitles root was last built from; a live poll rebuilds when it moves.
     sub_sig: Option<SubSig>,
     /// The Other languages page's model — one entry per language, as of the last root build or
@@ -717,6 +734,7 @@ impl TrackMenuState {
             position: plx_media::route::subtitle_position(),
             pages: PageStack::new(),
             renderer: SubRenderer::Text,
+            takes_colour: true,
             sub_sig: None,
             other: Vec::new(),
             root_tracks: Vec::new(),
@@ -1016,7 +1034,10 @@ impl TrackMenuState {
             self.motion.cancel_slide();
         } else {
             // The page still holds: remember what the root is now built from (the pop back
-            // rebuilds it) and refresh this page in place, focus kept by id.
+            // rebuilds it) and refresh this page in place, focus kept by id. The media fact the Color
+            // rungs are dimmed by (an ASS header arriving after the page opened) moves without
+            // changing the page's availability, so it is taken here.
+            self.takes_colour = sig.takes_colour;
             self.sub_sig = Some(sig);
             if let Some(page) = self.pages.top() {
                 let form = self.page_form(page);
@@ -1058,14 +1079,15 @@ impl TrackMenuState {
         let subs = item
             .map(|t| t.subs.iter().enumerate().map(|(i, s)| (s.id, offered.contains(&i))).collect())
             .unwrap_or_default();
-        let renderer = item
-            .and_then(|t| t.subs.get(usize::try_from(active).ok()?))
-            .map_or(SubRenderer::Text, |s| SubRenderer::of_codec(&s.codec));
+        let active_sub = item.and_then(|t| t.subs.get(usize::try_from(active).ok()?));
+        let renderer = active_sub.map_or(SubRenderer::Text, |s| SubRenderer::of_codec(&s.codec));
+        let takes_colour = active_sub.map_or(true, |s| plx_media::player::subtitle_takes_colour(&s.codec));
         let (_, enhancement, _, effect) = Self::enh_state(ps);
         SubSig {
             subs,
             active,
             renderer,
+            takes_colour,
             transcoding: plx_media::route::is_transcoding(ps),
             presenter: plx_media::route::subtitle_presenter(ps),
             enhancement,
@@ -1718,18 +1740,35 @@ impl TrackMenuState {
                 (),
                 field_row(StyleField::Color),
             );
-        if let Some(note) = self.renderer.note() {
+        if let Some(note) = self.renderer.note(self.takes_colour) {
             sec = sec.note(note);
         }
         Form::new().section(sec)
     }
 
     /// A picker page: one choice per rung of `field`'s ladder, the current one checked.
+    ///
+    /// The Color picker under a subtitle the pick's colours cannot reach (`takes_colour` is false: a
+    /// picture, or an ASS/SSA script with no pure-white style) shows those rungs DISABLED (the shared
+    /// disabled-row state: dim, focusable, inert) with the reason as the page's note. The grays stay live
+    /// (they tint any renderer), and the stored pick stays the checked rung and the saved preference: the
+    /// page says the pick does not reach this subtitle, it never rewrites it.
     fn picker_form(&self, field: StyleField) -> TrackForm {
         let current = TrackRow::Choice(field, self.current_rung(field));
-        let sec = (0..field.rungs()).fold(FormSection::new(""), |sec, rung| {
+        let unreachable = |rung: usize| {
+            field == StyleField::Color
+                && !self.takes_colour
+                && SubtitleTone::from_index(rung as u8).text_rgb8().is_some()
+        };
+        let mut sec = (0..field.rungs()).fold(FormSection::new(""), |sec, rung| {
             sec.choice(TrackRow::Choice(field, rung), (), Row::new(field.rung_label(rung)), |id| *id == current)
+                .disabled(unreachable(rung))
         });
+        if field == StyleField::Color && !self.takes_colour {
+            if let Some(note) = self.renderer.note(false) {
+                sec = sec.note(note);
+            }
+        }
         Form::new().section(sec)
     }
 
@@ -1976,6 +2015,7 @@ impl TrackMenuState {
         let forced_readout = Self::forced_readout(ps, meta, self.active_sub, self.forced_only);
         let sig = self.sub_sig_for(ps, meta, self.active_sub, forced_readout);
         self.renderer = sig.renderer;
+        self.takes_colour = sig.takes_colour;
         self.sub_sig = Some(sig);
         let (form, model) = self.sub_root_form(
             ps, meta, self.sub_sig.as_ref().and_then(|sig| sig.forced_only.as_deref()),
@@ -5508,6 +5548,7 @@ mod focus_tests {
             position: SubtitlePosition::Low,
             pages: PageStack::new(),
             renderer: SubRenderer::Text,
+            takes_colour: true,
             sub_sig: None,
             other: Vec::new(),
             root_tracks: Vec::new(),
@@ -6049,6 +6090,103 @@ mod style_page_tests {
         teardown(&ps);
     }
 
+    /// An authored header (white `Default`, blue `Sign`) and a coloured-only one, for the Color tests.
+    fn ass_header(white_default: bool) -> Vec<u8> {
+        let style = |name: &str, primary: &str| format!(
+            "Style: {name},Arial,48,{primary},&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1\n");
+        let default = if white_default { "&H00FFFFFF" } else { "&H0000FFFF" };
+        format!(
+            "[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n{}{}\n[Events]\n",
+            style("Default", default), style("Sign", "&H00FF0000")
+        ).into_bytes()
+    }
+
+    /// **A Color rung the active subtitle cannot take is dimmed with its reason, never unchecked.**
+    /// The one media fact (`player::subtitle_takes_colour`) decides: plain text and an ASS/SSA track with a
+    /// pure-white-primary style take Yellow; an ASS track with none and a picture subtitle do not. Then
+    /// the Yellow rung is a disabled row (focusable, inert), the grays stay live (they tint any
+    /// renderer), the Style page's note and the picker's own note say why, and a stored Yellow pick stays
+    /// the checked rung and the saved preference.
+    #[test]
+    fn a_color_the_active_subtitle_cannot_take_is_dimmed_with_its_reason_and_the_stored_pick_stays() {
+        use plx_media::player::ass_source::{self, TrackHeader};
+        use plx_platform::i18n::msg;
+        let _g = plx_base::testlock::serial();
+        let cases: [(&str, Option<bool>, bool, Option<&str>); 4] = [
+            ("srt", None, true, None),
+            ("ass", Some(true), true, Some(msg::widgets_tracks_style_styled_note())),
+            ("ass", Some(false), false, Some(msg::widgets_tracks_style_fixed_note())),
+            ("pgs", None, false, Some(msg::widgets_tracks_style_image_note())),
+        ];
+        for (codec, white_style, takes, note) in cases {
+            ass_source::reset();
+            plx_media::player::sidecar::reset();
+            if let Some(white) = white_style {
+                ass_source::begin("fixture", vec![(0, TrackHeader::Authored(ass_header(white)))], Vec::new());
+            }
+            plx_media::player::request_subtitle(0);
+            plx_media::player::restore_subtitle_tone(SubtitleTone::Yellow);
+            let (mut menu, ps, store) = open_with(codec, SubtitleEffect::Sidecar);
+            let at = format!("{codec} white_style={white_style:?}");
+            assert_eq!(menu.takes_colour, takes, "{at}: the menu reads the media fact");
+            let notes = |menu: &TrackMenuState| -> Vec<String> {
+                menu.form.table.sections.iter().flat_map(|s| &s.rows).filter(|r| r.is_note()).map(|r| r.label.to_string()).collect()
+            };
+            focus_id(&mut menu, TrackRow::Style);
+            menu.on_ok(store.view());
+            assert_eq!(notes(&menu), note.map(str::to_string).into_iter().collect::<Vec<_>>(), "{at}: the Style page's note");
+            focus_id(&mut menu, TrackRow::OpenField(StyleField::Color));
+            menu.on_ok(store.view());
+            assert_eq!(menu.page_path(), [TrackPage::Style, TrackPage::Picker(StyleField::Color)], "{at}");
+            assert_eq!(notes(&menu), if takes { vec![] } else { note.map(str::to_string).into_iter().collect() }, "{at}: the picker says why");
+            for rung in 0..SubtitleTone::LADDER.len() {
+                let tone = SubtitleTone::from_index(rung as u8);
+                let row = row_of(&menu, TrackRow::Choice(StyleField::Color, rung));
+                let reaches = takes || tone.text_rgb8().is_none();
+                assert_eq!(row.disabled, !reaches, "{at}: {tone:?}");
+                assert_eq!(row.checked, tone == SubtitleTone::Yellow, "{at}: {tone:?} stays the checked rung when it is the pick");
+            }
+            if !takes {
+                focus_id(&mut menu, TrackRow::Choice(StyleField::Color, SubtitleTone::Yellow.index() as usize));
+                assert_eq!(menu.on_ok(store.view()), TrackOk::Inert, "{at}: the dimmed rung opens nothing");
+                assert_eq!(plx_media::player::subtitle_tone(), SubtitleTone::Yellow, "{at}: the saved pick is untouched");
+            }
+            focus_id(&mut menu, TrackRow::Choice(StyleField::Color, SubtitleTone::Silver.index() as usize));
+            assert_ne!(menu.on_ok(store.view()), TrackOk::Inert, "{at}: a gray tints every renderer and stays pickable");
+            plx_media::player::restore_subtitle_tone(SubtitleTone::White);
+            teardown(&ps);
+        }
+        ass_source::reset();
+    }
+
+    /// **The dimmed rungs follow the fact live**: an ASS track's header is known only once the demuxer (or
+    /// the sidecar fetch) has delivered it, so the Color picker opened before that refreshes IN PLACE
+    /// (same page, same focused rung) when the fact arrives, rather than staying optimistic.
+    #[test]
+    fn the_color_picker_dims_its_rungs_when_the_headers_fact_arrives_after_it_opened() {
+        use plx_media::player::ass_source::{self, TrackHeader};
+        let _g = plx_base::testlock::serial();
+        ass_source::reset();
+        plx_media::player::sidecar::reset();
+        plx_media::player::request_subtitle(0);
+        let (mut menu, ps, store) = open_with("ass", SubtitleEffect::Sidecar);
+        focus_id(&mut menu, TrackRow::Style);
+        menu.on_ok(store.view());
+        focus_id(&mut menu, TrackRow::OpenField(StyleField::Color));
+        menu.on_ok(store.view());
+        let yellow = TrackRow::Choice(StyleField::Color, SubtitleTone::Yellow.index() as usize);
+        assert!(!row_of(&menu, yellow).disabled, "no header yet: nothing is dimmed");
+        focus_id(&mut menu, yellow);
+        ass_source::begin("fixture", vec![(0, TrackHeader::Authored(ass_header(false)))], Vec::new());
+        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store.view());
+        assert_eq!(menu.page_path(), [TrackPage::Style, TrackPage::Picker(StyleField::Color)], "refreshed in place");
+        assert!(!menu.takes_colour);
+        assert!(row_of(&menu, yellow).disabled, "the header has no white style: Yellow is dimmed");
+        assert_eq!(menu.selected_id(), Some(yellow), "on the row the viewer was on");
+        ass_source::reset();
+        teardown(&ps);
+    }
+
     /// **A Style page never outlives what it was built for**: a change of the
     /// page's availability (here the renderer kind) while on a sub-page pops to the root (opener and
     /// scroll restored); an unchanged signature leaves the page alone; on the root any change
@@ -6161,20 +6299,38 @@ mod style_page_tests {
         for language in plx_platform::i18n::SHIPPED {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
-            for codec in ["pgs", "ass"] {
-                let (mut menu, ps, _store) = open_with(codec, SubtitleEffect::Sidecar);
-                menu.push(TrackPage::Style);
-                let w = menu.form.table.menu_panel_width(&measure);
-                assert!(w >= theme::layout::PLAYER_MENU_MIN_W, "{language:?}: the page is not a sliver ({w})");
-                menu.form.table.fit_notes(w, &measure);
-                let lines = menu.form.table.sections.iter().flat_map(|s| &s.rows)
-                    .filter(|r| r.is_note()).map(|r| r.note_lines.get()).max().expect("a note row");
-                // Spanish's longer wording needs ~520px for two lines; at the 440 floor it takes three
-                // (measured), English and Belarusian take two
-                let allowed = if language == Preference::Es { 3 } else { 2 };
-                assert!(lines <= allowed, "{language:?} {codec}: the note takes {lines} lines at {w}px");
-                teardown(&ps);
+            // the picture note, the styled note (white follows the pick) and the styled-with-no-white note,
+            // each on the Style page and (the dimmed Yellow rung's reason) on the Color picker
+            for (codec, white_style) in [("pgs", None), ("ass", None), ("ass", Some(false))] {
+                plx_media::player::ass_source::reset();
+                plx_media::player::request_subtitle(0);
+                if let Some(white) = white_style {
+                    plx_media::player::ass_source::begin(
+                        "fixture", vec![(0, plx_media::player::ass_source::TrackHeader::Authored(ass_header(white)))], Vec::new(),
+                    );
+                }
+                for picker in [false, true] {
+                    let (mut menu, ps, _store) = open_with(codec, SubtitleEffect::Sidecar);
+                    menu.push(TrackPage::Style);
+                    if picker {
+                        menu.push(TrackPage::Picker(StyleField::Color));
+                    }
+                    let w = menu.form.table.menu_panel_width(&measure);
+                    assert!(w >= theme::layout::PLAYER_MENU_MIN_W, "{language:?}: the page is not a sliver ({w})");
+                    menu.form.table.fit_notes(w, &measure);
+                    let lines = menu.form.table.sections.iter().flat_map(|s| &s.rows)
+                        .filter(|r| r.is_note()).map(|r| r.note_lines.get()).max();
+                    // the picker carries a note only when its rungs are dimmed
+                    assert_eq!(lines.is_some(), !picker || !menu.takes_colour, "{language:?} {codec} picker={picker}");
+                    let lines = lines.unwrap_or(0);
+                    // Spanish's longer wording needs ~520px for two lines; at the 440 floor it takes three
+                    // (measured), English and Belarusian take two
+                    let allowed = if language == Preference::Es { 3 } else { 2 };
+                    assert!(lines <= allowed, "{language:?} {codec} {white_style:?} picker={picker}: the note takes {lines} lines at {w}px");
+                    teardown(&ps);
+                }
             }
+            plx_media::player::ass_source::reset();
         }
     }
 

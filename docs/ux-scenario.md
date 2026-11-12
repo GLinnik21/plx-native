@@ -679,9 +679,11 @@ full-screen sheet. All three are modal while open: they take every key, and BACK
   statistics, plus **Send diagnostics** when that row is enabled. LEFT/RIGHT are deliberately
   swallowed here: it is one column.
 
-The app exposes **no subtitle appearance settings**, and its client-rendered subtitles do not read
-the television's own subtitle settings — stated here because that is what makes the second half of
-checklist #48 N/A rather than failing.
+The player's Subtitles menu has a **Style** page (size, position and color; `docs/player-submenus.md`):
+a color the active subtitle cannot take (a picture subtitle, or a styled script with no white text) is
+shown dimmed with its reason, never as a checked choice that does nothing. Those are the app's own
+settings: its client-rendered subtitles do not read the television's own subtitle settings — stated
+here because that is what makes the second half of checklist #48 N/A rather than failing.
 
 **2. Over a marked segment: a Skip pill.** When the server has marked an intro or credits region and
 the playhead is inside it, a single **Skip Intro** / **Skip Credits** pill takes the row — same
