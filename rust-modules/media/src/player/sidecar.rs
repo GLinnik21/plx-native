@@ -290,7 +290,8 @@ pub fn select_without_fetch_for_test(stream_id: i64) {
 
 /// Select `stream_id` as a sidecar and install `script` as its loaded file, without fetching: for
 /// tests of what the DRAW is handed for a sidecar over a remux (`player::subtitle_draw`). The
-/// script must be an authored ASS/SSA one, so nothing restyles it on a worker.
+/// script must be an authored ASS/SSA one: a converted file would be restyled by a worker at once. (An
+/// authored script is rebuilt on a worker too, when the colour pick moves: [`start_recolour`].)
 #[cfg(any(test, feature = "test-support"))]
 pub fn select_loaded_for_test(stream_id: i64, script: &[u8]) {
     select_for_test(stream_id, "ass", Some(script));

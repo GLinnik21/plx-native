@@ -74,12 +74,12 @@ widening recorded the 17 forks that were already there (three in `screens/`: `le
 **Decisions the table hides.**
 
 - A bare `spawn(` / `submit(` / `peek(` / `revision(` / `blocked_for(` / `offers(` / `current_gen(` /
-  `active(` is a site only in a file that imports it from `task`, `storage_worker`, `session`, `keypin`,
-  `grant` or `tape` (singly, as the last or any other item of a braced group, or through a glob;
+  `active(` / `selected(` / `takes_colour(` is a site only in a file that imports it from `task`,
+  `storage_worker`, `session`, `keypin`, `grant`, `tape`, `sidecar` or `ass_source` (singly, as the last or any other item of a braced group, or through a glob;
   `Builder::spawn`, a local fn, `it.peek()` and another module's `active()` are not workers or registry
   reads); `peek` and `current_gen(` are also sites inside `plex/src/plex/session.rs`, the module that
   defines them. `current_gen` and `active` are generic names, so their bare form counts only as a call; a
-  `use ... as` rename of `tape`, `tape::active` or any of the new names fails outright. A local launcher
+  `use ... as` rename of `tape`, `tape::active`, `sidecar`, `ass_source` or any of the new names fails outright. A local launcher
   (`launch_browse_discovery`) is no site of its own: the real call inside it is.
 - The roster, session-cache and tape readers (`server_ids`, `server_roster_gen`, `server_facts_gen`,
   `server_probe_result`, `session::peek_settled`, `session::current_gen`, `tape::active`) read process-wide
