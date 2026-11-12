@@ -1201,6 +1201,85 @@ fn native_a_face_past_the_old_facade_limit_is_accepted_and_draws() {
     assert_eq!(native.stats().library_fonts, bundled_faces() + 2);
 }
 
+// ---- issue #1328: a renderer holds no copy of the attached font bytes ----
+
+use plx_base::testheap;
+
+/// Inter renamed to the family `Plx Heap {index}` and padded to `bytes`: a face a track names, as big
+/// as the display faces of the report (6-13 MB each).
+fn heap_face(index: usize, bytes: usize) -> Font {
+    let inter = std::fs::read(asset_dir().join("appfont.ttf")).expect("a shipped face");
+    Font {
+        name: format!("heap-{index}.ttf"),
+        data: rename(&inter, &format!("Plx Heap {index}"), "Regular", Some(bytes)).into(),
+    }
+}
+
+/// What a renderer costs in heap beyond the fonts it is handed, measured on the C heap of a fresh
+/// process (`testheap`: libass and FreeType call `malloc` themselves, so a Rust allocator count
+/// would miss exactly the copies this is about). The fonts are the store's, shared by `Arc`; the
+/// renderer opens six faces of 8 MiB, draws a cue in each, and the heap it added over its fonts
+/// is read back, and again once it is dropped.
+fn heap_renderer_cost() {
+    const FACES: usize = 6;
+    let fonts: Vec<Font> = (0..FACES).map(|i| heap_face(i, 8 * MIB)).collect();
+    let font_bytes: usize = fonts.iter().map(|f| f.data.len()).sum();
+    let lines: String = (0..FACES as i64)
+        .map(|i| glyph_line(i, &format!(r"\fnPlx Heap {i}"), u32::from(b'H')))
+        .collect();
+    let text = named_script("Plx Heap 0", &lines);
+    let base = testheap::live_bytes().expect("a host whose malloc can be asked");
+    let ((native, shown), peak) = testheap::peak_during(|| {
+        let mut native = native_with(&fonts, &text);
+        let mut shown = 0;
+        for second in 0..FACES as i64 {
+            shown += usize::from(native_frame(&mut native, second * 1000 + 500).is_some());
+        }
+        (native, shown)
+    });
+    assert_eq!(shown, FACES, "every cue draws");
+    assert_eq!(native.given, FACES, "the track names every face");
+    let held = testheap::live_bytes().unwrap();
+    drop(native);
+    let released = testheap::live_bytes().unwrap();
+    testheap::report("font_bytes", font_bytes as u64);
+    testheap::report("held", held.saturating_sub(base) as u64);
+    testheap::report("peak", peak.saturating_sub(base) as u64);
+    testheap::report("after_drop", released.saturating_sub(base) as u64);
+    drop(fonts);
+}
+
+/// Every renderer used to copy the attached fonts it was handed (`ass_add_font` mallocs and copies),
+/// so each one cost the fonts again: a primary and two helpers on the report's file held the 53 MB
+/// the track names three times over, beside the store's own copy. libass reads them in place now:
+/// the renderer's own heap is its face state and caches, a fraction of the font bytes and not their
+/// multiple.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_renderer_holds_no_copy_of_the_fonts_it_is_handed() {
+    const TEST: &str = "player::ass::tests::native_a_renderer_holds_no_copy_of_the_fonts_it_is_handed";
+    if testheap::is_child() {
+        return heap_renderer_cost();
+    }
+    let cost = testheap::in_fresh_process(TEST);
+    let fonts = cost["font_bytes"];
+    assert!(fonts >= 48 * MIB as u64, "the fixture is big enough to tell a copy from noise: {fonts}");
+    let mib = |bytes: u64| bytes as f64 / MIB as f64;
+    assert!(
+        cost["held"] < fonts / 4,
+        "a renderer of {:.1} MiB of faces held {:.1} MiB: it copies them",
+        mib(fonts),
+        mib(cost["held"])
+    );
+    assert!(
+        cost["peak"] < fonts / 3,
+        "a renderer of {:.1} MiB of faces peaked at {:.1} MiB: it copies them",
+        mib(fonts),
+        mib(cost["peak"])
+    );
+    assert!(cost["after_drop"] < 4 * MIB as u64, "a dropped renderer gives its heap back: {:.1} MiB left", mib(cost["after_drop"]));
+}
+
 /// A long sidecar script is fed to libass a window at a time, and the first window holds only its
 /// first lines: a face that a line far past it asks for must be held before the window slides there.
 #[test]
