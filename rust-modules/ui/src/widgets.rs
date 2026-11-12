@@ -1805,10 +1805,10 @@ pub fn hero_identity_w(r: Rect, parts: &[&str], resolution: Option<&str>, chips:
 }
 
 /// Home's metadata band uses brighter reading ink over the hero art and reserves room for the rating.
-pub fn hero_metadata(p: Painter, r: Rect, parts: &[&str], quality: Option<&str>, rating: &str, measure: &dyn plx_machine::machine::Measure) {
+pub fn hero_metadata(p: Painter, r: Rect, parts: &[&str], quality: Option<&str>, range: Option<&str>, rating: &str, measure: &dyn plx_machine::machine::Measure) {
     let rating = (!rating.is_empty() && keyline_chip_w(rating, measure) <= r.w * 0.5).then_some(rating);
-    let chips = rating.as_ref().map_or(&[][..], std::slice::from_ref);
-    identity_row(Some(p), r, parts, quality, chips, theme::TEXT_READING, measure);
+    let chips: Vec<&str> = range.into_iter().chain(rating).collect();
+    identity_row(Some(p), r, parts, quality, &chips, theme::TEXT_READING, measure);
 }
 
 /// The one layout of the identity band, painted with `paint` or only measured without it.

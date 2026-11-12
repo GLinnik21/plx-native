@@ -2985,11 +2985,12 @@ impl DetailScreen {
         }
         if !d.edition.is_empty() { parts.insert(0, &d.edition); }
         let resolution = plx_ui::fmt::resolution(&d.video_resolution, d.width, d.height);
-        let chips: Vec<&str> = [
+        let access = [
             (!d.subs.is_empty(), plx_platform::i18n::msg::widgets_badge_cc()),
             (d.subs.iter().any(|s| s.sdh), plx_platform::i18n::msg::widgets_badge_sdh()),
             (d.audio.iter().any(|s| s.ad), plx_platform::i18n::msg::widgets_badge_ad()),
-        ].into_iter().filter_map(|(present, label)| present.then_some(label)).collect();
+        ].into_iter().filter_map(|(present, label)| present.then_some(label));
+        let chips: Vec<&str> = plx_ui::fmt::dynamic_range(d.hdr, d.dovi.present).into_iter().chain(access).collect();
         let r = Rect::new(plx_ui::consts::MARGIN_X, y, plx_ui::detail_layout::HERO_TEXT_W, plx_ui::widgets::BADGE_H);
         plx_ui::widgets::hero_identity(p, r, &parts, resolution.as_deref(), &chips, measure);
     }
