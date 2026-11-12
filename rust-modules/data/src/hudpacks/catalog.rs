@@ -943,7 +943,7 @@ let (fetch,): (bool,) = (fetch,);
                 }
                 true
             }
-            _ => false,
+            Event::Load { .. } | Event::Read { .. } | Event::Reply { .. } | Event::Written { .. } => false,
         }
 
 }

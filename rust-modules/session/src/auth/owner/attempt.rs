@@ -1306,6 +1306,21 @@ mod tests {
         ]
     }
 
+    // Imported-residue fixtures intentionally include states no addressed runtime event admits.
+    // Construct their owned successor while exercising the production exit and entry plans.
+    fn fixture_after_attempt(init: SessionInit, event: AttemptEvent) -> (SessionMachine, Vec<SessionFx>) {
+        let mut owner = SessionMachine::from_init(init);
+        let exit = ExitFx::attempt(owner.view(), &event);
+        let entry = EntryFx::attempt(owner.view(), &event);
+        if let Some(notice) = signin_notice(&event) { owner.common.signin_notice = notice; }
+        let mut effects = Vec::new();
+        exit.emit(&mut |fx| effects.push(fx));
+        owner.state = next_attempt(owner.state, event);
+        entry.emit(&mut |fx| effects.push(fx));
+        assert!(owner.transition(&SessionEvent::RebuildPublication, 0, &mut effects));
+        (owner, effects)
+    }
+
     fn fixture(phase: Phase, erase: Option<(u64, bool)>) -> SessionInit {
         let mut s = SessionInit::captured(PersistedSession { client_id: "representation-client".into(), ..Default::default() });
         s.phase = phase;
@@ -1490,8 +1505,7 @@ mod tests {
                             AttemptEvent::LinkTrouble { present: false }
                         }
                     };
-                    let mut state = SessionMachine::from_init(init);
-                    state.transition(TransitionInput::Attempt(flow), 0, &mut |_| {});
+                    let (state, _effects) = fixture_after_attempt(init, flow);
                     assert_eq!(serde_json::to_value(state.snapshot_init()).unwrap(),
                         serde_json::to_value(&expected).unwrap());
                     assert_eq!(state.snapshot_init().signin_account, expected.signin_account);
@@ -1546,8 +1560,7 @@ mod tests {
                     6 => { expected.phase = Phase::Ready; expected.apply_pending = false; AttemptEvent::ActivateDev }
                     _ => { expected.phase = Phase::Ready; expected.error.clear(); AttemptEvent::ResumeDevBack }
                 };
-                let mut state = SessionMachine::from_init(init);
-                state.transition(TransitionInput::Attempt(flow), 0, &mut |_| {});
+                let (state, _effects) = fixture_after_attempt(init, flow);
                 let actual = state.snapshot_init();
                 assert_eq!(serde_json::to_value(&actual).unwrap(), serde_json::to_value(&expected).unwrap());
                 assert_eq!(actual.signin_account, expected.signin_account);
@@ -1635,13 +1648,13 @@ mod tests {
                         14 => { expected.users = users.clone(); AttemptEvent::RosterArrived { users } }
                         _ => { expected.apply_pending = false; AttemptEvent::ReadyCommitted }
                     };
-                    let mut owner = SessionMachine::from_init(init);
+                    let (owner, transition_effects) = fixture_after_attempt(init, event);
                     let mut effects = Vec::new();
                     let mut coordinator = Vec::new();
-                    owner.transition(TransitionInput::Attempt(event), 0, &mut |fx| {
+                    for fx in transition_effects {
                         if let SessionFx::Coordinator(action) = fx { coordinator.push(action); }
                         else { effects.push(fx); }
-                    });
+                    }
                     if matches!(case, 10 | 11) {
                         assert!(matches!(coordinator.as_slice(), [CoordinatorAction::SignInCompleted]));
                     } else { assert!(coordinator.is_empty()); }

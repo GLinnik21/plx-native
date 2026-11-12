@@ -2064,7 +2064,7 @@ let mut handled = match ev {
 SessionEvent::ConsumeLogicalDirty => {
  std::mem::take(&mut self.logical_dirty)
 },
-SessionEvent::RaiseIncident { flow, context } => { 'raise_incident: {
+SessionEvent::RaiseIncident { flow, context } => { publish = true; 'raise_incident: {
 let (flow, context,): (IncidentFlow, IncidentContext,) = (*flow, *context,);
 
         let key = IncidentKey { flow, kind: context.kind, link: context.link };
@@ -2088,7 +2088,7 @@ let (flow, context,): (IncidentFlow, IncidentContext,) = (*flow, *context,);
         });
 
 }; true },
-SessionEvent::ForgetIncidents => { {
+SessionEvent::ForgetIncidents => { publish = true; {
 
         self.common.incident = None;
         self.common.incidents_seen.clear();
@@ -2116,7 +2116,7 @@ let (envelope,): (&SessionEnvelope,) = (envelope,);
                     (_, SessionArrival::Refused) => (plx_platform::i18n::msg::browse_auth_start_failed(), InternalClass::WorkerRefused),
                     _ => (plx_platform::i18n::msg::browse_auth_finish_failed(), InternalClass::WorkerDropped),
                 };
-                'fail_login: {
+                {
 let (message, incident,): (&str, Option<IncidentContext>,) = (message, Some(IncidentContext::internal(class)),);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
@@ -2179,7 +2179,7 @@ let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, 
                     LoginProgress::CodeReady { code, qr_png, .. } => {
                         if envelope.key.op != SessionOp::Login { break 'apply_qr_observation false; }
                         let Some(next) = self.common.next_qr.checked_add(1) else {
-                            'fail_login: {
+                            {
 let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_start_failed(), Some(IncidentContext::internal(InternalClass::Exhausted)),);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
@@ -2294,7 +2294,7 @@ let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, 
                         }
                     }
                     LoginProgress::Failed { message, incident, plaintext, account, .. } => {
-                        'fail_login: {
+                        {
 let (message, incident,): (&str, Option<IncidentContext>,) = (message, Some(*incident),);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
@@ -2349,7 +2349,7 @@ let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, 
         true
 
 },
-#[cfg(test)] SessionEvent::FailLogin { message, incident } => { 'fail_login: {
+#[cfg(test)] SessionEvent::FailLogin { message, incident } => { {
 let (message, incident,): (&str, Option<IncidentContext>,) = (message, *incident,);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
@@ -4843,6 +4843,24 @@ mod tests {
         assert_eq!(legacy.subhash(), typed.subhash());
     }
 
+    #[test]
+    fn standalone_incident_events_publish_the_owned_readout() {
+        let mut owner = SessionMachine::from_init(SessionInit::captured(PersistedSession::default()));
+        let context = IncidentContext::new(IncidentKind::PinCreate, None);
+        let before = owner.publication();
+        let mut effects = Vec::new();
+        assert!(owner.transition(&SessionEvent::RaiseIncident { flow: IncidentFlow::SignIn, context }, 0, &mut effects));
+        assert!(owner.common.incident.is_some());
+        assert_eq!(owner.read().0.incident, owner.snapshot_init().incident);
+        assert!(!Arc::ptr_eq(&before, &owner.publication()));
+        let before = owner.publication();
+        assert!(owner.transition(&SessionEvent::ForgetIncidents, 0, &mut effects));
+        assert!(owner.common.incident.is_none());
+        assert!(owner.read().0.incident.is_none());
+        assert!(!Arc::ptr_eq(&before, &owner.publication()));
+        assert!(effects.is_empty());
+    }
+
     /// The session-cache refresh bookkeeping (`CacheRefresh`): driven by tick values, no sleeping.
     mod cache_refresh {
         use super::*;
@@ -6123,16 +6141,23 @@ mod tests {
     fn disk_comparison_identity_is_not_a_worker_or_back_input() {
         let src = include_str!("owner.rs");
         let production = src.split("\n#[cfg(test)]\nmod tests").next().unwrap();
-        // Explicit function-body list, not a transitive call-graph claim. apply_read may update
-        // an empty comparison client-id from a resource reply; it never reads its token for work.
-        for name in ["start_reserved_login", "restart_login", "start_switch", "select_profile",
-            "back", "request_endpoint", "refresh_roster", "emit_work", "work_is_current"] {
-            let marker = format!("fn {name}(");
-            let start = production.find(&marker).unwrap();
-            let rest = &production[start..];
-            let end = rest.find("\n    }").unwrap();
-            // start_switch also emits a no-save registry commit. Its exact comparison-field
-            // projection is allowed; no other use in these worker/BACK constructors is.
+        // The former helper bodies now live in these canonical event arms and entry plans.
+        // This is still an explicit source-scope check, not a transitive call-graph claim.
+        for (name, marker, boundary) in [
+            ("start_reserved_login/emit_work", "fn login(state:", "enum AttemptEvent {"),
+            ("restart_login", "restarted = 'restart_login: {", "}; if !matches!(ev, SessionEvent::Erased"),
+            ("start_switch", "SessionEvent::Command(Command::StartSwitch(picker))", "SessionEvent::Command(Command::SelectProfile { index, pin })"),
+            ("select_profile", "SessionEvent::Command(Command::SelectProfile { index, pin })", "SessionEvent::Command(Command::BackAtRoot"),
+            ("back", "SessionEvent::Command(Command::BackAtRoot", "SessionEvent::Command(Command::SignOut)"),
+            ("request_endpoint", "SessionEvent::Command(Command::RequestEndpoint { sid })", "SessionEvent::Command(Command::AnswerPlaintext"),
+            ("refresh_roster", "SessionEvent::Command(Command::RefreshRoster)", "SessionEvent::Command(Command::RequestEndpoint { sid })"),
+            ("work_is_current", "pub fn work_is_current(", "\n    }"),
+        ] {
+            let start = production.find(marker).unwrap_or_else(|| panic!("missing owner scope {name}"));
+            let rest = &production[start + marker.len()..];
+            let end = rest.find(boundary).unwrap_or_else(|| panic!("missing end of owner scope {name}"));
+            // A no-save registry commit may carry the exact comparison projection,
+            // never use it to construct worker credentials or BACK authority.
             let body = rest[..end].replace("expected_disk: self.common.disk_identity.clone(),", "");
             assert!(!body.contains("disk_identity"), "comparison identity reached {name}");
         }

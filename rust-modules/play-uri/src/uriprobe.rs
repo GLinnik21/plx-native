@@ -2287,7 +2287,7 @@ mod tests {
     }
 
     fn acb_request(fx: &[UriEffect]) -> AcbRequest {
-        fx.iter().find_map(|fx| match fx {UriEffect::Acb {request,..} => Some(*request), _ => None}).expect("ACB effect")
+        fx.iter().find_map(|fx| match fx {UriEffect::Acb {request,..} => Some(*request), UriEffect::Open(_) | UriEffect::Call(_) | UriEffect::Close | UriEffect::Settle(_) | UriEffect::PlaceWindow { .. } | UriEffect::Log(_) => None}).expect("ACB effect")
     }
     fn acb_loaded(variant: Variant, early_video: bool) -> (Rig, Vec<UriEffect>) {
         let mut rig=Rig::new(variant,None);
@@ -2297,7 +2297,7 @@ mod tests {
         let fx=rig.msg("register","");
         assert!(fx.contains(&load(Some("window_id_dummy"))));
         let fx=rig.msg("load",r#"{"returnValue":true,"mediaId":"_m1"}"#);
-        let calls:Vec<_>=fx.iter().filter_map(|fx| match fx {UriEffect::Call(call)=>Some(call.method()),_=>None}).collect();
+        let calls:Vec<_>=fx.iter().filter_map(|fx| match fx {UriEffect::Call(call)=>Some(call.method()),UriEffect::Open(_) | UriEffect::Acb { .. } | UriEffect::Close | UriEffect::Settle(_) | UriEffect::PlaceWindow { .. } | UriEffect::Log(_) => None}).collect();
         assert_eq!(calls,["notifyForeground","subscribe"]);
         if early_video { rig.msg("subscribe",r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"frameRate":24}}"#); }
         let fx=rig.msg("subscribe",r#"{"mediaId":"_m1","loadCompleted":true}"#);
@@ -2311,7 +2311,7 @@ mod tests {
             let mut trace=Vec::new();
             for step in 0..5 {
                 let request=acb_request(&fx);
-                let op=fx.iter().find_map(|fx| match fx {UriEffect::Acb{op,..}=>Some(op.clone()),_=>None}).unwrap();
+                let op=fx.iter().find_map(|fx| match fx {UriEffect::Acb{op,..}=>Some(op.clone()),UriEffect::Open(_) | UriEffect::Call(_) | UriEffect::Close | UriEffect::Settle(_) | UriEffect::PlaceWindow { .. } | UriEffect::Log(_) => None}).unwrap();
                 trace.push((rig.now,op));
                 fx=rig.feed(UriEvent::AcbAnswered{request,invoked:true,completed_ms:rig.now});
                 if step<4 {

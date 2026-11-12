@@ -709,9 +709,9 @@ let (ev,): (HudEvent,) = (ev,);
                     Op::Installing(Installing { step: Step::Fetching { expected: Some(p), .. }, .. }) => p.sha() == sha,
                     Op::Installing(Installing { step: Step::Validating(offer) | Step::Offered { offer, .. }, .. }) =>
                         offer.source == Source::Registry && offer.sha == sha && offer.now.is_none(),
-                    _ => false,
+                    Op::Idle | Op::Listing(_) | Op::Installing(_) | Op::Removing(_) => false,
                 };
-                if cancels { std::mem::replace(&mut self.op, Op::Idle); Handled::Yes } else { Handled::No }
+                if cancels { drop(std::mem::replace(&mut self.op, Op::Idle)); Handled::Yes } else { Handled::No }
             }
             HudEvent::FetchRegistry { sha, app, language } => {
                 if self.busy() || self.catalog.snapshot().revoked(sha).is_some() { break 'reduce Handled::No }
@@ -725,7 +725,7 @@ let (ev,): (HudEvent,) = (ev,);
 
 };
                 fx.push(HudEffect::FetchRegistry { tag, package: package.clone(), max_bytes: self.setup.max_pack_bytes });
-                std::mem::replace(&mut self.op, Op::Installing(Installing { tag, step: Step::Fetching { address, expected: Some(package) } }));
+                drop(std::mem::replace(&mut self.op, Op::Installing(Installing { tag, step: Step::Fetching { address, expected: Some(package) } })));
                 Handled::Yes
             }
             HudEvent::Refresh { setup, selected } => {
@@ -813,7 +813,7 @@ let (mut listing,): (Listing,) = (Listing { todo, flight: None, stray },);
         Op::Idle
 
 };
-                    std::mem::replace(&mut self.op, next);
+                    drop(std::mem::replace(&mut self.op, next));
 
 };
                 Handled::Yes
@@ -853,7 +853,7 @@ let (offer,): (Offer,) = (Offer { sha, source, now: Some(now), from: None, bytes
         Op::Installing(Installing { tag, step: Step::Validating(offer) })
 
 };
-                    std::mem::replace(&mut self.op, next);
+                    drop(std::mem::replace(&mut self.op, next));
                 }
                 Handled::Yes
             }
@@ -868,7 +868,7 @@ let (offer,): (Offer,) = (Offer { sha, source, now: Some(now), from: None, bytes
 
 };
                 fx.push(HudEffect::Fetch { tag, address: address.clone(), max_bytes: self.setup.max_pack_bytes });
-                std::mem::replace(&mut self.op, Op::Installing(Installing { tag, step: Step::Fetching { address, expected: None } }));
+                drop(std::mem::replace(&mut self.op, Op::Installing(Installing { tag, step: Step::Fetching { address, expected: None } })));
                 Handled::Yes
             }
             HudEvent::InstallOffer { sha, now } => match std::mem::replace(&mut self.op, Op::Idle) {
@@ -901,18 +901,18 @@ let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, 0,);
         Op::Installing(Installing { tag, step: Step::Writing { offer, meta, dir, what: Write::Pack } })
 
 };
-                    std::mem::replace(&mut self.op, next);
+                    drop(std::mem::replace(&mut self.op, next));
                     Handled::Yes
                 }
-                other => {
-                    std::mem::replace(&mut self.op, other);
+                other @ (Op::Idle | Op::Listing(_) | Op::Installing(_) | Op::Removing(_)) => {
+                    drop(std::mem::replace(&mut self.op, other));
                     Handled::No
                 }
             },
             HudEvent::DeclineOffer { sha } => match std::mem::replace(&mut self.op, Op::Idle) {
                 Op::Installing(Installing { step: Step::Offered { offer, .. }, .. }) if offer.sha == sha => Handled::Yes,
-                other => {
-                    std::mem::replace(&mut self.op, other);
+                other @ (Op::Idle | Op::Listing(_) | Op::Installing(_) | Op::Removing(_)) => {
+                    drop(std::mem::replace(&mut self.op, other));
                     Handled::No
                 }
             },
@@ -922,7 +922,7 @@ let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, 0,);
                 }
                 let Some((dir, name)) = self.drops.iter().find_map(|d| match &d.found {
                     Found::Parsed { sha: s, .. } if *s == sha => Some((d.dir, d.name.clone())),
-                    _ => None,
+                    Found::TooLarge | Found::Parsed { .. } => None,
                 }) else {
                     break 'reduce Handled::No;
                 };
@@ -933,7 +933,7 @@ let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, 0,);
 
 };
                 fx.push(self.read(tag, dir, format!("{DROP_DIR}/{name}")));
-                std::mem::replace(&mut self.op, Op::Installing(Installing { tag, step: Step::Reading { sha, now } }));
+                drop(std::mem::replace(&mut self.op, Op::Installing(Installing { tag, step: Step::Reading { sha, now } })));
                 Handled::Yes
             }
             HudEvent::Removed { id } => 'begin_removal: {
@@ -990,7 +990,7 @@ let (mut removing,): (Removing,) = (Removing { id, dirs, incomplete: false, flig
         Op::Idle
 
 };
-                    std::mem::replace(&mut self.op, next);
+                    drop(std::mem::replace(&mut self.op, next));
         Handled::Yes
 
 },
@@ -1011,7 +1011,10 @@ let (mut listing, ev,): (Listing, HudEvent,) = (listing, result,);
             | HudEvent::Read { tag: t, .. }
             | HudEvent::Validated { tag: t, .. }
             | HudEvent::Written { tag: t, .. } => *t == tag,
-            _ => false,
+            HudEvent::Catalog(_) | HudEvent::FetchRegistry { .. } | HudEvent::CancelRegistry { .. }
+            | HudEvent::Refresh { .. } | HudEvent::Install { .. } | HudEvent::Fetch { .. }
+            | HudEvent::Fetched { .. } | HudEvent::InstallOffer { .. } | HudEvent::DeclineOffer { .. }
+            | HudEvent::InstallDrop { .. } | HudEvent::Selected { .. } | HudEvent::Removed { .. } => false,
         };
         if !addressed {
             listing.flight = Some(Flight { tag, job, stage });
@@ -1138,7 +1141,10 @@ let (installing, ev,): (Installing, HudEvent,) = (installing, result,);
             | HudEvent::Validated { tag: t, .. }
             | HudEvent::Written { tag: t, .. }
             | HudEvent::Fetched { tag: t, .. } => *t == tag,
-            _ => false,
+            HudEvent::Catalog(_) | HudEvent::FetchRegistry { .. } | HudEvent::CancelRegistry { .. }
+            | HudEvent::Refresh { .. } | HudEvent::Install { .. } | HudEvent::Fetch { .. }
+            | HudEvent::InstallOffer { .. } | HudEvent::DeclineOffer { .. }
+            | HudEvent::InstallDrop { .. } | HudEvent::Selected { .. } | HudEvent::Removed { .. } => false,
         };
         if !addressed {
             break 'installing_result (Op::Installing(Installing { tag, step }), Handled::No);
@@ -1396,7 +1402,7 @@ let (mut removing,): (Removing,) = (removing,);
 
 },
                 };
-                std::mem::replace(&mut self.op, op);
+                drop(std::mem::replace(&mut self.op, op));
                 handled
             }
         }
@@ -1486,7 +1492,7 @@ let (mut removing,): (Removing,) = (removing,);
                 source: offer.source,
                 from: offer.from.clone(),
             }),
-            _ => None,
+            Op::Idle | Op::Listing(_) | Op::Installing(_) | Op::Removing(_) => None,
         }
     }
 
