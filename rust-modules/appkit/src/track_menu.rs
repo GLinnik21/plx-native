@@ -83,7 +83,9 @@
 //! client's own drawn text, and in an authored ASS/SSA script it replaces the pure-white primary of
 //! every style that has one (`plx_media::player::ass_ink`). Whether the pick's colours reach the
 //! active subtitle is ONE media fact, `plx_media::player::subtitle_takes_colour` (a picture: never;
-//! text: always; ASS/SSA: when the header that reaches libass has a white-primary style), read into
+//! text: always; ASS/SSA: when the header that reaches libass has a white-primary style), a pure read of
+//! the session (the header's half is a value of its readout that the app delivers once a tick,
+//! `player::deliver_subtitle_ink`: the menu reads no subtitle registry), taken into
 //! [`SubSig`] and [`TrackMenuState::takes_colour`]. Where it is false the Color picker shows the Yellow
 //! rung DISABLED (the shared disabled row: dim, focusable, inert; the grays stay live), with the reason
 //! as the page's note and on the Style page ("gray only dims"), and a stored Yellow pick stays the
@@ -1081,7 +1083,7 @@ impl TrackMenuState {
             .unwrap_or_default();
         let active_sub = item.and_then(|t| t.subs.get(usize::try_from(active).ok()?));
         let renderer = active_sub.map_or(SubRenderer::Text, |s| SubRenderer::of_codec(&s.codec));
-        let takes_colour = active_sub.map_or(true, |s| plx_media::player::subtitle_takes_colour(&s.codec));
+        let takes_colour = active_sub.map_or(true, |s| plx_media::player::subtitle_takes_colour(ps, &s.codec));
         let (_, enhancement, _, effect) = Self::enh_state(ps);
         SubSig {
             subs,
@@ -5889,11 +5891,22 @@ mod style_page_tests {
         codec: &str,
         effect: SubtitleEffect,
     ) -> (TrackMenuState, plx_media::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
-        let (ps, _sid) = enhancement_test_session(EnhTestFixture {
+        open_with_ink(codec, effect, None)
+    }
+
+    /// [`open_with`] on a session whose readout already carries the media side's colour fact `ink`
+    /// (`player::deliver_subtitle_ink`'s value: `None` = the ASS header is not known yet).
+    fn open_with_ink(
+        codec: &str,
+        effect: SubtitleEffect,
+        ink: Option<bool>,
+    ) -> (TrackMenuState, plx_media::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
+        let (mut ps, _sid) = enhancement_test_session(EnhTestFixture {
             remux: None,
             subtitle_effect: effect,
             ..Default::default()
         });
+        ps.step_readout(plx_media::player::readout::ReadoutEvent::SubtitleInk(ink));
         let mut s = stream(999, 0, "English", "eng", "");
         s.codec = codec.into();
         let store = store_with(vec![s]);
@@ -6092,26 +6105,16 @@ mod style_page_tests {
         teardown(&ps);
     }
 
-    /// An authored header (white `Default`, blue `Sign`) and a coloured-only one, for the Color tests.
-    fn ass_header(white_default: bool) -> Vec<u8> {
-        let style = |name: &str, primary: &str| format!(
-            "Style: {name},Arial,48,{primary},&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1\n");
-        let default = if white_default { "&H00FFFFFF" } else { "&H0000FFFF" };
-        format!(
-            "[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n{}{}\n[Events]\n",
-            style("Default", default), style("Sign", "&H00FF0000")
-        ).into_bytes()
-    }
-
     /// **A Color rung the active subtitle cannot take is dimmed with its reason, never unchecked.**
-    /// The one media fact (`player::subtitle_takes_colour`) decides: plain text and an ASS/SSA track with a
+    /// The one media fact (`player::subtitle_takes_colour`, which reads the session: the readout holds the
+    /// header's half) decides: plain text and an ASS/SSA track with a
     /// pure-white-primary style take Yellow; an ASS track with none and a picture subtitle do not. Then
     /// the Yellow rung is a disabled row (focusable, inert), the grays stay live (they tint any
     /// renderer), the Style page's note and the picker's own note say why, and a stored Yellow pick stays
-    /// the checked rung and the saved preference.
+    /// the checked rung and the saved preference. No subtitle registry is touched: the fact is a value
+    /// of the session.
     #[test]
     fn a_color_the_active_subtitle_cannot_take_is_dimmed_with_its_reason_and_the_stored_pick_stays() {
-        use plx_media::player::ass_source::{self, TrackHeader};
         use plx_platform::i18n::msg;
         let _g = plx_base::testlock::serial();
         let cases: [(&str, Option<bool>, bool, Option<&str>); 4] = [
@@ -6121,14 +6124,8 @@ mod style_page_tests {
             ("pgs", None, false, Some(msg::widgets_tracks_style_image_note())),
         ];
         for (codec, white_style, takes, note) in cases {
-            ass_source::reset();
-            plx_media::player::sidecar::reset();
-            if let Some(white) = white_style {
-                ass_source::begin("fixture", vec![(0, TrackHeader::Authored(ass_header(white)))], Vec::new());
-            }
-            plx_media::player::request_subtitle(0);
             plx_media::player::restore_subtitle_tone(SubtitleTone::Yellow);
-            let (mut menu, ps, store) = open_with(codec, SubtitleEffect::Sidecar);
+            let (mut menu, ps, store) = open_with_ink(codec, SubtitleEffect::Sidecar, white_style);
             let at = format!("{codec} white_style={white_style:?}");
             assert_eq!(menu.takes_colour, takes, "{at}: the menu reads the media fact");
             let notes = |menu: &TrackMenuState| -> Vec<String> {
@@ -6158,20 +6155,16 @@ mod style_page_tests {
             plx_media::player::restore_subtitle_tone(SubtitleTone::White);
             teardown(&ps);
         }
-        ass_source::reset();
     }
 
     /// **The dimmed rungs follow the fact live**: an ASS track's header is known only once the demuxer (or
     /// the sidecar fetch) has delivered it, so the Color picker opened before that refreshes IN PLACE
-    /// (same page, same focused rung) when the fact arrives, rather than staying optimistic.
+    /// (same page, same focused rung) when the fact arrives in the session's readout, rather than staying
+    /// optimistic.
     #[test]
     fn the_color_picker_dims_its_rungs_when_the_headers_fact_arrives_after_it_opened() {
-        use plx_media::player::ass_source::{self, TrackHeader};
         let _g = plx_base::testlock::serial();
-        ass_source::reset();
-        plx_media::player::sidecar::reset();
-        plx_media::player::request_subtitle(0);
-        let (mut menu, ps, store) = open_with("ass", SubtitleEffect::Sidecar);
+        let (mut menu, mut ps, store) = open_with("ass", SubtitleEffect::Sidecar);
         focus_id(&mut menu, TrackRow::Style);
         menu.on_ok(store.view());
         focus_id(&mut menu, TrackRow::OpenField(StyleField::Color));
@@ -6179,13 +6172,12 @@ mod style_page_tests {
         let yellow = TrackRow::Choice(StyleField::Color, SubtitleTone::Yellow.index() as usize);
         assert!(!row_of(&menu, yellow).disabled, "no header yet: nothing is dimmed");
         focus_id(&mut menu, yellow);
-        ass_source::begin("fixture", vec![(0, TrackHeader::Authored(ass_header(false)))], Vec::new());
+        ps.step_readout(plx_media::player::readout::ReadoutEvent::SubtitleInk(Some(false)));
         menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store.view());
         assert_eq!(menu.page_path(), [TrackPage::Style, TrackPage::Picker(StyleField::Color)], "refreshed in place");
         assert!(!menu.takes_colour);
         assert!(row_of(&menu, yellow).disabled, "the header has no white style: Yellow is dimmed");
         assert_eq!(menu.selected_id(), Some(yellow), "on the row the viewer was on");
-        ass_source::reset();
         teardown(&ps);
     }
 
@@ -6304,15 +6296,8 @@ mod style_page_tests {
             // the picture note, the styled note (white follows the pick) and the styled-with-no-white note,
             // each on the Style page and (the dimmed Yellow rung's reason) on the Color picker
             for (codec, white_style) in [("pgs", None), ("ass", None), ("ass", Some(false))] {
-                plx_media::player::ass_source::reset();
-                plx_media::player::request_subtitle(0);
-                if let Some(white) = white_style {
-                    plx_media::player::ass_source::begin(
-                        "fixture", vec![(0, plx_media::player::ass_source::TrackHeader::Authored(ass_header(white)))], Vec::new(),
-                    );
-                }
                 for picker in [false, true] {
-                    let (mut menu, ps, _store) = open_with(codec, SubtitleEffect::Sidecar);
+                    let (mut menu, ps, _store) = open_with_ink(codec, SubtitleEffect::Sidecar, white_style);
                     menu.push(TrackPage::Style);
                     if picker {
                         menu.push(TrackPage::Picker(StyleField::Color));
@@ -6332,7 +6317,6 @@ mod style_page_tests {
                     teardown(&ps);
                 }
             }
-            plx_media::player::ass_source::reset();
         }
     }
 

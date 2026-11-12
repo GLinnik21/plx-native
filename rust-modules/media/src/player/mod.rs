@@ -2289,18 +2289,37 @@ pub fn request_subtitle(idx: i32) {
 /// Color rungs are disabled by, answered here where the track is classified and never re-derived by a
 /// screen. A picture subtitle (PGS, VobSub) never takes a colour (only a gray tint reaches its bitmap);
 /// a text track always does (its header is built from the pick); an ASS/SSA track does when the header
-/// that reaches libass has a style the pick recolours ([`ass_ink::takes_colour`]), read from the
-/// selected sidecar when one is, else from the embedded track the demuxer is feeding. While that header
-/// is not known yet the answer is yes: the menu dims nothing it cannot explain.
-pub fn subtitle_takes_colour(codec: &str) -> bool {
+/// that reaches libass has a style the pick recolours ([`ass_ink::takes_colour`]). A pure read of the
+/// session: the header's half is the readout's value ([`deliver_subtitle_ink`] puts it there once a
+/// tick), so a menu asking this reads no registry. While the header is not known yet the answer is
+/// yes: the menu dims nothing it cannot explain.
+pub fn subtitle_takes_colour(ps: &crate::route::PlaybackSession, codec: &str) -> bool {
     if plx_data::metadata::sub_layout::is_image_sub_codec(codec) {
         return false;
     }
     if !(codec.eq_ignore_ascii_case("ass") || codec.eq_ignore_ascii_case("ssa")) {
         return true;
     }
-    let known = if sidecar::selected() { sidecar::takes_colour() } else { ass_source::takes_colour(desired_sub_idx()) };
-    known.unwrap_or(true)
+    ps.readout().subtitle_takes_colour().unwrap_or(true)
+}
+
+/// **Deliver the subtitle registries' colour fact to the session** (the app's frame tick, whichever
+/// backend plays): whether the header that reaches libass for the selected ASS/SSA track has a style the
+/// pick recolours ([`ass_ink::takes_colour`], cached from the file's own bytes), read from the selected
+/// sidecar when one is, else from the embedded track the demuxer is feeding. The readout holds it
+/// ([`readout::ReadoutEvent::SubtitleInk`]) for [`subtitle_takes_colour`]; nothing is stepped when it
+/// has not changed.
+pub fn deliver_subtitle_ink(ps: &mut crate::route::PlaybackSession) {
+    let known = if sidecar::selected() {
+        sidecar::takes_colour()
+    } else if desired_sub_idx() >= 0 {
+        ass_source::takes_colour(desired_sub_idx())
+    } else {
+        None
+    };
+    if ps.readout().subtitle_takes_colour() != known {
+        ps.step_readout(readout::ReadoutEvent::SubtitleInk(known));
+    }
 }
 
 /// The tone client-rendered subtitles are drawn in. A [`crate::route::LiveCell`] rather than a field

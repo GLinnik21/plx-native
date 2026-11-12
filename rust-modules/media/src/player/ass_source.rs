@@ -1772,14 +1772,19 @@ mod tests {
 
     /// **`player::subtitle_takes_colour` is the one answer the menu reads**: pictures never, text always,
     /// ASS by the header of the selected sidecar, else of the embedded track being fed, and yes while that
-    /// header is unknown.
+    /// header is unknown. The header's half reaches it through the session's readout, delivered once a
+    /// tick by `player::deliver_subtitle_ink`: asked before a delivery, the answer is still the last one.
     #[test]
     fn the_subtitle_takes_colour_fact_follows_the_codec_and_the_selected_track() {
         let _guard = plx_base::testlock::serial();
         reset();
         super::super::sidecar::reset();
         let coloured = String::from_utf8(authored_header()).unwrap().replace("&H00FFFFFF", "&H0000FFFF").into_bytes();
-        let takes = super::super::subtitle_takes_colour;
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let mut takes = |codec: &str| {
+            super::super::deliver_subtitle_ink(&mut ps);
+            super::super::subtitle_takes_colour(&ps, codec)
+        };
         assert!(!takes("pgs") && !takes("hdmv_pgs_subtitle") && !takes("dvd_subtitle"), "a picture never takes a colour");
         assert!(takes("srt") && takes("subrip") && takes("webvtt") && takes("mov_text"), "text always does");
         assert!(takes("ass"), "nothing known yet: nothing is dimmed");

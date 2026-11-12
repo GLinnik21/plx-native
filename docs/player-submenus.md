@@ -64,8 +64,10 @@ because the overlay's state shape changed on purpose.
   (the shared disabled row, grays live) and the reason as its note ("Image subtitles keep their look;
   gray only dims." / "This subtitle sets its own colors; gray only dims."), instead of a checked Yellow
   that does nothing; the stored pick stays checked and saved. The one fact is
-  `player::subtitle_takes_colour(codec)`, read into the `SubSig` (so it refreshes live, an ASS
-  header arriving after the page opened included).
+  `player::subtitle_takes_colour(ps, codec)`, read into the `SubSig` (so it refreshes live, an ASS
+  header arriving after the page opened included). It is a pure read of the session: the header's half
+  is a value of the readout that the app delivers once a tick (`player::deliver_subtitle_ink`), so the
+  menu reads no subtitle registry.
 - A DISABLED row (`FormSection::disabled`, `Row::disabled`) is focusable so the viewer can read why,
   is drawn soft with a ghost pill under focus, and is inert at the form layer (`FormTable::activate`
   answers `None` for OK, RIGHT and a click alike), not by a guard in each caller. A merely `dim`
