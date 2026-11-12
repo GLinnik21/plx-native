@@ -1,4 +1,5 @@
 use super::*;
+use super::mailbox::Kind;
 
 fn event(id: u32, start_ms: i64, duration_ms: i64) -> Event {
     Event {
@@ -91,7 +92,7 @@ fn off_retires_a_racing_publication_and_pending_source_outside_the_mailbox_lock(
     runtime.source_id.store(source.id, Ordering::Release);
     {
         let mut mailbox = runtime.mailbox.lock().unwrap();
-        mailbox.request(key, 100, &source);
+        mailbox.request(key, 100, &source, Pace::PAUSED);
         // The worker owns the lock and has already accepted this epoch. Cancel
         // must return while the lock is held; the old publication then races in.
         clear_runtime(&runtime);
@@ -1707,7 +1708,7 @@ fn native_the_worker_publishes_aligns_beside_a_text_frame_and_none_for_authored(
     let until = |source: &Arc<Source>, now: i64, expect: Option<AlignSet>| {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
-            let frame = request(source.clone(), now, 1920, 1080, 1920, 1080);
+            let frame = request(source.clone(), now, 1920, 1080, 1920, 1080, Pace::PAUSED);
             let got = frame.as_ref().and_then(|f| published_aligns(f.serial));
             if frame.is_some() && got == expect {
                 return;
@@ -1899,15 +1900,15 @@ fn a_changed_offset_on_a_paused_playhead_publishes_the_frame_of_the_new_clock() 
     // The worker drains its mailbox: the frame is `error_frame` (any frame), the validity the cue's.
     let drain = |mailbox: &mut Mailbox| {
         while let Some(job) = mailbox.take() {
-            let rendered = Rendered { frame: error_frame(job.key, Fault::RenderFailed), validity: validity_of(job.now_ms), aligns: None };
+            let rendered = Rendered { frame: error_frame(job.key, Fault::RenderFailed), validity: validity_of(job.now_ms), aligns: None, cost_us: None };
             mailbox.finish(&job, Some(rendered));
         }
     };
     // Paused at 23.0 s, the offset 0, then +2.5 s, then -2.5 s, then back, each one a frame step.
     for clock in [23_000, 20_500, 25_500, 20_500, 25_500, 23_000] {
-        mailbox.request(key, clock, &source);
+        mailbox.request(key, clock, &source, Pace::PAUSED);
         drain(&mut mailbox);
-        mailbox.request(key, clock, &source);
+        mailbox.request(key, clock, &source, Pace::PAUSED);
         let shown = mailbox.view(&key).expect("a frame");
         let published = mailbox.published.as_ref().map(|p| p.validity).expect("published");
         assert!(published.contains(clock), "clock {clock}: the frame on screen covers {published:?} ({:?})", shown.serial);

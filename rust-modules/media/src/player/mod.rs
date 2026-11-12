@@ -2362,6 +2362,19 @@ pub fn subtitle_draw(ps: &crate::route::PlaybackSession) -> Option<(std::sync::A
     ass_source::selected(desired_sub_idx()).map(|source| (source, playhead))
 }
 
+/// **How the subtitle playhead is moving**, for the renderer's pacing of a moving cue's frames
+/// ([`ass::Pace`]): whether the player is presenting, the speed it is applied at (1x with no Feed
+/// Load to say), the source's frame rate (0 for a transcode or an unreported rate, which the pace
+/// reads as film) and the wall-clock time since the caller's previous tick.
+pub fn subtitle_pace(ps: &crate::route::PlaybackSession, tick_ms: i64) -> ass::Pace {
+    ass::Pace::of(
+        is_playing(ps),
+        effective_playback_rate(ps).unwrap_or(RATE_NORMAL),
+        crate::route::stream_fps(ps),
+        tick_ms,
+    )
+}
+
 /// **The file-time position a SIDECAR is asked for at playhead `playhead_ns`.**
 ///
 /// A sidecar's timestamps are the Part's. On a direct play the playhead is file time. Over a remux

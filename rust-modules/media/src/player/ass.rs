@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 mod mailbox;
-use mailbox::{Job, Kind, Mailbox, Rendered};
+use mailbox::{Job, Mailbox, Rendered};
 use super::ass_timing::{self, Validity};
 
 const MAX_SCRIPT_BYTES: usize = super::ass_script::WINDOW_BYTES;
@@ -190,6 +190,48 @@ impl Key {
     }
 }
 
+/// How the playhead is moving, as values the caller measured: the mailbox reads no clock and no
+/// registry, so everything it needs to pace a moving cue's frames arrives here (issue #1328).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pace {
+    /// The playhead is advancing (playing). Paused, loading or stepping: a moving cue is one frame
+    /// for one clock, as for a still cue.
+    pub running: bool,
+    /// Playhead milliseconds per wall-clock millisecond: 1.0 at normal speed.
+    pub rate: f64,
+    /// One video frame period in playhead milliseconds: no moving frame is asked for closer
+    /// together than this.
+    pub frame_ms: i64,
+    /// Wall-clock milliseconds between this UI tick and the one before it: a frame rendered for a
+    /// playhead is shown by the first tick at or after it, up to this much late.
+    pub tick_ms: i64,
+}
+
+impl Pace {
+    /// A playhead that is not advancing: the pace of a paused or loading player.
+    pub const PAUSED: Pace = Pace { running: false, rate: 1.0, frame_ms: Pace::FILM_FRAME_MS, tick_ms: 16 };
+    /// A source whose frame rate is unknown is treated as film (24 fps), as `speeds_within` does.
+    const FILM_FRAME_MS: i64 = 42;
+
+    /// The pace from what the player reports: `rate_permille` is the applied speed in thousandths
+    /// (1000 = normal), `fps` the source video's frame rate (0 = unknown or a transcode) and
+    /// `tick_ms` the wall-clock time since the previous tick. Out-of-range values are clamped: a
+    /// pace can only be slower or faster than real time by a sane factor, and a tick is not zero.
+    pub fn of(running: bool, rate_permille: i32, fps: f64, tick_ms: i64) -> Pace {
+        let frame_ms = if fps >= 1.0 && fps.is_finite() {
+            ((1000.0 / fps).round() as i64).clamp(4, 100)
+        } else {
+            Self::FILM_FRAME_MS
+        };
+        Pace {
+            running,
+            rate: (f64::from(rate_permille) / 1000.0).clamp(0.25, 4.0),
+            frame_ms,
+            tick_ms: tick_ms.clamp(4, 100),
+        }
+    }
+}
+
 pub struct Runtime {
     source_id: AtomicU64,
     epoch: AtomicU64,
@@ -225,7 +267,8 @@ fn runtime() -> &'static Runtime {
 }
 
 /// MAIN THREAD: ask for the frame right for `now_ms` and return only this selection's last
-/// completed frame. Contention drops this tick's request rather than waiting.
+/// completed frame. Contention drops this tick's request rather than waiting. `pace` is how the
+/// playhead is moving ([`Pace`]).
 pub fn request(
     source: Arc<Source>,
     now_ms: i64,
@@ -233,6 +276,7 @@ pub fn request(
     height: i32,
     storage_width: i32,
     storage_height: i32,
+    pace: Pace,
 ) -> Option<Arc<Frame>> {
     if source.id == 0 {
         clear();
@@ -266,7 +310,7 @@ pub fn request(
     if !started {
         return Some(mailbox.publish_error(key, error_frame(key, Fault::StartFailed)));
     }
-    let requested = mailbox.request(key, now_ms, &source);
+    let requested = mailbox.request(key, now_ms, &source, pace);
     if requested.promoted {
         super::ass_perf::note_ahead_hit();
     }
@@ -311,7 +355,7 @@ fn retire_off(
     if runtime.source_id.load(Ordering::Acquire) != 0 || (engine.is_empty() && mailbox.is_empty()) {
         return None;
     }
-    Some((std::mem::take(mailbox), std::mem::take(engine)))
+    Some((mailbox.retire(), std::mem::take(engine)))
 }
 
 fn next_serial() -> u64 {
@@ -368,7 +412,7 @@ fn worker() {
         let rendered = live().then(|| {
             let job_started = std::time::Instant::now();
             let rendered = engine.render(&job);
-            super::ass_perf::record_job(job_started.elapsed(), job.kind != Kind::Normal);
+            super::ass_perf::record_job(job_started.elapsed(), job.kind.is_ahead());
             rendered
         });
         let finished = {
@@ -430,6 +474,12 @@ pub(super) fn validate(source: &Source) -> Result<(), Fault> {
     }
     // Fonts are never grounds to refuse a track: `Native::open` skips one it cannot use.
     Ok(())
+}
+
+/// SCAFFOLD: the earliest playhead whose picture the move from `old` to `new` can change.
+#[allow(dead_code)]
+fn earliest_change_ms(_old: &Source, _new: &Source) -> i64 {
+    i64::MAX
 }
 
 /// Pruning expired events and appending preserves libass's parsed events, font
@@ -650,7 +700,7 @@ impl Engine {
             self.validity(&job.source, job.now_ms)
         };
         let aligns = self.aligns(&job.source, job.now_ms);
-        Rendered { frame, validity, aligns }
+        Rendered { frame, validity, aligns, cost_us: None }
     }
 
     /// The window at `now_ms` from every event's timing, clamped to the script window held.

@@ -11,7 +11,9 @@
 //!
 //! Pure bookkeeping: no thread, no native call, no clock but the one stamp behind [`Job::queued`].
 //! `Runtime` owns the lock and the wake; the worker loop owns the rendering.
-use super::{AlignSet, Frame, Key, Source};
+// SCAFFOLD: the pipeline's fields are written before the logic that reads them; removed with it.
+#![allow(dead_code)]
+use super::{AlignSet, Frame, Key, Pace, Source};
 use crate::player::ass_timing::Validity;
 use std::sync::Arc;
 use std::time::Instant;
@@ -22,6 +24,16 @@ pub(super) enum Kind {
     Normal,
     /// The boundary after the published frame, rendered early. `after` is that frame's `pub_id`.
     Ahead { after: u64 },
+    /// A frame of a moving cue for a future playhead, planned by the animated pipeline; `run` is
+    /// the pipeline generation it was planned under, and a result of another one is discarded.
+    Pipe { run: u64 },
+}
+
+impl Kind {
+    /// Rendered ahead of the playhead rather than for what the screen needs now.
+    pub fn is_ahead(self) -> bool {
+        !matches!(self, Kind::Normal)
+    }
 }
 
 pub(super) struct Job {
@@ -34,10 +46,16 @@ pub(super) struct Job {
     pub queued: Option<Instant>,
 }
 
+/// A job a worker holds. The mailbox serves several workers, so these are a set keyed by `seq`.
 #[derive(Clone, Copy)]
 struct InFlight {
     kind: Kind,
     seq: u64,
+    /// The playhead the job renders.
+    target_ms: i64,
+    /// Results for a target at or past this are discarded: events were appended from there on
+    /// since the job began, and the frame cannot show them.
+    stale_from: i64,
 }
 
 pub(super) struct Published {
@@ -54,6 +72,8 @@ pub(super) struct Published {
     /// a Text-origin source has them (plan §2.4). Held beside the frame, so a promoted ahead frame
     /// carries its own and the two are never read from different frames.
     pub aligns: Option<AlignSet>,
+    /// The playhead the frame was rendered for: what a moving frame is right for.
+    pub target_ms: i64,
 }
 
 /// What the worker made of a job.
@@ -61,13 +81,17 @@ pub(super) struct Rendered {
     pub frame: Arc<Frame>,
     pub validity: Validity,
     pub aligns: Option<AlignSet>,
+    /// What the job cost in wall-clock microseconds, for the pipeline's pacing; `None` when it is
+    /// no sample of a steady render (the worker was not timing it, or the job opened or re-synced a
+    /// renderer, which re-reads every font and says nothing of what a frame costs).
+    pub cost_us: Option<u32>,
 }
 
 pub(super) struct Mailbox {
-    /// ONE slot, either kind.
+    /// ONE slot, a Normal job or the Ahead job of a still cue's next boundary.
     pending: Option<Job>,
-    /// Set when the worker takes `pending`, cleared on completion.
-    in_flight: Option<InFlight>,
+    /// Set when a worker takes a job, cleared on completion: one per busy worker.
+    in_flight: Vec<InFlight>,
     /// Seq of an in-flight NORMAL job a covered request made moot; its result is discarded.
     withdrawn: u64,
     /// The latest NORMAL job: key, now, seq. Ahead jobs never write it. A job's result is
@@ -81,6 +105,10 @@ pub(super) struct Mailbox {
     next: Option<Published>,
     pub_ids: u64,
     seqs: u64,
+    /// How many workers serve this mailbox: a moving cue's frame step is the render cost over this.
+    workers: usize,
+    /// The render cost the pipeline paces by, wall-clock microseconds (0 = no sample yet).
+    cost_us: u32,
 }
 
 impl Default for Mailbox {
@@ -108,13 +136,15 @@ pub(super) struct Finished {
     /// for the `assperf` account.
     pub changed: bool,
     pub pub_bytes: u64,
+    /// An ahead frame was thrown away: its timeline, run or target no longer stands (`assperf`'s `stale=`).
+    pub stale: bool,
 }
 
 impl Mailbox {
     pub const fn new() -> Self {
         Self {
             pending: None,
-            in_flight: None,
+            in_flight: Vec::new(),
             withdrawn: 0,
             requested: None,
             answered: 0,
@@ -122,13 +152,33 @@ impl Mailbox {
             next: None,
             pub_ids: 0,
             seqs: 0,
+            workers: 1,
+            cost_us: 0,
         }
+    }
+
+    /// How many workers take jobs from this mailbox (at least one).
+    pub fn set_workers(&mut self, workers: usize) {
+        self.workers = workers.max(1);
+    }
+
+    /// Everything the mailbox holds, handed out whole so it can be destroyed outside the lock, and
+    /// a fresh mailbox left in its place that keeps what is not a thing to retire: the worker
+    /// count, the cost it measured and the counters (a job another worker still holds finishes
+    /// against the new mailbox, and its `seq` must not be one the new mailbox hands out).
+    pub fn retire(&mut self) -> Mailbox {
+        let mut fresh = Mailbox::new();
+        fresh.workers = self.workers;
+        fresh.cost_us = self.cost_us;
+        fresh.pub_ids = self.pub_ids;
+        fresh.seqs = self.seqs;
+        std::mem::replace(self, fresh)
     }
 
     /// Nothing held: a worker with no source may park without cleanup.
     pub fn is_empty(&self) -> bool {
         self.pending.is_none()
-            && self.in_flight.is_none()
+            && self.in_flight.is_empty()
             && self.requested.is_none()
             && self.published.is_none()
             && self.next.is_none()
@@ -149,7 +199,7 @@ impl Mailbox {
         // A Normal job this one replaces keeps its earlier stamp: the wait began then (R6).
         let queued = match self.pending.as_ref() {
             Some(Job { kind: Kind::Normal, queued: Some(since), .. }) => Some(*since),
-            _ => matches!(self.in_flight, Some(InFlight { kind: Kind::Ahead { .. }, .. }))
+            _ => (self.in_flight.len() >= self.workers && self.in_flight.iter().any(|f| f.kind.is_ahead()))
                 .then(Instant::now),
         };
         self.pending = Some(Job {
@@ -171,13 +221,12 @@ impl Mailbox {
             self.pending = None;
             withdrew = true;
         }
-        if let (Some(flight), Some((_, _, latest))) = (self.in_flight, self.requested) {
-            if flight.kind == Kind::Normal
-                && flight.seq == latest
-                && flight.seq > self.answered
-                && flight.seq != self.withdrawn
+        if let Some((_, _, latest)) = self.requested {
+            if self.in_flight.iter().any(|f| f.kind == Kind::Normal && f.seq == latest)
+                && latest > self.answered
+                && latest != self.withdrawn
             {
-                self.withdrawn = flight.seq;
+                self.withdrawn = latest;
                 withdrew = true;
             }
         }
@@ -193,7 +242,7 @@ impl Mailbox {
         }
         let after = published.pub_id;
         let same = |kind: Kind| kind == Kind::Ahead { after };
-        if self.in_flight.is_some_and(|f| same(f.kind)) {
+        if self.in_flight.iter().any(|f| same(f.kind)) {
             return false;
         }
         match &self.pending {
@@ -215,7 +264,7 @@ impl Mailbox {
     }
 
     /// R2: MAIN THREAD, under the lock. `now_ms` is the playhead this tick asks about.
-    pub fn request(&mut self, key: Key, now_ms: i64, source: &Arc<Source>) -> Requested {
+    pub fn request(&mut self, key: Key, now_ms: i64, source: &Arc<Source>, _pace: Pace) -> Requested {
         // R2.1: a new key (late push, seek, restyle, size change).
         if self.requested_key() != Some(key) {
             self.enqueue_normal(key, now_ms, source);
@@ -287,6 +336,7 @@ impl Mailbox {
             frame: frame.clone(),
             validity: Validity::ALWAYS,
             aligns: None,
+            target_ms: 0,
         });
         frame
     }
@@ -304,7 +354,7 @@ impl Mailbox {
     /// WORKER, under the lock: take the pending job and mark it in flight.
     pub fn take(&mut self) -> Option<Job> {
         let job = self.pending.take()?;
-        self.in_flight = Some(InFlight { kind: job.kind, seq: job.seq });
+        self.in_flight.push(InFlight { kind: job.kind, seq: job.seq, target_ms: job.now_ms, stale_from: i64::MAX });
         Some(job)
     }
 
@@ -318,11 +368,16 @@ impl Mailbox {
     /// several appends (issue #1328). Such a frame arms no Ahead job and leaves the newer pending
     /// job alone; that job publishes the newest revision when it lands.
     pub fn finish(&mut self, job: &Job, outcome: Option<Rendered>) -> Finished {
-        self.in_flight = None;
+        // A job this mailbox does not hold was handed out before the mailbox was retired (another
+        // worker's, the epoch having ended): there is nothing of it to settle.
+        let Some(at) = self.in_flight.iter().position(|f| f.seq == job.seq) else {
+            return Finished::default();
+        };
+        let _flight = self.in_flight.swap_remove(at);
         match job.kind {
             Kind::Normal => {
                 self.answered = self.answered.max(job.seq);
-                let Some(Rendered { frame, validity, aligns }) = outcome else { return Finished::default() };
+                let Some(Rendered { frame, validity, aligns, .. }) = outcome else { return Finished::default() };
                 // A result stands unless the playhead was covered without it (`withdrawn`) or the
                 // timeline it was rendered for was replaced. A revision that moved meanwhile only
                 // appended events, which start ahead of the playhead, so the frame is still right
@@ -341,6 +396,7 @@ impl Mailbox {
                     frame,
                     validity,
                     aligns,
+                    target_ms: job.now_ms,
                 });
                 self.next = None;
                 // Only the newest request's frame has a boundary worth rendering ahead; the
@@ -348,10 +404,10 @@ impl Mailbox {
                 if self.requested_key() == Some(job.key) {
                     self.arm_ahead(&job.source);
                 }
-                Finished { wake: changed, changed, pub_bytes }
+                Finished { wake: changed, changed, pub_bytes, stale: false }
             }
             Kind::Ahead { after } => {
-                let Some(Rendered { frame, validity, aligns }) = outcome else { return Finished::default() };
+                let Some(Rendered { frame, validity, aligns, .. }) = outcome else { return Finished::default() };
                 let current = self.published.as_ref().is_some_and(|p| p.pub_id == after && p.key == job.key)
                     && self.requested_key() == Some(job.key)
                     && self.next.is_none();
@@ -367,11 +423,33 @@ impl Mailbox {
                     frame,
                     validity,
                     aligns,
+                    target_ms: job.now_ms,
                 });
                 // Nothing to show yet: the promotion on the UI thread is what the screen sees.
-                Finished { wake: false, changed, pub_bytes }
+                Finished { wake: false, changed, pub_bytes, stale: false }
             }
+            Kind::Pipe { .. } => Finished::default(),
         }
+    }
+
+    /// SCAFFOLD: the frame step in playhead milliseconds.
+    pub fn step_ms(&self, _pace: Pace) -> i64 {
+        0
+    }
+
+    /// SCAFFOLD: how far ahead of the playhead a moving frame is planned.
+    pub fn lead_ms(&self, _pace: Pace) -> i64 {
+        0
+    }
+
+    #[cfg(test)]
+    pub fn held_targets(&self) -> Vec<i64> {
+        Vec::new()
+    }
+
+    #[cfg(test)]
+    pub fn in_flight_len(&self) -> usize {
+        self.in_flight.len()
     }
 
     #[cfg(test)]
