@@ -30,6 +30,7 @@
 //! owns the rendering.
 //!
 //! [`adopt_revision`]: Mailbox::adopt_revision
+use super::scale::Change;
 use super::{earliest_change_ms, AlignSet, Frame, Key, Pace, RenderScale, Source};
 use crate::player::ass_timing::Validity;
 use std::sync::Arc;
@@ -203,7 +204,7 @@ impl Default for Mailbox {
 }
 
 /// What a `request` did, for the caller to act on outside the lock logic.
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
 pub(super) struct Requested {
     /// A job was queued: wake the worker.
     pub wake: bool,
@@ -217,6 +218,12 @@ pub(super) struct Requested {
     /// How many workers the pipeline could use to reach about thirty frames a second; 0 when it
     /// plans nothing. The runtime starts helpers up to what the device allows.
     pub workers_wanted: usize,
+    /// How many renderers the plan would want if it drew at full size: the pool is consulted about
+    /// the selection when this is more than one (`Runtime::start_helpers`), and the scale is not
+    /// decided before it has answered.
+    pub pool_wanted: usize,
+    /// The scale moving frames are drawn at moved with this request (to be logged once).
+    pub scale_change: Option<Change>,
 }
 
 /// What finishing a job published, for the worker's accounting.
@@ -263,6 +270,17 @@ impl Mailbox {
     /// How many workers take jobs from this mailbox (at least one).
     pub fn set_workers(&mut self, workers: usize) {
         self.workers = workers.max(1);
+    }
+
+    /// How many renderers the pool allows the selection, once it has said (`None` before): what the
+    /// scale is decided against. Nothing is decided while it has not.
+    #[allow(dead_code)] // red commit: nothing decides yet
+    pub fn set_capacity(&mut self, _renderers: Option<usize>) {}
+
+    /// The scale moving frames are drawn at now.
+    #[allow(dead_code)] // red commit: nothing decides yet
+    pub fn scale(&self) -> RenderScale {
+        RenderScale::Full
     }
 
     /// Everything the mailbox holds, handed out whole so it can be destroyed outside the lock, and
@@ -848,6 +866,11 @@ impl Mailbox {
                 Finished { wake: false, changed, pub_bytes, stale: false }
             }
         }
+    }
+
+    #[cfg(test)]
+    pub fn cost_full_ms(&self) -> f64 {
+        self.cost_ms()
     }
 
     #[cfg(test)]
