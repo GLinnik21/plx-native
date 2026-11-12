@@ -718,7 +718,7 @@ fn script_of(revision: u64, events: Vec<Event>) -> Arc<Source> {
 fn moving(job: &Job, cost_ms: i64, cue_end: i64) -> mailbox::Rendered {
     let target = job.now_ms;
     let (rects, validity) = if target < cue_end {
-        let rgba: Arc<[u8]> = Arc::from((target as u32).to_le_bytes());
+        let rgba: Arc<[u8]> = Arc::from((target as i32).to_le_bytes());
         (
             vec![Rect { x: 0, y: 0, width: 1, height: 1, rgba }],
             Validity { from_ms: 0, until_ms: cue_end, animated: true },
@@ -739,7 +739,7 @@ fn moving(job: &Job, cost_ms: i64, cue_end: i64) -> mailbox::Rendered {
 
 /// The playhead a `moving` frame was rendered for.
 fn target_of(frame: &Frame) -> Option<i64> {
-    frame.rects.first().map(|r| i64::from(u32::from_le_bytes(r.rgba[..4].try_into().unwrap())))
+    frame.rects.first().map(|r| i64::from(i32::from_le_bytes(r.rgba[..4].try_into().unwrap())))
 }
 
 /// A mailbox with `workers` workers and a moving frame published at 1000 whose render cost
@@ -1105,9 +1105,10 @@ fn an_append_keeps_the_frames_before_its_first_event_and_replans_from_there() {
     let held = rig.mb.held_targets();
     assert!(held.len() >= 2, "three workers hold frames ahead: {held:?}");
     let cut = held[1];
-    let taken = rig.taken.len();
     rig.append(cut);
     rig.tick();
+    // a worker that took a job before this tick's request read the revision before it
+    let taken = rig.taken.len();
     let after = rig.mb.held_targets();
     assert!(after.iter().all(|&t| t < cut), "the frames from the new event on are dropped: {after:?} (cut {cut})");
     let from = rig.shown.len();

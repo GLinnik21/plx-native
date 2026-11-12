@@ -411,8 +411,13 @@ fn worker() {
         let live = || runtime().epoch.load(Ordering::Acquire) == job.key.epoch;
         let rendered = live().then(|| {
             let job_started = std::time::Instant::now();
-            let rendered = engine.render(&job);
-            super::ass_perf::record_job(job_started.elapsed(), job.kind.is_ahead());
+            let mut rendered = engine.render(&job);
+            let elapsed = job_started.elapsed();
+            super::ass_perf::record_job(elapsed, job.kind.is_ahead());
+            // What a steady frame costs paces the animated pipeline; a job that re-read the fonts or
+            // the events is no sample of it.
+            rendered.cost_us =
+                (!engine.resynced).then(|| u32::try_from(elapsed.as_micros()).unwrap_or(u32::MAX));
             rendered
         });
         let finished = {
@@ -476,10 +481,18 @@ pub(super) fn validate(source: &Source) -> Result<(), Fault> {
     Ok(())
 }
 
-/// SCAFFOLD: the earliest playhead whose picture the move from `old` to `new` can change.
-#[allow(dead_code)]
-fn earliest_change_ms(_old: &Source, _new: &Source) -> i64 {
-    i64::MAX
+/// The earliest playhead whose picture the move from `old` to `new` can change: the first start
+/// among the events `new` adds, `i64::MAX` when it adds none (expiry alone changes no picture
+/// ahead of the playhead), and `i64::MIN` for a move the renderer cannot take as an append, which
+/// can change any picture. An appended event is drawn from its own start on, so every frame for an
+/// earlier playhead stays right.
+fn earliest_change_ms(old: &Source, new: &Source) -> i64 {
+    match (append_from(old, new), &new.content) {
+        (Some(first), Content::Embedded { events, .. }) => {
+            events.get(first..).and_then(|added| added.iter().map(|e| e.start_ms).min()).unwrap_or(i64::MAX)
+        }
+        _ => i64::MIN,
+    }
 }
 
 /// Pruning expired events and appending preserves libass's parsed events, font
@@ -572,6 +585,9 @@ struct Engine {
     aligns_index: Option<aligns::ScriptAligns>,
     frame: Option<Arc<Frame>>,
     error: Option<Fault>,
+    /// The last [`Engine::render`] opened, restyled or re-fed the renderer: that job re-read the
+    /// fonts or the events, and what it cost is no sample of what a frame costs.
+    resynced: bool,
 }
 
 impl Engine {
@@ -680,6 +696,7 @@ impl Engine {
         }
         let window = index.window(now_ms);
         *held = (window.lo_ms, window.hi_ms);
+        self.resynced = true;
         // Every window repeats the script's header, `[Fonts]` included, so the held renderer
         // already has the fonts: swap the track in place rather than reopening every face.
         match self.native.as_mut() {
@@ -730,6 +747,7 @@ impl Engine {
 
     fn render_frame(&mut self, request: &Job) -> Arc<Frame> {
         let key = request.key;
+        self.resynced = false;
         let source_changed = self.source.as_ref().is_none_or(|old| {
             old.id != request.source.id || old.revision != request.source.revision
         });
@@ -757,10 +775,13 @@ impl Engine {
                     // timeline. Reset events only, retaining parsed header, fonts and caches.
                     let native = self.native.as_mut().unwrap();
                     unsafe { plx_ass_flush_events(native.ptr) };
+                    self.resynced = true;
                     native.append(&request.source, 0)
                 } else if self.source.as_ref().is_some_and(|old| restyles(old, &request.source)) {
+                    self.resynced = true;
                     self.restyle(&request.source, request.now_ms)
                 } else {
+                    self.resynced = true;
                     self.open(&request.source, request.now_ms)
                 };
                 self.error = result.err();
