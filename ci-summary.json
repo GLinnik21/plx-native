@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-12T13:26:33Z",
+ "generated": "2026-11-12T13:30:09Z",
  "metrics": [
   {
    "change30_pct": 44.3,
@@ -172,18 +172,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 44.2,
-   "change7_pct": 8.6,
+   "change30_pct": 44.0,
+   "change7_pct": 8.5,
    "d30": 318,
-   "delta30": 140.5,
-   "delta7": 36.5,
+   "delta30": 140,
+   "delta7": 36,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 66,
+   "n_now": 67,
    "n_prev": 77,
-   "now": 458.5,
+   "now": 458,
    "prev7": 422,
    "shown": true,
    "state": "flat",
@@ -361,18 +361,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 44.4,
-   "change7_pct": 7.9,
+   "change30_pct": 44.2,
+   "change7_pct": 7.7,
    "d30": 223,
-   "delta30": 99,
-   "delta7": 23.5,
+   "delta30": 98.5,
+   "delta7": 23.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 59,
+   "n_now": 60,
    "n_prev": 70,
-   "now": 322,
+   "now": 321.5,
    "prev7": 298.5,
    "shown": true,
    "state": "flat",
@@ -424,18 +424,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 61.4,
-   "change7_pct": 11.1,
+   "change30_pct": 60.7,
+   "change7_pct": 10.6,
    "d30": 140,
-   "delta30": 86,
-   "delta7": 22.5,
+   "delta30": 85.0,
+   "delta7": 21.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 59,
+   "n_now": 60,
    "n_prev": 70,
-   "now": 226,
+   "now": 225.0,
    "prev7": 203.5,
    "shown": true,
    "state": "flat",
@@ -445,18 +445,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -34.0,
-   "change7_pct": -6.5,
+   "change30_pct": -33.5,
+   "change7_pct": -5.8,
    "d30": 306,
-   "delta30": -104,
-   "delta7": -14.0,
+   "delta30": -102.5,
+   "delta7": -12.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 59,
+   "n_now": 60,
    "n_prev": 70,
-   "now": 202,
+   "now": 203.5,
    "prev7": 216.0,
    "shown": true,
    "state": "flat",
@@ -511,15 +511,15 @@
    "change30_pct": 11.8,
    "change7_pct": 0.0,
    "d30": 17,
-   "delta30": 2,
+   "delta30": 2.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 59,
+   "n_now": 60,
    "n_prev": 70,
-   "now": 19,
+   "now": 19.0,
    "prev7": 19.0,
    "shown": false,
    "state": "flat",
@@ -618,11 +618,6 @@
    "change_pct": 28.7,
    "commits": [
     {
-     "pr": 1333,
-     "sha": "301811ec7",
-     "title": "Version choice: measure a version picked by hand from its own fetch"
-    },
-    {
      "pr": 1338,
      "sha": "c3aa053b2",
      "title": "disk tooling: never size, walk or probe trees on another volume"
@@ -666,6 +661,11 @@
      "pr": 1347,
      "sha": "b2dcd0c27",
      "title": "ASS subtitles: attached fonts, every-video-frame karaoke on the TV, straight colour over video"
+    },
+    {
+     "pr": 1349,
+     "sha": "9f43dba98",
+     "title": "Player: Previous always plays the previous episode, and a fresh play has one to go to"
     }
    ],
    "from": 24.3,
@@ -679,11 +679,6 @@
    "change_pct": 26.7,
    "commits": [
     {
-     "pr": 1333,
-     "sha": "301811ec7",
-     "title": "Version choice: measure a version picked by hand from its own fetch"
-    },
-    {
      "pr": 1338,
      "sha": "c3aa053b2",
      "title": "disk tooling: never size, walk or probe trees on another volume"
@@ -727,6 +722,11 @@
      "pr": 1347,
      "sha": "b2dcd0c27",
      "title": "ASS subtitles: attached fonts, every-video-frame karaoke on the TV, straight colour over video"
+    },
+    {
+     "pr": 1349,
+     "sha": "9f43dba98",
+     "title": "Player: Previous always plays the previous episode, and a fresh play has one to go to"
     }
    ],
    "from": 335,
@@ -740,11 +740,6 @@
    "change_pct": 22.4,
    "commits": [
     {
-     "pr": 1333,
-     "sha": "301811ec7",
-     "title": "Version choice: measure a version picked by hand from its own fetch"
-    },
-    {
      "pr": 1338,
      "sha": "c3aa053b2",
      "title": "disk tooling: never size, walk or probe trees on another volume"
@@ -788,6 +783,11 @@
      "pr": 1347,
      "sha": "b2dcd0c27",
      "title": "ASS subtitles: attached fonts, every-video-frame karaoke on the TV, straight colour over video"
+    },
+    {
+     "pr": 1349,
+     "sha": "9f43dba98",
+     "title": "Player: Previous always plays the previous episode, and a fresh play has one to go to"
     }
    ],
    "from": 196.0,
@@ -828,7 +828,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 322
+   "now": 321.5
   }
  ],
  "slowest_local": [
