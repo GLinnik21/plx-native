@@ -85,7 +85,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-12T02:58:28Z",
+ "generated": "2026-11-12T03:00:07Z",
  "metrics": [
   {
    "change30_pct": 54.4,
@@ -133,37 +133,16 @@
    "change30_pct": 101.4,
    "change7_pct": 26.9,
    "d30": 211,
-   "delta30": 214.0,
-   "delta7": 90.0,
+   "delta30": 214,
+   "delta7": 90,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 79,
-   "now": 425.0,
+   "now": 425,
    "prev7": 335,
-   "shown": true,
-   "state": "worse",
-   "state30": "worse",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": 41.0,
-   "change7_pct": 26.6,
-   "d30": 172,
-   "delta30": 70.5,
-   "delta7": 51.0,
-   "group": "ci",
-   "id": "ci|host lint + type-checks",
-   "kind": "job",
-   "label": "CI: host lint + type-checks",
-   "n_now": 64,
-   "n_prev": 80,
-   "now": 242.5,
-   "prev7": 191.5,
    "shown": true,
    "state": "worse",
    "state30": "worse",
@@ -190,6 +169,27 @@
    "state30": "worse",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 39.5,
+   "change7_pct": 25.3,
+   "d30": 172,
+   "delta30": 68,
+   "delta7": 48.5,
+   "group": "ci",
+   "id": "ci|host lint + type-checks",
+   "kind": "job",
+   "label": "CI: host lint + type-checks",
+   "n_now": 65,
+   "n_prev": 80,
+   "now": 240,
+   "prev7": 191.5,
+   "shown": true,
+   "state": "worse",
+   "state30": "worse",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
    "unit": "s"
   },
   {
@@ -277,18 +277,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 44.2,
-   "change7_pct": 5.8,
+   "change30_pct": 44.1,
+   "change7_pct": 5.7,
    "d30": 1906,
-   "delta30": 842.5,
-   "delta7": 149.5,
+   "delta30": 841,
+   "delta7": 148,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 54,
+   "n_now": 55,
    "n_prev": 67,
-   "now": 2748.5,
+   "now": 2747,
    "prev7": 2599,
    "shown": true,
    "state": "flat",
@@ -319,18 +319,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 68.8,
-   "change7_pct": 9.1,
+   "change30_pct": 67.7,
+   "change7_pct": 8.4,
    "d30": 269,
-   "delta30": 185.0,
-   "delta7": 38.0,
+   "delta30": 182,
+   "delta7": 35,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 79,
-   "now": 454.0,
+   "now": 451,
    "prev7": 416,
    "shown": true,
    "state": "flat",
@@ -341,17 +341,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 10.2,
+   "change7_pct": 10.3,
    "d30": null,
    "delta30": null,
-   "delta7": 35.0,
+   "delta7": 35.5,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 80,
-   "now": 378.5,
+   "now": 379,
    "prev7": 343.5,
    "shown": true,
    "state": "flat",
@@ -385,15 +385,15 @@
    "change30_pct": 111.3,
    "change7_pct": -15.7,
    "d30": 141,
-   "delta30": 157.0,
+   "delta30": 157,
    "delta7": -55.5,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 80,
-   "now": 298.0,
+   "now": 298,
    "prev7": 353.5,
    "shown": true,
    "state": "flat",
@@ -403,18 +403,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 81.8,
-   "change7_pct": -20.5,
+   "change30_pct": 80.6,
+   "change7_pct": -21.0,
    "d30": 129,
-   "delta30": 105.5,
-   "delta7": -60.5,
+   "delta30": 104,
+   "delta7": -62.0,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 80,
-   "now": 234.5,
+   "now": 233,
    "prev7": 295.0,
    "shown": true,
    "state": "better",
@@ -538,9 +538,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 80,
-   "now": 5.0,
+   "now": 5,
    "prev7": 5.0,
    "shown": false,
    "state": "flat",
@@ -553,15 +553,15 @@
    "change30_pct": -99.0,
    "change7_pct": 0.0,
    "d30": 304,
-   "delta30": -301.0,
+   "delta30": -301,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 80,
-   "now": 3.0,
+   "now": 3,
    "prev7": 3.0,
    "shown": false,
    "state": "flat",
@@ -574,15 +574,15 @@
    "change30_pct": -25.0,
    "change7_pct": -25.0,
    "d30": 4,
-   "delta30": -1.0,
-   "delta7": -1.0,
+   "delta30": -1,
+   "delta7": -1,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 79,
-   "now": 3.0,
+   "now": 3,
    "prev7": 4,
    "shown": false,
    "state": "flat",
@@ -795,68 +795,7 @@
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-11-11",
    "threshold_pct": 20.0,
-   "to": 425.0
-  },
-  {
-   "change_pct": 26.6,
-   "commits": [
-    {
-     "pr": 1332,
-     "sha": "e8442d5ee",
-     "title": "URI: say in the event log why the Experimental engine did not take a play"
-    },
-    {
-     "pr": 1333,
-     "sha": "301811ec7",
-     "title": "Version choice: measure a version picked by hand from its own fetch"
-    },
-    {
-     "pr": 1338,
-     "sha": "c3aa053b2",
-     "title": "disk tooling: never size, walk or probe trees on another volume"
-    },
-    {
-     "pr": 1336,
-     "sha": "4cc74ab6d",
-     "title": "build-gc: age out unused FFmpeg cache keys from --auto under disk pressure"
-    },
-    {
-     "pr": 1340,
-     "sha": "bd38620bc",
-     "title": "disk tooling: opt-in cold store parks idle build trees on an external disk"
-    },
-    {
-     "pr": 1341,
-     "sha": "19f66c64f",
-     "title": "disk preflight: restore a parked build tree from the cold store"
-    },
-    {
-     "pr": 1335,
-     "sha": "911e52997",
-     "title": "Fix nine issues found on 0.10.0 RC 1: Home hero, Settings, Player HUD, Library restore"
-    },
-    {
-     "pr": 1343,
-     "sha": "abd63570a",
-     "title": "Feed: audio interleaved ahead of a backpressured video sink is fed, not dropped as stale"
-    },
-    {
-     "pr": 1342,
-     "sha": "b59dc1ecb",
-     "title": "Subtitle color: a Yellow tone and a Settings row beside Size and Position"
-    },
-    {
-     "pr": 1345,
-     "sha": "0686bf703",
-     "title": "RC 2 polish: Yellow reaches SRT/ASS tracks, timed skip prompts follow the countdown, hero title gap"
-    }
-   ],
-   "from": 191.5,
-   "id": "ci|host lint + type-checks",
-   "label": "CI: host lint + type-checks",
-   "since": "2026-11-11",
-   "threshold_pct": 20.0,
-   "to": 242.5
+   "to": 425
   },
   {
    "change_pct": 25.8,
@@ -918,6 +857,67 @@
    "since": "2026-11-08",
    "threshold_pct": 25.0,
    "to": 192.9
+  },
+  {
+   "change_pct": 25.3,
+   "commits": [
+    {
+     "pr": 1332,
+     "sha": "e8442d5ee",
+     "title": "URI: say in the event log why the Experimental engine did not take a play"
+    },
+    {
+     "pr": 1333,
+     "sha": "301811ec7",
+     "title": "Version choice: measure a version picked by hand from its own fetch"
+    },
+    {
+     "pr": 1338,
+     "sha": "c3aa053b2",
+     "title": "disk tooling: never size, walk or probe trees on another volume"
+    },
+    {
+     "pr": 1336,
+     "sha": "4cc74ab6d",
+     "title": "build-gc: age out unused FFmpeg cache keys from --auto under disk pressure"
+    },
+    {
+     "pr": 1340,
+     "sha": "bd38620bc",
+     "title": "disk tooling: opt-in cold store parks idle build trees on an external disk"
+    },
+    {
+     "pr": 1341,
+     "sha": "19f66c64f",
+     "title": "disk preflight: restore a parked build tree from the cold store"
+    },
+    {
+     "pr": 1335,
+     "sha": "911e52997",
+     "title": "Fix nine issues found on 0.10.0 RC 1: Home hero, Settings, Player HUD, Library restore"
+    },
+    {
+     "pr": 1343,
+     "sha": "abd63570a",
+     "title": "Feed: audio interleaved ahead of a backpressured video sink is fed, not dropped as stale"
+    },
+    {
+     "pr": 1342,
+     "sha": "b59dc1ecb",
+     "title": "Subtitle color: a Yellow tone and a Settings row beside Size and Position"
+    },
+    {
+     "pr": 1345,
+     "sha": "0686bf703",
+     "title": "RC 2 polish: Yellow reaches SRT/ASS tracks, timed skip prompts follow the countdown, hero title gap"
+    }
+   ],
+   "from": 191.5,
+   "id": "ci|host lint + type-checks",
+   "label": "CI: host lint + type-checks",
+   "since": "2026-11-12",
+   "threshold_pct": 20.0,
+   "to": 240
   }
  ],
  "schema": 2,
@@ -932,19 +932,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 454.0
+   "now": 451
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 425.0
+   "now": 425
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 378.5
+   "now": 379
   },
   {
    "group": "ci",
