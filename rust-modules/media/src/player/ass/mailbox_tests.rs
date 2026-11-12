@@ -119,7 +119,7 @@ impl Sim {
             validity.from_ms = validity.from_ms.max(lo);
             validity.until_ms = validity.until_ms.min(hi);
         }
-        mailbox::Rendered { frame, validity, aligns: None, cost_us: None }
+        mailbox::Rendered { frame, validity, aligns: None, cost_us: None, moves_on: false }
     }
 
     fn complete(&mut self, job: Job) {
@@ -176,7 +176,7 @@ fn error_frame_requests_once() {
         while let Some(job) = mb.take() {
             jobs += 1;
             let frame = error_frame(job.key, Fault::RenderFailed);
-            mb.finish(&job, Some(mailbox::Rendered { frame, validity: Validity::ALWAYS, aligns: None, cost_us: None }));
+            mb.finish(&job, Some(mailbox::Rendered { frame, validity: Validity::ALWAYS, aligns: None, cost_us: None, moves_on: false }));
         }
         assert_eq!(mb.view(&key).unwrap().error, Some(Fault::RenderFailed));
     }
@@ -716,13 +716,21 @@ fn script_of(revision: u64, events: Vec<Event>) -> Arc<Source> {
 /// The frame for `job`'s playhead: one pixel holding it, animated until the cue ends at `cue_end`
 /// and a still empty picture after. `cost_ms` is what the worker reports for the job.
 fn moving(job: &Job, cost_ms: i64, cue_end: i64) -> mailbox::Rendered {
+    moving_between(job, cost_ms, cue_end, 0)
+}
+
+/// As [`moving`], with an event starting or ending every `boundary_ms` playhead milliseconds (0:
+/// none before `cue_end`): the frame's window of validity ends at the next of them, as a dense
+/// karaoke script's does (the issue's fixture has ~53 edges a second).
+fn moving_between(job: &Job, cost_ms: i64, cue_end: i64, boundary_ms: i64) -> mailbox::Rendered {
     let target = job.now_ms;
     let (rects, validity) = if target < cue_end {
         let rgba: Arc<[u8]> = Arc::from((target as i32).to_le_bytes());
-        (
-            vec![Rect { x: 0, y: 0, width: 1, height: 1, rgba }],
-            Validity { from_ms: 0, until_ms: cue_end, animated: true },
-        )
+        let (from_ms, until_ms) = match boundary_ms {
+            0 => (0, cue_end),
+            b => (target.div_euclid(b) * b, (target.div_euclid(b) * b + b).min(cue_end)),
+        };
+        (vec![Rect { x: 0, y: 0, width: 1, height: 1, rgba }], Validity { from_ms, until_ms, animated: true })
     } else {
         (Vec::new(), Validity { from_ms: cue_end, until_ms: i64::MAX, animated: false })
     };
@@ -734,7 +742,10 @@ fn moving(job: &Job, cost_ms: i64, cue_end: i64) -> mailbox::Rendered {
         rects,
         error: None,
     });
-    mailbox::Rendered { frame, validity, aligns: None, cost_us: Some(cost_ms as u32 * 1000) }
+    // the boundary is the end of the moving stretch only when it is the cue's: before that the
+    // picture after it moves as well
+    let moves_on = validity.animated && validity.until_ms < cue_end;
+    mailbox::Rendered { frame, validity, aligns: None, cost_us: Some(cost_ms as u32 * 1000), moves_on }
 }
 
 /// The playhead a `moving` frame was rendered for.
@@ -768,6 +779,8 @@ struct Rig {
     pace: Pace,
     cost_ms: i64,
     cue_end: i64,
+    /// An event boundary every this many playhead milliseconds (0: only the cue's end).
+    boundary_ms: i64,
     /// Added to the playhead: the viewer's subtitle timing offset moving.
     offset: i64,
     wall: i64,
@@ -798,6 +811,7 @@ impl Rig {
             pace: playing(1.0, 33),
             cost_ms,
             cue_end: END,
+            boundary_ms: 0,
             offset: 0,
             wall: 1000,
             busy: (0..workers).map(|_| None).collect(),
@@ -848,7 +862,7 @@ impl Rig {
         {
             self.wall = at;
             let Busy { cost, job, .. } = self.busy[worker].take().unwrap();
-            let done = self.mb.finish(&job, Some(moving(&job, cost, self.cue_end)));
+            let done = self.mb.finish(&job, Some(moving_between(&job, cost, self.cue_end, self.boundary_ms)));
             self.stale += u32::from(done.stale);
             self.try_take(worker);
         }
@@ -944,6 +958,31 @@ fn three_workers_reach_thirty_frames_a_second_from_an_eighty_millisecond_render(
     assert!(ages.iter().all(|age| (0..=50).contains(age)), "a 33 ms step and a tick: {ages:?}");
     assert!(rig.pipes - pipes <= 165, "{} renders for about 150 frames: little is wasted", rig.pipes - pipes);
     assert!(rig.late_promotions() * 10 <= rig.promotions.len());
+}
+
+/// The television's heavy karaoke opening (issue #1328, `fonts-over-budget.mkv`): about 2400 events in
+/// 90 s, so an event starts or ends every ~19 ms and each frame's window of validity is shorter than a
+/// render. The pipeline never engaged there: for twenty seconds every job was a Normal one, nothing was
+/// planned ahead and no frame was ever shown by the plan.
+#[test]
+fn a_moving_cue_with_an_event_boundary_every_few_milliseconds_is_still_pipelined() {
+    for (workers, cost_ms, frames) in [(1, 90, 50_u32), (3, 90, 130)] {
+        let mut rig = Rig::new(workers, cost_ms);
+        rig.boundary_ms = 19;
+        rig.run(2000);
+        let (normals, from, pipes) = (rig.normals, rig.shown.len(), rig.pipes);
+        rig.run(5000);
+        let name = format!("{workers} worker(s) at {cost_ms} ms");
+        assert!(rig.normals - normals <= 1, "{name}: {} Normal jobs in 5 s, the plan was given up", rig.normals - normals);
+        assert!(rig.pipes - pipes >= frames, "{name}: {} planned renders in 5 s", rig.pipes - pipes);
+        assert!(rig.distinct_shown(from) >= frames as usize, "{name}: {} different frames in 5 s", rig.distinct_shown(from));
+        let ages = rig.ages(from);
+        let step = rig.mb.step_ms(rig.pace);
+        assert!(
+            ages.iter().all(|age| (0..=step + 40).contains(age)),
+            "{name}: a frame is never early and at most a step and a tick old: {ages:?}"
+        );
+    }
 }
 
 #[test]

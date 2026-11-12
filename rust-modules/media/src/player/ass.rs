@@ -830,7 +830,7 @@ impl Engine {
             self.validity(&job.source, job.now_ms)
         };
         let aligns = self.aligns(&job.source, job.now_ms);
-        Rendered { frame, validity, aligns, cost_us: None }
+        Rendered { frame, validity, aligns, cost_us: None, moves_on: false }
     }
 
     /// The window at `now_ms` from every event's timing, clamped to the script window held.

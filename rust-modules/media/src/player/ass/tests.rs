@@ -1901,7 +1901,7 @@ fn a_changed_offset_on_a_paused_playhead_publishes_the_frame_of_the_new_clock() 
     // The worker drains its mailbox: the frame is `error_frame` (any frame), the validity the cue's.
     let drain = |mailbox: &mut Mailbox| {
         while let Some(job) = mailbox.take() {
-            let rendered = Rendered { frame: error_frame(job.key, Fault::RenderFailed), validity: validity_of(job.now_ms), aligns: None, cost_us: None };
+            let rendered = Rendered { frame: error_frame(job.key, Fault::RenderFailed), validity: validity_of(job.now_ms), aligns: None, cost_us: None, moves_on: false };
             mailbox.finish(&job, Some(rendered));
         }
     };

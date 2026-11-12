@@ -115,6 +115,10 @@ pub(super) struct Rendered {
     /// no sample of a steady render (the worker was not timing it, or the job opened or re-synced a
     /// renderer, which re-reads every font and says nothing of what a frame costs).
     pub cost_us: Option<u32>,
+    /// The picture at the end of the frame's window moves too: the boundary is inside a moving
+    /// stretch, not its end. SCAFFOLD: nothing reads it yet.
+    #[allow(dead_code)]
+    pub moves_on: bool,
 }
 
 /// What the pipeline plans against: the pace and the playhead of the latest request. The worker
