@@ -99,7 +99,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-12T22:02:23Z",
+ "generated": "2026-11-12T22:12:07Z",
  "metrics": [
   {
    "change30_pct": 44.3,
@@ -123,27 +123,6 @@
    "unit": "s"
   },
   {
-   "change30_pct": 100.9,
-   "change7_pct": 23.8,
-   "d30": 211,
-   "delta30": 213.0,
-   "delta7": 81.5,
-   "group": "ci",
-   "id": "ci|host unit tests (hostsim)",
-   "kind": "job",
-   "label": "CI: host unit tests (hostsim)",
-   "n_now": 64,
-   "n_prev": 66,
-   "now": 424.0,
-   "prev7": 342.5,
-   "shown": true,
-   "state": "worse",
-   "state30": "worse",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": 42.5,
    "change7_pct": 23.2,
    "d30": 173,
@@ -154,9 +133,30 @@
    "kind": "job",
    "label": "CI: host lint + type-checks",
    "n_now": 64,
-   "n_prev": 67,
+   "n_prev": 66,
    "now": 246.5,
-   "prev7": 200,
+   "prev7": 200.0,
+   "shown": true,
+   "state": "worse",
+   "state30": "worse",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 100.9,
+   "change7_pct": 22.9,
+   "d30": 211,
+   "delta30": 213.0,
+   "delta7": 79.0,
+   "group": "ci",
+   "id": "ci|host unit tests (hostsim)",
+   "kind": "job",
+   "label": "CI: host unit tests (hostsim)",
+   "n_now": 64,
+   "n_prev": 65,
+   "now": 424.0,
+   "prev7": 345,
    "shown": true,
    "state": "worse",
    "state30": "worse",
@@ -187,18 +187,18 @@
   },
   {
    "change30_pct": 44.0,
-   "change7_pct": 5.5,
+   "change7_pct": 5.3,
    "d30": 318,
    "delta30": 140,
-   "delta7": 24,
+   "delta7": 23.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
    "n_now": 67,
-   "n_prev": 67,
+   "n_prev": 66,
    "now": 458,
-   "prev7": 434,
+   "prev7": 435.0,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -295,15 +295,15 @@
    "change7_pct": 4.7,
    "d30": 1898,
    "delta30": 846,
-   "delta7": 124.0,
+   "delta7": 122,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
    "n_now": 53,
-   "n_prev": 60,
+   "n_prev": 59,
    "now": 2744,
-   "prev7": 2620.0,
+   "prev7": 2622,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -334,18 +334,18 @@
   },
   {
    "change30_pct": 65.3,
-   "change7_pct": 3.8,
+   "change7_pct": 3.7,
    "d30": 271,
    "delta30": 177.0,
-   "delta7": 16.5,
+   "delta7": 16.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
    "n_now": 64,
-   "n_prev": 66,
+   "n_prev": 65,
    "now": 448.0,
-   "prev7": 431.5,
+   "prev7": 432,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -355,18 +355,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 7.6,
+   "change7_pct": 7.3,
    "d30": null,
    "delta30": null,
-   "delta7": 27.0,
+   "delta7": 26.0,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
    "n_now": 64,
-   "n_prev": 67,
+   "n_prev": 66,
    "now": 380.0,
-   "prev7": 353,
+   "prev7": 354.0,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -379,15 +379,15 @@
    "change7_pct": 7.0,
    "d30": 218.0,
    "delta30": 104.0,
-   "delta7": 21.0,
+   "delta7": 21,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
    "n_now": 59,
-   "n_prev": 64,
+   "n_prev": 63,
    "now": 322,
-   "prev7": 301.0,
+   "prev7": 301,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -406,9 +406,9 @@
    "kind": "job",
    "label": "CI: host harness tests",
    "n_now": 64,
-   "n_prev": 67,
+   "n_prev": 66,
    "now": 299.0,
-   "prev7": 365,
+   "prev7": 365.0,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -427,9 +427,9 @@
    "kind": "job",
    "label": "CI: host python/shell/C gates",
    "n_now": 64,
-   "n_prev": 67,
+   "n_prev": 66,
    "now": 228.5,
-   "prev7": 297,
+   "prev7": 297.0,
    "shown": true,
    "state": "better",
    "state30": "worse",
@@ -442,15 +442,15 @@
    "change7_pct": 11.9,
    "d30": 137.5,
    "delta30": 88.5,
-   "delta7": 24.0,
+   "delta7": 24,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "n_now": 59,
-   "n_prev": 64,
+   "n_prev": 63,
    "now": 226,
-   "prev7": 202.0,
+   "prev7": 202,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -463,15 +463,15 @@
    "change7_pct": -6.5,
    "d30": 296.5,
    "delta30": -94.5,
-   "delta7": -14.0,
+   "delta7": -14,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
    "n_now": 59,
-   "n_prev": 64,
+   "n_prev": 63,
    "now": 202,
-   "prev7": 216.0,
+   "prev7": 216,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -526,15 +526,15 @@
    "change7_pct": 0.0,
    "d30": 17.0,
    "delta30": 2.0,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
    "n_now": 59,
-   "n_prev": 64,
+   "n_prev": 63,
    "now": 19,
-   "prev7": 19.0,
+   "prev7": 19,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -553,9 +553,9 @@
    "kind": "job",
    "label": "CI: which gates apply",
    "n_now": 64,
-   "n_prev": 67,
+   "n_prev": 66,
    "now": 5.0,
-   "prev7": 5,
+   "prev7": 5.0,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -574,9 +574,9 @@
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
    "n_now": 64,
-   "n_prev": 67,
+   "n_prev": 66,
    "now": 3.0,
-   "prev7": 3,
+   "prev7": 3.0,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -595,9 +595,9 @@
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
    "n_now": 64,
-   "n_prev": 66,
+   "n_prev": 65,
    "now": 3.0,
-   "prev7": 4.0,
+   "prev7": 4,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -690,67 +690,6 @@
    "to": 31.3
   },
   {
-   "change_pct": 23.8,
-   "commits": [
-    {
-     "pr": 1335,
-     "sha": "911e52997",
-     "title": "Fix nine issues found on 0.10.0 RC 1: Home hero, Settings, Player HUD, Library restore"
-    },
-    {
-     "pr": 1343,
-     "sha": "abd63570a",
-     "title": "Feed: audio interleaved ahead of a backpressured video sink is fed, not dropped as stale"
-    },
-    {
-     "pr": 1342,
-     "sha": "b59dc1ecb",
-     "title": "Subtitle color: a Yellow tone and a Settings row beside Size and Position"
-    },
-    {
-     "pr": 1345,
-     "sha": "0686bf703",
-     "title": "RC 2 polish: Yellow reaches SRT/ASS tracks, timed skip prompts follow the countdown, hero title gap"
-    },
-    {
-     "pr": 1347,
-     "sha": "b2dcd0c27",
-     "title": "ASS subtitles: attached fonts, every-video-frame karaoke on the TV, straight colour over video"
-    },
-    {
-     "pr": 1349,
-     "sha": "9f43dba98",
-     "title": "Player: Previous always plays the previous episode, and a fresh play has one to go to"
-    },
-    {
-     "pr": null,
-     "sha": "015868116",
-     "title": "release: 0.10.0"
-    },
-    {
-     "pr": 1355,
-     "sha": "22eb2a9c1",
-     "title": "Site video: the render works again after v0.10.0 (FFmpeg re-pin, demo Image[], item-menu trigger)"
-    },
-    {
-     "pr": 1357,
-     "sha": "db0125d55",
-     "title": "Site video: fetch the pinned FFmpeg from this repository's mirror first"
-    },
-    {
-     "pr": 1358,
-     "sha": "6f2c15a54",
-     "title": "refactor(sans-io): complete machine input and effect boundaries"
-    }
-   ],
-   "from": 342.5,
-   "id": "ci|host unit tests (hostsim)",
-   "label": "CI: host unit tests (hostsim)",
-   "since": "2026-11-12",
-   "threshold_pct": 20.0,
-   "to": 424.0
-  },
-  {
    "change_pct": 23.2,
    "commits": [
     {
@@ -804,12 +743,73 @@
      "title": "refactor(sans-io): complete machine input and effect boundaries"
     }
    ],
-   "from": 200,
+   "from": 200.0,
    "id": "ci|host lint + type-checks",
    "label": "CI: host lint + type-checks",
    "since": "2026-11-12",
    "threshold_pct": 20.0,
    "to": 246.5
+  },
+  {
+   "change_pct": 22.9,
+   "commits": [
+    {
+     "pr": 1335,
+     "sha": "911e52997",
+     "title": "Fix nine issues found on 0.10.0 RC 1: Home hero, Settings, Player HUD, Library restore"
+    },
+    {
+     "pr": 1343,
+     "sha": "abd63570a",
+     "title": "Feed: audio interleaved ahead of a backpressured video sink is fed, not dropped as stale"
+    },
+    {
+     "pr": 1342,
+     "sha": "b59dc1ecb",
+     "title": "Subtitle color: a Yellow tone and a Settings row beside Size and Position"
+    },
+    {
+     "pr": 1345,
+     "sha": "0686bf703",
+     "title": "RC 2 polish: Yellow reaches SRT/ASS tracks, timed skip prompts follow the countdown, hero title gap"
+    },
+    {
+     "pr": 1347,
+     "sha": "b2dcd0c27",
+     "title": "ASS subtitles: attached fonts, every-video-frame karaoke on the TV, straight colour over video"
+    },
+    {
+     "pr": 1349,
+     "sha": "9f43dba98",
+     "title": "Player: Previous always plays the previous episode, and a fresh play has one to go to"
+    },
+    {
+     "pr": null,
+     "sha": "015868116",
+     "title": "release: 0.10.0"
+    },
+    {
+     "pr": 1355,
+     "sha": "22eb2a9c1",
+     "title": "Site video: the render works again after v0.10.0 (FFmpeg re-pin, demo Image[], item-menu trigger)"
+    },
+    {
+     "pr": 1357,
+     "sha": "db0125d55",
+     "title": "Site video: fetch the pinned FFmpeg from this repository's mirror first"
+    },
+    {
+     "pr": 1358,
+     "sha": "6f2c15a54",
+     "title": "refactor(sans-io): complete machine input and effect boundaries"
+    }
+   ],
+   "from": 345,
+   "id": "ci|host unit tests (hostsim)",
+   "label": "CI: host unit tests (hostsim)",
+   "since": "2026-11-12",
+   "threshold_pct": 20.0,
+   "to": 424.0
   }
  ],
  "schema": 2,
