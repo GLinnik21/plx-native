@@ -16,7 +16,7 @@ use super::*;
 use crate::player::ass::Content;
 use crate::player::ass_source;
 use crate::player::subtitle_cue::{SideTracks, SubCue};
-use plx_media_codecs::subtitle_extract::{collect_manifest, AssTrack};
+use plx_media_codecs::subtitle_extract::{collect_manifest, detach_fonts, AssTrack};
 use plx_playback_contract::subtitle::{CaptionRetention, DecodeKind};
 
 fn fixture_retention() -> CaptionRetention {
@@ -32,7 +32,7 @@ unsafe fn fixture_subs(fmt: *mut AVFormatContext, key: &str) -> (SubTracks, Side
         stream_index: info.stream_index,
         authored: matches!(kind, DecodeKind::Ass { .. }),
     }).collect();
-    let manifest = collect_manifest(fmt, streams, &tracks, ass_source::MAX_HEADER_BYTES);
+    let manifest = collect_manifest(streams, &tracks, ass_source::MAX_HEADER_BYTES, detach_fonts(fmt));
     let generation = crate::player::subtitle_cue::begin_sources(key, presentation.kinds(), manifest);
     (SubTracks::open(streams, infos, plan), presentation, generation)
 }

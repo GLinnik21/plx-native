@@ -5,10 +5,12 @@
 //! as the format context lives: the demuxer's own parsed element (`matroskadec`'s `EbmlBin`, freed at
 //! `read_close`), the stream's `codecpar->extradata`, and the stream's internal codec context
 //! (`avformat_open_input` ends in `update_stream_avctx`, which `avcodec_parameters_to_context`-copies
-//! the extradata of EVERY stream, an attachment's included). The app then copies the fonts once more
-//! into the source store. The first and the third of libavformat's are private to it, so the most
-//! the app can shed is the `codecpar` one; those are the copies of the demux half, and the
-//! renderer's own are `player/ass/tests.rs`.
+//! the extradata of EVERY stream, an attachment's included). The app then copied the fonts once more
+//! into the source store. Only the `codecpar` copy is the app's to free (`detach_fonts`); the element
+//! buffer is private to the demuxer, and the codec context's is private to libavformat until
+//! `avformat_find_stream_info` rebuilds it from the codec parameters (the main demuxer runs it, so
+//! it ends with the element buffer alone; the side reader does not, and keeps the context's copy
+//! too). Those are the copies of the demux half; the renderer's own are `player/ass/tests.rs`.
 //!
 //! The meter is the C heap (`plx_base::testheap`): FFmpeg `malloc`s these buffers itself. Each
 //! measurement runs in a fresh single-threaded process whose input the PARENT made, so neither
@@ -24,7 +26,7 @@ use super::*;
 use crate::player::ass_source;
 use crate::player::subtitle_cue::{begin_sources, SideTracks};
 use plx_base::testheap;
-use plx_media_codecs::subtitle_extract::{collect_manifest, AssTrack, Job, ReadOutcome, ReadSeek};
+use plx_media_codecs::subtitle_extract::{collect_manifest, detach_fonts, AssTrack, Job, ReadOutcome, ReadSeek};
 use plx_playback_contract::subtitle::DecodeKind;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
@@ -140,6 +142,7 @@ fn measure_main_demuxer() {
     let ((held, font_bytes), peak) = testheap::peak_during(|| unsafe {
         let mut fmt = avformat_alloc_context();
         assert!(avformat_open_input(&mut fmt, path.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut()) >= 0);
+        let fonts = detach_fonts(fmt);
         assert!(avformat_find_stream_info(fmt, std::ptr::null_mut()) >= 0);
         let streams = (*fmt).streams;
         let infos = SubTracks::inspect(fmt, streams);
@@ -148,7 +151,7 @@ fn measure_main_demuxer() {
             stream_index: info.stream_index,
             authored: matches!(kind, DecodeKind::Ass { .. }),
         }).collect();
-        let manifest = collect_manifest(fmt, streams, &tracks, ass_source::MAX_HEADER_BYTES);
+        let manifest = collect_manifest(streams, &tracks, ass_source::MAX_HEADER_BYTES, fonts);
         let font_bytes = manifest.font_bytes;
         begin_sources("fixture:font-memory", presentation.kinds(), manifest);
         let held = testheap::live_bytes().unwrap();
@@ -193,14 +196,22 @@ fn reader_copies(n: &HashMap<String, u64>) -> f64 {
     copies(n["open_held"].saturating_sub(n["store_only"]), n["font_bytes"])
 }
 
-fn assert_fonts_handed_over(n: &HashMap<String, u64>, what: &str) {
+fn assert_fonts_handed_over(n: &HashMap<String, u64>, what: &str, libavformat_keeps: f64) {
     let fonts = n["font_bytes"];
+    eprintln!(
+        "{what}: {:.0} MiB of fonts; libavformat holds {:.2}x, the open peaks at {:.2}x, the store alone holds {:.2}x",
+        fonts as f64 / MIB as f64,
+        reader_copies(n),
+        copies(n["open_peak"], fonts),
+        copies(n["store_only"], fonts)
+    );
     assert!(fonts >= (FACES * FACE_BYTES) as u64 || std::env::var_os(FIXTURE_ENV).is_some(), "the fixture's fonts: {fonts}");
-    // The two libavformat keeps for itself (the demuxer's element buffer and the stream's codec
-    // context) are unreachable from outside; a third is `codecpar->extradata`, which the app owns.
+    // What libavformat keeps for itself (`libavformat_keeps` copies, with half a copy of room) is out
+    // of the app's reach; `codecpar->extradata`, the copy over that, is the app's and the hand-over
+    // frees it.
     assert!(
-        reader_copies(n) < 2.5,
-        "{what} holds the {:.0} MiB of fonts {:.2} more times after the hand-over: `codecpar->extradata` is still there",
+        reader_copies(n) < libavformat_keeps + 0.5,
+        "{what} holds the {:.0} MiB of fonts {:.2} more times after the hand-over, not {libavformat_keeps}: `codecpar->extradata` is still there",
         fonts as f64 / MIB as f64,
         reader_copies(n)
     );
@@ -217,20 +228,21 @@ fn assert_fonts_handed_over(n: &HashMap<String, u64>, what: &str) {
 }
 
 /// The side reader (`Job`: `avformat_open_input` alone) used to hold the fonts three times once it had
-/// handed them to the store (and a fourth time in the store).
+/// handed them to the store (and a fourth time in the store); now libavformat's element buffer and
+/// codec context are the two.
 #[test]
 #[ignore = "needs the bundled host FFmpeg and a system ffmpeg; run make check-ffmpeg"]
 fn the_side_reader_hands_the_fonts_over_without_keeping_a_copy() {
     let Some(n) = numbers(SIDE_TEST, "side", measure_side_reader) else { return };
-    assert_fonts_handed_over(&n, "the open side reader");
+    assert_fonts_handed_over(&n, "the open side reader", 2.0);
 }
 
-/// The main demuxer runs `avformat_find_stream_info` before it hands the fonts over; that does not
-/// make libavformat keep any more than `avformat_open_input` did, and it is where the hand-over must
-/// still find the bytes it is to take.
+/// The main demuxer takes the fonts right after `avformat_open_input`, then runs
+/// `avformat_find_stream_info`, which rebuilds the stream's codec context from the now empty codec
+/// parameters: libavformat is left with the element buffer alone.
 #[test]
 #[ignore = "needs the bundled host FFmpeg and a system ffmpeg; run make check-ffmpeg"]
 fn the_main_demuxer_hands_the_fonts_over_without_keeping_a_copy() {
     let Some(n) = numbers(MAIN_TEST, "main", measure_main_demuxer) else { return };
-    assert_fonts_handed_over(&n, "the open demuxer");
+    assert_fonts_handed_over(&n, "the open demuxer", 1.0);
 }

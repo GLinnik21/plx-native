@@ -15,7 +15,7 @@ use super::*;
 use crate::player::subtitle_cue::{SideTracks, SubCue};
 use crate::player::SHARED;
 use crate::player::{ass, ass_source};
-use plx_media_codecs::subtitle_extract::{collect_manifest, AssTrack};
+use plx_media_codecs::subtitle_extract::{collect_manifest, detach_fonts, AssTrack};
 use plx_playback_contract::subtitle::{CaptionRetention, DecodeKind};
 use std::sync::Arc;
 
@@ -62,8 +62,8 @@ impl AssFixture {
             stream_index: info.stream_index,
             authored: matches!(kind, DecodeKind::Ass { .. }),
         }).collect();
-        let manifest = collect_manifest(self.fmt, (*self.fmt).streams, &tracks,
-            ass_source::MAX_HEADER_BYTES);
+        let manifest = collect_manifest((*self.fmt).streams, &tracks,
+            ass_source::MAX_HEADER_BYTES, detach_fonts(self.fmt));
         crate::player::subtitle_cue::begin_sources("fixture:ass-header", self.presentation.kinds(), manifest)
     }
 
