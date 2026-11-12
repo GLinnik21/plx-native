@@ -146,3 +146,40 @@ fn sparse_episode_uses_its_title_or_omits_the_empty_row() {
     ep.show_title.clear();
     assert!(hero_line(&ep).is_none(), "the logo rung already carries the episode's title");
 }
+
+/// **The gap from the title to the line under it is one rule for art and for type** (owner, v0.10.0
+/// 2: a hero titled in type sat its glyphs almost on the metadata line while a clearLogo had even
+/// air). The ladder (`hero_ladder`) puts the title band's foot `HOME_TITLE_GAP` above the block and
+/// the block `HOME_ACTIONS_GAP` above the actions; the title's PAINTED box ends on that foot
+/// whether it is a logo's box (`hero_logo::place`) or type with its descenders
+/// (`HeroLogo::painted`), also for a title that wraps to two lines.
+#[test]
+fn the_title_to_metadata_to_actions_gaps_are_the_same_for_art_and_for_type() {
+    use plx_ui::hero_logo::{self, HeroLogo, LogoRung};
+    use plx_ui::label::HAlign;
+    let m = plx_ui::fixture::FixtureMeasure;
+    let long = "The Unbearably Long Name of the Last House at the Edge of the World";
+    let hero = movie();
+    let (stack, line) = hero_ladder(&hero);
+    assert!(matches!(line, Some(HeroLine::Metadata { .. })));
+    let block = stack.block.expect("the identity band");
+    let band = hero_title_band(&stack);
+    let foot = band.y + band.h;
+    let gap_to_meta = |painted_bottom: f32| block.y - painted_bottom;
+    // art: a logo box of any shape ends on the foot
+    for (w, h) in [(400.0, 80.0), (300.0, 240.0)] {
+        let logo = hero_logo::place(band, w, h, HAlign::Left);
+        assert_eq!(gap_to_meta(logo.y + logo.h), plx_ui::theme::hero::HOME_TITLE_GAP);
+    }
+    // type: one line, no descender or with one, and a title that wraps
+    for title in ["Backrooms", "Hollow Coast", long] {
+        let typed = HeroLogo::new(0, "", title, LogoRung::Hero).painted(band, &m);
+        assert_eq!(typed.y + typed.h, foot, "{title}: type ends on the foot as art does");
+        assert_eq!(gap_to_meta(typed.y + typed.h), plx_ui::theme::hero::HOME_TITLE_GAP, "{title}");
+    }
+    assert_eq!(
+        stack.actions.y - (block.y + block.h),
+        plx_ui::theme::hero::HOME_ACTIONS_GAP,
+        "the block's foot to the actions is the ladder's other gap"
+    );
+}

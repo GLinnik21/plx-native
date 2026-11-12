@@ -2090,6 +2090,9 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         #[cfg(feature = "play-feed")]
         park_on_decoder_release(app);
         app.adapters.player.sync_request_metrics(&mut app.player.session);
+        // The subtitle registries' colour fact, delivered to the session's readout for the Subtitles
+        // menu to read (a field, not a registry): whichever backend plays.
+        plx_media::player::deliver_subtitle_ink(&mut app.player.session);
         let foreground = playback_may_run(app);
         let backend_at = app.adapters.player.backend_tick();
         let _ = app.adapters.player.backend_set_foreground_at(&mut app.player.session, foreground, backend_at);

@@ -213,7 +213,7 @@ fn t_account_the_bound_rows_are_the_platform_bound_keys() {
 /// Settings dispatcher's T-settings), pinned here per key so a change is a visible edit. The nine
 /// are `Profile` rows with the legacy install key as their fallback since the per-profile work (P1a),
 /// and so is `trailer_autoplay` since P1c, which also gained its live cell and its Confirm Settings
-/// row then; every other fact, of every other row, is what `main` declared.
+/// row then, and `subtitle_tone` gained its Optimistic Settings row (Subtitle color) next to its player-panel writer; every other fact, of every other row, is what `main` declared.
 #[test]
 fn the_declared_live_and_settings_facts_are_the_ones_main_has() {
     let row = |key: &str| -> &Descriptor { DESCRIPTORS.iter().find(|d| d.key == key).unwrap() };
@@ -232,7 +232,7 @@ fn the_declared_live_and_settings_facts_are_the_ones_main_has() {
         ("subtitle_size", Some(Optimistic)),
         ("subtitle_position", Some(Optimistic)),
         ("hdr_overlay_brightness", Some(Optimistic)),
-        ("subtitle_tone", None),
+        ("subtitle_tone", Some(Optimistic)),
         ("audio_enhancements", None),
         ("trailer_autoplay", Some(Confirm)),
     ] {

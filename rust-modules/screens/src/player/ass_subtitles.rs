@@ -170,7 +170,7 @@ impl AssSubtitles {
         self.spans.clear();
         self.spans.extend(frame.rects.iter().map(|r| output_span(&frame, r)));
         lift_dys(origin, lift, band, &self.spans, aligns, &mut self.dys);
-        let ink = plx_appkit::player_hud::subtitle_ink(model);
+        let ink = plx_appkit::player_hud::subtitle_tint(model);
         for (i, (texture, rect)) in self.textures.iter().zip(&frame.rects).enumerate() {
             // The facade composes the regions premultiplied (`ass::Rect::rgba`), so they take the
             // premultiplied draw: the same ink rung, no straight-alpha conversion on the CPU. The
@@ -404,7 +404,7 @@ mod tests {
     }
 
     fn style(size: SubtitleSize, position: SubtitlePosition) -> TextStyle {
-        TextStyle { size, position }
+        TextStyle { size, position, ..TextStyle::default() }
     }
 
     /// A one-line region whose bottom edge sits on the style's bottom anchor, `extra` px below

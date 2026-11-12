@@ -39,6 +39,11 @@ struct AccessState {
     profile: Option<ProfileKey>,
     scope: u64,
     answer: Option<Result<MarkerAccess, PreferenceError>>,
+    /// What the seat is granted as of the last SUCCESSFUL answer. It outlives that answer's TTL, a
+    /// re-read in flight and a failed one: the TTL only decides when to ask again, never what the
+    /// page shows, so a row or an automatic offer does not drop out and come back every few
+    /// minutes while a viewer sits on it. Cleared with the seat; `None` is "not known yet".
+    settled: Option<MarkerAccess>,
     at: u32,
     awaiting: bool,
 }
@@ -61,6 +66,7 @@ impl AccessState {
         self.profile = profile;
         self.scope = self.scope.wrapping_add(1).max(1);
         self.answer = None;
+        self.settled = None;
         self.awaiting = false;
         true
     }
@@ -84,15 +90,14 @@ impl AccessState {
             return;
         }
         self.awaiting = false;
+        if let Ok(access) = answer {
+            self.settled = Some(access);
+        }
         self.answer = Some(answer);
         self.at = now;
     }
     fn view(&self, now: u32, intro: MarkerSkipMode, credits: MarkerSkipMode) -> MarkerPrefsView {
-        let grants = if self.fresh(now) {
-            self.answer.and_then(Result::ok).unwrap_or_default()
-        } else {
-            MarkerAccess::default()
-        };
+        let grants = self.settled.unwrap_or_default();
         MarkerPrefsView {
             scope: if self.profile.is_some() {
                 self.scope
@@ -231,17 +236,54 @@ mod tests {
                 .intro_granted
         );
         assert!(
-            !state
+            state
                 .view(
                     300_004,
                     MarkerSkipMode::Automatic,
                     MarkerSkipMode::Automatic
                 )
-                .intro_granted
+                .intro_granted,
+            "an answer past its TTL is stale, not withdrawn: the view keeps the settled grants"
         );
         let next = state.begin(300_004).unwrap();
         state.land(next, Err(PreferenceError::TimedOut), 300_005);
         assert_eq!(state.begin(345_004), None);
         assert!(state.begin(345_005).is_some());
+    }
+
+    /// **The grants never flip while a seat sits on a page** (the Settings > Playback skip rows, the
+    /// player's automatic offer): past its TTL an answer asks again but keeps standing, while the
+    /// re-read is in flight and when it fails. Only a landed answer replaces it; only another seat
+    /// clears it.
+    #[test]
+    fn settled_grants_stand_through_a_refresh_a_failure_and_only_a_new_answer_or_seat_changes_them() {
+        let both = MarkerAccess { intro: true, credits: true };
+        let view = |state: &AccessState, now| state.view(now, MarkerSkipMode::Automatic, MarkerSkipMode::Automatic);
+        let mut state = AccessState::default();
+        state.seat(Some(profile(1)));
+        let scope = state.begin(0).unwrap();
+        let loading = view(&state, 1);
+        assert!(!loading.intro_granted && !loading.credits_granted, "nothing is known before the first answer");
+        state.land(scope, Ok(both), 2);
+        assert!(view(&state, 3).intro_granted && view(&state, 3).credits_granted);
+        let ttl = plx_plex::plex::account::AUDIO_PREFERENCES_SUCCESS_TTL.as_millis() as u32;
+        // TTL expiry: a refresh is due, the grants stand.
+        let stale = view(&state, ttl + 3);
+        assert!(stale.needs_refresh && stale.intro_granted && stale.credits_granted);
+        // The refresh in flight: the grants stand, and no second refresh is asked for.
+        let scope = state.begin(ttl + 3).unwrap();
+        let loading = view(&state, ttl + 4);
+        assert!(!loading.needs_refresh && loading.intro_granted && loading.credits_granted);
+        // It fails: still standing, retried after the failure TTL.
+        state.land(scope, Err(PreferenceError::TimedOut), ttl + 5);
+        assert!(view(&state, ttl + 6).intro_granted, "a transient failure does not withdraw a settled grant");
+        // It answers: the new answer replaces the old.
+        let scope = state.begin(ttl + 60_000).unwrap();
+        state.land(scope, Ok(MarkerAccess { intro: true, credits: false }), ttl + 60_001);
+        let now = view(&state, ttl + 60_002);
+        assert!(now.intro_granted && !now.credits_granted);
+        // Another seat starts unknown.
+        state.seat(Some(profile(2)));
+        assert!(!view(&state, ttl + 60_003).intro_granted);
     }
 }

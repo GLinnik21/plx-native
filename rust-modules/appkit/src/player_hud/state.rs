@@ -114,18 +114,23 @@ impl ControlSlot {
     pub fn items(self) -> c_int {
         match self {
             ControlSlot::Discs(_) => BTN_N,
-            // Watch Credits + Next Episode — the one stand-in with a pair
+            // Watch Credits + Next Episode — a pair, like an Automatic skip prompt below
             ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => 2,
+            // an Automatic skip is the same two-button prompt: Watch (cancel) beside the filled Skip
+            ControlSlot::Skip(pr) if pr.automatic => 2,
             ControlSlot::Skip(_) => 1,
         }
     }
     /// Where the focus ring parks when this row APPEARS. The discs prefer an enabled Next, then
     /// the first enabled disc. Up Next's primary is drawn on the RIGHT; the countdown's
     /// cancel rule is a steady state (`up_next::countdown_may_run`), so parking on item 0 there
-    /// would disarm the timer on the frame after it armed.
+    /// would disarm the timer on the frame after it armed. The Automatic skip prompt (Watch, then the
+    /// filled Skip) follows the same rule: **one initial focus for both timed prompts, the filled
+    /// action, with the cancel button one key to its left.**
     pub fn primary_btn(self) -> c_int {
         match self {
             ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => crate::up_next::PRIMARY_BTN,
+            ControlSlot::Skip(pr) if pr.automatic => crate::up_next::PRIMARY_BTN,
             ControlSlot::Discs(controls) => controls.primary(),
             _ => 0,
         }
@@ -162,6 +167,16 @@ impl ControlSlot {
     }
     pub fn is_up_next_pair(self) -> bool {
         matches!(self, Self::UpNext(_) | Self::AutomaticUpNext(_))
+    }
+    /// The Automatic skip prompt: Watch (item 0, cancels) beside the filled Skip (item 1, acts now and
+    /// is what the five-second clock performs).
+    pub fn is_automatic_skip(self) -> bool {
+        matches!(self, Self::Skip(pr) if pr.automatic)
+    }
+    /// A slot whose row is a Watch button (item 0) beside a filled timed action (item 1): the Up Next
+    /// pair and the Automatic skip prompt.
+    pub fn is_timed_pair(self) -> bool {
+        self.is_up_next_pair() || self.is_automatic_skip()
     }
     pub fn automatic_marker(self) -> Option<plx_data::metadata::Marker> {
         match self {

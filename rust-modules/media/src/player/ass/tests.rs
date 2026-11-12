@@ -1682,7 +1682,7 @@ fn track(header: &str, events: &[(i64, i64, &str)]) -> Arc<Source> {
 }
 
 fn style(size: SubtitleSize, position: SubtitlePosition) -> TextStyle {
-    TextStyle { size, position }
+    TextStyle { size, position, ..TextStyle::default() }
 }
 
 /// Render a Text-origin source into the full logical screen, as the screen asks for it.
@@ -1714,7 +1714,10 @@ fn restyle_applies_to_text_origin_tracks_of_equal_fonts_and_a_different_header_o
         origin: Origin::Authored,
         content: Content::Embedded { header: Arc::from(header), events: Arc::from([]), fonts: Arc::from([]) },
     };
-    assert!(!restyles(&authored(b"a"), &authored(b"b")), "an authored header change is a new renderer");
+    assert!(restyles(&authored(b"a"), &authored(b"b")), "an authored header rebuilt for the colour pick, one timeline, is a restyle");
+    let mut other_track = authored(b"b");
+    other_track.id = 2;
+    assert!(!restyles(&authored(b"a"), &other_track), "another authored track's header is a new renderer");
     assert!(!restyles(&medium, &authored(b"b")) && !restyles(&authored(b"b"), &medium), "origins must both be Text");
 
     let font = |data: &'static [u8]| -> Arc<[Font]> { Arc::from([Font { name: "f.ttf".into(), data: Arc::from(data) }]) };

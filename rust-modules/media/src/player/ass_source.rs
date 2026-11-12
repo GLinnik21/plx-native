@@ -3,9 +3,13 @@
 //! receives immutable snapshots, never a pointer into FFmpeg's storage.
 //! Selection does not discard read-ahead. A seek replaces each source identity so a completed
 //! render from the old position cannot land in the new playback epoch.
+//! An authored track keeps the file's own bytes as its identity and is handed to the renderer with
+//! the viewer's colour pick applied to its pure-white-primary styles (`ass_ink`); a track with no
+//! such style is never restyled by the pick.
 use super::ass::{self, Content, Event, Font, Origin, Source};
 use super::text_ass::{self, Align, AlignClass, ClipCue, TextDialect};
 use super::text_style::TextStyle;
+use plx_plex::plex::session::SubtitleTone;
 use std::collections::BTreeMap;
 use std::sync::{Arc, MutexGuard};
 
@@ -48,9 +52,24 @@ pub enum TrackHeader {
     /// An ASS/SSA track: the codec-private header, as the file wrote it.
     Authored(Vec<u8>),
     /// A text track (SubRip, WebVTT, mov_text, ...): there is no header in the file. The store
-    /// synthesizes one from the viewer's size and position picks and remembers the dialect its
-    /// cues are written in.
+    /// synthesizes one from the viewer's size, position and colour picks (a colour change restyles
+    /// the track, a change among white and the grays does not: a gray is a draw-time tint) and
+    /// remembers the dialect its cues are written in.
     Text(TextDialect),
+}
+
+/// An authored track as the FILE wrote it, beside the header the renderer is given for the viewer's
+/// colour pick ([`super::ass_ink`]): the file's bytes are the reopen identity and the source the pick
+/// is applied to afresh each time, never to an earlier result.
+#[derive(Clone)]
+struct AuthoredTrack {
+    file: Arc<[u8]>,
+    /// The pick the held header was built for.
+    tone: SubtitleTone,
+    /// Whether the colour pick can reach this track at all: the FILE's header has a style whose primary
+    /// is pure white ([`super::ass_ink::takes_colour`]). Read once here, from the file's bytes (the held
+    /// header reads false under a colour that already took them), so a per-frame poll never parses.
+    takes_colour: bool,
 }
 
 /// A cue as the text track received it, converted: the ASS packet it became and the ReadOrder in it.
@@ -169,6 +188,8 @@ pub struct Store {
     tracks: BTreeMap<i32, Arc<Source>>,
     // The tracks of `tracks` that are Text origin, by track.
     text: BTreeMap<i32, TextTrack>,
+    // The tracks of `tracks` the file styled, by track.
+    authored: BTreeMap<i32, AuthoredTrack>,
     fonts: Option<Arc<[Font]>>,
     // Dedup index: the events held per track, so a reread after a seek is an O(1) lookup.
     seen: BTreeMap<i32, std::collections::HashSet<Event>>,
@@ -191,6 +212,7 @@ impl Store {
             awaiting_reopen: false,
             tracks: BTreeMap::new(),
             text: BTreeMap::new(),
+            authored: BTreeMap::new(),
             fonts: None,
             seen: BTreeMap::new(),
             selected_track: None,
@@ -204,6 +226,7 @@ impl Store {
         self.awaiting_reopen = false;
         self.tracks.clear();
         self.text.clear();
+        self.authored.clear();
         self.seen.clear();
         self.fonts = None;
     }
@@ -245,7 +268,44 @@ impl Store {
                 }
             }
         }
+        // An authored track takes the colour pick in its white-primary styles (`ass_ink`): the header the
+        // renderer holds is rebuilt from the FILE's bytes when the pick moves, the track keeps its id and
+        // its events, and the engine swaps it in place (`ass::restyles`). A pick that changes nothing in
+        // this header (a grey, a size, a file with no white style) bumps nothing. This runs inline, under the
+        // store lock, ONCE per pick change that moves the colour, and costs a scan plus a copy of the
+        // header: at most `MAX_HEADER_BYTES` (1 MiB; a header over it is never admitted), and a real
+        // Aegisub header is hundreds of KB at most. That is far more than the few hundred bytes a text track
+        // synthesizes just above, but a bounded, rare cost, so it stays here instead of taking a worker
+        // for the header alone. A sidecar script, whose whole file is up to `SIDECAR_MAX_BYTES` (4 MiB),
+        // does the same on a worker (`sidecar::start_recolour`).
+        if let (Some(ink), Some(source)) = (self.authored.get_mut(&track), self.tracks.get_mut(&track)) {
+            if ink.tone != style.tone {
+                ink.tone = style.tone;
+                if let Content::Embedded { header, events, fonts } = &source.content {
+                    let wanted: Arc<[u8]> = super::ass_ink::recolour(&ink.file, style.tone).map_or_else(|| ink.file.clone(), Arc::from);
+                    if *header != wanted {
+                        self.revision = self.revision.wrapping_add(1);
+                        *source = Arc::new(Source {
+                            id: source.id,
+                            revision: source.revision.wrapping_add(1),
+                            origin: Origin::Authored,
+                            content: Content::Embedded { header: wanted, events: events.clone(), fonts: fonts.clone() },
+                        });
+                    }
+                }
+            }
+        }
         self.tracks.get(&track).cloned()
+    }
+
+    /// Can the viewer's colour pick reach `track`? A text track always takes it (its header is built
+    /// from the pick); an authored one when the file has a style the pick recolours; `None` for a track
+    /// the store does not hold (nothing is known, so the caller must not dim anything).
+    fn takes_colour(&self, track: i32) -> Option<bool> {
+        match self.authored.get(&track) {
+            Some(ink) => Some(ink.takes_colour),
+            None => self.text.contains_key(&track).then_some(true),
+        }
     }
 
     #[cfg(test)]
@@ -288,8 +348,7 @@ impl Store {
                 self.tracks.get(track).is_some_and(|source| match registered {
                     TrackHeader::Authored(bytes) => {
                         source.origin == Origin::Authored
-                            && matches!(&source.content, Content::Embedded { header, .. }
-                                if header.as_ref() == bytes.as_slice())
+                            && self.authored.get(track).is_some_and(|ink| ink.file.as_ref() == bytes.as_slice())
                     }
                     TrackHeader::Text(dialect) => {
                         source.origin.is_text()
@@ -331,7 +390,12 @@ impl Store {
                         _ => None,
                     }).unwrap_or_else(|| Arc::from([]));
                     self.seen.insert(track, events.iter().cloned().collect());
-                    (Origin::Authored, header, events)
+                    // the renderer's header is the file's with the viewer's colour taken into its white styles
+                    let file: Arc<[u8]> = header.into();
+                    let held = super::ass_ink::recolour(&file, style.tone).map_or_else(|| file.clone(), Arc::from);
+                    let takes_colour = super::ass_ink::takes_colour(&file);
+                    self.authored.insert(track, AuthoredTrack { file, tone: style.tone, takes_colour });
+                    (Origin::Authored, held, events)
                 }
                 TrackHeader::Text(dialect) => {
                     // The header is built for the picks of now, so the generation is the current one
@@ -343,7 +407,7 @@ impl Store {
                     text.style_generation = style.generation();
                     let events = text.view();
                     self.text.insert(track, text);
-                    (Origin::Text(style), text_ass::header(&style).into_bytes(), events)
+                    (Origin::Text(style), text_ass::header(&style).into_bytes().into(), events)
                 }
             };
             self.tracks.insert(
@@ -353,7 +417,7 @@ impl Store {
                     revision: 0,
                     origin,
                     content: Content::Embedded {
-                        header: header.into(),
+                        header,
                         events,
                         fonts: fonts.clone(),
                     },
@@ -689,6 +753,12 @@ pub fn font_snapshot() -> (u64, Arc<[Font]>) {
 pub fn selected(track: i32) -> Option<Arc<Source>> {
     let style = TextStyle::current();
     store().selected_styled(track, style)
+}
+
+/// Can the viewer's colour pick reach embedded track `track` ([`Store::takes_colour`])? `None` while the
+/// store holds no such track.
+pub fn takes_colour(track: i32) -> Option<bool> {
+    store().takes_colour(track)
 }
 
 /// Interpolate the sparse native clock only while it is advancing. Limit extrapolation to
@@ -1678,13 +1748,138 @@ mod tests {
         assert_eq!(s.push_text(g, 0, 1000, 2000, "cue", 0), None);
     }
 
+    // ---- the colour pick on an authored track (`ass_ink`) ----
+
+    /// An authored header with a white-primary `Default` and a blue `Sign` style.
+    fn authored_header() -> Vec<u8> {
+        let style = |name: &str, primary: &str| format!(
+            "Style: {name},Arial,48,{primary},&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,1,2,10,10,10,1\n");
+        format!(
+            "[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n{}{}\n[Events]\n",
+            style("Default", "&H00FFFFFF"), style("Sign", "&H00FF0000")
+        ).into_bytes()
+    }
+
+    /// **An embedded ASS track takes the viewer's colour in its white styles** (an SRT converted to ASS is
+    /// one): the renderer's header is the file's with `ass_ink::recolour` applied, rebuilt in place when the
+    /// pick moves, while the store keeps the file's own bytes (the reopen identity) and the events.
+    #[test]
+    fn an_authored_track_takes_the_colour_pick_in_its_white_styles_and_keeps_the_files_own_bytes() {
+        use plx_plex::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
+        let file = authored_header();
+        let white = TextStyle::default();
+        let yellow = TextStyle { tone: SubtitleTone::Yellow, ..white };
+        let header_of = |source: &Arc<Source>| match &source.content {
+            Content::Embedded { header, .. } => header.to_vec(),
+            Content::Script { .. } => panic!(),
+        };
+        let mut s = Store::default();
+        let g = s.begin_styled("f", vec![(0, TrackHeader::Authored(file.clone()))], vec![], white);
+        s.push(g, 0, event("hello", 1000), 0);
+        let before = s.selected_styled(0, white).unwrap();
+        assert_eq!((before.origin, header_of(&before)), (Origin::Authored, file.clone()), "white is the file's own ink: nothing is rewritten");
+        let after = s.selected_styled(0, yellow).unwrap();
+        assert_eq!((after.id, after.origin), (before.id, Origin::Authored), "authored geometry, same identity");
+        assert_eq!(after.revision, before.revision.wrapping_add(1), "one bump for the new pick");
+        assert_eq!(header_of(&after), super::super::ass_ink::recolour(&file, SubtitleTone::Yellow).unwrap());
+        assert!(Arc::ptr_eq(&after, &s.selected_styled(0, yellow).unwrap()), "once only");
+        let Content::Embedded { events, .. } = &after.content else { panic!() };
+        assert_eq!(events.len(), 1, "the held events are untouched");
+        // a size or position pick is not this track's business, and a grey is a draw-time tint
+        let large = TextStyle { size: SubtitleSize::Large, position: SubtitlePosition::High, ..yellow };
+        assert!(Arc::ptr_eq(&after, &s.selected_styled(0, large).unwrap()));
+        // a cue arriving later is held under the recoloured header, and white puts the file's own back
+        s.push(g, 0, event("again", 3000), 0);
+        assert_eq!(header_of(&s.selected_styled(0, yellow).unwrap()), header_of(&after));
+        let back = s.selected_styled(0, white).unwrap();
+        assert_eq!(header_of(&back), file);
+        assert_ne!(back.revision, after.revision, "white is a change of pick too");
+        // the same file reopened under a pick still matches by the FILE's bytes and keeps its events
+        s.selected_styled(0, yellow);
+        s.begin_styled("f", vec![(0, TrackHeader::Authored(file.clone()))], vec![], yellow);
+        let Content::Embedded { events, .. } = &s.selected_styled(0, yellow).unwrap().content else { panic!() };
+        assert_eq!(events.len(), 2, "a reopen under a coloured pick is the same file");
+    }
+
+    #[test]
+    fn an_authored_track_with_no_white_style_is_never_restyled_by_the_pick() {
+        use plx_plex::plex::session::SubtitleTone;
+        let coloured = String::from_utf8(authored_header()).unwrap().replace("&H00FFFFFF", "&H0000FFFF").into_bytes();
+        let yellow = TextStyle { tone: SubtitleTone::Yellow, ..TextStyle::default() };
+        let mut s = Store::default();
+        s.begin_styled("f", vec![(0, TrackHeader::Authored(coloured))], vec![], TextStyle::default());
+        let before = s.selected_styled(0, TextStyle::default()).unwrap();
+        assert!(Arc::ptr_eq(&before, &s.selected_styled(0, yellow).unwrap()), "nothing for the pick to take");
+    }
+
+    /// **Whether the pick reaches a track is a fact of the track, read from the FILE's bytes**: a white
+    /// primary takes it, a coloured-only script does not, a text track always does, a track the store does
+    /// not hold is unknown — and none of that moves with the pick (the held header of a track that took
+    /// yellow has no white style left to find).
+    #[test]
+    fn a_track_knows_whether_the_colour_pick_reaches_it_whatever_the_pick_is() {
+        use plx_plex::plex::session::SubtitleTone;
+        let coloured = String::from_utf8(authored_header()).unwrap().replace("&H00FFFFFF", "&H0000FFFF").into_bytes();
+        let yellow = TextStyle { tone: SubtitleTone::Yellow, ..TextStyle::default() };
+        let mut s = Store::default();
+        s.begin_styled(
+            "f",
+            vec![(0, TrackHeader::Authored(authored_header())), (1, TrackHeader::Authored(coloured)), (2, TrackHeader::Text(TextDialect::Srt))],
+            vec![],
+            yellow,
+        );
+        let answers = |s: &Store| [s.takes_colour(0), s.takes_colour(1), s.takes_colour(2), s.takes_colour(3)];
+        assert_eq!(answers(&s), [Some(true), Some(false), Some(true), None], "opened under yellow");
+        s.selected_styled(0, TextStyle::default());
+        assert_eq!(answers(&s), [Some(true), Some(false), Some(true), None], "the pick moved off the colour");
+        s.selected_styled(0, yellow);
+        assert_eq!(answers(&s), [Some(true), Some(false), Some(true), None], "and back");
+    }
+
+    /// **`player::subtitle_takes_colour` is the one answer the menu reads**: pictures never, text always,
+    /// ASS by the header of the selected sidecar, else of the embedded track being fed, and yes while that
+    /// header is unknown. The header's half reaches it through the session's readout, delivered once a
+    /// tick by `player::deliver_subtitle_ink`: asked before a delivery, the answer is still the last one.
+    #[test]
+    fn the_subtitle_takes_colour_fact_follows_the_codec_and_the_selected_track() {
+        let _guard = plx_base::testlock::serial();
+        reset();
+        super::super::sidecar::reset();
+        let coloured = String::from_utf8(authored_header()).unwrap().replace("&H00FFFFFF", "&H0000FFFF").into_bytes();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let mut takes = |codec: &str| {
+            super::super::deliver_subtitle_ink(&mut ps);
+            super::super::subtitle_takes_colour(&ps, codec)
+        };
+        assert!(!takes("pgs") && !takes("hdmv_pgs_subtitle") && !takes("dvd_subtitle"), "a picture never takes a colour");
+        assert!(takes("srt") && takes("subrip") && takes("webvtt") && takes("mov_text"), "text always does");
+        assert!(takes("ass"), "nothing known yet: nothing is dimmed");
+        begin("fixture", vec![(0, TrackHeader::Authored(authored_header())), (1, TrackHeader::Authored(coloured.clone()))], vec![]);
+        super::super::request_subtitle(0);
+        assert!(takes("ass") && takes("ssa"), "a white-primary style");
+        super::super::request_subtitle(1);
+        assert!(!takes("ass") && !takes("ssa"), "no white-primary style");
+        // a selected sidecar answers instead of the embedded track
+        let with_event = |mut file: Vec<u8>| {
+            file.extend_from_slice(b"Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,Hello\n");
+            file
+        };
+        super::super::sidecar::select_loaded_for_test(7, &with_event(authored_header()));
+        assert!(takes("ass"), "the sidecar has a white style, the embedded track does not");
+        super::super::sidecar::select_loaded_for_test(7, &with_event(coloured));
+        super::super::request_subtitle(0);
+        assert!(!takes("ass"), "the sidecar has none, the embedded track does");
+        super::super::sidecar::reset();
+        reset();
+    }
+
     // ---- lazy restyle by style generation (plan §2.5) ----
 
     #[test]
     fn a_restyle_bumps_the_revision_once_and_keeps_the_events_and_the_identity() {
         use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
-        let small = TextStyle { size: SubtitleSize::Small, position: SubtitlePosition::Low };
-        let large = TextStyle { size: SubtitleSize::Large, position: SubtitlePosition::Low };
+        let small = TextStyle { size: SubtitleSize::Small, position: SubtitlePosition::Low, ..TextStyle::default() };
+        let large = TextStyle { size: SubtitleSize::Large, position: SubtitlePosition::Low, ..TextStyle::default() };
         let mut s = Store::default();
         let g = s.begin_styled("f", vec![(0, TrackHeader::Text(TextDialect::Srt))], vec![], small);
         s.push_text(g, 0, 1000, 2000, "cue", 0);
@@ -1713,8 +1908,8 @@ mod tests {
     #[test]
     fn a_reopen_after_a_pick_change_builds_the_header_for_the_new_picks_without_a_second_bump() {
         use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
-        let small = TextStyle { size: SubtitleSize::Small, position: SubtitlePosition::Low };
-        let large = TextStyle { size: SubtitleSize::Large, position: SubtitlePosition::High };
+        let small = TextStyle { size: SubtitleSize::Small, position: SubtitlePosition::Low, ..TextStyle::default() };
+        let large = TextStyle { size: SubtitleSize::Large, position: SubtitlePosition::High, ..TextStyle::default() };
         let mut s = Store::default();
         let g = s.begin_styled("f", vec![(0, TrackHeader::Text(TextDialect::Srt))], vec![], small);
         s.push_text(g, 0, 1000, 2000, "cue", 0);
@@ -1730,8 +1925,8 @@ mod tests {
     #[test]
     fn a_text_track_is_restyled_only_when_it_is_asked_for() {
         use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
-        let small = TextStyle { size: SubtitleSize::Small, position: SubtitlePosition::Low };
-        let large = TextStyle { size: SubtitleSize::Large, position: SubtitlePosition::Low };
+        let small = TextStyle { size: SubtitleSize::Small, position: SubtitlePosition::Low, ..TextStyle::default() };
+        let large = TextStyle { size: SubtitleSize::Large, position: SubtitlePosition::Low, ..TextStyle::default() };
         let mut s = Store::default();
         s.begin_styled(
             "f",

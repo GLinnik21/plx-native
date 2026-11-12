@@ -1157,7 +1157,9 @@ pub(crate) fn activate_ctrl_row(
                 false
             }
         }
-        ControlSlot::Skip(pr) if pr.automatic => {
+        // The Automatic skip prompt is the same two buttons: Watch (item 0) retires the segment without
+        // skipping it; the filled Skip (item 1) is what the clock would do, performed NOW.
+        ControlSlot::Skip(pr) if pr.automatic && btn == plx_appkit::up_next::BTN_CREDITS => {
             bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::MarkSkipped(pr.marker));
             false
         }
