@@ -100,14 +100,17 @@
 //!
 //! A fragment program with a reciprocal and a multiply per pixel (about 2 arithmetic words a quad on
 //! Midgard) over the covered pixels, and a draw call per box (at most 16). What the covered pixels are
-//! on a frame follows the frame: a subtitle line or two is a few hundred thousand pixels, a heavy
-//! typeset sign a million and a half, a full-width HUD scrim most of the screen, and a draw with no
-//! extent all 2.07 M. The pass over the whole viewport was measured on the set as the loss of about 10
-//! fps (about 50 to about 40 on the UI heartbeat); the covered pixels are the figure that scales it, and
-//! the pass's cost over a given set of boxes is UNMEASURED on the set. The copy fallback adds the frame's
-//! copy and a pass reload (about 17 MB of traffic at 1080p), whatever the boxes. The boxes are the
-//! drawn extents, not the logical rects (`AA_BLEED`, shadow and glow pads are inside them), and a
-//! bounding box of a few draws can cover pixels none of them touched: those are the clear, a fixed point.
+//! on a frame follows the frame. MODELLED, not measured, by running `Ledger::add` over assumed 1080p
+//! frames: two dialogue lines about 0.15 M pixels, a heavy opening whose regions sit in the lower 40% of
+//! the screen about 0.9 M, a HUD with full-width top and bottom scrims about 1.2 M; 64 regions scattered
+//! over the whole frame fold to one bounding box of nearly all of it, and a draw with no extent is all
+//! 2.07 M (the pass then costs what it did before). The pass over the whole viewport was measured on the
+//! set as the loss of about 10 fps (about 50 to about 40 on the UI heartbeat); the covered pixels are
+//! the figure that scales it, and the pass's cost over a given set of boxes is UNMEASURED on the set.
+//! The copy fallback adds the frame's copy and a pass reload (about 17 MB of traffic at 1080p), whatever
+//! the boxes. The boxes are the drawn extents, not the logical rects (`AA_BLEED`, shadow and glow pads
+//! are inside them), and a bounding box of a few draws can cover pixels none of them touched: those are
+//! the clear, a fixed point.
 
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uint};
