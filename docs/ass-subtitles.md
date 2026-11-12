@@ -77,9 +77,9 @@ renderer's same-fonts check is a pointer compare), and the renderer hands libass
 NAMES. With no font provider libass selects a face by the requested family, then "Inter", then the
 CJK file, so an attached face that no requested name matches is never drawn and its bytes would be
 dead weight. `player/ass/font_names.rs` (pure) reads each attachment's sfnt `name` table (family 1,
-full 4, PostScript 6, the CFF font name, TrueType Collections included) and selects a face when a
-requested name equals one of them under ASCII case folding, the rule being a superset of libass's own
-matching so it cannot hide text. The requested names are the Fontname of every `Style:` line of the
+typographic family 16, WWS family 21, full 4, PostScript 6, on every platform, plus the CFF font name,
+TrueType Collections included) and selects a face when a requested name equals one of them under ASCII
+case folding, the rule being a superset of libass's own matching so it cannot hide text. The requested names are the Fontname of every `Style:` line of the
 header (a sidecar script: its whole text, windowed or not), the always-requested "Inter" and "Arial",
 and every `\fn` override, which `Native::append` reads in each event packet before `plx_ass_chunk` and
 adds the face for then. A face shares its family with others: all of them are added together, in

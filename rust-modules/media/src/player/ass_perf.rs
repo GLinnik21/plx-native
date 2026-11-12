@@ -23,7 +23,8 @@
 //! split `p95_us`: the facade times its two phases itself (`clock_gettime` in `src/ass.c`,
 //! `PlxAssStats::last_*`) and the worker reads them after every render. `lib_p95_us` is libass's
 //! own `ass_render_frame`, `comp_p95_us` is everything the facade does with the image list after it
-//! (bounds, regions, the scalar composite into premultiplied RGBA; 0 for a call that found the frame
+//! (bounds, regions, the composite into premultiplied RGBA, eight pixels at a time with NEON on the TV
+//! and on arm64 hosts and scalar elsewhere; 0 for a call that found the frame
 //! unchanged), both wall time (`CLOCK_MONOTONIC`) and nearest-rank over the same fixed ring as
 //! `p95_us` (every call that returned a result, so a window of unchanged calls pulls them down).
 //! `lib_cpu_p95_us` and `comp_cpu_p95_us` are the same two phases on the worker thread's CPU clock
