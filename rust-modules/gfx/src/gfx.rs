@@ -19,6 +19,9 @@ use crate::overdraw::{
 pub mod backdrop;
 mod geom;
 pub mod scrim;
+/// The straight-alpha compositor's half of the frame: the pass that un-premultiplies the surface over
+/// the bound video plane, and the draw ledger that decides whether a frame needs it.
+pub mod straighten;
 /// Draw-phase instrumentation (`phase`, the GPU timer / HWCNT / CPU profilers) and the LOAD DIAL's
 /// published state.
 pub mod profile;
@@ -193,6 +196,13 @@ const FS_RAMP: &CStr = glsl!("shaders/fs_ramp.frag");
 const FS_TEX: &CStr = glsl!("shaders/fs_tex.frag");
 const VS_ART_SCRIM: &CStr = glsl!("shaders/vs_art_scrim.vert");
 const FS_ART_SCRIM: &CStr = glsl!("shaders/fs_art_scrim.frag");
+/// The straighten pass (`gfx/straighten.rs`): one full-viewport vertex shader and one fragment source
+/// in three variants, picked by a `#define` prefix. The fetch variants read the frame in place; the
+/// copy variant samples a copy of it.
+const VS_STRAIGHTEN: &CStr = glsl!("shaders/vs_straighten.vert");
+const FS_STRAIGHTEN_ARM: &CStr = glsl!("shaders/fs_straighten.frag", "#define PLX_STRAIGHTEN_ARM\n");
+const FS_STRAIGHTEN_EXT: &CStr = glsl!("shaders/fs_straighten.frag", "#define PLX_STRAIGHTEN_EXT\n");
+const FS_STRAIGHTEN_COPY: &CStr = glsl!("shaders/fs_straighten.frag");
 const GL_VERTEX_SHADER: c_uint = 0x8B31;
 const GL_FRAGMENT_SHADER: c_uint = 0x8B30;
 const GL_COMPILE_STATUS: c_uint = 0x8B81;
@@ -210,8 +220,6 @@ const GL_DITHER: c_uint = 0x0BD0;
 const GL_ONE: c_uint = 0x0001;
 const GL_SRC_ALPHA: c_uint = 0x0302;
 const GL_ONE_MINUS_SRC_ALPHA: c_uint = 0x0303;
-#[cfg(feature = "hostsim")]
-const GL_ONE_MINUS_DST_ALPHA: c_uint = 0x0305;
 const GL_TEXTURE_2D: c_uint = 0x0DE1;
 const GL_TEXTURE0: c_uint = 0x84C0;
 const GL_TEXTURE1: c_uint = 0x84C1;
@@ -257,7 +265,10 @@ extern "C" {
         stride: c_int,
         pointer: *const c_void,
     );
-    fn glDrawArrays(mode: c_uint, first: c_int, count: c_int);
+    /// The raw import. Nothing but [`glDrawArrays`] below (and the straighten pass's own full-viewport
+    /// draw, which is not content) calls it: see that wrapper.
+    #[link_name = "glDrawArrays"]
+    fn glDrawArrays_raw(mode: c_uint, first: c_int, count: c_int);
     fn glBindTexture(target: c_uint, texture: c_uint);
     fn glActiveTexture(texture: c_uint);
     fn glEnable(cap: c_uint);
@@ -323,6 +334,18 @@ extern "C" {
     );
     fn glGetError() -> c_uint;
     fn glViewport(x: c_int, y: c_int, w: c_int, h: c_int);
+}
+
+/// **Every draw call this module issues, counted.** `glDrawArrays` is shadowed by this wrapper so that
+/// every call site keeps its spelling while each one books itself in
+/// [`straighten::note_draw`]: the straighten pass runs only on a frame that drew something, and "drew
+/// nothing" has to mean no draw call was made, by any primitive, at all. A test pins that the raw
+/// import is called nowhere else in this file.
+#[allow(non_snake_case)]
+#[inline(always)]
+unsafe fn glDrawArrays(mode: c_uint, first: c_int, count: c_int) {
+    straighten::note_draw();
+    glDrawArrays_raw(mode, first, count)
 }
 
 const GL_RGBA: c_uint = 0x1908;
@@ -1338,6 +1361,13 @@ pub fn init_gl() {
         //
         // The player's transparent clear is unaffected in the right direction: over `dst.a = 0`,
         // accumulating alpha gives `src.a`, which is what a HUD drawn over the video plane means.
+        //
+        // **What that leaves in the framebuffer is PREMULTIPLIED colour** — `(rgb * a, a)` over the
+        // clear — and the television's compositor takes it as STRAIGHT (`panel = ui.rgb * ui.a +
+        // video * (1 - ui.a)`, measured on the dev set: the 43 -> 33 above is that multiply, 43 x 0.76).
+        // The two read the same pixel differently, so over the BOUND video plane the frame's last draw
+        // is the straighten pass (`straighten.rs`), which divides the colour by its alpha for the
+        // compositor to multiply back. Over an opaque ground `a` is 1 and the two agree.
         glBlendFuncSeparate(
             GL_SRC_ALPHA,
             GL_ONE_MINUS_SRC_ALPHA,
@@ -1348,6 +1378,8 @@ pub fn init_gl() {
         // penumbra) into a regular ordered-dither dot pattern visible along tile edges. The panel is
         // 888 and SURFACE_APP is snapped to exact 8-bit codes, so dithering buys nothing here — off.
         glDisable(GL_DITHER);
+        // Last: it reads GL's extension string and links against the context just built.
+        straighten::init();
     }
 }
 
@@ -3436,19 +3468,40 @@ pub fn draw_tex_carded_blend(tex: c_uint, next: c_uint, mix: f32, crop: [f32; 4]
     }
 }
 
-/// **Simulator only: composite `tex` UNDER everything drawn so far this frame** — the television
-/// compositor's arithmetic for its hardware video plane beneath our UI plane. The UI plane holds
-/// premultiplied colour over a transparent clear (see the blend note in the GL setup above), so
-/// the panel shows `ui.rgb + video.rgb * (1 - ui.a)`; drawing the picture with
-/// `(ONE_MINUS_DST_ALPHA, ONE)` computes exactly that, and leaves the surface opaque. Used by
-/// `app::adapters::hostsim::sim_video` for the screenshot pipeline's player figure; restores the app's blend.
+/// Run `draw` with the simulator's compositor blend ([`straighten::UNDER`]) set and the app's own put
+/// back after.
 #[cfg(feature = "hostsim")]
-pub fn draw_under(tex: c_uint, x: f32, y: f32, w: f32, h: f32) {
+fn under_blend(draw: impl FnOnce()) {
+    let [src_rgb, dst_rgb, src_a, dst_a] = straighten::UNDER.gl();
     unsafe {
-        glBlendFuncSeparate(GL_ONE_MINUS_DST_ALPHA, GL_ONE, GL_ONE_MINUS_DST_ALPHA, GL_ONE);
-        draw_tex(tex, x, y, w, h, 0.0, [1.0f32; 4].as_ptr());
+        glBlendFuncSeparate(src_rgb, dst_rgb, src_a, dst_a);
+        draw();
         glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     }
+}
+
+/// **Simulator only: composite `tex` UNDER everything drawn so far this frame** — the television
+/// compositor's arithmetic for its hardware video plane beneath our UI plane, which is STRAIGHT alpha:
+/// `panel = ui.rgb * ui.a + video * (1 - ui.a)`, measured on the dev set. The factors are
+/// [`straighten::UNDER`], `(ONE_MINUS_DST_ALPHA, DST_ALPHA)` for colour, and they leave the surface
+/// opaque. This is the compositor, not the intended picture: a premultiplied frame handed to it comes
+/// out darker by its own alpha, which is the television's fault and exactly what the straighten pass
+/// ([`straighten::straighten_surface`], run first) removes, so the simulator shows both. Used by
+/// `app::adapters::hostsim::sim_video` for the screenshot pipeline's player figure and, with no
+/// picture, by [`draw_under_black`]; restores the app's blend.
+#[cfg(feature = "hostsim")]
+pub fn draw_under(tex: c_uint, x: f32, y: f32, w: f32, h: f32) {
+    under_blend(|| draw_tex(tex, x, y, w, h, 0.0, [1.0f32; 4].as_ptr()));
+}
+
+/// **Simulator only: the same compositor over an empty plane** — black. A bound-plane frame is
+/// straightened (the pass has no simulator switch), so it has to go through the compositor model
+/// whether or not the simulator holds a decoded picture, or a screenshot would read the straight
+/// buffer itself.
+#[cfg(feature = "hostsim")]
+pub fn draw_under_black() {
+    let black = [0.0f32, 0.0, 0.0, 1.0];
+    under_blend(|| draw_rect(0.0, 0.0, SCR_W, SCR_H, 0.0, 0.0, black.as_ptr(), black.as_ptr(), 0.0, 1.0));
 }
 
 /// **A texture the renderer fills once and serves as one quad**, in one of two modes. They share the
@@ -6784,20 +6837,36 @@ pub fn video_plane_frame() -> bool {
 /// cache is therefore a photograph of transparent black, served back over the video for as long as
 /// the cache lives.
 ///
+/// **The doors also stay shut past the straighten pass** (`straighten.rs`), which is the frame's
+/// last draw while the plane is bound: from then until the next `frame_begin` framebuffer 0 holds
+/// STRAIGHT colour for the television's compositor, not the premultiplied picture every consumer of
+/// a snapshot composites, so a read of it is just as wrong, in another way.
+///
 /// **A debug build PANICS**, because reaching one of these is a structural mistake — a screen that
 /// declared `RenderStrategy::VideoPlane` and then asked for a snapshot — and the picture it
 /// produces on a television is a black rectangle nobody can explain from a log. A release build
 /// logs ONCE and refuses; the once is deliberate, since a door reached at all is reached every
 /// frame and a per-frame line would bury the event log during playback.
 pub fn video_plane_refuses(what: &str) -> bool {
-    if !video_plane_frame() {
+    // **Past the straighten pass the doors are shut too** (`straighten.rs`): the frame's last draw
+    // turned framebuffer 0 into STRAIGHT colour for the compositor, so a read of it is not the
+    // premultiplied picture every consumer composites. The pass is the one deliberate read of the
+    // framebuffer on a video-plane frame, and it caches nothing: it copies into its own texture and
+    // draws straight back.
+    let straight = straighten::straightened();
+    if !video_plane_frame() && !straight {
         return false;
     }
     // Under `cargo test` these doors are driven ON PURPOSE — the point of
     // `a_video_plane_screen_replaces_its_host_and_takes_no_snapshot` is to watch each one refuse —
     // so the assertion is the SHIPPING debug build's, not the harness's.
     #[cfg(all(debug_assertions, not(any(test, feature = "test-support"))))]
-    panic!("{what} on a VIDEO PLANE frame: the plane is not in our framebuffer to sample");
+    {
+        if straight {
+            panic!("{what} after the straighten pass: framebuffer 0 holds straight colour for the compositor");
+        }
+        panic!("{what} on a VIDEO PLANE frame: the plane is not in our framebuffer to sample");
+    }
     #[allow(unreachable_code)]
     {
         if !VIDEO_PLANE_TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
