@@ -1,5 +1,7 @@
 //! Styled subtitles, rendered by our pinned libass on a worker, and on up to two helpers while a
-//! moving cue needs more frames than one worker can make (issue #1328). The SDL thread
+//! moving cue needs more frames than one worker can make (issue #1328); a moving stretch that the
+//! renderers still cannot make thirty frames a second of is drawn at two thirds or half of the
+//! output size (`scale`, `docs/ass-subtitles.md`). The SDL thread
 //! only replaces a bounded request slot and reads an immutable RGBA publication;
 //! it never parses fonts/events, rasterizes, or waits for the native renderer.
 use std::ffi::CString;
@@ -28,7 +30,9 @@ const MAX_REGIONS: usize = 64;
 mod aligns;
 mod font_names;
 mod pool;
+mod scale;
 pub use aligns::AlignSet;
+pub use scale::RenderScale;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Event {
@@ -162,11 +166,38 @@ pub struct Frame {
     pub source_id: u64,
     /// Changes only when pixels/placement, canvas or the error state changes.
     pub serial: u64,
+    /// The output canvas the frame answers for: the size it was requested at, whatever size it was
+    /// drawn at (`scale`).
     pub width: i32,
     pub height: i32,
-    /// Disjoint regions; an empty list clears output between dialogue events.
+    /// Disjoint regions; an empty list clears output between dialogue events. Their coordinates are
+    /// in the canvas libass drew, which is the output canvas at `scale` ([`Frame::render_size`]):
+    /// [`Frame::output_edges`] takes one back to the output.
     pub rects: Vec<Rect>,
+    /// The size the regions were drawn at, as a fraction of the output (issue #1328).
+    pub scale: RenderScale,
     pub error: Option<Fault>,
+}
+
+impl Frame {
+    /// The canvas the regions' coordinates are in: the output canvas at the frame's scale.
+    pub fn render_size(&self) -> (i32, i32) {
+        self.scale.render_size(self.width, self.height)
+    }
+
+    /// Where `rect`, a region of this frame, lies on the output canvas: its left, top, right and
+    /// bottom edges. Both edges of each axis are scaled, never the origin and the size, so regions
+    /// that abut in the frame abut on the output, and a full-size frame maps to itself exactly.
+    pub fn output_edges(&self, rect: &Rect) -> (f32, f32, f32, f32) {
+        let (render_w, render_h) = self.render_size();
+        let (sx, sy) = (self.width as f32 / render_w as f32, self.height as f32 / render_h as f32);
+        (
+            rect.x as f32 * sx,
+            rect.y as f32 * sy,
+            (rect.x + rect.width) as f32 * sx,
+            (rect.y + rect.height) as f32 * sy,
+        )
+    }
 }
 
 pub fn next_source_id() -> u64 {
@@ -329,6 +360,12 @@ impl Runtime {
         verdict.renderers
     }
 
+    /// How many renderers the selection of `epoch` may hold, once the pool has said (`None` before):
+    /// what the mailbox decides the render scale against. Atomics only, so a request reads it every tick.
+    fn renderers_decided(&self, epoch: u64) -> Option<usize> {
+        (self.decided_epoch.load(Ordering::Acquire) == epoch).then(|| self.renderers.load(Ordering::Acquire))
+    }
+
     /// A helper of `slot` may not take jobs: the selection's verdict does not reach it.
     fn helper_barred(&self, slot: usize) -> bool {
         slot > 0 && slot >= self.renderers.load(Ordering::Acquire)
@@ -347,9 +384,11 @@ impl Runtime {
 
     /// Start the helpers that a pipeline asking for `wanted` workers can use on this device and in
     /// this much memory. Off the mailbox lock: starting a thread is not work for the lock the
-    /// workers take their jobs under.
-    fn start_helpers(&self, wanted: usize, epoch: u64) {
-        if wanted < 2 {
+    /// workers take their jobs under. The pool is consulted when drawing at full size would want a
+    /// helper (`pool_wanted`), even if the scale the plan draws at needs none: its verdict is what
+    /// the scale is decided against.
+    fn start_helpers(&self, wanted: usize, pool_wanted: usize, epoch: u64) {
+        if pool_wanted < 2 {
             return;
         }
         let renderers = self.renderers_for(epoch, read_mem_available);
@@ -425,6 +464,8 @@ pub fn request(
     if !started {
         return Some(mailbox.publish_error(key, error_frame(key, Fault::StartFailed)));
     }
+    // what the pool has said about this selection, if it has: the render scale is decided against it
+    mailbox.set_capacity(runtime().renderers_decided(key.epoch));
     let requested = mailbox.request(key, now_ms, &source, pace);
     if requested.promoted {
         if requested.piped {
@@ -438,8 +479,26 @@ pub fn request(
     }
     let frame = mailbox.view(&key);
     drop(mailbox);
-    runtime().start_helpers(requested.workers_wanted, key.epoch);
+    if let Some(change) = requested.scale_change {
+        log_scale_change(&change);
+    }
+    runtime().start_helpers(requested.workers_wanted, requested.pool_wanted, key.epoch);
     frame
+}
+
+/// Each move of the render scale is logged once, with the numbers it was decided from (`assperf`
+/// carries the scale in force on every line besides).
+fn log_scale_change(change: &scale::Change) {
+    let load = &change.load;
+    plx_base::eventlog::log(&format!(
+        "ass: render scale {} -> {} cost={:.1}ms renderers={} rate={:.2} target={}ms",
+        change.from.label(),
+        change.to.label(),
+        load.cost_full_ms,
+        load.renderers,
+        load.rate,
+        load.target_ms,
+    ));
 }
 
 /// MAIN THREAD: the alignment classes (bottom, middle, top) of the cues active in the frame
@@ -492,6 +551,7 @@ fn error_frame(key: Key, message: Fault) -> Arc<Frame> {
         width: key.width,
         height: key.height,
         rects: Vec::new(),
+        scale: RenderScale::Full,
         error: Some(message),
     })
 }
@@ -588,7 +648,7 @@ fn worker(slot: usize) {
             let job_started = std::time::Instant::now();
             let mut rendered = engine.render(&job);
             let elapsed = job_started.elapsed();
-            super::ass_perf::record_job(elapsed, job.kind.is_ahead());
+            super::ass_perf::record_job(elapsed, job.kind.is_ahead(), job.scale);
             // What a steady frame costs paces the animated pipeline; a job that re-read the fonts or
             // the events is no sample of it.
             rendered.cost_us =
@@ -771,6 +831,9 @@ struct Engine {
     /// The last [`Engine::render`] opened, restyled or re-fed the renderer: that job re-read the
     /// fonts or the events, and what it cost is no sample of what a frame costs.
     resynced: bool,
+    /// The frame size and the storage size the renderer last drew at: a render at another pair is
+    /// cold (libass drops its caches on a resize), and is no sample either.
+    rendered_size: Option<((i32, i32), (i32, i32))>,
 }
 
 impl Engine {
@@ -1014,9 +1077,19 @@ impl Engine {
         // The frame this one follows (another worker's, when several take turns) is looked at before
         // this engine's own last one: a region that draws identically to one of its regions shares
         // its allocation, so the screen keeps the texture it already uploaded for it (issue #1328).
+        // ... and only at the size this job draws at: regions of another size share nothing with it.
         let for_key = |frame: &&Arc<Frame>| {
-            frame.source_id == key.source_id && frame.width == key.width && frame.height == key.height
+            frame.source_id == key.source_id
+                && frame.width == key.width
+                && frame.height == key.height
+                && frame.scale == request.scale
         };
+        let size = (request.scale.render_size(key.width, key.height), (key.storage_width, key.storage_height));
+        if self.rendered_size.replace(size).is_some_and(|last| last != size) {
+            // libass empties its outline, bitmap and composite caches when the frame size changes: this
+            // render is cold, and what it costs is no sample of what a frame costs
+            self.resynced = true;
+        }
         let reference = request.reference.as_ref().filter(for_key);
         let previous = [
             reference.map_or(&[][..], |frame| frame.rects.as_slice()),
@@ -1026,7 +1099,7 @@ impl Engine {
             .native
             .as_mut()
             .expect("loaded ASS source")
-            .render(key, request.now_ms, &previous);
+            .render(key, request.scale, request.now_ms, &previous);
         let frame = match result {
             Ok(None) => match self.frame.clone() {
                 Some(frame) if frame.error.is_none() => {
@@ -1052,6 +1125,7 @@ impl Engine {
                         width: key.width,
                         height: key.height,
                         rects: frame.rects.clone(),
+                        scale: frame.scale,
                         error: None,
                     })
                 }
@@ -1076,6 +1150,7 @@ impl Engine {
                     width: key.width,
                     height: key.height,
                     rects,
+                    scale: request.scale,
                     error: None,
                 })
             }
@@ -1141,6 +1216,7 @@ fn interned(frame: &Arc<Frame>, reference: &Arc<Frame>) -> Arc<Frame> {
         width: frame.width,
         height: frame.height,
         rects,
+        scale: frame.scale,
         error: None,
     })
 }
@@ -1467,15 +1543,24 @@ impl Native {
 
     /// `previous` are the regions of the frames to share allocations with, in the order they are
     /// looked at ([`shared_region`]).
-    fn render(&mut self, key: Key, now_ms: i64, previous: &[&[Rect]]) -> Result<Option<Vec<Rect>>, Fault> {
+    fn render(
+        &mut self,
+        key: Key,
+        scale: RenderScale,
+        now_ms: i64,
+        previous: &[&[Rect]],
+    ) -> Result<Option<Vec<Rect>>, Fault> {
+        // libass draws at the frame size and lays the script out against the storage size, so a smaller
+        // frame is the same picture with fewer pixels (issue #1328); the regions come back in its canvas.
+        let (width, height) = scale.render_size(key.width, key.height);
         let mut frame = NativeFrame::default();
         let started = std::time::Instant::now();
         let result = unsafe {
             plx_ass_render(
                 self.ptr,
                 now_ms,
-                key.width,
-                key.height,
+                width,
+                height,
                 key.storage_width,
                 key.storage_height,
                 &mut frame,
@@ -1517,11 +1602,11 @@ impl Native {
                 || bitmap
                     .x
                     .checked_add(bitmap.width)
-                    .is_none_or(|x| x > key.width)
+                    .is_none_or(|x| x > width)
                 || bitmap
                     .y
                     .checked_add(bitmap.height)
-                    .is_none_or(|y| y > key.height)
+                    .is_none_or(|y| y > height)
                 || pixels.is_none_or(|n| n > MAX_PIXELS || n * 4 != bitmap.bytes)
                 || bitmap.rgba.is_null()
             {
@@ -1570,3 +1655,5 @@ pub(crate) mod synth_fonts;
 mod tests;
 #[cfg(test)]
 mod mailbox_tests;
+#[cfg(test)]
+mod scale_tests;

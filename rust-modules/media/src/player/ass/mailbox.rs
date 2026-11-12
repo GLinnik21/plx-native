@@ -24,13 +24,27 @@
 //! Anything the plan cannot absorb (a jump of the clock, a seek, a size, a source, a stalled worker)
 //! throws it away and asks for one Normal job, exactly as a still cue does.
 //!
+//! **A moving stretch the renderers cannot keep up with is drawn smaller** (issue #1328, [`Governor`]).
+//! The mailbox keeps the cost of a frame at full size (a frame drawn smaller is taken back to it by
+//! its rung's cost ratio), asks the governor on every tick of the running pipeline which rung the
+//! stretch should be drawn at given the renderers the pool allows ([`Mailbox::set_capacity`]), and
+//! hands the `Pipe` jobs that rung. Only those are drawn smaller (and the Normal job that fills a
+//! hole inside a reduced stretch, so libass's caches are not emptied by a frame of another size and
+//! again by the next): a Normal or Ahead job otherwise, the first frame of a stretch, a still picture
+//! and a paused one are drawn at full size, and a still picture the pipeline handed over drawn
+//! smaller is drawn again at full size by one Normal job. The scale is not part of the [`Key`], so a
+//! move never replaces the frame on screen: it stands until a frame of the new scale lands, and each
+//! frame says which scale it was drawn at. The rung belongs to the selection it was decided for: a
+//! new epoch, source or size starts at full size again and waits for the pool.
+//!
 //! Pure bookkeeping: no thread, no native call, no clock but the one stamp behind [`Job::queued`].
 //! The pace and the playhead arrive as values in [`Mailbox::request`]; the worker takes frames
 //! against the latest of them between ticks. `Runtime` owns the lock and the wake; the worker loop
 //! owns the rendering.
 //!
 //! [`adopt_revision`]: Mailbox::adopt_revision
-use super::{earliest_change_ms, AlignSet, Frame, Key, Pace, Source};
+use super::scale::{Change, Governor, Load};
+use super::{earliest_change_ms, AlignSet, Frame, Key, Pace, RenderScale, Source};
 use crate::player::ass_timing::Validity;
 use std::sync::Arc;
 use std::time::Instant;
@@ -76,6 +90,8 @@ pub(super) struct Job {
     /// draws identically with that frame's, so a static sign keeps the allocation the screen has
     /// already uploaded whichever worker renders the next frame. Set when a worker takes the job.
     pub reference: Option<Arc<Frame>>,
+    /// The size libass draws the frame at, as a fraction of the output (issue #1328).
+    pub scale: RenderScale,
 }
 
 /// A job a worker holds. The mailbox serves several workers, so these are a set keyed by `seq`.
@@ -190,8 +206,15 @@ pub(super) struct Mailbox {
     seqs: u64,
     /// How many workers serve this mailbox: a moving cue's frame step is the render cost over this.
     workers: usize,
-    /// The render cost the pipeline paces by, wall-clock microseconds (0 = no sample yet).
+    /// What a frame costs at FULL size, the mean the pipeline paces by, wall-clock microseconds (0 =
+    /// no sample yet). A frame drawn smaller is taken back to full size by its rung's cost ratio
+    /// before it joins the mean, so the cost does not change with the scale it is measured at.
     cost_us: u32,
+    /// How many renderers the pool allows the selection, once it has said: what the scale is
+    /// decided against, and nothing is decided before it has.
+    capacity: Option<usize>,
+    /// The scale a moving stretch's frames are drawn at.
+    governor: Governor,
 }
 
 impl Default for Mailbox {
@@ -201,7 +224,7 @@ impl Default for Mailbox {
 }
 
 /// What a `request` did, for the caller to act on outside the lock logic.
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
 pub(super) struct Requested {
     /// A job was queued: wake the worker.
     pub wake: bool,
@@ -215,6 +238,12 @@ pub(super) struct Requested {
     /// How many workers the pipeline could use to reach about thirty frames a second; 0 when it
     /// plans nothing. The runtime starts helpers up to what the device allows.
     pub workers_wanted: usize,
+    /// How many renderers the plan would want if it drew at full size: the pool is consulted about
+    /// the selection when this is more than one (`Runtime::start_helpers`), and the scale is not
+    /// decided before it has answered.
+    pub pool_wanted: usize,
+    /// The scale moving frames are drawn at moved with this request (to be logged once).
+    pub scale_change: Option<Change>,
 }
 
 /// What finishing a job published, for the worker's accounting.
@@ -255,6 +284,8 @@ impl Mailbox {
             seqs: 0,
             workers: 1,
             cost_us: 0,
+            capacity: None,
+            governor: Governor::new(),
         }
     }
 
@@ -262,6 +293,13 @@ impl Mailbox {
     pub fn set_workers(&mut self, workers: usize) {
         self.workers = workers.max(1);
     }
+
+    /// How many renderers the pool allows the selection, once it has said (`None` before): what the
+    /// scale is decided against. Nothing is decided while it has not.
+    pub fn set_capacity(&mut self, renderers: Option<usize>) {
+        self.capacity = renderers;
+    }
+
 
     /// Everything the mailbox holds, handed out whole so it can be destroyed outside the lock, and
     /// a fresh mailbox left in its place that keeps what is not a thing to retire: the worker
@@ -296,7 +334,13 @@ impl Mailbox {
         self.requested.map(|(key, _, _)| key)
     }
 
+    /// Queue a Normal job: what the screen needs now, drawn at full size. (A hole inside a reduced
+    /// stretch is recovered at the stretch's own size: [`Mailbox::enqueue_normal_at`].)
     fn enqueue_normal(&mut self, key: Key, now_ms: i64, source: &Arc<Source>) {
+        self.enqueue_normal_at(key, now_ms, source, RenderScale::Full);
+    }
+
+    fn enqueue_normal_at(&mut self, key: Key, now_ms: i64, source: &Arc<Source>, scale: RenderScale) {
         self.seqs += 1;
         self.requested = Some((key, now_ms, self.seqs));
         self.requested_source = Some(source.clone());
@@ -314,6 +358,7 @@ impl Mailbox {
             source: source.clone(),
             queued,
             reference: None,
+            scale,
         });
     }
 
@@ -365,6 +410,7 @@ impl Mailbox {
             source: source.clone(),
             queued: None,
             reference: None,
+            scale: RenderScale::Full,
         });
         true
     }
@@ -385,10 +431,21 @@ impl Mailbox {
     }
 
     /// How many workers the plan could use: enough that the frame step reaches the thirty-a-second
-    /// floor at the cost measured (more would render frames the step never asks for).
+    /// floor at the cost measured, drawing at the scale it does (more would render frames the step
+    /// never asks for).
     pub fn workers_wanted(&self, pace: Pace) -> usize {
+        self.workers_at(pace, self.governor.scale())
+    }
+
+    /// How many workers the plan would want drawing at full size: what the pool is asked about, since
+    /// the scale is what it can make of the answer.
+    pub fn pool_wanted(&self, pace: Pace) -> usize {
+        self.workers_at(pace, RenderScale::Full)
+    }
+
+    fn workers_at(&self, pace: Pace, scale: RenderScale) -> usize {
         let floor = pace.frame_ms.max(STEP_FLOOR_MS) as f64;
-        ((self.cost_ms() * pace.rate / floor) - 1e-6).ceil().max(1.0) as usize
+        ((self.cost_full_ms() * scale.cost_ratio() * pace.rate / floor) - 1e-6).ceil().max(1.0) as usize
     }
 
     /// The oldest a held or published moving frame may be and still stand for the playhead: a
@@ -397,7 +454,8 @@ impl Mailbox {
         self.lead_ms(pace) + 2 * self.step_ms(pace)
     }
 
-    fn cost_ms(&self) -> f64 {
+    /// What a frame costs at full size, in milliseconds.
+    pub fn cost_full_ms(&self) -> f64 {
         if self.cost_us == 0 {
             COST_DEFAULT_MS as f64
         } else {
@@ -405,15 +463,48 @@ impl Mailbox {
         }
     }
 
-    /// A sample of what a render costs, into the mean the pipeline paces by (a quarter of each new
-    /// one; the first seeds it).
-    fn note_cost(&mut self, sample_us: u32) {
-        let sample = sample_us.clamp(1, COST_CEIL_US);
-        self.cost_us = if self.cost_us == 0 {
+    /// What a frame of the moving stretch costs now, at the scale it is drawn at.
+    fn cost_ms(&self) -> f64 {
+        self.cost_full_ms() * self.governor.scale().cost_ratio()
+    }
+
+    /// A sample of what a render drawn at `scale` costs, into the mean the pipeline paces by (a
+    /// quarter of each new one; the first seeds it), taken back to full size first. The first
+    /// sample of a moving stretch replaces the mean: what the last stretch cost says nothing of
+    /// this one.
+    fn note_cost(&mut self, sample_us: u32, scale: RenderScale) {
+        let full = (f64::from(sample_us) / scale.cost_ratio()).round() as u32;
+        let sample = full.clamp(1, COST_CEIL_US);
+        let first = self.governor.is_fresh();
+        self.cost_us = if self.cost_us == 0 || first {
             sample
         } else {
             ((u64::from(self.cost_us) * 3 + u64::from(sample) + 2) / 4) as u32
         };
+        // only a frame of the rung in use says how that rung is doing; a frame of another one (a
+        // Normal job's, one that was in flight over a move) feeds the mean and no more
+        if first || scale == self.governor.scale() {
+            self.governor.note_sample();
+        }
+    }
+
+    /// The scale for the next frames of the running pipeline, when the pool has said what it has.
+    fn decide_scale(&mut self, now_ms: i64, pace: Pace) -> Option<Change> {
+        let renderers = self.capacity?;
+        let load = Load {
+            cost_full_ms: self.cost_full_ms(),
+            renderers,
+            rate: pace.rate,
+            target_ms: pace.frame_ms.max(STEP_FLOOR_MS),
+        };
+        self.governor.observe(now_ms, load)
+    }
+
+    /// A still picture is on screen: the next moving frame begins a stretch (issue #1328).
+    fn picture_shown(&mut self) {
+        if self.published.as_ref().is_some_and(|p| !p.validity.animated) {
+            self.governor.begin_stretch();
+        }
     }
 
     /// The pipeline is the way to show the moving frame on screen: the player is running and the
@@ -525,6 +616,11 @@ impl Mailbox {
         // R2.1: a new key (late push, seek, restyle, size change), but for a revision the pipeline
         // takes in.
         if self.requested_key() != Some(key) && !self.adopt_revision(key, now_ms, source, pace) {
+            if self.requested_key().is_none_or(|old| !old.same_timeline(&key)) {
+                // another selection (or size): the rung was decided for the last one, and the pool has
+                // not said what this one may have
+                self.governor = Governor::new();
+            }
             self.enqueue_normal(key, now_ms, source);
             self.next = None;
             self.stop_pipe();
@@ -555,6 +651,16 @@ impl Mailbox {
         };
         let animated = published.validity.animated;
         let mut out = Requested::default();
+        if !animated && published.validity.contains(now_ms) && published.frame.scale != RenderScale::Full {
+            // The still picture after a reduced stretch is drawn smaller than the output: it is drawn
+            // again at full size, and the reduced frame stands until that lands. It is not "covered"
+            // (below), which would withdraw that job.
+            if !self.normal_outstanding() {
+                self.enqueue_normal(key, now_ms, source);
+                out.wake = true;
+            }
+            return out;
+        }
         if !animated && published.validity.contains(now_ms) {
             // R2.2: covered.
             if self.withdraw() {
@@ -569,6 +675,7 @@ impl Mailbox {
         {
             // R2.3: promote the frame rendered ahead, keeping its pub_id.
             self.published = self.next.take();
+            self.picture_shown();
             self.withdraw();
             out.promoted = true;
             out.wake = self.arm_ahead(source);
@@ -605,6 +712,7 @@ impl Mailbox {
             return out;
         }
         self.plan = Some(Plan { pace, now_ms });
+        out.scale_change = self.decide_scale(now_ms, pace);
         let (lead, step, max_age) = (self.lead_ms(pace), self.step_ms(pace), self.max_age_ms(pace));
         // what can no longer be shown: past its boundary or too late
         self.held.retain(|f| {
@@ -626,6 +734,7 @@ impl Mailbox {
             out.piped = true;
             if !moving {
                 // the cue ended: its still picture is shown, and the boundary logic takes over
+                self.picture_shown();
                 self.stop_pipe();
                 let lagging = self.published.as_ref().is_some_and(|p| p.key != key);
                 if lagging {
@@ -651,8 +760,10 @@ impl Mailbox {
                         && (lo..=hi).contains(&f.target_ms)
                 });
             if !coming {
-                // a hole: nothing on screen is right and nothing is on its way
-                self.enqueue_normal(key, now_ms, source);
+                // a hole: nothing on screen is right and nothing is on its way. The frame that fills
+                // it is drawn at the size the stretch is: a frame at another size makes libass empty
+                // its caches, and the pipeline's next frame would pay for them again.
+                self.enqueue_normal_at(key, now_ms, source, self.governor.scale());
                 self.stop_pipe();
                 out.wake = true;
                 return out;
@@ -660,6 +771,7 @@ impl Mailbox {
         }
         out.wake = self.wants_job();
         out.workers_wanted = self.workers_wanted(pace);
+        out.pool_wanted = self.pool_wanted(pace);
         out
     }
 
@@ -720,7 +832,8 @@ impl Mailbox {
                 let now_ms = self.next_target()?;
                 let (key, source) = (self.requested_key()?, self.requested_source.clone()?);
                 self.seqs += 1;
-                Job { kind: Kind::Pipe { run: self.run }, key, now_ms, seq: self.seqs, source, queued: None, reference: None }
+                let scale = self.governor.scale();
+                Job { kind: Kind::Pipe { run: self.run }, key, now_ms, seq: self.seqs, source, queued: None, reference: None, scale }
             }
         };
         // The newest picture that has landed: the frame this one follows on screen, or close to it.
@@ -751,7 +864,7 @@ impl Mailbox {
         // The pipeline paces by what a MOVING frame costs: a still picture, an empty one or an error
         // costs next to nothing and says nothing of the frames the pipeline is for.
         if let Some(cost_us) = outcome.as_ref().filter(|o| o.validity.animated).and_then(|o| o.cost_us) {
-            self.note_cost(cost_us);
+            self.note_cost(cost_us, job.scale);
         }
         match job.kind {
             Kind::Normal => {
@@ -778,6 +891,7 @@ impl Mailbox {
                     target_ms: job.now_ms,
                     moves_on,
                 });
+                self.picture_shown();
                 self.next = None;
                 self.held.clear();
                 // Only the newest request's frame has a boundary worth rendering ahead; the
@@ -844,6 +958,14 @@ impl Mailbox {
                 Finished { wake: false, changed, pub_bytes, stale: false }
             }
         }
+    }
+
+    /// The scale a moving stretch's frames are drawn at now. Everything else is drawn at full size:
+    /// a still picture, a paused one, the first frame of a stretch and any job that is not the
+    /// pipeline's (`take`).
+    #[cfg(test)]
+    pub fn scale(&self) -> RenderScale {
+        self.governor.scale()
     }
 
     #[cfg(test)]

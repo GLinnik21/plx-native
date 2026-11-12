@@ -162,14 +162,15 @@ APPENDED events keeps every planned frame for a playhead before the first event 
 playhead, a seek, a new source or size, a jump of the clock, a pause and a worker so slow that
 nothing lands in time (a hole) each throw the plan away and ask for one Normal job, as a still cue does.
 The cost the plan paces by is the worker-reported time of the moving frames (a job that opened or
-re-synced the renderer is no sample), a running mean capped at 500 ms a sample.
+re-synced the renderer is no sample), a running mean capped at 500 ms a sample, kept as the cost at
+FULL size (a frame drawn smaller is taken back to it, see "A heavy moving stretch is drawn smaller").
 
 One worker cannot make thirty frames a second from an 80 ms render, so the plan asks for the workers
-that can (`workers_wanted`: the cost over the 33 ms floor) and the runtime starts helpers up to what the
+that can (`workers_wanted`: the cost, at the size the stretch is drawn at, over the 33 ms floor) and the runtime starts helpers up to what the
 device allows: the primary and a helper per other core, at most `MAX_ASS_RENDERERS` (3), and no more
 than a quarter of the memory available holds (`pool::decide`: each renderer is the fonts it copies, the
 bundled faces (the attached ones are the store's, shared), plus a bitmap cache; `/proc/meminfo`'s `MemAvailable` is read
-once for a selection, the first time a pipeline wants a helper, and the verdict is logged as
+once for a selection, the first time a pipeline drawing at full size would want a helper (`pool_wanted`), and the verdict is logged as
 `ass: pool renderers=N of M font_bytes=.. per_renderer=.. mem_available=.. budget=..`; a heavy file on
 a short television runs the primary alone, and the primary always runs). Every worker
 owns a whole libass instance (`Engine`: its own `ASS_Library`, renderer and track, which libass does not
@@ -198,6 +199,48 @@ the composite's time on the host and walked mostly transparent pixels. The scree
 colour scaled by its alpha after the painter's cascade), so the ink rung and a fade dim them as they
 dim a straight texture. Image subtitles (PGS, VobSub) and glyph textures are uploaded straight and
 stay on `Painter::tex`.
+
+## A heavy moving stretch is drawn smaller
+
+Helpers are limited by the set's cores and memory, so a stretch that one renderer cannot make thirty
+frames a second of (the opening of the issue's file is ~85 ms a frame at 1080p on the television) is
+drawn at 2/3 (720p) or 1/2 (540p) of the output size instead (#1328, `player::ass::scale`). libass is told
+the smaller frame size and the SAME storage size (the facade's `ass_set_frame_size` takes the render
+size, `ass_set_storage_size` the unchanged one, and the script's PlayRes is untouched), so the script
+lays out identically and only the number of pixels
+it draws changes; the regions come back in the smaller canvas and the screen draws each up to the
+rectangle it covers on the output with the linear filter its upload sets (`Frame::output_edges`,
+`ass_subtitles::region_rect`: both edges of a region are mapped, so regions that abut still abut).
+
+What it buys, measured on the host with the storage size fixed: libass takes 0.64x the time at 720p
+and 0.49x at 540p, the composite 0.49x and 0.30x, and the bytes published 0.54x and 0.37x. Weighted by
+the television's split of an 85 ms frame (65 ms in libass, 20 ms in the composite) a frame costs about
+0.60 and 0.44 of one at full size, the constants `COST_RATIO_TWO_THIRDS` and `COST_RATIO_HALF`, rounded
+down so a cost taken back to full size is never overstated.
+
+The choice is a pure `Governor` the mailbox owns, never a clock or a registry read. The mailbox keeps
+the cost at FULL size (each sample is divided by its rung's ratio) and, on each tick of the running
+pipeline, asks which rung the stretch should be drawn at: the largest whose projected step (cost x
+ratio x playback speed / renderers) meets the target, 33 ms or one video frame, whichever is longer.
+The renderers are the pool's verdict for the selection (`Runtime::renderers_decided`): nothing is
+decided before the pool has said, and a stretch that full size would not want a helper for never
+consults it and stays at full size. The first steady frame of a stretch decides at once (what the last
+stretch cost says nothing of this one); inside one, a rung steps down when its projection misses the
+target for 600 ms, and back up one rung only when the larger rung projects under 75% of the target for
+3 s (both holds scale with the playback speed, and count only after six steady frames of the rung). A
+step down within 10 s of a step up bars the next step up for 30 s, so a model that is wrong costs one
+flap per half minute at most.
+
+Only the pipeline's `Pipe` jobs are drawn smaller, and the Normal job that fills a hole inside a reduced
+stretch (a frame of another size would empty libass's caches, and the next one would pay for them
+again). Any other Normal or Ahead job, the first frame of a stretch, a still cue and a paused player are
+drawn at full size, and the still picture a reduced stretch hands over to is drawn again at full size by
+one Normal job (the reduced frame stands until it lands, and is not withdrawn as "covered"). The rung
+belongs to the selection it was decided for: a new epoch, source or size starts at full size again. The scale is not part of the `Key`, so a move never blanks the screen: the frame
+on screen stays until a frame at the new scale lands, and each `Frame` says which scale it was drawn at.
+libass empties its caches when the frame size changes, so a render at a new size is cold and is no cost
+sample. Each move is logged once (`ass: render scale 1.00 -> 0.50 cost=.. renderers=.. rate=.. target=..`)
+and every `assperf` line carries `scale=`.
 
 The subtitle clock interpolates between the pipeline's sparse position callbacks, with at most
 250 ms of extrapolation. Pause, seek and discontinuities re-anchor it. Output dimensions and the
@@ -263,7 +306,7 @@ Libass cost on the TV is read from the event log, not guessed. While a styled so
 `player::ass_perf` writes an `assperf: w=.. window_ms=.. calls=.. changed=.. p95_us=.. max_us=.. job_p95_us=..
 job_max_us=.. pub_bytes=.. up_bytes=.. jobs=N+A ahead_hit=.. shown=.. late=.. stale=.. nwait_p95_us=..
 nwait_max_us=.. lib_p95_us=.. comp_p95_us=.. lib_cpu_p95_us=.. comp_cpu_p95_us=.. images_p95=..
-img_kpx_p95=..` line per worker (`w` is the worker, 0 the primary) when a job
+img_kpx_p95=.. scale=..` line per worker (`w` is the worker, 0 the primary) when a job
 arrives at least a second after that worker's previous line (`window_ms` is the span its counts cover,
 including any idle stretch before it; read the counts as rates over it) (FFI render time, whole-job time including source load, append, flush-and-reload and window
 slide, `changed` and `pub_bytes` count frames published or held ahead whose pixels differ from the one on screen, bytes uploaded; `jobs` counts the worker's Normal and Ahead jobs
@@ -279,7 +322,9 @@ per-pixel composite (premultiplied RGBA, published as composed; eight pixels at 
 the same calls as `p95_us`; `lib_cpu_p95_us` and `comp_cpu_p95_us` are those two phases on the worker
 thread's CPU clock (`CLOCK_THREAD_CPUTIME_ID`), so a phase whose wall figure is far above its CPU one was
 waiting for the CPU (descheduled, or blocked), not computing; `images_p95` and `img_kpx_p95` are the `ASS_Image`s libass produced for a composed frame and
-the sum of their width x height in thousands of pixels, over the composed frames only. Attribute a slow
+the sum of their width x height in thousands of pixels, over the composed frames only; `scale` is the
+smallest size a job of the window was drawn at (`1.00`, `0.67`, `0.50`: the side over the output's), so a
+line is read at its own scale. Attribute a slow
 render with these before optimising either half. The worker also writes
 one `assperf: worker w=<n> tid=<n> nice=<n>` line when it starts, which `tools/tv-sched-trace.sh --tid <n>`
 follows. Workers run below the frame thread: the first at niceness +5, a helper at +10

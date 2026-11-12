@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! assperf: worker w=0 tid=1234 nice=5
-//! assperf: w=0 window_ms=1000 calls=3 changed=2 p95_us=1800 max_us=4100 job_p95_us=2100 job_max_us=9000 pub_bytes=123456 up_bytes=123456 jobs=2+1 ahead_hit=1 shown=0 late=0 stale=0 nwait_p95_us=0 nwait_max_us=0 lib_p95_us=900 comp_p95_us=800 lib_cpu_p95_us=870 comp_cpu_p95_us=790 images_p95=410 img_kpx_p95=620
+//! assperf: w=0 window_ms=1000 calls=3 changed=2 p95_us=1800 max_us=4100 job_p95_us=2100 job_max_us=9000 pub_bytes=123456 up_bytes=123456 jobs=2+1 ahead_hit=1 shown=0 late=0 stale=0 nwait_p95_us=0 nwait_max_us=0 lib_p95_us=900 comp_p95_us=800 lib_cpu_p95_us=870 comp_cpu_p95_us=790 images_p95=410 img_kpx_p95=620 scale=1.00
 //! ```
 //!
 //! `w` is the worker: 0 the primary, 1 and 2 the helpers a moving cue's pipeline starts when one
@@ -45,7 +45,11 @@
 //! is how a slow frame is told from a starved one. `images_p95` the `ASS_Image`s libass
 //! produced and `img_kpx_p95` the sum of their width x height in thousands of pixels
 //! (`last_image_pixels / 1000`), both over the composed frames only. They are 0 for a worker whose
-//! library reports no stats. The upload's own time is the `assup`
+//! library reports no stats. `scale` is the smallest size a job of the window was drawn at, as the
+//! side of the frame over the side of the output (`1.00`, `0.67`, `0.50`): a moving stretch that
+//! cannot make thirty frames a second at full size is drawn smaller (issue #1328, `docs/ass-subtitles.md`),
+//! and the figures above are for the frames of that size, so a line is read at its own `scale`. Each
+//! move of the scale is also logged once as `ass: render scale 1.00 -> 0.50 ...`. The upload's own time is the `assup`
 //! span on `FRAMEDROP spans=` (spans print only on `FRAMEDROP` lines and only while the frame
 //! instrument is armed, `/tmp/plxnative-framedrop`). A window closes on the first job at least a
 //! second after it opened (an idle stretch emits no line, hence `window_ms`), and [`flush`] emits the partial window when the source is deselected.
@@ -53,6 +57,7 @@
 //! Always compiled; the cost is one clock pair per render in Rust, six clock reads in the facade
 //! (three on each of the two clocks) and a fixed 256-slot ring per figure.
 
+use super::ass::RenderScale;
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -194,6 +199,8 @@ pub(super) struct Cycle {
     pub ahead: bool,
     /// The frame it rendered was thrown away when it landed (the plan had moved on).
     pub stale: bool,
+    /// The size it drew at.
+    pub scale: RenderScale,
 }
 
 /// Counters other threads keep, read when a window closes.
@@ -227,6 +234,8 @@ pub(super) struct Aggregator {
     max_us: u32,
     job_max_us: u32,
     pub_bytes: u64,
+    /// The smallest size a job of the window was drawn at.
+    scale: RenderScale,
     /// When the counters (these and the cross-thread ones) last restarted: the previous line, or
     /// the first job of a session. Survives a line so `window_ms` spans the idle gap too.
     counting_since: Option<Instant>,
@@ -255,6 +264,7 @@ impl Aggregator {
             max_us: 0,
             job_max_us: 0,
             pub_bytes: 0,
+            scale: RenderScale::Full,
             counting_since: None,
         }
     }
@@ -289,6 +299,9 @@ impl Aggregator {
         self.stale += u32::from(cycle.stale);
         self.changed += u32::from(cycle.changed);
         self.pub_bytes += cycle.pub_bytes;
+        if cycle.scale.factor() < self.scale.factor() {
+            self.scale = cycle.scale;
+        }
         if now.saturating_duration_since(started) < WINDOW {
             return None;
         }
@@ -315,7 +328,7 @@ impl Aggregator {
             .counting_since
             .map_or(0, |since| now.saturating_duration_since(since).as_millis());
         let line = format!(
-            "assperf: w={} window_ms={} calls={} changed={} p95_us={} max_us={} job_p95_us={} job_max_us={} pub_bytes={} up_bytes={} jobs={}+{} ahead_hit={} shown={} late={} stale={} nwait_p95_us={} nwait_max_us={} lib_p95_us={} comp_p95_us={} lib_cpu_p95_us={} comp_cpu_p95_us={} images_p95={} img_kpx_p95={}",
+            "assperf: w={} window_ms={} calls={} changed={} p95_us={} max_us={} job_p95_us={} job_max_us={} pub_bytes={} up_bytes={} jobs={}+{} ahead_hit={} shown={} late={} stale={} nwait_p95_us={} nwait_max_us={} lib_p95_us={} comp_p95_us={} lib_cpu_p95_us={} comp_cpu_p95_us={} images_p95={} img_kpx_p95={} scale={}",
             self.slot,
             window_ms,
             self.calls,
@@ -339,7 +352,8 @@ impl Aggregator {
             self.lib_cpu.p95(),
             self.comp_cpu.p95(),
             self.images.p95(),
-            self.image_kpx.p95()
+            self.image_kpx.p95(),
+            self.scale.label()
         );
         let slot = self.slot;
         *self = Self::new();
@@ -355,6 +369,7 @@ thread_local! {
     static LAST_NATIVE: Cell<Option<NativeCost>> = const { Cell::new(None) };
     static LAST_JOB_US: Cell<Option<u32>> = const { Cell::new(None) };
     static LAST_JOB_AHEAD: Cell<bool> = const { Cell::new(false) };
+    static LAST_JOB_SCALE: Cell<RenderScale> = const { Cell::new(RenderScale::Full) };
     /// The worker this thread is (0 = the primary, which owns the shared counters).
     static SLOT: Cell<usize> = const { Cell::new(0) };
 }
@@ -380,10 +395,11 @@ pub(super) fn record_native(cost: NativeCost) {
     LAST_NATIVE.set(Some(cost));
 }
 
-/// WORKER: remember the duration of the whole `Engine::render` job just run.
-pub(super) fn record_job(elapsed: Duration, ahead: bool) {
+/// WORKER: remember the duration of the whole `Engine::render` job just run, and the size it drew at.
+pub(super) fn record_job(elapsed: Duration, ahead: bool, scale: RenderScale) {
     LAST_JOB_US.set(Some(micros(elapsed)));
     LAST_JOB_AHEAD.set(ahead);
+    LAST_JOB_SCALE.set(scale);
 }
 
 /// WORKER: a Normal job started `waited` after it was queued behind an Ahead job in flight.
@@ -421,6 +437,7 @@ pub(super) fn finish_call(changed: bool, pub_bytes: u64, stale: bool) {
         pub_bytes,
         ahead: LAST_JOB_AHEAD.take(),
         stale,
+        scale: LAST_JOB_SCALE.take(),
     };
     let line = AGG.with(|a| close_cycle(&mut a.borrow_mut(), Instant::now(), cycle, owned_counters()));
     if let Some(line) = line {
@@ -476,6 +493,7 @@ mod tests {
             pub_bytes,
             ahead: false,
             stale: false,
+            scale: RenderScale::Full,
         }
     }
 
@@ -500,7 +518,7 @@ mod tests {
             } else {
                 assert_eq!(
                     line.as_deref(),
-                    Some("assperf: w=0 window_ms=1000 calls=200 changed=20 p95_us=950 max_us=1000 job_p95_us=1900 job_max_us=2000 pub_bytes=20000 up_bytes=777 jobs=200+0 ahead_hit=3 shown=140 late=9 stale=4 nwait_p95_us=0 nwait_max_us=0 lib_p95_us=475 comp_p95_us=475 lib_cpu_p95_us=237 comp_cpu_p95_us=237 images_p95=91 img_kpx_p95=910")
+                    Some("assperf: w=0 window_ms=1000 calls=200 changed=20 p95_us=950 max_us=1000 job_p95_us=1900 job_max_us=2000 pub_bytes=20000 up_bytes=777 jobs=200+0 ahead_hit=3 shown=140 late=9 stale=4 nwait_p95_us=0 nwait_max_us=0 lib_p95_us=475 comp_p95_us=475 lib_cpu_p95_us=237 comp_cpu_p95_us=237 images_p95=91 img_kpx_p95=910 scale=1.00")
                 );
             }
         }
@@ -553,6 +571,7 @@ mod tests {
             pub_bytes: 8,
             ahead: true,
             stale: true,
+            scale: RenderScale::Half,
         };
         assert!(a.push(t0, load, up(0)).is_none());
         a.note_nwait(300);
@@ -560,7 +579,7 @@ mod tests {
         let line = a.take_partial(t0, up(0)).unwrap();
         assert_eq!(
             line,
-            "assperf: w=0 window_ms=0 calls=0 changed=1 p95_us=0 max_us=0 job_p95_us=50000 job_max_us=50000 pub_bytes=8 up_bytes=0 jobs=0+1 ahead_hit=0 shown=0 late=0 stale=1 nwait_p95_us=900 nwait_max_us=900 lib_p95_us=0 comp_p95_us=0 lib_cpu_p95_us=0 comp_cpu_p95_us=0 images_p95=0 img_kpx_p95=0"
+            "assperf: w=0 window_ms=0 calls=0 changed=1 p95_us=0 max_us=0 job_p95_us=50000 job_max_us=50000 pub_bytes=8 up_bytes=0 jobs=0+1 ahead_hit=0 shown=0 late=0 stale=1 nwait_p95_us=900 nwait_max_us=900 lib_p95_us=0 comp_p95_us=0 lib_cpu_p95_us=0 comp_cpu_p95_us=0 images_p95=0 img_kpx_p95=0 scale=0.50"
         );
     }
 
@@ -586,6 +605,7 @@ mod tests {
             pub_bytes: 0,
             ahead: false,
             stale: false,
+            scale: RenderScale::Full,
         };
         // Twenty composed frames: libass 100..=2000 us, the composite 5x that, 10..=200 images of
         // 1.5 Mpx..30 Mpx; then an unchanged call, which has no composite and whose stale image
@@ -600,10 +620,28 @@ mod tests {
         // of the 21 composite samples (the 0 sorts first); 19th of the 20 composed frames.
         assert!(
             line.ends_with(
-                " lib_p95_us=1900 comp_p95_us=9500 lib_cpu_p95_us=950 comp_cpu_p95_us=4750 images_p95=190 img_kpx_p95=28500"
+                " lib_p95_us=1900 comp_p95_us=9500 lib_cpu_p95_us=950 comp_cpu_p95_us=4750 images_p95=190 img_kpx_p95=28500 scale=1.00"
             ),
             "{line}"
         );
+    }
+
+    #[test]
+    fn a_window_reports_the_smallest_size_a_job_in_it_was_drawn_at_and_the_next_one_starts_over() {
+        let t0 = Instant::now();
+        let mut a = Aggregator::new();
+        let at = |scale| Cycle { scale, ..cycle(10, true, 1) };
+        // the first frame of a stretch at full size, then the pipeline's at two thirds and at half
+        for scale in [RenderScale::Full, RenderScale::TwoThirds, RenderScale::Half, RenderScale::Full] {
+            assert!(a.push(t0, at(scale), up(0)).is_none());
+        }
+        let line = a.take_partial(t0, up(0)).unwrap();
+        assert!(line.ends_with(" scale=0.50"), "{line}");
+        assert!(a.push(t0, at(RenderScale::TwoThirds), up(0)).is_none());
+        let line = a.take_partial(t0, up(0)).unwrap();
+        assert!(line.ends_with(" scale=0.67"), "the window starts over at full size: {line}");
+        assert!(a.push(t0, at(RenderScale::Full), up(0)).is_none());
+        assert!(a.take_partial(t0, up(0)).unwrap().ends_with(" scale=1.00"));
     }
 
     #[test]
@@ -614,7 +652,7 @@ mod tests {
         cost.native.as_mut().unwrap().image_pixels = u64::MAX;
         assert!(a.push(t0, cost, up(0)).is_none());
         let line = a.take_partial(t0, up(0)).unwrap();
-        assert!(line.ends_with(" img_kpx_p95=4294967295"), "{line}");
+        assert!(line.ends_with(" img_kpx_p95=4294967295 scale=1.00"), "{line}");
     }
 
     #[test]
@@ -715,7 +753,7 @@ mod tests {
             image_pixels: 345_678,
             composed: true,
         });
-        record_job(Duration::from_micros(2000), false);
+        record_job(Duration::from_micros(2000), false, RenderScale::Full);
         finish_call(true, 64, false);
         AGG.with(|a| {
             let a = a.borrow();
@@ -745,7 +783,7 @@ mod tests {
         begin_call();
         record_render(Duration::from_micros(9));
         record_native(NativeCost { lib_us: 4, comp_us: 5, ..NativeCost::default() });
-        record_job(Duration::from_micros(9), false);
+        record_job(Duration::from_micros(9), false, RenderScale::Full);
         // Cycle 2 made no native call at all.
         begin_call();
         finish_call(false, 0, false);

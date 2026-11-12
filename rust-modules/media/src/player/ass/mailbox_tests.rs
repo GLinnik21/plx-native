@@ -102,6 +102,7 @@ impl Sim {
                     width: job.key.width,
                     height: job.key.height,
                     rects,
+                    scale: job.scale,
                     error: None,
                 })
             }
@@ -740,6 +741,7 @@ fn moving_between(job: &Job, cost_ms: i64, cue_end: i64, boundary_ms: i64) -> ma
         width: job.key.width,
         height: job.key.height,
         rects,
+        scale: job.scale,
         error: None,
     });
     // the boundary is the end of the moving stretch only when it is the cue's: before that the
@@ -797,6 +799,15 @@ struct Rig {
     promotions: Vec<(i64, i64)>,
     /// `(playhead, playhead of the frame on screen)` after each tick.
     shown: Vec<(i64, Option<i64>)>,
+    /// What a frame costs at each rung over what it costs at full size (full, two thirds, half): the
+    /// model's by default, which a test sets to something else to see what a wrong model does.
+    ratios: [f64; 3],
+    /// The scale and kind of every job taken.
+    scales: Vec<(Kind, RenderScale)>,
+    /// The scale of the frame on screen after each tick (`None`: no frame).
+    shown_scales: Vec<Option<RenderScale>>,
+    /// `(playhead, from, to)` for each move of the scale a request reported.
+    changes: Vec<(i64, RenderScale, RenderScale)>,
 }
 
 impl Rig {
@@ -823,6 +834,10 @@ impl Rig {
             taken: Vec::new(),
             promotions: Vec::new(),
             shown: Vec::new(),
+            ratios: RenderScale::LADDER.map(RenderScale::cost_ratio),
+            scales: Vec::new(),
+            shown_scales: Vec::new(),
+            changes: Vec::new(),
         }
     }
 
@@ -841,7 +856,13 @@ impl Rig {
                     _ => self.pipes += 1,
                 }
                 self.taken.push((job.kind, job.now_ms, job.key.revision));
-                let cost = if self.slow.is_empty() { self.cost_ms } else { self.slow.remove(0) };
+                self.scales.push((job.kind, job.scale));
+                let rung = RenderScale::LADDER.iter().position(|&s| s == job.scale).unwrap();
+                let cost = if self.slow.is_empty() {
+                    (self.cost_ms as f64 * self.ratios[rung]).round() as i64
+                } else {
+                    self.slow.remove(0)
+                };
                 self.busy[worker] = Some(Busy { done_at: self.wall + cost, cost, job });
                 self.parked[worker] = false;
             }
@@ -873,6 +894,9 @@ impl Rig {
         self.finish_due(self.wall + self.pace.tick_ms);
         let now = self.now();
         let out = self.mb.request(self.key, now, &self.source, self.pace);
+        if let Some(change) = out.scale_change {
+            self.changes.push((now, change.from, change.to));
+        }
         if out.promoted {
             let target = self.mb.published.as_ref().map_or(0, |p| p.target_ms);
             self.promotions.push((now, target));
@@ -884,8 +908,9 @@ impl Rig {
                 }
             }
         }
-        let shown = self.mb.view(&self.key).and_then(|f| target_of(&f));
-        self.shown.push((now, shown));
+        let frame = self.mb.view(&self.key);
+        self.shown_scales.push(frame.as_ref().map(|f| f.scale));
+        self.shown.push((now, frame.and_then(|f| target_of(&f))));
     }
 
     fn run(&mut self, ms: i64) {
@@ -1428,4 +1453,230 @@ fn a_promoted_frame_of_the_pipeline_says_it_was_late_only_past_a_tick() {
     sim.drain();
     let out = sim.mb.request(sim.key, 1100, &sim.source, Pace::PAUSED);
     assert!(out.promoted && !out.piped && !out.late);
+}
+
+// The render scale (issue #1328): the pipeline draws a moving stretch smaller only while it cannot
+// meet the target at full size, over the renderers the pool has, and never shows a frame less for it.
+// The rig's jobs cost what the scale they are given makes them cost (`Rig::ratios`).
+
+use RenderScale::{Full, Half, TwoThirds};
+
+/// A rig whose pool allows `renderers` renderers, all of them warm.
+fn pooled(renderers: usize, cost_ms: i64) -> Rig {
+    let mut rig = Rig::new(renderers, cost_ms);
+    rig.mb.set_capacity(Some(renderers));
+    rig
+}
+
+/// Hold the playhead at `frozen` for `ms` of wall time: the player is paused.
+fn pause(rig: &mut Rig, frozen: i64, ms: i64) {
+    rig.pace = Pace { running: false, ..rig.pace };
+    let until = rig.wall + ms;
+    while rig.wall < until {
+        rig.offset = frozen - (rig.wall + rig.pace.tick_ms);
+        rig.tick();
+    }
+}
+
+/// The opening of the issue's file on the television: ~85 ms a frame at full size, which one renderer
+/// cannot make thirty of a second at any size, two can at two thirds and three at full size.
+#[test]
+fn a_heavy_stretch_is_drawn_smaller_so_the_renderers_the_pool_has_reach_thirty_frames_a_second() {
+    // (renderers, the rung the stretch settles at, different frames shown in 5 s at least)
+    for (renderers, expected, frames) in [(1, Half, 110), (2, TwoThirds, 140), (3, Full, 140)] {
+        let mut rig = pooled(renderers, 85);
+        rig.run(1500);
+        let (from, normals) = (rig.shown.len(), rig.normals);
+        rig.run(5000);
+        let name = format!("{renderers} renderer(s)");
+        assert_eq!(rig.mb.scale(), expected, "{name}: {:?}", rig.changes);
+        assert_eq!(rig.normals, normals, "{name}: the plan is not given up on the way");
+        assert!(rig.distinct_shown(from) >= frames, "{name}: {} different frames in 5 s", rig.distinct_shown(from));
+        let step = rig.mb.step_ms(rig.pace);
+        let ages = rig.ages(from);
+        assert!(ages.iter().all(|age| (0..=step + 40).contains(age)), "{name}: a step is {step} ms: {ages:?}");
+        assert!(rig.changes.len() <= 1, "{name}: decided once: {:?}", rig.changes);
+    }
+}
+
+#[test]
+fn the_first_frame_of_a_stretch_is_full_size_and_the_pipeline_then_draws_smaller() {
+    let mut rig = pooled(1, 85);
+    rig.run(3000);
+    assert_eq!(rig.mb.scale(), Half);
+    let kinds: Vec<_> = rig.scales.iter().map(|&(kind, scale)| (matches!(kind, Kind::Pipe { .. }), scale)).collect();
+    assert_eq!(kinds[0], (false, Full), "the stretch's first frame is a Normal job at full size: {kinds:?}");
+    assert!(kinds[1..].iter().any(|&(pipe, scale)| pipe && scale == Half), "{kinds:?}");
+    assert!(
+        kinds.iter().take_while(|&&(pipe, _)| !pipe).all(|&(_, scale)| scale == Full),
+        "what the screen needs before the pipeline plans anything is drawn at full size: {kinds:?}"
+    );
+}
+
+#[test]
+fn a_cheap_moving_cue_and_a_still_one_stay_at_full_size() {
+    let mut rig = pooled(1, 12);
+    rig.run(8000);
+    assert_eq!(rig.mb.scale(), Full);
+    assert!(rig.changes.is_empty() && rig.scales.iter().all(|&(_, scale)| scale == Full), "{:?}", rig.changes);
+    // a still cue, however small the pool would make it: every job full size, and the frame
+    let mut sim = Sim::new(vec![cue(1000, 200_000, 7)]);
+    sim.pace = playing(1.0, 33);
+    sim.mb.set_capacity(Some(1));
+    for tick in 0..120 {
+        sim.tick(2000 + tick * 16);
+    }
+    assert_eq!(sim.published().frame.scale, Full);
+    assert_eq!(sim.mb.scale(), Full);
+}
+
+#[test]
+fn no_scale_is_decided_before_the_pool_has_said_how_many_renderers_it_has() {
+    let mut rig = Rig::new(1, 85);
+    rig.run(3000);
+    assert_eq!(rig.mb.scale(), Full, "the pool has not answered: there is no evidence of what it can make");
+    assert!(rig.changes.is_empty());
+    rig.mb.set_capacity(Some(1));
+    rig.run(200);
+    assert_eq!(rig.mb.scale(), Half);
+    assert_eq!(rig.changes.len(), 1);
+}
+
+/// A change of scale is not a change of picture: the frame on screen stays until a frame at the new
+/// scale lands, the frames already planned are still shown, and the plan is not given up.
+#[test]
+fn a_scale_change_keeps_the_frame_on_screen_until_the_first_one_at_the_new_scale_lands() {
+    let mut rig = pooled(1, 25);
+    rig.run(3000);
+    assert_eq!(rig.mb.scale(), Full, "25 ms a frame meets the target at full size");
+    let (normals, from) = (rig.normals, rig.shown.len());
+    rig.cost_ms = 70;
+    rig.run(4000);
+    assert_eq!(rig.changes.iter().map(|c| (c.1, c.2)).collect::<Vec<_>>(), [(Full, Half)]);
+    assert_eq!(rig.normals, normals, "the plan was kept: no Normal job, no blank while one renders");
+    let scales = &rig.shown_scales[from..];
+    assert!(scales.iter().all(Option::is_some), "a frame was on screen at every tick of the change");
+    let first_half = scales.iter().position(|&s| s == Some(Half)).expect("frames at the new scale landed");
+    assert!(first_half > 0 && scales[..first_half].iter().all(|&s| s == Some(Full)), "the old frames stood until then");
+    assert!(scales[first_half..].iter().all(|&s| s == Some(Half)), "and the new ones took over for good");
+    assert!(rig.ages(from).iter().all(|age| *age >= 0), "and none was shown early");
+}
+
+/// The last frame of a reduced stretch is the still picture after it: shown from the pipeline at the
+/// size it was drawn, then drawn again at full size. The reduced frame stands until then, and the
+/// full-size job is not withdrawn as "covered" by it.
+#[test]
+fn the_still_picture_after_a_reduced_stretch_is_redrawn_at_full_size() {
+    let mut rig = pooled(1, 85);
+    rig.cue_end = 4000;
+    rig.run(2500);
+    assert_eq!(rig.mb.scale(), Half);
+    let (normals, from) = (rig.normals, rig.shown.len());
+    rig.run(4000);
+    let published = rig.mb.published.as_ref().expect("a frame");
+    assert!(!published.validity.animated, "the cue has ended");
+    assert_eq!(published.frame.scale, Full, "the still picture is full size");
+    assert_eq!(rig.normals - normals, 1, "one full-size job for it, and no more");
+    assert_eq!(rig.scales.last().map(|s| s.1), Some(Full));
+    assert!(rig.shown_scales[from..].iter().all(Option::is_some), "a frame was on screen all the way");
+    let pipes = rig.pipes;
+    rig.run(1000);
+    assert_eq!((rig.pipes, rig.normals - normals), (pipes, 1), "and nothing follows");
+}
+
+#[test]
+fn a_paused_player_shows_a_full_size_frame_of_a_reduced_stretch() {
+    let mut rig = pooled(1, 85);
+    rig.run(3000);
+    assert_eq!(rig.mb.published.as_ref().map(|p| p.frame.scale), Some(Half));
+    let (normals, frozen) = (rig.normals, rig.now());
+    pause(&mut rig, frozen, 1000);
+    let published = rig.mb.published.as_ref().expect("a frame");
+    assert_eq!(published.frame.scale, Full, "a paused picture is drawn at full size");
+    assert_eq!(rig.normals - normals, 1, "once");
+    assert_eq!(rig.mb.scale(), Half, "the stretch's rung is kept for when it runs again");
+    // played again from where it stopped: the pipeline goes on at the rung it was at
+    rig.pace = playing(1.0, 33);
+    rig.offset = frozen - (rig.wall + rig.pace.tick_ms);
+    rig.run(2000);
+    let last_pipes: Vec<_> = rig.scales.iter().rev().filter(|(kind, _)| matches!(kind, Kind::Pipe { .. })).take(5).collect();
+    assert!(!last_pipes.is_empty() && last_pipes.iter().all(|(_, scale)| *scale == Half), "{last_pipes:?}");
+}
+
+#[test]
+fn a_cost_sample_is_taken_back_to_full_size_by_the_scale_it_was_drawn_at() {
+    let mut rig = pooled(1, 80);
+    rig.run(3000);
+    assert_eq!(rig.mb.scale(), Half);
+    // the frames it timed cost 35 ms each: that is 80 ms at full size, not a cheaper stretch
+    let cost = rig.mb.cost_full_ms();
+    assert!((cost - 80.0).abs() <= 3.0, "{cost}");
+    let step = rig.mb.step_ms(rig.pace);
+    assert!((35..=36).contains(&step), "and the step follows the cost at the rung in use: {step}");
+}
+
+#[test]
+fn the_pool_is_asked_about_what_full_size_would_want_and_the_plan_wants_what_its_scale_needs() {
+    let pace = playing(1.0, 33);
+    for (cost_ms, pool) in [(85, 3), (20, 1)] {
+        let (mut mb, source, key) = warm(1, cost_ms);
+        let out = mb.request(key, 1100, &source, pace);
+        assert_eq!(out.pool_wanted, pool, "{cost_ms} ms");
+        assert_eq!(out.workers_wanted, pool, "the workers the plan wants are the same while it draws at full size");
+    }
+    // drawing smaller, it wants fewer workers than the pool is asked for
+    let mut rig = pooled(1, 85);
+    rig.run(3000);
+    let out = rig.mb.request(rig.key, rig.now(), &rig.source, rig.pace);
+    assert_eq!((out.pool_wanted, out.workers_wanted), (3, 2));
+}
+
+/// The model may be wrong about what two thirds costs: the move up looks comfortable and costs more
+/// than projected, and it is taken back. That happens once per half minute at most.
+#[test]
+fn a_model_that_is_wrong_flaps_a_bounded_number_of_times() {
+    let mut rig = pooled(1, 40);
+    rig.ratios = [1.0, 0.9, 0.44];
+    rig.run(60_000);
+    assert!(rig.changes.len() <= 6, "{} moves in a minute: {:?}", rig.changes.len(), rig.changes);
+    let moves = rig.changes.iter().map(|c| c.0).collect::<Vec<_>>();
+    assert!(moves.windows(2).all(|w| w[1] - w[0] >= 500), "never twice within half a second: {moves:?}");
+}
+
+/// The rung belongs to the selection it was decided for: a track switched to directly (a new epoch, no
+/// `clear` between) starts at full size again, whatever the track before it was drawn at, and waits for
+/// the pool to say what it has.
+#[test]
+fn a_new_selection_starts_at_full_size_and_waits_for_the_pool() {
+    let mut rig = pooled(1, 85);
+    rig.run(3000);
+    assert_eq!(rig.mb.scale(), Half);
+    // the next selection: the runtime has not heard from the pool for it, and its frames are cheap
+    rig.key = Key { epoch: 2, ..rig.key };
+    rig.mb.set_capacity(None);
+    rig.cost_ms = 12;
+    let (from, moves) = (rig.scales.len(), rig.changes.len());
+    rig.run(3000);
+    assert_eq!(rig.mb.scale(), Full, "the old track's rung is not the new one's");
+    assert!(rig.scales.len() > from + 5, "the new selection plans frames");
+    // a worker may take one more frame of the old plan before the tick that sees the new key
+    let first = from + rig.scales[from..].iter().position(|(kind, _)| *kind == Kind::Normal).expect("its first frame");
+    assert!(rig.scales[first..].iter().all(|&(_, scale)| scale == Full), "{:?}", &rig.scales[first..]);
+    assert_eq!(rig.changes.len(), moves, "no move of its own: {:?}", rig.changes);
+}
+
+/// A hole in a reduced stretch is recovered at the rung the stretch is drawn at: a frame at full size
+/// would make libass empty its caches, and the next frame at the old size would pay for them again.
+#[test]
+fn a_hole_in_a_reduced_stretch_is_recovered_at_its_own_size() {
+    let mut rig = pooled(1, 85);
+    rig.run(3000);
+    assert_eq!(rig.mb.scale(), Half);
+    let (from, normals) = (rig.scales.len(), rig.normals);
+    rig.slow = vec![700];
+    rig.run(4000);
+    assert!(rig.normals > normals, "the stall left a hole, and a Normal job recovered it");
+    let recoveries: Vec<_> = rig.scales[from..].iter().filter(|(kind, _)| *kind == Kind::Normal).collect();
+    assert!(recoveries.iter().all(|(_, scale)| *scale == Half), "{recoveries:?}");
+    assert_eq!(rig.mb.scale(), Half);
 }

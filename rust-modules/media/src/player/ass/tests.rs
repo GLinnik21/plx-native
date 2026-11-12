@@ -37,10 +37,15 @@ fn a_heavy_selection_gets_no_helper_and_the_verdict_is_taken_once() {
         reads.set(reads.get() + 1);
         Some(400u64 << 20)
     };
+    assert_eq!(runtime.renderers_decided(epoch), None, "the render scale waits for the pool's verdict");
     assert_eq!(runtime.renderers_for(epoch, memory), 1, "a quarter of 400 MiB holds one renderer of 64 MiB");
     assert!(runtime.helper_barred(1) && runtime.helper_barred(2));
     assert_eq!(runtime.renderers_for(epoch, memory), 1);
     assert_eq!(reads.get(), 1, "the memory is read once for a selection, not on every tick");
+    assert_eq!(runtime.renderers_decided(epoch), Some(1));
+    runtime.begin_selection(8);
+    let next = runtime.epoch.load(Ordering::Acquire);
+    assert_eq!(runtime.renderers_decided(next), None, "the next selection is decided afresh");
 }
 
 #[test]
@@ -300,6 +305,7 @@ fn job(source: &Arc<Source>, now_ms: i64, width: i32, height: i32, storage_width
         source: source.clone(),
         queued: None,
         reference: None,
+        scale: RenderScale::Full,
     }
 }
 
@@ -693,7 +699,7 @@ fn native_key() -> Key {
 /// The frame at `now_ms`; `None` is libass's "identical to the last frame".
 fn native_frame(native: &mut Native, now_ms: i64) -> Option<Vec<Rect>> {
     native
-        .render(native_key(), now_ms, &[])
+        .render(native_key(), RenderScale::Full, now_ms, &[])
         .expect("render of a valid track")
 }
 
@@ -2228,4 +2234,120 @@ fn a_reference_frame_makes_another_engine_share_the_regions_it_draws_identically
     later.reference = Some(reference.clone());
     let handed = engine.render(&later).frame;
     assert!(Arc::ptr_eq(&handed, &reference), "unchanged, and the same pixels as the reference");
+}
+
+// The render scale (issue #1328): a moving stretch is drawn at a fraction of the output size, with
+// the storage size unchanged so the script lays out identically, and the regions come back in the
+// smaller canvas.
+
+fn region(x: i32, y: i32, width: i32, height: i32) -> Rect {
+    Rect { x, y, width, height, rgba: Arc::from(vec![0u8; (width * height * 4) as usize]) }
+}
+
+fn frame_at(scale: RenderScale, width: i32, height: i32, rects: Vec<Rect>) -> Frame {
+    Frame { source_id: 1, serial: 1, width, height, rects, scale, error: None }
+}
+
+#[test]
+fn a_regions_edges_map_back_to_the_output_canvas_whatever_the_scale() {
+    // the same region of the output, at each rung: the frame's own coordinates differ, the output's do not
+    let output = (480.0, 270.0, 1160.0, 640.0);
+    let full = frame_at(RenderScale::Full, 1920, 1080, vec![]);
+    assert_eq!(full.output_edges(&region(480, 270, 680, 370)), output, "full size maps to itself exactly");
+    let half = frame_at(RenderScale::Half, 1920, 1080, vec![]);
+    assert_eq!(half.render_size(), (960, 540));
+    assert_eq!(half.output_edges(&region(240, 135, 340, 185)), output);
+    let two_thirds = frame_at(RenderScale::TwoThirds, 1920, 1080, vec![]);
+    assert_eq!(two_thirds.render_size(), (1280, 720));
+    assert_eq!(two_thirds.output_edges(&region(320, 180, 453, 247)), (480.0, 270.0, 1159.5, 640.5));
+}
+
+#[test]
+fn regions_that_abut_in_the_frame_abut_on_the_output() {
+    // a letterboxed viewport, where the rounded render height does not divide the output's
+    let frame = frame_at(RenderScale::TwoThirds, 1920, 800, vec![]);
+    assert_eq!(frame.render_size(), (1280, 533));
+    for edge in [1, 100, 266, 400, 532] {
+        let above = frame.output_edges(&region(0, edge - 17, 10, 17));
+        let below = frame.output_edges(&region(0, edge, 10, 20));
+        assert_eq!(above.3, below.1, "the bottom of one is the top of the next at {edge}");
+    }
+    let last = frame.output_edges(&region(0, 500, 1280, 33));
+    assert!((last.2 - 1920.0).abs() < 1e-3 && (last.3 - 800.0).abs() < 1e-3, "the far edge of the frame is the far edge of the output");
+}
+
+/// A cue drawn at half size is the same picture as at full size: every region sits where the full-size
+/// one does, within the transparent border the facade leaves round a region, and it costs a quarter of
+/// the pixels. The storage size is the one the full frame has, so libass lays the script out the same.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn a_frame_drawn_at_half_size_lays_out_where_the_full_size_one_does() {
+    let red = r"{\an7\pos(20,20)\c&H0000FF&\p1}m 0 0 l 40 0 40 40 0 40";
+    let blue = r"{\an7\pos(120,90)\c&HFF0000&\p1}m 0 0 l 60 0 60 30 0 30";
+    let source = script(&format!(
+        "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{red}\nDialogue: 1,0:00:00.00,0:00:02.00,Default,,0,0,0,,{blue}\n"
+    ));
+    let at = |scale: RenderScale, now_ms: i64| {
+        let mut job = job(&source, now_ms, 640, 360, 640, 360);
+        job.scale = scale;
+        let frame = Engine::default().render(&job).frame;
+        assert_eq!(frame.error, None, "native fixture requires the built host library in pkg");
+        frame
+    };
+    let (full, half) = (at(RenderScale::Full, 100), at(RenderScale::Half, 100));
+    assert_eq!((full.scale, half.scale), (RenderScale::Full, RenderScale::Half));
+    assert_eq!((full.width, full.height, half.width, half.height), (640, 360, 640, 360), "both answer for the output");
+    assert_eq!(half.render_size(), (320, 180));
+    assert_eq!(full.rects.len(), 2, "two squares");
+    assert_eq!(half.rects.len(), full.rects.len());
+    let bytes = |f: &Frame| f.rects.iter().map(|r| r.rgba.len()).sum::<usize>();
+    assert!(bytes(&half) * 3 <= bytes(&full), "a quarter of the pixels: {} against {}", bytes(&half), bytes(&full));
+    let edges = |f: &Frame| {
+        let mut all: Vec<_> = f.rects.iter().map(|r| f.output_edges(r)).collect();
+        all.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        all
+    };
+    for (a, b) in edges(&full).into_iter().zip(edges(&half)) {
+        let close = |x: f32, y: f32| (x - y).abs() <= 3.0;
+        assert!(
+            close(a.0, b.0) && close(a.1, b.1) && close(a.2, b.2) && close(a.3, b.3),
+            "full {a:?} against half {b:?} on the output canvas"
+        );
+    }
+    // the solid square's centre is the same colour at both sizes
+    assert_eq!(pixel(&half, 20, 20), [255, 0, 0, 255]);
+    assert_eq!(pixel(&full, 40, 40), [255, 0, 0, 255]);
+}
+
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn a_render_at_a_new_size_is_cold_and_no_sample_and_each_frame_is_labelled_with_its_own_size() {
+    let sign = r"{\an7\pos(20,20)\c&H0000FF&\p1}m 0 0 l 40 0 40 40 0 40";
+    let source = script(&format!("Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{sign}\n"));
+    let mut engine = Engine::default();
+    let mut at = |scale: RenderScale, now_ms: i64| {
+        let mut job = job(&source, now_ms, 640, 360, 640, 360);
+        job.scale = scale;
+        let frame = engine.render(&job).frame;
+        assert_eq!(frame.error, None, "native fixture requires the built host library in pkg");
+        (frame, engine.resynced)
+    };
+    let (first, opened) = at(RenderScale::Full, 100);
+    assert!(opened, "the first render opens the renderer");
+    let (_, again) = at(RenderScale::Full, 200);
+    assert!(!again, "the same size again is a steady frame");
+    let (half, resized) = at(RenderScale::Half, 300);
+    assert!(resized, "a new size drops libass's caches: that frame is cold, no sample of a steady one");
+    assert_eq!(half.scale, RenderScale::Half);
+    let (_, steady) = at(RenderScale::Half, 400);
+    assert!(!steady);
+    let (back, resized) = at(RenderScale::Full, 500);
+    assert!(resized);
+    assert_eq!(back.scale, RenderScale::Full, "a frame is never handed back for another size's regions");
+    assert_eq!(back.rects, first.rects, "and it is the picture the full size drew before");
+    // a picture with no region is labelled with the size it was drawn at as well
+    let (empty_full, _) = at(RenderScale::Full, 5_000);
+    let (empty_half, _) = at(RenderScale::Half, 5_100);
+    assert!(empty_full.rects.is_empty() && empty_half.rects.is_empty());
+    assert_eq!((empty_full.scale, empty_half.scale), (RenderScale::Full, RenderScale::Half));
 }
