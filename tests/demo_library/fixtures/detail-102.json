@@ -97,6 +97,23 @@
       "tag": "Short"
      }
     ],
+    "Image": [
+     {
+      "alt": "Sintel",
+      "type": "coverPoster",
+      "url": "/library/metadata/102/thumb/1790000000"
+     },
+     {
+      "alt": "Sintel",
+      "type": "background",
+      "url": "/library/metadata/102/art/1790000000"
+     },
+     {
+      "alt": "Sintel",
+      "type": "clearLogo",
+      "url": "/library/metadata/102/clearLogo/1790000000"
+     }
+    ],
     "Marker": [],
     "Media": [
      {
