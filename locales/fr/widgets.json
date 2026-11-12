@@ -165,7 +165,7 @@
   "widgets.tracks.style_size": "Taille",
   "widgets.tracks.style_position": "Position",
   "widgets.tracks.style_image_note": "Sous-titres image : aspect propre ; le gris assombrit.",
-  "widgets.tracks.style_styled_note": "Sous-titres stylisés : aspect propre ; blanc au choix.",
+  "widgets.tracks.style_styled_note": "Sous-titres stylisés : aspect fixe ; le blanc suit la couleur.",
   "widgets.tracks.style_fixed_note": "Couleurs propres au sous-titre ; le gris assombrit.",
   "widgets.tracks.timing": "Synchronisation",
   "widgets.tracks.external_badge": "EXTERNE",
