@@ -233,21 +233,49 @@ widening recorded the 17 forks that were already there (three in `screens/`: `le
 
 ## Machine shape
 
-`ci/machines.ini` lists the state machines whose shape is gated, one `[file::Struct]` section each
-(paths relative to `rust-modules/`), with the machine's `event` and `effect` types and a `step`
-line saying how it is exposed, driven and owned. `ci/check-machine-shape.py` (in `make check`)
-fails on public state or a stale entry. Every registered machine must declare `writer_policy = strict`,
-`state_field`, `transition` and `constructor`; these bindings are mandatory, not opt-in. All ten
-registered machines have checked single-writer contracts. Production child/include files are checked
-too; shared state reads require structural immutable-payload proof, including closed, privately sealed
-identity bounds for generic payloads, not merely `Copy`.
+`ci/machines.ini` is the sole machine registry. Every entry binds a real event enum, a real
+mutable effect-vector channel (or exact `effect = none` for a pure view), and one private inherent
+`transition` reducer. The checker resolves the declarations and canonical signature: a raw-state
+setter cannot masquerade as the registered event reducer. Concrete effect-vector aliases are
+resolved; callbacks are not effect channels. Rust type checking and behavior review remain required.
 
-Every registered machine also requires a matching `[module file]` enum policy and an unconditional
-`#![deny(clippy::wildcard_enum_match_arm)]` (or `forbid`) header. Local `allow`, `expect` or `warn`,
-including `cfg_attr` and production children/includes, cannot weaken it. Numeric and wire-string
-fallbacks remain valid; Clippy checks enum exhaustiveness, not a textual underscore ban. The gate
-also reports each machine's `bool` and `Option<..>` field counts without failing on them. The first
-entry is `ForegroundLifecycle`.
+Every owned struct field is private and write-guarded by default: pending work, counters, outboxes,
+caches and nested owners are not exemptions. `state_field` selects a variant view, never the write
+coverage boundary. Fresh constructors initialize all fields and cannot accept an existing machine.
+All subsequent physical writes belong inside `transition` itself, not a helper merely called by it.
+Public adapters may dispatch typed owner events; consuming drains must do the same. Whole-machine
+aliases/replacement, live mutable projections, nested mutating functions/closures and unknown
+machine-capturing calls/macros fail closed. Detached owned values may have their own pure helpers.
+
+Shared readers require closed structural proof for the data they expose. A user `Copy` bound is
+not an inertness certificate: generic identities need a private closed seal covering only proved
+inert actual types. Numeric/discriminant reads may use bounded structural proof without exposing
+opaque payloads. Foreign types remain opaque without reproducible source-backed dependency proof;
+a familiar dependency name is not a certificate.
+
+`ci/readonly_generated.py` and `ci/proofs/platform-generated-enums.json` separately certify
+the actual platform language include: pinned package/module/include, complete production
+build scripts, generator/templates, manifests/configuration and locked graph. The reviewed
+pipeline emits only unit enum variants in every configuration; strict catalogue/schema and
+ASCII variant validation permit new languages without a count/list pin. The same evidence
+pins the machine ID macro source and proves its concrete `u32` fields, not a `Copy` promise.
+Reviewed machine snapshots differ only in `NavOp::SelectTabWithChild`, i18n snapshots only in clock formatting/helpers; either
+source changing requires review. No generator or Cargo/cache code executes in native CI.
+The certificate assumes ordinary Cargo/Rust/std/serde execution and no out-of-band output,
+compiler or external configuration overrides. It certifies values only, never locale contexts,
+locks, callbacks or generated method authority. Unknown layouts/includes remain opaque.
+
+Every source also registers a matching `[module file]` enum policy and unconditionally denies (or
+forbids) `clippy::wildcard_enum_match_arm`. Local `allow`, `expect` and `warn` cannot weaken it.
+Production child modules and literal includes are traversed exhaustively. Conditional
+`cfg_attr(path)`, opaque/generated includes and unresolved production modules are rejected rather
+than guessed; proven test-only code is excluded. Numeric and open wire-string wildcard matches
+remain legal; the compiler/Clippy classify enum exhaustiveness, not a textual underscore ban.
+
+The native tests derive the cohort and every owned field from this registry, retain the original
+writer/alias/macro negatives, and add typed-event/effect, full-field and production-closure matrices.
+Fixture and mutation passes are not full-cohort Rust, Clippy, behavior or performance acceptance.
+Bool/Option field counts are report-only.
 
 ## Layout
 

@@ -94,6 +94,9 @@ impl PictureGate {
     }
 
     pub fn step(&mut self, event: Event, fx: &mut Vec<Fx>) {
+        self.transition(event, fx);
+    }
+    fn transition(&mut self, event: Event, fx: &mut Vec<Fx>) {
         match event {
             Event::Reset => { self.stage = Stage::Neither; self.last_ms = None; },
             Event::Seeked => self.last_ms = None,

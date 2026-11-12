@@ -27,7 +27,8 @@ def verdict(source, ini=None, file=FILE):
         field = fields[0][1] if fields else 'state'
         ini = INI + f'writer_policy = strict\nstate_field = {field}\ntransition = transition\nconstructor = new\n\n[module {FILE}]\nwildcard_enum_match_arm = deny\n'
         source = '#![deny(clippy::wildcard_enum_match_arm)]\n' + source
-        source += f'\nimpl Machine {{ fn new() -> Self {{ Self {{ {field}: 0 }} }} fn transition(&mut self) {{ self.{field} = 1; }} }}'
+        initial = ', '.join(f'{key}: 0' for _, key, _ in fields)
+        source += f'\nenum Ev {{ Set }} enum Fx {{ Changed }} impl Machine {{ fn new() -> Self {{ Self {{ {initial} }} }} fn transition(&mut self, event: Ev, fx: &mut Vec<Fx>) {{ match event {{ Ev::Set => {{ self.{field} = 1; fx.push(Fx::Changed); }} }} }} }}'
     with tempfile.TemporaryDirectory() as temp:
         modules = Path(temp) / 'rust-modules'
         (modules / file).parent.mkdir(parents=True)
@@ -131,7 +132,7 @@ class MandatoryCohort(unittest.TestCase):
         registry = configparser.ConfigParser(interpolation=None)
         registry.read(ROOT / 'ci/machines.ini')
         entries = [s for s in registry.sections() if not s.startswith('module ')]
-        self.assertEqual(len(entries), 10)
+        self.assertTrue(entries, 'registry is the only normative cohort list')
         with tempfile.TemporaryDirectory() as temp:
             modules = Path(temp) / 'rust-modules'
             for crate in (ROOT / 'rust-modules').iterdir():
@@ -141,6 +142,18 @@ class MandatoryCohort(unittest.TestCase):
                 shutil.copyfile(crate / 'Cargo.toml', destination / 'Cargo.toml')
                 if (crate / 'src').is_dir():
                     shutil.copytree(crate / 'src', destination / 'src')
+            # The dependency proof checks the exact locked workspace, even in mutation fixtures.
+            for relative in ('Cargo.toml', 'Cargo.lock', '.cargo/config', '.cargo/config.toml'):
+                source = ROOT / 'rust-modules' / relative
+                if source.is_file():
+                    destination = modules / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(source, destination)
+            # Source-backed generated layouts require the actual producers and dynamic input.
+            for relative in ('platform/build.rs', 'platform/build_support/catalog.rs', 'build_support/install_identities.rs', '../locales/languages.json'):
+                destination = modules / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(ROOT / 'rust-modules' / relative, destination)
             ini = Path(temp) / 'machines.ini'
             for section in entries:
                 file, name = section.split('::')
@@ -177,6 +190,52 @@ class MandatoryCohort(unittest.TestCase):
                 with self.subTest(machine=section, mutation='baseline'):
                     self.assertEqual(check(), [])
                 path.write_text(original, encoding='utf-8')
+                conditional = original + '#[cfg_attr(feature = "shipping", path = "alternate.rs")] mod contract_child;'
+                with self.subTest(machine=section, mutation='conditional-production-child'):
+                    self.assertTrue(check(source=conditional))
+                path.write_text(original, encoding='utf-8')
+
+
+
+class CompleteOwnedCohort(unittest.TestCase):
+    def test_every_actual_owned_field_extra_writer_matrix(self):
+        from machine_readonly import Proof
+        registry = configparser.ConfigParser(interpolation=None)
+        registry.read(ROOT / 'ci/machines.ini')
+        entries = [s for s in registry.sections() if not s.startswith('module ')]
+        self.assertTrue(entries)
+        total_fields = total_mutations = 0
+        for section in entries:
+            file, name = section.split('::')
+            contract = registry[section]
+            root = ROOT / 'rust-modules'
+            original = (root / file).read_text(encoding='utf-8')
+            proof = Proof(root, gate)
+            fields = gate.struct_fields(gate.production_tokens(original), name) or []
+            self.assertTrue(fields)
+            bodies = (
+                'self.{field} = panic!("rogue");',
+                'self.{field} += panic!("rogue");',
+                'let alias = &mut self.{field}; unknown(alias);',
+                'self.{field}.clear();',
+                'unknown!(self.{field});',
+                'std::mem::take(&mut self.{field});',
+                'let ptr = core::ptr::addr_of_mut!(self.{field});',
+            )
+            for _, owned_field, actual_type in fields:
+                self.assertTrue(actual_type, (section, owned_field))
+                total_fields += 1
+                for body in bodies:
+                    mutation = body.replace('{field}', owned_field)
+                    child = f'impl {name} {{ fn contract_field_rogue(&mut self) {{ {mutation} }} }}'
+                    with self.subTest(machine=section, owned_field=owned_field, mutation=mutation):
+                        self.assertTrue(gate.writer_problems(child, name, contract['state_field'],
+                            contract['transition'], contract['constructor'], file,
+                            require_methods=False, event=contract['event'], effect=contract['effect'],
+                            proof=proof, shared_reads=contract.get('state_reads') == 'immutable',
+                            owned_fields=fields), f'{section}.{owned_field}: extra writer escaped')
+                    total_mutations += 1
+        print(f'owned-field matrix: {len(entries)} machines, {total_fields} fields, {total_mutations} rejected writers')
 
 
 if __name__ == '__main__':

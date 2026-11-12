@@ -134,13 +134,7 @@ impl BackendState {
         snapshot.backend == Some(backend) && snapshot.attempt == Some(attempt)
     }
 
-    fn dispatch(&mut self, backend: BackendKind, attempt: AttemptId,
-        operation: Operation, effects: &mut Vec<Fx>) {
-        self.next_command = self.next_command.checked_add(1).expect("playback command IDs exhausted");
-        let command = CommandId(self.next_command);
-        self.pending.insert(command, operation);
-        effects.push(Fx::Dispatch { backend, attempt, command, operation });
-    }
+
 
     fn reject_start(effects: &mut Vec<Fx>, backend: BackendKind, attempt: AttemptId,
         source: SourceKey, failure: Failure) {
@@ -174,7 +168,11 @@ impl BackendState {
                     self.snapshot.attempt = Some(attempt);
                     self.snapshot.viewer_paused = Some(initial.paused);
                     self.settled_viewer_paused = Some(initial.paused);
-                    self.dispatch(backend, attempt, Operation::Start { source, requirements }, effects);
+                    let operation = Operation::Start { source, requirements };
+                    self.next_command = self.next_command.checked_add(1).expect("playback command IDs exhausted");
+                    let command = CommandId(self.next_command);
+                    self.pending.insert(command, operation);
+                    effects.push(Fx::Dispatch { backend, attempt, command, operation });
                 }
             }
             Event::Intent(Intent::Control { backend, attempt, operation }) => {
@@ -188,7 +186,10 @@ impl BackendState {
                 if let Some(failure) = failure {
                     effects.push(Fx::Rejected { backend, attempt, failure });
                 } else {
-                    self.dispatch(backend, attempt, operation, effects);
+                    self.next_command = self.next_command.checked_add(1).expect("playback command IDs exhausted");
+                    let command = CommandId(self.next_command);
+                    self.pending.insert(command, operation);
+                    effects.push(Fx::Dispatch { backend, attempt, command, operation });
                 }
             }
             Event::Intent(Intent::Stop { backend, attempt, reason }) => {
@@ -205,7 +206,11 @@ impl BackendState {
                     effects.push(Fx::Rejected { backend, attempt, failure: Failure::Unavailable });
                 } else {
                     self.snapshot.phase = Phase::Releasing;
-                    self.dispatch(backend, attempt, Operation::Stop(reason), effects);
+                    let operation = Operation::Stop(reason);
+                    self.next_command = self.next_command.checked_add(1).expect("playback command IDs exhausted");
+                    let command = CommandId(self.next_command);
+                    self.pending.insert(command, operation);
+                    effects.push(Fx::Dispatch { backend, attempt, command, operation });
                 }
             }
             Event::CommandAnswer { backend, attempt, command, result } => {
@@ -755,5 +760,45 @@ mod tests {
                 operation: Operation::Play, failure: Failure::Refused }]);
         assert_eq!(state.snapshot.playback.unwrap().value, Playback::ReadyAwaitPlay);
         assert_eq!(state.snapshot.failure, Some(Failure::Refused));
+    }
+
+    #[test]
+    fn pending_cancellation_quarantine_and_release_never_rewind_command_identity() {
+        let mut state = BackendState::new();
+        let attempt = AttemptId::new(12, 1);
+        let first = start(&mut state, URI, attempt);
+        assert_eq!(state.pending.len(), 1);
+        assert!(step(&mut state, Event::CommandAnswer { backend: FEED, attempt,
+            command: first, result: DispatchResult::Queued }, None).is_empty());
+        assert_eq!(state.pending.len(), 1, "wrong backend cannot consume an addressed command");
+        let fx = step(&mut state, Event::Intent(Intent::Stop { backend: URI, attempt,
+            reason: StopReason::Replace }), Some(CAPS));
+        let [Fx::Dispatch { command: stop, operation: Operation::Stop(StopReason::Replace), .. }] = fx.as_slice()
+            else { panic!("stop dispatch: {fx:?}") };
+        let stop = *stop;
+        assert!(stop > first);
+        assert_eq!(state.pending.len(), 1);
+        assert!(!state.pending.contains_key(&first));
+        assert!(step(&mut state, Event::CommandAnswer { backend: URI, attempt,
+            command: first, result: DispatchResult::Queued }, None).is_empty());
+        step(&mut state, Event::Release { backend: URI, attempt, status: ReleaseStatus::Quarantined }, None);
+        assert!(state.pending.is_empty());
+        assert!(step(&mut state, Event::CommandAnswer { backend: URI, attempt,
+            command: stop, result: DispatchResult::Queued }, None).is_empty());
+        let next_attempt = AttemptId::new(12, 2);
+        assert!(step(&mut state, Event::Release { backend: URI, attempt: next_attempt,
+            status: ReleaseStatus::Released }, None).is_empty());
+        assert_eq!(state.snapshot.phase, Phase::Quarantined);
+        step(&mut state, Event::Release { backend: URI, attempt, status: ReleaseStatus::Released }, None);
+        assert_eq!(*state.snapshot(), Snapshot::default());
+        let next = start(&mut state, FEED, next_attempt);
+        assert!(next > stop, "release does not recycle a command ID");
+        assert!(step(&mut state, Event::CommandAnswer { backend: URI, attempt,
+            command: first, result: DispatchResult::Queued }, None).is_empty());
+        assert!(step(&mut state, Event::Release { backend: URI, attempt,
+            status: ReleaseStatus::Released }, None).is_empty());
+        assert_eq!(state.snapshot.attempt, Some(next_attempt));
+        assert_eq!(state.pending.len(), 1);
+        assert!(state.pending.contains_key(&next));
     }
 }

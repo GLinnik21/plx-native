@@ -12,7 +12,9 @@ use plx_machine::machine::{Addr, Canon, LogicalState, MachineId};
 
 mod attempt;
 mod incident;
-use plx_telemetry::telemetry::incident::{IncidentContext, InternalClass};
+use plx_telemetry::telemetry::incident::{IncidentContext, InternalClass, IncidentKind};
+use plx_telemetry::telemetry::consent::Permission;
+use incident::{is_settled, SEEN_CAP};
 pub use incident::{IncidentDelivery, IncidentFlow, IncidentKey, IncidentLane, IncidentOffer,
     IncidentReport, IncidentState};
 
@@ -628,6 +630,16 @@ pub trait SessionHost: plx_machine::machine::Host {
 }
 
 pub enum SessionEvent {
+    /// Consume the aggregate dirty marker through the same owner-event boundary.
+    ConsumeLogicalDirty,
+    /// Legacy incident producers enter with closed evidence, never a mutable owner escape.
+    RaiseIncident { flow: IncidentFlow, context: IncidentContext },
+    ForgetIncidents,
+    #[cfg(any(test, feature = "test-support"))] ReserveWork { op: SessionOp, lifecycle: Option<ServerLifecycle> },
+    #[cfg(test)] RebuildPublication,
+    #[cfg(test)] RestartLogin { fresh_login: bool },
+    #[cfg(test)] ObserveQr(SessionEnvelope),
+    #[cfg(test)] FailLogin { message: String, incident: Option<IncidentContext> },
     Command(Command),
     Result(SessionEnvelope),
     Commit(CommitReply),
@@ -1663,10 +1675,75 @@ enum AttemptEvent {
     FinishErase,
 }
 
-enum TransitionInput<'a> {
-    Event(&'a SessionEvent),
-    Attempt(AttemptEvent),
+fn next_attempt(attempt: attempt::Attempt, event: AttemptEvent) -> attempt::Attempt {
+match event {
+                    AttemptEvent::LoginFailed { message, revoke } => attempt.login_failed(message, revoke),
+                    AttemptEvent::CodeReplacing => attempt.code_replacing(),
+                    AttemptEvent::CodeReady { generation, code, png } => attempt.code_ready(generation, code, png),
+                    AttemptEvent::Authorized => attempt.authorized(),
+                    AttemptEvent::RestartDiscovery { req } => attempt.restart_discovery(req),
+                    AttemptEvent::RestartLogin { req } => attempt.restart_login(req),
+                    AttemptEvent::ResumeBack => attempt.resume_back(),
+                    AttemptEvent::ResumeDevBack => attempt.resume_dev_back(),
+                    AttemptEvent::BeginDevAccount { boundary_req, login_req } => attempt.begin_dev_account(boundary_req, login_req),
+                    AttemptEvent::ActivateDev => attempt.activate_dev(),
+                    AttemptEvent::ReadyExhausted => attempt.ready_exhausted(),
+                    AttemptEvent::SwitchCommitRefused => attempt.switch_commit_refused(),
+                    AttemptEvent::DevCommitRefused => attempt.dev_commit_refused(),
+                    AttemptEvent::SwitchAdmissionRefused => attempt.switch_admission_refused(),
+                    AttemptEvent::OpenDevPicker => attempt.open_dev_picker(),
+                    AttemptEvent::OpenPicker { kind, fallback } => attempt.open_picker(kind, fallback),
+                    AttemptEvent::ReuseProfile => attempt.reuse_profile(),
+                    AttemptEvent::SelectProfile { req } => attempt.select_profile(req),
+                    AttemptEvent::SwitchDropped => attempt.switch_dropped(),
+                    AttemptEvent::SwitchFailed { message, denied } => attempt.switch_failed(message, denied),
+                    AttemptEvent::SigninProfiles { users } => attempt.signin_profiles(users),
+                    AttemptEvent::SigninReady => attempt.signin_ready(),
+                    AttemptEvent::ProfileReady { req } => attempt.profile_ready(req),
+                    AttemptEvent::StoredReady => attempt.stored_ready(),
+                    AttemptEvent::LinkTrouble { present } => attempt.link_trouble(present),
+                    AttemptEvent::RosterFailed { message } => attempt.roster_failed(message),
+                    AttemptEvent::BeginSignin { req } => attempt.begin_signin(req),
+                    AttemptEvent::DiscoveryTrouble { progress } => attempt.discovery_trouble(progress),
+                    AttemptEvent::DiscoverySettled { run } => attempt.discovery_settled(run),
+                    AttemptEvent::DiscoveryFailed { plaintext, account } => attempt.discovery_failed(plaintext, account),
+                    AttemptEvent::PlaintextDeclined { choice } => attempt.plaintext_declined(choice),
+                    AttemptEvent::RosterArrived { users } => attempt.roster_arrived(users),
+                    AttemptEvent::ReadyCommitted => attempt.ready_committed(),
+                    AttemptEvent::EraseAuthority => attempt.erase_authority(),
+                    AttemptEvent::EpochAdvanced => attempt.epoch_advanced(),
+                    AttemptEvent::WorkRetired { req } => attempt.work_retired(req),
+                    AttemptEvent::BeginDevActivation { req } => attempt.begin_dev_activation(req),
+                    AttemptEvent::BeginStoredRestore { req } => attempt.begin_stored_restore(req),
+                    AttemptEvent::InstallPicker { req } => attempt.install_picker(req),
+                    AttemptEvent::BeginReadyCommit { req } => attempt.begin_ready_commit(req),
+                    AttemptEvent::BeginErase { epoch, sign_in } => attempt.begin_erase(epoch, sign_in),
+                    AttemptEvent::FinishErase => attempt.finish_erase(),
+                }
 }
+
+fn signin_notice(event: &AttemptEvent) -> Option<attempt::SignInNotice> {
+match event {
+                    AttemptEvent::RestartLogin { .. } | AttemptEvent::RestartDiscovery { .. } | AttemptEvent::BeginSignin { .. } => Some(attempt::SignInNotice::Owed),
+                    AttemptEvent::LoginFailed { .. } | AttemptEvent::ResumeBack | AttemptEvent::SigninProfiles { .. }
+                        | AttemptEvent::SigninReady | AttemptEvent::EraseAuthority => Some(attempt::SignInNotice::Settled),
+                    AttemptEvent::CodeReplacing | AttemptEvent::CodeReady { .. } | AttemptEvent::Authorized | AttemptEvent::ResumeDevBack
+                        | AttemptEvent::BeginDevAccount { .. } | AttemptEvent::ActivateDev | AttemptEvent::ReadyExhausted | AttemptEvent::SwitchCommitRefused
+                        | AttemptEvent::DevCommitRefused | AttemptEvent::SwitchAdmissionRefused | AttemptEvent::OpenDevPicker | AttemptEvent::OpenPicker { .. }
+                        | AttemptEvent::ReuseProfile | AttemptEvent::SelectProfile { .. } | AttemptEvent::SwitchDropped | AttemptEvent::SwitchFailed { .. }
+                        | AttemptEvent::ProfileReady { .. } | AttemptEvent::StoredReady | AttemptEvent::LinkTrouble { .. }
+                        | AttemptEvent::RosterFailed { .. } | AttemptEvent::DiscoveryTrouble { .. }
+                        | AttemptEvent::DiscoverySettled { .. } | AttemptEvent::DiscoveryFailed { .. } | AttemptEvent::PlaintextDeclined { .. }
+                        | AttemptEvent::RosterArrived { .. } | AttemptEvent::ReadyCommitted | AttemptEvent::EpochAdvanced | AttemptEvent::WorkRetired { .. }
+                        | AttemptEvent::BeginDevActivation { .. } | AttemptEvent::BeginStoredRestore { .. }
+                        | AttemptEvent::InstallPicker { .. } | AttemptEvent::BeginReadyCommit { .. }
+                        | AttemptEvent::BeginErase { .. } | AttemptEvent::FinishErase => None
+                }
+}
+
+struct WorkReservation { req: u32, pending: Pending }
+struct CommitPreparation { pending: PendingCommit, entry: CommitEntry }
+enum LoginRestart { Fresh, Retry }
 
 pub struct SessionMachine {
     state: attempt::Attempt,
@@ -1695,6 +1772,36 @@ impl SessionMachine {
             cache_refresh: CacheRefresh::Idle, next_cache_req: 0,
             #[cfg(test)] publication_payload_allocations: [0; 3] }
     }
+fn plan_reservation(&self, op: SessionOp, lifecycle: Option<ServerLifecycle>) -> Option<WorkReservation> {
+    let req = self.common.next_req.checked_add(1)?;
+    Some(WorkReservation { req, pending: Pending {
+        key: SessionWorkKey { epoch: self.common.epoch, op },
+        expected: Identity::of(&self.common.persisted), lifecycle,
+        last_arrival: None, phase: StreamPhase::Running, capture: None, admission: AdmissionState::NotRequested,
+    } })
+}
+
+fn plan_commit(&self, req: u32, arrival: u64, terminal: bool, plan: CommitPlan, delta: CommitDelta) -> Option<CommitPreparation> {
+    if self.common.pending_commit.is_some() { return None; }
+    let pending = self.common.pending.get(&req)?;
+    if pending.key.epoch != self.common.epoch { return None; }
+    let epoch = pending.key.epoch;
+    let fresh = plan.writes_durable && plan.credentials.is_some()
+        && plan.authority == plx_plex::plex::session::SaveAuthority::FreshReauthentication;
+    Some(CommitPreparation { pending: PendingCommit { req, epoch, arrival, terminal,
+        writes_credentials: plan.writes_durable && plan.credentials.is_some(),
+        receipt: None, delta, admitted_revision: None,
+        purpose: plan.writes_durable.then_some(plan.purpose), fresh,
+    }, entry: CommitEntry { req, epoch, arrival, plan } })
+}
+
+fn publication_update(&self) -> Option<(Arc<SessionSnapshot>, [usize; 3])> {
+        if self.publication.matches_state(self.view()) { return None; }
+        let mut allocations = [0; 3];
+        let next = SessionSnapshot::from_state_counted(self.view(), Some(&self.publication), &mut |field| allocations[field] += 1);
+        Some((Arc::new(next), allocations))
+    }
+    #[cfg(test)] fn fail_login(&mut self, message: &str, incident: Option<IncidentContext>, emit: &mut impl FnMut(SessionFx)) { let mut effects = Vec::new(); self.transition(&SessionEvent::FailLogin { message: message.into(), incident }, 0, &mut effects); effects.into_iter().for_each(emit); }
     // Required controlled-init boundary; full AppInit capture remains a following stage.
     pub fn snapshot_init(&self) -> SessionInit { self.view().snapshot_init() }
     fn view(&self) -> attempt::PartitionView<'_> { attempt::PartitionView { common: &self.common, attempt: &self.state } }
@@ -1709,17 +1816,9 @@ impl SessionMachine {
     pub fn subhash(&self) -> u64 { self.subhash }
     // Cached hashes already change on logical transitions; aggregate dirty consumption is
     // separate from UI Arc damage and remains a following-stage App recording integration.
-    pub fn take_logical_dirty(&mut self) -> bool { std::mem::take(&mut self.logical_dirty) }
+    pub fn take_logical_dirty(&mut self) -> bool { self.transition(&SessionEvent::ConsumeLogicalDirty, 0, &mut Vec::new()) }
 
-    fn refresh_subhash(&mut self) {
-        let mut canon = Canon::new();
-        LegacyV5Projection::from_partition(self.view()).write(&mut canon);
-        let next = canon.finish();
-        if next != self.subhash {
-            self.subhash = next;
-            self.logical_dirty = true;
-        }
-    }
+
 
     pub fn ready_is_current(&self, epoch: u64, scope: ProfileScope) -> bool {
         self.common.epoch == epoch && self.common.profile_scope == scope
@@ -1750,14 +1849,7 @@ impl SessionMachine {
 
     /// Physical completion remains evidence even after its authority permit was superseded.
     /// Advance only the comparison fence; never publish obsolete credentials as trusted state.
-    fn observe_disk_write(&mut self, before: &Identity, after: &Identity,
-        outcome: plx_plex::plex::session::async_persistence::CompletionOutcome) -> bool {
-        use plx_plex::plex::session::async_persistence::{CompletionOutcome, Operation};
-        if self.common.disk_identity != *before || before == after
-            || !matches!(outcome, CompletionOutcome::Durable(Operation::Write { .. })) { return false; }
-        self.common.disk_identity = after.clone();
-        true
-    }
+    #[cfg(test)] fn observe_disk_write(&mut self, before: &Identity, after: &Identity, outcome: plx_plex::plex::session::async_persistence::CompletionOutcome) -> bool { self.transition(&SessionEvent::DiskWrite { before: before.clone(), after: after.clone(), outcome }, 0, &mut Vec::new()) }
 
     /// Read-only authorization at effect execution, after any carried cancellation command.
     /// The bridge checks before admission and again when the worker completes. Supersession
@@ -1784,44 +1876,603 @@ impl SessionMachine {
         })
     }
 
-    fn prepare_commit(&mut self, req: u32, arrival: u64, terminal: bool,
-        plan: CommitPlan, delta: CommitDelta) -> Option<CommitEntry> {
-        if self.common.pending_commit.is_some() { return None; }
-        let Some(pending) = self.common.pending.get_mut(&req) else { return None };
-        if pending.key.epoch != self.common.epoch { return None; }
-        pending.last_arrival = Some(arrival);
-        let epoch = pending.key.epoch;
-        let fresh = plan.writes_durable && plan.credentials.is_some()
-            && plan.authority == plx_plex::plex::session::SaveAuthority::FreshReauthentication;
-        self.common.pending_commit = Some(PendingCommit { req, epoch, arrival, terminal,
-            writes_credentials: plan.writes_durable && plan.credentials.is_some(),
-            receipt: None, delta,
-            admitted_revision: None,
-            purpose: plan.writes_durable.then_some(plan.purpose),
-            fresh });
-        self.common.persistence_purpose = Some(plan.purpose);
-        Some(CommitEntry { req, epoch, arrival, plan })
+
+
+
+
+
+
+
+
+
+
+
+
+    #[cfg(test)] fn resume_stored(&mut self, emit: &mut impl FnMut(SessionFx)) -> bool { let mut effects = Vec::new(); let handled = self.transition(&SessionEvent::Command(Command::ResumeStored), 0, &mut effects); effects.into_iter().for_each(emit); handled }
+
+    /// Settle a durability verdict ONLY if it still describes the write this owner is waiting on.
+    ///
+    /// Fenced by request, epoch, arrival and revision together. A completion that fails the fence
+    /// is inert: it must not activate registry or profile, must not clear a newer error, and must
+    /// not release admission credit that belongs to a different operation. The owner keeps only
+    /// this logical identity; channels and receipts stay in the adapter.
+
+
+    #[cfg(test)] fn apply_commit_reply(&mut self, reply: CommitReply, emit: &mut impl FnMut(SessionFx)) -> bool { let mut effects = Vec::new(); let handled = self.transition(&SessionEvent::Commit(reply), 0, &mut effects); effects.into_iter().for_each(emit); handled }
+
+
+
+    /// The single site that publishes a profile and announces `SessionFx::Ready`. A fresh
+    /// handoff reaches it only once its write is released — durably confirmed, or its warning
+    /// acknowledged; a non-fresh (`Routine`) commit reaches it immediately, exactly as before.
+
+
+
+
+    /// The AUTH-03 acknowledgement door: clears the warning and, if a handoff is still held for
+    /// it, releases it — exactly ONE `SessionFx::Ready` for the flow, through
+    /// [`Self::release_held_handoff`], never a second one from here.
+
+
+
+
+
+    pub fn work_is_current(&self, req: u32, key: SessionWorkKey, admission: AdmissionId) -> bool {
+        key.epoch == self.common.epoch && self.common.pending.get(&req).is_some_and(|pending|
+            pending.key == key && self.state.owns_work(req, pending) && pending.capture.is_none()
+                && pending.admission == AdmissionState::Awaiting(admission)
+                && pending.expected.matches(&self.common.persisted))
     }
 
-    fn begin_commit(&mut self, req: u32, arrival: u64, terminal: bool,
-        plan: CommitPlan, delta: CommitDelta, emit: &mut impl FnMut(SessionFx)) -> bool {
-        let Some(entry) = self.prepare_commit(req, arrival, terminal, plan, delta) else { return false };
-        entry.emit(emit);
+
+
+
+
+    fn owns_receipt(&self, receipt: Receipt) -> bool {
+        self.common.inbox.iter().any(|record| Receipt::of(record) == receipt)
+            || self.common.pending_commit.as_ref().and_then(|commit| commit.receipt) == Some(receipt)
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    fn roster_plan(next: &PersistedSession, probes: &[super::SettledProbe], commit: RosterCommit)
+        -> Vec<RegistryPlan> {
+        let primary = next.sources.iter().position(|source| source.machine_id == next.server.machine_id);
+        let mut plans = vec![RegistryPlan::Install { sources: next.sources.clone(), primary, commit }];
+        plans.extend(probes.iter().cloned().map(RegistryPlan::Probe));
+        plans
+    }
+
+    /// A roster request ended without tiles. With cached tiles on screen nothing changes — they
+    /// are still the household, and offline switching reads them. With NONE, the picker says so
+    /// on its own route: `Phase::Profiles` with the reason in `error` and no tiles is the
+    /// read-out `screens/profiles.rs` draws, and [`SessionInit::roster_dead_end`] is what lets BACK leave
+    /// it. It used to be `fail_login`, i.e. `Phase::Error` — which the app routes to the SIGN-IN
+    /// screen ("Couldn't sign in", whose Try again starts a new QR sign-in) for a person who is
+    /// signed in, and whose BACK the Change-profile picker's root rule then refused (#132).
+
+
+    /// [`Self::fail_empty_home_roster`] for plex.tv's VERDICT: over nothing cached it is the dead
+    /// end itself, so it is also remembered for this identity and the account menu stops offering
+    /// the way in (`SessionInit::refuse_switch`). Over cached tiles it changes nothing, like any
+    /// other empty answer.
+
+
+
+
+    /// Start/restart is one owner decision. Check both counters before cancelling anything:
+    /// exhaustion must not detach the still-live operation or reuse its resource address.
+    #[cfg(test)] fn restart_login(&mut self, fresh_login: bool, emit: &mut impl FnMut(SessionFx)) -> bool { let mut effects = Vec::new(); let handled = self.transition(&SessionEvent::RestartLogin { fresh_login }, 0, &mut effects); effects.into_iter().for_each(emit); handled }
+
+    /// **The sign-in read-out's *Try again*.** Over an eligible server the person said *Not now*
+    /// to (or turned off), it is also how they are asked again — Settings, where a signed-in person
+    /// changes that answer, is out of reach before sign-in — so the answer is withdrawn (recorded
+    /// `Undecided`, through the same [`SessionFx::PlaintextAnswer`]) BEFORE the retry's work
+    /// captures the answers, and the retry that follows asks.
+
+
+    /// **The answer to "Connect without encryption?"** — recorded through
+    /// [`SessionFx::PlaintextAnswer`] first, so the work an *Allowed* starts captures it
+    /// (`plex::grant::PlaintextAsk`).
+    ///
+    /// On the sign-in read-out it must answer the server shown there: *Connect* retries the
+    /// discovery, *Not now* re-words the read-out (its primary becomes *Try again*, which
+    /// withdraws the answer and asks again — [`Self::retry`]) and starts nothing. Signed in (Home's or the Library's read-out, Settings), any server may be
+    /// answered; an *Allowed* re-finds `sid`'s endpoint, or the whole roster without one. Nothing
+    /// is recorded without an account to bind it to.
+    #[cfg(test)] fn answer_plaintext(&mut self, machine_id: &str, choice: plx_plex::plex::session::PlaintextChoice, sid: Option<plx_plex::plex::ServerId>, emit: &mut impl FnMut(SessionFx)) -> bool { let mut effects = Vec::new(); let handled = self.transition(&SessionEvent::Command(Command::AnswerPlaintext { machine_id: machine_id.into(), choice, sid }), 0, &mut effects); effects.into_iter().for_each(emit); handled }
+
+    /// End the flow on the error read-out. **Every ending names its incident**: `Some` is the
+    /// failure's own closed evidence and is raised here, so the read-out's Details and Send report
+    /// are about THIS failure; `None` is an ending the onboarding report does not cover, and it
+    /// retires whatever is held, which explains an earlier failure and not this one.
+
+
+    /// QR observations need no external commit. SignedIn and registry/profile facts go through
+    /// the separate resource commit protocol, rather than treating their side effects as reads.
+    #[cfg(test)] fn apply_qr_observation(&mut self, envelope: &SessionEnvelope, emit: &mut impl FnMut(SessionFx)) -> bool { let mut effects = Vec::new(); let handled = self.transition(&SessionEvent::ObserveQr(envelope.clone()), 0, &mut effects); effects.into_iter().for_each(emit); handled }
+
+    /// The checked allocator is independent from the full-width auth epoch. Exhaustion cannot
+    /// reuse an address, including when a cancelled worker still owns a Landing reservation.
+    #[cfg(any(test, feature = "test-support"))] fn allocate(&mut self, op: SessionOp, lifecycle: Option<ServerLifecycle>) -> Option<u32> { self.transition(&SessionEvent::ReserveWork { op, lifecycle }, 0, &mut Vec::new()).then_some(self.common.next_req) }
+
+    /// Admission to logical application, not a resource reservation. Landing owns the latter.
+    /// Merely inspecting an invalid envelope must not mutate pending state or its publication.
+    fn accepts_header(&self, envelope: &SessionEnvelope) -> bool {
+        if envelope.addr.to != MachineId::Session { return false; }
+        let Some(pending) = self.common.pending.get(&envelope.addr.req.0) else { return false; };
+        pending.key == envelope.key && pending.key.epoch == self.common.epoch
+            && self.state.owns_work(envelope.addr.req.0, pending)
+            && pending.capture.is_none()
+            && matches!(pending.admission, AdmissionState::Awaiting(id) | AdmissionState::Accepted(id) if id == envelope.admission)
+            && pending.last_arrival.is_none_or(|last| envelope.arrival > last)
+    }
+
+    fn accepts(&self, envelope: &SessionEnvelope) -> bool {
+        if !self.accepts_header(envelope) { return false; }
+        let pending = &self.common.pending[&envelope.addr.req.0];
+        match &envelope.outcome {
+                SessionArrival::Data(data) => data.matches_request(pending, envelope.terminal)
+                    && (!matches!(pending.key.op, SessionOp::Endpoint(_))
+                        || pending.lifecycle == envelope.lifecycle),
+                SessionArrival::Dropped | SessionArrival::Refused => envelope.terminal,
+        }
+    }
+
+    /// The frame step reports what the cache lacks. At most one refresh is out at a time; a backoff
+    /// holds the next one back on the frame clock; and the first transient observation of a cache
+    /// entry arms the backoff instead of reading, so a boot with the storage helper down retries
+    /// about a second later, as the in-line retry timer did, not on frame one.
+
+
+    /// A refresh ended. Only the request in flight can end it: a duplicate or stale answer is dropped.
+
+
+    /// Apply one addressed event, preserving the owner's effect order.
+fn transition(&mut self, ev: &SessionEvent, tick_ms: u32, fx: &mut Vec<SessionFx>) -> bool {
+        let mut publish = false;
+let mut pump = false;
+let mut restart = None;
+let mut restart_reply = None;
+let mut handled = match ev {
+SessionEvent::ConsumeLogicalDirty => 'take_logical_dirty: {
+ std::mem::take(&mut self.logical_dirty)
+},
+SessionEvent::RaiseIncident { flow, context } => { 'raise_incident: {
+let (flow, context,): (IncidentFlow, IncidentContext,) = (*flow, *context,);
+
+        let key = IncidentKey { flow, kind: context.kind, link: context.link };
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
+            // The same failure again. Unresolved (a second stalled report in one wait): keep the
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
+            if !is_settled(held) {
+                held.context = Some(context);
+            }
+            break 'raise_incident;
+        }
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
+            key,
+            context: Some(context),
+            readout_context: Some(context),
+            state: IncidentState::Pending,
+        });
+
+}; true },
+SessionEvent::ForgetIncidents => { 'forget_incidents: {
+
+        self.common.incident = None;
+        self.common.incidents_seen.clear();
+        { let event = AttemptEvent::LinkTrouble { present: false }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |_| {}); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |_| {}); true };
+
+}; true },
+#[cfg(any(test, feature = "test-support"))] SessionEvent::ReserveWork { op, lifecycle } => (('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (*op, *lifecycle); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) })).is_some(),
+#[cfg(test)] SessionEvent::RebuildPublication => { { publish = true; }; true },
+#[cfg(test)] SessionEvent::RestartLogin { fresh_login } => { restart = Some(if *fresh_login { LoginRestart::Fresh } else { LoginRestart::Retry }); true },
+#[cfg(test)] SessionEvent::ObserveQr(envelope) => 'apply_qr_observation: {
+let (envelope,): (&SessionEnvelope,) = (envelope,);
+
+        if !self.accepts(envelope)
+            || !matches!(envelope.key.op, SessionOp::Login | SessionOp::Rediscover) {
+            break 'apply_qr_observation false;
+        }
+        let req = envelope.addr.req.0;
+        if !self.common.pending[&req].expected.matches(&self.common.persisted) { break 'apply_qr_observation false; }
+        match &envelope.outcome {
+            SessionArrival::Refused | SessionArrival::Dropped => {
+                if !envelope.terminal { break 'apply_qr_observation false; }
+                let (message, class) = match (envelope.key.op, &envelope.outcome) {
+                    (SessionOp::Rediscover, SessionArrival::Refused) =>
+                        (plx_platform::i18n::msg::browse_auth_rediscover_failed(), InternalClass::WorkerRefused),
+                    (_, SessionArrival::Refused) => (plx_platform::i18n::msg::browse_auth_start_failed(), InternalClass::WorkerRefused),
+                    _ => (plx_platform::i18n::msg::browse_auth_finish_failed(), InternalClass::WorkerDropped),
+                };
+                'fail_login: {
+let (message, incident,): (&str, Option<IncidentContext>,) = (message, Some(IncidentContext::internal(class)),);
+
+        { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        self.common.persistence_warning = None;
+        self.common.held_handoff = None;
+        self.common.persistence_warning_answered = false;
+        // A token plex.tv refused is not an authorization in flight any more: without this, the
+        // retry decision (`retry_kind`) kept offering a discovery-only pass that presents the same
+        // refused token again, and Try again could never recover. Dropping it makes the retry a
+        // new QR sign-in; the incident below is raised exactly as before, so its dedup holds.
+        match incident {
+            Some(context) => 'raise_incident: {
+let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, context,);
+
+        let key = IncidentKey { flow, kind: context.kind, link: context.link };
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
+            // The same failure again. Unresolved (a second stalled report in one wait): keep the
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
+            if !is_settled(held) {
+                held.context = Some(context);
+            }
+            break 'raise_incident;
+        }
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
+            key,
+            context: Some(context),
+            readout_context: Some(context),
+            state: IncidentState::Pending,
+        });
+
+},
+            None => self.common.incident = None,
+        }
+
+};
+            }
+            SessionArrival::Data(data) => {
+                let super::observation::Observation::Login(progress) = &**data else { break 'apply_qr_observation false };
+                use super::LoginProgress;
+                let (epoch, terminal) = match progress {
+                    LoginProgress::CodeReplacing { epoch }
+                    | LoginProgress::CodeReady { epoch, .. }
+                    | LoginProgress::Authorized { epoch, .. }
+                    | LoginProgress::DiscoveryTrouble { epoch, .. }
+                    | LoginProgress::DiscoveryRetrySettled { epoch, .. }
+                    | LoginProgress::LinkTrouble { epoch, .. } => (*epoch, false),
+                    LoginProgress::Failed { epoch, .. } => (*epoch, true),
+                    LoginProgress::SignedIn { .. } => break 'apply_qr_observation false,
+                };
+                if epoch != envelope.key.epoch || terminal != envelope.terminal { break 'apply_qr_observation false; }
+                match progress {
+                    LoginProgress::CodeReplacing { .. } => {
+                        if envelope.key.op != SessionOp::Login || !matches!(self.state.phase(), Phase::Creating | Phase::Waiting) { break 'apply_qr_observation false; }
+                        { let event = AttemptEvent::CodeReplacing; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                    }
+                    LoginProgress::CodeReady { code, qr_png, .. } => {
+                        if envelope.key.op != SessionOp::Login { break 'apply_qr_observation false; }
+                        let Some(next) = self.common.next_qr.checked_add(1) else {
+                            'fail_login: {
+let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_start_failed(), Some(IncidentContext::internal(InternalClass::Exhausted)),);
+
+        { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        self.common.persistence_warning = None;
+        self.common.held_handoff = None;
+        self.common.persistence_warning_answered = false;
+        // A token plex.tv refused is not an authorization in flight any more: without this, the
+        // retry decision (`retry_kind`) kept offering a discovery-only pass that presents the same
+        // refused token again, and Try again could never recover. Dropping it makes the retry a
+        // new QR sign-in; the incident below is raised exactly as before, so its dedup holds.
+        match incident {
+            Some(context) => 'raise_incident: {
+let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, context,);
+
+        let key = IncidentKey { flow, kind: context.kind, link: context.link };
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
+            // The same failure again. Unresolved (a second stalled report in one wait): keep the
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
+            if !is_settled(held) {
+                held.context = Some(context);
+            }
+            break 'raise_incident;
+        }
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
+            key,
+            context: Some(context),
+            readout_context: Some(context),
+            state: IncidentState::Pending,
+        });
+
+},
+            None => self.common.incident = None,
+        }
+
+};
+                            self.common.pending.remove(&req);
+                            fx.push(SessionFx::Cancel { requests: vec![req], epoch: self.common.epoch });
+                            fx.push(SessionFx::Retire { req });
+                            { publish = true; };
+                            break 'apply_qr_observation true;
+                        };
+                        self.common.next_qr = next;
+                        { let event = AttemptEvent::CodeReady {
+                            generation: next, code: code.clone(), png: qr_png.clone(),
+                        }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                    }
+                    LoginProgress::Authorized { token, .. } => {
+                        if envelope.key.op != SessionOp::Login { break 'apply_qr_observation false; }
+                        // A sign-in that is not a sign-out (a stored session that could not be
+                        // activated, *Use another account*, the dev login trigger) starts from the
+                        // stored record. Whoever that record seated, its roster and its offline
+                        // profile cache belong to the authorization this token replaces, so none of
+                        // them may ride into the new account: `SignedIn` writes the roster and
+                        // `Session::account` names a single-user account from it; a Home account
+                        // seats through the picker. Reset BEFORE `expected` is recomputed below.
+                        // The new token cannot say whose cache this is (every sign-in mints one),
+                        // so the cache is emptied while the identity is unknown and `SignedIn`
+                        // restores the STORED record's when its roster names the same owner.
+                        self.common.persisted.user = UserRef::default();
+                        self.common.persisted.home_users.clear();
+                        self.common.persisted.profiles.clear();
+                        self.common.persisted.account_token = token.clone();
+                        { let event = AttemptEvent::Authorized; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                        self.common.pending.get_mut(&req).unwrap().expected = Identity::of(&self.common.persisted);
+                    }
+                    LoginProgress::DiscoveryTrouble { progress, .. } => {
+                        if !matches!(envelope.key.op, SessionOp::Login | SessionOp::Rediscover) {
+                            break 'apply_qr_observation false;
+                        }
+                        { let event = AttemptEvent::DiscoveryTrouble { progress: *progress }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                    }
+                    LoginProgress::DiscoveryRetrySettled { run, .. } => {
+                        if !matches!(envelope.key.op, SessionOp::Login | SessionOp::Rediscover) {
+                            break 'apply_qr_observation false;
+                        }
+                        { let event = AttemptEvent::DiscoverySettled { run: *run }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                    }
+                    LoginProgress::LinkTrouble { trouble, .. } => {
+                        if envelope.key.op != SessionOp::Login { break 'apply_qr_observation false; }
+                        { let event = AttemptEvent::LinkTrouble {
+                            present: trouble.is_some(),
+                        }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                        if let Some(context) = trouble {
+                            'raise_incident: {
+let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, *context,);
+
+        let key = IncidentKey { flow, kind: context.kind, link: context.link };
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
+            // The same failure again. Unresolved (a second stalled report in one wait): keep the
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
+            if !is_settled(held) {
+                held.context = Some(context);
+            }
+            break 'raise_incident;
+        }
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
+            key,
+            context: Some(context),
+            readout_context: Some(context),
+            state: IncidentState::Pending,
+        });
+
+};
+                        }
+                    }
+                    LoginProgress::Failed { message, incident, plaintext, account, .. } => {
+                        'fail_login: {
+let (message, incident,): (&str, Option<IncidentContext>,) = (message, Some(*incident),);
+
+        { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        self.common.persistence_warning = None;
+        self.common.held_handoff = None;
+        self.common.persistence_warning_answered = false;
+        // A token plex.tv refused is not an authorization in flight any more: without this, the
+        // retry decision (`retry_kind`) kept offering a discovery-only pass that presents the same
+        // refused token again, and Try again could never recover. Dropping it makes the retry a
+        // new QR sign-in; the incident below is raised exactly as before, so its dedup holds.
+        match incident {
+            Some(context) => 'raise_incident: {
+let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, context,);
+
+        let key = IncidentKey { flow, kind: context.kind, link: context.link };
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
+            // The same failure again. Unresolved (a second stalled report in one wait): keep the
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
+            if !is_settled(held) {
+                held.context = Some(context);
+            }
+            break 'raise_incident;
+        }
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
+            key,
+            context: Some(context),
+            readout_context: Some(context),
+            state: IncidentState::Pending,
+        });
+
+},
+            None => self.common.incident = None,
+        }
+
+};
+                        { let event = AttemptEvent::DiscoveryFailed { plaintext: plaintext.clone(), account: account.clone() }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                    }
+                    LoginProgress::SignedIn { .. } => unreachable!(),
+                }
+            }
+        }
+        if envelope.terminal {
+            self.common.pending.remove(&req);
+        } else {
+            self.common.pending.get_mut(&req).unwrap().last_arrival = Some(envelope.arrival);
+        }
+        { publish = true; };
         true
-    }
 
-    fn take_ready(&mut self, emit: &mut impl FnMut(SessionFx)) -> bool {
+},
+#[cfg(test)] SessionEvent::FailLogin { message, incident } => { 'fail_login: {
+let (message, incident,): (&str, Option<IncidentContext>,) = (message, *incident,);
+
+        { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        self.common.persistence_warning = None;
+        self.common.held_handoff = None;
+        self.common.persistence_warning_answered = false;
+        // A token plex.tv refused is not an authorization in flight any more: without this, the
+        // retry decision (`retry_kind`) kept offering a discovery-only pass that presents the same
+        // refused token again, and Try again could never recover. Dropping it makes the retry a
+        // new QR sign-in; the incident below is raised exactly as before, so its dedup holds.
+        match incident {
+            Some(context) => 'raise_incident: {
+let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, context,);
+
+        let key = IncidentKey { flow, kind: context.kind, link: context.link };
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
+            // The same failure again. Unresolved (a second stalled report in one wait): keep the
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
+            if !is_settled(held) {
+                held.context = Some(context);
+            }
+            break 'raise_incident;
+        }
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
+            key,
+            context: Some(context),
+            readout_context: Some(context),
+            state: IncidentState::Pending,
+        });
+
+},
+            None => self.common.incident = None,
+        }
+
+}; true },
+
+            SessionEvent::Command(Command::ActivateDevBootstrap) => 'activate_dev: {
+
+        if self.state.phase() != Phase::Idle || self.common.pending_commit.is_some()
+            || self.state.pending_erase().is_some() { break 'activate_dev false; }
+        let BootstrapAuthority::DevPms { primary, extras } = &self.common.authority else { break 'activate_dev false };
+        let registry = vec![RegistryPlan::DevInstall { primary: primary.clone(), extras: extras.clone(),
+            client_id: self.common.persisted.client_id.clone() }];
+        let Some(req) = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::DevBoundary, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }) else { break 'activate_dev false };
+        { let event = AttemptEvent::BeginDevActivation { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        ('begin_commit: {
+let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitDelta,) = (req, 0, true, CommitPlan { registry_client_id: self.common.persisted.client_id.clone(),
+            expected_disk: self.common.disk_identity.clone(),
+            credentials: None, lifecycle: None, registry,
+            purpose: PersistencePurpose::Background, writes_durable: false,
+            authority: plx_plex::plex::session::SaveAuthority::Routine }, CommitDelta {
+                dev: Some(DevCommitDelta::Activated), ..Default::default()
+            },);
+
+        let Some(entry) = ('commit: { let (req, arrival, terminal, plan, delta): (u32, u64, bool, CommitPlan, CommitDelta) = (req, arrival, terminal, plan, delta); let Some(CommitPreparation { pending, entry }) = self.plan_commit(req, arrival, terminal, plan, delta) else { break 'commit None }; self.common.pending.get_mut(&req).unwrap().last_arrival = Some(arrival); self.common.pending_commit = Some(pending); self.common.persistence_purpose = Some(entry.plan.purpose); Some(entry) }) else { break 'begin_commit false };
+        entry.emit(&mut |effect| fx.push(effect));
+        true
+
+})
+
+},
+            SessionEvent::Command(Command::ResumeStored) => 'resume_stored: {
+
+        if !matches!(self.common.authority, BootstrapAuthority::Account { .. }) { break 'resume_stored false; }
+        if self.state.phase() != Phase::Idle || !self.common.persisted.can_go_local()
+            || self.common.pending_commit.is_some() { break 'resume_stored false; }
+        let Some(req) = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::Ready, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }) else { break 'resume_stored false };
+        let plan = CommitPlan { registry_client_id: self.common.persisted.client_id.clone(),
+            expected_disk: self.common.disk_identity.clone(),
+            credentials: None, lifecycle: None,
+            registry: vec![RegistryPlan::Install { sources: self.common.persisted.sources.clone(),
+                primary: None, commit: RosterCommit::Merge }],
+            purpose: PersistencePurpose::Background, writes_durable: false,
+            authority: plx_plex::plex::session::SaveAuthority::Routine };
+        { let event = AttemptEvent::BeginStoredRestore { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        ('begin_commit: {
+let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitDelta,) = (req, 0, true, plan, CommitDelta {
+            destination: CommitDestination::StoredReady,
+            phase: Some(Phase::Ready), activate_profile: true, ready: Some(false),
+            ..Default::default()
+        },);
+
+        let Some(entry) = ('commit: { let (req, arrival, terminal, plan, delta): (u32, u64, bool, CommitPlan, CommitDelta) = (req, arrival, terminal, plan, delta); let Some(CommitPreparation { pending, entry }) = self.plan_commit(req, arrival, terminal, plan, delta) else { break 'commit None }; self.common.pending.get_mut(&req).unwrap().last_arrival = Some(arrival); self.common.pending_commit = Some(pending); self.common.persistence_purpose = Some(entry.plan.purpose); Some(entry) }) else { break 'begin_commit false };
+        entry.emit(&mut |effect| fx.push(effect));
+        true
+
+})
+
+},
+            SessionEvent::Command(Command::StartLogin) => { restart = Some(if true { LoginRestart::Fresh } else { LoginRestart::Retry }); true },
+            SessionEvent::Command(Command::Retry) => 'retry: {
+
+        use plx_plex::plex::session::PlaintextChoice;
+        if self.state.phase() == Phase::Error {
+            let account = plx_plex::plex::grant::account_key(&self.common.persisted.account_token);
+            let answered = self.state.plaintext().filter(|v| v.offers()
+                && matches!(v.choice, PlaintextChoice::Declined | PlaintextChoice::Revoked));
+            if let (Some(v), false) = (answered, account.is_empty()) {
+                fx.push(SessionFx::PlaintextAnswer {
+                    machine_id: v.machine_id.clone(), choice: PlaintextChoice::Undecided, account,
+                });
+            }
+        }
+        { restart = Some(if false { LoginRestart::Fresh } else { LoginRestart::Retry }); true }
+
+},
+            SessionEvent::Command(Command::TakeReady) => 'take_ready: {
+
         if self.state
             .phase() != Phase::Ready || !self.state
             .handoff_pending()
-            || self.common.pending_commit.is_some() { return false; }
+            || self.common.pending_commit.is_some() { break 'take_ready false; }
         // A discovery failure left a warning unacknowledged: the final fresh write must not run
         // over it (AUTH-03) — acknowledging is what re-admits `needs_ready_commit`.
-        if self.common.persistence_warning.is_some() { return false; }
-        let Some(req) = self.allocate(SessionOp::Ready, None) else {
-            self.transition(TransitionInput::Attempt(AttemptEvent::ReadyExhausted), 0, emit);
-            self.replace_publication();
-            return true;
+        if self.common.persistence_warning.is_some() { break 'take_ready false; }
+        let Some(req) = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::Ready, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }) else {
+            { let event = AttemptEvent::ReadyExhausted; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+            { publish = true; };
+            break 'take_ready true;
         };
         let mut next = self.common.persisted.clone();
         super::remember_unprotected_active(&mut next);
@@ -1829,7 +2480,7 @@ impl SessionMachine {
         // Consumed exactly once: a discovery/rediscovery retry only PEEKS this flag
         // (`apply_resource_observation`), so it cannot spend the authority the final write needs.
         let fresh = self.state.fresh_authority();
-        self.transition(TransitionInput::Attempt(AttemptEvent::BeginReadyCommit { req }), 0, emit);
+        { let event = AttemptEvent::BeginReadyCommit { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
         let authority = if fresh {
             plx_plex::plex::session::SaveAuthority::FreshReauthentication
         } else { plx_plex::plex::session::SaveAuthority::Routine };
@@ -1838,156 +2489,708 @@ impl SessionMachine {
             credentials: Some(patch.clone()), lifecycle: None,
             registry: vec![RegistryPlan::Install { sources: next.sources.clone(), primary: None, commit: RosterCommit::Merge }],
             purpose: PersistencePurpose::Final, writes_durable: true, authority };
-        self.begin_commit(req, 0, true, plan, CommitDelta {
+        ('begin_commit: {
+let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitDelta,) = (req, 0, true, plan, CommitDelta {
             destination: CommitDestination::ReadyCommitted,
             credentials: Some(patch), activate_profile: true, ready: Some(false),
             ..Default::default()
-        }, emit)
-    }
+        },);
 
-    fn activate_dev(&mut self, emit: &mut impl FnMut(SessionFx)) -> bool {
-        if self.state.phase() != Phase::Idle || self.common.pending_commit.is_some()
-            || self.state.pending_erase().is_some() { return false; }
-        let BootstrapAuthority::DevPms { primary, extras } = &self.common.authority else { return false };
-        let registry = vec![RegistryPlan::DevInstall { primary: primary.clone(), extras: extras.clone(),
-            client_id: self.common.persisted.client_id.clone() }];
-        let Some(req) = self.allocate(SessionOp::DevBoundary, None) else { return false };
-        self.transition(TransitionInput::Attempt(AttemptEvent::BeginDevActivation { req }), 0, emit);
-        self.begin_commit(req, 0, true, CommitPlan { registry_client_id: self.common.persisted.client_id.clone(),
-            expected_disk: self.common.disk_identity.clone(),
-            credentials: None, lifecycle: None, registry,
-            purpose: PersistencePurpose::Background, writes_durable: false,
-            authority: plx_plex::plex::session::SaveAuthority::Routine }, CommitDelta {
-                dev: Some(DevCommitDelta::Activated), ..Default::default()
-            }, emit)
-    }
-
-    fn begin_dev_account(&mut self, emit: &mut impl FnMut(SessionFx)) -> bool {
-        if self.state .pending_erase().is_some() || self.common.epoch.checked_add(1).is_none()
-            || self.common.next_req.checked_add(2).is_none()
-            || self.common.pending_commit.as_ref().is_some_and(|c|
-                matches!(c.delta.dev, Some(DevCommitDelta::StartAccount { .. }))) { return false; }
-        self.advance_epoch(emit).expect("dev login epoch preflight");
-        self.publish_profile(None, emit);
-        let req = self.allocate(SessionOp::DevBoundary, None).expect("two-slot preflight");
-        let login_req = self.allocate(SessionOp::Login, None).expect("two-slot preflight");
-        self.transition(TransitionInput::Attempt(AttemptEvent::BeginDevAccount { boundary_req: req, login_req }), 0, emit);
-        self.begin_commit(req, 0, true, CommitPlan { registry_client_id: self.common.persisted.client_id.clone(),
-            expected_disk: self.common.disk_identity.clone(),
-            credentials: None, lifecycle: None, registry: vec![RegistryPlan::Revoke],
-            purpose: PersistencePurpose::Background, writes_durable: false,
-            authority: plx_plex::plex::session::SaveAuthority::Routine }, CommitDelta {
-                dev: Some(DevCommitDelta::StartAccount { login_req }), ..Default::default()
-            }, emit);
-        self.replace_publication();
+        let Some(entry) = ('commit: { let (req, arrival, terminal, plan, delta): (u32, u64, bool, CommitPlan, CommitDelta) = (req, arrival, terminal, plan, delta); let Some(CommitPreparation { pending, entry }) = self.plan_commit(req, arrival, terminal, plan, delta) else { break 'commit None }; self.common.pending.get_mut(&req).unwrap().last_arrival = Some(arrival); self.common.pending_commit = Some(pending); self.common.persistence_purpose = Some(entry.plan.purpose); Some(entry) }) else { break 'begin_commit false };
+        entry.emit(&mut |effect| fx.push(effect));
         true
-    }
 
-    fn start_reserved_login(&mut self, req: u32, emit: &mut impl FnMut(SessionFx)) {
-        let entry = EntryFx::login(self.view(), req, false, false);
-        let pending = self.common.pending.get_mut(&req).expect("reserved login");
-        match entry.work() {
-            EntryWork::Capture { .. } => pending.capture = Some(CaptureIntent::Login),
-            EntryWork::Work { admission, .. } => pending.admission = AdmissionState::Awaiting(*admission),
+})
+
+},
+            SessionEvent::Command(Command::AcknowledgePersistenceWarning { key }) =>
+                'acknowledge_persistence_warning: {
+let (key,): (PersistenceWarningKey,) = (*key,);
+
+        if self.common.persistence_warning.map(|warning| warning.key) != Some(key) { break 'acknowledge_persistence_warning false; }
+        self.common.persistence_warning = None;
+        'retire_save_incident: {
+
+        if self.common.incident.as_ref().is_some_and(|offer|
+            offer.key.kind == plx_telemetry::telemetry::incident::IncidentKind::SaveFailed) {
+            self.common.incident = None;
         }
-        entry.emit(emit);
-    }
 
-    fn resume_stored(&mut self, emit: &mut impl FnMut(SessionFx)) -> bool {
-        if !matches!(self.common.authority, BootstrapAuthority::Account { .. }) { return false; }
-        if self.state.phase() != Phase::Idle || !self.common.persisted.can_go_local()
-            || self.common.pending_commit.is_some() { return false; }
-        let Some(req) = self.allocate(SessionOp::Ready, None) else { return false };
-        let plan = CommitPlan { registry_client_id: self.common.persisted.client_id.clone(),
-            expected_disk: self.common.disk_identity.clone(),
-            credentials: None, lifecycle: None,
-            registry: vec![RegistryPlan::Install { sources: self.common.persisted.sources.clone(),
-                primary: None, commit: RosterCommit::Merge }],
-            purpose: PersistencePurpose::Background, writes_durable: false,
-            authority: plx_plex::plex::session::SaveAuthority::Routine };
-        self.transition(TransitionInput::Attempt(AttemptEvent::BeginStoredRestore { req }), 0, emit);
-        self.begin_commit(req, 0, true, plan, CommitDelta {
-            destination: CommitDestination::StoredReady,
-            phase: Some(Phase::Ready), activate_profile: true, ready: Some(false),
-            ..Default::default()
-        }, emit)
-    }
+};
+        // This authorization's unsaved-login question is answered now: storage may never gate
+        // entry a second time for it (AUTH-03's field bug). A later failure — Discovery then
+        // Final, or a retry — releases the handoff itself instead of asking again.
+        self.common.persistence_warning_answered = true;
+        if self.common.held_handoff.is_some() {
+            'release_held_handoff: {
 
-    /// Settle a durability verdict ONLY if it still describes the write this owner is waiting on.
-    ///
-    /// Fenced by request, epoch, arrival and revision together. A completion that fails the fence
-    /// is inert: it must not activate registry or profile, must not clear a newer error, and must
-    /// not release admission credit that belongs to a different operation. The owner keeps only
-    /// this logical identity; channels and receipts stay in the adapter.
-    fn apply_persistence_completion(
-        &mut self,
-        completion: plx_plex::plex::session::async_persistence::PersistenceCompletion,
-        emit: &mut impl FnMut(SessionFx),
-    ) -> bool {
-        use plx_plex::plex::session::async_persistence::CompletionOutcome;
-        let Some(admitted) = self.common.admitted_persistence else { return false };
-        let correlation = plx_plex::plex::session::async_persistence::PersistenceCorrelation {
-            req: admitted.req, epoch: admitted.epoch, arrival: admitted.arrival,
+        self.common.held_handoff = None;
+        'publish_profile: {
+let (profile,): (Option<UserRef>,) = (Some(self.common.persisted.user.clone()),);
+
+        // This is the sole scope allocator. Resource publication will store this explicit value
+        // rather than independently incrementing another generation.
+        self.common.profile_scope.0 = self.common.profile_scope.0.wrapping_add(1);
+        self.common.active_profile = profile;
+        fx.push(SessionFx::PublishProfile(ProfilePublication {
+            epoch: self.common.epoch, profile: self.common.active_profile.clone(), scope: self.common.profile_scope,
+            stamp: plx_plex::plex::grant::account_key(&self.common.persisted.account_token),
+        }));
+
+};
+        if self.state.phase() == Phase::Ready {
+            EntryFx::Ready { announcement: Some(ReadyEntry { epoch: self.common.epoch, scope: self.common.profile_scope,
+                server: self.common.persisted.server.clone(), token: self.common.persisted.pms_token().into(),
+                install: ReadyInstall::PrimaryAndExtras(match &self.common.authority {
+                    BootstrapAuthority::Account { extras } => extras.clone(),
+                    BootstrapAuthority::DevPms { .. } => Vec::new(),
+                }) }) }.emit(&mut |effect| fx.push(effect));
+        }
+
+};
+        }
+        { publish = true; };
+        true
+
+},
+            SessionEvent::Command(command @ (Command::ResolveIncident { .. }
+                | Command::ReportIncident { .. } | Command::DeclineIncident { .. })) => {
+                let handled = 'step_incident_command: {
+let (command,): (&Command,) = (command,);
+
+        match command {
+            Command::ResolveIncident { id, permission, revision } => {
+                ('resolve_incident: {
+let (id, permission, revision,): (u32, Permission, u32,) = (*id, *permission, *revision,);
+
+        let seen = &self.common.incidents_seen;
+        let Some(held) = self.common.incident.as_mut().filter(|held| held.id == id) else { break 'resolve_incident false };
+        match held.state {
+            IncidentState::Pending => {}
+            IncidentState::Offered { revision: at } | IncidentState::OnRequest { revision: at }
+                if at != revision => {}
+            IncidentState::Offered { .. } | IncidentState::OnRequest { .. } | IncidentState::AutoSending
+                | IncidentState::Sending | IncidentState::Queued { .. } | IncidentState::Saved { .. }
+                | IncidentState::Delivered { .. } | IncidentState::Failed | IncidentState::NotNow | IncidentState::Dropped => break 'resolve_incident false,
+        }
+        let key = held.key;
+        // Offered behind Details only: a kind the alert never covers, a key this launch has
+        // already asked about (the raise that brought it back is Pending over a seen key), and
+        // an offer already resolved that way — a later decision may drop it, never escalate it.
+        let quiet = !key.kind.alert_eligible()
+            || matches!(held.state, IncidentState::OnRequest { .. })
+            || (held.state == IncidentState::Pending && seen.contains(&key));
+        match permission {
+            Permission::Declined => {
+                held.state = IncidentState::Dropped;
+                held.context = None;
+            }
+            Permission::Granted | Permission::NotDetermined if quiet => {
+                held.state = IncidentState::OnRequest { revision };
+            }
+            Permission::Granted if key.kind.standing_eligible() => {
+                let Some(context) = held.context else { break 'resolve_incident false };
+                held.state = IncidentState::AutoSending;
+                fx.push(SessionFx::Incident { id, lane: IncidentLane::Standing, report: IncidentReport::Retained(context) });
+            }
+            Permission::Granted | Permission::NotDetermined => {
+                held.state = IncidentState::Offered { revision };
+            }
+        }
+        'remember_seen: {
+let (key,): (IncidentKey,) = (key,);
+
+        if self.common.incidents_seen.contains(&key) {
+            break 'remember_seen;
+        }
+        if self.common.incidents_seen.len() >= SEEN_CAP {
+            self.common.incidents_seen.remove(0);
+        }
+        self.common.incidents_seen.push(key);
+
+};
+        true
+
+})
+            }
+            Command::ReportIncident { id } => 'report_incident: {
+let (id,): (u32,) = (*id,);
+
+        let Some(held) = self.common.incident.as_mut().filter(|held| held.id == id && held.sendable()) else {
+            break 'report_incident false;
         };
-        if !completion.acts_on(correlation, admitted.revision) { return false; }
-        // A verdict the worker resolved for a DIFFERENT purpose than the one admitted is not this
-        // operation's verdict either.
-        if admitted.purpose.is_some_and(|purpose| purpose != completion.purpose) { return false; }
-        let durable = matches!(completion.outcome, CompletionOutcome::Durable(_));
-        self.common.admitted_persistence = None;
-        let prior = self.common.unconfirmed_fresh_prior.take();
-        if let (Some(prior), CompletionOutcome::Failed(_)) = (prior, &completion.outcome) {
-            if admitted.fresh { self.common.disk_identity = prior; }
+        let report = match held.context {
+            Some(context) => IncidentReport::Retained(context),
+            None => {
+                self.common.persistence_warning
+                    .filter(|_| held.key.kind == IncidentKind::SaveFailed)
+                    .and_then(|warning| warning.incident_context())
+                    .map(IncidentReport::Retained)
+                    .unwrap_or(IncidentReport::AtPress(held.key))
+            },
+        };
+        let key = held.key;
+        held.state = IncidentState::Sending;
+        fx.push(SessionFx::Incident { id, lane: IncidentLane::OneOff, report });
+        'remember_seen: {
+let (key,): (IncidentKey,) = (key,);
+
+        if self.common.incidents_seen.contains(&key) {
+            break 'remember_seen;
         }
-        self.common.commit_phase.durable = durable;
-        self.common.commit_phase.proves_saved_login =
-            durable && completion.purpose.proves_saved_login();
-        let correlation_key = PersistenceWarningKey { epoch: completion.epoch, req: completion.req };
-        if durable {
-            // 0.6.6 parity: a later FRESH write landing durably supersedes any warning still
-            // showing about an earlier fresh attempt — the failure it was reporting on no longer
-            // describes the session's current state, so holding it would strand an acknowledgement
-            // over a problem that already resolved itself.
-            let superseded = admitted.fresh && self.common.persistence_warning.is_some();
-            if superseded {
-                self.common.persistence_warning = None;
-                self.retire_save_incident();
+        if self.common.incidents_seen.len() >= SEEN_CAP {
+            self.common.incidents_seen.remove(0);
+        }
+        self.common.incidents_seen.push(key);
+
+};
+        true
+
+},
+            Command::DeclineIncident { id } => 'decline_incident: {
+let (id,): (u32,) = (*id,);
+
+        let Some(held) = self.common.incident.as_mut().filter(|held| held.id == id) else { break 'decline_incident false };
+        if !matches!(held.state, IncidentState::Offered { .. }) {
+            break 'decline_incident false;
+        }
+        held.state = IncidentState::NotNow;
+        true
+
+},
+            Command::ActivateDevBootstrap | Command::ResumeStored | Command::StartLogin | Command::Retry
+                | Command::RestartWait { .. } | Command::StartSwitch(_) | Command::SelectProfile { .. }
+                | Command::SelectProfileWithReply { .. } | Command::DismissPinError | Command::BackAtRoot { .. }
+                | Command::SignOut | Command::EraseLocal | Command::NoteDeleteLeftovers(_) | Command::RefreshRoster
+                | Command::RequestEndpoint { .. } | Command::TakeReady | Command::AcknowledgePersistenceWarning { .. }
+                | Command::AnswerPlaintext { .. } => false,
+        }
+
+};
+                if handled { { publish = true; }; }
+                handled
             }
-            // Release only the handoff THIS completion is for — a routine completion arriving
-            // while an unrelated fresh handoff is held must not free it.
-            let released = self.common.held_handoff == Some(HeldHandoff { epoch: completion.epoch, req: completion.req });
-            if released { self.release_held_handoff(emit); }
-            if superseded || released { self.replace_publication(); }
-        } else if admitted.fresh {
-            if self.common.persistence_warning_answered {
-                // This authorization already had its one unsaved-login question answered
-                // (AUTH-03's field bug: a device unwritable on BOTH Discovery and Final used to
-                // ask it twice). Storage failing again must not ask it a second time — release
-                // whatever handoff this completion was holding so entry proceeds regardless.
-                let released = self.common.held_handoff == Some(HeldHandoff { epoch: completion.epoch, req: completion.req });
-                if released { self.release_held_handoff(emit); self.replace_publication(); }
-            } else {
-                // The final write's own non-durable completion replaces a Discovery warning still
-                // showing (`Discovery` and `Final` never coexist: an unacknowledged Discovery warning
-                // blocks `take_ready`), so the newer one wins by direct overwrite.
-                let warning = PersistenceWarning::from_outcome(correlation_key, admitted.site, &completion.outcome);
-                self.retire_save_incident();
-                self.common.persistence_warning = Some(warning);
-                if warning.helper.is_some() {
-                    // The reducer reads no clock. Both report paths use this fenced completion's
-                    // local warning evidence, not later process-global diagnostics.
-                    if let Some(context) = warning.incident_context() {
-                        self.raise_incident(IncidentFlow::SignIn, context);
-                    }
-                }
-                self.replace_publication();
+            SessionEvent::Command(Command::StartSwitch(picker)) => 'start_switch: {
+let (picker,): (Picker,) = (*picker,);
+
+        if matches!(self.common.authority, BootstrapAuthority::DevPms { .. }) {
+            // A dev-token session has no account behind it to list a roster with. The account
+            // menu still offers *Change profile* (it reads the on-disk sign-in), and the app has
+            // already routed to the picker by the time this runs — so refusing SILENTLY left that
+            // route with nothing behind it: a spinner that never ends and a BACK that could not
+            // leave (#132, TV session 8). Say so on the picker instead; `back` returns.
+            // `picker` is deliberately not recorded: nothing is detached here, so there is no
+            // picker-kind rule for `back` to apply, and BACK restores this session state exactly.
+            if self.state.phase() != Phase::Ready || self.state.pending_erase().is_some() { break 'start_switch false; }
+            let _ = picker;
+            { let event = AttemptEvent::OpenDevPicker; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+            self.common.switch_refused_for = Some(Identity::of(&self.common.persisted));
+            { publish = true; };
+            break 'start_switch true;
+        }
+        if self.state.pending_erase().is_some() { break 'start_switch false; }
+        if ('advance_epoch: {
+
+        let exit = match ExitFx::epoch(self.view()) { Some(value) => value, None => break 'advance_epoch None };
+        let epoch = exit.epoch_number();
+        self.common.inbox.clear();
+        self.common.pending_commit = None;
+        self.common.pending.clear();
+        self.common.epoch = epoch;
+        { let event = AttemptEvent::EpochAdvanced; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        // Keep pump_pending: a marker may still be carried outside the owner.
+        exit.emit(&mut |effect| fx.push(effect));
+        Some(epoch)
+
+}).is_none() { break 'start_switch false; }
+        if self.common.persisted.account_token.is_empty() {
+            'fail_login: {
+let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_signed_out(), None,);
+
+        { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        self.common.persistence_warning = None;
+        self.common.held_handoff = None;
+        self.common.persistence_warning_answered = false;
+        // A token plex.tv refused is not an authorization in flight any more: without this, the
+        // retry decision (`retry_kind`) kept offering a discovery-only pass that presents the same
+        // refused token again, and Try again could never recover. Dropping it makes the retry a
+        // new QR sign-in; the incident below is raised exactly as before, so its dedup holds.
+        match incident {
+            Some(context) => 'raise_incident: {
+let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, context,);
+
+        let key = IncidentKey { flow, kind: context.kind, link: context.link };
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
+            // The same failure again. Unresolved (a second stalled report in one wait): keep the
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
+            if !is_settled(held) {
+                held.context = Some(context);
             }
+            break 'raise_incident;
+        }
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
+            key,
+            context: Some(context),
+            readout_context: Some(context),
+            state: IncidentState::Pending,
+        });
+
+},
+            None => self.common.incident = None,
+        }
+
+};
+            { publish = true; };
+            break 'start_switch true;
+        }
+        if super::detaches_active_profile(picker) { 'publish_profile: {
+let (profile,): (Option<UserRef>,) = (None,);
+
+        // This is the sole scope allocator. Resource publication will store this explicit value
+        // rather than independently incrementing another generation.
+        self.common.profile_scope.0 = self.common.profile_scope.0.wrapping_add(1);
+        self.common.active_profile = profile;
+        fx.push(SessionFx::PublishProfile(ProfilePublication {
+            epoch: self.common.epoch, profile: self.common.active_profile.clone(), scope: self.common.profile_scope,
+            stamp: plx_plex::plex::grant::account_key(&self.common.persisted.account_token),
+        }));
+
+}; }
+        { let event = AttemptEvent::OpenPicker { kind: picker, fallback: if self.state.picker_data().users.is_empty() { self.common.persisted.home_users.iter().map(UserTile::of_ref).collect() } else { Vec::new() } }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        let mut initial = None;
+        if let Some(req) = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::Picker, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }) {
+            let initial_profile = picker == Picker::Boot && self.common.active_profile.is_none()
+                && self.common.persisted.can_go_local();
+            let mut registry = Vec::new();
+            if initial_profile {
+                registry.push(RegistryPlan::Primary { server: self.common.persisted.server.clone(),
+                    token: self.common.persisted.pms_token().into() });
+            }
+            registry.push(RegistryPlan::Install {
+                sources: self.common.persisted.sources.clone(), primary: None, commit: RosterCommit::Merge,
+            });
+            let plan = CommitPlan { registry_client_id: self.common.persisted.client_id.clone(),
+                expected_disk: self.common.disk_identity.clone(),
+                credentials: None, lifecycle: None, registry,
+                purpose: PersistencePurpose::Background, writes_durable: false,
+                authority: plx_plex::plex::session::SaveAuthority::Routine };
+            { let event = AttemptEvent::InstallPicker { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+            initial = ('commit: { let (req, arrival, terminal, plan, delta): (u32, u64, bool, CommitPlan, CommitDelta) = (req, 0, true, plan, CommitDelta {
+                activate_profile: initial_profile, ..Default::default()
+            }); let Some(CommitPreparation { pending, entry }) = self.plan_commit(req, arrival, terminal, plan, delta) else { break 'commit None }; self.common.pending.get_mut(&req).unwrap().last_arrival = Some(arrival); self.common.pending_commit = Some(pending); self.common.persistence_purpose = Some(entry.plan.purpose); Some(entry) });
+        }
+        let server_roster = match ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::ServerRoster, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }) { Some(req) => Some(
+            'prepare_work: {
+let (req, input,): (u32, SessionWork,) = (req, SessionWork::ServerRoster { session: self.common.persisted.clone(), expected: Identity::of(&self.common.persisted) },);
+
+        let pending = self.common.pending.get_mut(&req).expect("owned work request");
+        let admission = AdmissionId(req);
+        pending.admission = AdmissionState::Awaiting(admission);
+        EntryWork::Work { req, key: pending.key, admission, input }
+
+}), None => None };
+        let home_roster = match ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::HomeRoster, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }) { Some(req) => Some(
+            'prepare_work: {
+let (req, input,): (u32, SessionWork,) = (req, SessionWork::HomeRoster { client_id: self.common.persisted.client_id.clone(), account_token: self.common.persisted.account_token.clone(), expected: Identity::of(&self.common.persisted) },);
+
+        let pending = self.common.pending.get_mut(&req).expect("owned work request");
+        let admission = AdmissionId(req);
+        pending.admission = AdmissionState::Awaiting(admission);
+        EntryWork::Work { req, key: pending.key, admission, input }
+
+}), None => None };
+        EntryFx::Profiles { setup: Some(PickerSetup { initial, server_roster, home_roster }) }.emit(&mut |effect| fx.push(effect));
+        { publish = true; };
+        true
+
+},
+            SessionEvent::Command(Command::SelectProfile { index, pin }) => 'select_profile: {
+let (index, pin,): (usize, Option<String>,) = (*index, pin.clone(),);
+
+        if self.state.pending_erase().is_some() || !matches!(self.state, attempt::Attempt::Profiles(_) | attempt::Attempt::Switching(_)) { break 'select_profile false; }
+        let Some(tile) = self.state.picker_data().users.get(index).cloned() else { break 'select_profile false };
+        if self.common.next_req.checked_add(1).is_none() { break 'select_profile false; }
+        if ('advance_epoch: {
+
+        let exit = match ExitFx::epoch(self.view()) { Some(value) => value, None => break 'advance_epoch None };
+        let epoch = exit.epoch_number();
+        self.common.inbox.clear();
+        self.common.pending_commit = None;
+        self.common.pending.clear();
+        self.common.epoch = epoch;
+        { let event = AttemptEvent::EpochAdvanced; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        // Keep pump_pending: a marker may still be carried outside the owner.
+        exit.emit(&mut |effect| fx.push(effect));
+        Some(epoch)
+
+}).is_none() { break 'select_profile false; }
+        let same_user = super::may_reuse_seated_profile(&self.common.persisted, &tile, pin.as_deref());
+        if same_user {
+            { let event = AttemptEvent::ReuseProfile; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        } else {
+            let req = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::ProfileSwitch, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }).expect("request preflight");
+            self.common.pending.get_mut(&req).unwrap().capture = Some(CaptureIntent::Profile { tile, pin });
+            { let event = AttemptEvent::SelectProfile { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        { publish = true; };
+        true
+
+},
+            SessionEvent::Command(Command::SelectProfileWithReply { index, pin, reply }) => {
+                let accepted = 'select_profile: {
+let (index, pin,): (usize, Option<String>,) = (*index, pin.clone(),);
+
+        if self.state.pending_erase().is_some() || !matches!(self.state, attempt::Attempt::Profiles(_) | attempt::Attempt::Switching(_)) { break 'select_profile false; }
+        let Some(tile) = self.state.picker_data().users.get(index).cloned() else { break 'select_profile false };
+        if self.common.next_req.checked_add(1).is_none() { break 'select_profile false; }
+        if ('advance_epoch: {
+
+        let exit = match ExitFx::epoch(self.view()) { Some(value) => value, None => break 'advance_epoch None };
+        let epoch = exit.epoch_number();
+        self.common.inbox.clear();
+        self.common.pending_commit = None;
+        self.common.pending.clear();
+        self.common.epoch = epoch;
+        { let event = AttemptEvent::EpochAdvanced; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        // Keep pump_pending: a marker may still be carried outside the owner.
+        exit.emit(&mut |effect| fx.push(effect));
+        Some(epoch)
+
+}).is_none() { break 'select_profile false; }
+        let same_user = super::may_reuse_seated_profile(&self.common.persisted, &tile, pin.as_deref());
+        if same_user {
+            { let event = AttemptEvent::ReuseProfile; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        } else {
+            let req = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::ProfileSwitch, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }).expect("request preflight");
+            self.common.pending.get_mut(&req).unwrap().capture = Some(CaptureIntent::Profile { tile, pin });
+            { let event = AttemptEvent::SelectProfile { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        { publish = true; };
+        true
+
+};
+                fx.push(SessionFx::SelectionReply { to: *reply, accepted, flow_epoch: self.common.epoch });
+                true
+            }
+            SessionEvent::Command(Command::BackAtRoot { reply }) => 'back: {
+let (reply,): (ReplyTo,) = (*reply,);
+
+        // AUTH-03: while an unacknowledged persistence warning is showing, BACK must not clear it
+        // or resume — clearing it here would silently re-admit `needs_ready_commit`/`take_ready`
+        // on the next frame (a second, routine save over the still-unconfirmed fresh one) and, for
+        // a held Final handoff, would release it without the explicit acknowledgement the warning
+        // exists to require. Only the labelled Continue (`acknowledge_persistence_warning`) may
+        // clear it; BACK here is the platform root press only.
+        if self.common.persistence_warning.is_some() {
+            fx.push(SessionFx::BackReply { to: reply, resumed: false });
+            break 'back true;
+        }
+        let dead_end = self.view().roster_dead_end();
+        if dead_end {
+            if matches!(self.common.authority, BootstrapAuthority::DevPms { .. }) {
+                // Nothing was detached or re-pointed (see `start_switch`): re-announce the dev
+                // session exactly as its activation did.
+                { let event = AttemptEvent::ResumeDevBack; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                fx.push(SessionFx::BackReply { to: reply, resumed: true });
+                { publish = true; };
+                break 'back true;
+            }
+        }
+        let stored = self.common.committed_credentials.merge_into(&self.common.persisted);
+        // A dead-end picker offered nobody, so the picker-kind rule (`may_resume`: the
+        // Change-profile picker is a root, so BACK cannot skip a PIN) has no boundary to guard.
+        // Only "is there a session to go back to" remains — `dead_end_resumes`, the same answer
+        // the read-out publishes so its *Back* control is offered exactly when this resumes.
+        let resumable = if dead_end { self.view().dead_end_resumes() } else { super::resumable(&stored, self.state
+            .picker_data().picker) };
+        if !resumable || self.common.epoch.checked_add(1).is_none() {
+            fx.push(SessionFx::BackReply { to: reply, resumed: false });
+            break 'back true;
+        }
+        ('advance_epoch: {
+
+        let exit = match ExitFx::epoch(self.view()) { Some(value) => value, None => break 'advance_epoch None };
+        let epoch = exit.epoch_number();
+        self.common.inbox.clear();
+        self.common.pending_commit = None;
+        self.common.pending.clear();
+        self.common.epoch = epoch;
+        { let event = AttemptEvent::EpochAdvanced; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        // Keep pump_pending: a marker may still be carried outside the owner.
+        exit.emit(&mut |effect| fx.push(effect));
+        Some(epoch)
+
+}).expect("epoch preflight");
+        self.common.persisted = stored;
+        { let event = AttemptEvent::ResumeBack; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        self.common.persistence_warning = None;
+        self.common.held_handoff = None;
+        self.common.persistence_warning_answered = false;
+        fx.push(SessionFx::BackReply { to: reply, resumed: true });
+        { publish = true; };
+        true
+
+},
+            SessionEvent::Command(Command::SignOut) => 'erase: {
+let (sign_in,): (bool,) = (true,);
+
+        if self.state  .pending_erase().is_some() || self.common.epoch.checked_add(1).is_none() { break 'erase false; }
+        ExitFx::for_state(&self.state, ExitActions { cancel: None, acknowledge: Vec::new(), coordinator: Some(CoordinatorAction::CloseTelemetry) }).emit(&mut |effect| fx.push(effect));
+        ('advance_epoch: {
+
+        let exit = match ExitFx::epoch(self.view()) { Some(value) => value, None => break 'advance_epoch None };
+        let epoch = exit.epoch_number();
+        self.common.inbox.clear();
+        self.common.pending_commit = None;
+        self.common.pending.clear();
+        self.common.epoch = epoch;
+        { let event = AttemptEvent::EpochAdvanced; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        // Keep pump_pending: a marker may still be carried outside the owner.
+        exit.emit(&mut |effect| fx.push(effect));
+        Some(epoch)
+
+}).expect("epoch preflight");
+        self.common.persisted = PersistedSession::default();
+        self.common.committed_credentials = CredentialPatch::of(&self.common.persisted);
+        // The identity ends here, and its verdicts with it: the same account signed back in is
+        // the same `Identity`, and nothing has refused it anything in that sign-in.
+        self.common.switch_refused_for = None;
+        self.common.authority = BootstrapAuthority::Account { extras: Vec::new() };
+        self.common.persistence_warning = None;
+        self.common.held_handoff = None;
+        self.common.persistence_warning_answered = false;
+        { let event = AttemptEvent::EraseAuthority; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        'forget_incidents: {
+
+        self.common.incident = None;
+        self.common.incidents_seen.clear();
+        { let event = AttemptEvent::LinkTrouble { present: false }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |_| {}); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |_| {}); true };
+
+};
+        'publish_profile: {
+let (profile,): (Option<UserRef>,) = (None,);
+
+        // This is the sole scope allocator. Resource publication will store this explicit value
+        // rather than independently incrementing another generation.
+        self.common.profile_scope.0 = self.common.profile_scope.0.wrapping_add(1);
+        self.common.active_profile = profile;
+        fx.push(SessionFx::PublishProfile(ProfilePublication {
+            epoch: self.common.epoch, profile: self.common.active_profile.clone(), scope: self.common.profile_scope,
+            stamp: plx_plex::plex::grant::account_key(&self.common.persisted.account_token),
+        }));
+
+};
+        { let event = AttemptEvent::BeginErase { epoch: self.common.epoch, sign_in }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        { publish = true; };
+        true
+
+},
+            SessionEvent::Command(Command::EraseLocal) => 'erase: {
+let (sign_in,): (bool,) = (false,);
+
+        if self.state  .pending_erase().is_some() || self.common.epoch.checked_add(1).is_none() { break 'erase false; }
+        ExitFx::for_state(&self.state, ExitActions { cancel: None, acknowledge: Vec::new(), coordinator: Some(CoordinatorAction::CloseTelemetry) }).emit(&mut |effect| fx.push(effect));
+        ('advance_epoch: {
+
+        let exit = match ExitFx::epoch(self.view()) { Some(value) => value, None => break 'advance_epoch None };
+        let epoch = exit.epoch_number();
+        self.common.inbox.clear();
+        self.common.pending_commit = None;
+        self.common.pending.clear();
+        self.common.epoch = epoch;
+        { let event = AttemptEvent::EpochAdvanced; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        // Keep pump_pending: a marker may still be carried outside the owner.
+        exit.emit(&mut |effect| fx.push(effect));
+        Some(epoch)
+
+}).expect("epoch preflight");
+        self.common.persisted = PersistedSession::default();
+        self.common.committed_credentials = CredentialPatch::of(&self.common.persisted);
+        // The identity ends here, and its verdicts with it: the same account signed back in is
+        // the same `Identity`, and nothing has refused it anything in that sign-in.
+        self.common.switch_refused_for = None;
+        self.common.authority = BootstrapAuthority::Account { extras: Vec::new() };
+        self.common.persistence_warning = None;
+        self.common.held_handoff = None;
+        self.common.persistence_warning_answered = false;
+        { let event = AttemptEvent::EraseAuthority; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        'forget_incidents: {
+
+        self.common.incident = None;
+        self.common.incidents_seen.clear();
+        { let event = AttemptEvent::LinkTrouble { present: false }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |_| {}); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |_| {}); true };
+
+};
+        'publish_profile: {
+let (profile,): (Option<UserRef>,) = (None,);
+
+        // This is the sole scope allocator. Resource publication will store this explicit value
+        // rather than independently incrementing another generation.
+        self.common.profile_scope.0 = self.common.profile_scope.0.wrapping_add(1);
+        self.common.active_profile = profile;
+        fx.push(SessionFx::PublishProfile(ProfilePublication {
+            epoch: self.common.epoch, profile: self.common.active_profile.clone(), scope: self.common.profile_scope,
+            stamp: plx_plex::plex::grant::account_key(&self.common.persisted.account_token),
+        }));
+
+};
+        { let event = AttemptEvent::BeginErase { epoch: self.common.epoch, sign_in }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        { publish = true; };
+        true
+
+},
+            SessionEvent::Command(Command::RefreshRoster) => 'refresh_roster: {
+
+        if self.common.persisted.account_token.is_empty() { break 'refresh_roster false; }
+        let Some(req) = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::ServerRoster, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }) else { break 'refresh_roster false };
+        'emit_work: {
+let (req, input,): (u32, SessionWork,) = (req, SessionWork::ServerRoster { session: self.common.persisted.clone(),
+            expected: Identity::of(&self.common.persisted) },);
+
+        ('prepare_work: {
+let (req, input,): (u32, SessionWork,) = (req, input,);
+
+        let pending = self.common.pending.get_mut(&req).expect("owned work request");
+        let admission = AdmissionId(req);
+        pending.admission = AdmissionState::Awaiting(admission);
+        EntryWork::Work { req, key: pending.key, admission, input }
+
+}).emit(&mut |effect| fx.push(effect));
+
+};
+        true
+
+},
+            SessionEvent::Command(Command::RequestEndpoint { sid }) => 'request_endpoint: {
+let (sid,): (plx_plex::plex::ServerId,) = (*sid,);
+
+        // The registry's own validity rule: every id but the reserved UNSET names a slot.
+        if !sid.is_set()
+            || self.common.persisted.account_token.is_empty()
+            || self.common.pending.values().any(|pending| pending.key.op == SessionOp::Endpoint(sid.raw())) {
+            break 'request_endpoint false;
+        }
+        let sid = sid.raw();
+        let Some(req) = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::Endpoint(sid), None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }) else { break 'request_endpoint false };
+        self.common.pending.get_mut(&req).unwrap().capture = Some(CaptureIntent::Endpoint { sid });
+        fx.push(SessionFx::Capture { req, epoch: self.common.epoch, request: SessionReadRequest::Endpoint { sid } });
+        true
+
+},
+            SessionEvent::Command(Command::AnswerPlaintext { machine_id, choice, sid }) =>
+                'answer_plaintext: {
+let (machine_id, choice, sid,): (&str, plx_plex::plex::session::PlaintextChoice, Option<plx_plex::plex::ServerId>,) = (machine_id, *choice, *sid,);
+
+        use plx_plex::plex::session::PlaintextChoice;
+        let account = plx_plex::plex::grant::account_key(&self.common.persisted.account_token);
+        if account.is_empty() || machine_id.is_empty() || choice == PlaintextChoice::Undecided {
+            break 'answer_plaintext false;
+        }
+        let on_sign_in = self.state.phase() == Phase::Error;
+        if on_sign_in && !self.state.plaintext().is_some_and(|v| v.machine_id == machine_id) {
+            break 'answer_plaintext false;
+        }
+        fx.push(SessionFx::PlaintextAnswer { machine_id: machine_id.to_owned(), choice, account });
+        if on_sign_in {
+            if choice.allows() {
+                break 'answer_plaintext { restart = Some(if false { LoginRestart::Fresh } else { LoginRestart::Retry }); true };
+            }
+            { let event = AttemptEvent::PlaintextDeclined { choice }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+            { publish = true; };
+            break 'answer_plaintext true;
+        }
+        if choice.allows() {
+            let _ = match sid {
+                Some(sid) => 'request_endpoint: {
+let (sid,): (plx_plex::plex::ServerId,) = (sid,);
+
+        // The registry's own validity rule: every id but the reserved UNSET names a slot.
+        if !sid.is_set()
+            || self.common.persisted.account_token.is_empty()
+            || self.common.pending.values().any(|pending| pending.key.op == SessionOp::Endpoint(sid.raw())) {
+            break 'request_endpoint false;
+        }
+        let sid = sid.raw();
+        let Some(req) = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::Endpoint(sid), None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }) else { break 'request_endpoint false };
+        self.common.pending.get_mut(&req).unwrap().capture = Some(CaptureIntent::Endpoint { sid });
+        fx.push(SessionFx::Capture { req, epoch: self.common.epoch, request: SessionReadRequest::Endpoint { sid } });
+        true
+
+},
+                None => 'refresh_roster: {
+
+        if self.common.persisted.account_token.is_empty() { break 'refresh_roster false; }
+        let Some(req) = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::ServerRoster, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }) else { break 'refresh_roster false };
+        'emit_work: {
+let (req, input,): (u32, SessionWork,) = (req, SessionWork::ServerRoster { session: self.common.persisted.clone(),
+            expected: Identity::of(&self.common.persisted) },);
+
+        ('prepare_work: {
+let (req, input,): (u32, SessionWork,) = (req, input,);
+
+        let pending = self.common.pending.get_mut(&req).expect("owned work request");
+        let admission = AdmissionId(req);
+        pending.admission = AdmissionState::Awaiting(admission);
+        EntryWork::Work { req, key: pending.key, admission, input }
+
+}).emit(&mut |effect| fx.push(effect));
+
+};
+        true
+
+},
+            };
         }
         true
-    }
 
-    fn apply_commit_reply(&mut self, reply: CommitReply, emit: &mut impl FnMut(SessionFx)) -> bool {
-        if !self.commit_is_current(reply.req, reply.epoch, reply.arrival) { return false; }
+},
+            SessionEvent::Command(Command::RestartWait { phase, qr_generation, reply }) => {
+                let accepted = matches!(self.common.authority, BootstrapAuthority::Account { .. })
+                    && super::restart_permitted(Some((*phase, *qr_generation)),
+                    (self.state.phase(), self.state.qr().generation)) && { restart = Some(if false { LoginRestart::Fresh } else { LoginRestart::Retry }); true };
+                { restart_reply = Some((reply, accepted)); };
+                true
+            }
+            SessionEvent::Command(Command::DismissPinError) => {
+                let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder());
+                self.state = attempt.dismiss_pin();
+                { publish = true; };
+                true
+            }
+            SessionEvent::Command(Command::NoteDeleteLeftovers(count)) => {
+                self.common.delete_leftovers = *count;
+                { publish = true; };
+                true
+            }
+            SessionEvent::Result(envelope) => 'ingest: {
+let (envelope,): (&SessionEnvelope,) = (envelope,);
+
+        let receipt = Receipt::of(envelope);
+        if self.owns_receipt(receipt) { break 'ingest true; }
+        if !self.accepts_header(envelope) {
+            fx.push(SessionFx::Acknowledge(vec![receipt]));
+            break 'ingest true;
+        }
+        // The adapter admits only receipt-bearing records from an accepted resource. This can
+        // also confirm acceptance if its small admission reply is still carried in the queue.
+        self.common.pending.get_mut(&envelope.addr.req.0).unwrap().admission = AdmissionState::Accepted(envelope.admission);
+        let active = usize::from(self.common.pending_commit.as_ref().is_some_and(|commit| commit.receipt.is_some()));
+        assert!(self.common.inbox.len() + active < SESSION_TRANSFER_RECORDS, "Session transfer credit invariant");
+        // Do not advance last_arrival here: that is the processing watermark, not receipt
+        // admission. Advancing it would make the FIFO head reject its own first delivery.
+        self.common.inbox.push_back(envelope.clone());
+        if self.common.pending_commit.is_none() && !self.common.pump_pending { { pump = true; }; }
+        true
+
+},
+            SessionEvent::Commit(reply) => 'apply_commit_reply: {
+let (reply,): (CommitReply,) = (*reply,);
+
+        if !self.commit_is_current(reply.req, reply.epoch, reply.arrival) { break 'apply_commit_reply false; }
         // `take()` is what makes a duplicate reply inert. The admitted revision and purpose are
         // copied into `admitted_persistence` first, because that is the identity a later
         // completion must repeat exactly to be allowed to settle anything.
@@ -2011,39 +3214,125 @@ impl SessionMachine {
         self.common.persistence_purpose = None;
         if !reply.admission.accepted() {
             if let Some(DevCommitDelta::StartAccount { login_req }) = commit.delta.dev {
-                self.retire(login_req, emit);
+                'retire: {
+let (req,): (u32,) = (login_req,);
+
+        if self.common.pending.contains_key(&req) {
+            { let event = AttemptEvent::WorkRetired { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        self.common.pending.remove(&req);
+        fx.push(SessionFx::Retire { req });
+
+};
             }
             let op = self.common.pending[&reply.req].key.op;
             match op {
-                SessionOp::Login | SessionOp::Rediscover => self.fail_login(plx_platform::i18n::msg::browse_auth_finish_failed(),
-                    Some(IncidentContext::internal(InternalClass::CommitRefused)), emit),
+                SessionOp::Login | SessionOp::Rediscover => 'fail_login: {
+let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_finish_failed(), Some(IncidentContext::internal(InternalClass::CommitRefused)),);
+
+        { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        self.common.persistence_warning = None;
+        self.common.held_handoff = None;
+        self.common.persistence_warning_answered = false;
+        // A token plex.tv refused is not an authorization in flight any more: without this, the
+        // retry decision (`retry_kind`) kept offering a discovery-only pass that presents the same
+        // refused token again, and Try again could never recover. Dropping it makes the retry a
+        // new QR sign-in; the incident below is raised exactly as before, so its dedup holds.
+        match incident {
+            Some(context) => 'raise_incident: {
+let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, context,);
+
+        let key = IncidentKey { flow, kind: context.kind, link: context.link };
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
+            // The same failure again. Unresolved (a second stalled report in one wait): keep the
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
+            if !is_settled(held) {
+                held.context = Some(context);
+            }
+            break 'raise_incident;
+        }
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
+            key,
+            context: Some(context),
+            readout_context: Some(context),
+            state: IncidentState::Pending,
+        });
+
+},
+            None => self.common.incident = None,
+        }
+
+},
                 SessionOp::ProfileSwitch | SessionOp::Ready => {
-                    self.transition(TransitionInput::Attempt(AttemptEvent::SwitchCommitRefused), 0, emit);
+                    { let event = AttemptEvent::SwitchCommitRefused; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
                 }
                 SessionOp::HomeRoster | SessionOp::ServerRoster | SessionOp::Endpoint(_) | SessionOp::Picker => {}
                 SessionOp::DevBoundary => {
-                    self.transition(TransitionInput::Attempt(AttemptEvent::DevCommitRefused), 0, emit);
+                    { let event = AttemptEvent::DevCommitRefused; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
                 }
             }
-            self.retire(reply.req, emit);
-            if let Some(receipt) = commit.receipt { emit(SessionFx::Acknowledge(vec![receipt])); }
-            self.schedule_pump(emit);
-            self.replace_publication();
-            return true;
+            'retire: {
+let (req,): (u32,) = (reply.req,);
+
+        if self.common.pending.contains_key(&req) {
+            { let event = AttemptEvent::WorkRetired { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        self.common.pending.remove(&req);
+        fx.push(SessionFx::Retire { req });
+
+};
+            if let Some(receipt) = commit.receipt { fx.push(SessionFx::Acknowledge(vec![receipt])); }
+            'schedule_pump: {
+
+        if !self.common.inbox.is_empty() && self.common.pending_commit.is_none() && !self.common.pump_pending {
+            self.common.pump_pending = true;
+            fx.push(SessionFx::Pump);
+        }
+
+};
+            { publish = true; };
+            break 'apply_commit_reply true;
         }
         let delta = commit.delta;
         if let Some(dev) = &delta.dev {
             match dev {
                 DevCommitDelta::Activated => {
                     if matches!(self.common.authority, BootstrapAuthority::DevPms { .. }) {
-                        self.publish_profile(None, emit);
-                        self.transition(TransitionInput::Attempt(AttemptEvent::ActivateDev), 0, emit);
+                        'publish_profile: {
+let (profile,): (Option<UserRef>,) = (None,);
+
+        // This is the sole scope allocator. Resource publication will store this explicit value
+        // rather than independently incrementing another generation.
+        self.common.profile_scope.0 = self.common.profile_scope.0.wrapping_add(1);
+        self.common.active_profile = profile;
+        fx.push(SessionFx::PublishProfile(ProfilePublication {
+            epoch: self.common.epoch, profile: self.common.active_profile.clone(), scope: self.common.profile_scope,
+            stamp: plx_plex::plex::grant::account_key(&self.common.persisted.account_token),
+        }));
+
+};
+                        { let event = AttemptEvent::ActivateDev; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
                     }
                 }
                 DevCommitDelta::StartAccount { login_req } => {
                     self.common.authority = BootstrapAuthority::Account { extras: Vec::new() };
-                    self.transition(TransitionInput::Attempt(AttemptEvent::BeginSignin { req: *login_req }), 0, emit);
-                    self.start_reserved_login(*login_req, emit);
+                    { let event = AttemptEvent::BeginSignin { req: *login_req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                    'start_reserved_login: {
+let (req,): (u32,) = (*login_req,);
+
+        let entry = EntryFx::login(self.view(), req, false, false);
+        let pending = self.common.pending.get_mut(&req).expect("reserved login");
+        match entry.work() {
+            EntryWork::Capture { .. } => pending.capture = Some(CaptureIntent::Login),
+            EntryWork::Work { admission, .. } => pending.admission = AdmissionState::Awaiting(*admission),
+        }
+        entry.emit(&mut |effect| fx.push(effect));
+
+};
                 }
             }
         }
@@ -2058,19 +3347,36 @@ impl SessionMachine {
         }
         match delta.destination {
             CommitDestination::Unchanged => {}
-            CommitDestination::Roster => { if let Some(users) = delta.users { self.transition(TransitionInput::Attempt(AttemptEvent::RosterArrived { users }), 0, emit); } }
-            CommitDestination::ReadyCommitted => { self.transition(TransitionInput::Attempt(AttemptEvent::ReadyCommitted), 0, emit); }
-            CommitDestination::SignInProfiles => { self.transition(TransitionInput::Attempt(AttemptEvent::SigninProfiles { users: delta.users.expect("sign-in roster") }), 0, emit); }
-            CommitDestination::SignInReady => { self.transition(TransitionInput::Attempt(AttemptEvent::SigninReady), 0, emit); }
-            CommitDestination::ProfileReady => { self.transition(TransitionInput::Attempt(AttemptEvent::ProfileReady { req: reply.req }), 0, emit); }
-            CommitDestination::StoredReady => { self.transition(TransitionInput::Attempt(AttemptEvent::StoredReady), 0, emit); }
+            CommitDestination::Roster => { if let Some(users) = delta.users { { let event = AttemptEvent::RosterArrived { users }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true }; } }
+            CommitDestination::ReadyCommitted => { { let event = AttemptEvent::ReadyCommitted; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true }; }
+            CommitDestination::SignInProfiles => { { let event = AttemptEvent::SigninProfiles { users: delta.users.expect("sign-in roster") }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true }; }
+            CommitDestination::SignInReady => { { let event = AttemptEvent::SigninReady; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true }; }
+            CommitDestination::ProfileReady => { { let event = AttemptEvent::ProfileReady { req: reply.req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true }; }
+            CommitDestination::StoredReady => { { let event = AttemptEvent::StoredReady; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true }; }
         }
         if delta.roster_answered { self.common.switch_refused_for = None; }
         if matches!(delta.destination, CommitDestination::ProfileReady) {
             let pending = self.common.pending.get_mut(&reply.req).unwrap();
             pending.expected = Identity::of(&self.common.persisted);
             pending.phase = StreamPhase::ProfileSeated;
-            self.cancel_obsolete_interests(reply.req, emit);
+            'cancel_obsolete_interests: {
+let (retained,): (u32,) = (reply.req,);
+
+        let requests: Vec<_> = self.common.pending.iter().filter_map(|(&req, pending)|
+            (req != retained && !pending.expected.matches(&self.common.persisted)).then_some(req)).collect();
+        if requests.is_empty() { break 'cancel_obsolete_interests; }
+        for req in &requests { self.common.pending.remove(req); }
+        let mut receipts = Vec::new();
+        self.common.inbox.retain(|record| {
+            if requests.contains(&record.addr.req.0) {
+                receipts.push(Receipt::of(record));
+                false
+            } else { true }
+        });
+        fx.push(SessionFx::Cancel { requests, epoch: self.common.epoch });
+        if !receipts.is_empty() { fx.push(SessionFx::Acknowledge(receipts)); }
+
+};
         }
         if delta.activate_profile {
             if commit.fresh && admit_revision.is_some() && !self.common.persistence_warning_answered {
@@ -2088,394 +3394,227 @@ impl SessionMachine {
                 // a handoff still held behind an unacknowledged warning — that release is
                 // `acknowledge_persistence_warning`'s alone. An unrelated held handoff with NO live
                 // warning (already superseded above, or never one to begin with) is unaffected.
-                self.release_held_handoff(emit);
-            }
-        }
-        if commit.terminal { self.retire(reply.req, emit); }
-        if let Some(receipt) = commit.receipt { emit(SessionFx::Acknowledge(vec![receipt])); }
-        self.schedule_pump(emit);
-        self.replace_publication();
-        true
-    }
+                'release_held_handoff: {
 
-    fn retire(&mut self, req: u32, emit: &mut impl FnMut(SessionFx)) {
-        if self.common.pending.contains_key(&req) {
-            self.transition(TransitionInput::Attempt(AttemptEvent::WorkRetired { req }), 0, emit);
-        }
-        self.common.pending.remove(&req);
-        emit(SessionFx::Retire { req });
-    }
-
-    /// The single site that publishes a profile and announces `SessionFx::Ready`. A fresh
-    /// handoff reaches it only once its write is released — durably confirmed, or its warning
-    /// acknowledged; a non-fresh (`Routine`) commit reaches it immediately, exactly as before.
-    fn release_held_handoff(&mut self, emit: &mut impl FnMut(SessionFx)) {
         self.common.held_handoff = None;
-        self.publish_profile(Some(self.common.persisted.user.clone()), emit);
+        'publish_profile: {
+let (profile,): (Option<UserRef>,) = (Some(self.common.persisted.user.clone()),);
+
+        // This is the sole scope allocator. Resource publication will store this explicit value
+        // rather than independently incrementing another generation.
+        self.common.profile_scope.0 = self.common.profile_scope.0.wrapping_add(1);
+        self.common.active_profile = profile;
+        fx.push(SessionFx::PublishProfile(ProfilePublication {
+            epoch: self.common.epoch, profile: self.common.active_profile.clone(), scope: self.common.profile_scope,
+            stamp: plx_plex::plex::grant::account_key(&self.common.persisted.account_token),
+        }));
+
+};
         if self.state.phase() == Phase::Ready {
             EntryFx::Ready { announcement: Some(ReadyEntry { epoch: self.common.epoch, scope: self.common.profile_scope,
                 server: self.common.persisted.server.clone(), token: self.common.persisted.pms_token().into(),
                 install: ReadyInstall::PrimaryAndExtras(match &self.common.authority {
                     BootstrapAuthority::Account { extras } => extras.clone(),
                     BootstrapAuthority::DevPms { .. } => Vec::new(),
-                }) }) }.emit(emit);
+                }) }) }.emit(&mut |effect| fx.push(effect));
         }
-    }
 
-    fn retire_save_incident(&mut self) {
+};
+            }
+        }
+        if commit.terminal { 'retire: {
+let (req,): (u32,) = (reply.req,);
+
+        if self.common.pending.contains_key(&req) {
+            { let event = AttemptEvent::WorkRetired { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        self.common.pending.remove(&req);
+        fx.push(SessionFx::Retire { req });
+
+}; }
+        if let Some(receipt) = commit.receipt { fx.push(SessionFx::Acknowledge(vec![receipt])); }
+        'schedule_pump: {
+
+        if !self.common.inbox.is_empty() && self.common.pending_commit.is_none() && !self.common.pump_pending {
+            self.common.pump_pending = true;
+            fx.push(SessionFx::Pump);
+        }
+
+};
+        { publish = true; };
+        true
+
+},
+            SessionEvent::DiskWrite { before, after, outcome } => 'observe_disk_write: {
+let (before, after, outcome,): (&Identity, &Identity, plx_plex::plex::session::async_persistence::CompletionOutcome,) = (before, after, *outcome,);
+
+        use plx_plex::plex::session::async_persistence::{CompletionOutcome, Operation};
+        if self.common.disk_identity != *before || before == after
+            || !matches!(outcome, CompletionOutcome::Durable(Operation::Write { .. })) { break 'observe_disk_write false; }
+        self.common.disk_identity = after.clone();
+        true
+
+},
+            SessionEvent::Persistence(completion) => 'apply_persistence_completion: {
+let (completion,): (plx_plex::plex::session::async_persistence::PersistenceCompletion,) = (*completion,);
+
+        use plx_plex::plex::session::async_persistence::CompletionOutcome;
+        let Some(admitted) = self.common.admitted_persistence else { break 'apply_persistence_completion false };
+        let correlation = plx_plex::plex::session::async_persistence::PersistenceCorrelation {
+            req: admitted.req, epoch: admitted.epoch, arrival: admitted.arrival,
+        };
+        if !completion.acts_on(correlation, admitted.revision) { break 'apply_persistence_completion false; }
+        // A verdict the worker resolved for a DIFFERENT purpose than the one admitted is not this
+        // operation's verdict either.
+        if admitted.purpose.is_some_and(|purpose| purpose != completion.purpose) { break 'apply_persistence_completion false; }
+        let durable = matches!(completion.outcome, CompletionOutcome::Durable(_));
+        self.common.admitted_persistence = None;
+        let prior = self.common.unconfirmed_fresh_prior.take();
+        if let (Some(prior), CompletionOutcome::Failed(_)) = (prior, &completion.outcome) {
+            if admitted.fresh { self.common.disk_identity = prior; }
+        }
+        self.common.commit_phase.durable = durable;
+        self.common.commit_phase.proves_saved_login =
+            durable && completion.purpose.proves_saved_login();
+        let correlation_key = PersistenceWarningKey { epoch: completion.epoch, req: completion.req };
+        if durable {
+            // 0.6.6 parity: a later FRESH write landing durably supersedes any warning still
+            // showing about an earlier fresh attempt — the failure it was reporting on no longer
+            // describes the session's current state, so holding it would strand an acknowledgement
+            // over a problem that already resolved itself.
+            let superseded = admitted.fresh && self.common.persistence_warning.is_some();
+            if superseded {
+                self.common.persistence_warning = None;
+                'retire_save_incident: {
+
         if self.common.incident.as_ref().is_some_and(|offer|
             offer.key.kind == plx_telemetry::telemetry::incident::IncidentKind::SaveFailed) {
             self.common.incident = None;
         }
-    }
 
-    /// The AUTH-03 acknowledgement door: clears the warning and, if a handoff is still held for
-    /// it, releases it — exactly ONE `SessionFx::Ready` for the flow, through
-    /// [`Self::release_held_handoff`], never a second one from here.
-    fn acknowledge_persistence_warning(&mut self, key: PersistenceWarningKey,
-        emit: &mut impl FnMut(SessionFx)) -> bool {
-        if self.common.persistence_warning.map(|warning| warning.key) != Some(key) { return false; }
-        self.common.persistence_warning = None;
-        self.retire_save_incident();
-        // This authorization's unsaved-login question is answered now: storage may never gate
-        // entry a second time for it (AUTH-03's field bug). A later failure — Discovery then
-        // Final, or a retry — releases the handoff itself instead of asking again.
-        self.common.persistence_warning_answered = true;
-        if self.common.held_handoff.is_some() {
-            self.release_held_handoff(emit);
-        }
-        self.replace_publication();
-        true
-    }
-
-    fn prepare_work(&mut self, req: u32, input: SessionWork) -> EntryWork {
-        let pending = self.common.pending.get_mut(&req).expect("owned work request");
-        let admission = AdmissionId(req);
-        pending.admission = AdmissionState::Awaiting(admission);
-        EntryWork::Work { req, key: pending.key, admission, input }
-    }
-    fn emit_work(&mut self, req: u32, input: SessionWork, emit: &mut impl FnMut(SessionFx)) {
-        self.prepare_work(req, input).emit(emit);
-    }
-
-    pub fn work_is_current(&self, req: u32, key: SessionWorkKey, admission: AdmissionId) -> bool {
-        key.epoch == self.common.epoch && self.common.pending.get(&req).is_some_and(|pending|
-            pending.key == key && self.state.owns_work(req, pending) && pending.capture.is_none()
-                && pending.admission == AdmissionState::Awaiting(admission)
-                && pending.expected.matches(&self.common.persisted))
-    }
-
-    fn apply_admission(&mut self, reply: AdmissionReply, emit: &mut impl FnMut(SessionFx)) -> bool {
-        if reply.addr.to != MachineId::Session || reply.key.epoch != self.common.epoch { return false; }
-        let req = reply.addr.req.0;
-        if !self.common.pending.get(&req).is_some_and(|pending| self.state.owns_work(req, pending)) { return false; }
-        let Some(pending) = self.common.pending.get_mut(&req) else { return false };
-        if pending.key != reply.key || pending.admission != AdmissionState::Awaiting(reply.correlation) { return false; }
-        if reply.accepted {
-            pending.admission = AdmissionState::Accepted(reply.correlation);
-        } else {
-            // This is an unsequenced, never-admitted refusal. Accepted requests (including ones
-            // without a first observation) cannot enter this branch.
-            match pending.key.op {
-                SessionOp::Login => self.fail_login(plx_platform::i18n::msg::browse_auth_start_failed(),
-                    Some(IncidentContext::internal(InternalClass::AdmissionRefused)), emit),
-                SessionOp::Rediscover => self.fail_login(plx_platform::i18n::msg::browse_auth_rediscover_failed(),
-                    Some(IncidentContext::internal(InternalClass::AdmissionRefused)), emit),
-                SessionOp::ProfileSwitch => {
-                    self.transition(TransitionInput::Attempt(AttemptEvent::SwitchAdmissionRefused), 0, emit);
-                }
-                SessionOp::HomeRoster => self.fail_empty_home_roster(roster_unreachable(), emit),
-                SessionOp::ServerRoster | SessionOp::Endpoint(_) | SessionOp::Ready | SessionOp::Picker | SessionOp::DevBoundary => {}
+};
             }
-            self.retire(req, emit);
-            self.replace_publication();
-        }
-        self.schedule_pump(emit);
-        true
-    }
+            // Release only the handoff THIS completion is for — a routine completion arriving
+            // while an unrelated fresh handoff is held must not free it.
+            let released = self.common.held_handoff == Some(HeldHandoff { epoch: completion.epoch, req: completion.req });
+            if released { 'release_held_handoff: {
 
-    fn advance_epoch(&mut self, emit: &mut impl FnMut(SessionFx)) -> Option<u64> {
-        let exit = ExitFx::epoch(self.view())?;
-        let epoch = exit.epoch_number();
-        self.common.inbox.clear();
-        self.common.pending_commit = None;
-        self.common.pending.clear();
-        self.common.epoch = epoch;
-        self.transition(TransitionInput::Attempt(AttemptEvent::EpochAdvanced), 0, emit);
-        // Keep pump_pending: a marker may still be carried outside the owner.
-        exit.emit(emit);
-        Some(epoch)
-    }
+        self.common.held_handoff = None;
+        'publish_profile: {
+let (profile,): (Option<UserRef>,) = (Some(self.common.persisted.user.clone()),);
 
-    fn owns_receipt(&self, receipt: Receipt) -> bool {
-        self.common.inbox.iter().any(|record| Receipt::of(record) == receipt)
-            || self.common.pending_commit.as_ref().and_then(|commit| commit.receipt) == Some(receipt)
-    }
-
-    fn schedule_pump(&mut self, emit: &mut impl FnMut(SessionFx)) {
-        if !self.common.inbox.is_empty() && self.common.pending_commit.is_none() && !self.common.pump_pending {
-            self.common.pump_pending = true;
-            emit(SessionFx::Pump);
-        }
-    }
-
-
-
-    fn ingest(&mut self, envelope: &SessionEnvelope, emit: &mut impl FnMut(SessionFx)) -> bool {
-        let receipt = Receipt::of(envelope);
-        if self.owns_receipt(receipt) { return true; }
-        if !self.accepts_header(envelope) {
-            emit(SessionFx::Acknowledge(vec![receipt]));
-            return true;
-        }
-        // The adapter admits only receipt-bearing records from an accepted resource. This can
-        // also confirm acceptance if its small admission reply is still carried in the queue.
-        self.common.pending.get_mut(&envelope.addr.req.0).unwrap().admission = AdmissionState::Accepted(envelope.admission);
-        let active = usize::from(self.common.pending_commit.as_ref().is_some_and(|commit| commit.receipt.is_some()));
-        assert!(self.common.inbox.len() + active < SESSION_TRANSFER_RECORDS, "Session transfer credit invariant");
-        // Do not advance last_arrival here: that is the processing watermark, not receipt
-        // admission. Advancing it would make the FIFO head reject its own first delivery.
-        self.common.inbox.push_back(envelope.clone());
-        if self.common.pending_commit.is_none() && !self.common.pump_pending { self.pump_one(emit); }
-        true
-    }
-
-    fn pump_one(&mut self, emit: &mut impl FnMut(SessionFx)) {
-        if self.common.pending_commit.is_some() { return; }
-        let Some(mut envelope) = self.common.inbox.pop_front() else { return };
-        let receipt = Receipt::of(&envelope);
-        // Completion authority is independent of payload authority. Recheck at the FIFO
-        // head (a preceding commit may have changed this request), never at ingress.
-        // A trusted terminal with rejected data still ends its own work, using the same
-        // failure policy as a dropped producer; none of its payload reaches resource IO.
-        if !self.accepts(&envelope) && envelope.terminal
-            && matches!(envelope.outcome, SessionArrival::Data(_))
-            && self.accepts_header(&envelope)
-            && self.common.pending.get(&envelope.addr.req.0).is_some_and(|pending|
-                !matches!(pending.key.op, SessionOp::Endpoint(_))
-                    || pending.lifecycle == envelope.lifecycle)
-        {
-            envelope.outcome = SessionArrival::Dropped;
-        }
-        if self.accepts(&envelope) {
-            if !self.apply_qr_observation(&envelope, emit) {
-                self.apply_resource_observation(&envelope, emit);
-            }
-        }
-        if let Some(commit) = &mut self.common.pending_commit {
-            assert!(commit.req == receipt.addr.req.0 && commit.epoch == receipt.key.epoch
-                && commit.arrival == receipt.arrival, "Session commit receipt mismatch");
-            commit.receipt = Some(receipt);
-        } else {
-            emit(SessionFx::Acknowledge(vec![receipt]));
-        }
-        self.schedule_pump(emit);
-    }
-
-    fn publish_profile(&mut self, profile: Option<UserRef>, emit: &mut impl FnMut(SessionFx)) {
         // This is the sole scope allocator. Resource publication will store this explicit value
         // rather than independently incrementing another generation.
         self.common.profile_scope.0 = self.common.profile_scope.0.wrapping_add(1);
         self.common.active_profile = profile;
-        emit(SessionFx::PublishProfile(ProfilePublication {
+        fx.push(SessionFx::PublishProfile(ProfilePublication {
             epoch: self.common.epoch, profile: self.common.active_profile.clone(), scope: self.common.profile_scope,
             stamp: plx_plex::plex::grant::account_key(&self.common.persisted.account_token),
         }));
-    }
 
-    fn cancel_obsolete_interests(&mut self, retained: u32, emit: &mut impl FnMut(SessionFx)) {
-        let requests: Vec<_> = self.common.pending.iter().filter_map(|(&req, pending)|
-            (req != retained && !pending.expected.matches(&self.common.persisted)).then_some(req)).collect();
-        if requests.is_empty() { return; }
-        for req in &requests { self.common.pending.remove(req); }
-        let mut receipts = Vec::new();
-        self.common.inbox.retain(|record| {
-            if requests.contains(&record.addr.req.0) {
-                receipts.push(Receipt::of(record));
-                false
-            } else { true }
+};
+        if self.state.phase() == Phase::Ready {
+            EntryFx::Ready { announcement: Some(ReadyEntry { epoch: self.common.epoch, scope: self.common.profile_scope,
+                server: self.common.persisted.server.clone(), token: self.common.persisted.pms_token().into(),
+                install: ReadyInstall::PrimaryAndExtras(match &self.common.authority {
+                    BootstrapAuthority::Account { extras } => extras.clone(),
+                    BootstrapAuthority::DevPms { .. } => Vec::new(),
+                }) }) }.emit(&mut |effect| fx.push(effect));
+        }
+
+}; }
+            if superseded || released { { publish = true; }; }
+        } else if admitted.fresh {
+            if self.common.persistence_warning_answered {
+                // This authorization already had its one unsaved-login question answered
+                // (AUTH-03's field bug: a device unwritable on BOTH Discovery and Final used to
+                // ask it twice). Storage failing again must not ask it a second time — release
+                // whatever handoff this completion was holding so entry proceeds regardless.
+                let released = self.common.held_handoff == Some(HeldHandoff { epoch: completion.epoch, req: completion.req });
+                if released { 'release_held_handoff: {
+
+        self.common.held_handoff = None;
+        'publish_profile: {
+let (profile,): (Option<UserRef>,) = (Some(self.common.persisted.user.clone()),);
+
+        // This is the sole scope allocator. Resource publication will store this explicit value
+        // rather than independently incrementing another generation.
+        self.common.profile_scope.0 = self.common.profile_scope.0.wrapping_add(1);
+        self.common.active_profile = profile;
+        fx.push(SessionFx::PublishProfile(ProfilePublication {
+            epoch: self.common.epoch, profile: self.common.active_profile.clone(), scope: self.common.profile_scope,
+            stamp: plx_plex::plex::grant::account_key(&self.common.persisted.account_token),
+        }));
+
+};
+        if self.state.phase() == Phase::Ready {
+            EntryFx::Ready { announcement: Some(ReadyEntry { epoch: self.common.epoch, scope: self.common.profile_scope,
+                server: self.common.persisted.server.clone(), token: self.common.persisted.pms_token().into(),
+                install: ReadyInstall::PrimaryAndExtras(match &self.common.authority {
+                    BootstrapAuthority::Account { extras } => extras.clone(),
+                    BootstrapAuthority::DevPms { .. } => Vec::new(),
+                }) }) }.emit(&mut |effect| fx.push(effect));
+        }
+
+}; { publish = true; }; }
+            } else {
+                // The final write's own non-durable completion replaces a Discovery warning still
+                // showing (`Discovery` and `Final` never coexist: an unacknowledged Discovery warning
+                // blocks `take_ready`), so the newer one wins by direct overwrite.
+                let warning = PersistenceWarning::from_outcome(correlation_key, admitted.site, &completion.outcome);
+                'retire_save_incident: {
+
+        if self.common.incident.as_ref().is_some_and(|offer|
+            offer.key.kind == plx_telemetry::telemetry::incident::IncidentKind::SaveFailed) {
+            self.common.incident = None;
+        }
+
+};
+                self.common.persistence_warning = Some(warning);
+                if warning.helper.is_some() {
+                    // The reducer reads no clock. Both report paths use this fenced completion's
+                    // local warning evidence, not later process-global diagnostics.
+                    if let Some(context) = warning.incident_context() {
+                        'raise_incident: {
+let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, context,);
+
+        let key = IncidentKey { flow, kind: context.kind, link: context.link };
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
+            // The same failure again. Unresolved (a second stalled report in one wait): keep the
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
+            if !is_settled(held) {
+                held.context = Some(context);
+            }
+            break 'raise_incident;
+        }
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
+            key,
+            context: Some(context),
+            readout_context: Some(context),
+            state: IncidentState::Pending,
         });
-        emit(SessionFx::Cancel { requests, epoch: self.common.epoch });
-        if !receipts.is_empty() { emit(SessionFx::Acknowledge(receipts)); }
-    }
 
-    fn refresh_roster(&mut self, emit: &mut impl FnMut(SessionFx)) -> bool {
-        if self.common.persisted.account_token.is_empty() { return false; }
-        let Some(req) = self.allocate(SessionOp::ServerRoster, None) else { return false };
-        self.emit_work(req, SessionWork::ServerRoster { session: self.common.persisted.clone(),
-            expected: Identity::of(&self.common.persisted) }, emit);
-        true
-    }
-
-    fn start_switch(&mut self, picker: Picker, emit: &mut impl FnMut(SessionFx)) -> bool {
-        if matches!(self.common.authority, BootstrapAuthority::DevPms { .. }) {
-            // A dev-token session has no account behind it to list a roster with. The account
-            // menu still offers *Change profile* (it reads the on-disk sign-in), and the app has
-            // already routed to the picker by the time this runs — so refusing SILENTLY left that
-            // route with nothing behind it: a spinner that never ends and a BACK that could not
-            // leave (#132, TV session 8). Say so on the picker instead; `back` returns.
-            // `picker` is deliberately not recorded: nothing is detached here, so there is no
-            // picker-kind rule for `back` to apply, and BACK restores this session state exactly.
-            if self.state.phase() != Phase::Ready || self.state.pending_erase().is_some() { return false; }
-            let _ = picker;
-            self.transition(TransitionInput::Attempt(AttemptEvent::OpenDevPicker), 0, emit);
-            self.common.switch_refused_for = Some(Identity::of(&self.common.persisted));
-            self.replace_publication();
-            return true;
-        }
-        if self.state.pending_erase().is_some() { return false; }
-        if self.advance_epoch(emit).is_none() { return false; }
-        if self.common.persisted.account_token.is_empty() {
-            self.fail_login(plx_platform::i18n::msg::browse_auth_signed_out(), None, emit);
-            self.replace_publication();
-            return true;
-        }
-        if super::detaches_active_profile(picker) { self.publish_profile(None, emit); }
-        self.transition(TransitionInput::Attempt(AttemptEvent::OpenPicker { kind: picker, fallback: if self.state.picker_data().users.is_empty() { self.common.persisted.home_users.iter().map(UserTile::of_ref).collect() } else { Vec::new() } }), 0, emit);
-        let mut initial = None;
-        if let Some(req) = self.allocate(SessionOp::Picker, None) {
-            let initial_profile = picker == Picker::Boot && self.common.active_profile.is_none()
-                && self.common.persisted.can_go_local();
-            let mut registry = Vec::new();
-            if initial_profile {
-                registry.push(RegistryPlan::Primary { server: self.common.persisted.server.clone(),
-                    token: self.common.persisted.pms_token().into() });
-            }
-            registry.push(RegistryPlan::Install {
-                sources: self.common.persisted.sources.clone(), primary: None, commit: RosterCommit::Merge,
-            });
-            let plan = CommitPlan { registry_client_id: self.common.persisted.client_id.clone(),
-                expected_disk: self.common.disk_identity.clone(),
-                credentials: None, lifecycle: None, registry,
-                purpose: PersistencePurpose::Background, writes_durable: false,
-                authority: plx_plex::plex::session::SaveAuthority::Routine };
-            self.transition(TransitionInput::Attempt(AttemptEvent::InstallPicker { req }), 0, emit);
-            initial = self.prepare_commit(req, 0, true, plan, CommitDelta {
-                activate_profile: initial_profile, ..Default::default()
-            });
-        }
-        let server_roster = self.allocate(SessionOp::ServerRoster, None).map(|req|
-            self.prepare_work(req, SessionWork::ServerRoster { session: self.common.persisted.clone(), expected: Identity::of(&self.common.persisted) }));
-        let home_roster = self.allocate(SessionOp::HomeRoster, None).map(|req|
-            self.prepare_work(req, SessionWork::HomeRoster { client_id: self.common.persisted.client_id.clone(), account_token: self.common.persisted.account_token.clone(), expected: Identity::of(&self.common.persisted) }));
-        EntryFx::Profiles { setup: Some(PickerSetup { initial, server_roster, home_roster }) }.emit(emit);
-        self.replace_publication();
-        true
-    }
-
-    fn select_profile(&mut self, index: usize, pin: Option<String>, emit: &mut impl FnMut(SessionFx)) -> bool {
-        if self.state.pending_erase().is_some() || !matches!(self.state, attempt::Attempt::Profiles(_) | attempt::Attempt::Switching(_)) { return false; }
-        let Some(tile) = self.state.picker_data().users.get(index).cloned() else { return false };
-        if self.common.next_req.checked_add(1).is_none() { return false; }
-        if self.advance_epoch(emit).is_none() { return false; }
-        let same_user = super::may_reuse_seated_profile(&self.common.persisted, &tile, pin.as_deref());
-        if same_user {
-            self.transition(TransitionInput::Attempt(AttemptEvent::ReuseProfile), 0, emit);
-        } else {
-            let req = self.allocate(SessionOp::ProfileSwitch, None).expect("request preflight");
-            self.common.pending.get_mut(&req).unwrap().capture = Some(CaptureIntent::Profile { tile, pin });
-            self.transition(TransitionInput::Attempt(AttemptEvent::SelectProfile { req }), 0, emit);
-        }
-        self.replace_publication();
-        true
-    }
-
-    fn request_endpoint(&mut self, sid: plx_plex::plex::ServerId, emit: &mut impl FnMut(SessionFx)) -> bool {
-        // The registry's own validity rule: every id but the reserved UNSET names a slot.
-        if !sid.is_set()
-            || self.common.persisted.account_token.is_empty()
-            || self.common.pending.values().any(|pending| pending.key.op == SessionOp::Endpoint(sid.raw())) {
-            return false;
-        }
-        let sid = sid.raw();
-        let Some(req) = self.allocate(SessionOp::Endpoint(sid), None) else { return false };
-        self.common.pending.get_mut(&req).unwrap().capture = Some(CaptureIntent::Endpoint { sid });
-        emit(SessionFx::Capture { req, epoch: self.common.epoch, request: SessionReadRequest::Endpoint { sid } });
-        true
-    }
-
-    fn back(&mut self, reply: ReplyTo, emit: &mut impl FnMut(SessionFx)) -> bool {
-        // AUTH-03: while an unacknowledged persistence warning is showing, BACK must not clear it
-        // or resume — clearing it here would silently re-admit `needs_ready_commit`/`take_ready`
-        // on the next frame (a second, routine save over the still-unconfirmed fresh one) and, for
-        // a held Final handoff, would release it without the explicit acknowledgement the warning
-        // exists to require. Only the labelled Continue (`acknowledge_persistence_warning`) may
-        // clear it; BACK here is the platform root press only.
-        if self.common.persistence_warning.is_some() {
-            emit(SessionFx::BackReply { to: reply, resumed: false });
-            return true;
-        }
-        let dead_end = self.view().roster_dead_end();
-        if dead_end {
-            if matches!(self.common.authority, BootstrapAuthority::DevPms { .. }) {
-                // Nothing was detached or re-pointed (see `start_switch`): re-announce the dev
-                // session exactly as its activation did.
-                self.transition(TransitionInput::Attempt(AttemptEvent::ResumeDevBack), 0, emit);
-                emit(SessionFx::BackReply { to: reply, resumed: true });
-                self.replace_publication();
-                return true;
+};
+                    }
+                }
+                { publish = true; };
             }
         }
-        let stored = self.common.committed_credentials.merge_into(&self.common.persisted);
-        // A dead-end picker offered nobody, so the picker-kind rule (`may_resume`: the
-        // Change-profile picker is a root, so BACK cannot skip a PIN) has no boundary to guard.
-        // Only "is there a session to go back to" remains — `dead_end_resumes`, the same answer
-        // the read-out publishes so its *Back* control is offered exactly when this resumes.
-        let resumable = if dead_end { self.view().dead_end_resumes() } else { super::resumable(&stored, self.state
-            .picker_data().picker) };
-        if !resumable || self.common.epoch.checked_add(1).is_none() {
-            emit(SessionFx::BackReply { to: reply, resumed: false });
-            return true;
-        }
-        self.advance_epoch(emit).expect("epoch preflight");
-        self.common.persisted = stored;
-        self.transition(TransitionInput::Attempt(AttemptEvent::ResumeBack), 0, emit);
-        self.common.persistence_warning = None;
-        self.common.held_handoff = None;
-        self.common.persistence_warning_answered = false;
-        emit(SessionFx::BackReply { to: reply, resumed: true });
-        self.replace_publication();
         true
-    }
 
-    fn erase(&mut self, sign_in: bool, emit: &mut impl FnMut(SessionFx)) -> bool {
-        if self.state  .pending_erase().is_some() || self.common.epoch.checked_add(1).is_none() { return false; }
-        ExitFx::for_state(&self.state, ExitActions { cancel: None, acknowledge: Vec::new(), coordinator: Some(CoordinatorAction::CloseTelemetry) }).emit(emit);
-        self.advance_epoch(emit).expect("epoch preflight");
-        self.common.persisted = PersistedSession::default();
-        self.common.committed_credentials = CredentialPatch::of(&self.common.persisted);
-        // The identity ends here, and its verdicts with it: the same account signed back in is
-        // the same `Identity`, and nothing has refused it anything in that sign-in.
-        self.common.switch_refused_for = None;
-        self.common.authority = BootstrapAuthority::Account { extras: Vec::new() };
-        self.common.persistence_warning = None;
-        self.common.held_handoff = None;
-        self.common.persistence_warning_answered = false;
-        self.transition(TransitionInput::Attempt(AttemptEvent::EraseAuthority), 0, emit);
-        self.forget_incidents();
-        self.publish_profile(None, emit);
-        self.transition(TransitionInput::Attempt(AttemptEvent::BeginErase { epoch: self.common.epoch, sign_in }), 0, emit);
-        self.replace_publication();
-        true
-    }
+},
+            SessionEvent::Read(reply) => 'apply_read: {
+let (reply,): (&SessionReadReply,) = (reply,);
 
-    fn erased(&mut self, epoch: u64, leftovers: usize, emit: &mut impl FnMut(SessionFx)) -> bool {
-        let Some((expected, sign_in)) = self.state.pending_erase() else { return false };
-        if expected != epoch || self.common.epoch != epoch { return false; }
-        self.transition(TransitionInput::Attempt(AttemptEvent::FinishErase), 0, emit);
-        self.common.disk_identity = Identity::of(&self.common.persisted);
-        self.common.delete_leftovers = leftovers;
-        if sign_in { self.restart_login(true, emit); }
-        self.replace_publication();
-        true
-    }
-
-    fn apply_read(&mut self, reply: &SessionReadReply, emit: &mut impl FnMut(SessionFx)) -> bool {
-        if reply.addr.to != MachineId::Session || reply.epoch != self.common.epoch { return false; }
+        if reply.addr.to != MachineId::Session || reply.epoch != self.common.epoch { break 'apply_read false; }
         let req = reply.addr.req.0;
-        let Some(pending) = self.common.pending.get(&req) else { return false };
-        if pending.key.epoch != reply.epoch || !pending.expected.matches(&self.common.persisted) || !self.state.owns_work(req, pending) { return false; }
-        let Some(intent) = pending.capture.clone() else { return false };
+        let Some(pending) = self.common.pending.get(&req) else { break 'apply_read false };
+        if pending.key.epoch != reply.epoch || !pending.expected.matches(&self.common.persisted) || !self.state.owns_work(req, pending) { break 'apply_read false; }
+        let Some(intent) = pending.capture.clone() else { break 'apply_read false };
         let input = match (intent, &reply.value) {
             (CaptureIntent::Login, SessionReadValue::LoginClientId(client_id)) if !client_id.is_empty() => {
                 if self.common.disk_identity.client_id.is_empty() {
@@ -2497,72 +3636,620 @@ impl SessionMachine {
                     lifecycle: captured.lifecycle, machine_id: captured.machine_id.clone() }
             }
             (CaptureIntent::Endpoint { .. }, SessionReadValue::Endpoint(_)) => {
-                self.retire(req, emit);
-                return true;
+                'retire: {
+let (req,): (u32,) = (req,);
+
+        if self.common.pending.contains_key(&req) {
+            { let event = AttemptEvent::WorkRetired { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        self.common.pending.remove(&req);
+        fx.push(SessionFx::Retire { req });
+
+};
+                break 'apply_read true;
             }
             (CaptureIntent::Login, SessionReadValue::LoginClientId(_)) => {
-                self.fail_login(plx_platform::i18n::msg::browse_auth_start_failed(),
-                    Some(IncidentContext::internal(InternalClass::ClientIdUnavailable)), emit);
-                self.retire(req, emit);
-                self.replace_publication();
-                return true;
+                'fail_login: {
+let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_start_failed(), Some(IncidentContext::internal(InternalClass::ClientIdUnavailable)),);
+
+        { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        self.common.persistence_warning = None;
+        self.common.held_handoff = None;
+        self.common.persistence_warning_answered = false;
+        // A token plex.tv refused is not an authorization in flight any more: without this, the
+        // retry decision (`retry_kind`) kept offering a discovery-only pass that presents the same
+        // refused token again, and Try again could never recover. Dropping it makes the retry a
+        // new QR sign-in; the incident below is raised exactly as before, so its dedup holds.
+        match incident {
+            Some(context) => 'raise_incident: {
+let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, context,);
+
+        let key = IncidentKey { flow, kind: context.kind, link: context.link };
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
+            // The same failure again. Unresolved (a second stalled report in one wait): keep the
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
+            if !is_settled(held) {
+                held.context = Some(context);
             }
-            _ => return false,
+            break 'raise_incident;
+        }
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
+            key,
+            context: Some(context),
+            readout_context: Some(context),
+            state: IncidentState::Pending,
+        });
+
+},
+            None => self.common.incident = None,
+        }
+
+};
+                'retire: {
+let (req,): (u32,) = (req,);
+
+        if self.common.pending.contains_key(&req) {
+            { let event = AttemptEvent::WorkRetired { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        self.common.pending.remove(&req);
+        fx.push(SessionFx::Retire { req });
+
+};
+                { publish = true; };
+                break 'apply_read true;
+            }
+            _ => break 'apply_read false,
         };
         let pending = self.common.pending.get_mut(&req).unwrap();
         pending.capture = None;
-        self.emit_work(req, input, emit);
+        'emit_work: {
+let (req, input,): (u32, SessionWork,) = (req, input,);
+
+        ('prepare_work: {
+let (req, input,): (u32, SessionWork,) = (req, input,);
+
+        let pending = self.common.pending.get_mut(&req).expect("owned work request");
+        let admission = AdmissionId(req);
+        pending.admission = AdmissionState::Awaiting(admission);
+        EntryWork::Work { req, key: pending.key, admission, input }
+
+}).emit(&mut |effect| fx.push(effect));
+
+};
         true
-    }
 
-    fn roster_plan(next: &PersistedSession, probes: &[super::SettledProbe], commit: RosterCommit)
-        -> Vec<RegistryPlan> {
-        let primary = next.sources.iter().position(|source| source.machine_id == next.server.machine_id);
-        let mut plans = vec![RegistryPlan::Install { sources: next.sources.clone(), primary, commit }];
-        plans.extend(probes.iter().cloned().map(RegistryPlan::Probe));
-        plans
-    }
+},
+            SessionEvent::Admission(reply) => 'apply_admission: {
+let (reply,): (AdmissionReply,) = (*reply,);
 
-    /// A roster request ended without tiles. With cached tiles on screen nothing changes — they
-    /// are still the household, and offline switching reads them. With NONE, the picker says so
-    /// on its own route: `Phase::Profiles` with the reason in `error` and no tiles is the
-    /// read-out `screens/profiles.rs` draws, and [`SessionInit::roster_dead_end`] is what lets BACK leave
-    /// it. It used to be `fail_login`, i.e. `Phase::Error` — which the app routes to the SIGN-IN
-    /// screen ("Couldn't sign in", whose Try again starts a new QR sign-in) for a person who is
-    /// signed in, and whose BACK the Change-profile picker's root rule then refused (#132).
-    fn fail_empty_home_roster(&mut self, reason: &str, emit: &mut impl FnMut(SessionFx)) {
-        if self.state.picker_data().users.is_empty() && self.state.phase() == Phase::Profiles {
-            self.transition(TransitionInput::Attempt(AttemptEvent::RosterFailed { message: reason.to_owned() }), 0, emit);
+        if reply.addr.to != MachineId::Session || reply.key.epoch != self.common.epoch { break 'apply_admission false; }
+        let req = reply.addr.req.0;
+        if !self.common.pending.get(&req).is_some_and(|pending| self.state.owns_work(req, pending)) { break 'apply_admission false; }
+        let Some(pending) = self.common.pending.get_mut(&req) else { break 'apply_admission false };
+        if pending.key != reply.key || pending.admission != AdmissionState::Awaiting(reply.correlation) { break 'apply_admission false; }
+        if reply.accepted {
+            pending.admission = AdmissionState::Accepted(reply.correlation);
+        } else {
+            // This is an unsequenced, never-admitted refusal. Accepted requests (including ones
+            // without a first observation) cannot enter this branch.
+            match pending.key.op {
+                SessionOp::Login => 'fail_login: {
+let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_start_failed(), Some(IncidentContext::internal(InternalClass::AdmissionRefused)),);
+
+        { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        self.common.persistence_warning = None;
+        self.common.held_handoff = None;
+        self.common.persistence_warning_answered = false;
+        // A token plex.tv refused is not an authorization in flight any more: without this, the
+        // retry decision (`retry_kind`) kept offering a discovery-only pass that presents the same
+        // refused token again, and Try again could never recover. Dropping it makes the retry a
+        // new QR sign-in; the incident below is raised exactly as before, so its dedup holds.
+        match incident {
+            Some(context) => 'raise_incident: {
+let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, context,);
+
+        let key = IncidentKey { flow, kind: context.kind, link: context.link };
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
+            // The same failure again. Unresolved (a second stalled report in one wait): keep the
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
+            if !is_settled(held) {
+                held.context = Some(context);
+            }
+            break 'raise_incident;
         }
-    }
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
+            key,
+            context: Some(context),
+            readout_context: Some(context),
+            state: IncidentState::Pending,
+        });
 
-    /// [`Self::fail_empty_home_roster`] for plex.tv's VERDICT: over nothing cached it is the dead
-    /// end itself, so it is also remembered for this identity and the account menu stops offering
-    /// the way in (`SessionInit::refuse_switch`). Over cached tiles it changes nothing, like any
-    /// other empty answer.
-    fn refuse_empty_home_roster(&mut self, emit: &mut impl FnMut(SessionFx)) {
-        if self.state.picker_data().users.is_empty() && self.state.phase() == Phase::Profiles {
-            self.transition(TransitionInput::Attempt(AttemptEvent::RosterFailed { message: roster_refused().into() }), 0, emit);
-            self.common.switch_refused_for = Some(Identity::of(&self.common.persisted));
+},
+            None => self.common.incident = None,
         }
-    }
 
-    fn apply_resource_observation(&mut self, envelope: &SessionEnvelope,
-        emit: &mut impl FnMut(SessionFx)) -> bool {
+},
+                SessionOp::Rediscover => 'fail_login: {
+let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_rediscover_failed(), Some(IncidentContext::internal(InternalClass::AdmissionRefused)),);
+
+        { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        self.common.persistence_warning = None;
+        self.common.held_handoff = None;
+        self.common.persistence_warning_answered = false;
+        // A token plex.tv refused is not an authorization in flight any more: without this, the
+        // retry decision (`retry_kind`) kept offering a discovery-only pass that presents the same
+        // refused token again, and Try again could never recover. Dropping it makes the retry a
+        // new QR sign-in; the incident below is raised exactly as before, so its dedup holds.
+        match incident {
+            Some(context) => 'raise_incident: {
+let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, context,);
+
+        let key = IncidentKey { flow, kind: context.kind, link: context.link };
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
+            // The same failure again. Unresolved (a second stalled report in one wait): keep the
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
+            if !is_settled(held) {
+                held.context = Some(context);
+            }
+            break 'raise_incident;
+        }
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
+            key,
+            context: Some(context),
+            readout_context: Some(context),
+            state: IncidentState::Pending,
+        });
+
+},
+            None => self.common.incident = None,
+        }
+
+},
+                SessionOp::ProfileSwitch => {
+                    { let event = AttemptEvent::SwitchAdmissionRefused; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                }
+                SessionOp::HomeRoster => 'fail_empty_home_roster: {
+let (reason,): (&str,) = (roster_unreachable(),);
+
+        if self.state.picker_data().users.is_empty() && self.state.phase() == Phase::Profiles {
+            { let event = AttemptEvent::RosterFailed { message: reason.to_owned() }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+
+},
+                SessionOp::ServerRoster | SessionOp::Endpoint(_) | SessionOp::Ready | SessionOp::Picker | SessionOp::DevBoundary => {}
+            }
+            'retire: {
+let (req,): (u32,) = (req,);
+
+        if self.common.pending.contains_key(&req) {
+            { let event = AttemptEvent::WorkRetired { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        self.common.pending.remove(&req);
+        fx.push(SessionFx::Retire { req });
+
+};
+            { publish = true; };
+        }
+        'schedule_pump: {
+
+        if !self.common.inbox.is_empty() && self.common.pending_commit.is_none() && !self.common.pump_pending {
+            self.common.pump_pending = true;
+            fx.push(SessionFx::Pump);
+        }
+
+};
+        true
+
+},
+            SessionEvent::Erased { epoch, leftovers } => 'erased: {
+let (epoch, leftovers,): (u64, usize,) = (*epoch, *leftovers,);
+
+        let Some((expected, sign_in)) = self.state.pending_erase() else { break 'erased false };
+        if expected != epoch || self.common.epoch != epoch { break 'erased false; }
+        { let event = AttemptEvent::FinishErase; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        self.common.disk_identity = Identity::of(&self.common.persisted);
+        self.common.delete_leftovers = leftovers;
+        if sign_in { { restart = Some(if true { LoginRestart::Fresh } else { LoginRestart::Retry }); true }; }
+        { publish = true; };
+        true
+
+},
+            SessionEvent::IncidentReported { id, delivery } => {
+                let handled = 'incident_reported: {
+let (id, delivery,): (u32, &IncidentDelivery,) = (*id, delivery,);
+
+        let Some(held) = self.common.incident.as_mut().filter(|held| held.id == id) else { break 'incident_reported false };
+        let shown = match &held.state {
+            IncidentState::Queued { receipt } | IncidentState::Saved { receipt } => Some(receipt.as_str()),
+            IncidentState::Pending | IncidentState::Offered { .. } | IncidentState::OnRequest { .. }
+                | IncidentState::AutoSending | IncidentState::Sending | IncidentState::Delivered { .. }
+                | IncidentState::Failed | IncidentState::NotNow | IncidentState::Dropped => None,
+        };
+        held.state = match (&held.state, delivery) {
+            (IncidentState::AutoSending, IncidentDelivery::Standing { receipt: Some(receipt) })
+            | (IncidentState::Sending, IncidentDelivery::OneOff { receipt: Some(receipt) }) => {
+                IncidentState::Queued { receipt: receipt.clone() }
+            }
+            (IncidentState::AutoSending, IncidentDelivery::Standing { receipt: None })
+            | (IncidentState::Sending, IncidentDelivery::OneOff { receipt: None }) => IncidentState::Failed,
+            // Tried and not through yet, still queued durably: said once, from Queued.
+            (IncidentState::Queued { .. }, IncidentDelivery::Held { receipt }) if shown == Some(receipt) => {
+                IncidentState::Saved { receipt: receipt.clone() }
+            }
+            (_, IncidentDelivery::Delivered { receipt }) if shown == Some(receipt) => {
+                IncidentState::Delivered { receipt: receipt.clone() }
+            }
+            // The report did not get through after all: Send report is accepted again.
+            (_, IncidentDelivery::Undelivered { receipt }) if shown == Some(receipt) => IncidentState::Failed,
+            _ => break 'incident_reported false,
+        };
+        true
+
+};
+                if handled { { publish = true; }; }
+                handled
+            }
+            SessionEvent::Pump => {
+                self.common.pump_pending = false;
+                { pump = true; };
+                true
+            }
+            SessionEvent::CacheObserved(need) => {
+                'observe_cache: {
+let (need, now_ms,): (plx_plex::plex::session::RefreshNeed, u32,) = (*need, tick_ms,);
+
+        use plx_plex::plex::session::LOCKED_RETRY_MS;
+        let tracked = match self.cache_refresh {
+            CacheRefresh::InFlight { .. } => break 'observe_cache,
+            CacheRefresh::Backoff { armed_ms, generation } => {
+                let covers = generation.is_none_or(|g| g == need.generation);
+                if covers && now_ms.wrapping_sub(armed_ms) < LOCKED_RETRY_MS { break 'observe_cache; }
+                covers
+            }
+            CacheRefresh::Idle => false,
+        };
+        if need.transient && !tracked {
+            self.cache_refresh = CacheRefresh::Backoff { armed_ms: now_ms, generation: Some(need.generation) };
+            break 'observe_cache;
+        }
+        self.next_cache_req = self.next_cache_req.wrapping_add(1);
+        let req = self.next_cache_req;
+        self.cache_refresh = CacheRefresh::InFlight { req, generation: need.generation };
+        fx.push(SessionFx::RefreshCache { req, generation: need.generation });
+
+};
+                true
+            }
+            SessionEvent::CacheRefreshed { req, outcome } => 'cache_refreshed: {
+let (req, outcome, now_ms,): (u32, plx_plex::plex::session::CacheRefreshOutcome, u32,) = (*req, *outcome, tick_ms,);
+
+        use plx_plex::plex::session::CacheRefreshOutcome;
+        if self.cache_refresh_in_flight() != Some(req) { break 'cache_refreshed false; }
+        let armed_ms = now_ms;
+        self.cache_refresh = match outcome {
+            CacheRefreshOutcome::Settled | CacheRefreshOutcome::Superseded => CacheRefresh::Idle,
+            CacheRefreshOutcome::Transient { generation } => CacheRefresh::Backoff { armed_ms, generation: Some(generation) },
+            CacheRefreshOutcome::Refused => CacheRefresh::Backoff { armed_ms, generation: None },
+        };
+        true
+
+},
+        };
+// Result ingress and Pump share one receipt-ordered observation drain.
+if pump { 'pump_one: {
+
+        if self.common.pending_commit.is_some() { break 'pump_one; }
+        let Some(mut envelope) = self.common.inbox.pop_front() else { break 'pump_one };
+        let receipt = Receipt::of(&envelope);
+        // Completion authority is independent of payload authority. Recheck at the FIFO
+        // head (a preceding commit may have changed this request), never at ingress.
+        // A trusted terminal with rejected data still ends its own work, using the same
+        // failure policy as a dropped producer; none of its payload reaches resource IO.
+        if !self.accepts(&envelope) && envelope.terminal
+            && matches!(envelope.outcome, SessionArrival::Data(_))
+            && self.accepts_header(&envelope)
+            && self.common.pending.get(&envelope.addr.req.0).is_some_and(|pending|
+                !matches!(pending.key.op, SessionOp::Endpoint(_))
+                    || pending.lifecycle == envelope.lifecycle)
+        {
+            envelope.outcome = SessionArrival::Dropped;
+        }
+        if self.accepts(&envelope) {
+            if !('apply_qr_observation: {
+let (envelope,): (&SessionEnvelope,) = (&envelope,);
+
+        if !self.accepts(envelope)
+            || !matches!(envelope.key.op, SessionOp::Login | SessionOp::Rediscover) {
+            break 'apply_qr_observation false;
+        }
+        let req = envelope.addr.req.0;
+        if !self.common.pending[&req].expected.matches(&self.common.persisted) { break 'apply_qr_observation false; }
+        match &envelope.outcome {
+            SessionArrival::Refused | SessionArrival::Dropped => {
+                if !envelope.terminal { break 'apply_qr_observation false; }
+                let (message, class) = match (envelope.key.op, &envelope.outcome) {
+                    (SessionOp::Rediscover, SessionArrival::Refused) =>
+                        (plx_platform::i18n::msg::browse_auth_rediscover_failed(), InternalClass::WorkerRefused),
+                    (_, SessionArrival::Refused) => (plx_platform::i18n::msg::browse_auth_start_failed(), InternalClass::WorkerRefused),
+                    _ => (plx_platform::i18n::msg::browse_auth_finish_failed(), InternalClass::WorkerDropped),
+                };
+                'fail_login: {
+let (message, incident,): (&str, Option<IncidentContext>,) = (message, Some(IncidentContext::internal(class)),);
+
+        { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        self.common.persistence_warning = None;
+        self.common.held_handoff = None;
+        self.common.persistence_warning_answered = false;
+        // A token plex.tv refused is not an authorization in flight any more: without this, the
+        // retry decision (`retry_kind`) kept offering a discovery-only pass that presents the same
+        // refused token again, and Try again could never recover. Dropping it makes the retry a
+        // new QR sign-in; the incident below is raised exactly as before, so its dedup holds.
+        match incident {
+            Some(context) => 'raise_incident: {let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, context,);
+
+        let key = IncidentKey { flow, kind: context.kind, link: context.link };
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
+            // The same failure again. Unresolved (a second stalled report in one wait): keep the
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
+            if !is_settled(held) {
+                held.context = Some(context);
+            }
+            break 'raise_incident;
+        }
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
+            key,
+            context: Some(context),
+            readout_context: Some(context),
+            state: IncidentState::Pending,
+        });
+
+},
+            None => self.common.incident = None,
+        }
+
+};
+            }
+            SessionArrival::Data(data) => {
+                let super::observation::Observation::Login(progress) = &**data else { break 'apply_qr_observation false };
+                use super::LoginProgress;
+                let (epoch, terminal) = match progress {
+                    LoginProgress::CodeReplacing { epoch }
+                    | LoginProgress::CodeReady { epoch, .. }
+                    | LoginProgress::Authorized { epoch, .. }
+                    | LoginProgress::DiscoveryTrouble { epoch, .. }
+                    | LoginProgress::DiscoveryRetrySettled { epoch, .. }
+                    | LoginProgress::LinkTrouble { epoch, .. } => (*epoch, false),
+                    LoginProgress::Failed { epoch, .. } => (*epoch, true),
+                    LoginProgress::SignedIn { .. } => break 'apply_qr_observation false,
+                };
+                if epoch != envelope.key.epoch || terminal != envelope.terminal { break 'apply_qr_observation false; }
+                match progress {
+                    LoginProgress::CodeReplacing { .. } => {
+                        if envelope.key.op != SessionOp::Login || !matches!(self.state.phase(), Phase::Creating | Phase::Waiting) { break 'apply_qr_observation false; }
+                        { let event = AttemptEvent::CodeReplacing; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                    }
+                    LoginProgress::CodeReady { code, qr_png, .. } => {
+                        if envelope.key.op != SessionOp::Login { break 'apply_qr_observation false; }
+                        let Some(next) = self.common.next_qr.checked_add(1) else {
+                            'fail_login: {
+let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_start_failed(), Some(IncidentContext::internal(InternalClass::Exhausted)),);
+
+        { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        self.common.persistence_warning = None;
+        self.common.held_handoff = None;
+        self.common.persistence_warning_answered = false;
+        // A token plex.tv refused is not an authorization in flight any more: without this, the
+        // retry decision (`retry_kind`) kept offering a discovery-only pass that presents the same
+        // refused token again, and Try again could never recover. Dropping it makes the retry a
+        // new QR sign-in; the incident below is raised exactly as before, so its dedup holds.
+        match incident {
+            Some(context) => 'raise_incident: {
+let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, context,);
+
+        let key = IncidentKey { flow, kind: context.kind, link: context.link };
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
+            // The same failure again. Unresolved (a second stalled report in one wait): keep the
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
+            if !is_settled(held) {
+                held.context = Some(context);
+            }
+            break 'raise_incident;
+        }
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
+            key,
+            context: Some(context),
+            readout_context: Some(context),
+            state: IncidentState::Pending,
+        });
+
+},
+            None => self.common.incident = None,
+        }
+
+};
+                            self.common.pending.remove(&req);
+                            fx.push(SessionFx::Cancel { requests: vec![req], epoch: self.common.epoch });
+                            fx.push(SessionFx::Retire { req });
+                            { publish = true; };
+                            break 'apply_qr_observation true;
+                        };
+                        self.common.next_qr = next;
+                        { let event = AttemptEvent::CodeReady {
+                            generation: next, code: code.clone(), png: qr_png.clone(),
+                        }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                    }
+                    LoginProgress::Authorized { token, .. } => {
+                        if envelope.key.op != SessionOp::Login { break 'apply_qr_observation false; }
+                        // A sign-in that is not a sign-out (a stored session that could not be
+                        // activated, *Use another account*, the dev login trigger) starts from the
+                        // stored record. Whoever that record seated, its roster and its offline
+                        // profile cache belong to the authorization this token replaces, so none of
+                        // them may ride into the new account: `SignedIn` writes the roster and
+                        // `Session::account` names a single-user account from it; a Home account
+                        // seats through the picker. Reset BEFORE `expected` is recomputed below.
+                        // The new token cannot say whose cache this is (every sign-in mints one),
+                        // so the cache is emptied while the identity is unknown and `SignedIn`
+                        // restores the STORED record's when its roster names the same owner.
+                        self.common.persisted.user = UserRef::default();
+                        self.common.persisted.home_users.clear();
+                        self.common.persisted.profiles.clear();
+                        self.common.persisted.account_token = token.clone();
+                        { let event = AttemptEvent::Authorized; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                        self.common.pending.get_mut(&req).unwrap().expected = Identity::of(&self.common.persisted);
+                    }
+                    LoginProgress::DiscoveryTrouble { progress, .. } => {
+                        if !matches!(envelope.key.op, SessionOp::Login | SessionOp::Rediscover) {
+                            break 'apply_qr_observation false;
+                        }
+                        { let event = AttemptEvent::DiscoveryTrouble { progress: *progress }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                    }
+                    LoginProgress::DiscoveryRetrySettled { run, .. } => {
+                        if !matches!(envelope.key.op, SessionOp::Login | SessionOp::Rediscover) {
+                            break 'apply_qr_observation false;
+                        }
+                        { let event = AttemptEvent::DiscoverySettled { run: *run }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                    }
+                    LoginProgress::LinkTrouble { trouble, .. } => {
+                        if envelope.key.op != SessionOp::Login { break 'apply_qr_observation false; }
+                        { let event = AttemptEvent::LinkTrouble {
+                            present: trouble.is_some(),
+                        }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                        if let Some(context) = trouble {
+                            'raise_incident: {
+let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, *context,);
+
+        let key = IncidentKey { flow, kind: context.kind, link: context.link };
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
+            // The same failure again. Unresolved (a second stalled report in one wait): keep the
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
+            if !is_settled(held) {
+                held.context = Some(context);
+            }
+            break 'raise_incident;
+        }
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
+            key,
+            context: Some(context),
+            readout_context: Some(context),
+            state: IncidentState::Pending,
+        });
+
+};
+                        }
+                    }
+                    LoginProgress::Failed { message, incident, plaintext, account, .. } => {
+                        'fail_login: {
+let (message, incident,): (&str, Option<IncidentContext>,) = (message, Some(*incident),);
+
+        { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        self.common.persistence_warning = None;
+        self.common.held_handoff = None;
+        self.common.persistence_warning_answered = false;
+        // A token plex.tv refused is not an authorization in flight any more: without this, the
+        // retry decision (`retry_kind`) kept offering a discovery-only pass that presents the same
+        // refused token again, and Try again could never recover. Dropping it makes the retry a
+        // new QR sign-in; the incident below is raised exactly as before, so its dedup holds.
+        match incident {
+            Some(context) => 'raise_incident: {
+let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, context,);
+
+        let key = IncidentKey { flow, kind: context.kind, link: context.link };
+        if let Some(held) = self.common.incident.as_mut().filter(|held| held.key == key) {
+            // The same failure again. Unresolved (a second stalled report in one wait): keep the
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
+            if !is_settled(held) {
+                held.context = Some(context);
+            }
+            break 'raise_incident;
+        }
+        self.common.next_incident = self.common.next_incident.wrapping_add(1).max(1);
+        self.common.incident = Some(IncidentOffer {
+            id: self.common.next_incident,
+            key,
+            context: Some(context),
+            readout_context: Some(context),
+            state: IncidentState::Pending,
+        });
+
+},
+            None => self.common.incident = None,
+        }
+
+};
+                        { let event = AttemptEvent::DiscoveryFailed { plaintext: plaintext.clone(), account: account.clone() }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                    }
+                    LoginProgress::SignedIn { .. } => unreachable!(),
+                }
+            }
+        }
+        if envelope.terminal {
+            self.common.pending.remove(&req);
+        } else {
+            self.common.pending.get_mut(&req).unwrap().last_arrival = Some(envelope.arrival);
+        }
+        { publish = true; };
+        true
+
+}) {
+                'apply_resource_observation: {
+let (envelope,): (&SessionEnvelope,) = (&envelope,);
+
         use super::observation::Observation;
-        if !self.accepts(envelope) { return false; }
+        if !self.accepts(envelope) { break 'apply_resource_observation false; }
         let req = envelope.addr.req.0;
         let pending = &self.common.pending[&req];
-        if !pending.expected.matches(&self.common.persisted) { return false; }
+        if !pending.expected.matches(&self.common.persisted) { break 'apply_resource_observation false; }
         let SessionArrival::Data(data) = &envelope.outcome else {
             if pending.key.op == SessionOp::ProfileSwitch && pending.phase == StreamPhase::Running {
-                self.transition(TransitionInput::Attempt(AttemptEvent::SwitchDropped), 0, emit);
+                { let event = AttemptEvent::SwitchDropped; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
             } else if pending.key.op == SessionOp::HomeRoster {
-                self.fail_empty_home_roster(roster_unreachable(), emit);
+                'fail_empty_home_roster: {
+let (reason,): (&str,) = (roster_unreachable(),);
+
+        if self.state.picker_data().users.is_empty() && self.state.phase() == Phase::Profiles {
+            { let event = AttemptEvent::RosterFailed { message: reason.to_owned() }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+
+};
             }
-            self.retire(req, emit);
-            self.replace_publication();
-            return true;
+            'retire: {
+let (req,): (u32,) = (req,);
+
+        if self.common.pending.contains_key(&req) {
+            { let event = AttemptEvent::WorkRetired { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        self.common.pending.remove(&req);
+        fx.push(SessionFx::Retire { req });
+
+};
+            { publish = true; };
+            break 'apply_resource_observation true;
         };
         let mut delta = CommitDelta::default();
         // Purpose is decided by the op, not by whether the write happens to be a credential
@@ -2622,7 +4309,7 @@ impl SessionMachine {
                 }
                 delta.complete_signin = true;
             }
-            Observation::Login(_) => return false,
+            Observation::Login(_) => break 'apply_resource_observation false,
             Observation::Registry(progress) => {
                 if pending.key.op == SessionOp::ServerRoster
                     && !self.common.persisted.active_profile_is_admin() {
@@ -2669,13 +4356,36 @@ impl SessionMachine {
                     Some(users) if !users.is_empty() => users,
                     graded => {
                         if graded.is_none() {
-                            self.fail_empty_home_roster(roster_unreachable(), emit);
+                            'fail_empty_home_roster: {
+let (reason,): (&str,) = (roster_unreachable(),);
+
+        if self.state.picker_data().users.is_empty() && self.state.phase() == Phase::Profiles {
+            { let event = AttemptEvent::RosterFailed { message: reason.to_owned() }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+
+};
                         } else {
-                            self.refuse_empty_home_roster(emit);
+                            'refuse_empty_home_roster: {
+
+        if self.state.picker_data().users.is_empty() && self.state.phase() == Phase::Profiles {
+            { let event = AttemptEvent::RosterFailed { message: roster_refused().into() }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+            self.common.switch_refused_for = Some(Identity::of(&self.common.persisted));
+        }
+
+};
                         }
-                        self.retire(req, emit);
-                        self.replace_publication();
-                        return true;
+                        'retire: {
+let (req,): (u32,) = (req,);
+
+        if self.common.pending.contains_key(&req) {
+            { let event = AttemptEvent::WorkRetired { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        self.common.pending.remove(&req);
+        fx.push(SessionFx::Retire { req });
+
+};
+                        { publish = true; };
+                        break 'apply_resource_observation true;
                     }
                 };
                 let mut next = self.common.persisted.clone();
@@ -2689,8 +4399,17 @@ impl SessionMachine {
             }
             Observation::ServerRoster(progress) => match &progress.outcome {
                 super::ServerRosterOutcome::Unreachable => {
-                    self.retire(req, emit);
-                    return true;
+                    'retire: {
+let (req,): (u32,) = (req,);
+
+        if self.common.pending.contains_key(&req) {
+            { let event = AttemptEvent::WorkRetired { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        self.common.pending.remove(&req);
+        fx.push(SessionFx::Retire { req });
+
+};
+                    break 'apply_resource_observation true;
                 }
                 super::ServerRosterOutcome::NoReachable { settled } => {
                     // R2/A5: nothing was found to REGISTER, but a probe may still have verified
@@ -2698,8 +4417,17 @@ impl SessionMachine {
                     // registry-only commit, the same shape `start_switch`'s initial-primary plan
                     // already uses: no credential patch, no lifecycle, just the probe facts.
                     if settled.is_empty() {
-                        self.retire(req, emit);
-                        return true;
+                        'retire: {
+let (req,): (u32,) = (req,);
+
+        if self.common.pending.contains_key(&req) {
+            { let event = AttemptEvent::WorkRetired { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        self.common.pending.remove(&req);
+        fx.push(SessionFx::Retire { req });
+
+};
+                        break 'apply_resource_observation true;
                     }
                     plan.registry = settled.iter().cloned().map(RegistryPlan::Probe).collect();
                 }
@@ -2708,8 +4436,17 @@ impl SessionMachine {
                 } => {
                     if !self.common.persisted.active_profile_is_admin() {
                         if settled.is_empty() {
-                            self.retire(req, emit);
-                            return true;
+                            'retire: {
+let (req,): (u32,) = (req,);
+
+        if self.common.pending.contains_key(&req) {
+            { let event = AttemptEvent::WorkRetired { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        self.common.pending.remove(&req);
+        fx.push(SessionFx::Retire { req });
+
+};
+                            break 'apply_resource_observation true;
                         }
                         plan.registry = settled.iter().cloned().map(RegistryPlan::Probe).collect();
                     } else {
@@ -2724,8 +4461,17 @@ impl SessionMachine {
                         let repaired = next.refresh_profile_record();
                         if !(roster_changed || moved || repaired) {
                             if settled.is_empty() {
-                                self.retire(req, emit);
-                                return true;
+                                'retire: {
+let (req,): (u32,) = (req,);
+
+        if self.common.pending.contains_key(&req) {
+            { let event = AttemptEvent::WorkRetired { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        self.common.pending.remove(&req);
+        fx.push(SessionFx::Retire { req });
+
+};
+                                break 'apply_resource_observation true;
                             }
                             plan.registry = settled.iter().cloned().map(RegistryPlan::Probe).collect();
                         } else {
@@ -2754,10 +4500,19 @@ impl SessionMachine {
             },
             Observation::ProfileSwitch(progress) => match &progress.outcome {
                 super::ProfileSwitchOutcomeProgress::Failed { error, pin_denied } => {
-                    self.transition(TransitionInput::Attempt(AttemptEvent::SwitchFailed { message: error.clone(), denied: *pin_denied }), 0, emit);
-                    self.retire(req, emit);
-                    self.replace_publication();
-                    return true;
+                    { let event = AttemptEvent::SwitchFailed { message: error.clone(), denied: *pin_denied }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+                    'retire: {
+let (req,): (u32,) = (req,);
+
+        if self.common.pending.contains_key(&req) {
+            { let event = AttemptEvent::WorkRetired { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        self.common.pending.remove(&req);
+        fx.push(SessionFx::Retire { req });
+
+};
+                    { publish = true; };
+                    break 'apply_resource_observation true;
                 }
                 super::ProfileSwitchOutcomeProgress::Ready { delta: profile, probes } => {
                     let mut next = self.common.persisted.clone();
@@ -2778,8 +4533,17 @@ impl SessionMachine {
                 let Some(primary) = sources.iter()
                     .find(|s| s.machine_id == next.server.machine_id && s.dialable())
                     .or_else(|| sources.iter().find(|s| s.dialable())).cloned() else {
-                    self.retire(req, emit);
-                    return true;
+                    'retire: {
+let (req,): (u32,) = (req,);
+
+        if self.common.pending.contains_key(&req) {
+            { let event = AttemptEvent::WorkRetired { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        self.common.pending.remove(&req);
+        fx.push(SessionFx::Retire { req });
+
+};
+                    break 'apply_resource_observation true;
                 };
                 next.sources = sources;
                 next.server = super::server_ref(&primary);
@@ -2803,7 +4567,7 @@ impl SessionMachine {
                 plan.registry = Self::roster_plan(&next, &progress.probes, commit);
             }
             Observation::Endpoint(progress) => {
-                let Some(lifecycle) = pending.lifecycle else { return false; };
+                let Some(lifecycle) = pending.lifecycle else { break 'apply_resource_observation false; };
                 match &progress.fresh {
                     None => match &progress.probe {
                         // Nothing to INSTALL, but the probe itself is evidence — an InsecureOnly
@@ -2814,15 +4578,33 @@ impl SessionMachine {
                         // to publish and no verdict to widen — retire exactly as an empty
                         // `ServerRosterOutcome::NoReachable` does.
                         None => {
-                            self.retire(req, emit);
-                            return true;
+                            'retire: {
+let (req,): (u32,) = (req,);
+
+        if self.common.pending.contains_key(&req) {
+            { let event = AttemptEvent::WorkRetired { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        self.common.pending.remove(&req);
+        fx.push(SessionFx::Retire { req });
+
+};
+                            break 'apply_resource_observation true;
                         }
                     },
                     Some(fresh) => {
                         let mut next = self.common.persisted.clone();
                         let Some((source, changed)) = super::apply_refreshed_endpoint(&mut next, &progress.machine_id, fresh) else {
-                            self.retire(req, emit);
-                            return true;
+                            'retire: {
+let (req,): (u32,) = (req,);
+
+        if self.common.pending.contains_key(&req) {
+            { let event = AttemptEvent::WorkRetired { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        }
+        self.common.pending.remove(&req);
+        fx.push(SessionFx::Retire { req });
+
+};
+                            break 'apply_resource_observation true;
                         };
                         // Issue #95 step 6: this endpoint repair changes exactly the fields
                         // `refresh_profile_record` copies into the active profile's cached
@@ -2844,22 +4626,116 @@ impl SessionMachine {
             }
         }
         plan.writes_durable = plan.credentials.is_some();
-        self.begin_commit(req, envelope.arrival, envelope.terminal, plan, delta, emit)
-    }
+        ('begin_commit: {
+let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitDelta,) = (req, envelope.arrival, envelope.terminal, plan, delta,);
 
-    /// Start/restart is one owner decision. Check both counters before cancelling anything:
-    /// exhaustion must not detach the still-live operation or reuse its resource address.
-    fn restart_login(&mut self, fresh_login: bool, emit: &mut impl FnMut(SessionFx)) -> bool {
-        if matches!(self.common.authority, BootstrapAuthority::DevPms { .. }) {
-            return (fresh_login || self.state   .phase() == Phase::Error) && self.begin_dev_account(emit);
+        let Some(entry) = ('commit: { let (req, arrival, terminal, plan, delta): (u32, u64, bool, CommitPlan, CommitDelta) = (req, arrival, terminal, plan, delta); let Some(CommitPreparation { pending, entry }) = self.plan_commit(req, arrival, terminal, plan, delta) else { break 'commit None }; self.common.pending.get_mut(&req).unwrap().last_arrival = Some(arrival); self.common.pending_commit = Some(pending); self.common.persistence_purpose = Some(entry.plan.purpose); Some(entry) }) else { break 'begin_commit false };
+        entry.emit(&mut |effect| fx.push(effect));
+        true
+
+})
+
+};
+            }
         }
-        if self.state   .pending_erase().is_some() { return false; }
-        if self.common.epoch.checked_add(1).is_none() { return false; }
-        if self.common.next_req.checked_add(1).is_none() { return false; }
+        if let Some(commit) = &self.common.pending_commit {
+            assert!(commit.req == receipt.addr.req.0 && commit.epoch == receipt.key.epoch
+                && commit.arrival == receipt.arrival, "Session commit receipt mismatch");
+            self.common.pending_commit.as_mut().unwrap().receipt = Some(receipt);
+        } else {
+            fx.push(SessionFx::Acknowledge(vec![receipt]));
+        }
+        'schedule_pump: {
+
+        if !self.common.inbox.is_empty() && self.common.pending_commit.is_none() && !self.common.pump_pending {
+            self.common.pump_pending = true;
+            fx.push(SessionFx::Pump);
+        }
+
+};
+
+}; }
+// All login entry paths converge here; the reply follows its ordered exit and entry effects.
+let mut restarted = false;
+if let Some(restart) = restart { restarted = ('restart_login: {
+let (fresh_login,): (bool,) = (matches!(restart, LoginRestart::Fresh),);
+
+        if matches!(self.common.authority, BootstrapAuthority::DevPms { .. }) {
+            break 'restart_login (fresh_login || self.state   .phase() == Phase::Error) && 'begin_dev_account: {
+
+        if self.state .pending_erase().is_some() || self.common.epoch.checked_add(1).is_none()
+            || self.common.next_req.checked_add(2).is_none()
+            || self.common.pending_commit.as_ref().is_some_and(|c|
+                matches!(c.delta.dev, Some(DevCommitDelta::StartAccount { .. }))) { break 'begin_dev_account false; }
+        ('advance_epoch: {
+
+        let exit = match ExitFx::epoch(self.view()) { Some(value) => value, None => break 'advance_epoch None };
+        let epoch = exit.epoch_number();
+        self.common.inbox.clear();
+        self.common.pending_commit = None;
+        self.common.pending.clear();
+        self.common.epoch = epoch;
+        { let event = AttemptEvent::EpochAdvanced; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        // Keep pump_pending: a marker may still be carried outside the owner.
+        exit.emit(&mut |effect| fx.push(effect));
+        Some(epoch)
+
+}).expect("dev login epoch preflight");
+        'publish_profile: {
+let (profile,): (Option<UserRef>,) = (None,);
+
+        // This is the sole scope allocator. Resource publication will store this explicit value
+        // rather than independently incrementing another generation.
+        self.common.profile_scope.0 = self.common.profile_scope.0.wrapping_add(1);
+        self.common.active_profile = profile;
+        fx.push(SessionFx::PublishProfile(ProfilePublication {
+            epoch: self.common.epoch, profile: self.common.active_profile.clone(), scope: self.common.profile_scope,
+            stamp: plx_plex::plex::grant::account_key(&self.common.persisted.account_token),
+        }));
+
+};
+        let req = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::DevBoundary, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }).expect("two-slot preflight");
+        let login_req = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::Login, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }).expect("two-slot preflight");
+        { let event = AttemptEvent::BeginDevAccount { boundary_req: req, login_req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        'begin_commit: {
+let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitDelta,) = (req, 0, true, CommitPlan { registry_client_id: self.common.persisted.client_id.clone(),
+            expected_disk: self.common.disk_identity.clone(),
+            credentials: None, lifecycle: None, registry: vec![RegistryPlan::Revoke],
+            purpose: PersistencePurpose::Background, writes_durable: false,
+            authority: plx_plex::plex::session::SaveAuthority::Routine }, CommitDelta {
+                dev: Some(DevCommitDelta::StartAccount { login_req }), ..Default::default()
+            },);
+
+        let Some(entry) = ('commit: { let (req, arrival, terminal, plan, delta): (u32, u64, bool, CommitPlan, CommitDelta) = (req, arrival, terminal, plan, delta); let Some(CommitPreparation { pending, entry }) = self.plan_commit(req, arrival, terminal, plan, delta) else { break 'commit None }; self.common.pending.get_mut(&req).unwrap().last_arrival = Some(arrival); self.common.pending_commit = Some(pending); self.common.persistence_purpose = Some(entry.plan.purpose); Some(entry) }) else { break 'begin_commit false };
+        entry.emit(&mut |effect| fx.push(effect));
+        true
+
+};
+        { publish = true; };
+        true
+
+};
+        }
+        if self.state   .pending_erase().is_some() { break 'restart_login false; }
+        if self.common.epoch.checked_add(1).is_none() { break 'restart_login false; }
+        if self.common.next_req.checked_add(1).is_none() { break 'restart_login false; }
         let discovery = !fresh_login && super::retry_kind(self.state   .phase(),
             self.state.fresh_authority()) == super::RetryKind::Discovery;
         let fresh_attempt = fresh_login || super::restart_is_a_new_attempt(self.common.signin_notice.owed());
-        self.advance_epoch(emit).expect("epoch exhaustion checked before transition");
+        ('advance_epoch: {
+
+        let exit = match ExitFx::epoch(self.view()) { Some(value) => value, None => break 'advance_epoch None };
+        let epoch = exit.epoch_number();
+        self.common.inbox.clear();
+        self.common.pending_commit = None;
+        self.common.pending.clear();
+        self.common.epoch = epoch;
+        { let event = AttemptEvent::EpochAdvanced; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
+        // Keep pump_pending: a marker may still be carried outside the owner.
+        exit.emit(&mut |effect| fx.push(effect));
+        Some(epoch)
+
+}).expect("epoch exhaustion checked before transition");
         if discovery {
             // 0.6.6 parity (`discovery-warning-not-cleared-on-retry-or-fresh-success`): a restart
             // begins a fresh discovery attempt under a NEW epoch, so a warning (or a held handoff)
@@ -2876,461 +4752,51 @@ impl SessionMachine {
             self.common.persistence_warning_answered = false;
         }
         let op = if discovery { SessionOp::Rediscover } else { SessionOp::Login };
-        let req = self.allocate(op, None).expect("request exhaustion checked before transition");
+        let req = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (op, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }).expect("request exhaustion checked before transition");
         let event = if discovery { AttemptEvent::RestartDiscovery { req } } else { AttemptEvent::RestartLogin { req } };
-        self.transition(TransitionInput::Attempt(event), 0, emit);
+        { let event = event; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
         let entry = EntryFx::login(self.view(), req, discovery, fresh_attempt);
         let pending = self.common.pending.get_mut(&req).expect("allocated login request");
         match entry.work() {
             EntryWork::Capture { .. } => pending.capture = Some(CaptureIntent::Login),
             EntryWork::Work { admission, .. } => pending.admission = AdmissionState::Awaiting(*admission),
         }
-        entry.emit(emit);
-        self.replace_publication();
+        entry.emit(&mut |effect| fx.push(effect));
+        { publish = true; };
         true
-    }
 
-    /// **The sign-in read-out's *Try again*.** Over an eligible server the person said *Not now*
-    /// to (or turned off), it is also how they are asked again — Settings, where a signed-in person
-    /// changes that answer, is out of reach before sign-in — so the answer is withdrawn (recorded
-    /// `Undecided`, through the same [`SessionFx::PlaintextAnswer`]) BEFORE the retry's work
-    /// captures the answers, and the retry that follows asks.
-    fn retry(&mut self, emit: &mut impl FnMut(SessionFx)) -> bool {
-        use plx_plex::plex::session::PlaintextChoice;
-        if self.state.phase() == Phase::Error {
-            let account = plx_plex::plex::grant::account_key(&self.common.persisted.account_token);
-            let answered = self.state.plaintext().filter(|v| v.offers()
-                && matches!(v.choice, PlaintextChoice::Declined | PlaintextChoice::Revoked));
-            if let (Some(v), false) = (answered, account.is_empty()) {
-                emit(SessionFx::PlaintextAnswer {
-                    machine_id: v.machine_id.clone(), choice: PlaintextChoice::Undecided, account,
-                });
-            }
-        }
-        self.restart_login(false, emit)
-    }
+}); if !matches!(ev, SessionEvent::Erased { .. } | SessionEvent::Command(Command::RestartWait { .. })) { handled = restarted; } }
+if let Some((reply, permitted)) = restart_reply { fx.push(SessionFx::RestartReply { to: *reply, accepted: permitted && restarted }); }
+// Publications are observable only after this atomic event has finished.
+if publish { if let Some((next, allocations)) = self.publication_update() { self.publication = next; #[cfg(test)] for (total, count) in self.publication_payload_allocations.iter_mut().zip(allocations) { *total += count; } #[cfg(not(test))] let _ = allocations; } }
+if !matches!(ev, SessionEvent::CacheObserved(_) | SessionEvent::CacheRefreshed { .. } | SessionEvent::ConsumeLogicalDirty) { 'refresh_subhash: {
 
-    /// **The answer to "Connect without encryption?"** — recorded through
-    /// [`SessionFx::PlaintextAnswer`] first, so the work an *Allowed* starts captures it
-    /// (`plex::grant::PlaintextAsk`).
-    ///
-    /// On the sign-in read-out it must answer the server shown there: *Connect* retries the
-    /// discovery, *Not now* re-words the read-out (its primary becomes *Try again*, which
-    /// withdraws the answer and asks again — [`Self::retry`]) and starts nothing. Signed in (Home's or the Library's read-out, Settings), any server may be
-    /// answered; an *Allowed* re-finds `sid`'s endpoint, or the whole roster without one. Nothing
-    /// is recorded without an account to bind it to.
-    fn answer_plaintext(&mut self, machine_id: &str, choice: plx_plex::plex::session::PlaintextChoice,
-        sid: Option<plx_plex::plex::ServerId>, emit: &mut impl FnMut(SessionFx)) -> bool {
-        use plx_plex::plex::session::PlaintextChoice;
-        let account = plx_plex::plex::grant::account_key(&self.common.persisted.account_token);
-        if account.is_empty() || machine_id.is_empty() || choice == PlaintextChoice::Undecided {
-            return false;
+        let mut canon = Canon::new();
+        LegacyV5Projection::from_partition(self.view()).write(&mut canon);
+        let next = canon.finish();
+        if next != self.subhash {
+            self.subhash = next;
+            self.logical_dirty = true;
         }
-        let on_sign_in = self.state.phase() == Phase::Error;
-        if on_sign_in && !self.state.plaintext().is_some_and(|v| v.machine_id == machine_id) {
-            return false;
-        }
-        emit(SessionFx::PlaintextAnswer { machine_id: machine_id.to_owned(), choice, account });
-        if on_sign_in {
-            if choice.allows() {
-                return self.restart_login(false, emit);
-            }
-            self.transition(TransitionInput::Attempt(AttemptEvent::PlaintextDeclined { choice }), 0, emit);
-            self.replace_publication();
-            return true;
-        }
-        if choice.allows() {
-            let _ = match sid {
-                Some(sid) => self.request_endpoint(sid, emit),
-                None => self.refresh_roster(emit),
-            };
-        }
-        true
-    }
 
-    /// End the flow on the error read-out. **Every ending names its incident**: `Some` is the
-    /// failure's own closed evidence and is raised here, so the read-out's Details and Send report
-    /// are about THIS failure; `None` is an ending the onboarding report does not cover, and it
-    /// retires whatever is held, which explains an earlier failure and not this one.
-    fn fail_login(&mut self, message: &str, incident: Option<IncidentContext>, emit: &mut impl FnMut(SessionFx)) {
-        self.transition(TransitionInput::Attempt(AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }), 0, emit);
-        self.common.persistence_warning = None;
-        self.common.held_handoff = None;
-        self.common.persistence_warning_answered = false;
-        // A token plex.tv refused is not an authorization in flight any more: without this, the
-        // retry decision (`retry_kind`) kept offering a discovery-only pass that presents the same
-        // refused token again, and Try again could never recover. Dropping it makes the retry a
-        // new QR sign-in; the incident below is raised exactly as before, so its dedup holds.
-        match incident {
-            Some(context) => self.raise_incident(IncidentFlow::SignIn, context),
-            None => self.common.incident = None,
-        }
-    }
-
-    /// QR observations need no external commit. SignedIn and registry/profile facts go through
-    /// the separate resource commit protocol, rather than treating their side effects as reads.
-    fn apply_qr_observation(&mut self, envelope: &SessionEnvelope,
-        emit: &mut impl FnMut(SessionFx)) -> bool {
-        if !self.accepts(envelope)
-            || !matches!(envelope.key.op, SessionOp::Login | SessionOp::Rediscover) {
-            return false;
-        }
-        let req = envelope.addr.req.0;
-        if !self.common.pending[&req].expected.matches(&self.common.persisted) { return false; }
-        match &envelope.outcome {
-            SessionArrival::Refused | SessionArrival::Dropped => {
-                if !envelope.terminal { return false; }
-                let (message, class) = match (envelope.key.op, &envelope.outcome) {
-                    (SessionOp::Rediscover, SessionArrival::Refused) =>
-                        (plx_platform::i18n::msg::browse_auth_rediscover_failed(), InternalClass::WorkerRefused),
-                    (_, SessionArrival::Refused) => (plx_platform::i18n::msg::browse_auth_start_failed(), InternalClass::WorkerRefused),
-                    _ => (plx_platform::i18n::msg::browse_auth_finish_failed(), InternalClass::WorkerDropped),
-                };
-                self.fail_login(message, Some(IncidentContext::internal(class)), emit);
-            }
-            SessionArrival::Data(data) => {
-                let super::observation::Observation::Login(progress) = &**data else { return false };
-                use super::LoginProgress;
-                let (epoch, terminal) = match progress {
-                    LoginProgress::CodeReplacing { epoch }
-                    | LoginProgress::CodeReady { epoch, .. }
-                    | LoginProgress::Authorized { epoch, .. }
-                    | LoginProgress::DiscoveryTrouble { epoch, .. }
-                    | LoginProgress::DiscoveryRetrySettled { epoch, .. }
-                    | LoginProgress::LinkTrouble { epoch, .. } => (*epoch, false),
-                    LoginProgress::Failed { epoch, .. } => (*epoch, true),
-                    LoginProgress::SignedIn { .. } => return false,
-                };
-                if epoch != envelope.key.epoch || terminal != envelope.terminal { return false; }
-                match progress {
-                    LoginProgress::CodeReplacing { .. } => {
-                        if envelope.key.op != SessionOp::Login || !matches!(self.state.phase(), Phase::Creating | Phase::Waiting) { return false; }
-                        self.transition(TransitionInput::Attempt(AttemptEvent::CodeReplacing), 0, emit);
-                    }
-                    LoginProgress::CodeReady { code, qr_png, .. } => {
-                        if envelope.key.op != SessionOp::Login { return false; }
-                        let Some(next) = self.common.next_qr.checked_add(1) else {
-                            self.fail_login(plx_platform::i18n::msg::browse_auth_start_failed(),
-                                Some(IncidentContext::internal(InternalClass::Exhausted)), emit);
-                            self.common.pending.remove(&req);
-                            emit(SessionFx::Cancel { requests: vec![req], epoch: self.common.epoch });
-                            emit(SessionFx::Retire { req });
-                            self.replace_publication();
-                            return true;
-                        };
-                        self.common.next_qr = next;
-                        self.transition(TransitionInput::Attempt(AttemptEvent::CodeReady {
-                            generation: next, code: code.clone(), png: qr_png.clone(),
-                        }), 0, emit);
-                    }
-                    LoginProgress::Authorized { token, .. } => {
-                        if envelope.key.op != SessionOp::Login { return false; }
-                        // A sign-in that is not a sign-out (a stored session that could not be
-                        // activated, *Use another account*, the dev login trigger) starts from the
-                        // stored record. Whoever that record seated, its roster and its offline
-                        // profile cache belong to the authorization this token replaces, so none of
-                        // them may ride into the new account: `SignedIn` writes the roster and
-                        // `Session::account` names a single-user account from it; a Home account
-                        // seats through the picker. Reset BEFORE `expected` is recomputed below.
-                        // The new token cannot say whose cache this is (every sign-in mints one),
-                        // so the cache is emptied while the identity is unknown and `SignedIn`
-                        // restores the STORED record's when its roster names the same owner.
-                        self.common.persisted.user = UserRef::default();
-                        self.common.persisted.home_users.clear();
-                        self.common.persisted.profiles.clear();
-                        self.common.persisted.account_token = token.clone();
-                        self.transition(TransitionInput::Attempt(AttemptEvent::Authorized), 0, emit);
-                        self.common.pending.get_mut(&req).unwrap().expected = Identity::of(&self.common.persisted);
-                    }
-                    LoginProgress::DiscoveryTrouble { progress, .. } => {
-                        if !matches!(envelope.key.op, SessionOp::Login | SessionOp::Rediscover) {
-                            return false;
-                        }
-                        self.transition(TransitionInput::Attempt(AttemptEvent::DiscoveryTrouble { progress: *progress }), 0, emit);
-                    }
-                    LoginProgress::DiscoveryRetrySettled { run, .. } => {
-                        if !matches!(envelope.key.op, SessionOp::Login | SessionOp::Rediscover) {
-                            return false;
-                        }
-                        self.transition(TransitionInput::Attempt(AttemptEvent::DiscoverySettled { run: *run }), 0, emit);
-                    }
-                    LoginProgress::LinkTrouble { trouble, .. } => {
-                        if envelope.key.op != SessionOp::Login { return false; }
-                        self.transition(TransitionInput::Attempt(AttemptEvent::LinkTrouble {
-                            present: trouble.is_some(),
-                        }), 0, emit);
-                        if let Some(context) = trouble {
-                            self.raise_incident(IncidentFlow::SignIn, *context);
-                        }
-                    }
-                    LoginProgress::Failed { message, incident, plaintext, account, .. } => {
-                        self.fail_login(message, Some(*incident), emit);
-                        self.transition(TransitionInput::Attempt(AttemptEvent::DiscoveryFailed { plaintext: plaintext.clone(), account: account.clone() }), 0, emit);
-                    }
-                    LoginProgress::SignedIn { .. } => unreachable!(),
-                }
-            }
-        }
-        if envelope.terminal {
-            self.common.pending.remove(&req);
-        } else {
-            self.common.pending.get_mut(&req).unwrap().last_arrival = Some(envelope.arrival);
-        }
-        self.replace_publication();
-        true
-    }
-
-    /// The checked allocator is independent from the full-width auth epoch. Exhaustion cannot
-    /// reuse an address, including when a cancelled worker still owns a Landing reservation.
-    fn allocate(&mut self, op: SessionOp, lifecycle: Option<ServerLifecycle>) -> Option<u32> {
-        let req = self.common.next_req.checked_add(1)?;
-        self.common.next_req = req;
-        self.common.pending.insert(req, Pending {
-            key: SessionWorkKey { epoch: self.common.epoch, op },
-            expected: Identity::of(&self.common.persisted), lifecycle,
-            last_arrival: None, phase: StreamPhase::Running, capture: None, admission: AdmissionState::NotRequested,
-        });
-        Some(req)
-    }
-
-    /// Admission to logical application, not a resource reservation. Landing owns the latter.
-    /// Merely inspecting an invalid envelope must not mutate pending state or its publication.
-    fn accepts_header(&self, envelope: &SessionEnvelope) -> bool {
-        if envelope.addr.to != MachineId::Session { return false; }
-        let Some(pending) = self.common.pending.get(&envelope.addr.req.0) else { return false; };
-        pending.key == envelope.key && pending.key.epoch == self.common.epoch
-            && self.state.owns_work(envelope.addr.req.0, pending)
-            && pending.capture.is_none()
-            && matches!(pending.admission, AdmissionState::Awaiting(id) | AdmissionState::Accepted(id) if id == envelope.admission)
-            && pending.last_arrival.is_none_or(|last| envelope.arrival > last)
-    }
-
-    fn accepts(&self, envelope: &SessionEnvelope) -> bool {
-        if !self.accepts_header(envelope) { return false; }
-        let pending = &self.common.pending[&envelope.addr.req.0];
-        match &envelope.outcome {
-                SessionArrival::Data(data) => data.matches_request(pending, envelope.terminal)
-                    && (!matches!(pending.key.op, SessionOp::Endpoint(_))
-                        || pending.lifecycle == envelope.lifecycle),
-                SessionArrival::Dropped | SessionArrival::Refused => envelope.terminal,
-        }
-    }
-
-    /// The frame step reports what the cache lacks. At most one refresh is out at a time; a backoff
-    /// holds the next one back on the frame clock; and the first transient observation of a cache
-    /// entry arms the backoff instead of reading, so a boot with the storage helper down retries
-    /// about a second later, as the in-line retry timer did, not on frame one.
-    fn observe_cache(&mut self, need: plx_plex::plex::session::RefreshNeed, now_ms: u32,
-        emit: &mut impl FnMut(SessionFx)) {
-        use plx_plex::plex::session::LOCKED_RETRY_MS;
-        let tracked = match self.cache_refresh {
-            CacheRefresh::InFlight { .. } => return,
-            CacheRefresh::Backoff { armed_ms, generation } => {
-                let covers = generation.is_none_or(|g| g == need.generation);
-                if covers && now_ms.wrapping_sub(armed_ms) < LOCKED_RETRY_MS { return; }
-                covers
-            }
-            CacheRefresh::Idle => false,
-        };
-        if need.transient && !tracked {
-            self.cache_refresh = CacheRefresh::Backoff { armed_ms: now_ms, generation: Some(need.generation) };
-            return;
-        }
-        self.next_cache_req = self.next_cache_req.wrapping_add(1);
-        let req = self.next_cache_req;
-        self.cache_refresh = CacheRefresh::InFlight { req, generation: need.generation };
-        emit(SessionFx::RefreshCache { req, generation: need.generation });
-    }
-
-    /// A refresh ended. Only the request in flight can end it: a duplicate or stale answer is dropped.
-    fn cache_refreshed(&mut self, req: u32, outcome: plx_plex::plex::session::CacheRefreshOutcome, now_ms: u32) -> bool {
-        use plx_plex::plex::session::CacheRefreshOutcome;
-        if self.cache_refresh_in_flight() != Some(req) { return false; }
-        let armed_ms = now_ms;
-        self.cache_refresh = match outcome {
-            CacheRefreshOutcome::Settled | CacheRefreshOutcome::Superseded => CacheRefresh::Idle,
-            CacheRefreshOutcome::Transient { generation } => CacheRefresh::Backoff { armed_ms, generation: Some(generation) },
-            CacheRefreshOutcome::Refused => CacheRefresh::Backoff { armed_ms, generation: None },
-        };
-        true
-    }
-
-    /// Apply one addressed event, preserving the owner's effect order.
-    fn transition(&mut self, input: TransitionInput<'_>, tick_ms: u32, emit: &mut impl FnMut(SessionFx)) -> bool {
-        let ev = match input {
-            TransitionInput::Event(ev) => ev,
-            TransitionInput::Attempt(event) => {
-                let exit = ExitFx::attempt(self.view(), &event);
-                let entry = EntryFx::attempt(self.view(), &event);
-                match &event {
-                    AttemptEvent::RestartLogin { .. } | AttemptEvent::RestartDiscovery { .. } | AttemptEvent::BeginSignin { .. } => self.common.signin_notice = attempt::SignInNotice::Owed,
-                    AttemptEvent::LoginFailed { .. } | AttemptEvent::ResumeBack | AttemptEvent::SigninProfiles { .. }
-                        | AttemptEvent::SigninReady | AttemptEvent::EraseAuthority => self.common.signin_notice = attempt::SignInNotice::Settled,
-                    AttemptEvent::CodeReplacing | AttemptEvent::CodeReady { .. } | AttemptEvent::Authorized | AttemptEvent::ResumeDevBack
-                        | AttemptEvent::BeginDevAccount { .. } | AttemptEvent::ActivateDev | AttemptEvent::ReadyExhausted | AttemptEvent::SwitchCommitRefused
-                        | AttemptEvent::DevCommitRefused | AttemptEvent::SwitchAdmissionRefused | AttemptEvent::OpenDevPicker | AttemptEvent::OpenPicker { .. }
-                        | AttemptEvent::ReuseProfile | AttemptEvent::SelectProfile { .. } | AttemptEvent::SwitchDropped | AttemptEvent::SwitchFailed { .. }
-                        | AttemptEvent::ProfileReady { .. } | AttemptEvent::StoredReady | AttemptEvent::LinkTrouble { .. }
-                        | AttemptEvent::RosterFailed { .. } | AttemptEvent::DiscoveryTrouble { .. }
-                        | AttemptEvent::DiscoverySettled { .. } | AttemptEvent::DiscoveryFailed { .. } | AttemptEvent::PlaintextDeclined { .. }
-                        | AttemptEvent::RosterArrived { .. } | AttemptEvent::ReadyCommitted | AttemptEvent::EpochAdvanced | AttemptEvent::WorkRetired { .. }
-                        | AttemptEvent::BeginDevActivation { .. } | AttemptEvent::BeginStoredRestore { .. }
-                        | AttemptEvent::InstallPicker { .. } | AttemptEvent::BeginReadyCommit { .. }
-                        | AttemptEvent::BeginErase { .. } | AttemptEvent::FinishErase => {}
-                }
-                exit.emit(emit);
-                let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder());
-                self.state = match event {
-                    AttemptEvent::LoginFailed { message, revoke } => attempt.login_failed(message, revoke),
-                    AttemptEvent::CodeReplacing => attempt.code_replacing(),
-                    AttemptEvent::CodeReady { generation, code, png } => attempt.code_ready(generation, code, png),
-                    AttemptEvent::Authorized => attempt.authorized(),
-                    AttemptEvent::RestartDiscovery { req } => attempt.restart_discovery(req),
-                    AttemptEvent::RestartLogin { req } => attempt.restart_login(req),
-                    AttemptEvent::ResumeBack => attempt.resume_back(),
-                    AttemptEvent::ResumeDevBack => attempt.resume_dev_back(),
-                    AttemptEvent::BeginDevAccount { boundary_req, login_req } => attempt.begin_dev_account(boundary_req, login_req),
-                    AttemptEvent::ActivateDev => attempt.activate_dev(),
-                    AttemptEvent::ReadyExhausted => attempt.ready_exhausted(),
-                    AttemptEvent::SwitchCommitRefused => attempt.switch_commit_refused(),
-                    AttemptEvent::DevCommitRefused => attempt.dev_commit_refused(),
-                    AttemptEvent::SwitchAdmissionRefused => attempt.switch_admission_refused(),
-                    AttemptEvent::OpenDevPicker => attempt.open_dev_picker(),
-                    AttemptEvent::OpenPicker { kind, fallback } => attempt.open_picker(kind, fallback),
-                    AttemptEvent::ReuseProfile => attempt.reuse_profile(),
-                    AttemptEvent::SelectProfile { req } => attempt.select_profile(req),
-                    AttemptEvent::SwitchDropped => attempt.switch_dropped(),
-                    AttemptEvent::SwitchFailed { message, denied } => attempt.switch_failed(message, denied),
-                    AttemptEvent::SigninProfiles { users } => attempt.signin_profiles(users),
-                    AttemptEvent::SigninReady => attempt.signin_ready(),
-                    AttemptEvent::ProfileReady { req } => attempt.profile_ready(req),
-                    AttemptEvent::StoredReady => attempt.stored_ready(),
-                    AttemptEvent::LinkTrouble { present } => attempt.link_trouble(present),
-                    AttemptEvent::RosterFailed { message } => attempt.roster_failed(message),
-                    AttemptEvent::BeginSignin { req } => attempt.begin_signin(req),
-                    AttemptEvent::DiscoveryTrouble { progress } => attempt.discovery_trouble(progress),
-                    AttemptEvent::DiscoverySettled { run } => attempt.discovery_settled(run),
-                    AttemptEvent::DiscoveryFailed { plaintext, account } => attempt.discovery_failed(plaintext, account),
-                    AttemptEvent::PlaintextDeclined { choice } => attempt.plaintext_declined(choice),
-                    AttemptEvent::RosterArrived { users } => attempt.roster_arrived(users),
-                    AttemptEvent::ReadyCommitted => attempt.ready_committed(),
-                    AttemptEvent::EraseAuthority => attempt.erase_authority(),
-                    AttemptEvent::EpochAdvanced => attempt.epoch_advanced(),
-                    AttemptEvent::WorkRetired { req } => attempt.work_retired(req),
-                    AttemptEvent::BeginDevActivation { req } => attempt.begin_dev_activation(req),
-                    AttemptEvent::BeginStoredRestore { req } => attempt.begin_stored_restore(req),
-                    AttemptEvent::InstallPicker { req } => attempt.install_picker(req),
-                    AttemptEvent::BeginReadyCommit { req } => attempt.begin_ready_commit(req),
-                    AttemptEvent::BeginErase { epoch, sign_in } => attempt.begin_erase(epoch, sign_in),
-                    AttemptEvent::FinishErase => attempt.finish_erase(),
-                };
-                entry.emit(emit);
-                return true;
-            }
-        };
-        match ev {
-            SessionEvent::Command(Command::ActivateDevBootstrap) => self.activate_dev(emit),
-            SessionEvent::Command(Command::ResumeStored) => self.resume_stored(emit),
-            SessionEvent::Command(Command::StartLogin) => self.restart_login(true, emit),
-            SessionEvent::Command(Command::Retry) => self.retry(emit),
-            SessionEvent::Command(Command::TakeReady) => self.take_ready(emit),
-            SessionEvent::Command(Command::AcknowledgePersistenceWarning { key }) =>
-                self.acknowledge_persistence_warning(*key, emit),
-            SessionEvent::Command(command @ (Command::ResolveIncident { .. }
-                | Command::ReportIncident { .. } | Command::DeclineIncident { .. })) => {
-                let handled = self.step_incident_command(command, emit);
-                if handled { self.replace_publication(); }
-                handled
-            }
-            SessionEvent::Command(Command::StartSwitch(picker)) => self.start_switch(*picker, emit),
-            SessionEvent::Command(Command::SelectProfile { index, pin }) => self.select_profile(*index, pin.clone(), emit),
-            SessionEvent::Command(Command::SelectProfileWithReply { index, pin, reply }) => {
-                let accepted = self.select_profile(*index, pin.clone(), emit);
-                emit(SessionFx::SelectionReply { to: *reply, accepted, flow_epoch: self.common.epoch });
-                true
-            }
-            SessionEvent::Command(Command::BackAtRoot { reply }) => self.back(*reply, emit),
-            SessionEvent::Command(Command::SignOut) => self.erase(true, emit),
-            SessionEvent::Command(Command::EraseLocal) => self.erase(false, emit),
-            SessionEvent::Command(Command::RefreshRoster) => self.refresh_roster(emit),
-            SessionEvent::Command(Command::RequestEndpoint { sid }) => self.request_endpoint(*sid, emit),
-            SessionEvent::Command(Command::AnswerPlaintext { machine_id, choice, sid }) =>
-                self.answer_plaintext(machine_id, *choice, *sid, emit),
-            SessionEvent::Command(Command::RestartWait { phase, qr_generation, reply }) => {
-                let accepted = matches!(self.common.authority, BootstrapAuthority::Account { .. })
-                    && super::restart_permitted(Some((*phase, *qr_generation)),
-                    (self.state.phase(), self.state.qr().generation)) && self.restart_login(false, emit);
-                emit(SessionFx::RestartReply { to: *reply, accepted });
-                true
-            }
-            SessionEvent::Command(Command::DismissPinError) => {
-                let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder());
-                self.state = attempt.dismiss_pin();
-                self.replace_publication();
-                true
-            }
-            SessionEvent::Command(Command::NoteDeleteLeftovers(count)) => {
-                self.common.delete_leftovers = *count;
-                self.replace_publication();
-                true
-            }
-            SessionEvent::Result(envelope) => self.ingest(envelope, emit),
-            SessionEvent::Commit(reply) => self.apply_commit_reply(*reply, emit),
-            SessionEvent::DiskWrite { before, after, outcome } => self.observe_disk_write(before, after, *outcome),
-            SessionEvent::Persistence(completion) => self.apply_persistence_completion(*completion, emit),
-            SessionEvent::Read(reply) => self.apply_read(reply, emit),
-            SessionEvent::Admission(reply) => self.apply_admission(*reply, emit),
-            SessionEvent::Erased { epoch, leftovers } => self.erased(*epoch, *leftovers, emit),
-            SessionEvent::IncidentReported { id, delivery } => {
-                let handled = self.incident_reported(*id, delivery);
-                if handled { self.replace_publication(); }
-                handled
-            }
-            SessionEvent::Pump => {
-                self.common.pump_pending = false;
-                self.pump_one(emit);
-                true
-            }
-            SessionEvent::CacheObserved(need) => {
-                self.observe_cache(*need, tick_ms, emit);
-                true
-            }
-            SessionEvent::CacheRefreshed { req, outcome } => self.cache_refreshed(*req, *outcome, tick_ms),
-        }
-    }
-    fn replace_publication(&mut self) {
-        // Compare borrowed fields first: constructing a throwaway snapshot here would copy
-        // QR/roster payloads even if equality then retained all of the old handles.
-        if self.publication.matches_state(self.view()) { return; }
-        let next = SessionSnapshot::from_state_counted(attempt::PartitionView { common: &self.common, attempt: &self.state }, Some(&self.publication), &mut |field| {
-            #[cfg(test)]
-            { self.publication_payload_allocations[field] += 1; }
-            #[cfg(not(test))]
-            { let _ = field; }
-        });
-        self.publication = Arc::new(next);
-    }
+}; }
+handled
+}
+    #[cfg(test)] fn replace_publication(&mut self) { self.transition(&SessionEvent::RebuildPublication, 0, &mut Vec::new()); }
 }
 
 impl<H: SessionHost> plx_machine::machine::Machine<H> for SessionMachine {
     type Ev = SessionEvent;
 
-    fn step(&mut self, ev: &SessionEvent, cx: &plx_machine::machine::Cx<'_, H>,
-        fx: &mut plx_machine::machine::Effects<'_, H>) -> plx_machine::machine::Handled {
-        use plx_machine::machine::{Fx, Handled};
-        let before = self.publication();
-        let mut emit = |effect| fx.push(Fx::App(H::session_effect(effect)));
-        let handled = self.transition(TransitionInput::Event(ev), cx.tick.ms, &mut emit);
-        if !Arc::ptr_eq(&before, &self.publication) {
-            fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
-        }
-        // The cache bookkeeping is outside the recorded state, so its events (the first of them on
-        // EVERY frame a read is missing) cannot move the subhash: skip the whole-state rehash.
-        if !matches!(ev, SessionEvent::CacheObserved(_) | SessionEvent::CacheRefreshed { .. }) {
-            self.refresh_subhash();
-        }
-        if handled { Handled::Yes } else { Handled::No }
-    }
+    fn step(&mut self, ev: &SessionEvent, cx: &plx_machine::machine::Cx<'_, H>, fx: &mut plx_machine::machine::Effects<'_, H>) -> plx_machine::machine::Handled {
+ use plx_machine::machine::{Fx, Handled};
+ let before = self.publication();
+ let mut effects = Vec::new();
+ let handled = self.transition(ev, cx.tick.ms, &mut effects);
+ for effect in effects { fx.push(Fx::App(H::session_effect(effect))); }
+ if !Arc::ptr_eq(&before, &self.publication) { fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session)); }
+ if handled { Handled::Yes } else { Handled::No }
+}
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -3340,6 +4806,42 @@ pub mod scenarios;
 mod tests {
     use super::*;
     use super::scenarios::{roster_refresh_fixture, step, step_at, OwnerHost};
+
+    #[test]
+    fn logical_dirty_drain_is_an_owner_event_without_effects_or_publication_damage() {
+        let mut owner = SessionMachine::from_init(SessionInit::captured(PersistedSession::default()));
+        let publication = owner.publication();
+        let subhash = owner.subhash();
+        let mut effects = Vec::new();
+        assert!(owner.transition(&SessionEvent::ConsumeLogicalDirty, 0, &mut effects));
+        assert!(!owner.transition(&SessionEvent::ConsumeLogicalDirty, 0, &mut effects));
+        assert!(effects.is_empty());
+        assert_eq!(owner.subhash(), subhash);
+        assert!(Arc::ptr_eq(&publication, &owner.publication()));
+    }
+
+    #[test]
+    fn legacy_incident_callback_forwards_the_typed_event_effect_drain() {
+        let mut legacy = SessionMachine::from_init(SessionInit::captured(PersistedSession::default()));
+        let context = IncidentContext::new(IncidentKind::PinCreate, None);
+        legacy.raise_incident(IncidentFlow::SignIn, context);
+        let id = legacy.common.incident.as_ref().unwrap().id;
+        let mut typed = SessionMachine::from_init(legacy.snapshot_init());
+        let mut observed = Vec::new();
+        assert!(legacy.resolve_incident(id, Permission::Granted, 1, &mut |effect| observed.push(effect)));
+        let mut expected = Vec::new();
+        assert!(typed.transition(&SessionEvent::Command(Command::ResolveIncident {
+            id, permission: Permission::Granted, revision: 1,
+        }), 0, &mut expected));
+        assert_eq!(observed.len(), 1);
+        assert_eq!(expected.len(), 1);
+        for effect in observed.iter().chain(expected.iter()) {
+            assert!(matches!(effect, SessionFx::Incident { id: seen, lane: IncidentLane::Standing,
+                report: IncidentReport::Retained(evidence) } if *seen == id && *evidence == context));
+        }
+        assert_eq!(legacy.snapshot_init().incident, typed.snapshot_init().incident);
+        assert_eq!(legacy.subhash(), typed.subhash());
+    }
 
     /// The session-cache refresh bookkeeping (`CacheRefresh`): driven by tick values, no sleeping.
     mod cache_refresh {

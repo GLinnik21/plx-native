@@ -446,7 +446,7 @@ impl CacheRecord {
         let (body, index): (Arc<str>, _) = if cache.body.is_empty() && cache.checked_at.is_none() {
             (cache.body.into(), None)
         } else {
-            let verified = verify(cache.body.as_bytes(), keys)?;
+            let verified: Verified = verify(cache.body.as_bytes(), keys)?;
             (verified.body, Some(verified.index))
         };
         Ok(Self {
@@ -574,18 +574,78 @@ impl Catalog {
         }
     }
 
-    fn transition(&mut self, next: Phase) { self.phase = next; }
-    pub fn snapshot(&self) -> &Snapshot {
-        &self.snapshot
-    }
+fn transition(&mut self, ev: Event, fx: &mut Vec<CatalogEffect>) -> bool {
 
-    pub fn step(&mut self, ev: Event, fx: &mut Vec<CatalogEffect>) -> bool {
         match ev {
             Event::Load { candidates } if matches!(self.phase, Phase::Idle) => {
                 self.generation = self.generation.wrapping_add(1);
                 self.candidates = candidates;
                 self.allow_fetch = false;
-                self.read(0, fx);
+                'read: {
+let (at,): (usize,) = (0,);
+
+        if let Some(candidate) = self.candidates.get(at) {
+            let root = candidate.dir.clone();
+            { self.phase = Phase::Reading(at); };
+            fx.push(CatalogEffect::Read {
+                tag: self.generation,
+                at: Loc {
+                    root,
+                    rel: CACHE_FILE.into(),
+                },
+            });
+        } else if self.allow_fetch
+            && self
+                .attempted_at
+                .is_none_or(|at| self.now < at || self.now - at >= REFRESH_SECONDS)
+        {
+            self.attempted_at = Some(self.now);
+            self.snapshot.fetching = true;
+            // Persist the attempt before dialing, so a restart during the request keeps backoff.
+            'write: {
+let (at, fetch,): (usize, bool,) = (0, true,);
+
+        if let Some(candidate) = self.candidates.get(at) {
+            let root = candidate.dir.clone();
+            let record = CacheRecord {
+                checked_at: self.snapshot.checked_at,
+                attempted_at: self.attempted_at,
+                etag: self.etag.clone(),
+                body: Arc::clone(&self.body),
+                index: self.snapshot.index.clone(),
+            };
+            { self.phase = Phase::Writing(at, fetch); };
+            fx.push(CatalogEffect::Write {
+                tag: self.generation,
+                at: Loc {
+                    root,
+                    rel: CACHE_FILE.into(),
+                },
+                record,
+            });
+        } else {
+            'after_write: {
+let (fetch,): (bool,) = (fetch,);
+
+        if fetch {
+            { self.phase = Phase::Fetching; };
+            fx.push(CatalogEffect::Get {
+                tag: self.generation,
+                etag: self.etag.clone(),
+            });
+        } else {
+            { self.phase = Phase::Idle; };
+        }
+
+};
+        }
+
+};
+        } else {
+            { self.phase = Phase::Idle; };
+        }
+
+};
                 true
             }
             Event::Open { candidates, now } => {
@@ -601,7 +661,71 @@ impl Catalog {
                 self.generation = self.generation.wrapping_add(1);
                 self.now = now;
                 self.candidates = candidates;
-                self.read(0, fx);
+                'read: {
+let (at,): (usize,) = (0,);
+
+        if let Some(candidate) = self.candidates.get(at) {
+            let root = candidate.dir.clone();
+            { self.phase = Phase::Reading(at); };
+            fx.push(CatalogEffect::Read {
+                tag: self.generation,
+                at: Loc {
+                    root,
+                    rel: CACHE_FILE.into(),
+                },
+            });
+        } else if self.allow_fetch
+            && self
+                .attempted_at
+                .is_none_or(|at| self.now < at || self.now - at >= REFRESH_SECONDS)
+        {
+            self.attempted_at = Some(self.now);
+            self.snapshot.fetching = true;
+            // Persist the attempt before dialing, so a restart during the request keeps backoff.
+            'write: {
+let (at, fetch,): (usize, bool,) = (0, true,);
+
+        if let Some(candidate) = self.candidates.get(at) {
+            let root = candidate.dir.clone();
+            let record = CacheRecord {
+                checked_at: self.snapshot.checked_at,
+                attempted_at: self.attempted_at,
+                etag: self.etag.clone(),
+                body: Arc::clone(&self.body),
+                index: self.snapshot.index.clone(),
+            };
+            { self.phase = Phase::Writing(at, fetch); };
+            fx.push(CatalogEffect::Write {
+                tag: self.generation,
+                at: Loc {
+                    root,
+                    rel: CACHE_FILE.into(),
+                },
+                record,
+            });
+        } else {
+            'after_write: {
+let (fetch,): (bool,) = (fetch,);
+
+        if fetch {
+            { self.phase = Phase::Fetching; };
+            fx.push(CatalogEffect::Get {
+                tag: self.generation,
+                etag: self.etag.clone(),
+            });
+        } else {
+            { self.phase = Phase::Idle; };
+        }
+
+};
+        }
+
+};
+        } else {
+            { self.phase = Phase::Idle; };
+        }
+
+};
                 true
             }
             Event::Read { tag, result }
@@ -621,7 +745,71 @@ impl Catalog {
                         self.body = cache.body;
                     }
                 }
-                self.read(at + 1, fx);
+                'read: {
+let (at,): (usize,) = (at + 1,);
+
+        if let Some(candidate) = self.candidates.get(at) {
+            let root = candidate.dir.clone();
+            { self.phase = Phase::Reading(at); };
+            fx.push(CatalogEffect::Read {
+                tag: self.generation,
+                at: Loc {
+                    root,
+                    rel: CACHE_FILE.into(),
+                },
+            });
+        } else if self.allow_fetch
+            && self
+                .attempted_at
+                .is_none_or(|at| self.now < at || self.now - at >= REFRESH_SECONDS)
+        {
+            self.attempted_at = Some(self.now);
+            self.snapshot.fetching = true;
+            // Persist the attempt before dialing, so a restart during the request keeps backoff.
+            'write: {
+let (at, fetch,): (usize, bool,) = (0, true,);
+
+        if let Some(candidate) = self.candidates.get(at) {
+            let root = candidate.dir.clone();
+            let record = CacheRecord {
+                checked_at: self.snapshot.checked_at,
+                attempted_at: self.attempted_at,
+                etag: self.etag.clone(),
+                body: Arc::clone(&self.body),
+                index: self.snapshot.index.clone(),
+            };
+            { self.phase = Phase::Writing(at, fetch); };
+            fx.push(CatalogEffect::Write {
+                tag: self.generation,
+                at: Loc {
+                    root,
+                    rel: CACHE_FILE.into(),
+                },
+                record,
+            });
+        } else {
+            'after_write: {
+let (fetch,): (bool,) = (fetch,);
+
+        if fetch {
+            { self.phase = Phase::Fetching; };
+            fx.push(CatalogEffect::Get {
+                tag: self.generation,
+                etag: self.etag.clone(),
+            });
+        } else {
+            { self.phase = Phase::Idle; };
+        }
+
+};
+        }
+
+};
+        } else {
+            { self.phase = Phase::Idle; };
+        }
+
+};
                 true
             }
             Event::Reply { tag, result }
@@ -633,7 +821,7 @@ impl Catalog {
                     if reply.status == 304 && self.snapshot.index.is_some() && self.etag.is_some() {
                         self.snapshot.checked_at = Some(self.now);
                         self.snapshot.refresh_failed = false;
-                        self.etag = etag(reply.etag).or_else(|| self.etag.take());
+                        if let Some(validator) = etag(reply.etag) { self.etag = Some(validator); }
                     } else if let Some(signed) = reply.signed {
                         // The one rule that needs the cache: an index may not be older than the verified one held.
                         let cached = self.snapshot.index.as_ref().and_then(|index| index.serial);
@@ -650,64 +838,9 @@ impl Catalog {
                         }
                     }
                 }
-                self.write(0, false, fx);
-                true
-            }
-            Event::Written { tag, outcome }
-                if tag == self.generation && matches!(self.phase, Phase::Writing(..)) =>
-            {
-                let &Phase::Writing(at, fetch) = &self.phase else {
-                    unreachable!()
-                };
-                if outcome == WriteOutcome::Done {
-                    self.after_write(fetch, fx)
-                } else {
-                    self.write(at + 1, fetch, fx)
-                }
-                true
-            }
-            _ => false,
-        }
-    }
+                'write: {
+let (at, fetch,): (usize, bool,) = (0, false,);
 
-    fn read(&mut self, at: usize, fx: &mut Vec<CatalogEffect>) {
-        if let Some(candidate) = self.candidates.get(at) {
-            let root = candidate.dir.clone();
-            self.transition(Phase::Reading(at));
-            fx.push(CatalogEffect::Read {
-                tag: self.generation,
-                at: Loc {
-                    root,
-                    rel: CACHE_FILE.into(),
-                },
-            });
-        } else if self.allow_fetch
-            && self
-                .attempted_at
-                .is_none_or(|at| self.now < at || self.now - at >= REFRESH_SECONDS)
-        {
-            self.attempted_at = Some(self.now);
-            self.snapshot.fetching = true;
-            // Persist the attempt before dialing, so a restart during the request keeps backoff.
-            self.write(0, true, fx);
-        } else {
-            self.transition(Phase::Idle);
-        }
-    }
-
-    fn after_write(&mut self, fetch: bool, fx: &mut Vec<CatalogEffect>) {
-        if fetch {
-            self.transition(Phase::Fetching);
-            fx.push(CatalogEffect::Get {
-                tag: self.generation,
-                etag: self.etag.clone(),
-            });
-        } else {
-            self.transition(Phase::Idle);
-        }
-    }
-
-    fn write(&mut self, at: usize, fetch: bool, fx: &mut Vec<CatalogEffect>) {
         if let Some(candidate) = self.candidates.get(at) {
             let root = candidate.dir.clone();
             let record = CacheRecord {
@@ -717,7 +850,7 @@ impl Catalog {
                 body: Arc::clone(&self.body),
                 index: self.snapshot.index.clone(),
             };
-            self.transition(Phase::Writing(at, fetch));
+            { self.phase = Phase::Writing(at, fetch); };
             fx.push(CatalogEffect::Write {
                 tag: self.generation,
                 at: Loc {
@@ -727,9 +860,104 @@ impl Catalog {
                 record,
             });
         } else {
-            self.after_write(fetch, fx);
+            'after_write: {
+let (fetch,): (bool,) = (fetch,);
+
+        if fetch {
+            { self.phase = Phase::Fetching; };
+            fx.push(CatalogEffect::Get {
+                tag: self.generation,
+                etag: self.etag.clone(),
+            });
+        } else {
+            { self.phase = Phase::Idle; };
         }
+
+};
+        }
+
+};
+                true
+            }
+            Event::Written { tag, outcome }
+                if tag == self.generation && matches!(self.phase, Phase::Writing(..)) =>
+            {
+                let &Phase::Writing(at, fetch) = &self.phase else {
+                    unreachable!()
+                };
+                if outcome == WriteOutcome::Done {
+                    ('after_write: {
+let (fetch,): (bool,) = (fetch,);
+
+        if fetch {
+            { self.phase = Phase::Fetching; };
+            fx.push(CatalogEffect::Get {
+                tag: self.generation,
+                etag: self.etag.clone(),
+            });
+        } else {
+            { self.phase = Phase::Idle; };
+        }
+
+})
+                } else {
+                    ('write: {
+let (at, fetch,): (usize, bool,) = (at + 1, fetch,);
+
+        if let Some(candidate) = self.candidates.get(at) {
+            let root = candidate.dir.clone();
+            let record = CacheRecord {
+                checked_at: self.snapshot.checked_at,
+                attempted_at: self.attempted_at,
+                etag: self.etag.clone(),
+                body: Arc::clone(&self.body),
+                index: self.snapshot.index.clone(),
+            };
+            { self.phase = Phase::Writing(at, fetch); };
+            fx.push(CatalogEffect::Write {
+                tag: self.generation,
+                at: Loc {
+                    root,
+                    rel: CACHE_FILE.into(),
+                },
+                record,
+            });
+        } else {
+            'after_write: {
+let (fetch,): (bool,) = (fetch,);
+
+        if fetch {
+            { self.phase = Phase::Fetching; };
+            fx.push(CatalogEffect::Get {
+                tag: self.generation,
+                etag: self.etag.clone(),
+            });
+        } else {
+            { self.phase = Phase::Idle; };
+        }
+
+};
+        }
+
+})
+                }
+                true
+            }
+            _ => false,
+        }
+
+}
+    pub fn snapshot(&self) -> &Snapshot {
+        &self.snapshot
     }
+
+    pub fn step(&mut self, ev: Event, fx: &mut Vec<CatalogEffect>) -> bool { self.transition(ev, fx) }
+
+
+
+
+
+
 }
 
 #[cfg(test)]

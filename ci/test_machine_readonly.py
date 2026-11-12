@@ -6,6 +6,7 @@ from test_check_machine_writer import verdict, STRICT
 import unittest
 INI = STRICT + 'state_reads = immutable\n'
 SOURCE = '''
+enum Event { Set } enum Fx { Changed }
 struct Payload { value: String }
 enum State { Idle, Active(Payload) }
 impl State {
@@ -17,12 +18,13 @@ struct View<'a> { state: &'a State }
 struct Machine { state: State }
 impl Machine {
     fn new() -> Self { Self { state: State::Idle } }
-    fn step(&mut self) { self.state = State::Idle; }
+    fn transition(&mut self, event: Event, fx: &mut Vec<Fx>) { self.state = State::Idle; }
     fn read(&self) -> bool { self.state.active() }
     fn view(&self) -> View<'_> { View { state: &self.state } }
 }
 '''
 GENERIC = '''
+enum Event { Set } enum Fx { Changed }
 pub trait Identity: Copy + Ord + sealed::Sealed {}
 mod sealed { pub trait Sealed {} impl Sealed for u64 {} }
 impl Identity for u64 {}
@@ -30,7 +32,7 @@ struct Payload<T> { id: T }
 struct Machine<R: Identity> { state: Option<Payload<R>> }
 impl<R: Identity> Machine<R> {
     fn new() -> Self { Self { state: None } }
-    fn step(&mut self) { let owned = std::mem::take(&mut self.state); self.state = owned; }
+    fn transition(&mut self, event: Event, fx: &mut Vec<Fx>) { let owned = std::mem::take(&mut self.state); self.state = owned; }
     fn view(&self) -> Option<&Payload<R>> { self.state.as_ref() }
 }
 '''
@@ -134,4 +136,83 @@ class Regression(unittest.TestCase):
         module = '#[cfg(any(test, feature = "test-support"))] mod helper;'
         self.assertEqual(verdict(SOURCE + module, INI, {child: 'fn poke(m: &mut super::Machine) { m.state = State::Idle; }'}), [])
         self.assertTrue(verdict(SOURCE + module.replace('test-support', 'shipping'), INI, {child: 'fn poke(m: &mut super::Machine) { m.state = State::Idle; }'}))
+class CompleteReaderRegression(unittest.TestCase):
+    def test_closed_scalar_reads_do_not_allow_mutable_aliases_or_consuming_drains(self):
+        source = SOURCE.replace('struct Machine { state: State }', 'struct Machine { state: State, counter: u64 }').replace('Self { state: State::Idle }', 'Self { state: State::Idle, counter: 0 }')
+        self.assertEqual(verdict(source, INI), [])
+        for body in ('let alias = &mut self.counter; unknown(alias);',
+                     'let alias = &mut (self.counter); unknown(alias);',
+                     'let ref mut alias = self.counter; unknown(alias);',
+                     'let nested = || { self.counter = 1; };',
+                     'let nested = || { self.counter += 1; };'):
+            with self.subTest(body=body):
+                self.assertTrue(verdict(source + 'impl Machine { fn rogue(&mut self) { ' + body + ' } }', INI))
+        self.assertTrue(verdict(source + 'impl Machine { fn drain(self) { let value = self.state; } }', INI))
+
+    def test_unrelated_copy_derive_does_not_certify_a_noncopy_value(self):
+        source = 'enum Event { Set } enum Fx { Changed } #[derive(Copy, Clone)] struct Other { value: u8 } struct Payload { value: u8 } struct Machine { state: Payload } impl Machine { fn new() -> Self { Self { state: Payload { value: 0 } } } fn transition(&mut self, event: Event, fx: &mut Vec<Fx>) {} fn rogue(&mut self) { let alias = self.state; unknown(alias); } }'
+        self.assertTrue(verdict(source, INI))
+
+class TypeBindingRegression(unittest.TestCase):
+    def test_static_path_payload_is_resolved_and_conditional_path_remains_closed(self):
+        source = SOURCE.replace('struct Payload { value: String }', '#[path = "payload_data.rs"] mod payload; use payload::Payload;')
+        extra = {'fixture/src/payload_data.rs': 'pub struct Payload { pub value: String }'}
+        self.assertEqual(verdict(source, INI, extra), [])
+        extra['fixture/src/payload_data.rs'] = 'pub struct Payload { pub value: std::cell::Cell<u8> }'
+        self.assertTrue(verdict(source, INI, extra))
+        self.assertTrue(verdict(source.replace('#[path = "payload_data.rs"]', '#[cfg_attr(feature = "shipping", path = "payload_data.rs")]'), INI, extra))
+
+    def test_inert_btreeset_elements_do_not_admit_authority(self):
+        self.assertEqual(verdict(SOURCE.replace('value: String', 'value: std::collections::BTreeSet<String>'), INI), [])
+        self.assertTrue(verdict(SOURCE.replace('value: String', 'value: std::collections::BTreeSet<std::cell::Cell<u8>>'), INI))
+
+    def test_copy_payload_getter_is_not_a_closed_generic_proof(self):
+        source = 'enum Event { Set } enum Fx { Changed } struct Machine<T: Copy> { state: T } impl<T: Copy> Machine<T> { fn new(state: T) -> Self { Self { state } } fn transition(&mut self, event: Event, fx: &mut Vec<Fx>) {} fn expose(&self) -> T { self.state } }'
+        self.assertTrue(verdict(source))
+        self.assertTrue(verdict(source.replace('T: Copy', 'T: Copy + Ord')))
+
+    def test_foreign_json_and_local_replacements_are_not_name_whitelisted(self):
+        for prefix, typ in (('use serde_json::Value;', 'Value'),
+                            ('mod serde_json { pub struct Value { x: std::cell::Cell<u8> } }', 'serde_json::Value'),
+                            ('struct Value { x: *mut u8 }', 'Value')):
+            self.assertTrue(verdict(prefix + SOURCE.replace('value: String', 'value: ' + typ), INI))
+
+class SyntaxRegression(unittest.TestCase):
+    def test_logical_negation_does_not_become_a_macro_certificate_hole(self):
+        self.assertEqual(verdict(GENERIC + 'fn pure() { if !(true) {} }', INI), [])
+        self.assertTrue(verdict(SOURCE + 'impl Machine { fn rogue(&mut self) { r#if!(self.state); } }', INI))
+        self.assertTrue(verdict(SOURCE + 'impl Machine { fn rogue(&mut self) { unknown!(self.state); } }', INI))
+
+class ConvergenceProjectionRegression(unittest.TestCase):
+    ARC = '''enum Event { Set } enum Fx { Changed } struct Payload { value: String } struct Machine { state: std::sync::Arc<Payload> } impl Machine { fn new() -> Self { Self { state: std::sync::Arc::new(Payload { value: String::new() }) } } fn transition(&mut self, event: Event, fx: &mut Vec<Fx>) {} fn same(&self, other: &Payload) -> bool { *other != *self.state } }'''
+    ITER = '''enum Event { Set } enum Fx { Changed } struct Payload { left: Option<String>, right: Option<String> } impl Payload { fn items(&self) -> impl Iterator<Item = &String> { self.left.iter().chain(self.right.iter()) } } struct Machine { state: Payload } impl Machine { fn new() -> Self { Self { state: Payload { left: None, right: None } } } fn transition(&mut self, event: Event, fx: &mut Vec<Fx>) {} fn any(&self) -> bool { self.state.items().next().is_some() } }'''
+    MATCH = '''enum Event { Set } enum Fx { Changed } enum State { Idle, Active { value: String, loaded: bool } } struct Machine { state: State } impl Machine { fn new() -> Self { Self { state: State::Idle } } fn transition(&mut self, event: Event, fx: &mut Vec<Fx>) { match &mut self.state { State::Active { loaded: flag @ false, .. } => *flag = true, State::Active { .. } => self.state = State::Idle, State::Idle => {} } } }'''
+    def test_arc_comparison_is_shared_but_not_a_value_escape(self):
+        self.assertEqual(verdict(self.ARC, INI), [])
+        for body in ('unknown(*self.state); false', 'let alias = &mut self.state; unknown(alias); false'):
+            self.assertTrue(verdict(self.ARC.replace('*other != *self.state', body), INI))
+        self.assertTrue(verdict(self.ARC.replace('value: String', 'value: std::cell::Cell<u8>'), INI))
+    def test_only_direct_standard_inert_iterator_chains_are_proved(self):
+        self.assertEqual(verdict(self.ITER, INI), [])
+        for change in ('unknown(self.left.iter())', 'self.left.iter().map(callback)', 'self.left.iter_mut().chain(self.right.iter_mut())'):
+            self.assertTrue(verdict(self.ITER.replace('self.left.iter().chain(self.right.iter())', change), INI))
+        self.assertTrue(verdict(self.ITER.replace('Option<String>', 'Option<std::cell::Cell<u8>>'), INI))
+        self.assertTrue(verdict('trait Iterator {} ' + self.ITER, INI))
+    def test_mutable_match_alias_is_confined_to_a_direct_bool_write(self):
+        self.assertEqual(verdict(self.MATCH, INI), [])
+        for body in ('unknown(flag)', '{ let alias = flag; unknown(alias); }', '{ let nested = || *flag = true; nested(); }', '*flag = callback()'):
+            self.assertTrue(verdict(self.MATCH.replace('*flag = true', body), INI))
+        self.assertTrue(verdict(self.MATCH.replace('fn transition(', 'fn rogue('), INI))
+    def test_declared_backend_path_and_reexport_are_resolved_without_sibling_guess(self):
+        source = GENERIC.replace('impl Sealed for u64 {}', 'impl Sealed for super::super::backend::LogicalRequestId {}')
+        extra = {'fixture/src/lib.rs': 'mod machine; mod backend;', 'fixture/src/backend.rs': '#[path = "backend_metrics.rs"] mod metrics; pub use metrics::LogicalRequestId;', 'fixture/src/backend_metrics.rs': '#[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq)] pub struct LogicalRequestId(u64);'}
+        self.assertEqual(verdict(source, INI, extra), [])
+        self.assertTrue(verdict(source.replace('super::super::backend::', 'super::super::backend_metrics::'), INI, extra))
+        extra['fixture/src/backend_metrics.rs'] = 'pub struct LogicalRequestId(std::cell::Cell<u64>);'
+    def test_generated_opaque_layout_is_not_a_name_or_copy_certificate(self):
+        source = SOURCE.replace('struct Payload { value: String }', 'mod payload; use payload::Payload;')
+        extra = {'fixture/src/machine/payload.rs': 'include!(concat!(env!("OUT_DIR"), "/payload.rs"));', 'fixture/src/machine/payload/guess.rs': '#[derive(Copy, Clone)] pub struct Payload { value: u64 }'}
+        self.assertTrue(verdict(source, INI, extra))
+        self.assertTrue(verdict(source, INI, extra))
+
 if __name__ == '__main__': unittest.main()

@@ -235,10 +235,22 @@ pub enum Flight {
     Recovery,
 }
 
+/// Attempt addresses are data, never borrowed state, pointers or callbacks. Only the explicit
+/// inert identities below may cross the machine's read-only getters. Ordering is an identity
+/// property; the reducer still compares exact attempts and does not order them.
+pub trait ForegroundIdentity: Copy + Ord + identity::Sealed {}
+mod identity {
+    pub trait Sealed {}
+    impl Sealed for u64 {}
+    impl Sealed for crate::route::RouteStartAttempt {}
+}
+impl ForegroundIdentity for u64 {}
+impl ForegroundIdentity for crate::route::RouteStartAttempt {}
+
 /// The machine's state is private and its one writer is `transition`, called by [`step`](Self::step): there is no mutator
 /// beside it for a caller to reach, so a new way in is a new [`ForegroundEvent`].
 #[derive(Debug)]
-pub struct ForegroundLifecycle<Attempt = crate::route::RouteStartAttempt> {
+pub struct ForegroundLifecycle<Attempt: ForegroundIdentity = crate::route::RouteStartAttempt> {
     state: ForegroundState<Attempt>,
     next_id: u64,
 }
@@ -282,7 +294,7 @@ impl<Attempt: Copy> ForegroundState<Attempt> {
 // A settlement emits at most AfterLoad followed by PlayClock; all other edges emit at most one.
 type ForegroundDecision<Attempt> = (ForegroundState<Attempt>, Handled, [Option<ForegroundEffect<Attempt>>; 2]);
 
-impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
+impl<Attempt: ForegroundIdentity> ForegroundLifecycle<Attempt> {
     pub const IDLE: Self = Self {
         state: ForegroundState::Idle,
         next_id: 0,
@@ -968,6 +980,27 @@ mod foreground_resume_tests {
         Ordinary,
         Suppressed,
         Effect(ForegroundEffect<u64>),
+    }
+
+    #[test]
+    fn park_alone_advances_the_owner_id_and_wraps_past_zero() {
+        let mut lifecycle = ForegroundLifecycle::<u64> { state: ForegroundState::Idle, next_id: u64::MAX };
+        let mut fx = Vec::new();
+        assert_eq!(lifecycle.step(&ForegroundEvent::Park { saved_ns: 9_000_000_000, viewer_paused: false }, &mut fx), Handled::Yes);
+        assert_eq!(lifecycle.next_id, 1);
+        assert!(fx.is_empty());
+        assert_eq!(lifecycle.step(&ForegroundEvent::Input(ForegroundInput::DidForeground), &mut fx), Handled::Yes);
+        assert_eq!(fx, [ForegroundEffect::Prepare { id: 1, resume_ns: 4_000_000_000 }]);
+        fx.clear();
+        let before = lifecycle.state();
+        assert_eq!(lifecycle.step(&ForegroundEvent::PrepareAnswered { id: 2, answer: PrepareAnswer::Pending }, &mut fx), Handled::No);
+        assert_eq!(lifecycle.state(), before);
+        assert_eq!(lifecycle.next_id, 1);
+        assert!(fx.is_empty());
+        lifecycle.step(&ForegroundEvent::Park { saved_ns: 11_000_000_000, viewer_paused: false }, &mut fx);
+        assert_eq!(lifecycle.state(), ForegroundState::Suspended { id: 2, saved_ns: 11_000_000_000, clock: ForegroundClock::Playing });
+        assert_eq!(lifecycle.next_id, 2);
+        assert!(fx.is_empty());
     }
 
     fn claim(lifecycle: &mut ForegroundLifecycle<u64>, input: ForegroundInput) -> ForegroundClaimResult {

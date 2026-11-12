@@ -11,11 +11,12 @@ gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
 
 FILE = 'fixture/src/machine.rs'
-STRICT = f'[{FILE}::Machine]\nwriter_policy = strict\nstate_field = state\ntransition = step\nconstructor = new\n'
-HEADER = 'struct Machine { state: u8 }\n'
+STRICT = f'[{FILE}::Machine]\nevent = Event\neffect = Fx\nwriter_policy = strict\nstate_field = state\ntransition = transition\nconstructor = new\n'
+TYPES = 'enum Event { Set } enum Fx { Changed }\n'
+HEADER = TYPES + 'struct Machine { state: u8 }\n'
 GOOD = '''impl Machine {
     fn new() -> Self { Self { state: 0 } }
-    fn step(&mut self) { self.state = 1; }
+    fn transition(&mut self, event: Event, fx: &mut Vec<Fx>) { match event { Event::Set => { self.state = 1; fx.push(Fx::Changed); } } }
     fn read(&self) -> u8 { self.state }
 }
 '''
@@ -53,7 +54,7 @@ const TEXT: &str = "self.state = 99;";
         ini = STRICT.replace('constructor = new', 'constructor = IDLE')
         source = HEADER + '''impl Machine {
     pub const IDLE: Self = Self { state: 0 };
-    fn step(&mut self) { self.state = 1; }
+    fn transition(&mut self, event: Event, fx: &mut Vec<Fx>) { self.state = 1; }
 }
 '''
         self.assertEqual(verdict(source, ini), [])
@@ -96,7 +97,7 @@ const TEXT: &str = "self.state = 99;";
                 self.assertTrue(verdict(src), code)
 
     def test_other_impl_does_not_authorize_writer_or_constructor(self):
-        for method in ('fn step(&mut self) { self.state = 2; }',
+        for method in ('fn transition(&mut self, event: Event, fx: &mut Vec<Fx>) { self.state = 2; }',
                        'fn new() -> Machine { Machine { state: 2 } }'):
             self.assertTrue(verdict(HEADER + GOOD + 'struct Other; impl Other { ' + method + ' }'))
 
@@ -124,11 +125,11 @@ const TEXT: &str = "self.state = 99;";
         self.assertTrue(verdict(src))
 
     def test_readonly_matches_and_copy_enum_helper(self):
-        src = '''#[derive(Clone, Copy)] enum State { Idle, Active }
+        src = TYPES + '''#[derive(Clone, Copy)] enum State { Idle, Active }
 struct Machine { state: State }
 impl Machine {
     fn new() -> Self { Self { state: State::Idle } }
-    fn step(&mut self) { self.state = State::Active; }
+    fn transition(&mut self, event: Event, fx: &mut Vec<Fx>) { self.state = State::Active; }
     fn is_idle(snapshot: State) -> bool { matches!(snapshot, State::Idle) }
     fn snapshot(&self) -> bool { Self::is_idle(self.state) }
     fn read(&self) -> bool { matches!(self.state, State::Idle | State::Active) }
@@ -182,16 +183,17 @@ impl Effect { fn awaits(&self) -> bool { matches!(self, Self::Prepare | Self::Lo
         self.assertTrue(verdict(src))
 
     def test_visibility_does_not_define_writer(self):
-        src = HEADER + GOOD.replace('fn step', 'pub(crate) fn step')
+        src = HEADER + GOOD + 'impl Machine { pub(crate) fn step(&mut self, event: Event, fx: &mut Vec<Fx>) { self.transition(event, fx); } }'
         self.assertEqual(verdict(src), [])
         self.assertTrue(verdict(src + 'impl Machine { pub fn update(&mut self) { self.state = 4; } }'))
+        self.assertTrue(verdict(HEADER + GOOD.replace('fn transition', 'pub(crate) fn transition')))
 
     def test_strict_keys_and_stale_contract(self):
         for ini in (f'[{FILE}::Machine]\nstate_field = state\n',
-                    STRICT.replace('transition = step\n', ''),
+                    STRICT.replace('transition = transition\n', ''),
                     STRICT.replace('constructor = new', 'constructor = '),
                     STRICT.replace('state_field = state', 'state_field = missing'),
-                    STRICT.replace('transition = step', 'transition = missing'),
+                    STRICT.replace('transition = transition', 'transition = missing'),
                     STRICT.replace('constructor = new', 'constructor = missing')):
             with self.subTest(ini=ini):
                 self.assertTrue(verdict(HEADER + GOOD, ini))
@@ -200,7 +202,7 @@ impl Effect { fn awaits(&self) -> bool { matches!(self, Self::Prepare | Self::Lo
         raw = HEADER.replace('state:', 'r#state:') + GOOD.replace('.state', '.r#state').replace('{ state:', '{ r#state:')
         self.assertEqual(verdict(raw), [])
         self.assertTrue(verdict(HEADER + GOOD.replace('fn new() -> Self', 'fn new(&mut self) -> Self')))
-        self.assertTrue(verdict(HEADER + GOOD.replace('fn step(&mut self)', 'fn step(&self)')))
+        self.assertTrue(verdict(HEADER + GOOD.replace('fn transition(&mut self, event: Event, fx: &mut Vec<Fx>)', 'fn transition(&self)')))
         src = HEADER + GOOD + '#[cfg(any(test, feature = "extra"))] fn helper(m: &mut Machine) { m.state = 5; }'
         self.assertTrue(verdict(src))
 
@@ -246,6 +248,125 @@ class WildcardPolicy(unittest.TestCase):
         for ini in (f'[module {FILE}]\n', f'[module {FILE}]\nwildcard_enum_match_arm = maybe\n',
                     '[module missing.rs]\nwildcard_enum_match_arm = deny\n'):
             self.assertTrue(verdict('', ini))
+
+
+
+class EventContract(unittest.TestCase):
+    def test_event_binding_rejects_setters_missing_and_prose_metadata(self):
+        self.assertEqual(verdict(HEADER + GOOD), [])
+        for source, ini in (
+            (HEADER + GOOD.replace('event: Event', 'event: u8'), STRICT),
+            (HEADER + GOOD.replace('event: Event', 'event: State'), STRICT),
+            (HEADER + GOOD.replace('event: Event', 'event: &mut Event'), STRICT),
+            (HEADER + GOOD, STRICT.replace('event = Event', 'event = State')),
+            (HEADER + GOOD, STRICT.replace('event = Event', 'event = Event (prose)')),
+            (HEADER + GOOD, STRICT.replace('event = Event\n', '')),
+            (HEADER + GOOD, STRICT.replace('effect = Fx\n', '')),
+            (HEADER.replace('enum Event { Set }', 'struct Event;') + GOOD, STRICT),
+        ):
+            with self.subTest(source=source, ini=ini): self.assertTrue(verdict(source, ini))
+        raw = HEADER.replace('state: u8', 'state: Event') + GOOD
+        self.assertTrue(verdict(raw), 'an owned state enum is not an admission event')
+
+    def test_effect_binding_requires_real_mutable_registered_enum_output(self):
+        for typ in ('u8', 'Vec<u8>', '&Vec<Fx>', '&mut Vec<Event>', '&mut impl FnMut(Fx)', '&mut Unknown'):
+            with self.subTest(typ=typ):
+                self.assertTrue(verdict(HEADER + GOOD.replace('&mut Vec<Fx>', typ)))
+        self.assertTrue(verdict(HEADER.replace('enum Fx { Changed }', 'struct Fx;') + GOOD))
+        self.assertTrue(verdict(HEADER + GOOD, STRICT.replace('effect = Fx', 'effect = none (later)')))
+
+    def test_borrowed_event_and_real_effect_alias_are_bound(self):
+        for alias in ('type Effects = Vec<Fx>;', 'type Effects = std::vec::Vec<Fx>;'):
+            self.assertEqual(verdict(alias + HEADER + GOOD.replace('event: Event', 'event: &Event').replace('&mut Vec<Fx>', '&mut Effects')), [])
+        child = 'fixture/src/machine/output.rs'
+        source = 'mod output; use output::Effects;' + HEADER.replace('enum Fx { Changed }', 'use output::Fx;') + GOOD.replace('&mut Vec<Fx>', '&mut Effects')
+        self.assertEqual(verdict(source, extra={child: 'pub enum Fx { Changed } pub type Effects = Vec<Fx>;'}), [])
+        self.assertTrue(verdict('type Vec<T> = Unknown<T>;' + HEADER + GOOD))
+
+    def test_pure_view_exact_none_has_no_effect_channel(self):
+        source = HEADER + GOOD.replace(', fx: &mut Vec<Fx>', '').replace(' fx.push(Fx::Changed);', '')
+        ini = STRICT.replace('effect = Fx', 'effect = none')
+        self.assertEqual(verdict(source, ini), [])
+        self.assertTrue(verdict(HEADER + GOOD, ini))
+
+    def test_every_owned_field_and_production_child_is_guarded(self):
+        source = HEADER.replace('state: u8', 'state: u8, pending: Vec<u8>, next_command: u64, cache: String') + GOOD.replace('state: 0', 'state: 0, pending: Vec::new(), next_command: 0, cache: String::new()')
+        self.assertEqual(verdict(source), [])
+        for field in ('state', 'pending', 'next_command', 'cache'):
+            for body in (f'self.{field} = panic!("rogue");', f'let alias = &mut self.{field}; unknown(alias);', f'unknown!(self.{field});'):
+                with self.subTest(field=field, body=body):
+                    self.assertTrue(verdict(source + 'impl Machine { fn rogue(&mut self) { ' + body + ' } }'))
+                    self.assertTrue(verdict(source + 'mod child;', extra={'fixture/src/machine/child.rs': 'fn rogue(m: &mut super::Machine) { ' + body.replace('self.', 'm.') + ' }'}))
+        self.assertTrue(verdict(source + 'impl Machine { fn drain(&mut self) { self.pending.clear(); self.next_command = 0; } }'))
+
+    def test_mutating_helpers_do_not_inherit_reducer_authority(self):
+        for helper in ('fn helper(&mut self) { self.state = 5; }', 'fn helper(&mut self) { unknown(self); }'):
+            source = HEADER + GOOD.replace('self.state = 1;', 'self.helper();') + 'impl Machine { ' + helper + ' }'
+            self.assertTrue(verdict(source))
+        self.assertTrue(verdict(HEADER + GOOD.replace('self.state = 1;', 'self.unknown();')))
+        for body in ('let mut nested = || { self.state = 5; }; nested();',
+                     'let mut nested = || self.state = 5; nested();',
+                     'let mut nested = move || { *self = Self::new(); }; nested();',
+                     'fn nested(m: &mut Machine) { m.state = 5; } nested(self);',
+                     'unknown!(self);', 'unknown!(self.state);'):
+            with self.subTest(body=body): self.assertTrue(verdict(HEADER + GOOD.replace('self.state = 1;', body)))
+
+    def test_whole_self_alias_and_unknown_calls_cannot_escape(self):
+        for body in ('let alias = self; unknown(alias);', 'let alias = &mut *self; unknown(alias);',
+                     'unknown(self);', '*self = Self::new();', 'Self::setter(self, 0);'):
+            with self.subTest(body=body): self.assertTrue(verdict(HEADER + GOOD + 'impl Machine { fn rogue(&mut self) { ' + body + ' } }'))
+        source = 'type Alias = Machine;' + HEADER + GOOD + 'fn rogue(m: &mut Alias) { *m = Machine::new(); }'
+        self.assertTrue(verdict(source))
+
+    def test_constructors_are_fresh_not_machine_factories(self):
+        for signature in ('fn new(other: Self) -> Self', 'fn new(other: Machine) -> Self', 'fn new(other: &Machine) -> Self'):
+            self.assertTrue(verdict(HEADER + GOOD.replace('fn new() -> Self', signature)))
+        self.assertTrue(verdict('type Alias = Machine;' + HEADER + GOOD.replace('fn new() -> Self', 'fn new(other: Alias) -> Self')))
+        self.assertTrue(verdict(HEADER + GOOD.replace('Self { state: 0 }', 'Self { state: 0, ..other }')))
+
+    def test_proved_shared_decision_is_not_a_mutself_helper(self):
+        source = HEADER + GOOD.replace('self.state = 1;', 'self.state = self.decide();') + 'impl Machine { fn decide(&self) -> u8 { 1 } }'
+        self.assertEqual(verdict(source), [])
+        self.assertTrue(verdict(source.replace('fn decide(&self)', 'fn decide(&mut self)')))
+
+
+class ProductionClosure(unittest.TestCase):
+    def test_conditional_paths_nested_paths_and_unresolved_modules_fail_closed(self):
+        for attribute in ('#[cfg_attr(feature = "shipping", path = "alternate.rs")]',
+                          '#[cfg_attr(feature = "shipping", cfg_attr(feature = "other", path = "alternate.rs"))]'):
+            source = HEADER + GOOD + attribute + ' mod child;'
+            with self.subTest(attribute=attribute):
+                self.assertTrue(verdict(source, extra={'fixture/src/machine/child.rs': '', 'fixture/src/alternate.rs': 'fn rogue(m: &mut super::Machine) { m.state = 2; }'}))
+                self.assertEqual(verdict(HEADER + GOOD + '#[cfg(test)]' + attribute + ' mod missing;'), [])
+        self.assertTrue(verdict(HEADER + GOOD + 'mod generated;'))
+        self.assertTrue(verdict(HEADER + GOOD + '#[path = "absent.rs"] mod generated;'))
+        self.assertEqual(verdict(HEADER + GOOD + '#[cfg_attr(feature = "shipping", allow(dead_code))] mod child;', extra={'fixture/src/machine/child.rs': ''}), [])
+
+    def test_static_includes_are_checked_opaque_missing_includes_are_rejected(self):
+        for include in ('include!(concat!(env!("OUT_DIR"), "/generated.rs"));', 'include!(NAME);', 'include!("missing.rs");'):
+            with self.subTest(include=include):
+                self.assertTrue(verdict(HEADER + GOOD + include))
+                self.assertEqual(verdict(HEADER + GOOD + '#[cfg(test)] mod tests { ' + include + ' }'), [])
+        included = 'fixture/src/included.rs'
+        self.assertEqual(verdict(HEADER + GOOD + 'include!("included.rs");', extra={included: ''}), [])
+        self.assertTrue(verdict(HEADER + GOOD + 'include!("included.rs");', extra={included: 'fn rogue(m: &mut Machine) { m.state = 2; }'}))
+        self.assertTrue(verdict(HEADER + GOOD + 'include!("included.rs");', extra={included: 'include!(NAME);'}))
+
+    def test_explicit_and_nested_child_paths_are_exhausted(self):
+        source = HEADER + GOOD + '#[path = "alternate.rs"] mod child;'
+        self.assertEqual(verdict(source, extra={'fixture/src/alternate.rs': ''}), [])
+        self.assertTrue(verdict(source, extra={'fixture/src/alternate.rs': '#![warn(clippy::wildcard_enum_match_arm)]'}))
+        for level in ('allow', 'expect', 'warn'):
+            source = HEADER + GOOD + 'mod outer { mod child; }'
+            self.assertTrue(verdict(source, extra={'fixture/src/machine/outer/child.rs': f'#![{level}(clippy::wildcard_enum_match_arm)]'}))
+
+
+class AlternateAuthorityRegression(unittest.TestCase):
+    def test_type_alias_impl_and_child_named_transition_are_not_authorities(self):
+        self.assertTrue(verdict('type Alias = Machine;' + HEADER + GOOD + 'impl Alias { fn rogue(&mut self) { self.state = 3; } }'))
+        self.assertTrue(verdict('type Alias = Machine;' + HEADER + GOOD + 'impl SomeTrait for Alias { fn rogue(&mut self) { unknown(self); } }'))
+        source = HEADER + GOOD + 'mod child;'
+        self.assertTrue(verdict(source, extra={'fixture/src/machine/child.rs': 'use super::Machine; impl Machine { fn transition(&mut self, next: u8) { self.state = next; } }'}))
 
 
 if __name__ == '__main__':

@@ -507,7 +507,7 @@ impl Drop for TempSession {
 
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct OpaqueExtensions(pub BTreeMap<String, Value>);
+pub struct OpaqueExtensions(pub BTreeMap<String, ::serde_json::Value>);
 
 impl OpaqueExtensions {
     fn is_empty(&self) -> bool {

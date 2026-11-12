@@ -376,9 +376,20 @@ impl PlayerReadout {
         edge_pending(self.raw.native_audio_refusals, self.taken_native_audio_refusals)
     }
 
-    /// The one writer. Applies `event`; there are no effects yet. The session addresses the
+    /// Apply `event` through the sole reducer; this pure view has no effects. The session addresses the
     /// events that carry an attempt's facts before it steps them.
     pub fn step(&mut self, event: ReadoutEvent) {
+        self.transition(event);
+    }
+}
+
+/// Whether the feed's count of an edge is ahead of what the player has taken. A count the feed
+/// zeroed (its session reset) is no edge, whatever was taken before.
+fn edge_pending(counted: u32, taken: u32) -> bool { counted != 0 && counted != taken }
+
+impl PlayerReadout {
+    /// The only writer of every readout field, including coalescing and consumed-edge counters.
+    fn transition(&mut self, event: ReadoutEvent) {
         match event {
             ReadoutEvent::StateDerived(state) => self.state = state,
             ReadoutEvent::StreamEnded => self.ended = true,
@@ -397,7 +408,10 @@ impl PlayerReadout {
                 self.pending_seek_ns = None;
                 self.seek_requests = 0;
             }
-            ReadoutEvent::SeekRequeued { target_ns } => self.wait_for_pump(target_ns),
+            ReadoutEvent::SeekRequeued { target_ns } => {
+                self.pending_seek_ns = (target_ns >= 0).then_some(target_ns);
+                self.seek_requests = 1;
+            },
             ReadoutEvent::ReloadSeek { target_ns } => self.reload_seek_ns = Some(target_ns),
             ReadoutEvent::SessionReset => {
                 self.state = PlaybackState::Idle;
@@ -449,7 +463,8 @@ impl PlayerReadout {
                 // the feed's epoch makes the next request new again.
                 let asked = raw.seek_requeue;
                 if asked.epoch != 0 && asked.epoch != self.raw.seek_requeue.epoch {
-                    self.wait_for_pump(asked.target_ns);
+                    self.pending_seek_ns = (asked.target_ns >= 0).then_some(asked.target_ns);
+                    self.seek_requests = 1;
                 }
                 if raw.frames > 0 {
                     // The callback gate counts only the replacement Load here. A seeded
@@ -514,18 +529,6 @@ impl PlayerReadout {
     }
 }
 
-/// Whether the feed's count of an edge is ahead of what the player has taken. A count the feed
-/// zeroed (its session reset) is no edge, whatever was taken before.
-fn edge_pending(counted: u32, taken: u32) -> bool { counted != 0 && counted != taken }
-
-impl PlayerReadout {
-    /// `target_ns` waits for the pump as one request.
-    fn wait_for_pump(&mut self, target_ns: i64) {
-        self.pending_seek_ns = (target_ns >= 0).then_some(target_ns);
-        self.seek_requests = 1;
-    }
-}
-
 impl Default for PlayerReadout {
     fn default() -> Self { Self::IDLE }
 }
@@ -537,6 +540,22 @@ mod tests {
     use crate::route::{PlaybackSession, RouteStartAttempt};
     use plx_playback_contract::feed::{FeedFacts, FeedLoad, SeekRequeue};
     use plx_playback_contract::feed_fake::FakeFeed;
+
+    #[test]
+    fn explicit_and_sampled_requeues_fold_only_the_requests_they_replace() {
+        let mut r = stepped(&[tap(1), tap(2), ReadoutEvent::SeekRequeued { target_ns: 3_000_000_000 }]);
+        assert_eq!((r.seek_epoch(), r.pending_seek(), r.seek_coalesced()), (2, Some(3_000_000_000), 0));
+        assert_eq!(r.seek_display_ns(), Some(2_000_000_000));
+        let raw = FeedRaw { seek_requeue: SeekRequeue { epoch: 7, target_ns: 4_000_000_000 }, ..FeedRaw::IDLE };
+        r.step(ReadoutEvent::FactsIngested(raw));
+        assert_eq!((r.seek_epoch(), r.pending_seek(), r.seek_coalesced()), (2, Some(4_000_000_000), 0));
+        r.step(tap(5));
+        r.step(ReadoutEvent::FactsIngested(raw));
+        assert_eq!((r.seek_epoch(), r.pending_seek(), r.seek_coalesced()), (3, Some(5_000_000_000), 1));
+        r.step(ReadoutEvent::SessionReset);
+        assert_eq!((r.seek_epoch(), r.pending_seek(), r.seek_coalesced()), (3, None, 0));
+        assert!(!r.seeking());
+    }
 
     fn stepped(events: &[ReadoutEvent]) -> PlayerReadout {
         let mut readout = PlayerReadout::IDLE;

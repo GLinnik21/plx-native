@@ -7,6 +7,7 @@ remain report-only. See machines.ini for the conservative proof limits; Clippy c
 from pathlib import Path
 import configparser
 import sys
+from machine_readonly import macro_invocation
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rust_test_modules as rtm  # noqa: E402
@@ -20,7 +21,7 @@ OPEN, SHUT = '([{<', ')]}>'
 def struct_fields(source, name):
     """[(is_pub, field name or index, type tokens)] of the braced or tuple struct `name`, or None
     when the source declares no such struct. Comments and strings are gone after lexing."""
-    tokens = rust_tokens(source)
+    tokens = [t for t in source if t != '<test>'] if isinstance(source, list) else rust_tokens(source)
     start = next((i for i in range(len(tokens) - 1) if tokens[i] == 'struct' and tokens[i + 1] == name), None)
     if start is None: return None
     body, angle = start + 2, 0
@@ -33,12 +34,14 @@ def struct_fields(source, name):
         token = tokens[k]
         if depth == 0 and token in ('}', ')'): break
         if depth == 0 and token == ',':
-            fields.append(current); current = []
+            if current: fields.append(current)
+            current = []
             continue
         depth += (token in OPEN) - (token in SHUT and tokens[k - 1] != '-')
         current.append(token)
     if current: fields.append(current)
-    return [shape(index, field) for index, field in enumerate(fields)]
+    fields = [field[next((i for i, t in enumerate(field) if t not in ('<test>', ';')), len(field)):] for field in fields]
+    return [shape(index, field) for index, field in enumerate(f for f in fields if f)]
 
 
 def shape(index, tokens):
@@ -64,7 +67,10 @@ def rust_tokens(source):
     out, i = [], 0
     while i < len(raw):
         if raw[i:i + 2] == ['r', '#'] and i + 2 < len(raw):
-            out.append(raw[i + 2]); i += 3
+            identifier = raw[i + 2]
+            if identifier in ('if', 'while', 'return', 'match', 'let', 'else', 'for', 'yield', 'break', 'continue') and raw[i + 3:i + 4] == ['!']:
+                identifier = '_raw_macro_' + identifier
+            out.append(identifier); i += 3
         else:
             out.append(raw[i]); i += 1
     return out
@@ -75,7 +81,7 @@ def ends_of(tokens):
 
 
 def production_tokens(source):
-    """Erase items proven cfg(test)-only, retaining token positions for remaining groups."""
+    """Erase items proven cfg(test)-only, keeping item boundaries."""
     tokens = rust_tokens(source)
     ends = ends_of(tokens)
     i = 0
@@ -100,10 +106,11 @@ def production_tokens(source):
             if tokens[j] in ('(', '[') and j in ends:
                 j = ends[j] + 1; continue
             j += 1
+        boundary = ',' if tokens[j - 1:j] == [','] else ';'
         tokens[i:j] = ['<test>'] * (j - i)
-        if j > i: tokens[j - 1] = ';'  # retain an item boundary for the following production impl
+        if j > i: tokens[j - 1] = boundary  # retain an item boundary for the following production impl
         i = j
-    return tokens
+    return [token for token in tokens if token != '<test>']
 
 
 def item_bodies(tokens):
@@ -132,6 +139,19 @@ def item_bodies(tokens):
         if token == 'impl': impls.append((j, ends[j], tokens[i + 1:j]))
         else: functions.append((j, ends[j], name, tokens[i + 2:j]))
     return impls, functions, ends
+
+
+def impl_type(header):
+    """The implemented Rust type, without impl parameters or an implemented trait."""
+    header = list(header)
+    if header[:1] == ['<']:
+        depth, stop = 1, 1
+        while stop < len(header) and depth:
+            depth += (header[stop] == '<') - (header[stop] == '>'); stop += 1
+        header = header[stop:]
+    if 'for' in header: header = header[header.index('for') + 1:]
+    if 'where' in header: header = header[:header.index('where')]
+    return header
 
 
 def inherent_target(header, name):
@@ -228,20 +248,172 @@ def copy_enum_types(tokens):
     return safe
 
 
-def writer_problems(source, name, field, transition, constructor, label, require_methods=True, reader=None):
+def closure_spans(tokens, ends):
+    """Conservatively delimit closures so a nested writer never inherits method authority."""
+    spans = []
+    for i, token in enumerate(tokens):
+        if token != '|' or i and tokens[i - 1] not in ('=', '(', ',', '{', 'move', 'return', ':'): continue
+        stop = i + 1
+        while stop < len(tokens) and tokens[stop] not in ('|', ';', '{', '}'): stop += 1
+        if tokens[stop:stop + 1] != ['|']: continue
+        body = stop + 1
+        if tokens[body:body + 1] == ['{'] and body in ends:
+            spans.append((i, ends[body])); continue
+        end = body
+        while end < len(tokens) and tokens[end] not in (';', ',', '}', ')', ']'):
+            end = ends[end] + 1 if end in ends else end + 1
+        spans.append((i, end))
+    return spans
+
+
+def writer_problems(source, name, field, transition, constructor, label, require_methods=True,
+                    reader=None, event=None, effect=None, proof=None, shared_reads=False, owned_fields=None, owner_path=None):
+    """Literal Event/Effects authority covers EVERY owned field, never a selected-state whitelist."""
     tokens = production_tokens(source)
     impls, functions, ends = item_bodies(tokens)
+    fields = struct_fields(tokens, name) or owned_fields or []
     owned = [(a, b) for a, b, h in impls if inherent_target(h, name)]
+    declared = [(a, b, n, sig) for a, b, n, sig in functions
+                if any(x < a < b < y for x, y in owned)
+                and not any(x < a < y for x, y, _, _ in functions)]
+    problems = []
+    if transition != 'transition': problems.append(f'{label}: canonical method must be named transition')
+    if event is None or effect is None or proof is None:
+        problems.append(f'{label}: missing validated event/effect bindings')
+    source_path = proof.root / label if proof is not None else None
+    state_path = Path(owner_path) if owner_path is not None else source_path
+    from machine_readonly import split
+    def parameters(sig):
+        end = ends_of(sig).get(0)
+        return split(sig[1:end]) if end is not None else []
+    def typ(param):
+        return param[param.index(':') + 1:] if ':' in param else []
+    def leading(a, method):
+        fn = max(i for i in range(a) if tokens[i:i + 2] == ['fn', method])
+        start = fn - 1
+        while start >= 0 and tokens[start] not in (';', '{', '}'): start -= 1
+        return tokens[start + 1:fn]
+    if require_methods:
+        matches = [(a, b, sig) for a, b, n, sig in declared if n == transition]
+        if len(matches) != 1: problems.append(f'{label}: canonical transition must be unique')
+        for a, b, sig in matches:
+            if 'pub' in leading(a, transition): problems.append(f'{label}: canonical transition must be private')
+            params = parameters(sig)
+            if not params or params[0] != ['&', 'mut', 'self']:
+                problems.append(f'{label}: transition must take &mut self')
+            if proof is not None and event and effect:
+                expected = proof.nominal(source_path, rust_tokens(event))
+                event_params = [p for p in params[1:] if proof.nominal(source_path, typ(p)) is not None
+                                and expected is not None and proof.nominal(source_path, typ(p))[:3] == expected[:3]]
+                if expected is None or expected[2] != 'enum' or len(event_params) != 1 or any(typ(p)[:2] == ['&', 'mut'] for p in event_params):
+                    problems.append(f'{label}: transition must take registered event enum {event}')
+                elif any(proof.nominal(source_path, t) is not None and proof.nominal(source_path, t)[:3] == expected[:3] for _, _, t in fields):
+                    problems.append(f'{label}: event enum must not be an owned raw state setter')
+                if effect == 'none':
+                    if any('mut' in p or 'FnMut' in p for p in params[1:]):
+                        problems.append(f'{label}: effect = none forbids an effect output')
+                elif not any(proof.effect_output(source_path, typ(p), rust_tokens(effect)) for p in params[1:]):
+                    problems.append(f'{label}: transition requires &mut Vec<{effect}> or its concrete alias')
+                if any('FnMut' in p or 'Fn' in p or 'FnOnce' in p or 'fn' in p or '*' in p for p in params[1:]):
+                    problems.append(f'{label}: transition cannot delegate writes/effects to a callback or pointer')
+        for a, b, method, sig in declared:
+            if method != constructor: continue
+            params = parameters(sig)
+            if any('Self' in p or name in p or proof is not None and
+                   (target := proof.nominal(source_path, typ(p))) is not None and target[1] == name for p in params):
+                problems.append(f'{label}: constructor accepts existing machine authority (fresh values only)')
+            if any(tokens[i:i + 2] == ['.', '.'] for i in range(a + 1, b)):
+                problems.append(f'{label}: constructor must initialize fresh fields without struct updates')
+    if not require_methods and any(n in (transition, constructor) for _, _, n, _ in declared):
+        problems.append(f'{label}: a production child cannot define an alternate canonical writer/constructor')
+    if proof is not None:
+        for _, _, header in impls:
+            target_type = impl_type(header)
+            target = proof.nominal(source_path, target_type)
+            if target is not None and target[1] == name and target_type[:1] != [name]:
+                problems.append(f'{label}: a machine type alias cannot introduce another authority impl')
+    substitutions = proof.generic_context(state_path, name) if proof is not None and fields else {}
+    readers = {}
+    for _, key, typ_tokens in fields:
+        resolved = [part for token in typ_tokens for part in (substitutions or {}).get(token, [token])]
+        readers[key] = (proof, state_path, resolved) if proof is not None and shared_reads else None
+    if isinstance(reader, tuple): readers[field] = reader
+    elif isinstance(reader, dict): readers.update(reader)
+    if proof is not None:
+        field_types = {k: [part for token in t for part in (substitutions or {}).get(token, [token])] for _, k, t in fields}
+        for a, b, method, sig in declared:
+            if parameters(sig)[:1] != [['&', 'self']]: continue
+            opaque = False
+            for i in range(a + 1, b - 2):
+                if tokens[i:i + 2] != ['self', '.'] or tokens[i + 2] not in field_types: continue
+                position, resolved = i + 2, (state_path, field_types[tokens[i + 2]])
+                while tokens[position + 1:position + 2] == ['.'] and tokens[position + 3:position + 4] != ['(']:
+                    resolved = proof.field(*resolved, tokens[position + 2]) if resolved else None
+                    position += 2
+                if resolved is None or not proof.inert(*resolved): opaque = True
+            if opaque and not proof.discriminant_method(source_path, name, method):
+                problems.append(f'{label}::{method}: shared opaque payload requires a bounded inert/discriminant proof')
+    targets = fields or [(False, field, [])]
+    contexts = {}
+    for _, key, _ in targets:
+        problems.extend(_field_writer_problems(source, name, key, transition, constructor, label,
+                        require_methods=require_methods, reader=readers.get(key), analysis=(tokens, impls, functions, ends, contexts)))
+    for _, _, method, sig in declared:
+        params = parameters(sig)
+        if params and 'self' in params[0] and '&' not in params[0]:
+            problems.append(f'{label}::{method}: consuming the machine must use an owner event')
+    machine_methods = {n: [(a, b, sig) for a, b, m, sig in declared if m == n] for _, _, n, _ in declared}
+    all_inert = proof is not None and substitutions is not None and all(proof.inert(state_path, [part for token in t for part in substitutions.get(token, [token])]) for _, _, t in fields)
+    def machine_body(i): return any(a < i < b and inherent_target(h[h.index('for') + 1:] if 'for' in h else h, name) for a, b, h in impls)
+    for i, token in enumerate(tokens):
+        if not machine_body(i): continue
+        if token == 'unsafe': problems.append(f'{label}: unsafe machine authority cannot be proved')
+        if token == 'self' and tokens[i + 1:i + 2] == ['.'] and tokens[i + 3:i + 4] == ['(']:
+            method = tokens[i + 2]
+            if method == transition: continue
+            candidates = machine_methods.get(method, [])
+            shared = len(candidates) == 1 and parameters(candidates[0][2])[:1] == [['&', 'self']]
+            bounded = proof is not None and proof.discriminant_method(source_path, name, method) if shared and not all_inert else False
+            if not shared or not (all_inert or bounded) or 'unsafe' in tokens[candidates[0][0]:candidates[0][1]]:
+                problems.append(f'{label}: live machine call {method} is not the canonical event reducer or a proved shared decision')
+        if token == '!' and macro_invocation(tokens, i, ends):
+            args = tokens[i + 2:ends[i + 1]]
+            if 'self' in args and not (tokens[i - 1] in ('matches', 'assert', 'debug_assert', 'vec', 'format', 'format_args', 'write', 'writeln', 'panic')
+                    and proof is not None and proof.builtin(source_path, tokens[i - 1]) and builtin_macro(tokens, i, tokens[i - 1])):
+                problems.append(f'{label}: unknown macro may capture live machine authority')
+    if proof is not None:
+        for a, b, method, sig in functions:
+            for p in parameters(sig):
+                if '&' not in p or 'mut' not in p or ':' not in p: continue
+                target = proof.nominal(source_path, typ(p))
+                if target is not None and target[1] == name and target[0] == source_path.resolve():
+                    problems.append(f'{label}::{method}: mutable machine alias may replace owned fields')
+    return list(dict.fromkeys(problems))
 
-    def context(index):
+
+def _field_writer_problems(source, name, field, transition, constructor, label, require_methods=True, reader=None, analysis=None):
+    if analysis is None:
+        tokens = production_tokens(source)
+        impls, functions, ends = item_bodies(tokens)
+    else: tokens, impls, functions, ends, contexts = analysis
+    if analysis is None: contexts = {}
+    owned = [(a, b) for a, b, h in impls if inherent_target(h, name)]
+    closures = closure_spans(tokens, ends)
+
+    def compute_context(index):
+        if any(a <= index < b for a, b in closures): return None
         containing = [(a, b, n) for a, b, n, _ in functions if a < index < b]
         if not containing: return None
         a, b, method = min(containing, key=lambda x: x[1] - x[0])
         parents = [(x, y) for x, y, _, _ in functions if x < a < y]
         return method if not parents and any(x < a < b < y for x, y in owned) else None
 
+    def context(index):
+        if index not in contexts: contexts[index] = compute_context(index)
+        return contexts[index]
+
     problems = []
-    fields = struct_fields(source, name) or []
+    fields = struct_fields(tokens, name) or []
     field_types = [typ for _, field_name, typ in fields if field_name == field]
     plain_struct = any(tokens[j:j + 3] == ['struct', name, '{'] for j in range(len(tokens) - 2))
     copy_field = (plain_struct and len(field_types) == 1 and len(field_types[0]) == 1
@@ -326,12 +498,22 @@ def writer_problems(source, name, field, transition, constructor, label, require
         containing = [(a, b, h) for a, b, h in impls if a < index < b]
         if not containing: return False
         _, _, header = min(containing, key=lambda item: item[1] - item[0])
-        return inherent_target(header, name) or ('for' in header and header[-1:] == [name])
+        return inherent_target(header[header.index('for') + 1:] if 'for' in header else header, name)
 
     def unrelated_projection(index):
         if reader is None: return False
+        if tokens[index + 1:index + 2] == ['('] and tokens[index - 2:index] == ['self', '.'] and reader[0].shared_method(reader[0].root / label, [name], field): return True
+        root = index - 2
+        while root >= 2 and tokens[root - 1] == '.': root -= 2
+        if root >= 0 and tokens[root] == 'self' and root + 2 < index and self_is_machine(index): return True
         receiver = tokens[index - 2] if index >= 2 else ''
-        if receiver == 'self': return not self_is_machine(index)
+        if receiver == 'self':
+            if self_is_machine(index): return False
+            proof = reader[0]
+            enclosing = [(a, b, h) for a, b, h in impls if a < index < b]
+            if not enclosing: return False
+            header = impl_type(min(enclosing, key=lambda item: item[1] - item[0])[2])
+            return proof.field(proof.root / label, header, field) is not None
         proof, state_path, state_type = reader
         source_path = proof.root / label
         enclosing = [(a, b, sig) for a, b, _, sig in functions if a < index < b]
@@ -348,7 +530,13 @@ def writer_problems(source, name, field, transition, constructor, label, require
             equal = j + 1
             while equal < index and tokens[equal] not in ('=', ';', '{'): equal += 1
             if tokens[equal:equal + 1] != ['='] or receiver not in tokens[j:equal]: continue
+            binding = tokens[j + 1:equal]
+            if ':' in binding:
+                declared_type = binding[binding.index(':') + 1:]
+                target = proof.nominal(source_path, declared_type)
+                if target is not None and target[1] != name and proof.field(source_path, declared_type, field) is not None: return True
             pos = equal + 1
+            if tokens[pos:pos + 1] == ['&']: pos += 1
             if tokens[pos:pos + 2] != ['self', '.'] or tokens[pos + 2:pos + 3] == [field]: continue
             resolved = (state_path, [name])
             pos += 1
@@ -361,24 +549,37 @@ def writer_problems(source, name, field, transition, constructor, label, require
     def shared_read(index):
         if reader is None: return False
         proof, state_path, state_type = reader
-        if not proof.inert(state_path, state_type): return False
-        tail = tokens[index + 1:]
-        for j, token in enumerate(tail):
-            if token in (';', '{', '}'): break
-            if token == '=' and (j == 0 or tail[j - 1] not in ('=', '!', '<', '>')) and tail[j + 1:j + 2] not in (['='], ['>']):
-                return False
-        if tokens[index + 1:index + 2] == ['.'] and tokens[index + 3:index + 4] == ['(']:
-            return proof.shared_method(state_path, state_type, tokens[index + 2])
-        if tokens[index - 3:index] != ['&', 'self', '.']: return False
-        # A shared view may expose other owners, but its guarded field must still be &State.
+        position, resolved = index, (state_path, state_type)
+        while True:
+            if tokens[position + 1:position + 2] == ['['] and position + 1 in ends:
+                target = proof.nominal(*resolved) if resolved else None
+                if target is None or target[:3] not in (('std', 'Vec', 'std'), ('std', 'VecDeque', 'std'), ('std', 'BTreeMap', 'std')): return False
+                resolved = (target[4], target[3][-1])
+                position = ends[position + 1]
+            elif tokens[position + 1:position + 2] == ['.'] and tokens[position + 3:position + 4] != ['(']:
+                resolved = proof.field(resolved[0], resolved[1], tokens[position + 2]) if resolved else None
+                position += 2
+            else: break
+        if resolved is None or not proof.inert(*resolved): return False
+        if tokens[position + 1:position + 3] in (['=', '='], ['!', '='], ['<', '='], ['>', '=']): return True
+        for j in range(position + 1, len(tokens)):
+            token = tokens[j]
+            if token in (';', '{', '}', ','): break
+            if token == '=' and (j == 0 or tokens[j - 1] not in ('=', '!', '<', '>')) and tokens[j + 1:j + 2] not in (['='], ['>']): return False
+        if tokens[position + 1:position + 2] == ['.'] and tokens[position + 3:position + 4] == ['(']:
+            return proof.shared_method(resolved[0], resolved[1], tokens[position + 2])
+        if tokens[index - 5:index] in (['!', '=', '*', 'self', '.'], ['=', '=', '*', 'self', '.']):
+            target = proof.nominal(*resolved)
+            if target is not None and target[0] == 'std' and target[1] == 'Arc': return True
+        if tokens[index - 3:index] != ['&', 'self', '.']:
+            return proof.copy_value(*resolved)
         if tokens[index - 4:index - 3] == [':'] and tokens[index - 5].isidentifier():
             braces = [(a, b) for a, b in ends.items() if tokens[a] == '{' and a < index < b]
             if not braces: return False
             begin, _ = min(braces, key=lambda pair: pair[1] - pair[0])
             start = begin - 1
             while start > 1 and tokens[start - 2:start] == [':', ':']: start -= 3
-            view_type = tokens[start:begin]
-            return proof.shared_field(state_path, state_type, proof.root / label, view_type, tokens[index - 5])
+            return proof.shared_field(resolved[0], resolved[1], proof.root / label, tokens[start:begin], tokens[index - 5])
         return True
 
     def owned_take(index, owner):
@@ -391,9 +592,60 @@ def writer_problems(source, name, field, transition, constructor, label, require
                 return True
         return False
 
+    def owned_bool_match(index, owner):
+        """An in-place enum bool binding may only receive a literal in this reducer arm."""
+        if reader is None or owner != transition or tokens[index - 5:index] != ['match', '&', 'mut', 'self', '.']: return False
+        brace = index + 1
+        if brace not in ends or tokens[brace] != '{': return False
+        proof, state_path, state_type = reader
+        target = proof.nominal(state_path, state_type)
+        if target is None or target[2] != 'enum' or not proof.inert(state_path, state_type): return False
+        enum_path, enum_name = target[:2]
+        enum_tokens, enum_ends, _, _ = proof.module(enum_path)
+        declaration = next((i for i in range(len(enum_tokens) - 1) if enum_tokens[i:i + 2] == ['enum', enum_name]), None)
+        if declaration is None: return False
+        begin = declaration + 2
+        while begin < len(enum_tokens) and enum_tokens[begin] != '{': begin += 1
+        if begin not in enum_ends: return False
+        bool_fields = set()
+        pos = begin + 1
+        while pos < enum_ends[begin]:
+            variant = enum_tokens[pos]
+            if enum_tokens[pos + 1:pos + 2] == ['{'] and pos + 1 in enum_ends:
+                stop = enum_ends[pos + 1]
+                for j in range(pos + 2, stop - 2):
+                    if enum_tokens[j + 1:j + 3] == [':', 'bool']: bool_fields.add((variant, enum_tokens[j]))
+                pos = stop + 1
+            elif pos + 1 in enum_ends: pos = enum_ends[pos + 1] + 1
+            else: pos += 1
+            if enum_tokens[pos:pos + 1] == [',']: pos += 1
+        pos, bound = brace + 1, False
+        while pos < ends[brace]:
+            start = pos
+            while pos < ends[brace] and tokens[pos:pos + 2] != ['=', '>']:
+                pos = ends[pos] + 1 if pos in ends else pos + 1
+            if pos >= ends[brace]: return False
+            pattern = tokens[start:pos]
+            pos += 2
+            body_start = pos
+            if pos in ends: pos = ends[pos] + 1
+            else:
+                while pos < ends[brace] and tokens[pos] != ',': pos += 1
+            body = tokens[body_start:pos]
+            if '@' in pattern:
+                if len(pattern) != 14 or pattern[:3] != [enum_name, ':', ':'] or pattern[4] != '{' or pattern[6] != ':' or pattern[8] != '@' or pattern[9] not in ('false', 'true') or pattern[10:] != [',', '.', '.', '}']: return False
+                variant, field_name, alias = pattern[3], pattern[5], pattern[7]
+                if (variant, field_name) not in bool_fields or body not in (['*', alias, '=', 'true'], ['*', alias, '=', 'false']): return False
+                if context(body_start) != transition: return False
+                bound = True
+            elif any(t.isidentifier() and t[0].islower() and t != '_' for t in pattern): return False
+            if tokens[pos:pos + 1] == [',']: pos += 1
+        return bound
+
     for i, token in enumerate(tokens):
+        if token not in ('self', field, name, 'Self', '!', '*'): continue
         owner = context(i)
-        if token == 'self' and owner is not None:
+        if token == 'self' and (owner is not None or self_is_machine(i) and any(a < i < b for a, b, _, _ in functions)):
             if tokens[i + 1:i + 2] != ['.'] and not any(start == i for start, _ in safe_matches.values()):
                 problems.append(f'{location(i)}: machine reference may escape the authorized writer')
         if token == field and i and tokens[i - 1] == '.' and not unrelated_projection(i):
@@ -402,7 +654,10 @@ def writer_problems(source, name, field, transition, constructor, label, require
                 start -= 1
             prefix = tokens[start:i]
             # A shared reference can also escape and mutate interior-mutable state later.
-            borrowed = ('&' in prefix or
+            root = i - 2
+            while root and tokens[root - 1] == '(': root -= 1
+            logical_and = tokens[max(0, root - 2):root] == ['&', '&'] and root > 2 and (tokens[root - 3].isidentifier() or tokens[root - 3] in (')', ']', '}'))
+            borrowed = (tokens[root - 1:root] == ['&'] and not logical_and or tokens[max(0, root - 2):root] == ['&', 'mut'] or
                         any(prefix[j:j + 2] == ['ref', 'mut'] for j in range(len(prefix) - 1)))
             enclosing = [(a, b, sig) for a, b, _, sig in functions if a < i < b]
             signature = min(enclosing, key=lambda x: x[1] - x[0])[2] if enclosing else []
@@ -412,12 +667,13 @@ def writer_problems(source, name, field, transition, constructor, label, require
             forwarded = '=' in prefix or '(' in prefix
             matched_read = any(start + 2 == i and comma == i + 1 for start, comma in safe_matches.values())
             copied_argument = copy_argument(i, prefix)
-            proven_read = shared_read(i)
-            intrinsic = owned_take(i, owner)
+            mutable_borrow = tokens[max(0, root - 2):root] == ['&', 'mut'] or any(prefix[j:j + 2] == ['ref', 'mut'] for j in range(len(prefix) - 1))
+            proven_read = not mutable_borrow and shared_read(i)
+            intrinsic = owned_take(i, owner) or owned_bool_match(i, owner)
             mutable_result = any(result[j:j + 2] == ['&', 'mut'] for j in range(len(result) - 1))
             if ((reference_result and not proven_read or mutable_result) or (not matched_read and not intrinsic and not proven_read and (borrowed or 'addr_of_mut' in prefix or
                     (owner != transition and ((forwarded and not copied_argument) or '!' in prefix or mutation_in_tail(tokens[i + 1:])))))):
-                problems.append(f'{location(i)}: state projection may mutate or escape the authorized writer')
+                problems.append(f'{location(i)}: owned field {field} projection may mutate or escape the authorized writer (scope={owner})')
         # Destructuring may bind by reference; constructing a machine is restricted to its constructor.
         if token in (name, 'Self') and (token == name or reader is None or self_is_machine(i)) and i + 1 in ends and tokens[i + 1] == '{':
             if i and tokens[i - 1] in ('struct', 'enum', 'impl'): continue
@@ -426,13 +682,16 @@ def writer_problems(source, name, field, transition, constructor, label, require
             pattern = tokens[stop + 1:stop + 2] == ['='] or tokens[stop + 1:stop + 3] == ['=', '>']
             if field in tokens[i + 2:stop] and ((pattern and owner != transition) or (not pattern and owner != constructor and not (require_methods and any(i == start for start, _, _ in constants)))):
                 problems.append(f'{location(i)}: state construction/destructuring outside {constructor} or {transition}')
-        if token == '!' and i + 1 in ends and owner != transition:
+        if token == '!' and macro_invocation(tokens, i, ends) and owner != transition:
             args = tokens[i + 2:ends[i + 1]]
-            if (((reader is None or self_is_machine(i)) and 'self' in args) or field in args) and i not in safe_matches and i not in safe_asserts and not (reader is not None and (i < 3 or tokens[i - 3:i - 1] != [':', ':']) and tokens[i - 1] in ('matches', 'assert', 'debug_assert', 'vec', 'format', 'format_args', 'write', 'writeln', 'panic') and reader[0].builtin(reader[0].root / label, tokens[i - 1])):
+            if (((reader is None or self_is_machine(i)) and any(t == 'self' and args[j + 1:j + 2] != ['.'] for j, t in enumerate(args))) or any(t == field and j and args[j - 1] == '.' for j, t in enumerate(args))) and i not in safe_matches and i not in safe_asserts and not (reader is not None and (i < 3 or tokens[i - 3:i - 1] != [':', ':']) and tokens[i - 1] in ('matches', 'assert', 'debug_assert', 'vec', 'format', 'format_args', 'write', 'writeln', 'panic') and reader[0].builtin(reader[0].root / label, tokens[i - 1])):
                 problems.append(f'{location(i)}: macro may hide a state mutation outside {transition}')
         if token == '*' and tokens[i + 1:i + 3] == ['self', '='] and owner != transition and (reader is None or self_is_machine(i)):
             problems.append(f'{location(i)}: replacement of self outside {transition}')
     return problems
+
+
+
 
 
 def wildcard_problems(source, label, require_header=True):
@@ -457,16 +716,72 @@ def wildcard_problems(source, label, require_header=True):
 
 
 def production_sources(path, root):
-    """Registered module and its production-reachable child and include files."""
-    pending, seen = [path.resolve()], set()
+    """Exhaust the registered production closure; never guess conditional/generated paths."""
+    root = Path(root).resolve()
+    pending, seen = [Path(path).resolve()], set()
     while pending:
         current = pending.pop()
         if not current.is_relative_to(root):
             raise ValueError(f'production include escapes rust-modules: {current}')
         if current in seen: continue
         seen.add(current)
+        source = current.read_text(encoding='utf-8')
+        tokens = rtm.lex(source)
+        ends = rtm.group_ends(tokens)
+        module_dir = current.parent if current.name in ('mod.rs', 'lib.rs', 'main.rs') else current.with_suffix('')
+        def walk(start, stop, directory, attribute_base, inherited_test=False):
+            i, attrs = start, []
+            while i < stop:
+                kind, text = tokens[i]
+                if kind != 'code': i += 1; continue
+                if text == '#' and i + 1 < stop and tokens[i + 1][1] == '[':
+                    end = ends.get(i + 1)
+                    if end is None: raise ValueError(f'{current}: unresolved attribute')
+                    attrs.append(tokens[i + 2:end]); i = end + 1; continue
+                test = inherited_test or any(a and a[0][1] == 'cfg' and rtm.cfg_without_tests(a[2:-1]) == {False} for a in attrs)
+                conditional_path = any(a and a[0][1] == 'cfg_attr' and any(t == ('code', 'path') for t in a) for a in attrs)
+                paths = [a[2][1] for a in attrs if len(a) == 3 and a[:2] == [('code', 'path'), ('code', '=')] and a[2][0] == 'string']
+                if not test and conditional_path:
+                    raise ValueError(f'{current}: production cfg_attr(path) is unresolved')
+                if text == 'mod' and i + 2 < stop:
+                    name, form = tokens[i + 1][1], tokens[i + 2][1]
+                    if form in (';', '{'):
+                        if not test and (len(paths) > 1 or any(a and a[0][1] == 'path' for a in attrs) and not paths):
+                            raise ValueError(f'{current}: unresolved module path')
+                        if form == ';':
+                            candidates = [attribute_base / paths[0]] if paths else [directory / (name + '.rs'), directory / name / 'mod.rs']
+                            targets = [p.resolve() for p in candidates if p.is_file()]
+                            if not test:
+                                if len(targets) != 1: raise ValueError(f'{current}: unresolved production module {name}')
+                                pending.extend(targets)
+                            i += 3
+                        else:
+                            end = ends.get(i + 2)
+                            if end is None: raise ValueError(f'{current}: unresolved inline module {name}')
+                            nested = attribute_base / paths[0] if paths else directory / name
+                            walk(i + 3, end, nested, nested, test)
+                            i = end + 1
+                        attrs = []; continue
+                if text == 'include' and tokens[i + 1:i + 2] == [('code', '!')]:
+                    end = ends.get(i + 2)
+                    if not test:
+                        if end != i + 4 or tokens[i + 2][1] != '(' or tokens[i + 3][0] != 'string':
+                            raise ValueError(f'{current}: opaque production include!')
+                        target = (current.parent / tokens[i + 3][1]).resolve()
+                        if not target.is_file(): raise ValueError(f'{current}: unresolved production include!')
+                        pending.append(target)
+                    i = end + 1 if end is not None else stop
+                    attrs = []; continue
+                if text in ('{', '(', '['):
+                    end = ends.get(i)
+                    if end is None: raise ValueError(f'{current}: unbalanced production group')
+                    if text == '{': walk(i + 1, end, directory, attribute_base, test)
+                    i = end + 1
+                    attrs = []; continue
+                if text in (';', ','): attrs = []
+                i += 1
+        walk(0, len(tokens), module_dir, current.parent)
         yield current
-        pending.extend(target for target, test in rtm.file_edges(current) if not test)
 
 
 def check(modules=MODULES, ini=INI):
@@ -519,7 +834,7 @@ def check(modules=MODULES, ini=INI):
         for is_pub, field, _ in fields:
             if is_pub:
                 problems.append(f"{file}::{name}.{field} is public: a machine's state is private and its one "
-                                f"writer is step; a new way to change it is a new event (docs/sans-io.md)")
+                                f"writer is transition; a new way to change it is a new event (docs/sans-io.md)")
         bools = sum(1 for _, _, t in fields if t == ['bool'])
         options = sum(1 for _, _, t in fields if t[:2] == ['Option', '<'])
         report.append(f'machine {section} ({entry.get("event", "?")} -> {entry.get("effect", "?")}): '
@@ -535,36 +850,33 @@ def check(modules=MODULES, ini=INI):
         if field not in {f for _, f, _ in fields}:
             problems.append(f'machines.ini [{section}]: no state field {field} (stale strict contract)')
             continue
-        reader = None
-        if entry.get('state_reads') is not None:
-            if entry['state_reads'] != 'immutable':
-                problems.append(f'{section}: state_reads must be immutable')
-                continue
-            from machine_readonly import Proof
-            from types import SimpleNamespace
-            proof = Proof(root, SimpleNamespace(production_tokens=production_tokens, ends_of=ends_of,
-                shape=shape, struct_fields=struct_fields, item_bodies=item_bodies, inherent_target=inherent_target))
-            generic_bindings = proof.generic_context(path, name)
-            if generic_bindings is None:
-                problems.append(f'{section}: generic state bounds do not prove immutable identities')
-                continue
-            state_type = next(typ for _, field_name, typ in fields if field_name == field)
-            state_type = [part for token in state_type for part in generic_bindings.get(token, [token])]
-            if not proof.inert(path, state_type):
-                problems.append(f'{section}: shared state payload is unresolved or has mutable authority')
-            else:
-                reader = (proof, path, state_type)
+        if transition != 'transition':
+            problems.append(f'{section}: canonical method must be named transition')
+        event, effect = entry.get('event', '').strip(), entry.get('effect', '').strip()
+        if not event or not all(part.isidentifier() for part in event.split('::')) or not effect or not all(part.isidentifier() for part in effect.split('::')):
+            problems.append(f'{section}: event/effect require exact Rust type paths (or effect = none)')
+            continue
+        from machine_readonly import Proof
+        from types import SimpleNamespace
+        proof = Proof(root, SimpleNamespace(production_tokens=production_tokens, ends_of=ends_of,
+            shape=shape, struct_fields=struct_fields, item_bodies=item_bodies, inherent_target=inherent_target))
+        if entry.get('state_reads') is not None and entry['state_reads'] != 'immutable':
+            problems.append(f'{section}: state_reads must be immutable')
+            continue
+        if entry.get('state_reads') == 'immutable' and proof.generic_context(path, name) is None:
+            problems.append(f'{section}: generic state bounds do not prove immutable identities')
         try:
             for child in production_sources(path, root):
                 child_source = source if child == path else child.read_text(encoding='utf-8')
                 problems.extend(writer_problems(child_source, name, field, transition, constructor,
                                                 child.relative_to(root).as_posix(),
-                                                require_methods=child == path, reader=reader))
+                                                require_methods=child == path, event=event, effect=effect, proof=proof, shared_reads=entry.get('state_reads') == 'immutable', owned_fields=fields, owner_path=path))
         except (OSError, ValueError) as error:
             problems.append(f'machines.ini [{section}]: cannot analyze production sources: {error}')
-        if reader is not None:
-            report.append(f'immutable state read audit {section}: ' + ', '.join(sorted(reader[0].audit)))
+        if proof.audit:
+            report.append(f'immutable state read audit {section}: ' + ', '.join(sorted(proof.audit)))
     return problems, report
+
 
 
 def main():

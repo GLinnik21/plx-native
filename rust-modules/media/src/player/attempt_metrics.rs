@@ -45,16 +45,7 @@ pub struct SeenEvidence {
     pub clock_advanced: bool,
     pub picture_presented: bool,
 }
-impl SeenEvidence {
-    fn observe(&mut self, evidence: Evidence) {
-        match evidence {
-            Evidence::CommandAcknowledged => self.command_acknowledged = true,
-            Evidence::PlaybackObserved => self.playback_observed = true,
-            Evidence::ClockAdvanced => self.clock_advanced = true,
-            Evidence::PicturePresented => self.picture_presented = true,
-        }
-    }
-}
+
 
 /// What the viewer or backend is doing during the next interval. Unknown and intentional
 /// pause/seek/hold time is never charged to involuntary rebuffer or handoff stall.
@@ -196,11 +187,11 @@ pub trait Identity: Copy + Ord + identity::Sealed {}
 mod identity {
     pub trait Sealed {}
     impl Sealed for u64 {}
-    impl Sealed for super::super::backend_metrics::LogicalRequestId {}
+    impl Sealed for super::super::backend::LogicalRequestId {}
     impl Sealed for plx_playback_contract::AttemptId {}
 }
 impl Identity for u64 {}
-impl Identity for super::backend_metrics::LogicalRequestId {}
+impl Identity for super::backend::LogicalRequestId {}
 impl Identity for plx_playback_contract::AttemptId {}
 pub struct AttemptMetrics<R: Identity, A: Identity> {
     request: Option<RequestSummary<R, A>>,
@@ -242,128 +233,147 @@ impl<R: Identity, A: Identity> AttemptMetrics<R, A> {
         }
     }
 
-    fn advance(&mut self, request: &mut Option<RequestSummary<R, A>>, to: Tick) -> bool {
-        let Tick::Known(to) = to else {
-            // An unavailable clock breaks the interval. The next known tick starts a new
-            // anchor; no duration is invented for the unknown span.
-            self.time_anchor = None;
-            if let Some(request) = request.as_mut().filter(|r| r.outcome.is_none()) {
-                request.unknown_time_events = request.unknown_time_events.saturating_add(1);
-            }
-            self.request_start_clock_known = false;
-            self.attempt_start_clock_known = false;
-            return true;
-        };
-        if self.last_known_tick.is_some_and(|last| to < last) { return false; }
-        let elapsed = self.time_anchor.map_or(0, |from| to - from);
-        if let Some(request) = request.as_mut().filter(|r| r.outcome.is_none()) {
-            let eligible = self.condition.eligible();
-            let rebuffer = eligible && self.condition == Condition::Rebuffering && request.first_picture_at.is_some();
-            let handoff = eligible && self.handoff.is_some();
-            if rebuffer { request.rebuffer_ms = request.rebuffer_ms.saturating_add(elapsed); }
-            if handoff { request.handoff_gap_ms = request.handoff_gap_ms.saturating_add(elapsed); }
-            if rebuffer || handoff {
-                request.involuntary_stall_ms = request.involuntary_stall_ms.saturating_add(elapsed);
-            }
-        }
-        self.last_known_tick = Some(to);
-        self.time_anchor = Some(to);
-        true
-    }
-
-    fn save_attempt(request: &mut RequestSummary<R, A>, mut attempt: AttemptSummary<A>) {
-        if attempt.outcome.is_none() {
-            attempt.outcome = Some(if attempt.first_picture_at.is_some() {
-                AttemptOutcome::Superseded
-            } else { AttemptOutcome::Unconfirmed });
-        }
-        if request.recent_attempts.len() == MAX_ATTEMPT_HISTORY { request.recent_attempts.remove(0); }
-        request.recent_attempts.push(attempt);
-    }
-
-    fn finish(&mut self, request: &mut Option<RequestSummary<R, A>>, outcome: RequestOutcome, effects: &mut Vec<Fx<R, A>>) {
-        let Some(request) = request.as_mut().filter(|r| r.outcome.is_none()) else { return };
-        // An End without independent picture evidence is an unconfirmed playback, never a
-        // successful completion. Explicit failure and cancellation retain their own classes.
-        let outcome = if outcome == RequestOutcome::Ended && request.first_picture_at.is_none() {
-            RequestOutcome::Unconfirmed
-        } else { outcome };
-        if let Some(attempt) = request.current_attempt.as_mut() {
-            if attempt.outcome.is_none() {
-                attempt.outcome = Some(match outcome {
-                    RequestOutcome::Ended if attempt.first_picture_at.is_some() => AttemptOutcome::Ended,
-                    RequestOutcome::Ended => AttemptOutcome::Unconfirmed,
-                    RequestOutcome::Failed(failure) => AttemptOutcome::Failed(failure),
-                    RequestOutcome::Cancelled => AttemptOutcome::Cancelled,
-                    RequestOutcome::Unconfirmed => AttemptOutcome::Unconfirmed,
-                    RequestOutcome::Replaced => AttemptOutcome::Superseded,
-                });
-            }
-        }
-        request.outcome = Some(outcome);
-        if let RequestOutcome::Failed(failure) = outcome {
-            effects.push(Fx::HandledError {
-                request: request.id,
-                attempt: request.current_attempt.map(|a| a.id),
-                backend: request.current_attempt.map_or(Backend::Unknown, |a| a.backend),
-                failure,
-            });
-        }
-        effects.push(Fx::Finished(request.clone()));
-        self.handoff = None;
-        self.pending_refusal = None;
-    }
-
     pub fn step(&mut self, event: Event<R, A>, effects: &mut Vec<Fx<R, A>>) {
         self.transition(event, effects);
     }
 
+
     fn transition(&mut self, event: Event<R, A>, effects: &mut Vec<Fx<R, A>>) {
-        // Only owned data reaches helpers. No mutable projection of the registered field escapes.
-        let mut request = std::mem::take(&mut self.request);
-        self.reduce(event, &mut request, effects);
-        self.request = request;
-    }
-    fn reduce(&mut self, event: Event<R, A>, summary: &mut Option<RequestSummary<R, A>>, effects: &mut Vec<Fx<R, A>>) {
         // Address validation precedes time accounting. A late answer must not extend the
         // newer request's stall merely because it carries a later timestamp.
         let admitted = match &event {
             Event::RequestStarted { request, .. } => self.last_request_id.is_none_or(|last| *request > last),
-            Event::RequestFinished { request, .. } => summary.as_ref().is_some_and(|r| r.id == *request && r.outcome.is_none()),
-            Event::AttemptStarted { request, attempt, .. } => summary.as_ref().is_some_and(|r| {
-                r.id == *request && r.outcome.is_none()
+            Event::RequestFinished { request, .. } => {
+                self.request.as_ref().is_some_and(|r| r.id == *request && r.outcome.is_none())
+            }
+            Event::AttemptStarted { request, attempt, .. } => self.request.as_ref().is_some_and(|r| {
+                r.id == *request
+                    && r.outcome.is_none()
                     && self.last_attempt_id.is_none_or(|last| *attempt > last)
                     && !r.current_attempt.is_some_and(|a| a.id == *attempt)
                     && !r.recent_attempts.iter().any(|a| a.id == *attempt)
             }),
-            Event::Evidence { request, attempt, .. } | Event::Condition { request, attempt, .. }
-            | Event::AttemptFinished { request, attempt, .. } => summary.as_ref().is_some_and(|r| {
-                r.id == *request && r.outcome.is_none()
+            Event::Evidence { request, attempt, .. }
+            | Event::Condition { request, attempt, .. }
+            | Event::AttemptFinished { request, attempt, .. } => self.request.as_ref().is_some_and(|r| {
+                r.id == *request
+                    && r.outcome.is_none()
                     && r.current_attempt.is_some_and(|a| a.id == *attempt && a.outcome.is_none())
             }),
-            Event::HandoffBegun { request, from, .. } => summary.as_ref().is_some_and(|r| {
-                r.id == *request && r.outcome.is_none()
+            Event::HandoffBegun { request, from, .. } => self.request.as_ref().is_some_and(|r| {
+                r.id == *request
+                    && r.outcome.is_none()
                     && r.current_attempt.is_some_and(|a| a.id == *from)
                     && self.handoff.is_none()
             }),
-            Event::Handoff { request, from, to, .. } => summary.as_ref().is_some_and(|r| {
-                r.id == *request && r.outcome.is_none() && to > from
+            Event::Handoff { request, from, to, .. } => self.request.as_ref().is_some_and(|r| {
+                r.id == *request
+                    && r.outcome.is_none()
+                    && to > from
                     && r.current_attempt.is_some_and(|a| a.id == *from)
-                    && self.handoff.is_none() && self.last_handoff_to != Some(*to)
+                    && self.handoff.is_none()
+                    && self.last_handoff_to != Some(*to)
             }),
         };
-        if !admitted { return; }
+        if !admitted {
+            return;
+        }
         let at = event.at();
-        if !self.advance(summary, at) { return; }
+        if let Tick::Known(to) = at {
+            if self.last_known_tick.is_some_and(|last| to < last) {
+                return;
+            }
+            let elapsed = self.time_anchor.map_or(0, |from| to - from);
+            if let Some(request) = self.request.as_mut().filter(|r| r.outcome.is_none()) {
+                let eligible = self.condition.eligible();
+                let rebuffer = eligible && self.condition == Condition::Rebuffering && request.first_picture_at.is_some();
+                let handoff = eligible && self.handoff.is_some();
+                if rebuffer {
+                    request.rebuffer_ms = request.rebuffer_ms.saturating_add(elapsed);
+                }
+                if handoff {
+                    request.handoff_gap_ms = request.handoff_gap_ms.saturating_add(elapsed);
+                }
+                if rebuffer || handoff {
+                    request.involuntary_stall_ms = request.involuntary_stall_ms.saturating_add(elapsed);
+                }
+            }
+            self.last_known_tick = Some(to);
+            self.time_anchor = Some(to);
+        } else {
+            // An unavailable clock breaks the interval. The next known tick starts a new
+            // anchor; no duration is invented for the unknown span.
+            self.time_anchor = None;
+            if let Some(request) = self.request.as_mut().filter(|r| r.outcome.is_none()) {
+                request.unknown_time_events = request.unknown_time_events.saturating_add(1);
+            }
+            self.request_start_clock_known = false;
+            self.attempt_start_clock_known = false;
+        }
+        let finish = match &event {
+            Event::RequestStarted { .. } => Some(RequestOutcome::Replaced),
+            Event::RequestFinished { outcome, .. } => Some(*outcome),
+            Event::AttemptStarted { .. }
+            | Event::Evidence { .. }
+            | Event::Condition { .. }
+            | Event::HandoffBegun { .. }
+            | Event::Handoff { .. }
+            | Event::AttemptFinished { .. } => None,
+        };
+        if let Some(outcome) = finish {
+            if let Some(request) = self.request.as_mut().filter(|r| r.outcome.is_none()) {
+                // An End without independent picture evidence is an unconfirmed playback, never a
+                // successful completion. Explicit failure and cancellation retain their own classes.
+                let outcome = if outcome == RequestOutcome::Ended && request.first_picture_at.is_none() {
+                    RequestOutcome::Unconfirmed
+                } else {
+                    outcome
+                };
+                if let Some(attempt) = request.current_attempt.as_mut() {
+                    if attempt.outcome.is_none() {
+                        attempt.outcome = Some(match outcome {
+                            RequestOutcome::Ended if attempt.first_picture_at.is_some() => AttemptOutcome::Ended,
+                            RequestOutcome::Ended => AttemptOutcome::Unconfirmed,
+                            RequestOutcome::Failed(failure) => AttemptOutcome::Failed(failure),
+                            RequestOutcome::Cancelled => AttemptOutcome::Cancelled,
+                            RequestOutcome::Unconfirmed => AttemptOutcome::Unconfirmed,
+                            RequestOutcome::Replaced => AttemptOutcome::Superseded,
+                        });
+                    }
+                }
+                request.outcome = Some(outcome);
+                if let RequestOutcome::Failed(failure) = outcome {
+                    effects.push(Fx::HandledError {
+                        request: request.id,
+                        attempt: request.current_attempt.map(|a| a.id),
+                        backend: request.current_attempt.map_or(Backend::Unknown, |a| a.backend),
+                        failure,
+                    });
+                }
+                effects.push(Fx::Finished(request.clone()));
+                self.handoff = None;
+                self.pending_refusal = None;
+            }
+        }
         match event {
             Event::RequestStarted { request, origin, at } => {
-                if summary.as_ref().is_some_and(|old| old.id == request) { return; }
-                self.finish(summary, RequestOutcome::Replaced, effects);
-                *summary = Some(RequestSummary {
-                    id: request, origin, started_at: at, first_picture_at: None, startup_ms: None,
+                if self.request.as_ref().is_some_and(|old| old.id == request) {
+                    return;
+                }
+                self.request = Some(RequestSummary {
+                    id: request,
+                    origin,
+                    started_at: at,
+                    first_picture_at: None,
+                    startup_ms: None,
                     outcome: None,
-                    attempt_count: 0, recent_attempts: Vec::new(), current_attempt: None,
-                    rebuffer_count: 0, rebuffer_ms: 0, handoff_count: 0, handoff_gap_ms: 0,
+                    attempt_count: 0,
+                    recent_attempts: Vec::new(),
+                    current_attempt: None,
+                    rebuffer_count: 0,
+                    rebuffer_ms: 0,
+                    handoff_count: 0,
+                    handoff_gap_ms: 0,
                     involuntary_stall_ms: 0,
                     unknown_time_events: u32::from(at == Tick::Unknown),
                 });
@@ -371,46 +381,70 @@ impl<R: Identity, A: Identity> AttemptMetrics<R, A> {
                 self.last_attempt_id = None;
                 self.condition = Condition::Unknown;
                 self.time_anchor = at.as_millis();
-                if let Some(ms) = at.as_millis() { self.last_known_tick = Some(ms); }
+                if let Some(ms) = at.as_millis() {
+                    self.last_known_tick = Some(ms);
+                }
                 self.request_start_clock_known = at.as_millis().is_some();
                 self.attempt_start_clock_known = false;
                 self.handoff = None;
                 self.last_handoff_to = None;
                 self.pending_refusal = None;
             }
-            Event::RequestFinished { request, outcome, .. } => {
-                if summary.as_ref().is_some_and(|r| r.id == request) { self.finish(summary, outcome, effects); }
-            }
+            Event::RequestFinished { .. } => {}
             Event::AttemptStarted { request, attempt, backend, origin, at } => {
-                let Some(r) = summary.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
-                if r.current_attempt.is_some_and(|a| a.id == attempt)
-                    || r.recent_attempts.iter().any(|a| a.id == attempt) { return; }
-                if let Some(old) = r.current_attempt.take() { Self::save_attempt(r, old); }
+                let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
+                if r.current_attempt.is_some_and(|a| a.id == attempt) || r.recent_attempts.iter().any(|a| a.id == attempt) {
+                    return;
+                }
+                if let Some(mut attempt) = r.current_attempt.take() {
+                    if attempt.outcome.is_none() {
+                        attempt.outcome = Some(if attempt.first_picture_at.is_some() {
+                            AttemptOutcome::Superseded
+                        } else {
+                            AttemptOutcome::Unconfirmed
+                        });
+                    }
+                    if r.recent_attempts.len() == MAX_ATTEMPT_HISTORY {
+                        r.recent_attempts.remove(0);
+                    }
+                    r.recent_attempts.push(attempt);
+                }
                 r.attempt_count = r.attempt_count.saturating_add(1);
                 r.current_attempt = Some(AttemptSummary {
-                    id: attempt, backend, origin, started_at: at, first_picture_at: None,
+                    id: attempt,
+                    backend,
+                    origin,
+                    started_at: at,
+                    first_picture_at: None,
                     startup_ms: None,
-                    evidence: SeenEvidence::default(), outcome: None,
+                    evidence: SeenEvidence::default(),
+                    outcome: None,
                 });
                 self.last_attempt_id = Some(attempt);
                 self.attempt_start_clock_known = at.as_millis().is_some();
             }
             Event::Evidence { request, attempt, evidence, at } => {
-                let Some(r) = summary.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
+                let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
                 let Some(current) = r.current_attempt.as_mut().filter(|a| a.id == attempt && a.outcome.is_none()) else { return };
-                current.evidence.observe(evidence);
-                if evidence != Evidence::PicturePresented || current.first_picture_at.is_some() { return; }
+                match evidence {
+                    Evidence::CommandAcknowledged => current.evidence.command_acknowledged = true,
+                    Evidence::PlaybackObserved => current.evidence.playback_observed = true,
+                    Evidence::ClockAdvanced => current.evidence.clock_advanced = true,
+                    Evidence::PicturePresented => current.evidence.picture_presented = true,
+                }
+                if evidence != Evidence::PicturePresented || current.first_picture_at.is_some() {
+                    return;
+                }
                 current.first_picture_at = Some(at);
                 if self.attempt_start_clock_known {
-                    current.startup_ms = current.started_at.as_millis()
-                        .zip(at.as_millis()).map(|(start, end)| end.saturating_sub(start));
+                    current.startup_ms =
+                        current.started_at.as_millis().zip(at.as_millis()).map(|(start, end)| end.saturating_sub(start));
                 }
                 let first_for_request = r.first_picture_at.is_none();
                 if first_for_request {
                     r.first_picture_at = Some(at);
                     if self.request_start_clock_known {
-                        r.startup_ms = r.started_at.as_millis()
-                            .zip(at.as_millis()).map(|(start, end)| end.saturating_sub(start));
+                        r.startup_ms = r.started_at.as_millis().zip(at.as_millis()).map(|(start, end)| end.saturating_sub(start));
                     }
                 }
                 // Startup buffering becomes rebuffering only after the first picture; an
@@ -423,43 +457,57 @@ impl<R: Identity, A: Identity> AttemptMetrics<R, A> {
                 }
                 // A failed first target may be followed by another physical try. The gap
                 // ends at the first successor picture, not only the original target's.
-                if self.handoff.is_some_and(|h| h.from != attempt) { self.handoff = None; }
+                if self.handoff.is_some_and(|h| h.from != attempt) {
+                    self.handoff = None;
+                }
                 if let Some((refused_attempt, backend)) = self.pending_refusal.take().filter(|(old, _)| *old != attempt) {
-                    effects.push(Fx::RecoveredRefusal { request, refused_attempt, recovered_attempt: attempt, refused_backend: backend });
+                    effects.push(Fx::RecoveredRefusal {
+                        request,
+                        refused_attempt,
+                        recovered_attempt: attempt,
+                        refused_backend: backend,
+                    });
                 }
             }
             Event::Condition { request, attempt, condition, at } => {
-                let Some(r) = summary.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
+                let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
                 let Some(current) = r.current_attempt.filter(|a| a.id == attempt && a.outcome.is_none()) else { return };
-                if condition == Condition::Rebuffering && self.condition != Condition::Rebuffering && r.first_picture_at.is_some() {
+                if condition == Condition::Rebuffering && self.condition != Condition::Rebuffering && r.first_picture_at.is_some()
+                {
                     r.rebuffer_count = r.rebuffer_count.saturating_add(1);
                     effects.push(Fx::Incident(current.record(request, current.proven_stage(), Incident::Rebuffer, at)));
                 }
                 self.condition = condition;
             }
             Event::HandoffBegun { request, from, at } => {
-                let Some(r) = summary.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
+                let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
                 let Some(source) = r.current_attempt.filter(|a| a.id == from) else { return };
-                if self.handoff.is_some() { return; }
+                if self.handoff.is_some() {
+                    return;
+                }
                 r.handoff_count = r.handoff_count.saturating_add(1);
                 self.handoff = Some(Handoff { from });
                 effects.push(Fx::Incident(source.record(request, Self::handoff_stage(&source), Incident::Handoff, at)));
             }
             Event::Handoff { request, from, to, at } => {
-                let Some(r) = summary.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
+                let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
                 let Some(source) = r.current_attempt.filter(|a| a.id == from) else { return };
-                if to <= from || self.handoff.is_some() || self.last_handoff_to == Some(to) { return; }
+                if to <= from || self.handoff.is_some() || self.last_handoff_to == Some(to) {
+                    return;
+                }
                 r.handoff_count = r.handoff_count.saturating_add(1);
                 self.handoff = Some(Handoff { from });
                 self.last_handoff_to = Some(to);
                 effects.push(Fx::Incident(source.record(request, Self::handoff_stage(&source), Incident::Handoff, at)));
             }
             Event::AttemptFinished { request, attempt, outcome, at } => {
-                let Some(r) = summary.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
+                let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
                 let Some(current) = r.current_attempt.as_mut().filter(|a| a.id == attempt && a.outcome.is_none()) else { return };
                 current.outcome = Some(if outcome == AttemptOutcome::Ended && current.first_picture_at.is_none() {
                     AttemptOutcome::Unconfirmed
-                } else { outcome });
+                } else {
+                    outcome
+                });
                 if let AttemptOutcome::Failed(Failure { stage, cause }) = outcome {
                     if stage != Stage::Release {
                         effects.push(Fx::Incident(current.record(request, stage, Incident::Failed(cause), at)));
@@ -478,6 +526,55 @@ mod tests {
     use super::*;
     type Model = AttemptMetrics<u64, u64>;
     fn t(ms: u64) -> Tick { Tick::from_millis(ms) }
+    #[test]
+    fn rejected_events_preserve_every_field_and_the_next_interval() {
+        let mut m = Model::new();
+        start(&mut m, 1, 10);
+        send(&mut m, picture(1, 10, 10));
+        send(&mut m, condition(1, 10, 20, Condition::Rebuffering));
+        send(&mut m, Event::HandoffBegun { request: 1, from: 10, at: t(30) });
+        let before = (m.request.clone(), m.last_request_id, m.last_attempt_id, m.condition,
+            m.last_known_tick, m.time_anchor, m.request_start_clock_known, m.attempt_start_clock_known,
+            m.handoff.map(|h| h.from), m.last_handoff_to, m.pending_refusal);
+        for ev in [
+            Event::Evidence { request: 9, attempt: 10, evidence: Evidence::PicturePresented, at: Tick::Unknown },
+            Event::AttemptStarted { request: 1, attempt: 9, backend: Backend::Feed, origin: Origin::Recovery, at: t(100) },
+            condition(1, 10, 5, Condition::Paused),
+        ] {
+            assert!(send(&mut m, ev).is_empty());
+            assert_eq!((m.request.clone(), m.last_request_id, m.last_attempt_id, m.condition,
+                m.last_known_tick, m.time_anchor, m.request_start_clock_known, m.attempt_start_clock_known,
+                m.handoff.map(|h| h.from), m.last_handoff_to, m.pending_refusal), before);
+        }
+        assert!(send(&mut m, condition(1, 10, 50, Condition::Playing)).is_empty());
+        let s = m.snapshot().unwrap();
+        assert_eq!((s.rebuffer_count, s.rebuffer_ms, s.handoff_count, s.handoff_gap_ms, s.involuntary_stall_ms), (1, 30, 1, 20, 30));
+    }
+
+    #[test]
+    fn terminal_effects_follow_accounting_and_precede_replacement() {
+        let mut m = Model::new();
+        start(&mut m, 1, 10);
+        send(&mut m, picture(1, 10, 10));
+        send(&mut m, condition(1, 10, 20, Condition::Rebuffering));
+        let fx = send(&mut m, Event::RequestStarted { request: 2, origin: Origin::UserRetry, at: t(50) });
+        let [Fx::Finished(old)] = fx.as_slice() else { panic!("replacement must finish the old request once") };
+        assert_eq!(old.outcome, Some(RequestOutcome::Replaced));
+        assert_eq!((old.rebuffer_ms, old.involuntary_stall_ms), (30, 30));
+        assert_eq!(old.current_attempt.unwrap().outcome, Some(AttemptOutcome::Superseded));
+        assert_eq!(m.snapshot().unwrap().id, 2);
+        assert_eq!(m.snapshot().unwrap().attempt_count, 0);
+        assert_eq!((m.last_attempt_id, m.condition, m.time_anchor), (None, Condition::Unknown, Some(50)));
+        send(&mut m, Event::AttemptStarted { request: 2, attempt: 20, backend: Backend::Feed, origin: Origin::UserRetry, at: t(60) });
+        let failure = Failure { stage: Stage::Open, cause: Cause::Refused };
+        let fx = send(&mut m, Event::RequestFinished { request: 2, outcome: RequestOutcome::Failed(failure), at: t(70) });
+        assert_eq!(fx, vec![
+            Fx::HandledError { request: 2, attempt: Some(20), backend: Backend::Feed, failure },
+            Fx::Finished(m.snapshot().unwrap().clone()),
+        ]);
+        assert!(m.handoff.is_none() && m.pending_refusal.is_none());
+    }
+
     fn start(model: &mut Model, request: u64, attempt: u64) {
         let mut effects = Vec::new();
         model.step(Event::RequestStarted { request, origin: Origin::Fresh, at: t(0) }, &mut effects);
