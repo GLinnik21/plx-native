@@ -4159,6 +4159,7 @@ fn admit_side_reader(ps: &mut PlaybackSession) {
         preview: false,
         live: None,
         version: None,
+        show_rk: String::new(),
     });
 }
 

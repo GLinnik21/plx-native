@@ -142,7 +142,10 @@ def verify_library(path, darwin, readelf=None):
     else:
         dynamic = subprocess.check_output([readelf, '-d', str(path)], text=True)
         needed = re.findall(r'\(NEEDED\).*\[([^\]]+)\]', dynamic)
-        allowed = {'libc.so.6', 'libm.so.6', 'libgcc_s.so.1', 'libpthread.so.0', 'ld-linux.so.3'}
+        # librt: src/ass.c times its render phases with clock_gettime, which the build sysroot's glibc
+        # (2.12, the one this library links against, not the TV's) keeps there. Newer firmware (7.4 and
+        # later) provides the same clock_gettime@GLIBC_2.4 from libc.so.6.
+        allowed = {'libc.so.6', 'libm.so.6', 'libgcc_s.so.1', 'libpthread.so.0', 'librt.so.1', 'ld-linux.so.3'}
         symbols = subprocess.check_output([readelf, '--dyn-syms', '--wide', str(path)], text=True)
         names = []
         for line in symbols.splitlines():
@@ -327,7 +330,7 @@ def build_locked(host, darwin, target, prefix, work, sources):
         exports = work / 'exports.map'
         exports.write_text('{ global: plx_ass_*; local: *; };\n')
         command += ['-shared', '-Wl,-soname,' + name, '-Wl,--no-undefined',
-                    '-Wl,--exclude-libs,ALL', '-Wl,--version-script=' + str(exports)]
+                    '-Wl,--exclude-libs,ALL', '-Wl,--version-script=' + str(exports), '-lrt']
         if not host:
             # A stable identity for the shipped (stripped) library, so the `.debug` that
             # `make symbols-libs` extracts from the unstripped $prefix/lib copy can be paired with it.

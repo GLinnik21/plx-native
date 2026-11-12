@@ -1423,6 +1423,31 @@ impl Painter {
         }
         plx_gfx::gfx::draw_tex_uv(tex, uv, m.x, m.y, m.w, m.h, self.px(rad), t.as_ptr());
     }
+    /// A texture that holds PREMULTIPLIED RGBA (`(rgb * a, a)` per texel), drawn in `r` as one
+    /// square-cornered quad: what [`tex`](Self::tex) does for a straight-alpha one, through
+    /// [`plx_gfx::gfx::draw_tex_premultiplied`]'s blend. `tint` is the STRAIGHT ink and fade `tex`
+    /// takes, and the painter's own cascade (its alpha and colour gain) applies to it exactly as it does
+    /// to `tex`'s, so a subtitle's ink rung or a fade dims a premultiplied picture the way it dims a
+    /// straight one. Used for the libass regions, which the facade composes premultiplied; a texture
+    /// uploaded straight (an image subtitle, a glyph) stays on `tex`. Unlike `tex` it is not cut by an
+    /// ink clip (`widgets::paint_inked`): that path samples a texture as coverage, which a colour
+    /// picture is not.
+    pub fn tex_premultiplied(self, tex: u32, r: Rect, tint: [f32; 4]) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() {
+            draw_census::note_tex(tex, self.place(r), self.c(tint)[3]);
+        }
+        if self.declare(r, 15, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            plx_gfx::gfx::tex_ledger::revision(tex).record(data);
+            tint.record(data);
+        }) { return; }
+        if self.records() { return; }
+        let t = self.c(tint);
+        let m = self.place(r);
+        plx_gfx::gfx::draw_tex_premultiplied(tex, m.x, m.y, m.w, m.h, t);
+    }
     /// The FROSTED ground: what the frame drew behind `r`, blurred, clipped to `r`'s rounded rect.
     ///
     /// Returns whether it drew. `false` is not an error — the blur latches itself off on a driver
@@ -2411,6 +2436,26 @@ mod tests {
         assert_eq!(c, [0.3, 0.2, 0.1, 0.1]);
         assert_eq!(p.rgb, 0.4);
         assert_eq!(p.a, 0.125);
+    }
+
+    /// A premultiplied texture is the same recorded quad as a straight one under the painter's cascade
+    /// (translate and fade), and its shader tint is the cascaded tint premultiplied AFTER the cascade:
+    /// the cascade scales colour by the gain and alpha by the fade, so premultiplying first would leave
+    /// a faded picture's colour too bright.
+    #[test]
+    fn a_premultiplied_texture_takes_the_cascade_of_a_straight_one_and_is_premultiplied_after_it() {
+        let r = Rect::new(10.0, 20.0, 30.0, 40.0);
+        let ink = [0.85, 0.85, 0.85, 1.0];
+        let faded = || Painter::recording().translate(5.0, 6.0).alpha(0.5);
+        let straight = draw_census::capture_tex(|| faded().tex(7, r, 0.0, ink));
+        let premultiplied = draw_census::capture_tex(|| faded().tex_premultiplied(7, r, ink));
+        assert_eq!(premultiplied, vec![(7, Rect::new(15.0, 26.0, 30.0, 40.0), 0.5)]);
+        assert_eq!(premultiplied, straight, "the same texture, place and effective alpha");
+        let tag = |f: &dyn Fn()| draw_census::capture(|| f()).iter().map(|c| c.0).collect::<Vec<_>>();
+        assert_eq!(tag(&|| faded().tex(7, r, 0.0, ink)), [12]);
+        assert_eq!(tag(&|| faded().tex_premultiplied(7, r, ink)), [15], "its own command, so a glass replay can tell them apart");
+        let cascaded = Painter::root().alpha(0.5).c(ink);
+        assert_eq!(plx_gfx::gfx::premultiplied_tint(cascaded), [0.425, 0.425, 0.425, 0.5]);
     }
 
     #[test]

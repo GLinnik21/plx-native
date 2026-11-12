@@ -1116,6 +1116,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
                 title,
                 context: plx_data::metadata::TRAILER_CONTEXT.to_string(),
                 version: None,
+                show_rk: String::new(),
             };
             // A press-and-hold context menu can reach here within the same beat as opening it,
             // which only STARTED the open preview's abandonment (`ContentReq::ItemMenu`'s own

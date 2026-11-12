@@ -568,7 +568,7 @@ impl PlayerScreen {
         // opening or closing a section is a whole-page change with no spring behind it
         mix(u64::from(self.hud.sections.bits()));
         mix(match self.eff_slot() {
-            ControlSlot::Discs(controls) => 4 + u64::from(controls.pair()) + 2 * u64::from(controls.previous) + 4 * u64::from(controls.next) + 8 * u64::from(controls.restart),
+            ControlSlot::Discs(controls) => 4 + u64::from(controls.pair()) + 2 * u64::from(controls.previous) + 4 * u64::from(controls.next),
             ControlSlot::Skip(_) => 2,
             ControlSlot::UpNext(_) => 3,
             ControlSlot::AutomaticUpNext(_) => 32,
@@ -3541,7 +3541,7 @@ mod step_ladder_tests {
         assert!(failure_n >= 1, "Back is always offered");
         let cases: [(&str, ControlSlot, Busy, Vec<u32>); 5] = [
             ("discs", ControlSlot::Discs(player_hud::Controls::NONE), Busy::None, [(2..5).map(|i| ELEM_CONTROL_BASE + i).collect::<Vec<_>>(), vec![ELEM_TAB_BASE]].concat()),
-            ("episode", ControlSlot::Discs(player_hud::Controls { previous: true, next: true, restart: false }),
+            ("episode", ControlSlot::Discs(player_hud::Controls { previous: true, next: true }),
                 Busy::None, [row(5), vec![ELEM_TAB_BASE]].concat()),
             ("skip", skip, Busy::None, [row(1), vec![ELEM_TAB_BASE]].concat()),
             ("up next", up_next, Busy::None, [row(2), vec![ELEM_TAB_BASE]].concat()),

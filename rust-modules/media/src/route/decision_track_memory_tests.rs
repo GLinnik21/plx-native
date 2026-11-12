@@ -950,6 +950,7 @@ fn request(sid: ServerId, preview: bool) -> PlaybackRequest {
         preview,
         live: None,
         version: None,
+        show_rk: String::new(),
     }
 }
 

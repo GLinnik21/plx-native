@@ -1562,6 +1562,7 @@ fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
         preview: false,
         live: None,
         version: None,
+        show_rk: String::new(),
     };
     { let s = &mut ps; {
         s.request = Some(request.clone());

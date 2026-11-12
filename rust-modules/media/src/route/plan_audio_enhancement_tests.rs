@@ -603,6 +603,7 @@ fn cold_start_plan_lands_as_client_over_remux_with_a_reader_target() {
         preview: false,
         live: None,
         version: None,
+        show_rk: String::new(),
     });
     assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ClientOverRemux);
     assert!(!subtitles_burned(&ps));

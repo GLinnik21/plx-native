@@ -196,7 +196,6 @@
   "widgets.ass.unavailable": "Los subtítulos con estilo no están disponibles en esta instalación",
   "widgets.ass.fonts_unavailable": "No se pudieron cargar las fuentes de los subtítulos",
   "widgets.ass.init_failed": "No se pudieron inicializar los subtítulos con estilo",
-  "widgets.ass.font_too_large": "La fuente de subtítulos instalada es demasiado grande",
   "widgets.ass.unreadable": "No se pudo leer este archivo de subtítulos con estilo",
   "widgets.ass.font_name": "El nombre de esta fuente de subtítulos no es válido",
   "widgets.ass.track_fonts": "No se pudieron cargar las fuentes de este subtítulo",

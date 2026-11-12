@@ -678,6 +678,14 @@ BAND_FIXTURE_SEED = 20_261_031
 
 # ---------------------------------------------------------------- the generated library ----
 
+def show_episodes_of(items, show_rk):
+    """Every episode in `items` whose show is `show_rk`, in (season, episode) order."""
+    show = [x for x in items.values()
+            if x["type"] == "episode" and x["grandparentRatingKey"] == show_rk]
+    show.sort(key=lambda x: (x["parentIndex"], x.get("index", 0)))
+    return show
+
+
 class Library:
     """Two sections — movies (key 1) and shows (key 2) — with people, genres, collections,
     seasons, episodes, media parts, chapters, markers, watch state and blur colours. Generated
@@ -1325,10 +1333,16 @@ class Library:
         its show after it, in (season, episode) order, as PMS answers; anything else, itself."""
         if it["type"] != "episode":
             return [it]
-        show = [x for x in self.items.values()
-                if x["type"] == "episode" and x["grandparentRatingKey"] == it["grandparentRatingKey"]]
-        show.sort(key=lambda x: (x["parentIndex"], x.get("index", 0)))
+        # Read through `items` alone: tests/test_hud_preview.py calls this unbound on a bare
+        # namespace that holds only `items` and `images`.
+        show = show_episodes_of(self.items, it["grandparentRatingKey"])
         return show[show.index(it):]
+
+    def show_episodes(self, show_rk):
+        """Every episode of the show `show_rk`, in (season, episode) order: the rows of a PlayQueue
+        built from the SHOW (`uri` = the show, `key` = the episode to start on), which holds the
+        episodes before the keyed one as well as after it."""
+        return show_episodes_of(self.items, show_rk)
 
     # --- item builders -------------------------------------------------------------------
 
@@ -3291,6 +3305,7 @@ class MockPms:
         self.lock = threading.Lock()
         self.link = link_conditioner.Conditioner()  # `--link`; a no-op until a profile is set
         self.play_queues = {}  # retained snapshots for GET /playQueues/<id>?center=<item id>
+        self.play_queue_selected = {}  # queue id -> the playQueueItemID its POST selected
         self.wire_log = []  # `GET /_mock/wire`: per-request arrival/finish times under the link
         self.requests = []  # (path, status) in arrival order, for the harness
         # `/:/eventsource/notifications` (the PMS SSE feed): one queue per open stream, fed by
@@ -4139,11 +4154,24 @@ class MockPms:
             uri = q.get("uri", "")
             rk = uri.rsplit("/", 1)[-1]
             it = lib.items.get(int(rk)) if rk.isdigit() else None
+            key_rk = q.get("key", "").rsplit("/", 1)[-1]
+            keyed = lib.items.get(int(key_rk)) if key_rk.isdigit() else None
+            selected = 0
             # Only the demo library follows `continuous=1` past the item, and the verification show
             # under `--media-next-episode`: the seeded library's queue of one is what the
             # harness's recorded cases were taken against.
             if it is None:
                 queue = []
+            elif (it["type"] == "show" and keyed is not None and keyed["type"] == "episode"
+                    and keyed["grandparentRatingKey"] == str(it["ratingKey"])
+                    and (isinstance(lib, CatalogLibrary)
+                         or (getattr(lib, "media_next_episode", False)
+                             and str(it["ratingKey"]) == str(VERIFY_SHOW_RK)))):
+                # The queue the app builds an episode's from: the SHOW as the `uri` and the episode
+                # as the `key` ("the first item to play"), the episodes before it included, the
+                # keyed one selected (docs/pms-api.md, "A show-keyed PlayQueue").
+                queue = lib.show_episodes(str(it["ratingKey"]))
+                selected = queue.index(keyed)
             elif q.get("continuous") == "1" and (
                     isinstance(lib, CatalogLibrary)
                     or (getattr(lib, "media_next_episode", False)
@@ -4154,19 +4182,21 @@ class MockPms:
             rows = [dict(x, playQueueItemID=n) for n, x in enumerate(queue, start=1)]
             with self.lock:
                 self.play_queues[1] = rows
-            return j(self.container(Metadata=rows, playQueueID=1, playQueueSelectedItemID=1,
-                                    playQueueSelectedItemOffset=0, playQueueTotalCount=len(rows),
+                self.play_queue_selected[1] = selected + 1
+            return j(self.container(Metadata=rows, playQueueID=1, playQueueSelectedItemID=selected + 1,
+                                    playQueueSelectedItemOffset=selected, playQueueTotalCount=len(rows),
                                     playQueueVersion=1))
         if segs[:1] == ["playQueues"] and len(segs) == 2:
             queue_id = int(segs[1]) if segs[1].isdigit() else 1
             with self.lock:
                 rows = list(self.play_queues.get(queue_id, []))
+                selected = self.play_queue_selected.get(queue_id, 1)
             center = int(q.get("center", "1")) if q.get("center", "1").isdigit() else 1
             window = int(q.get("window", "50")) if q.get("window", "50").isdigit() else 50
             at = next((n for n, row in enumerate(rows) if row["playQueueItemID"] == center), 0)
             page = rows[max(0, at - window):at + window + 1]
             return j(self.container(Metadata=page, playQueueID=queue_id, playQueueTotalCount=len(rows),
-                                    playQueueSelectedItemID=1, playQueueSelectedItemOffset=0))
+                                    playQueueSelectedItemID=selected, playQueueSelectedItemOffset=selected - 1))
         if p.startswith("/library/parts/"):
             part_id = int(segs[2]) if len(segs) > 2 and segs[2].isdigit() else -1
             if method == "PUT":
@@ -4999,6 +5029,28 @@ def selftest():
     assert window["playQueueSelectedItemID"] == 1, "centering a window must not select it"
     assert queue_keys(next_base, V3_RATING_KEY) == [V3_RATING_KEY]
     assert queue_keys(next_base, V1_RATING_KEY, continuous=False) == [V1_RATING_KEY]
+    # A queue built from the SHOW with the episode as its `key` (what the app asks for an episode,
+    # so Previous has a row to go to): the whole show in order, the keyed episode selected.
+    def show_queue(base, show_rk, key_rk):
+        uri = urllib.parse.quote(f"server://machine/com.plexapp.plugins.library/library/metadata/{show_rk}")
+        key = urllib.parse.quote(f"/library/metadata/{key_rk}")
+        request = urllib.request.Request(
+            base + f"/playQueues?type=video&uri={uri}&key={key}&shuffle=0&repeat=0", method="POST")
+        return json.load(urllib.request.urlopen(request))["MediaContainer"]
+
+    keyed = show_queue(next_base, VERIFY_SHOW_RK, V3_RATING_KEY)
+    assert [int(row["ratingKey"]) for row in keyed["Metadata"]] == [V1_RATING_KEY, V3_RATING_KEY]
+    assert (keyed["playQueueSelectedItemID"], keyed["playQueueSelectedItemOffset"]) == (2, 1), \
+        "the keyed episode is selected, with the first one before it"
+    window = json.load(urllib.request.urlopen(next_base + "/playQueues/1?center=2&window=5&own=0"))["MediaContainer"]
+    assert [row["playQueueItemID"] for row in window["Metadata"]] == [1, 2]
+    assert window["playQueueSelectedItemID"] == 2, "a window read keeps the POST's selection"
+    first = show_queue(next_base, VERIFY_SHOW_RK, V1_RATING_KEY)
+    assert first["playQueueSelectedItemOffset"] == 0, "the first episode has nothing before it"
+    movie = show_queue(next_base, VERIFY_SHOW_RK, V2_RATING_KEY)["Metadata"]
+    assert [int(row["ratingKey"]) for row in movie] == [VERIFY_SHOW_RK], \
+        "a key that is not one of the show's episodes does not make a queue of the show"
+    assert queue_keys(next_base, V1_RATING_KEY) == [V1_RATING_KEY, V3_RATING_KEY], "the episode ask is unchanged"
     assert queue_keys(next_base, V2_RATING_KEY) == [V2_RATING_KEY], "a movie never follows a show"
     first_part, first_streams = part_streams(next_base, V1_RATING_KEY)
     second_part, second_streams = part_streams(next_base, V3_RATING_KEY)

@@ -69,6 +69,11 @@ struct PlaybackRequest {
     /// The version the viewer picked (Play Version), `None` for the default. Kept on the request,
     /// so a retry or quality change of this playback resolves the same version.
     version: Option<plx_plex::plex::MediaId>,
+    /// The show an EPISODE belongs to (`grandparentRatingKey`), empty for a movie, a clip, or an
+    /// item whose caller did not know it. The play queue is built from it
+    /// ([`ResolveEnv::queue_show_rk`]), so a retry or a quality change of this playback builds the
+    /// same queue.
+    show_rk: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -651,7 +656,8 @@ mod uri_failure_recovery_tests {
         session.install_backends(plx_playback_contract::BackendSet::BOTH);
         session.request = Some(PlaybackRequest { sid: ServerId::UNSET, rk: "42".into(),
             part: "/library/parts/7".into(), vcodec: "h264".into(), acodec: "aac".into(),
-            title: "Film".into(), ctx: String::new(), preview: false, live: None, version: None });
+            title: "Film".into(), ctx: String::new(), preview: false, live: None, version: None,
+            show_rk: String::new() });
         let mut policy = BackendPolicy::for_request(false);
         policy.qualify(BackendKind::Uri, OfferId::URI_ORIGINAL, Qualification::Qualified);
         assert!(policy.admitted(BackendKind::Uri, OfferId::URI_ORIGINAL));
@@ -961,7 +967,7 @@ mod backend_offer_session_tests {
         session.request = Some(PlaybackRequest {
             sid: session.cur_sid, rk: "42".into(), part: "/library/parts/7".into(),
             vcodec: "h264".into(), acodec: "ac3".into(), title: "Film".into(),
-            ctx: String::new(), preview: false, live: None, version: None,
+            ctx: String::new(), preview: false, live: None, version: None, show_rk: String::new(),
         });
         assert_eq!(menu_enhancement_availability(&session),
             EnhancementAvailability::Offered(EnhancementRoute::Remux),
@@ -976,7 +982,7 @@ mod backend_offer_session_tests {
         session.request = Some(PlaybackRequest {
             sid: ServerId::UNSET, rk: "42".into(), part: "/library/parts/7".into(),
             vcodec: "h264".into(), acodec: "ac3".into(), title: "Film".into(),
-            ctx: String::new(), preview: false, live: None, version: None,
+            ctx: String::new(), preview: false, live: None, version: None, show_rk: String::new(),
         });
         let mut meta = plx_data::stores::metadata::MetadataStore::default();
         let change = ViewerReconfigure::Speed(1500);
@@ -8586,6 +8592,16 @@ impl TimelineStopFence {
         }
     }
 
+    /// [`Self::wait`] for at most `bound`; whether every stop up to `required` had completed by then.
+    fn wait_for(&self, required: u64, bound: std::time::Duration) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, bound, |s| s.completed < required)
+            .unwrap_or_else(|e| e.into_inner());
+        state.completed >= required
+    }
+
     fn complete(&self, generation: u64) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if generation > state.completed {
@@ -8650,6 +8666,15 @@ pub fn scrobble_settled() -> bool {
 /// (`App::refresh_hubs`). Non-blocking.
 pub fn timeline_stop_landed() -> bool {
     TIMELINE_STOP_FENCE.landed()
+}
+
+/// Wait, for at most `bound`, until every `state=stopped` report announced up to generation
+/// `required` (a value of [`timeline_stops_announced`]) has been attempted or abandoned, and say
+/// whether it had. For a read that must see what that stop reported (the queue window's per-episode
+/// resume points, [`queue_navigation::QueueContinuation::refreshed`]); a bound, because it runs on
+/// the start's critical path and a slow server must not hold the start hostage.
+pub(super) fn wait_for_timeline_stop(required: u64, bound: std::time::Duration) -> bool {
+    TIMELINE_STOP_FENCE.wait_for(required, bound)
 }
 
 /// How many `state=stopped` reports have ever been announced. A caller that remembers the value it
@@ -9872,6 +9897,7 @@ pub fn with_queue<R>(ps: &PlaybackSession, f: impl FnOnce(&[plx_plex::plex::Queu
 pub(super) fn resolve_playqueue(
     c: &plx_plex::plex::Client,
     rk: &str,
+    show_rk: &str,
     session: &str,
     cached: &str,
     continuous: bool,
@@ -9895,7 +9921,7 @@ pub(super) fn resolve_playqueue(
         crate::player::log("playqueue: no machineIdentifier (skip)");
         return QueueInfo::default();
     }
-    match c.create_play_queue(effective, rk, session, continuous) {
+    match c.create_play_queue(effective, rk, show_rk, session, continuous) {
         Some(q) => {
             let up_next = q.next.as_ref().and_then(up_next_of);
             crate::player::log(&format!(
@@ -9988,6 +10014,7 @@ impl ResolveEnv {
             resume_ns: ps.requested_resume_ns,
             src_kbps: resolve_src_kbps(meta.current(), sid, rk),
             omit_queue_continuous: false,
+            queue_show_rk: String::new(),
             queue_continuation: None,
             preview: false,
             audio_enhancements: crate::player::audio_enhancements(),
@@ -10282,6 +10309,7 @@ pub fn request_play(
     title: &str,
     ctx: &str,
     version: Option<plx_plex::plex::MediaId>,
+    show_rk: &str,
 ) -> bool {
     request_play_inner(
         ps,
@@ -10298,6 +10326,7 @@ pub fn request_play(
             preview: false,
             live: None,
             version,
+            show_rk: show_rk.to_owned(),
         },
         None,
         None,
@@ -10324,8 +10353,8 @@ pub fn request_play_queue_item(
     let queue = super::queue_navigation::QueueContinuation::capture(ps, row);
     request_play_with_queue(ps, meta, caps, PlaybackRequest {
         sid: row.sid, rk: row.rk.clone(), part: row.part.clone(), vcodec: row.vcodec.clone(),
-        acodec: row.acodec.clone(), title: title.clone(), ctx: ctx.into(), preview: false,
-        live: None, version: None,
+        acodec: row.acodec.clone(), title: title.clone(), ctx: ctx.into(), preview: false, live: None, version: None,
+        show_rk: row.show_rk.clone(),
     }, None, None, false, crate::player::report::AttemptOrigin::Fresh, queue, false, None)
 }
 
@@ -10357,6 +10386,7 @@ pub fn request_preview(
             preview: true,
             live: None,
             version: None,
+            show_rk: String::new(),
         },
         None,
         None,
@@ -10394,6 +10424,7 @@ pub fn request_live(
             preview: false,
             live: Some(LiveTune { dvr: dvr.to_owned(), channel: channel.to_owned() }),
             version: None,
+            show_rk: String::new(),
         },
         None,
         None,
@@ -10436,6 +10467,7 @@ fn request_env(
 ) -> ResolveEnv {
     let mut env = ResolveEnv::snapshot(ps, meta, request.sid, &request.rk);
     env.omit_queue_continuous = plx_data::metadata::context_omits_queue_continuous(&request.ctx);
+    env.queue_show_rk = request.show_rk.clone();
     env.set_preview(request.preview);
     env.live = request.live.clone();
     env.fresh_play = retry.is_none() && !request.preview;
@@ -11113,7 +11145,14 @@ pub fn request_play_movie(
         &m.title,
         ctx,
         version,
+        episode_show_rk(m),
     )
+}
+
+/// The show a played row belongs to, for the queue built from it: only an EPISODE has one
+/// (`PmsMovie::show_rk` also names a season's parent show, and a movie has none).
+fn episode_show_rk(m: &PmsMovie) -> &str {
+    if m.kind == plx_data::pms::KIND_EPISODE { &m.show_rk } else { "" }
 }
 
 /// The server an item's ids belong to: its own when it has one, else the browsed surface.
@@ -14143,6 +14182,7 @@ pub(crate) fn resolve_refused_preview_for_test(ps: &mut PlaybackSession) {
         preview: true,
         live: None,
         version: None,
+        show_rk: String::new(),
     });
     test_support::apply_plan(ps, plan, "trailer");
     crate::route::resolve_as_preview_for_test(ps);
@@ -14228,6 +14268,10 @@ mod memory_tests;
 #[cfg(test)]
 #[path = "decision_queue_beside_tests.rs"]
 mod queue_beside_tests;
+
+#[cfg(test)]
+#[path = "decision_queue_predecessor_tests.rs"]
+mod queue_predecessor_tests;
 
 #[cfg(test)]
 #[path = "decision_track_memory_tests.rs"]

@@ -1855,7 +1855,7 @@ mod focus_tests {
                 fold("go_to_detail", None),
             ];
             let full = crate::player_hud::model::HudModel {
-                controls: crate::player_hud::Controls::for_item(true, true, true, false),
+                controls: crate::player_hud::Controls::for_item(true, true, true),
                 chapters: true,
                 detail: true,
                 ..Default::default()
@@ -2120,7 +2120,7 @@ mod folded_tests {
 
     /// A frame's model for an episode with both neighbours (or a movie with none), chapters and a detail page.
     fn model(episode: bool) -> HudModel {
-        HudModel { controls: Controls::for_item(episode, true, true, false), chapters: true, detail: true, ..HudModel::default() }
+        HudModel { controls: Controls::for_item(episode, true, true), chapters: true, detail: true, ..HudModel::default() }
     }
 
     fn rows_of(package: &Arc<crate::hud_format::compile::Compiled>, model: &HudModel) -> Vec<FoldedRow> {
@@ -2173,7 +2173,7 @@ mod folded_tests {
         assert!(!movie.contains(&HudCommand::Previous) && !movie.contains(&HudCommand::Next), "{movie:?}");
         assert!(movie.contains(&HudCommand::OpenTracks(TrackTab::Subtitles)), "the rest still folds: {movie:?}");
         // an episode with only a previous neighbour has no Next row either
-        let only_previous = HudModel { controls: Controls::for_item(true, true, false, false), ..model(true) };
+        let only_previous = HudModel { controls: Controls::for_item(true, true, false), ..model(true) };
         let rows = commands(&rows_of(&minimal, &only_previous));
         assert!(rows.contains(&HudCommand::Previous) && !rows.contains(&HudCommand::Next), "{rows:?}");
     }

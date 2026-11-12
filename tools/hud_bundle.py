@@ -223,7 +223,7 @@ def pack(binary: Path, destination: Path):
             raise ValueError("binary does not report the source being packaged")
         # Both app text shaping and native ASS use this dlopen-only library. Prove that the
         # relocated tree can load its exports instead of trusting ldd's view of the executable.
-        subprocess.run(["python3", "-c", "import ctypes,sys; lib=ctypes.CDLL(sys.argv[1]); assert lib.plx_ass_abi_version() == 4; assert lib.plx_ass_create; assert lib.plx_ass_text_measure", str(stage / "pkg" / native_text.name)],
+        subprocess.run(["python3", "-c", "import ctypes,sys; lib=ctypes.CDLL(sys.argv[1]); assert lib.plx_ass_abi_version() == 5; assert lib.plx_ass_create; assert lib.plx_ass_text_measure", str(stage / "pkg" / native_text.name)],
                        env={**env,"LD_LIBRARY_PATH":str(stage / "lib")},check=True)
         prepare_authoring(stage, inputs, wrapper, env, info)
         metrics = subprocess.check_output([str(wrapper), "--hud-text-metrics"], env=env)
