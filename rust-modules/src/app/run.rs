@@ -2747,7 +2747,7 @@ fn follow_control_row(app: &mut App, ctrl: plx_appkit::player_hud::ControlSlot, 
             player.hud.nav = HudNav::HOME;
             // The ring goes back to the SCRUBBER for the engine as much as for `nav`: `PlayerScreen::key_ok`
             // acts on the element the engine holds, so a stale seat on the stand-in's item (an enabled
-            // Previous / Restart on an episode, which reconcile leaves alone) made the next OK
+            // Previous on an episode, which reconcile leaves alone) made the next OK
             // press a disc where `main`'s `nav`-driven OK toggled pause. On a movie `main` did not
             // honour this contract either: reconcile moved the stale item to Subtitles and mirrored
             // it into `nav`, so OK opened that menu. Following the contract is the one deliberate
@@ -4864,7 +4864,7 @@ mod lifecycle_regression_tests {
         assert_eq!(reqs, vec![plx_screens::registry::PlayerReq::Transport(None)], "OK toggles play");
     }
 
-    /// The same on an EPISODE, where the first disc (Previous / Restart) IS enabled, so the engine's
+    /// The same on an EPISODE, where the first disc (Previous) IS enabled, so the engine's
     /// reconcile has nothing to move: before the departure re-seated the engine, the ring said
     /// "scrubber" while the engine held that disc, and OK restarted the episode.
     #[test]

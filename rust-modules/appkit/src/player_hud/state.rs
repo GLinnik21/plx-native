@@ -41,8 +41,8 @@ pub enum Action { Previous, Next, Subtitles, Audio, More }
 /// A frame's episode-button eligibility and availability, sampled once. **Previous is the previous
 /// episode of the queue and nothing else**: it is enabled exactly when the playing row has a
 /// predecessor (`queue_neighbors`), so on the first episode of a queue it is disabled. Restarting
-/// the current episode is the More menu's From beginning (`HudCommand::FromBeginning`), never a
-/// second meaning of this button.
+/// the current episode is `HudCommand::FromBeginning` (the Info tab's action, and a More-menu row
+/// in a package that folds it), never a second meaning of this button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Controls {
     pub previous: bool,

@@ -26,7 +26,8 @@ The default control row is **Previous, Next**, a wider gap, then **Subtitles, Au
 Previous always plays the preceding queue item, whatever the playhead: it is the previous episode
 and nothing else, and it never seeks. The episode it leaves is stopped at the position it really
 reached, so its resume point is kept. It is dimmed on the first episode of the queue. Starting the
-current episode over is the More menu's **From beginning**, not a second meaning of Previous.
+current episode over is **From beginning** on the Info tab (and a `…` menu row in a HUD package
+that folds it), not a second meaning of Previous.
 Unavailable buttons are dimmed, have no pointer stop and are
 skipped by keyboard focus. Entering the row focuses Next when enabled, otherwise its first
 enabled button. Marker offers and Up Next retain their precedence over this row: while one

@@ -6,8 +6,8 @@ use plx_plex::plex::QueueRow;
 /// Previous and Next both ask for the neighbouring queue row and play it through [`play`]; neither
 /// is ever a seek. The outgoing episode is stopped by the replacement itself
 /// (`stop_for_replacement` → `final_report`), which reports the playhead it really reached, so its
-/// resume point survives the step. Restarting the current episode is the More menu's From
-/// beginning (`from_beginning`), not a Previous.
+/// resume point survives the step. Restarting the current episode is `from_beginning` (the Info
+/// tab's action, and a More-menu row in a package that folds it), not a Previous.
 pub(super) fn step(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,

@@ -74,7 +74,7 @@ impl Client {
     /// after it, which is what Previous needs: the episode-only request below answers the playing
     /// episode and its successors and nothing before, so a play started fresh had no predecessor
     /// row and the Previous disc could only ever be a restart of the current episode. This shape
-    /// is spec- and client-derived, not observed on a live server (`docs/pms-api.md`, "Up Next"),
+    /// is spec- and client-derived, not observed on a live server (`docs/pms-api.md`, "A show-keyed PlayQueue"),
     /// so the answer is accepted only when its selected row IS the requested episode
     /// ([`PlayQueueResult::selects`]); a server that ignored `key`, or refused, falls back to the
     /// episode request, which is exactly what every play sent before.
