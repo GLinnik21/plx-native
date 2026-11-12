@@ -28,7 +28,9 @@
 //!   PLXNATIVE_SHOT_EXIT=1          end the run after an automatic capture — the headless one-shot
 //!                                  mode (an orderly stop through the app's own shutdown, never an
 //!                                  `exit()` from inside the frame: see [`maybe_capture`])
-//!   PLXNATIVE_SHOT_ALPHA=1         write RGBA (premultiplied, as the framebuffer holds it)
+//!   PLXNATIVE_SHOT_ALPHA=1         write RGBA (premultiplied, as the framebuffer holds it; a frame
+//!                                  over the bound video plane is the exception: the simulator has
+//!                                  composited it over the picture, or black, so its alpha is 1)
 //!
 //! The `shot` token on the remote FIFO captures on demand instead, which is what an interactive
 //! agent session uses: drive the UI, then ask for the frame. Those are NUMBERED (`shot-1.png`,
@@ -209,10 +211,18 @@ pub(crate) fn read_flipped(vx: c_int, vy: c_int, vw: c_int, vh: c_int, ch: usize
     // opaque RGB image is the FAITHFUL screenshot, and the one that compares to a device capture,
     // where the TV's compositor has likewise already flattened the two planes.
     //
+    // **A frame over the BOUND video plane is the one exception, and it arrives already flattened.**
+    // The straighten pass (`gfx/straighten.rs`) has turned its buffer into STRAIGHT colour for the
+    // television's compositor, which multiplies it by alpha; the simulator stands in for that
+    // compositor (`run.rs`'s `composite_plane_under`, the decoded picture or black) before this
+    // read, so the RGB here is the panel and the alpha is 1. Reading the straight buffer itself
+    // would give a picture brighter than any panel shows.
+    //
     // `PLXNATIVE_SHOT_ALPHA=1` keeps it anyway, for compositing a shot over a picture of your own:
-    // the channels are then exactly what the framebuffer holds, i.e. PREMULTIPLIED, so the
-    // composite is `out = shot.rgb + picture * (1 - shot.a)` — not the straight-alpha "over" a
-    // viewer applies to a PNG, which is why this file will look wrong opened on its own.
+    // the channels are then exactly what the framebuffer holds, i.e. PREMULTIPLIED (for every frame
+    // but the bound-plane one above), so the composite is `out = shot.rgb + picture * (1 - shot.a)`
+    // — not the straight-alpha "over" a viewer applies to a PNG, which is why this file will look
+    // wrong opened on its own.
     let src_stride = w * 4;
     let dst_stride = w * ch;
     let mut rgb = vec![0u8; dst_stride * h];

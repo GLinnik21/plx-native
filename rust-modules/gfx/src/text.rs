@@ -226,7 +226,19 @@ extern "C" {
     fn glUniform4fv(loc: c_int, count: c_int, value: *const f32);
     fn glUniform1i(loc: c_int, x: c_int);
     fn glUniform4f(loc: c_int, x: f32, y: f32, z: f32, w: f32);
-    fn glDrawArrays(mode: c_uint, first: c_int, count: c_int);
+    /// The raw import: only [`glDrawArrays`] below calls it.
+    #[link_name = "glDrawArrays"]
+    fn glDrawArrays_raw(mode: c_uint, first: c_int, count: c_int);
+}
+
+/// A draw call, booked in the straighten pass's ledger first (`gfx::straighten::note_draw`): the pass
+/// runs only on a frame that drew something, and a glyph is a draw like any other. Shadows the raw
+/// import so the call sites below keep their spelling; the same wrapper `gfx.rs` has.
+#[allow(non_snake_case)]
+#[inline(always)]
+unsafe fn glDrawArrays(mode: c_uint, first: c_int, count: c_int) {
+    crate::gfx::straighten::note_draw();
+    glDrawArrays_raw(mode, first, count)
 }
 
 static mut TPROG: c_uint = 0;
