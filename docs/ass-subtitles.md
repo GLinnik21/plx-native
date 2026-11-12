@@ -37,7 +37,8 @@ are part of the normal package/source-bundle workflow.
 The facade's ABI is 5 (`plx_ass_abi_version()`; `include/ass.h`). Two callers check it and refuse any
 other number: `player/ass.rs` for the subtitles, and `plx_gfx::rtl` for the UI's Arabic and Hebrew
 text through the `plx_ass_text_*` calls ABI 4 added (`src/ass_text.c`). ABI 5 let `plx_ass_add_font`
-run after `plx_ass_load` and lifted its 64 MiB limit (issue #1328, "Attached fonts" below). Besides the load/render calls
+run after `plx_ass_load` and lifted its 64 MiB limit (issue #1328, "Attached fonts" below), and
+`plx_ass_add_font_borrowed` hands libass a font by reference instead of copying it. Besides the load/render calls
 it sets track features (`plx_ass_set_features`, Unicode line breaking), the libass cache bounds
 (`plx_ass_set_cache_limits`) and extra line spacing (`plx_ass_set_line_spacing`), reports counters and the last render's phase timing
 (`plx_ass_stats`), and replaces the loaded track in place (`plx_ass_replace_track`). The renderer
@@ -88,9 +89,19 @@ give. A font that cannot be read is added (unknown means needed); a byte-identic
 A restyle of a text track reads the new header the same way. The event log says how many the renderer
 holds, numbers only: `ass: embedded ... fonts=17 font_bytes=...` when the file's inventory is read,
 and `ass: renderer fonts=5/17 font_bytes=...` for each renderer (again when a later event adds a face).
-What is resident is the file's attachments as FFmpeg holds them, the store's copy of them, and
-libass's copy of the faces the track names; a track that names every face holds all of them, the
-same order as what the demuxer already holds.
+What is resident is the file's attachments as libavformat holds them (the Matroska demuxer's own
+element buffer, one copy per attachment for as long as the file is open, and with the side reader,
+which does not run `avformat_find_stream_info`, the stream's internal codec context's too; both are
+private to libavformat) and the store's copy of them, one `Arc<[u8]>` per font. libass is handed no
+copy: `Native::font_shared` gives it the store's buffer by reference (`plx_ass_add_font_borrowed`, which
+the renderer keeps alive until after `plx_ass_destroy`), so a face a track names is resident once
+however many renderers draw with it. The demuxer
+frees its own `codecpar->extradata` copy of every attachment the moment `avformat_open_input` returns
+(`detach_fonts`). What libass still copies per renderer are the bundled faces (`fonts::bundled`) and a
+font the script's own `[Fonts]` section carries (libass extracts those itself). Measured on the host with
+a 6 x 8 MiB fixture in a fresh process (`make check-ffmpeg`, `ff_font_memory_tests.rs`; `make check-ass`,
+`player/ass/tests.rs`), the main demuxer holds the fonts 1x beside the store's 1x (3x and 1x before) and
+a renderer over them holds 9 MiB (57 MiB before).
 
 The demuxer copies ASS headers, complete timed packets and font attachments out of FFmpeg.
 The source store removes trailing zero terminators from headers and packets. A zero byte
@@ -156,14 +167,14 @@ re-synced the renderer is no sample), a running mean capped at 500 ms a sample.
 One worker cannot make thirty frames a second from an 80 ms render, so the plan asks for the workers
 that can (`workers_wanted`: the cost over the 33 ms floor) and the runtime starts helpers up to what the
 device allows: the primary and a helper per other core, at most `MAX_ASS_RENDERERS` (3), and no more
-than a quarter of the memory available holds (`pool::decide`: each renderer is the fonts it holds, the
-bundled faces and the ones the track names, plus a bitmap cache; `/proc/meminfo`'s `MemAvailable` is read
+than a quarter of the memory available holds (`pool::decide`: each renderer is the fonts it copies, the
+bundled faces (the attached ones are the store's, shared), plus a bitmap cache; `/proc/meminfo`'s `MemAvailable` is read
 once for a selection, the first time a pipeline wants a helper, and the verdict is logged as
 `ass: pool renderers=N of M font_bytes=.. per_renderer=.. mem_available=.. budget=..`; a heavy file on
 a short television runs the primary alone, and the primary always runs). Every worker
 owns a whole libass instance (`Engine`: its own `ASS_Library`, renderer and track, which libass does not
-let two threads share), fed the same `Source` snapshot, so a helper costs the fonts and the events
-again; it is started from the same `task::spawn` site as the primary, only while a moving cue is
+let two threads share), fed the same `Source` snapshot, so a helper costs the bundled faces, the caches
+and the events again, but not the attached fonts, which it references; it is started from the same `task::spawn` site as the primary, only while a moving cue is
 planned, counted in the plan's pacing only once it has rendered a steady frame (its first job opens the
 source and lands late), and gives its renderer back after 10 s with nothing to do. Each job carries the
 newest frame that had landed (`Job::reference`) and the renderer shares the allocation of every region

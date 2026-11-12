@@ -29,7 +29,8 @@ typedef struct {
  * ABI 4: the UI text surface, plx_ass_text_* (src/ass_text.c).
  * ABI 5: plx_ass_add_font works after plx_ass_load too (the face is opened alone at the next
  * frame) and has no byte limit but `int`; before, it refused once a track was loaded and past
- * 64 MiB in all. PlxAssStats also carries the last plx_ass_render call's timing (wall and thread
+ * 64 MiB in all. plx_ass_add_font_borrowed adds a font the caller keeps, without copying it.
+ * PlxAssStats also carries the last plx_ass_render call's timing (wall and thread
  * CPU) and image counts (last_*), the split a styled-subtitle frame's cost is attributed with.
  * plx_ass_render publishes PREMULTIPLIED RGBA, where it published straight RGBA before: the straight
  * conversion was a pass over every pixel of every changed region (mostly transparent ones) and the
@@ -71,6 +72,11 @@ void plx_ass_destroy(PlxAss *ctx);
  * the faces already open are not scanned again (PlxAssStats.font_scans stays 1). A face that
  * FreeType cannot open is skipped silently by libass; the copy is still held. */
 int plx_ass_add_font(PlxAss *ctx, const char *name, const uint8_t *data, size_t len);
+/* plx_ass_add_font without the copy: the library holds `data` itself, not a copy of it, so one
+ * buffer can back the same font in every context that is handed it. Same arguments, same -1s, same
+ * timing of the face scan. `data` must stay valid and unchanged until plx_ass_destroy of THIS context
+ * has returned (the renderer reads it for as long as it lives); destroy never frees it. */
+int plx_ass_add_font_borrowed(PlxAss *ctx, const char *name, const uint8_t *data, size_t len);
 int plx_ass_load(PlxAss *ctx, const uint8_t *data, size_t len, int script);
 /* Replace the loaded track on the same library and renderer, keeping every font face the
  * renderer has opened. The new track's own [Fonts] section is NOT extracted, so it must repeat the

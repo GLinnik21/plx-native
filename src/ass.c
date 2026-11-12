@@ -48,6 +48,10 @@ struct PlxAss {
     uint32_t last_images;
     uint64_t last_image_pixels;
     char *default_font;
+    /* Indices (into the library's font table) of the fonts added by plx_ass_add_font_borrowed: their
+     * bytes are the caller's, so plx_ass_destroy detaches them before the library frees its own. */
+    size_t *borrowed;
+    size_t borrowed_count, borrowed_capacity;
 };
 
 /* Subtitle text and font metadata are untrusted and can be private. Do not
@@ -96,7 +100,11 @@ void plx_ass_destroy(PlxAss *ctx)
     if (!ctx) return;
     if (ctx->track) ass_free_track(ctx->track);
     if (ctx->renderer) ass_renderer_done(ctx->renderer);
+    /* The renderer's faces read a borrowed font until it is done; the library frees every font's
+     * bytes, so those that are the caller's leave its table first. */
+    plxi_library_forget_borrowed(ctx->library, ctx->borrowed, ctx->borrowed_count);
     if (ctx->library) ass_library_done(ctx->library);
+    free(ctx->borrowed);
     free(ctx->rgba);
     free(ctx->images);
     free(ctx->default_font);
@@ -134,6 +142,28 @@ int plx_ass_add_font(PlxAss *ctx, const char *name, const uint8_t *data, size_t 
     if (!ctx || !name || !*name || !data || !len || len > INT_MAX)
         return -1;
     ass_add_font(ctx->library, name, (char *)data, (int)len);
+    return 0;
+}
+
+/* plx_ass_add_font without the copy: libass's entry points at the caller's `data`, which the caller
+ * keeps alive and unchanged until plx_ass_destroy returns. One font held by N renderers (the
+ * subtitle worker pool) is then one buffer, not N (issue #1328). The face is opened the same way,
+ * at the next frame. The destroy path detaches the entry so libass never frees the caller's bytes. */
+int plx_ass_add_font_borrowed(PlxAss *ctx, const char *name, const uint8_t *data, size_t len)
+{
+    if (!ctx || !name || !*name || !data || !len || len > INT_MAX)
+        return -1;
+    if (ctx->borrowed_count == ctx->borrowed_capacity) {
+        size_t capacity = ctx->borrowed_capacity ? 2 * ctx->borrowed_capacity : 16;
+        size_t *grown = realloc(ctx->borrowed, capacity * sizeof(*grown));
+        if (!grown) return -1;
+        ctx->borrowed = grown;
+        ctx->borrowed_capacity = capacity;
+    }
+    size_t index;
+    if (plxi_library_borrow_font(ctx->library, name, data, len, &index) != 0)
+        return -1;
+    ctx->borrowed[ctx->borrowed_count++] = index;
     return 0;
 }
 

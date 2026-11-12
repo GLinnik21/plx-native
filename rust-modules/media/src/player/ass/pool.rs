@@ -1,12 +1,13 @@
 //! How many renderers the memory can hold (issue #1328). Pure: numbers in, a verdict out.
 //!
-//! Every renderer is a whole libass instance with its own copy of the fonts (`ass_add_font` copies
-//! the bytes: the bundled faces and the attached ones the track names) and its own bitmap cache, so
-//! a helper costs what the primary does. A file whose karaoke styles name five display faces puts
-//! tens of megabytes in each renderer, and a television has little to spare; a helper that
-//! starts where the memory is not there trades a late subtitle frame for the process. The runner
-//! (`Runtime::renderers_for`) reads `MemAvailable` and the primary's font bytes and asks here once
-//! per selection; nothing here reads a file or a clock.
+//! Every renderer is a whole libass instance with its own copy of the bundled faces (`ass_add_font`
+//! copies the bytes) and its own bitmap cache, so a helper costs what the primary does. The attached
+//! fonts the track names are not in that cost: every renderer references the store's one buffer
+//! (`plx_ass_add_font_borrowed`), so a file whose karaoke styles name five display faces puts those
+//! tens of megabytes in the process once, not once per renderer. A television still has little to
+//! spare; a helper that starts where the memory is not there trades a late subtitle frame for the
+//! process. The runner (`Runtime::renderers_for`) reads `MemAvailable` and the primary's font bytes
+//! and asks here once per selection; nothing here reads a file or a clock.
 //!
 //! The number is a bound on helpers only: the primary always runs, so no subtitle is ever hidden by
 //! it, a pipeline merely has fewer workers to share its frames over.
@@ -22,7 +23,7 @@ pub(super) const MEMORY_SHARE_DIVISOR: u64 = 4;
 pub(super) struct Verdict {
     /// How many renderers, the primary included: at least 1, at most the ceiling asked for.
     pub renderers: usize,
-    /// What one renderer holds: its fonts and its bitmap cache.
+    /// What one renderer holds that another would not share: the fonts it copies and its bitmap cache.
     pub per_renderer: u64,
     /// What the renderers may take together; `None` when the memory available is not known.
     pub budget: Option<u64>,
@@ -35,7 +36,7 @@ fn cache_bytes() -> u64 {
     u64::from(super::CACHE_BITMAP_MIB.unsigned_abs()) << 20
 }
 
-/// How many renderers may run: `font_bytes` is what one holds in fonts (what the primary reports),
+/// How many renderers may run: `font_bytes` is what one copies in fonts (what the primary reports),
 /// `mem_available` what the device has free (`None` when it could not be read: nothing to gate on,
 /// the cores bound it), `ceiling` the most the cores and the pool's own cap allow. The primary
 /// always runs, so the answer is never below 1.

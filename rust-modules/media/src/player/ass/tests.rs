@@ -1265,6 +1265,13 @@ fn native_a_renderer_holds_no_copy_of_the_fonts_it_is_handed() {
     let fonts = cost["font_bytes"];
     assert!(fonts >= 48 * MIB as u64, "the fixture is big enough to tell a copy from noise: {fonts}");
     let mib = |bytes: u64| bytes as f64 / MIB as f64;
+    eprintln!(
+        "renderer over {:.0} MiB of faces: held {:.1} MiB, peaked at {:.1} MiB, {:.1} MiB left after drop",
+        mib(fonts),
+        mib(cost["held"]),
+        mib(cost["peak"]),
+        mib(cost["after_drop"])
+    );
     assert!(
         cost["held"] < fonts / 4,
         "a renderer of {:.1} MiB of faces held {:.1} MiB: it copies them",
@@ -1278,6 +1285,54 @@ fn native_a_renderer_holds_no_copy_of_the_fonts_it_is_handed() {
         mib(cost["peak"])
     );
     assert!(cost["after_drop"] < 4 * MIB as u64, "a dropped renderer gives its heap back: {:.1} MiB left", mib(cost["after_drop"]));
+}
+
+/// A font a renderer references is the store's buffer, not the library's: three renderers over the
+/// same `Arc` each hold it beside a font libass extracted from the script's own `[Fonts]` (which
+/// libass owns and frees), draw both, and are dropped in an order that is not their creation's. What
+/// libass frees at destroy is only what it allocated: the shared bytes are intact and the store's
+/// handle is the only one left (a freed or doubly freed buffer would have crashed the test, or
+/// drawn a different glyph).
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_borrowed_font_beside_an_extracted_one_survives_the_renderers_that_reference_it() {
+    let borrowed = named_face(5, "Plx Borrowed", None);
+    let original = borrowed.data.to_vec();
+    let extracted = std::fs::read(format!("{FACE_DIR}/face-03.ttf")).unwrap();
+    let (styles, events) = named_script("Plx Borrowed", "").split_once("[Events]").map(|(a, b)| (a.to_owned(), b.to_owned())).unwrap();
+    let text = format!(
+        "{styles}{}[Events]{events}{}{}",
+        ass_font_section("slide.ttf", &extracted),
+        glyph_line(0, "", 0xE005),
+        glyph_line(1, r"\fnPlxFaces", 0xE003),
+    );
+    let fonts = [borrowed.clone()];
+    let mut renderers: Vec<Native> = (0..3).map(|_| native_with(&fonts, &text)).collect();
+    for native in &renderers {
+        assert_eq!(native.given, 1, "the track names the attached face");
+        assert_eq!(
+            native.stats().library_fonts,
+            bundled_faces() + 2,
+            "the bundled faces, the one from [Fonts] and the one referenced"
+        );
+    }
+    assert_eq!(Arc::strong_count(&borrowed.data), 1 + 1 + 3, "the test's, the array's and one per renderer");
+    for native in &mut renderers {
+        assert_eq!(ink(&native_frame(native, 500).expect("a new cue")).bands.len(), 1, "the referenced face draws");
+        assert_eq!(ink(&native_frame(native, 1500).expect("a new cue")).bands.len(), 1, "and so does the extracted one");
+    }
+    drop(renderers.remove(1));
+    for native in &mut renderers {
+        assert_eq!(
+            ink(&native_frame(native, 500).expect("a new cue")).bands.len(),
+            1,
+            "a renderer still draws the shared face after another is gone"
+        );
+    }
+    renderers.clear();
+    assert_eq!(&borrowed.data[..], &original[..], "the shared bytes are untouched");
+    drop(fonts);
+    assert_eq!(Arc::strong_count(&borrowed.data), 1, "no renderer holds the buffer after it is destroyed");
 }
 
 /// A long sidecar script is fed to libass a window at a time, and the first window holds only its

@@ -17,9 +17,11 @@ const MAX_EVENT_BYTES: usize = 256 * 1024;
 // No event-count bound here: `ass_source` holds an embedded track, and `ass_script` a long sidecar
 // script, to a window far under the native library's own guard (`plx_ass_chunk` refuses past
 // 20 000), so a second count would only be a way to hide a track that is otherwise showable.
-// No font-byte bound either (issue #1328): the file's attachments are held once by the demuxer and
-// once by the store, and libass is handed only the fonts the track names (`font_names`), so what is
-// resident past the file's own bytes is what the track can draw.
+// No font-byte bound either (issue #1328): the file's attachments are held by the demuxer (the
+// copies libavformat keeps for itself) and once by the store, and every renderer REFERENCES the
+// store's buffer for the fonts the track names (`font_names`; `plx_ass_add_font_borrowed`) instead
+// of copying it, so a font is resident once however many renderers draw with it, and only the fonts
+// the track can draw are even opened.
 const MAX_PIXELS: usize = 3840 * 2160;
 const MAX_REGIONS: usize = 64;
 
@@ -263,8 +265,9 @@ pub struct Runtime {
     /// one more worker for each. A cold helper's first jobs open the source and land late, so it is
     /// not counted until it has rendered a steady frame.
     warm_helpers: AtomicUsize,
-    /// The bytes of fonts one renderer holds (the bundled faces and the attached ones the track
-    /// names), as the primary reports them: what a helper would copy again.
+    /// The bytes of fonts one renderer holds that a helper would copy again (the bundled faces; the
+    /// attached ones the track names are the store's, referenced by every renderer), as the primary
+    /// reports them.
     font_bytes: AtomicUsize,
     /// How many renderers (the primary included) the current selection may hold: 1 from the
     /// moment a selection begins, until the pool has decided it (`renderers_for`).
@@ -1193,6 +1196,7 @@ plx_base::dynlib! {
         fn plx_ass_create(default_font: *const c_char) -> *mut c_void;
         fn plx_ass_destroy(ctx: *mut c_void);
         fn plx_ass_add_font(ctx: *mut c_void, name: *const c_char, data: *const u8, len: usize) -> i32;
+        fn plx_ass_add_font_borrowed(ctx: *mut c_void, name: *const c_char, data: *const u8, len: usize) -> i32;
         fn plx_ass_load(ctx: *mut c_void, data: *const u8, len: usize, script: i32) -> i32;
         fn plx_ass_chunk(ctx: *mut c_void, data: *const u8, len: usize, start_ms: i64, duration_ms: i64) -> i32;
         fn plx_ass_prune_before(ctx: *mut c_void, deadline_ms: i64);
@@ -1209,13 +1213,21 @@ plx_base::dynlib! {
 /// One libass renderer. `selection` is which of the file's attached fonts it has been handed: the
 /// ones the track names (`font_names`), at open and as later events first name more. `given` and
 /// `given_bytes` count what libass actually took, for the log line.
+///
+/// The attached fonts are BORROWED: libass references the store's own buffer (`plx_ass_add_font_borrowed`)
+/// instead of copying it, so the bytes of a font are resident once however many renderers hold it
+/// (issue #1328). `shared` keeps the buffers libass points at alive, and it is declared (so dropped)
+/// after the native context, which `Drop` destroys first.
 struct Native {
     ptr: *mut c_void,
     selection: font_names::Selection,
     given: usize,
     given_bytes: usize,
-    /// The bytes of the bundled faces it was given at open (`fonts::bundled`).
+    /// The bytes of the bundled faces it was given at open (`fonts::bundled`): libass copies those.
     bundled_bytes: usize,
+    /// The attached fonts libass was handed by reference. Never read: it holds the buffers alive
+    /// until after `plx_ass_destroy`.
+    shared: Vec<Arc<[u8]>>,
 }
 
 #[cfg(test)]
@@ -1293,6 +1305,7 @@ impl Native {
             given: 0,
             given_bytes: 0,
             bundled_bytes: 0,
+            shared: Vec::new(),
         };
         native.configure()?;
         // Inter, Inter Bold, then the per-script Noto faces (`fonts.rs`: the order is load-bearing,
@@ -1325,7 +1338,7 @@ impl Native {
             if font.name.is_empty() || font.name.len() > 1024 || font.name.contains('\0') {
                 continue;
             }
-            if self.font(&font.name, &font.data).is_ok() {
+            if self.font_shared(&font.name, &font.data).is_ok() {
                 self.given += 1;
                 self.given_bytes += font.data.len();
             }
@@ -1342,10 +1355,11 @@ impl Native {
         }
     }
 
-    /// The bytes of fonts libass holds in this renderer, the bundled faces and the attached ones:
-    /// what another renderer would copy again.
+    /// The bytes of fonts this renderer holds that another renderer would copy again: the bundled
+    /// faces, which libass copies per renderer. The attached fonts it references are not here: they
+    /// are the store's buffers, one for every renderer.
     fn font_bytes(&self) -> usize {
-        self.bundled_bytes + self.given_bytes
+        self.bundled_bytes
     }
 
     /// How many of the file's `attached` fonts libass holds, numbers only: the event log is
@@ -1401,11 +1415,24 @@ impl Native {
         self.try_stats().expect("plx_ass_stats refused a live context")
     }
 
+    /// Hand libass a font it copies: for bytes this renderer owns, the bundled faces it reads from
+    /// the asset directory per renderer.
     fn font(&mut self, name: &str, bytes: &[u8]) -> Result<(), Fault> {
         let name = CString::new(name).map_err(|_| Fault::FontName)?;
         if unsafe { plx_ass_add_font(self.ptr, name.as_ptr(), bytes.as_ptr(), bytes.len()) } < 0 {
             return Err(Fault::TrackFonts);
         }
+        Ok(())
+    }
+
+    /// Hand libass a font it references: `bytes` stay alive and unchanged in `shared` until after
+    /// the native context is destroyed, which is what the facade requires of a borrowed font.
+    fn font_shared(&mut self, name: &str, bytes: &Arc<[u8]>) -> Result<(), Fault> {
+        let name = CString::new(name).map_err(|_| Fault::FontName)?;
+        if unsafe { plx_ass_add_font_borrowed(self.ptr, name.as_ptr(), bytes.as_ptr(), bytes.len()) } < 0 {
+            return Err(Fault::TrackFonts);
+        }
+        self.shared.push(Arc::clone(bytes));
         Ok(())
     }
 
