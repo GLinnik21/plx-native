@@ -482,7 +482,7 @@ fn content_geometry_focus_and_pair_availability_are_independent() {
         r#""thickness": { "value": 6, "if": { "title.is_episode": 12 } }"#));
     for pair in [false, true] {
         for episode in [false, true] {
-            let slot = ControlSlot::Discs(if pair { Controls { previous: true, next: true, restart: false } } else { Controls::NONE });
+            let slot = ControlSlot::Discs(if pair { Controls { previous: true, next: true } } else { Controls::NONE });
             let state = compiled.lookup_content(0, crate::hud_format::Slot::Discs, false, pair, episode, false).unwrap();
             assert_eq!(state.control("prev").is_some(), pair, "pair={pair} episode={episode}");
             let sized = crate::player_hud::geometry::geometry_content(&numeric, 0, slot, false, episode, false);

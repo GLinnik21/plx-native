@@ -797,7 +797,6 @@ fn face_state(act: HudCommand, m: &HudModel) -> &'static str {
     match act {
         HudCommand::TogglePlay if m.paused => "paused",
         HudCommand::TogglePlay => "playing",
-        HudCommand::Previous if m.controls.restart => "restart",
         HudCommand::ToggleStats if m.stats => "on",
         HudCommand::ToggleStats => "off",
         _ => "default",
@@ -808,7 +807,6 @@ fn face_state(act: HudCommand, m: &HudModel) -> &'static str {
 /// `Controls::icon`'s, so the replaced row and the old one cannot disagree.
 fn classic_glyph(act: Option<HudCommand>, m: &HudModel) -> Icon {
     match act {
-        Some(HudCommand::Previous) if m.controls.restart => Icon::Restart,
         Some(HudCommand::Previous) => Icon::Previous,
         Some(HudCommand::Next) => Icon::Next,
         Some(HudCommand::OpenTracks(TrackTab::Audio)) => Icon::Audio,
@@ -1018,8 +1016,7 @@ mod tests {
     }
 
     const FM: FixtureMeasure = FixtureMeasure;
-    const PAIR: Controls = Controls { previous: true, next: true, restart: false };
-    const RESTART: Controls = Controls { previous: true, next: false, restart: true };
+    const PAIR: Controls = Controls { previous: true, next: true };
 
     /// Every primitive a frame hands the painter: the command census, the text runs, the glyphs and the
     /// fills with their effective alpha, in draw order.
@@ -1092,7 +1089,6 @@ mod tests {
         let slots = [
             ("movie", ControlSlot::Discs(Controls::NONE)),
             ("pair", ControlSlot::Discs(PAIR)),
-            ("restart", ControlSlot::Discs(RESTART)),
             ("skip-intro", ControlSlot::Skip(prompt_for(marker(MarkerKind::Intro, false)))),
             ("skip-credits", ControlSlot::Skip(prompt_for(marker(MarkerKind::Credits, false)))),
             ("up-next", ControlSlot::UpNext(marker(MarkerKind::Credits, true))),
@@ -1945,8 +1941,8 @@ mod tests {
             let pair = frame_census_with(&compiled, ControlSlot::Discs(PAIR), GROUP_SCRUB, 0, model());
             let icons: Vec<Icon> = pair.2.iter().map(|(i, _)| *i).collect();
             assert!(icons.contains(&Icon::Previous) && icons.contains(&Icon::Next), "an episode pair: {icons:?}");
-            let restart = frame_census_with(&compiled, ControlSlot::Discs(RESTART), GROUP_SCRUB, 0, model());
-            assert!(restart.2.iter().any(|(i, _)| *i == Icon::Restart), "Previous's `restart` face");
+            // Previous never takes its package's `restart` face: that state is no longer selected
+            assert!(!pair.2.iter().any(|(i, _)| *i == Icon::Restart), "a Previous disc is not a restart: {icons:?}");
         }
 
         #[test]

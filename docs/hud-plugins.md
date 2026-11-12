@@ -52,7 +52,9 @@ HUD drawing and state
   (`:493-497`), `BTN_MORE = BTN_N - 1` (`:670`), `pub enum Action { Previous, Next, Subtitles, Audio,
   More }` (`:731`). `Controls::enabled` (`:758-761`): Previous and Next by their own flags, the other
   three always; `Controls::pair` (`:755-757`) makes Previous/Next come and go together;
-  `Controls::icon` swaps in `Icon::Restart` for Previous (`:772-776`).
+  `Controls::icon` once swapped in `Icon::Restart` for Previous from five seconds in; it no longer
+  does, and `Controls` has no `restart` field: Previous is the previous episode of the play queue and
+  nothing else, so it is enabled exactly when the playing row has a predecessor.
 - F7. Row identity is an INDEX: `Controls::action(i)` (`:767-771`), `ControlSlot::items()` 5/2/1
   (`:804-809`), `RowPop = CtlPop<{ BTN_N as usize }>` (`:512`), element ids `ELEM_SCRUB 0` `:1384`,
   `ELEM_ROW_BASE 10` `:1387`, `ELEM_TAB_BASE 20` `:1389`, `ELEM_FAILURE_BASE 30` `:1397`. Up Next
@@ -586,7 +588,9 @@ through `TransportButton`, `pill` through `TabPill` labelled by the command's ap
 through `widgets::Button`), `size` (px), `rest` (`film` today's, `bare` glyph only, `solid` the focused
 colours at rest; `custom` is refused because format 1.0 defines no keys for its inks), `focus` (`accent` today's, `ring`: rest face plus the white
 focus ring), `face` (optional: the command's classic glyph when absent). A pair that draws one face twice (`solid` with `accent`) is rejected. Faces: an asset
-or `builtin:<icon>`; `toggle_play` takes `{playing, paused}`; `previous` takes `{default, restart}`;
+or `builtin:<icon>`; `toggle_play` takes `{playing, paused}`; `previous` takes `{default, restart}` (the `restart` face is still required and
+parsed, because published packages carry it and format 1.0 is frozen, but the app never selects it any more:
+Previous is always the previous episode and wears `default`);
 `toggle_stats` takes `{on, off}`; a `seek` with `by: "setting"` takes `{by_interval: {...}, default}`. A
 glyph's visual size is its viewBox padding over the shared `DISC_ICON_RATIO` (`ui/src/widgets.rs:1394`).
 `TransportButton` gains the `bare` rest face and the `ring` focus face in place.
@@ -627,7 +631,7 @@ Each maps to an action the app already performs; the performer is shared with th
 |---|---|---|---|---|
 | `toggle_play` | - | the `Key::Play|Pause|PlayPause` arm, extracted to one function, PlayPause path incl. `take_target` (F13) | always | keys, OK on picture |
 | `seek` | `by`: a nonzero integer of seconds, whose sign is the direction (then `dir` is forbidden), or `"setting"`, which requires `dir`: `back` or `forward` | `commit_jump`'s `SeekBurst` and `CommitSeek`, extracted with the signed step in ns as a parameter (today `signed_step(forward)` = `scrub_step_ns() x +-1`, `seek_jump.rs:16-18`; a literal `by` passes `by x 10^9`) and a keep-HUD flag (today `self.hud.hide(false)`, `:43`): a control press keeps the HUD up and extends its linger, the hidden-HUD tap still hides it (F14) | duration known (`seek_jump.rs:39-40`) | Left/Right, FF/REW, hold |
-| `previous`, `next` | - | `queue_transport::step` (F15) | `Controls::for_item` (`player_hud.rs:749-752`): the pair is absent for a non-episode or with neither neighbour; Previous is enabled by `previous || restart` (a restart target counts), Next by `next` (F6) | none |
+| `previous`, `next` | - | `queue_transport::step` (F15) | `Controls::for_item` (`player_hud.rs:749-752`): the pair is absent for a non-episode or with neither neighbour; Previous is enabled by `previous` alone (the playing row has a predecessor in the play queue; there is no restart target any more), Next by `next` (F6) | none |
 | `open_tracks` | `tab`: `subtitles`, `audio` | `OverlayKind::Tracks { tab: 1 | 0 }` (F15) | always (F6) | none |
 | `open_more` | `page`: `root` (default), `quality`, `speed` | `OverlayKind::More { page }`; `quality` is what was `More { quality: true }` (F18); `speed` is the address PR3 added by turning that bool into `page: Option<MorePage>` (F16) | always | none |
 | `toggle_section` | `section`: `chapters`, `info` | opens or closes the section (D6) | chapters: the playing item has chapters (`chapters_panel::has_chapters`) | none |
@@ -1201,7 +1205,7 @@ with computed values; PR17's compile reports the chapters plus info block's top 
 | 7-8 | "5:27" left, "-52:33" right | `playbar.clocks: ends`; `fmt::clock`, minus from `fmt_time` (F27) | `draw_clock` |
 | 9 | Speech bubble | `open_tracks {tab: subtitles}`, `rest: bare`; the menu reaches Audio (F15) | `TransportButton` |
 | 10 | Arrow "10" | `seek {by: -10}`, static face | `TransportButton`; the extracted jump |
-| 11 | Previous | `previous`, `{default, restart}` faces | `TransportButton` |
+| 11 | Previous | `previous`, `{default, restart}` faces (`restart` is accepted and never selected) | `TransportButton` |
 | 12 | Large white disc | `toggle_play`, size 64, `rest: solid`, `focus: ring`, `{playing, paused}` | `TransportButton`; the extracted toggle |
 | 13 | Next | `next` | `TransportButton` |
 | 14 | Arrow "30" | `seek {by: 30}`, static face | `TransportButton` |
