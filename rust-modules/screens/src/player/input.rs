@@ -418,9 +418,9 @@ impl HudState {
     /// Parking is only ever from REST: a user who walked to the Subtitles disc or an Info tab keeps
     /// their spot (and for Up Next thereby declines the countdown — the same one rule, read as a
     /// steady state one block below). `primary` is the occupant's own
-    /// ([`plx_appkit::player_hud::ControlSlot::primary_btn`]) — item 0 for a Skip pill, the
-    /// RIGHT-hand one for Up Next, where parking on item 0 would disarm the timer on the frame
-    /// after it armed.
+    /// ([`plx_appkit::player_hud::ControlSlot::primary_btn`]) — item 0 for a plain (Manual) Skip pill, the
+    /// RIGHT-hand one for Up Next and for the Automatic Skip pair (Watch, then the filled Skip, item 1),
+    /// where parking on item 0 would disarm the timer on the frame after it armed.
     pub fn raise_for_offer(&mut self, now: u32, primary: c_int) {
         self.extend(now, HUD_LINGER_MS);
         self.dismissed = false;

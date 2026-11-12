@@ -206,6 +206,9 @@ struct Parser {
     /// Italic until the end of this line: an MPL2 line that began with `/`, or MicroDVD `{y:i}`
     /// (uppercase `{Y:i}` covers the cue).
     line_italic: bool,
+    /// A `<font color>` that is not white is in force (until the next `</font>`, which resets the
+    /// colour to the style's): a white inside it is a real choice and stays an override.
+    colour_open: bool,
 }
 
 impl Parser {
@@ -216,6 +219,7 @@ impl Parser {
             in_rt: false,
             line_start: true,
             line_italic: false,
+            colour_open: false,
         };
         let chars: Vec<char> = text.chars().collect();
         let mut i = 0;
@@ -347,9 +351,20 @@ impl Parser {
                 "s" if self.dialect == TextDialect::Srt => self.style_tag(&name, closing),
                 "font" if self.dialect == TextDialect::Srt => {
                     if closing {
-                        self.push(Piece::Tag("\\c".into()));
+                        if std::mem::take(&mut self.colour_open) {
+                            self.push(Piece::Tag("\\c".into()));
+                        }
                     } else if let Some(bgr) = font_color(body) {
-                        self.push(Piece::Tag(format!("\\c&H{bgr}&")));
+                        // Explicit white is the file's default ink spelled out (many downloaded
+                        // files wrap every cue in it): as an override it would beat the viewer's
+                        // colour pick (the style's primary colour), so it is not one, unless
+                        // another colour is open around it.
+                        if bgr != WHITE_BGR {
+                            self.colour_open = true;
+                        }
+                        if self.colour_open {
+                            self.push(Piece::Tag(format!("\\c&H{bgr}&")));
+                        }
                     }
                 }
                 "rt" if self.dialect == TextDialect::WebVtt => self.in_rt = !closing,
@@ -415,6 +430,9 @@ fn entity(chars: &[char]) -> (Piece, usize) {
     }
     (Piece::Ch('&'), 1)
 }
+
+/// `<font color>` white, as the `BBGGRR` [`font_color`] returns.
+const WHITE_BGR: &str = "FFFFFF";
 
 /// The `BBGGRR` of a `<font color=…>` attribute, if it names a colour.
 fn font_color(body: &str) -> Option<String> {

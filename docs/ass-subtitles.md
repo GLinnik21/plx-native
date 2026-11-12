@@ -7,13 +7,26 @@ the link is local and the Part is 1..=30000 kbps, and otherwise the server burns
 The viewer's timing control applies to every subtitle, and so does a gray tone (Settings > Audio &
 subtitles > Subtitle color, or the Color section of the player's Subtitles menu), which only dims
 the drawn bitmaps. A COLOR tone (Yellow) is different: it is the default colour of a synthesized
-text track (below) and never touches an authored script, so styled ASS/SSA colours are kept.
+text track (below), and in an authored ASS/SSA script (embedded, or a sidecar file, including a
+converted SubRip that reaches the app as an ASS track) it replaces the PrimaryColour of every style
+whose primary is exactly pure white (`&H00FFFFFF`, in any spelling libass reads: `&h` or `0x` hex, or decimal; alpha 0): white is the default
+ink, so it follows the pick. `player::ass_ink` does the rewrite on the header that reaches libass
+(the file's own bytes stay the reopen identity), through `SubtitleTone::text_rgb8`, the one palette.
+A style whose primary is any other colour, an inline `\c` override (explicit white included), the
+outline and shadow colours and the karaoke SecondaryColour (recoloured only when it is itself pure
+white) are left alone, and the grays never rewrite a header (they stay a draw-time tint). A colour
+change restyles the live track once, in place (`ass::restyles`). Cost, known: signs and typesetting
+drawn in white take the colour too. Picture subtitles (PGS, VobSub) are never recoloured. Whether the pick reaches the active track is one fact,
+`player::subtitle_takes_colour` (an ASS/SSA track: its header has a white-primary style, judged on the file's
+own bytes; delivered to the session's readout once a tick by `player::deliver_subtitle_ink`), which the
+Subtitles menu's Color page reads to dim the colours that would do nothing.
 
 Embedded TEXT tracks (SubRip, WebVTT, mov_text, SAMI and the other text codecs) render through the same
 libass worker. They have no header in the file, so `player::ass_source` synthesizes one
 (`player::text_ass::header`) from the viewer's size, position and colour picks and keeps each cue as it arrived;
 `player::text_ass::convert` turns the cue's text into an ASS event body in the track's dialect (italic,
-bold, underline, colour and `{\an}` placement honoured, everything else shown as plain text). Such a
+bold, underline, colour and `{\an}` placement honoured, everything else shown as plain text; a SubRip
+`<font color>` that is plain white is the file's default ink spelled out, so it is dropped and the viewer's colour pick applies). Such a
 source has `Origin::Text`: it renders into the full 1920x1080 logical screen, not the video viewport,
 and the screen lifts its bottom-anchored cues clear of the transport. A change of the size, position or colour
 pick (a gray tone is a draw-time tint, so only a colour counts) re-synthesizes the header of the selected track lazily (the revision bumps once; the renderer swaps

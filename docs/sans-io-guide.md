@@ -76,7 +76,10 @@ it. The ledgers freeze the sites that were found; they are not the definition.
   `devcaps::caps`, and the ones `docs/sans-io.md` lists as remaining:
   `plex::server_ids()`, `server_roster_gen()`, `server_facts_gen()`, `server_probe_result()`
   (re-exports in `plex/src/plex/mod.rs`), `session::peek_settled()` and `session::current_gen()`
-  (both in `plex/src/plex/session.rs`) and `tape::active()` (`data/src/stores/tape.rs`). A new use of
+  (both in `plex/src/plex/session.rs`), `tape::active()` (`data/src/stores/tape.rs`) and the subtitle
+  registries' `sidecar::takes_colour()` / `sidecar::selected()` / `ass_source::takes_colour()` /
+  `ass_source::selected()` (`media/src/player/`; the Subtitles menu reads their colour-pick fact as a
+  value of the session's readout, which the app delivers once a tick). A new use of
   any of these fails `make check` unless a ledger line names it, and is as wrong as a new `client_for`.
   (`transport::paused` is not a registry read any more: it takes the session and reads its
   `PlayerReadout`, a `ps`-addressed readout read, and the rule no longer matches it. `transport::viewer_paused`

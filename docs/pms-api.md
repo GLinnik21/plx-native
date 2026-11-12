@@ -1852,9 +1852,13 @@ the profile it was made for.
 `PreferenceRequest::load_marker_access` first verifies `/api/v2/user` with the captured viewer
 credential, requiring at least one known ID/UUID to match and neither to conflict, then reads
 `/api/v2/features` with the same credential. Profile replacement before or after either read
-refuses its result. The runner coalesces requests per seated identity, uses the account cache's
-five-minute success lifetime and 45-second failure cooldown, and publishes fresh, independent
-intro/credits grants as frame inputs. It never logs a response body or credentials.
+refuses its result. The runner coalesces requests per seated identity and uses the account cache's
+five-minute success lifetime and 45-second failure cooldown, but only to SCHEDULE the next read: what
+`AccessState::view` publishes as the independent intro/credits frame inputs is the last SETTLED
+answer for the seat. A stale answer, a re-read in flight and a failed re-read all keep those settled
+grants, so a Settings row or an automatic offer never drops out and returns while the viewer sits on
+it; only a landed successful answer replaces them, and another seat clears them. A seat with no
+answer yet has no grants. It never logs a response body or credentials.
 
 An implicit owner (no Home profile selected) keeps its original blank profile key. Marker access
 uses the unique admin roster identity only when the captured credential is the same account token,

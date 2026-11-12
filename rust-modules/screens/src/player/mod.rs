@@ -969,17 +969,18 @@ impl PlayerScreen {
             && id.entry == self.entry.0 && id.playback == self.model.playback_id
             && self.slot.marker().is_some_and(|m| m.kind == id.marker.kind && m.start_ms == id.marker.start_ms))
     }
-    /// Watch and taking hold of the old pair stop its clock, while keeping manual Next available.
+    /// Watch and taking hold of a timed pair (Up Next, or the Automatic skip prompt) stop its clock, while
+    /// keeping the filled action available.
     /// The identity survives a grant refresh, a timer-mode change and temporary buffering.
     pub fn decline_pair(&mut self) {
-        if !self.slot.is_up_next_pair() { return; }
+        if !self.slot.is_timed_pair() { return; }
         self.declined_pair = self.slot.marker().map(|marker| plx_appkit::skip_policy::OfferId {
             scope: self.model.marker_prefs.scope, entry: self.entry.0, playback: self.model.playback_id, marker });
         self.up_next.cancel();
         self.auto_skip.cancel();
     }
     fn hold_pair_for_next(&mut self, elem: Option<u32>) {
-        if self.slot.is_up_next_pair() && elem.and_then(player_hud::row_index) == Some(up_next::BTN_NEXT) {
+        if self.slot.is_timed_pair() && elem.and_then(player_hud::row_index) == Some(up_next::BTN_NEXT) {
             self.decline_pair();
         }
     }
@@ -989,7 +990,7 @@ impl PlayerScreen {
     }
     fn auto_skip_visible(&self) -> bool {
         self.watch_visible() && self.hud.nav.focus == GROUP_ROW
-            && (!self.slot.is_up_next_pair() || self.hud.nav.btn == up_next::BTN_NEXT)
+            && (!self.slot.is_timed_pair() || self.hud.nav.btn == up_next::BTN_NEXT)
     }
     fn cancel_watch<H: AppLike>(&mut self, now: u32, fx: &mut Effects<'_, H>) -> bool {
         let Some(id) = self.drawn_watch else { return false; };
@@ -1032,11 +1033,19 @@ impl PlayerScreen {
             .map(|marker| plx_appkit::skip_policy::OfferId { scope: self.model.marker_prefs.scope,
                 entry: self.entry.0, playback: self.model.playback_id, marker });
         if self.model.seeking || self.scrub.ns >= 0 { self.auto_skip.reset(); }
-        if matches!(self.slot, ControlSlot::AutomaticUpNext(_)) && !self.model.paused && !self.model.loading
+        // Taking hold of the prompt refuses the countdown for this segment. On the Up Next pair every way of
+        // engaging the transport is that (`countdown_may_run`); on the Automatic skip prompt only reaching
+        // for its Watch button is, so a paused or covered intro still waits and resumes as it always has.
+        let held = if self.slot.is_up_next_pair() {
+            !up_next::countdown_may_run(self.watch_visible(), self.hud.nav.focus == GROUP_ROW,
+                self.hud.nav.btn == up_next::BTN_NEXT)
+        } else {
+            self.watch_visible() && self.hud.nav.focus == GROUP_ROW && self.hud.nav.btn == up_next::BTN_CREDITS
+        };
+        if self.slot.automatic_marker().is_some() && !self.model.paused && !self.model.loading
             && (self.drawn_watch.is_some_and(|shown| Some(shown) == id)
                 || (id.is_some() && self.auto_skip.id() == id && self.auto_skip.progress() > 0.0))
-            && !up_next::countdown_may_run(self.watch_visible(), self.hud.nav.focus == GROUP_ROW,
-                self.hud.nav.btn == up_next::BTN_NEXT) {
+            && held {
             self.decline_pair();
         }
         if self.pair_declined() { self.auto_skip.cancel(); }
@@ -5536,7 +5545,8 @@ mod automatic_marker_tests {
         page.model.duration_ns = 120_000_000_000; page.model.advancing = true;
         page.slot = player_hud::slot_for_preferences(Some(marker), true, false,
             plx_media::route::NextEpisodeMode::Countdown, page.model.marker_prefs);
-        page.hud.nav.focus = GROUP_ROW; page.hud.nav.btn = 0; page.hud.visible_at_press = true;
+        // the row's initial focus is the slot's primary (`ControlSlot::primary_btn`): the filled timed button
+        page.hud.nav.focus = GROUP_ROW; page.hud.nav.btn = page.slot.primary_btn(); page.hud.visible_at_press = true;
         page.hud.until = 10_000;
         let id = OfferId { scope: 7, entry: 42, playback: 3, marker };
         assert!(step(&mut page, &meta, 0).is_empty());
@@ -5723,6 +5733,52 @@ mod automatic_marker_tests {
             page.auto_skip.presented(); assert!(step(&mut page, &meta, 1_000).is_empty());
             assert!(!page.auto_skip.pending());
         }
+    }
+    /// **One rule for both timed prompts** (owner design): the FILLED button is the action the countdown
+    /// performs when it runs out, it is the row's initial focus, and pressing it performs that action NOW;
+    /// the unfilled button one key to its left (item 0) cancels the countdown. Intro = Watch intro + Skip
+    /// intro; credits = Watch credits + Next episode.
+    #[test]
+    fn the_two_timed_prompts_share_one_filled_action_one_initial_focus_and_one_ok_rule() {
+        let _guard = plx_base::testlock::serial();
+        for credits in [false, true] {
+            let (mut page, meta, id) = if credits { pair() } else { page() };
+            assert_eq!(page.slot.items(), 2, "credits={credits}: the cancel button and the filled action");
+            assert_eq!(page.slot.primary_btn(), up_next::BTN_NEXT, "credits={credits}: focus starts on the filled action");
+            assert_eq!(page.hud.nav.btn, up_next::BTN_NEXT);
+            // the filled button's own press performs the action now, and the deadline can no longer fire it again
+            page.auto_skip.presented();
+            assert!(step(&mut page, &meta, 4_999_000).is_empty());
+            let mut rig = Rig::on(&page, EntryId(42));
+            rig.seat_on(player_hud::control_elem(up_next::BTN_NEXT));
+            let (handled, reqs) = rig.key(&mut page, plx_ui::consts::SDLK_RETURN, 0, Edge::Down, 6_000);
+            assert_eq!((handled, reqs.as_slice()), (Handled::No, &[][..]), "credits={credits}: the engine's press dips the control");
+            let (_, reqs) = rig.deliver(&mut page, ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
+            assert_eq!(reqs, vec![PlayerReq::StandIn], "credits={credits}: OK on the filled button acts now");
+            page.auto_skip.presented();
+            assert!(step(&mut page, &meta, 1_000).is_empty(), "credits={credits}: the deadline does not repeat the press");
+            assert!(!page.accepts_auto_skip(id));
+        }
+        // the unfilled button cancels the countdown instead of acting
+        let (mut page, _, id) = page();
+        let mut rig = Rig::on(&page, EntryId(42));
+        rig.seat_on(player_hud::control_elem(up_next::BTN_CREDITS));
+        let (handled, reqs) = rig.key(&mut page, plx_ui::consts::SDLK_RETURN, 0, Edge::Down, 6_000);
+        assert_eq!((handled, reqs), (Handled::Yes, vec![PlayerReq::CancelAutoSkip(id)]));
+    }
+    /// Reaching for the cancel button is taking hold of the prompt: the countdown stops, as it does on the pair.
+    #[test]
+    fn arrowing_to_the_intro_watch_button_stops_its_countdown_and_back_to_skip_does_not_restart_it() {
+        let _guard = plx_base::testlock::serial();
+        let (mut page, meta, id) = page();
+        page.hud.nav.btn = up_next::BTN_CREDITS;
+        assert!(step(&mut page, &meta, 1_000).is_empty());
+        assert!(page.pair_declined(), "the countdown is refused for this segment");
+        page.hud.nav.btn = up_next::BTN_NEXT;
+        page.auto_skip.presented();
+        assert!(step(&mut page, &meta, 10_000_000).is_empty(), "a refused countdown stays refused");
+        assert!(!page.accepts_auto_skip(id));
+        assert_eq!(page.slot.items(), 2, "…and the filled Skip stays available");
     }
     #[test]
     fn automatic_marker_fires_once_and_freezes_while_paused_or_covered() {

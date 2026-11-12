@@ -549,7 +549,10 @@ fn obstacles(layout: &CompiledState, skip: SkipKind) -> Vec<(String, Rect)> {
                 found.push(("up_next.credits".to_owned(), rects.credits));
                 found.push(("up_next.next".to_owned(), rects.next));
             }
-            DrawOp::SkipPill { rects } => found.push(("skip".to_owned(), rects[skip as usize])),
+            DrawOp::SkipPill { rects, watch } => {
+                found.push(("skip".to_owned(), rects[skip as usize]));
+                if watch[skip as usize].w > 0.0 { found.push(("watch".to_owned(), watch[skip as usize])); }
+            }
             _ => {}
         }
     }
