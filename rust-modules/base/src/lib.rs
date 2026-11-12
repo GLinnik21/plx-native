@@ -33,6 +33,8 @@ pub mod hold; // `HOLD_ROWS`, `clamp_hold`: the rows a paged store keeps, which 
 pub mod devtrig; // the /tmp trigger PRIMITIVES (`flag`, `read`, `latched_flag!`, `no_wan`...)
 pub mod diag; // the frame instruments (`heartbeat`, `spans`) and the zlib helper
 #[cfg(any(test, feature = "test-support"))]
+pub mod testheap; // the C heap's live bytes and a fresh process to measure in: the tests that pin how many copies of a buffer a path keeps
+#[cfg(any(test, feature = "test-support"))]
 pub mod testlock; // one lock for every test that touches a process-global
 #[cfg(any(test, feature = "test-support"))]
 pub mod testnet; // the accepts for a loopback test server: the one that fixes the socket's mode, and the bounded ones

@@ -949,6 +949,7 @@ fn request(sid: ServerId, preview: bool) -> PlaybackRequest {
         ctx: String::new(),
         preview,
         version: None,
+        show_rk: String::new(),
     }
 }
 

@@ -7,6 +7,24 @@ player machine: `player/lifecycle.rs` is the machine alone (private state, one w
 `player/foreground.rs` its drivers and `player/transport.rs` the transport-pause contract; its shape
 is gated by `ci/machines.ini` (see "Machine shape" below).
 
+## Notify integration checkpoint (not acceptance)
+
+Notify's typed Direct stream lane and app per-connection cursor are written; the
+frozen API and integration evidence are in `.empryo/reviews/verdict-notify-core.md`
+and `.empryo/reviews/verdict-notify-integration.md`. StoreId Notify is appended at
+12; old ordinals, Home/tape records and NOTIFY_FILLS `[Browse, Hubs]` are unchanged.
+Bridge captures fresh stream eligibility before the one-frame cursor, settles each
+initial admission before that connection's ordinary drain, then maps once and
+drains fan-out jobs. Accepted-held release failures use ordinary terminal timing.
+Production opens off-frame; test boot refuses unless explicitly scripted.
+
+The three Notify allow-area files have been retired. The coordinator reports actual
+ledger totals of 5 workers / 81 globals / 62 forks / 11 fxlanes, down from the
+S4 pre-Notify checkpoint of 6/89/65/11; the pins now match. The source-only stale-key
+check passed in orun-27; runtime tests, capture comparisons and full gates remain
+pending. Per-connection source ordering is preserved; asynchronous worker wall-time
+is not pinned, and disabled-state repair is explicitly intentional.
+
 ## The rule
 
 Logic never performs IO. A machine (a screen, a `data/` store, the session owner, the player's
@@ -30,7 +48,7 @@ and the lines are compared to the tree as an exact multiset.
 | Rule | A site is | Key |
 |---|---|---|
 | `workers` | a production call that starts a worker in a machine: `task::spawn(`, `spawn_small(`, `spawn_small_keeping(`, `spawn_small_or_inline(`, `spawn_off_frame(`, `spawn_off_frame_keeping(`, `storage_worker::submit(`, `submit_retained(`, the command worker's `.submit_ticket(` | `<path>::<enclosing fn>::<spelling>` |
-| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, the session cache's `session::peek_settled` and `session::current_gen`, the server registry's roster readers (`server_ids`, `server_roster_gen`, `server_facts_gen`, `server_probe_result`), the controlled-run switch `tape::active`, the player's pause readers (`transport::viewer_paused`, `preview::paused`: each takes the session but also reads process-global state, the claim hold's slot and the preview machine's phase; `transport::paused` reads only the session's readout and is no longer a spelling), the device's capability answer (`devcaps::caps`, and the zero-argument `is_dp_audio` / `is_dp_audio_track` that used to read it), and `player::TX` in the player's lifecycle (at zero) | `<path>::<enclosing fn>::<spelling>` |
+| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, the session cache's `session::peek_settled` and `session::current_gen`, the server registry's roster readers (`server_ids`, `server_roster_gen`, `server_facts_gen`, `server_probe_result`), the controlled-run switch `tape::active`, the subtitle registries' colour-pick readers (`sidecar::takes_colour`, `sidecar::selected`, `ass_source::takes_colour`, `ass_source::selected`: no site; the Subtitles menu reads the fact from the session's readout), the player's pause readers (`transport::viewer_paused`, `preview::paused`: each takes the session but also reads process-global state, the claim hold's slot and the preview machine's phase; `transport::paused` reads only the session's readout and is no longer a spelling), the device's capability answer (`devcaps::caps`, and the zero-argument `is_dp_audio` / `is_dp_audio_track` that used to read it), and `player::TX` in the player's lifecycle (at zero) | `<path>::<enclosing fn>::<spelling>` |
 | `forks` | a production test/production fork whose predicate reads `test` or `feature = "test-support"`: a `#[cfg(..)]` attribute that a production build can satisfy (`not(test)`, `not(any(test, feature = "test-support"))`, `all(target_os = .., not(test))`, ...), or an inline `cfg!(..)` of any value | `<path>::<item name>`, or `<path>::<enclosing fn>` for a statement or an inline `cfg!`, or `<path>::<struct>` for a field |
 | `fxlanes` | an `AppFx::<Variant>` arm of `Bridge::app_effect` that does not push `Fx::Deliver(`: one site for each variant on its head, and one for an arm that names no variant (`other => ..`, `_ => ..`) | `<path>::AppFx::<Variant>`, or `<path>::AppFx::_` |
 
@@ -56,12 +74,12 @@ widening recorded the 17 forks that were already there (three in `screens/`: `le
 **Decisions the table hides.**
 
 - A bare `spawn(` / `submit(` / `peek(` / `revision(` / `blocked_for(` / `offers(` / `current_gen(` /
-  `active(` is a site only in a file that imports it from `task`, `storage_worker`, `session`, `keypin`,
-  `grant` or `tape` (singly, as the last or any other item of a braced group, or through a glob;
+  `active(` / `selected(` / `takes_colour(` is a site only in a file that imports it from `task`,
+  `storage_worker`, `session`, `keypin`, `grant`, `tape`, `sidecar` or `ass_source` (singly, as the last or any other item of a braced group, or through a glob;
   `Builder::spawn`, a local fn, `it.peek()` and another module's `active()` are not workers or registry
   reads); `peek` and `current_gen(` are also sites inside `plex/src/plex/session.rs`, the module that
   defines them. `current_gen` and `active` are generic names, so their bare form counts only as a call; a
-  `use ... as` rename of `tape`, `tape::active` or any of the new names fails outright. A local launcher
+  `use ... as` rename of `tape`, `tape::active`, `sidecar`, `ass_source` or any of the new names fails outright. A local launcher
   (`launch_browse_discovery`) is no site of its own: the real call inside it is.
 - The roster, session-cache and tape readers (`server_ids`, `server_roster_gen`, `server_facts_gen`,
   `server_probe_result`, `session::peek_settled`, `session::current_gen`, `tape::active`) read process-wide
@@ -221,7 +239,7 @@ headed "The listing lanes"): their two worker starts and two registry reads are 
 `data/src/browse/mod.rs`. The Library's source discovery (the section list, the server's name and the
 item counts) is the twelfth (the bullet headed "The discovery lane"): its worker start and its one
 registry read are gone from `data/src/browse/mod.rs`, and its `data-browse` workers ledger file is
-deleted. The Home pins take the session from the Bridge (the bullet headed "The pins' session input"), and so do the Watchlist and catalog stores, for the seated profile and its plex.tv identity (the bullet headed "The Watchlist and catalog session input"), which deletes three `data-watchlist` globals lines. S4 replaces Browse's roster/gate/current reads with explicit `BrowseRosterInput` and the existing host-filled `ClientKeys`; the obsolete 14-entry Browse globals file is pending guarded deletion. Expected pins after that deletion are **6 workers / 89 globals / 65 forks / 11 fxlanes** (recount before deletion: 6/103/65/11). This is not integrated verification evidence; legacy fixture/caller migration remains tracked in `.empryo/reviews/verdict-s4-integration.md`. Other stores' and Session's global sites remain unchanged. The Metadata store's
+deleted. The Home pins take the session from the Bridge (the bullet headed "The pins' session input"), and so do the Watchlist and catalog stores, for the seated profile and its plex.tv identity (the bullet headed "The Watchlist and catalog session input"), which deletes three `data-watchlist` globals lines. S4 replaces Browse's roster/gate/current reads with explicit `BrowseRosterInput` and the existing host-filled `ClientKeys`; the obsolete 14-entry Browse globals file was retired. The S4 checkpoint was **6 workers / 89 globals / 65 forks / 11 fxlanes** (recount before deletion: 6/103/65/11); post-Notify retirement the coordinator reports **5/81/62/11**. Runtime and integrated verification remain pending; legacy fixture/caller migration remains tracked in `.empryo/reviews/verdict-s4-integration.md`. Other stores' and Session's global sites remain unchanged. The Metadata store's
 season switch and episode-page window are the tenth (the bullet headed "The Metadata reads"): their
 two worker starts and the `client_for` reads of `fetch_episodes` and `fetch_episode_page` are gone
 from `data/src/metadata.rs`; the Related row's tail window read joins them in the same bullet, and its

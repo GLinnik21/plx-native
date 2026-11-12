@@ -1296,6 +1296,10 @@ pub enum PlayIntent {
         context: String,
         /// The version picked on the Play Version panel, `None` for the default (`Media[0]`).
         version: Option<plx_plex::plex::MediaId>,
+        /// The show the item's episode belongs to, `""` for anything that is not an episode (a
+        /// trailer, a movie, an extra). The queue builder keys the PlayQueue off the show so the
+        /// episodes before this one are in it, which is what the HUD's Previous needs.
+        show_rk: String,
     },
     /// The alternative source the page had selected (`route::request_play_movie`). Owned rather
     /// than a `&'static` catalog borrow: it is held inside `PageAction`/`AppFx` across a frame
@@ -1449,6 +1453,11 @@ pub enum AppMsg {
     Library(LibraryCmd),
     LibraryEdit { target: plx_data::stores::browse::SectionAddress, edit: plx_data::stores::browse::QueryEdit },
     LibrarySelect(plx_data::stores::browse::SectionAddress),
+    /// A Sources menu pick delivered after the close animation, still tied to its opening page.
+    LibraryMenuSelect {
+        origin: plx_data::stores::browse::SectionAddress,
+        target: plx_data::stores::browse::SectionAddress,
+    },
     DetailRestore {
         spot: plx_data::metadata::Spot,
         episode: Option<String>,
@@ -1461,7 +1470,7 @@ pub enum AppMsg {
     /// `Deferred` for a covered one; `None` is ignored.
     DetailReconcile { refresh: DetailRefreshPhase },
     /// The *Also available* surface committed a row: open that copy's own page. The SURFACE names
-    /// the destination and the PAGE navigates, which is `LibraryMenu`'s shape (`LibrarySelect`) and
+    /// the destination and the PAGE navigates, which is `LibraryMenu`'s shape (`LibraryMenuSelect`) and
     /// what keeps "what a press means on the Detail page" in one place instead of two.
     AltSourceOpen(ContentArg),
     /// The *Play Version* surface committed a row: play that version of the page's item, as its
@@ -2765,7 +2774,9 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Previous screen pin: 0x1802_f17e_e583_f977; re-record incompatible replay anchors.
 // The player's Back motion gate keeps its last position and fixed anchor in the canon.
 // Previous pin: 0xf852_85cc_f116_356b. Re-record incompatible replay anchors.
-const SCREEN_SHAPES_PIN: u64 = 0x7e36_4373_746a_c3dc;
+// The Library menu retains its parent scroll across a Genre drill-in and the selected library
+// through its closing morph. Previous pin: 0x7e36_4373_746a_c3dc.
+const SCREEN_SHAPES_PIN: u64 = 0x1427_1d82_bf6b_e04c;
 
 #[cfg(test)]
 mod arg_tests {

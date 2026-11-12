@@ -38,25 +38,26 @@ pub const BTN_MORE: i32 = BTN_N - 1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action { Previous, Next, Subtitles, Audio, More }
 
-/// A frame's episode-button eligibility, availability and restart glyph, sampled once.
+/// A frame's episode-button eligibility and availability, sampled once. **Previous is the previous
+/// episode of the queue and nothing else**: it is enabled exactly when the playing row has a
+/// predecessor (`queue_neighbors`), so on the first episode of a queue it is disabled. Restarting
+/// the current episode is `HudCommand::FromBeginning` (the Info tab's action, and a More-menu row
+/// in a package that folds it), never a second meaning of this button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Controls {
     pub previous: bool,
     pub next: bool,
-    pub restart: bool,
 }
 impl Controls {
-    pub const NONE: Self = Self { previous: false, next: false, restart: false };
+    pub const NONE: Self = Self { previous: false, next: false };
     pub fn now(ps: &plx_media::route::PlaybackSession) -> Self {
         if plx_media::route::cur_kind(ps) != "episode" { return Self::NONE; }
         let (previous, next) = plx_media::route::queue_neighbors(ps);
-        if !(previous || next) { return Self::NONE; }
-        let restart = plx_media::route::previous_restarts(plx_media::player::intended_pos_ns(ps));
-        Self::for_item(true, previous, next, restart)
+        Self::for_item(true, previous, next)
     }
-    pub fn for_item(episode: bool, previous: bool, next: bool, restart: bool) -> Self {
+    pub fn for_item(episode: bool, previous: bool, next: bool) -> Self {
         if !episode || !(previous || next) { return Self::NONE; }
-        Self { previous: previous || restart, next, restart }
+        Self { previous, next }
     }
     /// Whether the Previous/Next pair is on the row at all: [`Self::for_item`] only ever builds a
     /// pair with at least one of its two buttons live.
@@ -85,7 +86,7 @@ impl Controls {
     }
     pub fn icon(self, i: i32) -> plx_ui::icons::Icon {
         use plx_ui::icons::Icon;
-        match i { BTN_PREVIOUS if self.restart => Icon::Restart, BTN_PREVIOUS => Icon::Previous,
+        match i { BTN_PREVIOUS => Icon::Previous,
             BTN_NEXT => Icon::Next, BTN_AUDIO => Icon::Audio, BTN_MORE => Icon::More, _ => Icon::Cc }
     }
 }
@@ -114,18 +115,23 @@ impl ControlSlot {
     pub fn items(self) -> c_int {
         match self {
             ControlSlot::Discs(_) => BTN_N,
-            // Watch Credits + Next Episode — the one stand-in with a pair
+            // Watch Credits + Next Episode — a pair, like an Automatic skip prompt below
             ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => 2,
+            // an Automatic skip is the same two-button prompt: Watch (cancel) beside the filled Skip
+            ControlSlot::Skip(pr) if pr.automatic => 2,
             ControlSlot::Skip(_) => 1,
         }
     }
     /// Where the focus ring parks when this row APPEARS. The discs prefer an enabled Next, then
     /// the first enabled disc. Up Next's primary is drawn on the RIGHT; the countdown's
     /// cancel rule is a steady state (`up_next::countdown_may_run`), so parking on item 0 there
-    /// would disarm the timer on the frame after it armed.
+    /// would disarm the timer on the frame after it armed. The Automatic skip prompt (Watch, then the
+    /// filled Skip) follows the same rule: **one initial focus for both timed prompts, the filled
+    /// action, with the cancel button one key to its left.**
     pub fn primary_btn(self) -> c_int {
         match self {
             ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => crate::up_next::PRIMARY_BTN,
+            ControlSlot::Skip(pr) if pr.automatic => crate::up_next::PRIMARY_BTN,
             ControlSlot::Discs(controls) => controls.primary(),
             _ => 0,
         }
@@ -162,6 +168,16 @@ impl ControlSlot {
     }
     pub fn is_up_next_pair(self) -> bool {
         matches!(self, Self::UpNext(_) | Self::AutomaticUpNext(_))
+    }
+    /// The Automatic skip prompt: Watch (item 0, cancels) beside the filled Skip (item 1, acts now and
+    /// is what the five-second clock performs).
+    pub fn is_automatic_skip(self) -> bool {
+        matches!(self, Self::Skip(pr) if pr.automatic)
+    }
+    /// A slot whose row is a Watch button (item 0) beside a filled timed action (item 1): the Up Next
+    /// pair and the Automatic skip prompt.
+    pub fn is_timed_pair(self) -> bool {
+        self.is_up_next_pair() || self.is_automatic_skip()
     }
     pub fn automatic_marker(self) -> Option<plx_data::metadata::Marker> {
         match self {
@@ -405,13 +421,14 @@ pub enum TransportMark {
     None,
     /// paused
     Pause,
-    /// the playhead is travelling BACKWARDS (scrub, hop or seek burst)
+    /// a LIVE scrub is travelling BACKWARDS (the target is still moving; nothing is committed)
     Rewind,
-    /// the playhead is travelling FORWARDS
+    /// a LIVE scrub is travelling FORWARDS
     FastForward,
     /// resumed within the last [`PLAY_MARK_MS`]
     Play,
-    /// the inline [`Spinner`] — the pipeline is being waited on with NO travel to show
+    /// the inline [`Spinner`] — the pipeline is being waited on: a seek the viewer committed until it lands, or a
+    /// re-buffer
     Working,
 }
 
@@ -423,28 +440,25 @@ pub enum TransportMark {
 /// * `scrubbing` — `player::TX.scrub_ns >= 0`, i.e. a LIVE preview the user is dragging. It is its
 ///   own argument because a preview is not busy: the pipeline is still playing the old position
 ///   happily while the playhead is dragged around, so `busy` alone cannot see it.
-/// * `travel_ns` / `pos_ns` — the DISPLAYED playhead against the PUBLISHED one. Their difference is
-///   the direction, and it is deliberately derived from position rather than from the keycode that
-///   caused it: one expression then covers a LEFT/RIGHT scrub, a chapter or marker hop and a
-///   rapid-seek burst, none of which agree about which key (if any) was pressed.
+/// * `travel_ns` / `pos_ns` — the DISPLAYED playhead against the PUBLISHED one. For a live scrub their
+///   difference is the direction, deliberately derived from position rather than from the keycode that
+///   caused it. Outside a live scrub they say nothing: after a commit the published playhead is no longer
+///   where the viewer left (a reload publishes none and the model reads 0, a landing snaps to a keyframe
+///   before the target), so a direction read from them there was wrong (`>>` for a seek BACKWARD).
 /// * `since_play_ms` — ms since the last paused→playing edge, `None` if this session has never been
 ///   resumed. See [`note_transport`], which is where that clock is sampled (NOT here, and not in
 ///   the draw).
 ///
-/// **Precedence: travel, then the pipeline, then paused, then the resume mark.** Travel outranks
-/// `paused` because a paused scrub is still a scrub — that is also the order the slot has always
-/// had, when its two states were spinner-over-pause.
+/// **Precedence: a live scrub's direction, then the pipeline, then paused, then the resume mark.** A live
+/// scrub outranks `paused` because a paused scrub is still a scrub.
 ///
-/// **What happened to the spinner** (the slot's only occupant during a seek until now): it stays,
-/// narrowed to what it actually means. `Busy::Transport` is *the pipeline is being waited on with a
-/// picture already up*, which is *`Seeking`* — the seek the user asked for — but also *`Buffering`*,
-/// a re-buffer nobody asked for. Those are two facts and `player_hud`'s own rule at [`Busy`] is that
-/// two indicators for one fact read as two facts; the inverse is just as true, so one indicator for
-/// two facts reads as one. The direction glyph therefore takes the slot whenever there IS a
-/// direction to show (it says everything the spinner said, plus which way), and the spinner keeps
-/// every busy frame that has none — a mid-play re-buffer, and the prime→first-frame tail of a seek
-/// after the published position has already caught up with the target. Drawing both was never an
-/// option: it is one slot, and they would overlap.
+/// **A direction glyph belongs to a live scrub only; a committed seek reads the spinner.** While the viewer
+/// is still moving the target (`scrubbing`) the slot says which way (`<<` / `>>`). The moment the seek is
+/// committed the target stops moving and the pipeline takes over: `Busy::Transport` reads
+/// [`TransportMark::Working`] for the whole of the seek (reload window and keyframe landing included) whichever way it
+/// goes, and the first frame after it lands falls to the ordinary state mark (the resume mark for two seconds,
+/// the pause mark while paused, nothing while playing), never a leftover direction. `Busy::Transport` is
+/// also a re-buffer nobody asked for, which is the same spinner.
 pub fn transport_mark(
     paused: bool,
     busy: Busy,
@@ -454,12 +468,14 @@ pub fn transport_mark(
     since_play_ms: Option<u32>,
 ) -> TransportMark {
     let seeking = busy == Busy::Transport;
-    if scrubbing || seeking {
+    // Only a LIVE scrub has a direction to show. A seek the viewer has committed is in flight, not
+    // travelling: it reads the spinner until it lands, whichever way it goes.
+    if scrubbing {
         match travel_ns.cmp(&pos_ns) {
             core::cmp::Ordering::Greater => return TransportMark::FastForward,
             core::cmp::Ordering::Less => return TransportMark::Rewind,
-            // no direction to show: the seek's target and the published position agree, which is
-            // the tail of a landed seek and the whole of a re-buffer. Fall through to the spinner.
+            // the scrub sits on the playhead: no direction, so the pipeline's state (or the rest of
+            // the ladder) answers.
             //
             // NB the comparison is against the PLAYHEAD, so it reports NET travel rather than the
             // instantaneous drag: dragging back from +100s to +50s while still ahead of the
@@ -480,7 +496,6 @@ pub fn transport_mark(
         _ => TransportMark::None,
     }
 }
-
 
 // ---- the failure read-out -------------------------------------------------------------------
 //

@@ -7,7 +7,7 @@
 use super::*;
 use crate::player::text_ass::{self, TextDialect};
 use crate::player::text_style::{self, HudBand, TextStyle};
-use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
+use plx_plex::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
 
 fn text_key() -> Key {
     Key {
@@ -56,29 +56,30 @@ fn text_native(style: &TextStyle, cues: &[Cue]) -> Native {
 }
 
 fn style(size: SubtitleSize, position: SubtitlePosition) -> TextStyle {
-    TextStyle { size, position }
+    TextStyle { size, position, ..TextStyle::default() }
 }
 
 /// The frame of `cues` at 1 s.
 fn text_frame(style: &TextStyle, cues: &[Cue]) -> Vec<Rect> {
     let mut native = text_native(style, cues);
-    native.render(text_key(), 1000, &[]).expect("a valid track").expect("a first frame")
+    native.render(text_key(), RenderScale::Full, 1000, &[]).expect("a valid track").expect("a first frame")
 }
 
-/// The pixels of a frame as `(x, y, [r, g, b, a])`.
+/// The pixels of a frame as `(x, y, [r, g, b, a])`, straight RGBA: the facade publishes premultiplied
+/// pixels, and what these goldens measure is where the colours are ([`straight`]).
 fn pixels(rects: &[Rect]) -> impl Iterator<Item = (i32, i32, [u8; 4])> + '_ {
     rects.iter().flat_map(|r| {
         (0..r.height).flat_map(move |y| {
             (0..r.width).map(move |x| {
                 let at = ((y * r.width + x) * 4) as usize;
-                (r.x + x, r.y + y, [r.rgba[at], r.rgba[at + 1], r.rgba[at + 2], r.rgba[at + 3]])
+                (r.x + x, r.y + y, straight([r.rgba[at], r.rgba[at + 1], r.rgba[at + 2], r.rgba[at + 3]]))
             })
         })
     })
 }
 
-/// The white fill (not the black outline, and not the soft edge of either): straight RGBA with
-/// most of its colour and opacity.
+/// The white fill (not the black outline, and not the soft edge of either): straight RGBA ([`pixels`])
+/// with most of its colour and opacity.
 fn is_fill(px: [u8; 4]) -> bool {
     px[0] >= 128 && px[3] >= 128
 }
@@ -456,4 +457,162 @@ fn native_hud_up_deep_marks_clear_the_transport_controls() {
             }
         }
     }
+}
+
+/// The opaque interior of every glyph (not the black outline, not an edge): straight RGBA at full
+/// coverage with a bright channel.
+fn solid_fill(rects: &[Rect]) -> Vec<[u8; 4]> {
+    pixels(rects).map(|(_, _, px)| px).filter(|px| px[3] == 255 && px[..3].iter().any(|&c| c >= 200)).collect()
+}
+
+/// **The colour pick reaches the real renderer's pixels.** A synthesized header with the Yellow
+/// pick draws a plain SubRip cue in the palette colour, a cue that carries its own inline colour
+/// keeps it (the style's primary colour is only the default), and the outline stays the dark
+/// stroke that keeps the glyph readable on a bright or HDR scene.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_yellow_pick_colours_plain_cues_and_keeps_inline_colours_and_the_outline() {
+    let yellow = TextStyle { tone: SubtitleTone::Yellow, ..TextStyle::default() };
+    let plain = solid_fill(&text_frame(&yellow, &[cue("Hello")]));
+    assert!(plain.len() > 100, "a cue with fill");
+    assert!(plain.iter().all(|px| px[0] >= 250 && (0xe0..=0xec).contains(&px[1]) && px[2] <= 0x30), "yellow fill: {:?}", plain[0]);
+    let red = solid_fill(&text_frame(&yellow, &[raw(2, "{\\c&H0000FF&}Hello")]));
+    assert!(red.iter().all(|px| px[0] >= 250 && px[1] <= 0x10 && px[2] <= 0x10), "an inline colour wins: {:?}", red[0]);
+    let white = solid_fill(&text_frame(&TextStyle::default(), &[cue("Hello")]));
+    assert!(white.iter().all(|px| px[..3].iter().all(|&c| c >= 250)), "the default is white");
+    let rects = text_frame(&yellow, &[cue("Hello")]);
+    assert!(pixels(&rects).any(|(_, _, px)| px[3] >= 128 && px[..3].iter().all(|&c| c <= 40)), "the dark outline is still drawn");
+}
+
+/// **A SubRip file that writes every cue as `<font color="#ffffff">` still takes the pick.** That
+/// tag is the file's default ink spelled out, not a colour choice; any other colour is.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_yellow_pick_colours_a_subrip_cue_that_spells_out_white() {
+    let yellow = TextStyle { tone: SubtitleTone::Yellow, ..TextStyle::default() };
+    for text in ["<font color=\"#ffffff\">Hello</font>", "<font color=white>Hello", "<i><font color=\"#FFF\">Hello</font></i>"] {
+        let fill = solid_fill(&text_frame(&yellow, &[cue(text)]));
+        assert!(
+            fill.len() > 100 && fill.iter().all(|px| px[0] >= 250 && (0xe0..=0xec).contains(&px[1]) && px[2] <= 0x30),
+            "{text}: {:?}",
+            fill.first()
+        );
+    }
+    let red = solid_fill(&text_frame(&yellow, &[cue("<font color=\"#ff0000\">Hello</font>")]));
+    assert!(red.iter().all(|px| px[0] >= 250 && px[1] <= 0x10 && px[2] <= 0x10), "another colour is still the cue's own");
+}
+
+/// Every plain fill pixel of `frame` is the palette yellow (and there are some).
+fn is_yellow_fill(frame: &Frame) -> bool {
+    let fill = solid_fill(&frame.rects);
+    fill.len() > 100 && fill.iter().all(|px| px[0] >= 250 && (0xe0..=0xec).contains(&px[1]) && px[2] <= 0x30)
+}
+
+fn is_white_fill(frame: &Frame) -> bool {
+    let fill = solid_fill(&frame.rects);
+    fill.len() > 100 && fill.iter().all(|px| px[..3].iter().all(|&c| c >= 250))
+}
+
+/// Most of the plain fill of `frame` (there is some) is `ink`: an authored style's own face and bold weight
+/// leave a thin anti-aliased edge a shade off the colour, which the all-pixels checks above do not meet.
+fn mostly(frame: &Frame, ink: impl Fn(&[u8; 4]) -> bool) -> bool {
+    let fill = solid_fill(&frame.rects);
+    fill.len() > 100 && fill.iter().filter(|px| ink(px)).count() * 4 >= fill.len() * 3
+}
+fn mostly_yellow(frame: &Frame) -> bool {
+    mostly(frame, |px| px[0] >= 230 && (0xc8..=0xec).contains(&px[1]) && px[2] <= 0x40)
+}
+fn mostly_white(frame: &Frame) -> bool {
+    mostly(frame, |px| px[..3].iter().all(|&c| c >= 230))
+}
+fn mostly_blue(frame: &Frame) -> bool {
+    mostly(frame, |px| px[2] >= 230 && px[0] <= 0x40 && px[1] <= 0x40)
+}
+
+/// **The Yellow pick reaches an AUTHORED ASS track whose style is white** (an SRT converted to ASS, as in
+/// the field log: one embedded `ass` track, no fonts), and only that style: through the real store, the
+/// real renderer and a live restyle of the held renderer, a white-primary style draws the palette yellow
+/// and a blue-primary style stays blue, an inline white override is the author's, and a grey changes nothing.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_yellow_pick_colours_a_white_primary_ass_style_and_leaves_a_blue_one_alone() {
+    use crate::player::ass_source::{self, TrackHeader};
+    let _g = plx_base::testlock::serial();
+    let before = crate::player::subtitle_tone();
+    let retention = plx_playback_contract::subtitle::CaptionRetention { playhead_ns: None, seek_target_ns: None };
+    let style = |name: &str, primary: &str| format!(
+        "Style: {name},Inter,48,{primary},&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,2,10,10,60,1\n");
+    let header = format!(
+        "[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n{}{}\n[Events]\n",
+        style("Default", "&H00FFFFFF"), style("Sign", "&H00FF0000")).into_bytes();
+    let open = |tone| {
+        crate::player::restore_subtitle_tone(tone);
+        ass_source::reset();
+        let generation = ass_source::begin("ass-in-mkv", vec![(0, TrackHeader::Authored(header.clone()))], vec![]);
+        // Matroska ASS packets: ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text
+        ass_source::push(generation, 0, 0, 5_000_000_000, b"0,0,Default,,0,0,0,,Hello", retention);
+        ass_source::push(generation, 0, 10_000_000_000, 15_000_000_000, b"1,0,Sign,,0,0,0,,Hello", retention);
+        ass_source::push(generation, 0, 20_000_000_000, 25_000_000_000, b"2,0,Default,,0,0,0,,{\\c&HFFFFFF&}Hello", retention);
+        ass_source::selected(0).expect("the track")
+    };
+    // Opened under Yellow: the white style takes it, the blue one does not, an inline override is the author's.
+    let mut engine = Engine::default();
+    let yellow = open(SubtitleTone::Yellow);
+    assert_eq!(yellow.origin, Origin::Authored, "authored geometry: the video viewport");
+    assert!(mostly_yellow(&text_render(&mut engine, &yellow, 1000)), "a white-primary style takes the pick");
+    assert!(mostly_blue(&text_render(&mut engine, &yellow, 11_000)), "a blue-primary style stays blue");
+    assert!(mostly_white(&text_render(&mut engine, &yellow, 21_000)), "an inline white override is the author's, not the default ink");
+    // Opened under White, then the pick moves to Yellow mid-play (the held renderer restyles in place) and back.
+    let mut engine = Engine::default();
+    let white = open(SubtitleTone::White);
+    assert!(mostly_white(&text_render(&mut engine, &white, 1000)), "the file's own white");
+    crate::player::restore_subtitle_tone(SubtitleTone::Yellow);
+    let live = ass_source::selected(0).expect("the track");
+    assert_eq!(live.id, white.id, "a restyle keeps the track's identity");
+    assert!(live.revision > white.revision, "and bumps its revision");
+    assert!(mostly_yellow(&text_render(&mut engine, &live, 1000)), "the live pick restyles the held renderer");
+    assert!(mostly_blue(&text_render(&mut engine, &live, 11_000)));
+    crate::player::restore_subtitle_tone(SubtitleTone::Silver);
+    let grey = ass_source::selected(0).expect("the track");
+    assert!(mostly_white(&text_render(&mut engine, &grey, 1000)), "a grey is a draw-time tint: the header goes back to the file's own");
+    ass_source::reset();
+    crate::player::restore_subtitle_tone(before);
+}
+
+/// **The Yellow pick reaches an EMBEDDED SubRip track through the real path** (the demuxer's
+/// `ass_source::begin` / `push_text`, the store's `selected`, the renderer `Engine` the screen's
+/// worker runs), not through a hand-built header: a track opened under Yellow draws yellow, and a
+/// pick that moves WHILE the track plays restyles it in place, to yellow and back to white.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_yellow_pick_colours_an_embedded_subrip_track_opened_and_live() {
+    use crate::player::ass_source::{self, TrackHeader};
+    let _g = plx_base::testlock::serial();
+    let before = crate::player::subtitle_tone();
+    let retention = plx_playback_contract::subtitle::CaptionRetention { playhead_ns: None, seek_target_ns: None };
+    let at_start = |tone| {
+        crate::player::restore_subtitle_tone(tone);
+        ass_source::reset();
+        let generation = ass_source::begin("srt-in-mkv", vec![(0, TrackHeader::Text(TextDialect::Srt))], vec![]);
+        ass_source::push_text(generation, 0, 0, 5_000_000_000, "Hello", 1, retention);
+        ass_source::selected(0).expect("the track")
+    };
+    // Opened under Yellow.
+    let mut engine = Engine::default();
+    let yellow = at_start(SubtitleTone::Yellow);
+    assert!(is_yellow_fill(&text_render(&mut engine, &yellow, 1000)), "a track opened under Yellow draws yellow");
+    // Opened under White, then the pick moves to Yellow mid-play and back.
+    let mut engine = Engine::default();
+    let white = at_start(SubtitleTone::White);
+    assert!(is_white_fill(&text_render(&mut engine, &white, 1000)), "the default is white");
+    crate::player::restore_subtitle_tone(SubtitleTone::Yellow);
+    let live = ass_source::selected(0).expect("the track");
+    assert_eq!(live.id, white.id, "a restyle keeps the track's identity");
+    assert!(live.revision > white.revision, "and bumps its revision");
+    assert!(is_yellow_fill(&text_render(&mut engine, &live, 1000)), "the live pick restyles the held renderer");
+    crate::player::restore_subtitle_tone(SubtitleTone::White);
+    let back = ass_source::selected(0).expect("the track");
+    assert!(is_white_fill(&text_render(&mut engine, &back, 1000)), "and back to white");
+    ass_source::reset();
+    crate::player::restore_subtitle_tone(before);
 }

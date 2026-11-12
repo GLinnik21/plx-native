@@ -620,16 +620,36 @@ fn the_picture_shows_each_posters_year_only_while_the_sort_value_row_has_focus()
 #[test]
 fn reset_restores_the_default_and_is_inert_at_the_default() {
     let _guard = plx_base::testlock::serial();
+    let reset_disabled = |page: &UnderPostersPage| page.form.table.sections.last().unwrap().rows[0].disabled;
     {
         let _live = Live::set(UnderPosters { title: true, details: parts(&[P::Genre]), show_details: DetailParts::NONE, sort_value: false });
         let mut page = UnderPostersPage::new(EntryId(0));
+        assert!(!reset_disabled(&page), "a changed value can be reset");
         let (asked, _reply) = write_request(activate(&mut page, UpId::Reset)).expect("reset writes");
         assert_eq!(asked, UnderPosters::DEFAULT);
+        assert!(reset_disabled(&page), "the reset action is unavailable as soon as it shows the defaults");
     }
     let _live = Live::set(UnderPosters::DEFAULT);
     let mut page = UnderPostersPage::new(EntryId(0));
+    assert!(reset_disabled(&page), "the default value presents the shared disabled row");
     assert!(write_request(activate(&mut page, UpId::Reset)).is_none(), "nothing to reset");
     assert!(!page.state.busy);
+}
+
+#[test]
+fn the_show_preview_supplies_examples_for_missing_facts() {
+    let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+    let tv = PmsMovie {
+        kind: 1,
+        title: "Family Stories".into(),
+        child_count: 2,
+        leaf_count: Some(12),
+        viewed_leaf_count: Some(5),
+        ..Default::default()
+    };
+    let value = up(true, &[], &[P::Year, P::Seasons, P::Genre, P::AgeRating]);
+    assert_eq!(picture_lines(value, PosterKind::Show, Some(&tv), false),
+        [Some("Family Stories".into()), Some("2019 · 2 seasons · Drama · TV-14".into())]);
 }
 
 #[test]
@@ -1217,9 +1237,9 @@ fn the_picture_paints_into_the_slot_it_is_handed() {
     for ((_, a), (_, b)) in runs.iter().zip(at(moved).iter()) {
         assert!((b.x - a.x - 123.0).abs() < 0.01 && (b.y - a.y - 45.0).abs() < 0.01, "the picture follows its slot: {a:?} -> {b:?}");
     }
-    // the lowest ink, a title over its details, still ends inside the slot
-    let floor = slot.y + PICTURE_TILE_TOP + PICTURE_TILE_H + PICTURE_LINE_GAP + PICTURE_LINE_STEP + PICTURE_LINE_H;
-    assert!(floor <= slot.y + slot.h, "tiles, captions and both lines end at {floor}, the slot's floor is {}", slot.y + slot.h);
+    // The title plus the longest details block still ends inside the slot.
+    let floor = tile_bottom + PICTURE_LINE_GAP + PICTURE_LINE_STEP * PICTURE_DETAIL_LINES as f32 + PICTURE_LINE_H;
+    assert!(floor <= slot.y + slot.h, "preview ends at {floor}, the slot's floor is {}", slot.y + slot.h);
 }
 
 /// With Title on the title stands above the details, in bold, on each tile.
@@ -1264,68 +1284,39 @@ fn the_kind_captions_wear_the_section_header_look_under_every_setting() {
     }
 }
 
-/// **A details line is ONE line, ending in an ellipsis when it is wider than its tile**
-/// (`DetailsByKind`: "one line, never wrapped"; the mockup's wrap is its missing `nowrap`): for every
-/// kind, every combination of up to four of its parts, with the title on, in every shipped language,
-/// the picture draws exactly one run per line, none wider than the 250 px tile, the line untouched
-/// when it fits and ended with an ellipsis when it does not. The widest English movie line is
-/// "2024 · 1h 52m · Drama · 4K · HDR".
+/// All combinations of the preview's examples fit across the two detail lines in every locale.
 #[test]
-fn a_details_line_is_one_line_and_ends_in_an_ellipsis_when_wider_than_its_tile() {
+fn the_preview_draws_every_selected_example_inside_its_caption_column() {
     use plx_machine::machine::Measure;
     let _guard = plx_base::testlock::serial();
     let slot = RouteLayout::settings_page().picture_slot();
-    let size = theme::size::CAPTION;
-    let width = |text: &str, bold: bool| ShippedMeasure.width_str(text, size, bold);
+    let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut out = Vec::new();
-    let mut widest: Option<(String, f32)> = None;
-    let mut elided = 0;
     for language in SHIPPED {
         let _lang = language_on_this_thread_for_test(language);
-        let tag = language.tag();
-        for kind in [PosterKind::Movie, PosterKind::Show] {
+        for (i, kind) in [PosterKind::Movie, PosterKind::Show].into_iter().enumerate() {
+            let centre = slot.x + PICTURE_TILE_STEP * i as f32 + PICTURE_TILE_W * 0.5;
             for set in subsets(kind.offered()) {
-                let value = kind.with_parts(UnderPosters { title: true, sort_value: false, ..UnderPosters::DEFAULT }, set);
-                let wanted = lines_of(value, &kind_sample(kind));
+                let value = kind.with_parts(UnderPosters { title: true, ..UnderPosters::DEFAULT }, set);
+                let [_, details] = plx_ui::caption_policy::caption_lines(
+                    &caption_policy_of(value), &kind_sample(kind), plx_platform::i18n::current(),
+                );
                 let picture = RootPicture { value, posters: &[], sorted: false, opacity: [1.0, 1.0] };
-                let runs = plx_ui::draw_census::capture_text(|| {
-                    plx_gfx::gfx::without_frame_clear(|| plx_ui::follow_copy::PictureSlot::draw(&picture, plx_ui::Painter::recording(), slot, &ShippedMeasure));
+                let runs = plx_ui::draw_census::capture_runs(|| {
+                    plx_gfx::gfx::without_frame_clear(|| plx_ui::follow_copy::PictureSlot::draw(
+                        &picture, plx_ui::Painter::recording(), slot, &ShippedMeasure,
+                    ));
                 });
-                // [movie caption, its lines.., show caption, its lines..]: this kind's own tile
-                let own: Vec<&str> = {
-                    let all: Vec<&str> = runs.iter().map(|(t, _)| t.as_str()).collect();
-                    let n_movie = lines_of(value, &kind_sample(PosterKind::Movie)).iter().flatten().count();
-                    match kind {
-                        PosterKind::Movie => all[1..1 + n_movie].to_vec(),
-                        PosterKind::Show => all[1 + n_movie + 1..].to_vec(),
-                    }
-                };
-                let present: Vec<&String> = wanted.iter().flatten().collect();
-                if own.len() != present.len() {
-                    out.push(format!("{tag} {kind:?} {set:?}: {} lines drawn for {} wanted: {own:?}", own.len(), present.len()));
-                    continue;
-                }
-                for (n, (drawn, natural)) in own.iter().zip(present).enumerate() {
-                    let bold = n == 0 && wanted[0].is_some();
-                    let fits = width(natural, bold) <= PICTURE_TILE_W;
-                    if fits && drawn != natural {
-                        out.push(format!("{tag} {kind:?} {set:?}: {natural:?} fits its tile but was drawn {drawn:?}"));
-                    }
-                    if !fits {
-                        elided += 1;
-                        if !drawn.ends_with('\u{2026}') || width(drawn, bold) > PICTURE_TILE_W {
-                            out.push(format!("{tag} {kind:?} {set:?}: {natural:?} drawn as {drawn:?} ({}px)", width(drawn, bold)));
-                        }
-                    }
-                    if !bold && kind == PosterKind::Movie && widest.as_ref().is_none_or(|(_, w)| width(natural, false) > *w) && tag == "en" {
-                        widest = Some((natural.clone(), width(natural, false)));
-                    }
+                let lines: Vec<_> = runs.iter()
+                    .filter(|r| r.ink == theme::CAPTION_DETAIL_INK && (r.at.x - centre).abs() < 1.0)
+                    .map(|r| r.text.as_str()).collect();
+                let fits = lines.len() <= PICTURE_DETAIL_LINES && lines.iter().all(|text|
+                    ShippedMeasure.width_str(text, theme::size::CAPTION, false) <= PICTURE_LINE_W);
+                if !fits || normalize(&lines.join(" ")) != normalize(details.as_deref().unwrap_or("")) {
+                    out.push(format!("{} {kind:?} {set:?}: {details:?} drawn as {lines:?}", language.tag()));
                 }
             }
         }
     }
     plx_ui::table::assert_no_fit_failures(&out);
-    let (line, w) = widest.expect("an English movie line");
-    assert_eq!(line, "1h 52m \u{b7} Drama \u{b7} 4K \u{b7} HDR \u{b7} PG-13", "the widest English four-part movie line");
-    assert!(elided > 0 || w <= PICTURE_TILE_W, "either some line is elided, or the widest fits ({w}px)");
 }

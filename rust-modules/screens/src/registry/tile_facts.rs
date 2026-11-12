@@ -75,6 +75,14 @@ pub fn face_cuts_name(item: &PmsMovie) -> bool {
     name_is_cut(face, &item.title, plx_ui::Rect::new(0.0, 0.0, plx_ui::consts::CARD_W, plx_ui::consts::CARD_H))
 }
 
+/// Progress and time left shared by the hero action and the tiles.
+pub fn resume_of(m: &PmsMovie) -> Option<Resume> {
+    m.resume_frac().map(|frac| Resume {
+        frac,
+        left_ms: m.dur_ns / 1_000_000 - m.resume_ms,
+    })
+}
+
 /// What `ui` reads of `m`. The result borrows from the row for `'a`, and carries the row's address
 /// as [`TileFacts::owner`], which is how a card's placement history stays keyed to the ROW and not
 /// to the short-lived facts built from it.
@@ -92,10 +100,7 @@ pub fn of(m: &PmsMovie) -> TileFacts<'_> {
         season_index: m.season_index,
         ep_index: m.ep_index,
         child_count: m.child_count,
-        resume: m.resume_frac().map(|frac| Resume {
-            frac,
-            left_ms: m.dur_ns / 1_000_000 - m.resume_ms,
-        }),
+        resume: resume_of(m),
         watched: m.watched,
         unwatched: m.unwatched,
         // Only a collection's thumb can be a composite, and only a collection tile reads the
@@ -127,10 +132,9 @@ pub fn of(m: &PmsMovie) -> TileFacts<'_> {
 ///   id (a local agent, personal media, a guid that is not `plex://movie|show` with 24 hex digits,
 ///   an episode whose listing lacks `grandparentGuid`): such a card has no cover to ask for and goes
 ///   straight to the composite.
-/// * `card`: [`artwork::card_path`], the composite of the row's background `art` and the clearLogo
-///   of the title: its own rating key for a movie or a show, the SHOW's for an episode or a season
-///   (neither has a clearLogo of its own, and an episode's backdrop is its show's). EMPTY when there
-///   is no background to compose onto or no rating key to ask the logo of.
+/// * `card`: [`artwork::card_path`], the composite of the row's background `art` and its title's
+///   clearLogo path. Episodes and seasons carry the show's logo. EMPTY when the row has no
+///   background or logo source.
 ///
 /// A cover is server-independent (one catalog id: the same title held by two servers asks for one
 /// cover) and a composite is server-local (its key names a path on `TileFacts::src`'s server), so a
@@ -142,7 +146,7 @@ pub struct DeckKeys {
 }
 
 impl DeckKeys {
-    /// The keys of one row. Pure: a function of the row's guids, rating keys and art path.
+    /// The keys of one row. Pure: a function of the row's title identity and artwork paths.
     pub fn of(item: &PmsMovie) -> Self {
         let cover = item
             .watchlist_subject()
@@ -151,7 +155,8 @@ impl DeckKeys {
             .unwrap_or_default();
         // The logo is the TITLE's: an episode or a season carries no clearLogo of its own.
         let logo_rk = if matches!(item.kind, 2 | 3) { item.show_rk.as_str() } else { item.rk.as_str() };
-        let card = artwork::card_path(logo_rk, &item.art).unwrap_or_default();
+        let card = artwork::card_path(item.logo.as_deref().unwrap_or(logo_rk), &item.art)
+            .unwrap_or_default();
         Self { cover, card }
     }
 
@@ -401,6 +406,30 @@ mod tests {
         let a_show = PmsMovie { kind: 1, rk: "77".into(), show_rk: String::new(), guid: Some(bytes(SHOW_HEX)),
             art: "/library/metadata/77/art/5".into(), ..Default::default() };
         assert_eq!(DeckKeys::of(&a_show), keys, "a show row and its episode ask for the same two pictures");
+    }
+
+    #[test]
+    fn a_changed_show_logo_rekeys_the_episode_composite_without_an_art_change() {
+        let from_pms = |images| {
+            let metadata = serde_json::from_value(serde_json::json!({
+                "type": "episode", "ratingKey": "9001", "grandparentRatingKey": "77",
+                "art": "/library/metadata/77/art/5", "Image": images,
+            })).unwrap();
+            plx_data::pms::parse_item(&metadata, ServerId::from_raw(1))
+        };
+        let before = "/library/metadata/77/clearLogo/17";
+        let after = "/library/metadata/77/clearLogo/18";
+        let keys = |path| DeckKeys::of(&from_pms(serde_json::json!([
+            {"type": "background", "url": "/library/metadata/77/art/5"},
+            {"type": "clearLogo", "url": "/library/metadata/9001/clearLogo/12"},
+            {"type": "clearLogo", "url": path},
+        ])));
+        let (old, new) = (keys(before), keys(after));
+        assert_ne!(old.card, new.card);
+        assert_eq!(artwork::card_parts(&old.card), Some((before, "/library/metadata/77/art/5")));
+        assert_eq!(artwork::card_parts(&new.card), Some((after, "/library/metadata/77/art/5")));
+        let removed = from_pms(serde_json::json!([{"type": "background"}]));
+        assert!(DeckKeys::of(&removed).card.is_empty(), "a removed logo has no composite");
     }
 
     /// A guid-less item (a local agent, personal media: `guid` is `None` when it is not a 24-hex

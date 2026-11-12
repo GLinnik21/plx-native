@@ -463,6 +463,20 @@ fn an_idle_control_over_video_keeps_a_visible_edge_below_focus() {
     assert_eq!(control_rim_spec(false, ControlGround::Keyed), constant);
 }
 
+#[test]
+fn preview_controls_keep_the_video_fill_and_content_rim() {
+    let palette = ControlPalette::ambient([0.04, 0.39, 0.71]);
+    for focused in [false, true] {
+        let preview = ControlStyle::Accent.face(focused, ControlGround::VideoPreview, palette);
+        let hud = ControlStyle::Accent.face(focused, ControlGround::Unkeyed, palette);
+        assert_eq!((preview.top, preview.body, preview.ink), (hud.top, hud.body, hud.ink));
+        assert_eq!(
+            control_rim_spec(focused, ControlGround::VideoPreview),
+            control_rim_spec(focused, ControlGround::Keyed)
+        );
+    }
+}
+
 /// **Every control face is KEYED until its caller says otherwise** — including
 /// [`TransportButton`], whose only caller today is the player HUD. A widget that defaulted to
 /// its one caller's ground would be the one control in the app whose look came from where it

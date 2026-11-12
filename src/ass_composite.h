@@ -44,16 +44,49 @@ static inline uint32_t ass_blend_pixel(uint32_t dst, uint32_t source, unsigned a
     return ass_div255_pair(rb) | (ass_div255_pair(ga) << 8);
 }
 
-/* The numerator is below 65536. Multiplication by floor(65536/alpha)
- * underestimates its quotient by at most one; the remainder supplies the exact
- * correction. This replaces ARMv7's software divide without changing a pixel. */
-static inline uint8_t ass_straight_channel(unsigned premultiplied, unsigned alpha,
-                                          unsigned reciprocal)
+/* NEON: eight pixels at once, on every target that has it (32-bit ARM TVs, and arm64 hosts, where the
+ * same intrinsics exist). PLX_ASS_NO_NEON keeps the scalar row path compiled on such a host, so the
+ * tests can run both. The arithmetic is the scalar blend's, lane by lane, so the output is
+ * bit-identical: `ci/test_ass_composite.py` runs every (coverage, source, destination) triple through
+ * it. A pixel whose coverage is 0 or 255 needs no branch here: the formula leaves the destination or
+ * stores the source exactly (255*d and 255*s are multiples of 255). */
+#if defined(__ARM_NEON) && !defined(PLX_ASS_NO_NEON)
+#define PLX_ASS_NEON 1
+#include <arm_neon.h>
+
+/* ass_div255_pair for eight 16-bit lanes: n -> (n + 128 + ((n + 128) >> 8)) >> 8, which is
+ * (n + 127) / 255 for 0 <= n <= 65025. vrsraq adds the rounded high byte (n + ((n + 128) >> 8)) and
+ * vrshrn adds the 128 and shifts, narrowing: both round in full width, and the largest intermediate,
+ * 65025 + 254 = 65279 (+128 = 65407), stays below 2^16. */
+static inline uint8x8_t ass_div255_lanes(uint16x8_t n)
 {
-    const unsigned n = premultiplied * 255u + alpha / 2;
-    unsigned q = (n * reciprocal) >> 16;
-    q += n - q * alpha >= alpha;
-    return (uint8_t)(q > 255 ? 255 : q);
+    return vrshrn_n_u16(vrsraq_n_u16(n, n, 8), 8);
 }
+
+/* The four bytes of an RGBA colour (byte 0 in the low bits, as ass_load_rgba reads it), one per lane. */
+typedef struct { uint8x8_t r, g, b, a; } AssSource8;
+
+static inline AssSource8 ass_source8(uint32_t color)
+{
+    return (AssSource8){ vdup_n_u8((uint8_t)color), vdup_n_u8((uint8_t)(color >> 8)),
+                         vdup_n_u8((uint8_t)(color >> 16)), vdup_n_u8((uint8_t)(color >> 24)) };
+}
+
+/* Eight pixels of one image onto the premultiplied destination `dst` (eight RGBA pixels): `mask` is
+ * libass's coverage of them, `opacity` the image's opacity in every lane. The coverage is what the
+ * scalar code reads from its table, (mask * opacity + 127) / 255, computed here instead of looked up:
+ * a lookup per lane is eight scalar loads and eight stores into a vector. */
+static inline void ass_blend8(uint8_t *dst, uint8x8_t mask, uint8x8_t opacity, AssSource8 source)
+{
+    const uint8x8_t a = ass_div255_lanes(vmull_u8(mask, opacity));
+    const uint8x8_t inverse = vmvn_u8(a); /* 255 - a */
+    uint8x8x4_t d = vld4_u8(dst);         /* planar: val[c] is channel c of the eight pixels */
+    d.val[0] = ass_div255_lanes(vmlal_u8(vmull_u8(d.val[0], inverse), source.r, a));
+    d.val[1] = ass_div255_lanes(vmlal_u8(vmull_u8(d.val[1], inverse), source.g, a));
+    d.val[2] = ass_div255_lanes(vmlal_u8(vmull_u8(d.val[2], inverse), source.b, a));
+    d.val[3] = ass_div255_lanes(vmlal_u8(vmull_u8(d.val[3], inverse), source.a, a));
+    vst4_u8(dst, d);
+}
+#endif
 
 #endif

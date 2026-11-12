@@ -317,8 +317,8 @@ fn push_player(ps: &plx_media::route::PlaybackSession, s: &mut String, overlay: 
         ControlSlot::Discs(controls) => controls,
         ControlSlot::Skip(_) | ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => plx_appkit::player_hud::Controls::NONE,
     };
-    let _ = write!(s, " pair={} previous={} next={} restart={}",
-        b(controls.pair()), b(controls.previous), b(controls.next), b(controls.restart));
+    let _ = write!(s, " pair={} previous={} next={}",
+        b(controls.pair()), b(controls.previous), b(controls.next));
     // Whether this item HAS chapters at all — a fact about the item, not about a panel, which is
     // why it stays here while each overlay's own open flag and cursor arrive on `content` from the
     // surface (`app::bridge::content_probe`).

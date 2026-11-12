@@ -70,6 +70,8 @@ pub struct Row {
     /// `On`/`Off` — a row whose value is a word rather than a state ("English", "Title"). Wins over
     /// `toggle` if both are somehow set.
     pub value: Option<String>,
+    /// Sample value that reserves the trailing column even while its read-out is hidden.
+    value_slot: Option<String>,
     pub value_origin: Origin,
     /// Quieten the read-out a further step (the value is context rather than the point).
     pub value_dim: bool,
@@ -125,6 +127,7 @@ impl Row {
             checked: false,
             toggle: None,
             value: None,
+            value_slot: None,
             value_origin: Origin::default(),
             value_dim: false,
             ticon: None,
@@ -189,6 +192,10 @@ impl Row {
     /// Give this row a trailing read-out — see [`Row::value`].
     pub fn value(mut self, v: impl Into<String>) -> Self {
         self.value = Some(v.into());
+        self
+    }
+    pub fn value_slot(mut self, sample: impl Into<String>) -> Self {
+        self.value_slot = Some(sample.into());
         self
     }
     /// Quieten the read-out a step — see [`Row::value_dim`].
@@ -1292,9 +1299,12 @@ impl TableView {
     /// hugged with [`fit::HUG_MARGIN`] (whole pixels), and the trailing value if it has one.
     fn row_runs(&self, row: &Row, measure: &dyn plx_machine::machine::Measure) -> (f32, Option<f32>) {
         let (size, bold) = self.label_style();
+        let value = row.readout().into_iter().chain(row.value_slot.as_deref())
+            .map(|v| measure.width_str(v, theme::size::LABEL, VALUE_BOLD != 0))
+            .reduce(f32::max);
         (
             (measure.width_str(&row.label, size, bold) * fit::HUG_MARGIN).ceil(),
-            row.readout().map(|v| measure.width_str(v, theme::size::LABEL, VALUE_BOLD != 0)),
+            value,
         )
     }
 

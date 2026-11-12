@@ -34,6 +34,7 @@ pub mod ass; // pinned libass worker and immutable rendered frames
 pub mod ass_perf; // per-second libass cost line (`assperf:`)
 pub mod ass_timing; // libass clock reading and the validity window of a rendered frame
 pub mod ass_script; // a sidecar script fed in windows around the playhead
+pub mod ass_ink; // the viewer's colour pick on an authored ASS header: white is the default ink (pure)
 pub mod ass_source; // bounded embedded scripts and subtitle presentation clock
 pub mod engine;
 mod feed_open; // one resolved request for the prepared route's physical feed open, built over `plx_play_feed` types
@@ -2284,6 +2285,43 @@ pub fn request_subtitle(idx: i32) {
         SHARED.sub_bitmaps.lock().unwrap().clear();
     }
 }
+/// **Does the viewer's colour pick reach the subtitle `codec` names?** The one fact the Subtitles menu's
+/// Color rungs are disabled by, answered here where the track is classified and never re-derived by a
+/// screen. A picture subtitle (PGS, VobSub) never takes a colour (only a gray tint reaches its bitmap);
+/// a text track always does (its header is built from the pick); an ASS/SSA track does when the header
+/// that reaches libass has a style the pick recolours ([`ass_ink::takes_colour`]). A pure read of the
+/// session: the header's half is the readout's value ([`deliver_subtitle_ink`] puts it there once a
+/// tick), so a menu asking this reads no registry. While the header is not known yet the answer is
+/// yes: the menu dims nothing it cannot explain.
+pub fn subtitle_takes_colour(ps: &crate::route::PlaybackSession, codec: &str) -> bool {
+    if plx_data::metadata::sub_layout::is_image_sub_codec(codec) {
+        return false;
+    }
+    if !(codec.eq_ignore_ascii_case("ass") || codec.eq_ignore_ascii_case("ssa")) {
+        return true;
+    }
+    ps.readout().subtitle_takes_colour().unwrap_or(true)
+}
+
+/// **Deliver the subtitle registries' colour fact to the session** (the app's frame tick, whichever
+/// backend plays): whether the header that reaches libass for the selected ASS/SSA track has a style the
+/// pick recolours ([`ass_ink::takes_colour`], cached from the file's own bytes), read from the selected
+/// sidecar when one is, else from the embedded track the demuxer is feeding. The readout holds it
+/// ([`readout::ReadoutEvent::SubtitleInk`]) for [`subtitle_takes_colour`]; nothing is stepped when it
+/// has not changed.
+pub fn deliver_subtitle_ink(ps: &mut crate::route::PlaybackSession) {
+    let known = if sidecar::selected() {
+        sidecar::takes_colour()
+    } else if desired_sub_idx() >= 0 {
+        ass_source::takes_colour(desired_sub_idx())
+    } else {
+        None
+    };
+    if ps.readout().subtitle_takes_colour() != known {
+        ps.step_readout(readout::ReadoutEvent::SubtitleInk(known));
+    }
+}
+
 /// The tone client-rendered subtitles are drawn in. A [`crate::route::LiveCell`] rather than a field
 /// of [`SHARED`] because it OUTLIVES a playback — it is a preference, not session state
 /// (the same reasoning as the quality cell in `route::prefs`) — and `reset_session` must not put a viewer back on white
@@ -2360,6 +2398,19 @@ pub fn subtitle_draw(ps: &crate::route::PlaybackSession) -> Option<(std::sync::A
         return Some((source, sidecar_clock_ns(ps, playhead)));
     }
     ass_source::selected(desired_sub_idx()).map(|source| (source, playhead))
+}
+
+/// **How the subtitle playhead is moving**, for the renderer's pacing of a moving cue's frames
+/// ([`ass::Pace`]): whether the player is presenting, the speed it is applied at (1x with no Feed
+/// Load to say), the source's frame rate (0 for a transcode or an unreported rate, which the pace
+/// reads as film) and the wall-clock time since the caller's previous tick.
+pub fn subtitle_pace(ps: &crate::route::PlaybackSession, tick_ms: i64) -> ass::Pace {
+    ass::Pace::of(
+        is_playing(ps),
+        effective_playback_rate(ps).unwrap_or(RATE_NORMAL),
+        crate::route::stream_fps(ps),
+        tick_ms,
+    )
 }
 
 /// **The file-time position a SIDECAR is asked for at playhead `playhead_ns`.**
@@ -2877,7 +2928,7 @@ mod tests {
         let mut meta = plx_data::stores::metadata::MetadataStore::default();
         assert!(crate::route::request_play(&mut ps, &mut meta,
             plx_platform::devcaps::caps(), plx_plex::plex::ServerId::from_raw(0),
-            "film", "/library/parts/1/file.mkv", "h264", "aac", "Film", "", None));
+            "film", "/library/parts/1/file.mkv", "h264", "aac", "Film", "", None, ""));
         assert!(crate::route::arm_play_resume(&mut ps, 12_000_000_000));
         let attempt = crate::route::RouteStartAttempt::fixture();
         ps.begin_attempt_view(attempt, attempt_view::Backend::Uri);

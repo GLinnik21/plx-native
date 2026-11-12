@@ -1,4 +1,4 @@
-//! Home metadata chooses identity, time remaining, episode label or premise by hero state.
+//! Home hero metadata and the independent resume pill.
 use super::*;
 use plx_ui::landing_hero::{home_synopsis, HOME_LABEL_H};
 
@@ -23,56 +23,25 @@ fn episode() -> PmsMovie {
     }
 }
 
-fn label(hero: &PmsMovie) -> String {
-    match hero_line(hero) {
-        Some(HeroLine::Label(label)) => label,
-        Some(HeroLine::Premise(premise)) => panic!("a label was expected, not the premise {premise:?}"),
-        _ => panic!("a label was expected"),
-    }
-}
-
 fn premise(hero: &PmsMovie) -> &str {
     match hero_line(hero) {
         Some(HeroLine::Premise(premise)) => premise,
-        Some(HeroLine::Label(label)) => panic!("the premise was expected, not the label {label:?}"),
         _ => panic!("the premise was expected"),
     }
 }
 
-/// **A movie being resumed says its time left, in the footer's own words.** Seven minutes into a
-/// fifteen-minute film is eight minutes left; the line is the string `fmt::footer_left` builds from
-/// the time left the Continue Watching footer derives ([`tile_facts::of`]), so the card under the
-/// hero and the hero say it identically.
 #[test]
-fn a_resumed_movie_reads_its_time_left_as_the_footer_does() {
-    let hero = PmsMovie { resume_ms: 7 * MIN, ..movie() };
-    assert!(hero_resumes(&hero), "the premise: its Play button says Resume");
-    let line = label(&hero);
-    assert_eq!(line, plx_ui::fmt::footer_left(8 * MIN));
-    let footer = tile_facts::of(&hero).resume.expect("the footer's own derivation of a started card");
-    assert_eq!(line, plx_ui::fmt::footer_left(footer.left_ms), "the footer under the hero says the same");
-    assert!(line.contains('8'), "eight minutes left, not {line:?}");
-    // the time left rounds UP to a whole minute, as the footer's does
-    let rounded = PmsMovie { resume_ms: 13 * MIN + 30_000, ..movie() };
-    assert_eq!(label(&rounded), plx_ui::fmt::footer_left(2 * MIN), "a minute and a half left reads two");
-    let last = PmsMovie { resume_ms: 14 * MIN, ..movie() };
-    assert_eq!(label(&last), plx_ui::fmt::footer_left(MIN), "the last minute the Play button still resumes");
-    // an hour and more reads as hours, in the footer's shortest form
-    let long = PmsMovie { dur_ns: 150 * MIN * 1_000_000, resume_ms: 30 * MIN, ..movie() };
-    assert_eq!(label(&long), plx_ui::fmt::footer_left(120 * MIN));
-}
-
-/// **An episode names itself, resumed or not**: the existing episode label, whether it is half
-/// watched or the next one on deck and not started.
-#[test]
-fn an_episode_reads_its_label_whether_resumed_or_on_deck() {
-    let want = plx_ui::fmt::episode_kicker(2, 4, "The Night Crossing");
-    assert!(want.contains("The Night Crossing"), "{want}");
-    let on_deck = episode();
-    assert_eq!(label(&on_deck), want, "on deck, not started");
-    let resumed = PmsMovie { resume_ms: 7 * MIN, ..episode() };
-    assert!(hero_resumes(&resumed), "the premise: it is being resumed");
-    assert_eq!(label(&resumed), want, "resumed: the label, not the time left");
+fn resume_pill_rounds_up_and_uses_the_existing_resume_rule() {
+    let hero = PmsMovie { resume_ms: 13 * MIN + 30_000, ..movie() };
+    let (label, progress) = hero_action(&hero);
+    assert_eq!(label.to_str().unwrap(), plx_ui::fmt::duration(2 * MIN));
+    assert_eq!(progress, hero.resume_frac());
+    let almost_finished = PmsMovie { resume_ms: 14 * MIN + 20_000, ..hero.clone() };
+    assert!(hero_action(&almost_finished).1.is_none());
+    let unknown = PmsMovie { dur_ns: 0, ..hero };
+    let (label, progress) = hero_action(&unknown);
+    assert_eq!(&*label, plx_appkit::hero_layout::play_label(true));
+    assert_eq!(progress, None);
 }
 
 #[test]
@@ -82,27 +51,20 @@ fn unplayed_movies_and_shows_get_the_identity_band() {
     }
     let show = PmsMovie { kind: plx_data::pms::KIND_SHOW, child_count: 2, ..movie() };
     assert!(matches!(hero_line(&show), Some(HeroLine::Metadata { .. })));
-    assert_eq!(premise(&PmsMovie { viewed_leaf_count: Some(1), ..show }), FIRST);
-    assert_eq!(premise(&PmsMovie { watched: true, ..movie() }), FIRST);
+    // Owner, v0.10.0 rc1 ("why this movie has description instead of Movie • Year • Length?"): a
+    // movie or show reads its identity band whether or not it has been played; the premise is for
+    // the kinds that have no identity band (a season, a collection).
+    for played in [
+        PmsMovie { viewed_leaf_count: Some(1), ..show.clone() },
+        PmsMovie { watched: true, ..show },
+        PmsMovie { watched: true, ..movie() },
+    ] {
+        assert!(matches!(hero_line(&played), Some(HeroLine::Metadata { .. })), "{:?}", played.kind);
+    }
+    assert_eq!(premise(&PmsMovie { kind: plx_data::pms::KIND_COLLECTION, ..movie() }), FIRST);
     let bare = PmsMovie::default();
-    assert!(matches!(hero_line(&bare), Some(HeroLine::Metadata { year, length, genres, rating, .. })
-        if year.is_empty() && length.is_empty() && genres.is_empty() && rating.is_empty()));
-}
-
-/// **A line with nothing to say falls to the next**: an episode with nothing to name it is a resumed
-/// film's time left, or its premise; a hero with no words at all has no line.
-#[test]
-fn a_line_with_nothing_to_say_falls_to_the_next() {
-    let nameless = PmsMovie { title: String::new(), season_index: 0, ep_index: 0, ..episode() };
-    assert_eq!(premise(&nameless), FIRST, "no label, not started: the premise");
-    let resumed = PmsMovie { resume_ms: 7 * MIN, ..nameless };
-    assert_eq!(label(&resumed), plx_ui::fmt::footer_left(8 * MIN), "no label, resumed: the time left");
-    let mute = PmsMovie { summary: String::new(), kind: plx_data::pms::KIND_SHOW, watched: true, ..movie() };
-    assert!(hero_line(&mute).is_none(), "no summary, nothing started: no line");
-    let blank = PmsMovie { summary: "  \n ".into(), kind: plx_data::pms::KIND_SHOW, watched: true, ..movie() };
-    assert!(hero_line(&blank).is_none(), "a blank summary is no summary");
-    let resumed_mute = PmsMovie { resume_ms: 7 * MIN, ..mute };
-    assert_eq!(label(&resumed_mute), plx_ui::fmt::footer_left(8 * MIN), "the time left needs no summary");
+    assert!(matches!(hero_line(&bare), Some(HeroLine::Metadata { date, length, genres, rating, .. })
+        if date.is_empty() && length.is_empty() && genres.is_empty() && rating.is_empty()));
 }
 
 /// **The ladder keeps its anchor whatever the line**: the block's foot is 638 (the board's number, 30
@@ -115,11 +77,10 @@ fn the_ladder_keeps_its_anchor_for_every_line() {
                   remembers, a woman crosses the frozen wastes, hunting the dragon she raised, \
                   carrying everything she still owns, and nothing she wants to keep"
             .into(),
-        kind: 1,
-        watched: true,
+        kind: plx_data::pms::KIND_COLLECTION,
         ..movie()
     };
-    let one = PmsMovie { kind: 1, watched: true, ..movie() };
+    let one = PmsMovie { kind: plx_data::pms::KIND_COLLECTION, ..movie() };
     let resumed = PmsMovie { resume_ms: 7 * MIN, ..movie() };
     let long_label = episode();
     assert_eq!(home_synopsis(FIRST).measure_h(theme::hero::HOME_SYNOPSIS_W), HOME_LABEL_H, "the premise: the first sentence is one line");
@@ -129,8 +90,8 @@ fn the_ladder_keeps_its_anchor_for_every_line() {
     for (what, s, h) in [
         ("two-line premise", &s_two, 2.0 * HOME_LABEL_H),
         ("one-line premise", &s_one, HOME_LABEL_H),
-        ("time left", &s_resumed, HOME_LABEL_H),
-        ("episode label", &s_label, HOME_LABEL_H),
+        ("movie identity", &s_resumed, HOME_LABEL_H),
+        ("episode identity", &s_label, HOME_LABEL_H),
     ] {
         let block = s.block.expect(what);
         assert_eq!(block.h, h, "{what}: the block's height");
@@ -141,38 +102,84 @@ fn the_ladder_keeps_its_anchor_for_every_line() {
     assert_eq!(s_one.title.y - s_two.title.y, HOME_LABEL_H, "a one-line block brings the title down a line");
     assert_eq!((s_resumed.title.y, s_resumed.block), (s_label.title.y, s_label.block), "a label is a label");
     // no line: the title stands alone over the actions
-    let mute = PmsMovie { summary: String::new(), kind: plx_data::pms::KIND_SHOW, watched: true, ..movie() };
+    let mute = PmsMovie { summary: String::new(), kind: plx_data::pms::KIND_COLLECTION, ..movie() };
     assert!(stack(&mute).block.is_none());
 }
 
-/// **The page draws the line the state names**: a resumed film draws its time left and none of its
-/// summary; a hero not started draws its first sentence and not the second; an episode its label.
+/// The hero prints the metadata row in the same order for the three title types.
 #[test]
-fn the_page_draws_the_line_the_state_names() {
+fn the_page_draws_episode_show_and_movie_metadata() {
     let _guard = plx_base::testlock::serial();
     let m = &plx_ui::fixture::FixtureMeasure;
     let drawn = |hero: &PmsMovie| {
         plx_gfx::text::capture_text_runs_for_test(|| hero_content(hero, Painter::recording(), 0.0, m)).join("\n")
     };
-    let resumed = drawn(&PmsMovie { resume_ms: 7 * MIN, ..movie() });
-    assert!(resumed.contains(&plx_ui::fmt::footer_left(8 * MIN)), "{resumed:?}");
-    assert!(!resumed.contains("woman"), "a resumed film does not recite its summary: {resumed:?}");
-    let fresh = drawn(&PmsMovie { year: 2010, rating: "PG-13".into(), ..movie() });
-    assert!(fresh.contains("2010"), "{fresh:?}");
-    assert!(fresh.contains(&plx_ui::fmt::duration(15 * MIN)), "{fresh:?}");
-    assert!(fresh.contains("PG-13"), "{fresh:?}");
-    assert!(fresh.contains("Movie"), "{fresh:?}");
-    assert!(fresh.contains("Fantasy, Adventure"), "{fresh:?}");
+    let film = PmsMovie { year: 2010, rating: "PG-13".into(), video_resolution: Some("4k".into()), ..movie() };
+    let fresh = drawn(&film);
+    assert_eq!(fresh, drawn(&PmsMovie { resume_ms: 7 * MIN, ..film }));
+    for word in ["Movie", "2010", "15m", "Fantasy, Adventure", "4K", "PG-13"] {
+        assert!(fresh.contains(word), "{fresh:?}");
+    }
     let show = drawn(&PmsMovie {
-        kind: plx_data::pms::KIND_SHOW, year: 2025, child_count: 2, rating: "TV-14".into(), ..movie()
+        kind: plx_data::pms::KIND_SHOW, year: 2025, child_count: 2, rating: "TV-14".into(),
+        video_resolution: Some("4k".into()), ..movie()
     });
-    for word in ["TV Show", "2025", "2 seasons", "Fantasy, Adventure", "TV-14"] {
+    for word in ["TV Show", "2025", "15m", "Fantasy, Adventure", "TV-14"] {
         assert!(show.contains(word), "{show:?}");
     }
-    assert!(!show.contains(&plx_ui::fmt::duration(15 * MIN)), "{show:?}");
-    assert!(!fresh.contains("woman crosses"), "{fresh:?}");
-    assert!(!fresh.contains("Years later"), "the second sentence stays on the Details page: {fresh:?}");
-    let ep = drawn(&PmsMovie { resume_ms: 7 * MIN, ..episode() });
-    assert!(ep.contains("The Night Crossing"), "{ep:?}");
-    assert!(!ep.contains("left"), "an episode names itself, it does not count down: {ep:?}");
+    assert!(!show.contains("4K"), "{show:?}");
+    let ep = drawn(&PmsMovie {
+        resume_ms: 7 * MIN, aired: "2001-09-19".into(), rating: "TV-14".into(),
+        video_resolution: Some("1080".into()), ..episode()
+    });
+    for word in [plx_ui::fmt::episode_address(2, 4), plx_ui::fmt::hero_date("2001-09-19", 0),
+        "15m".into(), "1080p".into(), "TV-14".into()] {
+        assert!(ep.contains(&word), "{ep:?}");
+    }
+    assert!(!ep.contains("left"), "{ep:?}");
+}
+
+#[test]
+fn sparse_episode_uses_its_title_or_omits_the_empty_row() {
+    let mut ep = PmsMovie { kind: plx_data::pms::KIND_EPISODE, show_title: "Series".into(), title: "Pilot".into(), ..Default::default() };
+    assert!(matches!(hero_line(&ep), Some(HeroLine::Metadata { identity, .. }) if identity == "Pilot"));
+    ep.show_title.clear();
+    assert!(hero_line(&ep).is_none(), "the logo rung already carries the episode's title");
+}
+
+/// **The gap from the title to the line under it is one rule for art and for type** (owner, v0.10.0
+/// 2: a hero titled in type sat its glyphs almost on the metadata line while a clearLogo had even
+/// air). The ladder (`hero_ladder`) puts the title band's foot `HOME_TITLE_GAP` above the block and
+/// the block `HOME_ACTIONS_GAP` above the actions; the title's PAINTED box ends on that foot
+/// whether it is a logo's box (`hero_logo::place`) or type with its descenders
+/// (`HeroLogo::painted`), also for a title that wraps to two lines.
+#[test]
+fn the_title_to_metadata_to_actions_gaps_are_the_same_for_art_and_for_type() {
+    use plx_ui::hero_logo::{self, HeroLogo, LogoRung};
+    use plx_ui::label::HAlign;
+    let m = plx_ui::fixture::FixtureMeasure;
+    let long = "The Unbearably Long Name of the Last House at the Edge of the World";
+    let hero = movie();
+    let (stack, line) = hero_ladder(&hero);
+    assert!(matches!(line, Some(HeroLine::Metadata { .. })));
+    let block = stack.block.expect("the identity band");
+    let band = hero_title_band(&stack);
+    let foot = band.y + band.h;
+    let gap_to_meta = |painted_bottom: f32| block.y - painted_bottom;
+    // art: a logo box of any shape ends on the foot
+    for (w, h) in [(400.0, 80.0), (300.0, 240.0)] {
+        let logo = hero_logo::place(band, w, h, HAlign::Left);
+        assert_eq!(gap_to_meta(logo.y + logo.h), plx_ui::theme::hero::HOME_TITLE_GAP);
+    }
+    // type: one line, no descender or with one, and a title that wraps
+    for title in ["Backrooms", "Hollow Coast", long] {
+        let typed = HeroLogo::new(0, "", title, LogoRung::Hero).painted(band, &m);
+        assert_eq!(typed.y + typed.h, foot, "{title}: type ends on the foot as art does");
+        assert_eq!(gap_to_meta(typed.y + typed.h), plx_ui::theme::hero::HOME_TITLE_GAP, "{title}");
+    }
+    assert_eq!(
+        stack.actions.y - (block.y + block.h),
+        plx_ui::theme::hero::HOME_ACTIONS_GAP,
+        "the block's foot to the actions is the ladder's other gap"
+    );
 }

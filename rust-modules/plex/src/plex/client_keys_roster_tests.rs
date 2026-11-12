@@ -127,3 +127,51 @@ fn capture_remains_a_cloneable_send_sync_value_not_a_client_handle() {
     value::<ClientKeys>();
     assert_eq!(ClientKeys::default().iter().count(), 0);
 }
+
+#[test]
+fn stream_policy_is_fresh_each_fill_fail_closed_and_reuses_s4_buffers() {
+    let a = client(61);
+    let mut keys = ClientKeys::default();
+    assert!(!ClientKeys::of([(a.id(), a)]).stream_allowed(a.id()));
+    keys.refill_roster(a.id(), 1, 1, [a.id()], |_| Some(a), |_| None, |_| None);
+    assert!(!keys.stream_allowed(a.id()), "compatibility capture cannot authorize streaming");
+    let buffers = (keys.0.as_ptr(), keys.1.as_ptr());
+    let string = keys.facts(a.id()).unwrap().machine_id.as_ptr();
+    let mut previous = keys.clone();
+    for allowed in [true, false, true, false] {
+        keys.refill_roster_with_stream_policy(a.id(), 1, 1, [a.id()], |_| Some(a),
+            |_| None, |_| None, |_| allowed);
+        assert_eq!(keys.stream_allowed(a.id()), allowed);
+        assert_eq!(keys.facts(a.id()).unwrap().stream_allowed, allowed);
+        assert_eq!((keys.0.as_ptr(), keys.1.as_ptr()), buffers);
+        assert_eq!(keys.facts(a.id()).unwrap().machine_id.as_ptr(), string);
+        assert_ne!(keys, previous, "stream policy participates in equality without generation moves");
+        previous = keys.clone();
+    }
+    assert!(!keys.stream_allowed(ServerId::UNSET));
+}
+
+#[test]
+fn stream_policy_runs_after_probe_and_incoherent_capture_clears_permission() {
+    let a = client(62);
+    let stage = std::cell::Cell::new(0);
+    let mut reads = 0;
+    let mut keys = ClientKeys::default();
+    keys.refill_roster_with_stream_policy(a.id(), 1, 1, [a.id()], |_| {
+        reads += 1;
+        (reads == 1).then_some(a)
+    }, |_| None, |_| { stage.set(1); None }, |_| {
+        assert_eq!(stage.get(), 1);
+        stage.set(2);
+        true
+    });
+    assert_eq!(stage.get(), 2);
+    assert_eq!(keys.key(a.id()), None);
+    assert!(!keys.stream_allowed(a.id()));
+    assert!(!keys.facts(a.id()).unwrap().stream_allowed);
+    // A credential identity move inside the policy fence rejects the same row.
+    keys.refill_roster_with_stream_policy(a.id(), 1, 1, [a.id()], |_| Some(a),
+        |_| None, |_| None, |c| { c.set_token("changed-in-policy"); true });
+    assert_eq!(keys.key(a.id()), None);
+    assert!(!keys.stream_allowed(a.id()));
+}

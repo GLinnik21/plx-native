@@ -228,7 +228,7 @@ pub struct LibraryScreen {
     keys: KeyRegistry,
     pair: MasterDetail<RailPart, GridPart, Regions>,
     /// The visible favorite names, the current library when outside those shortcuts, and the
-    /// persistent `MORE` action last. A single library retains its name and the options action.
+    /// persistent `MORE` action after the favorites, followed by any temporary visit.
     libraries: Vec<(u32, usize)>,
     /// The directory sections the fold hid behind Library options (what the Sources list shows).
     folded: Vec<u32>,
@@ -956,8 +956,8 @@ impl LibraryScreen {
         (region, -1, -1, 0.0, self.scroll.pos)
     }
 
-    /// Choose a library: ONLY the grid fades out and back in, under a header that does not move;
-    /// the plate lands on the new name at once and focus stays on the name that was pressed.
+    /// Choose a library: the grid fades out and back in while the header marks the new name.
+    /// A visit appends a temporary pill beside the fixed shortcuts and their menu.
     fn switch_library<H: LibraryLike>(&mut self, target: SectionTarget, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         self.save_cursor(cx, fx);
         self.pending.request_section(target);
@@ -1400,11 +1400,21 @@ impl LibraryScreen {
                 self.pending.request_grid(GridTarget { epoch: target.epoch, sid: target.sid, section: target.section, query: self.query.unwrap_or(0) }, action);
                 self.grid_fade.reload();
             }
-            ScreenEvent::App(AppMsg::LibrarySelect(target)) => {
+            ScreenEvent::App(AppMsg::LibrarySelect(target) | AppMsg::LibraryMenuSelect { target, .. }) => {
+                if let ScreenEvent::App(AppMsg::LibraryMenuSelect { origin, .. }) = ev {
+                    // The modal hands input back before it unmounts. A newer shortcut
+                    // selection can already be pending or committed by the time we hear this.
+                    if self.requested_address(cx) != Some(*origin) {
+                        return Handled::No;
+                    }
+                }
                 let directory = H::directory(cx);
                 if directory.epoch() == Some(target.epoch) {
                     if let Some(index) = directory.sections().iter().position(|section| section.sid == Some(target.sid) && section.key == target.section) {
                         self.switch_library(SectionTarget { epoch: target.epoch, index, identity: LibrarySectionIdentity { sid: target.sid, key: target.section }, kind: directory.sections()[index].kind }, cx, fx);
+                        // The Sources panel has closed. Move focus as the row changes, before the
+                        // asynchronous listing lands and the grid reappears.
+                        self.seat_on(LIBRARY_GROUP, cx, fx);
                     }
                 }
             }
@@ -1423,7 +1433,12 @@ impl LibraryScreen {
                 if self.initial && !self.switched && from.is_none() && to.entry == self.entry {
                     if let Some(target) = self.with_regions(|regions| regions.unseat()) { self.reseat(target, fx); }
                 }
-                if matches!(by, By::Dir | By::Pointer) {
+                // That seat is reported as a directional move (`FocusTarget::FirstInGroupAnimated`, a
+                // tab's mint), but its origin is another page's focus or none: the reader's key moves
+                // focus WITHIN the page. Only the latter claims the arrival from the cells that land.
+                let engine_seat = by == &By::Dir && self.initial && !self.switched && to.entry == self.entry
+                    && from.is_none_or(|from| from.entry != self.entry);
+                if matches!(by, By::Dir | By::Pointer) && !engine_seat {
                     self.initial = false;
                     self.provisional = None;
                 }

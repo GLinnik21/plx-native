@@ -226,7 +226,20 @@ extern "C" {
     fn glUniform4fv(loc: c_int, count: c_int, value: *const f32);
     fn glUniform1i(loc: c_int, x: c_int);
     fn glUniform4f(loc: c_int, x: f32, y: f32, z: f32, w: f32);
-    fn glDrawArrays(mode: c_uint, first: c_int, count: c_int);
+    /// The raw import: only [`glDrawArrays`] below calls it.
+    #[link_name = "glDrawArrays"]
+    fn glDrawArrays_raw(mode: c_uint, first: c_int, count: c_int);
+}
+
+/// A draw call, booked in the straighten pass's ledger first with the extent it writes
+/// (`gfx::straighten::note_draw`): the pass draws over the boxes the frame drew into, and a glyph is a
+/// draw like any other. Shadows the raw import so the call sites below keep their spelling and add the
+/// extent ([`crate::gfx::set_rect`]'s answer for the quad's rect uniform); the same wrapper `gfx.rs` has.
+#[allow(non_snake_case)]
+#[inline(always)]
+unsafe fn glDrawArrays(mode: c_uint, first: c_int, count: c_int, extent: crate::gfx::straighten::Extent) {
+    crate::gfx::straighten::note_draw(extent);
+    glDrawArrays_raw(mode, first, count)
 }
 
 static mut TPROG: c_uint = 0;
@@ -341,8 +354,8 @@ pub fn draw_mask_inked(tex: c_uint, x: f32, y: f32, w: f32, h: f32, tint: *const
         }
         glUniform4fv(TLI_COL, 1, tint);
         glBindTexture(GL_TEXTURE_2D, tex);
-        glUniform4f(TLI_RECT, x, y, w, h);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        let ext = crate::gfx::set_rect(TLI_RECT, x, y, w, h);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
     true
 }
@@ -2863,16 +2876,16 @@ pub fn draw_text(
             if bind_ink(&clip) {
                 glUniform4fv(TLI_COL, 1, col);
                 glBindTexture(GL_TEXTURE_2D, p.tex);
-                glUniform4f(TLI_RECT, ox, oy, p.quad.w, p.quad.h);
-                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                let ext = crate::gfx::set_rect(TLI_RECT, ox, oy, p.quad.w, p.quad.h);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
                 return p.w;
             }
         }
         crate::gfx::use_prog(TPROG); // TL_SCREEN / TL_TEX / texture unit 0 set once at init
         glUniform4fv(TL_COL, 1, col);
         glBindTexture(GL_TEXTURE_2D, p.tex);
-        glUniform4f(TL_RECT, ox, oy, p.quad.w, p.quad.h);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        let ext = crate::gfx::set_rect(TL_RECT, ox, oy, p.quad.w, p.quad.h);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         p.w
     }
 }
@@ -3089,8 +3102,8 @@ pub fn draw_text_fade(
         glUniform2f(TLF_VBOT, vb0, vb1);
         glBindTexture(GL_TEXTURE_2D, p.tex);
         let (ox, oy) = p.origin(zoom);
-        glUniform4f(TLF_RECT, ox, oy, p.quad.w, p.quad.h);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        let ext = crate::gfx::set_rect(TLF_RECT, ox, oy, p.quad.w, p.quad.h);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         p.w
     }
 }

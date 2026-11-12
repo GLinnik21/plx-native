@@ -7,6 +7,26 @@ process-global registry and has no `cfg(test)` fork. Its work leaves as a typed 
 the app's runners execute, and the result returns as one addressed event. The reason is that a
 step then has no seam to fake: a test and a replay feed it the events the product feeds it.
 
+## Notify stream integration (written; acceptance pending)
+
+Notify uses one captured `NotifyInput { keys, armed }` and the actual store's
+`begin -> prepare_next -> settle_admission -> finish_turn -> end` cursor. Refill
+keys with `refill_roster_with_stream_policy` before begin. For each connection,
+exit data and drain only Notify jobs through the app runner before settlement;
+finish that connection before preparing the next. Map the completed output once,
+then drain the unchanged Browse/Hubs fill list and Notify in StoreId order.
+
+Initial refusal settles at the emission frame before ordinary mail. Accepted-held
+release failure is an ordinary terminal at the observation frame, never a second
+admission. Production streams always run off-frame, including held real release;
+`Bridge::for_test` selects refusal, and finite scripts supply explicit eligibility.
+No stream callback runs inside data or while borrowing Stores across the runner.
+The coordinator reports post-retirement ledger totals of 5 workers / 81 globals /
+62 forks / 11 fxlanes, down from the S4 pre-Notify 6/89/65/11. The source-only
+stale-key test passed in orun-27; runtime tests, capture comparisons and full gates
+remain pending. These contracts are not runtime or replay acceptance; see
+`.empryo/reviews/verdict-notify-integration.md` for the handoff limits.
+
 ## Which code is a machine
 
 `ci/check-deps.sh` (the `MACHINES` array) scans these for `workers` and `globals`:
@@ -56,7 +76,10 @@ it. The ledgers freeze the sites that were found; they are not the definition.
   `devcaps::caps`, and the ones `docs/sans-io.md` lists as remaining:
   `plex::server_ids()`, `server_roster_gen()`, `server_facts_gen()`, `server_probe_result()`
   (re-exports in `plex/src/plex/mod.rs`), `session::peek_settled()` and `session::current_gen()`
-  (both in `plex/src/plex/session.rs`) and `tape::active()` (`data/src/stores/tape.rs`). A new use of
+  (both in `plex/src/plex/session.rs`), `tape::active()` (`data/src/stores/tape.rs`) and the subtitle
+  registries' `sidecar::takes_colour()` / `sidecar::selected()` / `ass_source::takes_colour()` /
+  `ass_source::selected()` (`media/src/player/`; the Subtitles menu reads their colour-pick fact as a
+  value of the session's readout, which the app delivers once a tick). A new use of
   any of these fails `make check` unless a ledger line names it, and is as wrong as a new `client_for`.
   (`transport::paused` is not a registry read any more: it takes the session and reads its
   `PlayerReadout`, a `ps`-addressed readout read, and the rule no longer matches it. `transport::viewer_paused`

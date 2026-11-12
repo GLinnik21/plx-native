@@ -807,11 +807,12 @@ fn live_cell_indices_are_pinned() {
     // bit values themselves are private to `player`)
     for (tone, index) in [
         (SubtitleTone::White, 0),
-        (SubtitleTone::Silver, 1),
-        (SubtitleTone::LightGrey, 2),
-        (SubtitleTone::Grey, 3),
-        (SubtitleTone::DarkGrey, 4),
-        (SubtitleTone::Charcoal, 5),
+        (SubtitleTone::Yellow, 1),
+        (SubtitleTone::Silver, 2),
+        (SubtitleTone::LightGrey, 3),
+        (SubtitleTone::Grey, 4),
+        (SubtitleTone::DarkGrey, 5),
+        (SubtitleTone::Charcoal, 6),
     ] {
         assert_eq!(tone.index(), index, "{tone:?}");
         crate::player::restore_subtitle_tone(tone);

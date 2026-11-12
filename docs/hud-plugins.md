@@ -52,7 +52,9 @@ HUD drawing and state
   (`:493-497`), `BTN_MORE = BTN_N - 1` (`:670`), `pub enum Action { Previous, Next, Subtitles, Audio,
   More }` (`:731`). `Controls::enabled` (`:758-761`): Previous and Next by their own flags, the other
   three always; `Controls::pair` (`:755-757`) makes Previous/Next come and go together;
-  `Controls::icon` swaps in `Icon::Restart` for Previous (`:772-776`).
+  `Controls::icon` once swapped in `Icon::Restart` for Previous from five seconds in; it no longer
+  does, and `Controls` has no `restart` field: Previous is the previous episode of the play queue and
+  nothing else, so it is enabled exactly when the playing row has a predecessor.
 - F7. Row identity is an INDEX: `Controls::action(i)` (`:767-771`), `ControlSlot::items()` 5/2/1
   (`:804-809`), `RowPop = CtlPop<{ BTN_N as usize }>` (`:512`), element ids `ELEM_SCRUB 0` `:1384`,
   `ELEM_ROW_BASE 10` `:1387`, `ELEM_TAB_BASE 20` `:1389`, `ELEM_FAILURE_BASE 30` `:1397`. Up Next
@@ -551,7 +553,10 @@ also legal on a `vstack` cell and on a control item), and exactly one of:
   its rect is the track's width), which I4 reads as decor and I10 judges as app text.
   In HUD format 1.1, set `end_time_width` to reserve a right-aligned lane in px (1–1920, capped at the track width) for the remaining
   clock, a separator dot and the localized finish time. Classic declares 320 px. The same field enables the
-  feature in installed packages. I4 includes the lane in its decor census and I10 checks the combined run in
+  feature in installed packages: it is the package's declaration of support (`Compiled::declares_end_time`), so the
+  *Estimated end time* switch on the Player HUD settings page is listed only while the HUD in use declares it
+  (a HUD format 1.0 package cannot, `E0107`, and a 1.1 package may omit it), and the app projects no estimate for a
+  HUD that does not. I4 includes the lane in its decor census and I10 checks the combined run in
   both hour cycles. The renderer uses the plain remaining clock if the estimate is absent, the field is omitted
   or the run would crowd the elapsed clock. The knob and mark overhang the
   track;
@@ -583,7 +588,9 @@ through `TransportButton`, `pill` through `TabPill` labelled by the command's ap
 through `widgets::Button`), `size` (px), `rest` (`film` today's, `bare` glyph only, `solid` the focused
 colours at rest; `custom` is refused because format 1.0 defines no keys for its inks), `focus` (`accent` today's, `ring`: rest face plus the white
 focus ring), `face` (optional: the command's classic glyph when absent). A pair that draws one face twice (`solid` with `accent`) is rejected. Faces: an asset
-or `builtin:<icon>`; `toggle_play` takes `{playing, paused}`; `previous` takes `{default, restart}`;
+or `builtin:<icon>`; `toggle_play` takes `{playing, paused}`; `previous` takes `{default, restart}` (the `restart` face is still required and
+parsed, because published packages carry it and format 1.0 is frozen, but the app never selects it any more:
+Previous is always the previous episode and wears `default`);
 `toggle_stats` takes `{on, off}`; a `seek` with `by: "setting"` takes `{by_interval: {...}, default}`. A
 glyph's visual size is its viewBox padding over the shared `DISC_ICON_RATIO` (`ui/src/widgets.rs:1394`).
 `TransportButton` gains the `bare` rest face and the `ring` focus face in place.
@@ -624,7 +631,7 @@ Each maps to an action the app already performs; the performer is shared with th
 |---|---|---|---|---|
 | `toggle_play` | - | the `Key::Play|Pause|PlayPause` arm, extracted to one function, PlayPause path incl. `take_target` (F13) | always | keys, OK on picture |
 | `seek` | `by`: a nonzero integer of seconds, whose sign is the direction (then `dir` is forbidden), or `"setting"`, which requires `dir`: `back` or `forward` | `commit_jump`'s `SeekBurst` and `CommitSeek`, extracted with the signed step in ns as a parameter (today `signed_step(forward)` = `scrub_step_ns() x +-1`, `seek_jump.rs:16-18`; a literal `by` passes `by x 10^9`) and a keep-HUD flag (today `self.hud.hide(false)`, `:43`): a control press keeps the HUD up and extends its linger, the hidden-HUD tap still hides it (F14) | duration known (`seek_jump.rs:39-40`) | Left/Right, FF/REW, hold |
-| `previous`, `next` | - | `queue_transport::step` (F15) | `Controls::for_item` (`player_hud.rs:749-752`): the pair is absent for a non-episode or with neither neighbour; Previous is enabled by `previous || restart` (a restart target counts), Next by `next` (F6) | none |
+| `previous`, `next` | - | `queue_transport::step` (F15) | `Controls::for_item` (`player_hud.rs:749-752`): the pair is absent for a non-episode or with neither neighbour; Previous is enabled by `previous` alone (the playing row has a predecessor in the play queue; there is no restart target any more), Next by `next` (F6) | none |
 | `open_tracks` | `tab`: `subtitles`, `audio` | `OverlayKind::Tracks { tab: 1 | 0 }` (F15) | always (F6) | none |
 | `open_more` | `page`: `root` (default), `quality`, `speed` | `OverlayKind::More { page }`; `quality` is what was `More { quality: true }` (F18); `speed` is the address PR3 added by turning that bool into `page: Option<MorePage>` (F16) | always | none |
 | `toggle_section` | `section`: `chapters`, `info` | opens or closes the section (D6) | chapters: the playing item has chapters (`chapters_panel::has_chapters`) | none |
@@ -698,7 +705,8 @@ every item that CAN be absent collapsed (a Previous/Next member, an item with `w
 for classic that is `disc_row()` over `disc_items(false)`, the three always-present discs, `ctrl_row_w` = 3 x 64 + 2 x 20 =
 232 (`player_hud.rs:672-683`, `:717-719`). A centred or multi-segment replace has no floor: the primary takes its own
 label's width (`classic::stand_in_w` with no floor). The Skip pill is `classic::stand_in_w` of ITS OWN label
-(`standin` in `hud_format/compile.rs`), under the same floor rule, at the same aligned edge. Logic stays app-owned: when it appears, the countdown's
+(`standin` in `hud_format/compile.rs`), under the same floor rule, at the same aligned edge; an Automatic face is the
+Up Next arrangement of two buttons (the filled Skip at that width, the Watch button its own label's beside it). Logic stays app-owned: when it appears, the countdown's
 timing and cancel rules (`up_next.rs:105-125`, production sites `src/app/run.rs:2001`, `:2026-2045`,
 `src/app/playback.rs:939`), what the buttons do.
 
@@ -740,9 +748,10 @@ Skip. Edges are app-owned: OK or a click on a `toggle_section` control; BACK (cl
 then hides the HUD; over a Skip or Up Next offer it first retires that segment in the metadata store's
 `skipped` set and returns the slot to Discs); for modal sections, a direction that leaves the section's groups
 (closes it); the slot changes involuntarily with the marker (`slot_for`, F19), and every stand-in slot returns
-to Discs when its marker ends or BACK dismisses it. A standalone automatic Watch button dismisses
-its single-button offer; Watch Credits in the Up Next pair cancels the countdown and leaves
-Next Episode available. Automatic credits retains that pair and its geometry, using five presented
+to Discs when its marker ends or BACK dismisses it. Every Automatic skip prompt (an intro, a mid-item credits marker, and a final marker with no
+queued successor, or with Next episode set to After credits or Off) is a Watch + Skip pair laid out as
+Up Next's two buttons are (`up_next::layout_at`; Watch is item 0 and cancels, the filled Skip is item 1,
+the initial focus and the countdown's target); pressing Watch there dismisses the offer. Watch Credits in the Up Next pair cancels the countdown and leaves Next Episode available. Automatic credits retains that pair and its geometry, using five presented
 seconds on the primary button instead of the legacy ten-second clock.
 
 - R1. `open_more` is placed, at or above `MIN_CONTROL_SIZE`, in the root state (compact, Discs) under EVERY valuation
@@ -1196,7 +1205,7 @@ with computed values; PR17's compile reports the chapters plus info block's top 
 | 7-8 | "5:27" left, "-52:33" right | `playbar.clocks: ends`; `fmt::clock`, minus from `fmt_time` (F27) | `draw_clock` |
 | 9 | Speech bubble | `open_tracks {tab: subtitles}`, `rest: bare`; the menu reaches Audio (F15) | `TransportButton` |
 | 10 | Arrow "10" | `seek {by: -10}`, static face | `TransportButton`; the extracted jump |
-| 11 | Previous | `previous`, `{default, restart}` faces | `TransportButton` |
+| 11 | Previous | `previous`, `{default, restart}` faces (`restart` is accepted and never selected) | `TransportButton` |
 | 12 | Large white disc | `toggle_play`, size 64, `rest: solid`, `focus: ring`, `{playing, paused}` | `TransportButton`; the extracted toggle |
 | 13 | Next | `next` | `TransportButton` |
 | 14 | Arrow "30" | `seek {by: 30}`, static face | `TransportButton` |

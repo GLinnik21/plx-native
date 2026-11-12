@@ -1805,9 +1805,10 @@ pub fn hero_identity_w(r: Rect, parts: &[&str], resolution: Option<&str>, chips:
 }
 
 /// Home's metadata band uses brighter reading ink over the hero art and reserves room for the rating.
-pub fn hero_metadata(p: Painter, r: Rect, parts: &[&str], rating: &str, measure: &dyn plx_machine::machine::Measure) {
+pub fn hero_metadata(p: Painter, r: Rect, parts: &[&str], quality: Option<&str>, rating: &str, measure: &dyn plx_machine::machine::Measure) {
     let rating = (!rating.is_empty() && keyline_chip_w(rating, measure) <= r.w * 0.5).then_some(rating);
-    identity_row(Some(p), r, parts, rating, &[], theme::TEXT_READING, measure);
+    let chips = rating.as_ref().map_or(&[][..], std::slice::from_ref);
+    identity_row(Some(p), r, parts, quality, chips, theme::TEXT_READING, measure);
 }
 
 /// The one layout of the identity band, painted with `paint` or only measured without it.
@@ -6348,6 +6349,11 @@ impl TabStrip {
             foc: Capsule::new(),
         }
     }
+    /// Re-enter the selected plate at its new layout position on the next update.
+    pub(crate) fn restart_selection(&mut self) {
+        self.sel = Capsule::new();
+    }
+
     /// Whether either capsule is still travelling, resizing or fading: the strip's own statement of
     /// motion, for an owner that waits for the strip to arrive (the Detail season pill's hold hint).
     pub fn moving(&self) -> bool {
@@ -8205,25 +8211,25 @@ pub enum ControlStyle {
 /// The design system states this as a CSS scope (`[data-ground="unkeyed"]`, `tokens/colors.css`):
 /// a surface standing on video sets it and every control inside switches. There is no scope to
 /// inherit through here, so it rides the widget as a builder — [`Button::ground`],
-/// [`CircleButton::ground`], [`TransportButton::ground`] — and the player HUD is the only caller
-/// that sets it.
+/// [`CircleButton::ground`], [`TransportButton::ground`].
 ///
 /// It changes the parts that require KNOWING the ground: `Keyed` accepts a [`ControlPalette`] for
 /// both face levels, while `Unkeyed` drops that palette, uses the HUD's light film and stronger
 /// idle edge at rest, flattens focus back to [`theme::ACCENT`] and raises its rim to pure white.
-/// Focus still means the same
-/// thing on both grounds — bright face, dark ink, pop and cast — but video cannot borrow a hue from
-/// pixels this process never sees.
+/// `VideoPreview` uses the same video fills with the quieter content-page rim. Focus on all
+/// three grounds uses a bright face, dark ink, pop and cast.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ControlGround {
-    /// The app's own pages — a ground we drew and can therefore answer to. Every control that is
-    /// not in the player HUD, and the default.
+    /// The app's own artwork — a ground we drew and can therefore sample. The default.
     Keyed,
     /// The VIDEO PLANE, under the HUD's own ramp: ambient tint is disabled, idle becomes the light
     /// film ([`theme::CONTROL_IDLE_FILL_UNKEYED`]) with its visible idle edge
     /// ([`theme::CONTROL_RIM_IDLE_UNKEYED`]); focus is flat [`theme::ACCENT`] and its edge is the
     /// pure-white line ([`theme::CONTROL_RIM_FOCUS_UNKEYED`]).
     Unkeyed,
+    /// Content-page chrome over a preview. The video fills preserve the picture under the row,
+    /// and the standard card sheen keeps its edge consistent with the poster-backed controls.
+    VideoPreview,
 }
 
 /// The colours a keyed control derives from its page's local ground sample.
@@ -8233,7 +8239,7 @@ pub enum ControlGround {
 /// only OKLCH hue and a fraction of chroma. That is the difference between a white object catching
 /// the scene's light and a white chip averaged toward a dark photograph (which turns muddy). A
 /// screen computes this once for its control row and copies it into every face; the player may
-/// receive one accidentally, but [`ControlGround::Unkeyed`] ignores it by construction.
+/// receive one accidentally, but video grounds ignore it by construction.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ControlPalette {
     focus_top: [f32; 4],
@@ -8362,12 +8368,17 @@ fn oklab_to_srgb(c: [f32; 3], alpha: f32) -> [f32; 4] {
 }
 
 impl ControlGround {
+    fn is_video(self) -> bool {
+        matches!(self, Self::Unkeyed | Self::VideoPreview)
+    }
+
     /// The idle control face on this ground. The ONE place the two fills are chosen between, so a
     /// widget can never hand-pick the wrong one.
     fn idle_fill(self) -> [f32; 4] {
-        match self {
-            ControlGround::Keyed => theme::CONTROL_IDLE_FILL,
-            ControlGround::Unkeyed => theme::CONTROL_IDLE_FILL_UNKEYED,
+        if self.is_video() {
+            theme::CONTROL_IDLE_FILL_UNKEYED
+        } else {
+            theme::CONTROL_IDLE_FILL
         }
     }
 }
@@ -8411,11 +8422,11 @@ struct ControlFace {
 /// invisible by construction, which is the sign it is an edge and not a fill.
 ///
 /// **[`ControlGround::Unkeyed`] is the one exception, and it is the ground asking, not the state.**
-/// Over the video plane both states use the 1.25px unkeyed geometry. Idle takes
+/// Over the player's video plane both states use the 1.25px unkeyed geometry. Idle takes
 /// [`theme::CONTROL_RIM_IDLE_UNKEYED`] because the keyed 1px/.22 card edge disappeared between the
 /// light film and the panel's video composition; focus raises that same geometry to
 /// [`theme::CONTROL_RIM_FOCUS_UNKEYED`] — pure white, with no top boost because nothing is brighter
-/// than white. Keyed controls keep the same card edge in both states.
+/// than white. Content-page controls keep the same card edge over artwork and preview video.
 fn control_rim(
     p: Painter,
     r: Rect,
@@ -8539,7 +8550,7 @@ fn control_rim_spec(focused: bool, ground: ControlGround) -> ([f32; 4], f32, f32
 
 impl ControlStyle {
     /// Full face material for this style and ground. A keyed Accent has two focused stops and a
-    /// palette-derived idle stop; an unkeyed Accent deliberately flattens back to the fixed video
+    /// palette-derived idle stop; a video-ground Accent deliberately flattens to the fixed video
     /// treatment because no colour can be sampled from that plane.
     fn face(self, focused: bool, ground: ControlGround, palette: ControlPalette) -> ControlFace {
         let flat = |fill, ink, spent| ControlFace {
@@ -8549,11 +8560,11 @@ impl ControlStyle {
             spent,
         };
         match self {
-            ControlStyle::Accent if ground == ControlGround::Unkeyed && focused => {
+            ControlStyle::Accent if ground.is_video() && focused => {
                 flat(theme::ACCENT, theme::ACCENT_INK, theme::CONTROL_SPENT_FILL)
             }
-            ControlStyle::Accent if ground == ControlGround::Unkeyed => flat(
-                theme::CONTROL_IDLE_FILL_UNKEYED,
+            ControlStyle::Accent if ground.is_video() => flat(
+                ground.idle_fill(),
                 theme::CONTROL_IDLE_INK,
                 theme::CONTROL_SPENT_FILL,
             ),
@@ -8683,12 +8694,15 @@ pub struct Button<'a> {
     /// 0..1 countdown progress, in the face selected by the progress builder; None = an ordinary button.
     pub progress: Option<f32>,
     progress_face: ButtonProgress,
+    inline_progress: Option<f32>,
 }
 /// [`Button`]'s icon box, as a multiple of its type size, and the icon→label gap. Named because
 /// [`Button::pill_w`] measures the same run `Button::draw` lays out — a literal in each would let
 /// the two drift.
 const BTN_ICON_RATIO: f32 = 1.15;
 const BTN_ICON_GAP: f32 = 12.0;
+const BTN_RAIL_W: f32 = 64.0;
+const BTN_RAIL_H: f32 = 6.0;
 /// Total horizontal air a pill carries around its icon+label run.
 pub const BTN_PILL_AIR: f32 = 68.0;
 /// [`ControlStyle::Keyline`]'s stroke width (the design's 1.5 — same weight as [`keyline_chip`]'s).
@@ -8714,6 +8728,7 @@ impl<'a> Button<'a> {
             scale: 1.0,
             progress: None,
             progress_face: ButtonProgress::FillSweep,
+            inline_progress: None,
         }
     }
     /// The [FOCUS POP](CTRL_FOCUS_SCALE), about the capsule's centre — normally [`CtlPop::scale`],
@@ -8842,20 +8857,33 @@ impl<'a> Button<'a> {
     }
 
     fn pill_w_from_advance(advance: f32, sz: c_int, icon: bool, trailing: Option<crate::icons::Icon>) -> f32 {
-        HStack::new(&Self::run_items(advance, sz, icon, trailing), BTN_ICON_GAP, StackAlign::Leading(0.0)).width()
+        HStack::new(&Self::run_items(advance, sz, icon, trailing, false), BTN_ICON_GAP, StackAlign::Leading(0.0)).width()
             + BTN_PILL_AIR
     }
 
     /// The pill's one run, which `draw` places and `pill_w_*` sizes: the leading icon's box, the
     /// label, and the trailing accessory standing by its INK. An accessory the pill does not carry
     /// is ABSENT, so it leaves neither its width nor its gap.
-    fn run_items(advance: f32, sz: c_int, icon: bool, trailing: Option<crate::icons::Icon>) -> [HItem; 3] {
+    fn run_items(advance: f32, sz: c_int, icon: bool, trailing: Option<crate::icons::Icon>, rail: bool) -> [HItem; 4] {
         let box_w = sz as f32 * BTN_ICON_RATIO;
         [
             if icon { HItem::new(box_w) } else { HItem::absent() },
+            if rail { HItem::new(BTN_RAIL_W) } else { HItem::absent() },
             HItem::new(advance),
             trailing.map_or_else(HItem::absent, |acc| HItem::glyph(acc, box_w)),
         ]
+    }
+
+    /// Width of the Play glyph, inline progress rail, and duration at this type size.
+    pub fn progress_pill_width(measure: &dyn plx_machine::machine::Measure, label: &std::ffi::CStr, sz: c_int) -> f32 {
+        let items = Self::run_items(measure.width(label, sz, true), sz, true, None, true);
+        HStack::new(&items, BTN_ICON_GAP, StackAlign::Leading(0.0)).width() + BTN_PILL_AIR
+    }
+
+    /// Place a playback progress rail between the leading glyph and the label.
+    pub fn inline_progress(mut self, frac: f32) -> Self {
+        self.inline_progress = Some(frac.clamp(0.0, 1.0));
+        self
     }
 
     /// Turn the pill into its own countdown: `frac` of its width is filled with
@@ -9033,7 +9061,7 @@ impl View for Button<'_> {
         // sizing the pill without the chevron and then drawing one would push the label off-centre.
         // The accessory stands by its INK, so the pill's right pad is measured to the mark itself.
         let isz = self.sz as f32 * BTN_ICON_RATIO;
-        let items = Self::run_items(tw, self.sz, self.icon.is_some() || self.svg.is_some(), self.trailing);
+        let items = Self::run_items(tw, self.sz, self.icon.is_some() || self.svg.is_some(), self.trailing, self.inline_progress.is_some());
         for span in HStack::new(&items, BTN_ICON_GAP, StackAlign::Centre(r.cx())).placed() {
             match span.i {
                 0 => {
@@ -9045,6 +9073,20 @@ impl View for Button<'_> {
                     }
                 }
                 1 => {
+                    let rail = Rect::new(span.x, r.cy() - BTN_RAIL_H * 0.5, BTN_RAIL_W, BTN_RAIL_H);
+                    let rad = BTN_RAIL_H * 0.5;
+                    p.rrect(rail, rad, rad, theme::with_a(ink, 0.22));
+                    let w = rail.w * self.inline_progress.unwrap_or_default();
+                    if w > 0.0 {
+                        // Switch with the face's contrast-selected ink. A tiny spring tail can
+                        // still set `focused` while the pill already reads as idle.
+                        let idle_ink = self.style.face(false, self.ground, self.palette).ink;
+                        let fill = if self.enabled && ink == idle_ink { theme::RESUME_FILL } else { ink };
+                        let rad = rad.min(w * 0.5);
+                        p.rrect(Rect::new(rail.x, rail.y, w, rail.h), rad, rad, fill);
+                    }
+                }
+                2 => {
                     p.text(self.label, span.x, ty, self.sz, ink, 0, 1); // left-aligned after the icon
                 }
                 _ => {

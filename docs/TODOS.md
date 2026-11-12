@@ -4,7 +4,7 @@
 
 ### Grade the hero shade's legibility contract against synopsis text over live trailer video
 
-**What:** Verify the synopsis contrast over a bound video plane at `field=1.35` using a TV capture of real trailer content. The host grader in `widgets_hero_scrim_tests.rs` samples `landing_hero::detail_shade`.
+**What:** Verify the synopsis contrast over the lower gradient using a TV capture of real trailer content. The host grader in `widgets_hero_scrim_tests.rs` samples `landing_hero::detail_shade` with the logo in the corner and the middle of the picture clear.
 
 **Why:** `docs/trailer-ux-plan.md` §2.3 keeps the detail hero's synopsis visible during background
 trailer autoplay for the first time — previously no prose was ever drawn over playing video, only

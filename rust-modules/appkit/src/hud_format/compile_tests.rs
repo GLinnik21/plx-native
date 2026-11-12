@@ -67,7 +67,7 @@ fn marker(kind: MarkerKind, final_seg: bool) -> Marker {
     Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg }
 }
 
-const PAIR: Controls = Controls { previous: true, next: true, restart: false };
+const PAIR: Controls = Controls { previous: true, next: true };
 
 /// Every field of two geometries that differ, as text; empty when they are equal.
 fn diff(got: &HudGeometry, want: &HudGeometry) -> Vec<String> {
@@ -1155,6 +1155,17 @@ fn an_installed_playbar_can_reserve_a_lane_for_the_end_time() {
     assert!(bar_of(compact(&original, Slot::Discs)).1.end_time.is_none());
 }
 
+/// **The finish-time capability is the declared lane**, which only HUD format 1.1 can name: the *Estimated
+/// end time* setting and the app's projection ask the compiled HUD, so a package that does not declare the lane
+/// is never offered a switch that does nothing.
+#[test]
+fn only_a_package_that_declares_the_end_time_lane_supports_the_end_time() {
+    let declared = REFERENCE.replacen(r#""clock_size": "CAPTION""#, r#""clock_size": "CAPTION", "end_time_width": 320"#, 1);
+    assert!(build(&declared, &FM).declares_end_time(), "the lane is declared");
+    assert!(!build(REFERENCE, &FM).declares_end_time(), "a playbar with no lane");
+    assert!(!Compiled::default().declares_end_time(), "no state at all");
+}
+
 /// **The bands are placed in `z` order, equal `z` in declared order.** `z_order` replaced a stable sort by key;
 /// every sequence of up to five bands over three `z` values (duplicates included) comes out the same.
 #[test]
@@ -1172,7 +1183,8 @@ fn bands_fill_in_z_order_and_equal_z_keep_their_declared_order() {
     assert_eq!(seen, 1 + 3 + 9 + 27 + 81 + 243);
 }
 
-/// Marker faces with equal rects share a layout; every distinct rect gets its own title exclusion.
+/// Marker faces with equal occupancy (the filled pill and the Watch button beside an Automatic one) share a
+/// layout; every distinct one gets its own title exclusion.
 #[test]
 fn a_skip_state_carries_a_credits_layout_exactly_when_its_pill_rects_differ() {
     let mut alt = 0;
@@ -1180,10 +1192,12 @@ fn a_skip_state_carries_a_credits_layout_exactly_when_its_pill_rects_differ() {
         let compiled = build(text, &FM);
         for state in compiled.states().iter().filter(|s| s.key.slot == Slot::Skip) {
             let rects = state.standin.skip.expect("a Skip state places the pill");
-            let unique = rects.iter().enumerate().filter(|(i, rect)| !rects[..*i].contains(rect)).count();
+            let faces = SkipKind::ALL.map(|kind| state.standin.face(kind));
+            let unique = faces.iter().enumerate().filter(|(i, face)| !faces[..*i].contains(face)).count();
             assert_eq!(state.skip_alt.len() + 1, unique, "{:?}", state.key);
             for kind in SkipKind::ALL {
-                assert_eq!(state.geometry(kind).items[0], Some(rects[kind as usize]));
+                let automatic = matches!(kind, SkipKind::WatchIntro | SkipKind::WatchCredits);
+                assert_eq!(state.geometry(kind).items[usize::from(automatic)], Some(rects[kind as usize]));
             }
             alt += state.skip_alt.len();
         }
@@ -1191,7 +1205,9 @@ fn a_skip_state_carries_a_credits_layout_exactly_when_its_pill_rects_differ() {
     assert!(alt > 0, "no Skip state differs between the two labels: the test saw nothing");
 }
 
-/// Watch labels reserve their own width without changing the Manual baseline.
+/// **The Automatic faces are the Up Next pair's arrangement** (one rule for both timed prompts): the unfilled
+/// Watch button is item 0 and sits left of the filled Skip, item 1, `PILL_GAP` apart on one baseline, and the
+/// Watch label's own width sizes the Watch button, not the filled one.
 #[test]
 fn watch_faces_use_their_own_hit_and_title_exclusion_geometry() {
     let mut labels = labels();
@@ -1200,20 +1216,33 @@ fn watch_faces_use_their_own_hit_and_title_exclusion_geometry() {
     let package = package(CLASSIC);
     let compiled = compile(&package, &FM, CompileCtx { labels });
     for state in compiled.states().iter().filter(|s| s.key.slot == Slot::Skip) {
-        let rects = state.standin.skip.unwrap();
-        assert!(rects[2].w > rects[0].w && rects[3].w > rects[1].w);
+        let (rects, watch) = (state.standin.skip.unwrap(), state.standin.watch.unwrap());
+        assert_eq!(rects[2], rects[0], "the filled Skip intro is the manual pill, whatever Watch reads");
+        assert_eq!(rects[3], rects[1]);
+        assert!(watch[3].w > watch[2].w, "the longer Watch label makes the wider Watch button");
+        assert!(watch[0].w == 0.0 && watch[1].w == 0.0, "the manual faces have no Watch button");
         for kind in SkipKind::ALL {
             let shown = state.skip_variant(kind);
             let rect = rects[kind as usize];
-            assert_eq!(state.geometry(kind).items[0], Some(rect));
+            let automatic = matches!(kind, SkipKind::WatchIntro | SkipKind::WatchCredits);
+            let items = state.geometry(kind).items;
+            assert_eq!(items[usize::from(automatic)], Some(rect));
+            let mut left = rect.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE).x;
+            if automatic {
+                let w = watch[kind as usize];
+                assert_eq!(items[0], Some(w));
+                assert!(w.x + w.w < rect.x, "Watch is left of the filled Skip, so LEFT reaches it");
+                assert_eq!((w.y, w.h), (rect.y, rect.h), "one baseline");
+                left = left.min(w.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE).x);
+            }
             for op in &shown.ops {
                 if let DrawOp::Text { bind, rect: title, .. } = op {
                     if bind == "title.main" {
-                        assert!(title.x + title.w <= rect.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE).x);
+                        assert!(title.x + title.w <= left, "{kind:?}: the title stops short of the first button");
                     }
                 }
             }
-            assert!(shown.ops.iter().any(|op| matches!(op, DrawOp::SkipPill { rects: painted } if painted[kind as usize] == rect)));
+            assert!(shown.ops.iter().any(|op| matches!(op, DrawOp::SkipPill { rects: painted, .. } if painted[kind as usize] == rect)));
         }
     }
 }

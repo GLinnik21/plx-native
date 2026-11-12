@@ -4,6 +4,76 @@ use super::*;
 use plx_data::stores::tape;
 use crate::app::adapters::stores::StoreRunner;
 
+#[test]
+fn session_codec_profiles_require_canonical_exact_matching_envelopes() {
+    let initial = Initial::synthetic_home(17, 32517, None).unwrap();
+    let legacy = serde_json::to_value(&initial).unwrap();
+    let current = initial.to_v6_value().unwrap();
+    let prior = super::super::recorder::FP_PRIOR;
+    let v6 = super::super::recorder::FP_V6;
+    assert_eq!(current["session"], serde_json::json!({"codec":6,"boot":legacy["session"]}));
+    assert_eq!(Initial::decode_profile(legacy.clone(), initial.hash(), prior).unwrap().hash(), initial.hash());
+    assert_eq!(Initial::decode_profile(current.clone(), initial.hash(), v6).unwrap().hash(), initial.hash());
+    assert!(Initial::decode_profile(current.clone(), initial.hash(), prior).is_err());
+    assert!(Initial::decode_profile(legacy.clone(), initial.hash(), v6).is_err());
+    for historic in [5612583773909772043u64, 14623229906352324261u64] {
+        assert!(Initial::decode_profile(legacy.clone(), initial.hash(), historic).is_err());
+        assert!(Initial::decode_profile(current.clone(), initial.hash(), historic).is_err());
+    }
+    assert!(Initial::decode_profile(current.clone(), initial.hash(), v6 ^ 1).is_err());
+    assert!(Initial::decode_profile(current.clone(), initial.hash() ^ 1, v6).is_err());
+    let mut bad = current.clone(); bad["version"] = serde_json::json!(2);
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current.clone(); bad["session"].as_object_mut().unwrap().remove("boot");
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current.clone(); bad["session"]["codec"] = serde_json::json!(5);
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current.clone(); bad["session"]["extra"] = serde_json::json!(true);
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current.clone(); bad["session"]["boot"]["signin_account"] = serde_json::json!("private");
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current.clone(); bad["session"]["boot"].as_object_mut().unwrap().remove("next_req");
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    let mut bad = current; bad["session"]["boot"]["next_req"] = serde_json::json!(1);
+    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+}
+
+// Probe only until the coordinator captures and installs literal bytes and hashes.
+#[test]
+fn session_app_initial_probe_only() {
+    let initial = Initial::synthetic_home(17, 32517, None).unwrap();
+    let value = serde_json::to_value(&initial).unwrap();
+    let bytes = serde_json::to_vec(&initial).unwrap();
+    assert_eq!(bytes.as_slice(), include_bytes!("../fixtures/session-codec-v5/initial-v5.json"));
+    let frozen_hashes: serde_json::Value = serde_json::from_str(include_str!("../fixtures/session-codec-v5/initial-hashes.json")).unwrap();
+    assert_eq!(frozen_hashes["canon_finish"].as_u64(), Some(14618251649147468963u64));
+    assert_eq!(frozen_hashes["outer_hash"].as_u64(), Some(14618251649147468963u64));
+    let mut canon = Canon::new();
+    initial.write(&mut canon);
+    let outer_hash = initial.hash();
+    assert_eq!(canon.finish(), 14618251649147468963u64);
+    assert_eq!(outer_hash, 14618251649147468963u64);
+    assert_eq!(initial.version, 1);
+    assert_eq!(Initial::decode(value.clone(), outer_hash).unwrap().hash(), outer_hash);
+    assert!(Initial::decode(value.clone(), outer_hash ^ 1).is_err());
+    let mut unknown = value.clone();
+    unknown["unexpected"] = serde_json::json!(true);
+    assert!(Initial::from_value(unknown).is_err());
+    let mut nested_unknown = value.clone();
+    nested_unknown["session"]["signin_account"] = serde_json::json!("injected");
+    assert!(Initial::from_value(nested_unknown).is_err());
+    let mut missing = value;
+    missing.as_object_mut().unwrap().remove("settings");
+    assert!(Initial::from_value(missing).is_err());
+    if let Some(dir) = std::env::var_os("PLX_SESSION_APP_V5_GOLDEN_OUT") {
+        let dir = std::path::Path::new(&dir);
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("session-app-initial-v5.json"), bytes).unwrap();
+        std::fs::write(dir.join("session-app-initial-hashes.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({"canon_finish": canon.finish(), "outer_hash": outer_hash})).unwrap()).unwrap();
+    }
+}
+
 /// One controlled Hubs step as the Bridge's controlled arm runs it: the store's step against an
 /// empty Browse directory and the registry's keys (`cmd: None` is the tick), then every job it
 /// emitted started through the run's admission ledger.

@@ -10,6 +10,7 @@
 //! modal style and restarts its countdown when the page becomes active again.
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -22,7 +23,6 @@ use plx_ui::consts::*;
 use plx_ui::hstack::Item;
 use plx_ui::frame::Budget;
 use plx_ui::hero_logo::{self, HeroLogo, LogoRung};
-use plx_ui::label::{Label, VAlign};
 use plx_ui::hold_hint::{HintInput, HoldHint};
 use plx_ui::icons::Icon;
 use plx_ui::linked_heading::{self, LinkedHeading};
@@ -239,6 +239,79 @@ impl Grid {
     }
 }
 
+/// **The ground the hero's controls are keyed to, and how it moves.** The reading is the pixels
+/// under the action row ([`plx_gfx::gfx::sample_control_ground`], latched, a frame or two late); it
+/// used to key the Play pill the moment it landed, so after a flip the pill kept the PREVIOUS page's
+/// tint while the background had already turned, then popped to the new one (owner, v0.10.0 rc1:
+/// "when the page flips play button tint falls behind the actual page color"). The key now
+/// dissolves toward each reading at the wash's own rate ([`AmbientWash::K`]) -- the controls take the
+/// colour in step with the ground they stand on -- and a page sliding AWAY keeps the key it had
+/// ([`Self::leaving`]) rather than following the page that replaces it.
+#[derive(Default)]
+struct HeroTint {
+    /// The latest reading the draw was answered with. Written by the draw (a `Cell`: the draw reads
+    /// the screen by `&self`), read by [`Self::step`].
+    read: Cell<Option<[f32; 3]>>,
+    key: [Spring; 3],
+    primed: bool,
+    /// The key the outgoing page's controls keep while it slides away.
+    leaving: Option<[f32; 3]>,
+}
+
+impl HeroTint {
+    /// The eased key, `None` until the first reading.
+    fn key(&self) -> Option<[f32; 3]> {
+        self.primed.then(|| self.key.map(|s| s.pos))
+    }
+
+    /// Dissolve toward the latest reading (the first one is taken whole: there is nothing to dissolve from).
+    fn step(&mut self, dt: f32) {
+        let Some(target) = self.read.get() else { return };
+        if !self.primed {
+            for (spring, v) in self.key.iter_mut().zip(target) {
+                spring.jump(v);
+            }
+            self.primed = true;
+            return;
+        }
+        // decorative, like the wash's own dissolve: must not hold the page-freeze snapshot
+        plx_machine::idle::decorative(|| {
+            for (spring, v) in self.key.iter_mut().zip(target) {
+                spring.step(v, AmbientWash::K, dt);
+                if plx_machine::idle::settled(spring.pos, v, spring.vel) {
+                    spring.jump(v);
+                }
+            }
+        });
+    }
+
+    /// A page begins to slide away: it keeps the key it stands on.
+    fn leave(&mut self) {
+        self.leaving = self.key();
+    }
+
+    /// The page is gone (or none ever left).
+    fn arrived(&mut self) {
+        self.leaving = None;
+    }
+
+    /// The key the controls of a page are drawn with: the live page follows the eased key, the page
+    /// sliding away the one it left with.
+    fn for_page(&self, live: bool) -> Option<[f32; 3]> {
+        if live { self.key() } else { self.leaving.or_else(|| self.key()) }
+    }
+}
+
+/// **May the hero row take a fresh ground reading on this draw?** The page must be fully visible
+/// (`page_alpha`), and the row of the LIVE page (the incoming one, during a flip) must stand wholly
+/// on screen at its drawn place: it is read where it is DRAWN (the sampler is handed the row shifted
+/// by the slide's `dx`), so it need not be at rest. It used to wait for rest (`dx` ~ 0), which put
+/// the new page's reading after the whole slide and left the controls on the previous page's tint
+/// for all of it.
+fn may_read_hero_ground(live: bool, row: Rect, page_alpha: f32) -> bool {
+    live && page_alpha >= 0.999 && row.x >= 0.0 && row.x + row.w <= SCR_W
+}
+
 struct Backdrop {
     wash: AmbientWash,
     grid_target: [[f32; 4]; 4],
@@ -264,12 +337,22 @@ struct Backdrop {
     /// released. While it is fresh a key is being HELD along the page, and the wash keeps the
     /// colours it has instead of re-keying to every card the focus crosses ([`Self::held`]).
     repeat_ms: Option<u32>,
+    /// The shelf card the wash last saw focus on, and the tick (ms) it arrived there
+    /// ([`Self::dwelled`]). Derived from the draw's own reads; not canon.
+    dwell: (Option<(u16, String)>, u32),
 }
 
 /// How long after the last direction-key `Repeat` the wash still counts the key as held, for the
 /// case where the key-up never arrives (the dropped-key-up net `ui::dispatch` keeps for OK). The
 /// panel repeats about every 100 ms, so a live hold refreshes this several times over.
 const WASH_REPEAT_GRACE_MS: u32 = 300;
+
+/// How long focus must rest on a shelf card before the wash keys to that card's colours. A run of
+/// quick taps (a Down and an Up each, never a `Repeat`) crosses cards whose envelopes are unrelated
+/// (blue, purple, green) a few frames apart; keying the wash to each one swings it back and forth,
+/// which on the television reads as the background flickering (owner, v0.10.0 rc1). Well under the
+/// wash's own half-second dissolve ([`AmbientWash::K`]), so a single press still reads as immediate.
+const WASH_DWELL_MS: u32 = 200;
 
 impl Backdrop {
     fn new() -> Self {
@@ -285,6 +368,7 @@ impl Backdrop {
             held: None,
             pending_art: String::new(),
             repeat_ms: None,
+            dwell: (None, 0),
         }
     }
 
@@ -300,6 +384,20 @@ impl Backdrop {
             Edge::Up => self.repeat_ms = None,
             Edge::Down => {}
         }
+    }
+
+    /// **Has focus rested on `item` for [`WASH_DWELL_MS`]?** Called once a frame with the shelf card
+    /// focus is on (`None` off the shelves): a different card restarts the clock.
+    fn dwelled(&mut self, item: Option<&PmsMovie>, ms: u32) -> bool {
+        let same = match (&self.dwell.0, item) {
+            (Some((sid, rk)), Some(m)) => *sid == m.sid.raw() && *rk == m.rk,
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            self.dwell = (item.map(|m| (m.sid.raw(), m.rk.clone())), ms);
+        }
+        ms.wrapping_sub(self.dwell.1) >= WASH_DWELL_MS
     }
 
     /// Is a direction key being held right now? The chrome glass blurs the page under it and
@@ -416,7 +514,8 @@ impl Backdrop {
             self.held = None;
             self.outgoing_tex = (0, 0.0, 0.0);
         }
-        if let Some(item) = grid_item.filter(|m| m.has_blur).filter(|_| !self.held(ms)) {
+        let dwelled = self.dwelled(grid_item, ms);
+        if let Some(item) = grid_item.filter(|m| m.has_blur).filter(|_| dwelled && !self.held(ms)) {
             self.grid_target = AmbientWash::keyed(item.blur, PageGround::CARD_W);
         }
         // decorative colour dissolve under the page — must not hold the page-freeze snapshot
@@ -630,6 +729,8 @@ pub struct HomeScreen {
     /// The standing "Hold OK for options" capsule and its dwell/life schedule — a timer advanced by
     /// `Tick`, not logical state (it is not in `SHAPE`, the way `status_ms` is not).
     hold_hint: HoldHint,
+    /// The ground the hero's controls are keyed to, eased ([`HeroTint`]): paint state, not canon.
+    tint: HeroTint,
     backdrop: Backdrop,
     grid: Grid,
 }
@@ -681,6 +782,7 @@ impl HomeScreen {
             hero_pop: CtlPop::new(),
             disc: HeroDisc::default(),
             hold_hint: HoldHint::new(),
+            tint: HeroTint::default(),
             backdrop: Backdrop::new(),
             grid: Grid::new(),
         }
@@ -1364,12 +1466,12 @@ impl HomeScreen {
     }
 
     fn carousel_index(&self, view: HubsView<'_>) -> usize {
-        self.carousel
-            .as_ref()
-            .and_then(|id| {
-                (0..view.hero_count())
-                    .find(|&i| view.hero(i).is_some_and(|h| Self::same_item(h.item, id)))
-            })
+        Self::index_of(view, self.carousel.as_ref())
+    }
+
+    /// Where the hero named `id` stands in the pool (0 for none).
+    fn index_of(view: HubsView<'_>, id: Option<&(plx_plex::plex::ServerId, String)>) -> usize {
+        id.and_then(|id| (0..view.hero_count()).find(|&i| view.hero(i).is_some_and(|h| Self::same_item(h.item, id))))
             .unwrap_or(0)
     }
 
@@ -1386,6 +1488,7 @@ impl HomeScreen {
         let Some(incoming) = view.hero(next).and_then(|h| Self::identity_of(h.item)) else {
             return false;
         };
+        self.tint.leave();
         self.outgoing = Some(current);
         self.carousel = Some(incoming);
         self.hero_dir = dir as f32;
@@ -1752,6 +1855,10 @@ impl HomeScreen {
                 self.outgoing = None;
             }
         }
+        if self.outgoing.is_none() {
+            self.tint.arrived();
+        }
+        self.tint.step(dt);
         if self.covered {
             // Compact surfaces keep ticking their host page, unlike Sheet/Alert/Opaque surfaces.
             // Cover/Uncover is the shared modal lifecycle across BOTH policies, so retain the
@@ -1893,7 +2000,7 @@ impl HomeScreen {
             return;
         }
         for hero in neighbours() {
-            if plx_ui::tex::logo_warm(hero.item.sid.raw(), hero_logo_rk(hero.item))
+            if plx_ui::tex::logo_warm(hero.item.sid.raw(), hero_logo_source(hero.item))
                 == Warm::Claimed
             {
                 return;
@@ -2213,29 +2320,48 @@ impl HomeScreen {
             hero_content(hero.item, p, 0.0, measure);
             self.draw_hero_actions(hero.item, env, p, 0.0, true, page_alpha, focus, measure, press_scale);
         }
-        if let Some((dots, pager)) = self.pager(view, hero.item, measure) {
-            // Follow the shelf's focus motion so the pager recedes and returns with the card.
-            let p = if self.holds_page(0) {
-                let focus_mix = self.grid.shelves.first().map_or(0.0, |shelf| shelf.band_expand().clamp(0.0, 1.0));
-                p.alpha(1.0 - (1.0 - theme::hero::HOME_PAGER_SHELF_ALPHA) * focus_mix)
-            } else {
-                p
-            };
-            dots.centered_y(pager.dots_x, HERO_PAGER_CY).draw(env, p);
-            plx_ui::icons::draw(p, Icon::Chevron, pager.chevron, theme::TEXT_SECONDARY);
+        self.draw_pagers(view, hero.item, env, p, measure);
+    }
+
+    /// **The pagers: one per page, drawn on the page they belong to.** The dots and chevron are part
+    /// of the hero's action row (they stand after that hero's Info disc), so each page of a flip
+    /// carries its own at the page's own slide offset, with its own dot lit — the outgoing page's
+    /// pager leaves with it and the incoming page's arrives with it, instead of one pager staying
+    /// put over the slide and jumping to the next hero's row when it ends.
+    fn draw_pagers(&self, view: HubsView<'_>, hero: &PmsMovie, env: &Env, p: Painter, measure: &dyn Measure) {
+        // Follow the shelf's focus motion so the pager recedes and returns with the card.
+        let p = if self.holds_page(0) {
+            let focus_mix = self.grid.shelves.first().map_or(0.0, |shelf| shelf.band_expand().clamp(0.0, 1.0));
+            p.alpha(1.0 - (1.0 - theme::hero::HOME_PAGER_SHELF_ALPHA) * focus_mix)
+        } else {
+            p
+        };
+        let draw = |hero: &PmsMovie, index: usize, p: Painter| {
+            if let Some((dots, pager)) = self.pager(view, hero, index, measure) {
+                dots.centered_y(pager.dots_x, HERO_PAGER_CY).draw(env, p);
+                plx_ui::icons::draw(p, Icon::Chevron, pager.chevron, theme::TEXT_SECONDARY);
+            }
+        };
+        if let Some((out_x, in_x)) = self.slide_offsets() {
+            if let Some(old) = self.outgoing_hero(view) {
+                draw(old.item, Self::index_of(view, self.outgoing.as_ref()), p.translate(out_x, 0.0));
+            }
+            draw(hero, self.carousel_index(view), p.translate(in_x, 0.0));
+        } else {
+            draw(hero, self.carousel_index(view), p);
         }
     }
 
-    /// The billboard's pager for `hero`, the selected one: its page dots (the active one set) and
-    /// where the group stands ([`hero_pager`]), after that hero's Info disc. `None` for a single hero,
-    /// which has nothing to page. It is not a focus stop and records no hit rect.
-    fn pager(&self, view: HubsView<'_>, hero: &PmsMovie, measure: &dyn Measure) -> Option<(PageDots, PagerRects)> {
+    /// The billboard's pager for `hero`, the one at pool index `index`: its page dots (that one set)
+    /// and where the group stands ([`hero_pager`]), after that hero's Info disc. `None` for a single
+    /// hero, which has nothing to page. It is not a focus stop and records no hit rect.
+    fn pager(&self, view: HubsView<'_>, hero: &PmsMovie, index: usize, measure: &dyn Measure) -> Option<(PageDots, PagerRects)> {
         if view.hero_count() <= 1 {
             return None;
         }
-        let resumes = hero_resumes(hero);
-        let info = hero_rects(measure, hero, plx_appkit::hero_layout::play_label(resumes)).info;
-        let dots = PageDots::new(view.hero_count()).active(self.carousel_index(view));
+        let (label, progress) = hero_action(hero);
+        let info = hero_rects(measure, hero, &label, progress.is_some()).info;
+        let dots = PageDots::new(view.hero_count()).active(index);
         let pager = hero_pager(info.x + info.w, dots.width());
         Some((dots, pager))
     }
@@ -2252,27 +2378,31 @@ impl HomeScreen {
         measure: &dyn Measure,
         press_scale: f32,
     ) {
-        let resumes = hero_resumes(hero);
-        let label = plx_appkit::hero_layout::play_label(resumes);
-        let HeroRects { play: pill, disc, info } = hero_rects(measure, hero, label);
+        let (label, progress) = hero_action(hero);
+        let HeroRects { play: pill, disc, info } = hero_rects(measure, hero, &label, progress.is_some());
         if !on_axis(MARGIN_X + dx, info.x + info.w - MARGIN_X, SCR_W, 0.0) { return; }
-        let may_read = live && dx.abs() < 0.5 && page_alpha >= 0.999;
-        let palette = plx_gfx::gfx::sample_control_ground(
-            [pill.x + dx, pill.y, info.x + info.w - pill.x, pill.h],
-            may_read,
-        )
-        .map(ControlPalette::ambient)
-        .unwrap_or_default();
+        let row = Rect::new(pill.x + dx, pill.y, info.x + info.w - pill.x, pill.h);
+        let reading = plx_gfx::gfx::sample_control_ground(
+            [row.x, row.y, row.w, row.h],
+            may_read_hero_ground(live, row, page_alpha),
+        );
+        if live && reading.is_some() {
+            self.tint.read.set(reading);
+        }
+        let palette = self.tint.for_page(live).or(reading).map(ControlPalette::ambient).unwrap_or_default();
         let pop = |i| if live { self.hero_pop.scale_with(i, press_scale) } else { 1.0 };
         // The fill rides the lift spring (`CtlPop::focus`) so the plate cross-fades (and the ink flips) with the pop;
         // a frame drawn off the live row (a transition's snapshot) has no spring and reads the focus.
         let fill = |i| if live { self.hero_pop.focus(i) } else { f32::from(focus == Some(Located::Hero(i))) };
-        Button::new(label.as_ptr(), theme::size::BODY, pill)
+        let mut button = Button::new(label.as_ptr(), theme::size::BODY, pill)
             .icon(Icon::Play)
             .focus_mix(fill(0))
             .palette(palette)
-            .scale(pop(0))
-            .draw(env, p);
+            .scale(pop(0));
+        if let Some(progress) = progress {
+            button = button.inline_progress(progress);
+        }
+        button.draw(env, p);
         if let Some((rect, hex)) = disc.zip(disc_hex(hero)) {
             // At either rest the plain face; only a flip in flight layers the fill.
             let (icon, mid) = plx_appkit::watchlist_disc::paint(self.disc.progress(hex));
@@ -2593,7 +2723,7 @@ impl LogicalState for HomeScreen {
             // the commit opens the card) is an effect, and the page it moves is `snap_target`.
             reveal_press: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
-            hero_pop: _, backdrop: _, grid: _,
+            hero_pop: _, tint: _, backdrop: _, grid: _,
             // The disc's membership is the Watchlist store's (the application feeds it); the flip
             // is paint, like Detail's.
             disc: _,
@@ -3067,9 +3197,8 @@ impl HomeScreen {
             return status_overlay(view, &self.plaintext, &self.clock)?.action_frame_measured(measure);
         }
         let hero = self.selected_hero(view)?.item;
-        let resumes = hero_resumes(hero);
-        let label = plx_appkit::hero_layout::play_label(resumes);
-        let rects = hero_rects(measure, hero, label);
+        let (label, progress) = hero_action(hero);
+        let rects = hero_rects(measure, hero, &label, progress.is_some());
         match index {
             0 => Some(rects.play),
             1 => Some(rects.info),
@@ -3685,13 +3814,17 @@ fn hero_pager(info_right: f32, dots_w: f32) -> PagerRects {
     }
 }
 
-fn hero_rects(measure: &dyn Measure, item: &PmsMovie, label: &std::ffi::CStr) -> HeroRects {
+fn hero_rects(measure: &dyn Measure, item: &PmsMovie, label: &std::ffi::CStr, inline_progress: bool) -> HeroRects {
     // One row: Play, the watchlist disc when the title has one (absent: no room, no gap), Info —
     // each exactly one gap after the one before it, measured between the visible marks
     // ([`plx_appkit::hero_layout::flat_row`]).
     let has_disc = disc_hex(item).is_some();
     let items = [
-        Item::new(plx_appkit::hero_layout::play_width(measure, label)),
+        Item::new(if inline_progress {
+            Button::progress_pill_width(measure, label, theme::size::BODY).max(theme::hero::PLAY_MIN_W)
+        } else {
+            plx_appkit::hero_layout::play_width(measure, label)
+        }),
         if has_disc { Item::new(HERO_CTRL_D) } else { Item::absent() },
         Item::new(HERO_CTRL_D),
     ];
@@ -3859,12 +3992,14 @@ fn hero_art(tex: (u32, f32, f32), snap: f32, alpha: f32) -> plx_ui::widgets::Was
 fn show_of(item: &PmsMovie) -> Option<&str> {
     (item.kind == 3 && !item.show_rk.is_empty()).then_some(item.show_rk.as_str())
 }
-fn hero_logo_rk(item: &PmsMovie) -> &str {
-    if item.kind == 3 && !item.show_rk.is_empty() {
-        &item.show_rk
-    } else {
-        &item.rk
-    }
+fn hero_logo_source(item: &PmsMovie) -> &str {
+    item.logo.as_deref().unwrap_or_else(|| {
+        if item.kind == 3 && !item.show_rk.is_empty() {
+            &item.show_rk
+        } else {
+            &item.rk
+        }
+    })
 }
 fn prefetch_order(cur: i32, n: i32, out: &mut [i32; 2 * HERO_PREFETCH]) -> usize {
     if n <= 1 {
@@ -3892,66 +4027,80 @@ fn prefetch_armed(snap: f32, sliding: bool) -> bool {
     neighbours_armed(snap) && !sliding
 }
 
-/// **What Home's hero says under its title** (owner's board CW-13 v2), by the hero's state
-/// ([`hero_line`]).
+/// The copy beneath the title. Playback progress lives in the action row.
 enum HeroLine<'a> {
-    /// ONE bold line, the column wide, elided when it does not fit (`LABEL`, primary ink): an
-    /// episode's label (`S2, E4 · The Night Crossing`), or the time left of a movie being resumed
-    /// (`8m left`, the string the Continue Watching row's footer reads).
-    Label(String),
-    /// The premise of a hero nothing has been watched of: the first sentence of its summary
-    /// ([`first_sentence`]) in reading ink on [`theme::hero::HOME_SYNOPSIS_W`], at most two lines.
     Premise(&'a str),
-    /// One compact identity band for an unplayed movie or show.
-    Metadata { kind: &'static str, year: String, length: String, genres: String, rating: &'a str },
+    Metadata { identity: String, date: String, length: String, genres: String, quality: Option<String>, rating: &'a str },
 }
 
-/// Does the Play button of `hero` say Resume (the one resume rule, [`plx_data::metadata::resume_ns`])?
 fn hero_resumes(hero: &PmsMovie) -> bool {
     plx_data::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0
 }
 
-/// **The line Home's hero reads by its state.** An EPISODE (resumed, or the next one on deck and not
-/// started) names itself: its label. A hero being RESUMED says how much is left, with the footer's
-/// own formatter ([`plx_ui::fmt::footer_left`], over the footer's own derivation of the time left,
-/// [`tile_facts::of`]). An unplayed movie or show gets an identity band. Other heroes
-/// fall back to the first sentence of the synopsis.
+fn hero_action(hero: &PmsMovie) -> (std::borrow::Cow<'static, std::ffi::CStr>, Option<f32>) {
+    use std::borrow::Cow;
+    let resumes = hero_resumes(hero);
+    if resumes {
+        if let Some(progress) = tile_facts::resume_of(hero) {
+            if let Ok(label) = std::ffi::CString::new(plx_ui::fmt::remaining_duration(progress.left_ms)) {
+                return (Cow::Owned(label), Some(progress.frac));
+            }
+        }
+    }
+    (Cow::Borrowed(plx_appkit::hero_layout::play_label(resumes)), None)
+}
+
 fn hero_line(hero: &PmsMovie) -> Option<HeroLine<'_>> {
-    let label = if hero.kind == 3 {
-        plx_ui::fmt::episode_kicker(i64::from(hero.season_index), i64::from(hero.ep_index), &hero.title)
-    } else {
-        String::new()
-    };
-    if !label.is_empty() {
-        return Some(HeroLine::Label(label));
-    }
-    let left = tile_facts::of(hero).resume.filter(|_| hero_resumes(hero)).map(|r| r.left_ms).filter(|&ms| ms > 0);
-    if let Some(left) = left {
-        return Some(HeroLine::Label(plx_ui::fmt::footer_left(left)));
-    }
-    let is_show = hero.kind == plx_data::pms::KIND_SHOW;
-    if (is_show || hero.kind == plx_data::pms::KIND_MOVIE)
-        && !hero.watched && !hero_resumes(hero) && hero.viewed_leaf_count.unwrap_or(0) == 0
-    {
-        use plx_platform::i18n::msg;
-        let kind = if is_show { msg::browse_kind_tv_show() } else { msg::browse_kind_movie() };
-        let year = (hero.year > 0).then(|| hero.year.to_string()).unwrap_or_default();
-        let length = if is_show {
-            (hero.child_count > 0).then(|| msg::browse_detail_seasons(hero.child_count)).unwrap_or_default()
-        } else {
-            let ms = hero.dur_ns / 1_000_000;
-            (ms >= 60_000).then(|| plx_ui::fmt::duration(ms)).unwrap_or_default()
+    use plx_data::pms::{KIND_EPISODE, KIND_MOVIE, KIND_SHOW};
+    use plx_platform::i18n::msg;
+    use plx_ui::fmt;
+    let is_episode = hero.kind == KIND_EPISODE;
+    let is_show = hero.kind == KIND_SHOW;
+    // A movie, a show and an episode read their identity band whatever their watch state: the
+    // owner expects "Movie • Year • Length" on every one (v0.10.0 rc1 — a watched film showed its
+    // plot instead). Only the kinds with no such band (a season, a collection) read a premise.
+    if hero.kind == KIND_MOVIE || is_show || is_episode {
+        let identity = match hero.kind {
+            KIND_EPISODE => {
+                let address = fmt::episode_address(i64::from(hero.season_index), i64::from(hero.ep_index));
+                if address.is_empty() && hero.title.trim() != hero_title(hero).trim() {
+                    hero.title.trim().into()
+                } else {
+                    address
+                }
+            }
+            KIND_SHOW => msg::browse_kind_tv_show().into(),
+            _ => msg::browse_kind_movie().into(),
         };
-        let genres = [hero.genre.as_deref(), hero.secondary_genre.as_deref()].into_iter()
-            .flatten().map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ");
-        return Some(HeroLine::Metadata { kind, year, length, genres, rating: hero.rating.trim() });
+        let year = i64::from(hero.year);
+        let date = fmt::hero_date(if is_episode { &hero.aired } else { "" }, year);
+        let ms = hero.dur_ns / 1_000_000;
+        let length = if ms >= 60_000 {
+            fmt::duration(ms)
+        } else if is_show && hero.child_count > 0 {
+            msg::browse_detail_seasons(hero.child_count)
+        } else {
+            String::new()
+        };
+        let genres = if is_episode {
+            String::new()
+        } else {
+            [hero.genre.as_deref(), hero.secondary_genre.as_deref()].into_iter()
+                .flatten().map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ")
+        };
+        let quality = if is_show { None } else {
+            hero.video_resolution.as_deref().and_then(|resolution| fmt::resolution(resolution, 0, 0))
+        };
+        let rating = hero.rating.trim();
+        if !(identity.is_empty() && date.is_empty() && length.is_empty() && genres.is_empty() && quality.is_none() && rating.is_empty()) {
+            return Some(HeroLine::Metadata { identity, date, length, genres, quality, rating });
+        }
     }
     Some(first_sentence(&hero.summary)).filter(|s| !s.is_empty()).map(HeroLine::Premise)
 }
 
 /// **Home's hero text** (owner's board CW-13 v2): the title (clearLogo, or its typed fallback) and ONE
-/// metadata block beneath it, standing on the shared ladder above the action row. A label is bold
-/// in primary ink, an identity band is one line in reading ink, and a premise wraps to two lines.
+/// metadata block beneath it. The identity band is one line in reading ink. A premise can wrap.
 fn hero_content(hero: &PmsMovie, p: Painter, dx: f32, measure: &dyn Measure) {
     if !on_axis(
         MARGIN_X + dx,
@@ -3962,20 +4111,13 @@ fn hero_content(hero: &PmsMovie, p: Painter, dx: f32, measure: &dyn Measure) {
         return;
     }
     let (stack, line) = hero_ladder(hero);
-    HeroLogo::new(hero.sid.raw(), hero_logo_rk(hero), hero_title(hero), LogoRung::Hero)
+    HeroLogo::new(hero.sid.raw(), hero_logo_source(hero), hero_title(hero), LogoRung::Hero)
         .draw(p, hero_title_band(&stack), measure);
     let Some(block) = stack.block else { return };
     match line {
-        Some(HeroLine::Label(label)) => {
-            let run = measure.fit_line(&label, HERO_COL_W, theme::size::LABEL, true);
-            Label::new(run.as_ptr(), theme::size::LABEL, theme::TEXT_PRIMARY)
-                .bold()
-                .v(VAlign::CapTop)
-                .draw(p, Rect::new(MARGIN_X, block.y, HERO_COL_W, measure.cap_h(theme::size::LABEL)));
-        }
-        Some(HeroLine::Metadata { kind, year, length, genres, rating }) => {
+        Some(HeroLine::Metadata { identity, date, length, genres, quality, rating }) => {
             let r = Rect::new(MARGIN_X, block.y, HERO_COL_W, block.h);
-            plx_ui::widgets::hero_metadata(p, r, &[kind, &year, &length, &genres], rating, measure);
+            plx_ui::widgets::hero_metadata(p, r, &[&identity, &date, &length, &genres], quality.as_deref(), rating, measure);
         }
         Some(HeroLine::Premise(premise)) => {
             home_synopsis(premise).draw(p, Rect::new(MARGIN_X, block.y, theme::hero::HOME_SYNOPSIS_W, 0.0));
@@ -3996,7 +4138,7 @@ fn hero_title(hero: &PmsMovie) -> &str {
 fn hero_ladder(hero: &PmsMovie) -> (plx_ui::landing_hero::HomeStack, Option<HeroLine<'_>>) {
     let line = hero_line(hero);
     let block_h = match &line {
-        Some(HeroLine::Label(_) | HeroLine::Metadata { .. }) => Some(HOME_LABEL_H),
+        Some(HeroLine::Metadata { .. }) => Some(HOME_LABEL_H),
         Some(HeroLine::Premise(premise)) => Some(home_synopsis(premise).measure_h(theme::hero::HOME_SYNOPSIS_W)),
         None => None,
     };

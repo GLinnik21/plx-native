@@ -1603,6 +1603,10 @@ pub struct Detail {
     /// Edition identity, presented in the hero's metadata rather than appended to its title.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub edition: String,
+    /// The stamped clearLogo, or empty when the image list contains no usable logo.
+    /// Absent from older responses and recordings, which use the legacy lookup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<String>,
     pub year: i64,
     pub rating: String, // contentRating
     pub summary: String,
@@ -1734,6 +1738,22 @@ pub struct Detail {
 }
 
 impl Detail {
+    /// **The show an episode played from this page belongs to**, which the play queue is built
+    /// from so the episodes BEFORE it are in the queue: a show page's own key, a season page's
+    /// parent, an episode page's grandparent, empty for anything else (a movie). The `show_rk` field
+    /// alone is the grandparent key and stays empty on a show page and on a season page.
+    pub fn episodes_show_rk(&self) -> &str {
+        if self.is_show {
+            &self.rk
+        } else if self.kind == "season" {
+            &self.parent_rk
+        } else if self.kind == "episode" {
+            &self.show_rk
+        } else {
+            ""
+        }
+    }
+
     /// **Does this item have a FILE of its own?** — the rule behind the *Track information* sheet
     /// (`screens::tracks_panel`) and the Languages column's press gate on the detail page.
     ///
@@ -2277,6 +2297,7 @@ fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::Se
         index: it.index,
         title: it.title.clone(),
         edition: it.edition_title.clone(),
+        logo: it.clear_logo().map(str::to_owned),
         year: it.year,
         rating: it.content_rating.clone(),
         summary: it.summary.clone(),
@@ -2627,7 +2648,8 @@ pub struct PlayingItem {
     /// `/decision` (issue #22's over-claim class — docs/plex-pass-audit.md, closing section).
     pub width: i64,
     pub height: i64,
-    /// Whole-file bitrate in kbps (`Media[0].bitrate`). Auto uses this—not merely the video
+    /// Whole-file bitrate in kbps of the version that plays (`Media[0]`'s unless another version was
+    /// fetched). Auto uses this—not merely the video
     /// stream's rate—when deciding whether a remote connection has enough headroom to carry the
     /// original file, because the transport also has to carry audio and container overhead.
     pub bitrate: i64,
@@ -6145,6 +6167,27 @@ mod episode_tests {
             both.resume_ms, 120_000,
             "and keeps the resume point the player needs"
         );
+    }
+}
+
+#[cfg(test)]
+mod episodes_show_rk_tests {
+    use super::*;
+
+    /// **The show an episode played from a page belongs to, per kind of page**: the play queue is
+    /// built from it (`route::request_play`), so the episodes before the played one are in the
+    /// queue and Previous has somewhere to go. Only the pages that play episodes have one.
+    #[test]
+    fn each_page_that_plays_episodes_names_its_show() {
+        let show = Detail { is_show: true, kind: "show".into(), rk: "50".into(), ..Default::default() };
+        assert_eq!(show.episodes_show_rk(), "50", "a show page's own key");
+        let season = Detail { kind: "season".into(), rk: "60".into(), parent_rk: "50".into(), ..Default::default() };
+        assert_eq!(season.episodes_show_rk(), "50", "a season page's parent");
+        let episode = Detail { kind: "episode".into(), rk: "101".into(), show_rk: "50".into(), ..Default::default() };
+        assert_eq!(episode.episodes_show_rk(), "50", "an episode page's grandparent");
+        let movie = Detail { kind: "movie".into(), rk: "9".into(), show_rk: "50".into(), ..Default::default() };
+        assert_eq!(movie.episodes_show_rk(), "", "a movie has no show, whatever a stale field holds");
+        assert_eq!(Detail::default().episodes_show_rk(), "");
     }
 }
 

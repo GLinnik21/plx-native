@@ -2,6 +2,11 @@
 use super::{cur_rk, cur_sid, pq_id, pq_item_id, with_queue, PlaybackSession};
 use plx_plex::plex::{queue_index_of, QueueRow, ServerId};
 use std::sync::Arc;
+use std::time::Duration;
+
+/// The longest the window re-read waits for the outgoing episode's `stopped` report to land
+/// (see [`QueueContinuation::refreshed`]): a stop on a slow server must not hold a start hostage.
+const STOP_WAIT: Duration = Duration::from_millis(1500);
 
 /// An owned continuation of the server's existing queue, captured before request_play retires
 /// the outgoing state. Shared across resolve snapshots without copying a show's rows per frame.
@@ -10,6 +15,11 @@ pub struct QueueContinuation {
     id: String,
     rows: Arc<Vec<QueueRow>>,
     selected: usize,
+    /// How many `state=stopped` reports had been announced when the continuation was captured,
+    /// which is after the outgoing episode's own (the handoff stops it before it requests the
+    /// next): the window re-read waits for these to land, so the rows it reads carry the position
+    /// that stop reported. `0` for a continuation built from rows alone.
+    stop: u64,
 }
 
 impl QueueContinuation {
@@ -26,9 +36,21 @@ impl QueueContinuation {
         Some(selected)
     }
 
-    fn from_queue(id: String, rows: Vec<QueueRow>, target: &QueueRow) -> Option<Self> {
+    pub(super) fn from_queue(id: String, rows: Vec<QueueRow>, target: &QueueRow) -> Option<Self> {
         let selected = Self::select(&id, &rows, target)?;
-        Some(Self { id, rows: Arc::new(rows), selected })
+        Some(Self { id, rows: Arc::new(rows), selected, stop: 0 })
+    }
+
+    /// This continuation, its window re-read set to wait for the stops announced up to `stop`.
+    #[cfg(test)]
+    pub(super) fn awaiting(self, stop: u64) -> Self {
+        Self { stop, ..self }
+    }
+
+    /// The stop count the window re-read waits for.
+    #[cfg(test)]
+    pub(super) fn stop(&self) -> u64 {
+        self.stop
     }
 
     /// The live queue is lent, not owned, so its rows are copied only once `target` is found.
@@ -36,7 +58,12 @@ impl QueueContinuation {
         with_queue(ps, |rows| {
             let id = pq_id(ps);
             let selected = Self::select(&id, rows, target)?;
-            Some(Self { id, rows: Arc::new(rows.to_vec()), selected })
+            Some(Self {
+                id,
+                rows: Arc::new(rows.to_vec()),
+                selected,
+                stop: super::decision::timeline_stops_announced(),
+            })
         })
     }
 
@@ -46,10 +73,24 @@ impl QueueContinuation {
 
     fn with_window(&self, rows: Vec<QueueRow>) -> Self {
         Self::from_queue(self.id.clone(), rows, &self.rows[self.selected])
+            .map(|window| Self { stop: self.stop, ..window })
             .unwrap_or_else(|| self.clone())
     }
 
+    /// This queue re-read around its selected item.
+    ///
+    /// **After the outgoing episode's `stopped` report has landed**: the rows carry each episode's
+    /// `viewOffset`, and a handoff (Previous, Next) re-reads them while that report is still on its
+    /// way, so a row read before it lands holds the position from before the viewer left. Stepping
+    /// back to the episode just left would then resume it from that stale point, and its next
+    /// report would write that over the real one. The wait is the shared stop fence
+    /// (`decision::TIMELINE_STOP_FENCE`), bounded by [`STOP_WAIT`].
     pub(super) fn refreshed(&self, client: &plx_plex::plex::Client) -> Self {
+        self.refreshed_within(client, STOP_WAIT)
+    }
+
+    pub(super) fn refreshed_within(&self, client: &plx_plex::plex::Client, bound: Duration) -> Self {
+        super::decision::wait_for_timeline_stop(self.stop, bound);
         client
             .play_queue_window(&self.id, self.rows[self.selected].item_id)
             .map(|rows| self.with_window(rows))
@@ -74,11 +115,6 @@ impl QueueContinuation {
 pub enum QueueStep {
     Previous,
     Next,
-}
-
-/// At five seconds the Previous button becomes Restart. Before it, it asks for the prior item.
-pub fn previous_restarts(position_ns: i64) -> bool {
-    position_ns >= 5_000_000_000
 }
 
 /// The row now playing among `rows`, by the queue's identity rule (item id, rating key as the
@@ -118,14 +154,6 @@ mod tests {
     fn neighbor_of<'a>(rows: &'a [QueueRow], item_id: i64, sid: ServerId, rk: &str, step: QueueStep)
         -> Option<&'a QueueRow> {
         neighbor(rows, queue_index_of(rows, item_id, sid, rk)?, step)
-    }
-
-    #[test]
-    fn queue_navigation_previous_has_a_five_second_boundary() {
-        assert!(!previous_restarts(0));
-        assert!(!previous_restarts(4_999_999_999));
-        assert!(previous_restarts(5_000_000_000));
-        assert!(previous_restarts(90_000_000_000));
     }
 
     #[test]

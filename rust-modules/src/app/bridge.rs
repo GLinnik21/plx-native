@@ -46,6 +46,10 @@ mod metadata_alt_sources_bridge_tests;
 #[path = "browse_roster_bridge_tests.rs"]
 mod browse_roster_bridge_tests;
 
+#[cfg(test)]
+#[path = "notify_bridge_tests.rs"]
+mod notify_bridge_tests;
+
 use plx_screens::family::SettingsPage;
 use plx_screens::player::HudPolicy;
 use plx_screens::registry::{AppArg, AppFx, AppMounter, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, ItemMenuKind, LibraryReq, LoopReq, PageMemory};
@@ -1106,6 +1110,8 @@ impl Bridge {
     /// [`AppMounter::player_compiled`]. Set at boot, again by `run::refresh_hud` when a controlled run or a dev package compiles on the first player frame, and by every hand-over of `huds_tick` (the profile's chosen package).
     pub(crate) fn seed_player_compiled(&mut self, compiled: std::sync::Arc<plx_appkit::hud_format::compile::Compiled>) {
         self.mounter.player_compiled = compiled;
+        // the Player HUD page lists the finish-time switch only over a HUD that declares its lane
+        self.huds_publish();
     }
 
     /// Begin the player-HUD store with the compiled classic as what draws until a package lands, and read
@@ -1222,7 +1228,8 @@ impl Bridge {
         if self.huds_pages.is_empty() { return }
         let (revision, notice) = (self.huds.revision(), self.huds_notice.as_ref().map_or(0, |_| 1));
         let stamp = revision * 2 + notice;
-        let end_time = self.huds_profile_seated.then(plx_media::route::hud_end_time);
+        // the switch is the profile's, and it means something only over a HUD that draws the lane
+        let end_time = (self.huds_profile_seated && self.mounter.player_compiled.declares_end_time()).then(plx_media::route::hud_end_time);
         if self.huds_pages.iter().all(|(_, sent, end)| *sent == stamp && *end == end_time) {
             return;
         }
@@ -1955,10 +1962,31 @@ impl Bridge {
     /// and the endpoint refreshes the map's quiet refetches settled, for the caller to carry.
     pub(crate) fn notify_pump(&mut self, pages: &[ContentArg], shown: plx_data::stores::notify_map::Shown)
         -> (bool, plx_data::stores::EndpointRefreshSet) {
-        let out = self.stores.notify_pump();
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        self.notify_pump_captured(pages, shown)
+    }
+
+    /// One captured input, one frame, and a runner boundary for EACH connection. This
+    /// helper is also the explicit-value test port; it never reads ambient keys.
+    fn notify_pump_captured(&mut self, pages: &[ContentArg], shown: plx_data::stores::notify_map::Shown)
+        -> (bool, plx_data::stores::EndpointRefreshSet) {
+        let input = plx_data::stores::notify::NotifyInput {
+            keys: &self.client_keys, armed: self.stores.landgate.is_armed(),
+        };
+        let mut pass = self.stores.notify_begin(&input);
+        while let Some(mut turn) = self.stores.notify_prepare_next(&mut pass, &input) {
+            // No Stores borrow survives the IO boundary. Earlier connections have
+            // already drained before any later connection is prepared or launched.
+            for job in self.stores.take_jobs_of(StoreId::Notify) {
+                self.store_runner.start(job);
+            }
+            self.stores.notify_settle_admission(&mut pass, &mut turn);
+            self.stores.notify_finish_turn(&mut pass, turn, &input);
+        }
+        let out = self.stores.notify_end(pass);
         let mut spent = self.stores.notify_map(&out, pages, shown, self.directory.view(), &self.client_keys);
         self.start_store_jobs_in(plx_data::stores::Stores::NOTIFY_FILLS);
+        self.start_store_jobs_of(StoreId::Notify);
         if !spent.refetched.is_empty() || !spent.invalidated.is_empty() {
             plx_base::eventlog::log(&format!(
                 "notify: refetched {} source(s) invalidated {} server(s)", spent.refetched.len(), spent.invalidated.len()));
@@ -2348,19 +2376,15 @@ impl Bridge {
 }
 
 impl Bridge {
-    /// **Publish this frame's playback session** (spec §2.3) — see `AppViews::session`.
-    ///
-    /// Called once per iteration by the loop, BEFORE the dispatcher frame and the tree draw, so
-    /// every screen in one frame reads one consistent picture of the playback. The copy is skipped
-    /// entirely when nothing that reads it is mounted: off the player route the publication is
-    /// `PlaybackSession::IDLE` and stays there, which is what keeps a still Home grid free of the
-    /// dozen small allocations this otherwise costs at the loop rate.
     /// The video plane's EDGE, from `Player::set_video_plane_bound` and from nowhere else
     /// (spec §16 risk 10). Reaches both the dispatcher's present gate and this rig's own copy.
     pub(crate) fn publish_video_plane(&mut self, bound: bool) {
         self.video_plane = bound;
     }
 
+    /// Publish one playback picture before the dispatcher frame and draw. The loop sets `live`
+    /// for the Player page or a preview on Detail; otherwise the publication stays idle, avoiding
+    /// the copy's allocations while browsing without playback.
     pub(crate) fn publish_playback(&mut self, session: &plx_media::route::PlaybackSession,
         live: bool, viewer_paused: Option<bool>) {
         self.transport_paused = live && viewer_paused.unwrap_or(false);
@@ -5091,6 +5115,9 @@ mod library_reread_route_tests;
 #[cfg(test)]
 #[path = "library_memory_route_tests.rs"]
 mod library_memory_route_tests;
+#[cfg(test)]
+#[path = "library_restore_arrival_tests.rs"]
+mod library_restore_arrival_tests;
 #[cfg(test)]
 #[path = "under_posters_route_tests.rs"]
 mod under_posters_route_tests;

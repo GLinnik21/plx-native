@@ -2,7 +2,11 @@
 //! the plain data types they need. Nothing here reads a `static mut`, touches [`super::decision`]'s
 //! `SESSION`/`PLAYER_CONTROL`/`PLAY_SLOT`/`ENCODER_CLEANUP`/`SCROBBLE_JOIN`/`TIMELINE_STOP_FENCE`/
 //! `QUALITY`, or calls `task::spawn*` — that is what makes [`build_stream`] safe to run on the
-//! resolve worker. Everything else in the former `route.rs` (session state, the synchronized
+//! resolve worker. (One bounded wait is the exception that is not named here: a handoff's queue
+//! re-read, [`build_stream`]'s `queue.refreshed` on its `beside` leg, waits up to 1.5 s through
+//! `queue_navigation` for the outgoing episode's `stopped` report, the shared stop fence, before
+//! it reads the rows; it never runs on the main thread.) Everything else in the former
+//! `route.rs` (session state, the synchronized
 //! `PlayerControl`, PMS/native I/O, the encoder/scrobble/timeline machinery) lives in
 //! [`super::decision`]. `ci/check-deps.sh`'s `wall` gate holds this file, and its child
 //! module `plan_memory.rs` (the track memory's pure helpers), to zero
@@ -477,7 +481,7 @@ pub(super) fn transcode_spec_carrying_burn<'a>(
 }
 
 
-pub use plx_plex::plex::session::{PlaybackQuality as Quality, DeckPress, DirectPlayMode, HdrOverlayBrightness, NextEpisodeMode, SkipInterval, SubtitleSize, SubtitlePosition};
+pub use plx_plex::plex::session::{PlaybackQuality as Quality, DeckPress, DirectPlayMode, HdrOverlayBrightness, NextEpisodeMode, SkipInterval, SubtitleSize, SubtitlePosition, SubtitleTone};
 
 
 /// The ladder IN ORDER, best first. The ONE place row order lives, so the picker's index mapping
@@ -1452,6 +1456,11 @@ pub struct ResolveEnv {
     pub src_kbps: i64,
     /// Trailer sessions omit `continuous=1` so EOS cannot Up-Next into a sibling extra.
     pub omit_queue_continuous: bool,
+    /// The show the played EPISODE belongs to, empty for anything else (and for a caller that did not
+    /// know it). The queue is built from the show with the episode as its start, so the episodes
+    /// BEFORE it are in the queue and Previous has somewhere to go
+    /// ([`plx_plex::plex::Client::create_play_queue`]).
+    pub queue_show_rk: String,
     /// An explicit queue-item handoff reuses the existing queue instead of POSTing a new tail.
     pub queue_continuation: Option<super::queue_navigation::QueueContinuation>,
     /// Hero preview. Skip the PlayQueue entirely, and refuse anything that is not a direct play.
@@ -1609,6 +1618,12 @@ pub struct Plan {
     /// Why a PMS output was not URI-qualified, without interpreting an integration gap as a
     /// firmware refusal. Local diagnostics only; no report schema or consent field changes.
     pub pms_decline: Option<super::uri_preflight::PmsDecline>,
+    /// Why the original file was not URI-qualified: the first guard or check that said no, from the
+    /// plan's own guards through the port and the qualifier. `None` when the original was qualified
+    /// (then [`uri_original`](Self::uri_original) is set) or no qualification was tried before the
+    /// plan ended for another reason. Local diagnostics only: the event log says it once per resolve
+    /// for a viewer who opted in (`uri_decline_line`); nothing routes on it.
+    pub uri_decline: Option<super::uri_preflight::UriDecline>,
     /// A source was qualified without constructing a Feed URL or PMS encoder.
     pub uri_source_ready: bool,
     pub tsession: String,
@@ -1813,7 +1828,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             Some(plx_base::task::beside(s, "route-queue", move || {
                 env.queue_continuation.as_ref().filter(|queue| queue.matches(env.sid, rk))
                     .map(|queue| queue.refreshed(client).resolve()).unwrap_or_else(|| resolve_playqueue(
-                        client, rk, &session, &env.machine_id, !env.omit_queue_continuous,
+                        client, rk, &env.queue_show_rk, &session, &env.machine_id, !env.omit_queue_continuous,
                     ))
             }))
         } else {
@@ -1876,8 +1891,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             plan.src_fps = plan.playing.as_ref().map_or(0.0, |p| p.video_fps);
             plan.playing_fresh = env.cached_item.is_none() && plan.playing.is_some();
             let src_kbps = match (env.version, played.as_ref()) {
-                (None, Some(_)) => plan.playing.as_ref().map_or(0, |p| p.bitrate),
-                _ => env.src_kbps,
+                (None, None) => env.src_kbps,
+                _ => plan.playing.as_ref().map_or(0, |p| p.bitrate),
             };
             let reselected = env.with_selection_for_part(plan.part_id);
             let env = reselected.as_ref().unwrap_or(env);
@@ -2028,10 +2043,16 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 subtitle_sid: source_sub_stream.map_or(0, |sub| sub.id),
                 audio_contract: env.audio_enhancements };
             plan.source_selection = Some(source_selection);
-            if let Some(port) = env.uri_preflight_port.as_ref().filter(|_| env.uri_offers.original && {
-                (env.audio_sid <= 0 || source_audio.is_some())
-                    && (env.subtitle_override.unwrap_or(0) <= 0 || source_sub_stream.is_some())
-            }) {
+            // The guards that skip qualification, and the reason each leaves on the plan.
+            plan.uri_decline = match env.uri_preflight_port.as_ref() {
+                None => Some(super::uri_preflight::UriDecline::NoPort),
+                Some(_) if !env.uri_offers.original => Some(super::uri_preflight::UriDecline::NotOffered),
+                Some(_) if !((env.audio_sid <= 0 || source_audio.is_some())
+                    && (env.subtitle_override.unwrap_or(0) <= 0 || source_sub_stream.is_some())) =>
+                    Some(super::uri_preflight::UriDecline::TrackPickUnresolved),
+                Some(_) => None,
+            };
+            if let Some(port) = env.uri_preflight_port.as_ref().filter(|_| plan.uri_decline.is_none()) {
                 let source_kbps = plan.playing.as_ref().map_or(src_kbps, |p|
                     if p.bitrate > 0 { p.bitrate } else { src_kbps });
                 let (width, height) = plan.playing.as_ref().map_or((0, 0), |p| (p.width, p.height));
@@ -2096,7 +2117,12 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     requires_client_subtitle,
                     preview: env.preview,
                 };
-                if let super::uri_preflight::Verdict::Known(known) = port.qualify(off, request) {
+                let verdict = port.qualify(off, request);
+                if let super::uri_preflight::Verdict::Unknown(why)
+                    | super::uri_preflight::Verdict::Refused(why) = &verdict {
+                    plan.uri_decline = Some(*why);
+                }
+                if let super::uri_preflight::Verdict::Known(known) = verdict {
                     // These describe the *source* for a possible later viewer-requested Feed
                     // conversion, from the verdicts computed above for the request. The certificate
                     // is the qualifier's: nothing here re-judges it.
@@ -3183,11 +3209,25 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             .map(|item| resolve_candidate(new_plan(), Some(item), None, true))
             .filter(|plan| plan.uri_original.is_some());
         let mut plan = first_original.unwrap_or_else(|| resolve_candidate(new_plan(), playing, played, false));
+        if let Some(line) = uri_decline_line(env.uri_engine, &plan) {
+            crate::player::log(&line);
+        }
         if let Some(queue) = queue {
             land_queue(&mut plan, queue.finish());
         }
         plan
     })
+}
+
+/// The event-log line that says why a viewer's Experimental engine did not take this play's original,
+/// `uri: original declined (<reason>)`: only for a viewer who opted in (Standard says nothing, there
+/// being nothing to explain), and only when the plan carries no URI original. The reason is the
+/// plan's own ([`Plan::uri_decline`]); the line names no title, host, URL or token.
+pub(super) fn uri_decline_line(engine: plx_plex::plex::session::UriEngine, plan: &Plan) -> Option<String> {
+    if engine != plx_plex::plex::session::UriEngine::On || plan.uri_original.is_some() {
+        return None;
+    }
+    plan.uri_decline.map(|why| format!("uri: original declined ({})", why.log_name()))
 }
 
 /// The play queue's answer joins the plan. Destructured whole, so a field `QueueInfo` gains cannot

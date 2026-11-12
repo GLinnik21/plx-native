@@ -330,7 +330,9 @@ pub enum FaceRef {
 
 /// A control's `face` as the package wrote it: absent (the command's classic glyph), one glyph, or one per
 /// state of the command (`playing`/`paused`, `default`/`restart`, `on`/`off`, and a `seek by: setting`'s
-/// `default` plus its ladder keyed by seconds).
+/// `default` plus its ladder keyed by seconds). `previous`'s `restart` state is still parsed, because
+/// published packages carry it and the schema is frozen, but the renderer never selects it any more
+/// (`render::face_state`): Previous is always the previous episode.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Face {
     pub single: Option<FaceRef>,
@@ -403,8 +405,21 @@ pub struct Standin {
     pub row: Rect,
     pub anchor: RowAnchor,
     pub up_next: Option<UpNextRects>,
-    /// The Skip pill per [`SkipKind`] (index `SkipKind as usize`).
+    /// The Skip pill per [`SkipKind`] (index `SkipKind as usize`): the FILLED button, which for the
+    /// two Automatic faces is the Skip the countdown performs.
     pub skip: Option<[Rect; 4]>,
+    /// The Automatic faces' unfilled Watch button (item 0, left of the filled one), per [`SkipKind`];
+    /// the manual faces have none (an empty rect).
+    pub watch: Option<[Rect; 4]>,
+}
+
+impl Standin {
+    /// What a marker face occupies: its filled pill and, for an Automatic face, the Watch button beside
+    /// it. Two faces with the same occupancy share one compiled layout.
+    pub fn face(&self, kind: SkipKind) -> Option<(Rect, Rect)> {
+        let skip = self.skip?[kind as usize];
+        Some((skip, self.watch.map_or(Rect::default(), |w| w[kind as usize])))
+    }
 }
 
 /// One thing to draw, in draw order. Coordinates are the logical 1920 x 1080 canvas.
@@ -466,7 +481,7 @@ pub enum DrawOp {
     /// The Up Next offer (slot UpNext only); its inside is app-drawn.
     UpNext { rects: UpNextRects, credits_rest: Rest, next_rest: Rest, credits_focus: Focus, next_focus: Focus, countdown: crate::up_next::CountdownFace },
     /// The marker pill (slot Skip only), at each Skip/Watch face width.
-    SkipPill { rects: [Rect; 4] },
+    SkipPill { rects: [Rect; 4], watch: [Rect; 4] },
 }
 
 /// One op of a strip card's template and whether THIS card draws it: the card's `item.*` conditions
@@ -637,9 +652,8 @@ impl CompiledState {
 
     /// The layout for the face actually shown, including the title's exclusion around its pill.
     pub fn skip_variant(&self, skip: SkipKind) -> &CompiledState {
-        let rect = self.standin.skip.map(|rects| rects[skip as usize]);
-        self.skip_alt.iter().find(|(kind, _)| self.standin.skip.map(|rects| rects[*kind as usize]) == rect)
-            .map_or(self, |(_, state)| state)
+        let face = self.standin.face(skip);
+        self.skip_alt.iter().find(|(kind, _)| self.standin.face(*kind) == face).map_or(self, |(_, state)| state)
     }
 
     /// Every geometry-distinct face, once; non-Skip states have only the base layout.
@@ -745,7 +759,17 @@ impl CompiledState {
                     g.items[up_next::BTN_NEXT as usize] = Some(u.next);
                 }
             }
-            Slot::Skip => g.items[0] = self.standin.skip.map(|s| s[skip as usize]),
+            Slot::Skip => {
+                // an Automatic face is the pair: Watch (item 0) then the filled Skip (item 1)
+                let automatic = matches!(skip, SkipKind::WatchIntro | SkipKind::WatchCredits);
+                let (filled, watch) = (self.standin.skip.map(|s| s[skip as usize]), self.standin.watch.map(|w| w[skip as usize]));
+                if automatic {
+                    g.items[up_next::BTN_CREDITS as usize] = watch;
+                    g.items[up_next::BTN_NEXT as usize] = filled;
+                } else {
+                    g.items[0] = filled;
+                }
+            }
         }
         g
     }
@@ -799,6 +823,7 @@ impl CompiledState {
             }
         }
         out.extend(self.standin.skip.into_iter().flatten().map(|r| at("Skip pill", r)));
+        out.extend(self.standin.watch.into_iter().flatten().filter(|r| r.w > 0.0).map(|r| at("Watch pill", r)));
         if block {
             for (i, op) in self.ops.iter().enumerate() {
                 let (what, rect) = match op {
@@ -883,6 +908,9 @@ pub struct Compiled {
     findings: Vec<CompileFinding>,
     /// `(id, svg source)`: the package's declared assets, which a [`FaceRef::Asset`] and a [`DrawOp::Icon`] name
     assets: Vec<(String, std::sync::Arc<str>)>,
+    /// does a playbar of the package declare the finish-time lane (`playbar.end_time_width`, HUD format 1.1)?
+    /// Read once, here, by [`Compiled::declares_end_time`]
+    end_time: bool,
 }
 
 /// Which dimensions of a compile the package names.
@@ -909,6 +937,7 @@ impl Default for Compiled {
             folds: Vec::new(),
             findings: Vec::new(),
             assets: Vec::new(),
+            end_time: false,
         }
     }
 }
@@ -925,7 +954,21 @@ pub struct CompileFinding {
     pub message: String,
 }
 
+/// Does any state's playbar reserve the finish-time lane (`playbar.end_time_width`)?
+fn states_declare_end_time(states: &[CompiledState]) -> bool {
+    states.iter().flat_map(|s| &s.ops).any(|op| matches!(op, DrawOp::Playbar { clock_rects, .. } if clock_rects.end_time.is_some()))
+}
+
 impl Compiled {
+    /// **Does the package declare the finish-time lane?** `playbar.end_time_width` is the capability: the
+    /// field arrived in HUD format 1.1, so a 1.0 package cannot name it (`E0107`), and a 1.1 package that omits
+    /// it asks for the plain remaining clock. The renderer draws the finish time only into a declared lane, so
+    /// this is also what the *Estimated end time* setting and the app's projection ask before they offer or
+    /// compute anything the HUD would not draw.
+    pub fn declares_end_time(&self) -> bool {
+        self.end_time
+    }
+
     /// Every state, in `reach`'s order (valuation by valuation, breadth first from the root).
     pub fn states(&self) -> &[CompiledState] {
         &self.states
@@ -1039,6 +1082,7 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
             message: format!("the replaced row places {wide} controls, but the geometry report holds {MAX_ROW_ITEMS}, so the tail has no stop"),
         });
     }
+    let end_time = states_declare_end_time(&states);
     let mut compiled = Compiled {
         states,
         named: Named { chapters: layout.named_chapters, episode: layout.named_pair, real_episode: layout.named_episode, paused: frame.paused },
@@ -1048,6 +1092,7 @@ pub fn compile(package: &Package, measure: &dyn Measure, ctx: CompileCtx) -> Com
         folds: layout.folds(),
         findings,
         assets: package.assets.clone(),
+        end_time,
     };
     let band = compiled
         .compact_band_extents()
@@ -2182,11 +2227,10 @@ impl<'e, 'p> Env<'e, 'p> {
     fn compile_state(&self) -> CompiledState {
         let mut state = self.compile_for(SkipKind::Intro);
         if self.state.slot == Slot::Skip {
-            if let Some(rects) = state.standin.skip {
-                for (index, kind) in SkipKind::ALL.into_iter().enumerate().skip(1) {
-                    if !rects[..index].contains(&rects[index]) {
-                        state.skip_alt.push((kind, self.compile_for(kind)));
-                    }
+            let faces = SkipKind::ALL.map(|kind| state.standin.face(kind));
+            for (index, kind) in SkipKind::ALL.into_iter().enumerate().skip(1) {
+                if faces[index].is_some() && !faces[..index].contains(&faces[index]) {
+                    state.skip_alt.push((kind, self.compile_for(kind)));
                 }
             }
         }
@@ -2239,7 +2283,11 @@ impl<'e, 'p> Env<'e, 'p> {
                         .fold(f32::MAX, f32::min)
                 }),
                 // the pill actually shown: a start-aligned fill stops at ITS edge, as the hand-written `title_right` did
-                _ => standin.skip.map(|s| s[skip as usize].scaled(CTRL_FOCUS_SCALE).x),
+                _ => standin.skip.map(|s| {
+                    let scaled = |r: Rect| r.scaled(CTRL_FOCUS_SCALE).x;
+                    let watch = standin.watch.map(|w| w[skip as usize]).filter(|r| r.w > 0.0);
+                    watch.map_or(scaled(s[skip as usize]), |w| scaled(w).min(scaled(s[skip as usize])))
+                }),
             };
             self.fill_bands(&bands, &boxes, &Mode { replaces: &replaces, hide: true, standin_left: left, host })
         };
@@ -2260,7 +2308,8 @@ impl<'e, 'p> Env<'e, 'p> {
             }
             Slot::Skip => {
                 if let Some(rects) = standin.skip {
-                    out.push(up.map_or("", |u| u.pointer.as_str()), DrawOp::SkipPill { rects });
+                    let watch = standin.watch.unwrap_or_default();
+                    out.push(up.map_or("", |u| u.pointer.as_str()), DrawOp::SkipPill { rects, watch });
                 }
             }
             Slot::Discs => {}
@@ -2394,7 +2443,7 @@ impl<'e, 'p> Env<'e, 'p> {
         let still = (up.get("still").and_then(Val::as_bool) == Some(true)).then_some(l.still);
         let caption = (up.get("caption").and_then(Val::as_bool) == Some(true)).then_some(l.caption);
         let up_next = UpNextRects { still, caption, credits: l.credits, next: l.next };
-        let skip = [&self.labels.skip_intro, &self.labels.skip_credits, &self.labels.watch_intro, &self.labels.watch_credits].map(|label| {
+        let single = |label: &String| {
             let width = self.measure.width_str(label, theme::size::BODY, true);
             let w = stand_in_w(width, floor.unwrap_or(0.0));
             let x = match align {
@@ -2403,14 +2452,29 @@ impl<'e, 'p> Env<'e, 'p> {
                 _ => union.x + union.w - w,
             };
             Rect::new(x, union.y, w, union.h)
-        });
+        };
+        // An Automatic face is the Up Next pair's arrangement (`up_next::layout_at`, one rule for both timed
+        // prompts): the filled Skip takes the floor width at the right, the unfilled Watch its own label's
+        // beside it. The pair reads `(watch, filled)`.
+        let pair = |filled: &String, watch: &String| {
+            let w_filled = stand_in_w(self.measure.width_str(filled, theme::size::BODY, true), floor.unwrap_or(0.0));
+            let w_watch = Button::pill_w_measured(&cstring(watch), theme::size::BODY, false, None, self.measure);
+            let probe = up_next::layout_at(RowAnchor { right: 0.0, top: union.y, h: union.h }, w_filled, w_watch);
+            let run = probe.next.x + probe.next.w - probe.credits.x;
+            let l = up_next::layout_at(RowAnchor { right: edge(run), top: union.y, h: union.h }, w_filled, w_watch);
+            (l.credits, l.next)
+        };
+        let (watch_intro, skip_intro) = pair(&self.labels.skip_intro, &self.labels.watch_intro);
+        let (watch_credits, skip_credits) = pair(&self.labels.skip_credits, &self.labels.watch_credits);
+        let skip = [single(&self.labels.skip_intro), single(&self.labels.skip_credits), skip_intro, skip_credits];
+        let watch = [Rect::default(), Rect::default(), watch_intro, watch_credits];
         let row = match (floor, align) {
             (Some(f), "start") => Rect::new(union.x, union.y, f, union.h),
             (Some(f), "center") => Rect::new(union.x + union.w * 0.5 - f * 0.5, union.y, f, union.h),
             (Some(f), _) => Rect::new(union.x + union.w - f, union.y, f, union.h),
             (None, _) => union,
         };
-        Standin { row, anchor, up_next: Some(up_next), skip: Some(skip) }
+        Standin { row, anchor, up_next: Some(up_next), skip: Some(skip), watch: Some(watch) }
     }
 
     /// The floor width of a stand-in: when `replaces` names ONE start- or end-aligned segment, that
@@ -2538,9 +2602,11 @@ fn weigh(op: &DrawOp) -> Contributor {
             c.blended_px = plate_rest(*credits_rest, rects.credits) + plate_rest(*next_rest, rects.next)
                 + if extra > 0 { area(rects.next) } else { 0 };
         }
-        DrawOp::SkipPill { rects } => {
-            // Watch uses the shared fill-sweep face, as Classic's Up Next does. Price it through
-            // that face's existing cost model; the measured class ceilings remain unchanged.
+        DrawOp::SkipPill { rects, .. } => {
+            // The Automatic prompt's filled Skip uses the shared fill-sweep face, as Classic's Up Next does.
+            // Price it through that face's existing cost model; the measured class ceilings remain
+            // unchanged. Its Watch button beside it is a plain second Button of the kind Up Next's pair
+            // already draws, and that state (two buttons, a still and a caption) is the one the ceilings bound.
             c.draw_ops += plx_ui::widgets::ButtonProgress::FillSweep.extra_draw_ops();
             c.glyph_runs = 1;
             c.blended_px = rects.iter().map(|r| area(*r)).max().unwrap_or(0);
