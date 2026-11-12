@@ -2042,8 +2042,10 @@ class CatalogLibrary(Library):
                     raise ValueError(f"{slug}: derived {name} is missing ({path}); rerun "
                                      "`python3 tools/demo_library.py derive`")
             if "logo" in rec:
-                # The item's clearLogo, which the app asks for by path
-                # (`/library/metadata/<rk>/clearLogo`), as it does of a real server.
+                # The item's clearLogo. The row's `Image[]` names it at a stamped path
+                # (`_image_list`), which is the one the app asks for; the unstamped
+                # `/library/metadata/<rk>/clearLogo` an older server's rows get is served too, from the
+                # same file (`image` reads the fourth path segment and ignores any stamp).
                 path = demo_derived_file(assets, self.cache, slug, rec, "logo")
                 if not path.is_file():
                     raise ValueError(f"{slug}: derived logo is missing ({path}); rerun "
