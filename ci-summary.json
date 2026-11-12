@@ -99,7 +99,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-12T21:01:04Z",
+ "generated": "2026-11-12T21:08:30Z",
  "metrics": [
   {
    "change30_pct": 44.3,
@@ -175,9 +175,9 @@
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 160,
-   "n_prev": 192,
+   "n_prev": 191,
    "now": 483.0,
-   "prev7": 446.0,
+   "prev7": 446,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -186,18 +186,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 44.2,
-   "change7_pct": 5.6,
+   "change30_pct": 44.0,
+   "change7_pct": 5.5,
    "d30": 318,
-   "delta30": 140.5,
-   "delta7": 24.5,
+   "delta30": 140,
+   "delta7": 24,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 66,
+   "n_now": 67,
    "n_prev": 69,
-   "now": 458.5,
+   "now": 458,
    "prev7": 434,
    "shown": true,
    "state": "flat",
@@ -375,18 +375,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 47.5,
-   "change7_pct": 7.0,
+   "change30_pct": 47.7,
+   "change7_pct": 7.2,
    "d30": 218.0,
-   "delta30": 103.5,
-   "delta7": 21.0,
+   "delta30": 104.0,
+   "delta7": 21.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 66,
-   "now": 321.5,
+   "now": 322,
    "prev7": 300.5,
    "shown": true,
    "state": "flat",
@@ -438,18 +438,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 65.1,
-   "change7_pct": 12.4,
+   "change30_pct": 64.4,
+   "change7_pct": 11.9,
    "d30": 137.5,
-   "delta30": 89.5,
-   "delta7": 25.0,
+   "delta30": 88.5,
+   "delta7": 24.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 66,
-   "now": 227.0,
+   "now": 226,
    "prev7": 202.0,
    "shown": true,
    "state": "flat",
@@ -459,18 +459,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -32.2,
-   "change7_pct": -6.7,
+   "change30_pct": -31.9,
+   "change7_pct": -6.3,
    "d30": 296.5,
-   "delta30": -95.5,
-   "delta7": -14.5,
+   "delta30": -94.5,
+   "delta7": -13.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 66,
-   "now": 201.0,
+   "now": 202,
    "prev7": 215.5,
    "shown": true,
    "state": "flat",
@@ -531,9 +531,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 66,
-   "now": 19.0,
+   "now": 19,
    "prev7": 19.0,
    "shown": false,
    "state": "flat",
@@ -632,11 +632,6 @@
    "change_pct": 28.7,
    "commits": [
     {
-     "pr": 1341,
-     "sha": "19f66c64f",
-     "title": "disk preflight: restore a parked build tree from the cold store"
-    },
-    {
      "pr": 1335,
      "sha": "911e52997",
      "title": "Fix nine issues found on 0.10.0 RC 1: Home hero, Settings, Player HUD, Library restore"
@@ -680,6 +675,11 @@
      "pr": 1357,
      "sha": "db0125d55",
      "title": "Site video: fetch the pinned FFmpeg from this repository's mirror first"
+    },
+    {
+     "pr": 1358,
+     "sha": "6f2c15a54",
+     "title": "refactor(sans-io): complete machine input and effect boundaries"
     }
    ],
    "from": 24.3,
@@ -693,11 +693,6 @@
    "change_pct": 23.8,
    "commits": [
     {
-     "pr": 1341,
-     "sha": "19f66c64f",
-     "title": "disk preflight: restore a parked build tree from the cold store"
-    },
-    {
      "pr": 1335,
      "sha": "911e52997",
      "title": "Fix nine issues found on 0.10.0 RC 1: Home hero, Settings, Player HUD, Library restore"
@@ -741,6 +736,11 @@
      "pr": 1357,
      "sha": "db0125d55",
      "title": "Site video: fetch the pinned FFmpeg from this repository's mirror first"
+    },
+    {
+     "pr": 1358,
+     "sha": "6f2c15a54",
+     "title": "refactor(sans-io): complete machine input and effect boundaries"
     }
    ],
    "from": 342.5,
@@ -754,11 +754,6 @@
    "change_pct": 23.2,
    "commits": [
     {
-     "pr": 1341,
-     "sha": "19f66c64f",
-     "title": "disk preflight: restore a parked build tree from the cold store"
-    },
-    {
      "pr": 1335,
      "sha": "911e52997",
      "title": "Fix nine issues found on 0.10.0 RC 1: Home hero, Settings, Player HUD, Library restore"
@@ -802,6 +797,11 @@
      "pr": 1357,
      "sha": "db0125d55",
      "title": "Site video: fetch the pinned FFmpeg from this repository's mirror first"
+    },
+    {
+     "pr": 1358,
+     "sha": "6f2c15a54",
+     "title": "refactor(sans-io): complete machine input and effect boundaries"
     }
    ],
    "from": 200,
@@ -842,7 +842,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 321.5
+   "now": 322
   }
  ],
  "slowest_local": [
