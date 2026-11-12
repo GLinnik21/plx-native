@@ -337,7 +337,7 @@ extern "C" {
 }
 
 /// **Every draw call this module issues, counted.** `glDrawArrays` is shadowed by this wrapper so that
-/// the 30-odd call sites keep their spelling while each one books itself in
+/// every call site keeps its spelling while each one books itself in
 /// [`straighten::note_draw`]: the straighten pass runs only on a frame that drew something, and "drew
 /// nothing" has to mean no draw call was made, by any primitive, at all. A test pins that the raw
 /// import is called nowhere else in this file.
