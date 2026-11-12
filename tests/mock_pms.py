@@ -662,6 +662,14 @@ BAND_FIXTURE_SEED = 20_261_031
 
 # ---------------------------------------------------------------- the generated library ----
 
+def show_episodes_of(items, show_rk):
+    """Every episode in `items` whose show is `show_rk`, in (season, episode) order."""
+    show = [x for x in items.values()
+            if x["type"] == "episode" and x["grandparentRatingKey"] == show_rk]
+    show.sort(key=lambda x: (x["parentIndex"], x.get("index", 0)))
+    return show
+
+
 class Library:
     """Two sections — movies (key 1) and shows (key 2) — with people, genres, collections,
     seasons, episodes, media parts, chapters, markers, watch state and blur colours. Generated
@@ -1309,17 +1317,16 @@ class Library:
         its show after it, in (season, episode) order, as PMS answers; anything else, itself."""
         if it["type"] != "episode":
             return [it]
-        show = self.show_episodes(it["grandparentRatingKey"])
+        # Read through `items` alone: tests/test_hud_preview.py calls this unbound on a bare
+        # namespace that holds only `items` and `images`.
+        show = show_episodes_of(self.items, it["grandparentRatingKey"])
         return show[show.index(it):]
 
     def show_episodes(self, show_rk):
         """Every episode of the show `show_rk`, in (season, episode) order: the rows of a PlayQueue
         built from the SHOW (`uri` = the show, `key` = the episode to start on), which holds the
         episodes before the keyed one as well as after it."""
-        show = [x for x in self.items.values()
-                if x["type"] == "episode" and x["grandparentRatingKey"] == show_rk]
-        show.sort(key=lambda x: (x["parentIndex"], x.get("index", 0)))
-        return show
+        return show_episodes_of(self.items, show_rk)
 
     # --- item builders -------------------------------------------------------------------
 
