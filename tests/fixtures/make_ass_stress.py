@@ -58,6 +58,8 @@ container order and that exactly the opening's five would have been dropped by a
 each face has the glyphs its styles draw, one packet per event, >= 40 events at once, and a video
 mean of at least 15 Mbit/s. A libass host render of the opening differs frame for frame between
 the embedded faces and the fallback, so a dropped font is visible.
+The per-syllable effects (pops, rings, shines, star bursts) are placed from the real glyph advances
+of the Japanese face (`libass_advances`), so they sit on their glyphs.
 
 Needs host ffmpeg and ffprobe only (no mkvmerge); curl is used for downloads when present: the A/V is encoded once per resolution and every
 fixture remuxes it with `-c copy`, so the subtitle track is never subject to the encoder's sparse
@@ -587,10 +589,10 @@ def rename_font(data, family, style, pad_to=None):
     return font
 
 
-def font_codepoints(data):
-    """The Unicode code points a font maps to a real glyph (cmap formats 4 and 12)."""
+def font_cmap(data):
+    """{Unicode code point: glyph id} a font maps to a real glyph (cmap formats 4 and 12)."""
     cmap = sfnt_tables(data)[1][b"cmap"]
-    found = set()
+    found = {}
     for i in range(_u16(cmap, 2)):
         pid, eid, off = struct.unpack_from(">HHI", cmap, 4 + 8 * i)
         if (pid, eid) not in ((0, 3), (0, 4), (3, 1), (3, 10)):
@@ -609,12 +611,52 @@ def font_codepoints(data):
                     if ro and g:
                         g = (g + delta) & 0xFFFF
                     if g:
-                        found.add(c)
+                        found[c] = g
         elif fmt == 12:
             for g in range(_u32(cmap, off + 12)):
                 start, end, glyph = struct.unpack_from(">III", cmap, off + 16 + 12 * g)
-                found.update(c for c in range(start, end + 1) if glyph + c - start)
+                found.update((c, glyph + c - start) for c in range(start, end + 1) if glyph + c - start)
     return found
+
+
+def font_codepoints(data):
+    """The Unicode code points a font maps to a real glyph."""
+    return set(font_cmap(data))
+
+
+def libass_advances(data, text, size):
+    """The horizontal advance in px of each character of `text` set in the font `data` at font size
+    `size` (a style's Fontsize at 100% scale, no \\fsp). libass sizes a face with
+    FT_Request_Size(FT_SIZE_REQUEST_TYPE_REAL_DIM) (`ass_face_set_size`), which maps the face's
+    ascender - descender, NOT its em (`head.unitsPerEm` takes no part), onto `size`; so a glyph is
+    advance / (ascender - descender) of `size` wide. The ascender and descender are the ones libass
+    leaves on the face (`set_font_metrics`, mimicking GDI): OS/2 usWinAscent and usWinDescent (read
+    as signed) when they do not sum to zero; else FreeType's (sfnt/sfobjs.c: OS/2 sTypo* when
+    fsSelection bit 7, USE_TYPO_METRICS, is set, else `hhea`); else OS/2 sTypo* when those differ,
+    else the `head` bounding box. Dela Gothic One's are 1160 and 288 units for a 1000 unit em: a
+    full-width glyph is 1000 / 1448 = 0.69 of `size` wide. Not modelled, and absent from the
+    opening's text: kerning (a host render of every line of the opening agrees with these advances
+    to 2 px). The style's Outline is symmetric and does not move a glyph's centre."""
+    _, tables = sfnt_tables(data)
+    asc, desc = struct.unpack_from(">hh", tables[b"hhea"], 4)
+    os2 = tables.get(b"OS/2")
+    typo = (0, 0)
+    if os2 and len(os2) >= 78:
+        typo = struct.unpack_from(">hh", os2, 68)
+        win_asc, win_desc = struct.unpack_from(">hh", os2, 74)
+        if win_asc + win_desc:
+            asc, desc = win_asc, -win_desc
+        elif _u16(os2, 62) & 128:
+            asc, desc = typo
+    if asc - desc == 0:
+        if typo[0] - typo[1]:
+            asc, desc = typo
+        else:
+            _, desc, _, asc = struct.unpack_from(">hhhh", tables[b"head"], 36)  # xMin yMin xMax yMax
+    assert asc - desc > 0, "font has no height"
+    metrics, count = tables[b"hmtx"], _u16(tables[b"hhea"], 34)
+    cmap = font_cmap(data)
+    return [_u16(metrics, 4 * min(cmap[ord(ch)], count - 1)) * size / (asc - desc) for ch in text]
 
 
 # ---- the opening's script ----------------------------------------------------------------------
@@ -649,8 +691,8 @@ DIALOGUE = [
     "Pues vamos a comprobarlo.", "Prepara las velas. Yo me encargo del mapa.",
     "¡Mira! Ya empieza a clarear.",
 ]
-JP_SIZE = 88            # the Japanese line's size: every glyph is one em wide
-JP_Y = 980              # its baseline (\an2); the glyphs' middle is about 44 px above
+JP_SIZE = 88            # the Japanese line's font size; its glyphs are narrower (`libass_advances`)
+JP_Y = 980              # its bottom edge (\an2: baseline plus descent); the glyphs' middle is ~40 px above
 STAR = "m 0 -20 l 5 -6 20 -6 8 3 12 18 0 9 -12 18 -8 3 -20 -6 -5 -6"
 RING = ("m -20 0 b -20 -11 -11 -20 0 -20 b 11 -20 20 -11 20 0 "
         "b 20 11 11 20 0 20 b -11 20 -20 11 -20 0")
@@ -662,8 +704,17 @@ def style_line(name, family, size, primary, secondary, outline, bold, border, al
             f"100,100,0,0,1,{border},0,{align},60,60,{margin_v},1")
 
 
-def opening_events():
-    """[(start_s, end_s, layer, style, text)] of the dialogue stretch and the 90 s opening."""
+def opening_events(jp_font):
+    """[(start_s, end_s, layer, style, text)] of the dialogue stretch and the 90 s opening.
+    `jp_font` is the bytes of the face the OPJp style names: the per-syllable effects are placed
+    from its real glyph advances.
+
+    The effects are placed for the Japanese line's SETTLED layout (every glyph at 100%): the line's
+    opening `\\fscx110` (animated to 100 over 0.35 s, before the first syllable) and each syllable's
+    `\\fscx118` pop are transient, and a pop's scale is inherited by every later glyph until that
+    glyph's own block, so the glyphs shift while a syllable pops (~15 px at a pop's start for the
+    line's first glyphs, none for its last; more at the pop's peak). A host render of all 18 lines
+    puts every pop within 2 px of its glyph's settled position."""
     rnd = random.Random(1328)
     ev = []
     for i, line in enumerate(DIALOGUE):
@@ -681,12 +732,14 @@ def opening_events():
         starts_ms = [400 + 10 * sum(durs[:j]) for j in range(count)]
         k = "kf" if n % 2 else "k"
         life_ms = int(OP_LINE * 1000)
-        half = JP_SIZE * sum(len(jp) for jp, _ in items) / 2
-        # Each item's centre, from the one-em glyphs, so the per-syllable effects sit on their glyph.
-        centres, x = [], 960 - half
-        for jp, _ in items:
-            centres.append(x + JP_SIZE * len(jp) / 2)
-            x += JP_SIZE * len(jp)
+        # Each item's centre at 100% scale, from the font's real advances, as libass centres a
+        # `\an2\pos(960,_)` line (its width is the sum of the advances, no \fsp): so the per-syllable
+        # effects sit on their glyph.
+        widths = [sum(libass_advances(jp_font, jp, JP_SIZE)) for jp, _ in items]
+        centres, x = [], 960 - sum(widths) / 2
+        for width in widths:
+            centres.append(x + width / 2)
+            x += width
         kara = "".join(
             f"{{\\{k}{d}\\t({s},{s + 140},\\fscx118\\fscy118)\\t({s + 140},{s + 360},\\fscx100\\fscy100)}}{jp}"
             for (jp, _), d, s in zip(items, durs, starts_ms))
@@ -728,8 +781,11 @@ def opening_events():
                 (a, a + 0.6, 5, "OPFx",
                  f"{{\\an5\\move({cx:.0f},{cy},{cx:.0f},{cy - 80},0,600)\\bord3\\blur1.5\\1c{c1}\\3c{c2}"
                  f"\\t(0,600,\\fscx210\\fscy210\\alpha&HFF&\\blur6)}}{jp}"),
+                # \an7, not \an5: libass anchors a drawing at its coordinate origin, so under \an5 a ring
+                # drawn about (0,0) drifts up-left by its own radius as it grows (host render: 18 px
+                # at +0.15 s, 44 px at +0.45 s); \an7 keeps its centre on pos.
                 (a, a + 0.55, 4, "OPFx",
-                 f"{{\\an5\\pos({cx:.0f},{cy})\\p1\\bord4\\blur2\\1a&HFF&\\3c{c2}\\fscx30\\fscy30"
+                 f"{{\\an7\\pos({cx:.0f},{cy})\\p1\\bord4\\blur2\\1a&HFF&\\3c{c2}\\fscx30\\fscy30"
                  f"\\t(0,550,\\fscx260\\fscy260\\3a&HFF&)}}{RING}"),
                 (a, a + 0.35, 6, "OPFx",
                  f"{{\\an5\\pos({cx:.0f},{cy})\\bord2\\blur0.5\\1c&HFFFFFF&\\3c&HFFFFFF&"
@@ -942,7 +998,8 @@ def verify_fonts_over_budget(mkv, events, ass_text, attachments):
 def build_fonts_over_budget(out):
     attachments = build_attachments(out)
     av = encode_av_hibr(out)
-    events = opening_events()
+    jp_font = next(p for p, family in attachments if family == FAMILY["gothic"]).read_bytes()
+    events = opening_events(jp_font)
     ass_text = opening_script(events)
     mkv = mux_fonts(out, av, "fonts-over-budget", ass_text, attachments)
     m = verify_fonts_over_budget(mkv, events, ass_text, attachments)
