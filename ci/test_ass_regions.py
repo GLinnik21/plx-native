@@ -61,6 +61,8 @@ static void ass_set_frame_size(ASS_Renderer *r, int w, int h) {}
 static int ass_track_set_feature(ASS_Track *t, int f, int e) { return 0; }
 static void ass_set_line_spacing(ASS_Renderer *r, double s) {}
 static size_t plxi_library_fonts(ASS_Library *l) { return 0; }
+static int plxi_library_borrow_font(ASS_Library *l, const char *n, const uint8_t *d, size_t z, size_t *i) { *i = 0; return 0; }
+static void plxi_library_forget_borrowed(ASS_Library *l, const size_t *i, size_t c) {}
 static void ass_set_storage_size(ASS_Renderer *r, int w, int h) {}
 '''
 SOURCE = r'''
