@@ -1457,11 +1457,9 @@ impl Bridge {
         let Some(entry) = d.nav.top_page() else { return false };
         let Some(home) = entry.inst.as_ref().and_then(|i| i.screen.as_any())
             .and_then(|s| s.downcast_ref::<plx_screens::home::HomeScreen>()) else { return false };
-        if <plx_screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home) { return false; }
-        let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
-            focus: plx_machine::machine::FocusRead { current: Self::home_focus(d) , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
-        let cx = parts.cx::<AppHost>(self.views(), &self.measure);
-        if home.grid_position::<AppHost>(parts.focus.current, &cx).is_none() { return false; }
+        // The page's own rule for where a menu may open, the one a hold answers by: NOT "the page is
+        // off the hero" (`strip_reachable`), which the Continue Watching row never makes true.
+        if !home.item_menu_reachable(Self::home_focus(d)) { return false; }
         self.home_command(HomeCmd::ItemMenu)
     }
 

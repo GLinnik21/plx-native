@@ -2053,6 +2053,8 @@ class CatalogLibrary(Library):
                 it["UltraBlurColors"] = self._blur_of(images["art"])
             self.images[rk] = images
             self.by_slug[slug] = rk
+            if kind in ("movie", "show"):  # a season's and an episode's name their show's (below)
+                it["Image"] = self._image_list(rec["title"], it.get("thumb"), it.get("art"), rk)
             return it
 
         movies, shows = self.sections[0], self.sections[1]
@@ -2087,6 +2089,7 @@ class CatalogLibrary(Library):
                 se.update(index=season["index"], parentRatingKey=show["ratingKey"], parentKey=show["key"],
                           parentTitle=show["title"], parentThumb=show.get("thumb", ""), thumb=show.get("thumb", ""),
                           art=show.get("art", ""), leafCount=0, viewedLeafCount=0)
+                se["Image"] = self._image_list(show["title"], show.get("thumb"), show.get("art"), rk)
                 self.images[srk] = self.images[rk]
                 self.items[srk] = se
                 for e in season["episodes"]:
@@ -2117,6 +2120,8 @@ class CatalogLibrary(Library):
                         ep.update(duration=dur, Media=[media])
                     if "art" in self.images[rk]:
                         self.images[erk]["art"] = self.images[rk]["art"]
+                    ep["Image"] = self._image_list(e["title"], show.get("thumb"), show.get("art"), rk,
+                                                   snapshot=ep.get("thumb"))
                     self.items[erk] = ep
         self._add_empty_collection("Empty Collection")
         self._add_name_fitting_collections()
@@ -2173,6 +2178,26 @@ class CatalogLibrary(Library):
         ends = starts[1:] + [duration]
         return [{"id": n, "index": n, "tag": c["title"], "startTimeOffset": a, "endTimeOffset": b}
                 for n, (c, a, b) in enumerate(zip(marks, starts, ends), start=1)]
+
+    def _image_list(self, title, poster, background, logo_rk, snapshot=None):
+        """A row's `Image[]`, as a modern PMS sends it on every listing and detail row: the
+        `coverPoster` and the `background`, a `clearLogo` ONLY where the title has one (at the
+        STAMPED `/library/metadata/<title rk>/clearLogo/<stamp>` path, which is what the app reads
+        the logo's identity from) and, on an episode, its own `snapshot`. `logo_rk` is the TITLE's
+        key, so a season's or an episode's list names its show's background and logo, as
+        `--cw-art-fixture`'s rows do. A title without a logo carries a list WITHOUT one: that is
+        how the app knows there is nothing to ask for. A row with no list at all reads as an older
+        PMS and gets the legacy `/clearLogo` lookup, which this library answers with a 404 for
+        every title in the catalog's `logo_none_approved`, and a frame dump fails closed on a
+        failed art request."""
+        rows = [{"alt": title, "type": kind, "url": url}
+                for kind, url in (("coverPoster", poster), ("background", background)) if url]
+        if "clearLogo" in self.images.get(logo_rk, {}):
+            rows.append({"alt": title, "type": "clearLogo",
+                         "url": f"/library/metadata/{logo_rk}/clearLogo/{self.now}"})
+        if snapshot:
+            rows.append({"alt": title, "type": "snapshot", "url": snapshot})
+        return rows
 
     @staticmethod
     def _blur_of(path):
