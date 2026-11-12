@@ -79,7 +79,7 @@
 
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uint};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::{
     cap_tex, delete_tex, glActiveTexture, glBindFramebuffer, glBindTexture, glCopyTexSubImage2D, glDisable,
@@ -110,7 +110,7 @@ pub(crate) fn note_draw() {
 /// `text::begin_frame`, once per presented frame, before the draw.
 pub fn frame_begin() {
     DRAWS.store(0, Ordering::Relaxed);
-    STRAIGHTENED.store(false, Ordering::Relaxed);
+    STRAIGHTENED.with(|s| s.set(false));
 }
 
 /// Has this frame drawn anything since [`frame_begin`]?
@@ -118,14 +118,20 @@ pub fn frame_drew() -> bool {
     DRAWS.load(Ordering::Relaxed) != 0
 }
 
-/// Set by the pass, cleared by [`frame_begin`]: the surface now holds STRAIGHT colour.
-static STRAIGHTENED: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    /// Set by the pass, cleared by [`frame_begin`]: the surface now holds STRAIGHT colour.
+    ///
+    /// THREAD-LOCAL like `VIDEO_PLANE_FRAME` beside the doors that read it, and for the same reason:
+    /// it is draw state, the draw is one thread's, and a process-wide flag would let one test's
+    /// straightened surface refuse another test's perfectly ordinary snapshot.
+    static STRAIGHTENED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 /// Has the pass run on this frame? Past it, framebuffer 0 holds straight colour, so a read of it (a
 /// snapshot, a glass source, a field kick) would cache a picture the premultiplied blend cannot
 /// composite: `video_plane_refuses` answers `true` for every door once this is.
 pub fn straightened() -> bool {
-    STRAIGHTENED.load(Ordering::Relaxed)
+    STRAIGHTENED.with(|s| s.get())
 }
 
 // ---- what to do: a pure decision ------------------------------------------------------------------
@@ -312,7 +318,7 @@ pub fn straighten_surface(plane_bound: bool) -> bool {
         }
         glEnable(GL_BLEND);
     }
-    STRAIGHTENED.store(true, Ordering::Relaxed);
+    STRAIGHTENED.with(|s| s.set(true));
     true
 }
 
@@ -604,7 +610,7 @@ mod tests {
         assert!(!frame_drew() && !straightened());
         note_draw();
         assert!(frame_drew());
-        STRAIGHTENED.store(true, Ordering::Relaxed);
+        STRAIGHTENED.with(|s| s.set(true));
         assert!(straightened());
         assert!(super::super::video_plane_refuses("test door"), "a door refuses once the surface is straight");
         frame_begin();
