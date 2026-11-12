@@ -366,3 +366,73 @@ fn controlled_person_capture_never_calls_the_live_seed_reader() {
     assert!(capture.controlled);
     assert!(capture.dev_bio.is_none());
 }
+
+impl Bridge {
+    pub(crate) fn assert_person_provenance_at_dispatch(tap: &mut dyn plx_ui::dispatch::Tap<AppHost>) {
+        use plx_data::stores::person::PersonCmd;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CAPTURES: AtomicUsize = AtomicUsize::new(0);
+        let sender = MachineId::Instance(InstanceId(3));
+        let other = MachineId::Instance(InstanceId(4));
+        let mut bridge = Bridge::for_test(|| 0);
+        bridge.live_screen_inputs = false;
+        assert!(bridge.person_run_from(Some(sender), deferred_open("admitted")));
+        bridge.stores.person.seed_ownership_fixture_for_test();
+        let publication = bridge.stores.person.ownership_fixture_for_test();
+        let generation = bridge.stores.person.gen();
+        let owner = bridge.person_owner;
+        let captured = bridge.store_session.observed.clone();
+        let capture_guid = bridge.person_capture.guid.clone();
+        bridge.person_session_capture = |_| { CAPTURES.fetch_add(1, Ordering::SeqCst); false };
+        CAPTURES.store(0, Ordering::SeqCst);
+        let mut dispatcher = Dispatcher::<AppHost>::new();
+        let parts = CxParts { tick: Tick::default(), press: Default::default(),
+            focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
+        let mut report = FrameReport::default();
+        // The tap sees the forged envelope, but cannot prevent its execution.
+        for (from, embedded) in [(MachineId::Nav, sender), (sender, MachineId::Nav), (other, sender)] {
+            for command in [PersonCmd::Reset, deferred_open("forged")] {
+                dispatcher.emit(from, Fx::Deliver(MachineId::Store(StoreId::Person.ord()),
+                    Delivery::Machine(AppMsg::PersonCommand { from: embedded, command })));
+                assert_eq!(dispatcher.drain(&mut bridge, &parts, 1, &mut report, tap), 1);
+                assert_eq!(bridge.stores.person.ownership_fixture_for_test(), publication,
+                    "mismatched Person provenance must not mutate its publication or flights");
+                assert_eq!(bridge.stores.person.gen(), generation);
+                assert_eq!(bridge.person_owner, owner);
+                assert!(bridge.pending_person_open.is_none(), "forged Open must not become deferred work");
+                assert!(std::sync::Arc::ptr_eq(&bridge.store_session.observed, &captured));
+                assert_eq!(bridge.person_capture.guid, capture_guid);
+                assert_eq!(CAPTURES.load(Ordering::SeqCst), 0, "rejection must precede captured-input IO");
+                assert!(!bridge.stores.person.has_jobs());
+                assert!(bridge.take_held_store_jobs_for_test().is_empty(), "no runner IO admitted");
+                bridge.assert_no_store_jobs_left_for_test();
+            }
+        }
+        let mut out = Vec::new();
+        let mut present = Present::new();
+        let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::Person.ord()), &mut present);
+        assert_eq!(Rig::deliver_from(&mut bridge, MachineId::Nav, MachineId::Store(StoreId::Person.ord()),
+            &AppMsg::PersonCommand { from: sender, command: PersonCmd::Reset }, &parts, &mut fx), Handled::No);
+        assert!(out.is_empty(), "refusal emits no work");
+        // Matching provenance still executes in this drain, including after tap refusal.
+        bridge.person_session_capture = Bridge::capture_store_session_live;
+        dispatcher.emit(other, Fx::Deliver(MachineId::Store(StoreId::Person.ord()),
+            Delivery::Machine(AppMsg::PersonCommand { from: other, command: deferred_open("matching") })));
+        assert_eq!(dispatcher.drain(&mut bridge, &parts, 1, &mut report, tap), 1);
+        assert_eq!(bridge.person_view().current().unwrap().key, "matching");
+        assert!(bridge.pending_person_open.is_none());
+        let matching = bridge.stores.person.ownership_fixture_for_test();
+        dispatcher.emit(sender, Fx::Deliver(MachineId::Store(StoreId::Person.ord()),
+            Delivery::Machine(AppMsg::PersonCommand { from: sender, command: PersonCmd::Close })));
+        dispatcher.drain(&mut bridge, &parts, 1, &mut report, tap);
+        assert_eq!(bridge.stores.person.ownership_fixture_for_test(), matching,
+            "matching provenance must not bypass retired-instance authorization");
+        dispatcher.emit(other, Fx::Deliver(MachineId::Store(StoreId::Person.ord()),
+            Delivery::Machine(AppMsg::PersonCommand { from: other, command: PersonCmd::Reset })));
+        assert_eq!(dispatcher.drain(&mut bridge, &parts, 1, &mut report, tap), 1);
+        assert!(bridge.person_view().current().is_none());
+        assert!(bridge.stores.person.gen() > generation);
+        assert_eq!(CAPTURES.load(Ordering::SeqCst), 0);
+        bridge.assert_no_store_jobs_left_for_test();
+    }
+}

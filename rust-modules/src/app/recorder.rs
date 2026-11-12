@@ -1453,6 +1453,26 @@ mod tests {
     }
 
     #[test]
+    fn dispatcher_person_provenance_rejects_before_state_or_io_in_live_record_and_replay() {
+        use super::super::bridge::Bridge;
+        let _serial = plx_base::testlock::serial();
+        let _session = plx_plex::plex::session::TempSession::new("person-dispatch-provenance");
+        Bridge::assert_person_provenance_at_dispatch(&mut plx_ui::dispatch::NoTap);
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
+        let mut recording = Recplay::recording_with_sink(&initial,
+            Box::new(plx_ui::rec::MemSink::default())).unwrap();
+        Bridge::assert_person_provenance_at_dispatch(&mut recording);
+        assert_eq!(recording.failure(), Some("mismatched controlled Person sender or destination"));
+        let manifest = Header::new(state_fp(), &initial).to_json().to_string();
+        for mode in [ReplayMode::Targets, ReplayMode::Resolve] {
+            let recording = Recording::parse(&manifest, &[], state_fp()).unwrap();
+            let mut replay = replay_for_test(recording, mode);
+            Bridge::assert_person_provenance_at_dispatch(&mut replay);
+            assert_eq!(replay.failure(), Some("mismatched controlled Person sender or destination"));
+        }
+    }
+
+    #[test]
     fn person_sender_provenance_is_checked_when_recording_and_in_both_replay_modes() {
         use plx_machine::machine::{Delivery, Fx, InstanceId, MachineId, Stamped};
         use plx_screens::registry::AppMsg;

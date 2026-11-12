@@ -3078,6 +3078,14 @@ impl Rig<AppHost> for Bridge {
             measure: &self.measure,
         }
     }
+    fn deliver_from(&mut self, from: MachineId, to: MachineId, msg: &AppMsg,
+        parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
+        if matches!(msg, AppMsg::PersonCommand { from: embedded, .. } if *embedded != from) {
+            return Handled::No;
+        }
+        self.deliver(to, msg, parts, fx)
+    }
+
     fn deliver(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
         let handled = self.deliver_inner(to, msg, parts, fx);
         // A store step queues the endpoint refreshes it owes; they leave here, as many as the step

@@ -230,6 +230,11 @@ pub trait Rig<H: Host> {
         parts: &CxParts<H::Elem>,
         fx: &mut Effects<'_, H>,
     ) -> Handled;
+    /// Deliver with the original envelope sender; legacy rigs retain their delivery behavior.
+    fn deliver_from(&mut self, _from: MachineId, to: MachineId, msg: &H::Msg,
+        parts: &CxParts<H::Elem>, fx: &mut Effects<'_, H>) -> Handled {
+        self.deliver(to, msg, parts, fx)
+    }
     /// A timer for a non-instance machine.
     fn timer(&mut self, owner: MachineId, id: TimerId, parts: &CxParts<H::Elem>, fx: &mut Effects<'_, H>);
     /// Execute an application effect against the adapters; may emit more (an adapter result
@@ -1982,7 +1987,7 @@ where
                 Fx::Deliver(to, delivery) => {
                     steps += 1;
                     let mut out: Vec<Stamped<H>> = Vec::new();
-                    self.execute_deliver(rig, parts, to, delivery, &mut out, report, tap);
+                    self.execute_deliver(rig, parts, item.from, to, delivery, &mut out, report, tap);
                     self.absorb(out);
                 }
                 Fx::Timer { id, after_ms } => {
@@ -2081,6 +2086,7 @@ where
         &mut self,
         rig: &mut dyn Rig<H>,
         parts: &CxParts<H::Elem>,
+        from: MachineId,
         to: MachineId,
         delivery: Delivery<H>,
         out: &mut Vec<Stamped<H>>,
@@ -2120,7 +2126,7 @@ where
                     return;
                 }
                 let event = if held { ScreenEvent::PressHold(id) } else { ScreenEvent::PressCommit(id) };
-                self.execute_deliver(rig, parts, to, Delivery::Screen(event), out, report, tap);
+                self.execute_deliver(rig, parts, from, to, Delivery::Screen(event), out, report, tap);
             }
             (MachineId::Instance(id), Delivery::Screen(ev)) => {
                 // An OS ownership edge takes effect at its position in the delivery stream.
@@ -2276,7 +2282,7 @@ where
             (other, Delivery::Machine(msg)) => {
                 let Dispatcher { present, .. } = self;
                 let mut fx = Effects::new(out, other, present);
-                let _ = rig.deliver(other, &msg, parts, &mut fx);
+                let _ = rig.deliver_from(from, other, &msg, parts, &mut fx);
             }
             (_, Delivery::Screen(_) | Delivery::Press { .. } | Delivery::Keyboard { .. }) => {
                 report.dropped_deliveries += 1;
@@ -2577,7 +2583,7 @@ where
             self.input.abandon_if_off(entry, to);
             if let Some(id) = self.nav.instance_of(entry) {
                 let mut out = Vec::new();
-                self.execute_deliver(rig, parts, MachineId::Instance(id), Delivery::Screen(ScreenEvent::FocusMoved { from, to, by }), &mut out, report, tap);
+                self.execute_deliver(rig, parts, MachineId::Input, MachineId::Instance(id), Delivery::Screen(ScreenEvent::FocusMoved { from, to, by }), &mut out, report, tap);
                 self.absorb(out);
             }
         }
