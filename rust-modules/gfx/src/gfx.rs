@@ -20,7 +20,8 @@ pub mod backdrop;
 mod geom;
 pub mod scrim;
 /// The straight-alpha compositor's half of the frame: the pass that un-premultiplies the surface over
-/// the bound video plane, and the draw ledger that decides whether a frame needs it.
+/// the bound video plane, and the ledger of what every draw wrote that decides whether a frame needs
+/// it and where.
 pub mod straighten;
 /// Draw-phase instrumentation (`phase`, the GPU timer / HWCNT / CPU profilers) and the LOAD DIAL's
 /// published state.
@@ -196,8 +197,8 @@ const FS_RAMP: &CStr = glsl!("shaders/fs_ramp.frag");
 const FS_TEX: &CStr = glsl!("shaders/fs_tex.frag");
 const VS_ART_SCRIM: &CStr = glsl!("shaders/vs_art_scrim.vert");
 const FS_ART_SCRIM: &CStr = glsl!("shaders/fs_art_scrim.frag");
-/// The straighten pass (`gfx/straighten.rs`): one full-viewport vertex shader and one fragment source
-/// in three variants, picked by a `#define` prefix. The fetch variants read the frame in place; the
+/// The straighten pass (`gfx/straighten.rs`): one vertex shader that stretches the unit quad over a box
+/// of the viewport and one fragment source in three variants, picked by a `#define` prefix. The fetch variants read the frame in place; the
 /// copy variant samples a copy of it.
 const VS_STRAIGHTEN: &CStr = glsl!("shaders/vs_straighten.vert");
 const FS_STRAIGHTEN_ARM: &CStr = glsl!("shaders/fs_straighten.frag", "#define PLX_STRAIGHTEN_ARM\n");
@@ -265,8 +266,8 @@ extern "C" {
         stride: c_int,
         pointer: *const c_void,
     );
-    /// The raw import. Nothing but [`glDrawArrays`] below (and the straighten pass's own full-viewport
-    /// draw, which is not content) calls it: see that wrapper.
+    /// The raw import. Nothing but [`glDrawArrays`] below (and the straighten pass's own quads over the
+    /// boxes the frame drew into, which are not content) calls it: see that wrapper.
     #[link_name = "glDrawArrays"]
     fn glDrawArrays_raw(mode: c_uint, first: c_int, count: c_int);
     fn glBindTexture(target: c_uint, texture: c_uint);
@@ -276,7 +277,9 @@ extern "C" {
     fn glScissor(x: c_int, y: c_int, w: c_int, h: c_int);
     fn glBlendFuncSeparate(src_rgb: c_uint, dst_rgb: c_uint, src_a: c_uint, dst_a: c_uint);
     fn glClearColor(r: f32, g: f32, b: f32, a: f32);
-    fn glClear(mask: c_uint);
+    /// The raw import: only [`glClear`] below calls it.
+    #[link_name = "glClear"]
+    fn glClear_raw(mask: c_uint);
     #[cfg(feature = "devtriggers")]
     fn glFinish();
     #[cfg(feature = "devtriggers")]
@@ -304,7 +307,9 @@ extern "C" {
     // UI self-capture (the "cap_*" section at the bottom of this file)
     fn glGenFramebuffers(n: c_int, ids: *mut c_uint);
     fn glDeleteFramebuffers(n: c_int, ids: *const c_uint);
-    fn glBindFramebuffer(target: c_uint, framebuffer: c_uint);
+    /// The raw import: only [`glBindFramebuffer`] below calls it.
+    #[link_name = "glBindFramebuffer"]
+    fn glBindFramebuffer_raw(target: c_uint, framebuffer: c_uint);
     fn glFramebufferTexture2D(
         target: c_uint,
         attachment: c_uint,
@@ -336,16 +341,47 @@ extern "C" {
     fn glViewport(x: c_int, y: c_int, w: c_int, h: c_int);
 }
 
-/// **Every draw call this module issues, counted.** `glDrawArrays` is shadowed by this wrapper so that
-/// every call site keeps its spelling while each one books itself in
-/// [`straighten::note_draw`]: the straighten pass runs only on a frame that drew something, and "drew
-/// nothing" has to mean no draw call was made, by any primitive, at all. A test pins that the raw
+/// **Every draw call this module issues, with the extent it writes.** `glDrawArrays` is shadowed by this
+/// wrapper so that every call site keeps its spelling, adds one argument and books itself in
+/// [`straighten::note_draw`]: the straighten pass draws over the boxes the frame drew into and
+/// nowhere else, so a draw that did not say where it lands would be a translucent pixel the pass
+/// skipped. The `extent` is [`set_rect`]'s answer for every quad placed by a rect uniform (the numbers
+/// the vertex shader places the quad with, not the logical rect it was asked for) and
+/// [`straighten::Extent::Target`], the whole target, for a draw with none. A test pins that the raw
 /// import is called nowhere else in this file.
 #[allow(non_snake_case)]
 #[inline(always)]
-unsafe fn glDrawArrays(mode: c_uint, first: c_int, count: c_int) {
-    straighten::note_draw();
+unsafe fn glDrawArrays(mode: c_uint, first: c_int, count: c_int, extent: straighten::Extent) {
+    straighten::note_draw(extent);
     glDrawArrays_raw(mode, first, count)
+}
+
+/// Set a program's rect uniform (`u_rect` / `u_trect`: the authored-pixel quad the vertex shader
+/// places the unit quad over) and return the extent that quad writes, for the draw that follows. The
+/// one function that does both, so the extent a draw books cannot differ from the rect the shader
+/// draws.
+#[inline(always)]
+pub(crate) unsafe fn set_rect(loc: c_int, x: f32, y: f32, w: f32, h: f32) -> straighten::Extent {
+    glUniform4f(loc, x, y, w, h);
+    straighten::Extent::quad(x, y, w, h)
+}
+
+/// `glClear`, shadowed so a clear of the surface to a colour the straighten pass does not leave alone
+/// is booked ([`straighten::note_clear`]); the colour is the one [`set_clear_color`] left.
+#[allow(non_snake_case)]
+#[inline(always)]
+unsafe fn glClear(mask: c_uint) {
+    straighten::note_clear(CLEAR_COLOR[3]);
+    glClear_raw(mask)
+}
+
+/// `glBindFramebuffer`, shadowed so the straighten pass's ledger knows whether gfx is drawing into
+/// the surface or into a target of its own ([`straighten::note_bind`]).
+#[allow(non_snake_case)]
+#[inline(always)]
+unsafe fn glBindFramebuffer(target: c_uint, framebuffer: c_uint) {
+    straighten::note_bind(framebuffer);
+    glBindFramebuffer_raw(target, framebuffer)
 }
 
 const GL_RGBA: c_uint = 0x1908;
@@ -1478,7 +1514,7 @@ fn rect_fill(radius: f32, focus: f32, one_colour: bool) -> RectFill {
 unsafe fn draw_flat(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
     if FPROG == 0 {
         use_prog(PROG);
-        glUniform4f(LOC_RECT, x, y, w, h);
+        let ext = set_rect(LOC_RECT, x, y, w, h);
         glUniform2f(LOC_SIZE, w, h);
         glUniform1f(LOC_PAD, 0.0);
         glUniform1f(LOC_RADIUS, 0.0);
@@ -1490,13 +1526,13 @@ unsafe fn draw_flat(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
         glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0);
         glUniform1f(LOC_RIMTOP, 0.0);
         pill_off();
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         return;
     }
     use_prog(FPROG); // u_screen is set once at init (uniforms are per-program state)
-    glUniform4f(FL_RECT, x, y, w, h);
+    let ext = set_rect(FL_RECT, x, y, w, h);
     glUniform4fv(FL_COL, 1, col);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
 }
 
 /// A top-to-bottom two-stop gradient over an axis-aligned quad through `shaders/fs_ramp.frag` — the
@@ -1506,7 +1542,7 @@ unsafe fn draw_flat(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
 unsafe fn draw_ramp(x: f32, y: f32, w: f32, h: f32, top: *const f32, bot: *const f32) {
     if RPROG == 0 {
         use_prog(PROG);
-        glUniform4f(LOC_RECT, x, y, w, h);
+        let ext = set_rect(LOC_RECT, x, y, w, h);
         glUniform2f(LOC_SIZE, w, h);
         glUniform1f(LOC_PAD, 0.0);
         glUniform1f(LOC_RADIUS, 0.0);
@@ -1518,14 +1554,14 @@ unsafe fn draw_ramp(x: f32, y: f32, w: f32, h: f32, top: *const f32, bot: *const
         glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0);
         glUniform1f(LOC_RIMTOP, 0.0);
         pill_off();
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         return;
     }
     use_prog(RPROG); // u_screen is set once at init (uniforms are per-program state)
-    glUniform4f(RP_RECT, x, y, w, h);
+    let ext = set_rect(RP_RECT, x, y, w, h);
     glUniform4fv(RP_TOP, 1, top);
     glUniform4fv(RP_BOT, 1, bot);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
 }
 
 /// Only the bottom band and its AA fringe are rasterized; the shader clips to the full card.
@@ -1574,11 +1610,11 @@ pub fn draw_art_scrim(
         use_prog(AS_PROG);
         let radius = radius.max(0.0).min(w * 0.5).min(h * 0.5);
         let inner = art_scrim_inner(w, h, radius);
-        glUniform4f(AS_RECT, qx, qy, qw, qh);
+        let ext = set_rect(AS_RECT, qx, qy, qw, qh);
         glUniform4f(AS_SIZE, w, h, w * 0.5 - radius, h * 0.5 - radius);
         glUniform4f(AS_BAND, band.min(h), radius, inner[0], inner[1]);
         glUniform4fv(AS_COL, 1, col.as_ptr());
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
     true
 }
@@ -1632,7 +1668,7 @@ pub fn draw_rect(
         } else {
             0.0
         };
-        glUniform4f(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
+        let ext = set_rect(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
         glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
         glUniform1f(LOC_PAD, pad + aa);
         glUniform1f(LOC_RADIUS, radius);
@@ -1648,7 +1684,7 @@ pub fn draw_rect(
         glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0); // no edge-sheen (default)
         glUniform1f(LOC_RIMTOP, 0.0);
         pill_off();
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
 }
 
@@ -1700,7 +1736,7 @@ pub fn draw_rect_shaped(
     unsafe {
         use_prog(PROG);
         let aa = AA_BLEED; // a sheened tile is always rounded → always SDF path
-        glUniform4f(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
+        let ext = set_rect(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
         glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
         glUniform1f(LOC_PAD, aa);
         glUniform1f(LOC_RADIUS, radius);
@@ -1713,7 +1749,7 @@ pub fn draw_rect_shaped(
         glUniform1f(LOC_RIMTOP, rimtop);
         glUniform1f(LOC_RGB_CAP, rgb_cap);
         pill_on(pill, glow);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
 }
 
@@ -1779,7 +1815,7 @@ fn draw_ambient_impl(
         let amp = DITHER_LSB;
         let (prog, l_rect, l_tl, l_tr, l_br, l_bl) = ambient_program(amp);
         use_prog(prog); // u_screen is set once per program at init
-        glUniform4f(l_rect, x, y, w, h);
+        let ext = set_rect(l_rect, x, y, w, h);
         glUniform4f(l_tl, c3(tl, 0) * dim, c3(tl, 1) * dim, c3(tl, 2) * dim, 1.0);
         glUniform4f(l_tr, c3(tr, 0) * dim, c3(tr, 1) * dim, c3(tr, 2) * dim, 1.0);
         glUniform4f(l_br, c3(br, 0) * dim, c3(br, 1) * dim, c3(br, 2) * dim, 1.0);
@@ -1791,7 +1827,7 @@ fn draw_ambient_impl(
             glUniform2f(AL_INKA, inka[0], inka[1]);
             send_scrim(0, AL_SCRIM, scrim);
         }
-        draw_field_mesh();
+        draw_field_mesh(ext);
     }
 }
 
@@ -1982,26 +2018,45 @@ pub fn draw_scrim_layer(x: f32, y: f32, w: f32, h: f32, ink: [f32; 3], scrim: &s
             return;
         }
         use_prog(SCRIM_PROG);
-        glUniform4f(SCL_RECT, x, y, w, h);
+        let ext = set_rect(SCL_RECT, x, y, w, h);
         glUniform3f(SCL_INK, ink[0], ink[1], ink[2]);
         send_scrim(2, SCL_SCRIM, scrim);
-        draw_field_mesh_rows(rows);
+        draw_field_mesh_rows(rows, ext);
     }
 }
 
 /// Issue the field mesh (see [`field_mesh`]) — every four-corner draw goes through this.
 #[inline]
-unsafe fn draw_field_mesh() {
-    draw_field_mesh_rows(0..FIELD_N);
+unsafe fn draw_field_mesh(ext: straighten::Extent) {
+    draw_field_mesh_rows(0..FIELD_N, ext);
 }
 
 /// Issue rows `rows` of the field mesh (`0..FIELD_N`, top to bottom). [`field_mesh`] stores it row
 /// by row, `FIELD_N` squares of 6 vertices to a row, after the unit quad's 4 vertices, so a run of
 /// rows is one contiguous `glDrawArrays` and draws exactly the vertices the whole mesh holds there.
+/// `ext` is the rect the program places the WHOLE mesh over ([`set_rect`]'s answer); the draw books
+/// the part of it the rows reach ([`rows_extent`]).
 #[inline]
-unsafe fn draw_field_mesh_rows(rows: std::ops::Range<usize>) {
+unsafe fn draw_field_mesh_rows(rows: std::ops::Range<usize>, ext: straighten::Extent) {
     const ROW_VERTS: usize = FIELD_N * 6;
-    glDrawArrays(GL_TRIANGLES, (4 + rows.start * ROW_VERTS) as c_int, (rows.len() * ROW_VERTS) as c_int);
+    glDrawArrays(
+        GL_TRIANGLES,
+        (4 + rows.start * ROW_VERTS) as c_int,
+        (rows.len() * ROW_VERTS) as c_int,
+        rows_extent(ext, &rows),
+    );
+}
+
+/// The part of the mesh's rect `ext` that rows `rows` cover: row `j` spans `j / FIELD_N .. (j + 1) /
+/// FIELD_N` of the rect's height ([`field_mesh`]). A whole-target extent has no rect to cut.
+fn rows_extent(ext: straighten::Extent, rows: &std::ops::Range<usize>) -> straighten::Extent {
+    match ext {
+        straighten::Extent::Quad([x, y, w, h]) => {
+            let n = FIELD_N as f32;
+            straighten::Extent::quad(x, y + h * rows.start as f32 / n, w, h * rows.len() as f32 / n)
+        }
+        whole => whole,
+    }
 }
 
 /// Which of the two ambient programs draws a field, with its uniform locations: the dithered one
@@ -2049,7 +2104,7 @@ pub fn draw_grad4(
         // plain twin when it linked.
         let (prog, l_rect, l_tl, l_tr, l_br, l_bl) = ambient_program(0.0);
         use_prog(prog); // u_screen is set once per program at init
-        glUniform4f(l_rect, x, y, w, h);
+        let ext = set_rect(l_rect, x, y, w, h);
         glUniform4fv(l_tl, 1, tl);
         glUniform4fv(l_tr, 1, tr);
         glUniform4fv(l_br, 1, br);
@@ -2057,7 +2112,7 @@ pub fn draw_grad4(
         if prog == APROG {
             glUniform1f(AL_DITHER, 0.0);
         }
-        draw_field_mesh();
+        draw_field_mesh(ext);
     }
 }
 
@@ -2077,7 +2132,7 @@ pub fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *
         } else {
             0.0
         };
-        glUniform4f(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
+        let ext = set_rect(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
         glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
         glUniform1f(LOC_PAD, aa);
         glUniform1f(LOC_RADIUS, rad_l);
@@ -2091,7 +2146,7 @@ pub fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *
         glUniform1f(LOC_RIMTOP, 0.0);
         glUniform1f(LOC_RGB_CAP, 1.0); // no rim, glow or ring to hold
         pill_off();
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
 }
 
@@ -2115,7 +2170,7 @@ pub fn draw_rrect_sheened(
     unsafe {
         use_prog(PROG);
         let aa = AA_BLEED;
-        glUniform4f(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
+        let ext = set_rect(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
         glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
         glUniform1f(LOC_PAD, aa);
         glUniform1f(LOC_RADIUS, rad_l);
@@ -2129,7 +2184,7 @@ pub fn draw_rrect_sheened(
         glUniform1f(LOC_RIMTOP, rimtop);
         glUniform1f(LOC_RGB_CAP, rgb_cap);
         pill_off();
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
 }
 
@@ -2191,9 +2246,9 @@ pub fn draw_shadow(
         let (bands, n) = shadow_bands([qx, qy, qw, qh], inner, target_map().2);
         let (cx, cy) = (qx + qw * 0.5, qy + qh * 0.5);
         for r in &bands[..n] {
-            glUniform4f(SL_RECT, r[0], r[1], r[2], r[3]);
+            let ext = set_rect(SL_RECT, r[0], r[1], r[2], r[3]);
             glUniform4f(SL_MAP, r[0] - cx, r[1] - cy, r[2], r[3]);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         }
     }
 }
@@ -2538,7 +2593,7 @@ pub fn draw_art_wash(
     let inv = |d: f32| if d.abs() > 0.001 { 1.0 / d } else { 0.0 };
     unsafe {
         use_prog(g.prog);
-        glUniform4f(g.rect, x, y, w, h);
+        let ext = set_rect(g.rect, x, y, w, h);
         for (loc, c) in g.corners.iter().zip(corners) {
             glUniform4f(*loc, c[0], c[1], c[2], 1.0);
         }
@@ -2550,7 +2605,7 @@ pub fn draw_art_wash(
         glUniform2f(g.inka, inka[0], inka[1]);
         send_scrim(1, g.scrim, scrim);
         glBindTexture(GL_TEXTURE_2D, tex);
-        draw_field_mesh();
+        draw_field_mesh(ext);
     }
 }
 
@@ -3092,7 +3147,7 @@ fn draw_tex_core_in(
             },
         };
         let Some(boxes) = boxes else {
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, straighten::Extent::Quad(quad));
             return;
         };
         let plan = card_plan(&boxes, LIVE_SCISSOR, masked_part);
@@ -3117,7 +3172,7 @@ fn draw_tex_core_in(
             }
             let b = piece.scissor;
             glScissor(b[0], b[1], b[2] - b[0], b[3] - b[1]);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, straighten::Extent::Quad(quad));
         }
         // The clip the caller had (a scrolling list's, a source pass's box) is theirs: put it back,
         // through the two functions that keep `LIVE_SCISSOR` honest.
@@ -5721,7 +5776,7 @@ fn blur_snapshot_with_taps(reg: [f32; 4], taps: &[f32]) {
                 let tap = tap * plx_base::surface::render_scale() as f32;
                 glUniform2f(BL_TEXEL, tap / c.sw as f32, tap / c.sh as f32);
                 glBindTexture(GL_TEXTURE_2D, src);
-                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, straighten::Extent::Target);
             });
         }
 
@@ -5745,7 +5800,7 @@ fn blur_snapshot_with_taps(reg: [f32; 4], taps: &[f32]) {
             // The Settings kernel adds an even pair of extra passes, so both the ordinary and
             // modal chains finish in `a`. The assertion at entry keeps that property structural.
             glBindTexture(GL_TEXTURE_2D, c.a);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, straighten::Extent::Target);
         });
 
         glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
@@ -7103,7 +7158,7 @@ pub fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) -> bool
                 note_px(Class::Blur, (tw as f64) * (th as f64));
                 glUniform2f(BL_TEXEL, off / c.sw as f32, off / c.sh as f32);
                 glBindTexture(GL_TEXTURE_2D, src);
-                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, straighten::Extent::Target);
             });
         }
 
@@ -7125,7 +7180,7 @@ pub fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) -> bool
                 BLUR_UP_TAP / c.mh as f32,
             );
             glBindTexture(GL_TEXTURE_2D, c.a);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, straighten::Extent::Target);
         });
 
         glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
@@ -7495,9 +7550,9 @@ pub fn draw_blur_backdrop(
         glUniform4f(GL_UVRECT, uv[0], uv[1], uv[2], uv[3]);
         glUniform1f(GL_RADIUS, radius);
         glUniform2f(GL_CH, w * 0.5, h * 0.5);
-        glUniform4f(GL_RECT, x, y, w, h);
+        let ext = set_rect(GL_RECT, x, y, w, h);
         profile::phase("glass.composite", || {
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         });
         true
     }
@@ -7615,9 +7670,9 @@ pub fn draw_glass_frozen(
         glUniform4f(GL_UVRECT, x / SCR_W, y / SCR_H, w / SCR_W, h / SCR_H);
         glUniform1f(GL_RADIUS, radius);
         glUniform2f(GL_CH, w * 0.5, h * 0.5);
-        glUniform4f(GL_RECT, x, y, w, h);
+        let ext = set_rect(GL_RECT, x, y, w, h);
         profile::phase("glass.frozen", || {
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         });
     }
     true
@@ -8295,11 +8350,11 @@ pub fn draw_field(x: f32, y: f32, w: f32, h: f32, tex: c_uint, tint: *const f32)
     }
     unsafe {
         use_prog(UPROG); // u_screen and the sampler unit are set once at init
-        glUniform4f(UL_RECT, x, y, w, h);
+        let ext = set_rect(UL_RECT, x, y, w, h);
         glUniform4fv(UL_TINT, 1, tint);
         glUniform1f(UL_DITHER, dither_for_field(w, h));
         glBindTexture(GL_TEXTURE_2D, tex);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
 }
 
@@ -8331,14 +8386,14 @@ pub fn draw_field_panel(
     }
     unsafe {
         use_prog(PPROG); // u_screen and the sampler unit are set once at init
-        glUniform4f(FP_RECT, x, y, w, h);
+        let ext = set_rect(FP_RECT, x, y, w, h);
         glUniform4fv(FP_TINT, 1, tint);
         glUniform4f(FP_UVRECT, uv[0], uv[1], uv[2], uv[3]);
         glUniform2f(FP_SIZE, w, h);
         glUniform1f(FP_RADIUS, radius.min(w.min(h) * 0.5));
         glUniform1f(FP_DITHER, dither_for_field(w, h));
         glBindTexture(GL_TEXTURE_2D, tex);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
     true
 }
@@ -8993,7 +9048,7 @@ mod tests {
             &rest[..rest.find("\n}\n").expect("the end of the function")]
         };
         let ramp_draw = body("unsafe fn draw_ramp(");
-        assert!(ramp_draw.contains("glUniform4f(RP_RECT, x, y, w, h);"), "exactly the rect's bounds");
+        assert!(ramp_draw.contains("set_rect(RP_RECT, x, y, w, h);"), "exactly the rect's bounds");
         assert!(ramp_draw.contains("if RPROG == 0 {") && ramp_draw.contains("use_prog(PROG);"), "the fallback");
         let rect_draw = body("pub fn draw_rect(");
         let (gated, routed) = (
@@ -11379,7 +11434,7 @@ mod card_split_tests {
         let (booked, refused, drawn) = (
             draw[whole..].find("note_card_path(path").expect("booked"),
             draw[whole..].find("card_whole_refused(path, masked_part)").expect("refused through the real mask"),
-            draw.find("glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)").expect("drawn"),
+            draw.find("glDrawArrays(GL_TRIANGLE_STRIP, 0, 4,").expect("drawn"),
         );
         assert!(booked < refused && whole + refused < drawn, "booked {booked}, refused {refused}, drawn {drawn}");
         let split = draw.find("CardCut::Pieces(rect) =>").expect("the split arm");

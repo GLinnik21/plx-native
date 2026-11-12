@@ -1622,7 +1622,9 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   buffer-age argument and the cost). The framebuffer holds PREMULTIPLIED colour over the player's
   transparent clear; the platform composites it as `ui.rgb * ui.a + video * (1 - ui.a)`. So the
   frame's last draw on a frame that drew anything while `Player::video_plane_bound` is `rgb / a`
-  (alpha unchanged, blending off), in place through `GL_ARM_shader_framebuffer_fetch` /
+  (alpha unchanged, blending off) over the boxes of the surface the frame drew into and nowhere else
+  (every draw call in gfx declares its extent, `Extent`; a draw with none is the whole surface; at
+  most 16 disjoint boxes, because a pixel two quads cover would be divided twice), in place through `GL_ARM_shader_framebuffer_fetch` /
   `GL_EXT_shader_framebuffer_fetch` and through a copy of the frame when the driver has neither (the
   simulator): `present_and_swap` calls it after the dev capture's read and before the swap. A bound
   frame must therefore stay a COMPLETE redraw from a clear: nothing may blend premultiplied colour
