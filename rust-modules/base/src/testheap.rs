@@ -21,7 +21,7 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -57,21 +57,22 @@ pub fn live_bytes() -> Option<usize> {
 /// value is a floor on the true peak; the copies this exists to count live for seconds.
 pub fn peak_during<R>(work: impl FnOnce() -> R) -> (R, usize) {
     let stop = Arc::new(AtomicBool::new(false));
+    let peak = Arc::new(AtomicUsize::new(live_bytes().unwrap_or(0)));
     let sampler = {
-        let stop = Arc::clone(&stop);
-        std::thread::spawn(move || {
-            let mut peak = live_bytes().unwrap_or(0);
+        let (stop, peak) = (Arc::clone(&stop), Arc::clone(&peak));
+        crate::task::spawn("testheap-sampler", move || {
             while !stop.load(Ordering::Acquire) {
-                peak = peak.max(live_bytes().unwrap_or(0));
+                peak.fetch_max(live_bytes().unwrap_or(0), Ordering::Relaxed);
                 std::thread::sleep(Duration::from_micros(100));
             }
-            peak.max(live_bytes().unwrap_or(0))
+            peak.fetch_max(live_bytes().unwrap_or(0), Ordering::Relaxed);
         })
+        .expect("the heap sampler thread starts")
     };
     let result = work();
     stop.store(true, Ordering::Release);
-    let peak = sampler.join().expect("the heap sampler does not panic");
-    (result, peak)
+    sampler.join().expect("the heap sampler does not panic");
+    (result, peak.load(Ordering::Relaxed))
 }
 
 /// Is this process the fresh one [`in_fresh_process`] started?
