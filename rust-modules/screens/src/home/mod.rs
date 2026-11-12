@@ -4091,8 +4091,7 @@ fn hero_line(hero: &PmsMovie) -> Option<HeroLine<'_>> {
         let quality = if is_show { None } else {
             hero.video_resolution.as_deref().and_then(|resolution| fmt::resolution(resolution, 0, 0))
         };
-        // A listing row says only that its video is HDR, so a Dolby Vision title reads "HDR" here.
-        let range = if is_show { None } else { fmt::dynamic_range(hero.hdr, false) };
+        let range = if is_show { None } else { fmt::dynamic_range(hero.hdr, hero.dolby_vision) };
         let rating = hero.rating.trim();
         if !(identity.is_empty() && date.is_empty() && length.is_empty() && genres.is_empty() && quality.is_none() && range.is_none() && rating.is_empty()) {
             return Some(HeroLine::Metadata { identity, date, length, genres, quality, range, rating });
