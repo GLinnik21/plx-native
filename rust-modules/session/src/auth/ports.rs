@@ -552,10 +552,7 @@ pub fn profile_switch_worker_with_io(
     let user = match outcome {
         SwitchOutcome::Switched(user) => user,
         SwitchOutcome::Refused(status) => {
-            log(&format!(
-                "auth: switch '{}' -> refused (HTTP {status})",
-                tile.title
-            ));
+            log(&format!("auth: profile switch -> refused (HTTP {status})"));
             let (error, pin_denied) = switch_failure(pin.is_some());
             output.terminal(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
                 epoch,
@@ -669,8 +666,7 @@ pub fn profile_switch_worker_with_io(
                 reached.push(winner);
                 break;
             }
-            log(&format!("auth: switch '{}' — {:?} did not admit this profile ({admission:?})",
-                tile.title, resources[i].name));
+            log(&format!("auth: profile switch — resource[{i}] did not admit this profile ({admission:?})"));
             admission_failures.push((resources[i].name.clone(), admission));
             if admission_budget.exhausted() { break; }
             rejected_origins.push(origin);
@@ -704,8 +700,7 @@ pub fn profile_switch_worker_with_io(
         }
         let probe_cause = causes.worst();
         log(&format!(
-            "auth: switch '{}' -> {}",
-            tile.title,
+            "auth: profile switch -> {}",
             if insecure_only { "verified only over plaintext" }
             else if refusal.is_some() { "server refused the profile credential" }
             else if malformed { "server returned a malformed authenticated response" }
@@ -748,10 +743,7 @@ pub fn profile_switch_worker_with_io(
         return;
     };
 
-    log(&format!(
-        "auth: switch '{}' -> ok (per-user server token)",
-        tile.title
-    ));
+    log("auth: profile switch -> ok (per-user server token)");
     let server = server_ref(&primary);
     let plex_tv_token = (!user.auth_token.is_empty()).then(|| user.auth_token.clone());
     let user = UserRef {

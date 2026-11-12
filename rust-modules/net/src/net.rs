@@ -1542,9 +1542,11 @@ mod loopback_pms {
                         }
                         let reply = answer(&request);
                         log.lock().unwrap_or_else(|e| e.into_inner()).push(request);
-                        if tls.write_all(&reply).is_err() || tls.flush().is_err() || !keep_alive {
-                            return;
-                        }
+                        if tls.write_all(&reply).is_err() { return; }
+                        // OpenSSL must see an orderly TLS close to keep the TLS 1.3 session
+                        // resumable after this response, not just a bare TCP EOF.
+                        if !keep_alive { tls.conn.send_close_notify(); }
+                        if tls.flush().is_err() || !keep_alive { return; }
                     }
                 });
             }
