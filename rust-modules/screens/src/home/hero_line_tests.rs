@@ -149,6 +149,7 @@ fn an_hdr_hero_names_its_dynamic_range_beside_the_resolution() {
     };
     let film = PmsMovie { video_resolution: Some("4k".into()), hdr: true, ..movie() };
     assert_eq!(range(&film), Some("HDR"));
+    assert_eq!(range(&PmsMovie { dolby_vision: true, ..film.clone() }), Some("Dolby Vision"));
     assert_eq!(range(&PmsMovie { hdr: false, ..film.clone() }), None);
     assert_eq!(range(&PmsMovie { kind: plx_data::pms::KIND_SHOW, ..film }), None);
 }
