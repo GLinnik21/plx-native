@@ -125,11 +125,43 @@ retains the entire script. It also incorporates the video's font attachments, in
 those arrive after the external file. Source reuse includes server identity, stream identity,
 delivery key and codec. Backward seeks and Off→On do not re-download a loaded script.
 
-`player::ass` owns the native objects on one worker. A published frame carries the window of
+`player::ass` owns the native objects on its workers: one primary, started by the first request, and
+up to two helpers. A published frame carries the window of
 playheads it stays right for, so a UI tick inside the window enqueues nothing; the one pending
 slot holds either a Normal job (the screen needs a frame) or an Ahead job (the next boundary,
 rendered early and promoted by the first tick at or after it). A completed frame is accepted only
-for the current source/selection epoch. The UI never
+for the current source/selection epoch.
+
+A MOVING cue (karaoke, `\t`, `\move`, `\fad`, an Effect) is right for one playhead only, so a frame
+asked for when the screen needs it is shown one render late (50-150 ms on the television, issue
+#1328). While the player is running the mailbox instead PLANS the frames (`player::ass::mailbox`):
+it hands out `Pipe` jobs for future playheads on a grid of one `step` (what a render costs over the
+workers, scaled by the playback speed, never under one video frame or 33 ms, never over 250 ms), the
+first a `lead` ahead of the playhead (a render, a quarter more, and a UI tick), holds each frame
+that lands, and a tick shows the held frame with the greatest playhead not after its own: never
+early, at most a step old. Nothing is planned past the horizon (the lead and a step per worker), so
+a worker with nothing to do parks. The pace (`running`, the applied speed, the video frame period)
+and the tick interval reach the mailbox as the values of `ass::request`'s `Pace`
+(`player::subtitle_pace`), never as a clock or a registry read inside it. A revision that only
+APPENDED events keeps every planned frame for a playhead before the first event it adds
+(`earliest_change_ms`, built on `append_from`) and replans from there; a revision that reaches the
+playhead, a seek, a new source or size, a jump of the clock, a pause and a worker so slow that
+nothing lands in time (a hole) each throw the plan away and ask for one Normal job, as a still cue does.
+The cost the plan paces by is the worker-reported time of the moving frames (a job that opened or
+re-synced the renderer is no sample), a running mean capped at 500 ms a sample.
+
+One worker cannot make thirty frames a second from an 80 ms render, so the plan asks for the workers
+that can (`workers_wanted`: the cost over the 33 ms floor) and the runtime starts helpers up to what the
+device allows: the primary and a helper per other core, at most `MAX_ASS_RENDERERS` (3). Every worker
+owns a whole libass instance (`Engine`: its own `ASS_Library`, renderer and track, which libass does not
+let two threads share), fed the same `Source` snapshot, so a helper costs the fonts and the events
+again; it is started from the same `task::spawn` site as the primary, only while a moving cue is
+planned, counted in the plan's pacing only once it has rendered a steady frame (its first job opens the
+source and lands late), and gives its renderer back after 10 s with nothing to do. Each job carries the
+newest frame that had landed (`Job::reference`) and the renderer shares the allocation of every region
+that draws identically to one of that frame's (before looking at its own last frame), so a static sign
+rendered by another engine is not uploaded again by the screen: the texture cache keys on the
+allocation. The UI never
 waits for font parsing or rasterization. Native change detection avoids work for unchanged output. Overlapping libass images are composed
 in order into disjoint regions, with a maximum of 64 regions and one bounded pixel arena.
 Consecutive libass image identities also retain native region pixels, so a moving or karaoke
@@ -209,15 +241,19 @@ Boot the fixture with `tools/tv-session.sh up --guest --mock --screen player=990
 it never resolves a real Plex account. Configure and build the developer app against that mock first.
 
 Libass cost on the TV is read from the event log, not guessed. While a styled source renders,
-`player::ass_perf` writes an `assperf: window_ms=.. calls=.. changed=.. p95_us=.. max_us=.. job_p95_us=..
-job_max_us=.. pub_bytes=.. up_bytes=.. jobs=N+A ahead_hit=.. nwait_p95_us=.. nwait_max_us=.. lib_p95_us=..
-comp_p95_us=.. lib_cpu_p95_us=.. comp_cpu_p95_us=.. images_p95=.. img_kpx_p95=..` line when a job
-arrives at least a second after the previous line (`window_ms` is the span its counts cover,
+`player::ass_perf` writes an `assperf: w=.. window_ms=.. calls=.. changed=.. p95_us=.. max_us=.. job_p95_us=..
+job_max_us=.. pub_bytes=.. up_bytes=.. jobs=N+A ahead_hit=.. shown=.. late=.. stale=.. nwait_p95_us=..
+nwait_max_us=.. lib_p95_us=.. comp_p95_us=.. lib_cpu_p95_us=.. comp_cpu_p95_us=.. images_p95=..
+img_kpx_p95=..` line per worker (`w` is the worker, 0 the primary) when a job
+arrives at least a second after that worker's previous line (`window_ms` is the span its counts cover,
 including any idle stretch before it; read the counts as rates over it) (FFI render time, whole-job time including source load, append, flush-and-reload and window
 slide, `changed` and `pub_bytes` count frames published or held ahead whose pixels differ from the one on screen, bytes uploaded; `jobs` counts the worker's Normal and Ahead jobs
-separately, `ahead_hit` the ahead frames the UI thread promoted, `nwait` how long a Normal job
+separately (a frame the pipeline planned is an Ahead one), `ahead_hit` the boundary frames of still cues the UI thread
+promoted, `shown` the frames of the moving cue's pipeline it promoted (updates a second) and `late` how many of those came more than a tick after
+their playhead, `stale` the frames this worker rendered that were thrown away when they landed, `nwait` how long a Normal job
 waited behind an Ahead job already rendering; the partial window is written when the source is
-deselected). The last six fields split `p95_us` between the two things `plx_ass_render` does, timed by
+deselected). `up_bytes`, `ahead_hit`, `shown` and `late` are counted by the UI thread and read by the
+primary's line alone (a helper's line has zeros there). The last six fields split `p95_us` between the two things `plx_ass_render` does, timed by
 the facade itself with `clock_gettime` (`src/ass.c`, read back through `PlxAssStats.last_*`): `lib_p95_us`
 is libass's own `ass_render_frame`, `comp_p95_us` is everything after it (bounds, regions and our
 per-pixel composite (premultiplied RGBA, published as composed; eight pixels at a time with NEON, `src/ass_composite.h`, scalar on a target without it), 0 for a call that found the frame unchanged), both wall time over
@@ -226,13 +262,16 @@ thread's CPU clock (`CLOCK_THREAD_CPUTIME_ID`), so a phase whose wall figure is 
 waiting for the CPU (descheduled, or blocked), not computing; `images_p95` and `img_kpx_p95` are the `ASS_Image`s libass produced for a composed frame and
 the sum of their width x height in thousands of pixels, over the composed frames only. Attribute a slow
 render with these before optimising either half. The worker also writes
-one `assperf: worker tid=<n>` line when it starts, which `tools/tv-sched-trace.sh --tid <n>`
-follows. The UI-thread texture upload is the `assup` span on `FRAMEDROP spans=` (spans print only on
+one `assperf: worker w=<n> tid=<n> nice=<n>` line when it starts, which `tools/tv-sched-trace.sh --tid <n>`
+follows. Workers run below the frame thread: the first at niceness +5, a helper at +10
+(`plx_base::task::lower_priority`, a per-thread `setpriority`, so only the worker is touched; the
+line has no `nice=` where the platform has none or the kernel refused it). The UI-thread texture upload is the `assup` span on `FRAMEDROP spans=` (spans print only on
 `FRAMEDROP` lines, with `/tmp/plxnative-framedrop` armed); each changed region uploads with a full
 `glTexImage2D` (a bucketed `glTexSubImage2D` variant that reused the texture was measured on the TV and gave no gain, #735). Nothing is
 logged while no styled source is selected, and a render costs one clock pair in Rust and six clock reads in the facade (three per clock). The worker renders
 only when the screen needs a frame (a new key, a playhead outside the published frame's validity
-window, an animated cue) and renders the next boundary ahead of its time, so a steady cue costs no
+window) or plans one (an animated cue, while playing: one frame per step, ahead of its playhead) and
+renders the next boundary of a still cue ahead of its time, so a steady cue costs no
 job at all between boundaries (no line is written then), not one per UI frame. `python3
 tests/fixtures/make_ass_stress.py <dir>` builds the stress MKVs (Latin, CJK, Thai, Devanagari,
 Arabic, rapid, karaoke, long, 4K60; host `ffmpeg`/`ffprobe` only) to serve with `mock_pms.py

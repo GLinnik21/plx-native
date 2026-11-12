@@ -1,4 +1,5 @@
 use super::*;
+use super::mailbox::Kind;
 
 fn event(id: u32, start_ms: i64, duration_ms: i64) -> Event {
     Event {
@@ -91,7 +92,7 @@ fn off_retires_a_racing_publication_and_pending_source_outside_the_mailbox_lock(
     runtime.source_id.store(source.id, Ordering::Release);
     {
         let mut mailbox = runtime.mailbox.lock().unwrap();
-        mailbox.request(key, 100, &source);
+        mailbox.request(key, 100, &source, Pace::PAUSED);
         // The worker owns the lock and has already accepted this epoch. Cancel
         // must return while the lock is held; the old publication then races in.
         clear_runtime(&runtime);
@@ -147,7 +148,7 @@ fn cancellation_before_worker_parks_is_remembered_and_releases_resources() {
         let observed_idle = observed_idle.clone();
         let may_park = may_park.clone();
         plx_base::task::spawn("ASS cancellation test", move || {
-            runtime.worker.set(std::thread::current()).unwrap();
+            runtime.threads[0].set(std::thread::current()).unwrap();
             let mut engine = Engine {
                 source: Some(source),
                 frame: Some(frame),
@@ -230,6 +231,7 @@ fn job(source: &Arc<Source>, now_ms: i64, width: i32, height: i32, storage_width
         seq: 1,
         source: source.clone(),
         queued: None,
+        reference: None,
     }
 }
 
@@ -1707,7 +1709,7 @@ fn native_the_worker_publishes_aligns_beside_a_text_frame_and_none_for_authored(
     let until = |source: &Arc<Source>, now: i64, expect: Option<AlignSet>| {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
-            let frame = request(source.clone(), now, 1920, 1080, 1920, 1080);
+            let frame = request(source.clone(), now, 1920, 1080, 1920, 1080, Pace::PAUSED);
             let got = frame.as_ref().and_then(|f| published_aligns(f.serial));
             if frame.is_some() && got == expect {
                 return;
@@ -1899,17 +1901,129 @@ fn a_changed_offset_on_a_paused_playhead_publishes_the_frame_of_the_new_clock() 
     // The worker drains its mailbox: the frame is `error_frame` (any frame), the validity the cue's.
     let drain = |mailbox: &mut Mailbox| {
         while let Some(job) = mailbox.take() {
-            let rendered = Rendered { frame: error_frame(job.key, Fault::RenderFailed), validity: validity_of(job.now_ms), aligns: None };
+            let rendered = Rendered { frame: error_frame(job.key, Fault::RenderFailed), validity: validity_of(job.now_ms), aligns: None, cost_us: None };
             mailbox.finish(&job, Some(rendered));
         }
     };
     // Paused at 23.0 s, the offset 0, then +2.5 s, then -2.5 s, then back, each one a frame step.
     for clock in [23_000, 20_500, 25_500, 20_500, 25_500, 23_000] {
-        mailbox.request(key, clock, &source);
+        mailbox.request(key, clock, &source, Pace::PAUSED);
         drain(&mut mailbox);
-        mailbox.request(key, clock, &source);
+        mailbox.request(key, clock, &source, Pace::PAUSED);
         let shown = mailbox.view(&key).expect("a frame");
         let published = mailbox.published.as_ref().map(|p| p.validity).expect("published");
         assert!(published.contains(clock), "clock {clock}: the frame on screen covers {published:?} ({:?})", shown.serial);
     }
+}
+
+// Several renderers (issue #1328): each worker owns its own libass instance, so what one engine
+// would have drawn alone is what any of them draws, and the screen's texture cache is not defeated
+// by the frames of one cue coming from different engines.
+
+const SIGN: &str = r"{\an7\pos(20,20)\c&H0000FF&\p1}m 0 0 l 40 0 40 40 0 40";
+/// Moves and changes colour: a square that only moved is the same bitmap in another place, which
+/// the renderer rightly shares between frames, so the test's moving region must change its pixels.
+const MOVER: &str = r"{\an7\move(100,20,260,20,0,4000)\c&HFF0000&\t(0,4000,\c&H00FF00&)\p1}m 0 0 l 30 0 30 30 0 30";
+
+/// A static sign and a square that moves and changes colour for four seconds.
+fn sign_and_mover() -> Arc<Source> {
+    script(&format!(
+        "Dialogue: 0,0:00:00.00,0:00:04.00,Default,,0,0,0,,{SIGN}\nDialogue: 1,0:00:00.00,0:00:04.00,Default,,0,0,0,,{MOVER}\n"
+    ))
+}
+
+/// A frame as one canvas of the bytes it publishes (its regions are disjoint).
+fn canvas(frame: &Frame) -> Vec<u8> {
+    let mut out = vec![0u8; (frame.width * frame.height * 4) as usize];
+    for r in &frame.rects {
+        for row in 0..r.height {
+            let to = ((r.y + row) * frame.width + r.x) as usize * 4;
+            let from = (row * r.width) as usize * 4;
+            out[to..to + r.width as usize * 4].copy_from_slice(&r.rgba[from..from + r.width as usize * 4]);
+        }
+    }
+    out
+}
+
+fn same_pixels(a: &Rect, b: &Rect) -> bool {
+    a.width == b.width && a.height == b.height && a.rgba == b.rgba
+}
+
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn two_engines_on_two_threads_render_what_one_engine_renders_in_sequence() {
+    let source = sign_and_mover();
+    let times: Vec<i64> = (1..=24).map(|i| i * 150).collect();
+    let mut alone = Engine::default();
+    let expected: Vec<Vec<u8>> = times.iter().map(|&t| canvas(&render(&mut alone, &source, t))).collect();
+    assert!(expected.windows(2).all(|w| w[0] != w[1]), "the square moves at every playhead");
+    assert!(expected[0].iter().any(|&b| b != 0), "something is drawn");
+    // two workers, each with an engine of its own, taking the playheads alternately
+    let drawn: Vec<(usize, Vec<u8>)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..2)
+            .map(|worker| {
+                let (source, times) = (&source, &times);
+                scope.spawn(move || {
+                    let mut engine = Engine::default();
+                    times
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| i % 2 == worker)
+                        .map(|(i, &t)| (i, canvas(&render(&mut engine, source, t))))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        workers.into_iter().flat_map(|worker| worker.join().unwrap()).collect()
+    });
+    assert_eq!(drawn.len(), times.len());
+    for (i, pixels) in drawn {
+        assert!(pixels == expected[i], "the playhead {} ms is drawn the same by either engine", times[i]);
+    }
+}
+
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn a_reference_frame_makes_another_engine_share_the_regions_it_draws_identically() {
+    let source = sign_and_mover();
+    let mut first_engine = Engine::default();
+    let first = render(&mut first_engine, &source, 500);
+    assert_eq!(first.rects.len(), 2, "a sign and a square are two regions");
+    let allocations: Vec<_> = first.rects.iter().map(|r| r.rgba.clone()).collect();
+    let shares_one = |frame: &Frame| {
+        frame.rects.iter().filter(|r| allocations.iter().any(|a| Arc::ptr_eq(a, &r.rgba))).count()
+    };
+
+    // Another engine on its own draws the sign the same, in an allocation of its own: the screen
+    // would upload it again for every frame the engines take turns on.
+    let alone = render(&mut Engine::default(), &source, 1000);
+    assert!(alone.rects.iter().any(|r| first.rects.iter().any(|f| same_pixels(r, f))), "the sign is the same");
+    assert_eq!(shares_one(&alone), 0);
+
+    // With the frame before it as its reference, the sign is that frame's allocation and the
+    // square, which moved, is a new one; the picture is the same bytes.
+    let mut referred = job(&source, 1000, 320, 180, 320, 180);
+    referred.reference = Some(first.clone());
+    let shared = Engine::default().render(&referred).frame;
+    assert_eq!(shared.error, None);
+    assert_eq!(shares_one(&shared), 1, "the static sign shares, the square that changed does not");
+    assert_eq!(canvas(&shared), canvas(&alone), "sharing changes no pixel");
+
+    // A picture that is the reference's own is that very frame: the screen already knows its serial.
+    let mut same = job(&source, 500, 320, 180, 320, 180);
+    same.reference = Some(first.clone());
+    let again = Engine::default().render(&same).frame;
+    assert!(Arc::ptr_eq(&again, &first));
+
+    // ... also when the engine itself found nothing changed since its own last frame: a still sign
+    // drawn before by this engine with no reference is handed back as the reference's.
+    let still = script(&format!("Dialogue: 0,0:00:00.00,0:00:04.00,Default,,0,0,0,,{SIGN}\n"));
+    let reference = render(&mut Engine::default(), &still, 300);
+    let mut engine = Engine::default();
+    let own = render(&mut engine, &still, 400);
+    assert!(!Arc::ptr_eq(&own, &reference), "each engine draws its own copy");
+    let mut later = job(&still, 900, 320, 180, 320, 180);
+    later.reference = Some(reference.clone());
+    let handed = engine.render(&later).frame;
+    assert!(Arc::ptr_eq(&handed, &reference), "unchanged, and the same pixels as the reference");
 }

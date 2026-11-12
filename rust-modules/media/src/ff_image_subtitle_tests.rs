@@ -109,7 +109,7 @@ impl Drop for AssReset {
 fn ass_frame(source: Arc<ass::Source>, now_ms: i64, visible: bool) -> Arc<ass::Frame> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
-        if let Some(frame) = ass::request(source.clone(), now_ms, 320, 180, 320, 180) {
+        if let Some(frame) = ass::request(source.clone(), now_ms, 320, 180, 320, 180, ass::Pace::PAUSED) {
             if frame.error.is_some() || !frame.rects.is_empty() == visible {
                 return frame;
             }

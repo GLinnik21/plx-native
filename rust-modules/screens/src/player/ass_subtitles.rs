@@ -18,6 +18,8 @@ pub struct AssSubtitles {
     frame: Option<Arc<ass::Frame>>,
     source: u64,
     clock: ass_source::Clock,
+    /// The `now` of the previous `update`: the tick the renderer paces a moving cue by.
+    last_tick: Option<u32>,
     textures: Vec<CachedTexture>,
     uploaded: u64,
     viewport: Viewport,
@@ -53,6 +55,7 @@ impl AssSubtitles {
             self.frame = None;
             self.aligns = None;
         }
+        let tick_ms = self.last_tick.replace(now).map_or(16, |last| i64::from(now.wrapping_sub(last)));
         let clock = self.clock.sample(
             position_ns,
             now,
@@ -73,7 +76,15 @@ impl AssSubtitles {
         }
         let origin = source.origin;
         if let Some(frame) =
-            ass::request(source, clock, viewport.width, viewport.height, coded_w, coded_h)
+            ass::request(
+                source,
+                clock,
+                viewport.width,
+                viewport.height,
+                coded_w,
+                coded_h,
+                plx_media::player::subtitle_pace(ps, tick_ms),
+            )
         {
             self.frame = Some(frame);
             self.frame_origin = origin;
