@@ -155,7 +155,12 @@ re-synced the renderer is no sample), a running mean capped at 500 ms a sample.
 
 One worker cannot make thirty frames a second from an 80 ms render, so the plan asks for the workers
 that can (`workers_wanted`: the cost over the 33 ms floor) and the runtime starts helpers up to what the
-device allows: the primary and a helper per other core, at most `MAX_ASS_RENDERERS` (3). Every worker
+device allows: the primary and a helper per other core, at most `MAX_ASS_RENDERERS` (3), and no more
+than a quarter of the memory available holds (`pool::decide`: each renderer is the fonts it holds, the
+bundled faces and the ones the track names, plus a bitmap cache; `/proc/meminfo`'s `MemAvailable` is read
+once for a selection, the first time a pipeline wants a helper, and the verdict is logged as
+`ass: pool renderers=N of M font_bytes=.. per_renderer=.. mem_available=.. budget=..`; a heavy file on
+a short television runs the primary alone, and the primary always runs). Every worker
 owns a whole libass instance (`Engine`: its own `ASS_Library`, renderer and track, which libass does not
 let two threads share), fed the same `Source` snapshot, so a helper costs the fonts and the events
 again; it is started from the same `task::spawn` site as the primary, only while a moving cue is

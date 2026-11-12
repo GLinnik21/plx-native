@@ -11,13 +11,14 @@
 //! The number is a bound on helpers only: the primary always runs, so no subtitle is ever hidden by
 //! it, a pipeline merely has fewer workers to share its frames over.
 
-/// SCAFFOLD: the share of `MemAvailable` the renderers may take together is not decided yet.
-#[allow(dead_code)]
-pub(super) const MEMORY_SHARE_DIVISOR: u64 = 1;
+/// The renderers may take this fraction (`1 / MEMORY_SHARE_DIVISOR`) of the memory available,
+/// together: the rest is the video pipeline's, the UI's and the headroom a spike needs. A share,
+/// not a number of megabytes, so a television with little free gets fewer helpers and one with
+/// plenty gets them all; the event log line says what each verdict was made of.
+pub(super) const MEMORY_SHARE_DIVISOR: u64 = 4;
 
 /// What the pool may hold, and why.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // SCAFFOLD: the runner reads these when the gate lands
 pub(super) struct Verdict {
     /// How many renderers, the primary included: at least 1, at most the ceiling asked for.
     pub renderers: usize,
@@ -27,18 +28,32 @@ pub(super) struct Verdict {
     pub budget: Option<u64>,
 }
 
-/// SCAFFOLD: allows the ceiling whatever the memory.
-#[allow(dead_code)]
-pub(super) fn decide(font_bytes: u64, mem_available: Option<u64>, ceiling: usize) -> Verdict {
-    let _ = (font_bytes, mem_available);
-    Verdict { renderers: ceiling.max(1), per_renderer: 0, budget: None }
+/// What one renderer holds beyond its fonts: libass's bitmap cache, which grows to its cap
+/// (`CACHE_BITMAP_MIB`) on a busy moving cue. The glyph outlines, FreeType's face state and the
+/// parsed events are not counted: a floor on a renderer, not a ceiling.
+fn cache_bytes() -> u64 {
+    u64::from(super::CACHE_BITMAP_MIB.unsigned_abs()) << 20
 }
 
-/// SCAFFOLD: reads nothing.
-#[allow(dead_code)]
+/// How many renderers may run: `font_bytes` is what one holds in fonts (what the primary reports),
+/// `mem_available` what the device has free (`None` when it could not be read: nothing to gate on,
+/// the cores bound it), `ceiling` the most the cores and the pool's own cap allow. The primary
+/// always runs, so the answer is never below 1.
+pub(super) fn decide(font_bytes: u64, mem_available: Option<u64>, ceiling: usize) -> Verdict {
+    let per_renderer = font_bytes.saturating_add(cache_bytes());
+    let ceiling = ceiling.max(1);
+    let budget = mem_available.map(|available| available / MEMORY_SHARE_DIVISOR);
+    let fits = budget.map_or(ceiling as u64, |budget| budget / per_renderer);
+    let renderers = usize::try_from(fits).unwrap_or(usize::MAX).clamp(1, ceiling);
+    Verdict { renderers, per_renderer, budget }
+}
+
+/// `MemAvailable` in bytes from the text of `/proc/meminfo` (the kernel's own estimate of what a
+/// new allocation can take without swapping; absent before Linux 3.14).
 pub(super) fn mem_available_bytes(meminfo: &str) -> Option<u64> {
-    let _ = meminfo;
-    None
+    let line = meminfo.lines().find_map(|line| line.strip_prefix("MemAvailable:"))?;
+    let kib: u64 = line.trim().strip_suffix("kB")?.trim().parse().ok()?;
+    kib.checked_mul(1024)
 }
 
 #[cfg(test)]

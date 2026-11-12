@@ -264,15 +264,12 @@ pub struct Runtime {
     /// not counted until it has rendered a steady frame.
     warm_helpers: AtomicUsize,
     /// The bytes of fonts one renderer holds (the bundled faces and the attached ones the track
-    /// names), as the primary reports them: what a helper would copy again. SCAFFOLD: unread.
-    #[allow(dead_code)]
+    /// names), as the primary reports them: what a helper would copy again.
     font_bytes: AtomicUsize,
     /// How many renderers (the primary included) the current selection may hold: 1 from the
-    /// moment a selection begins, until the pool has decided it. SCAFFOLD: unread.
-    #[allow(dead_code)]
+    /// moment a selection begins, until the pool has decided it (`renderers_for`).
     renderers: AtomicUsize,
-    /// The selection `renderers` was decided for. SCAFFOLD: unread.
-    #[allow(dead_code)]
+    /// The selection `renderers` was decided for.
     decided_epoch: AtomicU64,
     mailbox: Mutex<Mailbox>,
 }
@@ -294,25 +291,44 @@ impl Runtime {
     }
 
     /// MAIN THREAD: a different source is selected: a new epoch, and the helpers withdrawn until the
-    /// pool has decided how many renderers this one may hold. SCAFFOLD: does not withdraw them.
+    /// pool has decided how many renderers this one may hold.
     fn begin_selection(&self, source_id: u64) {
         self.epoch.fetch_add(1, Ordering::AcqRel);
         self.source_id.store(source_id, Ordering::Release);
+        self.renderers.store(1, Ordering::Release);
     }
 
-    /// How many renderers the selection of `epoch` may hold, decided once from the fonts a renderer
-    /// holds and `mem_available`, which the caller reads. SCAFFOLD: allows every core.
-    #[allow(dead_code)]
+    /// MAIN THREAD: how many renderers the selection of `epoch` may hold. Decided once per selection,
+    /// the first time a pipeline wants a helper, from the fonts a renderer holds and the memory
+    /// available (`mem_available` is the read, supplied by the caller: the verdict is
+    /// `pool::decide`, which touches nothing), and logged. A verdict above 1 wakes the helpers
+    /// that were parked while it was awaited.
     fn renderers_for(&self, epoch: u64, mem_available: impl FnOnce() -> Option<u64>) -> usize {
-        let _ = (epoch, mem_available);
-        renderer_slots()
+        if self.decided_epoch.load(Ordering::Acquire) == epoch {
+            return self.renderers.load(Ordering::Acquire);
+        }
+        let font_bytes = self.font_bytes.load(Ordering::Relaxed) as u64;
+        let (mem, slots) = (mem_available(), renderer_slots());
+        let verdict = pool::decide(font_bytes, mem, slots);
+        let number = |n: Option<u64>| n.map_or_else(|| String::from("na"), |n| n.to_string());
+        plx_base::eventlog::log(&format!(
+            "ass: pool renderers={} of {slots} font_bytes={font_bytes} per_renderer={} mem_available={} budget={}",
+            verdict.renderers,
+            verdict.per_renderer,
+            number(mem),
+            number(verdict.budget),
+        ));
+        self.renderers.store(verdict.renderers, Ordering::Release);
+        self.decided_epoch.store(epoch, Ordering::Release);
+        if verdict.renderers > 1 {
+            self.wake();
+        }
+        verdict.renderers
     }
 
-    /// A helper of `slot` may not take jobs: the selection's verdict does not reach it. SCAFFOLD.
-    #[allow(dead_code)]
+    /// A helper of `slot` may not take jobs: the selection's verdict does not reach it.
     fn helper_barred(&self, slot: usize) -> bool {
-        let _ = slot;
-        false
+        slot > 0 && slot >= self.renderers.load(Ordering::Acquire)
     }
 
     fn wake(&self) {
@@ -326,16 +342,23 @@ impl Runtime {
         }
     }
 
-    /// Start the helpers that a pipeline asking for `wanted` workers can use on this device. Off the
-    /// mailbox lock: starting a thread is not work for the lock the workers take their jobs under.
-    fn start_helpers(&self, wanted: usize) {
+    /// Start the helpers that a pipeline asking for `wanted` workers can use on this device and in
+    /// this much memory. Off the mailbox lock: starting a thread is not work for the lock the
+    /// workers take their jobs under.
+    fn start_helpers(&self, wanted: usize, epoch: u64) {
         if wanted < 2 {
             return;
         }
-        for slot in 1..wanted.min(renderer_slots()) {
+        let renderers = self.renderers_for(epoch, read_mem_available);
+        for slot in 1..wanted.min(renderers) {
             self.helpers[slot - 1].get_or_init(|| spawn_worker(slot));
         }
     }
+}
+
+/// The memory the device has available, read where the pool asks for it: once for a selection.
+fn read_mem_available() -> Option<u64> {
+    std::fs::read_to_string("/proc/meminfo").ok().and_then(|text| pool::mem_available_bytes(&text))
 }
 
 /// How many renderers this device can run at once: the primary and a helper for every other core,
@@ -412,7 +435,7 @@ pub fn request(
     }
     let frame = mailbox.view(&key);
     drop(mailbox);
-    runtime().start_helpers(requested.workers_wanted);
+    runtime().start_helpers(requested.workers_wanted, key.epoch);
     frame
 }
 
@@ -520,14 +543,18 @@ fn worker(slot: usize) {
                     mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
                     continue;
                 }
-                if let Some(job) = mailbox.take() {
+                // A helper the selection's memory verdict does not reach takes nothing.
+                let barred = runtime().helper_barred(slot);
+                if barred {
+                    pacing.set(runtime(), &mut mailbox, false);
+                } else if let Some(job) = mailbox.take() {
                     break job;
                 }
                 let helper_holds_renderer = slot > 0 && !engine.is_empty();
-                if helper_holds_renderer && idle_since.elapsed() >= HELPER_IDLE {
-                    // Nothing for a helper to do for a while: give the renderer back, and stay
-                    // parked until a plan wants it again. Decided under the lock, so a job
-                    // handed out meanwhile is not missed.
+                if helper_holds_renderer && (barred || idle_since.elapsed() >= HELPER_IDLE) {
+                    // Nothing for a helper to do for a while, or no memory for it: give the renderer
+                    // back, and stay parked until a plan wants it again. Decided under the lock, so a
+                    // job handed out meanwhile is not missed.
                     let retired = std::mem::take(&mut engine);
                     pacing.set(runtime(), &mut mailbox, false);
                     drop(mailbox);
@@ -565,6 +592,10 @@ fn worker(slot: usize) {
                 (!engine.resynced).then(|| u32::try_from(elapsed.as_micros()).unwrap_or(u32::MAX));
             rendered
         });
+        if slot == 0 {
+            // What a helper would copy: the pool decides how many may run from it.
+            runtime().font_bytes.store(engine.font_bytes(), Ordering::Relaxed);
+        }
         let finished = {
             let mut mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
             // Every exit finishes the job, so the mailbox never believes one is still in flight.
@@ -740,6 +771,11 @@ struct Engine {
 }
 
 impl Engine {
+    /// The bytes of fonts the renderer holds, 0 with none open.
+    fn font_bytes(&self) -> usize {
+        self.native.as_ref().map_or(0, Native::font_bytes)
+    }
+
     fn is_empty(&self) -> bool {
         self.source.is_none()
             && self.native.is_none()
@@ -1178,6 +1214,8 @@ struct Native {
     selection: font_names::Selection,
     given: usize,
     given_bytes: usize,
+    /// The bytes of the bundled faces it was given at open (`fonts::bundled`).
+    bundled_bytes: usize,
 }
 
 #[cfg(test)]
@@ -1254,6 +1292,7 @@ impl Native {
             selection: font_names::Selection::new(fonts),
             given: 0,
             given_bytes: 0,
+            bundled_bytes: 0,
         };
         native.configure()?;
         // Inter, Inter Bold, then the per-script Noto faces (`fonts.rs`: the order is load-bearing,
@@ -1265,6 +1304,7 @@ impl Native {
             let bytes = std::fs::read(&path).map_err(|_| Fault::FontsUnavailable)?;
             let name = path.file_name().and_then(|n| n.to_str()).ok_or(Fault::FontsUnavailable)?;
             native.font(name, &bytes)?;
+            native.bundled_bytes += bytes.len();
         }
         // The attached fonts the track names, in container order after the bundled ones. A font the
         // renderer cannot take (unnamed, rejected by the native side) is skipped: the text still
@@ -1300,6 +1340,12 @@ impl Native {
         if !wanted.is_empty() {
             self.log_fonts(fonts.len());
         }
+    }
+
+    /// The bytes of fonts libass holds in this renderer, the bundled faces and the attached ones:
+    /// what another renderer would copy again.
+    fn font_bytes(&self) -> usize {
+        self.bundled_bytes + self.given_bytes
     }
 
     /// How many of the file's `attached` fonts libass holds, numbers only: the event log is
