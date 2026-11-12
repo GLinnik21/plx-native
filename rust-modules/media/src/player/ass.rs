@@ -28,7 +28,6 @@ const MAX_REGIONS: usize = 64;
 mod aligns;
 mod font_names;
 mod pool;
-#[allow(dead_code)] // red commit: the decision is not wired in yet
 mod scale;
 pub use aligns::AlignSet;
 pub use scale::RenderScale;
@@ -359,6 +358,12 @@ impl Runtime {
         verdict.renderers
     }
 
+    /// How many renderers the selection of `epoch` may hold, once the pool has said (`None` before):
+    /// what the mailbox decides the render scale against. Atomics only, so a request reads it every tick.
+    fn renderers_decided(&self, epoch: u64) -> Option<usize> {
+        (self.decided_epoch.load(Ordering::Acquire) == epoch).then(|| self.renderers.load(Ordering::Acquire))
+    }
+
     /// A helper of `slot` may not take jobs: the selection's verdict does not reach it.
     fn helper_barred(&self, slot: usize) -> bool {
         slot > 0 && slot >= self.renderers.load(Ordering::Acquire)
@@ -377,9 +382,11 @@ impl Runtime {
 
     /// Start the helpers that a pipeline asking for `wanted` workers can use on this device and in
     /// this much memory. Off the mailbox lock: starting a thread is not work for the lock the
-    /// workers take their jobs under.
-    fn start_helpers(&self, wanted: usize, epoch: u64) {
-        if wanted < 2 {
+    /// workers take their jobs under. The pool is consulted when drawing at full size would want a
+    /// helper (`pool_wanted`), even if the scale the plan draws at needs none: its verdict is what
+    /// the scale is decided against.
+    fn start_helpers(&self, wanted: usize, pool_wanted: usize, epoch: u64) {
+        if pool_wanted < 2 {
             return;
         }
         let renderers = self.renderers_for(epoch, read_mem_available);
@@ -455,6 +462,8 @@ pub fn request(
     if !started {
         return Some(mailbox.publish_error(key, error_frame(key, Fault::StartFailed)));
     }
+    // what the pool has said about this selection, if it has: the render scale is decided against it
+    mailbox.set_capacity(runtime().renderers_decided(key.epoch));
     let requested = mailbox.request(key, now_ms, &source, pace);
     if requested.promoted {
         if requested.piped {
@@ -468,8 +477,26 @@ pub fn request(
     }
     let frame = mailbox.view(&key);
     drop(mailbox);
-    runtime().start_helpers(requested.workers_wanted, key.epoch);
+    if let Some(change) = requested.scale_change {
+        log_scale_change(&change);
+    }
+    runtime().start_helpers(requested.workers_wanted, requested.pool_wanted, key.epoch);
     frame
+}
+
+/// Each move of the render scale is logged once, with the numbers it was decided from (`assperf`
+/// carries the scale in force on every line besides).
+fn log_scale_change(change: &scale::Change) {
+    let load = &change.load;
+    plx_base::eventlog::log(&format!(
+        "ass: render scale {} -> {} cost={:.1}ms renderers={} rate={:.2} target={}ms",
+        change.from.label(),
+        change.to.label(),
+        load.cost_full_ms,
+        load.renderers,
+        load.rate,
+        load.target_ms,
+    ));
 }
 
 /// MAIN THREAD: the alignment classes (bottom, middle, top) of the cues active in the frame
@@ -619,7 +646,7 @@ fn worker(slot: usize) {
             let job_started = std::time::Instant::now();
             let mut rendered = engine.render(&job);
             let elapsed = job_started.elapsed();
-            super::ass_perf::record_job(elapsed, job.kind.is_ahead());
+            super::ass_perf::record_job(elapsed, job.kind.is_ahead(), job.scale);
             // What a steady frame costs paces the animated pipeline; a job that re-read the fonts or
             // the events is no sample of it.
             rendered.cost_us =

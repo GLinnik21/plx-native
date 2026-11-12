@@ -1620,7 +1620,7 @@ fn the_pool_is_asked_about_what_full_size_would_want_and_the_plan_wants_what_its
     let pace = playing(1.0, 33);
     for (cost_ms, pool) in [(85, 3), (20, 1)] {
         let (mut mb, source, key) = warm(1, cost_ms);
-        let out = mb.request(key, 1200, &source, pace);
+        let out = mb.request(key, 1100, &source, pace);
         assert_eq!(out.pool_wanted, pool, "{cost_ms} ms");
         assert_eq!(out.workers_wanted, pool, "the workers the plan wants are the same while it draws at full size");
     }

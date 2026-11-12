@@ -174,6 +174,11 @@ pub struct Governor {
 }
 
 impl Governor {
+    /// At full size, with the first sample deciding: nothing has been drawn yet.
+    pub const fn new() -> Self {
+        Self { scale: RenderScale::Full, samples: 0, fresh: true, pending: None, last_up_ms: None, barred_until_ms: 0 }
+    }
+
     /// The rung moving frames are drawn at now.
     pub fn scale(&self) -> RenderScale {
         self.scale
@@ -189,7 +194,7 @@ impl Governor {
 
     /// The next sample is the first of a stretch: it replaces what was known of the cost.
     pub fn is_fresh(&self) -> bool {
-        self.fresh
+        self.fresh && self.samples == 0
     }
 
     /// A steady frame of the current rung was timed.
