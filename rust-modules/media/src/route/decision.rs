@@ -2087,9 +2087,20 @@ pub fn clear_url(ps: &mut PlaybackSession) {
 pub(crate) fn retire_stopped_playback(ps: &mut PlaybackSession) {
     clear_url(ps);
     ps.sess.clear();
+    ps.request = None;
     if ps.engine_failure == Some(crate::player::RuntimeFailure::ServerStopped) {
         ps.engine_failure = None;
     }
+}
+
+/// A replacement ends the old server resources but still needs its descriptor to retry, or has
+/// already published the next item's request. A plain Stop/Back never retains that descriptor.
+pub(crate) fn retaining_request_for_replacement(
+    ps: &mut PlaybackSession, stop: impl FnOnce(&mut PlaybackSession),
+) {
+    let request = ps.request.clone();
+    stop(ps);
+    ps.request = request;
 }
 
 pub fn transcode_session(ps: &PlaybackSession) -> String {
@@ -5545,6 +5556,7 @@ pub enum VideoLane {
 /// [`RecoveryDispatch::Refused`] / [`RecoveryVerdict::Refused`] leave the failure the pump held back
 /// (a forced direct play, which the viewer asked not to convert, is one).
 pub fn dispatch_refusal_conversion(ps: &mut PlaybackSession, offset_secs: i64, video: VideoLane) -> RecoveryDispatch {
+    if is_live(ps) { return RecoveryDispatch::Refused; }
     let expected = worker_ticket();
     if !rebuild_precheck(ps, &expected) {
         return RecoveryDispatch::Refused;
@@ -6909,6 +6921,10 @@ pub fn note_engine_failure(ps: &mut PlaybackSession, cause: crate::player::Runti
 pub fn play_verdict(ps: &PlaybackSession) -> Option<std::borrow::Cow<'_, str>> {
     ps.play_verdict.as_ref().map(PlayVerdict::text)
 }
+pub(crate) fn tuners_busy(ps: &PlaybackSession) -> bool {
+    matches!(ps.play_verdict, Some(PlayVerdict::TunersBusy))
+}
+
 /// The verdict NUMBERS of a refusal the SERVER made at `/decision` — `None` when nothing was
 /// refused, or when the refusal was the app's own (Direct Play off, Force Direct Play): those carry
 /// no server codes because the server was never asked to decide. Numbers only; the sentence is
@@ -10337,8 +10353,8 @@ pub fn request_preview(
 }
 
 /// Same resolve door as [`request_play`], for a Live TV channel of server `sid`: the worker tunes
-/// `channel` on DVR `dvr` (several seconds, under the player's Resolving state) and direct-plays the
-/// session it opens. `title` is the channel's name. MAIN THREAD, NON-BLOCKING, like `request_play`.
+/// `channel` on DVR `dvr` (several seconds, under the player's Resolving state), then plays its
+/// session directly or through the universal transcoder. `title` is the channel's name. MAIN THREAD, NON-BLOCKING, like `request_play`.
 pub fn request_live(
     ps: &mut PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
@@ -10366,7 +10382,7 @@ pub fn request_live(
         },
         None,
         None,
-        false,
+        true,
         crate::player::report::AttemptOrigin::Fresh,
     )
 }
@@ -10374,6 +10390,21 @@ pub fn request_live(
 /// This playback watches a Live TV channel: there is no timeline to seek in and nothing to resume.
 pub fn is_live(ps: &PlaybackSession) -> bool {
     ps.cur_live.is_some() || ps.request.as_ref().is_some_and(|r| r.live.is_some())
+}
+
+/// The requested channel and its server, including while its tune is still resolving.
+pub fn live_request(ps: &PlaybackSession) -> Option<(ServerId, &LiveTune)> {
+    let request = ps.request.as_ref()?;
+    Some((request.sid, request.live.as_ref()?))
+}
+
+/// Publish the lineup's current programme through the ordinary HUD pair and retry descriptor.
+pub fn set_live_context(ps: &mut PlaybackSession, context: &str) {
+    let Some(request) = ps.request.as_mut().filter(|r| r.live.is_some()) else { return };
+    if request.ctx == context { return; }
+    request.ctx = context.to_owned();
+    // SAFETY: the buffer length comes from the same fixed array as its pointer.
+    unsafe { set_c(ps.ctxline.as_mut_ptr(), ps.ctxline.len(), context); }
 }
 
 /// The resolve environment a play REQUEST hands its worker: the snapshot taken AFTER the request
@@ -14177,3 +14208,4 @@ mod track_memory_tests;
 #[cfg(test)]
 #[path = "decision_write_back_tests.rs"]
 mod write_back_tests;
+

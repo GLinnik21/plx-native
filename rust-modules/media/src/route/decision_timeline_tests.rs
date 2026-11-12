@@ -1466,3 +1466,26 @@ fn a_live_plan_abandoned_after_its_tune_still_stops_the_recording() {
     assert_eq!((resources.identities, resources.live), (vec!["s1".to_string()], Some((live, "s1".to_string()))));
     assert!(abandoned_plan_resources(&Plan::default()).is_none());
 }
+
+#[test]
+fn a_full_stop_retires_the_live_request_but_replacement_keeps_its_descriptor() {
+    let mut ps = PlaybackSession::IDLE;
+    let _guard = fresh_registry(&mut ps);
+    let mut meta = plx_data::stores::metadata::MetadataStore::default();
+    assert!(request_live(&mut ps, &mut meta, plx_platform::devcaps::caps(), ServerId::UNSET,
+        "7", "channel-1", "Channel one"));
+    assert!(is_live(&ps));
+    let mut adapter = crate::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+    assert!(crate::player::stop_for_replacement(&mut ps, &mut adapter));
+    assert_eq!(live_request(&ps).unwrap().1.channel, "channel-1", "retry retains its descriptor");
+    crate::player::stop_playback(&mut ps, &mut adapter);
+    assert!(!is_live(&ps), "Back retires the actual live request, even without a landed engine");
+    assert!(!can_retry_current_play(&ps));
+    // No library-only facet may ever manufacture /library/metadata/ for a live request.
+    assert!(request_live(&mut ps, &mut meta, plx_platform::devcaps::caps(), ServerId::UNSET,
+        "7", "channel-2", "Channel two"));
+    for video in [VideoLane::AsPlanned, VideoLane::Encode, VideoLane::Both] {
+        assert!(matches!(dispatch_refusal_conversion(&mut ps, 0, video), RecoveryDispatch::Refused));
+    }
+    crate::player::stop_playback(&mut ps, &mut adapter);
+}

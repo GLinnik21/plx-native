@@ -130,7 +130,7 @@ fn a_live_segment_without_parameter_sets_inherits_them_from_its_own_playlist_onl
 
 /// A live recording starts three seconds behind its edge and is polled twice a second (measured
 /// on the TV 2026-10-21: started on its first segment it stalled at every late one); a PMS
-/// transcode's playlist keeps the VOD cadence and starts at once.
+/// VOD transcode's playlist keeps the VOD cadence and starts at once.
 #[test]
 fn a_live_playlist_starts_behind_its_edge_and_is_polled_faster() {
     assert!(!live_start_ready(true, false, 760_000_000), "one segment is no cushion");

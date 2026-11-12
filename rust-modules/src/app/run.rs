@@ -732,6 +732,7 @@ fn begin_product_frame(app: &mut App) -> Frame {
 
 /// Current transport/marker facts before the dispatcher's input/Tick, refreshed again for draw.
 fn publish_player_model(app: &mut App) {
+    super::playback::publish_live_banner(&mut app.player.session, app.bridge.livetv_view().channels);
     let mut model = hud_model(&app.player.session, app.bridge.metadata_view(),
         app.adapters.player.backend_viewer_paused().unwrap_or(false),
         matches!(app.rec, super::recorder::Recplay::Off) && !app.bridge.is_controlled_replay()
@@ -6054,6 +6055,7 @@ pub(super) mod lifecycle_regression_tests {
     }
 
     include!("run_uri_boot_tests.rs");
+    include!("run_livetv_tests.rs");
 
     // ---- track memory: what the viewer picked on one episode is what the next episode plays -----
 

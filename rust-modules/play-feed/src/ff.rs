@@ -4462,8 +4462,10 @@ pub struct HlsCursor {
     pub ended: bool,
     pub target_duration_secs: u64,
     pub start_applied: bool,
-    /// A Live TV session's playlist (the entry was already a media playlist): every open, a reload
-    /// included, starts [`LIVE_START_CUSHION_NS`] behind its edge; polled every [`LIVE_POLL`].
+    /// A Live TV playback — the session's own media playlist (the entry is already a media
+    /// playlist) or the universal transcoder's output for a live session
+    /// ([`is_live_session_source`]). Every open, a reload included, starts
+    /// [`LIVE_START_CUSHION_NS`] behind its edge; polled every [`LIVE_POLL`].
     pub live: bool,
 }
 
@@ -4481,6 +4483,18 @@ const LIVE_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 /// Whether a live playlist holding `total_ns` of recording may start delivering segments.
 fn live_start_ready(live: bool, start_applied: bool, total_ns: i64) -> bool {
     !live || start_applied || total_ns >= LIVE_START_CUSHION_NS
+}
+
+/// Whether a master playlist URL is the universal transcoder's output for a Live TV session: its
+/// `path=` source is a `/livetv/sessions/…` key (`TranscodeSource::Live`), never a library item.
+/// The route's own source names it; a growing playlist alone does not (a fresh library encoder's
+/// playlist also lists only what it has produced so far).
+fn is_live_session_source(path_and_query: &str) -> bool {
+    let query = path_and_query.split_once('?').map_or("", |(_, q)| q);
+    query.split('&').any(|pair| {
+        let value = pair.strip_prefix("path=").unwrap_or("");
+        value.starts_with("%2Flivetv%2Fsessions%2F") || value.starts_with("/livetv/sessions/")
+    })
 }
 
 /// The index a live playlist starts delivering from: the latest segment with at least
@@ -4860,7 +4874,7 @@ pub fn hls_cursor_open(
         ended: false,
         target_duration_secs: 1,
         start_applied: false,
-        live: false,
+        live: is_live_session_source(path),
     })
 }
 
@@ -7268,3 +7282,6 @@ mod aac_timestamp_tests;
 #[cfg(test)]
 #[path = "ff_packet_framing_tests.rs"]
 mod packet_framing_tests;
+#[cfg(test)]
+#[path = "ff_hls_live_tests.rs"]
+mod hls_live_tests;

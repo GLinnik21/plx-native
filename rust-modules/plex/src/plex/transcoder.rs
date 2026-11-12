@@ -16,7 +16,7 @@
 //! HTTP, deadline and transport causes for route policy.
 use super::client::{Client, JsonDeadlineOutcome, QueryBuilder, StreamUrl};
 use super::models::MediaContainer;
-use super::params::{Ceiling, TranscodeDelivery, TranscodeSpec};
+use super::params::{Ceiling, TranscodeDelivery, TranscodeSource, TranscodeSpec};
 use super::probe::Location;
 
 // `DP_AUDIO_CODECS` — the AUDIO codec set the buffer-feed pipeline decodes — is defined in
@@ -431,8 +431,12 @@ impl Client {
         );
         let copy_ok = !hls && !(s.contract.no_video_copy && !s.contract.remux);
         let protocol = if hls { "hls" } else { "http" };
+        let path = match s.source {
+            TranscodeSource::Library(rating_key) => format!("/library/metadata/{rating_key}"),
+            TranscodeSource::Live(key) => key.to_owned(),
+        };
         let mut q = QueryBuilder::new("")
-            .str("path", &format!("/library/metadata/{}", s.rating_key))
+            .str("path", &path)
             .int("mediaIndex", s.media_index as i64)
             .int("partIndex", 0)
             .str("protocol", protocol)
@@ -744,7 +748,7 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::{
-        link_policy, Ceiling, Client, LinkPolicy, Location, TranscodeDelivery, TranscodeSpec,
+        link_policy, Ceiling, Client, LinkPolicy, Location, TranscodeDelivery, TranscodeSource, TranscodeSpec,
     };
     use plx_platform::devcaps::Caps;
     use crate::plex::{AudioEnhancements, EncodeContract, Origin, ServerId};
@@ -778,7 +782,7 @@ mod tests {
         audio: AudioEnhancements,
     ) -> TranscodeSpec<'a> {
         TranscodeSpec {
-            rating_key: "5",
+            source: TranscodeSource::Library("5"),
             media_index: 0,
             session: "s1",
             encoder_session: "s1",
@@ -795,6 +799,16 @@ mod tests {
             client_subtitles: false,
             offset: crate::plex::TranscodeOffset::Fresh,
         }
+    }
+
+    #[test]
+    fn a_live_session_is_not_prefixed_with_library_metadata() {
+        let mut live = spec(false, false);
+        live.source = TranscodeSource::Live("/livetv/sessions/9b9fe727-0000-46db-b94c-ef512e3e61d2");
+        let query = a_client().transcode_query(&live);
+        assert!(query.contains("path=%2Flivetv%2Fsessions%2F9b9fe727-0000-46db-b94c-ef512e3e61d2&"), "{query}");
+        assert_eq!(query.replace("path=%2Flivetv%2Fsessions%2F9b9fe727-0000-46db-b94c-ef512e3e61d2&", "path=%2Flibrary%2Fmetadata%2F5&"),
+            a_client().transcode_query(&spec(false, false)), "the source changes no encode contract parameter");
     }
 
     /// PMS acknowledges `/stop` before its cleanup worker erases the physical session. The

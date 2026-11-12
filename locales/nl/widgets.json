@@ -253,5 +253,7 @@
   "widgets.region.latin_america": "Latijns-Amerika",
   "widgets.failure.play_auto": "Op Auto zetten en afspelen",
   "widgets.failure.change_quality": "Kwaliteit wijzigen",
-  "widgets.watch.intro": "Intro bekijken"
+  "widgets.watch.intro": "Intro bekijken",
+  "widgets.verdict.tuners_busy": "Alle tuners zijn bezet",
+  "widgets.live.channel_context": "{number} · {programme}"
 }

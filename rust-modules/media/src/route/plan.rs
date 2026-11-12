@@ -463,7 +463,7 @@ pub(super) fn transcode_spec_carrying_burn<'a>(
     contract: plx_plex::plex::EncodeContract,
 ) -> plx_plex::plex::TranscodeSpec<'a> {
     plx_plex::plex::TranscodeSpec {
-        rating_key: rk,
+        source: plx_plex::plex::TranscodeSource::Library(rk),
         media_index,
         session,
         encoder_session,
@@ -1210,6 +1210,8 @@ pub enum PlayVerdict {
     PreviewNeedsDirectPlay,
     /// This build has no Feed executor and no source-specific URI qualification was granted.
     NoQualifiedBackend,
+    /// The DVR refused the tune because no tuner was available.
+    TunersBusy,
 }
 
 /// The limitation a Force Direct Play verdict names. Each one carries the same recovery step.
@@ -1242,6 +1244,7 @@ impl PlayVerdict {
             Self::DirectPlayDisabled => Borrowed(msg::widgets_verdict_direct_play_disabled()),
             Self::PreviewNeedsDirectPlay => Borrowed(msg::widgets_reason_open()),
             Self::NoQualifiedBackend => Borrowed(msg::widgets_reason_open()),
+            Self::TunersBusy => Borrowed(msg::widgets_verdict_tuners_busy()),
             Self::Forced(why) => match why {
                 ForcedFailure::NoOriginal => Borrowed(msg::widgets_verdict_forced_no_original()),
                 ForcedFailure::Container => Borrowed(msg::widgets_verdict_forced_container()),
@@ -1824,7 +1827,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         if let Some(tune) = &env.live {
             let mut plan = base_plan();
             if let Some(client) = client {
-                build_live_stream(off, tune, client, &mut plan);
+                build_live_stream(off, tune, client, env, &mut plan);
             }
             return plan;
         }
@@ -3265,30 +3268,60 @@ pub(super) fn video_copy_fps(contract: &plx_plex::plex::EncodeContract, src_fps:
     if contract.remux && !contract.no_video_copy { src_fps } else { 0.0 }
 }
 
-/// The Live TV resolve: tune, ask the decision for the playlist, and direct-play it. Nothing of the
-/// library path applies — no PlayQueue, no metadata, no track memory, no quality ladder, no
-/// direct-play mode: the server already records the channel as H.264/AAC in MPEG-TS, and the
-/// official client plays it the same way (`docs/pms-api.md` §10).
+/// Tune once, then use the same decoder predicates and universal-transcoder contract as library
+/// playback. The live session remains owned even when the decision refuses its conversion.
 fn build_live_stream(
-    off: &plx_base::task::OffFrame, tune: &LiveTune, client: &plx_plex::plex::Client, plan: &mut Plan,
+    off: &plx_base::task::OffFrame, tune: &LiveTune, client: &plx_plex::plex::Client,
+    env: &ResolveEnv, plan: &mut Plan,
 ) {
+    use plx_plex::plex::livetv::TuneOutcome;
     let session = new_sess("");
     plan.sess = session.clone();
-    let Some(live) = client.tune(off, &tune.dvr, &tune.channel, &session) else {
-        crate::player::log(&format!("livetv: tune of {} on dvr {} failed", tune.channel, tune.dvr));
-        return;
+    let live = match client.tune(off, &tune.dvr, &tune.channel, &session) {
+        TuneOutcome::Tuned { session, .. } => session,
+        TuneOutcome::Busy { .. } => { plan.verdict = Some(PlayVerdict::TunersBusy); return; }
+        TuneOutcome::Failed { .. } => {
+            crate::player::log("livetv: tune failed");
+            return;
+        }
     };
-    crate::player::log(&format!("livetv: tuned {} -> {}", tune.channel, live.key));
     plan.live = Some(live.clone());
     let Some(play) = client.live_part(off, &live, &session) else {
         crate::player::log("livetv: the decision named no playlist");
         return;
     };
+    let video = video_direct_plays(&play.vcodec, play.width, play.height,
+        plx_data::metadata::DvPresentation::NotDv, &env.caps);
+    let audio = audio_direct_plays_with(&env.caps, env.direct_play_mode,
+        &play.acodec, play.channels, 0);
+    plan.source_decodable = video && audio;
+    plan.src_vcodec = play.vcodec.clone();
+    plan.src_acodec = play.acodec.clone();
     plan.vcodec = play.vcodec;
-    plan.acodec = play.acodec;
-    plan.src_vcodec = plan.vcodec.clone();
-    plan.src_acodec = plan.acodec.clone();
-    plan.url = client.direct_play_url(&play.part, &session).to_url();
+    plan.acodec = audio_declaration(&play.acodec);
+    if plan.source_decodable {
+        plan.url = client.direct_play_url(&play.part, &session).to_url();
+        return;
+    }
+    plan.contract = plx_plex::plex::EncodeContract {
+        delivery: plx_plex::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
+        no_video_copy: !video,
+        ..Default::default()
+    };
+    let mut spec = transcode_spec_carrying_burn(&env.caps, "", 0, &session, &session,
+        plx_plex::plex::TranscodeOffset::Fresh, 0, 0, true, plan.contract);
+    spec.source = plx_plex::plex::TranscodeSource::Live(&live.key);
+    // The decision may register resources even on refusal; both owners must survive for cleanup.
+    plan.tsession = session.clone();
+    let Some(decision) = client.transcode_decision(off, &spec) else { return };
+    if let Some(reason) = refusal(&decision) {
+        plan.verdict = Some(PlayVerdict::Server(reason, DecisionCodes::of(&decision)));
+        return;
+    }
+    let Some((video, audio)) = decision_codecs(&decision) else { return };
+    plan.vcodec = video;
+    plan.acodec = audio_declaration(&audio);
+    plan.url = client.transcode_start_url(&spec).to_url();
 }
 
 /// The Load audio declaration as the pipeline names it.

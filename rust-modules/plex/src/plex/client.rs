@@ -848,11 +848,12 @@ impl Client {
             .map(|e| e.media_container)
     }
 
-    /// POST → the JSON body as a tree, for a write whose answer has no flat container shape — the
-    /// Live TV tune, whose session sits several levels down (`livetv::session_of`).
-    pub(super) fn post_value(&self, path_no_token: &str) -> Option<serde_json::Value> {
-        let body = self.body_2xx(path_no_token, Method::Post, &[ACCEPT_JSON])?;
-        serde_json::from_slice(&body).ok()
+    /// POST → status and a parsed 2xx JSON tree, for the nested Live TV tune answer. A rejected
+    /// status survives parsing so its caller can distinguish a busy tuner from other failures.
+    pub(super) fn post_value(&self, path_no_token: &str) -> Option<(i32, Option<serde_json::Value>)> {
+        let reply = self.send(path_no_token, Method::Post, &[ACCEPT_JSON])?;
+        let parsed = if reply.ok() { serde_json::from_slice(&reply.body).ok() } else { None };
+        Some((reply.status, parsed))
     }
 
     /// THE token choke point. Appends `X-Plex-Token=…` with the right separator.

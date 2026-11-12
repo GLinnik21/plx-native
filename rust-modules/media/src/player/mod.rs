@@ -987,6 +987,8 @@ pub enum FailureKind {
     /// `/decision` refused the item outright — the server can neither direct play nor convert it.
     /// The earliest and most certain failure: it happens before an engine exists.
     DecisionRefused,
+    /// The DVR has no available tuner for this channel.
+    TunersBusy,
     /// The explicit Direct Play policy cannot deliver the requested original stream.
     PlaybackPolicy,
     /// Transcoding, and the server produced no video stream — it found no usable video target.
@@ -1037,6 +1039,7 @@ impl FailureKind {
         use plx_telemetry::telemetry::classes::FailureClass as C;
         match self {
             FailureKind::DecisionRefused => C::DecisionRefused,
+            FailureKind::TunersBusy => C::TunersBusy,
             FailureKind::PlaybackPolicy => C::PlaybackPolicy,
             FailureKind::NoVideoTranscodeTarget => C::NoVideoTranscodeTarget,
             FailureKind::NoVideoTrack => C::NoVideoTrack,
@@ -1129,6 +1132,7 @@ pub fn failure_actions(kind: FailureKind, cx: FailureContext) -> Vec<FailureActi
         // The file itself has no picture; no rung and no retry puts one in it.
         K::NoVideoTrack => {}
         K::ServerStopped => {}
+        K::TunersBusy => { if cx.can_retry { v.push(A::TryAgain); } }
         _ if cx.forced => {
             if cx.can_retry {
                 v.push(A::PlayAutomatically);
@@ -1440,6 +1444,16 @@ pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
     }
     // The typed verdict, not the sentence: a refused preview is ours, not the server's, and must
     // not read as `DecisionRefused`.
+    if crate::route::tuners_busy(ps) {
+        return ErrorShape {
+            kind: FailureKind::TunersBusy,
+            caption: plx_platform::i18n::msg::widgets_verdict_tuners_busy_c(),
+            panel: plx_platform::i18n::msg::widgets_verdict_tuners_busy(),
+            readout: plx_platform::i18n::msg::widgets_verdict_tuners_busy(),
+            detail: std::borrow::Cow::Borrowed(""),
+            no_pass: false,
+        };
+    }
     if crate::route::play_refused_as_preview(ps) {
         return preview_not_direct_shape();
     }
@@ -2812,7 +2826,7 @@ pub fn failtest_policy_shape_for_test(verdict: &str) -> ErrorShape {
 #[cfg(any(test, feature = "test-support"))]
 pub fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureAction>)> {
     use FailureKind as K;
-    let kinds = [K::DecisionRefused, K::PlaybackPolicy, K::NoVideoTranscodeTarget, K::NoVideoTrack,
+    let kinds = [K::TunersBusy, K::DecisionRefused, K::PlaybackPolicy, K::NoVideoTranscodeTarget, K::NoVideoTrack,
         K::MediaSource, K::PlaybackInterrupted, K::TvPipeline, K::LoadTimeout,
         K::ReleaseTimeout, K::JailMissingRtkmem, K::ResolveFailed, K::PreviewNotDirect, K::ServerStopped,
         K::Unspecified];
@@ -3196,6 +3210,21 @@ mod tests {
         assert_eq!(shape.detail, verdict);
     }
 
+    #[test]
+    fn busy_tuners_have_clear_wording_and_only_retry_or_back() {
+        let _guard = plx_base::testlock::serial();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        crate::route::refuse_for_test(&mut ps, crate::route::PlayVerdict::TunersBusy);
+        let shape = error_now(&ps);
+        assert_eq!(shape.kind, FailureKind::TunersBusy);
+        assert_eq!(shape.readout, plx_platform::i18n::msg::widgets_verdict_tuners_busy());
+        for forced in [false, true] {
+            let cx = FailureContext { forced, can_retry: true, repair_idle: false };
+            assert_eq!(failure_actions(shape.kind, cx), vec![FailureAction::TryAgain, FailureAction::Back]);
+            assert_eq!(failure_actions(shape.kind, FailureContext { can_retry: false, ..cx }), vec![FailureAction::Back]);
+        }
+    }
+
     /// **Each cause converts to its own telemetry class, under the code it always had.** The class
     /// enum is telemetry's and the match that fills it is this layer's, so a copy-paste that sent
     /// two causes to one class would merge two dashboard series without any compile error. (The
@@ -3215,6 +3244,7 @@ mod tests {
             (K::LoadTimeout, "load_timeout"),
             (K::ReleaseTimeout, "release_timeout"),
             (K::ResolveFailed, "resolve_failed"),
+            (K::TunersBusy, "tuners_busy"),
             (K::PreviewNotDirect, "preview_not_direct"),
             (K::ServerStopped, "server_stopped"),
             (K::Unspecified, "unspecified"),

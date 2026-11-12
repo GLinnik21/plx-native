@@ -233,6 +233,8 @@ pub enum PlayerReq {
     /// and the panel stays up. `true` = the key was PLAY, `false` = PAUSE; a PLAYPAUSE toggle is
     /// neither and is carried as `None`.
     Transport(Option<bool>),
+    /// CH+/CH− in the shared paging direction. The app only tunes a Live TV request.
+    Channel(i32),
     /// Seek to this position in ns and resume if paused — the Chapters strip's OK, and OK or PLAY
     /// taking the scrub's pending key target (a playing film simply seeks and plays on).
     SeekTo(i64),
@@ -1308,8 +1310,8 @@ pub enum PlayIntent {
         version: Option<plx_plex::plex::MediaId>,
     },
     /// A Live TV channel (`screens::livetv`, Home's Live TV row): tune `channel` on DVR `dvr` of
-    /// server `sid` and watch the session the tune opens. `title` is the channel's name, the
-    /// player's title until the tune names the airing. The resolve worker performs the tune and its
+    /// server `sid` and watch the session the tune opens. `title` stays the channel's name; the
+    /// guide's number and current airing use the player's context line. The resolve worker performs the tune and its
     /// decision (`route::request_live`); a channel has no resume point, version or PlayQueue.
     Live {
         sid: plx_plex::plex::ServerId,

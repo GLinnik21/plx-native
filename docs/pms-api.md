@@ -1830,6 +1830,29 @@ a server looping on its grabber).
    transcode, deletes its directory, **frees the tuner** and destroys the rolling subscription — all
    inside the same 3 ms. The client's `DELETE /media/subscriptions/{id}` afterwards answered 404.
 
+### App routing beyond the measured direct-play sequence (implemented, tuner acceptance unmeasured)
+
+The app retains the tune's HTTP status and distinguishes `Tuned`, `Busy` and `Failed` outcomes.
+**409 and 503 are classified as Busy by inference, not by a measured exhausted-tuner response.**
+Every other HTTP rejection, a transport failure, malformed JSON or a successful answer without a
+session remains a generic failure; the UI must not claim a cause that the response does not prove.
+
+The live decision's selected playlist also carries its own `Media.width`, `Media.height` and
+`Media.audioChannels`, parsed with the same lenient numeric handling as library decisions; missing
+values stay 0 (unknown). These output facts allow routing to check the actual stream against the
+attempt's device capabilities instead of assuming the measured H.264/AAC channel represents every
+tuner.
+
+`TranscodeSpec::source` now supports either a library rating key or the tuned
+`/livetv/sessions/{uuid}` key. Live re-encode requests reuse the **same** universal-transcoder
+query, capability profile, decision and fixed-segment HLS delivery (`start.m3u8`, the library's
+`FixedHls` contract) as library playback, with the source path replaced. The player reads that
+output as live because its `path=` source is a `/livetv/sessions/…` key: it starts at the edge on
+every open and publishes no duration. This is an implemented extension of the library contract,
+**not a measured live-tuner remux/transcode flow**. Real PMS/tuner acceptance, output codecs and
+resource cleanup for this route still require device or server evidence; the official client's
+sequence above proves only the direct-play route.
+
 ---
 
 ## Paging, observed

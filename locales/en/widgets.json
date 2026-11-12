@@ -1136,5 +1136,17 @@
   "widgets.watch.intro": {
     "value": "Watch Intro",
     "description": "Playback marker skipping preference or cancellation action."
+  },
+  "widgets.verdict.tuners_busy": {
+    "value": "All tuners are busy",
+    "description": "Live TV failure when the DVR has no available tuner; retry or go back."
+  },
+  "widgets.live.channel_context": {
+    "value": "{number} · {programme}",
+    "description": "Live TV HUD kicker: channel number and current programme. Titles come from the server.",
+    "args": {
+      "number": "str",
+      "programme": "str"
+    }
   }
 }

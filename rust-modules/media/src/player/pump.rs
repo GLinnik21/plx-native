@@ -1142,6 +1142,7 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
         let snapshot = super::timeline::TimelineSnapshot::from_feed(
             ps.readout(),
             super::duration_ns(ps).unwrap_or(0),
+            crate::route::is_live(ps),
         );
         pa.publish_timeline(attempt, snapshot);
     }
@@ -5135,7 +5136,7 @@ mod native_seek_pump_tests {
         assert_eq!(rig.ps.readout().raw().playpos_ns, 9_000_000_000, "the stale position reached the pump");
         assert!(rig.ps.readout().seeking(), "the segment is still awaiting presentation");
         assert!(super::super::timeline::TimelineSnapshot::from_feed(
-            rig.ps.readout(), 7_200_000_000_000,
+            rig.ps.readout(), 7_200_000_000_000, false,
         ).is_none(), "Plex must not save the stale clock");
         assert!(reloads().is_empty(), "presentation gets time to land");
         rig.now += 10_000;

@@ -94,6 +94,33 @@ pub struct LiveSession {
     pub rating_key: String,
 }
 
+/// The tune's HTTP answer stays attached to its protocol result. Busy statuses are an inferred
+/// policy (409/503), not measured tuner behavior; every other failure remains generic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TuneOutcome {
+    Tuned { session: LiveSession, status: i32 },
+    Busy { status: i32 },
+    Failed { status: Option<i32> },
+}
+
+fn tune_outcome(response: Option<(i32, Option<serde_json::Value>)>) -> TuneOutcome {
+    let Some((status, body)) = response else {
+        return TuneOutcome::Failed { status: None };
+    };
+    if matches!(status, 409 | 503) {
+        return TuneOutcome::Busy { status };
+    }
+    if (200..300).contains(&status) {
+        if let Some(body) = body {
+            if let Some(session) = session_of(&body) {
+                return TuneOutcome::Tuned { session, status };
+            }
+            plx_base::eventlog::log(&format!("livetv: tune answered without a session; shape {}", shape_of(&body, 3)));
+        }
+    }
+    TuneOutcome::Failed { status: Some(status) }
+}
+
 const SESSIONS: &str = "/livetv/sessions/";
 
 /// `/livetv/sessions/{uuid}` with nothing after the id.
@@ -177,6 +204,10 @@ pub struct LivePlay {
     pub part: String,
     pub vcodec: String,
     pub acodec: String,
+    /// Decision output facts; 0 means the server did not supply a usable value.
+    pub width: i64,
+    pub height: i64,
+    pub channels: i64,
 }
 
 /// The live decision's profile augmentation: the official LG client's (read from the server log,
@@ -195,6 +226,9 @@ pub fn session_playlist(session: &LiveSession, playback: &str) -> Option<LivePla
         part: format!("{}/{playback}/index.m3u8{LIVE_EDGE}", session.key),
         vcodec: RECORDED_VCODEC.to_owned(),
         acodec: RECORDED_ACODEC.to_owned(),
+        width: 0,
+        height: 0,
+        channels: 0,
     })
 }
 
@@ -228,6 +262,9 @@ pub fn live_part_of(session: &LiveSession, decision: &super::MediaContainer) -> 
                 part: format!("{}{LIVE_EDGE}", part.split_once('?').map_or(part, |(path, _)| path)),
                 vcodec: or_recorded(&media.video_codec, RECORDED_VCODEC),
                 acodec: or_recorded(&media.audio_codec, RECORDED_ACODEC),
+                width: media.width,
+                height: media.height,
+                channels: media.audio_channels,
             })
     })
 }
@@ -303,18 +340,16 @@ impl Client {
     }
 
     /// `POST …/tune` — the server starts recording the channel and answers once it streams (4.8 s
-    /// measured). `None` when it refused, failed, or answered without a session. The playback
+    /// measured). Retains the HTTP status; 409/503 are inferred busy-tuner outcomes, every other
+    /// rejection, transport failure or answer without a session is a generic failure. The playback
     /// session id is required: without one PMS answers 400 "A session identifier is required for
     /// this request" before it looks at the channel (measured on the TV, 2026-10-21).
-    pub fn tune(&self, _off: &plx_base::task::OffFrame, dvr: &str, channel: &str, playback: &str) -> Option<LiveSession> {
-        let q = QueryBuilder::new(tune_path(dvr, channel)?).str("X-Plex-Session-Identifier", playback);
-        let body = self.post_value(&self.playback_identity(q).build())?;
-        let session = session_of(&body);
-        if session.is_none() {
-            // The tune's body has never been captured: say what it held, names only, no values.
-            plx_base::eventlog::log(&format!("livetv: tune answered without a session; shape {}", shape_of(&body, 3)));
-        }
-        session
+    pub fn tune(&self, _off: &plx_base::task::OffFrame, dvr: &str, channel: &str, playback: &str) -> TuneOutcome {
+        let Some(path) = tune_path(dvr, channel) else {
+            return TuneOutcome::Failed { status: None };
+        };
+        let q = QueryBuilder::new(path).str("X-Plex-Session-Identifier", playback);
+        tune_outcome(self.post_value(&self.playback_identity(q).build()))
     }
 
     /// The playlist this client reads for `session`: the decision's part, or — when the decision
@@ -551,6 +586,27 @@ mod tests {
     }
 
     #[test]
+    fn tune_classifies_only_conflict_and_unavailable_as_busy_and_keeps_every_status() {
+        let body: serde_json::Value = serde_json::from_str(TUNED).unwrap();
+        for status in [200, 201, 299] {
+            assert_eq!(tune_outcome(Some((status, Some(body.clone())))),
+                TuneOutcome::Tuned { session: session(), status });
+        }
+        for status in [409, 503] {
+            assert_eq!(tune_outcome(Some((status, None))), TuneOutcome::Busy { status });
+            assert_eq!(tune_outcome(Some((status, Some(body.clone())))), TuneOutcome::Busy { status });
+        }
+        for status in [400, 401, 403, 404, 408, 429, 500, 502, 504] {
+            assert_eq!(tune_outcome(Some((status, Some(body.clone())))),
+                TuneOutcome::Failed { status: Some(status) });
+        }
+        for body in [None, Some(serde_json::json!({"MediaContainer": {"size": 0}}))] {
+            assert_eq!(tune_outcome(Some((200, body))), TuneOutcome::Failed { status: Some(200) });
+        }
+        assert_eq!(tune_outcome(None), TuneOutcome::Failed { status: None });
+    }
+
+    #[test]
     fn the_live_profile_is_an_hls_target_that_leaves_generic_s_direct_play_alone() {
         assert!(LIVE_PROFILE_EXTRA.starts_with("add-transcode-target(type=videoProfile&context=all&protocol=hls&container=mpegts&"));
         assert!(!LIVE_PROFILE_EXTRA.contains("add-direct-play-profile"), "one replaces Generic's HLS direct play");
@@ -575,6 +631,9 @@ mod tests {
                 part: "/livetv/sessions/9b9fe727-0000-46db-b94c-ef512e3e61d2/d1f32c49-d8f8-4621-9075-f3d80792824a/index.m3u8?offset=-1.000000".into(),
                 vcodec: "h264".into(),
                 acodec: "aac".into(),
+                width: 0,
+                height: 0,
+                channels: 0,
             })
         );
         assert_eq!(session_playlist(&session(), "../x"), None);
@@ -598,7 +657,7 @@ mod tests {
         let measured = "/livetv/sessions/9b9fe727-0000-46db-b94c-ef512e3e61d2/clientid/index.m3u8?offset=-1.000000";
         assert_eq!(
             live_part_of(&session(), &decided(measured)),
-            Some(LivePlay { part: measured.into(), vcodec: "hevc".into(), acodec: "aac".into() }),
+            Some(LivePlay { part: measured.into(), vcodec: "hevc".into(), acodec: "aac".into(), width: 0, height: 0, channels: 0 }),
             "the decision's codecs, the recording's where it names none"
         );
         let incomplete = "/livetv/sessions/9b9fe727-0000-46db-b94c-ef512e3e61d2/clientid/index.m3u8?offset=0.021333&X-Plex-Incomplete-Segments=1";
@@ -613,6 +672,22 @@ mod tests {
             "/livetv/sessions/9b9fe727-0000-46db-b94c-ef512e3e61d2/clientid/00001.ts",
         ] {
             assert_eq!(live_part_of(&session(), &decided(wrong)), None, "{wrong}");
+        }
+    }
+
+    #[test]
+    fn the_live_part_carries_lenient_output_dimensions_and_channels_from_its_own_media() {
+        let key = format!("{}/client/index.m3u8", session().key);
+        let decided = |facts: &str| page(format!(r#"{{"MediaContainer":{{"Metadata":[{{"Media":[
+            {{"width":3840,"height":2160,"audioChannels":8,"Part":[{{"key":"/other/index.m3u8"}}]}},
+            {{{facts},"Part":[{{"key":"{key}"}}]}}
+        ]}}]}}}}"#).as_bytes());
+        for (facts, expected) in [
+            (r#""width":"1920","height":1080,"audioChannels":"6""#, (1920, 1080, 6)),
+            (r#""width":null,"height":"unknown","audioChannels":null"#, (0, 0, 0)),
+        ] {
+            let play = live_part_of(&session(), &decided(facts)).unwrap();
+            assert_eq!((play.width, play.height, play.channels), expected);
         }
     }
 

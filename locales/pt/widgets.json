@@ -257,5 +257,7 @@
   "widgets.region.latin_america": "América Latina",
   "widgets.failure.play_auto": "Mudar para Automático e reproduzir",
   "widgets.failure.change_quality": "Mudar qualidade",
-  "widgets.watch.intro": "Assistir à introdução"
+  "widgets.watch.intro": "Assistir à introdução",
+  "widgets.verdict.tuners_busy": "Todos os sintonizadores estão ocupados",
+  "widgets.live.channel_context": "{number} · {programme}"
 }

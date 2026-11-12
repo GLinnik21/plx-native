@@ -62,6 +62,98 @@ fn activate(app: &mut App, now: &mut u32, key: u32) {
     settle(app, now);
 }
 
+fn player_request(app: &mut App, now: u32, req: plx_screens::registry::PlayerReq) {
+    crate::app::playback::player_requests(
+        &mut app.player, &mut app.adapters.player, &mut app.repause_at, vec![req], now,
+        &mut app.refresh_hubs, &mut app.pages, &mut app.bridge, &mut app.ok_armed, &mut app.input.press,
+    );
+}
+
+fn start_channel(app: &mut App, now: &mut u32) {
+    let ch = &app.bridge.livetv_view().channels[0];
+    let intent = PlayIntent::Live { sid: ch.sid, dvr: ch.dvr.clone(), channel: ch.channel.clone(), title: ch.name.clone() };
+    assert!(crate::app::content::request_play_intent(&mut app.player.session, app.bridge.metadata_mut(), &intent));
+    assert!(crate::app::playback::start_playback(&mut app.player.session, &mut app.adapters.player,
+        0, crate::app::playback::Origin::Here, 4_500, None, &mut app.pages, &mut app.bridge));
+    settle(app, now);
+    assert!(app.route() == AppArg::Player);
+}
+
+#[test]
+fn channel_requests_wrap_the_lineup_and_keep_the_original_return_entry() {
+    let _serial = plx_base::testlock::serial();
+    let _session = plx_plex::plex::session::TempSession::new("livetv-player-channel");
+    plx_plex::plex::reset_servers_for_test();
+    let mut app = app();
+    let mut now = 0;
+    open_live(&mut app, &mut now);
+    // An equal DVR/channel on a different server cannot steal the current channel's identity.
+    let mut other = channel("101", "Other server");
+    other.sid = plx_plex::plex::ServerId::from_raw(1);
+    app.bridge.stores.livetv.install_for_test(vec![channel("101", "Family Channel"), channel("102", "Cartoons"), other]);
+    let origin_entry = app.pages.nav.top_page().unwrap().id;
+    start_channel(&mut app, &mut now);
+    let player_entry = app.pages.nav.top_page().unwrap().id;
+    let origin = super::player(&app.pages).unwrap().origin.unwrap();
+    assert_eq!(origin.entry, origin_entry);
+    for (direction, sid, title) in [(1, 0, "Cartoons"), (1, 1, "Other server"), (1, 0, "Family Channel"), (-1, 1, "Other server")] {
+        app.repause_at = 50;
+        player_request(&mut app, now, plx_screens::registry::PlayerReq::Channel(direction));
+        settle(&mut app, &mut now);
+        let (actual, _) = plx_media::route::live_request(&app.player.session).unwrap();
+        assert_eq!(actual.raw(), sid);
+        // SAFETY: the session owns the NUL-terminated banner for this assertion.
+        assert_eq!(unsafe { std::ffi::CStr::from_ptr(plx_media::route::title_cptr(&app.player.session)) }.to_str().unwrap(), title);
+        assert_eq!(app.repause_at, -1, "the old channel's pending pause was retired");
+        assert_eq!(app.pages.nav.top_page().unwrap().id, player_entry);
+        assert_eq!(super::player(&app.pages).unwrap().origin.unwrap().entry, origin_entry);
+    }
+    player_request(&mut app, now, plx_screens::registry::PlayerReq::Exit);
+    settle(&mut app, &mut now);
+    assert_eq!(app.pages.nav.top_page().unwrap().id, origin_entry);
+    assert!(!plx_media::route::is_live(&app.player.session));
+}
+
+#[test]
+fn channel_request_on_nonlive_and_an_empty_or_single_lineup_keeps_the_session() {
+    let _serial = plx_base::testlock::serial();
+    let _session = plx_plex::plex::session::TempSession::new("livetv-player-no-neighbour");
+    plx_plex::plex::reset_servers_for_test();
+    let mut app = app();
+    let mut now = 0;
+    open_live(&mut app, &mut now);
+    player_request(&mut app, now, plx_screens::registry::PlayerReq::Channel(1));
+    assert!(!plx_media::route::is_live(&app.player.session));
+    start_channel(&mut app, &mut now);
+    for channels in [vec![channel("101", "Family Channel")], Vec::new()] {
+        app.bridge.stores.livetv.install_for_test(channels);
+        player_request(&mut app, now, plx_screens::registry::PlayerReq::Channel(1));
+        assert_eq!(plx_media::route::live_request(&app.player.session).unwrap().1.channel, "C101.242.ersatztv.org");
+    }
+    player_request(&mut app, now, plx_screens::registry::PlayerReq::Exit);
+}
+
+#[test]
+fn live_banner_uses_the_existing_caption_and_tracks_the_airing() {
+    let _serial = plx_base::testlock::serial();
+    let _session = plx_plex::plex::session::TempSession::new("livetv-player-banner");
+    plx_plex::plex::reset_servers_for_test();
+    let mut app = app();
+    let mut now = 0;
+    open_live(&mut app, &mut now);
+    start_channel(&mut app, &mut now);
+    for (number, programme, expected) in [("101", "Family Show", "101 · Family Show"),
+        ("101", "Next Show", "101 · Next Show"), ("", "Next Show", "Next Show"), ("101", "", "101"), ("", "", "")] {
+        let mut ch = channel(number, "Family Channel");
+        ch.channel = "C101.242.ersatztv.org".into();
+        ch.now = programme.into();
+        crate::app::playback::publish_live_banner(&mut app.player.session, &[ch]);
+        // SAFETY: the session owns the NUL-terminated banner for this assertion.
+        assert_eq!(unsafe { std::ffi::CStr::from_ptr(plx_media::route::ctxline_cptr(&app.player.session)) }.to_str().unwrap(), expected);
+    }
+    player_request(&mut app, now, plx_screens::registry::PlayerReq::Exit);
+}
+
 #[test]
 fn a_channel_ok_reaches_the_real_content_drain_and_live_playback_request() {
     let _serial = plx_base::testlock::serial();
