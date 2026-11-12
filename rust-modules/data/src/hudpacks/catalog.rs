@@ -581,7 +581,7 @@ fn transition(&mut self, ev: Event, fx: &mut Vec<CatalogEffect>) -> bool {
                 self.generation = self.generation.wrapping_add(1);
                 self.candidates = candidates;
                 self.allow_fetch = false;
-                'read: {
+                {
 let (at,): (usize,) = (0,);
 
         if let Some(candidate) = self.candidates.get(at) {
@@ -602,7 +602,7 @@ let (at,): (usize,) = (0,);
             self.attempted_at = Some(self.now);
             self.snapshot.fetching = true;
             // Persist the attempt before dialing, so a restart during the request keeps backoff.
-            'write: {
+            {
 let (at, fetch,): (usize, bool,) = (0, true,);
 
         if let Some(candidate) = self.candidates.get(at) {
@@ -624,7 +624,7 @@ let (at, fetch,): (usize, bool,) = (0, true,);
                 record,
             });
         } else {
-            'after_write: {
+            {
 let (fetch,): (bool,) = (fetch,);
 
         if fetch {
@@ -661,7 +661,7 @@ let (fetch,): (bool,) = (fetch,);
                 self.generation = self.generation.wrapping_add(1);
                 self.now = now;
                 self.candidates = candidates;
-                'read: {
+                {
 let (at,): (usize,) = (0,);
 
         if let Some(candidate) = self.candidates.get(at) {
@@ -682,7 +682,7 @@ let (at,): (usize,) = (0,);
             self.attempted_at = Some(self.now);
             self.snapshot.fetching = true;
             // Persist the attempt before dialing, so a restart during the request keeps backoff.
-            'write: {
+            {
 let (at, fetch,): (usize, bool,) = (0, true,);
 
         if let Some(candidate) = self.candidates.get(at) {
@@ -704,7 +704,7 @@ let (at, fetch,): (usize, bool,) = (0, true,);
                 record,
             });
         } else {
-            'after_write: {
+            {
 let (fetch,): (bool,) = (fetch,);
 
         if fetch {
@@ -745,7 +745,7 @@ let (fetch,): (bool,) = (fetch,);
                         self.body = cache.body;
                     }
                 }
-                'read: {
+                {
 let (at,): (usize,) = (at + 1,);
 
         if let Some(candidate) = self.candidates.get(at) {
@@ -766,7 +766,7 @@ let (at,): (usize,) = (at + 1,);
             self.attempted_at = Some(self.now);
             self.snapshot.fetching = true;
             // Persist the attempt before dialing, so a restart during the request keeps backoff.
-            'write: {
+            {
 let (at, fetch,): (usize, bool,) = (0, true,);
 
         if let Some(candidate) = self.candidates.get(at) {
@@ -788,7 +788,7 @@ let (at, fetch,): (usize, bool,) = (0, true,);
                 record,
             });
         } else {
-            'after_write: {
+            {
 let (fetch,): (bool,) = (fetch,);
 
         if fetch {
@@ -838,7 +838,7 @@ let (fetch,): (bool,) = (fetch,);
                         }
                     }
                 }
-                'write: {
+                {
 let (at, fetch,): (usize, bool,) = (0, false,);
 
         if let Some(candidate) = self.candidates.get(at) {
@@ -860,7 +860,7 @@ let (at, fetch,): (usize, bool,) = (0, false,);
                 record,
             });
         } else {
-            'after_write: {
+            {
 let (fetch,): (bool,) = (fetch,);
 
         if fetch {
@@ -886,7 +886,7 @@ let (fetch,): (bool,) = (fetch,);
                     unreachable!()
                 };
                 if outcome == WriteOutcome::Done {
-                    ('after_write: {
+                    {
 let (fetch,): (bool,) = (fetch,);
 
         if fetch {
@@ -899,9 +899,9 @@ let (fetch,): (bool,) = (fetch,);
             { self.phase = Phase::Idle; };
         }
 
-})
+}
                 } else {
-                    ('write: {
+                    {
 let (at, fetch,): (usize, bool,) = (at + 1, fetch,);
 
         if let Some(candidate) = self.candidates.get(at) {
@@ -923,7 +923,7 @@ let (at, fetch,): (usize, bool,) = (at + 1, fetch,);
                 record,
             });
         } else {
-            'after_write: {
+            {
 let (fetch,): (bool,) = (fetch,);
 
         if fetch {
@@ -939,7 +939,7 @@ let (fetch,): (bool,) = (fetch,);
 };
         }
 
-})
+}
                 }
                 true
             }

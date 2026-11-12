@@ -904,3 +904,86 @@ fn the_account_name_is_absent_from_every_report_effect_and_digest() {
             plaintext: None, account: Some(NAME.into()) })).unwrap();
     assert!(!encoded.contains(NAME), "{encoded}");
 }
+
+fn incident_compat_seeded_owner() -> SessionMachine {
+    let mut init = SessionInit::captured(PersistedSession {
+        client_id: "synthetic-incident-client".into(),
+        account_token: "synthetic-incident-account-token".into(),
+        user: UserRef { uuid: "synthetic-incident-user".into(),
+            token: "synthetic-incident-profile-token".into(), ..Default::default() },
+        ..Default::default()
+    });
+    init.phase = Phase::Ready;
+    init.active_profile = Some(init.persisted.user.clone());
+    init.profile_scope = ProfileScope(7);
+    init.delete_leftovers = 3;
+    let mut owner = SessionMachine::from_init(init);
+    owner.raise_incident(IncidentFlow::SignIn, pin_create());
+    let id = offer(&owner).unwrap().id;
+    assert!(owner.resolve_incident(id, Permission::NotDetermined, 1, &mut |_| {}));
+    owner
+}
+
+#[test]
+fn incident_compat_rejects_nonincident_commands_without_touching_default_or_seeded_state() {
+    for mut owner in [
+        SessionMachine::from_init(SessionInit::captured(PersistedSession::default())),
+        incident_compat_seeded_owner(),
+    ] {
+        for rejected in [Command::SignOut, Command::EraseLocal, Command::StartLogin,
+            Command::Retry, Command::NoteDeleteLeftovers(99), Command::RefreshRoster] {
+            let snapshot = serde_json::to_string(&owner.snapshot_init()).unwrap();
+            let account = owner.snapshot_init().signin_account;
+            let publication = owner.publication();
+            let fingerprint = (owner.subhash(), owner.logical_dirty, owner.cache_refresh,
+                owner.next_cache_req, owner.publication_payload_allocations);
+            let mut effects = Vec::new();
+            assert!(!owner.step_incident_command(&rejected, &mut |fx| effects.push(fx)));
+            assert!(effects.is_empty());
+            assert_eq!(serde_json::to_string(&owner.snapshot_init()).unwrap(), snapshot);
+            assert_eq!(owner.snapshot_init().signin_account, account);
+            assert!(Arc::ptr_eq(&publication, &owner.publication()));
+            assert_eq!((owner.subhash(), owner.logical_dirty, owner.cache_refresh,
+                owner.next_cache_req, owner.publication_payload_allocations), fingerprint);
+        }
+    }
+}
+
+#[test]
+fn incident_compat_preserves_all_three_accepted_commands_and_their_effects() {
+    let mut legacy = signing_in();
+    fail(&mut legacy, pin_create());
+    let id = offer(&legacy).unwrap().id;
+    let mut typed = SessionMachine::from_init(legacy.snapshot_init());
+    for accepted in [
+        Command::ResolveIncident { id, permission: Permission::NotDetermined, revision: 1 },
+        Command::DeclineIncident { id },
+        Command::ReportIncident { id },
+    ] {
+        let mut observed = Vec::new();
+        assert!(legacy.step_incident_command(&accepted, &mut |fx| observed.push(fx)));
+        let mut expected = Vec::new();
+        assert!(typed.transition(&SessionEvent::Command(accepted), 0, &mut expected));
+        assert_eq!(observed.len(), expected.len());
+        assert_eq!(incident_effects(&observed), incident_effects(&expected));
+        assert_eq!(serde_json::to_string(&legacy.snapshot_init()).unwrap(),
+            serde_json::to_string(&typed.snapshot_init()).unwrap());
+        assert_eq!(legacy.subhash(), typed.subhash());
+    }
+    assert_eq!(offer(&legacy).unwrap().state, IncidentState::Sending);
+}
+
+#[test]
+fn authorized_sign_out_still_erases_credentials_and_incidents_through_the_owner_step() {
+    let mut owner = incident_compat_seeded_owner();
+    assert!(!owner.common.persisted.account_token.is_empty());
+    assert!(!owner.common.incidents_seen.is_empty());
+    let effects = command(&mut owner, Command::SignOut);
+    assert!(effects.iter().any(|fx| matches!(fx, SessionFx::Erase { .. })));
+    assert!(owner.common.persisted.account_token.is_empty());
+    assert!(owner.common.persisted.user.token.is_empty());
+    assert!(owner.common.active_profile.is_none());
+    assert!(owner.common.incident.is_none());
+    assert!(owner.common.incidents_seen.is_empty());
+    assert!(owner.state.pending_erase().is_some());
+}

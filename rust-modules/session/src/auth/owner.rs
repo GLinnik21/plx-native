@@ -2061,7 +2061,7 @@ let mut pump = false;
 let mut restart = None;
 let mut restart_reply = None;
 let mut handled = match ev {
-SessionEvent::ConsumeLogicalDirty => 'take_logical_dirty: {
+SessionEvent::ConsumeLogicalDirty => {
  std::mem::take(&mut self.logical_dirty)
 },
 SessionEvent::RaiseIncident { flow, context } => { 'raise_incident: {
@@ -2088,7 +2088,7 @@ let (flow, context,): (IncidentFlow, IncidentContext,) = (*flow, *context,);
         });
 
 }; true },
-SessionEvent::ForgetIncidents => { 'forget_incidents: {
+SessionEvent::ForgetIncidents => { {
 
         self.common.incident = None;
         self.common.incidents_seen.clear();
@@ -2399,7 +2399,7 @@ let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, 
             client_id: self.common.persisted.client_id.clone() }];
         let Some(req) = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::DevBoundary, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }) else { break 'activate_dev false };
         { let event = AttemptEvent::BeginDevActivation { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
-        ('begin_commit: {
+        'begin_commit: {
 let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitDelta,) = (req, 0, true, CommitPlan { registry_client_id: self.common.persisted.client_id.clone(),
             expected_disk: self.common.disk_identity.clone(),
             credentials: None, lifecycle: None, registry,
@@ -2412,7 +2412,7 @@ let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitD
         entry.emit(&mut |effect| fx.push(effect));
         true
 
-})
+}
 
 },
             SessionEvent::Command(Command::ResumeStored) => 'resume_stored: {
@@ -2429,7 +2429,7 @@ let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitD
             purpose: PersistencePurpose::Background, writes_durable: false,
             authority: plx_plex::plex::session::SaveAuthority::Routine };
         { let event = AttemptEvent::BeginStoredRestore { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
-        ('begin_commit: {
+        'begin_commit: {
 let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitDelta,) = (req, 0, true, plan, CommitDelta {
             destination: CommitDestination::StoredReady,
             phase: Some(Phase::Ready), activate_profile: true, ready: Some(false),
@@ -2440,11 +2440,11 @@ let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitD
         entry.emit(&mut |effect| fx.push(effect));
         true
 
-})
+}
 
 },
             SessionEvent::Command(Command::StartLogin) => { restart = Some(if true { LoginRestart::Fresh } else { LoginRestart::Retry }); true },
-            SessionEvent::Command(Command::Retry) => 'retry: {
+            SessionEvent::Command(Command::Retry) => {
 
         use plx_plex::plex::session::PlaintextChoice;
         if self.state.phase() == Phase::Error {
@@ -2489,7 +2489,7 @@ let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitD
             credentials: Some(patch.clone()), lifecycle: None,
             registry: vec![RegistryPlan::Install { sources: next.sources.clone(), primary: None, commit: RosterCommit::Merge }],
             purpose: PersistencePurpose::Final, writes_durable: true, authority };
-        ('begin_commit: {
+        'begin_commit: {
 let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitDelta,) = (req, 0, true, plan, CommitDelta {
             destination: CommitDestination::ReadyCommitted,
             credentials: Some(patch), activate_profile: true, ready: Some(false),
@@ -2500,7 +2500,7 @@ let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitD
         entry.emit(&mut |effect| fx.push(effect));
         true
 
-})
+}
 
 },
             SessionEvent::Command(Command::AcknowledgePersistenceWarning { key }) =>
@@ -2509,7 +2509,7 @@ let (key,): (PersistenceWarningKey,) = (*key,);
 
         if self.common.persistence_warning.map(|warning| warning.key) != Some(key) { break 'acknowledge_persistence_warning false; }
         self.common.persistence_warning = None;
-        'retire_save_incident: {
+        {
 
         if self.common.incident.as_ref().is_some_and(|offer|
             offer.key.kind == plx_telemetry::telemetry::incident::IncidentKind::SaveFailed) {
@@ -2522,10 +2522,10 @@ let (key,): (PersistenceWarningKey,) = (*key,);
         // Final, or a retry — releases the handoff itself instead of asking again.
         self.common.persistence_warning_answered = true;
         if self.common.held_handoff.is_some() {
-            'release_held_handoff: {
+            {
 
         self.common.held_handoff = None;
-        'publish_profile: {
+        {
 let (profile,): (Option<UserRef>,) = (Some(self.common.persisted.user.clone()),);
 
         // This is the sole scope allocator. Resource publication will store this explicit value
@@ -2555,12 +2555,12 @@ let (profile,): (Option<UserRef>,) = (Some(self.common.persisted.user.clone()),)
 },
             SessionEvent::Command(command @ (Command::ResolveIncident { .. }
                 | Command::ReportIncident { .. } | Command::DeclineIncident { .. })) => {
-                let handled = 'step_incident_command: {
+                let handled = {
 let (command,): (&Command,) = (command,);
 
         match command {
             Command::ResolveIncident { id, permission, revision } => {
-                ('resolve_incident: {
+                'resolve_incident: {
 let (id, permission, revision,): (u32, Permission, u32,) = (*id, *permission, *revision,);
 
         let seen = &self.common.incidents_seen;
@@ -2611,7 +2611,7 @@ let (key,): (IncidentKey,) = (key,);
 };
         true
 
-})
+}
             }
             Command::ReportIncident { id } => 'report_incident: {
 let (id,): (u32,) = (*id,);
@@ -2704,7 +2704,7 @@ let (picker,): (Picker,) = (*picker,);
 
 }).is_none() { break 'start_switch false; }
         if self.common.persisted.account_token.is_empty() {
-            'fail_login: {
+            {
 let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_signed_out(), None,);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
@@ -2747,7 +2747,7 @@ let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, 
             { publish = true; };
             break 'start_switch true;
         }
-        if super::detaches_active_profile(picker) { 'publish_profile: {
+        if super::detaches_active_profile(picker) { {
 let (profile,): (Option<UserRef>,) = (None,);
 
         // This is the sole scope allocator. Resource publication will store this explicit value
@@ -2762,7 +2762,7 @@ let (profile,): (Option<UserRef>,) = (None,);
 }; }
         { let event = AttemptEvent::OpenPicker { kind: picker, fallback: if self.state.picker_data().users.is_empty() { self.common.persisted.home_users.iter().map(UserTile::of_ref).collect() } else { Vec::new() } }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
         let mut initial = None;
-        if let Some(req) = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::Picker, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }) {
+        if let Some(req) = 'reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::Picker, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) } {
             let initial_profile = picker == Picker::Boot && self.common.active_profile.is_none()
                 && self.common.persisted.can_go_local();
             let mut registry = Vec::new();
@@ -2779,12 +2779,12 @@ let (profile,): (Option<UserRef>,) = (None,);
                 purpose: PersistencePurpose::Background, writes_durable: false,
                 authority: plx_plex::plex::session::SaveAuthority::Routine };
             { let event = AttemptEvent::InstallPicker { req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
-            initial = ('commit: { let (req, arrival, terminal, plan, delta): (u32, u64, bool, CommitPlan, CommitDelta) = (req, 0, true, plan, CommitDelta {
+            initial = 'commit: { let (req, arrival, terminal, plan, delta): (u32, u64, bool, CommitPlan, CommitDelta) = (req, 0, true, plan, CommitDelta {
                 activate_profile: initial_profile, ..Default::default()
-            }); let Some(CommitPreparation { pending, entry }) = self.plan_commit(req, arrival, terminal, plan, delta) else { break 'commit None }; self.common.pending.get_mut(&req).unwrap().last_arrival = Some(arrival); self.common.pending_commit = Some(pending); self.common.persistence_purpose = Some(entry.plan.purpose); Some(entry) });
+            }); let Some(CommitPreparation { pending, entry }) = self.plan_commit(req, arrival, terminal, plan, delta) else { break 'commit None }; self.common.pending.get_mut(&req).unwrap().last_arrival = Some(arrival); self.common.pending_commit = Some(pending); self.common.persistence_purpose = Some(entry.plan.purpose); Some(entry) };
         }
-        let server_roster = match ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::ServerRoster, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }) { Some(req) => Some(
-            'prepare_work: {
+        let server_roster = match 'reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::ServerRoster, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) } { Some(req) => Some(
+            {
 let (req, input,): (u32, SessionWork,) = (req, SessionWork::ServerRoster { session: self.common.persisted.clone(), expected: Identity::of(&self.common.persisted) },);
 
         let pending = self.common.pending.get_mut(&req).expect("owned work request");
@@ -2793,8 +2793,8 @@ let (req, input,): (u32, SessionWork,) = (req, SessionWork::ServerRoster { sessi
         EntryWork::Work { req, key: pending.key, admission, input }
 
 }), None => None };
-        let home_roster = match ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::HomeRoster, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }) { Some(req) => Some(
-            'prepare_work: {
+        let home_roster = match 'reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::HomeRoster, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) } { Some(req) => Some(
+            {
 let (req, input,): (u32, SessionWork,) = (req, SessionWork::HomeRoster { client_id: self.common.persisted.client_id.clone(), account_token: self.common.persisted.account_token.clone(), expected: Identity::of(&self.common.persisted) },);
 
         let pending = self.common.pending.get_mut(&req).expect("owned work request");
@@ -2964,14 +2964,14 @@ let (sign_in,): (bool,) = (true,);
         self.common.held_handoff = None;
         self.common.persistence_warning_answered = false;
         { let event = AttemptEvent::EraseAuthority; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
-        'forget_incidents: {
+        {
 
         self.common.incident = None;
         self.common.incidents_seen.clear();
         { let event = AttemptEvent::LinkTrouble { present: false }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |_| {}); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |_| {}); true };
 
 };
-        'publish_profile: {
+        {
 let (profile,): (Option<UserRef>,) = (None,);
 
         // This is the sole scope allocator. Resource publication will store this explicit value
@@ -3018,14 +3018,14 @@ let (sign_in,): (bool,) = (false,);
         self.common.held_handoff = None;
         self.common.persistence_warning_answered = false;
         { let event = AttemptEvent::EraseAuthority; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
-        'forget_incidents: {
+        {
 
         self.common.incident = None;
         self.common.incidents_seen.clear();
         { let event = AttemptEvent::LinkTrouble { present: false }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |_| {}); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |_| {}); true };
 
 };
-        'publish_profile: {
+        {
 let (profile,): (Option<UserRef>,) = (None,);
 
         // This is the sole scope allocator. Resource publication will store this explicit value
@@ -3047,11 +3047,11 @@ let (profile,): (Option<UserRef>,) = (None,);
 
         if self.common.persisted.account_token.is_empty() { break 'refresh_roster false; }
         let Some(req) = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::ServerRoster, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }) else { break 'refresh_roster false };
-        'emit_work: {
+        {
 let (req, input,): (u32, SessionWork,) = (req, SessionWork::ServerRoster { session: self.common.persisted.clone(),
             expected: Identity::of(&self.common.persisted) },);
 
-        ('prepare_work: {
+        ({
 let (req, input,): (u32, SessionWork,) = (req, input,);
 
         let pending = self.common.pending.get_mut(&req).expect("owned work request");
@@ -3097,7 +3097,7 @@ let (machine_id, choice, sid,): (&str, plx_plex::plex::session::PlaintextChoice,
         fx.push(SessionFx::PlaintextAnswer { machine_id: machine_id.to_owned(), choice, account });
         if on_sign_in {
             if choice.allows() {
-                break 'answer_plaintext { restart = Some(if false { LoginRestart::Fresh } else { LoginRestart::Retry }); true };
+                break 'answer_plaintext ({ restart = Some(if false { LoginRestart::Fresh } else { LoginRestart::Retry }); true });
             }
             { let event = AttemptEvent::PlaintextDeclined { choice }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
             { publish = true; };
@@ -3125,11 +3125,11 @@ let (sid,): (plx_plex::plex::ServerId,) = (sid,);
 
         if self.common.persisted.account_token.is_empty() { break 'refresh_roster false; }
         let Some(req) = ('reservation: { let (op, lifecycle): (SessionOp, Option<ServerLifecycle>) = (SessionOp::ServerRoster, None); let Some(WorkReservation { req, pending }) = self.plan_reservation(op, lifecycle) else { break 'reservation None }; self.common.next_req = req; self.common.pending.insert(req, pending); Some(req) }) else { break 'refresh_roster false };
-        'emit_work: {
+        {
 let (req, input,): (u32, SessionWork,) = (req, SessionWork::ServerRoster { session: self.common.persisted.clone(),
             expected: Identity::of(&self.common.persisted) },);
 
-        ('prepare_work: {
+        ({
 let (req, input,): (u32, SessionWork,) = (req, input,);
 
         let pending = self.common.pending.get_mut(&req).expect("owned work request");
@@ -3214,7 +3214,7 @@ let (reply,): (CommitReply,) = (*reply,);
         self.common.persistence_purpose = None;
         if !reply.admission.accepted() {
             if let Some(DevCommitDelta::StartAccount { login_req }) = commit.delta.dev {
-                'retire: {
+                {
 let (req,): (u32,) = (login_req,);
 
         if self.common.pending.contains_key(&req) {
@@ -3227,7 +3227,7 @@ let (req,): (u32,) = (login_req,);
             }
             let op = self.common.pending[&reply.req].key.op;
             match op {
-                SessionOp::Login | SessionOp::Rediscover => 'fail_login: {
+                SessionOp::Login | SessionOp::Rediscover => {
 let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_finish_failed(), Some(IncidentContext::internal(InternalClass::CommitRefused)),);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
@@ -3275,7 +3275,7 @@ let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, 
                     { let event = AttemptEvent::DevCommitRefused; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
                 }
             }
-            'retire: {
+            {
 let (req,): (u32,) = (reply.req,);
 
         if self.common.pending.contains_key(&req) {
@@ -3286,7 +3286,7 @@ let (req,): (u32,) = (reply.req,);
 
 };
             if let Some(receipt) = commit.receipt { fx.push(SessionFx::Acknowledge(vec![receipt])); }
-            'schedule_pump: {
+            {
 
         if !self.common.inbox.is_empty() && self.common.pending_commit.is_none() && !self.common.pump_pending {
             self.common.pump_pending = true;
@@ -3302,7 +3302,7 @@ let (req,): (u32,) = (reply.req,);
             match dev {
                 DevCommitDelta::Activated => {
                     if matches!(self.common.authority, BootstrapAuthority::DevPms { .. }) {
-                        'publish_profile: {
+                        {
 let (profile,): (Option<UserRef>,) = (None,);
 
         // This is the sole scope allocator. Resource publication will store this explicit value
@@ -3321,7 +3321,7 @@ let (profile,): (Option<UserRef>,) = (None,);
                 DevCommitDelta::StartAccount { login_req } => {
                     self.common.authority = BootstrapAuthority::Account { extras: Vec::new() };
                     { let event = AttemptEvent::BeginSignin { req: *login_req }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
-                    'start_reserved_login: {
+                    {
 let (req,): (u32,) = (*login_req,);
 
         let entry = EntryFx::login(self.view(), req, false, false);
@@ -3394,10 +3394,10 @@ let (retained,): (u32,) = (reply.req,);
                 // a handoff still held behind an unacknowledged warning — that release is
                 // `acknowledge_persistence_warning`'s alone. An unrelated held handoff with NO live
                 // warning (already superseded above, or never one to begin with) is unaffected.
-                'release_held_handoff: {
+                {
 
         self.common.held_handoff = None;
-        'publish_profile: {
+        {
 let (profile,): (Option<UserRef>,) = (Some(self.common.persisted.user.clone()),);
 
         // This is the sole scope allocator. Resource publication will store this explicit value
@@ -3422,7 +3422,7 @@ let (profile,): (Option<UserRef>,) = (Some(self.common.persisted.user.clone()),)
 };
             }
         }
-        if commit.terminal { 'retire: {
+        if commit.terminal { {
 let (req,): (u32,) = (reply.req,);
 
         if self.common.pending.contains_key(&req) {
@@ -3433,7 +3433,7 @@ let (req,): (u32,) = (reply.req,);
 
 }; }
         if let Some(receipt) = commit.receipt { fx.push(SessionFx::Acknowledge(vec![receipt])); }
-        'schedule_pump: {
+        {
 
         if !self.common.inbox.is_empty() && self.common.pending_commit.is_none() && !self.common.pump_pending {
             self.common.pump_pending = true;
@@ -3485,7 +3485,7 @@ let (completion,): (plx_plex::plex::session::async_persistence::PersistenceCompl
             let superseded = admitted.fresh && self.common.persistence_warning.is_some();
             if superseded {
                 self.common.persistence_warning = None;
-                'retire_save_incident: {
+                {
 
         if self.common.incident.as_ref().is_some_and(|offer|
             offer.key.kind == plx_telemetry::telemetry::incident::IncidentKind::SaveFailed) {
@@ -3497,10 +3497,10 @@ let (completion,): (plx_plex::plex::session::async_persistence::PersistenceCompl
             // Release only the handoff THIS completion is for — a routine completion arriving
             // while an unrelated fresh handoff is held must not free it.
             let released = self.common.held_handoff == Some(HeldHandoff { epoch: completion.epoch, req: completion.req });
-            if released { 'release_held_handoff: {
+            if released { {
 
         self.common.held_handoff = None;
-        'publish_profile: {
+        {
 let (profile,): (Option<UserRef>,) = (Some(self.common.persisted.user.clone()),);
 
         // This is the sole scope allocator. Resource publication will store this explicit value
@@ -3531,10 +3531,10 @@ let (profile,): (Option<UserRef>,) = (Some(self.common.persisted.user.clone()),)
                 // ask it twice). Storage failing again must not ask it a second time — release
                 // whatever handoff this completion was holding so entry proceeds regardless.
                 let released = self.common.held_handoff == Some(HeldHandoff { epoch: completion.epoch, req: completion.req });
-                if released { 'release_held_handoff: {
+                if released { {
 
         self.common.held_handoff = None;
-        'publish_profile: {
+        {
 let (profile,): (Option<UserRef>,) = (Some(self.common.persisted.user.clone()),);
 
         // This is the sole scope allocator. Resource publication will store this explicit value
@@ -3562,7 +3562,7 @@ let (profile,): (Option<UserRef>,) = (Some(self.common.persisted.user.clone()),)
                 // showing (`Discovery` and `Final` never coexist: an unacknowledged Discovery warning
                 // blocks `take_ready`), so the newer one wins by direct overwrite.
                 let warning = PersistenceWarning::from_outcome(correlation_key, admitted.site, &completion.outcome);
-                'retire_save_incident: {
+                {
 
         if self.common.incident.as_ref().is_some_and(|offer|
             offer.key.kind == plx_telemetry::telemetry::incident::IncidentKind::SaveFailed) {
@@ -3636,7 +3636,7 @@ let (reply,): (&SessionReadReply,) = (reply,);
                     lifecycle: captured.lifecycle, machine_id: captured.machine_id.clone() }
             }
             (CaptureIntent::Endpoint { .. }, SessionReadValue::Endpoint(_)) => {
-                'retire: {
+                {
 let (req,): (u32,) = (req,);
 
         if self.common.pending.contains_key(&req) {
@@ -3649,7 +3649,7 @@ let (req,): (u32,) = (req,);
                 break 'apply_read true;
             }
             (CaptureIntent::Login, SessionReadValue::LoginClientId(_)) => {
-                'fail_login: {
+                {
 let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_start_failed(), Some(IncidentContext::internal(InternalClass::ClientIdUnavailable)),);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
@@ -3689,7 +3689,7 @@ let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, 
         }
 
 };
-                'retire: {
+                {
 let (req,): (u32,) = (req,);
 
         if self.common.pending.contains_key(&req) {
@@ -3706,10 +3706,10 @@ let (req,): (u32,) = (req,);
         };
         let pending = self.common.pending.get_mut(&req).unwrap();
         pending.capture = None;
-        'emit_work: {
+        {
 let (req, input,): (u32, SessionWork,) = (req, input,);
 
-        ('prepare_work: {
+        ({
 let (req, input,): (u32, SessionWork,) = (req, input,);
 
         let pending = self.common.pending.get_mut(&req).expect("owned work request");
@@ -3737,7 +3737,7 @@ let (reply,): (AdmissionReply,) = (*reply,);
             // This is an unsequenced, never-admitted refusal. Accepted requests (including ones
             // without a first observation) cannot enter this branch.
             match pending.key.op {
-                SessionOp::Login => 'fail_login: {
+                SessionOp::Login => {
 let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_start_failed(), Some(IncidentContext::internal(InternalClass::AdmissionRefused)),);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
@@ -3777,7 +3777,7 @@ let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, 
         }
 
 },
-                SessionOp::Rediscover => 'fail_login: {
+                SessionOp::Rediscover => {
 let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_rediscover_failed(), Some(IncidentContext::internal(InternalClass::AdmissionRefused)),);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
@@ -3820,7 +3820,7 @@ let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, 
                 SessionOp::ProfileSwitch => {
                     { let event = AttemptEvent::SwitchAdmissionRefused; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
                 }
-                SessionOp::HomeRoster => 'fail_empty_home_roster: {
+                SessionOp::HomeRoster => {
 let (reason,): (&str,) = (roster_unreachable(),);
 
         if self.state.picker_data().users.is_empty() && self.state.phase() == Phase::Profiles {
@@ -3830,7 +3830,7 @@ let (reason,): (&str,) = (roster_unreachable(),);
 },
                 SessionOp::ServerRoster | SessionOp::Endpoint(_) | SessionOp::Ready | SessionOp::Picker | SessionOp::DevBoundary => {}
             }
-            'retire: {
+            {
 let (req,): (u32,) = (req,);
 
         if self.common.pending.contains_key(&req) {
@@ -3842,7 +3842,7 @@ let (req,): (u32,) = (req,);
 };
             { publish = true; };
         }
-        'schedule_pump: {
+        {
 
         if !self.common.inbox.is_empty() && self.common.pending_commit.is_none() && !self.common.pump_pending {
             self.common.pump_pending = true;
@@ -3985,7 +3985,7 @@ let (envelope,): (&SessionEnvelope,) = (&envelope,);
                     (_, SessionArrival::Refused) => (plx_platform::i18n::msg::browse_auth_start_failed(), InternalClass::WorkerRefused),
                     _ => (plx_platform::i18n::msg::browse_auth_finish_failed(), InternalClass::WorkerDropped),
                 };
-                'fail_login: {
+                {
 let (message, incident,): (&str, Option<IncidentContext>,) = (message, Some(IncidentContext::internal(class)),);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
@@ -4047,7 +4047,7 @@ let (message, incident,): (&str, Option<IncidentContext>,) = (message, Some(Inci
                     LoginProgress::CodeReady { code, qr_png, .. } => {
                         if envelope.key.op != SessionOp::Login { break 'apply_qr_observation false; }
                         let Some(next) = self.common.next_qr.checked_add(1) else {
-                            'fail_login: {
+                            {
 let (message, incident,): (&str, Option<IncidentContext>,) = (plx_platform::i18n::msg::browse_auth_start_failed(), Some(IncidentContext::internal(InternalClass::Exhausted)),);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
@@ -4162,7 +4162,7 @@ let (flow, context,): (IncidentFlow, IncidentContext,) = (IncidentFlow::SignIn, 
                         }
                     }
                     LoginProgress::Failed { message, incident, plaintext, account, .. } => {
-                        'fail_login: {
+                        {
 let (message, incident,): (&str, Option<IncidentContext>,) = (message, Some(*incident),);
 
         { let event = AttemptEvent::LoginFailed { message: message.to_owned(), revoke: incident.is_some_and(|context| context.kind.refuses_the_account_token()) }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
@@ -4229,7 +4229,7 @@ let (envelope,): (&SessionEnvelope,) = (&envelope,);
             if pending.key.op == SessionOp::ProfileSwitch && pending.phase == StreamPhase::Running {
                 { let event = AttemptEvent::SwitchDropped; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
             } else if pending.key.op == SessionOp::HomeRoster {
-                'fail_empty_home_roster: {
+                {
 let (reason,): (&str,) = (roster_unreachable(),);
 
         if self.state.picker_data().users.is_empty() && self.state.phase() == Phase::Profiles {
@@ -4238,7 +4238,7 @@ let (reason,): (&str,) = (roster_unreachable(),);
 
 };
             }
-            'retire: {
+            {
 let (req,): (u32,) = (req,);
 
         if self.common.pending.contains_key(&req) {
@@ -4356,7 +4356,7 @@ let (req,): (u32,) = (req,);
                     Some(users) if !users.is_empty() => users,
                     graded => {
                         if graded.is_none() {
-                            'fail_empty_home_roster: {
+                            {
 let (reason,): (&str,) = (roster_unreachable(),);
 
         if self.state.picker_data().users.is_empty() && self.state.phase() == Phase::Profiles {
@@ -4365,7 +4365,7 @@ let (reason,): (&str,) = (roster_unreachable(),);
 
 };
                         } else {
-                            'refuse_empty_home_roster: {
+                            {
 
         if self.state.picker_data().users.is_empty() && self.state.phase() == Phase::Profiles {
             { let event = AttemptEvent::RosterFailed { message: roster_refused().into() }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
@@ -4374,7 +4374,7 @@ let (reason,): (&str,) = (roster_unreachable(),);
 
 };
                         }
-                        'retire: {
+                        {
 let (req,): (u32,) = (req,);
 
         if self.common.pending.contains_key(&req) {
@@ -4399,7 +4399,7 @@ let (req,): (u32,) = (req,);
             }
             Observation::ServerRoster(progress) => match &progress.outcome {
                 super::ServerRosterOutcome::Unreachable => {
-                    'retire: {
+                    {
 let (req,): (u32,) = (req,);
 
         if self.common.pending.contains_key(&req) {
@@ -4417,7 +4417,7 @@ let (req,): (u32,) = (req,);
                     // registry-only commit, the same shape `start_switch`'s initial-primary plan
                     // already uses: no credential patch, no lifecycle, just the probe facts.
                     if settled.is_empty() {
-                        'retire: {
+                        {
 let (req,): (u32,) = (req,);
 
         if self.common.pending.contains_key(&req) {
@@ -4436,7 +4436,7 @@ let (req,): (u32,) = (req,);
                 } => {
                     if !self.common.persisted.active_profile_is_admin() {
                         if settled.is_empty() {
-                            'retire: {
+                            {
 let (req,): (u32,) = (req,);
 
         if self.common.pending.contains_key(&req) {
@@ -4461,7 +4461,7 @@ let (req,): (u32,) = (req,);
                         let repaired = next.refresh_profile_record();
                         if !(roster_changed || moved || repaired) {
                             if settled.is_empty() {
-                                'retire: {
+                                {
 let (req,): (u32,) = (req,);
 
         if self.common.pending.contains_key(&req) {
@@ -4501,7 +4501,7 @@ let (req,): (u32,) = (req,);
             Observation::ProfileSwitch(progress) => match &progress.outcome {
                 super::ProfileSwitchOutcomeProgress::Failed { error, pin_denied } => {
                     { let event = AttemptEvent::SwitchFailed { message: error.clone(), denied: *pin_denied }; let exit = ExitFx::attempt(self.view(), &event); let entry = EntryFx::attempt(self.view(), &event); if let Some(notice) = signin_notice(&event) { self.common.signin_notice = notice; } exit.emit(&mut |effect| fx.push(effect)); let attempt = std::mem::replace(&mut self.state, attempt::Attempt::placeholder()); self.state = next_attempt(attempt, event); entry.emit(&mut |effect| fx.push(effect)); true };
-                    'retire: {
+                    {
 let (req,): (u32,) = (req,);
 
         if self.common.pending.contains_key(&req) {
@@ -4533,7 +4533,7 @@ let (req,): (u32,) = (req,);
                 let Some(primary) = sources.iter()
                     .find(|s| s.machine_id == next.server.machine_id && s.dialable())
                     .or_else(|| sources.iter().find(|s| s.dialable())).cloned() else {
-                    'retire: {
+                    {
 let (req,): (u32,) = (req,);
 
         if self.common.pending.contains_key(&req) {
@@ -4578,7 +4578,7 @@ let (req,): (u32,) = (req,);
                         // to publish and no verdict to widen — retire exactly as an empty
                         // `ServerRosterOutcome::NoReachable` does.
                         None => {
-                            'retire: {
+                            {
 let (req,): (u32,) = (req,);
 
         if self.common.pending.contains_key(&req) {
@@ -4594,7 +4594,7 @@ let (req,): (u32,) = (req,);
                     Some(fresh) => {
                         let mut next = self.common.persisted.clone();
                         let Some((source, changed)) = super::apply_refreshed_endpoint(&mut next, &progress.machine_id, fresh) else {
-                            'retire: {
+                            {
 let (req,): (u32,) = (req,);
 
         if self.common.pending.contains_key(&req) {
@@ -4626,14 +4626,14 @@ let (req,): (u32,) = (req,);
             }
         }
         plan.writes_durable = plan.credentials.is_some();
-        ('begin_commit: {
+        'begin_commit: {
 let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitDelta,) = (req, envelope.arrival, envelope.terminal, plan, delta,);
 
         let Some(entry) = ('commit: { let (req, arrival, terminal, plan, delta): (u32, u64, bool, CommitPlan, CommitDelta) = (req, arrival, terminal, plan, delta); let Some(CommitPreparation { pending, entry }) = self.plan_commit(req, arrival, terminal, plan, delta) else { break 'commit None }; self.common.pending.get_mut(&req).unwrap().last_arrival = Some(arrival); self.common.pending_commit = Some(pending); self.common.persistence_purpose = Some(entry.plan.purpose); Some(entry) }) else { break 'begin_commit false };
         entry.emit(&mut |effect| fx.push(effect));
         true
 
-})
+}
 
 };
             }
@@ -4645,7 +4645,7 @@ let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitD
         } else {
             fx.push(SessionFx::Acknowledge(vec![receipt]));
         }
-        'schedule_pump: {
+        {
 
         if !self.common.inbox.is_empty() && self.common.pending_commit.is_none() && !self.common.pump_pending {
             self.common.pump_pending = true;
@@ -4657,7 +4657,7 @@ let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitD
 }; }
 // All login entry paths converge here; the reply follows its ordered exit and entry effects.
 let mut restarted = false;
-if let Some(restart) = restart { restarted = ('restart_login: {
+if let Some(restart) = restart { restarted = 'restart_login: {
 let (fresh_login,): (bool,) = (matches!(restart, LoginRestart::Fresh),);
 
         if matches!(self.common.authority, BootstrapAuthority::DevPms { .. }) {
@@ -4681,7 +4681,7 @@ let (fresh_login,): (bool,) = (matches!(restart, LoginRestart::Fresh),);
         Some(epoch)
 
 }).expect("dev login epoch preflight");
-        'publish_profile: {
+        {
 let (profile,): (Option<UserRef>,) = (None,);
 
         // This is the sole scope allocator. Resource publication will store this explicit value
@@ -4765,11 +4765,11 @@ let (req, arrival, terminal, plan, delta,): (u32, u64, bool, CommitPlan, CommitD
         { publish = true; };
         true
 
-}); if !matches!(ev, SessionEvent::Erased { .. } | SessionEvent::Command(Command::RestartWait { .. })) { handled = restarted; } }
+}; if !matches!(ev, SessionEvent::Erased { .. } | SessionEvent::Command(Command::RestartWait { .. })) { handled = restarted; } }
 if let Some((reply, permitted)) = restart_reply { fx.push(SessionFx::RestartReply { to: *reply, accepted: permitted && restarted }); }
 // Publications are observable only after this atomic event has finished.
 if publish { if let Some((next, allocations)) = self.publication_update() { self.publication = next; #[cfg(test)] for (total, count) in self.publication_payload_allocations.iter_mut().zip(allocations) { *total += count; } #[cfg(not(test))] let _ = allocations; } }
-if !matches!(ev, SessionEvent::CacheObserved(_) | SessionEvent::CacheRefreshed { .. } | SessionEvent::ConsumeLogicalDirty) { 'refresh_subhash: {
+if !matches!(ev, SessionEvent::CacheObserved(_) | SessionEvent::CacheRefreshed { .. } | SessionEvent::ConsumeLogicalDirty) { {
 
         let mut canon = Canon::new();
         LegacyV5Projection::from_partition(self.view()).write(&mut canon);

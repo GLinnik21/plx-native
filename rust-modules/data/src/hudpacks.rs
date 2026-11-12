@@ -718,7 +718,7 @@ let (ev,): (HudEvent,) = (ev,);
                 let Some(package) = self.catalog.snapshot().index.as_ref().and_then(|i| i.entries.iter().find(|p| p.sha() == sha))
                     .filter(|p| p.compatible(&app, &language, self.setup.max_pack_bytes)).cloned() else { break 'reduce Handled::No };
                 let Ok(address) = address::parse(&package.url) else { break 'reduce Handled::No };
-                let tag = 'tag: {
+                let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -732,10 +732,10 @@ let (ev,): (HudEvent,) = (ev,);
                 // Always taken: it is how a store whose runner lost an answer recovers. Whatever it
                 // displaces wrote atomically and put the index last, so disk is consistent, and the
                 // answers the displaced work is still owed carry a stale tag.
-                'begin_listing: {
+                {
 let (setup, selected,): (Setup, String,) = (setup, selected,);
 
-        let stray = 'displaced: {
+        let stray = {
 
         let at = |candidates: &[Candidate], dir: usize, sha: Sha| candidates.get(dir).map(|c| (c.dir.clone(), sha));
         let mut stray = Vec::new();
@@ -779,11 +779,12 @@ let (setup, selected,): (Setup, String,) = (setup, selected,);
         let mut todo: VecDeque<Job> = (0..n).map(Job::Index).collect();
         todo.push_back(Job::Plan);
         todo.extend((0..n).map(Job::Scan));
+        // Issue the next listing request, or finish.
         let next = 'advance: {
-let (listing,): (Listing,) = (Listing { todo, flight: None, stray },);
+let (mut listing,): (Listing,) = (Listing { todo, flight: None, stray },);
 
         while let Some(job) = listing.todo.pop_front() {
-            let tag = 'tag: {
+            let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -838,10 +839,11 @@ let (id,): (String,) = (id,);
                 if bytes.len() > self.setup.max_pack_bytes {
                     fx.push(HudEffect::Notice(Notice::Refused { sha, reason: Refusal::TooLarge }));
                 } else {
-                    let next = 'validate: {
+                    // Ask the runner whether these bytes are a package this app can run.
+                    let next = {
 let (offer,): (Offer,) = (Offer { sha, source, now: Some(now), from: None, bytes: bytes.into(), expected: None },);
 
-        let tag = 'tag: {
+        let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -859,7 +861,7 @@ let (offer,): (Offer,) = (Offer { sha, source, now: Some(now), from: None, bytes
                 if self.busy() {
                     break 'reduce Handled::No;
                 }
-                let tag = 'tag: {
+                let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -876,6 +878,7 @@ let (offer,): (Offer,) = (Offer { sha, source, now: Some(now), from: None, bytes
                         break 'reduce Handled::Yes;
                     }
                     offer.now = Some(now);
+                    // Write the pack to candidate `dir`; with no candidate left, nothing was installed.
                     let next = 'write_pack: {
 let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, 0,);
 
@@ -884,7 +887,7 @@ let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, 0,);
             Self::notice(fx, Notice::NotWritten { sha: Some(offer.sha) });
             break 'write_pack Op::Idle;
         };
-        let tag = 'tag: {
+        let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -923,7 +926,7 @@ let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, 0,);
                 }) else {
                     break 'reduce Handled::No;
                 };
-                let tag = 'tag: {
+                let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -946,7 +949,7 @@ let (id,): (String,) = (id,);
             .filter(|dir| self.dirs[*dir].access == Access::ReadOnly || self.dirs[*dir].index.contains_key(&id))
             .collect();
         let next = 'advance_removal: {
-let (removing,): (Removing,) = (Removing { id, dirs, incomplete: false, flight: None },);
+let (mut removing,): (Removing,) = (Removing { id, dirs, incomplete: false, flight: None },);
 
         while let Some(dir) = removing.dirs.pop_front() {
             if self.dirs[dir].access == Access::ReadOnly {
@@ -957,7 +960,7 @@ let (removing,): (Removing,) = (Removing { id, dirs, incomplete: false, flight: 
             let mut index = self.dirs[dir].index.clone();
             let Some(record) = index.remove(&removing.id) else { continue };
             let gone = vec![record.sha];
-            let tag = 'tag: {
+            let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -999,7 +1002,7 @@ let (removing,): (Removing,) = (Removing { id, dirs, incomplete: false, flight: 
                 let (op, handled) = match std::mem::replace(&mut self.op, Op::Idle) {
                     Op::Idle => (Op::Idle, Handled::No),
                     Op::Listing(listing) => 'listing_result: {
-let (listing, ev,): (Listing, HudEvent,) = (listing, result,);
+let (mut listing, ev,): (Listing, HudEvent,) = (listing, result,);
 
         let Some(flight) = listing.flight.take() else { break 'listing_result (Op::Listing(listing), Handled::No) };
         let Flight { tag, job, stage } = flight;
@@ -1032,7 +1035,7 @@ let (listing, ev,): (Listing, HudEvent,) = (listing, result,);
             }
             (Job::Pack { sha, mut dirs }, Stage::Io, HudEvent::Read { result, .. }) => match result {
                 Ok(bytes) if Sha::of(&bytes) == sha => {
-                    let tag = 'tag: {
+                    let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -1067,7 +1070,7 @@ let (listing, ev,): (Listing, HudEvent,) = (listing, result,);
             (Job::Drop { dir, name }, Stage::Io, HudEvent::Read { result, .. }) => match result {
                 Ok(bytes) => {
                     let sha = Sha::of(&bytes);
-                    let tag = 'tag: {
+                    let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -1091,10 +1094,10 @@ let (listing, ev,): (Listing, HudEvent,) = (listing, result,);
             }
         }
         (('advance: {
-let (listing,): (Listing,) = (listing,);
+let (mut listing,): (Listing,) = (listing,);
 
         while let Some(job) = listing.todo.pop_front() {
-            let tag = 'tag: {
+            let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -1143,10 +1146,10 @@ let (installing, ev,): (Installing, HudEvent,) = (installing, result,);
         let op = match (step, ev) {
             (Step::Reading { sha, now }, HudEvent::Read { result, .. }) => match result {
                 Ok(bytes) if Sha::of(&bytes) == sha => {
-                    ('validate: {
+                    {
 let (offer,): (Offer,) = (Offer { sha, source: Source::Drop, now: Some(now), from: None, bytes: bytes.into(), expected: None },);
 
-        let tag = 'tag: {
+        let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -1155,7 +1158,7 @@ let (offer,): (Offer,) = (Offer { sha, source: Source::Drop, now: Some(now), fro
         fx.push(HudEffect::Validate { tag, sha: offer.sha, bytes: offer.bytes.clone() });
         Op::Installing(Installing { tag, step: Step::Validating(offer) })
 
-})
+}
                 }
                 _ => {
                     Self::notice(fx, Notice::Refused { sha, reason: Refusal::Changed });
@@ -1178,10 +1181,10 @@ let (offer,): (Offer,) = (Offer { sha, source: Source::Drop, now: Some(now), fro
                     } else {
                         let source = if expected.is_some() { Source::Registry } else { Source::Address };
                         let offer = Offer { sha, source, now: None, from: Some(address), bytes: bytes.into(), expected };
-                        ('validate: {
+                        {
 let (offer,): (Offer,) = (offer,);
 
-        let tag = 'tag: {
+        let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -1190,7 +1193,7 @@ let (offer,): (Offer,) = (offer,);
         fx.push(HudEffect::Validate { tag, sha: offer.sha, bytes: offer.bytes.clone() });
         Op::Installing(Installing { tag, step: Step::Validating(offer) })
 
-})
+}
                     }
                 }
             },
@@ -1213,7 +1216,7 @@ let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, 0,);
             Self::notice(fx, Notice::NotWritten { sha: Some(offer.sha) });
             break 'write_pack Op::Idle;
         };
-        let tag = 'tag: {
+        let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -1239,7 +1242,7 @@ let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, 0,);
                         .insert(meta.id.clone(), Record::new(offer.sha, offer.source, offer.now.unwrap_or_default(), &meta.package_format, &meta.hud_format)
                             .from_dev_source(offer.from.as_ref()))
                         .map(|old| old.sha);
-                    let tag = 'tag: {
+                    let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -1263,7 +1266,7 @@ let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, dir + 1,);
             Self::notice(fx, Notice::NotWritten { sha: Some(offer.sha) });
             break 'write_pack Op::Idle;
         };
-        let tag = 'tag: {
+        let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -1298,7 +1301,7 @@ let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, dir + 1,);
                     if !self.referenced(dir, offer.sha) {
                         fx.push(HudEffect::Delete { at: self.loc(dir, pack_rel(offer.sha)) });
                     }
-                    ('write_pack: {
+                    'write_pack: {
 let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, dir + 1,);
 
         // A candidate whose index is read-only cannot list the new package, so it is not a candidate.
@@ -1306,7 +1309,7 @@ let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, dir + 1,);
             Self::notice(fx, Notice::NotWritten { sha: Some(offer.sha) });
             break 'write_pack Op::Idle;
         };
-        let tag = 'tag: {
+        let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -1319,7 +1322,7 @@ let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, dir + 1,);
         });
         Op::Installing(Installing { tag, step: Step::Writing { offer, meta, dir, what: Write::Pack } })
 
-})
+}
                 }
             },
             (step, _) => break 'installing_result (Op::Installing(Installing { tag, step }), Handled::No),
@@ -1328,7 +1331,7 @@ let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, dir + 1,);
 
 },
                     Op::Removing(removing) => 'removing_result: {
-let (removing, ev,): (Removing, HudEvent,) = (removing, result,);
+let (mut removing, ev,): (Removing, HudEvent,) = (removing, result,);
 
         let HudEvent::Written { tag, outcome } = ev else { break 'removing_result (Op::Removing(removing), Handled::No) };
         match removing.flight.take() {
@@ -1343,7 +1346,7 @@ let (removing, ev,): (Removing, HudEvent,) = (removing, result,);
                     WriteOutcome::Refused => removing.incomplete = true,
                 }
                 (('advance_removal: {
-let (removing,): (Removing,) = (removing,);
+let (mut removing,): (Removing,) = (removing,);
 
         while let Some(dir) = removing.dirs.pop_front() {
             if self.dirs[dir].access == Access::ReadOnly {
@@ -1354,7 +1357,7 @@ let (removing,): (Removing,) = (removing,);
             let mut index = self.dirs[dir].index.clone();
             let Some(record) = index.remove(&removing.id) else { continue };
             let gone = vec![record.sha];
-            let tag = 'tag: {
+            let tag = {
 
         self.tags = self.tags.wrapping_add(1);
         Tag(self.tags)
@@ -1641,19 +1644,19 @@ let (removing,): (Removing,) = (removing,);
         by_sha.into_iter().map(|(sha, dirs)| Job::Pack { sha, dirs }).collect()
     }
 
-    /// Issue the next listing request, or finish.
+
 
 
 
 
     // -------- install --------
 
-    /// Ask the runner whether these bytes are a package this app can run.
 
 
 
 
-    /// Write the pack to candidate `dir`; with no candidate left, nothing was installed.
+
+
 
 
     // -------- removal --------

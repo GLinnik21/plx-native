@@ -235,9 +235,25 @@ widening recorded the 17 forks that were already there (three in `screens/`: `le
 
 `ci/machines.ini` is the sole machine registry. Every entry binds a real event enum, a real
 mutable effect-vector channel (or exact `effect = none` for a pure view), and one private inherent
-`transition` reducer. The checker resolves the declarations and canonical signature: a raw-state
-setter cannot masquerade as the registered event reducer. Concrete effect-vector aliases are
-resolved; callbacks are not effect channels. Rust type checking and behavior review remain required.
+`transition` reducer. The checker binds the complete argument list: exactly `&mut self`, one
+registered event enum (possibly borrowed), one concrete mutable effect vector (absent for
+`effect = none`), and only the explicitly declared closed `aux_facts` slot where required.
+No additional state/model, context bag, reference, generic or callback argument is admitted,
+regardless of its parameter name. Duplicate, missing and unknown bindings fail closed.
+Concrete effect-vector aliases are resolved; an owned-state alias is not an event or an
+auxiliary-fact certificate, and an opaque setter cannot become a writer through a renamed
+frame/root wrapper.
+
+The actual canonical headers require three auxiliary inputs, not just Session time:
+`tick_ms: u32` for Session, `now_ms: u64` for URI, and backend
+`capabilities: Option<Capabilities>`. Clock facts require unshadowed primitive identities
+(or canonical primitive paths), by value, with the exact declared name and width. The backend
+fact is pinned to the actual playback-contract declaration with exactly nine named boolean
+fields; neither an arbitrary immutable model nor a familiar type name is sufficient. The
+closed semantic slots cannot be extended by adding a type name to the registry. Reducer logic
+may legitimately change phase based on these facts; the checker does not prove monotonic
+clock history or semantic event admission. An event wrapping raw state and ignoring admission
+is not made sound by its signature. Rust type checking and behavior review remain required.
 
 Every owned struct field is private and write-guarded by default: pending work, counters, outboxes,
 caches and nested owners are not exemptions. `state_field` selects a variant view, never the write

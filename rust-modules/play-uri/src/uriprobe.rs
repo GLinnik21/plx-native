@@ -889,10 +889,13 @@ impl UriProbe {
                             fx.push(self.line(now_ms, &format!("call {} ok", match method {
                                     Method::Load => "load",
                                     Method::Subscribe => "subscribe",
-                                    _ => "play",
+                                    Method::Register | Method::Play | Method::NotifyForeground | Method::Pause
+                                    | Method::Seek | Method::SelectTrack | Method::SetSubtitleEnable
+                                    | Method::SetWindowId | Method::Unload | Method::Dropped | Method::Other => "play",
                                 })));
                         }
-                        _ => {}
+                        Method::Register | Method::Load | Method::Subscribe | Method::Play
+                        | Method::Unload | Method::Dropped | Method::Other => {}
                     }
                     if self.media_id.is_none() && !denied {
                         self.media_id = message.media_id.clone();

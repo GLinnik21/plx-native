@@ -266,8 +266,63 @@ def closure_spans(tokens, ends):
     return spans
 
 
+# Closed semantic fact slots required by the current canonical headers, not type-name exemptions.
+AUX_FACTS = {
+    'play-uri/src/uriprobe.rs::UriProbe': 'now_ms:monotonic_ms_u64',
+    'session/src/auth/owner.rs::SessionMachine': 'tick_ms:monotonic_ms_u32',
+    'playback-contract/src/state.rs::BackendState': 'capabilities:playback_capabilities',
+}
+CAPABILITY_FIELDS = ('progressive_uri', 'hls_uri', 'packet_feed', 'pause', 'seek',
+                     'audio_track', 'subtitle_track', 'audio_off', 'subtitle_off')
+
+
+def primitive_fact(proof, path, typ, primitive, headers=()):
+    """Require a by-value primitive spelling with no lexical shadow or alias."""
+    tokens, _, definitions, uses = proof.module(path)
+    if any(alias == '*' for alias, _ in uses): return False
+    if any(primitive in header for header in headers): return False
+    if typ == [primitive]:
+        if primitive in definitions or any(alias == primitive for alias, _ in uses): return False
+        if any(tokens[i] in ('union', 'trait', 'mod') and tokens[i + 1] == primitive for i in range(len(tokens) - 1)): return False
+        return proof.resolve(path, [primitive]) == ('std', primitive)
+    for namespace in ('core', 'std'):
+        canonical = [':', ':', namespace, ':', ':', 'primitive', ':', ':', primitive]
+        if typ not in (canonical, canonical[2:]): continue
+        if namespace in definitions or any(alias == namespace for alias, _ in uses): return False
+        if any(tokens[i] in ('mod', 'union', 'trait', 'extern', 'as') and tokens[i + 1] == namespace for i in range(len(tokens) - 1)): return False
+        return not any(namespace in header for header in headers)
+    return False
+
+
+def auxiliary_argument(proof, path, param, declaration, headers=()):
+    """Two clock widths and one exact nine-boolean capability record; no open model whitelist."""
+    if not declaration or len(param) < 3 or param[1] != ':': return False
+    name, kind = declaration.split(':')
+    if param[0] != name: return False
+    typ = param[2:]
+    if kind in ('monotonic_ms_u32', 'monotonic_ms_u64'):
+        return primitive_fact(proof, path, typ, kind.rsplit('_', 1)[1], headers)
+    if kind != 'playback_capabilities' or typ != ['Option', '<', 'Capabilities', '>']: return False
+    expected_path = (proof.root / 'playback-contract/src/lib.rs').resolve()
+    if any(n in header for header in headers for n in ('Option', 'Capabilities')): return False
+    if any(alias == '*' for alias, _ in proof.module(path)[3]): return False
+    if proof.resolve(path, ['Option']) != ('std', 'Option'): return False
+    if proof.resolve(path, ['Capabilities']) != (expected_path, 'Capabilities'): return False
+    target = proof.nominal(path, typ)
+    if target is None or target[:3] != ('std', 'Option', 'std') or len(target[3]) != 1: return False
+    item = proof.nominal(target[4], target[3][0])
+
+    if item is None or item[:3] != (expected_path, 'Capabilities', 'struct') or item[3]: return False
+    tokens, _, definitions, uses = proof.module(expected_path)
+    fields = struct_fields(tokens, 'Capabilities')
+    if definitions['Capabilities'][0][0] or fields is None: return False
+    if [n for _, n, _ in fields] != list(CAPABILITY_FIELDS): return False
+    return proof.inert(expected_path, ['Capabilities']) and all(
+        primitive_fact(proof, expected_path, t, 'bool') for _, _, t in fields)
+
+
 def writer_problems(source, name, field, transition, constructor, label, require_methods=True,
-                    reader=None, event=None, effect=None, proof=None, shared_reads=False, owned_fields=None, owner_path=None):
+                    reader=None, event=None, effect=None, proof=None, shared_reads=False, owned_fields=None, owner_path=None, aux_facts=""):
     """Literal Event/Effects authority covers EVERY owned field, never a selected-state whitelist."""
     tokens = production_tokens(source)
     impls, functions, ends = item_bodies(tokens)
@@ -302,6 +357,14 @@ def writer_problems(source, name, field, transition, constructor, label, require
             if not params or params[0] != ['&', 'mut', 'self']:
                 problems.append(f'{label}: transition must take &mut self')
             if proof is not None and event and effect:
+                headers = [h for x, y, h in impls if x < a < b < y]
+                names = [p[0] for p in params[1:] if len(p) >= 3 and p[1] == ':' and p[0].isidentifier()]
+                if len(names) != len(params) - 1 or len(set(names)) != len(names):
+                    problems.append(f'{label}: transition arguments require unique simple bindings')
+                aux_params = [p for p in params[1:] if aux_facts and p[:2] == [aux_facts.split(':')[0], ':']]
+                if aux_facts and (len(aux_params) != 1 or not auxiliary_argument(proof, source_path, aux_params[0], aux_facts, headers)):
+                    problems.append(f'{label}: transition requires exact auxiliary fact {aux_facts}')
+                    return problems  # Invalid/opaque facts cannot enter nominal resolution as authority.
                 expected = proof.nominal(source_path, rust_tokens(event))
                 event_params = [p for p in params[1:] if proof.nominal(source_path, typ(p)) is not None
                                 and expected is not None and proof.nominal(source_path, typ(p))[:3] == expected[:3]]
@@ -309,6 +372,13 @@ def writer_problems(source, name, field, transition, constructor, label, require
                     problems.append(f'{label}: transition must take registered event enum {event}')
                 elif any(proof.nominal(source_path, t) is not None and proof.nominal(source_path, t)[:3] == expected[:3] for _, _, t in fields):
                     problems.append(f'{label}: event enum must not be an owned raw state setter')
+                effect_params = [p for p in params[1:] if effect != 'none' and proof.effect_output(source_path, typ(p), rust_tokens(effect))]
+                for p in params[1:]:
+                    if p not in event_params and p not in effect_params and p not in aux_params:
+                        problems.append(f'{label}: unbound transition argument {" ".join(p)}')
+                required = 1 + (effect != 'none') + bool(aux_facts)
+                if len(params) != required + 1 or len(effect_params) != (effect != 'none'):
+                    problems.append(f'{label}: transition argument arity must be self + Event + exact Fx/fact slots')
                 if effect == 'none':
                     if any('mut' in p or 'FnMut' in p for p in params[1:]):
                         problems.append(f'{label}: effect = none forbids an effect output')
@@ -823,9 +893,13 @@ def check(modules=MODULES, ini=INI):
             continue
         if 'module ' + file not in parser:
             problems.append(f'machines.ini [{section}]: missing enum policy [module {file}]')
-        unknown = set(entry) - {'event', 'effect', 'step', 'state_reads'} - strict_keys
+        unknown = set(entry) - {'event', 'effect', 'step', 'state_reads', 'aux_facts'} - strict_keys
         if unknown:
             problems.append(f'machines.ini [{section}]: unknown keys: {", ".join(sorted(unknown))}')
+        aux_facts = entry.get('aux_facts', '').strip()
+        if aux_facts != AUX_FACTS.get(section, ''):
+            problems.append(f'{section}: auxiliary fact contract must be {AUX_FACTS.get(section, "none")}')
+            continue
         source = path.read_text(encoding='utf-8')
         fields = struct_fields(source, name)
         if fields is None:
@@ -870,7 +944,7 @@ def check(modules=MODULES, ini=INI):
                 child_source = source if child == path else child.read_text(encoding='utf-8')
                 problems.extend(writer_problems(child_source, name, field, transition, constructor,
                                                 child.relative_to(root).as_posix(),
-                                                require_methods=child == path, event=event, effect=effect, proof=proof, shared_reads=entry.get('state_reads') == 'immutable', owned_fields=fields, owner_path=path))
+                                                require_methods=child == path, event=event, effect=effect, proof=proof, shared_reads=entry.get('state_reads') == 'immutable', owned_fields=fields, owner_path=path, aux_facts=aux_facts))
         except (OSError, ValueError) as error:
             problems.append(f'machines.ini [{section}]: cannot analyze production sources: {error}')
         if proof.audit:

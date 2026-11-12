@@ -398,6 +398,7 @@ python3 ci/test_step_scope.py
 python3 ci/test_machine_readonly.py
 python3 ci/test_readonly_dependencies.py
 python3 ci/test_readonly_generated.py
+python3 ci/test_transition_arguments.py
 
 # tools/cold-store.py, the opt-in cold store that parks idle build trees on a second volume: unconfigured it creates no file anywhere; each
 # reason `available()` can give (no config, no ditto, an unmounted /Volumes root, the same device as the build tree, under min_free_gib, a

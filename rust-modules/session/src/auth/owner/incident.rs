@@ -305,7 +305,22 @@ impl SessionMachine {
 
 
 
-    pub fn step_incident_command(&mut self, command: &Command, emit: &mut impl FnMut(SessionFx)) -> bool { let mut effects = Vec::new(); let handled = self.transition(&SessionEvent::Command(command.clone()), 0, &mut effects); effects.into_iter().for_each(emit); handled }
+    pub fn step_incident_command(
+        &mut self,
+        command: &Command,
+        emit: &mut impl FnMut(SessionFx),
+    ) -> bool {
+        if !matches!(
+            command,
+            Command::ResolveIncident { .. } | Command::ReportIncident { .. } | Command::DeclineIncident { .. }
+        ) {
+            return false;
+        }
+        let mut effects = Vec::new();
+        let handled = self.transition(&SessionEvent::Command(command.clone()), 0, &mut effects);
+        effects.into_iter().for_each(emit);
+        handled
+    }
 }
 
 #[cfg(test)]
