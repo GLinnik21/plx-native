@@ -85,13 +85,13 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-12T11:35:55Z",
+ "generated": "2026-11-12T12:16:49Z",
  "metrics": [
   {
-   "change30_pct": 54.4,
+   "change30_pct": 52.6,
    "change7_pct": 43.6,
-   "d30": 21.4,
-   "delta30": 11.7,
+   "d30": 21.7,
+   "delta30": 11.4,
    "delta7": 10.1,
    "group": "local",
    "id": "bench.app",
@@ -130,10 +130,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 60.7,
+   "change30_pct": 53.7,
    "change7_pct": 26.0,
-   "d30": 39.5,
-   "delta30": 24.0,
+   "d30": 41.3,
+   "delta30": 22.2,
    "delta7": 13.1,
    "group": "local",
    "id": "bench.screens",
@@ -151,10 +151,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 112.0,
+   "change30_pct": 104.8,
    "change7_pct": 26.0,
-   "d30": 44.5,
-   "delta30": 49.8,
+   "d30": 46.0,
+   "delta30": 48.2,
    "delta7": 19.5,
    "group": "local",
    "id": "bench.ui",
@@ -193,19 +193,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 40.0,
-   "change7_pct": 11.5,
+   "change30_pct": 39.8,
+   "change7_pct": 11.4,
    "d30": 349,
-   "delta30": 139.5,
-   "delta7": 50.5,
+   "delta30": 139,
+   "delta7": 50,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 160,
-   "n_prev": 202,
-   "now": 488.5,
-   "prev7": 438.0,
+   "n_now": 159,
+   "n_prev": 203,
+   "now": 488,
+   "prev7": 438,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -214,18 +214,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 43.9,
-   "change7_pct": 9.0,
+   "change30_pct": 43.7,
+   "change7_pct": 8.9,
    "d30": 319,
-   "delta30": 140,
-   "delta7": 38,
+   "delta30": 139.5,
+   "delta7": 37.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 65,
+   "n_now": 66,
    "n_prev": 79,
-   "now": 459,
+   "now": 458.5,
    "prev7": 421,
    "shown": true,
    "state": "flat",
@@ -235,10 +235,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 111.2,
+   "change30_pct": 104.4,
    "change7_pct": 24.6,
-   "d30": 99.7,
-   "delta30": 110.8,
+   "d30": 103.0,
+   "delta30": 107.5,
    "delta7": 41.6,
    "group": "local",
    "id": "bench.leaf",
@@ -256,10 +256,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 243.1,
+   "change30_pct": 239.7,
    "change7_pct": 23.9,
-   "d30": 56.2,
-   "delta30": 136.7,
+   "d30": 56.8,
+   "delta30": 136.1,
    "delta7": 37.2,
    "group": "local",
    "id": "bench.tests",
@@ -298,19 +298,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 20.7,
-   "change7_pct": 0.2,
+   "change30_pct": 20.6,
+   "change7_pct": 0.1,
    "d30": 924,
-   "delta30": 191,
-   "delta7": 2,
+   "delta30": 190.5,
+   "delta7": 1.0,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 37,
-   "n_prev": 15,
-   "now": 1115,
-   "prev7": 1113,
+   "n_now": 36,
+   "n_prev": 16,
+   "now": 1114.5,
+   "prev7": 1113.5,
    "shown": true,
    "state": "flat",
    "state30": "flat",
@@ -361,18 +361,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 44.2,
-   "change7_pct": 8.4,
+   "change30_pct": 43.8,
+   "change7_pct": 8.1,
    "d30": 224,
-   "delta30": 99.0,
-   "delta7": 25.0,
+   "delta30": 98,
+   "delta7": 24,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 71,
-   "now": 323.0,
+   "now": 322,
    "prev7": 298,
    "shown": true,
    "state": "flat",
@@ -424,18 +424,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 60.7,
-   "change7_pct": 10.8,
+   "change30_pct": 61.4,
+   "change7_pct": 11.3,
    "d30": 140,
-   "delta30": 85.0,
-   "delta7": 22.0,
+   "delta30": 86,
+   "delta7": 23,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 71,
-   "now": 225.0,
+   "now": 226,
    "prev7": 203,
    "shown": true,
    "state": "flat",
@@ -448,15 +448,15 @@
    "change30_pct": -34.6,
    "change7_pct": -6.5,
    "d30": 309,
-   "delta30": -107.0,
-   "delta7": -14.0,
+   "delta30": -107,
+   "delta7": -14,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 71,
-   "now": 202.0,
+   "now": 202,
    "prev7": 216,
    "shown": true,
    "state": "flat",
@@ -469,16 +469,16 @@
    "change30_pct": 25.0,
    "change7_pct": 4.2,
    "d30": 20,
-   "delta30": 5,
-   "delta7": 1,
+   "delta30": 5.0,
+   "delta7": 1.0,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
-   "n_now": 37,
-   "n_prev": 15,
-   "now": 25,
-   "prev7": 24,
+   "n_now": 36,
+   "n_prev": 16,
+   "now": 25.0,
+   "prev7": 24.0,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -490,16 +490,16 @@
    "change30_pct": 40.0,
    "change7_pct": 5.0,
    "d30": 15,
-   "delta30": 6,
-   "delta7": 1,
+   "delta30": 6.0,
+   "delta7": 1.0,
    "group": "ci",
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
-   "n_now": 37,
-   "n_prev": 15,
-   "now": 21,
-   "prev7": 20,
+   "n_now": 36,
+   "n_prev": 16,
+   "now": 21.0,
+   "prev7": 20.0,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -511,15 +511,15 @@
    "change30_pct": 11.8,
    "change7_pct": 0.0,
    "d30": 17,
-   "delta30": 2.0,
-   "delta7": 0.0,
+   "delta30": 2,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 71,
-   "now": 19.0,
+   "now": 19,
    "prev7": 19,
    "shown": false,
    "state": "flat",
@@ -592,10 +592,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 54.7,
+   "change30_pct": 39.0,
    "change7_pct": 46.4,
-   "d30": 0.5,
-   "delta30": 0.3,
+   "d30": 0.6,
+   "delta30": 0.2,
    "delta7": 0.3,
    "group": "local",
    "id": "bench.noop",
@@ -618,11 +618,6 @@
    "change_pct": 43.6,
    "commits": [
     {
-     "pr": 1332,
-     "sha": "e8442d5ee",
-     "title": "URI: say in the event log why the Experimental engine did not take a play"
-    },
-    {
      "pr": 1333,
      "sha": "301811ec7",
      "title": "Version choice: measure a version picked by hand from its own fetch"
@@ -666,6 +661,11 @@
      "pr": 1345,
      "sha": "0686bf703",
      "title": "RC 2 polish: Yellow reaches SRT/ASS tracks, timed skip prompts follow the countdown, hero title gap"
+    },
+    {
+     "pr": 1347,
+     "sha": "b2dcd0c27",
+     "title": "ASS subtitles: attached fonts, every-video-frame karaoke on the TV, straight colour over video"
     }
    ],
    "from": 23.1,
@@ -679,11 +679,6 @@
    "change_pct": 26.9,
    "commits": [
     {
-     "pr": 1332,
-     "sha": "e8442d5ee",
-     "title": "URI: say in the event log why the Experimental engine did not take a play"
-    },
-    {
      "pr": 1333,
      "sha": "301811ec7",
      "title": "Version choice: measure a version picked by hand from its own fetch"
@@ -727,6 +722,11 @@
      "pr": 1345,
      "sha": "0686bf703",
      "title": "RC 2 polish: Yellow reaches SRT/ASS tracks, timed skip prompts follow the countdown, hero title gap"
+    },
+    {
+     "pr": 1347,
+     "sha": "b2dcd0c27",
+     "title": "ASS subtitles: attached fonts, every-video-frame karaoke on the TV, straight colour over video"
     }
    ],
    "from": 335,
@@ -740,11 +740,6 @@
    "change_pct": 26.0,
    "commits": [
     {
-     "pr": 1332,
-     "sha": "e8442d5ee",
-     "title": "URI: say in the event log why the Experimental engine did not take a play"
-    },
-    {
      "pr": 1333,
      "sha": "301811ec7",
      "title": "Version choice: measure a version picked by hand from its own fetch"
@@ -788,6 +783,11 @@
      "pr": 1345,
      "sha": "0686bf703",
      "title": "RC 2 polish: Yellow reaches SRT/ASS tracks, timed skip prompts follow the countdown, hero title gap"
+    },
+    {
+     "pr": 1347,
+     "sha": "b2dcd0c27",
+     "title": "ASS subtitles: attached fonts, every-video-frame karaoke on the TV, straight colour over video"
     }
    ],
    "from": 50.4,
@@ -801,11 +801,6 @@
    "change_pct": 26.0,
    "commits": [
     {
-     "pr": 1332,
-     "sha": "e8442d5ee",
-     "title": "URI: say in the event log why the Experimental engine did not take a play"
-    },
-    {
      "pr": 1333,
      "sha": "301811ec7",
      "title": "Version choice: measure a version picked by hand from its own fetch"
@@ -849,6 +844,11 @@
      "pr": 1345,
      "sha": "0686bf703",
      "title": "RC 2 polish: Yellow reaches SRT/ASS tracks, timed skip prompts follow the countdown, hero title gap"
+    },
+    {
+     "pr": 1347,
+     "sha": "b2dcd0c27",
+     "title": "ASS subtitles: attached fonts, every-video-frame karaoke on the TV, straight colour over video"
     }
    ],
    "from": 74.8,
@@ -862,11 +862,6 @@
    "change_pct": 24.0,
    "commits": [
     {
-     "pr": 1332,
-     "sha": "e8442d5ee",
-     "title": "URI: say in the event log why the Experimental engine did not take a play"
-    },
-    {
      "pr": 1333,
      "sha": "301811ec7",
      "title": "Version choice: measure a version picked by hand from its own fetch"
@@ -910,6 +905,11 @@
      "pr": 1345,
      "sha": "0686bf703",
      "title": "RC 2 polish: Yellow reaches SRT/ASS tracks, timed skip prompts follow the countdown, hero title gap"
+    },
+    {
+     "pr": 1347,
+     "sha": "b2dcd0c27",
+     "title": "ASS subtitles: attached fonts, every-video-frame karaoke on the TV, straight colour over video"
     }
    ],
    "from": 193.5,
@@ -926,7 +926,7 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 1115
+   "now": 1114.5
   },
   {
    "group": "ci",
@@ -950,7 +950,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 323.0
+   "now": 322
   }
  ],
  "slowest_local": [
