@@ -170,8 +170,9 @@ input too: the Collection step asks `keys.key(sid)` of the `ClientKeys` it is ha
 in `data/src/collection.rs`), never `client_for`.
 
 A screen gets a session read the same way: the Bridge reads it and folds it into what a store
-publishes (`Bridge::household_ids` into `Stores::search_snapshot`). The screens' own `peek` and
-`client_for` reads are ledger lines (`ci/allow/globals/screens.txt`), not a pattern.
+publishes (`Bridge::household_ids` into `Stores::search_snapshot`). Screens also consume retained
+host-captured `ScreenInputs` through `Cx`; their former `peek` and `client_for` ledger entries
+are retired, and `ci/allow/globals/screens.txt` is empty.
 
 **(c) A stepped machine: `step` returns effects, a runner executes them.** The player lifecycle
 (#1003) is `step(&mut self, ev, fx: &mut Vec<ForegroundEffect>) -> Handled` (`lifecycle.rs`).
@@ -209,8 +210,10 @@ Never `Instant::now` or `SystemTime::now` in a step. The `wall` rule (`ci/check-
 instruments are listed in `ci/allow/wall.txt`) fails a clock read in most machine scope: `ui/`,
 `screens/`, `data/src/stores/`, the session owner and the migrated store files. Outside it, CI does
 not count the ones that remain (a diagnostic timer in `step_landings_with_scope` in `data/src/pms.rs`,
-one in the fetch body `fetch_full` in `data/src/metadata.rs`), and `WatchlistIo::today` is a
-documented remaining read; do not add to them.
+one in the fetch body `fetch_full` in `data/src/metadata.rs`); do not add to them. W2 retired
+the Watchlist step's ambient date read: the host captures the UTC date, worker ports return the
+captured value, and the step consumes the snapshot. `WatchlistIo::today` is not a remaining
+ambient step read.
 
 **(e) A test needs different behaviour: a seam or an argument, never a `cfg` branch.** A body takes
 the one call that reaches the world as a parameter. `finish_browse_page_job` passes the real read
@@ -224,8 +227,9 @@ fn finish_page_with(port: &BrowsePagePort, addr: Addr, client: &'static Client, 
     read: impl FnOnce(&Client, ServerId, &SectionQuery<'_>, bool, Option<&Restore>) -> ListingPage) {
 ```
 
-An IO trait works the same way when only the job body calls it (`CatalogIo`, `data/src/catalog.rs`);
-a trait the step calls (`WatchlistIo`) is a registry read with one more hop. The shape to avoid is
+An IO trait works the same way when only the job body calls it (`CatalogIo`, `data/src/catalog.rs`).
+`WatchlistIo` is worker transport over captured facts; W2 retired its former ambient step readers.
+A trait must not hide registry or clock access in a step. The shape to avoid is
 `#[cfg(not(test))]` or `if cfg!(test) { fake } else { real }` in production code:
 `ci/allow/forks/*.txt` list the ones that remain, to be deleted, not copied. An item only
 a test can see (`#[cfg(test)] fn`) is no fork.

@@ -567,10 +567,11 @@ worker start and the `client_for` read inside that worker are gone too. The hous
     can capture nothing: it clears the identity and records the title as owed a read (`take_reopen`).
     `Bridge::catalog_pump` takes it and calls `catalog_open`, which reads the input then and starts the job,
     all in the pump's own call. An `open` or a `reset` clears the owed title.
-  - **What stays.** The Watchlist's `copy_rank::current_server`, `find::client_for` and `guid_of::client_for`
-    (W-2), `server_ids` / `server_probe_result` / `server_roster_gen` / `server_facts_gen`, and the
-    `today()` clock read. The test entries (`WatchlistStore::pump`, `run_for_test`, `WatchlistInput::for_test`)
-    hand a generation-1 seat.
+  - **W1 leftovers (retired by W2).** At W1, the Watchlist still read `copy_rank::current_server`,
+    `find::client_for`, `guid_of::client_for`, `server_ids` / `server_probe_result` / `server_roster_gen` /
+    `server_facts_gen`, and `today()`. These are not current step exceptions: W2 moved client lookup to
+    worker transport and roster, ranking and UTC-date facts to host-captured snapshots. At W1, the test
+    entries (`WatchlistStore::pump`, `run_for_test`, `WatchlistInput::for_test`) handed a generation-1 seat.
 - **A refusal the step can observe.** The runner may decline to start a job: the thread ceiling, a
   registry that moved on between the step and the launch (the client the job names is no longer the
   one the slot holds), or a `Held` runner whose client is gone. It then calls the port's `refused`,
@@ -790,9 +791,10 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   registry: each is handed the `&Session` the app read. This is the second consumer of the pattern Search's
   household scope began (`Bridge::household_ids`, the Bridge reads, the store takes the value), and of the
   controlled run's `preferences`, which is the same value handed under the `""` key. No job kind and no
-  runner arm is added; every replay fixture is byte-identical. One path is not yet handed: the roster
-  reconcile (`sync_roster_owned` -> `reconcile_pins_from` -> `pin_record_for`) is given
-  `sync_roster_owned`'s own in-machine `peek()`, which stays on the ledger until B-E.
+  runner arm was added at this checkpoint; every replay fixture was byte-identical. The roster reconcile
+  (`sync_roster_owned` -> `reconcile_pins_from` -> `pin_record_for`) still used an in-machine `peek()`
+  then. S4 retired that ledger entry: `sync_roster_owned` now consumes `BrowseRosterInput`, and pin
+  reconciliation receives the captured `input.session` and `input.profile_key`.
   - **Observe, then read.** `Bridge::browse_session` is the one production reader: it calls
     `BrowseStore::observe_pin_write` FIRST, then `session::peek()`. The write's receipt is sent after the
     storage worker installed the written session, so a session read after seeing the receipt contains the
@@ -807,12 +809,14 @@ worker start and the `client_for` read inside that worker are gone too. The hous
     `Discovery` (a `debug_assert`, and a dropped command with a log line in a release build) rather than
     read the registry; both reach `run_with_session`. The `Machine` arms hand the step no keys and no
     session.
-  - **What stays.** `current_profile_key` (the profile is a published key, not a session read), the
-    `queue_update` / `queue_update_ticket` merge under IO, `peek_settled`, and B-E's reads
-    (`discovery_needs_pump`, `sync_roster_owned`). The first-run gate's session is read by its two
-    callers, boot and `follow_auth_landing`, where each asks. The test entry points (`*_for_test`, the
-    `#[cfg(test)]` `resolve_pins` / `apply_pins` / `record_pins` shims) read the registry as of now, after
-    observing the pin write, as the Bridge does.
+  - **Historical leftovers (machine reads retired by S4).** This checkpoint still listed
+    `current_profile_key`, `peek_settled`, and B-E's reads (`discovery_needs_pump`, `sync_roster_owned`).
+    S4 retired the Browse globals ledger: roster reconciliation and discovery now consume captured
+    roster, session, settled and profile facts through `BrowseRosterInput`. The `queue_update` /
+    `queue_update_ticket` session merge remains IO-boundary work. The first-run gate's session is read
+    by its callers, boot and `follow_auth_landing`. At this checkpoint, the test entry points
+    (`*_for_test`, the `#[cfg(test)]` `resolve_pins` / `apply_pins` / `record_pins` shims) read the registry
+    after observing the pin write, as the Bridge did.
 - **The Metadata reads.** The season tabs, the long-season page window and the Related row's tail
   window (`data/src/metadata.rs`) are the tenth store reads on the lane. `load_season` flips the tab and emits
   `StoreJob::MetaSeason(Job<MetaSeasonReq>, MetaSeasonPort)`, addressed by the season generation it
