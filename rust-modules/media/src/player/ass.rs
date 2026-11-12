@@ -28,7 +28,10 @@ const MAX_REGIONS: usize = 64;
 mod aligns;
 mod font_names;
 mod pool;
+#[allow(dead_code)] // red commit: the decision is not wired in yet
+mod scale;
 pub use aligns::AlignSet;
+pub use scale::RenderScale;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Event {
@@ -1570,3 +1573,5 @@ pub(crate) mod synth_fonts;
 mod tests;
 #[cfg(test)]
 mod mailbox_tests;
+#[cfg(test)]
+mod scale_tests;
