@@ -1,5 +1,7 @@
 //! Styled subtitles, rendered by our pinned libass on a worker, and on up to two helpers while a
-//! moving cue needs more frames than one worker can make (issue #1328). The SDL thread
+//! moving cue needs more frames than one worker can make (issue #1328); a moving stretch that the
+//! renderers still cannot make thirty frames a second of is drawn at two thirds or half of the
+//! output size (`scale`, `docs/ass-subtitles.md`). The SDL thread
 //! only replaces a bounded request slot and reads an immutable RGBA publication;
 //! it never parses fonts/events, rasterizes, or waits for the native renderer.
 use std::ffi::CString;
