@@ -1,4 +1,4 @@
-{"updated":"2026-11-12T16:04:55Z",
+{"updated":"2026-11-12T16:44:05Z",
 "ci":[
 {"id":31774159986,"at":"2026-08-14T05:48:08Z","sha":"6c7b13547","title":"scrub: the friend's library name, in a doc comment this branch wrote","pr":35,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"cross-build (armv7) + artifact assertions":83},"failed":["host checks (NOT a device gate)"]},
 {"id":31774287269,"at":"2026-08-14T05:50:30Z","sha":"b413a641a","title":"library: the chip a pointer clicked is a lookup, not an index","pr":35,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"cross-build (armv7) + artifact assertions":97},"failed":["host checks (NOT a device gate)"]},
@@ -5058,7 +5058,8 @@
 {"id":43224012500,"at":"2026-11-12T13:05:47Z","sha":"ed34ea2a8","title":"Test that a handoff captures the stop it waits for; correct plan.rs's purity note and the fallback's cost","pr":1349,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":301,"macOS simulator build + launch":234,"Windows launcher syntax":22,"Linux simulator build + launch":272}},
 {"id":43225185606,"at":"2026-11-12T13:13:08Z","sha":"22328ec58","title":"mock_pms: the continuous queue reads a show's episodes through items alone","pr":1349,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":301,"Windows launcher syntax":22,"macOS tests against bundled FFmpeg and ASS":218,"macOS simulator build + launch":127}},
 {"id":43227084316,"at":"2026-11-12T13:25:00Z","sha":"9f43dba98","title":"Player: Previous always plays the previous episode, and a fresh play has one to go to","pr":1349,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":210,"Windows launcher syntax":20,"macOS tests against bundled FFmpeg and ASS":156,"Linux simulator build + launch":277}},
-{"id":43245351227,"at":"2026-11-12T15:12:53Z","sha":"015868116","title":"release: 0.10.0","pr":null,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":273,"Windows launcher syntax":26,"Linux simulator build + launch":369,"macOS simulator build + launch":144}}
+{"id":43245351227,"at":"2026-11-12T15:12:53Z","sha":"015868116","title":"release: 0.10.0","pr":null,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":273,"Windows launcher syntax":26,"Linux simulator build + launch":369,"macOS simulator build + launch":144}},
+{"id":43260437075,"at":"2026-11-12T16:36:02Z","sha":"7a712870b","title":"Demo mock: say in the clearLogo comment which path the app asks for","pr":1355,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":22,"macOS tests against bundled FFmpeg and ASS":160,"Linux simulator build + launch":307,"macOS simulator build + launch":162}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
