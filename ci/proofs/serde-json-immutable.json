@@ -239,7 +239,7 @@
       ],
       "unbounded_depth": []
     },
-    "guard": "all local manifest/config bytes and complete Cargo.lock pinned; no indexmap/foldhash lock edges",
+    "guard": "all local manifest/config bytes and complete Cargo.lock pinned except coherent non-resolving root release version; no indexmap/foldhash lock edges",
     "locked_dependencies": [
       "itoa",
       "memchr",
@@ -371,9 +371,9 @@
       ".cargo/config": null,
       ".cargo/config.toml": "82f061c716740e16cfee63a74d87159e0e0dc253e1092b87c54190c603515b14"
     },
-    "lock_sha256": "d10b0a9b66120d1bc465148486c75fbcf8471f40e0f2c63b7e887449e81e144f",
+    "lock_sha256": "a1e4a5b1dc4a4ae661f41b037dc040caf348136efa23976da56786259897383f",
     "manifests": {
-      "Cargo.toml": "a6ef087f2431af56eeedf74d2bf9b66648442889cc2451eb18ac58e3556277fe",
+      "Cargo.toml": "fbeb900767c6d3a7091b0366cdaf79753f45384be9b39a649dd8e7decbf40fb6",
       "appkit/Cargo.toml": "1e3a33f392110f269537b12f12879c6bc15309aca304b189d6b0346edf8a1186",
       "base/Cargo.toml": "ebe0b95553bd44f33f422f7d8e22b75ddeb53c7ee81bbe738f675690694568f7",
       "data/Cargo.toml": "dc246544384d3cfe5648b13cfcbd67edff69f027d22a268dd6fdca53bdf1e794",
@@ -605,6 +605,6 @@
         "lib_sha256": "1b5373566db1931371a191b5e0619d48fbc7cec93d07d95669668e481187517e"
       }
     },
-    "text_hashing": "sha256-utf8-bytes-crlf-to-lf"
+    "text_hashing": "sha256-utf8-bytes-crlf-to-lf-local-root-version-v1"
   }
 }

@@ -2971,7 +2971,24 @@ impl<'a> BrowseScope<'a> {
     /// may both report generation zero while naming different libraries. The replayed cache fields
     /// are fixed-width atomics; fold the actual `(server, section, pin)` input into that existing
     /// shape instead of adding a global owner selector.
-    fn cache_key(&self) -> u32 { self.sections_gen }
+    fn cache_key(&self) -> u32 {
+        // An empty pin table carries no new Home membership, even when discovery advances.
+        if self.pins.is_empty() { return 0; }
+        let mut hash = 0x811c_9dc5u32;
+        let mut fold = |bytes: &[u8]| {
+            for byte in bytes {
+                hash = (hash ^ u32::from(*byte)).wrapping_mul(0x0100_0193);
+            }
+        };
+        fold(&self.sections_gen.to_le_bytes());
+        fold(&(self.pins.len() as u64).to_le_bytes());
+        for (sid, section, pinned) in self.pins {
+            fold(&sid.raw().to_le_bytes());
+            fold(&section.to_le_bytes());
+            fold(&[*pinned as u8]);
+        }
+        hash
+    }
 }
 
 /// The registry's answer for every active server slot as of now, for a test that drives a step: the

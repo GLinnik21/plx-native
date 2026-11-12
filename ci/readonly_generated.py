@@ -10,10 +10,10 @@ overrides, output tampering or unsafe-code/compiler unsoundness attestation.
 from pathlib import Path
 import json
 import re
-from readonly_dependencies import _local_sha, _sha, _json, _manifest_paths, _configs
+from readonly_dependencies import _local_sha, _sha, _json, _manifest_paths, _configs, _workspace_hashes, WORKSPACE_HASHING
 
 CERTIFICATE_PATH = Path(__file__).with_name('proofs') / 'platform-generated-enums.json'
-CERTIFICATE_SHA256 = '02e7d8fa2f88d80e204e3f10e3c213248f0deebc4aabbafc5d0c454da6bdd0ee'
+CERTIFICATE_SHA256 = '0f020e2791e3b371373bad85574363295fca450b1f9c2f46321bae72391a6dc5'
 SOURCES = ['platform/Cargo.toml', 'platform/src/lib.rs', 'platform/src/i18n/mod.rs',
            'platform/build.rs', 'platform/build_support/catalog.rs', 'build_support/install_identities.rs',
            'machine/src/lib.rs', 'machine/src/machine.rs']
@@ -41,12 +41,13 @@ def source_hashes(root):
 def produce_certificate(root):
     """Review all executable sources on regeneration; catalogue additions need no pin."""
     root = Path(root).resolve()
+    hashes = _workspace_hashes(root, _manifest_paths(root))
     return {'schema': 'plx.readonly.generated-unit-enums.v1', 'package': 'plx_platform',
             'module': 'platform/src/i18n/mod.rs',
             'include': 'include!(concat!(env!("OUT_DIR"), "/languages.rs"));',
             'sources': source_hashes(root),
-            'manifests': {p: _local_sha((root / p).read_bytes()) for p in _manifest_paths(root)},
-            'configs': _configs(root), 'lock': _local_sha((root / 'Cargo.lock').read_bytes()),
+            'text_hashing': WORKSPACE_HASHING, 'manifests': hashes['manifests'],
+            'configs': _configs(root), 'lock': hashes['lock_sha256'],
             'grammar': GRAMMAR, 'machine_newtype': 'reviewed local newtype macro emits pub struct Name(pub u32); doc attributes only',
             'review': ['build.rs -> catalog::build(locales, OUT_DIR), no cfg-dependent producer',
                        'parse_registry derives variant solely from validated ASCII tag',

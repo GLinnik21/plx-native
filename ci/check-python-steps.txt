@@ -410,3 +410,4 @@ python3 ci/test_transition_arguments.py
 # free-space/clock override refused unless every root is named. Temp dirs, a faked two-volume device check and a shutil stand-in for `ditto`
 # (one darwin-only test drives the real one); touches no real cache, config or volume.
 python3 ci/test_cold_store.py
+python3 ci/test_verdict_data_captured_inputs_source_oracle.py

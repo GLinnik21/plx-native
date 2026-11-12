@@ -17,7 +17,7 @@ import re
 import tarfile
 
 CERTIFICATE_PATH = Path(__file__).with_name('proofs') / 'serde-json-immutable.json'
-CERTIFICATE_SHA256 = '9f2a8893267e633ce72f76b0c9b3e2f4e3d60f0a29602f6e8c16ebe6d6b31e10'
+CERTIFICATE_SHA256 = 'd73dc7b1fabf6fd4ab2b4db52f7a7d72d618f329b91290c50cfc82dcd822c5c0'
 SCHEMA = 'plx.readonly.locked-json.v1'
 REGISTRY = 'registry+https://github.com/rust-lang/crates.io-index'
 SUPPORTED = ['alloc', 'arbitrary_precision', 'default', 'float_roundtrip', 'raw_value', 'std', 'unbounded_depth']
@@ -177,6 +177,45 @@ def _manifest_paths(root):
     return ['Cargo.toml'] + [m + '/Cargo.toml' for m in sorted(set(members))]
 
 
+WORKSPACE_HASHING = 'sha256-utf8-bytes-crlf-to-lf-local-root-version-v1'
+
+
+def _mask_local_version(text, section, version):
+    matches = list(re.finditer(r'(?m)^version[ \t]*=[ \t]*"([^"\n]+)"[ \t]*(?:#[^\n]*)?$', section))
+    if len(matches) != 1 or matches[0][1] != version or text.count(section) != 1:
+        raise ValueError('unsupported local root version assignment')
+    match = matches[0]
+    start = text.index(section) + match.start(1)
+    end = start + len(version)
+    return text[:start] + '<local-root-version>' + text[end:]
+
+
+def _workspace_hashes(root, paths):
+    """Pin all bytes except the root app's coherent, non-resolving release number.
+
+    The app build.rs reports this number; it does not select the locked JSON
+    source or the platform enum producer. Member/dependency versions, features,
+    source identities, comments and all other metadata remain byte-pinned.
+    """
+    manifest = (root / 'Cargo.toml').read_bytes().replace(b'\r\n', b'\n').decode('utf-8')
+    section = _sections(manifest)['package']
+    package = _table(section)
+    name, version = package['name'], package['version']
+    if not isinstance(name, str) or not isinstance(version, str) or not re.fullmatch(r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)', version):
+        raise ValueError('unsupported local root package version')
+    lock = (root / 'Cargo.lock').read_bytes().replace(b'\r\n', b'\n').decode('utf-8')
+    entries = [(body, _table(body)) for body in lock.split('[[package]]')[1:]]
+    local = [(body, entry) for body, entry in entries if entry.get('name') == name]
+    if len(local) != 1 or local[0][1].get('version') != version or {'source', 'checksum'} & set(local[0][1]):
+        raise ValueError('ambiguous/nonlocal root lock identity or version mismatch')
+    if any(dep.split(' ')[0] == name for _, entry in entries for dep in entry.get('dependencies', [])):
+        raise ValueError('root version participates in dependency resolution')
+    manifests = {p: _local_sha((root / p).read_bytes()) for p in paths}
+    manifests['Cargo.toml'] = _sha(_mask_local_version(manifest, section, version).encode('utf-8'))
+    return {'manifests': manifests,
+            'lock_sha256': _sha(_mask_local_version(lock, local[0][0], version).encode('utf-8'))}
+
+
 def _configs(root):
     return {name: _local_sha((root / name).read_bytes()) if (root / name).exists() else None
             for name in ('.cargo/config', '.cargo/config.toml', '../.cargo/config', '../.cargo/config.toml')}
@@ -311,6 +350,7 @@ def produce_certificate(root, archive):
         raise ValueError('archive package identity mismatch')
     declarations, features = _review(sources)
     paths = _manifest_paths(root)
+    hashes = _workspace_hashes(root, paths)
     for name, digest in _configs(root).items():
         if digest is not None:
             text = (root / name).read_text(encoding='utf-8')
@@ -323,9 +363,9 @@ def produce_certificate(root, archive):
             'declarations': declarations, 'grammar': GRAMMAR,
             'features': {'definitions': features, 'supported': SUPPORTED, 'unsupported': ['preserve_order'],
                          'locked_dependencies': dependencies,
-                         'guard': 'all local manifest/config bytes and complete Cargo.lock pinned; no indexmap/foldhash lock edges'},
-            'workspace': {'text_hashing': 'sha256-utf8-bytes-crlf-to-lf', 'manifests': {p: _local_sha((root / p).read_bytes()) for p in paths},
-                          'lock_sha256': _local_sha((root / 'Cargo.lock').read_bytes()),
+                         'guard': 'all local manifest/config bytes and complete Cargo.lock pinned except coherent non-resolving root release version; no indexmap/foldhash lock edges'},
+            'workspace': {'text_hashing': WORKSPACE_HASHING, 'manifests': hashes['manifests'],
+                          'lock_sha256': hashes['lock_sha256'],
                           'configs': _configs(root), 'owners': _bindings(root, paths, package)},
             'trust_boundary': ['reviewed archive bytes and canonical crates.io Cargo identity',
                                'Rust/std sound owned container axioms; arbitrary_precision is owned String',
@@ -337,7 +377,7 @@ def produce_certificate(root, archive):
 def _load_certificate():
     certificate = json.loads(CERTIFICATE_PATH.read_text(encoding='utf-8'))
     if _sha(_json(certificate)) != CERTIFICATE_SHA256: raise ValueError('unreviewed certificate')
-    if certificate['workspace']['text_hashing'] != 'sha256-utf8-bytes-crlf-to-lf':
+    if certificate['workspace']['text_hashing'] != WORKSPACE_HASHING:
         raise ValueError('unsupported workspace text hashing')
     if certificate['schema'] != SCHEMA or certificate['grammar'] != GRAMMAR:
         raise ValueError('unsupported certificate grammar/schema')
@@ -399,9 +439,9 @@ def provenance(rust_modules_root, source_file, type_tokens, namespace_context=No
         certificate = _load_certificate()
         workspace = certificate['workspace']
         if set(_manifest_paths(root)) != set(workspace['manifests']): return None
-        for path, digest in workspace['manifests'].items():
-            if _local_sha((root / path).read_bytes()) != digest: return None
-        if _local_sha((root / 'Cargo.lock').read_bytes()) != workspace['lock_sha256'] or _configs(root) != workspace['configs']:
+        hashes = _workspace_hashes(root, _manifest_paths(root))
+        if hashes['manifests'] != workspace['manifests']: return None
+        if hashes['lock_sha256'] != workspace['lock_sha256'] or _configs(root) != workspace['configs']:
             return None
         package, dependencies = _locked(root)
         if package != certificate['package'] or dependencies != certificate['features']['locked_dependencies']: return None

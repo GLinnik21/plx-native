@@ -693,7 +693,7 @@ impl plx_ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
             Fx::CancelTimer(_) => "CancelTimer", Fx::Press(_) => "Press",
             Fx::Remember { .. } => "Remember", Fx::Log(_) => "Log", Fx::App(_) => "App",
         };
-        let payload = match super::bootstrap::effects::encode(&stamped.fx) {
+        let payload = match super::bootstrap::effects::encode_from(stamped.from, &stamped.fx) {
             Ok(payload) => payload,
             Err(reason) => { self.refuse(reason); return; }
         };
@@ -1450,6 +1450,48 @@ mod tests {
         Recplay::Replaying(Replay { resolution:ResolutionReplay {mode,..Default::default()}, rec,
             at:0,graded:0,diverged:0,present_diffs:0,result_diffs:0,land_diffs:0,result_at:0,
             effect_at:0,input_at:0,input_diffs:0,effect_diffs:0,started:false,failure:None })
+    }
+
+    #[test]
+    fn person_sender_provenance_is_checked_when_recording_and_in_both_replay_modes() {
+        use plx_machine::machine::{Delivery, Fx, InstanceId, MachineId, Stamped};
+        use plx_screens::registry::AppMsg;
+        use plx_ui::dispatch::Tap;
+        use super::super::bridge::AppHost;
+        let _serial = plx_base::testlock::serial();
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
+        let sender = MachineId::Instance(InstanceId(3));
+        let delivery = |from| Stamped { from, fx: Fx::Deliver(
+            MachineId::Store(plx_data::stores::StoreId::Person.ord()),
+            Delivery::Machine(AppMsg::PersonCommand { from: sender,
+                command: plx_data::stores::person::PersonCmd::Close })) };
+        let sink = plx_ui::rec::MemSink::default();
+        let segments = sink.segments.clone();
+        let manifest = Header::new(state_fp(), &initial).to_json().to_string();
+        let mut rec = Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
+        rec.tick(0, 0.0);
+        Tap::<AppHost>::effect(&mut rec, 0, &delivery(sender));
+        rec.end_frame(&|| 7);
+        assert!(!rec.finish(plx_machine::landgate::fixture_gate()));
+        let recording = Recording::parse(&manifest,
+            &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(), state_fp()).unwrap();
+        let mut refused = Recplay::recording_with_sink(&initial,
+            Box::new(plx_ui::rec::MemSink::default())).unwrap();
+        Tap::<AppHost>::effect(&mut refused, 0, &delivery(MachineId::Nav));
+        let Recplay::Recording(r) = &refused else { unreachable!() };
+        assert_eq!(r.failure, Some("mismatched controlled Person sender or destination"));
+        for mode in [ReplayMode::Targets, ReplayMode::Resolve] {
+            for valid in [true, false] {
+                let mut replay = replay_for_test(copy_recording(&recording), mode);
+                replay.tick(0, 0.0);
+                Tap::<AppHost>::effect(&mut replay, 0,
+                    &delivery(if valid { sender } else { MachineId::Nav }));
+                let Recplay::Replaying(r) = replay else { unreachable!() };
+                assert_eq!(r.failure, (!valid).then_some("mismatched controlled Person sender or destination"));
+                assert_eq!(r.effect_at, usize::from(valid));
+                assert_eq!(r.effect_diffs, 0);
+            }
+        }
     }
 
     #[test]

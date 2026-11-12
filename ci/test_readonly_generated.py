@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import unittest
 import readonly_generated as generated
+import readonly_dependencies as dependency
 from machine_readonly import Proof, imports
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,6 +126,103 @@ class GeneratedProofTests(unittest.TestCase):
         path.write_text('mod plx_platform { pub mod i18n { pub enum Preference { Payload(std::cell::Cell<u32>) } } }', encoding='utf-8')
         self.assertFalse(Proof(self.root, gate).inert(path, ['plx_platform', ':', ':', 'i18n', ':', ':', 'Preference']))
         self.assertEqual(imports(['plx_plex', ':', ':', 'probe', ':', ':', '{', 'self', '}']), [('probe', ('plx_plex', 'probe'))])
+
+    def change_root_release(self, version, manifest=True, lock=True):
+        path = self.root / 'Cargo.toml'
+        text = path.read_text(encoding='utf-8')
+        package = dependency._table(dependency._sections(text)['package'])
+        old, name = package['version'], package['name']
+        if manifest:
+            path.write_text(text.replace('version = "' + old + '"', 'version = "' + version + '"', 1), encoding='utf-8')
+        if lock:
+            path = self.root / 'Cargo.lock'
+            old_entry = 'name = "' + name + '"\nversion = "' + old + '"'
+            text = path.read_text(encoding='utf-8')
+            self.assertEqual(text.count(old_entry), 1)
+            path.write_text(text.replace(old_entry, 'name = "' + name + '"\nversion = "' + version + '"'), encoding='utf-8')
+
+    def test_coherent_local_root_release_versions_keep_source_identity(self):
+        for version in ('0.9.0', '0.10.0', '2.34.56'):
+            with self.subTest(version=version):
+                self.change_root_release(version)
+                self.assertTrue(self.evidence() is not None)
+
+    def test_local_root_release_must_match_lock(self):
+        self.change_root_release('4.5.6', lock=False)
+        self.assertFalse(self.evidence() is not None)
+
+    def test_local_root_lock_must_match_manifest(self):
+        self.change_root_release('4.5.6', manifest=False)
+        self.assertFalse(self.evidence() is not None)
+
+    def test_local_root_release_is_not_dependency_or_source_approval(self):
+        self.change_root_release('4.5.6')
+        path = self.root / 'Cargo.lock'
+        original = path.read_text(encoding='utf-8')
+        package = dependency._table(dependency._sections((self.root / 'Cargo.toml').read_text(encoding='utf-8'))['package'])
+        entry = 'name = "' + package['name'] + '"\nversion = "4.5.6"'
+        for extra in ('\nsource = "git+https://example.org/evil"', '\nchecksum = "' + '0' * 64 + '"'):
+            with self.subTest(extra=extra):
+                path.write_text(original.replace(entry, entry + extra), encoding='utf-8')
+                self.assertFalse(self.evidence() is not None)
+        path.write_text(original, encoding='utf-8')
+        path = self.root / 'Cargo.toml'
+        path.write_text(path.read_text(encoding='utf-8') + '\n# unreviewed metadata\n', encoding='utf-8')
+        self.assertFalse(self.evidence() is not None)
+
+    def test_local_root_prerelease_and_noncanonical_versions_fail_closed(self):
+        originals = {p: (self.root / p).read_bytes() for p in ('Cargo.toml', 'Cargo.lock')}
+        for version in ('01.2.3', '1.2.3-rogue', '1.2.3+rogue', '1.2'):
+            with self.subTest(version=version):
+                for p, data in originals.items():
+                    (self.root / p).write_bytes(data)
+                self.change_root_release(version)
+                self.assertFalse(self.evidence() is not None)
+
+    def test_bare_carriage_return_is_not_checkout_normalization(self):
+        for relative in ('Cargo.toml', 'Cargo.lock'):
+            path = self.root / relative
+            original = path.read_bytes()
+            path.write_bytes(original.replace(b'\r\n', b'\n').replace(b'\n', b'\r'))
+            self.assertFalse(self.evidence() is not None)
+            path.write_bytes(original)
+
+    def test_local_root_duplicate_lock_identity_fails_closed(self):
+        self.change_root_release('4.5.6')
+        name = dependency._table(dependency._sections((self.root / 'Cargo.toml').read_text(encoding='utf-8'))['package'])['name']
+        path = self.root / 'Cargo.lock'
+        path.write_text(path.read_text(encoding='utf-8') + '\n[[package]]\nname = "' + name + '"\nversion = "4.5.6"\n', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'ambiguous/nonlocal'):
+            dependency._workspace_hashes(self.root, dependency._manifest_paths(self.root))
+        self.assertFalse(self.evidence() is not None)
+
+    def test_local_root_version_cannot_participate_in_resolution(self):
+        name = dependency._table(dependency._sections((self.root / 'Cargo.toml').read_text(encoding='utf-8'))['package'])['name']
+        path = self.root / 'Cargo.lock'
+        text = path.read_text(encoding='utf-8')
+        path.write_text(text.replace('dependencies = [', 'dependencies = [\n "' + name + '",', 1), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'participates in dependency resolution'):
+            dependency._workspace_hashes(self.root, dependency._manifest_paths(self.root))
+        self.assertFalse(self.evidence() is not None)
+
+    def test_local_root_release_does_not_unpin_dependency_version(self):
+        self.change_root_release('4.5.6')
+        path = self.root / 'Cargo.lock'
+        original = path.read_text(encoding='utf-8')
+        old = 'name = "serde_json"\nversion = "1.0.154"'
+        self.assertIn(old, original)
+        path.write_text(original.replace(old, 'name = "serde_json"\nversion = "1.0.155"'), encoding='utf-8')
+        self.assertFalse(self.evidence() is not None)
+
+    def test_lf_and_crlf_producer_inputs_keep_identity(self):
+        certificate = json.loads(generated.CERTIFICATE_PATH.read_text(encoding='utf-8'))
+        paths = set(certificate['sources']) | set(certificate['manifests']) | {'Cargo.lock'}
+        paths |= {p for p, digest in certificate['configs'].items() if digest is not None}
+        for ending in (b'\n', b'\r\n'):
+            for relative in paths:
+                path = self.root / relative
+                path.write_bytes(path.read_bytes().replace(b'\r\n', b'\n').replace(b'\n', ending))
+            self.assertIsNotNone(self.evidence())
 
 
 if __name__ == '__main__':
