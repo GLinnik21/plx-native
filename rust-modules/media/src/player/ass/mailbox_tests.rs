@@ -1659,7 +1659,9 @@ fn a_new_selection_starts_at_full_size_and_waits_for_the_pool() {
     rig.run(3000);
     assert_eq!(rig.mb.scale(), Full, "the old track's rung is not the new one's");
     assert!(rig.scales.len() > from + 5, "the new selection plans frames");
-    assert!(rig.scales[from..].iter().all(|&(_, scale)| scale == Full), "{:?}", &rig.scales[from..]);
+    // a worker may take one more frame of the old plan before the tick that sees the new key
+    let first = from + rig.scales[from..].iter().position(|(kind, _)| *kind == Kind::Normal).expect("its first frame");
+    assert!(rig.scales[first..].iter().all(|&(_, scale)| scale == Full), "{:?}", &rig.scales[first..]);
     assert_eq!(rig.changes.len(), moves, "no move of its own: {:?}", rig.changes);
 }
 

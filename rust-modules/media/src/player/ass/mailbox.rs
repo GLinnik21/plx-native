@@ -28,11 +28,14 @@
 //! The mailbox keeps the cost of a frame at full size (a frame drawn smaller is taken back to it by
 //! its rung's cost ratio), asks the governor on every tick of the running pipeline which rung the
 //! stretch should be drawn at given the renderers the pool allows ([`Mailbox::set_capacity`]), and
-//! hands the `Pipe` jobs that rung. Only those are drawn smaller: a Normal or Ahead job, the first
-//! frame of a stretch, a still picture and a paused one are drawn at full size, and a still picture
-//! the pipeline handed over drawn smaller is drawn again at full size by one Normal job. The scale
-//! is not part of the [`Key`], so a move never replaces the frame on screen: it stands until a frame
-//! of the new scale lands, and each frame says which scale it was drawn at.
+//! hands the `Pipe` jobs that rung. Only those are drawn smaller (and the Normal job that fills a
+//! hole inside a reduced stretch, so libass's caches are not emptied by a frame of another size and
+//! again by the next): a Normal or Ahead job otherwise, the first frame of a stretch, a still picture
+//! and a paused one are drawn at full size, and a still picture the pipeline handed over drawn
+//! smaller is drawn again at full size by one Normal job. The scale is not part of the [`Key`], so a
+//! move never replaces the frame on screen: it stands until a frame of the new scale lands, and each
+//! frame says which scale it was drawn at. The rung belongs to the selection it was decided for: a
+//! new epoch, source or size starts at full size again and waits for the pool.
 //!
 //! Pure bookkeeping: no thread, no native call, no clock but the one stamp behind [`Job::queued`].
 //! The pace and the playhead arrive as values in [`Mailbox::request`]; the worker takes frames
@@ -331,7 +334,13 @@ impl Mailbox {
         self.requested.map(|(key, _, _)| key)
     }
 
+    /// Queue a Normal job: what the screen needs now, drawn at full size. (A hole inside a reduced
+    /// stretch is recovered at the stretch's own size: [`Mailbox::enqueue_normal_at`].)
     fn enqueue_normal(&mut self, key: Key, now_ms: i64, source: &Arc<Source>) {
+        self.enqueue_normal_at(key, now_ms, source, RenderScale::Full);
+    }
+
+    fn enqueue_normal_at(&mut self, key: Key, now_ms: i64, source: &Arc<Source>, scale: RenderScale) {
         self.seqs += 1;
         self.requested = Some((key, now_ms, self.seqs));
         self.requested_source = Some(source.clone());
@@ -349,7 +358,7 @@ impl Mailbox {
             source: source.clone(),
             queued,
             reference: None,
-            scale: RenderScale::Full,
+            scale,
         });
     }
 
@@ -607,6 +616,11 @@ impl Mailbox {
         // R2.1: a new key (late push, seek, restyle, size change), but for a revision the pipeline
         // takes in.
         if self.requested_key() != Some(key) && !self.adopt_revision(key, now_ms, source, pace) {
+            if self.requested_key().is_none_or(|old| !old.same_timeline(&key)) {
+                // another selection (or size): the rung was decided for the last one, and the pool has
+                // not said what this one may have
+                self.governor = Governor::new();
+            }
             self.enqueue_normal(key, now_ms, source);
             self.next = None;
             self.stop_pipe();
@@ -746,8 +760,10 @@ impl Mailbox {
                         && (lo..=hi).contains(&f.target_ms)
                 });
             if !coming {
-                // a hole: nothing on screen is right and nothing is on its way
-                self.enqueue_normal(key, now_ms, source);
+                // a hole: nothing on screen is right and nothing is on its way. The frame that fills
+                // it is drawn at the size the stretch is: a frame at another size makes libass empty
+                // its caches, and the pipeline's next frame would pay for them again.
+                self.enqueue_normal_at(key, now_ms, source, self.governor.scale());
                 self.stop_pipe();
                 out.wake = true;
                 return out;

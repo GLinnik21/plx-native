@@ -231,10 +231,12 @@ target for 600 ms, and back up one rung only when the larger rung projects under
 step down within 10 s of a step up bars the next step up for 30 s, so a model that is wrong costs one
 flap per half minute at most.
 
-Only the pipeline's `Pipe` jobs are drawn smaller. A Normal or Ahead job, the first frame of a stretch, a
-still cue and a paused player are drawn at full size, and the still picture a reduced stretch hands over
-to is drawn again at full size by one Normal job (the reduced frame stands until it lands, and is not
-withdrawn as "covered"). The scale is not part of the `Key`, so a move never blanks the screen: the frame
+Only the pipeline's `Pipe` jobs are drawn smaller, and the Normal job that fills a hole inside a reduced
+stretch (a frame of another size would empty libass's caches, and the next one would pay for them
+again). Any other Normal or Ahead job, the first frame of a stretch, a still cue and a paused player are
+drawn at full size, and the still picture a reduced stretch hands over to is drawn again at full size by
+one Normal job (the reduced frame stands until it lands, and is not withdrawn as "covered"). The rung
+belongs to the selection it was decided for: a new epoch, source or size starts at full size again. The scale is not part of the `Key`, so a move never blanks the screen: the frame
 on screen stays until a frame at the new scale lands, and each `Frame` says which scale it was drawn at.
 libass empties its caches when the frame size changes, so a render at a new size is cold and is no cost
 sample. Each move is logged once (`ass: render scale 1.00 -> 0.50 cost=.. renderers=.. rate=.. target=..`)
