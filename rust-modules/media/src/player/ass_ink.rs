@@ -8,8 +8,10 @@
 //! pure white wrote the default ink, not a colour choice, so the viewer's colour pick takes it.
 //!
 //! [`recolour`] rewrites the `PrimaryColour` of every style whose primary is exactly white (alpha 0,
-//! RGB `FFFFFF`, whichever spelling: `&H00FFFFFF`, `&HFFFFFF`, `&H00ffffff&`, `$00FFFFFF`, or the SSA
-//! decimal `16777215`) to the pick. A style with any other primary colour, every inline `\c` / `\1c`
+//! RGB `FFFFFF`, in any spelling libass's own `parse_int_header` reads: `&H00FFFFFF`, `&HFFFFFF`,
+//! `&H00ffffff&`, `0x00FFFFFF`, or the SSA decimal `16777215`; a `$00FFFFFF` is not one, libass reads
+//! it as 0) to the pick. The fields are found by the file's own `Format:` line, in whatever order it
+//! lists them, and a header this module cannot read is returned as the file's bytes. A style with any other primary colour, every inline `\c` / `\1c`
 //! override (an explicit white one included), the outline and shadow colours and everything else in
 //! the header are left byte for byte. `SecondaryColour` is karaoke's pre-highlight colour: it follows
 //! only when it is pure white too, so a style whose sweep runs between two different colours keeps
@@ -33,20 +35,35 @@ struct StyleColours {
     secondary: Option<(usize, usize)>,
 }
 
-/// Is the colour field `field` pure opaque white, in any spelling libass reads?
+/// Is the colour field `field` pure opaque white, read the way libass reads it (`parse_int_header` and
+/// `mystrtou32_modulo` in `ass.c`)? A `&h` or `0x` prefix (either case) makes the digits hex, anything
+/// else is decimal; then optional blanks, a sign, for hex an extra `0x`, and digits that wrap modulo
+/// 2**32. The `$` prefix some ASS tools write is not read by libass (it yields 0, black).
 fn is_white(field: &[u8]) -> bool {
     let field = field.trim_ascii();
-    let (digits, radix) = match field {
-        [b'&', b'h' | b'H', rest @ ..] => (rest, 16),
-        [b'$', rest @ ..] => (rest, 16),
+    let (rest, radix) = match field {
+        [b'&', b'h' | b'H', rest @ ..] | [b'0', b'x' | b'X', rest @ ..] => (rest, 16u32),
         _ => (field, 10),
     };
-    let mut value: u64 = 0;
+    let rest = rest.trim_ascii_start();
+    let (rest, negative) = match rest {
+        [b'+', rest @ ..] => (rest, false),
+        [b'-', rest @ ..] => (rest, true),
+        _ => (rest, false),
+    };
+    let rest = match rest {
+        [b'0', b'x' | b'X', rest @ ..] if radix == 16 => rest,
+        _ => rest,
+    };
+    let mut value: u32 = 0;
     let mut any = false;
-    for &b in digits {
+    for &b in rest {
         let Some(d) = (b as char).to_digit(radix) else { break };
-        value = value.saturating_mul(u64::from(radix)).saturating_add(u64::from(d));
+        value = value.wrapping_mul(radix).wrapping_add(d);
         any = true;
+    }
+    if negative {
+        value = value.wrapping_neg();
     }
     any && value == 0x00FF_FFFF
 }
@@ -137,9 +154,16 @@ pub fn recolour(header: &[u8], tone: SubtitleTone) -> Option<Vec<u8>> {
     if edits.is_empty() {
         return None;
     }
+    // libass honours any `Format:` column order, so the primary field may follow the secondary one:
+    // splice in offset order, and a field that would start before the previous edit ended (overlapping
+    // columns a malformed header could produce) is left as the file wrote it, never sliced backwards
+    edits.sort_unstable();
     let mut out = Vec::with_capacity(header.len() + edits.len() * 4);
     let mut at = 0;
     for (from, to) in edits {
+        if from < at || to < from || to > header.len() {
+            continue;
+        }
         out.extend_from_slice(&header[at..from]);
         // keep the field's own padding, replace the colour it spelled
         let field = &header[from..to];
@@ -180,11 +204,13 @@ mod tests {
 
     #[test]
     fn every_spelling_of_pure_opaque_white_is_the_default_ink() {
-        for white in ["&H00FFFFFF", "&H00ffffff", "&HFFFFFF", "&H00FFFFFF&", "&hFFFFFF", "$00FFFFFF", "16777215", " &H00FFFFFF "] {
+        // libass's `parse_int_header`: a `&h`/`0x` prefix then hex, else decimal; the digits wrap modulo 2**32
+        for white in ["&H00FFFFFF", "&H00ffffff", "&HFFFFFF", "&H00FFFFFF&", "&hFFFFFF", "0x00FFFFFF", "0X00ffffff", "16777215", "+16777215", "&H100FFFFFF", " &H00FFFFFF "] {
             assert!(is_white(white.as_bytes()), "{white:?}");
         }
-        // not white: another colour, a transparent or half-transparent white, an off-white, nothing at all
-        for other in ["&H00FFFFFE", "&H01FFFFFF", "&H80FFFFFF", "&HFFFFFFFF", "&H00FF0000", "16777214", "4294967295", "&H", "", "white"] {
+        // not white: another colour, a transparent or half-transparent white, an off-white, nothing at all,
+        // and the `$` prefix other ASS tools write, which libass reads as decimal zero (black)
+        for other in ["$00FFFFFF", "&H00FFFFFE", "&H01FFFFFF", "&H80FFFFFF", "&HFFFFFFFF", "&H00FF0000", "16777214", "4294967295", "-16777215", "&H", "", "white"] {
             assert!(!is_white(other.as_bytes()), "{other:?}");
         }
     }
@@ -236,6 +262,85 @@ mod tests {
         assert!(out.contains("Style: Default, Arial, 20, &H001AE6FF, 255, 0, 0, 0\r\n"), "{out:?}");
         assert!(out.contains("Style: Red,Arial,20,255,255,0,0,0\r\n"));
         assert_eq!(out.replace("&H001AE6FF", "16777215"), ssa);
+    }
+
+    /// libass honours ANY `Format:` column order, so a style's two white colours can sit in the opposite
+    /// order to the one `recolour` found them in: the splice must not assume the primary comes first.
+    #[test]
+    fn a_format_line_may_put_secondary_before_primary_and_every_case_is_rewritten() {
+        let swapped = |styles: &[&str]| {
+            let mut s = String::from("[V4+ Styles]\nFormat: Name, Fontname, Fontsize, SecondaryColour, PrimaryColour, OutlineColour, BackColour\n");
+            for style in styles {
+                s.push_str(style);
+                s.push('\n');
+            }
+            s.push_str("\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:04.00,A,,0,0,0,,Hi\n");
+            s.into_bytes()
+        };
+        let line = |name: &str, secondary: &str, primary: &str| format!("Style: {name},Arial,48,{secondary},{primary},&H00000000,&H80000000");
+        // both white (the case that used to panic), only the primary white, only the secondary white
+        let out = text(&recolour(&swapped(&[&line("A", "&H00FFFFFF", "&H00FFFFFF")]), SubtitleTone::Yellow).expect("both are white"));
+        assert!(out.contains(&format!("Style: A,Arial,48,{YELLOW},{YELLOW},&H00000000,")), "{out}");
+        let out = text(&recolour(&swapped(&[&line("B", "&H000000FF", "&H00FFFFFF")]), SubtitleTone::Yellow).expect("the primary is white"));
+        assert!(out.contains(&format!("Style: B,Arial,48,&H000000FF,{YELLOW},")), "{out}");
+        assert_eq!(recolour(&swapped(&[&line("C", "&H00FFFFFF", "&H0000FFFF")]), SubtitleTone::Yellow), None, "a coloured primary: the pick takes nothing");
+        // several styles, mixed
+        let many = swapped(&[&line("A", "&H00FFFFFF", "&H00FFFFFF"), &line("B", "&H000000FF", "&H00FFFFFF"), &line("C", "&H00FFFFFF", "&H0000FFFF")]);
+        let out = text(&recolour(&many, SubtitleTone::Yellow).unwrap());
+        assert_eq!(out.matches(YELLOW).count(), 3, "{out}");
+        assert!(out.contains("Style: C,Arial,48,&H00FFFFFF,&H0000FFFF,"), "{out}");
+    }
+
+    /// A subtitle file's content must never crash playback: whatever the header says, `recolour` and
+    /// `takes_colour` return, and an unsure header comes back as the file's own bytes (`None`).
+    #[test]
+    fn hostile_headers_never_panic_and_an_unsure_header_is_left_as_the_file_wrote_it() {
+        let good = script(&[&style("Default", "&H00FFFFFF", "&H00FFFFFF")]);
+        let cases: [&[u8]; 10] = [
+            b"[V4+ Styles]\nFormat: PrimaryColour\nStyle: &H00FFFFFF",
+            b"[V4+ Styles]\nFormat: SecondaryColour, PrimaryColour\nStyle: &H00FFFFFF",
+            b"[V4+ Styles]\nFormat: Name, PrimaryColour, SecondaryColour\nStyle: A,&H00FFFFFF",
+            b"[V4+ Styles]\nFormat: Name, PrimaryColour, PrimaryColour\nStyle: A,&H00FFFFFF,&H000000FF",
+            b"[V4+ Styles]\nFormat: Name, SecondaryColour\nStyle: A,&H00FFFFFF\n",
+            b"[V4+ Styles]\r\nFormat: Name, PrimaryColour, SecondaryColour\r\nStyle: A,&H00FFFFFF,&H00FFFFFF\r\nStyle:\r\nStyle: ,,\r\n",
+            b"[V4+ Styles]\nFormat: Name, PrimaryColour\nFormat: Name, SecondaryColour, PrimaryColour\nStyle: A,&H00FFFFFF,&H00FFFFFF\n",
+            b"[V4+ Styles]\nFormat:\nFormat:,,,,\nStyle:,,,,\n[V4+ Styles]\n[V4+ Styles]",
+            b"[V4+ Styles",
+            b"\xff\xfe\x00[V4+ Styles]\nFormat: PrimaryColour\x00\nStyle: \xff,\x80\n",
+        ];
+        for case in cases {
+            let _ = takes_colour(case);
+            let _ = recolour(case, SubtitleTone::Yellow);
+        }
+        // a duplicate Format line: the later one decides the columns, as in libass
+        let dup = b"[V4+ Styles]\nFormat: Name, PrimaryColour\nFormat: Name, SecondaryColour, PrimaryColour\nStyle: A,&H00FFFFFF,&H00FFFFFF\n";
+        assert!(recolour(dup, SubtitleTone::Yellow).is_some());
+        // no colour column at all: nothing to take
+        let none = b"[V4+ Styles]\nFormat: Name, Fontname\nStyle: A,Arial\n";
+        assert_eq!(recolour(none, SubtitleTone::Yellow), None);
+        // every prefix of a good header, and a deterministic scramble of its bytes
+        for end in 0..=good.len() {
+            let _ = recolour(&good[..end], SubtitleTone::Yellow);
+            let _ = takes_colour(&good[..end]);
+        }
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        for _ in 0..4000 {
+            let mut bytes = good.clone();
+            for _ in 0..4 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let at = (seed >> 33) as usize % bytes.len();
+                bytes[at] = match (seed >> 20) & 7 {
+                    0 => b',',
+                    1 => b'\n',
+                    2 => b'\r',
+                    3 => b':',
+                    4 => b'&',
+                    _ => (seed >> 8) as u8,
+                };
+            }
+            let _ = recolour(&bytes, SubtitleTone::Yellow);
+            let _ = takes_colour(&bytes);
+        }
     }
 
     #[test]
