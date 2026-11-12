@@ -2009,7 +2009,7 @@ pub enum AppArg {
     /// store's sort and filter.
     Watchlist,
     /// The Live TV page (`screens::livetv`): a PEER of Home on the strip. It carries nothing — the
-    /// channels are the Home catalog's.
+    /// channels are the Live TV store's (`plx_data::livetv`).
     LiveTv,
     /// Playback. Its panels are NOT here — they are entries on the player page's own
     /// `ModalStack` ([`Self::PlayerOverlay`]), and the container owns which one is up.

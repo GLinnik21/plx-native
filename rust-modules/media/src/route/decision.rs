@@ -11050,6 +11050,8 @@ pub fn retry_current_play(
         crate::player::log("playback retry: no Plex request descriptor");
         return false;
     };
+    // A channel has no position to return to: a retry tunes again and starts at the live edge.
+    let resume_ns = if request.live.is_some() { 0 } else { resume_ns };
     crate::player::log(&format!(
         "playback retry: resolving item again at quality {:?}",
         quality(),

@@ -1640,3 +1640,41 @@ fn a_full_stop_retires_the_live_request_but_replacement_keeps_its_descriptor() {
     }
     crate::player::stop_playback(&mut ps, &mut adapter);
 }
+
+/// A converted channel that fails is tried again by tuning it again, and starts at the live edge.
+/// Its playhead names nothing on a channel, and a resume rebuild needs a library ratingKey that a live
+/// recording never has: the retry used to carry the position into that rebuild, which is refused
+/// without one, so the channel never started again.
+#[test]
+fn a_live_retry_tunes_again_and_starts_at_the_edge_not_at_the_failed_position() {
+    use std::time::Duration;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (port, rx) = live_pms(false);
+    let sid = plx_plex::plex::register_for_test("route-live-retry", "127.0.0.1", port, "tok-live", "cid-live");
+    let mut meta = plx_data::stores::metadata::MetadataStore::default();
+    assert!(request_live(&mut ps, &mut meta, plx_platform::devcaps::caps(), sid, "7",
+        "C101.242.ersatztv.org", "Channel one"));
+    assert!(wait_resolve_workers_for_test(Duration::from_secs(10)));
+    let first = pump_play(&mut ps, &mut meta).expect("the first tune lands");
+    assert_eq!(first.resume_ns, 0, "a first tune starts at the edge");
+    settle_plan_start_in_unit_test(&mut ps, first.route_start);
+
+    // The channel failed 30 seconds into its picture; the retry is handed that playhead.
+    assert!(retry_current_play(&mut ps, &mut meta, 30_000_000_000, None,
+        crate::player::report::AttemptOrigin::UserRetry), "a tuned channel can be tuned again");
+    assert_eq!(unpresented_resume_ns(&ps), 0, "the retry carries no position to return to");
+    assert!(PLAY_RESUME.lock().unwrap_or_else(|e| e.into_inner()).is_none(), "and no resume is pending");
+    assert!(wait_resolve_workers_for_test(Duration::from_secs(10)));
+    let retried = pump_play(&mut ps, &mut meta).expect("the retried tune lands");
+    assert_eq!(retried.resume_ns, 0, "the retry starts at the live edge");
+    settle_plan_start_in_unit_test(&mut ps, retried.route_start);
+
+    let mut tunes = 0;
+    while tunes < 2 {
+        let line = rx.recv_timeout(Duration::from_secs(5)).expect("PMS sees the first tune and the retried one");
+        tunes += usize::from(line.starts_with("POST /livetv/dvrs/7/channels/C101.242.ersatztv.org/tune?"));
+    }
+    scrobble_stop(&mut ps, None, None);
+    drain_scrobble();
+}
