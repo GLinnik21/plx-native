@@ -652,7 +652,7 @@ fn hud_model(
     ps: &plx_media::route::PlaybackSession,
     meta: plx_data::metadata::MetadataView<'_>,
     viewer_paused: bool,
-    live_clock: bool,
+    live_clock_and_lane: bool,
 ) -> plx_appkit::player_hud::model::HudModel {
     let position_ns = plx_media::player::playpos_ns(ps);
     let playpos_ns = position_ns.unwrap_or(0);
@@ -665,7 +665,7 @@ fn hud_model(
     let (is_episode, is_movie) = meta.now_playing().map_or((false, false), |n| (n.is_real_episode, n.is_movie));
     let projected_end_time = if plx_appkit::player_hud::model::end_time_is_eligible(
         plx_appkit::player_hud::model::EndTimeEligibility {
-            enabled: live_clock && plx_media::route::hud_end_time(),
+            enabled: live_clock_and_lane && plx_media::route::hud_end_time(),
             is_movie_or_episode: is_episode || is_movie,
             is_preview: plx_media::route::is_preview(ps),
             advancing,
@@ -734,7 +734,9 @@ fn begin_product_frame(app: &mut App) -> Frame {
 fn publish_player_model(app: &mut App) {
     let mut model = hud_model(&app.player.session, app.bridge.metadata_view(),
         app.adapters.player.backend_viewer_paused().unwrap_or(false),
-        matches!(app.rec, super::recorder::Recplay::Off) && !app.bridge.is_controlled_replay());
+        matches!(app.rec, super::recorder::Recplay::Off) && !app.bridge.is_controlled_replay()
+            // a HUD with no finish-time lane draws no estimate, so none is projected for it
+            && app.hud.as_ref().is_some_and(|hud| hud.compiled.declares_end_time()));
     model.marker_prefs = app.bridge.marker_preferences();
     model.covered = app.pages.surface_up();
     if let Some(screen) = super::bridge::player_mut(&mut app.pages) { screen.set_model(model); }
@@ -2071,6 +2073,9 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         #[cfg(feature = "play-feed")]
         park_on_decoder_release(app);
         app.adapters.player.sync_request_metrics(&mut app.player.session);
+        // The subtitle registries' colour fact, delivered to the session's readout for the Subtitles
+        // menu to read (a field, not a registry): whichever backend plays.
+        plx_media::player::deliver_subtitle_ink(&mut app.player.session);
         let foreground = playback_may_run(app);
         let backend_at = app.adapters.player.backend_tick();
         let _ = app.adapters.player.backend_set_foreground_at(&mut app.player.session, foreground, backend_at);

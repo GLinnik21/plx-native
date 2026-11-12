@@ -51,8 +51,17 @@ fn unplayed_movies_and_shows_get_the_identity_band() {
     }
     let show = PmsMovie { kind: plx_data::pms::KIND_SHOW, child_count: 2, ..movie() };
     assert!(matches!(hero_line(&show), Some(HeroLine::Metadata { .. })));
-    assert_eq!(premise(&PmsMovie { viewed_leaf_count: Some(1), ..show }), FIRST);
-    assert_eq!(premise(&PmsMovie { watched: true, ..movie() }), FIRST);
+    // Owner, v0.10.0 rc1 ("why this movie has description instead of Movie • Year • Length?"): a
+    // movie or show reads its identity band whether or not it has been played; the premise is for
+    // the kinds that have no identity band (a season, a collection).
+    for played in [
+        PmsMovie { viewed_leaf_count: Some(1), ..show.clone() },
+        PmsMovie { watched: true, ..show },
+        PmsMovie { watched: true, ..movie() },
+    ] {
+        assert!(matches!(hero_line(&played), Some(HeroLine::Metadata { .. })), "{:?}", played.kind);
+    }
+    assert_eq!(premise(&PmsMovie { kind: plx_data::pms::KIND_COLLECTION, ..movie() }), FIRST);
     let bare = PmsMovie::default();
     assert!(matches!(hero_line(&bare), Some(HeroLine::Metadata { date, length, genres, rating, .. })
         if date.is_empty() && length.is_empty() && genres.is_empty() && rating.is_empty()));
@@ -68,11 +77,10 @@ fn the_ladder_keeps_its_anchor_for_every_line() {
                   remembers, a woman crosses the frozen wastes, hunting the dragon she raised, \
                   carrying everything she still owns, and nothing she wants to keep"
             .into(),
-        kind: 1,
-        watched: true,
+        kind: plx_data::pms::KIND_COLLECTION,
         ..movie()
     };
-    let one = PmsMovie { kind: 1, watched: true, ..movie() };
+    let one = PmsMovie { kind: plx_data::pms::KIND_COLLECTION, ..movie() };
     let resumed = PmsMovie { resume_ms: 7 * MIN, ..movie() };
     let long_label = episode();
     assert_eq!(home_synopsis(FIRST).measure_h(theme::hero::HOME_SYNOPSIS_W), HOME_LABEL_H, "the premise: the first sentence is one line");
@@ -94,7 +102,7 @@ fn the_ladder_keeps_its_anchor_for_every_line() {
     assert_eq!(s_one.title.y - s_two.title.y, HOME_LABEL_H, "a one-line block brings the title down a line");
     assert_eq!((s_resumed.title.y, s_resumed.block), (s_label.title.y, s_label.block), "a label is a label");
     // no line: the title stands alone over the actions
-    let mute = PmsMovie { summary: String::new(), kind: plx_data::pms::KIND_SHOW, watched: true, ..movie() };
+    let mute = PmsMovie { summary: String::new(), kind: plx_data::pms::KIND_COLLECTION, ..movie() };
     assert!(stack(&mute).block.is_none());
 }
 
@@ -137,4 +145,41 @@ fn sparse_episode_uses_its_title_or_omits_the_empty_row() {
     assert!(matches!(hero_line(&ep), Some(HeroLine::Metadata { identity, .. }) if identity == "Pilot"));
     ep.show_title.clear();
     assert!(hero_line(&ep).is_none(), "the logo rung already carries the episode's title");
+}
+
+/// **The gap from the title to the line under it is one rule for art and for type** (owner, v0.10.0
+/// 2: a hero titled in type sat its glyphs almost on the metadata line while a clearLogo had even
+/// air). The ladder (`hero_ladder`) puts the title band's foot `HOME_TITLE_GAP` above the block and
+/// the block `HOME_ACTIONS_GAP` above the actions; the title's PAINTED box ends on that foot
+/// whether it is a logo's box (`hero_logo::place`) or type with its descenders
+/// (`HeroLogo::painted`), also for a title that wraps to two lines.
+#[test]
+fn the_title_to_metadata_to_actions_gaps_are_the_same_for_art_and_for_type() {
+    use plx_ui::hero_logo::{self, HeroLogo, LogoRung};
+    use plx_ui::label::HAlign;
+    let m = plx_ui::fixture::FixtureMeasure;
+    let long = "The Unbearably Long Name of the Last House at the Edge of the World";
+    let hero = movie();
+    let (stack, line) = hero_ladder(&hero);
+    assert!(matches!(line, Some(HeroLine::Metadata { .. })));
+    let block = stack.block.expect("the identity band");
+    let band = hero_title_band(&stack);
+    let foot = band.y + band.h;
+    let gap_to_meta = |painted_bottom: f32| block.y - painted_bottom;
+    // art: a logo box of any shape ends on the foot
+    for (w, h) in [(400.0, 80.0), (300.0, 240.0)] {
+        let logo = hero_logo::place(band, w, h, HAlign::Left);
+        assert_eq!(gap_to_meta(logo.y + logo.h), plx_ui::theme::hero::HOME_TITLE_GAP);
+    }
+    // type: one line, no descender or with one, and a title that wraps
+    for title in ["Backrooms", "Hollow Coast", long] {
+        let typed = HeroLogo::new(0, "", title, LogoRung::Hero).painted(band, &m);
+        assert_eq!(typed.y + typed.h, foot, "{title}: type ends on the foot as art does");
+        assert_eq!(gap_to_meta(typed.y + typed.h), plx_ui::theme::hero::HOME_TITLE_GAP, "{title}");
+    }
+    assert_eq!(
+        stack.actions.y - (block.y + block.h),
+        plx_ui::theme::hero::HOME_ACTIONS_GAP,
+        "the block's foot to the actions is the ladder's other gap"
+    );
 }

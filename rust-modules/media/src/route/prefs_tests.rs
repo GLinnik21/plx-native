@@ -392,7 +392,7 @@ fn every_live_setting_is_picked_into_the_seated_profiles_record() {
     assert!(confirm::<NextEpisodeModePref>(NextEpisodeMode::Off));
     assert!(confirm::<SkipIntervalPref>(SkipInterval::Seconds60));
     assert!(confirm::<DeckPressPref>(DeckPress::Details));
-    assert!(confirm::<SubtitleTonePref>(SubtitleTone::Grey));
+    assert!(confirm::<SubtitleTonePref>(SubtitleTone::Yellow));
     assert!(confirm::<AudioEnhancementsPref>(AudioEnhancements::NONE));
     assert!(confirm::<TrailerAutoplayPref>(true), "over the TV's off: an own value, on");
 
@@ -405,7 +405,7 @@ fn every_live_setting_is_picked_into_the_seated_profiles_record() {
     assert_eq!(
         cells(),
         Cells(Quality::P480, DirectPlayMode::Disabled, SubtitleSize::ExtraLarge, SubtitlePosition::Middle,
-            NextEpisodeMode::Off, SkipInterval::Seconds60, DeckPress::Details, SubtitleTone::Grey,
+            NextEpisodeMode::Off, SkipInterval::Seconds60, DeckPress::Details, SubtitleTone::Yellow,
             AudioEnhancements::NONE, HdrOverlayBrightness::ThreeQuarters, true)
     );
 }
@@ -541,8 +541,52 @@ fn how_settings_follows_the_rows_declared_policy() {
     assert!(matches!(How::settings::<DeckPressPref>(tx.clone()), How::Confirm(_)));
     assert!(matches!(How::settings::<QualityPref>(tx.clone()), How::Confirm(_)));
     assert!(matches!(How::settings::<SubtitleSizePref>(tx.clone()), How::Optimistic(Some(_))));
-    assert!(matches!(How::settings::<SubtitlePositionPref>(tx), How::Optimistic(Some(_))));
+    assert!(matches!(How::settings::<SubtitlePositionPref>(tx.clone()), How::Optimistic(Some(_))));
+    assert!(matches!(How::settings::<SubtitleTonePref>(tx), How::Optimistic(Some(_))));
 }
+
+/// **The Subtitle colour has a Settings row**, so a `Choice` saves it: the player's Color section
+/// was its only writer until it joined Size and Position under Settings > Audio & subtitles.
+#[test]
+fn the_subtitle_colour_is_a_settings_choice() {
+    assert!(Choice::KEYS.contains(&"subtitle_tone"), "{:?}", Choice::KEYS);
+    assert!(settings_rows().contains("subtitle_tone"));
+}
+
+/// **The Subtitle colour is a per-profile pick.** A profile that never chose reads the install's
+/// older value (white when the install has none either, which is the look every build before the
+/// colour drew); a pick made through the Settings door is the seated profile's own, shows live at
+/// once and is the one the seat restores, while another profile keeps reading its fallback.
+#[test]
+fn the_subtitle_colour_is_a_per_profile_pick_that_defaults_to_the_install_value() {
+    let _g = plx_base::testlock::serial();
+    let session = session::TempSession::new("colour-per-profile");
+    let _restore = Put::back(cells());
+    assert_eq!(session.seated("u1", TOKEN), stamp());
+    let install = Preferences { subtitle_tone: SubtitleTone::Silver, ..Preferences::default() };
+    session::save(&record(install, vec![]));
+    seed_profile_prefs_for_test(&session::peek());
+    let stored = |who: &str| stored_effective::<SubtitleTonePref>(&session::load(), &seat(who));
+    assert_eq!(stored("u1"), SubtitleTone::Silver, "u1 has picked nothing: the install's older value");
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    choose::<SubtitleTonePref>(SubtitleTone::Yellow, How::settings::<SubtitleTonePref>(tx));
+    assert_eq!(crate::player::subtitle_tone(), SubtitleTone::Yellow, "live at once");
+    assert!(rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap(), "and saved");
+    assert_eq!(stored("u1"), SubtitleTone::Yellow);
+    assert_eq!(stored("u2"), SubtitleTone::Silver, "u2 keeps reading the fallback, not u1's pick");
+    assert_eq!(session::load().prefs.subtitle_tone, SubtitleTone::Silver, "and the install's key is untouched");
+
+    let after = session::load();
+    restore(&after, &seat("u2"), Overrides::default());
+    assert_eq!(crate::player::subtitle_tone(), SubtitleTone::Silver, "u2 is seated: the fallback");
+    restore(&after, &seat("u1"), Overrides::default());
+    assert_eq!(crate::player::subtitle_tone(), SubtitleTone::Yellow, "u1 is back: its own pick");
+
+    restore(&record(Preferences::default(), vec![]), &seat("u3"), Overrides::default());
+    assert_eq!(crate::player::subtitle_tone(), SubtitleTone::White, "no profile and no install value: white");
+}
+
 
 /// The keys of the descriptors that have a Settings row, as plex declares them.
 fn settings_rows() -> BTreeSet<&'static str> {
@@ -577,7 +621,7 @@ fn t_settings_catches_a_row_or_choice_dropped() {
     rows.remove("playback_quality"); // the Quality row's SETTINGS fact dropped
     assert!(!agrees(&rows), "a Choice whose setting has no Settings row is caught");
     rows.insert("playback_quality");
-    rows.insert("subtitle_tone"); // a panel-only setting gains a row with no Choice
+    rows.insert("audio_enhancements"); // a panel-only setting gains a row with no Choice
     assert!(!agrees(&rows), "a Settings row with no Choice is caught");
 }
 

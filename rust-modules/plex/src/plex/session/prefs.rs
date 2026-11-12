@@ -550,9 +550,10 @@ setting!(SubtitlePositionPref: SubtitlePosition = subtitle_position, "subtitle_p
     account false, live true, settings Some(SettingsWrite::Optimistic), parse Soft);
 setting!(HdrOverlayBrightnessPref: HdrOverlayBrightness = hdr_overlay_brightness, "hdr_overlay_brightness",
     Profile fallback LegacyInstallKey, account false, live true, settings Some(SettingsWrite::Optimistic), parse Soft);
-// Tone and enhancements have no Settings row: the player panel is their only writer.
+// The tone is the player panel's Color section AND Settings > Audio & subtitles' Subtitle colour row.
 setting!(SubtitleTonePref: SubtitleTone = subtitle_tone, "subtitle_tone", Profile fallback LegacyInstallKey,
-    account false, live true, settings None, parse Soft);
+    account false, live true, settings Some(SettingsWrite::Optimistic), parse Soft);
+// Enhancements have no Settings row: the player panel is their only writer.
 setting!(AudioEnhancementsPref: crate::plex::AudioEnhancements = audio_enhancements,
     "audio_enhancements", Profile fallback LegacyInstallKey, account false, live true, settings None, parse Soft);
 

@@ -4889,6 +4889,32 @@ fn a_single_press_still_re_keys_the_wash_to_the_card_it_lands_on() {
     assert_eq!(corner_codes(&rig.s), card_ground(1), "a press with no repeat re-keys to its card");
 }
 
+/// **A run of quick taps is one move to the wash, as a held key is.** (Owner, v0.10.0 rc1: "why does
+/// the background colour flicker a little bit when I switch?", filmed walking the Recently Added
+/// shelf.) Every press is a Down and an Up, so none of them is ever a `Repeat`: the held-key rule
+/// never fired, and the wash re-keyed to each card the focus crossed, swinging between neighbouring
+/// posters' unrelated colours (blue, purple, green) a few frames apart. It now keys to the card focus
+/// DWELLS on ([`WASH_DWELL_MS`]), whichever way the focus got there.
+#[test]
+fn quick_taps_do_not_chase_every_card_with_the_wash() {
+    let _guard = plx_base::testlock::serial();
+    let (_state, snap) = washed_snapshot();
+    let view = snap.view();
+    let mut rig = WashRig::new(view);
+    let rest = AmbientWash::keyed(card_blur(0), PageGround::CARD_W);
+    let target = |s: &HomeScreen| s.backdrop.grid_target.map(|c| c.map(f32::to_bits));
+    assert_eq!(target(&rig.s), rest.map(|c| c.map(f32::to_bits)), "the premise: the wash rests on card 0");
+    for _ in 0..6 {
+        rig.key_edge(view, Edge::Down);
+        rig.right(view);
+        rig.key_edge(view, Edge::Up);
+        rig.frames(view, 8); // a tap every ~130 ms
+        assert_eq!(target(&rig.s), rest.map(|c| c.map(f32::to_bits)), "the wash was re-keyed to a card the focus was only crossing");
+    }
+    rig.frames(view, 240);
+    assert_eq!(corner_codes(&rig.s), card_ground(6), "…and it keys to the card the focus rests on");
+}
+
 #[test]
 fn a_settled_wash_records_the_same_bits_frame_after_frame() {
     let _guard = plx_base::testlock::serial();

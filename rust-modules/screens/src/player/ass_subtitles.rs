@@ -158,7 +158,7 @@ impl AssSubtitles {
         self.spans.clear();
         self.spans.extend(frame.rects.iter().map(|r| (r.y, r.height)));
         lift_dys(origin, lift, band, &self.spans, aligns, &mut self.dys);
-        let ink = plx_appkit::player_hud::subtitle_ink(model);
+        let ink = plx_appkit::player_hud::subtitle_tint(model);
         for (i, (texture, rect)) in self.textures.iter().zip(&frame.rects).enumerate() {
             let dy = self.dys[i];
             Painter::root().tex(
@@ -384,7 +384,7 @@ mod tests {
     }
 
     fn style(size: SubtitleSize, position: SubtitlePosition) -> TextStyle {
-        TextStyle { size, position }
+        TextStyle { size, position, ..TextStyle::default() }
     }
 
     /// A one-line region whose bottom edge sits on the style's bottom anchor, `extra` px below

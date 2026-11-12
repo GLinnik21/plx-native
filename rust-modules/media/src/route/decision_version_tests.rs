@@ -176,6 +176,29 @@ fn a_fixed_quality_measures_the_1080p_version_it_resolved() {
     assert!(!requests.iter().any(|l| l.contains("/transcode/universal/start")), "{requests:?}");
 }
 
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_version_picked_by_hand_is_measured_from_its_own_fetch() {
+    let (plan, _) = resolve_with("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, |env| {
+        env.caps = std::sync::Arc::new(full_hd_set());
+        env.quality = Quality::P1080;
+        env.version = Some(plx_plex::plex::MediaId(3086));
+    });
+    assert_eq!(plan.src_measure, (2372, 1920, 800));
+    assert!(plan.url.contains("/library/parts/3134/"), "{}", plan.url);
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_picked_version_that_is_gone_is_measured_from_the_default_that_plays() {
+    let (plan, _) = resolve_with("rk-4k", FOUR_K_DEFAULT, MDE_DIRECTPLAY, |env| {
+        env.caps = std::sync::Arc::new(full_hd_set());
+        env.quality = Quality::P1080;
+        env.version = Some(plx_plex::plex::MediaId(9999));
+    });
+    assert_eq!(plan.src_measure.0, 14663);
+}
+
 fn retry_holding(part_id: i64, audio_sid: i64, sub_sid: i64) -> RetryContext {
     RetryContext {
         direct_play_mode: DirectPlayMode::Auto,
@@ -389,7 +412,8 @@ struct QualifiedNativeMaster;
 impl crate::route::uri_preflight::OriginalQualifier for QualifiedNativeMaster {
     fn qualify(&self, _: &plx_base::task::OffFrame,
         _: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
-        crate::route::uri_preflight::Verdict::Unknown
+        crate::route::uri_preflight::Verdict::Unknown(
+            crate::route::uri_preflight::UriDecline::NotCertified)
     }
 
     fn qualify_pms(&self, _: &plx_base::task::OffFrame,
@@ -445,7 +469,8 @@ struct QualifiedPms(std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)
 impl crate::route::uri_preflight::OriginalQualifier for QualifiedPms {
     fn qualify(&self, _: &plx_base::task::OffFrame,
         _: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
-        crate::route::uri_preflight::Verdict::Unknown
+        crate::route::uri_preflight::Verdict::Unknown(
+            crate::route::uri_preflight::UriDecline::NotCertified)
     }
 
     fn qualify_pms(&self, _: &plx_base::task::OffFrame,
@@ -543,7 +568,8 @@ impl crate::route::uri_preflight::OriginalQualifier for RecordingOriginal {
     fn qualify(&self, _: &plx_base::task::OffFrame,
         request: crate::route::uri_preflight::OriginalRequest) -> crate::route::uri_preflight::Verdict {
         self.0.lock().unwrap().push((request.selection.audio_sid, request.audio_ordinal));
-        crate::route::uri_preflight::Verdict::Unknown
+        crate::route::uri_preflight::Verdict::Unknown(
+            crate::route::uri_preflight::UriDecline::NotCertified)
     }
 }
 

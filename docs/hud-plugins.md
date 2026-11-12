@@ -551,7 +551,10 @@ also legal on a `vstack` cell and on a control item), and exactly one of:
   its rect is the track's width), which I4 reads as decor and I10 judges as app text.
   In HUD format 1.1, set `end_time_width` to reserve a right-aligned lane in px (1–1920, capped at the track width) for the remaining
   clock, a separator dot and the localized finish time. Classic declares 320 px. The same field enables the
-  feature in installed packages. I4 includes the lane in its decor census and I10 checks the combined run in
+  feature in installed packages: it is the package's declaration of support (`Compiled::declares_end_time`), so the
+  *Estimated end time* switch on the Player HUD settings page is listed only while the HUD in use declares it
+  (a HUD format 1.0 package cannot, `E0107`, and a 1.1 package may omit it), and the app projects no estimate for a
+  HUD that does not. I4 includes the lane in its decor census and I10 checks the combined run in
   both hour cycles. The renderer uses the plain remaining clock if the estimate is absent, the field is omitted
   or the run would crowd the elapsed clock. The knob and mark overhang the
   track;
@@ -698,7 +701,8 @@ every item that CAN be absent collapsed (a Previous/Next member, an item with `w
 for classic that is `disc_row()` over `disc_items(false)`, the three always-present discs, `ctrl_row_w` = 3 x 64 + 2 x 20 =
 232 (`player_hud.rs:672-683`, `:717-719`). A centred or multi-segment replace has no floor: the primary takes its own
 label's width (`classic::stand_in_w` with no floor). The Skip pill is `classic::stand_in_w` of ITS OWN label
-(`standin` in `hud_format/compile.rs`), under the same floor rule, at the same aligned edge. Logic stays app-owned: when it appears, the countdown's
+(`standin` in `hud_format/compile.rs`), under the same floor rule, at the same aligned edge; an Automatic face is the
+Up Next arrangement of two buttons (the filled Skip at that width, the Watch button its own label's beside it). Logic stays app-owned: when it appears, the countdown's
 timing and cancel rules (`up_next.rs:105-125`, production sites `src/app/run.rs:2001`, `:2026-2045`,
 `src/app/playback.rs:939`), what the buttons do.
 
@@ -740,9 +744,10 @@ Skip. Edges are app-owned: OK or a click on a `toggle_section` control; BACK (cl
 then hides the HUD; over a Skip or Up Next offer it first retires that segment in the metadata store's
 `skipped` set and returns the slot to Discs); for modal sections, a direction that leaves the section's groups
 (closes it); the slot changes involuntarily with the marker (`slot_for`, F19), and every stand-in slot returns
-to Discs when its marker ends or BACK dismisses it. A standalone automatic Watch button dismisses
-its single-button offer; Watch Credits in the Up Next pair cancels the countdown and leaves
-Next Episode available. Automatic credits retains that pair and its geometry, using five presented
+to Discs when its marker ends or BACK dismisses it. Every Automatic skip prompt (an intro, a mid-item credits marker, and a final marker with no
+queued successor, or with Next episode set to After credits or Off) is a Watch + Skip pair laid out as
+Up Next's two buttons are (`up_next::layout_at`; Watch is item 0 and cancels, the filled Skip is item 1,
+the initial focus and the countdown's target); pressing Watch there dismisses the offer. Watch Credits in the Up Next pair cancels the countdown and leaves Next Episode available. Automatic credits retains that pair and its geometry, using five presented
 seconds on the primary button instead of the legacy ten-second clock.
 
 - R1. `open_more` is placed, at or above `MIN_CONTROL_SIZE`, in the root state (compact, Discs) under EVERY valuation

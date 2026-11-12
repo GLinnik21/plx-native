@@ -544,6 +544,31 @@ fn the_settings_surface_owns_input_and_walks_its_own_stack() {
     assert_eq!(d.nav.tabs.stack.depth(), 1, "the app's page never moved");
 }
 
+/// **The Player HUD page offers the finish-time switch only while the HUD that draws declares the lane**
+/// (v0.10.0-rc1: it was offered over a package that cannot draw it). A switch is on the page for a seated profile
+/// over the built-in HUD (HUD format 1.1, `playbar.end_time_width`), goes when a package without the lane is taken
+/// into use, and returns with one that has it; the page is told when the HUD changes, not only when it opens.
+#[test]
+fn the_finish_time_switch_follows_whether_the_hud_in_use_declares_the_lane() {
+    let mut world = World::new("hud-end-time-capability");
+    world.step(vec![]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    world.bridge.huds_watch(tx);
+    world.bridge.huds_profile_seated = true;
+    let latest = |rx: &std::sync::mpsc::Receiver<plx_screens::hud_settings::HudList>| rx.try_iter().last().map(|list| list.end_time.is_some());
+    let classic = plx_appkit::player_hud::loaded::classic_for_test();
+    assert!(classic.declares_end_time(), "the built-in declares the lane");
+    world.bridge.seed_player_compiled(classic.clone());
+    assert_eq!(latest(&rx), Some(true), "offered over the built-in");
+    world.bridge.seed_player_compiled(plx_appkit::player_hud::loaded::reference_for_test());
+    assert_eq!(latest(&rx), Some(false), "withdrawn over a package with no lane, the page told at once");
+    world.bridge.seed_player_compiled(classic);
+    assert_eq!(latest(&rx), Some(true), "and back");
+    world.bridge.huds_profile_seated = false;
+    world.bridge.huds_publish();
+    assert_eq!(latest(&rx), Some(false), "no profile, no switch");
+}
+
 /// The gate that kept the registry out of the stable install sat on the Bridge's `HudCmd::Open` arm
 /// (`ENV_STEERABLE || flavour().is_some()`), a second copy of the field PR14 deleted from the page, so the
 /// gallery showed in stable and never fetched `index.signed`. This suite builds with no flavour in its app

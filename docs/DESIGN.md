@@ -80,8 +80,10 @@ their positions change.
   The shelf ramp follows the first tile's live top and reaches `SHELF_FOOT_A` at the
   Continue Watching caption line. The whole field fades with the hero.
 - Home's movie row shows type, year, runtime, up to two genres, quality, and the content rating.
-  Episodes show their season and episode number, air date, runtime, quality, and rating. Unplayed
-  shows use the series runtime or season count when runtime is missing, plus year, genres, and rating.
+  Episodes show their season and episode number, air date, runtime, quality, and rating. Shows
+  use the series runtime or season count when runtime is missing, plus year, genres, and rating.
+  Movies and shows read this band whether or not they have been played; only a season or a
+  collection falls back to the first sentence of its summary.
   The Resume pill shows the play glyph, progress rail, and localized time remaining.
 - Detail uses the same continuous renderer. Its wider left fade supports the synopsis and the
   full-width lower ramp supports the credits. The left fade shifts up with the preview logo and

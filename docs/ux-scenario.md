@@ -583,13 +583,17 @@ One slot, beside the elapsed clock, showing exactly one of:
 |---|---|
 | playing steadily | **nothing** |
 | paused | pause mark |
-| playhead travelling backwards (scrub, chapter hop, seek burst) | rewind mark, drawn to the **left** of the clock |
-| playhead travelling forwards | fast-forward mark |
+| a live scrub travelling backwards (the target is still moving) | rewind mark, drawn to the **left** of the clock |
+| a live scrub travelling forwards | fast-forward mark |
 | just resumed | play mark, for **two seconds**, then it clears |
-| waiting on the pipeline with no travel to show | inline spinner |
+| waiting on the pipeline: a seek the viewer has committed (until it lands) or a re-buffer | inline spinner (the loading sign) |
 
-Precedence is travel → pipeline → paused → the resume mark, so a paused scrub still reads as a
-scrub. Rewind sits on the clock's left and everything else on its right, so the mark points the way
+Precedence is live scrub → pipeline → paused → the resume mark, so a paused scrub still reads as a
+scrub. A direction mark belongs to a *live* scrub only: the moment a seek is committed (OK on the
+scrubber, a chapter or marker hop, a FF/REW jump) the mark is the spinner whichever way it goes, and
+the first frame after it lands is the ordinary state mark (the play mark for two seconds, the pause
+mark while paused, nothing while playing), never a leftover direction. A package reaches the spinner
+the same way as before: the playbar's mark mode `busy_only` draws exactly this state. Rewind sits on the clock's left and everything else on its right, so the mark points the way
 the playhead is going.
 
 Three properties of this design are the substance of the decision, and are the part worth putting in
@@ -599,8 +603,7 @@ front of QA:
   nothing. This slot answers *did that press land* and *which way am I going* — questions a static
   button row cannot answer at all.
 - **The direction is derived from the playhead, not from the keycode.** One rule therefore covers a
-  LEFT/RIGHT scrub, a chapter or marker hop and a rapid seek burst — none of which agree about which
-  key, if any, was pressed. It reports **net** travel, so dragging back from +100 s to +50 s while
+  LEFT/RIGHT scrub and a held FF/REW scrub, which do not agree about which key was pressed. It reports **net** travel, so dragging back from +100 s to +50 s while
   still ahead of the playhead keeps reading fast-forward: it answers *which way will I jump when I
   confirm*.
 - **The play mark clears after two seconds** deliberately. A play glyph held for a whole film would
@@ -676,9 +679,11 @@ full-screen sheet. All three are modal while open: they take every key, and BACK
   statistics, plus **Send diagnostics** when that row is enabled. LEFT/RIGHT are deliberately
   swallowed here: it is one column.
 
-The app exposes **no subtitle appearance settings**, and its client-rendered subtitles do not read
-the television's own subtitle settings — stated here because that is what makes the second half of
-checklist #48 N/A rather than failing.
+The player's Subtitles menu has a **Style** page (size, position and color; `docs/player-submenus.md`):
+a color the active subtitle cannot take (a picture subtitle, or a styled script with no white text) is
+shown dimmed with its reason, never as a checked choice that does nothing. Those are the app's own
+settings: its client-rendered subtitles do not read the television's own subtitle settings — stated
+here because that is what makes the second half of checklist #48 N/A rather than failing.
 
 **2. Over a marked segment: a Skip pill.** When the server has marked an intro or credits region and
 the playhead is inside it, a single **Skip Intro** / **Skip Credits** pill takes the row — same
@@ -686,6 +691,14 @@ position, same height, never narrower than the disc pair, so the transport does 
 When the segment begins the HUD is raised and the focus ring is parked on the pill, so **one bare OK
 skips**. OK seeks past the segment and resumes; on a `final` credits marker it finishes the item
 instead. The pill leaves with the segment, and focus returns to the scrubber when it does.
+
+**With Settings → Skip intros / Skip credits on Automatic the pill becomes a pair, and both timed prompts
+follow ONE rule.** The **filled** button is the action that will happen by itself when the five-second
+countdown (the fill sweep) runs out; pressing it does that action **now**; the **unfilled** button one key to its
+left cancels the countdown. The intro prompt is **Watch Intro** + **Skip Intro** (filled); the credits prompt is
+**Watch Credits** + **Next Episode** (filled; and **Skip Credits** for a mid-item credits marker). The focus ring
+starts on the filled button, so one bare OK performs the action, and LEFT reaches the cancel button. Reaching for it
+stops the countdown, and the filled button stays available to press. BACK dismisses the segment's offer as above.
 
 **3. Over the credits with another episode queued: Up Next.** The row becomes the next episode's
 still, a caption (*"Up Next · S2, E4 · Laura"*), and **two buttons — Watch Credits** on the left and
