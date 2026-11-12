@@ -121,7 +121,7 @@ pub(super) fn windows_names(family: &str, style: &str) -> Vec<NameRecord> {
 /// `data`, a single-face font, renamed to `family`, `style`; with `pad_to` the file is exactly that
 /// many bytes, the difference a private `PLXP` table of unread bytes (legal sfnt, which FreeType
 /// skips). The glyph tables are untouched, so the face draws as `data` does.
-pub(super) fn rename(data: &[u8], family: &str, style: &str, pad_to: Option<usize>) -> Vec<u8> {
+pub(crate) fn rename(data: &[u8], family: &str, style: &str, pad_to: Option<usize>) -> Vec<u8> {
     let (version, mut tables) = parse(data);
     tables.insert(*b"name", name_table(&windows_names(family, style)));
     let font = build(version, &tables);

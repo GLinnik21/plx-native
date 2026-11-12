@@ -90,10 +90,19 @@ pub fn report(key: &str, value: u64) {
 /// The child inherits this process's environment (the libraries a host test finds by
 /// `PLXNATIVE_APP_DIR` or `PLX_FFMPEG_DIR`), plus `PLX_TESTHEAP_CHILD`.
 pub fn in_fresh_process(test: &str) -> HashMap<String, u64> {
+    in_fresh_process_with_env(test, &[])
+}
+
+/// [`in_fresh_process`] with more environment variables for the child. A test that measures what a
+/// path allocates hands its input over this way, made by the parent: whatever the child allocated to
+/// MAKE the input would otherwise be in its heap, and on macOS a freed large block that malloc keeps
+/// cached is handed back, rounded up, to the next large allocation, so the number moves with it.
+pub fn in_fresh_process_with_env(test: &str, env: &[(&str, &std::ffi::OsStr)]) -> HashMap<String, u64> {
     let exe = std::env::current_exe().expect("the test binary has a path");
     let out = std::process::Command::new(exe)
         .args(["--exact", test, "--include-ignored", "--test-threads=1", "--nocapture"])
         .env(CHILD_ENV, test)
+        .envs(env.iter().copied())
         .output()
         .expect("the test binary starts again");
     let text = String::from_utf8_lossy(&out.stdout);

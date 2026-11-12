@@ -138,3 +138,8 @@ fn a_packet_without_a_duration_is_clipped_by_the_cue_after_it() {
     assert_eq!(events[0].duration_ms, starts[1] - starts[0], "the first cue ends where the second begins");
     assert_eq!(events[1].duration_ms, 4000, "the last cue keeps the default");
 }
+
+/// The memory the demuxer half of the font attachments costs (issue #1328): a module of its own, in the
+/// `ff::subtitle_charset_tests` filter `make check-ffmpeg` already runs.
+#[path = "ff_font_memory_tests.rs"]
+mod font_memory;

@@ -1538,7 +1538,7 @@ impl Native {
 mod fonts;
 
 #[cfg(test)]
-mod synth_fonts;
+pub(crate) mod synth_fonts;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
