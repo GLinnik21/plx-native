@@ -456,6 +456,7 @@ fn a_session_resolved_for_a_preview_never_reports_a_timeline() {
         ctx: plx_data::metadata::TRAILER_CONTEXT.into(),
         preview: true,
         version: None,
+        show_rk: String::new(),
     });
     apply_plan(
         &mut ps,
@@ -494,7 +495,7 @@ fn a_film_request_retires_the_previous_trailers_preview_mark() {
     assert!(preview_request(&ps), "the trailer's session is marked");
 
     assert!(request_play(
-        &mut ps, &mut meta, plx_platform::devcaps::caps(), ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "", None,
+        &mut ps, &mut meta, plx_platform::devcaps::caps(), ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "", None, "",
     ));
     assert!(!preview_request(&ps), "a film request is not a preview, whatever the last landing was");
 
@@ -716,7 +717,7 @@ fn a_playback_request_clears_a_finished_flag_no_stop_took() {
     ps.finished = true;
 
     assert!(request_play(
-        &mut ps, &mut meta, plx_platform::devcaps::caps(), ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "", None,
+        &mut ps, &mut meta, plx_platform::devcaps::caps(), ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "", None, "",
     ));
     assert!(!ps.finished, "the request retired the flag");
 

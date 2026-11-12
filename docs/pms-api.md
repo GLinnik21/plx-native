@@ -1002,7 +1002,8 @@ GET /library/metadata/{rk}?includeMarkers=1&includeChapters=1
 ### Up Next — the `continuous=1` PlayQueue already carries it (verified live 2026-07-29)
 
 There is no "what plays next" endpoint to call: the `POST /playQueues?continuous=1` the app makes
-for **every** playback (§7) returns the show's remaining episodes after the selected one, each a
+for a playback of an item with no show (§7; an episode whose show is not known, a movie) returns
+the show's remaining episodes after the selected one, each a
 **full** `Metadata` row — `thumb`, `parentIndex`/`index`, `duration`, `viewOffset`, `summary`, and
 `Media[0].videoCodec`/`audioCodec` + `Part[0].key`. That is everything both the Up Next card and a
 subsequent direct-play need, so the feature costs zero extra round-trips.
@@ -1013,6 +1014,36 @@ subsequent direct-play need, so the feature costs zero extra round-trips.
 - The queue does **not** span past the available episodes: the last episode a server holds for a
   show returns `playQueueTotalCount: 1`, i.e. no successor. A movie behaves the same way.
 - The POST needs an `X-Plex-Client-Identifier`; without it PMS answers with an empty body.
+
+### A show-keyed PlayQueue — the episodes BEFORE the playing one (spec- and client-derived, NOT yet observed live)
+
+The episode-only request above answers the selected episode and the ones after it with
+`playQueueSelectedItemOffset: 0`; there is **no row before the selected one**, so a queue created
+that way can never serve Previous (the HUD's Previous is `index > 0` of the queue's rows, and an
+episode played fresh from a Continue Watching tile or a detail page started at index 0). The
+`GET /playQueues/{id}` window parameters (`includeBefore`, `center`) only window a queue that
+already holds the rows, so they cannot add predecessors the queue lacks.
+
+For an episode whose show is known the app therefore asks for the queue of the SHOW with the
+episode as its first item to play:
+
+```
+POST /playQueues?type=video&uri=server://{machine}/com.plexapp.plugins.library/library/metadata/{showRk}
+                 &key=/library/metadata/{episodeRk}&shuffle=0&repeat=0      (no `continuous`)
+```
+
+`docs/plex-openapi.json` documents `key` as "the key of the first item to play" and the show URI as
+a valid `uri` (`onDeck` applies to show/season queues); python-plexapi's `PlayQueue.create(show,
+startItem=episode)` sends exactly `uri` + `key`. The answer is expected to hold the show's episodes
+in order with the keyed one selected (`playQueueSelectedItemID`/`Offset` on it). **That response
+shape has not been observed on a live server** (no PMS was probed for this change), so the app
+trusts it only when the selected row IS the requested episode on this server; a server that
+ignores `key` (and answers the first episode, or the show itself), refuses it, or does not answer
+costs nothing: the app asks the episode-only request above, as it always did. When the offset says
+rows precede the selected one but the answer's window opens on it, the existing window read
+(`GET /playQueues/{id}?center=…`, `queue_window.rs`) is spent once to fetch them. To verify live
+(owner's TV or a mock-free read-only probe): play an episode from the middle of a season and read
+the `playQueueSelectedItemOffset` and the first row of the log's queue line.
 
 ### Show chain (verified against a show, ratingKey 1857)
 

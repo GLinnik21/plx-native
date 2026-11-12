@@ -1452,6 +1452,11 @@ pub struct ResolveEnv {
     pub src_kbps: i64,
     /// Trailer sessions omit `continuous=1` so EOS cannot Up-Next into a sibling extra.
     pub omit_queue_continuous: bool,
+    /// The show the played EPISODE belongs to, empty for anything else (and for a caller that did not
+    /// know it). The queue is built from the show with the episode as its start, so the episodes
+    /// BEFORE it are in the queue and Previous has somewhere to go
+    /// ([`plx_plex::plex::Client::create_play_queue`]).
+    pub queue_show_rk: String,
     /// An explicit queue-item handoff reuses the existing queue instead of POSTing a new tail.
     pub queue_continuation: Option<super::queue_navigation::QueueContinuation>,
     /// Hero preview. Skip the PlayQueue entirely, and refuse anything that is not a direct play.
@@ -1819,7 +1824,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             Some(plx_base::task::beside(s, "route-queue", move || {
                 env.queue_continuation.as_ref().filter(|queue| queue.matches(env.sid, rk))
                     .map(|queue| queue.refreshed(client).resolve()).unwrap_or_else(|| resolve_playqueue(
-                        client, rk, &session, &env.machine_id, !env.omit_queue_continuous,
+                        client, rk, &env.queue_show_rk, &session, &env.machine_id, !env.omit_queue_continuous,
                     ))
             }))
         } else {

@@ -4873,7 +4873,7 @@ mod lifecycle_regression_tests {
         use plx_data::metadata::{Marker, MarkerKind};
         let _serial = plx_base::testlock::serial();
         let credits = Marker { kind: MarkerKind::Credits, start_ms: 0, end_ms: 60_000, final_seg: true };
-        let discs = ControlSlot::Discs(Controls::for_item(true, true, true, true));
+        let discs = ControlSlot::Discs(Controls::for_item(true, true, true));
         assert!(discs.enabled(plx_appkit::player_hud::BTN_PREVIOUS), "the fixture: the first disc is live");
         let (focus, engine, reqs) = depart_and_press_ok(ControlSlot::UpNext(credits), discs);
         assert_eq!(focus, GROUP_SCRUB, "nav");
@@ -5100,11 +5100,12 @@ mod lifecycle_regression_tests {
         );
     }
 
-    /// **Previous and Next are not interchangeable in the performer.** With the playhead past the
-    /// restart threshold, Previous restarts the item (`queue_transport::step(Previous)` seeks to 0);
-    /// Next, with no queue behind it, asks for no seek at all. A swap of the two steps fails both ways.
+    /// **Previous and Next are queue steps and never seeks.** With the playhead well into the item
+    /// (it used to be past Previous's five-second restart threshold, where `queue_transport::step`
+    /// seeked to 0 and rewrote the episode's resume point), neither step, with no queue behind or
+    /// after the item, asks for a seek: an item with no neighbour has nothing to step to.
     #[test]
-    fn previous_steps_the_queue_back_and_next_steps_it_forward() {
+    fn previous_and_next_with_no_neighbour_seek_nowhere() {
         use plx_appkit::player_hud::command::HudCommand;
         let _serial = plx_base::testlock::serial();
         let mut app = app();
@@ -5114,7 +5115,7 @@ mod lifecycle_regression_tests {
         perform_on_a_mounted_player(&mut app, HudCommand::Next, 100);
         assert_eq!(globals.seek_to(), -1, "Next, with nothing queued after it, seeks nowhere");
         perform_on_a_mounted_player(&mut app, HudCommand::Previous, 200);
-        assert_eq!(globals.seek_to(), 0, "Previous past the threshold restarts the item");
+        assert_eq!(globals.seek_to(), -1, "Previous, with nothing queued before it, seeks nowhere: it is not a restart");
     }
 
     /// **A section no control opens is reached through More, and focus ends on a drawn control.** The package places
@@ -5930,6 +5931,7 @@ mod lifecycle_regression_tests {
                 "First",
                 "",
                 None,
+                "",
             ));
             self.entered.recv_timeout(Duration::from_secs(3)).unwrap();
         }
@@ -6181,6 +6183,7 @@ mod lifecycle_regression_tests {
                 "Episode 1",
                 "",
                 None,
+                "",
             ));
             self.entered.recv_timeout(Duration::from_secs(3)).unwrap();
             self.resolve();
@@ -7709,6 +7712,7 @@ mod lifecycle_regression_tests {
             "Replacement",
             "",
             None,
+            "",
         ));
         rig.accept_start();
         assert!(plx_media::route::play_pending());
@@ -9784,6 +9788,191 @@ mod lifecycle_regression_tests {
             "E1 is marked watched after its `stopped` report: {:?}",
             rig.requests.lock().unwrap(),
         );
+    }
+
+    // ---- Previous and Next walk the queue, and never rewrite the episode they leave -------------
+    //
+    // The Previous disc used to be a RESTART from five seconds in (a seek to 0 that rewrote the
+    // playhead and the viewOffset of the episode the viewer meant to leave), and was disabled again
+    // before it: a play started fresh had a queue that began at the playing episode, so there was
+    // no episode before it to go to. These play an episode of a three-episode season fresh, the way
+    // a Continue Watching tile or the detail page's Play does, and press the controls.
+
+    /// One episode `n` of the season fixture as a PlayQueue row (ratingKey `n`, queue item `10 + n`).
+    fn season_row(n: usize) -> String {
+        format!(
+            r#"{{"ratingKey":"{n}","playQueueItemID":{},"type":"episode","title":"Episode {n}",
+            "grandparentRatingKey":"50","grandparentTitle":"Show","parentIndex":1,"index":{n},
+            "duration":60000,
+            "Media":[{{"videoCodec":"h264","audioCodec":"aac","width":1280,"height":720,
+            "Part":[{{"id":{n},"key":"/library/parts/{n}/file.mkv","Stream":[
+            {{"id":1,"streamType":1,"codec":"h264"}},
+            {{"id":2,"streamType":2,"codec":"aac","selected":true}}]}}]}}]}}"#,
+            10 + n
+        )
+    }
+
+    /// The fixture's answer to `POST /playQueues` for a show-keyed request (`key=` names the episode
+    /// to start on: the WHOLE season, that episode selected, the episodes before it included) or an
+    /// episode-only one (that episode and the ones after it), and to `GET /playQueues/1` (the whole
+    /// season). `/decision` direct-plays; the timeline and the scrobble answer empty.
+    fn season_body(request: &str) -> String {
+        if request.contains("/decision?") {
+            return queue_body(request, true).to_owned();
+        }
+        if request.contains("/:/") {
+            return r#"{"MediaContainer":{}}"#.into();
+        }
+        let after = |marker: &str| {
+            request.split_once(marker).and_then(|(_, rest)| rest.split(|c: char| !c.is_ascii_digit()).next()?.parse::<usize>().ok())
+        };
+        let (first, selected) = if request.starts_with("POST") {
+            match (after("key=%2Flibrary%2Fmetadata%2F"), after("metadata%2F")) {
+                (Some(keyed), _) => (1, keyed),
+                (None, Some(episode)) => (episode, episode),
+                _ => (1, 1),
+            }
+        } else {
+            (1, 1)
+        };
+        let rows: Vec<String> = (first..=3).map(season_row).collect();
+        format!(
+            r#"{{"MediaContainer":{{"machineIdentifier":"lifecycle-fixture","size":{},
+            "playQueueID":1,"playQueueSelectedItemID":{},"playQueueSelectedItemOffset":{},
+            "playQueueTotalCount":{},"Metadata":[{}]}}}}"#,
+            rows.len(),
+            10 + selected,
+            selected - first,
+            rows.len(),
+            rows.join(",")
+        )
+    }
+
+    /// Episode `rk` of the season fixture played FRESH (a show-keyed request, no queue handed over),
+    /// its plan landed and a real Engine over it with the playhead at `pos_ms` of 60 s.
+    fn playing_season_episode_at(rig: &mut Rig, rk: &str, pos_ms: i64) {
+        assert!(plx_media::route::request_play(
+            &mut rig.app.player.session,
+            rig.app.bridge.metadata_mut(),
+            plx_platform::devcaps::caps(),
+            rig.sid,
+            rk,
+            &format!("/library/parts/{rk}/file.mkv"),
+            "h264",
+            "aac",
+            "Episode",
+            "",
+            None,
+            "50",
+        ));
+        rig.entered.recv_timeout(Duration::from_secs(3)).unwrap();
+        rig.release.send(()).unwrap();
+        poll_until("the season fixture's plan did not land", || {
+            plx_media::route::pump_play(&mut rig.app.player.session, rig.app.bridge.metadata_mut()).is_some()
+        });
+        rig.accept_start();
+        frame(&mut rig.app, 16);
+        let _ = plx_platform::tv::launch::take_all();
+        assert!(rig.app.adapters.player.is_live(), "the fixture must create the actual Engine");
+        plx_play_feed::shared::FEED_SHARED.duration_ns.store(60_000_000_000, Ordering::Relaxed);
+        plx_play_feed::shared::FEED_SHARED.playpos_ns.store(pos_ms * 1_000_000, Ordering::Relaxed);
+        publish_feed_fixture_facts(&mut rig.app.player.session, |facts| {
+            facts.duration_ns = Some(60_000_000_000);
+            facts.position_ns = Some(pos_ms * 1_000_000);
+            facts.started = Some(true);
+        });
+    }
+
+    /// The `state=stopped` timeline reports episode `rk` sent, once the stop's worker has finished.
+    fn stop_reports(rig: &Rig, rk: &str) -> Vec<String> {
+        plx_media::route::drain_scrobble();
+        let needle = format!("ratingKey={rk}&");
+        rig.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.contains("/:/timeline") && l.contains(&needle) && l.contains("state=stopped"))
+            .cloned()
+            .collect()
+    }
+
+    /// **Previous goes to the episode before, and the episode it leaves reports where it was.** E2
+    /// of the season is played fresh and the viewer is 30 s into it. The queue the fresh play built
+    /// holds E1, so the Previous disc is enabled (the old disc was a Restart that seeked to 0); a
+    /// press stops E2 at the playhead it really reached (`time=30000`, never a rewound 0 and no
+    /// seek at all) and asks for E1.
+    #[test]
+    fn previous_plays_the_episode_before_and_the_one_it_leaves_reports_its_real_position() {
+        use plx_appkit::player_hud::command::HudCommand;
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request: &str| season_body(request)) else {
+            eprintln!("SKIPPED previous_plays_the_episode_before_and_the_one_it_leaves_reports_its_real_position: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        playing_season_episode_at(&mut rig, "2", 30_000);
+        let controls = plx_appkit::player_hud::Controls::now(&rig.app.player.session);
+        assert!(controls.previous, "a FRESH play of E2 has E1 before it: {:?}", rig.requests.lock().unwrap());
+        assert!(controls.next, "and E3 after it");
+        let globals = SeekGlobals::set(&mut rig.app, 30_000_000_000, 60_000_000_000);
+
+        perform_on_a_mounted_player(&mut rig.app, HudCommand::Previous, 100);
+
+        assert!(plx_media::route::play_pending(), "Previous asked for the episode before");
+        assert_eq!(globals.seek_to(), -1, "Previous is a queue step: it seeks nowhere");
+        let stops = stop_reports(&rig, "2");
+        assert_eq!(stops.len(), 1, "the outgoing episode was stopped once: {:?}", rig.requests.lock().unwrap());
+        assert!(stops[0].contains("time=30000&"), "it reports the playhead it reached, not 0: {}", stops[0]);
+    }
+
+    /// **The first episode of the queue has no Previous.** E1 of the season, played fresh, is the
+    /// first row: the disc is disabled, and a Previous press (the Previous key reaches the same
+    /// performer) changes nothing: no stop report, no request, no seek.
+    #[test]
+    fn previous_on_the_first_episode_of_the_queue_is_disabled_and_does_nothing() {
+        use plx_appkit::player_hud::command::HudCommand;
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request: &str| season_body(request)) else {
+            eprintln!("SKIPPED previous_on_the_first_episode_of_the_queue_is_disabled_and_does_nothing: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        playing_season_episode_at(&mut rig, "1", 30_000);
+        let controls = plx_appkit::player_hud::Controls::now(&rig.app.player.session);
+        assert!(!controls.previous, "nothing before the first episode: {:?}", rig.requests.lock().unwrap());
+        assert!(controls.next, "E2 follows");
+        assert!(!controls.enabled(plx_appkit::player_hud::BTN_PREVIOUS), "the disc has no focus stop");
+        assert_eq!(controls.command(plx_appkit::player_hud::BTN_PREVIOUS), None, "and nothing to press");
+        let globals = SeekGlobals::set(&mut rig.app, 30_000_000_000, 60_000_000_000);
+
+        perform_on_a_mounted_player(&mut rig.app, HudCommand::Previous, 100);
+
+        assert!(!plx_media::route::play_pending(), "no episode before E1 to request");
+        assert_eq!(globals.seek_to(), -1, "and it is not a restart either");
+        assert!(stop_reports(&rig, "1").is_empty(), "E1 plays on: {:?}", rig.requests.lock().unwrap());
+    }
+
+    /// **Next still steps forward, and the episode it leaves reports where it was.** The same E2 at
+    /// 30 s: Next stops it at `time=30000` and requests E3.
+    #[test]
+    fn next_plays_the_episode_after_and_the_one_it_leaves_reports_its_real_position() {
+        use plx_appkit::player_hud::command::HudCommand;
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request: &str| season_body(request)) else {
+            eprintln!("SKIPPED next_plays_the_episode_after_and_the_one_it_leaves_reports_its_real_position: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        playing_season_episode_at(&mut rig, "2", 30_000);
+        let globals = SeekGlobals::set(&mut rig.app, 30_000_000_000, 60_000_000_000);
+
+        perform_on_a_mounted_player(&mut rig.app, HudCommand::Next, 100);
+
+        assert!(plx_media::route::play_pending(), "Next asked for E3");
+        assert_eq!(globals.seek_to(), -1);
+        let stops = stop_reports(&rig, "2");
+        assert_eq!(stops.len(), 1, "{:?}", rig.requests.lock().unwrap());
+        assert!(stops[0].contains("time=30000&"), "{}", stops[0]);
     }
 }
 

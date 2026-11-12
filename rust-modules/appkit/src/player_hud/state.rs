@@ -38,25 +38,26 @@ pub const BTN_MORE: i32 = BTN_N - 1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action { Previous, Next, Subtitles, Audio, More }
 
-/// A frame's episode-button eligibility, availability and restart glyph, sampled once.
+/// A frame's episode-button eligibility and availability, sampled once. **Previous is the previous
+/// episode of the queue and nothing else**: it is enabled exactly when the playing row has a
+/// predecessor (`queue_neighbors`), so on the first episode of a queue it is disabled. Restarting
+/// the current episode is the More menu's From beginning (`HudCommand::FromBeginning`), never a
+/// second meaning of this button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Controls {
     pub previous: bool,
     pub next: bool,
-    pub restart: bool,
 }
 impl Controls {
-    pub const NONE: Self = Self { previous: false, next: false, restart: false };
+    pub const NONE: Self = Self { previous: false, next: false };
     pub fn now(ps: &plx_media::route::PlaybackSession) -> Self {
         if plx_media::route::cur_kind(ps) != "episode" { return Self::NONE; }
         let (previous, next) = plx_media::route::queue_neighbors(ps);
-        if !(previous || next) { return Self::NONE; }
-        let restart = plx_media::route::previous_restarts(plx_media::player::intended_pos_ns(ps));
-        Self::for_item(true, previous, next, restart)
+        Self::for_item(true, previous, next)
     }
-    pub fn for_item(episode: bool, previous: bool, next: bool, restart: bool) -> Self {
+    pub fn for_item(episode: bool, previous: bool, next: bool) -> Self {
         if !episode || !(previous || next) { return Self::NONE; }
-        Self { previous: previous || restart, next, restart }
+        Self { previous, next }
     }
     /// Whether the Previous/Next pair is on the row at all: [`Self::for_item`] only ever builds a
     /// pair with at least one of its two buttons live.
@@ -85,7 +86,7 @@ impl Controls {
     }
     pub fn icon(self, i: i32) -> plx_ui::icons::Icon {
         use plx_ui::icons::Icon;
-        match i { BTN_PREVIOUS if self.restart => Icon::Restart, BTN_PREVIOUS => Icon::Previous,
+        match i { BTN_PREVIOUS => Icon::Previous,
             BTN_NEXT => Icon::Next, BTN_AUDIO => Icon::Audio, BTN_MORE => Icon::More, _ => Icon::Cc }
     }
 }

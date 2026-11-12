@@ -52,6 +52,7 @@ pub fn play(d: &Detail, key: u32) -> Option<PlayIntent> {
         title: extra.hud_title(d.title.as_str()).to_string(),
         context: extra_play_context(extra).into(),
         version: None,
+        show_rk: String::new(),
     })
 }
 

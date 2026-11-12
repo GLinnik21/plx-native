@@ -124,7 +124,7 @@ fn marker(kind: plx_data::metadata::MarkerKind, final_seg: bool) -> plx_data::me
 fn slot_of(occupant: Occupant) -> ControlSlot {
     use plx_data::metadata::MarkerKind::{Credits, Intro};
     use plx_media::route::NextEpisodeMode::Countdown;
-    let discs = |previous, next| ControlSlot::Discs(Controls { previous, next, restart: false });
+    let discs = |previous, next| ControlSlot::Discs(Controls { previous, next });
     let slot = match occupant {
         Occupant::Plain => ControlSlot::Discs(Controls::NONE),
         Occupant::Episode => discs(true, true),
