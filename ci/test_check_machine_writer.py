@@ -22,6 +22,9 @@ GOOD = '''impl Machine {
 
 
 def verdict(source, ini=STRICT, extra=None):
+    if '::Machine]' in ini and '[module ' + FILE + ']' not in ini:
+        ini += f'\n[module {FILE}]\nwildcard_enum_match_arm = deny\n'
+        source = '#![deny(clippy::wildcard_enum_match_arm)]\n' + source
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / 'rust-modules'
         path = root / FILE
@@ -225,6 +228,19 @@ class WildcardPolicy(unittest.TestCase):
                 self.assertTrue(verdict(src, ini))
         self.assertEqual(verdict('#![deny(clippy::wildcard_enum_match_arm)]\n'
                                  'fn numeric(n: u8) { match n { 0 => (), _ => () } }', ini), [])
+    def test_policy_cannot_be_downgraded_in_root_child_or_include(self):
+        ini = f'[module {FILE}]\nwildcard_enum_match_arm = deny\n'
+        header = '#![deny(clippy::wildcard_enum_match_arm)]\n'
+        for level in ('allow', 'expect', 'warn'):
+            for attribute in (f'#[{level}(clippy::wildcard_enum_match_arm)]',
+                              f'#[cfg_attr(feature = "shipping", {level}(clippy::wildcard_enum_match_arm))]'):
+                weak = attribute + ' fn weak() {}'
+                with self.subTest(level=level, attribute=attribute):
+                    self.assertTrue(verdict(header + weak, ini))
+                    self.assertTrue(verdict(header + 'mod child;', ini, {'fixture/src/machine/child.rs': weak}))
+                    self.assertTrue(verdict(header + 'include!("included.rs");', ini, {'fixture/src/included.rs': weak}))
+        wire = 'fn wire(s: &str) { match s { "known" => (), _ => () } }'
+        self.assertEqual(verdict(header + wire, ini), [])
 
     def test_missing_stale_or_unknown_policy_fails(self):
         for ini in (f'[module {FILE}]\n', f'[module {FILE}]\nwildcard_enum_match_arm = maybe\n',

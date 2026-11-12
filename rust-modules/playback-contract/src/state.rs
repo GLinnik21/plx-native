@@ -1,3 +1,4 @@
+#![deny(clippy::wildcard_enum_match_arm)]
 //! Pure admission and publication for one logical playback attempt across physical backends.
 //! Each concrete driver owns its native requests, release deadlines and quarantine evidence.
 use std::collections::BTreeMap;
@@ -129,7 +130,8 @@ impl BackendState {
     }
 
     fn owns(&self, backend: BackendKind, attempt: AttemptId) -> bool {
-        self.snapshot.backend == Some(backend) && self.snapshot.attempt == Some(attempt)
+        let snapshot = &self.snapshot;
+        snapshot.backend == Some(backend) && snapshot.attempt == Some(attempt)
     }
 
     fn dispatch(&mut self, backend: BackendKind, attempt: AttemptId,
@@ -149,6 +151,9 @@ impl BackendState {
     /// `capabilities` is supplied by the injected driver set for this event's backend. It may be
     /// absent; no source or operation is dispatched to an unavailable driver.
     pub fn step(&mut self, event: Event, capabilities: Option<Capabilities>, effects: &mut Vec<Fx>) {
+        self.transition(event, capabilities, effects);
+    }
+    fn transition(&mut self, event: Event, capabilities: Option<Capabilities>, effects: &mut Vec<Fx>) {
         match event {
             Event::Intent(Intent::Start { backend, attempt, source, requirements, initial }) => {
                 let failure = if self.snapshot.phase != Phase::Vacant {
@@ -188,7 +193,7 @@ impl BackendState {
             }
             Event::Intent(Intent::Stop { backend, attempt, reason }) => {
                 if !self.owns(backend, attempt)
-                    || !matches!(self.snapshot.phase, Phase::Starting | Phase::Active) { return; }
+                    || !matches!(&self.snapshot.phase, Phase::Starting | Phase::Active) { return; }
                 self.pending.clear();
                 self.latest_queued_seek = None;
                 self.latest_queued_transport = None;
@@ -240,7 +245,7 @@ impl BackendState {
             }
             Event::Observation { backend, attempt, observation }
                 if self.owns(backend, attempt)
-                    && matches!(self.snapshot.phase, Phase::Starting | Phase::Active) =>
+                    && matches!(&self.snapshot.phase, Phase::Starting | Phase::Active) =>
             {
                 if observation == Observation::Presented && self.snapshot.presented { return; }
                 match observation {
@@ -275,7 +280,7 @@ impl BackendState {
             Event::Observation { .. } => {}
             Event::ViewerGoal { backend, attempt, paused }
                 if self.owns(backend, attempt)
-                    && matches!(self.snapshot.phase, Phase::Starting | Phase::Active) => {
+                    && matches!(&self.snapshot.phase, Phase::Starting | Phase::Active) => {
                 self.snapshot.viewer_paused = Some(paused);
                 self.settled_viewer_paused = Some(paused);
             }

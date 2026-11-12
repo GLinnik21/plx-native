@@ -1,3 +1,4 @@
+#![deny(clippy::wildcard_enum_match_arm)]
 //! Pure, local playback-attempt measurements. A logical request may try several physical
 //! backends; their identities come from the route owner. This reducer neither mints an attempt
 //! nor reads a clock, player registry, recorder, consent setting, URL, or user content. A caller
@@ -190,7 +191,18 @@ impl<A: Copy> AttemptSummary<A> {
 /// route-owned physical identity such as `crate::route::RouteStartAttempt`; the reducer creates
 /// neither. IDs must increase in the owner's canonical order. Persisted high-water marks reject
 /// replay even after bounded history evicts an old summary. Completed summaries leave as effects.
-pub struct AttemptMetrics<R, A> {
+/// IDs are data, not mutable capabilities. This closed bound keeps borrowed summaries inert.
+pub trait Identity: Copy + Ord + identity::Sealed {}
+mod identity {
+    pub trait Sealed {}
+    impl Sealed for u64 {}
+    impl Sealed for super::super::backend_metrics::LogicalRequestId {}
+    impl Sealed for plx_playback_contract::AttemptId {}
+}
+impl Identity for u64 {}
+impl Identity for super::backend_metrics::LogicalRequestId {}
+impl Identity for plx_playback_contract::AttemptId {}
+pub struct AttemptMetrics<R: Identity, A: Identity> {
     request: Option<RequestSummary<R, A>>,
     last_request_id: Option<R>,
     last_attempt_id: Option<A>,
@@ -204,11 +216,11 @@ pub struct AttemptMetrics<R, A> {
     pending_refusal: Option<(A, Backend)>,
 }
 
-impl<R: Copy + Ord, A: Copy + Ord> Default for AttemptMetrics<R, A> {
+impl<R: Identity, A: Identity> Default for AttemptMetrics<R, A> {
     fn default() -> Self { Self::new() }
 }
 
-impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
+impl<R: Identity, A: Identity> AttemptMetrics<R, A> {
     pub const fn new() -> Self {
         Self {
             request: None, last_request_id: None, last_attempt_id: None,
@@ -230,12 +242,12 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
         }
     }
 
-    fn advance(&mut self, to: Tick) -> bool {
+    fn advance(&mut self, request: &mut Option<RequestSummary<R, A>>, to: Tick) -> bool {
         let Tick::Known(to) = to else {
             // An unavailable clock breaks the interval. The next known tick starts a new
             // anchor; no duration is invented for the unknown span.
             self.time_anchor = None;
-            if let Some(request) = self.request.as_mut().filter(|r| r.outcome.is_none()) {
+            if let Some(request) = request.as_mut().filter(|r| r.outcome.is_none()) {
                 request.unknown_time_events = request.unknown_time_events.saturating_add(1);
             }
             self.request_start_clock_known = false;
@@ -244,7 +256,7 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
         };
         if self.last_known_tick.is_some_and(|last| to < last) { return false; }
         let elapsed = self.time_anchor.map_or(0, |from| to - from);
-        if let Some(request) = self.request.as_mut().filter(|r| r.outcome.is_none()) {
+        if let Some(request) = request.as_mut().filter(|r| r.outcome.is_none()) {
             let eligible = self.condition.eligible();
             let rebuffer = eligible && self.condition == Condition::Rebuffering && request.first_picture_at.is_some();
             let handoff = eligible && self.handoff.is_some();
@@ -269,8 +281,8 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
         request.recent_attempts.push(attempt);
     }
 
-    fn finish(&mut self, outcome: RequestOutcome, effects: &mut Vec<Fx<R, A>>) {
-        let Some(request) = self.request.as_mut().filter(|r| r.outcome.is_none()) else { return };
+    fn finish(&mut self, request: &mut Option<RequestSummary<R, A>>, outcome: RequestOutcome, effects: &mut Vec<Fx<R, A>>) {
+        let Some(request) = request.as_mut().filter(|r| r.outcome.is_none()) else { return };
         // An End without independent picture evidence is an unconfirmed playback, never a
         // successful completion. Explicit failure and cancellation retain their own classes.
         let outcome = if outcome == RequestOutcome::Ended && request.first_picture_at.is_none() {
@@ -303,28 +315,38 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
     }
 
     pub fn step(&mut self, event: Event<R, A>, effects: &mut Vec<Fx<R, A>>) {
+        self.transition(event, effects);
+    }
+
+    fn transition(&mut self, event: Event<R, A>, effects: &mut Vec<Fx<R, A>>) {
+        // Only owned data reaches helpers. No mutable projection of the registered field escapes.
+        let mut request = std::mem::take(&mut self.request);
+        self.reduce(event, &mut request, effects);
+        self.request = request;
+    }
+    fn reduce(&mut self, event: Event<R, A>, summary: &mut Option<RequestSummary<R, A>>, effects: &mut Vec<Fx<R, A>>) {
         // Address validation precedes time accounting. A late answer must not extend the
         // newer request's stall merely because it carries a later timestamp.
         let admitted = match &event {
             Event::RequestStarted { request, .. } => self.last_request_id.is_none_or(|last| *request > last),
-            Event::RequestFinished { request, .. } => self.request.as_ref().is_some_and(|r| r.id == *request && r.outcome.is_none()),
-            Event::AttemptStarted { request, attempt, .. } => self.request.as_ref().is_some_and(|r| {
+            Event::RequestFinished { request, .. } => summary.as_ref().is_some_and(|r| r.id == *request && r.outcome.is_none()),
+            Event::AttemptStarted { request, attempt, .. } => summary.as_ref().is_some_and(|r| {
                 r.id == *request && r.outcome.is_none()
                     && self.last_attempt_id.is_none_or(|last| *attempt > last)
                     && !r.current_attempt.is_some_and(|a| a.id == *attempt)
                     && !r.recent_attempts.iter().any(|a| a.id == *attempt)
             }),
             Event::Evidence { request, attempt, .. } | Event::Condition { request, attempt, .. }
-            | Event::AttemptFinished { request, attempt, .. } => self.request.as_ref().is_some_and(|r| {
+            | Event::AttemptFinished { request, attempt, .. } => summary.as_ref().is_some_and(|r| {
                 r.id == *request && r.outcome.is_none()
                     && r.current_attempt.is_some_and(|a| a.id == *attempt && a.outcome.is_none())
             }),
-            Event::HandoffBegun { request, from, .. } => self.request.as_ref().is_some_and(|r| {
+            Event::HandoffBegun { request, from, .. } => summary.as_ref().is_some_and(|r| {
                 r.id == *request && r.outcome.is_none()
                     && r.current_attempt.is_some_and(|a| a.id == *from)
                     && self.handoff.is_none()
             }),
-            Event::Handoff { request, from, to, .. } => self.request.as_ref().is_some_and(|r| {
+            Event::Handoff { request, from, to, .. } => summary.as_ref().is_some_and(|r| {
                 r.id == *request && r.outcome.is_none() && to > from
                     && r.current_attempt.is_some_and(|a| a.id == *from)
                     && self.handoff.is_none() && self.last_handoff_to != Some(*to)
@@ -332,12 +354,12 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
         };
         if !admitted { return; }
         let at = event.at();
-        if !self.advance(at) { return; }
+        if !self.advance(summary, at) { return; }
         match event {
             Event::RequestStarted { request, origin, at } => {
-                if self.request.as_ref().is_some_and(|old| old.id == request) { return; }
-                self.finish(RequestOutcome::Replaced, effects);
-                self.request = Some(RequestSummary {
+                if summary.as_ref().is_some_and(|old| old.id == request) { return; }
+                self.finish(summary, RequestOutcome::Replaced, effects);
+                *summary = Some(RequestSummary {
                     id: request, origin, started_at: at, first_picture_at: None, startup_ms: None,
                     outcome: None,
                     attempt_count: 0, recent_attempts: Vec::new(), current_attempt: None,
@@ -357,10 +379,10 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
                 self.pending_refusal = None;
             }
             Event::RequestFinished { request, outcome, .. } => {
-                if self.request.as_ref().is_some_and(|r| r.id == request) { self.finish(outcome, effects); }
+                if summary.as_ref().is_some_and(|r| r.id == request) { self.finish(summary, outcome, effects); }
             }
             Event::AttemptStarted { request, attempt, backend, origin, at } => {
-                let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
+                let Some(r) = summary.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
                 if r.current_attempt.is_some_and(|a| a.id == attempt)
                     || r.recent_attempts.iter().any(|a| a.id == attempt) { return; }
                 if let Some(old) = r.current_attempt.take() { Self::save_attempt(r, old); }
@@ -374,7 +396,7 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
                 self.attempt_start_clock_known = at.as_millis().is_some();
             }
             Event::Evidence { request, attempt, evidence, at } => {
-                let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
+                let Some(r) = summary.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
                 let Some(current) = r.current_attempt.as_mut().filter(|a| a.id == attempt && a.outcome.is_none()) else { return };
                 current.evidence.observe(evidence);
                 if evidence != Evidence::PicturePresented || current.first_picture_at.is_some() { return; }
@@ -407,7 +429,7 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
                 }
             }
             Event::Condition { request, attempt, condition, at } => {
-                let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
+                let Some(r) = summary.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
                 let Some(current) = r.current_attempt.filter(|a| a.id == attempt && a.outcome.is_none()) else { return };
                 if condition == Condition::Rebuffering && self.condition != Condition::Rebuffering && r.first_picture_at.is_some() {
                     r.rebuffer_count = r.rebuffer_count.saturating_add(1);
@@ -416,7 +438,7 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
                 self.condition = condition;
             }
             Event::HandoffBegun { request, from, at } => {
-                let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
+                let Some(r) = summary.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
                 let Some(source) = r.current_attempt.filter(|a| a.id == from) else { return };
                 if self.handoff.is_some() { return; }
                 r.handoff_count = r.handoff_count.saturating_add(1);
@@ -424,7 +446,7 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
                 effects.push(Fx::Incident(source.record(request, Self::handoff_stage(&source), Incident::Handoff, at)));
             }
             Event::Handoff { request, from, to, at } => {
-                let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
+                let Some(r) = summary.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
                 let Some(source) = r.current_attempt.filter(|a| a.id == from) else { return };
                 if to <= from || self.handoff.is_some() || self.last_handoff_to == Some(to) { return; }
                 r.handoff_count = r.handoff_count.saturating_add(1);
@@ -433,7 +455,7 @@ impl<R: Copy + Ord, A: Copy + Ord> AttemptMetrics<R, A> {
                 effects.push(Fx::Incident(source.record(request, Self::handoff_stage(&source), Incident::Handoff, at)));
             }
             Event::AttemptFinished { request, attempt, outcome, at } => {
-                let Some(r) = self.request.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
+                let Some(r) = summary.as_mut().filter(|r| r.id == request && r.outcome.is_none()) else { return };
                 let Some(current) = r.current_attempt.as_mut().filter(|a| a.id == attempt && a.outcome.is_none()) else { return };
                 current.outcome = Some(if outcome == AttemptOutcome::Ended && current.first_picture_at.is_none() {
                     AttemptOutcome::Unconfirmed

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Registry-backed machine privacy, opt-in writer checks and enum-lint policy.
+"""Mandatory registry-backed privacy, single-writer and enum-lint contracts.
 
-All listed machines retain the private-fields gate and report-only bool/Option counts. Explicit
-strict contracts add a conservative lexical single-writer check; see machines.ini for its limits.
-Listed enum-policy modules must carry the Clippy deny; Clippy classifies the matched types.
+Every listed machine has a validated strict writer binding and an enum policy. Bool/Option counts
+remain report-only. See machines.ini for the conservative proof limits; Clippy classifies enums.
 """
 from pathlib import Path
 import configparser
@@ -102,6 +101,7 @@ def production_tokens(source):
                 j = ends[j] + 1; continue
             j += 1
         tokens[i:j] = ['<test>'] * (j - i)
+        if j > i: tokens[j - 1] = ';'  # retain an item boundary for the following production impl
         i = j
     return tokens
 
@@ -115,7 +115,7 @@ def item_bodies(tokens):
         if token == 'impl' and i and tokens[i - 1] not in ('}', ';', ']', '{', 'unsafe', 'default'): continue
         j = i + 1
         if token == 'fn':
-            if j >= len(tokens): continue
+            if j >= len(tokens) or not tokens[j].isidentifier(): continue
             name = tokens[j]
             while j < len(tokens) and tokens[j] not in ('(', ';', '{'):
                 j += 1
@@ -430,12 +430,12 @@ def writer_problems(source, name, field, transition, constructor, label, require
             args = tokens[i + 2:ends[i + 1]]
             if (((reader is None or self_is_machine(i)) and 'self' in args) or field in args) and i not in safe_matches and i not in safe_asserts and not (reader is not None and (i < 3 or tokens[i - 3:i - 1] != [':', ':']) and tokens[i - 1] in ('matches', 'assert', 'debug_assert', 'vec', 'format', 'format_args', 'write', 'writeln', 'panic') and reader[0].builtin(reader[0].root / label, tokens[i - 1])):
                 problems.append(f'{location(i)}: macro may hide a state mutation outside {transition}')
-        if token == '*' and tokens[i + 1:i + 3] == ['self', '='] and owner != transition:
+        if token == '*' and tokens[i + 1:i + 3] == ['self', '='] and owner != transition and (reader is None or self_is_machine(i)):
             problems.append(f'{location(i)}: replacement of self outside {transition}')
     return problems
 
 
-def wildcard_problems(source, label):
+def wildcard_problems(source, label, require_header=True):
     tokens = production_tokens(source)
     ends = ends_of(tokens)
     lint = ['clippy', ':', ':', 'wildcard_enum_match_arm']
@@ -446,12 +446,12 @@ def wildcard_problems(source, label):
         attr = tokens[i + 3:end]
         if attr in (['deny', '('] + lint + [')'], ['forbid', '('] + lint + [')']): found = True
         i = end + 1
-    problems = [] if found else [f'{label}: module must have #![deny(clippy::wildcard_enum_match_arm)]']
+    problems = [] if found or not require_header else [f'{label}: module must have #![deny(clippy::wildcard_enum_match_arm)]']
     for i in range(len(tokens) - 2):
         bracket = i + 2 if tokens[i:i + 3] == ['#', '!', '['] else i + 1
         if tokens[i] != '#' or bracket not in ends or tokens[bracket] != '[': continue
         attr = tokens[bracket + 1:ends[bracket]]
-        if ('allow' in attr or 'expect' in attr) and any(x in attr for x in ('wildcard_enum_match_arm', 'warnings', 'all')):
+        if any(level in attr for level in ('allow', 'expect', 'warn')) and any(x in attr for x in ('wildcard_enum_match_arm', 'warnings', 'all')):
             problems.append(f'{label}: wildcard enum lint may not be locally suppressed')
     return problems
 
@@ -481,6 +481,8 @@ def check(modules=MODULES, ini=INI):
     if parser.defaults():
         problems.append('machines.ini: DEFAULT keys are not permitted')
     strict_keys = {'writer_policy', 'state_field', 'transition', 'constructor'}
+    if not parser.sections():
+        problems.append('machines.ini: registry must not be empty')
     for section in parser.sections():
         entry = parser[section]
         is_module = section.startswith('module ')
@@ -496,11 +498,16 @@ def check(modules=MODULES, ini=INI):
             if set(entry) != {'wildcard_enum_match_arm'} or entry.get('wildcard_enum_match_arm') != 'deny':
                 problems.append(f'machines.ini [{section}]: module requires wildcard_enum_match_arm = deny')
                 continue
-            problems.extend(wildcard_problems(path.read_text(encoding='utf-8'), f'module {file}'))
+            try:
+                for child in production_sources(path, root):
+                    problems.extend(wildcard_problems(child.read_text(encoding='utf-8'),
+                        f'module {child.relative_to(root).as_posix()}', require_header=child == path))
+            except (OSError, ValueError) as error:
+                problems.append(f'machines.ini [{section}]: cannot analyze enum policy: {error}')
             report.append(f'enum policy {file}: clippy::wildcard_enum_match_arm deny')
             continue
-        if 'state_reads' in entry and not strict_keys & set(entry):
-            problems.append(f'{section}: state_reads requires a complete strict writer contract')
+        if 'module ' + file not in parser:
+            problems.append(f'machines.ini [{section}]: missing enum policy [module {file}]')
         unknown = set(entry) - {'event', 'effect', 'step', 'state_reads'} - strict_keys
         if unknown:
             problems.append(f'machines.ini [{section}]: unknown keys: {", ".join(sorted(unknown))}')
@@ -517,42 +524,46 @@ def check(modules=MODULES, ini=INI):
         options = sum(1 for _, _, t in fields if t[:2] == ['Option', '<'])
         report.append(f'machine {section} ({entry.get("event", "?")} -> {entry.get("effect", "?")}): '
                       f'{len(fields)} fields, {bools} bool, {options} Option')
-        if strict_keys & set(entry):
-            values = {key: entry.get(key, '').strip() for key in strict_keys}
-            if values['writer_policy'] != 'strict' or any(not values[k].isidentifier() for k in ('state_field', 'transition', 'constructor')):
-                problems.append(f'machines.ini [{section}]: strict contract requires writer_policy = strict and nonempty state_field, transition and constructor identifiers')
+        values = {key: entry.get(key, '').strip() for key in strict_keys}
+        if values['writer_policy'] != 'strict' or any(not values[k].isidentifier() for k in ('state_field', 'transition', 'constructor')):
+            problems.append(f'machines.ini [{section}]: strict contract requires writer_policy = strict and nonempty state_field, transition and constructor identifiers')
+            continue
+        field, transition, constructor = (values[k] for k in ('state_field', 'transition', 'constructor'))
+        if transition == constructor:
+            problems.append(f'machines.ini [{section}]: transition and constructor must differ')
+            continue
+        if field not in {f for _, f, _ in fields}:
+            problems.append(f'machines.ini [{section}]: no state field {field} (stale strict contract)')
+            continue
+        reader = None
+        if entry.get('state_reads') is not None:
+            if entry['state_reads'] != 'immutable':
+                problems.append(f'{section}: state_reads must be immutable')
                 continue
-            field, transition, constructor = (values[k] for k in ('state_field', 'transition', 'constructor'))
-            if transition == constructor:
-                problems.append(f'machines.ini [{section}]: transition and constructor must differ')
+            from machine_readonly import Proof
+            from types import SimpleNamespace
+            proof = Proof(root, SimpleNamespace(production_tokens=production_tokens, ends_of=ends_of,
+                shape=shape, struct_fields=struct_fields, item_bodies=item_bodies, inherent_target=inherent_target))
+            generic_bindings = proof.generic_context(path, name)
+            if generic_bindings is None:
+                problems.append(f'{section}: generic state bounds do not prove immutable identities')
                 continue
-            if field not in {f for _, f, _ in fields}:
-                problems.append(f'machines.ini [{section}]: no state field {field} (stale strict contract)')
-                continue
-            reader = None
-            if entry.get('state_reads') is not None:
-                if entry['state_reads'] != 'immutable':
-                    problems.append(f'{section}: state_reads must be immutable')
-                    continue
-                from machine_readonly import Proof
-                from types import SimpleNamespace
-                proof = Proof(root, SimpleNamespace(production_tokens=production_tokens, ends_of=ends_of,
-                    shape=shape, struct_fields=struct_fields, item_bodies=item_bodies, inherent_target=inherent_target))
-                state_type = next(typ for _, field_name, typ in fields if field_name == field)
-                if not proof.inert(path, state_type):
-                    problems.append(f'{section}: shared state payload is unresolved or has mutable authority')
-                else:
-                    reader = (proof, path, state_type)
-            try:
-                for child in production_sources(path, root):
-                    child_source = source if child == path else child.read_text(encoding='utf-8')
-                    problems.extend(writer_problems(child_source, name, field, transition, constructor,
-                                                    child.relative_to(root).as_posix(),
-                                                    require_methods=child == path, reader=reader))
-            except (OSError, ValueError) as error:
-                problems.append(f'machines.ini [{section}]: cannot analyze production sources: {error}')
-            if reader is not None:
-                report.append(f'immutable state read audit {section}: ' + ', '.join(sorted(reader[0].audit)))
+            state_type = next(typ for _, field_name, typ in fields if field_name == field)
+            state_type = [part for token in state_type for part in generic_bindings.get(token, [token])]
+            if not proof.inert(path, state_type):
+                problems.append(f'{section}: shared state payload is unresolved or has mutable authority')
+            else:
+                reader = (proof, path, state_type)
+        try:
+            for child in production_sources(path, root):
+                child_source = source if child == path else child.read_text(encoding='utf-8')
+                problems.extend(writer_problems(child_source, name, field, transition, constructor,
+                                                child.relative_to(root).as_posix(),
+                                                require_methods=child == path, reader=reader))
+        except (OSError, ValueError) as error:
+            problems.append(f'machines.ini [{section}]: cannot analyze production sources: {error}')
+        if reader is not None:
+            report.append(f'immutable state read audit {section}: ' + ', '.join(sorted(reader[0].audit)))
     return problems, report
 
 

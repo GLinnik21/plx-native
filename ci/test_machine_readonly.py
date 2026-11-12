@@ -22,11 +22,47 @@ impl Machine {
     fn view(&self) -> View<'_> { View { state: &self.state } }
 }
 '''
+GENERIC = '''
+pub trait Identity: Copy + Ord + sealed::Sealed {}
+mod sealed { pub trait Sealed {} impl Sealed for u64 {} }
+impl Identity for u64 {}
+struct Payload<T> { id: T }
+struct Machine<R: Identity> { state: Option<Payload<R>> }
+impl<R: Identity> Machine<R> {
+    fn new() -> Self { Self { state: None } }
+    fn step(&mut self) { let owned = std::mem::take(&mut self.state); self.state = owned; }
+    fn view(&self) -> Option<&Payload<R>> { self.state.as_ref() }
+}
+'''
 class Readonly(unittest.TestCase):
     def test_shared_getter_view_and_owned_intrinsic_transition(self):
         self.assertEqual(verdict(SOURCE, INI), [])
         source = SOURCE.replace('self.state = State::Idle;', 'let old = std::mem::replace(&mut self.state, State::Idle); self.state = old.consume();')
         self.assertEqual(verdict(source, INI), [])
+    def test_generic_identity_requires_a_closed_inert_bound(self):
+        self.assertEqual(verdict(GENERIC, INI), [])
+        for source in (
+            GENERIC.replace('R: Identity', 'R: Copy + Ord'),
+            GENERIC.replace('mod sealed', 'pub mod sealed'),
+            GENERIC.replace('mod sealed', '#[rewrite] mod sealed'),
+            GENERIC.replace('pub trait Identity', '#[rewrite] pub trait Identity'),
+            GENERIC.replace('impl Sealed for u64 {}', 'impl Sealed for *mut u8 {}'),
+            GENERIC.replace('impl Sealed for u64 {}', 'impl Sealed for std::cell::Cell<u8> {}'),
+            GENERIC + 'impl sealed::Sealed for Bad {} struct Bad { value: std::cell::Cell<u8> }',
+            GENERIC + 'fn hidden() { make_impl!(); }',
+            GENERIC + 'mod child;',
+        ):
+            with self.subTest(source=source): self.assertTrue(verdict(source, INI))
+
+    def test_owned_data_containers_do_not_admit_mutable_authority(self):
+        for typ in ('std::collections::VecDeque<String>', 'std::collections::BTreeMap<String, u8>',
+                    'Result<std::path::PathBuf, u8>'):
+            self.assertEqual(verdict(SOURCE.replace('value: String', 'value: ' + typ), INI), [])
+            self.assertTrue(verdict(SOURCE.replace('value: String', 'value: ' + typ.replace('String', 'std::cell::Cell<u8>').replace('PathBuf', 'PathBuf')), INI)) if 'String' in typ else None
+
+    def test_test_only_tail_does_not_hide_a_later_registered_impl(self):
+        for tail in ('#[cfg(test)] mod tests { fn x() {} }', '#[cfg(test)] mod tests;'):
+            self.assertTrue(verdict(SOURCE + tail + ' impl Machine { fn rogue(&mut self) { self.state = State::Idle; } }', INI))
     def test_receiver_mutation_consumption_and_mutable_reference_are_not_readers(self):
         for change in ('fn active(&mut self)', 'fn active(self)'):
             self.assertTrue(verdict(SOURCE.replace('fn active(&self)', change), INI))

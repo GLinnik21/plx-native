@@ -236,10 +236,18 @@ widening recorded the 17 forks that were already there (three in `screens/`: `le
 `ci/machines.ini` lists the state machines whose shape is gated, one `[file::Struct]` section each
 (paths relative to `rust-modules/`), with the machine's `event` and `effect` types and a `step`
 line saying how it is exposed, driven and owned. `ci/check-machine-shape.py` (in `make check`)
-fails on a `pub`, `pub(crate)` or `pub(super)` field of a listed struct, so its state stays
-private and its one writer stays `step`, and on an entry whose file or struct is gone. It also
-prints one line per machine with the number of its `bool` and `Option<..>` fields: a report-only
-flag ratchet, read in review and never red. The first entry is `ForegroundLifecycle`.
+fails on public state or a stale entry. Every registered machine must declare `writer_policy = strict`,
+`state_field`, `transition` and `constructor`; these bindings are mandatory, not opt-in. All ten
+registered machines have checked single-writer contracts. Production child/include files are checked
+too; shared state reads require structural immutable-payload proof, including closed, privately sealed
+identity bounds for generic payloads, not merely `Copy`.
+
+Every registered machine also requires a matching `[module file]` enum policy and an unconditional
+`#![deny(clippy::wildcard_enum_match_arm)]` (or `forbid`) header. Local `allow`, `expect` or `warn`,
+including `cfg_attr` and production children/includes, cannot weaken it. Numeric and wire-string
+fallbacks remain valid; Clippy checks enum exhaustiveness, not a textual underscore ban. The gate
+also reports each machine's `bool` and `Option<..>` field counts without failing on them. The first
+entry is `ForegroundLifecycle`.
 
 ## Layout
 

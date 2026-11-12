@@ -1,3 +1,4 @@
+#![deny(clippy::wildcard_enum_match_arm)]
 //! The registry contract and gallery cache policy. No clock, transport, filesystem or profile IO.
 //!
 //! Only `Open` may begin a request: booting the package store cannot contact the registry.
@@ -555,7 +556,11 @@ pub struct Catalog {
 }
 
 impl Default for Catalog {
-    fn default() -> Self {
+    fn default() -> Self { Self::new() }
+}
+
+impl Catalog {
+    pub fn new() -> Self {
         Self {
             snapshot: Snapshot::default(),
             candidates: Vec::new(),
@@ -568,9 +573,8 @@ impl Default for Catalog {
             allow_fetch: false,
         }
     }
-}
 
-impl Catalog {
+    fn transition(&mut self, next: Phase) { self.phase = next; }
     pub fn snapshot(&self) -> &Snapshot {
         &self.snapshot
     }
@@ -603,7 +607,7 @@ impl Catalog {
             Event::Read { tag, result }
                 if tag == self.generation && matches!(self.phase, Phase::Reading(_)) =>
             {
-                let Phase::Reading(at) = self.phase else {
+                let &Phase::Reading(at) = &self.phase else {
                     unreachable!()
                 };
                 if let Ok(cache) = result {
@@ -652,7 +656,7 @@ impl Catalog {
             Event::Written { tag, outcome }
                 if tag == self.generation && matches!(self.phase, Phase::Writing(..)) =>
             {
-                let Phase::Writing(at, fetch) = self.phase else {
+                let &Phase::Writing(at, fetch) = &self.phase else {
                     unreachable!()
                 };
                 if outcome == WriteOutcome::Done {
@@ -668,11 +672,12 @@ impl Catalog {
 
     fn read(&mut self, at: usize, fx: &mut Vec<CatalogEffect>) {
         if let Some(candidate) = self.candidates.get(at) {
-            self.phase = Phase::Reading(at);
+            let root = candidate.dir.clone();
+            self.transition(Phase::Reading(at));
             fx.push(CatalogEffect::Read {
                 tag: self.generation,
                 at: Loc {
-                    root: candidate.dir.clone(),
+                    root,
                     rel: CACHE_FILE.into(),
                 },
             });
@@ -686,24 +691,25 @@ impl Catalog {
             // Persist the attempt before dialing, so a restart during the request keeps backoff.
             self.write(0, true, fx);
         } else {
-            self.phase = Phase::Idle;
+            self.transition(Phase::Idle);
         }
     }
 
     fn after_write(&mut self, fetch: bool, fx: &mut Vec<CatalogEffect>) {
         if fetch {
-            self.phase = Phase::Fetching;
+            self.transition(Phase::Fetching);
             fx.push(CatalogEffect::Get {
                 tag: self.generation,
                 etag: self.etag.clone(),
             });
         } else {
-            self.phase = Phase::Idle;
+            self.transition(Phase::Idle);
         }
     }
 
     fn write(&mut self, at: usize, fetch: bool, fx: &mut Vec<CatalogEffect>) {
         if let Some(candidate) = self.candidates.get(at) {
+            let root = candidate.dir.clone();
             let record = CacheRecord {
                 checked_at: self.snapshot.checked_at,
                 attempted_at: self.attempted_at,
@@ -711,11 +717,11 @@ impl Catalog {
                 body: Arc::clone(&self.body),
                 index: self.snapshot.index.clone(),
             };
-            self.phase = Phase::Writing(at, fetch);
+            self.transition(Phase::Writing(at, fetch));
             fx.push(CatalogEffect::Write {
                 tag: self.generation,
                 at: Loc {
-                    root: candidate.dir.clone(),
+                    root,
                     rel: CACHE_FILE.into(),
                 },
                 record,

@@ -1,3 +1,4 @@
+#![deny(clippy::wildcard_enum_match_arm)]
 //! The URI-mode probe machine (issue #1064, the first test): what to say to `com.webos.media`, in
 //! what order, and what each answer means, as a tested `State + Event -> Effects` machine in the
 //! shape of `plx_media::player::lifecycle::ForegroundLifecycle` (not linked: that crate is above this one).
@@ -351,7 +352,7 @@ enum Phase {
 
 impl Phase {
     /// The name a failure in this phase is reported under.
-    fn name(self) -> &'static str {
+    fn name(&self) -> &'static str {
         match self {
             Phase::Idle | Phase::Registering { .. } | Phase::AwaitingClose => "register",
             Phase::Acb => "acb",
@@ -582,7 +583,7 @@ pub struct UriProbe {
 
 impl std::fmt::Debug for UriProbe {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "UriProbe {{ phase: {:?}, shape: {:?} }}", self.phase, self.shape)
+        write!(f, "UriProbe {{ phase: {:?}, shape: {:?} }}", &self.phase, self.shape)
     }
 }
 
@@ -612,6 +613,9 @@ impl UriProbe {
         }
     }
 
+    /// All phase changes, including renewals of a deadline, enter here.
+    fn transition(&mut self, next: Phase) { self.phase = next; }
+
     /// The session is over (everything it will say has been said).
     pub fn is_done(&self) -> bool {
         self.phase == Phase::Done
@@ -632,8 +636,8 @@ impl UriProbe {
         match ev {
             UriEvent::Start => self.start(now_ms, fx),
             UriEvent::Back => self.stop(now_ms, End::Back, fx),
-            UriEvent::Closed if self.phase == Phase::AwaitingClose => {
-                self.phase = Phase::Registering { deadline: now_ms.saturating_add(REGISTER_TIMEOUT_MS) };
+            UriEvent::Closed if matches!(self.phase, Phase::AwaitingClose) => {
+                self.transition(Phase::Registering { deadline: now_ms.saturating_add(REGISTER_TIMEOUT_MS) });
                 fx.push(UriEffect::Open(self.shape));
             }
             UriEvent::Closed => {},
@@ -672,7 +676,7 @@ impl UriProbe {
         fx.push(self.line(now_ms, &armed));
         if self.config.variant.acb() { self.acb_event(AcbEvent::Start, now_ms, fx); }
         else {
-            self.phase = Phase::Registering { deadline: now_ms + REGISTER_TIMEOUT_MS };
+            self.transition(Phase::Registering { deadline: now_ms + REGISTER_TIMEOUT_MS });
             fx.push(UriEffect::Open(self.shape));
         }
     }
@@ -758,7 +762,7 @@ impl UriProbe {
                 return;
             }
         }
-        self.phase = Phase::Driving { step: step + 1, deadline: now_ms + DRIVE_STEP_MS };
+        self.transition(Phase::Driving { step: step + 1, deadline: now_ms + DRIVE_STEP_MS });
     }
 
     fn reply(&mut self, method: Method, ok: bool, message: &Message, now_ms: u64, fx: &mut Vec<UriEffect>) {
@@ -773,7 +777,7 @@ impl UriProbe {
                 let shape = register_ladder::label(self.shape);
                 if ok {
                     fx.push(self.line(now_ms, &format!("register shape={shape} ok")));
-                    self.phase = Phase::Loading { deadline: now_ms + LOAD_TIMEOUT_MS };
+                    self.transition(Phase::Loading { deadline: now_ms + LOAD_TIMEOUT_MS });
                     let window_id = if self.config.variant.acb() { Some(super::acb_bind::DUMMY_WINDOW_ID.to_owned()) }
                         else if self.config.variant.binds_at_load() { self.config.window_id.clone() } else { None };
                     fx.push(UriEffect::Call(UriCall::Load { window_id, bps: self.config.bps }));
@@ -799,7 +803,7 @@ impl UriProbe {
                 self.media_id = None;
                 self.subscribed = false;
                 fx.push(UriEffect::Close);
-                self.phase = Phase::AwaitingClose;
+                self.transition(Phase::AwaitingClose);
             }
             Step::Settled(_) | Step::Failed(_) => self.stop(now_ms, end, fx),
         }
@@ -940,11 +944,11 @@ impl UriProbe {
                     self.facts.playing_ms = Some(now_ms.saturating_sub(self.started_ms));
                 }
                 if matches!(self.phase, Phase::Starting { .. }) {
-                    self.phase = if self.config.transport {
+                    self.transition(if self.config.transport {
                         Phase::Driving { step: 0, deadline: now_ms + DRIVE_FIRST_MS }
                     } else {
                         Phase::Playing { frozen_at: now_ms + FROZEN_TIME_MS }
-                    };
+                    });
                 }
             }
             Ev::Paused => {
@@ -1020,7 +1024,7 @@ impl UriProbe {
         match (self.config.variant, self.config.window_id.clone(), self.media_id.clone()) {
             (Variant::Late, Some(window_id), Some(media_id)) => {
                 self.facts.window_call = WindowCall::Pending;
-                self.phase = Phase::SettingWindow { deadline: now_ms + LATE_ID_TIMEOUT_MS };
+                self.transition(Phase::SettingWindow { deadline: now_ms + LATE_ID_TIMEOUT_MS });
                 fx.push(UriEffect::Call(UriCall::SetWindowId { media_id, window_id }));
             }
             _ => self.play(now_ms, fx),
@@ -1035,24 +1039,24 @@ impl UriProbe {
         for effect in out {
             match effect {
                 AcbFx::Run {request, step, op, ..} => {
-                    self.phase = Phase::Acb;
+                    self.transition(Phase::Acb);
                     fx.push(self.line(now_ms, &format!("acb request={} step={step:?}", request.number())));
                     fx.push(UriEffect::Acb {request, op});
                 }
                 AcbFx::WaitingVideo => {
-                    self.phase = Phase::Acb;
+                    self.transition(Phase::Acb);
                     fx.push(self.line(now_ms, "acb waiting for real videoInfo dimensions/rate"));
                 }
                 AcbFx::Answered {step, invoked} => {
                     fx.push(self.line(now_ms, &format!("acb answer step={step:?} invoked={invoked} (not plane proof)")));
                 }
                 AcbFx::GatePassed => {
-                    self.phase = Phase::Registering {deadline: now_ms.saturating_add(REGISTER_TIMEOUT_MS)};
+                    self.transition(Phase::Registering {deadline: now_ms.saturating_add(REGISTER_TIMEOUT_MS)});
                     fx.push(UriEffect::Open(self.shape));
                 }
                 AcbFx::Bound => {
-                    self.phase = if self.facts.playing_ms.is_some() { Phase::Playing {frozen_at: now_ms.saturating_add(FROZEN_TIME_MS)} }
-                        else { Phase::Starting {deadline: now_ms.saturating_add(PLAY_TIMEOUT_MS)} };
+                    self.transition(if self.facts.playing_ms.is_some() { Phase::Playing {frozen_at: now_ms.saturating_add(FROZEN_TIME_MS)} }
+                        else { Phase::Starting {deadline: now_ms.saturating_add(PLAY_TIMEOUT_MS)} });
                 }
                 AcbFx::Failed(failure) => {
                     let end = match failure {
@@ -1068,7 +1072,7 @@ impl UriProbe {
 
     fn play(&mut self, now_ms: u64, fx: &mut Vec<UriEffect>) {
         if let Some(media_id) = self.media_id.clone() {
-            self.phase = Phase::Starting { deadline: now_ms + PLAY_TIMEOUT_MS };
+            self.transition(Phase::Starting { deadline: now_ms + PLAY_TIMEOUT_MS });
             fx.push(UriEffect::Call(UriCall::Play { media_id }));
         }
     }
@@ -1097,7 +1101,7 @@ impl UriProbe {
         if moved {
             if matches!(self.phase, Phase::Playing { .. }) || (!self.config.transport && matches!(self.phase, Phase::Starting { .. })) {
                 // Drive waits for the explicit playing event before scheduling its one script.
-                self.phase = Phase::Playing { frozen_at: now_ms + FROZEN_TIME_MS };
+                self.transition(Phase::Playing { frozen_at: now_ms + FROZEN_TIME_MS });
             }
             let first = self.facts.time_moved.is_none();
             self.facts.time_moved.get_or_insert(now_ms.saturating_sub(self.started_ms));
@@ -1133,7 +1137,7 @@ impl UriProbe {
             fx.push(UriEffect::Call(UriCall::Unload { media_id }));
         }
         fx.push(UriEffect::Close);
-        self.phase = Phase::Done;
+        self.transition(Phase::Done);
         fx.push(self.line(now_ms, &self.summary()));
         fx.push(self.line(now_ms, "tester: report picture yes/no and sound yes/no"));
     }

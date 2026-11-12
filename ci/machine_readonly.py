@@ -8,9 +8,11 @@ from pathlib import Path
 import re
 
 PRIMITIVES = set('bool char str u8 u16 u32 u64 u128 usize i8 i16 i32 i64 i128 isize f32 f64'.split())
-WRAPPERS = {'Vec', 'Option', 'Arc', 'String'}
+WRAPPERS = {'Vec', 'Option', 'Arc', 'String', 'VecDeque', 'BTreeMap', 'Result', 'PathBuf'}
 STD = {'std::vec::Vec', 'alloc::vec::Vec', 'std::option::Option', 'core::option::Option',
-       'std::sync::Arc', 'alloc::sync::Arc', 'std::string::String', 'alloc::string::String'}
+       'std::sync::Arc', 'alloc::sync::Arc', 'std::string::String', 'alloc::string::String',
+       'std::collections::VecDeque', 'std::collections::BTreeMap', 'std::path::PathBuf',
+       'std::result::Result', 'core::result::Result'}
 
 def split(tokens, delimiter=','):
     result, current, depth = [], [], 0
@@ -156,11 +158,86 @@ class Proof:
         found = [self.resolve(path, target[:-1] + names, seen) for alias, target in uses if alias == '*']
         found = {value for value in found if value is not None}
         if len(found) == 1: return found.pop()
-        if len(names) == 1 and names[0] in PRIMITIVES | {'Vec', 'Option', 'String'}:
+        if len(names) == 1 and names[0] in PRIMITIVES | {'Vec', 'Option', 'String', 'Result'}:
             return ('std', names[0])
         return None
 
+    def generic_context(self, path, name):
+        """Prove each machine parameter through a closed, private sealing module, not Copy alone."""
+        tokens, ends, _, uses = self.module(path)
+        start = next((i + 2 for i in range(len(tokens) - 2)
+                      if tokens[i:i + 2] == ['struct', name]), None)
+        if start is None or tokens[start:start + 1] != ['<']: return {}
+        stop, depth = start + 1, 1
+        while stop < len(tokens) and depth:
+            depth += (tokens[stop] == '<') - (tokens[stop] == '>'); stop += 1
+        result = {}
+        for parameter in split(tokens[start + 1:stop - 1]):
+            if len(parameter) != 3 or parameter[1] != ':': return None
+            generic, _, bound = parameter
+            if not self.closed_bound(path, bound): return None
+            result[generic] = ['u64']  # proof certificate: no mutable authority, not a Rust substitution
+        return result
+
+    def closed_bound(self, path, bound):
+        tokens, ends, _, uses = self.module(path)
+        matches = [i for i in range(len(tokens) - 1) if tokens[i:i + 2] == ['trait', bound]]
+        if len(matches) != 1 or any(alias in (bound, '*') for alias, _ in uses): return False
+        at = matches[0]
+        # The empty public bound has no associated types, callbacks or defaults.
+        signature = tokens[at + 2:at + 12]
+        if len(signature) != 10 or signature[:5] != [':', 'Copy', '+', 'Ord', '+'] or signature[6:8] != [':', ':'] or signature[9] != '{': return False
+        module, seal = signature[5], signature[8]
+        before = at - 2 if tokens[at - 1:at] == ['pub'] else at - 1
+        def outer_attribute(index):
+            opening = next((a for a, b in ends.items() if b == index and tokens[a] == '['), None)
+            return opening is not None and tokens[opening - 1:opening] == ['#']
+        if outer_attribute(before): return False
+        if sum(tokens[i:i + 4] == [module, ':', ':', seal] for i in range(len(tokens) - 3)) != 1: return False
+        if ends.get(at + 11) != at + 12: return False
+        mods = [i for i in range(len(tokens) - 2) if tokens[i:i + 3] == ['mod', module, '{']]
+        if len(mods) != 1: return False
+        begin = mods[0]
+        if begin and (tokens[begin - 1] in ('pub', ')') or outer_attribute(begin - 1)): return False
+        if any(a < begin < b for a, b in ends.items() if tokens[a] == '{'): return False
+        # Additional modules/includes or top-level macros could hide another sealing impl.
+        if any(t == 'mod' and i != begin or t == 'include' for i, t in enumerate(tokens)): return False
+        for i, t in enumerate(tokens):
+            if t == '!' and tokens[i - 1:i] != ['#'] and tokens[i + 1:i + 2] in (['('], ['{'], ['[']):
+                if (tokens[i - 1] not in ('matches', 'assert', 'debug_assert', 'vec', 'format', 'format_args', 'write', 'writeln', 'panic')
+                        or tokens[max(0, i - 3):i - 1] == [':', ':']
+                        or not self.builtin(path, tokens[i - 1])): return False
+            if tokens[i:i + 2] == ['derive', '('] and i + 1 in ends:
+                if any(t not in ('Clone', 'Copy', 'Debug', 'PartialEq', 'Eq', 'PartialOrd', 'Ord', 'Default', ',') for t in tokens[i + 2:ends[i + 1]]): return False
+        pos, end = begin + 3, ends[begin + 2]
+        if tokens[pos:pos + 5] != ['pub', 'trait', seal, '{', '}']: return False
+        pos += 5
+        count = 0
+        while pos < end:
+            if tokens[pos:pos + 3] != ['impl', seal, 'for']: return False
+            body = pos + 3
+            while body < end and tokens[body] != '{': body += 1
+            if body >= end or ends[body] != body + 1: return False
+            target = tokens[pos + 3:body]
+            # Resolve from the inline module's lexical parent; no generics, aliases or blanket impls.
+            if target[:3] == ['super', ':', ':']: target = target[3:]
+            if '<' in target or not self.inert(path, target): return False
+            count += 1
+            pos = body + 2
+        return count > 0
+
     def inert(self, path, tokens, substitutions=None):
+        # Cache only completed roots: recursive coinductive successes are provisional.
+        substitutions = substitutions or {}
+        concrete = tuple(part for token in tokens for part in substitutions.get(token, [token]))
+        key = (Path(path).resolve(), concrete)
+        if self.visiting: return self._inert(path, list(concrete))
+        if not hasattr(self, 'inert_roots'): self.inert_roots = {}
+        if key not in self.inert_roots:
+            self.inert_roots[key] = self._inert(path, list(concrete))
+        return self.inert_roots[key]
+
+    def _inert(self, path, tokens, substitutions=None):
         substitutions = substitutions or {}
         tokens = [part for token in tokens for part in substitutions.get(token, [token])]
         if not tokens: return True
@@ -181,8 +258,9 @@ class Proof:
         if target is None: return False
         owner, name = target
         if owner == 'std':
-            return (name in PRIMITIVES and not args or name == 'String' and not args
-                    or name in WRAPPERS - {'String'} and len(args) == 1 and self.inert(path, args[0], substitutions))
+            return (name in PRIMITIVES and not args or name in ('String', 'PathBuf') and not args
+                    or name in WRAPPERS - {'String', 'PathBuf'} and len(args) == (2 if name in ('Result', 'BTreeMap') else 1)
+                    and all(self.inert(path, arg, substitutions) for arg in args))
         if not all(self.inert(path, arg, substitutions) for arg in args): return False
         parameters, payloads, kind = self.module(owner)[2][name][0]
         if len(parameters) != len(args): return False
@@ -196,8 +274,10 @@ class Proof:
         return result
 
     def shared_method(self, path, state_type, method):
-        names = [t for t in state_type if t not in (':', '<', '>')]
+        names = [t for t in state_type[:state_type.index('<')] if t != ':'] if '<' in state_type else [t for t in state_type if t != ':']
         target = self.resolve(path, names)
+        if target and target[0] == 'std' and target[1] == 'Option' and method in ('as_ref', 'is_some', 'is_none'):
+            return self.inert(path, state_type)
         if not target or target[0] == 'std' or not self.inert(path, state_type): return False
         owner, name = target
         tokens, ends, _, _ = self.module(owner)

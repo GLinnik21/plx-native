@@ -1,3 +1,4 @@
+#![deny(clippy::wildcard_enum_match_arm)]
 //! The failed-open recovery ladder: what a play request does when the pipeline (or the source)
 //! fails it BEFORE the first picture.
 //!
@@ -466,6 +467,11 @@ impl OpenRecovery {
         }
     }
 
+    /// Transfer state ownership; a pending proof is moved, never cloned to mark its reload.
+    fn transition(&mut self, next: State) -> State {
+        std::mem::replace(&mut self.state, next)
+    }
+
     /// The capability value this request plans and profiles from: `start` less the facets the rungs
     /// took out. A cheap `Arc` clone, so a worker or a flight can own it.
     pub fn attempt(&self) -> Arc<Caps> {
@@ -503,7 +509,7 @@ impl OpenRecovery {
             return;
         }
         fx.push(RecoveryEffect::ShowError { refusal });
-        self.state = State::Failed;
+        self.transition(State::Failed);
         self.rescue = None;
     }
 
@@ -520,7 +526,7 @@ impl OpenRecovery {
         }
         self.excluded.video = None;
         self.narrow();
-        self.state = State::Opening;
+        self.transition(State::Opening);
         self.rescue = None;
         fx.push(RecoveryEffect::DecodeInApp { audio, refusal });
         true
@@ -551,7 +557,7 @@ impl OpenRecovery {
         self.narrow();
         self.flights += 1;
         fx.push(RecoveryEffect::ConvertBoth { flight: self.flights });
-        self.state = State::Flight { rung: Rung::Encode, cause: refusal, facts: facts.clone() };
+        self.transition(State::Flight { rung: Rung::Encode, cause: refusal, facts: facts.clone() });
         self.rescue = Some(Rung::Encode);
         true
     }
@@ -602,7 +608,7 @@ impl OpenRecovery {
                 self.narrow();
             }
             fx.push(RecoveryEffect::Rollback);
-            self.state = flight(Rung::Rollback);
+            self.transition(flight(Rung::Rollback));
             self.rescue = Some(Rung::Rollback);
             return;
         }
@@ -616,7 +622,7 @@ impl OpenRecovery {
                 fx.push(RecoveryEffect::NameRefusedAudio { codec });
             }
             fx.push(RecoveryEffect::ShowError { refusal });
-            self.state = State::Failed;
+            self.transition(State::Failed);
             self.rescue = None;
             return;
         }
@@ -632,7 +638,7 @@ impl OpenRecovery {
                 self.narrow();
                 self.flights += 1;
                 fx.push(RecoveryEffect::ConvertFacet { facet, flight: self.flights });
-                self.state = flight(Rung::Facet);
+                self.transition(flight(Rung::Facet));
                 self.rescue = Some(Rung::Facet);
                 return;
             }
@@ -649,7 +655,7 @@ impl OpenRecovery {
             self.narrow();
             self.flights += 1;
             fx.push(RecoveryEffect::StartAutoHls);
-            self.state = flight(Rung::Both);
+            self.transition(flight(Rung::Both));
             self.rescue = Some(Rung::Both);
             return;
         }
@@ -669,7 +675,7 @@ impl OpenRecovery {
             return;
         }
         fx.push(RecoveryEffect::ShowError { refusal });
-        self.state = State::Failed;
+        self.transition(State::Failed);
         self.rescue = None;
     }
 
@@ -774,10 +780,10 @@ impl OpenRecovery {
                 let proven = (*rung == Rung::Facet && !self.pictured && !self.unprovable)
                     .then(|| self.excluded.iter().find(|f| proves(f, lanes.as_ref())))
                     .flatten();
-                self.state = match proven {
+                self.transition(match proven {
                     Some(facet) => State::Proving { facet: facet.clone(), loaded: false },
                     None => State::Opening,
-                };
+                });
                 Handled::Yes
             }
             RecoveryEvent::FlightRefused => {
@@ -794,7 +800,7 @@ impl OpenRecovery {
                     // A refused rollback stays terminal.
                     Rung::Rollback => {
                         fx.push(RecoveryEffect::ShowError { refusal: cause });
-                        self.state = State::Failed;
+                        self.transition(State::Failed);
                         self.rescue = None;
                     }
                 }
@@ -803,24 +809,25 @@ impl OpenRecovery {
             RecoveryEvent::FirstPicture => match &self.state {
                 State::Opening => {
                     self.pictured = true;
-                    self.state = State::Playing;
+                    self.transition(State::Playing);
                     self.report_rescue(fx);
                     Handled::Yes
                 }
                 State::Proving { facet, .. } => {
                     fx.push(RecoveryEffect::ConfirmRefusal { facet: facet.clone(), evidence: Evidence::Proof });
                     self.pictured = true;
-                    self.state = State::Playing;
+                    self.transition(State::Playing);
                     self.report_rescue(fx);
                     Handled::Yes
                 }
-                _ => Handled::No,
+                State::Flight { .. } | State::Playing | State::Failed => Handled::No,
             },
-            RecoveryEvent::LoadStarted => match &mut self.state {
+            RecoveryEvent::LoadStarted => match &self.state {
                 // The landing's own reload: `FlightLanded` moved the machine before the driver
                 // reloaded, so the first Load here is the one the landing asked for.
-                State::Proving { loaded: loaded @ false, .. } => {
-                    *loaded = true;
+                State::Proving { loaded: false, .. } => {
+                    let State::Proving { facet, .. } = self.transition(State::Opening) else { unreachable!() };
+                    self.transition(State::Proving { facet, loaded: true });
                     Handled::Yes
                 }
                 // A second Load before the picture (a track switch, a restore after Home, a seek
@@ -837,7 +844,7 @@ impl OpenRecovery {
                     if !matches!(self.state, State::Proving { .. }) {
                         self.rescue = None;
                     }
-                    self.state = State::Opening;
+                    self.transition(State::Opening);
                     Handled::Yes
                 }
                 State::Opening | State::Playing => Handled::No,

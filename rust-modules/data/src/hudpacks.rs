@@ -1,3 +1,4 @@
+#![deny(clippy::wildcard_enum_match_arm)]
 //! The player-HUD package store: which packages are installed, which one is selected, and the rules
 //! that admit a new one (`docs/hud-plugins.md`, "Storage per install mode", "Trust and safety").
 //!
@@ -519,6 +520,9 @@ impl Record {
         Record { sha, source, at, package_format: package_format.into(), hud_format: hud_format.into(), from: None }
     }
 
+    /// Move the previous operation out so its payload and cancellation debt stay owned.
+
+
     /// This record with the development source `from` names, when a record of `self.source` may carry one.
     fn from_dev_source(mut self, from: Option<&address::Address>) -> Self {
         self.from = from.filter(|address| self.source == Source::Address && address.dev_source()).cloned();
@@ -688,6 +692,11 @@ impl HudStore {
         }
     }
 
+    /// Move the old operation out with its payload and cancellation debt.
+    fn transition(&mut self, next: Op) -> Op {
+        std::mem::replace(&mut self.op, next)
+    }
+
     // -------- readers --------
 
     /// The current gallery view, including dated cache status and revocation reasons.
@@ -830,7 +839,7 @@ impl HudStore {
                         offer.source == Source::Registry && offer.sha == sha && offer.now.is_none(),
                     _ => false,
                 };
-                if cancels { self.op = Op::Idle; Handled::Yes } else { Handled::No }
+                if cancels { self.transition(Op::Idle); Handled::Yes } else { Handled::No }
             }
             HudEvent::FetchRegistry { sha, app, language } => {
                 if self.busy() || self.catalog.snapshot().revoked(sha).is_some() { return Handled::No }
@@ -839,7 +848,7 @@ impl HudStore {
                 let Ok(address) = address::parse(&package.url) else { return Handled::No };
                 let tag = self.tag();
                 fx.push(HudEffect::FetchRegistry { tag, package: package.clone(), max_bytes: self.setup.max_pack_bytes });
-                self.op = Op::Installing(Installing { tag, step: Step::Fetching { address, expected: Some(package) } });
+                self.transition(Op::Installing(Installing { tag, step: Step::Fetching { address, expected: Some(package) } }));
                 Handled::Yes
             }
             HudEvent::Refresh { setup, selected } => {
@@ -858,7 +867,8 @@ impl HudStore {
                 if bytes.len() > self.setup.max_pack_bytes {
                     fx.push(HudEffect::Notice(Notice::Refused { sha, reason: Refusal::TooLarge }));
                 } else {
-                    self.op = self.validate(Offer { sha, source, now: Some(now), from: None, bytes: bytes.into(), expected: None }, fx);
+                    let next = self.validate(Offer { sha, source, now: Some(now), from: None, bytes: bytes.into(), expected: None }, fx);
+                    self.transition(next);
                 }
                 Handled::Yes
             }
@@ -868,28 +878,29 @@ impl HudStore {
                 }
                 let tag = self.tag();
                 fx.push(HudEffect::Fetch { tag, address: address.clone(), max_bytes: self.setup.max_pack_bytes });
-                self.op = Op::Installing(Installing { tag, step: Step::Fetching { address, expected: None } });
+                self.transition(Op::Installing(Installing { tag, step: Step::Fetching { address, expected: None } }));
                 Handled::Yes
             }
-            HudEvent::InstallOffer { sha, now } => match std::mem::replace(&mut self.op, Op::Idle) {
+            HudEvent::InstallOffer { sha, now } => match self.transition(Op::Idle) {
                 Op::Installing(Installing { step: Step::Offered { mut offer, meta }, .. }) if offer.sha == sha => {
                     if self.catalog.snapshot().revoked(sha).is_some() {
                         Self::notice(fx, Notice::Refused { sha, reason: Refusal::Unloadable(Unloadable::Revoked) });
                         return Handled::Yes;
                     }
                     offer.now = Some(now);
-                    self.op = self.write_pack(offer, meta, 0, fx);
+                    let next = self.write_pack(offer, meta, 0, fx);
+                    self.transition(next);
                     Handled::Yes
                 }
                 other => {
-                    self.op = other;
+                    self.transition(other);
                     Handled::No
                 }
             },
-            HudEvent::DeclineOffer { sha } => match std::mem::replace(&mut self.op, Op::Idle) {
+            HudEvent::DeclineOffer { sha } => match self.transition(Op::Idle) {
                 Op::Installing(Installing { step: Step::Offered { offer, .. }, .. }) if offer.sha == sha => Handled::Yes,
                 other => {
-                    self.op = other;
+                    self.transition(other);
                     Handled::No
                 }
             },
@@ -905,7 +916,7 @@ impl HudStore {
                 };
                 let tag = self.tag();
                 fx.push(self.read(tag, dir, format!("{DROP_DIR}/{name}")));
-                self.op = Op::Installing(Installing { tag, step: Step::Reading { sha, now } });
+                self.transition(Op::Installing(Installing { tag, step: Step::Reading { sha, now } }));
                 Handled::Yes
             }
             HudEvent::Removed { id } => self.begin_removal(id, fx),
@@ -914,13 +925,13 @@ impl HudStore {
             | HudEvent::Validated { .. }
             | HudEvent::Written { .. }
             | HudEvent::Fetched { .. }) => {
-                let (op, handled) = match std::mem::replace(&mut self.op, Op::Idle) {
+                let (op, handled) = match self.transition(Op::Idle) {
                     Op::Idle => (Op::Idle, Handled::No),
                     Op::Listing(listing) => self.listing_result(listing, result, fx),
                     Op::Installing(installing) => self.installing_result(installing, result, fx),
                     Op::Removing(removing) => self.removing_result(removing, result, fx),
                 };
-                self.op = op;
+                self.transition(op);
                 handled
             }
         }
@@ -1021,9 +1032,9 @@ impl HudStore {
     /// End the install or removal a `Refresh` displaces with its notice, and return the packs it may
     /// have left behind. It must run before the new `Setup` replaces the candidates it indexes.
     fn displaced(&mut self, fx: &mut Vec<HudEffect>) -> Vec<(PathBuf, Sha)> {
-        let at = |store: &Self, dir: usize, sha: Sha| store.setup.candidates.get(dir).map(|c| (c.dir.clone(), sha));
+        let at = |candidates: &[Candidate], dir: usize, sha: Sha| candidates.get(dir).map(|c| (c.dir.clone(), sha));
         let mut stray = Vec::new();
-        match std::mem::replace(&mut self.op, Op::Idle) {
+        match self.transition(Op::Idle) {
             Op::Idle | Op::Listing(_) => {}
             Op::Installing(Installing { step, .. }) => {
                 let sha = match step {
@@ -1034,9 +1045,9 @@ impl HudStore {
                     Step::Writing { offer, dir, what, .. } => {
                         // The pack is down or on its way. If the index write reached the disk the id's
                         // old pack is the unlisted one, if not the new one is: only a re-read says.
-                        stray.extend(at(self, dir, offer.sha));
+                        stray.extend(at(&self.setup.candidates, dir, offer.sha));
                         if let Write::Index { replaced: Some(old), .. } = what {
-                            stray.extend(at(self, dir, old).filter(|_| old != offer.sha));
+                            stray.extend(at(&self.setup.candidates, dir, old).filter(|_| old != offer.sha));
                         }
                         Some(offer.sha)
                     }
@@ -1046,7 +1057,7 @@ impl HudStore {
             Op::Removing(Removing { id, flight, .. }) => {
                 if let Some(Rewrite { dir, gone, .. }) = flight {
                     // The rewrite may have reached the disk: the packs it unlisted are the stray ones.
-                    stray.extend(gone.into_iter().filter_map(|sha| at(self, dir, sha)));
+                    stray.extend(gone.into_iter().filter_map(|sha| at(&self.setup.candidates, dir, sha)));
                 }
                 Self::notice(fx, Notice::RemoveIncomplete { id });
             }
@@ -1065,7 +1076,8 @@ impl HudStore {
         let mut todo: VecDeque<Job> = (0..n).map(Job::Index).collect();
         todo.push_back(Job::Plan);
         todo.extend((0..n).map(Job::Scan));
-        self.op = self.advance(Listing { todo, flight: None, stray }, fx);
+        let next = self.advance(Listing { todo, flight: None, stray }, fx);
+                    self.transition(next);
     }
 
     /// Delete the packs a displaced operation may have left that no index names now that every index
@@ -1349,7 +1361,8 @@ impl HudStore {
         let dirs: VecDeque<usize> = (0..self.dirs.len())
             .filter(|dir| self.dirs[*dir].access == Access::ReadOnly || self.dirs[*dir].index.contains_key(&id))
             .collect();
-        self.op = self.advance_removal(Removing { id, dirs, incomplete: false, flight: None }, fx);
+        let next = self.advance_removal(Removing { id, dirs, incomplete: false, flight: None }, fx);
+                    self.transition(next);
         Handled::Yes
     }
 
