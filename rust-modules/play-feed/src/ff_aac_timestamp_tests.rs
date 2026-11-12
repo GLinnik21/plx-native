@@ -143,6 +143,18 @@ fn a_live_playlist_starts_behind_its_edge_and_is_polled_faster() {
     assert_eq!(playlist_poll(false, 0), std::time::Duration::from_millis(250));
 }
 
+/// A reopened live playlist starts a cushion behind its edge, not on the first segment it still
+/// lists: a reload of a long recording must not replay it from the tune.
+#[test]
+fn a_reopened_live_playlist_starts_at_its_edge_not_its_first_segment() {
+    let recording = [1_000_000_000i64; 600];
+    assert_eq!(live_edge_start_index(&recording), 597, "597, 598 and 599 hold three seconds");
+    assert_eq!(live_edge_start_index(&[2_000_000_000; 10]), 8, "8 and 9 hold four seconds");
+    assert_eq!(live_edge_start_index(&[1_000_000_000; 3]), 0, "exactly the cushion: the first");
+    assert_eq!(live_edge_start_index(&[760_000_000]), 0, "one segment is no cushion");
+    assert_eq!(live_edge_start_index(&[]), 0);
+}
+
 #[test]
 fn a_ts_idr_without_any_parameter_sets_is_rejected() {
     let mut sets = H264ParamSets::default();

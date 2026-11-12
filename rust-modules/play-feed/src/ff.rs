@@ -4462,8 +4462,8 @@ pub struct HlsCursor {
     pub ended: bool,
     pub target_duration_secs: u64,
     pub start_applied: bool,
-    /// A Live TV session's playlist (the entry was already a media playlist): it starts
-    /// [`LIVE_START_CUSHION_NS`] behind its edge and is polled every [`LIVE_POLL`].
+    /// A Live TV session's playlist (the entry was already a media playlist): every open, a reload
+    /// included, starts [`LIVE_START_CUSHION_NS`] behind its edge; polled every [`LIVE_POLL`].
     pub live: bool,
 }
 
@@ -4481,6 +4481,21 @@ const LIVE_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 /// Whether a live playlist holding `total_ns` of recording may start delivering segments.
 fn live_start_ready(live: bool, start_applied: bool, total_ns: i64) -> bool {
     !live || start_applied || total_ns >= LIVE_START_CUSHION_NS
+}
+
+/// The index a live playlist starts delivering from: the latest segment with at least
+/// [`LIVE_START_CUSHION_NS`] of recording from it to the edge, so every open (a reload of a long
+/// recording included) starts a cushion behind the edge. A list shorter than the cushion, or an
+/// empty one, starts at its first segment.
+fn live_edge_start_index(durations_ns: &[i64]) -> usize {
+    let mut held_ns = 0i64;
+    for (index, duration_ns) in durations_ns.iter().enumerate().rev() {
+        held_ns = held_ns.saturating_add(*duration_ns);
+        if held_ns >= LIVE_START_CUSHION_NS {
+            return index;
+        }
+    }
+    0
 }
 
 /// The wait before re-reading a playlist that had nothing new.
@@ -4870,9 +4885,18 @@ fn hls_cursor_next(
             HlsExit::Failed("HLS media playlist rejected")
         })?;
         cursor.target_duration_secs = media.target_duration_secs;
-        let start_index = media
-            .preferred_start_index()
-            .map_err(|_| HlsExit::Failed("HLS start offset is outside the supported timeline"))?;
+        let start_index = if cursor.live {
+            let durations_ns: Vec<i64> = media
+                .segments
+                .iter()
+                .map(|segment| i64::try_from(segment.duration.as_nanos()).unwrap_or(i64::MAX))
+                .collect();
+            live_edge_start_index(&durations_ns)
+        } else {
+            media
+                .preferred_start_index()
+                .map_err(|_| HlsExit::Failed("HLS start offset is outside the supported timeline"))?
+        };
         let total_ns = i64::try_from(
             media
                 .total_duration()
@@ -4880,11 +4904,12 @@ fn hls_cursor_next(
                 .as_nanos(),
         )
         .map_err(|_| HlsExit::Failed("HLS playlist duration overflow"))?;
-        if cursor.publishes_duration {
+        // A live recording has no duration: its playlist total only grows, and the HUD would climb.
+        if cursor.publishes_duration && !cursor.live {
             net.observer.publish(DemuxCallbackEffect::DurationNs(total_ns));
         }
         // Not one segment of a live recording leaves before the cushion exists; the tracker is left
-        // untouched, so the read that has it delivers every segment from the first.
+        // untouched, so the read that has it delivers from the edge index, not the first segment.
         let holding = !live_start_ready(cursor.live, cursor.start_applied, total_ns);
         if holding {
             plx_base::eventlog::log(&format!("hls: live start holds for its cushion total_ms={}", total_ns / 1_000_000));
