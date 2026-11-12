@@ -30,7 +30,7 @@
 //! owns the rendering.
 //!
 //! [`adopt_revision`]: Mailbox::adopt_revision
-use super::{earliest_change_ms, AlignSet, Frame, Key, Pace, Source};
+use super::{earliest_change_ms, AlignSet, Frame, Key, Pace, RenderScale, Source};
 use crate::player::ass_timing::Validity;
 use std::sync::Arc;
 use std::time::Instant;
@@ -76,6 +76,8 @@ pub(super) struct Job {
     /// draws identically with that frame's, so a static sign keeps the allocation the screen has
     /// already uploaded whichever worker renders the next frame. Set when a worker takes the job.
     pub reference: Option<Arc<Frame>>,
+    /// The size libass draws the frame at, as a fraction of the output (issue #1328).
+    pub scale: RenderScale,
 }
 
 /// A job a worker holds. The mailbox serves several workers, so these are a set keyed by `seq`.
@@ -314,6 +316,7 @@ impl Mailbox {
             source: source.clone(),
             queued,
             reference: None,
+            scale: RenderScale::Full,
         });
     }
 
@@ -365,6 +368,7 @@ impl Mailbox {
             source: source.clone(),
             queued: None,
             reference: None,
+            scale: RenderScale::Full,
         });
         true
     }
@@ -720,7 +724,7 @@ impl Mailbox {
                 let now_ms = self.next_target()?;
                 let (key, source) = (self.requested_key()?, self.requested_source.clone()?);
                 self.seqs += 1;
-                Job { kind: Kind::Pipe { run: self.run }, key, now_ms, seq: self.seqs, source, queued: None, reference: None }
+                Job { kind: Kind::Pipe { run: self.run }, key, now_ms, seq: self.seqs, source, queued: None, reference: None, scale: RenderScale::Full }
             }
         };
         // The newest picture that has landed: the frame this one follows on screen, or close to it.

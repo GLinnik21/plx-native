@@ -102,6 +102,7 @@ impl Sim {
                     width: job.key.width,
                     height: job.key.height,
                     rects,
+                    scale: job.scale,
                     error: None,
                 })
             }
@@ -740,6 +741,7 @@ fn moving_between(job: &Job, cost_ms: i64, cue_end: i64, boundary_ms: i64) -> ma
         width: job.key.width,
         height: job.key.height,
         rects,
+        scale: job.scale,
         error: None,
     });
     // the boundary is the end of the moving stretch only when it is the cue's: before that the

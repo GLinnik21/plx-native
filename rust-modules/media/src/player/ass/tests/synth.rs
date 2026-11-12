@@ -62,7 +62,7 @@ fn style(size: SubtitleSize, position: SubtitlePosition) -> TextStyle {
 /// The frame of `cues` at 1 s.
 fn text_frame(style: &TextStyle, cues: &[Cue]) -> Vec<Rect> {
     let mut native = text_native(style, cues);
-    native.render(text_key(), 1000, &[]).expect("a valid track").expect("a first frame")
+    native.render(text_key(), RenderScale::Full, 1000, &[]).expect("a valid track").expect("a first frame")
 }
 
 /// The pixels of a frame as `(x, y, [r, g, b, a])`, straight RGBA: the facade publishes premultiplied

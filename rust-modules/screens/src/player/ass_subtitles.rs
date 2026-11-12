@@ -105,6 +105,7 @@ impl AssSubtitles {
             width: 0,
             height: 0,
             rects: Vec::new(),
+            scale: ass::RenderScale::Full,
             error: None,
         }));
     }

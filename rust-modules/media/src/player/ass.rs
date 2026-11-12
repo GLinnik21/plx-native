@@ -165,11 +165,38 @@ pub struct Frame {
     pub source_id: u64,
     /// Changes only when pixels/placement, canvas or the error state changes.
     pub serial: u64,
+    /// The output canvas the frame answers for: the size it was requested at, whatever size it was
+    /// drawn at (`scale`).
     pub width: i32,
     pub height: i32,
-    /// Disjoint regions; an empty list clears output between dialogue events.
+    /// Disjoint regions; an empty list clears output between dialogue events. Their coordinates are
+    /// in the canvas libass drew, which is the output canvas at `scale` ([`Frame::render_size`]):
+    /// [`Frame::output_edges`] takes one back to the output.
     pub rects: Vec<Rect>,
+    /// The size the regions were drawn at, as a fraction of the output (issue #1328).
+    pub scale: RenderScale,
     pub error: Option<Fault>,
+}
+
+impl Frame {
+    /// The canvas the regions' coordinates are in: the output canvas at the frame's scale.
+    pub fn render_size(&self) -> (i32, i32) {
+        self.scale.render_size(self.width, self.height)
+    }
+
+    /// Where `rect`, a region of this frame, lies on the output canvas: its left, top, right and
+    /// bottom edges. Both edges of each axis are scaled, never the origin and the size, so regions
+    /// that abut in the frame abut on the output, and a full-size frame maps to itself exactly.
+    pub fn output_edges(&self, rect: &Rect) -> (f32, f32, f32, f32) {
+        let (render_w, render_h) = self.render_size();
+        let (sx, sy) = (self.width as f32 / render_w as f32, self.height as f32 / render_h as f32);
+        (
+            rect.x as f32 * sx,
+            rect.y as f32 * sy,
+            (rect.x + rect.width) as f32 * sx,
+            (rect.y + rect.height) as f32 * sy,
+        )
+    }
 }
 
 pub fn next_source_id() -> u64 {
@@ -495,6 +522,7 @@ fn error_frame(key: Key, message: Fault) -> Arc<Frame> {
         width: key.width,
         height: key.height,
         rects: Vec::new(),
+        scale: RenderScale::Full,
         error: Some(message),
     })
 }
@@ -774,6 +802,9 @@ struct Engine {
     /// The last [`Engine::render`] opened, restyled or re-fed the renderer: that job re-read the
     /// fonts or the events, and what it cost is no sample of what a frame costs.
     resynced: bool,
+    /// The frame size and the storage size the renderer last drew at: a render at another pair is
+    /// cold (libass drops its caches on a resize), and is no sample either.
+    rendered_size: Option<((i32, i32), (i32, i32))>,
 }
 
 impl Engine {
@@ -1017,9 +1048,19 @@ impl Engine {
         // The frame this one follows (another worker's, when several take turns) is looked at before
         // this engine's own last one: a region that draws identically to one of its regions shares
         // its allocation, so the screen keeps the texture it already uploaded for it (issue #1328).
+        // ... and only at the size this job draws at: regions of another size share nothing with it.
         let for_key = |frame: &&Arc<Frame>| {
-            frame.source_id == key.source_id && frame.width == key.width && frame.height == key.height
+            frame.source_id == key.source_id
+                && frame.width == key.width
+                && frame.height == key.height
+                && frame.scale == request.scale
         };
+        let size = (request.scale.render_size(key.width, key.height), (key.storage_width, key.storage_height));
+        if self.rendered_size.replace(size).is_some_and(|last| last != size) {
+            // libass empties its outline, bitmap and composite caches when the frame size changes: this
+            // render is cold, and what it costs is no sample of what a frame costs
+            self.resynced = true;
+        }
         let reference = request.reference.as_ref().filter(for_key);
         let previous = [
             reference.map_or(&[][..], |frame| frame.rects.as_slice()),
@@ -1029,7 +1070,7 @@ impl Engine {
             .native
             .as_mut()
             .expect("loaded ASS source")
-            .render(key, request.now_ms, &previous);
+            .render(key, request.scale, request.now_ms, &previous);
         let frame = match result {
             Ok(None) => match self.frame.clone() {
                 Some(frame) if frame.error.is_none() => {
@@ -1055,6 +1096,7 @@ impl Engine {
                         width: key.width,
                         height: key.height,
                         rects: frame.rects.clone(),
+                        scale: frame.scale,
                         error: None,
                     })
                 }
@@ -1079,6 +1121,7 @@ impl Engine {
                     width: key.width,
                     height: key.height,
                     rects,
+                    scale: request.scale,
                     error: None,
                 })
             }
@@ -1144,6 +1187,7 @@ fn interned(frame: &Arc<Frame>, reference: &Arc<Frame>) -> Arc<Frame> {
         width: frame.width,
         height: frame.height,
         rects,
+        scale: frame.scale,
         error: None,
     })
 }
@@ -1470,15 +1514,24 @@ impl Native {
 
     /// `previous` are the regions of the frames to share allocations with, in the order they are
     /// looked at ([`shared_region`]).
-    fn render(&mut self, key: Key, now_ms: i64, previous: &[&[Rect]]) -> Result<Option<Vec<Rect>>, Fault> {
+    fn render(
+        &mut self,
+        key: Key,
+        scale: RenderScale,
+        now_ms: i64,
+        previous: &[&[Rect]],
+    ) -> Result<Option<Vec<Rect>>, Fault> {
+        // libass draws at the frame size and lays the script out against the storage size, so a smaller
+        // frame is the same picture with fewer pixels (issue #1328); the regions come back in its canvas.
+        let (width, height) = scale.render_size(key.width, key.height);
         let mut frame = NativeFrame::default();
         let started = std::time::Instant::now();
         let result = unsafe {
             plx_ass_render(
                 self.ptr,
                 now_ms,
-                key.width,
-                key.height,
+                width,
+                height,
                 key.storage_width,
                 key.storage_height,
                 &mut frame,
@@ -1520,11 +1573,11 @@ impl Native {
                 || bitmap
                     .x
                     .checked_add(bitmap.width)
-                    .is_none_or(|x| x > key.width)
+                    .is_none_or(|x| x > width)
                 || bitmap
                     .y
                     .checked_add(bitmap.height)
-                    .is_none_or(|y| y > key.height)
+                    .is_none_or(|y| y > height)
                 || pixels.is_none_or(|n| n > MAX_PIXELS || n * 4 != bitmap.bytes)
                 || bitmap.rgba.is_null()
             {
