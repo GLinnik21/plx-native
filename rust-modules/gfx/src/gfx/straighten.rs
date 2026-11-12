@@ -415,6 +415,103 @@ pub const UNDER: UnderBlend = UnderBlend {
     alpha: (BlendFactor::OneMinusDstAlpha, BlendFactor::One),
 };
 
+// ---- where the frame drew: the boxes the pass covers -----------------------------------------------
+
+/// What a draw call writes to the surface, as the draw site declares it (see [`Ledger`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Extent {
+    /// The authored-pixel quad `(x, y, w, h)` the vertex shader places the unit quad over: the very
+    /// numbers the draw's `*_RECT` uniform holds.
+    Quad([f32; 4]),
+    /// Whatever target is bound, edge to edge: a draw with no rect to place it, and the fallback for
+    /// every extent that is not known. The pass then covers the whole viewport.
+    Target,
+}
+
+impl Extent {
+    /// The quad `(x, y, w, h)`.
+    pub const fn quad(x: f32, y: f32, w: f32, h: f32) -> Self {
+        Extent::Quad([x, y, w, h])
+    }
+}
+
+/// Edges past this (in either direction) are clamped to it, so a box that means "everything" and a
+/// union of two boxes can neither overflow an `i32` nor an `i64` area.
+const FAR: i32 = 1 << 28;
+/// The box that stands for the whole surface (an unknown extent): every viewport lies inside it.
+const EVERYTHING: PxBox = [-FAR, -FAR, FAR, FAR];
+/// Pixels of slack on every side of a quad's box, for the rounding between the CPU's idea of the
+/// quad and the pixels the rasterizer lights: the vertex stage is fp32 and the rasterizer snaps to
+/// sub-pixel positions, neither of which a whole-pixel `floor`/`ceil` accounts for.
+const MARGIN: i32 = 1;
+/// How many boxes the pass draws at most. A bound on work, never on content: past it the two boxes
+/// that waste the fewest pixels together become their bounding box, so every drawn pixel stays covered.
+const SLOTS: usize = 16;
+
+use super::PxBox;
+
+/// The window-pixel box (GL's bottom-left origin, far edges exclusive) that holds every pixel the
+/// authored quad `q` can light, for a viewport at `(vx, vy)` and `s` window pixels per authored pixel.
+/// `None` for a quad with no area, which draws nothing; [`EVERYTHING`] for one that is not finite.
+fn quad_box(q: [f32; 4], (vx, vy): (i32, i32), s: f32) -> Option<PxBox> {
+    let [x, y, w, h] = q;
+    if !(x.is_finite() && y.is_finite() && w.is_finite() && h.is_finite() && s > 0.0 && s.is_finite()) {
+        return Some(EVERYTHING);
+    }
+    if w == 0.0 || h == 0.0 {
+        return None;
+    }
+    let (ax0, ax1) = (x.min(x + w), x.max(x + w));
+    let (ay0, ay1) = (y.min(y + h), y.max(y + h));
+    let lo = |v: f32| v.floor().clamp(-(FAR as f32), FAR as f32) as i32;
+    let hi = |v: f32| v.ceil().clamp(-(FAR as f32), FAR as f32) as i32;
+    // Rows count upward from the bottom of the target, authored y downward from the top.
+    let (wy0, wy1) = (vy as f32 + (plx_base::surface::LOGICAL_H - ay1) * s, vy as f32 + (plx_base::surface::LOGICAL_H - ay0) * s);
+    Some([
+        lo(vx as f32 + ax0 * s) - MARGIN,
+        lo(wy0) - MARGIN,
+        hi(vx as f32 + ax1 * s) + MARGIN,
+        hi(wy1) + MARGIN,
+    ])
+}
+
+/// **The boxes of the surface a frame drew into**, pairwise disjoint (the contract the pass leans on).
+#[derive(Clone, Copy)]
+struct Ledger {
+    #[allow(dead_code)] // the red stub books nothing; the next commit reads it
+    boxes: [PxBox; SLOTS],
+    n: usize,
+}
+
+impl Ledger {
+    const fn new() -> Self {
+        Ledger { boxes: [[0; 4]; SLOTS], n: 0 }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    /// Book a box the frame drew into.
+    fn add(&mut self, _b: PxBox) {}
+
+    /// The boxes the pass draws over, cut to the viewport `view`.
+    fn covering(&self, view: PxBox) -> Vec<PxBox> {
+        vec![view]
+    }
+}
+
+/// The pass's quads for `ledger` over the viewport `view`, as the `(x0, y0, x1, y1)` fractions of the
+/// viewport the vertex shader's `u_box` takes.
+fn quads(ledger: &Ledger, view: PxBox) -> Vec<[f32; 4]> {
+    let (w, h) = ((view[2] - view[0]) as f32, (view[3] - view[1]) as f32);
+    ledger
+        .covering(view)
+        .into_iter()
+        .map(|b| [(b[0] - view[0]) as f32 / w, (b[1] - view[1]) as f32 / h, (b[2] - view[0]) as f32 / w, (b[3] - view[1]) as f32 / h])
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -658,6 +755,202 @@ mod tests {
         assert!(fs.contains("#extension GL_ARM_shader_framebuffer_fetch : require"));
         assert!(fs.contains("#extension GL_EXT_shader_framebuffer_fetch : require"));
         assert!(fs.contains("texture2D(u_tex, v_uv)"), "the copy variant samples its copy");
+    }
+
+    // ---- the extent ledger ---------------------------------------------------------------------------
+
+    /// A small viewport the model tests count pixels on: 192 x 108, with authored space at one tenth.
+    const VIEW: PxBox = [0, 0, 192, 108];
+    const TENTH: f32 = 0.1;
+
+    /// The box of an authored quad on [`VIEW`].
+    fn at_tenth(q: [f32; 4]) -> Option<PxBox> {
+        quad_box(q, (0, 0), TENTH)
+    }
+
+    /// How many of `boxes` cover each pixel of [`VIEW`], row-major.
+    fn coverage(boxes: &[PxBox]) -> Vec<u8> {
+        let (w, h) = ((VIEW[2] - VIEW[0]) as usize, (VIEW[3] - VIEW[1]) as usize);
+        let mut count = vec![0u8; w * h];
+        for b in boxes {
+            for y in b[1].max(VIEW[1])..b[3].min(VIEW[3]) {
+                for x in b[0].max(VIEW[0])..b[2].min(VIEW[2]) {
+                    count[y as usize * w + x as usize] += 1;
+                }
+            }
+        }
+        count
+    }
+
+    /// A deterministic spread of authored quads: small and large, near and far, some on the edges.
+    fn spread(n: usize) -> Vec<[f32; 4]> {
+        let mut s = 0x9E37_79B9u32;
+        let mut next = move |m: u32| {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (s >> 8) % m
+        };
+        (0..n)
+            .map(|_| [next(2100) as f32 - 100.0, next(1200) as f32 - 60.0, 1.0 + next(700) as f32, 1.0 + next(300) as f32])
+            .collect()
+    }
+
+    /// **The pass covers every pixel any draw touched, once, and no other.** A few hundred quads of
+    /// every size are booked; each pixel of the viewport is then covered at most once (the fetch
+    /// program divides what it finds, so a pixel two quads cover would be divided twice: wrong colour,
+    /// and on the television only, because the simulator's copy program reads an untouched copy), and
+    /// exactly once wherever a draw's own box reaches. Without this the quads could not be trusted
+    /// to touch a translucent pixel at all.
+    #[test]
+    fn the_ledger_covers_every_drawn_pixel_exactly_once_and_no_other() {
+        let quads: Vec<[f32; 4]> = spread(300);
+        let mut ledger = Ledger::new();
+        let mut drawn = Vec::new();
+        for q in &quads {
+            if let Some(b) = at_tenth(*q) {
+                drawn.push(b);
+                ledger.add(b);
+            }
+        }
+        let covering = ledger.covering(VIEW);
+        assert!(covering.len() <= SLOTS, "{} boxes", covering.len());
+        let (got, want) = (coverage(&covering), coverage(&drawn));
+        for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+            assert!(*g <= 1, "pixel {i} is covered by {g} quads");
+            assert!(*g >= 1 || *w == 0, "pixel {i} was drawn into and is not covered");
+        }
+    }
+
+    /// The pass is not the screen: a dozen small quads leave most of the viewport alone. (The property
+    /// above holds for the whole viewport too; this is the half that says the work went down.)
+    #[test]
+    fn a_frame_of_small_quads_touches_a_small_part_of_the_surface() {
+        let mut ledger = Ledger::new();
+        for q in spread(12).iter().map(|q| [q[0], q[1], q[2] / 8.0, q[3] / 8.0]) {
+            if let Some(b) = at_tenth(q) {
+                ledger.add(b);
+            }
+        }
+        let touched = coverage(&ledger.covering(VIEW)).iter().filter(|c| **c > 0).count();
+        assert!(touched * 4 < 192 * 108, "{touched} of {} pixels", 192 * 108);
+    }
+
+    /// With room to spare the pass covers exactly the drawn boxes: a frame with two small regions on
+    /// it is not widened to the screen, nor to their bounding box.
+    #[test]
+    fn a_few_separate_quads_are_covered_exactly() {
+        let a = at_tenth([100.0, 100.0, 300.0, 60.0]).unwrap();
+        let b = at_tenth([1500.0, 800.0, 200.0, 100.0]).unwrap();
+        let mut ledger = Ledger::new();
+        ledger.add(a);
+        ledger.add(b);
+        let mut covering = ledger.covering(VIEW);
+        covering.sort();
+        let mut want = vec![a, b];
+        want.sort();
+        assert_eq!(covering, want);
+        let area = |boxes: &[PxBox]| coverage(boxes).iter().filter(|c| **c > 0).count();
+        assert!(area(&covering) < 192 * 108 / 8, "two small regions are a small part of the surface");
+    }
+
+    /// A box inside a box already booked adds nothing, and two that share a pixel become one: the
+    /// shape every glyph over its scrim takes.
+    #[test]
+    fn a_contained_box_adds_nothing_and_overlapping_boxes_merge() {
+        let mut ledger = Ledger::new();
+        ledger.add([10, 10, 100, 60]);
+        ledger.add([20, 20, 30, 30]);
+        assert_eq!(ledger.covering(VIEW), vec![[10, 10, 100, 60]]);
+        ledger.add([90, 50, 150, 100]);
+        assert_eq!(ledger.covering(VIEW), vec![[10, 10, 150, 100]], "the overlap folds both into their bounding box");
+    }
+
+    /// Boxes that only TOUCH share no pixel and stay two: the pass draws each once, and nothing is
+    /// widened over the corner they leave out.
+    #[test]
+    fn boxes_that_touch_stay_two() {
+        let mut ledger = Ledger::new();
+        ledger.add([0, 0, 50, 50]);
+        ledger.add([50, 0, 100, 50]);
+        ledger.add([0, 50, 50, 60]);
+        let mut covering = ledger.covering(VIEW);
+        covering.sort();
+        assert_eq!(covering, vec![[0, 0, 50, 50], [0, 50, 50, 60], [50, 0, 100, 50]]);
+    }
+
+    /// Past [`SLOTS`] separate boxes the two that waste the fewest pixels together are folded, and
+    /// nothing that was drawn is ever left out.
+    #[test]
+    fn past_the_slots_the_cheapest_pair_folds() {
+        let mut ledger = Ledger::new();
+        let far: Vec<PxBox> = (0..SLOTS as i32).map(|i| [i * 11, 100 - i, i * 11 + 4, 104 - i]).collect();
+        for b in &far {
+            ledger.add(*b);
+        }
+        assert_eq!(ledger.covering(VIEW).len(), SLOTS);
+        // A seventeenth box two pixels from the first one: they are the cheapest pair.
+        ledger.add([0, 96, 4, 100]);
+        let covering = ledger.covering(VIEW);
+        assert_eq!(covering.len(), SLOTS, "still at most {SLOTS} boxes");
+        for b in &far {
+            assert!(covering.iter().any(|c| c[0] <= b[0] && c[1] <= b[1] && c[2] >= b[2] && c[3] >= b[3]), "{b:?} is not covered");
+        }
+        assert!(covering.contains(&[0, 96, 4, 104]) || covering.iter().any(|c| c[0] == 0 && c[1] <= 96), "the new box folded into its neighbour");
+        assert!(coverage(&covering).iter().all(|c| *c <= 1), "and no two boxes share a pixel");
+    }
+
+    /// **An extent that is not known is the whole surface.** A draw with no rect to place it, or one
+    /// whose rect is not a number, books the box that holds every viewport, and every later box folds
+    /// into it.
+    #[test]
+    fn an_unknown_extent_is_the_whole_surface() {
+        let mut ledger = Ledger::new();
+        ledger.add([10, 10, 20, 20]);
+        ledger.add(EVERYTHING);
+        ledger.add([30, 30, 40, 40]);
+        assert_eq!(ledger.covering(VIEW), vec![VIEW]);
+        assert_eq!(quad_box([f32::NAN, 0.0, 10.0, 10.0], (0, 0), 1.0), Some(EVERYTHING));
+        assert_eq!(quad_box([0.0, 0.0, f32::INFINITY, 10.0], (0, 0), 1.0), Some(EVERYTHING));
+        assert_eq!(quad_box([0.0, 0.0, 10.0, 10.0], (0, 0), 0.0), Some(EVERYTHING), "no scale is no mapping");
+    }
+
+    /// A quad becomes the window box it can reach: y is flipped (GL's rows count upward), the box is
+    /// rounded OUTWARD and given a pixel of slack, and the viewport's origin and scale are applied.
+    #[test]
+    fn a_quad_is_the_window_box_it_can_reach() {
+        assert_eq!(quad_box([100.0, 200.0, 300.0, 50.0], (0, 0), 1.0), Some([99, 829, 401, 881]));
+        assert_eq!(quad_box([100.5, 200.25, 10.0, 10.0], (0, 0), 1.0), Some([99, 868, 112, 881]), "outward on both axes");
+        assert_eq!(quad_box([100.0, 200.0, 300.0, 50.0], (10, 20), 0.5), Some([59, 434, 211, 461]), "origin and scale");
+        assert_eq!(quad_box([100.0, 200.0, -300.0, 50.0], (0, 0), 1.0), quad_box([-200.0, 200.0, 300.0, 50.0], (0, 0), 1.0), "a flipped quad is the same box");
+        assert_eq!(quad_box([5.0, 5.0, 0.0, 10.0], (0, 0), 1.0), None, "no width, no pixels");
+        assert_eq!(quad_box([5.0, 5.0, 10.0, 0.0], (0, 0), 1.0), None, "no height, no pixels");
+    }
+
+    /// **The pass's quads are the boxes and only them**: each quad's `u_box` maps back to a box of
+    /// the ledger cut to the viewport, a box wholly outside the viewport draws nothing, and the
+    /// pixels the quads cover are the pixels the ledger holds, no more.
+    #[test]
+    fn the_pass_draws_quads_only_over_the_ledger() {
+        let mut ledger = Ledger::new();
+        ledger.add([20, 30, 80, 50]);
+        ledger.add([150, 90, 260, 400]); // runs off the right and top edges
+        ledger.add([-90, -90, -10, -10]); // wholly outside
+        let q = quads(&ledger, VIEW);
+        assert_eq!(q.len(), 2, "the box outside the viewport is not drawn");
+        let back = |q: &[f32; 4]| [(q[0] * 192.0).round() as i32, (q[1] * 108.0).round() as i32, (q[2] * 192.0).round() as i32, (q[3] * 108.0).round() as i32];
+        let mut boxes: Vec<PxBox> = q.iter().map(back).collect();
+        boxes.sort();
+        assert_eq!(boxes, vec![[20, 30, 80, 50], [150, 90, 192, 108]]);
+        let covered = coverage(&boxes);
+        assert_eq!(covered.iter().filter(|c| **c > 0).count(), 60 * 20 + 42 * 18);
+        assert!(covered.iter().all(|c| *c <= 1));
+    }
+
+    /// An empty ledger has nothing to cover: the pass is not run for it.
+    #[test]
+    fn an_empty_ledger_covers_nothing() {
+        let ledger = Ledger::new();
+        assert!(ledger.is_empty());
+        assert!(quads(&ledger, VIEW).is_empty());
     }
 
     /// The wiring no host test can drive: `init_gl` links the pass's programs.
