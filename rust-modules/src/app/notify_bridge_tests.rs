@@ -133,7 +133,7 @@ fn cursor_posts_and_terminal_map_in_connection_order_without_second_drain_or_lat
     assert_eq!(bridge.stores.reconcile.pending_for_test(),
         [(a, "a-first".into()), (b, "b-first".into()), (a, "a-late".into())]);
     SCRIPT.with(|s| assert_eq!(s.borrow().launches, [a, b]));
-    assert_eq!(plx_data::stores::Stores::NOTIFY_FILLS, [StoreId::Browse, StoreId::Hubs]);
+    assert_eq!(plx_data::stores::Stores::NOTIFY_FILLS, [StoreId::Browse, StoreId::Hubs, StoreId::Watchlist]);
     assert!(StoreId::Hubs.ord().0 < StoreId::Notify.ord().0);
     clean(&bridge); bridge.notify_suspend();
 }

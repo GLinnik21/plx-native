@@ -819,9 +819,10 @@ fn start_watchlist_stream(&mut self, job: StoreJob) {
         }
         let launched = match self {
             Self::Live => {
-                plx_base::storage_worker::submit(move || {
+                let _ = plx_base::storage_worker::submit_retained(move || {
                     finish_browse_preferences_job(&port, addr, job.req);
-                }).is_ok()
+                });
+                true
             }
             #[cfg(test)]
             Self::Held { parked, .. } => {
@@ -1863,12 +1864,16 @@ mod tests {
     fn a_person_job_the_tape_does_not_admit_is_refused_once_and_its_claim_comes_back() {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
-        let (sid, store, job, _) = person_requests(false);
+        let (sid, mut store, job, _) = person_requests(false);
         let admission = media_admission(sid, false);
         tape::init(None, true);
         tape::begin([admission.clone()].into(), Default::default());
 
         StoreRunner::live().start(job);
+        {
+            let _step = plx_base::step::StepScope::enter();
+            store.land_launch_refusals();
+        }
         plx_base::task::drain_workers_for_test();
 
         assert_eq!(tape::finish(), (vec![admission], None),
@@ -1903,11 +1908,15 @@ mod tests {
     fn a_person_job_whose_client_the_registry_has_moved_on_from_is_not_started() {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
-        let (sid, store, job, _) = person_requests(false);
+        let (sid, mut store, job, _) = person_requests(false);
         plx_plex::plex::client_for(sid).expect("registered").set_token("rotated");
         tape::init(None, false);
 
         StoreRunner::live().start(job);
+        {
+            let _step = plx_base::step::StepScope::enter();
+            store.land_launch_refusals();
+        }
         plx_base::task::drain_workers_for_test();
 
         assert_eq!(tape::finish(), (vec![media_admission(sid, false)], None),
@@ -1945,7 +1954,7 @@ mod tests {
     fn a_parked_person_job_whose_client_is_gone_when_it_runs_is_refused() {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
-        let (_, store, job, mut global) = person_requests(true);
+        let (_, mut store, job, mut global) = person_requests(true);
         let mut runner = StoreRunner::held();
 
         runner.start(job);
@@ -1954,6 +1963,10 @@ mod tests {
         assert!(adapter.busy_for_test(MEDIA) && adapter.busy_for_test(PROFILE), "parked, still out");
         plx_plex::plex::reset_servers_for_test();
         assert_eq!(runner.run_held(), 2);
+        {
+            let _step = plx_base::step::StepScope::enter();
+            store.land_launch_refusals();
+        }
 
         assert!(!adapter.busy_for_test(MEDIA), "the refusal handed the claim back");
         assert!(!adapter.has_mail_for_test(MEDIA));
@@ -2106,17 +2119,29 @@ mod tests {
         plx_plex::plex::reset_servers_for_test();
         let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", 9, "t", "cid");
         let mut store = SearchStore::default();
-        search_store_pump(&mut store, 0.0); // the first pump observes the roster
-        assert!(store.run(SearchCmd::SetQuery("wallace".into())));
-        search_store_pump(&mut store, 0.3);
+        let host_capture = plx_data::search::fixture_input();
+        let search_input = host_capture.input();
+        let directory = DirectorySnapshot::default();
+        search_store_pump_with_input(&mut store, 0.0, &search_input); // the first pump observes the roster
+        assert!(store.run_with_directory_and_input(
+            SearchCmd::SetQuery("wallace".into()), directory.view(), &search_input));
+        search_store_pump_with_input(&mut store, 0.3, &search_input);
         let mut jobs = store.take_jobs();
         assert_eq!(jobs.len(), 1, "one registered server, one request");
         (sid, store, jobs.remove(0))
     }
 
     fn search_store_pump(store: &mut SearchStore, dt: f32) {
+        let captured = plx_data::search::fixture_input();
+        search_store_pump_with_input(store, dt, &captured.input());
+    }
+
+    fn search_store_pump_with_input(
+        store: &mut SearchStore, dt: f32, input: &plx_data::search::SearchInput<'_>,
+    ) {
         let directory = DirectorySnapshot::default();
-        store.pump_with_directory_and_gate(dt, directory.view(), plx_machine::landgate::fixture_gate(), &registry_keys());
+        store.pump_with_directory_and_input_and_gate(
+            dt, directory.view(), plx_machine::landgate::fixture_gate(), input);
     }
 
     fn search_store_claim_held(store: &SearchStore, sid: ServerId) -> bool {
@@ -2174,6 +2199,10 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
         let (sid, mut store, job) = search_store_request();
+        // Keep the host publication that admitted this request: observing the retoken instead
+        // supersedes the query and intentionally retires its refusal/backoff with that scope.
+        let captured = plx_data::search::fixture_input();
+        let input = captured.input();
         plx_plex::plex::client_for(sid).expect("registered").set_token("rotated");
 
         StoreRunner::live().start(job);
@@ -2181,10 +2210,10 @@ mod tests {
 
         assert!(!search_store_claim_held(&store, sid), "the refusal handed the claim back");
         assert!(!search_store_has_mail(&store, sid), "nothing was read, so nothing answered");
-        search_store_pump(&mut store, 0.016);
+        search_store_pump_with_input(&mut store, 0.016, &input);
         assert!(!store.has_jobs(), "backed off: no request at once");
         for _ in 0..30 {
-            search_store_pump(&mut store, 0.016);
+            search_store_pump_with_input(&mut store, 0.016, &input);
             assert!(!store.has_jobs(), "and none while the wait runs");
         }
     }

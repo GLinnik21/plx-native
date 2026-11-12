@@ -11,7 +11,7 @@ is gated by `ci/machines.ini` (see "Machine shape" below).
 
 The integration tree retains full ancestry from base `f8f6dbb7`, Session `33f18e52`,
 Watchlist W2 `abd26d21`, enforcement `dd1664f7`, and Screens `10bd53db`. Actual
-ledger entries are **4 workers / 19 globals / 62 forks / 11 fxlanes** after Person and
+ledger entries are **4 workers / 19 globals / 61 forks / 11 fxlanes** after Person and
 remaining data captured-input retirement; the pins
 match those entries. Watchlist workers/globals and Screens globals are zero.
 No remaining allowance was removed merely to reach a target count.
