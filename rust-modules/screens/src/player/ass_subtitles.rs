@@ -204,18 +204,16 @@ impl AssSubtitles {
 /// Where a region of `frame` is drawn on the screen: the rectangle it covers on the output canvas
 /// ([`ass::Frame::output_edges`], so a frame drawn smaller lands exactly where the full-size one does
 /// and regions that abut still abut), inside `viewport` and moved `dy` (output pixels).
-fn region_rect(viewport: Viewport, _frame: &ass::Frame, rect: &ass::Rect, dy: f32) -> Rect {
-    Rect::new(
-        (viewport.x + rect.x) as f32,
-        (viewport.y + rect.y) as f32 + dy,
-        rect.width as f32,
-        rect.height as f32,
-    )
+fn region_rect(viewport: Viewport, frame: &ass::Frame, rect: &ass::Rect, dy: f32) -> Rect {
+    let (left, top, right, bottom) = frame.output_edges(rect);
+    Rect::new(viewport.x as f32 + left, viewport.y as f32 + top + dy, right - left, bottom - top)
 }
 
 /// `(y, height)` of a region on the output canvas, in whole pixels: what the lift reasons about.
-fn output_span(_frame: &ass::Frame, rect: &ass::Rect) -> (i32, i32) {
-    (rect.y, rect.height)
+fn output_span(frame: &ass::Frame, rect: &ass::Rect) -> (i32, i32) {
+    let (_, top, _, bottom) = frame.output_edges(rect);
+    let top = top.round() as i32;
+    (top, bottom.round() as i32 - top)
 }
 
 /// The viewport a frame is rendered into and the storage raster it is sized against. An authored
