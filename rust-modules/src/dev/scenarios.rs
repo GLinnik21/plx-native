@@ -1434,7 +1434,9 @@ fn acct_arm(app: &mut App, fr: &mut Frame) {
 ///
 /// **Done means the SURFACE is up**, not that the command was queued (phase 10). The queue is
 /// data-dependent — `deliver_home_commands` holds `ItemMenu` back until the first catalog arrives,
-/// and `request_home_menu` refuses while focus is on the strip rather than the grid — so latching
+/// and `request_home_menu` refuses until a card the menu may open on is focused (the Home page's
+/// own rule, `HomeScreen::item_menu_reachable`: a grid card, or one of the Continue Watching row,
+/// which holds focus with the page still at rest on the hero) — so latching
 /// on the enqueue could mark the scene armed for a panel that never appeared, which reads on the
 /// television as an fps scene measuring the wrong screen. The 12 s ceiling is what stops it
 /// retrying forever on a boot that never reaches a grid at all.
