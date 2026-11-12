@@ -2956,6 +2956,9 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                     // A preview landing nobody is waiting for any more (the page halted it while
                     // the resolve was in flight) must not start an engine: nothing would track
                     // it, so nothing would stop it at its end or hand the engine to a later Play.
+                    // The viewer moved focus; no route failed, so the metric request finishes
+                    // `Cancelled`, never as a handled `PreviewNotDirect` (that kind is only a
+                    // landing the resolve itself refused, which never reaches this branch).
                     #[cfg(feature = "play-feed")]
                     if plx_media::route::is_preview(&app.player.session)
                         && !plx_media::player::preview::expects_landing()
@@ -2964,9 +2967,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                             let _ = plx_media::route::reject_route_start_preparation(transaction);
                         }
                         app.player.session.finish_metric_request(
-                            plx_media::player::attempt_metrics::RequestOutcome::Failed(
-                                plx_media::player::backend::handled_failure(
-                                    plx_media::player::FailureKind::PreviewNotDirect)));
+                            plx_media::player::attempt_metrics::RequestOutcome::Cancelled);
                         app.adapters.player.sync_request_metrics(&mut app.player.session);
                         plx_media::player::stop_playback(&mut app.player.session, &mut app.adapters.player);
                         plx_media::route::clear_preview(&mut app.player.session);
@@ -9085,6 +9086,65 @@ mod lifecycle_regression_tests {
         });
         settle(&mut rig.app, t);
         assert!(super::super::bridge::player(&rig.app.pages).is_some(), "premise: the player is on top");
+    }
+
+    /// **A preview the page halted while its resolve was in flight is a cancellation, not a
+    /// failure.** The viewer moved focus off the hero before the plan landed, so the landing is
+    /// discarded unstarted ([`plx_media::player::preview::halt`] left the machine Idle). Nothing
+    /// failed: the request must finish `Cancelled`. It used to finish
+    /// `Failed(handled_failure(PreviewNotDirect))`, a terminal handled-error effect naming a route
+    /// problem the preview never had, for a plain focus move. (That effect is a local attempt
+    /// measurement; the Sentry `PlaybackError` of a preview is `report::tick_preview`'s, keyed on
+    /// the resolve's own refusal verdict, which a discarded landing never carries.)
+    #[test]
+    fn a_preview_halted_before_its_landing_finishes_its_request_cancelled() {
+        use plx_media::player::attempt_metrics::{Fx, RequestOutcome};
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        // The machine and the autoplay switch are process-wide: stand them where a fresh install
+        // has them, whatever an earlier test in this binary left behind.
+        plx_media::player::preview::reset_for_test();
+        plx_media::player::preview::restore_trailer_autoplay(true);
+        assert_eq!(plx_media::player::preview::request_start(rig.sid, "1", 0),
+            plx_media::player::preview::Start::Accepted);
+        assert!(plx_media::route::request_preview(
+            &mut rig.app.player.session,
+            rig.app.bridge.metadata_mut(),
+            plx_platform::devcaps::caps(),
+            rig.sid,
+            "1",
+            "/library/parts/1/file.mkv",
+            "h264",
+            "aac",
+            "First",
+        ));
+        rig.entered.recv_timeout(Duration::from_secs(3)).unwrap();
+        let request = rig.app.player.session.metric_request().expect("a preview mints a metric request");
+        // The page's focus leaves the hero while the resolve is still parked on the server: with
+        // no preview session installed yet, `halt` releases the machine so the landing is unwanted.
+        plx_media::player::preview::halt(&mut rig.app.player.session, &mut rig.app.adapters.player);
+        assert!(!plx_media::player::preview::occupies(), "premise: nothing waits for the landing any more");
+        rig.release.send(()).unwrap();
+        poll_until("the halted preview's request never settled", || {
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+            fr.now = t;
+            unsafe { update(&mut rig.app, &mut fr); }
+            rig.app.adapters.player.backend_metrics_snapshot()
+                .is_some_and(|summary| summary.id == request && summary.outcome.is_some())
+        });
+        let summary = rig.app.adapters.player.backend_metrics_snapshot().unwrap();
+        assert_eq!(summary.outcome, Some(RequestOutcome::Cancelled),
+            "the viewer left; no route failed, so the request is cancelled, not a handled error");
+        assert!(!rig.app.adapters.player.backend_metric_notices().any(|notice| matches!(notice,
+            plx_media::player::backend::MetricNotice::Measured(Fx::HandledError { .. }))),
+            "a halted preview raises no handled-error effect");
+        assert!(!plx_media::route::is_preview(&rig.app.player.session),
+            "the discarded landing retired the preview mark");
+        assert_ne!(plx_media::player::state(&rig.app.player.session),
+            plx_media::player::PlaybackState::Error,
+            "the failure observer reports on the Error transition, which a focus move must never cause");
     }
 
     /// The real app request and landing must reach the backend reducer, including the source
