@@ -589,7 +589,7 @@ fn the_theme_caption_inks_are_tied_to_the_plex_palette() {
 /// message, the sidecar failure notice) takes the palette colour for its glyph ink, white by
 /// default and the grey rung for a grey, and every line keeps the dark outline runs under it that
 /// keep it readable on a bright or HDR scene. The bitmap tint stays the identity for a colour, so
-/// an authored ASS script or a picture subtitle is never recoloured by the pick.
+/// the tint never recolours an authored ASS script or a picture subtitle (an authored script takes the colour in its header instead, `player::ass_ink`).
 #[test]
 fn the_drawn_caption_takes_the_viewers_colour_and_keeps_its_outline() {
     use plx_plex::plex::session::SubtitleTone;

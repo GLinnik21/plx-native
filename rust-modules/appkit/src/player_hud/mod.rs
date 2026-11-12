@@ -244,8 +244,9 @@ fn subtitle_ink_for(tone: plx_plex::plex::session::SubtitleTone) -> [f32; 4] {
 /// track or an authored ASS/SSA script) or a picture subtitle. It multiplies the pixels, so it
 /// can dim but never recolour: a gray is its [`theme::SUBTITLE_INKS`] rung, a COLOUR rung
 /// ([`SubtitleTone::text_rgb8`]) is the identity (white). A colour reaches a synthesized text track
-/// through its header's primary colour instead (`text_style::primary_colour`), so authored ASS
-/// colours, a cue's own inline colours and a picture's pixels are never tinted by it.
+/// through its header's primary colour instead (`text_style::primary_colour`), and an authored ASS script
+/// through the pure-white primaries of its header (`player::ass_ink`), so a cue's own inline colours and a
+/// picture's pixels are never tinted by it.
 ///
 /// [`SubtitleTone::text_rgb8`]: plx_plex::plex::session::SubtitleTone::text_rgb8
 pub fn subtitle_tint(model: &HudModel) -> [f32; 4] {
