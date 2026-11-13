@@ -327,7 +327,7 @@ impl HintInput {
     /// `held_ms` is the press machine's own clock (`cx.press.held_ms`), passed through unchanged;
     /// the division by the hold threshold happens here so no screen names `press::LONG_MS`.
     pub fn new(focus: Option<u32>, settled: bool, held_ms: Option<u32>) -> Self {
-        let hold = held_ms.map(|ms| (ms as f32 / crate::press::LONG_MS as f32).clamp(0.0, 1.0));
+        let hold = held_ms.map(|ms| (ms as f32 / crate::dispatch::press::LONG_MS as f32).clamp(0.0, 1.0));
         Self { focus, settled, ready: true, hold, surface: Surface::Card }
     }
 
@@ -480,7 +480,7 @@ impl HoldHint {
         // The capsule stands over the page and moves nothing under it: its springs wake the
         // present gate but are not LAYOUT motion, so a fade still running when a route's dip ends
         // cannot hold the page image past the dissolve (`idle::decorative`).
-        plx_machine::idle::decorative(|| self.fade.step(if show { 1.0 } else { 0.0 }, K_FADE, dt));
+        plx_machine::motion::report::decorative(|| self.fade.step(if show { 1.0 } else { 0.0 }, K_FADE, dt));
         // the surface's one showing is spent only once it could be read: the fade-in has completed
         // while this instance holds the claim (an interrupted fade-in clears the claim and spends
         // nothing, so it is offered again)
@@ -493,7 +493,7 @@ impl HoldHint {
             self.full_at = None;
         }
         if show {
-            plx_machine::idle::decorative(|| self.rise.step(1.0, K_RISE, dt));
+            plx_machine::motion::report::decorative(|| self.rise.step(1.0, K_RISE, dt));
         } else if self.fade.pos <= VISIBLE {
             // leaving is a plain fade; the capsule goes back under its resting place unseen
             self.rise.jump(0.0);
@@ -755,14 +755,15 @@ mod tests {
     /// by the frames that raise them, as they are in the loop.
     fn run(h: &mut HoldHint, input: HintInput, n: usize) -> usize {
         let mut notes = 0;
+        let mut present = plx_machine::present::Present::new();
         for _ in 0..n {
-            plx_machine::idle::note_present(10_000);
-            plx_machine::idle::frame_begin(DT);
+            plx_machine::motion::report::frame_begin(DT);
             tstep(h, input, &mut |ev| {
                 notes += 1;
-                plx_machine::idle::note(ev)
+                present.note(ev)
             });
-            plx_machine::idle::should_present(10_016);
+            plx_machine::motion::report::collect_into(&mut present, 10_016);
+            if present.take(10_016) { present.acknowledge(10_016); }
         }
         notes
     }
@@ -785,10 +786,13 @@ mod tests {
     /// into the flag `frame_begin` clears, so the tick has to happen BETWEEN the two calls, with a
     /// present just behind us so the 2 s keepalive cannot answer in the hint's place.
     fn frame_asks(h: &mut HoldHint, input: HintInput) -> bool {
-        plx_machine::idle::note_present(10_000);
-        plx_machine::idle::frame_begin(DT);
-        tstep(h, input, &mut |ev| plx_machine::idle::note(ev));
-        plx_machine::idle::should_present(10_016)
+        let mut present = plx_machine::present::Present::new();
+        present.take(10_000);
+        present.acknowledge(10_000);
+        plx_machine::motion::report::frame_begin(DT);
+        tstep(h, input, &mut |ev| present.note(ev));
+        plx_machine::motion::report::collect_into(&mut present, 10_016);
+        present.take(10_016)
     }
 
     /// **The capsule's fade is decoration, not page layout.** It stands over the page and moves
@@ -802,19 +806,20 @@ mod tests {
         run(&mut h, rested(7), secs(2.5));
         assert!(h.visible(), "premise: the hint stands");
         // a focus move starts its fade out
-        plx_machine::idle::frame_begin(DT);
-        tstep(&mut h, rested(8), &mut |ev| plx_machine::idle::note(ev));
+        plx_machine::motion::report::frame_begin(DT);
+        let mut present = plx_machine::present::Present::new();
+        tstep(&mut h, rested(8), &mut |ev| present.note(ev));
         assert!(h.visible() && h.opacity() < 1.0, "premise: the fade out is under way");
-        assert!(plx_machine::idle::page_moving(), "the fade is page motion (the gate presents it)");
-        assert!(!plx_machine::idle::page_layout_moving(), "but no layout moves, so it cannot hold a page image");
+        assert!(plx_machine::motion::report::page_moving(), "the fade is page motion (the gate presents it)");
+        assert!(!plx_machine::motion::report::page_layout_moving(), "but no layout moves, so it cannot hold a page image");
         // and the fade in
         let mut h = HoldHint::new();
         run(&mut h, rested(7), secs(1.6));
-        plx_machine::idle::frame_begin(DT);
-        tstep(&mut h, rested(7), &mut |ev| plx_machine::idle::note(ev));
+        plx_machine::motion::report::frame_begin(DT);
+        tstep(&mut h, rested(7), &mut |ev| present.note(ev));
         assert!(h.visible() && h.opacity() < 1.0, "premise: the fade in is under way");
-        assert!(plx_machine::idle::page_moving());
-        assert!(!plx_machine::idle::page_layout_moving());
+        assert!(plx_machine::motion::report::page_moving());
+        assert!(!plx_machine::motion::report::page_layout_moving());
     }
 
     #[test]
@@ -1160,7 +1165,7 @@ mod tests {
             seed_taught(taught, taught);
             for surface in [Surface::Card, Surface::SeasonPill] {
                 let mut h = HoldHint::new();
-                let mut press = crate::press::Press::new();
+                let mut press = crate::dispatch::press::Press::new();
                 press.begin(1000);
                 for ms in (0..200).step_by(16) {
                     let input = HintInput::new(Some(7), false, press.held_ms(1000 + ms)).surface(surface);
@@ -1261,7 +1266,7 @@ mod tests {
             fn frames(&mut self, n: usize) {
                 for _ in 0..n {
                     let input = HintInput::new(self.focus, self.settled, self.held_ms);
-                    tstep(&mut self.hint, input, &mut |ev| plx_machine::idle::note(ev));
+                    tstep(&mut self.hint, input, &mut |_| {});
                 }
             }
         }
@@ -1277,10 +1282,10 @@ mod tests {
         assert!(o.hint.visible(), "after it");
 
         // a hold: raw press milliseconds in, a clamped fraction of the hold time out
-        o.held_ms = Some(crate::press::LONG_MS / 4);
+        o.held_ms = Some(crate::dispatch::press::LONG_MS / 4);
         o.frames(2);
         assert!((o.hint.fill() - 0.25).abs() < 1e-6);
-        o.held_ms = Some(crate::press::LONG_MS * 3);
+        o.held_ms = Some(crate::dispatch::press::LONG_MS * 3);
         o.frames(1);
         assert_eq!(o.hint.fill(), 1.0, "clamped by the constructor");
         o.held_ms = None;
@@ -1417,7 +1422,7 @@ mod tests {
 
     #[test]
     fn the_input_constructor_does_the_hold_division() {
-        let long = crate::press::LONG_MS;
+        let long = crate::dispatch::press::LONG_MS;
         assert_eq!(HintInput::new(Some(1), true, None).hold, None);
         assert_eq!(HintInput::new(Some(1), true, Some(0)).hold, Some(0.0));
         assert_eq!(HintInput::new(Some(1), true, Some(long / 2)).hold, Some(0.5));

@@ -139,7 +139,7 @@ fn reset(clear_picture: bool) {
     *SESSION.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if clear_picture {
         *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        plx_machine::idle::invalidate();
+
     }
 }
 
@@ -220,7 +220,7 @@ fn spawn() -> Option<Session> {
             if frames == 1 {
                 plx_base::eventlog::log("simvideo: first picture decoded");
             }
-            plx_machine::idle::invalidate();
+            plx_machine::present::wake_from_worker();
         }
     });
     if writer.is_err() || reader.is_err() {

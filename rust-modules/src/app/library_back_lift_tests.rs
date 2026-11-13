@@ -50,7 +50,7 @@ impl Rig {
         self.frames.push(Frame {
             phase: self.w.d.nav.tabs.stack.transition.phase_word(),
             paint,
-            moving: plx_machine::idle::page_layout_moving(),
+            moving: plx_machine::motion::report::page_layout_moving(),
             scale,
         });
     }

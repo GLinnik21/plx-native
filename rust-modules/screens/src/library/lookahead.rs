@@ -115,7 +115,7 @@ impl Rest {
             None => {}
         }
         self.target = Some(target);
-        self.still >= SETTLE_FRAMES && plx_machine::idle::settled(scroll, target, 0.0)
+        self.still >= SETTLE_FRAMES && plx_machine::motion::report::settled(scroll, target, 0.0)
     }
 
     pub(super) fn forward(&self) -> bool { self.forward }

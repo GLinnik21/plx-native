@@ -86,7 +86,7 @@ impl Port<ResolveEnd> for ResolvePort {
         self.mailbox.0.lock().unwrap_or_else(|e| e.into_inner()).push(ResolveLanding {
             addr, tag: self.tag, sid: self.sid, rk: self.rk.clone(), key: self.key, end,
         });
-        plx_machine::idle::invalidate();
+
     }
     fn refused(&self, addr: Addr) { self.done(addr, ResolveEnd::NotStarted); }
 }
@@ -188,7 +188,7 @@ impl Port<WriteEnd> for WritePort {
         };
         if previous.is_err() { return; }
         self.mailbox.0.lock().unwrap_or_else(|e| e.into_inner()).push(WriteLanding { addr, tag: self.tag, end });
-        plx_machine::idle::invalidate();
+
     }
     fn refused(&self, addr: Addr) { self.done(addr, WriteEnd::NotStarted { write: self.write }); }
 }

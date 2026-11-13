@@ -88,7 +88,6 @@ impl ChromeSnapshot {
     /// idle app wakes for it.
     pub(crate) fn pulse(&mut self, key: u32) {
         self.pulse = Some(key);
-        plx_machine::idle::invalidate();
     }
 
     /// The pending pulse as the strip index of its destination; `None` when nothing is pending or

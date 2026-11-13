@@ -109,12 +109,16 @@ fn deliver(screen: &mut SearchScreen, fixture: &Fixture, focus: Option<FocusKey<
     let cx = fixture.cx(focus);
     let mut out = Vec::new();
     let mut present = Present::new();
-    present.take(0); // a fresh gate's own always-dirty first frame is not this event's damage
+    // Simulate the initial swap: admission alone must not retire its damage.
+    assert!(present.take(0));
+    present.acknowledge(0);
     let handled = {
         let mut fx = Effects::new(&mut out, MachineId::Instance(INSTANCE), &mut present);
         Machine::<HostFixture>::step(screen, &event, &cx, &mut fx)
     };
-    (handled, out, present.take(1))
+    let asked = present.take(1);
+    if asked { present.acknowledge(1); }
+    (handled, out, asked)
 }
 
 /// One frame: the tick every screen owes, graded on whether it asked the gate for a present.

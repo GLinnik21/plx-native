@@ -3,13 +3,13 @@
      (spec §6.2)`) and it previously lived only in a private plans directory, unreadable to every
      contributor. Copied verbatim; the status notes below were added at the move. -->
 
-> **STATUS (2026-09-20).** Phases 0–12 landed. This is the DESIGN RECORD, not a description of the
-> shipped tree — read it for the contract and the rationale, and `rust-modules/src/ui/CLAUDE.md`
-> for what actually exists. Known divergences: the containers shipped as `ui/containers/`, not
-> `ui/nav/` (§11); `ui/nav.rs` and `ui/press.rs` are still present though §11 lists them for
-> deletion (`ui/trail.rs` is gone); and `ui/present.rs` has not replaced `ui/idle.rs` — both
-> exist, at 233 and 1069 lines. §0's done-criterion 9 (`doc_claim_auditor` clean against §11's
-> prose list) is not yet met.
+> **STATUS.** This is a design record, not a claim that every ownership goal has landed.
+> For current UI guidance see `rust-modules/ui/src/CLAUDE.md`. Containers live under
+> `rust-modules/ui/src/containers/`. Root `nav.rs`, `press.rs`, `trail.rs` and the old
+> `machine/src/idle.rs` gate are removed. Navigation and press now use explicit frame
+> snapshots; `Dispatcher::present` owns admission and actual-swap accounting. The executed
+> ownership boundary is recorded in §11. Source migration does not itself establish full
+> runtime/device acceptance or close §0's broader documentation audit.
 
 # PlxNative UI restructure — specification v4
 
@@ -301,6 +301,32 @@ The frame timer's origin moves to the TOP of the iteration; `Instruments::mark` 
 
 ## 11. Modules and prose
 `app/{boot,run,events,lifecycle,playback,effects,adapters/{mod,net,disk,sys,poster}}.rs` (`adapters/poster.rs` is today's `posters.rs` minus its GL half, §10); `ui/{machine,dispatch,screen,hit,focus,frame,motion,present,tex,rec,nav/{stack,tabs,modal,transition,legacy(temp),fixture}}.rs` (`ui/present.rs` replaces `ui/idle.rs`); `screens/{registry,home,library,search,detail,person,filmography,settings,legal,consent,onboard,login,profiles,player/{mod,input},account_menu,item_menu,track_menu,info_panel,chapters_panel,more_menu,alt_sources,tracks_panel,about_panel,person_bio,up_next,diagnostics,lab_toast,skip_pill,source_list}.rs`; `stores/mod.rs`; `player/{machine,adapter}.rs` (engine and threads as today); `dev/scenarios.rs`; `diag/heartbeat.rs`; `route/{plan,decision}.rs`; `ci/{check-statics,check-deps}.sh`; `tools/plxnative-rec`; `tests/{mock_pms.py,focusfp.sh,fixtures/replay/*}`. Deleted: `ui/nav.rs`, `ui/trail.rs`, `ui/press.rs` (into `ui/dispatch/press.rs`), the app.rs ladders. Test-module homes: `input_event_tests` → events; `foreground_resume_tests`, `transport_pause_contract_tests`, `root_back_tests` → lifecycle; `hud_visibility_tests` → player/screen; `repeat_gate_tests`, `failed_player_input_tests`, `overlay_transport_key_tests`, `player_return_tests` → player/input; `replay_budget_tests`, `script_schedule_tests` → dev/scenarios; `unsupported_key_tests`, `key_layout_tests` → dispatch; `settings_child_input_tests` → deleted (dissolves into `input_owner()`); `play_landing_order_tests`, `delete_local_data_tests` → playback; `host_page_lifecycle_tests` → the fold table; `route_tests` → split into `chrome()` and `Leave` tests. Prose to re-audit: `ui/CLAUDE.md` (table rows, containers, rule 12, focus/pointer sections), `docs/agent-reference.md` (triggers, scenes, recordings, panel policy), `docs/ui-viewtree-plan.md` §E superseded, `docs/async-model-decision.md` step 3 reversed (five copies were sound while a screen was a singleton; not once it can be popped mid-flight), `docs/retui-invalidation-design.md` implemented, `docs/ui-framework-improvements.md` §1.7 built, `task.rs` doc, `docs/ui-system-migration.md` §D, `PRIVACY.md` (recorder is dev-only).
+
+### Executed ownership boundary
+
+The workspace paths are now `ui/src/dispatch/press.rs`, `machine/src/present.rs` and
+`machine/src/motion/report.rs`. Root `ui/src/nav.rs`, `ui/src/press.rs` and
+`machine/src/idle.rs` are removed. `Input` owns press state and publishes explicit
+`PressRead` values; navigation presentation is derived from the owning `NavStack` and
+passed through `DrawFrame`, including consumers outside the page pass.
+
+`Dispatcher::present` is the sole runtime gate. The loop collects motion/damage, admits
+a frame without consuming pending work, and acknowledges only after an actual swap.
+Damage or worker wakes arriving after admission remain pending for the next frame.
+The report module collects scoped motion only, never generic damage. It has no keepalive,
+video-plane state or frame-admission authority. Actual store/publication deltas and resource
+outcomes reach the owned gate through their runner/effect boundaries. Only off-thread
+completions use the documented worker wake door.
+The shadow `App.input.press` and pointer-only
+`ArmControlRow` commit ladder are removed too: keyboard and pointer controls both arm
+the dispatcher and receive addressed commits. Removing the duplicated press digest
+advances the app recorder census to `AppFrameV5`; recordings with the previous
+fingerprint are refused unless the validated key-only V4 profile proves the retired press
+remained idle. That profile uses frozen V4 bytes for grading only, never a second input
+owner; current recordings retain the V5 composition.
+Settled screenshot decisions follow current-frame collection. Drawing is revalidated;
+late work re-arms the one-shot rather than capturing/exiting prematurely.
+Build/runtime/device acceptance is separate from this source-level ownership record.
 
 ## 12. Behaviour changes (an INDEX of what the user or a log reader can notice; each rule lives in the section cited)
 1. Background: route and trail no longer disagree; the player is a parked entry (§9). 2. `covered_by_child` becomes `Cover`/`Uncover` (§3.4). 3. Identity on detail landings, refusals and drops as events (§5.2); `idle::dt()` gone and press arms stamped from the input, so a commit may move by one frame (§4.1). 4. Springs' transcendental functions change in the last ~1e-6, below the rest test (§4.2). 5. Press, modal phase, present gate, focus and hit map each gain one owner; no pixel changes (§2.2). 6. Home's strip reachability and the pill→hero `Link` are unchanged in behaviour and declared as data (§6.2). 7. The one visible focus-policy change is that `Seat::Remembered` no longer depends on distance (§7.3 step 4); no group adopts `RememberedNear` at migration (Open question 1). 8. The GL upload + warm pair becomes a solo frame (§8.1); the poster quota is unchanged. 9. Committed fixtures are synthetic and the recorder is dev-only (§5.3, §5.6). 10. Legal stays a push inside the Settings family's own stack (§6.2 `SettingsSurface`; §10 "Legal declines" MasterDetail). 11. The `Job<T>` decision is reversed (§11).

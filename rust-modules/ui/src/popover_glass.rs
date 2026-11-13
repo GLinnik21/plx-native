@@ -369,7 +369,11 @@ pub(crate) mod tests {
                         assert!(!live, "settled frame {i}: the glass stands, asking for nothing");
                         assert_eq!(declared_glass(|| menu(Painter::root())).len(), 1, "settled frame {i}: the glass stands");
                     }
-                    let _input = crate::popover::host::input_scope();
+                    // Dismissal is addressed to the surface, not ambient page damage.
+                    let mut present = plx_machine::present::Present::new();
+                    present.note_in_scope(plx_machine::present::Scope::Surface,
+                        plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
+                    assert!(!present.page_damaged());
                     pop.dismiss();
                     closing = true;
                 }

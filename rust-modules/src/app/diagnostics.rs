@@ -206,33 +206,21 @@ pub(crate) fn enabled() -> bool {
 /// survives a restart is one a user can strand themselves with.
 pub(crate) fn toggle() {
     ON.fetch_xor(true, Ordering::Relaxed);
-    kick();
 }
 
 /// Force it on for an automated playback run. Unlike [`toggle`], this is idempotent so an already
 /// visible read-out keeps its sample cadence and does not reset the panel's clock.
 pub(crate) fn open() {
-    if !ON.swap(true, Ordering::Relaxed) {
-        kick();
-    }
+    ON.store(true, Ordering::Relaxed);
 }
 
 /// Force it off. The only caller is the leave-playback ritual — a diagnostics panel that survived
 /// into the next session would be a bug in the feature built to find bugs.
 pub(crate) fn close() {
     ON.store(false, Ordering::Relaxed);
-    kick();
 }
 
-/// A discrete change: the whole-frame present gate has no spring to watch here, so without this
-/// the panel would not appear until something else happened to repaint (see `plx_machine::idle`).
-///
-/// It used to also force the next sample by writing a static. It does not need to: `Diagnostics`
-/// watches [`ON`]'s rising edge itself, which is the same behaviour without a handle the three
-/// callers of `toggle`/`open`/`close` do not all have.
-fn kick() {
-    plx_machine::idle::invalidate();
-}
+// Toggle callers mutate only ON. The App-owned observer reports visible edges from update.
 
 // ---- the snapshot -----------------------------------------------------------------------------
 
@@ -412,21 +400,23 @@ impl Diagnostics {
     /// The panel being switched ON is its own re-sample: the rising edge of [`ON`] is what the
     /// static-era `kick()` expressed by zeroing the deadline from three modules away.
     pub(crate) fn update(&mut self, ps: &plx_media::route::PlaybackSession, pa: &plx_media::player::adapter::PlayerAdapter,
-        paused: Option<bool>, now: u32) {
+        paused: Option<bool>, now: u32) -> bool {
         let on = enabled();
+        let changed = on != self.was_on;
         let woke = on && !self.was_on;
         self.was_on = on;
         if !on {
-            return;
+            return changed;
         }
         if !woke && now < self.next_sample {
-            return;
+            return false;
         }
         self.next_sample = now.wrapping_add(SAMPLE_MS);
         // The panel is the maintainer's instrument: its own messages are English-only, and the
         // shared helpers it composes (units, decimals, quality labels) read the UI language, so
         // the whole sample is taken in English. Nothing sampled here reaches product UI.
         self.sample(ps, pa, paused, now);
+        true
     }
 
     /// Take the sample in English (see `update`). The one entry to `resample`.
@@ -463,8 +453,7 @@ impl Diagnostics {
             now,
         );
         self.chart_values = chart_values(&self.history);
-        // a re-sample changes what is on screen, and no spring is involved — see `plx_machine::idle`
-        plx_machine::idle::invalidate();
+        // The caller owns presentation authority; update reports this sample edge.
     }
 }
 

@@ -751,7 +751,7 @@ mod tests {
 
     #[test]
     fn a_hold_outlasts_the_hold_threshold_and_a_tap_does_not() {
-        let long = plx_ui::press::LONG_MS;
+        let long = plx_ui::dispatch::press::LONG_MS;
         assert!(PressBench::new(1, 1, PressKind::Hold).period_ms > long);
         assert!(PressBench::new(1, 100_000, PressKind::Tap).period_ms < long);
         assert_eq!(PressBench::new(1, DEFAULT_HOLD_PERIOD_MS, PressKind::Hold).period_ms, DEFAULT_HOLD_PERIOD_MS);

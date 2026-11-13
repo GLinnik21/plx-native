@@ -174,7 +174,7 @@ impl MarkerAccessRunner {
             let member = !plx_plex::plex::session::peek().active_profile_is_admin();
             plx_base::eventlog::log(&outcome_line(member, &result));
             let _ = tx.send(result);
-            plx_machine::idle::invalidate();
+            plx_machine::present::wake_from_worker();
         });
     }
 }

@@ -954,7 +954,7 @@ mod uri_boot_tests {
         assert!(plx_media::player::speed_offer(&rig.app.player.session).contains(&1500));
         crate::app::playback::apply_more_action(&mut rig.app.player.session,
             &mut rig.app.adapters.player, &mut rig.app.bridge,
-            plx_appkit::more_menu::Action::SetSpeed(1500));
+            plx_appkit::more_menu::Action::SetSpeed(1500), &mut rig.app.pages.present);
         assert_eq!(rig.app.player.session.requested_rate_permille(), 1500);
         assert_eq!(rig.app.player.session.reconfigure_pause_goal(), Some(true));
         assert_eq!(rig.app.player.session.attempt_origin(),

@@ -2352,7 +2352,7 @@ pub fn spring(pos: *mut f32, vel: *mut f32, target: f32, k: f32, dt: f32) {
         *vel = (*vel - w * b * dt) * e;
         // Every animation in the app lands here or in `spring_zeta`, which is what lets
         // `plx_machine::idle` know EXACTLY whether the screen is still moving without any screen opting in.
-        plx_machine::idle::note_spring(*pos, target, *vel);
+        plx_machine::motion::report::note_spring(*pos, target, *vel);
     }
 }
 
@@ -2378,7 +2378,7 @@ pub fn spring_zeta(pos: *mut f32, vel: *mut f32, target: f32, k: f32, zeta: f32,
         let b = (v0 + z * w * x0) / wd;
         *pos = target + e * (a * c + b * s);
         *vel = e * ((b * wd - z * w * a) * c - (a * wd + z * w * b) * s);
-        plx_machine::idle::note_spring(*pos, target, *vel); // see the note in `spring`
+        plx_machine::motion::report::note_spring(*pos, target, *vel); // see the note in `spring`
     }
 }
 
@@ -6852,7 +6852,7 @@ static mut CULL_RECT: Option<[f32; 4]> = None;
 // and its two accessors live in `plx_machine::idle`, the machine layer: `idle::invalidate` has to read it,
 // and this module may name that layer but not the reverse. Every primitive below consults it
 // through these two names exactly as it did when the flag was declared here.
-pub use plx_machine::idle::{page_frozen, set_page_frozen};
+pub use plx_machine::motion::report::{page_frozen, set_page_frozen};
 
 thread_local! {
     /// **This frame's picture is a hardware VIDEO PLANE** (restructure spec §9), armed for the
@@ -10013,7 +10013,7 @@ mod tests {
 
     #[test]
     fn the_dither_policy_refuses_small_fields() {
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let broad = 700.0;
         assert_eq!(
             dither_for_field(40.0, broad),

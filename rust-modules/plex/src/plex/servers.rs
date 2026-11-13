@@ -174,6 +174,7 @@ pub fn same_item(a: (ServerId, &str), b: (ServerId, &str)) -> bool {
 /// Deliberately NOT fields on `Client`: a `Client` is re-pointed whenever the address moves, and
 /// a re-point must not forget whose server it is. Published by the same leak-and-store the client
 /// slots use, so [`facts`] hands out `&'static` on exactly the same terms as [`client_for`].
+#[derive(Debug, PartialEq, Eq)]
 pub struct ServerFacts {
     /// The MACHINE name — "nas-home". "People in content, machines in settings": this is drawn
     /// only where the grant itself is the subject, i.e. the Sources list's group headers.
@@ -676,9 +677,7 @@ pub fn publish_probe_result(id: ServerId, outcome: Outcome) {
         return;
     };
     s.probe.store(probe_code(outcome), Ordering::Release);
-    // The Sources list follows this atomic from `browse::sync_roster`; wake an idle frame so the
-    // new word/tier is visible immediately rather than at the two-second keepalive.
-    plx_machine::idle::invalidate();
+    // The app observes this addressed server outcome at its main-thread visual boundary.
 }
 
 /// Publish what a generic PMS request proved, but only if the slot still names the exact client
@@ -735,7 +734,7 @@ pub fn commit_reachability_if_current<R>(
     // registry; callers keep it to their own main-thread stores.
     let committed = commit(outcome);
     drop(w);
-    plx_machine::idle::invalidate();
+    // Some(committed) is the caller's explicit landing outcome.
     Some(committed)
 }
 
@@ -836,12 +835,7 @@ fn describe_locked(id: ServerId, name: &str, credit: Option<&str>, grant: GrantE
     // The PUBLISHED FACTS moved, which every cached projection of them has to be able to notice —
     // see [`FACTS_GEN`], and note the ordering hazard it closes.
     FACTS_GEN.fetch_add(1, Ordering::AcqRel);
-    // A server learning its own name CHANGES PIXELS — the Search screen's scope line and the
-    // Library's Source chip both read it — and it lands asynchronously, well after the first frame.
-    // `plx_machine::idle` gates the whole present on detected motion and cannot see a `static` being
-    // written, so without this the new name sat invisible until the 2 s keepalive or the next
-    // keypress: a screen showing "your server and your server" for two seconds after it knew better.
-    plx_machine::idle::invalidate();
+    // The app captures FACTS_GEN and these immutable facts before present admission.
 }
 
 /// Record a server's MACHINE NAME and nothing else — for a describer that learned it from the
@@ -1342,7 +1336,7 @@ pub fn revoke_for_profile_switch() {
             live.len()
         ));
     }
-    plx_machine::idle::invalidate();
+    // ROSTER_GEN is observed by the app's owned visual-input boundary.
 }
 
 /// Finish a profile/roster replacement with exactly the slots the caller just installed.
@@ -1403,7 +1397,7 @@ pub fn revoke_before_foreign_retoken(machine_id: &str, token: &str) {
         if let Some(s) = slot_of(id) {
             s.probe.store(PROBE_UNKNOWN, Ordering::Release);
         }
-        plx_machine::idle::invalidate();
+        // The app observes the client's grant epoch and probe outcome.
     }
 }
 
@@ -1435,7 +1429,7 @@ fn commit_installed_roster(installed: &[ServerId]) {
     CURRENT.store(next.0 as u32, Ordering::Release);
     if set_active_only(&exact) {
         ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
-        plx_machine::idle::invalidate();
+        // ROSTER_GEN is observed by the app's owned visual-input boundary.
     }
 }
 
@@ -1488,10 +1482,7 @@ pub fn revoke_all() {
             n - floor
         ));
     }
-    // The Sources list, the Search scope line and every shelf heading are drawn from this table,
-    // and `plx_machine::idle` gates the whole present on detected motion — it cannot see a `static` being
-    // written. Same reason `describe` invalidates.
-    plx_machine::idle::invalidate();
+    // ROSTER_GEN is observed by the app's owned visual-input boundary.
 }
 
 /// **Re-ask the grant table for every client a grant was carrying** ([`Slot::on_grant`]), after a plaintext grant was
@@ -1525,7 +1516,7 @@ pub fn regrade_credentials() {
         plx_base::eventlog::log(&format!(
             "plex: {regraded} server(s) lost their plaintext credential — the grant ended"
         ));
-        plx_machine::idle::invalidate();
+        // The app observes the roster, eligibility and probe outcome together.
     }
 }
 

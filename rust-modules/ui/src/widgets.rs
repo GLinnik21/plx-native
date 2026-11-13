@@ -413,19 +413,21 @@ impl ArtCycle {
     const HOLD_MS: u32 = 6000;
     const FADE_MS: u32 = 1200;
 
-    pub fn set_frames(&mut self, frames: &[&str]) {
+    /// Return discrete resource replacement for the owner's typed UI effect.
+    pub fn set_frames(&mut self, frames: &[&str]) -> bool {
         let mut unique = Vec::new();
         for frame in frames {
             if !unique.contains(frame) { unique.push(*frame); }
         }
-        if self.frames.iter().map(String::as_str).eq(unique.iter().copied()) { return; }
+        if self.frames.iter().map(String::as_str).eq(unique.iter().copied()) { return false; }
         self.frames = unique.into_iter().map(str::to_owned).collect();
         self.current = 0;
         self.clock = plx_machine::motion::Ramp::default();
         self.mix = 0.0;
         self.fading = false;
         self.ready.set(false);
-        plx_machine::idle::invalidate();
+        // Resource replacement is landed by the owning UI/result boundary.
+        true
     }
 
     pub fn is_empty(&self) -> bool { self.frames.is_empty() }
@@ -484,6 +486,12 @@ mod art_cycle_tests {
 
     fn tick(ms: u32) -> Tick { Tick { ms, dt_us: 16_000 } }
 
+    fn presented(present: &mut Present) -> bool {
+        let admitted = present.take(0);
+        if admitted { present.acknowledge(0); }
+        admitted
+    }
+
     #[test]
     fn equivalent_frames_cycle_without_changing_the_owners_scene() {
         let _g = plx_base::testlock::serial();
@@ -491,26 +499,26 @@ mod art_cycle_tests {
         let mut present = Present::new();
         cycle.set_frames(&["coast", "painted", "city"]);
         cycle.ready.set(true);
-        let _ = present.take(0);
+        let _ = presented(&mut present);
         cycle.tick(tick(16), true, &mut PresentHandle(&mut present));
         cycle.tick(tick(5000), true, &mut PresentHandle(&mut present));
         assert_eq!(cycle.current, 0);
         assert!(!cycle.fading);
-        assert!(!present.take(0), "the hold must not redraw at 60 FPS");
+        assert!(!presented(&mut present), "the hold must not redraw at 60 FPS");
         cycle.tick(tick(6000), true, &mut PresentHandle(&mut present));
         assert!(cycle.fading);
-        assert!(present.take(0), "the first fade frame must wake the idle gate");
+        assert!(presented(&mut present), "the first fade frame must wake the idle gate");
         for frame in 1..60 {
             cycle.tick(tick(6000 + frame * 16), true, &mut PresentHandle(&mut present));
-            assert!(present.take(0), "every overlapping frame must be presented");
+            assert!(presented(&mut present), "every overlapping frame must be presented");
         }
         cycle.tick(tick(7300), true, &mut PresentHandle(&mut present));
         assert_eq!(cycle.current, 1);
         assert!(!cycle.fading);
-        assert!(present.take(0), "the final frame must be presented too");
+        assert!(presented(&mut present), "the final frame must be presented too");
         cycle.ready.set(true);
         cycle.tick(tick(7316), true, &mut PresentHandle(&mut present));
-        assert!(!present.take(0));
+        assert!(!presented(&mut present));
     }
 
     #[test]
@@ -519,23 +527,23 @@ mod art_cycle_tests {
         let mut cycle = ArtCycle::default();
         let mut present = Present::new();
         cycle.set_frames(&["one", "two"]);
-        let _ = present.take(0);
+        let _ = presented(&mut present);
         cycle.tick(tick(1000), true, &mut PresentHandle(&mut present));
         assert_eq!(cycle.clock.len_ms, 0);
-        assert!(!present.take(0));
+        assert!(!presented(&mut present));
         cycle.ready.set(true);
         cycle.tick(tick(1016), true, &mut PresentHandle(&mut present));
         cycle.pause(tick(1100));
         cycle.tick(tick(20000), false, &mut PresentHandle(&mut present));
         cycle.tick(tick(21000), true, &mut PresentHandle(&mut present));
         assert!(!cycle.fading, "suspension must not consume the hold");
-        assert!(!present.take(0));
+        assert!(!presented(&mut present));
         cycle.set_frames(&["one", "one"]);
-        let _ = present.take(0);
+        let _ = presented(&mut present);
         cycle.ready.set(true);
         cycle.tick(tick(100000), true, &mut PresentHandle(&mut present));
         assert_eq!(cycle.frames.len(), 1);
-        assert!(!present.take(0));
+        assert!(!presented(&mut present));
         cycle.set_frames(&["two", "three"]);
         assert_eq!(cycle.current, 0);
         assert_eq!(cycle.clock.len_ms, 0);
@@ -1500,7 +1508,7 @@ pub const CONTROL_GAP: f32 = 20.0;
 /// same event at the same rate, which is the thing that was actually worth sharing. What still
 /// belongs to `press` is the click, and that is folded in by [`scale`](Self::scale) below.
 ///
-/// [`scale`](Self::scale) folds in [`press::scale`](crate::press::scale) for the PRESSED control. The
+/// [`scale`](Self::scale) folds in the supplied `PressRead` for the PRESSED control. The
 /// dip is a FACTOR on top of the focus scale — that is what makes a press read the same on a 1.07
 /// capsule as on a 1.09 poster. Unlike a card's dip (`cards::press_scale`, which matches
 /// `PressRead::owner`) a row of controls has no element keys, so the pressed control is LATCHED
@@ -1517,7 +1525,7 @@ pub struct CtlPop<const N: usize> {
 /// keys to match `PressRead::owner` against, so the dip latches the FOCUSED index the first time
 /// the press reads off rest and holds it until the press is back at exactly rest: focus moving
 /// away (a direction key abandons the press) then leaves the spring-back on the pressed control.
-/// The latch also remembers WHICH press it was taken for ([`press::arm_id`](crate::press::arm_id)),
+/// The latch also remembers WHICH press it was taken for (`PressRead::identity`),
 /// so a row that was not drawn when the last press returned to rest (the press committed a page or
 /// a popover) or a press armed inside the previous one's spring-back re-latches to the control
 /// holding focus when the new press arms, instead of dipping the old one. A draw-side cache, not
@@ -1527,16 +1535,18 @@ pub struct DipLatch(std::cell::Cell<Option<(u32, usize)>>);
 impl DipLatch {
     /// The dip factor for control `i` given the press scale `press` (`0.0` = no press read) and
     /// the control holding focus (`None` for none).
-    pub fn factor(&self, i: usize, focused: Option<usize>, press: f32) -> f32 {
-        let press = if press > 0.0 { press } else { 1.0 };
-        if press == 1.0 {
+    pub fn factor<K: Copy>(&self, i: usize, focused: Option<usize>, read: plx_machine::machine::PressRead<K>) -> f32 {
+        let press = read.dip();
+        if !read.active {
             self.0.set(None);
             return 1.0;
         }
-        let arm = crate::press::arm_id();
+        let arm = read.identity;
         match self.0.get() {
             Some((a, _)) if a == arm => {}
-            _ => self.0.set(focused.map(|f| (arm, f))),
+            // A cancelled spring may keep its latch, never acquire another row.
+            _ if read.live => self.0.set(focused.map(|f| (arm, f))),
+            _ => self.0.set(None),
         }
         if self.0.get().is_some_and(|(_, l)| l == i) { press } else { 1.0 }
     }
@@ -1579,8 +1589,8 @@ impl<const N: usize> CtlPop<N> {
     /// Control `i`'s drawn scale this frame, press dip included. Out-of-range asks answer 1.0 rather
     /// than panicking: a row whose control COUNT changes with the item (`detail::hero_ctls`) indexes
     /// this by a position that can outrun `N` for a frame while the set is being rebuilt.
-    pub fn scale(&self, i: usize) -> f32 {
-        self.scale_with(i, crate::press::scale())
+    pub fn scale<K: Copy>(&self, i: usize, press: plx_machine::machine::PressRead<K>) -> f32 {
+        self.scale_with(i, press)
     }
     /// How far control `i` is into its focus, 0 (resting) to 1 (focused), read off the SAME lift
     /// spring [`scale`](Self::scale) reads: the fill of a control cross-fades on this (its ink flips on
@@ -1590,11 +1600,10 @@ impl<const N: usize> CtlPop<N> {
         let pos = self.sp.get(i).map(|sp| sp.pos).unwrap_or(1.0);
         ((pos - 1.0) / (CTRL_FOCUS_SCALE - 1.0)).clamp(0.0, 1.0)
     }
-    /// Captured-input counterpart for owned screens: paint and placement use the same frame's
-    /// press value, without consulting the legacy global press machine. Zero means no press read.
-    pub fn scale_with(&self, i: usize, press_scale: f32) -> f32 {
+    /// Paint and placement use the same explicit press, including its arm identity.
+    pub fn scale_with<K: Copy>(&self, i: usize, press: plx_machine::machine::PressRead<K>) -> f32 {
         let s = self.sp.get(i).map(|sp| sp.pos).unwrap_or(1.0);
-        s * self.dip.factor(i, self.focused, press_scale)
+        s * self.dip.factor(i, self.focused, press)
     }
     /// Drop every pop to rest with no motion in between — for a page being torn down or re-mounted,
     /// so the next mount does not open on a control already popped (`detail::reset_view_state`).
@@ -2508,7 +2517,7 @@ pub fn skeleton_phase(ms: u32) -> f32 {
 /// something keeps drawing one.
 fn skeleton_sheen(p: Painter, r: Rect, rad: f32, phase: f32) {
     // placeholder-exempt: the sweep is paint over a skeleton its caller (`skeleton_bar`, `skeleton_sheet`) counted first
-    plx_machine::idle::invalidate();
+    plx_machine::motion::report::note_motion();
     let band = (r.w * SKEL_BAND).max(1.0);
     // travel from fully off the left edge to fully off the right, so the block is clean at both
     // ends of the cycle rather than starting mid-flash
@@ -3707,7 +3716,7 @@ impl View for Spinner {
         // from is then a constant, so the next frame would be identical and a waiting screen
         // (the sign-in QR's "Waiting for you to sign in…") could never come to rest.
         if !plx_machine::motion::phase_clocks_held() {
-            plx_machine::idle::invalidate();
+            plx_machine::motion::report::note_motion();
         }
         #[cfg_attr(feature = "placeholder-sentinel", allow(unused_variables))]
         let t = (self.phase % Self::PERIOD_MS) as f32 / Self::PERIOD_MS as f32;
@@ -3745,7 +3754,7 @@ impl View for Spinner {
 /// hand-rolls them ends up doing index arithmetic over a flat array. Fading a wash toward the app's
 /// own GROUND is the one case the cascade *does* handle, and it belongs to the cascade: an alpha
 /// below 1 mixes the corners toward [`theme::SURFACE_APP`] inside `Painter::ambient`, which is what
-/// lets a whole page — wash included — dip for [`ui::nav`](crate::nav)'s route transition.
+/// lets a whole page — wash included — dip for the owning stack's route transition.
 ///
 /// Blend the corners toward a base surface with [`theme::mix`] before handing them over: a wash
 /// keyed at full strength is a photograph, not a wash, and mixing toward [`theme::SURFACE_APP`]
@@ -3876,7 +3885,7 @@ impl AmbientWash {
     /// Dissolve toward `target` at rate `k`. Every channel shares one rate, so the corners move as
     /// one wash rather than twelve independent fades.
     ///
-    /// **A channel that has [`settled`](plx_machine::idle::settled) is landed on its target** (the
+    /// **A channel that has [`settled`](plx_machine::motion::report::settled) is landed on its target** (the
     /// idle gate has stopped asking for frames for it, which is what that function's export is
     /// for), so the wash's last drawn codes are the codes its target maps to, and [`at_rest`](Self::at_rest)
     /// is exact. Without the landing a critically damped tail keeps moving the float's low bits
@@ -3885,7 +3894,7 @@ impl AmbientWash {
         for (c, t) in self.corners.iter_mut().zip(target) {
             for (sp, v) in c.iter_mut().zip(t) {
                 sp.step(v, k, dt);
-                if plx_machine::idle::settled(sp.pos, v, sp.vel) {
+                if plx_machine::motion::report::settled(sp.pos, v, sp.vel) {
                     // Change-guarded, so a wash already at rest reports nothing frame after frame.
                     sp.jump(v);
                 }
@@ -6995,7 +7004,7 @@ impl StripRender {
     /// through `ChromeSnapshot::pulse`; no screen does.
     pub fn pulse(&mut self, idx: usize) {
         self.pulse = Some(TabPulse { idx, age: 0.0 });
-        plx_machine::idle::invalidate();
+        // The input boundary selects the first pulse frame; step reports its ramp.
     }
 
     /// The running pulse as `(pill index, envelope)`, `None` at rest.
@@ -7947,11 +7956,11 @@ impl StripRender {
         // dismissed, and damage under that fading menu re-captured the host and re-latched the
         // dim's field on every one of its frames.
         if let Some(mut pulse) = self.pulse.take() {
-            plx_machine::idle::decorative(|| {
+            plx_machine::motion::report::decorative(|| {
                 pulse.age = pulse.age + dt; // the strip's own step, as its springs take
                 if pulse.age < TAB_PULSE_S {
                     self.pulse = Some(pulse);
-                    plx_machine::idle::note_motion();
+                    plx_machine::motion::report::note_motion();
                 }
             });
         }
@@ -7990,7 +7999,7 @@ impl StripRender {
 /// the legacy Library screen); every caller now owns its captured `TabLabels` and draws through
 /// `Bridge::draw` -> `self.strip.draw(self.chrome.labels(), …)` directly.
 impl StripRender {
-    pub fn draw(&mut self, data: TabLabels<'_>, p: Painter, band: &mut TabBand) {
+    pub fn draw(&mut self, data: TabLabels<'_>, p: Painter, band: &mut TabBand, nav: crate::screen::NavPresentation) {
                    // The band's material resets first: every early
                    // return below must leave [`profile_chip_with`] on the flat capsule rather than on the stops some
                    // previous frame solved. See [`BarMaterial`].
@@ -8020,7 +8029,7 @@ impl StripRender {
         // is also the honest answer on the two screens that really do have it up there.
         // …and never DURING a route transition: `nav` dips the page under this bar while the bar
         // itself holds still, so those pixels are the app ground fading, not the screen's colour.
-        let settled = crate::nav::page_alpha() >= 0.999;
+        let settled = nav.page_alpha >= 0.999 && nav.blur_amount <= 0.001;
         // **Decided BEFORE the ground is sampled, because it decides whether to sample at all.**
         // `sample_ground` reads its taps from the retained image of the band this track's glass
         // draws from — so a track that is about to draw FLAT because the `flattabs` experiment is

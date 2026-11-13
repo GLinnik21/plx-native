@@ -1585,9 +1585,9 @@ mod tests {
         let ps = plx_media::route::PlaybackSession::default();
         let m = plx_base::fontcov::advances::ShippedMeasure;
         let step = |st: &mut MoreMenuState| {
-            plx_machine::idle::frame_begin(DT);
+            plx_machine::motion::report::frame_begin(DT);
             st.update(DT, &m, &ps);
-            plx_machine::idle::present_moving()
+            plx_machine::motion::report::present_moving()
         };
         let mut st = menu(false, plx_media::route::quality());
         st.motion.step(DT, st.panel_rect(&m));
@@ -1629,9 +1629,9 @@ mod tests {
         let ps = plx_media::route::PlaybackSession::default();
         let m = plx_base::fontcov::advances::ShippedMeasure;
         let step = |st: &mut MoreMenuState| {
-            plx_machine::idle::frame_begin(DT);
+            plx_machine::motion::report::frame_begin(DT);
             st.update(DT, &m, &ps);
-            plx_machine::idle::present_moving()
+            plx_machine::motion::report::present_moving()
         };
         // opened under Force Direct Play: no Quality row, a short panel
         let mut st = menu(true, plx_media::route::quality());

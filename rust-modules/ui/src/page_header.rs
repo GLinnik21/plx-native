@@ -431,11 +431,11 @@ impl PageHeader {
     /// `layout.items` (`-1`: none; focus off the row closes the pop). The span a capsule follows is
     /// the item's plate, the same geometry the row is laid out and hit-tested with.
     ///
-    /// **Decoration, not layout** ([`plx_machine::idle::decorative`]): the capsules and the pop move
+    /// **Decoration, not layout** ([`plx_machine::motion::report::decorative`]): the capsules and the pop move
     /// nothing but themselves, so they wake the present gate and never hold a pushed page's
     /// snapshot, which the page-freeze keeps until the page's LAYOUT stops moving.
     pub fn step(layout: &HeaderLayout, selected: i32, focused: i32, capsules: &mut TabStrip, pop: &mut CtlPop<1>, dt: f32) {
-        plx_machine::idle::decorative(|| {
+        plx_machine::motion::report::decorative(|| {
             capsules.update(selected, focused, |i| layout.items.get(i).map(|r| (r.plate.x, r.plate.w)), SelMark::Travels, dt);
             pop.step((focused >= 0).then_some(0), dt);
         });
@@ -1106,14 +1106,14 @@ impl HeaderSwap {
     }
 
     /// One frame of the swap's clocks: the dissolve's, and the slide's spring on the tab bar's own
-    /// stiffness. **Decoration, not layout** ([`plx_machine::idle::decorative`]).
+    /// stiffness. **Decoration, not layout** ([`plx_machine::motion::report::decorative`]).
     pub fn step(&mut self, dt: f32) {
         if self.running {
-            plx_machine::idle::decorative(|| { self.clock.tick(dt, true); });
+            plx_machine::motion::report::decorative(|| { self.clock.tick(dt, true); });
             if !self.clock.is_swapping() { self.end_dissolve(); }
         }
         if self.is_sliding() {
-            plx_machine::idle::decorative(|| self.slide.step(1.0, crate::widgets::K_TAB_CAP, dt));
+            plx_machine::motion::report::decorative(|| self.slide.step(1.0, crate::widgets::K_TAB_CAP, dt));
             if self.slide.land(1.0, dt) { self.settle(); }
         }
     }

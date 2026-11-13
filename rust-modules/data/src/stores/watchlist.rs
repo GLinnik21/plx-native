@@ -130,7 +130,7 @@ impl WatchlistAdapter {
     #[cfg(any(test, feature = "test-support"))]
     fn post(&self, landed: Landed) {
         self.mail.lock().unwrap_or_else(|e| e.into_inner()).push_back(landed);
-        plx_machine::idle::invalidate();
+
     }
 
     fn take_all(&self) -> Vec<Landed> {

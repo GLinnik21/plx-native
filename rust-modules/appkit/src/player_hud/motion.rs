@@ -500,8 +500,8 @@ impl HudMotion {
     }
 
     /// Section button `i`'s focus pop this frame.
-    pub fn section_scale(&self, i: usize) -> f32 {
-        self.section_pop.scale(i)
+    pub fn section_scale(&self, i: usize, press: plx_machine::machine::PressRead<u32>) -> f32 {
+        self.section_pop.scale(i, press)
     }
 
     /// Do the title block, control row and bottom tabs take the pointer? Not while a scrub has
@@ -519,8 +519,8 @@ impl HudMotion {
 
     /// Control `i`'s focus pop this frame — the read half of the row's springs, for the two
     /// stand-ins that draw into this row from their own modules (`up_next`, `skip_pill`).
-    pub fn scale(&self, i: c_int) -> f32 {
-        self.pop.scale(i.max(0) as usize)
+    pub fn scale(&self, i: c_int, press: plx_machine::machine::PressRead<u32>) -> f32 {
+        self.pop.scale(i.max(0) as usize, press)
     }
 
     /// Stamp the resume edge directly. `note_transport` derives it from `plx_play_feed::shared::FEED_TX`, which is

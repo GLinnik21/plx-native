@@ -310,22 +310,26 @@ impl RouteGround {
     /// the frame after once deferred only while invisible. A pending read is not a refusal: the
     /// corner fallback is for a frame with no honest source, and it latches for the life of the
     /// ground.
-    fn latch_host(&mut self) {
+    fn latch_host(&mut self) -> FrameLatch {
         // The host snapshot is the undimmed page when there is one (Settings caches its host), and
         // it saves the chain its own full-screen copy; a route with no snapshot reads the frame.
         let src = crate::popover::host::page_tex();
-        if self.field.latch_from_frame(Grade::Ground, src) == FrameLatch::Refused {
+        let result = self.field.latch_from_frame(Grade::Ground, src);
+        if result == FrameLatch::Refused {
             self.field.latch_from_corners(Self::fallback_corners(), Grade::Ground);
         }
+        result
     }
 
-    pub fn draw_host(&mut self, p: Painter) {
-        // `ModalStack::draw_scrims_on`'s rule, for its reason — see [`ground_reads_host`].
-        // Recording a layout must neither sample the framebuffer nor change its host latch.
-        if !p.is_recording() && ground_reads_host(p.opacity(), plx_gfx::gfx::snapshot_captured_this_frame()) {
-            self.latch_host();
-        }
+    #[must_use = "pending ground readback must be scheduled by its frame owner"]
+    pub fn draw_host(&mut self, p: Painter) -> bool {
+        let pending = !p.is_recording()
+            && !crate::frame::backdrop::source_walk()
+            && !plx_gfx::gfx::blur_source_pass()
+            && ground_reads_host(p.opacity(), plx_gfx::gfx::snapshot_captured_this_frame())
+            && self.latch_host() == FrameLatch::Pending;
         self.field.draw(p, Rect::FULL, Role::Ground, 1.0);
+        pending
     }
 
     /// Draw the pre-Home atmosphere captured at construction. Ordinary Settings samples its
@@ -987,11 +991,11 @@ impl<const N: usize> ActionRow<N> {
     }
 
     /// Control `i`'s drawn scale this frame — the focus pop, and, once focused and only once the
-    /// caller has armed [`crate::press::begin_ctl`] on its OK-down, the tvOS press dip/ring on
+    /// caller has armed [`crate::dispatch::press::Press::begin_ctl`] on its OK-down, the tvOS press dip/ring on
     /// top of it (`CtlPop::scale`'s own fold). Pass straight to `Button::scale`; never draw an
     /// action-row control without it, or it arrives at focus with no pop and clicks with no dip.
-    pub fn scale(&self, i: usize) -> f32 {
-        self.pop.scale(i)
+    pub fn scale<K: Copy>(&self, i: usize, press: plx_machine::machine::PressRead<K>) -> f32 {
+        self.pop.scale(i, press)
     }
 }
 
@@ -1394,9 +1398,9 @@ mod tests {
     #[test]
     fn a_recorded_host_ground_neither_captures_nor_latches() {
         let mut ground = super::RouteGround::new();
-        ground.draw_host(crate::Painter::recording());
+        assert!(!ground.draw_host(crate::Painter::recording()));
         assert!(!ground.is_latched());
-        crate::record_walk(|| ground.draw_host(crate::Painter::root()));
+        crate::record_walk(|| { assert!(!ground.draw_host(crate::Painter::root())); });
         assert!(!ground.is_latched(), "nested root painters obey the recording walk too");
     }
 
@@ -1671,20 +1675,20 @@ mod tests {
             row.step(Some(0), 1.0 / 60.0);
         }
         assert!(
-            row.scale(0) > 1.0,
+            row.scale(0, plx_machine::machine::PressRead::<()>::default()) > 1.0,
             "the focused control must be visibly popped, got {}",
-            row.scale(0)
+            row.scale(0, plx_machine::machine::PressRead::<()>::default())
         );
         assert!(
-            (row.scale(1) - 1.0).abs() < 0.001,
+            (row.scale(1, plx_machine::machine::PressRead::<()>::default()) - 1.0).abs() < 0.001,
             "the unfocused sibling must not move, got {}",
-            row.scale(1)
+            row.scale(1, plx_machine::machine::PressRead::<()>::default())
         );
         for _ in 0..300 {
             row.step(None, 1.0 / 60.0);
         }
         assert!(
-            (row.scale(0) - 1.0).abs() < 0.001,
+            (row.scale(0, plx_machine::machine::PressRead::<()>::default()) - 1.0).abs() < 0.001,
             "focus leaving the row must settle every control back to rest"
         );
     }

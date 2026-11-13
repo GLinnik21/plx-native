@@ -361,9 +361,9 @@ impl PlaintextAlert {
         if !self.alert.visible() {
             return;
         }
-        self.alert.draw_scrim();
+        self.alert.draw_scrim(f);
         let (cancel, affirm) = PlaintextQuestion::verbs();
-        self.alert.draw(cancel, affirm, f.measure);
+        self.alert.draw(cancel, affirm, f.measure, f.route_navigation(), f.press);
         let frames = self.alert.frames(f.measure);
         self.frames.set(Some(frames));
         if self.alert.is_open() && self.alert.settled() {

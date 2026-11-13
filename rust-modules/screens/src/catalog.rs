@@ -331,19 +331,17 @@ impl CatalogScreen {
     /// The app hands the page its store snapshot: on the first frames, and again whenever the
     /// record, the membership or a server match moved. Only what is drawn from it changes; a
     /// match landing while the page is open re-derives the status line and nothing else.
-    pub fn input(&mut self, vm: CatalogViewModel) {
-        if self.vm != vm {
-            self.vm = vm;
-            plx_machine::idle::invalidate();
-        }
+    pub fn input(&mut self, vm: CatalogViewModel) -> bool {
+        if self.vm == vm { return false; }
+        self.vm = vm;
+        true // the runner applies the changed snapshot to its owned Present
     }
 
     /// The reachable server that proxies the art (`None`: neutral ground).
-    pub fn set_art_server(&mut self, server: Option<ServerId>) {
-        if self.art_server != server {
-            self.art_server = server;
-            plx_machine::idle::invalidate();
-        }
+    pub fn set_art_server(&mut self, server: Option<ServerId>) -> bool {
+        if self.art_server == server { return false; }
+        self.art_server = server;
+        true // resource attribution belongs to the runner, not this retained snapshot
     }
 
     pub fn view_model(&self) -> &CatalogViewModel {
@@ -523,7 +521,7 @@ impl CatalogScreen {
             .icon(face.icon)
             .focused(focused)
             .ground(ControlGround::Keyed)
-            .scale(self.pop.scale(0))
+            .scale(self.pop.scale_with(0, f.press))
             .draw(&Env::inert(), p);
         f.stop(
             p,

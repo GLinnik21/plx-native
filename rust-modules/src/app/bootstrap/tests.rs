@@ -11,6 +11,9 @@ fn session_codec_profiles_require_canonical_exact_matching_envelopes() {
     let current = initial.to_v6_value().unwrap();
     let prior = super::super::recorder::FP_PRIOR;
     let v6 = super::super::recorder::FP_V6;
+    let owned = super::super::recorder::state_fp();
+    assert_eq!(Initial::decode_profile(current.clone(), initial.hash(), owned).unwrap().hash(), initial.hash());
+    assert!(Initial::decode_profile(legacy.clone(), initial.hash(), owned).is_err());
     assert_eq!(current["session"], serde_json::json!({"codec":6,"boot":legacy["session"]}));
     assert_eq!(Initial::decode_profile(legacy.clone(), initial.hash(), prior).unwrap().hash(), initial.hash());
     assert_eq!(Initial::decode_profile(current.clone(), initial.hash(), v6).unwrap().hash(), initial.hash());
@@ -216,9 +219,8 @@ fn typed_initial_roundtrip_and_hidden_input_hash_are_complete() {
     changed.consent.errors = true;
     changed.validate().unwrap();
     assert_ne!(changed.hash(), initial.hash(), "automation hides the prompt, not its logical initial decision");
-    let press = plx_ui::press::Press::new();
-    assert_ne!(super::super::recorder::state_hash(&press,"home","","",0,0,0,initial.hash()),
-        super::super::recorder::state_hash(&press,"home","","",0,0,0,changed.hash()));
+    assert_ne!(super::super::recorder::state_hash("home","","",0,0,0,initial.hash()),
+        super::super::recorder::state_hash("home","","",0,0,0,changed.hash()));
     assert!(Initial::decode(serde_json::to_value(&changed).unwrap(),initial.hash()).is_err());
     let mut unknown = value.clone(); unknown["unrecognized"] = json!(true);
     assert!(Initial::from_value(unknown).is_err());
@@ -477,7 +479,7 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
         let mut launches = 0;
         let sink = plx_ui::rec::MemSink::default();
         let bytes = sink.segments.clone();
-        let header = plx_ui::rec::Header::new(17,&plx_ui::press::Press::new());
+        let header = plx_ui::rec::Header::new(17,&plx_ui::dispatch::press::Press::new());
         let mut writer = plx_ui::rec::Writer::open(Box::new(sink),&header,0).unwrap();
         for frame in 0..160 {
             if replay {
@@ -594,7 +596,7 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
         let mut parked = 0;
         let sink = plx_ui::rec::MemSink::default();
         let bytes = sink.segments.clone();
-        let header = plx_ui::rec::Header::new(17, &plx_ui::press::Press::new());
+        let header = plx_ui::rec::Header::new(17, &plx_ui::dispatch::press::Press::new());
         let mut writer = plx_ui::rec::Writer::open(Box::new(sink), &header, 0).unwrap();
         for frame in 0..=602 {
             if replay {

@@ -65,7 +65,7 @@ ok()   { echo "  ok — $*"; }
 # path is now a loud gate failure, not a swallowed scan of nothing.
 GATED_MUT_PATHS=("$UI" "$APPKIT" "$SCREENS" "$DATA/person.rs" "$DATA/metadata.rs" "$DATA/metadata" "$DATA/pms.rs" "$DATA/stores")
 GATED_WIDE_PATHS=("$DATA/search")
-for p in "${GATED_MUT_PATHS[@]}" "${GATED_WIDE_PATHS[@]}" "$MEDIA/route/decision.rs" "$MEDIA/player/engine.rs" "$UI/press.rs"; do
+for p in "${GATED_MUT_PATHS[@]}" "${GATED_WIDE_PATHS[@]}" "$MEDIA/route/decision.rs" "$MEDIA/player/engine.rs" "$UI/dispatch/press.rs"; do
   [ -e "$p" ] || fail "gated path missing: $p — the statics gate would silently scan nothing here"
 done
 
@@ -75,7 +75,7 @@ matches() {
     printf '%s\n' "$wide"
     grep -nE '^\s*static mut SESSION\b' "$MEDIA/route/decision.rs" | sed "s|^|$MEDIA/route/decision.rs:|"
     grep -nE '^\s*static mut ENGINE\b' "$MEDIA/player/engine.rs" | sed "s|^|$MEDIA/player/engine.rs:|"
-    grep -nE '^\s*static mut S\b' "$UI/press.rs" | sed "s|^|$UI/press.rs:|"
+
   } | sed -E "s/^([^:]+):[0-9]+:[[:space:]]*(pub(\(crate\))? )?static (mut )?([A-Za-z_][A-Za-z_0-9]*).*/\1	\5/" | sort -u
 }
 

@@ -2064,7 +2064,7 @@ pub(crate) unsafe fn construct(
     let mut glass = plx_ui::frame::glass::GlassPlan::new();
     if !controlled {
         crate::dev::scenarios::arm_glassload(&mut glass);
-        crate::dev::scenarios::arm_navblur(&mut glass);
+        bridge.blur_dissolve = crate::dev::scenarios::arm_navblur(&mut glass);
     }
     // dev: the two OVERDRAW surfaces (`ui::overdraw`, docs/backdrop-blur-profiling.md Part 5).
     // `plxnative-overdraw` arms the CPU-side per-draw-class ledger — how much screen-visible
@@ -2097,8 +2097,8 @@ pub(crate) unsafe fn construct(
         plx_media::player::seed_dev_track_names();
     }
     if let Some(initial) = &initial {
-        plx_machine::idle::set_enabled(!plx_base::devtrig::listed(&initial.triggers, "noidle"));
-    } else { crate::dev::scenarios::arm_noidle(); }
+        pages.present.set_enabled(!plx_base::devtrig::listed(&initial.triggers, "noidle"));
+    } else { crate::dev::scenarios::arm_noidle(&mut pages.present); }
     // dev: /tmp/plxnative-detailosc (read once at boot, like the other triggers) makes the detail scroll
     // perpetually swing hero<->bottom so the FPS heartbeat samples the transition, not the ends.
     let detail_osc = !controlled && crate::dev::scenarios::detailosc_armed();
@@ -2322,10 +2322,7 @@ pub(crate) unsafe fn construct(
         (player, adapters)
     };
     let repause_at = 0i64;
-    // ui::press click state: a grid-card OK is deferred (press-in on down, activate on the
-    // spring-back after key-up) so `ok_armed` marks "a press is in flight, commit it from the
-    // per-frame loop when press::take_commit fires". Only ever set on Home's grid.
-    let ok_armed = false;
+
     // Which route name was last REPORTED as an event. Not `route` itself: several `Route`
     // values share one name (every `Route::Player` is "player"), and an overlay
     // opening is not a screen change.
@@ -2489,12 +2486,13 @@ pub(crate) unsafe fn construct(
         down_sym,
         modal_repeat,
         diagnostics: crate::app::diagnostics::Diagnostics::default(),
+        lab_toast: Default::default(),
         player,
         adapters,
         repause_at,
         decoder_parked: false,
         foreground_retry: None,
-        ok_armed,
+
         last_route_reported,
         ptr,
         menu_play_await: None,
@@ -2512,11 +2510,11 @@ pub(crate) unsafe fn construct(
         t0,
         instr,
         measure_fault_logged: false,
-        input: plx_ui::input::Input::new(),
+
         rec: super::recorder::Recplay::Off,
         boot_initial: initial,
         telemetry_guard: None,
-        present: plx_machine::present::Present::new(),
+
         glass,
         // **The application's page stack runs the route DIP** (§6.2). It ran `Immediate` until
         // phase 12 while `ui::nav` held a second fader and the loop applied its own route change
@@ -2661,7 +2659,7 @@ pub(crate) unsafe fn construct(
             log(&format!("bootstrap: REFUSED — {reason}"));
             return Err(1);
         }
-        super::run::recorder_end_frame(&mut app.rec, &app.bridge, &app.input.press,
+        super::run::recorder_end_frame(&mut app.rec, &app.bridge,
             "home", "", "bootstrap", tree);
         if let Some(ms) = app.rec.clock_start() {
             super::clock::set_replay(ms);

@@ -135,7 +135,7 @@ fn the_morph_begins_and_ends_on_the_chip_as_the_bar_draws_it() {
     w.land_watchlist();
     w.settle(30);
     let drawn = |w: &World| {
-        let presented = w.bridge.navigation_presentation().tucked(w.d.top_screen().expect("a page").chrome_tuck());
+        let presented = w.bridge.navigation_presentation(&w.d.nav).tucked(w.d.top_screen().expect("a page").chrome_tuck());
         w.bridge.bar_member_rect(TAB_KEY_CHIP, presented).expect("the chip is a bar member")
     };
     crate::app::bridge::open_account_menu(&mut w.d);

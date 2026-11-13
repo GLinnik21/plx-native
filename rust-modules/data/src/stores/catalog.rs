@@ -53,7 +53,7 @@ struct Mailbox {
 impl Mailbox {
     fn post(&self, landing: Landing) {
         self.mail.lock().unwrap_or_else(|e| e.into_inner()).push_back(landing);
-        plx_machine::idle::invalidate();
+
     }
 
     fn take_all(&self) -> Vec<Landing> {

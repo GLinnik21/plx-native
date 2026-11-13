@@ -165,14 +165,14 @@ pub(super) fn parse_cell(v: &str) -> Option<(usize, usize)> {
 /// accept a rest period, and hold the surface back until the page has stopped changing. The signal
 /// is `plx_machine::idle`'s change clock, which only the simulator keeps; on the television there is none,
 /// the wait is skipped, and the arm behaves exactly as it did before it took a value.
-pub(crate) fn at_rest(now: u32, rest: Option<u32>) -> bool {
+pub(crate) fn at_rest(now: u32, rest: Option<u32>, last_change_ms: u32, current_changed: bool) -> bool {
     #[cfg(feature = "hostsim")]
     {
-        rest.is_none_or(|ms| now.wrapping_sub(plx_machine::idle::last_change_ms()) >= ms)
+        rest.is_none_or(|ms| !current_changed && now.wrapping_sub(last_change_ms) >= ms)
     }
     #[cfg(not(feature = "hostsim"))]
     {
-        let _ = (now, rest);
+        let _ = (now, rest, last_change_ms, current_changed);
         true
     }
 }
@@ -379,7 +379,8 @@ pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
         return;
     }
     if on_library_page(app)
-        && at_rest(fr.now, rest)
+        && at_rest(fr.now, rest, app.pages.present.last_change_ms(),
+            app.pages.present.changed() || plx_machine::motion::report::present_moving())
         && due(app.scenarios.shots.libmenu_sent, fr.now)
     {
         app.scenarios.shots.libmenu_sent = Some(fr.now);

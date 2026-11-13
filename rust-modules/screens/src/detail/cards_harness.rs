@@ -127,7 +127,7 @@ impl Harness {
     fn step(&mut self, ev: ScreenEvent<TestHost>) -> bool {
         let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
-        let (_, moving) = plx_machine::idle::scoped_motion(|| {
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
             static MEASURE: FixtureMeasure = FixtureMeasure;
             let cx = Cx::<TestHost> { views: (), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &MEASURE,
                 press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },

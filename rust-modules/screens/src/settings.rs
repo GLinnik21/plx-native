@@ -891,7 +891,7 @@ impl<H: DirectoryLike> Screen<H> for RouteSurface {
                 // opaque ground at rest and what fades out over the host on dismissal
                 let dim = theme::scrim_black(settings_scrim_alpha(a, f.nav_page_alpha));
                 root.rect(Rect::FULL, 0.0, dim, dim, 0.0);
-                plx_ui::profile::phase("st.ground", || self.ground.draw_host(root.alpha(a)));
+                plx_ui::profile::phase("st.ground", || { if self.ground.draw_host(root.alpha(a)) { f.request_frame(); } });
             }
             Family::FirstRunConsent => {
                 self.ground.draw_home(root);
@@ -917,6 +917,7 @@ impl<H: DirectoryLike> Screen<H> for RouteSurface {
         if let Some(inst) = self.top_mut() {
             let mut inner = DrawFrame::with_navigation(&icx, f.painter, navigation);
             inst.screen.draw(&mut inner);
+            if inner.take_frame_request() { f.request_frame(); }
         }
         self.push.route.walked();
     }
@@ -994,6 +995,7 @@ impl RouteSurface {
             if let Some(inst) = self.top_mut() {
                 let mut inner = DrawFrame::with_navigation(&icx, entrance, navigation);
                 inst.screen.draw(&mut inner);
+                if inner.take_frame_request() { f.request_frame(); }
                 stops.extend(inner.into_stops());
             }
         } else {
@@ -1002,6 +1004,7 @@ impl RouteSurface {
                     let mut inner = DrawFrame::with_navigation(&icx, parent_p, navigation);
                     inner.push = parent_frame;
                     inst.screen.draw(&mut inner);
+                    if inner.take_frame_request() { f.request_frame(); }
                     stops.extend(inner.into_stops());
                 }
             }
@@ -1015,6 +1018,7 @@ impl RouteSurface {
                     let mut inner = DrawFrame::with_navigation(&icx, child_p, navigation);
                     inner.push = child_frame;
                     inst.screen.draw(&mut inner);
+                    if inner.take_frame_request() { f.request_frame(); }
                     // a leaving page takes no input: its stops are not registered
                     if !popping {
                         stops.extend(inner.into_stops());

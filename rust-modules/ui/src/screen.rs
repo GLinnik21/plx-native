@@ -715,17 +715,17 @@ macro_rules! focusable_via_composed {
 /// generic too (`fn view<H: Bounds>(&self) -> impl Focusable<H> + '_`) — a `cards::Stack` page.
 #[macro_export]
 macro_rules! focusable_via_view {
-    (@impl [$($gen:tt)*] $t:ty, $h:ty, $view:ident, [$($turbofish:tt)*]) => {
+    (@impl [$($gen:tt)*] $t:ty, $h:ty, $view:ident, [$($turbofish:tt)*] $(, $press:ident)?) => {
         impl $($gen)* $crate::screen::Focusable<$h> for $t {
             fn groups(&self, cx: &plx_machine::machine::Cx<'_, $h>, out: &mut Vec<$crate::screen::GroupSpec>) {
-                $crate::screen::Focusable::<$h>::groups(&self.$view $($turbofish)* (), cx, out)
+                $crate::screen::Focusable::<$h>::groups(&self.$view $($turbofish)* ($(cx.$press)?), cx, out)
             }
             fn group_of(
                 &self,
                 key: &<$h as plx_machine::machine::Host>::Elem,
                 cx: &plx_machine::machine::Cx<'_, $h>,
             ) -> Option<plx_machine::machine::GroupId> {
-                $crate::screen::Focusable::<$h>::group_of(&self.$view $($turbofish)* (), key, cx)
+                $crate::screen::Focusable::<$h>::group_of(&self.$view $($turbofish)* ($(cx.$press)?), key, cx)
             }
             fn neighbour(
                 &self,
@@ -733,7 +733,7 @@ macro_rules! focusable_via_view {
                 dir: $crate::screen::Dir,
                 cx: &plx_machine::machine::Cx<'_, $h>,
             ) -> $crate::screen::Step<<$h as plx_machine::machine::Host>::Elem> {
-                $crate::screen::Focusable::<$h>::neighbour(&self.$view $($turbofish)* (), key, dir, cx)
+                $crate::screen::Focusable::<$h>::neighbour(&self.$view $($turbofish)* ($(cx.$press)?), key, dir, cx)
             }
             fn place(
                 &self,
@@ -741,14 +741,14 @@ macro_rules! focusable_via_view {
                 cx: &plx_machine::machine::Cx<'_, $h>,
                 at: $crate::screen::At,
             ) -> Option<$crate::screen::Placed> {
-                $crate::screen::Focusable::<$h>::place(&self.$view $($turbofish)* (), key, cx, at)
+                $crate::screen::Focusable::<$h>::place(&self.$view $($turbofish)* ($(cx.$press)?), key, cx, at)
             }
             fn reconcile(
                 &self,
                 want: plx_machine::machine::FocusKey<<$h as plx_machine::machine::Host>::Elem>,
                 cx: &plx_machine::machine::Cx<'_, $h>,
             ) -> plx_machine::machine::FocusKey<<$h as plx_machine::machine::Host>::Elem> {
-                $crate::screen::Focusable::<$h>::reconcile(&self.$view $($turbofish)* (), want, cx)
+                $crate::screen::Focusable::<$h>::reconcile(&self.$view $($turbofish)* ($(cx.$press)?), want, cx)
             }
             fn seat(
                 &self,
@@ -756,7 +756,7 @@ macro_rules! focusable_via_view {
                 from: $crate::screen::Placed,
                 cx: &plx_machine::machine::Cx<'_, $h>,
             ) -> plx_machine::machine::FocusKey<<$h as plx_machine::machine::Host>::Elem> {
-                $crate::screen::Focusable::<$h>::seat(&self.$view $($turbofish)* (), g, from, cx)
+                $crate::screen::Focusable::<$h>::seat(&self.$view $($turbofish)* ($(cx.$press)?), g, from, cx)
             }
         }
     };
@@ -765,6 +765,9 @@ macro_rules! focusable_via_view {
     };
     ($t:ty, $h:ty, $view:ident) => {
         $crate::focusable_via_view!(@impl [] $t, $h, $view, []);
+    };
+    ($t:ty, $h:ty, $view:ident, press) => {
+        $crate::focusable_via_view!(@impl [] $t, $h, $view, [], press);
     };
 }
 
@@ -836,6 +839,17 @@ pub fn chrome_lift(tuck: f32) -> f32 {
 }
 
 impl NavPresentation {
+    /// Build a snapshot from the owning stack and the application's tab and blur configuration.
+    pub fn from_transition(page: f32, chrome: f32, view_tab: Option<u32>, blur_dissolve: bool) -> Self {
+        Self {
+            page_alpha: if blur_dissolve { 1.0 } else { page },
+            chrome_alpha: chrome,
+            view_tab,
+            blur_amount: if blur_dissolve { 1.0 - page } else { 0.0 },
+            chrome_lift: 0.0,
+        }
+    }
+
     /// This presentation with the top chrome tucked away by `tuck` ([`Screen::chrome_tuck`]):
     /// the chrome's alpha falls to 0 and it lifts by [`chrome_lift`] as the tuck reaches 1. The dispatcher hands the chrome pass
     /// this value for the page that answers a tuck; every other page answers 0 and is unchanged.
@@ -912,6 +926,7 @@ pub struct DrawFrame<'a, 'views, H: Host> {
     /// that opts into the dip ([`Screen::entry_motion`]). Set by the dispatcher's surface pass.
     pub entry_floor: f32,
     stops: Vec<Stop<H::Elem>>,
+    wants_frame: bool,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -946,6 +961,17 @@ pub fn record_stops_while_recording<R>(f: impl FnOnce() -> R) -> R {
 }
 
 impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
+    /// Route presentation retained independently of a container's local page alpha.
+    pub fn route_navigation(&self) -> NavPresentation {
+        NavPresentation {
+            page_alpha: self.nav_page_alpha,
+            chrome_alpha: self.chrome_alpha,
+            view_tab: self.view_tab,
+            blur_amount: self.blur_amount,
+            chrome_lift: 0.0,
+        }
+    }
+
     pub fn new(cx: &'a Cx<'views, H>, painter: Painter) -> Self {
         Self::with_navigation(cx, painter, NavPresentation::default())
     }
@@ -966,6 +992,7 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
             push: None,
             entry_floor: 0.0,
             stops: Vec::new(),
+            wants_frame: false,
         }
     }
 
@@ -1056,6 +1083,23 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
         &self.stops
     }
 
+    /// Deferred renderer work is an effect of this visible frame, never a process wake.
+    pub fn is_visible_pass(&self) -> bool {
+        !self.painter.is_recording() && !plx_gfx::gfx::blur_source_pass()
+            && !crate::frame::backdrop::source_walk()
+    }
+
+    pub fn request_frame(&mut self) {
+        if self.is_visible_pass() { self.wants_frame = true; }
+    }
+
+    pub fn take_frame_request(&mut self) -> bool {
+        std::mem::take(&mut self.wants_frame)
+    }
+
+    pub fn apply_frame_requests(&mut self, present: &mut plx_machine::present::Present) {
+        if self.take_frame_request() { present.note(plx_machine::present::PresentEvent::Wake); }
+    }
     pub fn into_stops(self) -> Vec<Stop<H::Elem>> {
         self.stops
     }
@@ -1231,6 +1275,50 @@ mod draw_frame_tests {
         }
     }
 
+    #[test]
+    fn frame_demand_is_owned_and_survives_the_current_admission() {
+        use plx_machine::present::Present;
+        let _serial = plx_base::testlock::serial();
+        let measure = crate::fixture::FixtureMeasure;
+        let view = crate::fixture::FixtureView::default();
+        let context = cx(&measure, &view);
+        let mut owner = Present::new();
+        let mut other = Present::new();
+        let mut worker = Present::global();
+        for p in [&mut other, &mut worker] { p.take(0); p.acknowledge(0); }
+        assert!(owner.take(0));
+        let mut frame = DrawFrame::new(&context, Painter::root());
+        frame.request_frame();
+        frame.request_frame();
+        frame.apply_frame_requests(&mut owner);
+        assert!(!frame.take_frame_request(), "the frame effect is consumed exactly once");
+        owner.acknowledge(0);
+        assert!(owner.peek(1));
+        assert!(!other.peek(1));
+        assert!(!worker.peek(1));
+        assert!(!owner.page_damaged());
+        assert!(!owner.page_moving());
+        assert!(owner.why().is_none());
+    }
+
+    #[test]
+    fn source_and_recording_frames_do_not_request_presents() {
+        use crate::frame::backdrop::{self, Z};
+        let _serial = plx_base::testlock::serial();
+        let measure = crate::fixture::FixtureMeasure;
+        let view = crate::fixture::FixtureView::default();
+        let context = cx(&measure, &view);
+        let sources = std::rc::Rc::new(std::cell::RefCell::new(backdrop::Sources::default()));
+        let request = |painter| {
+            let mut frame = DrawFrame::new(&context, painter);
+            frame.request_frame(); frame.take_frame_request()
+        };
+        assert!(!request(Painter::recording()));
+        { let _walk = backdrop::discover(sources.clone()); assert!(!request(Painter::root())); }
+        { let _walk = backdrop::enter(sources, Z::OPENER); assert!(!request(Painter::root())); }
+        assert!(request(Painter::root()));
+    }
+
     /// A stop under a clipped painter is clipped to the cascade's clip ∩ its own.
     #[test]
     fn a_stop_under_a_clip_carries_the_visible_part_only() {
@@ -1323,6 +1411,21 @@ mod draw_frame_tests {
         f.page_alpha = 0.9;
         assert_eq!(f.page_alpha, 0.9);
         assert_eq!(f.nav_page_alpha, 0.42, "the outer route fade must survive the overwrite");
+    }
+
+    #[test]
+    fn transition_presentations_are_independent_and_keep_blur_and_chrome_separate() {
+        let first = NavPresentation::from_transition(0.25, 1.0, Some(2), true);
+        let second = NavPresentation::from_transition(0.6, 0.4, None, false);
+        assert_eq!(first.page_alpha, 1.0);
+        assert_eq!(first.blur_amount, 0.75);
+        assert_eq!(first.chrome_alpha, 1.0);
+        assert_eq!(first.view_tab, Some(2));
+        assert_eq!(second.page_alpha, 0.6);
+        assert_eq!(second.blur_amount, 0.0);
+        assert_eq!(second.chrome_alpha, 0.4);
+        assert_eq!(second.view_tab, None);
+        assert_eq!(NavPresentation::from_transition(1.0, 1.0, None, false), NavPresentation::default());
     }
 
     /// `DrawFrame::new` (no explicit navigation) is `NavPresentation::default()`, whose

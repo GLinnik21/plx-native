@@ -2,17 +2,18 @@
 use super::{consts::SAFE, label::Label, theme, Painter, Rect};
 use std::{cell::Cell, ffi::CString};
 thread_local! { static WAS_VISIBLE: Cell<bool> = const { Cell::new(false) }; }
-pub fn update(controlled: bool) {
+/// Return the presentation effect; the runner applies surface damage to its owner.
+pub fn update(controlled: bool) -> bool {
     // The app supplies its bootstrap predicate. Wall-clock diagnostics must not affect a
     // controlled run's per-frame present grade; checker logging and fatal policy stay active.
     if controlled {
         WAS_VISIBLE.with(|v| v.set(false));
-        return;
+        return false;
     }
     let visible = plx_base::task::runtime_check::warning().is_some();
     let previous = WAS_VISIBLE.with(|v| v.replace(visible));
     // Keep presenting through the linger and clear the final painted warning on expiry.
-    if visible || previous { plx_machine::idle::invalidate(); }
+    visible || previous
 }
 pub fn draw(controlled: bool) {
     draw_with(controlled, paint);
@@ -38,10 +39,9 @@ mod tests {
     fn a_controlled_boot_warning_neither_invalidates_nor_draws() {
         let _serial = plx_base::testlock::serial();
         plx_base::task::runtime_check::with_warning_for_test(|| {
-            plx_machine::idle::reset_for_test();
+            plx_machine::motion::report::reset_for_test();
             WAS_VISIBLE.with(|v| v.set(false));
-            update(true);
-            let damage = plx_machine::idle::take_local_damage();
+            let damage = u32::from(update(true));
             let mut paints = 0;
             draw_with(true, |_| paints += 1);
             assert_eq!((damage, paints), (0, 0), "controlled boots must exclude real-time warning presentation");
@@ -52,16 +52,15 @@ mod tests {
     fn live_warnings_still_present_and_controlled_mode_clears_no_pixels() {
         let _serial = plx_base::testlock::serial();
         plx_base::task::runtime_check::with_warning_for_test(|| {
-            plx_machine::idle::reset_for_test();
+            plx_machine::motion::report::reset_for_test();
             WAS_VISIBLE.with(|v| v.set(false));
-            update(false);
-            assert!(plx_machine::idle::take_local_damage() > 0);
+            assert!(update(false));
             let mut paints = 0;
             draw_with(false, |_| paints += 1);
             assert_eq!(paints, 1);
-            update(true);
+            let damage = u32::from(update(true));
             draw_with(true, |_| paints += 1);
-            assert_eq!(plx_machine::idle::take_local_damage(), 0, "even a stale visible flag must not force a controlled present");
+            assert_eq!(damage, 0, "even a stale visible flag must not force a controlled present");
             assert_eq!(paints, 1);
         });
     }

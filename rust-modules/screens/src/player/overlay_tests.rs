@@ -456,7 +456,7 @@ fn the_more_title_band_is_a_pointer_only_stop_and_slides_with_its_page() {
         f.into_stops()
     };
     let tick = |page: &mut PlayerOverlayScreen, ms: u32| {
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         deliver(page, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
     };
     tick(&mut page, 1_000);
@@ -712,7 +712,7 @@ fn the_pointer_is_held_while_a_page_slides_and_released_at_rest() {
     let meta = plx_data::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
     let tick = |page: &mut PlayerOverlayScreen, ms: u32| {
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         deliver(page, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
     };
     tick(&mut page, 1_000);

@@ -192,7 +192,7 @@ impl RowPool {
     /// entry frees.
     pub(crate) fn admit<H: Host, S: CardSource<H>>(&mut self, row: &CardRow, src: &S, focus: Option<usize>) {
         let spring = |i: usize| row.cell_spring(i);
-        let off_rest = |i: usize| spring(i).is_some_and(|sp| !plx_machine::idle::settled(sp.pos, 1.0, sp.vel));
+        let off_rest = |i: usize| spring(i).is_some_and(|sp| !plx_machine::motion::report::settled(sp.pos, 1.0, sp.vel));
         let mut w = 0;
         for r in 0..self.n {
             if off_rest(self.at[r]) {

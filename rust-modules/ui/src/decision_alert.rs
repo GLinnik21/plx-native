@@ -306,7 +306,7 @@ impl DecisionAlert {
         // The body determines the panel's size. A cached ground can contain the OLD outline;
         // dropping it here lets all hosts redraw the measured panel, even inside an own scope.
         crate::popover::host::ground_invalidate();
-        plx_machine::idle::invalidate();
+        // The addressed reconcile/input boundary owns content damage.
         true
     }
     /// One answer or two, as last opened or reconciled.
@@ -325,7 +325,7 @@ impl DecisionAlert {
         // A fresh open is a fresh page under it: re-latch at the next `draw_scrim`.
         self.field.reset();
         self.pop.open();
-        plx_machine::idle::invalidate();
+        // Opening is selected by the owning navigation/input effect.
     }
     /// Measure retained content through the caller's capability, before paint or during replay.
     fn measured(&self, measure: &dyn Measure) -> Layout {
@@ -346,7 +346,7 @@ impl DecisionAlert {
         self.scroll_target = (self.scroll_target + delta as f32 * theme::size::BODY as f32 * 6.0)
             .clamp(0.0, max);
         let _own = crate::popover::own_motion();
-        plx_machine::idle::invalidate();
+        // The input boundary selects this change; update reports the scroll spring.
         self.scroll_target.to_bits()
     }
     pub fn scroll_target_bits(&self) -> u32 { self.scroll_target.to_bits() }
@@ -370,12 +370,12 @@ impl DecisionAlert {
     /// Instant hide — see [`Popover::close`]. Interactive answers take [`dismiss`](Self::dismiss).
     pub fn close(&mut self) {
         self.pop.close();
-        plx_machine::idle::invalidate();
+        // The closing effect owns discrete damage.
     }
     /// The shared exit choreography, in reverse of the entry (`Popover::dismiss`).
     pub fn dismiss(&mut self) {
         self.pop.dismiss();
-        plx_machine::idle::invalidate();
+        // The dismiss effect owns damage; update reports the exit animation.
     }
     /// Open or still fading out — the DRAW gate, never the input gate.
     pub fn visible(&self) -> bool {
@@ -389,7 +389,7 @@ impl DecisionAlert {
     }
     pub fn set_choice(&mut self, choice: Choice) {
         self.choice = self.valid_choice(choice);
-        plx_machine::idle::invalidate();
+        // Selection is an owned input effect, not ambient cache damage.
     }
     pub fn update(&mut self, dt: f32) {
         if !self.visible() {
@@ -405,7 +405,8 @@ impl DecisionAlert {
             dt,
         );
     }
-    pub fn draw_scrim(&mut self) {
+    pub fn draw_scrim<H: plx_machine::machine::Host>(&mut self, f: &mut crate::screen::DrawFrame<'_, '_, H>) {
+        let nav = f.route_navigation();
         if self.visible() {
             // Live over the frozen host — and the first `live` of a frame is what takes the
             // snapshot, before this scrim lands on it. See `popover::host::live`.
@@ -413,21 +414,23 @@ impl DecisionAlert {
             // The panel's field, from the page as it stands before the dim below touches it —
             // idempotent once latched; until the read lands, and on a refusal (the video plane),
             // the flat sheet.
-            let _ = self.field.latch_from_frame(
+            if f.is_visible_pass() && self.field.latch_from_frame(
                 crate::underlay::Grade::Dim,
                 crate::popover::host::page_tex(),
-            );
+            ) == crate::underlay::FrameLatch::Pending { f.request_frame(); }
             // The DECISION role's weight, as the flat ink (`Popover::scrim`): this alert is a
             // `Popover` drawn from inside its page (consent, and the player's repair alert over the
             // video plane), not a `ModalStack` surface, so its DIM has no container field to inherit.
-            self.pop.scrim(theme::underlay::DIM_DECISION);
+            self.pop.scrim(theme::underlay::DIM_DECISION, nav);
         }
     }
-    pub fn draw(
+    pub fn draw<K: Copy>(
         &mut self,
         cancel: &core::ffi::CStr,
         destructive: &core::ffi::CStr,
         measure: &dyn Measure,
+        nav: crate::screen::NavPresentation,
+        press: plx_machine::machine::PressRead<K>,
     ) {
         if !self.visible() {
             return;
@@ -435,7 +438,7 @@ impl DecisionAlert {
         // Everything below is LIVE over the frozen host page — see `popover::host::live`.
         let _live = crate::popover::host::live();
         let l = self.measured(measure);
-        let p = self.pop.content_painter(Popover::RISE);
+        let p = self.pop.content_painter(Popover::RISE, nav);
         crate::profile::phase("da.panel", || self.pop.panel(p, l.panel, theme::ALERT_PANEL_RAD, Some(&self.field), crate::widgets::Ground::Sheet));
         crate::profile::phase("da.text", || {
             let scroll = self.scroll.pos.clamp(0.0, l.scroll_max);
@@ -462,7 +465,7 @@ impl DecisionAlert {
         crate::profile::phase("da.ctl", || {
         Button::new(cancel.as_ptr(), theme::size::BODY, l.cancel)
             .focused(self.choice == Choice::Cancel)
-            .scale(self.controls.scale(0))
+            .scale(self.controls.scale(0, press))
             .draw(&env, p);
         if self.answers == Answers::One {
             return;
@@ -474,7 +477,7 @@ impl DecisionAlert {
         Button::new(destructive.as_ptr(), theme::size::BODY, l.destructive)
             .style(destructive_style)
             .focused(self.choice == Choice::Destructive)
-            .scale(self.controls.scale(1))
+            .scale(self.controls.scale(1, press))
             .draw(&env, p);
         });
     }
@@ -570,9 +573,9 @@ mod tests {
         assert_eq!(alert.choice(), Choice::Destructive);
         assert_eq!(alert.pop.appear(), appear, "content must not restart the entrance");
         assert_eq!(crate::popover::host_users_for_test(), users);
-        plx_machine::idle::take_local_damage();
+        plx_machine::motion::report::take_local_motion();
         assert!(!alert.reconcile_card(c"Details", vec!["receipt".into()], Answers::Two));
-        assert_eq!(plx_machine::idle::take_local_damage(), 0, "a settled card must stay idle");
+        assert_eq!(plx_machine::motion::report::take_local_motion(), 0, "a settled card must stay idle");
         assert!(alert.reconcile_card(c"Details", vec!["receipt".into()], Answers::One));
         assert_eq!(alert.choice(), Choice::Cancel, "the removed answer hands focus to Close");
         alert.set_choice(Choice::Destructive);

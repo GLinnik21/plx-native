@@ -141,7 +141,7 @@ impl DocumentReader {
 
     pub fn move_by(&mut self, delta: i32) {
         self.target = (self.target + delta as f32 * self.body_leading() * 6.0).clamp(0.0, self.max_scroll);
-        plx_machine::idle::invalidate();
+        // The owned input boundary selects this frame; update reports scroll motion.
     }
 
     pub fn update(&mut self, dt: f32) {
