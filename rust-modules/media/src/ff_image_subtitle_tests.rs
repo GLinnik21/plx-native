@@ -550,3 +550,120 @@ fn mkvmerge_zlib_subtitle_tracks_decode_like_uncompressed_ones() {
         "the zlib-compressed SRT packet must arrive inflated"
     );
 }
+
+/// How the demux loop hands the fixture's packets to `SubTracks`, in the three cases its image
+/// gate has: a subtitle on from the start, one turned on after the packets were read, and one
+/// turned on after a seek discarded what was read.
+#[derive(Clone, Copy, PartialEq)]
+enum Selection {
+    On,
+    OffThenOn,
+    OffThenSeekThenOn,
+}
+
+/// The cues `mkv_zlib_subs.mkv`'s image tracks put in the store as `(track, start_ns, end_ns,
+/// rects)`, and how many of them were emitted before the flip, when every packet is read the way
+/// the demux loop reads them under `selection` (`ff.rs`: `decode`, then `hold` while Off, then
+/// `release_held` on the first packet after the selection).
+unsafe fn present_zlib_fixture(selection: Selection) -> (Vec<(i32, i64, i64, usize)>, usize) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/mkv_zlib_subs.mkv")
+        .canonicalize()
+        .expect("fixture present");
+    let url = CString::new(path.to_str().unwrap()).unwrap();
+    SHARED.sub_bitmaps.lock().unwrap().clear();
+    FEED_SHARED.playpos_ns.store(0, Ordering::Relaxed);
+
+    let mut fmt: *mut AVFormatContext = std::ptr::null_mut();
+    assert!(
+        avformat_open_input(&mut fmt, url.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut()) >= 0,
+        "open the fixture"
+    );
+    let streams = (*fmt).streams;
+    let infos = SubTracks::inspect(fmt, streams);
+    let presentation = SideTracks::new(&infos);
+    let plan = presentation.decode_plan();
+    let mut subs = SubTracks::open(streams, infos, plan);
+    let on = selection == Selection::On;
+    let mut emitted_while_off = 0;
+
+    let pkt = av_packet_alloc();
+    while av_read_frame(fmt, pkt) >= 0 {
+        let si = (*pkt).stream_index;
+        if let Some(pos) = subs.position(si) {
+            let st = *streams.add(si as usize);
+            if let Some(raw) = subs.decode(pos, pkt, st, on, crate::player::SUB_BITMAP_BUDGET) {
+                if matches!(subs.plan()[pos], DecodeKind::Bitmap) && !on { emitted_while_off += 1; }
+                presentation.decode(raw).push(0, fixture_retention());
+            }
+            if !on { subs.hold(pos, pkt, st, || Some(fixture_retention())); }
+        }
+        av_packet_unref(pkt);
+    }
+    let mut p = pkt;
+    av_packet_free(&mut p);
+
+    if selection == Selection::OffThenSeekThenOn {
+        // Without this the "nothing lands" result below would hold for a backlog that was never kept.
+        assert!(subs.holds_images(), "the packets read while Off are held");
+        subs.discard_held();
+    }
+    // The first packet after the selection: everything held is decoded before it.
+    subs.release_held(streams, crate::player::SUB_BITMAP_BUDGET, |raw| {
+        presentation.decode(raw).push(0, fixture_retention());
+    });
+    assert!(!subs.holds_images(), "releasing leaves nothing held");
+    subs.close();
+    avformat_close_input(&mut fmt);
+
+    let mut cues: Vec<(i32, i64, i64, usize)> = SHARED
+        .sub_bitmaps
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|c| (c.track, c.start_ns, c.end_ns, c.rects.len()))
+        .collect();
+    cues.sort();
+    SHARED.sub_bitmaps.lock().unwrap().clear();
+    (cues, emitted_while_off)
+}
+
+/// **An image track turned on mid-play shows the lines the demuxer had already read.** The demuxer
+/// reads ahead of the playhead; with subtitles Off the image packets of that window were dropped, so
+/// a track chosen at 232 s showed nothing until the read-ahead had been used up (10 s), while a TEXT
+/// track, whose cues are kept whatever the selection, answered at once. Held packets decode, in file
+/// order, to exactly the cues the same packets give when they are decoded as they are read.
+///
+/// The fixture's image tracks (PGS and VobSub, each also zlib-compressed) carry one cue at 0 s.
+#[test]
+#[ignore = "needs the host build of the bundled FFmpeg — run by `make check-ffmpeg`"]
+fn image_packets_read_while_subtitles_are_off_decode_when_one_is_turned_on() {
+    let _g = plx_base::testlock::serial();
+    let _ffmpeg = bind_host_ffmpeg();
+    unsafe {
+        let (live, _) = present_zlib_fixture(Selection::On);
+        assert!(
+            live.iter().any(|cue| cue.0 == 0) && live.iter().any(|cue| cue.0 == 2),
+            "the control: the PGS and VobSub tracks decode when read live, got {live:?}"
+        );
+        let (after_flip, emitted_while_off) = present_zlib_fixture(Selection::OffThenOn);
+        assert_eq!(emitted_while_off, 0, "nothing is decoded while Off");
+        assert_eq!(
+            after_flip, live,
+            "the image cue read while Off must be emitted once an image track is on"
+        );
+    }
+}
+
+/// A seek moves the playhead to a place the held packets do not describe: they are discarded, and
+/// the selection that follows emits nothing of them.
+#[test]
+#[ignore = "needs the host build of the bundled FFmpeg — run by `make check-ffmpeg`"]
+fn a_seek_discards_the_image_packets_held_while_subtitles_were_off() {
+    let _g = plx_base::testlock::serial();
+    let _ffmpeg = bind_host_ffmpeg();
+    unsafe {
+        let (cues, _) = present_zlib_fixture(Selection::OffThenSeekThenOn);
+        assert!(cues.is_empty(), "no stale cue lands after a seek, got {cues:?}");
+    }
+}
