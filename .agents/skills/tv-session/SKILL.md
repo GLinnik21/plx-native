@@ -85,7 +85,11 @@ proxy). `curl -X POST -d '{"mode":"blackhole"}' http://127.0.0.1:C/_proxy/mode` 
 `pass`; `blackhole` (existing connections stay open and go silent in both directions, new ones are
 accepted and never answered: no FIN, no RST, the closest userland analogue to a dead link, and what
 was held is delivered on `pass`); `reset` (RST every connection, RST new ones on accept); `refuse`
-(listener closed). `--schedule blackhole@10,pass@70` flips on a timer for a one-lease run. Every
+(listener closed); `{"mode":"throttle","kbps":27000}` (or `--mode throttle:27000`) limits the link to
+that many kilobits per second, ONE shared bucket per direction across all connections, so a slow link
+rather than a dead one (what crosses the proxy, a stream included, arrives at that rate; the TV
+connects to `<host LAN IPv4>:P`, never the mock's own `M`). `--schedule blackhole@10,pass@70` (or
+`throttle:27000@10,pass@70`) flips on a timer for a one-lease run. Every
 mode change and connection is logged with a timestamp. Stopping or SIGSTOPping the mock is NOT
 this: use it when the question is what the app does when the link itself dies. Stop the proxy and
 the mock when the run ends.

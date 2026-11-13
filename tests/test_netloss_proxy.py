@@ -1,7 +1,9 @@
 """`tools/netloss-proxy.py`: the fault-injecting TCP proxy that makes a real-looking network loss.
 Host only, real loopback sockets on port 0, a few seconds. The semantics that matter are the ones a
 TV client sees: blackhole = silence with the connection still open (no FIN, no RST), reset = a RST,
-refuse = ECONNREFUSED, and a restore that delivers what was held."""
+refuse = ECONNREFUSED, a restore that delivers what was held, and throttle = ONE link rate shared by
+every connection, timed at the receiver (the loopback buffers swallow megabytes, so a send's return
+time says nothing)."""
 import importlib.util
 import json
 import pathlib
@@ -85,11 +87,11 @@ class ProxyCase(unittest.TestCase):
             got += chunk
         return got
 
-    def ctl(self, mode=None):
+    def ctl(self, mode=None, **body):
         url = "http://%s:%d/_proxy/mode" % self.proxy.control_addr
         if mode is None:
             return json.load(urllib.request.urlopen(url, timeout=2))
-        req = urllib.request.Request(url, json.dumps({"mode": mode}).encode(), method="POST")
+        req = urllib.request.Request(url, json.dumps({"mode": mode, **body}).encode(), method="POST")
         return json.load(urllib.request.urlopen(req, timeout=2))
 
 
@@ -142,6 +144,223 @@ class Blackhole(ProxyCase):
         s.settimeout(0.5)
         with self.assertRaises(socket.timeout):
             s.recv(1)
+
+
+class Bulk:
+    """An upstream that sources and sinks bulk bytes. `GET n\\n` is answered with n bytes; `PUT n\\n`
+    followed by n bytes is answered with `ok\\n` once all n have arrived."""
+
+    def __init__(self):
+        self.srv = socket.socket()
+        self.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.srv.bind(("127.0.0.1", 0))
+        self.srv.listen(16)
+        self.port = self.srv.getsockname()[1]
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):
+        while True:
+            try:
+                c, _ = self.srv.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._serve, args=(c,), daemon=True).start()
+
+    @staticmethod
+    def _serve(c):
+        buf = b""
+        try:
+            while True:
+                while b"\n" not in buf:
+                    d = c.recv(65536)
+                    if not d:
+                        return
+                    buf += d
+                line, _, buf = buf.partition(b"\n")
+                verb, n = line.split()
+                n = int(n)
+                if verb == b"GET":
+                    c.sendall(b"x" * n)
+                else:
+                    got, buf = len(buf), b""
+                    while got < n:
+                        d = c.recv(1 << 20)
+                        if not d:
+                            return
+                        got += len(d)
+                    c.sendall(b"ok\n")
+        except OSError:
+            pass
+        finally:
+            c.close()
+
+    def close(self):
+        self.srv.close()
+
+
+class FakeClock:
+    """A clock the bucket's sleeps advance, so its arithmetic is tested without real time."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, dt):
+        self.now += dt
+
+
+class ThrottleBucket(unittest.TestCase):
+    RATE = 2_500_000  # 20000 kbps in bytes per second
+
+    def bucket(self, rate=RATE):
+        clock = FakeClock()
+        b = np.Bucket(clock=clock, sleep=clock.sleep)
+        b.configure(rate)
+        return b, clock
+
+    def test_a_fresh_link_starts_with_one_chunk_then_grants_ten_ms_quanta(self):
+        b, clock = self.bucket()
+        self.assertEqual(b.take(np.CHUNK, lambda: False), np.CHUNK)  # the burst
+        self.assertEqual(clock.now, 0.0)
+        n = b.take(np.CHUNK, lambda: False)
+        self.assertLessEqual(n, self.RATE * 0.0125)  # about one 10 ms tick, never a 1-byte recv
+        self.assertGreaterEqual(n, self.RATE * 0.0099)
+        self.assertGreaterEqual(clock.now, 0.0099)
+
+    def test_grants_never_exceed_the_link_rate_plus_one_burst(self):
+        b, clock = self.bucket()
+        granted = 0
+        while clock.now < 2.0:
+            granted += b.take(np.CHUNK, lambda: False)
+        self.assertLessEqual(granted, np.CHUNK + self.RATE * clock.now)
+        self.assertGreaterEqual(granted, np.CHUNK + self.RATE * clock.now - self.RATE * 0.0125)
+
+    def test_an_idle_link_banks_no_more_than_the_burst_and_a_refund_returns_tokens(self):
+        b, clock = self.bucket()
+        clock.now += 60
+        self.assertEqual(b.take(10 * np.CHUNK, lambda: False), np.CHUNK)
+        t = clock.now
+        b.give(1000)
+        self.assertEqual(b.take(1000, lambda: False), 1000)
+        self.assertEqual(clock.now, t, "refunded tokens are granted without waiting")
+
+    def test_a_wait_bails_out_when_told_and_a_cleared_bucket_grants_nothing(self):
+        b, clock = self.bucket()
+        b.take(np.CHUNK, lambda: False)
+        self.assertEqual(b.take(np.CHUNK, lambda: True), 0)
+        b.clear()
+        self.assertEqual(b.take(np.CHUNK, lambda: False), 0)
+
+    def test_a_rate_that_needs_more_than_one_chunk_per_tick_still_keeps_up(self):
+        b, clock = self.bucket(12_500_000)  # 100 Mbps: one CHUNK is 5 ms, so the burst grows to two ticks
+        granted = 0
+        while clock.now < 1.0:
+            granted += b.take(np.CHUNK, lambda: False)
+        self.assertGreaterEqual(granted, 12_500_000 * 0.97)
+
+
+class ThrottleCase(ProxyCase):
+    def setUp(self):
+        super().setUp()
+        self.bulk = Bulk()
+        self.addCleanup(self.bulk.close)
+        self.proxy.upstream = ("127.0.0.1", self.bulk.port)
+
+    def fetch(self, s, n):
+        """GET n bytes on `s`; the seconds until the last one arrived."""
+        t0 = time.monotonic()
+        s.sendall(b"GET %d\n" % n)
+        got = 0
+        while got < n:
+            d = s.recv(1 << 20)
+            if not d:
+                self.fail("EOF after %d of %d bytes" % (got, n))
+            got += len(d)
+        return time.monotonic() - t0
+
+    def assertRate(self, elapsed, nominal, tol=0.15):
+        self.assertGreaterEqual(elapsed, nominal * (1 - tol), "faster than the link: %.2f s" % elapsed)
+        self.assertLessEqual(elapsed, nominal * (1 + tol), "slower than the link: %.2f s" % elapsed)
+
+
+class Throttle(ThrottleCase):
+    def test_down_runs_at_the_link_rate_and_pass_restores_full_rate_on_the_same_connection(self):
+        self.ctl("throttle", kbps=20000)
+        s = self.connect(timeout=15)
+        self.assertRate(self.fetch(s, 8_000_000), 3.2)  # 8 MB at 20 Mbps
+        self.ctl("pass")
+        fast = self.fetch(s, 8_000_000)  # the live connection, no reconnect
+        self.assertLess(fast, 1.0, "pass must lift the limit: %.2f s" % fast)
+
+    def test_the_limit_is_one_link_shared_by_every_connection(self):
+        self.ctl("throttle", kbps=20000)
+        socks = [self.connect(timeout=15) for _ in range(2)]
+        t0 = time.monotonic()
+        threads = [threading.Thread(target=self.fetch, args=(s, 4_000_000)) for s in socks]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        # 2 x 4 MB = 8 MB over ONE 20 Mbps link: 3.2 s (a per-connection limit would take 1.6 s).
+        self.assertRate(time.monotonic() - t0, 3.2)
+
+    def test_up_is_limited_too(self):
+        self.ctl("throttle", kbps=20000)
+        s = self.connect(timeout=15)
+        t0 = time.monotonic()
+        s.sendall(b"PUT 4000000\n" + b"y" * 4_000_000)
+        self.assertEqual(s.recv(8), b"ok\n")
+        self.assertRate(time.monotonic() - t0, 1.6)
+
+    def test_a_new_rate_takes_effect_on_a_live_connection(self):
+        s = self.connect(timeout=15)
+        self.ctl("throttle", kbps=8000)
+        self.assertRate(self.fetch(s, 1_000_000), 1.0)
+        self.ctl("throttle", kbps=40000)
+        fast = self.fetch(s, 1_000_000)  # 0.2 s at the new rate, a fifth of the old one
+        self.assertTrue(0.1 < fast < 0.6, "%.2f s" % fast)
+
+    def test_mode_endpoint_validates_kbps_and_reports_it(self):
+        for body in ({}, {"kbps": 0}, {"kbps": -5}, {"kbps": "fast"}, {"kbps": True}, {"kbps": None},
+                     {"kbps": float("nan")}, {"kbps": float("inf")}):
+            with self.assertRaises(urllib.error.HTTPError, msg=repr(body)) as cm:
+                self.ctl("throttle", **body)
+            self.assertEqual(cm.exception.code, 400, body)
+            self.assertEqual(self.proxy.mode, "pass")
+        snap = self.ctl("throttle", kbps=27000)
+        self.assertEqual((snap["mode"], snap["kbps"]), ("throttle", 27000))
+        self.assertEqual(self.ctl()["kbps"], 27000)
+        self.assertIsNone(self.ctl("pass")["kbps"])
+        self.assertIsNone(self.ctl("blackhole")["kbps"])
+
+    def test_blackhole_holds_a_throttled_stream_and_pass_resumes_it(self):
+        self.ctl("throttle", kbps=8000)
+        s = self.connect(timeout=15)
+        s.sendall(b"GET 400000\n")
+        got = len(s.recv(1 << 20))
+        self.ctl("blackhole")
+        s.settimeout(0.6)
+        try:
+            while True:  # what was already in flight, until the silence
+                d = s.recv(1 << 20)
+                self.assertTrue(d, "a blackhole must not FIN")
+                got += len(d)
+        except socket.timeout:
+            pass
+        self.assertLess(got, 400_000, "the stream was held, not finished")
+        self.ctl("pass")
+        s.settimeout(10)
+        while got < 400_000:
+            got += len(s.recv(1 << 20))
+        self.assertEqual(got, 400_000)
+
+    def test_the_log_names_the_rate(self):
+        self.ctl("throttle", kbps=27000)
+        self.ctl("pass")
+        self.assertTrue(any("mode pass -> throttle:27000 " in l for l in self.lines), self.lines)
+        self.assertTrue(any("mode throttle:27000 -> pass " in l for l in self.lines), self.lines)
 
 
 class UpstreamRetry(ProxyCase):
@@ -223,6 +442,22 @@ class Control(ProxyCase):
         self.assertEqual(self.proxy.mode, "pass")
         self.assertEqual([l.split("mode ")[1].split(" (")[0] for l in self.lines if " mode " in l],
                          ["pass -> blackhole", "blackhole -> pass"])
+
+    def test_throttle_in_a_schedule_and_as_a_mode_spec(self):
+        self.assertEqual(np.parse_schedule("pass@60, throttle:27000@5"),
+                         [(5.0, "throttle:27000"), (60.0, "pass")])
+        self.assertEqual(np.parse_mode_spec("throttle:27000"), ("throttle", 27000))
+        self.assertEqual(np.parse_mode_spec("blackhole"), ("blackhole", None))
+        for bad in ("throttle", "throttle:", "throttle:0", "throttle:-1", "throttle:x", "throttle:nan",
+                    "throttle:inf", "pass:3", "nope:3"):
+            with self.assertRaises(ValueError, msg=bad):
+                np.parse_mode_spec(bad)
+            with self.assertRaises(ValueError, msg=bad):
+                np.parse_schedule(bad + "@3")
+        np.run_schedule(self.proxy, [(0.0, "throttle:5000"), (0.05, "pass")])
+        self.assertEqual(self.proxy.mode, "pass")
+        self.assertEqual([l.split("mode ")[1].split(" (")[0] for l in self.lines if " mode " in l],
+                         ["pass -> throttle:5000", "throttle:5000 -> pass"])
 
 
 class MockAdvertisesTheProxy(unittest.TestCase):

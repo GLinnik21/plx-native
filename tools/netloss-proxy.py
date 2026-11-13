@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A fault-injecting TCP proxy that makes a REAL-LOOKING network loss between the TV and `tests/mock_pms.py`.
+"""A fault-injecting TCP proxy that makes a REAL-LOOKING network loss, or a too-slow link, between the TV and `tests/mock_pms.py`.
 
 Why it exists. Silencing or restarting the mock is not a loss of the link: a stopped process closes
 its sockets (FIN/RST) or answers instantly, and a SIGSTOPped one still completes TCP handshakes in
@@ -16,9 +16,28 @@ requests) crosses it. Plex.tv sign-in still goes straight to the mock through th
     curl -s -X POST -d '{"mode":"blackhole"}' http://127.0.0.1:32498/_proxy/mode      # the loss
     curl -s -X POST -d '{"mode":"pass"}'      http://127.0.0.1:32498/_proxy/mode      # restore
 
-MODES (`POST /_proxy/mode {"mode": ...}`, `GET /_proxy/mode` reads it back with the counters):
+A too-slow link instead of a dead one: add `--mode throttle:27000` to the proxy command (a 27 Mbps link
+from the start), or flip to it at any time with
+    curl -s -X POST -d '{"mode":"throttle","kbps":27000}' http://127.0.0.1:32498/_proxy/mode
+The TV reaches the mock through the proxy at `<HOST-LAN-IP>:32500` (the `--listen` and `--advertise-port`
+port, not the mock's own 32499), so its PMS traffic, a stream included, is limited to that rate.
+
+MODES (`POST /_proxy/mode {"mode": ...}`, `GET /_proxy/mode` reads it back with `kbps` and the counters):
 
     pass       forward both directions.
+    throttle   forward both directions through a LINK RATE: `{"mode":"throttle","kbps":N}` (N kilobits
+               per second, 1 kbps = 1000 bit/s; the schedule and `--mode` spell it `throttle:N`). Each
+               direction has its own token bucket of N kbps shared by EVERY connection, so the SSE feed
+               and a bulk download compete for the one link as they do on a real one, rather than each
+               getting N. A pump reads only as many bytes as its bucket grants (and only once its socket is
+               readable, so an idle connection holds no tokens), which keeps TCP back-pressure real: the
+               proxy never reads ahead of the link into an unbounded buffer, and the peers' own windows
+               fill exactly as they would behind a slow link. Tokens accrue from the monotonic clock and
+               are granted in 10 ms quanta; the burst is one CHUNK (64 KiB), or two 10 ms ticks of the
+               link where that is more (above ~52 Mbps a CHUNK is under 10 ms). A new rate applies to the
+               live connections at once; `pass` lifts the limit from them, and `blackhole`, `reset` and
+               `refuse` take over from it as from `pass`. What is measured is the rate the proxy
+               forwards, not the latency of a real link.
     blackhole  the closest userland analogue to a dead link: existing connections stay open, but the
                proxy stops reading and forwarding in BOTH directions (so the kernel buffers fill and
                TCP back-pressures the peers, as on a link that drops everything), and a new
@@ -35,19 +54,22 @@ MODES (`POST /_proxy/mode {"mode": ...}`, `GET /_proxy/mode` reads it back with 
 LOGGING. Every mode change and every connection (open, close with the byte counts and the reason) is
 logged to stdout with a wall-clock timestamp, flushed per line. The control endpoint binds loopback
 only. `--schedule MODE@SECONDS,...` flips modes on a timer from the start of the run (for one-lease
-runs); the log shows each flip.
+runs), e.g. `throttle:27000@10,blackhole@60,pass@90`; the log shows each flip.
 """
 import argparse
 import http.server
 import json
+import math
+import select
 import socket
 import struct
 import sys
 import threading
 import time
 
-MODES = ("pass", "blackhole", "reset", "refuse")
+MODES = ("pass", "blackhole", "reset", "refuse", "throttle")
 CHUNK = 65536
+TICK = 0.01  # throttle: the quantum a grant waits for, and the unit of the burst floor
 UPSTREAM_TRIES = 6
 POLL = 0.25  # how often a blocked pump looks at the mode / its connection's fate
 
@@ -76,6 +98,101 @@ def rst_close(sock):
         pass
 
 
+def parse_kbps(value):
+    """A throttle rate in kilobits per second: a finite number above 0 (not a bool, not a string)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("throttle needs a numeric kbps")
+    value = float(value)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("throttle kbps must be a finite number above 0")
+    return int(value) if value == int(value) else value
+
+
+def parse_mode_spec(text):
+    """`MODE` or `throttle:KBPS` (the `--mode` and `--schedule` spelling) to `(mode, kbps or None)`."""
+    name, sep, rate = text.partition(":")
+    if name not in MODES:
+        raise ValueError(f"mode must be one of {', '.join(MODES)}")
+    if name != "throttle":
+        if sep:
+            raise ValueError(f"{name} takes no rate")
+        return name, None
+    if not sep:
+        raise ValueError("throttle needs a rate: throttle:KBPS")
+    try:
+        return name, parse_kbps(float(rate))
+    except ValueError as e:
+        raise ValueError(f"throttle rate {rate!r}: {e}") from None
+
+
+class Bucket:
+    """One direction of the throttled link: a token bucket (tokens are bytes) shared by the pumps of
+    every connection that goes that way, so the connections split one link rather than each having it.
+
+    Tokens accrue from the monotonic clock whenever the bucket is touched, so a sleep that overshoots
+    catches up instead of losing time (no ticker thread, and the 10 ms granularity of `sleep` does not
+    bend the rate). The burst is one CHUNK, or two TICKs of the link where that is more: at 100 Mbps a
+    CHUNK is 5 ms, which a 10 ms cadence could not otherwise sustain. `take` grants nothing until one
+    TICK of tokens (at most a CHUNK) exists, so a recv is never a handful of bytes, and never grants
+    more than asked; the caller recvs exactly that many bytes, which is what keeps TCP back-pressure
+    real (the proxy never reads ahead of the link). A fresh bucket starts full: a link that has just
+    been limited is idle. `clock` and `sleep` are injectable so the arithmetic is unit-tested without
+    real time."""
+
+    def __init__(self, clock=time.monotonic, sleep=time.sleep):
+        self._clock, self._sleep = clock, sleep
+        self._lock = threading.Lock()
+        self._rate = None  # bytes per second; None while no throttle is configured
+        self._cap = CHUNK
+        self._tokens = 0.0
+        self._at = 0.0
+
+    def configure(self, rate):
+        """(Re)limit the link to `rate` bytes per second; tokens already banked are kept."""
+        with self._lock:
+            now = self._clock()
+            fresh = self._rate is None
+            if not fresh:
+                self._refill(now)
+            self._rate = float(rate)
+            self._cap = max(CHUNK, math.ceil(2 * TICK * self._rate))
+            self._tokens = self._cap if fresh else min(self._tokens, self._cap)
+            self._at = now
+
+    def clear(self):
+        with self._lock:
+            self._rate = None
+
+    def _refill(self, now):
+        self._tokens = min(self._cap, self._tokens + (now - self._at) * self._rate)
+        self._at = now
+
+    def take(self, want, abort):
+        """Block until a quantum of tokens exists, then take and return `n` of them, 1 <= n <= want.
+        Returns 0 as soon as `abort()` is true or the bucket is cleared (the caller re-reads the mode)."""
+        while True:
+            if abort():
+                return 0
+            with self._lock:
+                if self._rate is None:
+                    return 0
+                self._refill(self._clock())
+                need = min(want, max(1, int(self._rate * TICK)))
+                if self._tokens >= need:
+                    n = min(want, int(self._tokens))
+                    self._tokens -= n
+                    return n
+                wait = (need - self._tokens) / self._rate
+            self._sleep(min(max(wait, 0.001), POLL))
+
+    def give(self, n):
+        """Return the unused part of a grant (a short recv, an EOF, a timeout)."""
+        if n > 0:
+            with self._lock:
+                if self._rate is not None:
+                    self._tokens = min(self._cap, self._tokens + n)
+
+
 class Conn:
     def __init__(self, cid, client, peer):
         self.cid, self.client, self.peer = cid, client, peer
@@ -95,6 +212,8 @@ class NetlossProxy:
         self.control_addr = control
         self._log = log or (lambda line: print(line, flush=True))
         self.mode = "pass"
+        self.kbps = None  # the throttle's rate while mode == "throttle", else None
+        self._buckets = {"up": Bucket(), "down": Bucket()}  # one link per direction, shared by all connections
         self.cond = threading.Condition()
         self.conns = {}
         self.next_id = 1
@@ -150,13 +269,25 @@ class NetlossProxy:
             self._kill(c, "proxy stopped", rst=False)
 
     # ---- mode ----
-    def set_mode(self, mode):
+    def _label(self):
+        return f"throttle:{self.kbps}" if self.mode == "throttle" else self.mode
+
+    def set_mode(self, mode, kbps=None):
+        """Switch the mode. `kbps` is the throttle's rate and is required by it, ignored by the rest."""
         if mode not in MODES:
             raise ValueError(f"mode must be one of {', '.join(MODES)}")
+        kbps = parse_kbps(kbps) if mode == "throttle" else None
         with self.cond:
-            old, self.mode = self.mode, mode
+            old = self._label()
+            self.mode, self.kbps = mode, kbps
+            for bucket in self._buckets.values():
+                if kbps is None:
+                    bucket.clear()
+                else:
+                    bucket.configure(kbps * 125.0)  # 1 kbps = 1000 bit/s = 125 B/s
             self.cond.notify_all()
-        self.log(f"mode {old} -> {mode} (connections={len(self.conns)})")
+            new = self._label()
+        self.log(f"mode {old} -> {new} (connections={len(self.conns)})")
         if mode == "refuse":
             self._close_listener()
         elif self._listener is None:
@@ -168,8 +299,8 @@ class NetlossProxy:
 
     def snapshot(self):
         with self.cond:
-            mode = self.mode
-        return {"mode": mode, "connections": len(self.conns), **self.stats,
+            mode, kbps = self.mode, self.kbps
+        return {"mode": mode, "kbps": kbps, "connections": len(self.conns), **self.stats,
                 "listen": f"{self.listen_addr[0]}:{self.listen_addr[1]}"}
 
     def _gate(self, conn):
@@ -178,6 +309,10 @@ class NetlossProxy:
             while self.mode == "blackhole" and not conn.dead and not self._stop.is_set():
                 self.cond.wait(POLL)
         return not conn.dead and not self._stop.is_set()
+
+    def _left_throttle(self, conn):
+        """A token wait is over: the connection or the proxy ended, or the mode is no longer throttle."""
+        return conn.dead or self._stop.is_set() or self.mode != "throttle"
 
     # ---- accepting ----
     def _accept_loop(self, lsock):
@@ -229,14 +364,32 @@ class NetlossProxy:
         self._pump(conn, up, conn.client, "down")
 
     def _pump(self, conn, src, dst, way):
+        bucket = self._buckets[way]
         try:
             while True:
                 if not self._gate(conn):
                     break
+                grant = 0
+                if self.mode == "throttle":
+                    # Wait for data BEFORE taking tokens: a grant held across an idle recv would drain
+                    # the link for every other connection (the feed sits silent for 25 s at a time).
+                    try:
+                        if not select.select([src], [], [], POLL)[0]:
+                            continue
+                    except ValueError:  # the socket was closed under us: select refuses fd -1
+                        raise OSError("connection ended") from None
+                    grant = bucket.take(CHUNK, lambda: self._left_throttle(conn))
+                    if not grant:  # the mode changed or the connection ended while waiting: look again
+                        continue
                 try:
-                    data = src.recv(CHUNK)
+                    data = src.recv(grant or CHUNK)
                 except socket.timeout:
+                    bucket.give(grant)
                     continue
+                except OSError:
+                    bucket.give(grant)
+                    raise
+                bucket.give(grant - len(data))  # the unused part of the grant; a no-op when not throttled
                 if not data:
                     try:
                         dst.shutdown(socket.SHUT_WR)
@@ -319,8 +472,8 @@ class NetlossProxy:
                     return self._send(404, {"error": "not found"})
                 try:
                     n = int(self.headers.get("Content-Length") or 0)
-                    mode = json.loads(self.rfile.read(n) or b"{}").get("mode")
-                    proxy.set_mode(mode)
+                    body = json.loads(self.rfile.read(n) or b"{}")
+                    proxy.set_mode(body.get("mode"), body.get("kbps"))
                 except (ValueError, AttributeError, TypeError) as e:
                     return self._send(400, {"error": str(e)})
                 self._send(200, proxy.snapshot())
@@ -329,22 +482,28 @@ class NetlossProxy:
 
 
 def parse_schedule(text):
+    """`MODE@SECONDS,...` (MODE as `parse_mode_spec` reads it) to `[(seconds, spec)]`, earliest first."""
     out = []
     for item in filter(None, (p.strip() for p in text.split(","))):
-        mode, sep, secs = item.partition("@")
-        if not sep or mode not in MODES:
-            raise ValueError(f"--schedule item {item!r}: want MODE@SECONDS with MODE one of {', '.join(MODES)}")
-        out.append((float(secs), mode))
+        spec, sep, secs = item.partition("@")
+        try:
+            if not sep:
+                raise ValueError("no @SECONDS")
+            parse_mode_spec(spec)
+            out.append((float(secs), spec))
+        except ValueError as e:
+            raise ValueError(f"--schedule item {item!r}: want MODE@SECONDS, MODE one of "
+                             f"{', '.join(MODES)} (throttle as throttle:KBPS): {e}") from None
     return sorted(out)
 
 
 def run_schedule(proxy, schedule):
     t0 = time.monotonic()
-    for at, mode in schedule:
+    for at, spec in schedule:
         delay = at - (time.monotonic() - t0)
         if delay > 0 and proxy._stop.wait(delay):
             return
-        proxy.set_mode(mode)
+        proxy.set_mode(*parse_mode_spec(spec))
 
 
 def main(argv=None):
@@ -355,19 +514,23 @@ def main(argv=None):
                          "--advertise-port must name this port")
     ap.add_argument("--control-port", type=int, default=0,
                     help="loopback port of POST /_proxy/mode (default: kernel-picked, printed)")
-    ap.add_argument("--mode", choices=MODES, default="pass", help="initial mode")
+    ap.add_argument("--mode", default="pass", metavar="MODE|throttle:KBPS",
+                    help=f"initial mode, one of {', '.join(MODES)}; throttle takes its rate in kilobits "
+                         "per second, shared by every connection, e.g. throttle:27000")
     ap.add_argument("--schedule", default="", metavar="MODE@SECONDS,...",
-                    help="flip modes on a timer from start, e.g. blackhole@10,pass@70")
+                    help="flip modes on a timer from start, e.g. blackhole@10,pass@70 or "
+                         "throttle:27000@10,pass@70")
     a = ap.parse_args(argv)
     try:
+        initial = parse_mode_spec(a.mode)
         schedule = parse_schedule(a.schedule)
         proxy = NetlossProxy(parse_hostport(a.upstream, "127.0.0.1"),
                              parse_hostport(a.listen, "0.0.0.0"), ("127.0.0.1", a.control_port))
     except ValueError as e:
         ap.error(str(e))
     proxy.start()
-    if a.mode != "pass":
-        proxy.set_mode(a.mode)
+    if initial[0] != "pass":
+        proxy.set_mode(*initial)
     if schedule:
         threading.Thread(target=run_schedule, args=(proxy, schedule), daemon=True).start()
     try:
