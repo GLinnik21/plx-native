@@ -99,21 +99,21 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-13T12:45:15Z",
+ "generated": "2026-11-13T12:47:37Z",
  "metrics": [
   {
-   "change30_pct": 44.2,
-   "change7_pct": 32.5,
+   "change30_pct": 40.2,
+   "change7_pct": 28.7,
    "d30": 22.3,
-   "delta30": 9.9,
-   "delta7": 7.9,
+   "delta30": 9.0,
+   "delta7": 7.0,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 6,
+   "n_now": 7,
    "n_prev": 6,
-   "now": 32.2,
+   "now": 31.3,
    "prev7": 24.3,
    "shown": true,
    "state": "worse",
@@ -186,18 +186,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 52.7,
-   "change7_pct": 24.7,
+   "change30_pct": 52.3,
+   "change7_pct": 24.4,
    "d30": 41.5,
-   "delta30": 21.9,
-   "delta7": 12.5,
+   "delta30": 21.7,
+   "delta7": 12.4,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
-   "n_now": 6,
+   "n_now": 7,
    "n_prev": 6,
-   "now": 63.4,
+   "now": 63.2,
    "prev7": 50.8,
    "shown": true,
    "state": "flat",
@@ -207,18 +207,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 98.0,
-   "change7_pct": -1.7,
+   "change30_pct": 96.6,
+   "change7_pct": -2.4,
    "d30": 46.5,
-   "delta30": 45.6,
-   "delta7": -1.6,
+   "delta30": 44.9,
+   "delta7": -2.3,
    "group": "local",
    "id": "bench.ui",
    "kind": "local",
    "label": "Rebuild after editing plx_ui",
-   "n_now": 6,
+   "n_now": 7,
    "n_prev": 6,
-   "now": 92.1,
+   "now": 91.4,
    "prev7": 93.7,
    "shown": true,
    "state": "flat",
@@ -228,18 +228,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 92.7,
-   "change7_pct": -0.3,
+   "change30_pct": 91.5,
+   "change7_pct": -1.0,
    "d30": 108.7,
-   "delta30": 100.8,
-   "delta7": -0.7,
+   "delta30": 99.4,
+   "delta7": -2.1,
    "group": "local",
    "id": "bench.leaf",
    "kind": "local",
    "label": "Rebuild after editing plx_base",
-   "n_now": 6,
+   "n_now": 7,
    "n_prev": 6,
-   "now": 209.5,
+   "now": 208.1,
    "prev7": 210.3,
    "shown": true,
    "state": "flat",
@@ -615,7 +615,7 @@
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 6,
+   "n_now": 7,
    "n_prev": 6,
    "now": 0.8,
    "prev7": 0.6,
@@ -629,7 +629,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 32.5,
+   "change_pct": 28.7,
    "commits": [
     {
      "pr": 1349,
@@ -685,9 +685,9 @@
    "from": 24.3,
    "id": "bench.app",
    "label": "Rebuild after editing the app crate",
-   "since": "2026-11-12",
+   "since": "2026-11-13",
    "threshold_pct": 25.0,
-   "to": 32.2
+   "to": 31.3
   },
   {
    "change_pct": 24.6,
@@ -789,7 +789,7 @@
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 209.5
+   "now": 208.1
   },
   {
    "group": "local",
@@ -801,19 +801,19 @@
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 92.1
+   "now": 91.4
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 63.4
+   "now": 63.2
   },
   {
    "group": "local",
    "id": "bench.app",
    "label": "Rebuild after editing the app crate",
-   "now": 32.2
+   "now": 31.3
   }
  ],
  "thresholds": {
