@@ -15,6 +15,7 @@
     not(any(feature = "play-uri", feature = "play-feed"))))]
 compile_error!("native playback requires play-uri or play-feed");
 mod api; // command API: a FIFO-only surface for an agent (an LLM over SSH, a test harness) — see the module doc
+mod api_sock; // the typed control surface: a UDS socket beside the FIFO — typed requests, structured outcomes and errors — see the module doc
 mod app; // run_application — the Rust app core / event loop (the entry inverted from main.c; port.rs's `plex_run` hands over to it)
 mod capture; // dev live UI capture stream: own-GLES-frame grab → MPEG1/TS or JPEG → TCP (UI plane only)
 mod coldstart; // retires old last-page bookmarks; authenticated cold boots now stay on Home

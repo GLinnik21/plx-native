@@ -79,11 +79,20 @@ use serde_json::json;
 
 use plx_base::eventlog::log;
 
-/// Command tokens posted for the frame loop, drained once per frame by `run::ingest` and
-/// fed to `ingress_token` — the single input path. Fed by the roster auto-default (in
-/// [`take_pending`]) and the play-staging worker; the FIFO's own tokens enter the same
-/// path via `remote::drain_fifo`.
-static PENDING: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+/// A command on the frame loop's single input path: a free-form DEV token (the FIFO, the
+/// lab channel, replay — `ingress_token` performs it unchanged), or a TYPED request from
+/// the UDS control socket ([`crate::api_sock`]) carrying the client's request id — whose
+/// response is written back over the socket by the server thread, not to a log line.
+pub(crate) enum IngestToken {
+    Free(String),
+    Api(crate::api_sock::Request),
+}
+/// Commands the frame loop has not yet performed: `run::ingest` calls [`take_pending`]
+/// once per frame and feeds every entry to its dispatcher — the single input path both
+/// token families share. Fed by the roster auto-default (in [`take_pending`]), the
+/// play-staging worker, and the UDS server thread (`crate::api_sock`); the FIFO's own
+/// tokens enter the same path via `remote::drain_fifo`.
+static PENDING: Mutex<VecDeque<IngestToken>> = Mutex::new(VecDeque::new());
 /// Staged plays: the rk a token asked for → the `PmsMovie` fetched from PMS on a worker
 /// thread, WITH THE GENERATION OF THE PLAY REQUEST IT BELONGS TO, consumed (removed) by
 /// [`handle_play_staged`] on the frame thread. A play whose staging failed is never
@@ -119,7 +128,7 @@ pub(crate) fn init() {
 /// The debug-flavour roster default is posted HERE, on the command path — not from
 /// [`publish`], the snapshot's construction, which stays a pure read: profile selection
 /// is an explicit commit, not a side effect of the state file's publication.
-pub(crate) unsafe fn take_pending(app: &crate::app::App) -> Vec<String> {
+pub(crate) unsafe fn take_pending(app: &crate::app::App) -> Vec<IngestToken> {
     // The debug-flavour roster default (the user's rule): the "who's watching" screen is
     // answered with the FIRST user — this household's admin — exactly once per app launch,
     // so a debug install never sits on the picker. The flow's own phase change (Profiles →
@@ -147,15 +156,27 @@ pub(crate) unsafe fn take_pending(app: &crate::app::App) -> Vec<String> {
     guard.drain(..).collect()
 }
 
-/// Post one token to the frame loop. `tok` is bounded (an `api:` verb spelling, never a
-/// body).
+/// Post one DEV token to the frame loop. `tok` is bounded (an `api:` verb spelling,
+/// never a body).
 fn push(tok: String) {
     let mut guard = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     if guard.len() >= 64 {
         log("api: command queue full, dropping");
         return;
     }
-    guard.push_back(tok);
+    guard.push_back(IngestToken::Free(tok));
+}
+
+/// The UDS server thread's half: post one TYPED request for the frame loop's drain.
+/// Bounded exactly like [`push`] — a flooded socket cannot stall the frame thread; the
+/// overflow answers with the structured `queue_full` error (the caller reports it).
+pub(crate) fn push_req(req: crate::api_sock::Request) -> bool {
+    let mut guard = PENDING.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.len() >= 64 {
+        return false;
+    }
+    guard.push_back(IngestToken::Api(req));
+    true
 }
 
 /// The `state` FIFO token (dispatched by `events::dispatch_remote_token`): write the last
@@ -182,7 +203,9 @@ pub(crate) fn state_file() {
 /// re-writes the token to retry. The client is the NON-PANICKING accessor — before
 /// sign-in no server is selected yet, and a worker must not take the app down with a
 /// panic.
-fn stage_play(rk: String, gen: u64) {
+/// Returns whether the worker was accepted (a refused spawn is the only failure the
+/// CALLER can see here — the fetch's own failures are logged no-posts by the worker).
+fn stage_play(rk: String, gen: u64) -> bool {
     let refused_msg = format!("api: play rk {rk}: the worker was refused — retry the token");
     let worker = plx_base::task::spawn("api-play-stage", move || {
         let Some(client) = plx_plex::plex::client_opt() else {
@@ -217,6 +240,9 @@ fn stage_play(rk: String, gen: u64) {
     });
     if worker.is_none() {
         log(&refused_msg);
+        false
+    } else {
+        true
     }
 }
 
@@ -258,6 +284,156 @@ pub(crate) unsafe fn handle(app: &mut crate::app::App, fr: &mut crate::app::run:
     }
 }
 
+/// The frame thread's half of a TYPED UDS request: the same handlers the FIFO's tokens
+/// reach (the typed surface is a CONVERSATION over the command set, not a second command
+/// set), and the response over the socket instead of a log line — the outcome in the
+/// action's own vocabulary, or a structured error naming the reason.
+pub(crate) unsafe fn execute_request(
+    app: &mut crate::app::App,
+    fr: &mut crate::app::run::Frame,
+    req: crate::api_sock::Request,
+) {
+    use crate::api_sock::{ApiError, Outcome, Reply, Verb};
+    let id = req.id;
+    let st = plx_media::player::state(&app.player.session);
+    let no_engine = Reply::err(ApiError::NoEngine { state: state_str(st) });
+    match req.verb {
+        Verb::Play { rk } => {
+            let accepted = handle_play(app, fr, &rk);
+            crate::api_sock::reply(
+                id,
+                if accepted {
+                    Reply::ok(Outcome::PlayStaged { rk })
+                } else {
+                    Reply::err(ApiError::WorkerRefused)
+                },
+            );
+        }
+        Verb::Seek { ms } => {
+            // The seek target is a `i64` of NANOSECONDS: a ms beyond ~292 years is not a
+            // seek (and a blind `as i64` would wrap negative — the FIFO's own guard
+            // rejects negatives for exactly this reason).
+            let ns = (ms as i64).checked_mul(1_000_000);
+            if is_seated(st) {
+                if let Some(ns) = ns {
+                    plx_media::player::request_seek(
+                        &mut app.player.session,
+                        &mut app.adapters.player,
+                        ns,
+                    );
+                    crate::api_sock::reply(id, Reply::ok(Outcome::SeekCommitted { ms }));
+                } else {
+                    crate::api_sock::reply(id, Reply::err(ApiError::Internal {
+                        reason: "the seek target overflows nanoseconds".to_string(),
+                    }));
+                }
+            } else {
+                crate::api_sock::reply(id, no_engine);
+            }
+        }
+        Verb::Audio { sid } => {
+            let ok = handle_track(app, fr, &sid.to_string(), true);
+            crate::api_sock::reply(
+                id,
+                if ok {
+                    Reply::ok(Outcome::TrackCommitted { track: "audio", sid })
+                } else {
+                    Reply::err(ApiError::NoTrack { sid })
+                },
+            );
+        }
+        Verb::Sub { sid } => {
+            let ok = handle_track(app, fr, &sid.to_string(), false);
+            crate::api_sock::reply(
+                id,
+                if ok {
+                    Reply::ok(Outcome::TrackCommitted { track: "sub", sid })
+                } else {
+                    Reply::err(ApiError::NoTrack { sid })
+                },
+            );
+        }
+        Verb::Quality { rung } => {
+            let ok = handle_quality(app, fr, &rung);
+            crate::api_sock::reply(
+                id,
+                if ok {
+                    Reply::ok(Outcome::QualityCommitted { rung })
+                } else {
+                    Reply::err(ApiError::UnknownRung { rung })
+                },
+            );
+        }
+        Verb::Profile { index } => {
+            commit_profile(app, index, None);
+            crate::api_sock::reply(id, Reply::ok(Outcome::ProfileCommitted { index }));
+        }
+        Verb::Pause => {
+            let ok = handle_transport(app, fr, false);
+            crate::api_sock::reply(
+                id,
+                if ok { Reply::ok(Outcome::Paused) } else { no_engine },
+            );
+        }
+        Verb::Resume => {
+            let ok = handle_transport(app, fr, true);
+            crate::api_sock::reply(
+                id,
+                if ok { Reply::ok(Outcome::Resumed) } else { no_engine },
+            );
+        }
+        Verb::Stop => {
+            // Idempotent: an idle session has nothing to leave, and "stopped" is still
+            // the true answer to "is it playing".
+            handle_stop(app, fr);
+            crate::api_sock::reply(id, Reply::ok(Outcome::Stopped));
+        }
+        Verb::State => {
+            let snap = SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let r = match snap
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            {
+                Some(snapshot) => Reply::ok(Outcome::State { snapshot }),
+                None => Reply::err(ApiError::NoSnapshot),
+            };
+            crate::api_sock::reply(id, r);
+        }
+        Verb::Shot => {
+            crate::shot::request();
+            crate::api_sock::reply(id, Reply::ok(Outcome::ShotRequested));
+        }
+    }
+}
+
+/// The playback state's snapshot vocabulary: the same strings the state file's `state`
+/// field and the structured `no_engine` error answer share.
+fn state_str(st: plx_media::player::PlaybackState) -> &'static str {
+    match st {
+        plx_media::player::PlaybackState::Idle => "idle",
+        plx_media::player::PlaybackState::Resolving => "resolving",
+        plx_media::player::PlaybackState::Connecting => "connecting",
+        plx_media::player::PlaybackState::Buffering => "buffering",
+        plx_media::player::PlaybackState::Seeking => "seeking",
+        plx_media::player::PlaybackState::Playing => "playing",
+        plx_media::player::PlaybackState::Paused => "paused",
+        plx_media::player::PlaybackState::Error => "error",
+    }
+}
+
+/// The seated-engine question the transport verbs (and the typed seek) ask before they
+/// touch the engine: `sink().pause` and `request_seek` are Starfish calls, and a session
+/// without an engine (idle, resolving, connecting, errored) has nothing for them to
+/// reach.
+fn is_seated(st: plx_media::player::PlaybackState) -> bool {
+    matches!(
+        st,
+        plx_media::player::PlaybackState::Buffering
+            | plx_media::player::PlaybackState::Paused
+            | plx_media::player::PlaybackState::Seeking
+            | plx_media::player::PlaybackState::Playing
+    )
+}
+
 /// A FRESH `api:play` request: bump the play-intent generation (a stop, or a later play,
 /// bumps again and supersedes this one) and stage from PMS on a worker — the re-posted
 /// `api:playstaged` token performs the ritual on a later drain, only if this generation
@@ -274,8 +450,7 @@ unsafe fn handle_play(
         intent.0
     };
     log(&format!("api: play rk {rk}: nothing staged yet — resolving from PMS (worker)"));
-    stage_play(rk.to_string(), gen);
-    false
+    stage_play(rk.to_string(), gen)
 }
 
 /// The STAGED half of `api:play` — the headless play ritual, the same three calls the dev
@@ -494,6 +669,15 @@ unsafe fn handle_profile(
         return false;
     };
     let pin = (pin != "-").then(|| pin.to_string());
+    commit_profile(app, index, pin);
+    true
+}
+
+/// The profile commit the FIFO's `api:profile` token and the typed `profile` request both
+/// reach: the session machine's own command (the same commit the roster's rows land in).
+/// The pick moves the flow to Switching; its outcome is visible in the state file's
+/// `auth` section (phase, error).
+unsafe fn commit_profile(app: &mut crate::app::App, index: usize, pin: Option<String>) {
     log(&format!(
         "api: profile: select index {index} (pin {})",
         if pin.is_some() { "given" } else { "none" }
@@ -502,7 +686,6 @@ unsafe fn handle_profile(
         &mut app.pages,
         plx_session::auth::SessionCmd::SelectProfile { index, pin },
     );
-    true
 }
 
 /// Republish the snapshot, called from `run::report` once per frame. The string form is
@@ -511,16 +694,7 @@ unsafe fn handle_profile(
 pub(crate) unsafe fn publish(app: &mut crate::app::App, fr: &mut crate::app::run::Frame) {
     let ps = &app.player.session;
     let st = plx_media::player::state(ps);
-    let state_name = match st {
-        plx_media::player::PlaybackState::Idle => "idle",
-        plx_media::player::PlaybackState::Resolving => "resolving",
-        plx_media::player::PlaybackState::Connecting => "connecting",
-        plx_media::player::PlaybackState::Buffering => "buffering",
-        plx_media::player::PlaybackState::Seeking => "seeking",
-        plx_media::player::PlaybackState::Playing => "playing",
-        plx_media::player::PlaybackState::Paused => "paused",
-        plx_media::player::PlaybackState::Error => "error",
-    };
+    let state_name = state_str(st);
     let views = app.bridge.views();
     // This frame's auth section: the sign-in flow's phase, the offered "who's watching"
     // roster (title, PIN flag, admin flag) and the flow's error line — the state file's

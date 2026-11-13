@@ -1834,6 +1834,7 @@ pub(crate) unsafe fn construct(
         crate::capture::init(); // dev live UI capture stream
     }
     crate::api::init(); // command API — FIFO-only surface; the door exists where the devtrig FIFO does (see api.rs's doc)
+    crate::api_sock::start(); // the typed control surface — the UDS socket beside the FIFO (see api_sock.rs's doc)
 
     // Any dev trigger under /tmp marks the boot as automated (the harness token override,
     // autoplay/detail captures, playback-path knobs): those runs need a deterministic Home,
