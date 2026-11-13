@@ -13,10 +13,14 @@
     "platform/build.rs": "58a7a2f8d8851b995648f40fb0a179c3ae743fb0e4e92dd3e19b93f9b86940c8",
     "platform/build_support/catalog.rs": "b02769b2de34bf6cf53a60d05bc9fc3080e6012778e30b400b13f772b43f7083",
     "build_support/install_identities.rs": "8039b85c09d27c1f9a80aded1245dd4a0c7b7ac3b633e28cb9b7a0f6d62ed621",
-    "machine/src/lib.rs": "105afdbb05fb762e6752cef260b6d928b1d828993350aaa71651f96cee0c3188",
+    "machine/src/lib.rs": [
+      "105afdbb05fb762e6752cef260b6d928b1d828993350aaa71651f96cee0c3188",
+      "c35d39ae620b5607e7035222ab1023799adaf091d6a4f737a847dd70b26c1b36"
+    ],
     "machine/src/machine.rs": [
       "571415d64a9885248f852b402153feedd4660acbe03606e4796c59659726049f",
-      "03a6e18f576dcbaff66c3d7405923b155302bfb2996bb373dac115ece055a5bf"
+      "03a6e18f576dcbaff66c3d7405923b155302bfb2996bb373dac115ece055a5bf",
+      "d08b44dbff241962286eb7e1f85897073ba9f2f712a2ba935837f901635369a8"
     ]
   },
   "text_hashing": "sha256-utf8-bytes-crlf-to-lf-local-root-version-v1",
@@ -69,7 +73,8 @@
     "discover preserves validated LanguageSpec; compile sorts by row",
     "languages_rs emits only unit variants; Pseudo cfg_attr only allows dead_code",
     "string slots use Rust Debug escaping; numeric slots are integers",
-    "install_identities writes only install_identities.rs, never languages.rs"
+    "install_identities writes only install_identities.rs, never languages.rs",
+    "PR1366: PressRead identity/live/active and owned-present sibling/test modules; canonical machine child and doc-only u32 newtype producer unchanged"
   ],
   "assumptions": [
     "Offline source-backed unit-enum proof; certificate changes require source review.",

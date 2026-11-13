@@ -173,8 +173,8 @@ const RESOLUTION_SHAPE: &str = "ProductResolutionV1{fo:Option<(entry:u32,elem:u3
 /// invalidated old recordings. AppFrameV3 additionally bound the complete typed initial-input
 /// digest; AppFrameV4 adds the physical Consent owner's current decision. The controlled Home
 /// boot consumer restores both before work. AppFrameV5 removes the shadow App press prefix:
-/// the dispatcher tree already includes the single real input press. V4 recordings must be
-/// rerecorded rather than being silently graded against the changed hash.
+/// the dispatcher tree already includes the single real input press. A bounded key-only V4
+/// profile is graded with frozen idle-prefix bytes; legacy pointer/direct-input profiles are refused.
 ///
 /// **`tree:u64` joined it in phase 5b** and the bump was deliberate: the Settings family's state
 /// left the legacy globals the focus fingerprint reads and became instances on the container tree,
@@ -300,20 +300,42 @@ fn session_app_fingerprint_probe_only() {
 /// `session` and `consent` are their owners' cached, side-effect-free subhashes, obtained by
 /// the common run tail. Only those u64 values are serialized; this neither adds raw secrets nor
 /// claims all-domain state coverage.
-pub(crate) fn state_hash(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FrameHashProfile { OwnedV5, KeyOnlyV4 }
 
-    route: &str,
-    overlay: &str,
-    focus: &str,
-    tree: u64,
-    session: u64,
-    consent: u64,
-    initial: u64,
-) -> u64 {
+/// Only owned key input can prove the retired app press stayed at its boot-time rest.
+/// Pointer/direct-token profiles are incompatible and are rejected before startup.
+fn recording_hash_profile(recording: &Recording) -> Result<FrameHashProfile, &'static str> {
+    if recording.header.state_fp == state_fp() { return Ok(FrameHashProfile::OwnedV5); }
+    if recording.header.state_fp != FP_PRIOR { return Err("incompatible controlled state shape"); }
+    for input in recording.frames.iter().flat_map(|frame| &frame.inputs) {
+        if !matches!(decode_input(input).map_err(|_| "unsupported legacy press input")?.kind,
+            plx_machine::machine::InputKind::Key { .. }) {
+            return Err("unsupported legacy press input");
+        }
+    }
+    Ok(FrameHashProfile::KeyOnlyV4)
+}
+
+/// Frozen AppFrameV4 bytes, not a second press machine or mutable compatibility state.
+fn write_v4_idle_press(c: &mut Canon) {
+    c.f32(1.0).f32(0.0).discriminant(0)
+        .u32(0).u32(0).bool(false).u32(0).u32(0)
+        .bool(false).bool(false).bool(false).bool(false).bool(true);
+}
+
+pub(crate) fn state_hash_profile(profile: FrameHashProfile, route: &str, overlay: &str, focus: &str,
+    tree: u64, session: u64, consent: u64, initial: u64) -> u64 {
+    if profile == FrameHashProfile::OwnedV5 { return state_hash(route, overlay, focus, tree, session, consent, initial); }
     let mut c = Canon::new();
-
+    if profile == FrameHashProfile::KeyOnlyV4 { write_v4_idle_press(&mut c); }
     c.str(route).str(overlay).str(focus).u64(tree).u64(session).u64(consent).u64(initial);
     c.finish()
+}
+pub(crate) fn state_hash(route: &str, overlay: &str, focus: &str, tree: u64, session: u64, consent: u64, initial: u64) -> u64 {
+    let mut current = Canon::new();
+    current.str(route).str(overlay).str(focus).u64(tree).u64(session).u64(consent).u64(initial);
+    current.finish()
 }
 
 pub(crate) struct Rec {
@@ -471,6 +493,7 @@ struct ResultEnvelope {
 /// a live supplier as a fallback; content resources require the typed content initial domain.
 pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootstrap::Initial)
     -> Result<(), &'static str> {
+    recording_hash_profile(recording)?;
     if recording.stopped_at.is_some() || recording.frames.is_empty() || recording.header.clock_start_ms != initial.clock_start {
         return Err("invalid controlled clock");
     }
@@ -746,6 +769,13 @@ pub(crate) fn machine_name(id: plx_machine::machine::MachineId) -> String {
 }
 
 impl Recplay {
+    pub(crate) fn frame_hash_profile(&self) -> FrameHashProfile {
+        match self {
+            Self::Replaying(replay) if replay.rec.header.state_fp == FP_PRIOR => FrameHashProfile::KeyOnlyV4,
+            _ => FrameHashProfile::OwnedV5,
+        }
+    }
+
     fn resolve_observation(&mut self, identity:(bool,u8,Option<u32>), actual:Option<ResolutionWire>) -> Option<ResolutionWire> {
         match self {
             Self::Off => actual,
@@ -1439,6 +1469,41 @@ mod tests {
         second_bridge.landgate().landed(browse);
         assert!(second_bridge.landgate().take_frame_lands().is_empty(),
             "startup abort must disarm its own owner gate too");
+    }
+
+    #[test]
+    fn legacy_profile_loading_cannot_bypass_product_state_shape() {
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, Some("root".into())).unwrap();
+        let mut header = Header::new(FP_PRIOR, &initial);
+        header.clock_start_ms = initial.clock_start;
+        header.features = features(); header.triggers = initial.triggers.clone();
+        let mut recording = Recording { header, frames: vec![plx_ui::rec::Frame {
+            f: 0, tick: Some(Tick::default()), st: Some(0), ..Default::default()
+        }], metrics: Default::default(), stopped_at: None };
+        assert_eq!(recording_hash_profile(&recording), Ok(FrameHashProfile::KeyOnlyV4));
+        let key = super::super::bridge::script_edge(plx_machine::machine::Key::Down,
+            plx_machine::machine::Edge::Down, Tick::default());
+        recording.frames[0].inputs.push(super::super::bootstrap::effects::input(&key).unwrap());
+        assert_eq!(recording_hash_profile(&recording), Ok(FrameHashProfile::KeyOnlyV4));
+        let pointer = super::super::bridge::click_input(0.0, 0.0, Tick::default());
+        recording.frames[0].inputs[0] = super::super::bootstrap::effects::input(&pointer).unwrap();
+        assert_eq!(recording_hash_profile(&recording), Err("unsupported legacy press input"));
+        recording.frames[0].inputs.clear();
+        recording.header.state_fp = FP_V6;
+        assert_eq!(validate_controlled(&recording, &initial), Err("incompatible controlled state shape"));
+        recording.header.state_fp = state_fp();
+        assert_eq!(recording_hash_profile(&recording), Ok(FrameHashProfile::OwnedV5));
+        assert_eq!(validate_controlled(&recording, &initial), Ok(()));
+    }
+
+    #[test]
+    fn legacy_key_grading_uses_the_frozen_rest_prefix_not_a_second_input_owner() {
+        let mut old = Canon::new();
+        plx_ui::dispatch::press::Press::new().write(&mut old);
+        old.str("home").str("").str("focus").u64(17).u64(21).u64(34).u64(55);
+        let historical = old.finish();
+        assert_eq!(state_hash_profile(FrameHashProfile::KeyOnlyV4, "home", "", "focus", 17, 21, 34, 55), historical);
+        assert_ne!(state_hash("home", "", "focus", 17, 21, 34, 55), historical);
     }
 
     #[test]

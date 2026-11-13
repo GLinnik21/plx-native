@@ -321,7 +321,9 @@ The shadow `App.input.press` and pointer-only
 `ArmControlRow` commit ladder are removed too: keyboard and pointer controls both arm
 the dispatcher and receive addressed commits. Removing the duplicated press digest
 advances the app recorder census to `AppFrameV5`; recordings with the previous
-fingerprint are refused rather than silently replayed under different semantics.
+fingerprint are refused unless the validated key-only V4 profile proves the retired press
+remained idle. That profile uses frozen V4 bytes for grading only, never a second input
+owner; current recordings retain the V5 composition.
 Settled screenshot decisions follow current-frame collection. Drawing is revalidated;
 late work re-arms the one-shot rather than capturing/exiting prematurely.
 Build/runtime/device acceptance is separate from this source-level ownership record.

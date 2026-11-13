@@ -279,7 +279,7 @@ impl Initial {
         use super::recorder::{FP_PRIOR, FP_V6};
         match fingerprint {
             FP_PRIOR => Self::decode(value, expected_hash),
-            FP_V6 => {
+            fp if fp == FP_V6 || fp == super::recorder::state_fp() => {
                 let session = value.get_mut("session").ok_or("invalid session codec")?;
                 let envelope = session.as_object_mut().ok_or("invalid session codec")?;
                 if envelope.len() != 2 || envelope.get("codec").and_then(|v| v.as_u64()) != Some(6) {

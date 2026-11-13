@@ -11,6 +11,9 @@ fn session_codec_profiles_require_canonical_exact_matching_envelopes() {
     let current = initial.to_v6_value().unwrap();
     let prior = super::super::recorder::FP_PRIOR;
     let v6 = super::super::recorder::FP_V6;
+    let owned = super::super::recorder::state_fp();
+    assert_eq!(Initial::decode_profile(current.clone(), initial.hash(), owned).unwrap().hash(), initial.hash());
+    assert!(Initial::decode_profile(legacy.clone(), initial.hash(), owned).is_err());
     assert_eq!(current["session"], serde_json::json!({"codec":6,"boot":legacy["session"]}));
     assert_eq!(Initial::decode_profile(legacy.clone(), initial.hash(), prior).unwrap().hash(), initial.hash());
     assert_eq!(Initial::decode_profile(current.clone(), initial.hash(), v6).unwrap().hash(), initial.hash());

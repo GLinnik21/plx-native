@@ -52,7 +52,8 @@ pub(super) fn recorder_end_frame(
 ) -> bool {
     rec.measurements(bridge);
     rec.content_end();
-    rec.end_frame_with_gate(&|| super::recorder::state_hash(
+    let profile = rec.frame_hash_profile();
+    rec.end_frame_with_gate(&|| super::recorder::state_hash_profile(profile,
         route, overlay, focus, tree, bridge.session_subhash(), bridge.consent_subhash(),
         bridge.initial_subhash(),
     ), &|id| bridge.store_gen(id), bridge.landgate())
