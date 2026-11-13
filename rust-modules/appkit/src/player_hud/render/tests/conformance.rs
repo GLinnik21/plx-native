@@ -143,7 +143,7 @@ fn info_frame(compiled: &Compiled, focus: GroupId, btn: i32) -> Census {
     let mut row = HudMotion::new();
     row.set_section_appear_for_test(Section::Info, 1.0);
     for _ in 0..30 { row.section_pop.step(Some(0), 0.016_667); }
-    let frame = Frame { entry: EntryId(0), ps: &ps, model: &model, up: &up,
+    let frame = Frame { press: Default::default(), entry: EntryId(0), ps: &ps, model: &model, up: &up,
         slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None, focus, btn, tab: 0,
         open: crate::hud_format::compile::OPEN_INFO, now: 1_000, transport: true, measure: &FM, meta: store.view() };
     census(|| with_df(|df| assert!(draw(compiled, &frame, df, &mut row, Painter::root()))))
@@ -200,7 +200,7 @@ fn episode_frame(compiled: &Compiled, open: u8) -> Census {
     let up = Countdown::default();
     let mut row = HudMotion::new();
     if open != 0 { row.set_section_appear_for_test(Section::Info, 1.0); }
-    let frame = Frame { entry: EntryId(0), ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
+    let frame = Frame { press: Default::default(), entry: EntryId(0), ps: &ps, model: &model, up: &up, slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None,
         focus: GROUP_SCRUB, btn: 0, tab: 0, open, now: 1_000, transport: true, measure: &FM, meta: store.view() };
     census(|| with_df(|df| assert!(draw(compiled, &frame, df, &mut row, Painter::root()))))
 }
@@ -325,7 +325,7 @@ fn chapter_frame_content(compiled: &Compiled, focused: bool, name: &str, episode
     let up = Countdown::default();
     let mut row = HudMotion::new();
     row.set_section_appear_for_test(Section::Chapters, 1.0);
-    let frame = Frame { entry: EntryId(0), ps: &ps, model: &model, up: &up,
+    let frame = Frame { press: Default::default(), entry: EntryId(0), ps: &ps, model: &model, up: &up,
         slot: ControlSlot::Discs(Controls::NONE), busy: Busy::None, focus: GROUP_STRIP,
         btn: 0, tab: 0, open: OPEN_CHAPTERS, now: 1_000, transport: true, measure: &FM, meta: store.view() };
     let focus = FocusRead { current: focused.then_some(plx_machine::machine::FocusKey {

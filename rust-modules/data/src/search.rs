@@ -77,7 +77,7 @@
 //! the results for `wallace`. Debounce is `ui/detail.rs`'s `season_settle` accumulator. Two rules
 //! that are easy to miss and both wedge the screen forever if missed: the in-flight flag must come
 //! back when the runner REFUSES the request ([`SearchPort`]'s `refused`, which the next pump reads
-//! to back the source off), and [`plx_machine::idle::invalidate`] must be called on every landing
+//! to back the source off), and every changed landing must reach the caller's owned presentation effect,
 //! including the failure branch.
 //!
 //! ## A fetch is a store job
@@ -1145,7 +1145,7 @@ fn set_query_with_directory(
         state.settle_us = 0;
         state.armed = real_query;
     }
-    plx_machine::idle::invalidate();
+
 }
 
 /// Apply a view-state change to every result row it covers — the optimistic half of a view-state
@@ -1417,7 +1417,7 @@ fn pump_with_optional_directory(
     }
     // every landing repaints, the failure branch included: without this the screen sits on a
     // spinner that has already been answered until the next keypress happens to invalidate it
-    plx_machine::idle::invalidate();
+
     true
 }
 

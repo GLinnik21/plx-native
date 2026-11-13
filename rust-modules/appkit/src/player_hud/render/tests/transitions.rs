@@ -56,7 +56,7 @@ fn draw_in(compiled: &Compiled, row: &mut HudMotion, store: &plx_data::stores::m
     let ps = plx_media::route::PlaybackSession::IDLE;
     let up = Countdown::default();
     let model = HudModel { duration_ns: 600_000_000_000, playpos_ns: 90_000_000_000, ..HudModel::default() };
-    let frame = Frame {
+    let frame = Frame { press: Default::default(),
         entry: EntryId(0), ps: &ps, model: &model, up: &up, slot, busy: Busy::None, focus: GROUP_SCRUB, btn: 0, tab: 0,
         open, now: 1_000, transport, measure: &FM, meta: store.view(),
     };
@@ -68,7 +68,7 @@ fn walk_in(compiled: &Compiled, state: &CompiledState, row: &mut HudMotion, stor
     let ps = plx_media::route::PlaybackSession::IDLE;
     let up = Countdown::default();
     let model = HudModel { duration_ns: 600_000_000_000, playpos_ns: 90_000_000_000, ..HudModel::default() };
-    let frame = Frame {
+    let frame = Frame { press: Default::default(),
         entry: EntryId(0), ps: &ps, model: &model, up: &up, slot: NONE, busy: Busy::None, focus: GROUP_SCRUB, btn: 0, tab: 0,
         open, now: 1_000, transport, measure: &FM, meta: store.view(),
     };
@@ -561,10 +561,10 @@ fn the_titles_marquee_is_released_once_the_fade_is_over_and_not_at_its_first_fra
     // a title that has been running for a while
     let prime = |row: &HudMotion| {
         row.title_clock.read("a long title");
-        plx_machine::idle::frame_begin(0.05);
+        plx_machine::motion::report::frame_begin(0.05);
     };
     let running = |row: &HudMotion| {
-        plx_machine::idle::frame_begin(0.05);
+        plx_machine::motion::report::frame_begin(0.05);
         row.title_clock.read("a long title") > 10.0
     };
 

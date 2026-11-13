@@ -211,7 +211,15 @@ where
         // its own state stays comparable. They differ in what a mismatch IS: `Targets` takes the
         // recording's answer silently (the engine is not what is being graded); `Resolve`
         // reports it and then continues from the recording.
-        let r = d.frame(rig, tick, inputs, results, &mut silent);
+        let mut r = d.frame_with(rig, tick, inputs, results, &mut silent, false);
+        if r.presented {
+            // Replay's headless renderer completes a virtual swap, with the same
+            // admission-before-draw / acknowledgement-after-draw contract as product.
+            d.present.take(tick.ms);
+            d.prepare(rig);
+            r.drawn = d.draw(rig, true).drawn;
+            d.present.acknowledge(tick.ms);
+        }
         report.frames += 1;
         if let Some(rec_bit) = fr.present {
             if rec_bit != r.presented {

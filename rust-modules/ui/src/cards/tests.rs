@@ -346,7 +346,7 @@ impl<S: Section> Rig<S> {
         let mut present = Present::new();
         let mut out = Vec::new();
         let mut reported = None;
-        let (_, moving) = plx_machine::idle::scoped_motion(|| {
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
             let cx = cx9_pressed(&self.view, self.ms, self.press, self.focus, self.pressed.or(self.focus));
             let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
             reported = self.sect.on(&ev, &cx, &self.src, &mut fx);
@@ -2628,7 +2628,7 @@ mod stack {
             let mut present = Present::new();
             let mut out = Vec::new();
             let mut got = None;
-            let (_, moving) = plx_machine::idle::scoped_motion(|| {
+            let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
                 let cx = cx9(&self.view, self.ms, 1.0, self.focus);
                 let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
                 got = self.stack.on(&self.page, &ev, &cx, &mut fx);
@@ -3951,7 +3951,7 @@ fn abandoned_press_trace<S: Section + 'static>() -> Vec<AbandonRow> {
     r.land_focus(100, By::Dir);
     r.run(120);
     let rest = r.drawn_rect(101, 1.0).unwrap().w;
-    let mut press = crate::press::Press::new();
+    let mut press = crate::dispatch::press::Press::new();
     let row = |r: &Rig<S>, ms: u32, what, dip, motion| {
         let width = |elem| r.drawn_rect(elem, dip).unwrap().w / rest;
         AbandonRow { ms, what, dip, pressed: width(100), neighbour: width(101), motion }
@@ -3968,7 +3968,7 @@ fn abandoned_press_trace<S: Section + 'static>() -> Vec<AbandonRow> {
             what = "RIGHT";
         }
         r.ms += MS;
-        let (_, motion) = plx_machine::idle::scoped_motion(|| press.tick(r.ms, MS as f32 / 1000.0));
+        let (_, motion) = plx_machine::motion::report::scoped_motion(|| press.tick(r.ms, MS as f32 / 1000.0));
         r.feed(ScreenEvent::Tick(Tick { ms: r.ms, dt_us: 16_667 }));
         let dip = if press.is_active() { press.scale() } else { 1.0 };
         rows.push(row(&r, r.ms - t0, what, dip, motion));

@@ -172,7 +172,7 @@ pub fn set(spec: &str) -> bool {
     let p = match spec {
         "off" | "" => {
             CURRENT.set(None);
-            plx_machine::idle::invalidate();
+            // Success returns an effect for the app's owned presentation boundary.
             return true;
         }
         "ramp" => Pattern::Ramp,
@@ -210,9 +210,8 @@ pub fn set(spec: &str) -> bool {
         }
     };
     CURRENT.set(Some(p));
-    // A pattern change is discrete damage: nothing is moving, so without this the present gate
-    // would hold the old ground on screen until something else asked for a frame.
-    plx_machine::idle::invalidate();
+    // A pattern change is discrete damage: the caller applies this successful
+    // outcome to its owned Present, never through a global cache notification.
     true
 }
 

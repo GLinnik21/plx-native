@@ -23,7 +23,7 @@
 //! Recorded keys and supplied keys use the same production controlled ingress, retaining the
 //! original event timestamp and source rather than synthesizing a new SDL timestamp.
 //!
-//! AppFrameV4 combines press/route/overlay/focus/tree with cached Session, physical Consent and typed initial-input
+//! AppFrameV5 combines route/overlay/focus/tree with cached Session, physical Consent and typed initial-input
 //! digests. Private initial/effect data may contain credentials; shareable probes contain no
 //! raw identity. Only explicit synthetic construction is eligible for fixture import.
 //!
@@ -147,10 +147,10 @@ fn initial_header(app: &AppInit, state: &plx_data::pms::PmsState, adapter: &plx_
 /// Pinned by `the_app_shape_census_is_pinned` below, which does NOT move when a screen lands —
 /// the registry's own pin does that, beside the entry that caused it.
 const APP_SHAPES: &[&str] = &[
-    plx_ui::press::Press::SHAPE,
+    plx_ui::dispatch::press::Press::SHAPE,
     plx_ui::input::STATE_SHAPE,
     "TextInputWire{kind:text,text:str,panel:bool,ms:u32,dt_us:u32,source:{Sdl,RemoteFifo,Script,Replay}}",
-    "AppFrameV4{route:str,overlay:str,focus:str,tree:u64,session:u64,consent:u64,initial:u64}",
+    "AppFrameV5{route:str,overlay:str,focus:str,tree:u64,session:u64,consent:u64,initial:u64}",
     super::bridge::ConsentMachine::SHAPE,
     plx_ui::containers::STATE_SHAPE,
     plx_ui::screen::RETURN_STATE_SHAPE,
@@ -172,7 +172,9 @@ const RESOLUTION_SHAPE: &str = "ProductResolutionV1{fo:Option<(entry:u32,elem:u3
 /// could not distinguish a Session change with otherwise identical visible/tree state. This
 /// invalidated old recordings. AppFrameV3 additionally bound the complete typed initial-input
 /// digest; AppFrameV4 adds the physical Consent owner's current decision. The controlled Home
-/// boot consumer restores both before work.
+/// boot consumer restores both before work. AppFrameV5 removes the shadow App press prefix:
+/// the dispatcher tree already includes the single real input press. V4 recordings must be
+/// rerecorded rather than being silently graded against the changed hash.
 ///
 /// **`tree:u64` joined it in phase 5b** and the bump was deliberate: the Settings family's state
 /// left the legacy globals the focus fingerprint reads and became instances on the container tree,
@@ -227,6 +229,8 @@ pub(crate) fn state_fp() -> u64 {
 #[cfg(test)]
 fn session_app_prior_vector() -> Vec<&'static str> {
     let mut shapes = APP_SHAPES.to_vec();
+    // This test's session-codec census is frozen history, not today's product shape.
+    shapes[3] = "AppFrameV4{route:str,overlay:str,focus:str,tree:u64,session:u64,consent:u64,initial:u64}";
     shapes.push(super::bootstrap::CONTENT_SHAPE);
     shapes.push(RESOLUTION_SHAPE);
     shapes.push("CaptureReadinessV2{before_dispatch:pending:bool,text:bool}");
@@ -271,7 +275,10 @@ fn session_app_fingerprint_probe_only() {
     assert_eq!(prior.iter().zip(&prospective).filter(|(a, b)| a != b).count(), 1);
     let prospective_fp_v6 = plx_ui::rec::state_fp(&prospective);
     assert_eq!(prospective_fp_v6, FP_V6);
-    assert_eq!(state_fp(), prospective_fp_v6);
+    assert_ne!(state_fp(), prospective_fp_v6, "AppFrameV5 retires the legacy press contribution");
+    let manifest = format!(r#"{{"schema":{},"state_fp":{prospective_fp_v6}}}"#, plx_ui::rec::SCHEMA);
+    assert_eq!(Recording::parse(&manifest, &[], state_fp()).err(),
+        Some(RecError::StateShape { theirs: prospective_fp_v6, ours: state_fp() }));
     assert_eq!(frozen["prospective_fp_v6"].as_u64(), Some(FP_V6));
     for manifest in [
         include_str!("../../../tests/fixtures/replay/1-boot-home-chip-grid/manifest.json"),
@@ -294,7 +301,7 @@ fn session_app_fingerprint_probe_only() {
 /// the common run tail. Only those u64 values are serialized; this neither adds raw secrets nor
 /// claims all-domain state coverage.
 pub(crate) fn state_hash(
-    press: &plx_ui::press::Press,
+
     route: &str,
     overlay: &str,
     focus: &str,
@@ -304,7 +311,7 @@ pub(crate) fn state_hash(
     initial: u64,
 ) -> u64 {
     let mut c = Canon::new();
-    press.write(&mut c);
+
     c.str(route).str(overlay).str(focus).u64(tree).u64(session).u64(consent).u64(initial);
     c.finish()
 }
@@ -2513,7 +2520,8 @@ mod tests {
         // **A collection shelf's total moves it to this value.** A Home shelf and a hub row carry
         // the hub's `totalSize` (the linked heading's "· N"), in both the hubs record and the
         // hubs initial state.
-        assert_eq!(plx_ui::rec::state_fp(APP_SHAPES), 0x68eb_d05d_f046_ba72);
+        // AppFrameV5 drops the duplicate legacy press prefix; the tree hashes the real input.
+        assert_eq!(plx_ui::rec::state_fp(APP_SHAPES), 0xb7b3_fd3a_cc0b_e6b5);
     }
 
     /// The gate at the REAL hubs landing site, through the recording the driver loads: a result
@@ -2592,14 +2600,32 @@ mod tests {
     }
 
     #[test]
+    fn the_shadow_press_recording_shape_is_refused() {
+        let mut shapes = APP_SHAPES.to_vec();
+        shapes[3] = "AppFrameV4{route:str,overlay:str,focus:str,tree:u64,session:u64,consent:u64,initial:u64}";
+        let initial = shapes.iter_mut().find(|s| **s == super::super::bootstrap::SHAPE).unwrap();
+        *initial = super::super::bootstrap::SHAPE_V7;
+        shapes.push(super::super::bootstrap::CONTENT_SHAPE);
+        shapes.push(RESOLUTION_SHAPE);
+        shapes.push("CaptureReadinessV2{before_dispatch:pending:bool,text:bool}");
+        shapes.push("MeasurementV1{query:Width(text:bytes,sz:i32,bold:bool)|Cap(sz:i32)|Line(sz:i32),answer:f32bits:u32}");
+        shapes.extend_from_slice(plx_screens::registry::SCREEN_SHAPES);
+        let old = plx_ui::rec::state_fp(&shapes);
+        assert_ne!(old, state_fp());
+        let manifest = format!(r#"{{"schema":{},"state_fp":{old}}}"#, plx_ui::rec::SCHEMA);
+        assert_eq!(Recording::parse(&manifest, &[], state_fp()).err(),
+            Some(RecError::StateShape { theirs: old, ours: state_fp() }));
+    }
+
+    #[test]
     fn the_state_hash_moves_with_the_focus_line_and_the_press() {
-        let mut press = plx_ui::press::Press::new();
-        let a = state_hash(&press, "home", "", "focus route=home sel=0", 0, 0, 0, 0);
-        let b = state_hash(&press, "home", "", "focus route=home sel=1", 0, 0, 0, 0);
+        let mut d = plx_ui::dispatch::Dispatcher::<super::super::bridge::AppHost>::new();
+        let a = state_hash("home", "", "focus route=home sel=0", d.state_hash(), 0, 0, 0);
+        let b = state_hash("home", "", "focus route=home sel=1", d.state_hash(), 0, 0, 0);
         assert_ne!(a, b);
-        press.begin(10);
-        let c = state_hash(&press, "home", "", "focus route=home sel=0", 0, 0, 0, 0);
-        assert_ne!(a, c);
+        d.input.press.begin(10);
+        let c = state_hash("home", "", "focus route=home sel=0", d.state_hash(), 0, 0, 0);
+        assert_ne!(a, c, "the real dispatcher press is already in the tree digest");
     }
 
     /// …and with the TREE, which is the half phase 5b added. Every screen in the Settings family
@@ -2608,17 +2634,15 @@ mod tests {
     /// did not, and come back `verdict=SAME`.
     #[test]
     fn the_state_hash_moves_with_the_container_tree() {
-        let press = plx_ui::press::Press::new();
-        let a = state_hash(&press, "home", " overlay=settings", "focus route=home", 0x11, 0, 0, 0);
-        let b = state_hash(&press, "home", " overlay=settings", "focus route=home", 0x12, 0, 0, 0);
+        let a = state_hash("home", " overlay=settings", "focus route=home", 0x11, 0, 0, 0);
+        let b = state_hash("home", " overlay=settings", "focus route=home", 0x12, 0, 0, 0);
         assert_ne!(a, b, "the same page and focus over a different tree is a different state");
     }
 
     #[test]
     fn the_state_hash_moves_with_the_physical_consent_owner() {
-        let press = plx_ui::press::Press::new();
-        let denied = state_hash(&press, "home", "", "focus route=home", 0, 0, 0x11, 0);
-        let allowed = state_hash(&press, "home", "", "focus route=home", 0, 0, 0x12, 0);
+        let denied = state_hash("home", "", "focus route=home", 0, 0, 0x11, 0);
+        let allowed = state_hash("home", "", "focus route=home", 0, 0, 0x12, 0);
         assert_ne!(
             denied, allowed,
             "a consent decision changed without moving the canonical application state"
@@ -2649,9 +2673,8 @@ mod tests {
         let mut rec = Recplay::Recording(Rec { w: writer, f: 0, focus: None, events: false, spent_ns: 0, failure: None });
         rec.tick(0, 0.016);
         if let Recplay::Recording(r)=&mut rec { r.events=true; } // force a state grade; this unit exercises no input delivery
-        let press = plx_ui::press::Press::new();
         assert!(!super::super::run::recorder_end_frame(
-            &mut rec, bridge, &press, "home", "", "fixed synthetic focus", 17,
+            &mut rec, bridge, "home", "", "fixed synthetic focus", 17,
         ));
         let bytes = segments.borrow();
         let slices: Vec<_> = bytes.iter().map(Vec::as_slice).collect();
@@ -2696,12 +2719,12 @@ mod tests {
                 present_diffs: 0, result_diffs: 0, land_diffs: 0, result_at: 0, effect_at: 0,
                 input_at: 0, input_diffs: 0, effect_diffs: 0, started: false, failure: None,
             });
-            let press = plx_ui::press::Press::new();
+
             assert_eq!(plx_ui::dispatch::Tap::<Product>::focus_continuation(
                 &mut replay, 0, true, None), Some(None));
             plx_ui::dispatch::Tap::<Product>::focus(&mut replay, 0, None);
             assert!(super::super::run::recorder_end_frame(
-                &mut replay, &other, &press, "home", "", "fixed synthetic focus", 17,
+                &mut replay, &other, "home", "", "fixed synthetic focus", 17,
             ));
             let Recplay::Replaying(result) = replay else { unreachable!() };
             assert_eq!(result.graded, 1);
@@ -2726,6 +2749,7 @@ mod tests {
         // `child_count`; they are history, so they keep the record they were computed with.
         const PRE_CHILD_COUNT_RECORD_SHAPE: &str = "HubsResultV1{gen:u32,seq:u32,sid:u16,client:Option<u32>,token_gen:u32,build:Option<{cw:[{last_viewed_at:i64,m:PmsMovie}],shelves:[{title:str,hub_id:str,key:str,items:[PmsMovie]}]}>};PmsMovie{sid:u16,sec:i64,title:str,year:i32,rating:str,dur_ns:i64,part:str,thumb:str,still:str,art:str,summary:str,rk:str,vcodec:str,acodec:str,blur:[[f32bits;3];4],has_blur:bool,kind:i32,resume_ms:i64,show_rk:str,season_index:i32,show_title:str,ep_index:i32,unwatched:bool,watched:bool,aired:str}";
         let mut pre_settings = APP_SHAPES.to_vec();
+        pre_settings[3] = "AppFrameV4{route:str,overlay:str,focus:str,tree:u64,session:u64,consent:u64,initial:u64}";
         let record = pre_settings.iter().position(|shape| *shape == plx_data::pms::record::SHAPE).unwrap();
         pre_settings[record] = PRE_CHILD_COUNT_RECORD_SHAPE;
         // ...and under the hubs initial state before a hub row carried its total.

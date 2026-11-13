@@ -1312,7 +1312,7 @@ impl PersonState {
                 }
                 // Every landing repaints, failures included: a shelf or stopped spinner must not
                 // wait for the next keypress to become visible.
-                plx_machine::idle::invalidate();
+
                 if reply.gen == self.generation {
                     adapter.terminals.lock().unwrap_or_else(|e| e.into_inner()).pending.remove(&i);
                     changed |= apply_landing(self, i, reply.what);
@@ -1486,7 +1486,7 @@ fn sync_roster(state: &mut PersonState, adapter: &PersonAdapter, input: &PersonI
     p.roster_gen = gen;
     p.roster_sig = Some(sig);
     resettle(p);
-    plx_machine::idle::invalidate();
+
     true
 }
 
@@ -1801,7 +1801,7 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize,
         let profile = i == F_PROFILE;
         if !input.controlled && (if profile { input.profile_refused } else { input.credits_refused }) {
             // A fixed provider refusal is terminal in this drain, with no job, claim or retry.
-            plx_machine::idle::invalidate();
+
             return apply_landing(state, i, Landing::Refused);
         }
         let identity = if input.controlled { Identity::Controlled } else {
@@ -2031,7 +2031,7 @@ impl PersonState {
             if req.slot == F_PROFILE {
                 if let Some(person) = &mut self.current { person.profile_tried = true; }
             }
-            plx_machine::idle::invalidate();
+
         }
         changed
     }

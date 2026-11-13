@@ -358,7 +358,7 @@ impl CollectionState {
         let reply = crate::stores::tape::take_store_landing(
             gate, crate::stores::StoreId::Collection, "collection", 0, &adapter.fetch, |m| m.gen);
         if let Some(reply) = reply {
-            plx_machine::idle::invalidate();
+
             if reply.gen == self.generation { changed |= self.apply(reply.what); }
         }
         self.maybe_spawn(adapter, keys);

@@ -687,7 +687,7 @@ impl super::BrowseState {
                 Flight::Row => st.hubs.inflight = None,
             }
         }
-        plx_machine::idle::invalidate();
+
     }
 
     /// Reads one row's window: a page the reader walked to, or the cards of a row that came back
@@ -756,7 +756,7 @@ impl super::BrowseState {
                     plx_base::eventlog::log(&format!("libhubs: section {} row {} read failed", result.sec, ask.id));
                 }
                 let moved = state.hubs.land_row(&ask, shelf);
-                plx_machine::idle::invalidate();
+
                 return moved || failed;
             }
             Outcome::List(Some(parsed)) => {
@@ -782,7 +782,7 @@ impl super::BrowseState {
                 state.hubs.owed = true;
             }
         }
-        plx_machine::idle::invalidate();
+
         true
     }
 

@@ -885,7 +885,7 @@ fn the_top_bar_draws_every_label_at_full_ink_in_one_weight_per_frame() {
         let mut flips = [0usize; 3];
         for frame in 0..80 {
             strip.update(labels, sel, TopFocus::Pill(to), DT);
-            let runs = crate::draw_census::capture_runs(|| strip.draw(labels, Painter::recording(), &mut band));
+            let runs = crate::draw_census::capture_runs(|| strip.draw(labels, Painter::recording(), &mut band, Default::default()));
             let widths = with_tab_metrics_for(labels, |_, _, w| w.to_vec());
             let glass_on = tab_glass_on();
             for (i, word) in words.iter().enumerate() {
@@ -952,7 +952,7 @@ fn painted_pill_frames_stand_one_gap_apart_in_the_top_bar_and_in_a_strip() {
     for _ in 0..90 {
         strip.update(labels, 0, TopFocus::Pill(0), DT);
     }
-    let runs = crate::draw_census::capture_runs(|| strip.draw(labels, Painter::recording(), &mut band));
+    let runs = crate::draw_census::capture_runs(|| strip.draw(labels, Painter::recording(), &mut band, Default::default()));
     let bar: Vec<(f32, f32)> = ["Home", "Movies", "TV Shows"].iter().map(|w| frame(&runs, w, TAB_PILL_PAD)).collect();
     for pair in bar.windows(2) {
         let air = pair[1].0 - (pair[0].0 + pair[0].1);

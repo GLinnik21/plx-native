@@ -438,7 +438,7 @@ impl ConsentPage {
         }
     }
 
-    fn view(&self) -> ConsentView<'_> {
+    fn view<K: Copy>(&self, press: plx_machine::machine::PressRead<K>) -> ConsentView<'_> {
         let layout = self.layout;
         let labels = self.band_labels();
         ConsentView {
@@ -450,7 +450,7 @@ impl ConsentPage {
             has_crumb: self.crumb().is_some(),
             entry: self.entry,
             labels,
-            scales: [self.pop.scale(0), self.pop.scale(1)],
+            scales: [self.pop.scale_with(0, press), self.pop.scale_with(1, press)],
             alert_open: self.alert.is_open(),
             alert_frames: self.alert_frames.get(),
             alert_choice: self.alert.choice(),
@@ -726,7 +726,7 @@ impl Focusable<InnerHost> for ConsentView<'_> {
     }
 }
 
-plx_ui::focusable_via_view!(ConsentPage, InnerHost, view);
+plx_ui::focusable_via_view!(ConsentPage, InnerHost, view, press);
 
 impl Machine<InnerHost> for ConsentPage {
     type Ev = ScreenEvent<InnerHost>;
@@ -843,7 +843,7 @@ impl Machine<InnerHost> for ConsentPage {
                 && !self.alert.visible()
                 && cx.focus.current.is_some_and(|key| band_index(key.elem).is_some())
                 && matches!(self.mode, Mode::FirstRun { .. }) => {
-                let frame = self.view().disclosure_frame(cx.measure);
+                let frame = self.view(cx.press).disclosure_frame(cx.measure);
                 let body = self.body();
                 let (position, moved) = self.disclosure.move_measured(
                     if *key == Key::Up { -1 } else { 1 }, body, frame, cx.measure);
@@ -951,7 +951,7 @@ impl Screen<InnerHost> for ConsentPage {
         let layout = self.layout;
         if matches!(self.mode, Mode::FirstRun { .. }) {
             Header::new(layout, self.crumb(), self.title(), "").paint(p, f.measure);
-            let frame = self.view().disclosure_frame(f.measure);
+            let frame = self.view(f.press).disclosure_frame(f.measure);
             let body = self.body();
             self.disclosure.draw(p, frame, None, body);
         } else {
@@ -980,7 +980,7 @@ impl Screen<InnerHost> for ConsentPage {
                     group: BAND_GROUP,
                     entry: self.entry,
                     uncommitted,
-                    scales: [self.pop.scale(0), self.pop.scale(1)],
+                    scales: [self.pop.scale_with(0, f.press), self.pop.scale_with(1, f.press)],
                     palette: palette(),
                     danger: None,
                     note: self.band_note(),
@@ -994,8 +994,8 @@ impl Screen<InnerHost> for ConsentPage {
         // the delete alert over everything, its own scrim first; its answers are the stops the
         // engine seats on while it is open
         if self.alert.visible() {
-            self.alert.draw_scrim();
-            self.alert.draw(plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::settings_delete_c(), f.measure);
+            self.alert.draw_scrim(f);
+            self.alert.draw(plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::settings_delete_c(), f.measure, f.route_navigation(), f.press);
             let frames = self.alert.frames(f.measure);
             self.alert_frames.set(Some(frames));
             // **Register the two hit stops only once the entrance spring has actually arrived.**

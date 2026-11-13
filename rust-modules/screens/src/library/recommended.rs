@@ -1306,7 +1306,7 @@ impl RecommendedScreen {
     /// The page's title row: "<Library> › Recommended".
     pub(super) fn draw_title<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>) {
         self.header(f.cx).draw(f.painter.alpha(f.page_alpha), self.scroll.pos, &self.header_capsules,
-            self.header_pop.scale_with(0, f.press.scale), None);
+            self.header_pop.scale_with(0, f.press), None);
     }
 
     fn library_title<'a, H: LibraryLike>(cx: &Cx<'a, H>) -> &'a str {

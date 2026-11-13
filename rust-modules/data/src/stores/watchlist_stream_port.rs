@@ -67,7 +67,7 @@ impl<T> StreamPort<T> {
         self.mailbox.0.lock().unwrap_or_else(|e| e.into_inner()).push(StreamLanding {
             addr: self.addr, tag: self.tag, event, owed: Arc::clone(&self.owed),
         });
-        plx_machine::idle::invalidate();
+
     }
     pub fn start(&self) -> Option<StreamProducer<T>> {
         let mut claim = self.claim.lock().unwrap_or_else(|e| e.into_inner());

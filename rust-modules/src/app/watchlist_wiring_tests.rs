@@ -305,15 +305,23 @@ fn the_feed_hands_the_page_nothing_while_a_menu_holds_it() {
     for veil in [1.0, 0.5, CLOSING_GONE * 1.5] {
         set_veil(veil);
         rig.watchlist_pump();
-        let _ = plx_machine::idle::take_local_damage();
+        let before = d.present.damage_epoch();
+        let page_before = d.present.page_damage_epoch();
         rig.watchlist_feed(&mut d);
         assert_eq!(guids(&d), vec![guid(1), guid(2), guid(3)], "veil {veil}: the page is as the menu found it");
         assert_eq!(page(&d).count(), Some(Count::All(3)), "veil {veil}: and so is its count");
-        assert_eq!(plx_machine::idle::take_local_damage(), 0, "veil {veil}: nothing invalidated the host");
+        assert_eq!(d.present.damage_epoch() - before, 0, "veil {veil}: nothing invalidated the host");
+        assert_eq!(d.present.page_damage_epoch() - page_before, 0, "veil {veil}: no page damage");
     }
     set_veil(CLOSING_GONE * 0.5);
     rig.watchlist_pump();
+    let before = d.present.damage_epoch();
+    let page_before = d.present.page_damage_epoch();
     rig.watchlist_feed(&mut d);
+    assert_eq!(d.present.damage_epoch() - before, 1, "one applied publication, one owned landing");
+    assert_eq!(d.present.page_damage_epoch() - page_before, 1);
+    rig.watchlist_feed(&mut d);
+    assert_eq!(d.present.damage_epoch() - before, 1, "unchanged feed adds no damage");
     assert_eq!(guids(&d), vec![guid(1), guid(3)], "the first feed after the menu let go commits the Remove");
     set_veil(0.0);
 }

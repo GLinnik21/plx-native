@@ -309,9 +309,9 @@ impl HubsStore {
         directory: crate::stores::browse::DirectoryView<'_>,
         clients: &plx_plex::plex::ClientKeys,
     ) -> super::StoreOutcome {
-        let before = self.state.catalog_gen;
+        let before = crate::pms::visible_projection(&self.state);
         let endpoints = crate::pms::tick_with_directory(&mut self.state, &self.adapter, dt, directory, clients);
-        let changed = self.state.catalog_gen != before;
+        let changed = crate::pms::visible_projection(&self.state) != before;
         if changed { self.bump(); }
         super::StoreOutcome { changed, endpoints }
     }

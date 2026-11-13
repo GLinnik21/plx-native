@@ -370,18 +370,16 @@ fn evict_wake_due(s: &Pslot, now: u32) -> bool {
     s.state == P_EVICTED && s.evict_cooldown_until.is_some_and(|t| now.wrapping_sub(t) < u32::MAX / 2)
 }
 
-/// Wake the present gate once a scheduled retry's main-thread deadline arrives. The loop calls this
-/// even while a settled screen skips draws; the draw it requests is what probes the slot again and
-/// moves it back to `P_WANT`.
-fn invalidate_due_retries(slots: &mut [Pslot; PT_CAP], now: u32) {
+/// Return a typed deadline result once per scheduled retry batch. The runner consumes it
+/// through its owned present gate even while a settled screen skips draws; the admitted draw
+/// probes the slot again and moves it back to `P_WANT`.
+fn invalidate_due_retries(slots: &mut [Pslot; PT_CAP], now: u32) -> Option<ResourceOutcome> {
     let mut due = false;
     for s in slots.iter_mut().filter(|s| !s.retry_wake_sent && retry_due(s, now)) {
         s.retry_wake_sent = true; // latch the whole batch; one frame probes every visible slot
         due = true;
     }
-    if due {
-        plx_machine::idle::invalidate();
-    }
+    due.then_some(ResourceOutcome::RetryDue)
 }
 
 /// The eviction-cooldown twin of [`invalidate_due_retries`], and the fix for the gap the
@@ -392,24 +390,22 @@ fn invalidate_due_retries(slots: &mut [Pslot; PT_CAP], now: u32) {
 /// draws would invalidate every loop iteration forever, undoing the idle behaviour the app depends
 /// on. The wake only ever asks for one present; it does not itself re-arm anything — re-arming
 /// stays Draw-only, through `lookup`'s P_EVICTED branch, exactly as before.
-fn invalidate_due_evictions(slots: &mut [Pslot; PT_CAP], now: u32) {
+fn invalidate_due_evictions(slots: &mut [Pslot; PT_CAP], now: u32) -> Option<ResourceOutcome> {
     let mut due = false;
     for s in slots.iter_mut().filter(|s| !s.evict_wake_sent && evict_wake_due(s, now)) {
         s.evict_wake_sent = true;
         due = true;
     }
-    if due {
-        plx_machine::idle::invalidate();
-    }
+    due.then_some(ResourceOutcome::EvictionDue)
 }
 
 /// Park one transient result and request the draw that assigns its main-thread deadline.
-fn park_retry(s: &mut Pslot) {
+fn park_retry(s: &mut Pslot) -> ResourceOutcome {
     s.attempts = s.attempts.saturating_add(1);
     s.retry_at = None;
     s.retry_wake_sent = false;
     s.state = P_RETRY;
-    plx_machine::idle::invalidate();
+    ResourceOutcome::RetryParked
 }
 
 /// Does a failed fetch's outcome deserve another try? Transport failure and the statuses whose
@@ -457,8 +453,20 @@ fn sans_token(key: &[u8]) -> &[u8] {
     }
 }
 
+/// Actual resource/admission results, consumed by the runner's owned present gate.
+/// No worker publishes presentation provenance; deadlines remain main-thread observations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResourceOutcome {
+    AdmissionRefused,
+    RetryParked,
+    RetryDue,
+    EvictionDue,
+    LoadFailed,
+}
+
 struct Store {
     slots: [Pslot; PT_CAP],
+    results: Vec<ResourceOutcome>,
     clock: c_uint,
     frame: c_uint,
     quit: bool,
@@ -468,6 +476,7 @@ impl Store {
     const fn new() -> Store {
         Store {
             slots: [Pslot::ZERO; PT_CAP],
+            results: Vec::new(),
             clock: 0,
             frame: 0,
             quit: false,
@@ -1187,7 +1196,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     g.slots[i].retry_wake_sent = false;
                 } else if retry_due(&g.slots[i], now) {
                     if decline {
-                        plx_ui::card_motion::deferred();
+                        g.results.push(ResourceOutcome::AdmissionRefused);
                         #[cfg(feature = "devtriggers")]
                         plx_ui::card_motion_metrics::refused(plx_ui::card_motion_metrics::Refused::Retry);
                         trace::outcome("declined_retry");
@@ -1237,7 +1246,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     return (None, Warm::Known);
                 }
                 if decline {
-                    plx_ui::card_motion::deferred();
+                    g.results.push(ResourceOutcome::AdmissionRefused);
                     #[cfg(feature = "devtriggers")]
                     plx_ui::card_motion_metrics::refused(plx_ui::card_motion_metrics::Refused::Evicted);
                     // The same deferral the cooldown just made, for the same reason: the slot
@@ -1329,7 +1338,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // slow server, which [`victim`] (a stale request is recyclable) and [`next_wanted`] (newest
     // draw first) bound.
     if decline {
-        plx_ui::card_motion::deferred();
+        g.results.push(ResourceOutcome::AdmissionRefused);
         #[cfg(feature = "devtriggers")]
         plx_ui::card_motion_metrics::refused(plx_ui::card_motion_metrics::Refused::New);
         trace::outcome("declined_new");
@@ -1592,16 +1601,20 @@ fn store_idle() -> bool {
 /// checked (see [`log_residency_settled`]'s doc for why THIS seam and not `PosterSource::idle`):
 /// the slot scan below is the same one [`idle_of`] would run, so this is the store's one
 /// once-a-frame, screen-agnostic read of whether it is quiet.
-pub(crate) fn begin_frame() {
+/// Returns actual resource results and newly due deadlines to the owning runner. The runner
+/// assigns resource provenance before its present decision; this source never mutates a gate.
+pub(crate) fn begin_frame() -> Vec<ResourceOutcome> {
     trace::begin_frame();
     let now = crate::app::clock::now();
     let mut g = store();
     g.frame = g.frame.wrapping_add(1);
-    invalidate_due_retries(&mut g.slots, now);
-    invalidate_due_evictions(&mut g.slots, now);
+    let mut results = std::mem::take(&mut g.results);
+    results.extend(invalidate_due_retries(&mut g.slots, now));
+    results.extend(invalidate_due_evictions(&mut g.slots, now));
     let settled = idle_of(&g.slots);
     drop(g);
     log_residency_settled(settled);
+    results
 }
 
 /// MAIN thread, once per frame (§3.3 step 3, the adapter's results): every slot a worker has
@@ -1690,13 +1703,8 @@ impl Uploader for GfxUploader {
 /// under the frame budget — the `Poster` class for an ordinary poster, the solo `Residency` class
 /// for a backdrop or a hero logo (`ui::tex`'s `RESIDENCY_BYTES`).
 ///
-/// **The frame this runs on has already been decided to present**, because the budget's
-/// queued-work term is the second half of that decision (`app/run.rs`, §3.3 step 8). So what
-/// `idle::invalidate` marks here is not this frame but the NEXT one, and it is still worth its
-/// frame: a landed texture is DISCRETE damage, which is exactly what `idle::present_dirty`'s
-/// readers — the glass hosts deciding whether to re-snapshot the page under them — are asking
-/// about, and no spring reports it. The cache's own `Provenance::Resource` note is the same
-/// statement to the phase-2 `Present` machine.
+/// The queued-work budget already admits this frame. The cache reports genuine uploads
+/// through the supplied owned `PresentHandle`; no compatibility damage is published.
 pub(crate) fn prepare(
     b: &mut plx_ui::frame::Budget,
     present: &mut plx_machine::machine::PresentHandle<'_>,
@@ -1705,7 +1713,7 @@ pub(crate) fn prepare(
     let n = tex::prepare(b, &mut GfxUploader, present, now_us);
     if n > 0 {
         CV.notify_all();
-        plx_machine::idle::invalidate();
+
     }
     n
 }
@@ -2220,9 +2228,12 @@ fn poster_worker() {
                     true
                 } else {
                     if plx_gfx::dump::armed() { note_dump_failure(key_bytes(s), transient); }
-                    if transient && cache_gen == plx_platform::imgcache::generation() { park_retry(s); }
-                    else { s.state = P_FAILED; }
+                    let outcome = if transient && cache_gen == plx_platform::imgcache::generation() { park_retry(s) }
+                    else { s.state = P_FAILED; ResourceOutcome::LoadFailed };
                     trace::lost(idx, gen, "failed");
+                    // Publish the actual result. The runner owns its repaint provenance; this
+                    // mutation-only source does not manufacture a worker/platform wake.
+                    g.results.push(outcome);
                     false
                 }
             } else { false }
@@ -3202,8 +3213,7 @@ mod tests {
         assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "text prewarming must not start poster work");
         for frame in 0..3 {
             plx_ui::card_motion::begin_frame(frame * 16);
-            plx_machine::idle::frame_begin(0.016);
-            plx_machine::idle::take_local_damage();
+            store().results.clear();
             let painter = plx_ui::Painter::root().translate(if frame == 0 { 0.0 } else { 80.0 }, 0.0);
             let facts = plx_screens::registry::tile_facts::of(&item);
             for art in [plx_ui::widgets::Art::Poster(Some(facts)), plx_ui::widgets::Art::Still(Some(facts)),
@@ -3214,7 +3224,7 @@ mod tests {
             // Frame 0 is `Unknown`; frame 1 jumped 80 px in 16 ms (`Moving`, 5000 px/s); frame 2 held.
             if frame == 0 || enforced && frame == 1 {
                 assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "unknown/moving cards must claim no slots");
-                assert!(plx_machine::idle::take_local_damage() > 0, "a refused unknown needs a follow-up present");
+                assert_eq!(store().results, vec![ResourceOutcome::AdmissionRefused; 4], "each refused request needs a follow-up present");
             } else {
                 assert_eq!(store().slots.iter().filter(|s| s.state == P_WANT).count(), 4, "all four admitted variants must queue art");
             }
@@ -3241,14 +3251,14 @@ mod tests {
         }
         let _enforce = plx_ui::card_motion::enforce_for_test();
         let motion = plx_ui::card_motion::Scope::moving_for_test();
-        plx_machine::idle::take_local_damage();
+        store().results.clear();
         assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
             "the future retry must match its existing slot, not take the fresh-miss gate");
-        assert_eq!(plx_machine::idle::take_local_damage(), 0, "a future retry must let the present gate rest");
+        assert!(store().results.is_empty(), "a future retry must let the present gate rest");
         store().slots[0].retry_at = Some(0);
         assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
             "motion must defer the known due retry");
-        assert!(plx_machine::idle::take_local_damage() > 0, "an actually refused rearm needs a follow-up draw");
+        assert_eq!(store().results, vec![ResourceOutcome::AdmissionRefused], "an actually refused rearm needs a follow-up draw");
         assert_eq!(store().slots[0].state, P_RETRY);
         drop(motion);
         assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
@@ -3814,7 +3824,7 @@ mod tests {
     #[test]
     fn a_due_evicted_slot_invalidates_the_frame_gate_exactly_once() {
         let _g = plx_base::testlock::serial();
-        plx_machine::idle::reset_for_test();
+
         let mut slots = [Pslot::ZERO; PT_CAP];
         slots[3] = Pslot {
             state: P_EVICTED,
@@ -3827,24 +3837,21 @@ mod tests {
             ..Pslot::ZERO
         };
 
-        invalidate_due_evictions(&mut slots, 1_999);
         assert_eq!(
-            plx_machine::idle::take_local_damage(),
-            0,
+            invalidate_due_evictions(&mut slots, 1_999),
+            None,
             "a cooling slot must leave the screen settled before its deadline"
         );
 
-        invalidate_due_evictions(&mut slots, 2_000);
         assert_eq!(
-            plx_machine::idle::take_local_damage(),
-            1,
+            invalidate_due_evictions(&mut slots, 2_000),
+            Some(ResourceOutcome::EvictionDue),
             "the deadline must wake exactly one draw that can probe the slot again"
         );
 
-        invalidate_due_evictions(&mut slots, 2_001);
         assert_eq!(
-            plx_machine::idle::take_local_damage(),
-            0,
+            invalidate_due_evictions(&mut slots, 2_001),
+            None,
             "an off-screen expired slot must not hold the present gate awake - the latch makes \
              this ONE redraw request, not a request every frame"
         );
@@ -4051,7 +4058,7 @@ mod tests {
     #[test]
     fn a_due_parked_retry_invalidates_the_frame_gate() {
         let _g = plx_base::testlock::serial();
-        plx_machine::idle::reset_for_test();
+
         let mut slots = [Pslot::ZERO; PT_CAP];
         slots[3] = Pslot {
             state: P_RETRY,
@@ -4064,24 +4071,21 @@ mod tests {
             ..Pslot::ZERO
         };
 
-        invalidate_due_retries(&mut slots, 1_999);
         assert_eq!(
-            plx_machine::idle::take_local_damage(),
-            0,
+            invalidate_due_retries(&mut slots, 1_999),
+            None,
             "a parked retry must leave the screen settled before its deadline"
         );
 
-        invalidate_due_retries(&mut slots, 2_000);
         assert_eq!(
-            plx_machine::idle::take_local_damage(),
-            1,
+            invalidate_due_retries(&mut slots, 2_000),
+            Some(ResourceOutcome::RetryDue),
             "the deadline must wake a draw that can re-queue the retry"
         );
 
-        invalidate_due_retries(&mut slots, 2_001);
         assert_eq!(
-            plx_machine::idle::take_local_damage(),
-            0,
+            invalidate_due_retries(&mut slots, 2_001),
+            None,
             "an off-screen due slot must not hold the present gate awake"
         );
     }
@@ -4092,19 +4096,19 @@ mod tests {
     #[test]
     fn a_newly_parked_retry_wakes_the_draw_that_schedules_it() {
         let _g = plx_base::testlock::serial();
-        plx_machine::idle::reset_for_test();
+
         let mut s = Pslot {
             state: P_LOADING,
             attempts: 2,
             ..Pslot::ZERO
         };
 
-        park_retry(&mut s);
+        let outcome = park_retry(&mut s);
 
         assert_eq!(s.state, P_RETRY);
         assert_eq!(s.attempts, 3);
         assert_eq!(s.retry_at, None, "only a draw may read the loop clock and schedule");
-        assert_eq!(plx_machine::idle::take_local_damage(), 1);
+        assert_eq!(outcome, ResourceOutcome::RetryParked);
     }
 
     /// **The test the whole prefetch rests on.** `Touch::Warm` writes `use_ = 0` and a frame stamp

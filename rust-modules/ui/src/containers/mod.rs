@@ -5,8 +5,8 @@
 //! page. Structural ops arrive as `NavOp`s at NAV COMMIT and come back out as [`Life`] steps the
 //! dispatcher executes; the container never calls a screen.
 //!
-//! Under `ui/containers/` rather than the spec's `ui/nav/` because `ui/nav.rs` is the LEGACY page
-//! transition and lives until phase 12; the directory takes that name when the file goes.
+//! Navigation presentation is derived from this tree and passed explicitly as
+//! `screen::NavPresentation`; there is no global navigation publication.
 #![allow(dead_code)] // phase 3b: the tree was a shadow of the loop's route; screens arrive from 5b
 
 pub mod modal;

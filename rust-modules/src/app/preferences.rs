@@ -45,7 +45,7 @@ pub(super) fn execute(command: PreferenceCmd) {
                 let _ = reply.send(AccountPreferenceReply {
                     request: None, outcome: Err(PreferenceError::Unavailable),
                 });
-                plx_machine::idle::invalidate();
+
                 return;
             };
             // A refused spawn drops the reply sender. The screen reports its disconnected
@@ -53,14 +53,14 @@ pub(super) fn execute(command: PreferenceCmd) {
             plx_base::task::spawn_small("acct-prefs", move || {
                 let outcome = request.load();
                 let _ = reply.send(AccountPreferenceReply { request: Some(request), outcome });
-                plx_machine::idle::invalidate();
+                plx_machine::present::wake_from_worker();
             });
         }
         PreferenceCmd::Save { request, base, update, reply } => {
             plx_base::task::spawn_small("acct-prefs", move || {
                 let outcome = request.save(&base, update);
                 let _ = reply.send(AccountPreferenceReply { request: Some(request), outcome });
-                plx_machine::idle::invalidate();
+                plx_machine::present::wake_from_worker();
             });
         }
         // Every live setting saves through the one write door, in `choose_setting`.
@@ -74,19 +74,19 @@ pub(super) fn execute(command: PreferenceCmd) {
                     (current.auto_sign_in() != on).then(|| current.with_auto_sign_in(on))
                 }, || plx_plex::plex::session::tenure() == tenure).is_some_and(|write| write.outcome.persisted());
                 let _ = reply.send(saved);
-                plx_machine::idle::invalidate();
+                plx_machine::present::wake_from_worker();
             });
         }
         PreferenceCmd::UiResolution { mode, reply } => {
             let _ = plx_base::storage_worker::submit_retained(move || {
                 let _ = reply.send(plx_plex::plex::session::set_ui_resolution(mode));
-                plx_machine::idle::invalidate();
+                plx_machine::present::wake_from_worker();
             });
         }
         PreferenceCmd::Language { language, reply } => {
             let _ = plx_base::storage_worker::submit_retained(move || {
                 let _ = reply.send(plx_plex::plex::session::set_language(language));
-                plx_machine::idle::invalidate();
+                plx_machine::present::wake_from_worker();
             });
         }
     }

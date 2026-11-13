@@ -29,23 +29,26 @@ fn a_visible_session_change_invalidates_the_frame_once_per_landing() {
     let _session = session::TempSession::new("bridge-session-landing");
     struct ResetIdle;
     impl Drop for ResetIdle {
-        fn drop(&mut self) { plx_machine::idle::reset_for_test(); }
+        fn drop(&mut self) { plx_machine::motion::report::reset_for_test(); }
     }
     let _idle = ResetIdle;
     let mut bridge = Bridge::for_test(|| 0);
     let mut pages = plx_ui::dispatch::Dispatcher::new();
     session::save(&signed_in());
-    plx_machine::idle::reset_for_test();
+    plx_machine::motion::report::reset_for_test();
     let _frame = plx_base::task::FrameScope::enter();
+    let before = pages.present.damage_epoch();
     bridge.land_session_cache(&mut pages);
-    assert_eq!(plx_machine::idle::take_local_damage(), 1, "a changed session lands on the frame step");
+    assert_eq!(pages.present.damage_epoch() - before, 1, "a changed session lands on the frame step");
+    let before = pages.present.damage_epoch();
     bridge.land_session_cache(&mut pages);
-    assert_eq!(plx_machine::idle::take_local_damage(), 0, "one invalidation per landing");
+    assert_eq!(pages.present.damage_epoch() - before, 0, "one invalidation per landing");
     drop(_frame);
     session::save(&signed_in());
     let _frame = plx_base::task::FrameScope::enter();
+    let before = pages.present.damage_epoch();
     bridge.land_session_cache(&mut pages);
-    assert_eq!(plx_machine::idle::take_local_damage(), 0, "a save that serves the same content lands nothing");
+    assert_eq!(pages.present.damage_epoch() - before, 0, "a save that serves the same content lands nothing");
 }
 
 /// This thread holds the session's IO lock for the whole run, so a frame that took it — or made any
@@ -137,7 +140,7 @@ fn an_unloaded_cache_is_refilled_by_the_owner_within_a_few_frames() {
     let _session = session::TempSession::new("bridge-cache-refill");
     struct ResetIdle;
     impl Drop for ResetIdle {
-        fn drop(&mut self) { plx_machine::idle::reset_for_test(); }
+        fn drop(&mut self) { plx_machine::motion::report::reset_for_test(); }
     }
     let _idle = ResetIdle;
     session::save(&signed_in());
@@ -202,7 +205,7 @@ fn a_refresh_effect_still_queued_is_not_reconciled_as_lost() {
     let _session = session::TempSession::new("bridge-cache-effect-queued");
     struct ResetIdle;
     impl Drop for ResetIdle {
-        fn drop(&mut self) { plx_machine::idle::reset_for_test(); }
+        fn drop(&mut self) { plx_machine::motion::report::reset_for_test(); }
     }
     let _idle = ResetIdle;
     session::save(&signed_in());

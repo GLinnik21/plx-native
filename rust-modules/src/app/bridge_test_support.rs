@@ -107,7 +107,7 @@ pub(super) struct Pump {
     ps: plx_media::route::PlaybackSession,
     pa: plx_media::player::adapter::PlayerAdapter,
     menu_play_await: Option<crate::app::input::MenuPlayAwait>,
-    ok_armed: bool,
+
 }
 
 impl Pump {
@@ -116,7 +116,7 @@ impl Pump {
         // under `cfg(test)`, so no player verb is reached.
         let mt = unsafe { plx_base::task::MainThread::assume() };
         Pump { ps: Default::default(), pa: plx_media::player::adapter::PlayerAdapter::new(mt),
-            menu_play_await: None, ok_armed: false }
+            menu_play_await: None }
     }
 
     /// One frame's requests, `now` being the frame clock in ms.
@@ -158,7 +158,7 @@ fn pump_requests(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, mut item: Option
             (_, Some((pump, now))) => {
                 // SAFETY: the player seam is this pump's own `NoSink` session.
                 unsafe {
-                    library_page_request(&mut pump.ps, &mut pump.pa, &mut pump.menu_play_await, &mut pump.ok_armed,
+                    library_page_request(&mut pump.ps, &mut pump.pa, &mut pump.menu_play_await,
                         *now, d, rig, instance, entry, request, ret);
                 }
                 seen.push(format!("library:{label}"));
@@ -210,8 +210,8 @@ fn pump_requests(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, mut item: Option
         let label = format!("{request:?}");
         seen.push(match (watchlist_navigation(d, rig, &request, ret), item.as_mut()) {
             (None, _) => format!("watchlist:{label}"),
-            (Some(ret), Some((pump, _))) => {
-                watchlist_request(d, rig, entry, request, ret, &mut pump.ok_armed);
+            (Some(ret), Some(_)) => {
+                watchlist_request(d, rig, entry, request, ret);
                 format!("watchlist:{label}")
             }
             (Some(_), None) => format!("unperformed watchlist:{label}"),
@@ -305,7 +305,7 @@ impl DipImage {
     /// The paint the frame `d` just ran (at `ms`) gets, and `page_image_held` for the next tick.
     /// `None` when no page is on top.
     pub(super) fn plan(&mut self, d: &Dispatcher<AppHost>, ms: u32) -> Option<PagePaint> {
-        let quiescent = !plx_machine::idle::page_layout_moving();
+        let quiescent = !plx_machine::motion::report::page_layout_moving();
         let transition = &d.nav.tabs.stack.transition;
         let (alpha, flight) = (transition.page_alpha(), transition.in_flight());
         let entry = d.nav.top_page().map(|e| e.id)?;
@@ -650,7 +650,7 @@ impl World {
         self.frame += 1;
         if let Some(feed) = self.feed { feed(&mut self.d, &mut self.bridge); }
         if self.script.is_some() { self.bridge.store_runner.run_held_watchlist_writes(); }
-        plx_machine::idle::frame_begin(0.016);
+        plx_machine::motion::report::frame_begin(0.016);
         super::frame(&mut self.d, &mut self.bridge, tick(self.frame), inputs);
         let now = self.frame * 16;
         self.performed.extend(self.pump.run(&mut self.d, &mut self.bridge, now));

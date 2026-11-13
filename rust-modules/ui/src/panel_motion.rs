@@ -268,7 +268,7 @@ impl PanelMotion {
             for layer in &mut slide.leaving {
                 layer.alpha = (layer.alpha - dt / OUT_S).max(0.0);
                 layer.x.step(-slide.dir * shift, SLIDE_K, dt);
-                plx_machine::idle::note_spring(layer.alpha, 0.0, 1.0);
+                plx_machine::motion::report::note_spring(layer.alpha, 0.0, 1.0);
             }
             slide.leaving.retain(|l| l.alpha > 0.0);
             let loudest = slide.leaving.iter().fold(0.0_f32, |m, l| m.max(l.alpha));
@@ -277,9 +277,9 @@ impl PanelMotion {
             }
             slide.live_x.step(0.0, SLIDE_K, dt);
             if slide.live_alpha < 1.0 {
-                plx_machine::idle::note_spring(slide.live_alpha, 1.0, 1.0);
+                plx_machine::motion::report::note_spring(slide.live_alpha, 1.0, 1.0);
             }
-            let at_rest = plx_machine::idle::settled(slide.live_x.pos, 0.0, slide.live_x.vel);
+            let at_rest = plx_machine::motion::report::settled(slide.live_x.pos, 0.0, slide.live_x.vel);
             if slide.leaving.is_empty() && slide.live_alpha >= 1.0 && at_rest {
                 self.slide = None;
             }
@@ -288,7 +288,7 @@ impl PanelMotion {
 
     fn step_edge(spring: &mut Spring, target: f32, dt: f32) {
         spring.step(target, RECT_K, dt);
-        if plx_machine::idle::settled(spring.pos, target, spring.vel) {
+        if plx_machine::motion::report::settled(spring.pos, target, spring.vel) {
             spring.jump(target);
         }
     }

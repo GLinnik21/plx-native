@@ -909,8 +909,9 @@ fn page_damage_frames_across_a_taken_holds_spring(lift_owns_the_card: bool) -> (
     let mut t = 0u32;
     let run = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, t: &mut u32| {
         *t += 1;
+        let before = d.present.page_damage_epoch();
         frame(d, rig, AppArg::Home, tick(*t), vec![]);
-        let damage = plx_machine::idle::take_page_damage();
+        let damage = d.present.page_damage_epoch() != before;
         damage
     };
     run(&mut d, &mut rig, &mut t);

@@ -216,9 +216,8 @@ fn typed_initial_roundtrip_and_hidden_input_hash_are_complete() {
     changed.consent.errors = true;
     changed.validate().unwrap();
     assert_ne!(changed.hash(), initial.hash(), "automation hides the prompt, not its logical initial decision");
-    let press = plx_ui::press::Press::new();
-    assert_ne!(super::super::recorder::state_hash(&press,"home","","",0,0,0,initial.hash()),
-        super::super::recorder::state_hash(&press,"home","","",0,0,0,changed.hash()));
+    assert_ne!(super::super::recorder::state_hash("home","","",0,0,0,initial.hash()),
+        super::super::recorder::state_hash("home","","",0,0,0,changed.hash()));
     assert!(Initial::decode(serde_json::to_value(&changed).unwrap(),initial.hash()).is_err());
     let mut unknown = value.clone(); unknown["unrecognized"] = json!(true);
     assert!(Initial::from_value(unknown).is_err());
@@ -477,7 +476,7 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
         let mut launches = 0;
         let sink = plx_ui::rec::MemSink::default();
         let bytes = sink.segments.clone();
-        let header = plx_ui::rec::Header::new(17,&plx_ui::press::Press::new());
+        let header = plx_ui::rec::Header::new(17,&plx_ui::dispatch::press::Press::new());
         let mut writer = plx_ui::rec::Writer::open(Box::new(sink),&header,0).unwrap();
         for frame in 0..160 {
             if replay {
@@ -594,7 +593,7 @@ fn controlled_discovery_replays_refusal_retry_and_success_with_exact_identity() 
         let mut parked = 0;
         let sink = plx_ui::rec::MemSink::default();
         let bytes = sink.segments.clone();
-        let header = plx_ui::rec::Header::new(17, &plx_ui::press::Press::new());
+        let header = plx_ui::rec::Header::new(17, &plx_ui::dispatch::press::Press::new());
         let mut writer = plx_ui::rec::Writer::open(Box::new(sink), &header, 0).unwrap();
         for frame in 0..=602 {
             if replay {

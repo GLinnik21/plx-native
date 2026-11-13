@@ -660,7 +660,8 @@ fn owned_card_stops_clip_pointer_hits_and_hold_the_engine_item() {
     assert_eq!(resolved.activate, Some((chosen, plx_ui::screen::Activate::Press)));
     input.engine.set(OWNER, chosen, page.group_of(&chosen.elem, &cx), By::Pointer);
     input.arm(PressArm { key: chosen, from: PressFrom::Pointer, holdable: true }, MachineId::Instance(InstanceId(19)), 0);
-    let held = input.tick(plx_ui::press::LONG_MS + 1, 0.016);
+    let held: Vec<_> = input.tick(plx_ui::dispatch::press::LONG_MS + 1, 0.016).into_iter()
+        .filter(|event| !matches!(event, PressEvent::PageDamage)).collect();
     assert!(matches!(held.as_slice(), [PressEvent::Hold(_, _, key)] if *key == chosen));
     let PressEvent::Hold(id, _, _) = held[0] else { unreachable!() };
     let mut out = Vec::new();

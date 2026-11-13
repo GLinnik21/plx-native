@@ -136,7 +136,7 @@ impl Marquee {
     }
 
     /// Keep the present gate honest for a run drawn at `t_ms` that does NOT fit: the clock
-    /// advances by [`plx_machine::idle::now_ms`] on DRAWN frames only, so the rest beat has to buy
+    /// advances by [`plx_machine::motion::report::now_ms`] on DRAWN frames only, so the rest beat has to buy
     /// its own frames or it never ends — a focused overflowing title was reproduced sitting clipped
     /// and motionless at 4 s and again at 7 s of focus (sim, 2026-09-02). `wake` (a frame, no claim
     /// that pixels changed) for the hold; `invalidate` for the glide, where they do.
@@ -149,9 +149,10 @@ impl Marquee {
     /// only by a run that is actually moving.
     pub fn report_in(&self, t_ms: f32, text_w: f32, budget: f32, cycle_w: f32) {
         if self.moving_in(t_ms, text_w, budget, cycle_w) {
-            plx_machine::idle::invalidate();
+            plx_machine::motion::report::note_motion();
         } else {
-            plx_machine::idle::wake();
+            // A pause samples the animation clock without claiming visible movement.
+            plx_machine::motion::report::note_wait();
         }
     }
 
@@ -258,7 +259,7 @@ impl Block {
 /// the same either way. Lives in a `thread_local!` at its user.
 pub struct Clock {
     key: RefCell<String>,
-    /// The [`plx_machine::idle::now_ms`] reading when `key` last changed. Elapsed time is
+    /// The [`plx_machine::motion::report::now_ms`] reading when `key` last changed. Elapsed time is
     /// `now_ms().wrapping_sub(this)` — `draw` gets no `Tick`, and a `wrapping_sub` of two absolute
     /// readings is drift-free without an accumulator.
     start_ms: Cell<u32>,
@@ -272,7 +273,7 @@ impl Clock {
     /// Advance (or restart, when `text` is a different run) the clock, returning its value in ms.
     /// Call at most once per frame per user — the focused run is drawn exactly once.
     pub fn read(&self, text: &str) -> f64 {
-        let now = plx_machine::idle::now_ms();
+        let now = plx_machine::motion::report::now_ms();
         let changed = {
             let mut k = self.key.borrow_mut();
             if k.as_str() == text {

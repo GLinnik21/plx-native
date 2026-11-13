@@ -346,12 +346,12 @@ fn a_tab_pulse_runs_its_beat_then_is_gone_without_holding_the_page() {
     assert_eq!(strip.pulse_read(), None);
     strip.pulse(1);
     assert_eq!(strip.pulse_read(), Some((1, 0.0)));
-    plx_machine::idle::reset_for_test();
+    plx_machine::motion::report::reset_for_test();
     strip.update(labels, 0, TopFocus::Away, TAB_PULSE_S * 0.5);
     let (at, env) = strip.pulse_read().expect("still running at the peak");
     assert_eq!(at, 1);
     assert!(env > 0.99, "peak envelope {env}");
-    assert!(!plx_machine::idle::page_layout_moving(), "a pulse is not layout motion");
+    assert!(!plx_machine::motion::report::page_layout_moving(), "a pulse is not layout motion");
     strip.update(labels, 0, TopFocus::Away, TAB_PULSE_S);
     assert_eq!(strip.pulse_read(), None, "ended on its own");
 }
@@ -374,20 +374,21 @@ fn a_running_tab_pulse_reports_motion_not_page_damage() {
         strip.update(labels, 0, TopFocus::Away, 1.0 / 60.0);
     }
     strip.pulse(1);
-    plx_machine::idle::reset_for_test();
-    let _ = plx_machine::idle::take_local_damage();
+    plx_machine::motion::report::reset_for_test();
+    let mut present = plx_machine::present::Present::new();
     let mut frames = 0;
     while strip.pulse_read().is_some() {
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         strip.update(labels, 0, TopFocus::Away, 1.0 / 60.0);
         if strip.pulse_read().is_none() {
             break;
         }
         frames += 1;
-        assert!(plx_machine::idle::present_moving(), "frame {frames}: the pulse keeps the gate awake");
-        assert!(plx_machine::idle::page_moving(), "frame {frames}: as the page's own motion");
-        assert!(!plx_machine::idle::page_layout_moving(), "frame {frames}: decorative, not layout");
-        assert_eq!(plx_machine::idle::take_local_damage(), 0, "frame {frames}: and raises no damage");
+        assert!(plx_machine::motion::report::present_moving(), "frame {frames}: the pulse keeps the gate awake");
+        assert!(plx_machine::motion::report::page_moving(), "frame {frames}: as the page's own motion");
+        assert!(!plx_machine::motion::report::page_layout_moving(), "frame {frames}: decorative, not layout");
+        plx_machine::motion::report::collect_into(&mut present, frames);
+        assert!(!present.page_damaged(), "frame {frames}: and raises no damage");
     }
     // A 0.4 s beat at 60 Hz: 24 frames, less the frame that crosses the end.
     assert!(frames >= 22, "the pulse ran its beat ({frames} frames)");

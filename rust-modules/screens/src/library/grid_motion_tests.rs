@@ -570,12 +570,12 @@ fn relist_regression_the_removed_tail_card_has_its_ghost_pixels() {
     let (playing, ghosts) = page.pair.detail.relist_probe();
     assert!(playing);
     assert_eq!(ghosts, [Some("7".to_string())], "the removed last tile must fade with its own pixels");
-    plx_machine::idle::frame_begin(1.0 / 60.0);
-    let (_, moving) = plx_machine::idle::scoped_motion(|| frame(&mut page, &mut engine, &fixture, 4032));
+    plx_machine::motion::report::frame_begin(1.0 / 60.0);
+    let (_, moving) = plx_machine::motion::report::scoped_motion(|| frame(&mut page, &mut engine, &fixture, 4032));
     assert!(moving, "the landing buys frames while moving");
     settle(&mut page, &mut engine, &fixture, 4048);
-    plx_machine::idle::frame_begin(1.0 / 60.0);
-    let (_, moving) = plx_machine::idle::scoped_motion(|| frame(&mut page, &mut engine, &fixture, 8000));
+    plx_machine::motion::report::frame_begin(1.0 / 60.0);
+    let (_, moving) = plx_machine::motion::report::scoped_motion(|| frame(&mut page, &mut engine, &fixture, 8000));
     assert!(!moving, "a settled landing buys no frames");
     assert_eq!(page.pair.detail.relist_probe(), (false, Vec::new()));
 }

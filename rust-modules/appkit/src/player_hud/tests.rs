@@ -98,7 +98,7 @@ fn long_hud_titles_fit_before_every_control_slot() {
                     row.pop.step(Some(focused as usize), 1.0 / 60.0);
                     for i in 0..slot.items() {
                         let Some(rect) = items[i as usize] else { continue };
-                        assert!(right + theme::space::MD <= rect.scaled(row.scale(i)).x + 0.001);
+                        assert!(right + theme::space::MD <= rect.scaled(row.scale(i, Default::default())).x + 0.001);
                     }
                     for kicker in [Kicker::Episode(long.as_ptr()), Kicker::Context(long.as_ptr())] {
                         let runs = plx_ui::draw_census::capture_runs(|| {
@@ -147,10 +147,10 @@ fn paused_title_reveals_once_and_resume_restores_ellipsis() {
     });
     let start = paint(true);
     assert!(start[1].text.ends_with('…'));
-    plx_machine::idle::frame_begin(2.0);
+    plx_machine::motion::report::frame_begin(2.0);
     let moving = paint(true);
     assert!(moving[1].at.x < SB_X);
-    plx_machine::idle::frame_begin(30.0);
+    plx_machine::motion::report::frame_begin(30.0);
     let ended = paint(true);
     assert_eq!(ended[1].at.x, SB_X - (FM.width(long, HUD_TITLE_SZ, true) - (right - SB_X)));
     assert_eq!(paint(true)[1].at.x, ended[1].at.x, "the title must stay at the end");
@@ -173,12 +173,12 @@ fn a_paused_right_to_left_title_reveals_its_end_to_the_left() {
             long.as_ptr(), right, &FM, paused, &clock);
     });
     let _ = paint(true);
-    plx_machine::idle::frame_begin(2.0);
+    plx_machine::motion::report::frame_begin(2.0);
     let moving = paint(true);
     let elapsed = 2000.0 - plx_ui::marquee::TITLE.hold_ms;
     let off = elapsed / 1000.0 * plx_ui::marquee::SPEED;
     assert_eq!(moving[1].at.x, SB_X + window - full + off, "first words flush right, moving right");
-    plx_machine::idle::frame_begin(60.0);
+    plx_machine::motion::report::frame_begin(60.0);
     assert_eq!(paint(true)[1].at.x, SB_X, "the last words rest on the window's left edge");
     assert_eq!(paint(true)[1].at.x, SB_X, "and stay");
 }

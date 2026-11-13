@@ -1202,6 +1202,12 @@ mod contract_tests {
         let _ = stores.take_notices();
         let before_notice = stores.browse.borrow().gen();
         let before_sources = stores.browse.borrow().source_list_gen_for_test();
+        // Data publication cannot dirty or wake an independent presentation owner.
+        let mut present = plx_machine::present::Present::global();
+        assert!(present.take(0));
+        present.acknowledge(0);
+        assert!(!present.changed());
+        let damage = (present.damage_epoch(), present.page_damage_epoch());
         plx_plex::plex::register_for_test(
             "", "127.0.0.1", 9, "synthetic", "fixture");
         let launches = refused_discovery_step(&stores);
@@ -1211,7 +1217,8 @@ mod contract_tests {
         assert_eq!(stores.browse.borrow().gen(), before_notice + 1);
         assert_eq!(stores.take_notices(), [(StoreId::Browse, before_notice + 1)]);
         assert!(stores.take_notices().is_empty());
-        let _ = plx_machine::idle::take_local_damage();
+        assert_eq!((present.damage_epoch(), present.page_damage_epoch()), damage);
+        assert!(!present.changed(), "a data publication must not wake an unrelated owner");
 
         let settled_notice = stores.browse.borrow().gen();
         let settled_sources = stores.browse.borrow().source_list_gen_for_test();
@@ -1220,8 +1227,9 @@ mod contract_tests {
         assert_eq!(stores.browse.borrow().gen(), settled_notice);
         assert_eq!(stores.browse.borrow().source_list_gen_for_test(), settled_sources);
         assert!(stores.take_notices().is_empty());
-        assert_eq!(plx_machine::idle::take_local_damage(), 0,
-            "an empty-to-empty machine identity must not invalidate the settled frame");
+        assert_eq!((present.damage_epoch(), present.page_damage_epoch()), damage);
+        assert!(!present.changed(),
+            "an empty-to-empty machine identity must not dirty or wake an unrelated owner");
 
         plx_plex::plex::reset_servers_for_test();
     }

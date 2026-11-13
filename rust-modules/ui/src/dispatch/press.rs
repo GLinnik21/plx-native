@@ -2,21 +2,20 @@
 //! activation. OK-**down** dips the focused control inward (press-in); OK-**up** releases it back with
 //! an overshoot bounce and, a beat later (so the bounce is actually on screen), the caller commits the
 //! activation. It is genuinely event-driven — the dip persists for as long as the button is physically
-//! held — so a HELD OK is a measurable long-press ([`held_ms`]/[`is_long`]), not a tap. The design
+//! held — so a HELD OK is a measurable long-press ([`Press::held_ms`]/[`Press::is_long`]), not a tap. The design
 //! (`Home Screen.dc.html`) fakes down/up with a fixed `setTimeout`; the real remote gives us both
 //! edges, so we use them. That long press is what opens the **item context menu** on a home shelf
 //! card and on the detail page's episode still (`screens/item_menu.rs`) — see [`LONG_MS`].
 //!
-//! ONE control is pressed at a time, so one value suffices — `App.input.press`, the only owner (restructure spec §2.2); draw code reads its published snapshot —
-//! the renderer multiplies the PRESSED element's scale by [`scale`] while [`is_active`]. Pressed is
-//! not always focused: navigation [`cancel`]s the press, and the spring-back then plays on the card
+//! ONE control is pressed at a time, so one value suffices — `Dispatcher.input.press`, the only owner (restructure spec §2.2); draw code receives an explicit `PressRead` —
+//! the renderer multiplies the PRESSED element's scale by [`Press::scale`] while [`Press::is_active`]. Pressed is
+//! not always focused: navigation [`Press::cancel`]s the press, and the spring-back then plays on the card
 //! that was pressed while focus (and its pop) has already moved on. The machine does not know which
 //! element that is; the dispatcher's `InputMachine::dip_owner` does, and hands it to draw code as
 //! `PressRead::owner` for as long as the press is active, so a card dips only if it is the owner.
-//! The control-face consumers that read [`scale`] directly (`CtlPop`, `AvatarRow`) still apply it to
-//! the focused one — see their docs.
+//! Control faces receive the same read, including arm identity, while avatars match the dip owner.
 //!
-//! **Two things take this press, not one.** A CARD ([`begin`]) and a CONTROL FACE ([`begin_ctl`]) —
+//! **Two things take this press, not one.** A CARD ([`Press::begin`]) and a CONTROL FACE ([`Press::begin_ctl`]) —
 //! the design system's `Button` / `CircleButton` / `TransportButton`, whose dip arrives through their
 //! row's [`CtlPop::scale`](crate::widgets::CtlPop::scale). They differ only in whether a HOLD
 //! means anything: a card grows a context menu out of one, a control face has nothing to grow, so
@@ -26,7 +25,7 @@
 //! `CtlPop` was already folding a factor that was permanently 1.0.
 //!
 //! Reliability mirrors the scrub commit in `app.rs`: the Magic Remote occasionally drops a key-up, so
-//! [`tick`] resolves a stuck press three ways — a real release (after a minimum visible dip), a stale
+//! [`Press::tick`] resolves a stuck press three ways — a real release (after a minimum visible dip), a stale
 //! heartbeat (dropped key-up), or a hard hold cap — and a press therefore always commits or cancels.
 use crate::Spring;
 
@@ -84,8 +83,8 @@ enum Phase {
     Up,   // released/cancelled: springing back toward REST
 }
 
-/// The press machine (restructure spec §7.4): ONE value, owned by `App.input` — no global. Draw
-/// code reads the published snapshot (`scale`/`is_live`/`is_active` below); only the owner writes.
+/// The press machine (restructure spec §7.4): ONE value, owned by `Dispatcher.input` — no global. Draw
+/// code receives `InputMachine::press_read`; only the input owner writes.
 pub struct Press {
     sp: Spring,
     phase: Phase,
@@ -152,11 +151,7 @@ impl Press {
     }
 
     fn arm(&mut self, now: u32, holdable: bool) {
-        SNAP.with(|c| {
-            let mut snap = c.get();
-            snap.arm = snap.arm.wrapping_add(1);
-            c.set(snap);
-        });
+
         let s = &mut *self;
         s.phase = Phase::Down;
         s.down_at = now;
@@ -169,7 +164,7 @@ impl Press {
         s.long = false;
         s.took = false;
         s.holdable = holdable;
-        self.publish();
+
     }
 
     /// A held-key heartbeat (OK 0x101 auto-repeat) — keeps [`LOST_MS`] from firing on a genuine hold.
@@ -179,7 +174,7 @@ impl Press {
             s.alive = now;
             s.got_beat = true;
         }
-        self.publish();
+
     }
 
     /// OK-up: record the release. The bounce starts (respecting [`MIN_DIP_MS`]) and the activation commits
@@ -189,7 +184,7 @@ impl Press {
         if s.phase == Phase::Down && s.release_at == 0 {
             s.release_at = now;
         }
-        self.publish();
+
     }
 
     /// Abort the in-flight press: spring back WITHOUT committing. The ONE way a press that will not
@@ -211,7 +206,7 @@ impl Press {
             s.commit_at = 0;
             s.release_at = 0;
         }
-        self.publish();
+
     }
 
     /// True while a press is in flight that can still reach its activation — [`is_active`] MINUS the
@@ -299,18 +294,16 @@ impl Press {
     /// section (Detail's season tabs, a hero button; the episode strip leaves its lifted still out
     /// through `DrawFrame::leaves_out`) has its card in the snapshot, so the snapshot is re-taken on every frame the press visibly moves it and on the
     /// phase changes (the release, the landing on rest), with the invisible tails of the spring
-    /// ([`idle::settled`](plx_machine::idle::settled)) left alone. A tap that opens a cached
+    /// ([`idle::settled`](plx_machine::motion::report::settled)) left alone. A tap that opens a cached
     /// surface (a Library chip, the account menu) springs back under it too but is not a long
     /// hold: a tap stays motion-only.
-    pub fn tick(&mut self, now: u32, dt: f32) {
+    pub fn tick(&mut self, now: u32, dt: f32) -> bool {
         let phase = self.phase;
         self.step(now, dt);
-        if self.long && !crate::popover::lift_owns() {
-            let target = if self.phase == Phase::Down { DIP } else { REST };
-            if self.phase != phase || !plx_machine::idle::settled(self.sp.pos, target, self.sp.vel) {
-                plx_machine::idle::invalidate();
-            }
-        }
+        let target = if self.phase == Phase::Down { DIP } else { REST };
+        // A typed result for the input owner's Present, never ambient damage.
+        self.long && !crate::popover::lift_owns()
+            && (self.phase != phase || !plx_machine::motion::report::settled(self.sp.pos, target, self.sp.vel))
     }
 
     fn step(&mut self, now: u32, dt: f32) {
@@ -360,7 +353,7 @@ impl Press {
                 }
             }
         }
-        self.publish();
+
     }
 
     /// One-shot: `true` exactly once, when a released press's bounce has played long enough to commit the
@@ -370,24 +363,13 @@ impl Press {
         if s.want_commit && !s.took && reached(now, s.commit_at) {
             s.took = true;
             s.want_commit = false;
-            s.publish();
+
             return true;
         }
         false
     }
 
-    /// Write the read-only snapshot draw code reads (restructure spec §2.3: the owner publishes
-    /// on change; readers never reach the machine).
-    fn publish(&self) {
-        SNAP.with(|c| {
-            c.set(Snap {
-                scale: self.sp.pos,
-                live: self.phase != Phase::Idle && !self.cancelled,
-                active: self.phase != Phase::Idle,
-                arm: c.get().arm,
-            })
-        });
-    }
+
 }
 
 impl Press {
@@ -432,45 +414,7 @@ impl plx_machine::machine::LogicalState for Press {
     }
 }
 
-/// The published snapshot: what a frame's draw and the screens' `armed()` predicates read. It is
-/// a MAIN-THREAD cell written by the owner on every change, not a second copy of the machine —
-/// the `Press` in `App.input` is the only state.
-#[derive(Clone, Copy)]
-struct Snap {
-    scale: f32,
-    live: bool,
-    active: bool,
-    arm: u32,
-}
-
-thread_local! {
-    static SNAP: std::cell::Cell<Snap> = const { std::cell::Cell::new(Snap { scale: REST, live: false, active: false, arm: 0 }) };
-}
-
-/// Which press is in flight (or springing back): changes with every `begin` / `begin_ctl`. The
-/// identity of THIS press for a draw-side cache that must not mistake the next press for the last
-/// one (`widgets::DipLatch`); part of the snapshot, never of the machine's canon.
-#[inline]
-pub fn arm_id() -> u32 {
-    SNAP.with(|c| c.get().arm)
-}
-
-/// The dip factor the renderer multiplies the focus scale by (published snapshot).
-#[inline]
-pub fn scale() -> f32 {
-    SNAP.with(|c| c.get().scale)
-}
-
-/// A press is in flight and was not abandoned (published snapshot).
-pub fn is_live() -> bool {
-    SNAP.with(|c| c.get().live)
-}
-
-/// A press is in flight or still springing back (published snapshot).
-#[inline]
-pub fn is_active() -> bool {
-    SNAP.with(|c| c.get().active)
-}
+// Read capabilities are projected by InputMachine::press_read, never published globally.
 
 #[cfg(test)]
 mod ownership_tests {
@@ -479,7 +423,7 @@ mod ownership_tests {
     #[test]
     fn the_press_machine_is_owned_by_input_and_has_no_global() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let press = std::fs::read_to_string(root.join("ui/src/press.rs")).unwrap();
+        let press = std::fs::read_to_string(root.join("ui/src/dispatch/press.rs")).unwrap();
         let code: Vec<&str> = press
             .lines()
             .filter(|l| !l.trim_start().starts_with("//"))
@@ -491,11 +435,13 @@ mod ownership_tests {
         );
         let cell = ["thread_local", "!"].join(""); // as above: keep this line from matching itself
         let cells = code.iter().filter(|l| l.contains(&cell)).count();
-        assert_eq!(cells, 1, "the one thread_local is the published snapshot");
+        assert_eq!(cells, 0, "press must have no thread-local publication");
         let input = std::fs::read_to_string(root.join("ui/src/input.rs")).unwrap();
         assert!(input.contains("press: Press"), "Input owns the press");
         let app = std::fs::read_to_string(root.join("src/app/mod.rs")).unwrap();
-        assert!(app.contains("input: plx_ui::input::Input"), "App owns Input");
+        assert!(!app.contains("input: plx_ui::input::Input"), "App must not own a shadow press");
+        let dispatch = std::fs::read_to_string(root.join("ui/src/dispatch.rs")).unwrap();
+        assert!(dispatch.contains("pub input: InputMachine<H::Elem>"), "Dispatcher owns InputMachine");
     }
 }
 
@@ -504,9 +450,8 @@ mod tests {
     //! **The two press KINDS**, which is the whole of what [`begin_ctl`] added: a card's hold is a
     //! second gesture and swallows the tap, a control face's hold is nothing and must not.
     //!
-    //! Every one of these drives the real module, and the module is a crate GLOBAL — tests in
-    //! other files drive it too — so each takes `testlock::serial()` for its whole body and leaves
-    //! the spring back at rest on the way out.
+    //! Every test drives its independently owned press. The legacy motion reporter still needs
+    //! the serial guard; no press state or draw read is shared.
     use super::*;
 
     /// Tick the machine forward `ms` from `now` at ~60 Hz, reporting whether the activation
@@ -719,20 +664,23 @@ mod tests {
         assert_eq!(p.held_ms(3200), None, "a control face has no hold gesture");
     }
     /// Tick a spring-back to rest, one frame at a time, reporting per frame whether it raised
-    /// damage and whether the spring was still visibly moving (or changed phase) on that frame
-    /// (no `OwnScope` is open in these tests, so damage raised on this thread IS page damage). Read
-    /// from `idle::take_local_damage`, never the process-wide `take_page_damage`: another test's
-    /// thread landing a spring bumps or steals that one, and a press test then fails at random.
+    /// damage and whether the spring was still visibly moving (or changed phase) on that frame.
+    /// Apply its explicit result to a local Present, matching InputMachine and Dispatcher:
+    /// another input owner or worker cannot steal or publish this press's page damage.
     fn spring_back_frames(p: &mut Press, now: &mut u32) -> Vec<(bool, bool)> {
         let mut out = Vec::new();
-        let _ = plx_machine::idle::take_local_damage();
+        let _ = plx_machine::motion::report::take_local_motion();
         while p.is_active() && out.len() < 120 {
             let phase = p.phase;
             *now = now.wrapping_add(16);
-            p.tick(*now, 0.016);
+            let mut present = plx_machine::present::Present::new();
+            if p.tick(*now, 0.016) {
+                present.note_in_scope(plx_machine::present::Scope::Page,
+                    plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
+            }
             let target = if p.phase == Phase::Down { DIP } else { REST };
-            let moving = p.phase != phase || !plx_machine::idle::settled(p.sp.pos, target, p.sp.vel);
-            let raised = plx_machine::idle::take_local_damage() > 0;
+            let moving = p.phase != phase || !plx_machine::motion::report::settled(p.sp.pos, target, p.sp.vel);
+            let raised = present.page_damaged();
             out.push((raised, moving));
         }
         assert!(!p.is_active(), "the spring-back ends");
@@ -745,7 +693,7 @@ mod tests {
     /// only reports MOTION (the present gate), and motion under an open panel is deliberately not a
     /// reason to re-take the snapshot (`popover::host_refresh`), so without damage per moving frame
     /// the snapshot kept the dipped card while the opener's lift grew over it: two copies of the
-    /// card and its title. The damage reaches `take_page_damage`, which is what the host reads, and
+    /// card and its title. The typed effect reaches `Present::page_damaged`, which the host reads, and
     /// it stops with the visible motion (`idle::settled`): the invisible tails of the spring, and a
     /// press held steady at its dip, raise nothing, so the idle gate still saves those frames.
     #[test]
@@ -756,11 +704,10 @@ mod tests {
         p.begin(now);
         run(&mut p, &mut now, LONG_MS + 100); // past LONG_MS, and the dip has arrived and settled
         assert!(p.was_long(), "the hold latched");
-        let _ = plx_machine::idle::take_local_damage();
+        let _ = plx_machine::motion::report::take_local_motion();
         for _ in 0..5 {
             now = now.wrapping_add(16);
-            p.tick(now, 0.016);
-            assert_eq!(plx_machine::idle::take_local_damage(), 0, "held steady at its dip is quiet");
+            assert!(!p.tick(now, 0.016), "held steady at its dip is quiet");
         }
         p.cancel(); // the hold was answered: spring back
         let frames = spring_back_frames(&mut p, &mut now);
@@ -771,8 +718,7 @@ mod tests {
         assert!(frames.iter().filter(|f| f.1).count() > 5, "the spring really moved the card");
         assert!(frames.iter().any(|f| !f.1), "…and its invisible tail raised nothing");
         now = now.wrapping_add(16);
-        p.tick(now, 0.016);
-        assert_eq!(plx_machine::idle::take_local_damage(), 0, "a press at rest is quiet");
+        assert!(!p.tick(now, 0.016), "a press at rest is quiet");
     }
 
     /// **When the opener lift owns the card (a card section left it out of the page pass), the
@@ -791,11 +737,8 @@ mod tests {
         let frames = spring_back_frames(&mut p, &mut now);
         crate::popover::set_lift_owns(false);
         assert!(frames.iter().filter(|f| f.1).count() > 5, "the spring really moved the card");
-        // Graded on THIS thread's damage (`idle::take_local_damage`), not on `take_page_damage`:
-        // that one reads the process-wide `DAMAGE_GEN`, which any test on another thread that
-        // lands a spring (this module's own unlocked press tests among them) bumps, and "no
-        // damage at all" then fails at random. No `OwnScope` is open here, so nothing raised on
-        // this thread is exactly "no page damage from this press".
+        // The local Present observes only this press's explicit page-damage effects;
+        // global worker scheduling and another press cannot affect the readout.
         assert!(frames.iter().all(|f| !f.0), "no frame of it is page damage: {frames:?}");
     }
 

@@ -54,7 +54,8 @@ fn publish(probe: DvProbe, started: Instant, code: Option<i64>, detail: Option<&
             probe.provenance(),
         ));
     }
-    plx_machine::idle::invalidate();
+    // The boot worker publishes DvProbe only. Bridge captures the typed probe before present
+    // admission and owns the Page damage when this diagnostic fact changes.
 }
 
 /// Start the one boot probe. The registration and its private GLib context are both created and

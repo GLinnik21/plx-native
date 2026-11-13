@@ -190,7 +190,7 @@ const DT: f32 = 1.0 / 60.0;
 /// The rounded rects one recording draw of the row paints, in paint order. The selection plate is
 /// exactly [`HEIGHT`] tall (it never scales); the focus capsule wears the pop, so it is taller.
 fn rrects(page: &PageHeader, layout: &HeaderLayout, capsules: &TabStrip, pop: &CtlPop<1>, lifted: Option<usize>) -> Vec<Rect> {
-    crate::draw_census::capture(|| page.draw(Painter::recording(), layout, capsules, pop.scale_with(0, 0.0), lifted))
+    crate::draw_census::capture(|| page.draw(Painter::recording(), layout, capsules, pop.scale_with(0, plx_machine::machine::PressRead::<()>::default()), lifted))
         .into_iter().filter(|(tag, _)| *tag == 2).map(|(_, rect)| rect).collect()
 }
 
@@ -278,7 +278,7 @@ fn a_lifted_control_leaves_no_label_on_the_page() {
     let layout = page.layout(1920.0, &Fixed);
     let (capsules, pop) = settled(&layout, 0, 3);
     let words = |lifted: Option<usize>| crate::draw_census::capture_text(|| {
-        page.draw(Painter::recording(), &layout, &capsules, pop.scale_with(0, 0.0), lifted)
+        page.draw(Painter::recording(), &layout, &capsules, pop.scale_with(0, plx_machine::machine::PressRead::<()>::default()), lifted)
     }).into_iter().map(|(text, _)| text).collect::<Vec<_>>();
     let kept = words(None);
     assert!(kept.iter().any(|t| t == "Collections"), "{kept:?}");
@@ -319,7 +319,7 @@ fn the_opener_is_painted_as_the_focused_control() {
     let layout = page.layout(1920.0, &Fixed);
     let (_, pop) = settled(&layout, 0, 3);
     let plate = layout.items[3].plate;
-    let scale = pop.scale_with(0, 0.0);
+    let scale = pop.scale_with(0, plx_machine::machine::PressRead::<()>::default());
     let rects = crate::draw_census::capture(|| page.draw_opener(Painter::recording(), &layout, 3, scale))
         .into_iter().filter(|(tag, _)| *tag == 2).map(|(_, r)| r).collect::<Vec<_>>();
     let want = focus_pill(plate);
@@ -460,10 +460,10 @@ fn the_rows_motion_wakes_the_gate_but_never_holds_a_page_freeze() {
     let mut layout_moved = false;
     let mut page_moved = false;
     for _ in 0..90 {
-        plx_machine::idle::frame_begin(DT);
+        plx_machine::motion::report::frame_begin(DT);
         PageHeader::step(&layout, 0, 1, &mut capsules, &mut pop, DT);
-        layout_moved |= plx_machine::idle::page_layout_moving();
-        page_moved |= plx_machine::idle::page_moving();
+        layout_moved |= plx_machine::motion::report::page_layout_moving();
+        page_moved |= plx_machine::motion::report::page_moving();
         frames += 1;
     }
     assert_eq!(frames, 90);
@@ -1616,10 +1616,10 @@ fn the_slide_wakes_the_gate_while_it_runs_and_goes_quiet_at_rest() {
     swap.begin(&old, &new);
     let (mut frames, mut moving, mut layout_moved) = (0, 0, false);
     while swap.is_active() && frames < 600 {
-        plx_machine::idle::frame_begin(DT);
+        plx_machine::motion::report::frame_begin(DT);
         swap.step(DT);
-        layout_moved |= plx_machine::idle::page_layout_moving();
-        if plx_machine::idle::page_moving() {
+        layout_moved |= plx_machine::motion::report::page_layout_moving();
+        if plx_machine::motion::report::page_moving() {
             moving += 1;
             assert!(frames == moving - 1, "frame {frames}: the slide stopped asking for frames before it landed");
         }
@@ -1628,8 +1628,8 @@ fn the_slide_wakes_the_gate_while_it_runs_and_goes_quiet_at_rest() {
     assert!(!swap.is_active() && moving > 5, "the slide ran ({moving} frames asked for, {frames} stepped) and landed");
     assert!(!layout_moved, "it is decoration: it never holds a page freeze");
     for frame in 0..120 {
-        plx_machine::idle::frame_begin(DT);
+        plx_machine::motion::report::frame_begin(DT);
         swap.step(DT);
-        assert!(!plx_machine::idle::page_moving() && !swap.is_active(), "frame {frame} after landing: a settled swap asks for nothing");
+        assert!(!plx_machine::motion::report::page_moving() && !swap.is_active(), "frame {frame} after landing: a settled swap asks for nothing");
     }
 }

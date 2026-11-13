@@ -215,7 +215,7 @@ mod tests {
                 safe.x + safe.w - RowStyle::CAST.w * 0.5] {
                 let at = label_frame(center, 100.0, 0.0, &LabelMeasure);
                 restart_clocks();
-                plx_machine::idle::frame_begin(1.0 / 60.0);
+                plx_machine::motion::report::frame_begin(1.0 / 60.0);
                 let log = |focused| plx_ui::draw_census::capture(|| {
                     label(Painter::recording(), "Ana", caption, center, 100.0, focused, 0.0, &LabelMeasure);
                 });
@@ -260,17 +260,17 @@ mod tests {
     fn a_focused_cast_name_that_does_not_fit_marquees() {
         let _serial = plx_base::testlock::serial();
         restart_clocks();
-        plx_machine::idle::frame_begin(1.0 / 60.0);
-        let _ = plx_machine::idle::take_local_damage();
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
+        let _ = plx_machine::motion::report::take_local_motion();
         let (rest, _) = runs(LONG_NAME, "", true);
         assert_eq!(rest.len(), 2, "a run and its follower: {rest:?}");
-        assert_eq!(plx_machine::idle::take_local_damage(), 0, "resting is not damage");
+        assert_eq!(plx_machine::motion::report::take_local_motion(), 0, "resting is not damage");
         let x0 = rest.iter().map(|r| r.x).fold(f32::MAX, f32::min);
-        plx_machine::idle::frame_begin((marquee::TITLE.hold_ms + 500.0) / 1000.0);
+        plx_machine::motion::report::frame_begin((marquee::TITLE.hold_ms + 500.0) / 1000.0);
         let (gliding, _) = runs(LONG_NAME, "", true);
         let x1 = gliding.iter().map(|r| r.x).fold(f32::MAX, f32::min);
         assert!(x1 < x0, "the name has moved left: {x0} -> {x1}");
-        assert!(plx_machine::idle::take_local_damage() > 0, "a gliding frame reports");
+        assert!(plx_machine::motion::report::take_local_motion() > 0, "a gliding frame reports");
     }
 
     /// And nothing else moves: a fitting focused name and any UNFOCUSED name draw one still run.
@@ -279,11 +279,11 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         restart_clocks();
         for _ in 0..3 {
-            plx_machine::idle::frame_begin(1.5);
-            let _ = plx_machine::idle::take_local_damage();
+            plx_machine::motion::report::frame_begin(1.5);
+            let _ = plx_machine::motion::report::take_local_motion();
             assert_eq!(runs("Ana", "", true).0.len(), 1, "a fitting focused name");
             assert_eq!(runs(LONG_NAME, "", false).0.len(), 1, "an unfocused name elides");
-            assert_eq!(plx_machine::idle::take_local_damage(), 0);
+            assert_eq!(plx_machine::motion::report::take_local_motion(), 0);
         }
     }
 
@@ -294,19 +294,19 @@ mod tests {
     fn a_focused_role_that_overflows_marquees_one_that_fits_does_not() {
         let _serial = plx_base::testlock::serial();
         restart_clocks();
-        plx_machine::idle::frame_begin(1.0 / 60.0);
-        let _ = plx_machine::idle::take_local_damage();
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
+        let _ = plx_machine::motion::report::take_local_motion();
         let (_, rest) = runs("Ana", LONG_ROLE, true);
         assert_eq!(rest.len(), 2, "a run and its follower: {rest:?}");
         let y = rest[0].y;
         assert!(rest.iter().all(|r| r.y == y), "one line, not a wrapped block");
-        assert_eq!(plx_machine::idle::take_local_damage(), 0, "resting is not damage");
-        plx_machine::idle::frame_begin((marquee::TITLE.hold_ms + 500.0) / 1000.0);
+        assert_eq!(plx_machine::motion::report::take_local_motion(), 0, "resting is not damage");
+        plx_machine::motion::report::frame_begin((marquee::TITLE.hold_ms + 500.0) / 1000.0);
         let (_, gliding) = runs("Ana", LONG_ROLE, true);
         let x0 = rest.iter().map(|r| r.x).fold(f32::MAX, f32::min);
         let x1 = gliding.iter().map(|r| r.x).fold(f32::MAX, f32::min);
         assert!(x1 < x0, "the role has moved left: {x0} -> {x1}");
-        assert!(plx_machine::idle::take_local_damage() > 0);
+        assert!(plx_machine::motion::report::take_local_motion() > 0);
 
         restart_clocks();
         assert_eq!(runs("Ana", "Director", true).1.len(), 1, "a fitting role is one still run");
@@ -320,7 +320,7 @@ mod tests {
     #[test]
     fn a_cast_label_is_one_name_line_and_one_role_line_focused_or_not() {
         let _serial = plx_base::testlock::serial();
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let ys = |runs: &[Rect]| -> Vec<i32> {
             let mut v: Vec<i32> = runs.iter().map(|r| r.y.round() as i32).collect();
             v.sort_unstable();
@@ -352,7 +352,7 @@ mod tests {
     fn a_focused_name_and_role_that_both_overflow_glide_in_lockstep() {
         let _serial = plx_base::testlock::serial();
         restart_clocks();
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let (name0, role0) = runs(LONG_NAME, LONG_ROLE, true);
         let (name_x, role_x) = (name0[0].x, role0[0].x);
         assert_eq!((name0.len(), role0.len()), (2, 2));
@@ -360,7 +360,7 @@ mod tests {
         let name_period = marquee::TITLE.period(measure.width_str(LONG_NAME, theme::size::LABEL, true));
         let role_period = marquee::TITLE.period(measure.width_str(LONG_ROLE, theme::size::CAPTION, false));
         assert!(name_period + 3000.0 < role_period, "the fixture needs a much longer role");
-        plx_machine::idle::frame_begin((name_period + 3000.0) / 1000.0);
+        plx_machine::motion::report::frame_begin((name_period + 3000.0) / 1000.0);
         let (name, role) = runs(LONG_NAME, LONG_ROLE, true);
         assert!(name.iter().any(|r| (r.x - name_x).abs() < 0.5),
             "the name waits at rest for the role instead of looping: {name:?}");

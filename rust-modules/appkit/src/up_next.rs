@@ -353,6 +353,7 @@ pub fn draw_over(
     focused: bool,
     btn: c_int,
     measure: &dyn plx_machine::machine::Measure,
+    press: plx_machine::machine::PressRead<u32>,
 ) -> bool {
     let Some(u) = plx_media::route::up_next(ps) else {
         return false;
@@ -386,7 +387,7 @@ pub fn draw_over(
         }
     }
 
-    if !draw_buttons(l, look, row, timer, p, focused, btn) { return false; }
+    if !draw_buttons(l, look, row, timer, p, focused, btn, press) { return false; }
     p.opacity() >= 0.5 && [l.credits, l.next].into_iter().all(|r| {
         let (rect, _, clip) = p.to_screen(r);
         let hit = rect.intersect(clip);
@@ -397,8 +398,8 @@ pub fn draw_over(
 /// The fixed command pair's presentation, factored so a host census can exercise every countdown without a decoder.
 #[allow(clippy::too_many_arguments)]
 fn draw_buttons(l: &Layout, look: Look, row: &crate::player_hud::motion::HudMotion, timer: CountdownView,
-    p: Painter, focused: bool, btn: c_int) -> bool {
-    let (pop_credits, pop_next) = (row.scale(BTN_CREDITS), row.scale(BTN_NEXT));
+    p: Painter, focused: bool, btn: c_int, press: plx_machine::machine::PressRead<u32>) -> bool {
+    let (pop_credits, pop_next) = (row.scale(BTN_CREDITS, press), row.scale(BTN_NEXT, press));
     let e = Env::inert();
     // The focus pop is the CONTROL ROW's, not this card's: these two stand in the transport's own
     // slot and share its cursor, so they share its springs (`HudMotion::scale`).
@@ -433,7 +434,7 @@ fn draw_buttons(l: &Layout, look: Look, row: &crate::player_hud::motion::HudMoti
         // A HELD clock (`remaining_ms`) draws one fixed fill, so there is nothing to redraw — the
         // same exception `widgets::Spinner` makes.
         if !plx_machine::motion::phase_clocks_held() {
-            plx_machine::idle::invalidate();
+            plx_machine::motion::report::note_motion();
         }
         let progress = 1.0 - (left as f32 / timer.duration_ms as f32).clamp(0.0, 1.0);
         b = match look.countdown {
@@ -468,7 +469,7 @@ mod tests {
             let look = Look { countdown: face, ..Look::CLASSIC };
             let mut runs = Vec::new();
             let prims = plx_ui::record_walk(|| plx_ui::draw_census::capture(|| {
-                runs = plx_ui::draw_census::capture_runs(|| { draw_buttons(&l, look, &row, up.view(now), Painter::root(), true, BTN_NEXT); });
+                runs = plx_ui::draw_census::capture_runs(|| { draw_buttons(&l, look, &row, up.view(now), Painter::root(), true, BTN_NEXT, Default::default()); });
             }));
             (prims, runs)
         };

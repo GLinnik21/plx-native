@@ -293,6 +293,10 @@ pub fn fit_line_by<M: Measure + ?Sized>(
 #[derive(Clone, Copy, Debug)]
 pub struct PressRead<K = ()> {
     pub scale: f32,
+    /// Identity of the input owner's arm, retained through spring-back (not a global counter).
+    pub identity: u32,
+    pub live: bool,
+    pub active: bool,
     pub is_long: bool,
     /// Milliseconds a HOLDABLE (card) press has been held down right now, still undecided: `None`
     /// for no press, a control face's press (no hold gesture), a released or cancelled one.
@@ -308,7 +312,7 @@ pub struct PressRead<K = ()> {
 
 impl<K> Default for PressRead<K> {
     fn default() -> Self {
-        Self { scale: 0.0, is_long: false, held_ms: None, owner: None }
+        Self { scale: 0.0, identity: 0, live: false, active: false, is_long: false, held_ms: None, owner: None }
     }
 }
 

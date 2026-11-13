@@ -471,7 +471,7 @@ struct OnboardView<'a> {
 }
 
 impl<'a> OnboardView<'a> {
-    fn screen(&'a self) -> TableScreen<'a> {
+    fn screen<K: Copy>(&'a self, press: plx_machine::machine::PressRead<K>) -> TableScreen<'a> {
         let layout = RouteLayout::screen();
         TableScreen::new(Header::new(layout, None, "", ""), &self.screen.form.table, TABLE_GROUP, self.screen.entry)
             .keyed(&self.screen.form)
@@ -482,7 +482,7 @@ impl<'a> OnboardView<'a> {
                 group: BAND_GROUP,
                 entry: self.screen.entry,
                 uncommitted: false,
-                scales: [self.screen.pop.scale(0), 1.0],
+                scales: [self.screen.pop.scale_with(0, press), 1.0],
                 palette: palette(),
                 danger: None,
                 note: None,
@@ -492,22 +492,22 @@ impl<'a> OnboardView<'a> {
 
 impl<H: DirectoryLike> plx_ui::screen::Focusable<H> for OnboardView<'_> {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<plx_ui::screen::GroupSpec>) {
-        plx_ui::screen::Focusable::<H>::groups(&self.screen(), cx, out)
+        plx_ui::screen::Focusable::<H>::groups(&self.screen(cx.press), cx, out)
     }
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
-        plx_ui::screen::Focusable::<H>::group_of(&self.screen(), key, cx)
+        plx_ui::screen::Focusable::<H>::group_of(&self.screen(cx.press), key, cx)
     }
     fn neighbour(&self, key: plx_machine::machine::FocusKey<u32>, dir: plx_ui::screen::Dir, cx: &Cx<'_, H>) -> plx_ui::screen::Step<u32> {
-        plx_ui::screen::Focusable::<H>::neighbour(&self.screen(), key, dir, cx)
+        plx_ui::screen::Focusable::<H>::neighbour(&self.screen(cx.press), key, dir, cx)
     }
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: plx_ui::screen::At) -> Option<plx_ui::screen::Placed> {
-        plx_ui::screen::Focusable::<H>::place(&self.screen(), key, cx, at)
+        plx_ui::screen::Focusable::<H>::place(&self.screen(cx.press), key, cx, at)
     }
     fn reconcile(&self, want: plx_machine::machine::FocusKey<u32>, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
-        plx_ui::screen::Focusable::<H>::reconcile(&self.screen(), want, cx)
+        plx_ui::screen::Focusable::<H>::reconcile(&self.screen(cx.press), want, cx)
     }
     fn seat(&self, g: GroupId, from: plx_ui::screen::Placed, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
-        plx_ui::screen::Focusable::<H>::seat(&self.screen(), g, from, cx)
+        plx_ui::screen::Focusable::<H>::seat(&self.screen(cx.press), g, from, cx)
     }
 }
 
@@ -782,7 +782,7 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
             group: BAND_GROUP,
             entry: self.entry,
             uncommitted: false,
-            scales: [self.pop.scale(0), 1.0],
+            scales: [self.pop.scale_with(0, f.press), 1.0],
             palette: pal,
             danger: None,
             note: None,

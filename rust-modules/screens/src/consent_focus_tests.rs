@@ -517,7 +517,7 @@ mod composed {
     /// twin of `page.step(...)` for the half of the focus protocol a screen's own `step`
     /// never answers.
     fn go(engine: &mut FocusEngine<u32>, owner: InputOwner, page: &ConsentPage, dir: Dir, c: &Cx<'_, InnerHost>) -> Outcome<u32> {
-        engine.move_dir(owner, &page.view(), &[], dir, c)
+        engine.move_dir(owner, &page.view(plx_machine::machine::PressRead::<u32>::default()), &[], dir, c)
     }
 
     /// **The second half of this audit's LEFT-escape defect, and the RIGHT half legacy never
@@ -741,13 +741,13 @@ fn overflowing_disclosure_scrolls_before_draw_with_visible_choice_focus_and_repl
         assert!(page.place(&BAND, &cx, At::SpringTarget).is_some(), "the visible action keeps the input focus");
         assert!(out.is_empty(), "reading cannot submit or change focus");
         assert_eq!(page.draft, (false, false));
-        let outcome = engine.move_dir(owner, &page.view(), &[], Dir::Right, &cx);
+        let outcome = engine.move_dir(owner, &page.view(plx_machine::machine::PressRead::<u32>::default()), &[], Dir::Right, &cx);
         assert!(matches!(outcome, Outcome::Moved { .. }));
         cx.focus.current = engine.current(owner);
         assert_eq!(cx.focus.current.unwrap().elem, BAND + 1, "the other answer stays directly reachable");
         page.step(&key_down(Key::Up), &cx, &mut mk_fx(&mut out, &mut present));
         assert_eq!(page.state.hash(), before, "either answer can scroll back to the same position");
-        engine.move_dir(owner, &page.view(), &[], Dir::Right, &cx);
+        engine.move_dir(owner, &page.view(plx_machine::machine::PressRead::<u32>::default()), &[], Dir::Right, &cx);
         assert!(engine.current(owner).is_some_and(|key| page.form.index_of_key(RowKey(key.elem)).is_some()));
         page.step(&key_down(Key::Back), &cx, &mut mk_fx(&mut out, &mut present));
         assert!(out.iter().any(|event| matches!(event.fx, Fx::App(AppFx::Loop(LoopReq::BackAtRoot)))));

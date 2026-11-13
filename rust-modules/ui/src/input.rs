@@ -1,9 +1,7 @@
 //! The `Input` machine's HOME (restructure spec §2.2): the press machine, the focus engine, the
 //! hit map, the press ARM (who armed what, from a key or the pointer, holdable or not), and the
-//! television-keyboard owner flag. [`Input`] is the product's field today — the ONE owner of
-//! the press, reached by the legacy key ladders as `&mut Press` (spec §14, the press facade).
-//! [`InputMachine`] is the same machine generic over the element key, as the dispatcher owns
-//! it (phase 3b); the two merge when the loop swaps onto the dispatcher.
+//! television-keyboard owner flag. [`InputMachine`] is the single product input owner, held by
+//! the dispatcher. Screens arm it through typed effects and receive addressed commits.
 //!
 //! The press protocol (§7.4): `Fx::Press(PressArm)` arms; `Input` steps the press on `Tick`,
 //! `Edge::Repeat` and `Up`, resolves dropped key-ups (`LOST_MS`, `MAX_HOLD_MS`), cancels on
@@ -11,19 +9,8 @@
 //! delivers `PressHold(id)` — `Handled::Yes` cancels the press onto its release spring
 //! (a declined hold springs back; a taken one springs from its dip up to its pop as the item menu
 //! opens, and nothing ends it early), `Handled::No` latches it non-committing — and on release `PressCommit(id)` to the arming owner only.
-use super::press::Press;
+use super::dispatch::press::Press;
 
-pub struct Input {
-    pub press: Press,
-}
-
-impl Input {
-    pub const fn new() -> Self {
-        Self {
-            press: Press::new(),
-        }
-    }
-}
 
 use std::hash::Hash;
 
@@ -49,6 +36,8 @@ pub struct Arm<K> {
 pub enum PressEvent<K> {
     Hold(PressId, MachineId, FocusKey<K>),
     Commit(PressId, MachineId, FocusKey<K>),
+    /// A long-held card still painted into the host snapshot visibly changed.
+    PageDamage,
 }
 
 pub struct InputMachine<K> {
@@ -90,6 +79,19 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
             next_press: 0,
             keyboard: false,
             keyboard_owner: None,
+        }
+    }
+
+    /// Project the owned press as an explicit frame capability, including arm identity.
+    pub fn press_read(&self, now: u32) -> plx_machine::machine::PressRead<K> {
+        plx_machine::machine::PressRead {
+            scale: self.press.scale(),
+            identity: self.next_press,
+            live: self.press.is_live(),
+            active: self.press.is_active(),
+            is_long: self.press.was_long(),
+            held_ms: self.press.held_ms(now),
+            owner: self.dip_owner,
         }
     }
 
@@ -150,7 +152,7 @@ impl<K: Copy + Eq + Hash> InputMachine<K> {
     /// One frame: the press spring and the hold/commit decisions.
     pub fn tick(&mut self, now: u32, dt: f32) -> Vec<PressEvent<K>> {
         let mut out = Vec::new();
-        self.press.tick(now, dt);
+        if self.press.tick(now, dt) { out.push(PressEvent::PageDamage); }
         if !self.press.is_active() {
             self.dip_owner = None;
         }

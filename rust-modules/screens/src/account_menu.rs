@@ -489,7 +489,7 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
         let r = self.frame(measure);
         // The glass and the rows ride the MORPH (`Popover::panel` / `morph_rows`), not the
         // container's appear: the panel begins and ends as the chip it grows from.
-        let m = self.popover.content_painter_on(f.painter, 0.0);
+        let m = self.popover.content_painter_on(f.painter.alpha(f.nav_page_alpha), 0.0);
         self.popover.panel(m, r, PANEL_RAD, f.underlay, plx_ui::widgets::Ground::Menu);
         plx_ui::profile::phase("glass.foreground", || {
             self.popover.morph_rows(m, r, PANEL_RAD, |m| self.form.table.draw(m, r, measure));

@@ -733,7 +733,37 @@ for entry in "${MUT_FNS_TABLE[@]}"; do
 done
 if [ "$vis_bad" -eq 0 ]; then ok "mutators-visibility"; else fail "mutators-visibility: $vis_bad fn(s) still crate-visible"; fi
 
-gate nav '(crate::ui|plx_ui)::nav::' "$SRC_SCREENS"
+gate nav '(crate::ui|plx_ui)::nav::' "$SRC" "$SRC_UI" "$SRC_APPKIT" "$SRC_SCREENS"
+
+# Completed ownership migration: legacy publications and the old gate cannot return.
+ui_owner_hits=$(grep_code '(plx_ui|crate::ui)::press::|(plx_machine|crate)::idle::' "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_NET" "$SRC_UI" "$SRC_PLEX" "$SRC_TELEMETRY" "$SRC_DATA" "$SRC_SESSION" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS")
+if [ -z "$ui_owner_hits" ]; then ok "ui-owner-legacy"; else
+  printf '%s\n' "$ui_owner_hits"
+  fail "ui-owner-legacy: retired global readers must not return"
+fi
+legacy_owners=0
+for legacy in "$SRC_UI/nav.rs" "$SRC_UI/press.rs" "$SRC_MACHINE/idle.rs"; do
+  if [ -e "$legacy" ]; then
+    fail "ui-owner-files: retired module $legacy exists"
+    legacy_owners=$((legacy_owners+1))
+  fi
+done
+if [ "$legacy_owners" -eq 0 ]; then ok "ui-owner-files"; fi
+
+# Motion collectors may not own generic damage or a second process-global notification adapter.
+owned_damage_hits=$(grep_code 'motion::report::(invalidate|take_damage|select_damage|take_page_damage|OwnScope)' "$SRC" "$SRC_UI" "$SRC_APPKIT" "$SRC_SCREENS" "$SRC_DATA" "$SRC_PLEX" "$SRC_MEDIA" "$SRC_PLATFORM")
+report_adapter=$(grep_code '\bAtomic[A-Za-z0-9_]*\b|pub fn (invalidate|take_damage|select_damage|take_page_damage|present_dirty|wake)\b' "$SRC_MACHINE/motion/report.rs")
+if [ -z "$owned_damage_hits$report_adapter" ]; then ok "owned-damage"; else
+  printf '%s\n%s\n' "$owned_damage_hits" "$report_adapter"
+  fail "owned-damage: presentation changes must reach the owned gate, never a global damage adapter"
+fi
+
+# Main-thread render/deferred work must address its owner; only actual IO workers use the atomic door.
+main_wake_hits=$(grep_code 'motion::report::wake|wake_from_worker[[:space:]]*\(' "$SRC_UI" "$SRC/dev" "$SRC/app/run.rs")
+if [ -z "$main_wake_hits" ]; then ok "owned-wake"; else
+  printf '%s\n' "$main_wake_hits"
+  fail "owned-wake: main-thread work must request PresentEvent::Wake from its owner"
+fi
 
 # cards: a screen's card shelves and grids come from `plx_ui::cards::{Shelf, Grid}` (the
 # shared-card-sections plan, layer L1), which own the pop, press, stops, restore and paging a

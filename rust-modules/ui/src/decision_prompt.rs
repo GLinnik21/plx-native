@@ -158,9 +158,9 @@ impl DecisionPrompt {
         if !self.alert.visible() {
             return;
         }
-        self.alert.draw_scrim();
+        self.alert.draw_scrim(f);
         let (cancel, affirm) = (self.cancel_label, self.affirm_label);
-        self.alert.draw(cancel, affirm, f.measure);
+        self.alert.draw(cancel, affirm, f.measure, f.route_navigation(), f.press);
         let frames = self.alert.frames(f.measure);
         if self.alert.is_open() && self.alert.settled() {
             for (elem, rect) in [(self.cancel, frames.0), (self.affirm, frames.1)] {

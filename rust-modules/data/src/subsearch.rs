@@ -346,7 +346,7 @@ impl SubSearchState {
         if let Some(mail) = mail {
             // every landing repaints, the failure branch included — a spinner already answered
             // must not wait for the next keypress
-            plx_machine::idle::invalidate();
+
             if mail.gen == self.generation { changed |= self.apply(mail.what); }
         }
         // A launch the runner refused freed its claim in the call that refused it, and said so:

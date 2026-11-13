@@ -10011,6 +10011,53 @@ impl PersonOwnerGateFixture {
         self.assertIn("dt:", out)
         self.assertIn("_check_deps_selftest_dt_fn.rs", out)
 
+    def test_ui_owner_gate_rejects_retired_global_readers(self):
+        for name, body in (
+            ("nav", "plx_ui::nav::page_alpha()"),
+            ("press", "plx_ui::press::scale()"),
+            ("idle", "plx_machine::idle::invalidate()"),
+        ):
+            with self.subTest(reader=name):
+                result = self._plant(
+                    f"_check_deps_selftest_owner_{name}.rs",
+                    f"pub fn retired_reader() {{ {body}; }}\n",
+                )
+                output = result.stdout + result.stderr
+                self.assertNotEqual(result.returncode, 0, output)
+                self.assertIn("nav:" if name == "nav" else "ui-owner-legacy:", output)
+
+    def test_ui_owner_gate_rejects_resurrected_modules(self):
+        for crate, name in (("ui", "nav.rs"), ("ui", "press.rs"), ("machine", "idle.rs")):
+            with self.subTest(crate=crate, module=name):
+                result = self._plant(name, "// Retired module must remain absent.\n", crate_dir=crate)
+                output = result.stdout + result.stderr
+                self.assertNotEqual(result.returncode, 0, output)
+                self.assertIn("ui-owner-files:", output)
+
+    def test_owned_damage_gate_rejects_a_retired_transport_call(self):
+        result = self._plant("_check_deps_selftest_damage_adapter.rs",
+                             "pub fn repaint() { plx_machine::motion::report::invalidate(); }\n")
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("owned-damage:", output)
+
+    def test_owned_wake_gate_rejects_worker_door_from_ui(self):
+        result = self._plant("_check_deps_selftest_render_worker_door.rs",
+                             "pub fn deferred_draw() { plx_machine::present::wake_from_worker(); }\n", crate_dir="ui")
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("owned-wake:", output)
+
+    def test_owned_damage_gate_rejects_a_report_global(self):
+        target = os.path.join(self.tree, "rust-modules", "machine", "src", "motion", "report.rs")
+        with open(target, "a", encoding="utf-8") as stream:
+            stream.write("\nstatic PAINT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);\n")
+        result = subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
+                                capture_output=True, text=True)
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("owned-damage:", output)
+
     def test_check_statics_is_green(self):
         """Spec §0 done-criterion 1: `ci/check-statics.sh` — every `static mut` in the gated
         directories is named in ci/allow/statics.txt or sits in a legacy module still awaiting its
@@ -10266,11 +10313,11 @@ static mut MUTABLE: u8 = 0;
             for fn in ("check-statics.sh", "check-statics-heap.py", "module_graph.py", "rust_test_modules.py", "ledger.awk"):
                 shutil.copy(os.path.join(ci, fn), os.path.join(root, "ci", fn))
             mod = os.path.join(root, "rust-modules")
-            for d in ("ui/src", "appkit/src", "screens/src", "data/src/metadata", "data/src/stores",
+            for d in ("ui/src/dispatch", "appkit/src", "screens/src", "data/src/metadata", "data/src/stores",
                       "data/src/search", "media/src/route", "media/src/player"):
                 os.makedirs(os.path.join(mod, d))
             for f in ("data/src/person.rs", "data/src/metadata.rs", "data/src/pms.rs",
-                      "media/src/route/decision.rs", "media/src/player/engine.rs", "ui/src/press.rs"):
+                      "media/src/route/decision.rs", "media/src/player/engine.rs", "ui/src/dispatch/press.rs"):
                 open(os.path.join(mod, f), "w").close()
             source = os.path.join(mod, "gfx", "src", "a.rs")
             os.makedirs(os.path.dirname(source))

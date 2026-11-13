@@ -1492,7 +1492,8 @@ pub(crate) fn note_server_stop(playback: &str, wire_session: &str, reason: &str,
         };
         SHARED.server_stopped.store(true, std::sync::atomic::Ordering::Release);
     }
-    plx_machine::idle::invalidate();
+    // The addressed server-stop note is observed by the foreground runner; no UI provenance
+    // is published by this notification worker.
 }
 
 fn with_server_stop<T>(playback: &str, read: impl FnOnce(&ServerStopNote) -> T) -> Option<T> {
@@ -2543,8 +2544,7 @@ pub fn set_audio_enhancements(a: plx_plex::plex::AudioEnhancements) {
 pub fn request_audio_enhancement(ps: &mut crate::route::PlaybackSession, a: plx_plex::plex::AudioEnhancements) {
     set_audio_enhancements(a);
     crate::route::reconcile_enhancement(ps, false);
-    // the rows' checkmarks move on this — see `route::choose`
-    plx_machine::idle::invalidate();
+    // The input owner repaints the rows; route::preference_values observes confirmed writes.
 }
 
 /// Restore the persisted preference without writing it back (what `route::restore_profile_rows`
@@ -2566,7 +2566,7 @@ pub fn set_subtitle_tone(tone: plx_plex::plex::session::SubtitleTone) {
 /// (`route::persist_subtitle_offset`) — see [`SUBTITLE_OFFSET_MS`].
 pub fn set_subtitle_offset(offset_ms: i64) {
     SUBTITLE_OFFSET_MS.store(clamp_subtitle_offset_ms(offset_ms), Relaxed);
-    plx_machine::idle::invalidate();
+    // The input owner repaints the subtitle controls; no ambient damage side effect.
 }
 
 /// Carry a retry's offset through [`reset_subtitle`] (`route::reset_track_selection`). The

@@ -454,11 +454,8 @@ pub(super) fn draw_player_title_at(
         let elapsed = clock.read(&key) as f32;
         let offset = plx_ui::marquee::TITLE.reveal_once(elapsed, full_width, width);
         if offset < full_width - width {
-            if elapsed < plx_ui::marquee::TITLE.hold_ms {
-                plx_machine::idle::wake();
-            } else {
-                plx_machine::idle::invalidate();
-            }
+            // The hold and reveal are one frame-captured animation, never worker work.
+            plx_machine::motion::report::note_motion();
         }
         if offset > 0.0 {
             // an Arabic or Hebrew title's end is on its left: it moves right instead

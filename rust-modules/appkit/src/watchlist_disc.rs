@@ -149,10 +149,10 @@ impl Disc {
     /// Decorative (`idle::decorative`): the flip moves no layout, so it never holds a page image.
     pub fn step(&mut self, dt: f32) -> bool {
         let to = target(self.m);
-        plx_machine::idle::decorative(|| self.flip.step(to, plx_ui::widgets::K_DISC_UNFURL, dt));
+        plx_machine::motion::report::decorative(|| self.flip.step(to, plx_ui::widgets::K_DISC_UNFURL, dt));
         // A spring idle has stopped asking frames for can rest a hair short of its target; land it
         // exactly so a settled disc draws the plain face, never a 99.9 % fill clip.
-        if plx_machine::idle::settled(self.flip.pos, to, self.flip.vel) {
+        if plx_machine::motion::report::settled(self.flip.pos, to, self.flip.vel) {
             self.flip.jump(to);
         }
         self.animating()
@@ -234,7 +234,7 @@ mod tests {
     fn frames(d: &mut Disc, n: usize) -> Vec<f32> {
         (0..n)
             .map(|_| {
-                plx_machine::idle::frame_begin(DT);
+                plx_machine::motion::report::frame_begin(DT);
                 d.step(DT);
                 d.pos()
             })
@@ -309,14 +309,14 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let mut d = Disc::new(Membership::Off);
         d.set(Membership::On);
-        plx_machine::idle::frame_begin(DT);
+        plx_machine::motion::report::frame_begin(DT);
         assert!(d.step(DT), "mid-flip");
         for _ in 0..600 {
-            plx_machine::idle::frame_begin(DT);
+            plx_machine::motion::report::frame_begin(DT);
             d.step(DT);
         }
         assert_eq!((d.flip.pos, d.flip.vel), (1.0, 0.0));
-        plx_machine::idle::frame_begin(DT);
+        plx_machine::motion::report::frame_begin(DT);
         assert!(!d.step(DT), "at rest");
     }
 

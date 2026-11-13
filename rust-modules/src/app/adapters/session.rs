@@ -635,7 +635,7 @@ impl SessionAdapter {
         let cancelled = Arc::clone(&pending.cancelled);
         pending.ticket = plx_base::storage_worker::submit(move || {
             let result = if cancelled.load(Ordering::Acquire) { Err(()) } else { write_credentials(&plan, &cancelled) };
-            plx_machine::idle::wake();
+
             plx_machine::present::wake_from_worker();
             result
         }).ok();
@@ -889,7 +889,7 @@ impl SessionAdapter {
                 Vec::new()
             };
             if all_local { failures.extend(erasure.preference_failures); }
-            plx_machine::idle::wake();
+
             plx_machine::present::wake_from_worker();
             EraseWorkerOutcome { complete, failures, kept: erasure.retained }
         }).ok();

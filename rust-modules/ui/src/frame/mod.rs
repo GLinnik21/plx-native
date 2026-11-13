@@ -18,6 +18,8 @@
 
 mod budget;
 pub mod glass;
+#[cfg(test)]
+mod glass_wake_tests;
 mod render_set;
 
 pub use budget::*;
