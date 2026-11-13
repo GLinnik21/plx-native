@@ -9100,6 +9100,10 @@ mod lifecycle_regression_tests {
     fn a_preview_halted_before_its_landing_finishes_its_request_cancelled() {
         use plx_media::player::attempt_metrics::{Fx, RequestOutcome};
         let _serial = plx_base::testlock::serial();
+        // The preview machine is process-wide: put it back to Idle when this test ends, however it
+        // ends, so a panic between `request_start` and `halt` cannot leave every later test in the
+        // binary seeing `preview::occupies()`.
+        let _preview = super::super::bridge::test_support::PreviewReset;
         let Some(mut rig) = Rig::new() else { return };
         let mut t = product_transition(&mut rig.app);
         settle(&mut rig.app, &mut t);
