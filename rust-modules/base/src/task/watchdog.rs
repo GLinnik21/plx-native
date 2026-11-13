@@ -1373,7 +1373,10 @@ mod tests {
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        let path = crate::testscratch::process_dir("freeze-at").join(name);
+        // `process_dir` replaces the directory on every call: made once, or a parallel test's
+        // call would remove another's file between its write and its read.
+        static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+        let path = DIR.get_or_init(|| crate::testscratch::process_dir("freeze-at")).join(name);
         let _ = std::fs::remove_file(&path);
         path
     }
