@@ -272,7 +272,7 @@ class Toolchain(unittest.TestCase):
         self.real = gen.read_std
         self.addCleanup(setattr, gen, 'read_std', self.real)
 
-    def fake(self, std, rustc='rustc 1.100.0 (abc 2026-11-01)', backtrace='0.3.77'):
+    def fake(self, std, rustc='rustc 1.101.0 (abc 2026-11-01)', backtrace='0.3.77'):
         gen.read_std = lambda pin: (std, rustc, backtrace, [])
 
     def test_the_layout_round_trips_so_a_derive_changes_only_what_moved(self):
@@ -283,28 +283,28 @@ class Toolchain(unittest.TestCase):
     def test_a_moved_release_rewrites_the_snapshot(self):
         std = {**self.std, 'libc': ['0.2.999'], 'compiler_builtins': ['0.1.999']}
         self.fake(std)
-        out, problems, added = gen.derive_toolchain(self.data, self.text, '1.100.0')
+        out, problems, added = gen.derive_toolchain(self.data, self.text, '1.101.0')
         self.assertEqual((problems, added), ([], []))
         new = json.loads(out)
-        self.assertEqual(new['toolchain'], {'pin': '1.100.0', 'rustc': 'rustc 1.100.0 (abc 2026-11-01)', 'backtrace': '0.3.77'})
+        self.assertEqual(new['toolchain'], {'pin': '1.101.0', 'rustc': 'rustc 1.101.0 (abc 2026-11-01)', 'backtrace': '0.3.77'})
         self.assertEqual(new['std_lock']['libc'], '0.2.999')
         self.assertEqual(new['groups'], self.data['groups'])
         self.assertEqual(new['not_shipped'], self.data['not_shipped'])
 
     def test_a_crate_new_to_std_needs_a_person_and_nothing_is_rewritten(self):
         self.fake({**self.std, 'brandnew': ['0.1.0']})
-        out, problems, added = gen.derive_toolchain(self.data, self.text, '1.100.0')
+        out, problems, added = gen.derive_toolchain(self.data, self.text, '1.101.0')
         self.assertEqual(added, ['brandnew'])
         self.assertEqual(out, self.text)
 
     def test_a_crate_that_left_std_lock_is_dropped_from_std_not_shipped_but_a_linked_one_needs_a_person(self):
         gone = {k: v for k, v in self.std.items() if k != 'dlmalloc'}
         self.fake(gone)
-        out, problems, added = gen.derive_toolchain(self.data, self.text, '1.100.0')
+        out, problems, added = gen.derive_toolchain(self.data, self.text, '1.101.0')
         self.assertEqual((problems, added), ([], []))
         self.assertNotIn('dlmalloc', json.loads(out)['std_not_shipped'])
         self.fake({k: v for k, v in self.std.items() if k != 'libc'})
-        out, problems, added = gen.derive_toolchain(self.data, self.text, '1.100.0')
+        out, problems, added = gen.derive_toolchain(self.data, self.text, '1.101.0')
         self.assertTrue(any('libc' in p for p in problems))
         self.assertEqual(out, self.text)
 
@@ -313,8 +313,8 @@ class Toolchain(unittest.TestCase):
         self.addCleanup(setattr, gen, 'workflow_pins', saved)
         gen.workflow_pins = lambda: {self.data['toolchain']['pin']}
         self.assertIsNone(gen.stale_pin(self.data))
-        gen.workflow_pins = lambda: {'1.100.0'}
-        self.assertEqual(gen.stale_pin(self.data), '1.100.0')
+        gen.workflow_pins = lambda: {'1.101.0'}
+        self.assertEqual(gen.stale_pin(self.data), '1.101.0')
         for bad in ('nightly', '1.100', '1.1.1; rm -rf /', '1.2.3-beta'):
             gen.workflow_pins = lambda bad=bad: {bad}
             with self.assertRaises(SystemExit):
