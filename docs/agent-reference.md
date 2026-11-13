@@ -1231,7 +1231,11 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   eighth heartbeat, to exercise the freeze probe (`dev::freeze_on_purpose`; the trigger file is
   removed when it fires). A real freeze is a 5 s stall of the loop in the foreground: the watchdog
   (`plx_base::task::watchdog`) sends `SIGUSR2` to the main thread, `freeze_handler` in
-  `src/crashtrace.c` writes a `*** FREEZE` record, and the next launch reports it
+  `src/crashtrace.c` writes a `*** FREEZE` record, the observer thread appends
+  `freeze-at: seq=<n> leg=<word>` to the crash log (the loop leg the main thread was in, one of
+  `LoopPhase::word`'s eleven words; `LoopPhases::enter` stores it in every build, `threadcheck` or
+  not, so a release report says where the loop stood; the importer joins the two lines by probe
+  number whichever came first), and the next launch reports it
   (`telemetry::crashreport`). The app is never stopped. A default (`threadcheck`) build aborts the
   stalled main thread at 2 s, before the 5 s probe, unless `/tmp/plxnative-guard` contains `log`:
   write `log` there before launching, or no freeze report is produced.

@@ -56,7 +56,7 @@
 //! may not truncate it. Instead it records how many bytes it has already reported and skips them,
 //! which means a human and this module can both read the file without either disturbing the other.
 
-use plx_base::task::watchdog::FreezeBucket;
+use plx_base::task::watchdog::{FreezeBucket, LoopPhase};
 
 /// The one place a signal number becomes a name. See the module doc: this exists so the name on the
 /// wire comes from a table this crate owns rather than from bytes in a file.
@@ -471,7 +471,8 @@ pub struct PanicReport {
 /// and probed the thread (`src/crashtrace.c`, `freeze_handler`). **Numbers only, like [`Fault`]**:
 /// the program counter, the link register, the walked return addresses, the registers, the second
 /// the probe landed, and a duration BUCKET from [`FreezeBucket`]'s fixed table (never the stall's
-/// milliseconds). The process did not die, so there is no signal and no fault address.
+/// milliseconds). The one other thing it holds is [`Freeze::leg`], a word from [`LoopPhase`]'s
+/// fixed table. The process did not die, so there is no signal and no fault address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Freeze {
     /// The n-th probe of the process that wrote it; what a `freeze-end:` line names.
@@ -487,6 +488,11 @@ pub struct Freeze {
     pub crash_time: Option<u64>,
     /// [`FreezeBucket::Unrecovered`] until a `freeze-end:` line of the same process says otherwise.
     pub bucket: FreezeBucket,
+    /// The leg of the app's own frame loop the main thread was in when the probe was sent: a fixed
+    /// word from [`LoopPhase::word`]'s table, from the `freeze-at:` line of the same process and
+    /// probe number. `None` for a record written before that line existed, or one whose line did
+    /// not parse.
+    pub leg: Option<LoopPhase>,
 }
 
 /// A foreign `exit()`: another part of the television's software (a firmware library on a thread of
@@ -646,15 +652,23 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
     // belong to nothing, and without this they would attach to the report above it (`out.last_mut()`),
     // so a malformed exit could put its thread on a fault that has none. Cleared by the next header.
     let mut detached = false;
+    // A `freeze-at:` line that no freeze of this process owns YET. The observer thread writes it
+    // right after it sends the probe, while the stuck thread's handler writes the `*** FREEZE`
+    // record, so the two lines come in either order (or interleaved); this holds the earlier one
+    // until its partner arrives. One slot is enough: a probe is only sent after the one before it
+    // recovered, so there is never more than one waiting. Cleared at the next process marker.
+    let mut pending_leg: Option<(u32, LoopPhase)> = None;
     for l in log.lines() {
         if l.starts_with("img: ") || l.starts_with("*** ") {
             detached = false;
-        } else if detached && !l.starts_with("freeze-end: ") {
-            // `freeze-end:` names a probe number of its own and is not a line of any record.
+        } else if detached && !l.starts_with("freeze-end: ") && !l.starts_with("freeze-at: ") {
+            // `freeze-end:` and `freeze-at:` name a probe number of their own and are not lines of
+            // any record.
             continue;
         }
         if l.starts_with("img: ") {
             awaiting_regs = None;
+            pending_leg = None;
             process_starts.push(out.len());
             // An explicit but unreadable marker is a process boundary too: clear rather than
             // attributing this process's later crash to the executable that ran before it.
@@ -662,7 +676,10 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
             process_start = out.len();
         } else if let Some(rest) = l.strip_prefix("*** FREEZE ") {
             awaiting_regs = None;
-            if let Some(f) = parse_freeze(rest, l, image.clone()) {
+            if let Some(mut f) = parse_freeze(rest, l, image.clone()) {
+                if let Some((_, leg)) = pending_leg.take_if(|(seq, _)| *seq == f.seq) {
+                    f.leg = Some(leg);
+                }
                 out.push(Report::Freeze(f));
                 awaiting_regs = Some(out.len() - 1);
             }
@@ -685,6 +702,21 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
                 });
                 if let Some(f) = open {
                     f.bucket = bucket;
+                }
+            }
+        } else if let Some(rest) = l.strip_prefix("freeze-at: ") {
+            // Touches no other parse state (`awaiting_regs` included): it may land between a
+            // freeze header and the `reg:` line that belongs to it.
+            if let Some((seq, leg)) = parse_freeze_at(rest) {
+                let open = out[process_start..].iter_mut().rev().find_map(|r| match r {
+                    Report::Freeze(f) if f.seq == seq => Some(f),
+                    _ => None,
+                });
+                match open {
+                    Some(f) => {
+                        f.leg.get_or_insert(leg);
+                    }
+                    None => pending_leg = Some((seq, leg)),
                 }
             }
         } else if let Some(rest) = l.strip_prefix("*** SIGNAL ") {
@@ -903,6 +935,7 @@ fn parse_freeze(rest: &str, whole: &str, image: Option<ImageIdentity>) -> Option
         modules: Vec::new(),
         crash_time: None,
         bucket: FreezeBucket::Unrecovered,
+        leg: None,
     })
 }
 
@@ -959,6 +992,20 @@ fn parse_freeze_end(rest: &str) -> Option<(u32, FreezeBucket)> {
         return None;
     }
     Some((seq.parse().ok()?, FreezeBucket::from_word(bucket)?))
+}
+
+/// `seq=<n> leg=<word>` of a `freeze-at:` line: the probe number (decimal digits only) and a word
+/// that must be one of [`LoopPhase::word`]'s fixed legs, so what a probe was in can never carry
+/// anything but a phase of the app's own frame loop onto the wire. Exactly two fields, in that
+/// order: a line with anything else on it is no leg.
+fn parse_freeze_at(rest: &str) -> Option<(u32, LoopPhase)> {
+    let mut it = rest.split_whitespace();
+    let seq = it.next()?.strip_prefix("seq=")?;
+    let leg = it.next()?.strip_prefix("leg=")?;
+    if it.next().is_some() || seq.is_empty() || seq.len() > 9 || !seq.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((seq.parse().ok()?, LoopPhase::from_word(leg)?))
 }
 
 fn parse_image(line: &str) -> Option<ImageIdentity> {
@@ -1425,30 +1472,50 @@ fn freeze_stack(f: &Freeze) -> Vec<u64> {
 }
 
 /// The second fingerprint component of a freeze: `<file>+0x<offset>` of the NEAREST frame inside
-/// the app's own image, else of the nearest frame in any recorded mapping, else `unmapped`.
+/// the app's own image; else, for a record that carries a loop leg, the basenames of the modules
+/// holding `pc` and `lr` (`libfoo.so>libbar.so`, no offsets); else the nearest frame in any
+/// recorded mapping as `<file>+0x<offset>`; else `unmapped`.
 ///
 /// **Why not simply the top frame.** A main thread that is stuck is nearly always parked inside
 /// libc (`poll`, `futex`, `nanosleep`), so `pc` names the same library offset whatever the app was
 /// waiting for, and every freeze would land in one issue. The first app frame names the call that
 /// waited. Never a raw address: an unmapped one reads `unmapped`, since a runtime address is a
 /// per-boot value that would split one cause into many issues.
+///
+/// **With no app frame at all** (the walk found nothing; the report's whole stack is firmware) an
+/// offset into a firmware library is the one thing left to name, and it splits one stall into an
+/// issue per instruction the thread happened to be parked on. The two modules it sat between do not
+/// move, so a record with a leg groups on those. A record WITHOUT a leg predates that rule and keeps
+/// the offset, so the issues it already belongs to do not regroup.
 fn freeze_fingerprint_site(f: &Freeze) -> String {
     let located: Vec<_> = freeze_stack(f).iter().filter_map(|a| freeze_locate(f, *a)).collect();
+    if let Some((file, off, _)) = located.iter().find(|(_, _, app)| *app) {
+        return format!("{file}+0x{off:x}");
+    }
+    if f.leg.is_some() {
+        let module = |a: u64| freeze_locate(f, a).map(|(file, _, _)| file);
+        return match (module(f.pc), module(f.lr)) {
+            (Some(pc), Some(lr)) => format!("{pc}>{lr}"),
+            (Some(one), None) | (None, Some(one)) => one,
+            (None, None) => "unmapped".to_string(),
+        };
+    }
     located
-        .iter()
-        .find(|(_, _, app)| *app)
-        .or_else(|| located.first())
+        .first()
         .map(|(file, off, _)| format!("{file}+0x{off:x}"))
         .unwrap_or_else(|| "unmapped".to_string())
 }
 
 /// The Sentry event body for one main-thread freeze.
 ///
-/// Level `error` (the process survived), tag `freeze` with the duration bucket's word, mechanism
-/// `freeze` (`handled` once the loop recovered; an unrecovered one is `handled: false`, since the
-/// process died or was killed still stuck). **The fingerprint is explicit**, `["freeze", site]`
-/// from [`freeze_fingerprint_site`], and carries neither the bucket nor a signal: the same stall
-/// lasting 6 s on one television and 40 s on another is one cause, one issue.
+/// Level `error` (the process survived), tag `freeze` with the duration bucket's word, tag
+/// `freeze.leg` with the loop leg's fixed word when the record has one, mechanism `freeze`
+/// (`handled` once the loop recovered; an unrecovered one is `handled: false`, since the process
+/// died or was killed still stuck). **The fingerprint is explicit**, `["freeze", site]` from
+/// [`freeze_fingerprint_site`] with the leg's word as a third element when there is one, and
+/// carries neither the bucket nor a signal: the same stall lasting 6 s on one television and 40 s
+/// on another is one cause, one issue. A record without a leg keeps the two-element form, so the
+/// issues it already belongs to do not regroup.
 ///
 /// The exception `type` and `value` are built from this crate's own strings and the bucket's fixed
 /// word, never from the record's text, like [`sentry_body`]'s.
@@ -1467,6 +1534,14 @@ pub fn freeze_sentry_body(
     } else {
         format!("Main thread frozen for {word}")
     };
+    // The loop leg, when the record has one, is a tag AND the fingerprint's third element: its
+    // word comes from `LoopPhase`'s fixed table, never from the record's text.
+    let mut tags = serde_json::json!({"freeze": word});
+    let mut fingerprint = vec![serde_json::json!("freeze"), serde_json::json!(freeze_fingerprint_site(f))];
+    if let Some(leg) = f.leg {
+        tags["freeze.leg"] = serde_json::json!(leg.word());
+        fingerprint.push(serde_json::json!(leg.word()));
+    }
     // Oldest first, which is the order Sentry renders bottom-up: the walk's outermost frame first,
     // pc (where the thread was parked) last and on top.
     let frames: Vec<_> = freeze_stack(f)
@@ -1489,14 +1564,14 @@ pub fn freeze_sentry_body(
         "environment": super::sender::ENVIRONMENT,
         "dist": effective_build_id,
         "sdk": {"name": "plxnative-fallback", "version": super::app_version()},
-        "tags": {"freeze": word},
+        "tags": tags,
         "exception": {"values": [{
             "type": "MainThreadFreeze",
             "value": value,
             "mechanism": {"type": "freeze", "handled": f.bucket != FreezeBucket::Unrecovered},
             "stacktrace": {"frames": frames},
         }]},
-        "fingerprint": ["freeze", freeze_fingerprint_site(f)],
+        "fingerprint": fingerprint,
     });
     if let Some(t) = crash_timestamp(f.crash_time, now_secs()) {
         body["timestamp"] = serde_json::json!(t);
@@ -3924,6 +3999,202 @@ mod tests {
         let text = String::from_utf8(freeze_sentry_body(&f, "e", BUILD, Some("did"), None, &[])).unwrap();
         assert!(!text.contains("SecretMovie"));
         assert!(!text.contains("/lib/") && !text.contains("/media"), "only a library's basename may travel");
+    }
+
+    // ---- the loop leg a freeze was probed in (`freeze-at:`) ----
+
+    const AT_UPDATE: &str = "freeze-at: seq=1 leg=update\n";
+
+    /// `FRZ` with its `freeze-at:` line in each of the places the two writers can leave it: the
+    /// observer thread's line may land before the handler's header, between two of the handler's
+    /// own lines, or after them all.
+    fn frz_with_leg_at(place: &str) -> String {
+        match place {
+            "before the header" => FRZ.replacen("*** FREEZE seq=1", &format!("{AT_UPDATE}*** FREEZE seq=1"), 1),
+            "between the header and its time" => FRZ.replacen("time: 1750000000", &format!("{AT_UPDATE}time: 1750000000"), 1),
+            "between its time and its regs" => FRZ.replacen("reg: sp", &format!("{AT_UPDATE}reg: sp"), 1),
+            "among the mappings" => FRZ.replacen("bin: ", &format!("{AT_UPDATE}bin: "), 1),
+            "after the recovery" => format!("{FRZ}{AT_UPDATE}"),
+            other => panic!("{other}"),
+        }
+    }
+
+    const LEG_PLACES: [&str; 5] = [
+        "before the header",
+        "between the header and its time",
+        "between its time and its regs",
+        "among the mappings",
+        "after the recovery",
+    ];
+
+    #[test]
+    fn a_freeze_takes_its_leg_from_the_freeze_at_line_wherever_it_landed() {
+        for place in LEG_PLACES {
+            let log = frz_with_leg_at(place);
+            let f = only_freeze(&log);
+            assert_eq!(f.leg, Some(LoopPhase::Update), "{place}");
+            // The line is a neighbour, not a part of the record: everything else reads as before.
+            assert_eq!(f.registers.r1, Some(0x2a), "{place}");
+            assert_eq!(f.frames, vec![0x4b_ccd0, 0x4a_1234, 0xb6f0_1000], "{place}");
+            assert_eq!(f.crash_time, Some(1_750_000_000), "{place}");
+            assert_eq!(f.bucket, FreezeBucket::Medium, "{place}");
+            assert_eq!(f.modules.len(), 1, "{place}");
+            assert_eq!(parse(&log).len(), 1, "{place}: a leg line is not a report");
+        }
+        assert_eq!(only_freeze(FRZ).leg, None, "an old record has no leg");
+    }
+
+    #[test]
+    fn a_freeze_leg_is_a_tag_and_a_third_fingerprint_element_only_when_there_is_one() {
+        for place in LEG_PLACES {
+            let body = freeze_json(&only_freeze(&frz_with_leg_at(place)));
+            assert_eq!(body["tags"]["freeze.leg"], "update", "{place}");
+            assert_eq!(body["tags"]["freeze"], "10-30s", "{place}");
+            assert_eq!(body["fingerprint"], serde_json::json!(["freeze", "plxnative+0x4accd0", "update"]), "{place}");
+        }
+        // An old record, written before the line existed, keeps its tags and its grouping.
+        let old = freeze_json(&only_freeze(FRZ));
+        assert!(old["tags"].get("freeze.leg").is_none());
+        assert_eq!(old["fingerprint"], serde_json::json!(["freeze", "plxnative+0x4accd0"]));
+    }
+
+    #[test]
+    fn a_freeze_at_line_that_is_not_exactly_a_number_and_a_table_word_is_ignored() {
+        for bad in [
+            "freeze-at: seq=1 leg=SecretMovie\n",
+            "freeze-at: seq=1 leg=event ingest\n",
+            "freeze-at: seq=1 leg=update SecretMovie\n",
+            "freeze-at: seq=1 leg=unlabeled\n",
+            "freeze-at: seq=1 leg=\n",
+            "freeze-at: seq=1\n",
+            "freeze-at: seq=x leg=update\n",
+            "freeze-at: seq=-1 leg=update\n",
+            "freeze-at: seq=99999999999 leg=update\n",
+            "freeze-at: leg=update seq=1\n",
+            "freeze-at: seq=1 leg=Update\n",
+        ] {
+            for place in ["before the header", "after the recovery"] {
+                let log = frz_with_leg_at(place).replace(AT_UPDATE, bad);
+                let f = only_freeze(&log);
+                assert_eq!(f.leg, None, "{bad:?} {place}");
+                let body = freeze_json(&f);
+                assert!(body["tags"].get("freeze.leg").is_none(), "{bad:?} {place}");
+                assert_eq!(body["fingerprint"], serde_json::json!(["freeze", "plxnative+0x4accd0"]), "{bad:?} {place}");
+                let text = String::from_utf8(freeze_sentry_body(&f, "e", BUILD, Some("did"), None, &[])).unwrap();
+                assert!(!text.contains("SecretMovie"), "{bad:?} {place}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_freeze_at_line_of_another_probe_number_or_another_process_is_not_this_freezes() {
+        // Probe 2's line, with no freeze 2: it waits for a freeze 2 that never comes.
+        let other_probe = "freeze-at: seq=2 leg=update\n";
+        for place in ["before the header", "after the recovery"] {
+            let log = frz_with_leg_at(place).replace(AT_UPDATE, other_probe);
+            assert_eq!(only_freeze(&log).leg, None, "{place}");
+        }
+        // The earlier process's line, then a later process whose own probe 1 has no line.
+        let earlier = "\nimg: build_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa image_addr=0x10000 image_size=0x5f0000\n";
+        let log = format!("{earlier}{AT_UPDATE}{FRZ}");
+        assert_eq!(only_freeze(&log).leg, None, "a line waiting from the earlier process is dropped at the next marker");
+        // The reverse: the earlier process's freeze 1 never gets the later process's line.
+        let unrecovered = FRZ.replace("freeze-end: seq=1 bucket=10-30s\n", "");
+        let log = format!("{unrecovered}{earlier}{AT_UPDATE}");
+        assert_eq!(only_freeze(&log).leg, None, "a leg line closes only a freeze of its own process");
+        // And each process keeps its own.
+        let both = format!("{}{FRZ}", frz_with_leg_at("before the header"));
+        let legs: Vec<_> = parse(&both)
+            .into_iter()
+            .filter_map(|r| match r {
+                Report::Freeze(f) => Some(f.leg),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(legs, vec![Some(LoopPhase::Update), None]);
+    }
+
+    #[test]
+    fn a_freeze_leg_line_survives_a_malformed_exit_header_above_it() {
+        let log = FRZ.replacen("bin: ", "*** EXIT status=x\nfreeze-at: seq=1 leg=update\nbin: ", 1);
+        assert_eq!(only_freeze(&log).leg, Some(LoopPhase::Update));
+    }
+
+    /// A freeze that has no frame in the app's own image: `pc` in `pc_lib` and `lr` in `lr_lib`
+    /// (a library basename), at the given offsets, with the given extra line (a `freeze-at:`).
+    fn firmware_only_freeze(pc_off: u64, lr_off: u64, leg_line: &str) -> Freeze {
+        let log = format!(
+            "\nimg: build_id=11223344556677889900aabbccddeeff00112233 image_addr=0x10000 image_size=0x5f0000\n\
+             \n*** FREEZE seq=1 pc=0x{:x} lr=0x{:x}\n\
+             {leg_line}\
+             at: b6f00000-b6f21000 r-xp 00000000 fe:01 1234 /lib/libc.so.6\n\
+             at: b6a00000-b6a40000 r-xp 00000000 fe:01 4321 /usr/lib/libgl-firmware.so\n\
+             freeze-end: seq=1 bucket=5-10s\n",
+            0xb6f0_0000 + pc_off,
+            0xb6a0_0000 + lr_off,
+        );
+        only_freeze(&log)
+    }
+
+    #[test]
+    fn a_firmware_only_freeze_with_a_leg_fingerprints_on_module_basenames_not_offsets() {
+        let a = firmware_only_freeze(0x1_0000, 0x2_0000, AT_UPDATE);
+        let b = firmware_only_freeze(0x1_0aa4, 0x3_1230, AT_UPDATE);
+        let expect = serde_json::json!(["freeze", "libc.so.6>libgl-firmware.so", "update"]);
+        assert_eq!(freeze_json(&a)["fingerprint"], expect);
+        assert_eq!(freeze_json(&b)["fingerprint"], expect, "another instruction in the same libraries is the same issue");
+        // Another leg is another issue; so are other libraries.
+        let other_leg = firmware_only_freeze(0x1_0000, 0x2_0000, "freeze-at: seq=1 leg=present-and-swap\n");
+        assert_eq!(
+            freeze_json(&other_leg)["fingerprint"],
+            serde_json::json!(["freeze", "libc.so.6>libgl-firmware.so", "present-and-swap"])
+        );
+        // The stack still shows the exact frames: only the grouping drops the offsets.
+        let addrs: Vec<_> = freeze_json(&a)["exception"]["values"][0]["stacktrace"]["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x["instruction_addr"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(addrs, ["0xb6a20000", "0xb6f10000"]);
+    }
+
+    #[test]
+    fn the_freeze_basename_site_covers_a_single_module_a_shared_one_and_none() {
+        let f = firmware_only_freeze(0x1_0000, 0x2_0000, AT_UPDATE);
+        // lr unlocated: pc's module alone.
+        let no_lr = Freeze { lr: 0, ..f.clone() };
+        assert_eq!(freeze_json(&no_lr)["fingerprint"], serde_json::json!(["freeze", "libc.so.6", "update"]));
+        // pc unlocated: lr's module alone.
+        let no_pc = Freeze { pc: 0, ..f.clone() };
+        assert_eq!(freeze_json(&no_pc)["fingerprint"], serde_json::json!(["freeze", "libgl-firmware.so", "update"]));
+        // pc and lr in one module: both ends are named, so it differs from the one-ended shapes.
+        let same = Freeze { lr: 0xb6f0_5000, ..f.clone() };
+        assert_eq!(freeze_json(&same)["fingerprint"], serde_json::json!(["freeze", "libc.so.6>libc.so.6", "update"]));
+        // Nothing located: the constant word, still with the leg.
+        let nothing = Freeze { image: None, modules: Vec::new(), ..f };
+        assert_eq!(freeze_json(&nothing)["fingerprint"], serde_json::json!(["freeze", "unmapped", "update"]));
+    }
+
+    #[test]
+    fn a_firmware_only_freeze_without_a_leg_keeps_its_old_offset_fingerprint() {
+        // An old record is not regrouped: it names the instruction, as it always did.
+        let old = firmware_only_freeze(0x1_0000, 0x2_0000, "");
+        assert_eq!(old.leg, None);
+        assert_eq!(freeze_json(&old)["fingerprint"], serde_json::json!(["freeze", "libc.so.6+0x10000"]));
+        // And an old record with an app frame is untouched, as the test above pins.
+        assert_eq!(freeze_json(&only_freeze(FRZ))["fingerprint"], serde_json::json!(["freeze", "plxnative+0x4accd0"]));
+    }
+
+    /// What a freeze report can carry is what `PRIVACY.md` lists: the tag and every word of the
+    /// fixed table that can reach it.
+    #[test]
+    fn privacy_names_the_freeze_leg_tag_and_every_word_it_can_carry() {
+        let notice = include_str!("../../../../PRIVACY.md");
+        assert!(notice.contains("`freeze.leg`"), "PRIVACY.md does not name the tag");
+        for leg in LoopPhase::ALL {
+            assert!(notice.contains(&format!("`{}`", leg.word())), "PRIVACY.md does not name `{}`", leg.word());
+        }
     }
 
     #[test]
