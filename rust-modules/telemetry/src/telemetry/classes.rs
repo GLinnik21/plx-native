@@ -965,13 +965,17 @@ impl TerminalStageClass {
 /// 1. `no_part`: the item has no media part to play at all;
 /// 2. `not_direct`: a direct play was not on offer before Auto quality chose a delivery, so the
 ///    route was going to be a transcode or a remux. That is the server's decision, but also a link
-///    or quality policy that denies direct play, a track the TV cannot decode as is, and an
-///    enhancement remux; this domain does not tell those apart;
-/// 3. `adaptive`: a direct play WAS on offer, and Auto quality's bandwidth probe chose HLS instead.
+///    or quality policy that denies direct play and a track the TV cannot play as it is; this
+///    domain does not tell those apart;
+/// 3. `adaptive`: a direct play WAS on offer, and Auto did not keep the Original. That is Auto's
+///    bandwidth probe finding the link too slow, the probe coming back inconclusive, or the link
+///    not being classified yet; this domain does not tell those apart.
 ///
-/// A route that fails none of these is the direct play a preview takes and is never refused, so
-/// this domain has no "none". It rides a report only when the failure kind is `preview_not_direct`;
-/// every value is a code of this enum and nothing the server said.
+/// A direct play that was on offer and that Auto kept, then lost to a later demotion (an
+/// enhancement's remux), is also named `not_direct`: the fall-through. A route that is still the
+/// direct play a preview takes is never refused, so this domain has no "none". It rides a report
+/// only when the failure kind is `preview_not_direct`; every value is a code of this enum and
+/// nothing the server said.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewRefusal { NotDirect, NoPart, Adaptive }
 impl PreviewRefusal {
