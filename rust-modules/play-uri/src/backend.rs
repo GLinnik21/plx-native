@@ -97,13 +97,12 @@ pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneF
 pub const EXPORTED_STRATA: &[u32] = &[
     // webOS 5.6.2, LG OLED CX (build 5.6.2-21): `docs/uri-mode.md` Results row "webOS 5.6.2 (build
     // 5.6.2-21)", #1064. (a) the 5.5.0 and 5.6.2 images read `option.windowId`; (b) a product run on a
-    // debug build played a placed, correctly letterboxed picture with sound; (c) the drive probe
-    // printed pause=unconfirmed; replaying its numbers through the current grader gives froze
-    // (#1314's tests: `uri_drive_pause_event_and_resume_position_confirm_freeze_without_samples`
-    // asserts pause=froze for the 2439 -> 2641 replay, and
-    // `drive_binds_like_load_then_pauses_resumes_seeks_and_selects_tracks` pins
-    // pause_basis=paused_event_and_resume), seek hit, audio ok; the product run's pause and seek
-    // answered; its audio-track switch failed and is routed to Standard (#1314).
+    // debug build of main at e8442d5e (carries #1314; single audio track, SDR and Dolby Vision) played
+    // a placed, correctly letterboxed picture with sound; (c) the drive probe on that build printed
+    // pause=froze (pause_basis=paused_event_and_resume), seek=hit and audio_at_load=0, and the
+    // product run's pause, seek and sound answered, so amendment (1) is not used. The earlier
+    // four-audio-track run's audio-track switch failed; such a file now starts in Standard (#1314,
+    // amendment (2); `exported_uri_leaves_multi_audio_originals_on_standard` pins the route).
     5,
 ];
 
