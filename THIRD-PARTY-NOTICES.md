@@ -319,7 +319,7 @@ stated; election does not alter your rights under the other arms.
 | crc | 3.4.0 | MIT OR Apache-2.0 | 2017 crc-rs Developers |
 | crc-catalog | 2.5.0 | MIT OR Apache-2.0 | Akhil Velagapudi |
 | crc32fast | 1.5.0 | MIT OR Apache-2.0 | 2018 Sam Rijs, Alex Crichton and contributors |
-| ed25519-compact | 2.6.0 | MIT | 2020-2026 Frank Denis |
+| ed25519-compact | 2.6.1 | MIT | 2020-2026 Frank Denis |
 | either | 1.18.0 | MIT OR Apache-2.0 | Copyright (c) 2015 (the upstream notice names no holder) |
 | encoding_rs | 0.8.44 | (Apache-2.0 OR MIT) AND BSD-3-Clause | Mozilla Foundation. Its encoding tables derive from the WHATWG Encoding Standard, whose data files are BSD-3-Clause (`licenses/WHATWG-BSD-3-Clause.txt`) |
 | equivalent | 1.0.3 | Apache-2.0 OR MIT | 2016–2023 The equivalent authors |
