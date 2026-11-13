@@ -974,11 +974,18 @@ pub(crate) unsafe fn ingest(app: &mut App, fr: &mut Frame) {
             let ok = !supplied && ingress_token(app, fr, &command.token);
             crate::lab::command_done(command.id, ok);
         }
-        // The command API's internal stage (api.rs): the roster auto-default and the
-        // play-staging worker post their tokens here; the same single input path as the
-        // FIFO and the lab channel (the FIFO's own tokens are drained below).
+        // The command API's internal stage (api.rs): the roster auto-default, the
+        // play-staging worker, and the UDS server thread post their commands here; the
+        // same single input path as the FIFO and the lab channel (the FIFO's own tokens
+        // are drained below). A typed request answers its id over the socket; a free
+        // token answers a log line.
         for tok in crate::api::take_pending(app) {
-            if !supplied { let _ = ingress_token(app, fr, &tok); }
+            if !supplied {
+                match tok {
+                    crate::api::IngestToken::Free(t) => { let _ = ingress_token(app, fr, &t); }
+                    crate::api::IngestToken::Api(req) => { crate::api::execute_request(app, fr, req); }
+                }
+            }
         }
         // The FIFO's tokens are collected first so the recorder (a field beside `remote`) can
         // be written per token; a token that pushes SDL events is recorded where they are
