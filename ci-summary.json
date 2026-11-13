@@ -99,7 +99,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-13T21:16:31Z",
+ "generated": "2026-11-13T21:28:00Z",
  "metrics": [
   {
    "change30_pct": 40.2,
@@ -123,10 +123,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 44.3,
+   "change30_pct": 45.1,
    "change7_pct": 27.0,
-   "d30": 176,
-   "delta30": 78.0,
+   "d30": 175,
+   "delta30": 79.0,
    "delta7": 54.0,
    "group": "ci",
    "id": "ci|host lint + type-checks",
@@ -144,10 +144,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 20.1,
+   "change30_pct": 19.2,
    "change7_pct": 4.8,
-   "d30": 399,
-   "delta30": 80.0,
+   "d30": 402,
+   "delta30": 77.0,
    "delta7": 22.0,
    "group": "ci",
    "id": "pr_wait",
@@ -165,18 +165,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 42.1,
-   "change7_pct": 3.0,
-   "d30": 322,
-   "delta30": 135.5,
-   "delta7": 13.5,
+   "change30_pct": 41.0,
+   "change7_pct": 2.9,
+   "d30": 324,
+   "delta30": 133,
+   "delta7": 13.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 62,
-   "now": 457.5,
+   "now": 457,
    "prev7": 444.0,
    "shown": true,
    "state": "flat",
@@ -270,10 +270,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 41.1,
+   "change30_pct": 40.6,
    "change7_pct": 1.7,
-   "d30": 1944,
-   "delta30": 799.0,
+   "d30": 1951,
+   "delta30": 792.0,
    "delta7": 46.0,
    "group": "ci",
    "id": "minutes",
@@ -333,10 +333,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 87.7,
+   "change30_pct": 86.9,
    "change7_pct": 5.1,
-   "d30": 216,
-   "delta30": 189.5,
+   "d30": 217,
+   "delta30": 188.5,
    "delta7": 19.5,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
@@ -375,18 +375,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 52.6,
-   "change7_pct": 8.8,
+   "change30_pct": 53.0,
+   "change7_pct": 9.1,
    "d30": 215,
-   "delta30": 113.0,
-   "delta7": 26.5,
+   "delta30": 114,
+   "delta7": 27.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 58,
-   "now": 328.0,
+   "now": 329,
    "prev7": 301.5,
    "shown": true,
    "state": "flat",
@@ -438,18 +438,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 60.0,
+   "change30_pct": 63.5,
    "change7_pct": 4.9,
-   "d30": 140,
-   "delta30": 84.0,
+   "d30": 137,
+   "delta30": 87,
    "delta7": 10.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 58,
-   "now": 224.0,
+   "now": 224,
    "prev7": 213.5,
    "shown": true,
    "state": "flat",
@@ -459,18 +459,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 3.4,
-   "change7_pct": -5.2,
+   "change30_pct": 4.1,
+   "change7_pct": -4.5,
    "d30": 194,
-   "delta30": 6.5,
-   "delta7": -11.0,
+   "delta30": 8,
+   "delta7": -9.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 58,
-   "now": 200.5,
+   "now": 202,
    "prev7": 211.5,
    "shown": true,
    "state": "flat",
@@ -525,15 +525,15 @@
    "change30_pct": 11.8,
    "change7_pct": -2.6,
    "d30": 17,
-   "delta30": 2.0,
+   "delta30": 2,
    "delta7": -0.5,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 58,
-   "now": 19.0,
+   "now": 19,
    "prev7": 19.5,
    "shown": false,
    "state": "flat",
@@ -632,11 +632,6 @@
    "change_pct": 28.7,
    "commits": [
     {
-     "pr": null,
-     "sha": "015868116",
-     "title": "release: 0.10.0"
-    },
-    {
      "pr": 1355,
      "sha": "22eb2a9c1",
      "title": "Site video: the render works again after v0.10.0 (FFmpeg re-pin, demo Image[], item-menu trigger)"
@@ -680,6 +675,11 @@
      "pr": 1376,
      "sha": "fbec5ed32",
      "title": "webOS version: read /usr/lib/os-release when nyx's os_info.json is unreadable"
+    },
+    {
+     "pr": null,
+     "sha": "6d7b48e7a",
+     "title": "Deps: bump ed25519-compact to 2.6.1 (hold zip at 9.2.2)"
     }
    ],
    "from": 24.3,
@@ -693,11 +693,6 @@
    "change_pct": 27.0,
    "commits": [
     {
-     "pr": null,
-     "sha": "015868116",
-     "title": "release: 0.10.0"
-    },
-    {
      "pr": 1355,
      "sha": "22eb2a9c1",
      "title": "Site video: the render works again after v0.10.0 (FFmpeg re-pin, demo Image[], item-menu trigger)"
@@ -741,6 +736,11 @@
      "pr": 1376,
      "sha": "fbec5ed32",
      "title": "webOS version: read /usr/lib/os-release when nyx's os_info.json is unreadable"
+    },
+    {
+     "pr": null,
+     "sha": "6d7b48e7a",
+     "title": "Deps: bump ed25519-compact to 2.6.1 (hold zip at 9.2.2)"
     }
    ],
    "from": 200,
@@ -781,7 +781,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 328.0
+   "now": 329
   }
  ],
  "slowest_local": [
