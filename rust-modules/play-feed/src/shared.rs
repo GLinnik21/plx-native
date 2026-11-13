@@ -1208,10 +1208,15 @@ impl Shared {
     }
 
     /// Whether the native clock is held for the VIEWER's pause, which fences the start's first
-    /// Play behind a prime (`reserve_hls_prime_play`).
+    /// Play behind a prime (`reserve_hls_prime_play`). Under a held prime the answer is what tells
+    /// a viewer Play that has something to undo from one that has not (`FeedDriver::dispatch`).
+    pub fn clock_user_held(&self) -> bool {
+        self.hls_clock.lock().unwrap_or_else(|e| e.into_inner()).user_held
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn clock_user_held_for_test(&self) -> bool {
-        self.hls_clock.lock().unwrap_or_else(|e| e.into_inner()).user_held
+        self.clock_user_held()
     }
 
     #[cfg(all(any(test, feature = "test-support"), feature = "hostsim"))]

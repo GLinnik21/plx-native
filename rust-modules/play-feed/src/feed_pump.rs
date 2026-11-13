@@ -362,11 +362,17 @@ pub fn user_resume(feed: &mut FeedResources, mt: &MainThread) -> UserResumeOutco
             // play_initial_now; Rebuffer/ResumePrime falls through to Fenced.
             let hooks = feed.hooks();
             let fired = feed.engine().is_some_and(|eng| {
+                // Only a Resume that IS the first Play fires it. When the runner's Play was
+                // already commanded, the prime owns the physical Play and its own media proof
+                // releases it: a viewer Play that undoes a Pause held on an Initial or Seek
+                // prime must not start the clock on empty lanes.
+                let first_play = !eng.startup_play_commanded;
                 eng.startup_play_commanded = true;
-                matches!(
-                    crate::native_executor::play_initial_now(mt, eng, &hooks.feed),
-                    Some(true)
-                )
+                first_play
+                    && matches!(
+                        crate::native_executor::play_initial_now(mt, eng, &hooks.feed),
+                        Some(true)
+                    )
             });
             close_preroll_and_commit();
             if fired {

@@ -101,7 +101,18 @@ impl FeedDriver {
                             return DispatchResult::Refused(Failure::Refused);
                         }
                     }
-                } else if !eng.prime_play {
+                } else if !eng.prime_play || eng.shared.clock_user_held() || FEED_TX.seek_preroll_active() {
+                    // An armed prime owns the physical Play; what a viewer Play still owes is
+                    // the viewer's own hold. A Pause that landed on the prime
+                    // (`ClockHold::Initial`/`Seek`/`Rebuffer`/`ResumePrime`) only marks the clock
+                    // `user_held`, which fences the prime until the Resume transition clears it,
+                    // and a Pause under a seek leaves its one-frame preroll holding the
+                    // transport gate shut (`user_resume` closes it). Swallowing that Play left
+                    // the contract at `viewer_paused = false`, the hold standing and every later
+                    // Play a no-op. Handed on, the prime keeps the Play (`user_resume` fences the
+                    // physical Play behind it). With no hold and no preroll there is nothing to
+                    // resume, and the prime is left alone (the claim hold's give-back sends such
+                    // a Play).
                     self.transport_actions.push_back(FeedTransportAction::Play { attempt, command });
                 }
                 DispatchResult::Queued
