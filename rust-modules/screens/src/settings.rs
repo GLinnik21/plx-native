@@ -53,7 +53,7 @@ use plx_ui::screen::{
     At, Dir, DrawFrame, Enter, FocusSource, FocusTarget, Focusable, GroupSpec, HitSource, Mounter,
     Placed, RenderStrategy, ReturnState, Screen, ScreenEvent, Step,
 };
-use plx_plex::plex::session::UiResolution;
+use plx_plex::plex::session::{IpMode, UiResolution};
 use plx_ui::table::Row;
 use plx_ui::table_screen::{Header, TableScreen};
 use plx_ui::{theme, Painter, Rect};
@@ -1150,8 +1150,7 @@ struct RootState {
     sel: RowKey,
     auto_sign_in: bool,
     trailer_autoplay: bool,
-    prefer_ipv6: bool,
-    ipv6_only: bool,
+    ip_mode: IpMode,
     language: plx_platform::i18n::Preference,
     /// What shows under a poster, as the Under posters row summarises it. Written to the canon only
     /// when it is not the default, so every default root's digest is unchanged.
@@ -1169,7 +1168,7 @@ impl LogicalState for RootState {
             w.u32(u32::from(self.under_posters.pack()));
         }
         if self.trace != plx_platform::playback_trace::Status::Off { w.u8(0xd1).u8(self.trace as u8); }
-        if !self.prefer_ipv6 || self.ipv6_only { w.u8(0xd2).bool(self.prefer_ipv6).bool(self.ipv6_only); }
+        if self.ip_mode != IpMode::Ipv4Preferred { w.u8(0xd2).u8(self.ip_mode as u8); }
         if !self.plaintext.is_empty() {
             w.u32(self.plaintext.len() as u32);
             for &on in &self.plaintext {
@@ -1183,7 +1182,7 @@ impl LogicalState for RootState {
             self.sel.0, self.auto_sign_in, self.trailer_autoplay, self.language.tag()
         ));
         out.push_str(&format!(" trace={:?}", self.trace));
-        if !self.prefer_ipv6 || self.ipv6_only { out.push_str(&format!(" ipv6_preferred={} ipv6_only={}", self.prefer_ipv6, self.ipv6_only)); }
+        if self.ip_mode != IpMode::Ipv4Preferred { out.push_str(&format!(" ip_mode={:?}", self.ip_mode)); }
         if !self.plaintext.is_empty() {
             out.push_str(&format!(" plaintext={:?}", self.plaintext));
         }
@@ -1217,8 +1216,7 @@ struct RootInputs {
     library_count: i64,
     auto_sign_in: bool,
     trailer_autoplay: bool,
-    prefer_ipv6: bool,
-    ipv6_only: bool,
+    ip_mode: IpMode,
     resolution: UiResolution,
     /// Whether this set is offered the Interface resolution row at all: webOS 1-3 only
     /// (`plx_platform::tv::device::ui_resolution_offered`). A plain flag, like the others, so the
@@ -1357,13 +1355,7 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
     let network = FormSection::new(plx_platform::i18n::msg::settings_network_section())
         .item(RootId::IpProtocol, RowKind::Nav(SettingsPage::Picker(PickerKind::IpProtocol)), Action::Door,
             Row::new(plx_platform::i18n::msg::settings_ip_protocol_title())
-                .value(super::preferences::ip_mode_label(if inputs.ipv6_only {
-                    plx_plex::plex::session::IpMode::Ipv6Only
-                } else if inputs.prefer_ipv6 {
-                    plx_plex::plex::session::IpMode::Ipv6Preferred
-                } else {
-                    plx_plex::plex::session::IpMode::Ipv4Only
-                })).chevron(true));
+                .value(super::preferences::ip_mode_label(inputs.ip_mode)).chevron(true));
     let has_plaintext = signed_in && !inputs.plaintext.is_empty();
     let mut plaintext = FormSection::new(plx_platform::i18n::msg::settings_plaintext_section()).visible(has_plaintext);
     if has_plaintext {
@@ -1438,7 +1430,7 @@ impl RootPage {
                 sel: RowKey(0),
                 auto_sign_in: false,
                 trailer_autoplay: true,
-                prefer_ipv6: true, ipv6_only: false,
+                ip_mode: plx_plex::plex::session::IpMode::Ipv4Preferred,
                 language: plx_platform::i18n::Preference::System,
                 under_posters: plx_plex::plex::session::UnderPosters::DEFAULT,
                 plaintext: Vec::new(),
@@ -1467,21 +1459,20 @@ impl RootPage {
             plx_plex::plex::session::stored_effective::<plx_plex::plex::session::TrailerAutoplayPref>(
                 sess, &plx_plex::plex::session::current_seat())
         }, |(value, _)| *value);
-        let (prefer_ipv6, ipv6_only) = (sess.prefer_ipv6(), sess.ipv6_only());
+        let ip_mode = sess.ip_mode();
         let resolution = sess.ui_resolution();
         let resolution_offered = plx_platform::tv::device::ui_resolution_offered();
         let multi_user = sess.home_users.len() > 1;
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;
-        self.state.prefer_ipv6 = prefer_ipv6;
-        self.state.ipv6_only = ipv6_only;
+        self.state.ip_mode = ip_mode;
         self.state.language = plx_platform::i18n::saved_preference();
         self.state.under_posters = plx_media::route::under_posters();
         let plaintext = if signed_in { self.plaintext_inputs() } else { Vec::new() };
         let form = root_form(&RootInputs {
             trace: self.state.trace,
             signed_in, multi_user, library_count: directory.pinned_count() as i64,
-            auto_sign_in, trailer_autoplay, prefer_ipv6, ipv6_only, resolution, resolution_offered, language: self.state.language,
+            auto_sign_in, trailer_autoplay, ip_mode, resolution, resolution_offered, language: self.state.language,
             under_posters: self.state.under_posters, plaintext,
         });
         let keep = self.form.selected_id().cloned();

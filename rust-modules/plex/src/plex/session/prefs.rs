@@ -185,14 +185,18 @@ pub struct Preferences {
     /// credentials.
     #[serde(default, deserialize_with = "super::de_soft_bool")]
     pub auto_sign_in: bool,
-    /// Prefer IPv6 Plex connections on this installation. Missing means enabled, preserving
-    /// old session JSON and allowing an IPv4 fallback if no v6 endpoint responds.
+    /// Legacy pre-four-mode IPv6 preference. Read only if ip_mode is not specified.
+    /// Absence uses upstream's original IPv4-first ordering.
     #[serde(default, deserialize_with = "de_soft_opt", skip_serializing_if = "Option::is_none")]
     pub prefer_ipv6: Option<bool>,
     /// Opt-in strict mode: do not consider Plex connections advertised as IPv4.
     /// Off by default; it is a candidate-family gate, not a TV-wide network toggle.
     #[serde(default, deserialize_with = "de_soft_opt", skip_serializing_if = "Option::is_none")]
     pub ipv6_only: Option<bool>,
+    /// Explicit four-way install-wide protocol selection; absence preserves upstream
+    /// IPv4 preference and old saved choices are decoded from the legacy booleans.
+    #[serde(default, deserialize_with = "de_soft_opt", skip_serializing_if = "Option::is_none")]
+    pub ip_mode: Option<super::IpMode>,
     /// **Interface resolution** — the window the NEXT launch asks for ([`UiResolution`]).
     /// Install-wide, not per profile: `app::boot::construct` reads it before `SDL_CreateWindow`,
     /// before anyone is seated. Absence (every session written before the field) is Automatic, the
@@ -617,6 +621,8 @@ setting!(PreferIpv6Pref: Option<bool> = prefer_ipv6, "prefer_ipv6", Install,
     account false, live false, settings None, parse OptionalSoft);
 setting!(Ipv6OnlyPref: Option<bool> = ipv6_only, "ipv6_only", Install,
     account false, live false, settings None, parse OptionalSoft);
+setting!(IpModePref: Option<super::IpMode> = ip_mode, "ip_mode", Install,
+    account false, live false, settings None, parse OptionalSoft);
 setting!(UiResolutionPref: UiResolution = ui_resolution, "ui_resolution", Install,
     account false, live false, settings None, parse Soft);
 setting!(HoldHintTaughtPref: HoldHintTaught = hold_hint_taught, "hold_hint_taught", Install,
@@ -713,6 +719,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<AutoSignInPref>(),
     Descriptor::of::<PreferIpv6Pref>(),
     Descriptor::of::<Ipv6OnlyPref>(),
+    Descriptor::of::<IpModePref>(),
     Descriptor::of::<TrailerAutoplayPref>(),
     Descriptor::of::<HudEndTimePref>(),
     Descriptor::of::<LastHeroBlurPref>(),

@@ -409,6 +409,7 @@
   "settings.network.section": "Red",
   "settings.ip_protocol.title": "Protocolo IP",
   "settings.ip_protocol.detail": "Elige la familia de direcciones para Plex y la reproducción. Reinicia PlxNative después de cambiarla.",
+  "settings.ip_protocol.v4_preferred": "IPv4 preferido (IPv6 alternativo)",
   "settings.ip_protocol.v6_preferred": "IPv6 preferido (IPv4 alternativo)",
   "settings.ip_protocol.v6_only": "Solo IPv6",
   "settings.ip_protocol.v4_only": "Solo IPv4"

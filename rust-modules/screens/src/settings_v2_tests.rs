@@ -11,7 +11,7 @@ use plx_platform::playback_trace::{Command, Status};
 fn inputs(signed_in: bool) -> RootInputs {
     RootInputs {
         trace: Status::Off,
-        signed_in, multi_user: false, library_count: 3, auto_sign_in: false, trailer_autoplay: true, prefer_ipv6: true, ipv6_only: false,
+        signed_in, multi_user: false, library_count: 3, auto_sign_in: false, trailer_autoplay: true, ip_mode: plx_plex::plex::session::IpMode::Ipv4Preferred,
         resolution: UiResolution::Auto, resolution_offered: false,
         language: plx_platform::i18n::Preference::System,
         under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(),

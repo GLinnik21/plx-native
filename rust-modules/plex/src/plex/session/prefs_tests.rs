@@ -9,7 +9,7 @@
 //! T-live and T-settings sit in media (`route/prefs_tests.rs`), where the lists they hold to these
 //! descriptors are declared.
 use super::prefs::{Descriptor, Fallback, ListRow, Parse, ProfileMemory, Row, Scope, Setting, SettingsWrite, DESCRIPTORS};
-use super::prefs::{DolbyVisionModePref, InstantDpadSeekingPref, UriEnginePref, AudioEnhancementsPref, AutoSignInPref, PreferIpv6Pref, Ipv6OnlyPref, DeckPressPref, UnderPostersPref, DirectPlayModePref, LastHeroBlurPref,
+use super::prefs::{DolbyVisionModePref, InstantDpadSeekingPref, UriEnginePref, AudioEnhancementsPref, AutoSignInPref, PreferIpv6Pref, Ipv6OnlyPref, IpModePref, DeckPressPref, UnderPostersPref, DirectPlayModePref, LastHeroBlurPref,
     LastLibraryRow, LibraryViewsRow, NextEpisodeModePref, PlaintextConsentRow, QualityPref, ServerKeyPinsRow,
     HdrOverlayBrightnessPref, SkipIntervalPref, SubtitleOffsetsPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
     HoldHintTaughtPref, HudEndTimePref, TrailerAutoplayPref, UiResolutionPref};
@@ -122,6 +122,7 @@ fn every_marker_names_its_own_field() {
     check_row::<AutoSignInPref>(true);
     check_row::<PreferIpv6Pref>(Some(false));
     check_row::<Ipv6OnlyPref>(Some(true));
+    check_row::<IpModePref>(Some(super::IpMode::Ipv6Preferred));
     check_row::<TrailerAutoplayPref>(true);
     check_row::<HudEndTimePref>(false);
     check_row::<LastHeroBlurPref>(Some([[0.5, 0.25, 0.125]; 4]));
@@ -133,7 +134,7 @@ fn every_marker_names_its_own_field() {
     // `the_subtitle_offsets_row_names_its_own_field`) and the per-profile record list
     // (`ProfilePrefsPref`, `profile_prefs_tests::nothing_picked_serializes_to_no_key`): a row needs
     // its line in one of the four places.
-    assert_eq!(DESCRIPTORS.len(), 24 + 5 + 2 + 1 + 1, "plus `HudSelectionPref`, a `String` row checked by `profile_prefs_tests`");
+    assert_eq!(DESCRIPTORS.len(), 25 + 5 + 2 + 1 + 1, "plus `HudSelectionPref`, a `String` row checked by `profile_prefs_tests`");
 }
 
 /// The list rows do what `check_row` proves for the `Copy` ones: the marker names its own field
@@ -355,6 +356,7 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("auto_sign_in", not_a_bool()),
         ("prefer_ipv6", not_a_bool()),
         ("ipv6_only", not_a_bool()),
+        ("ip_mode", vec![json!("unknown_protocol"), json!(17), json!(true), json!([1, "x"]), json!({"unexpected": 1})]),
         ("ui_resolution", generic()),
         ("hold_hint_taught", generic()),
         ("trailer_autoplay", not_a_bool()),
@@ -686,14 +688,28 @@ fn sort_value_is_on_by_default_stored_as_its_off_state_and_soft_parsed() {
 }
 
 #[test]
-fn ip_protocol_defaults_to_ipv6_preferred_and_migrates_legacy_booleans() {
+fn ip_protocol_defaults_to_main_and_preserves_explicit_legacy_choices() {
     use super::IpMode;
     let default = super::Session::default();
-    assert_eq!(default.ip_mode(), IpMode::Ipv6Preferred);
+    assert_eq!(default.ip_mode(), IpMode::Ipv4Preferred);
+    assert!(default.prefs.ip_mode.is_none());
+    // No IP preference in existing installs: never silently switch to IPv6.
     for mode in IpMode::LADDER {
         let saved = default.with_ip_mode(mode);
         assert_eq!(saved.ip_mode(), mode);
-        assert_eq!(saved.prefs.prefer_ipv6, Some(mode != IpMode::Ipv4Only));
-        assert_eq!(saved.prefs.ipv6_only, Some(mode == IpMode::Ipv6Only));
+        assert_eq!(saved.prefs.ip_mode, Some(mode));
+        let encoded = serde_json::to_value(&saved.prefs).unwrap();
+        let decoded: super::prefs::Preferences = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.ip_mode, Some(mode));
     }
+    // Preserve explicit preferences from previous feature-test builds.
+    let mut legacy = default.clone();
+    legacy.prefs.prefer_ipv6 = Some(true);
+    assert_eq!(legacy.ip_mode(), IpMode::Ipv6Preferred);
+    legacy.prefs.prefer_ipv6 = Some(false);
+    assert_eq!(legacy.ip_mode(), IpMode::Ipv4Only);
+    legacy.prefs.ipv6_only = Some(true);
+    assert_eq!(legacy.ip_mode(), IpMode::Ipv6Only);
+    // The explicit four-way choice takes precedence over legacy settings.
+    assert_eq!(legacy.with_ip_mode(IpMode::Ipv4Preferred).ip_mode(), IpMode::Ipv4Preferred);
 }

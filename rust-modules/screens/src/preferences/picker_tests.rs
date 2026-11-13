@@ -393,19 +393,20 @@ fn the_interface_resolution_picker_writes_install_wide_and_reverts_on_a_refused_
 }
 
 #[test]
-fn ip_protocol_picker_is_install_wide_and_defaults_to_ipv6_with_ipv4_fallback() {
+fn ip_protocol_picker_is_install_wide_and_defaults_to_ipv4_with_ipv6_fallback() {
     use plx_plex::plex::session::IpMode;
     let _guard = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("picker-ip-protocol");
     assert_eq!(PickerKind::IpProtocol.kind(), None, "network is on Settings root");
     assert_eq!(PickerKind::IpProtocol.parent_title(), plx_platform::i18n::msg::settings_title());
     assert_eq!(field_options(PickerKind::IpProtocol, Quality::Original, DirectPlayMode::Auto, None), [
+        (plx_platform::i18n::msg::settings_ip_protocol_v4_preferred().into(), Value::IpMode(IpMode::Ipv4Preferred)),
         (plx_platform::i18n::msg::settings_ip_protocol_v6_preferred().into(), Value::IpMode(IpMode::Ipv6Preferred)),
-        (plx_platform::i18n::msg::settings_ip_protocol_v6_only().into(), Value::IpMode(IpMode::Ipv6Only)),
         (plx_platform::i18n::msg::settings_ip_protocol_v4_only().into(), Value::IpMode(IpMode::Ipv4Only)),
+        (plx_platform::i18n::msg::settings_ip_protocol_v6_only().into(), Value::IpMode(IpMode::Ipv6Only)),
     ]);
     let page = PickerPage::new(EntryId(0), PickerKind::IpProtocol);
-    assert_eq!(page.state.checked, 0, "new installations prefer IPv6");
+    assert_eq!(page.state.checked, 0, "new installations retain IPv4-first behaviour");
 }
 
 #[test]

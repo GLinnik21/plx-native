@@ -406,6 +406,7 @@
   "settings.network.section": "Netzwerk",
   "settings.ip_protocol.title": "IP-Protokoll",
   "settings.ip_protocol.detail": "Legt die IP-Adressfamilie für Plex und Videostreams fest. Starte PlxNative nach einer Änderung neu.",
+  "settings.ip_protocol.v4_preferred": "IPv4 bevorzugt (IPv6 als Ersatz)",
   "settings.ip_protocol.v6_preferred": "IPv6 bevorzugt (IPv4 als Ersatz)",
   "settings.ip_protocol.v6_only": "Nur IPv6",
   "settings.ip_protocol.v4_only": "Nur IPv4"

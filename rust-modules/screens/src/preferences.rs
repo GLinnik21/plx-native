@@ -776,6 +776,7 @@ pub(crate) fn resolution_label(mode: UiResolution) -> String {
 }
 pub(crate) fn ip_mode_label(mode: IpMode) -> &'static str {
     match mode {
+        IpMode::Ipv4Preferred => plx_platform::i18n::msg::settings_ip_protocol_v4_preferred(),
         IpMode::Ipv6Preferred => plx_platform::i18n::msg::settings_ip_protocol_v6_preferred(),
         IpMode::Ipv6Only => plx_platform::i18n::msg::settings_ip_protocol_v6_only(),
         IpMode::Ipv4Only => plx_platform::i18n::msg::settings_ip_protocol_v4_only(),

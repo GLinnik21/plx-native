@@ -406,6 +406,7 @@
   "settings.network.section": "Hálózat",
   "settings.ip_protocol.title": "IP-protokoll",
   "settings.ip_protocol.detail": "Válasszon IP-címcsaládot a Plexhez és a videókhoz. A módosítás után indítsa újra a PlxNative alkalmazást.",
+  "settings.ip_protocol.v4_preferred": "IPv4 előnyben (IPv6 tartalék)",
   "settings.ip_protocol.v6_preferred": "IPv6 előnyben (IPv4 tartalék)",
   "settings.ip_protocol.v6_only": "Csak IPv6",
   "settings.ip_protocol.v4_only": "Csak IPv4"

@@ -409,6 +409,7 @@
   "settings.network.section": "Réseau",
   "settings.ip_protocol.title": "Protocole IP",
   "settings.ip_protocol.detail": "Choisissez le protocole des connexions Plex et vidéo. Redémarrez PlxNative pour reconnecter le serveur après tout changement.",
+  "settings.ip_protocol.v4_preferred": "IPv4 prioritaire (IPv6 en secours)",
   "settings.ip_protocol.v6_preferred": "IPv6 prioritaire (IPv4 en secours)",
   "settings.ip_protocol.v6_only": "IPv6 uniquement",
   "settings.ip_protocol.v4_only": "IPv4 uniquement"

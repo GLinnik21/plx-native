@@ -412,6 +412,7 @@
   "settings.network.section": "Сетка",
   "settings.ip_protocol.title": "Пратакол IP",
   "settings.ip_protocol.detail": "Выберыце сямейства IP-адрасоў для Plex і відэа. Перазапусціце PlxNative пасля змянення.",
+  "settings.ip_protocol.v4_preferred": "Перавага IPv4 (рэзервовы IPv6)",
   "settings.ip_protocol.v6_preferred": "Перавага IPv6 (рэзервовы IPv4)",
   "settings.ip_protocol.v6_only": "Толькі IPv6",
   "settings.ip_protocol.v4_only": "Толькі IPv4"
