@@ -977,7 +977,7 @@ pub(crate) unsafe fn ingest(app: &mut App, fr: &mut Frame) {
         // The command API's internal stage (api.rs): the roster auto-default and the
         // play-staging worker post their tokens here; the same single input path as the
         // FIFO and the lab channel (the FIFO's own tokens are drained below).
-        for tok in crate::api::take_pending() {
+        for tok in crate::api::take_pending(app) {
             if !supplied { let _ = ingress_token(app, fr, &tok); }
         }
         // The FIFO's tokens are collected first so the recorder (a field beside `remote`) can

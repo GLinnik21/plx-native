@@ -26,16 +26,22 @@
 //! track menu's picks land in — so nothing here re-implements a playback decision):
 //! - `api:play:<rk>`  — the headless play ritual, SELF-CONTAINED: when nothing is staged
 //!   yet, the rk is resolved from PMS on a WORKER thread (the fetch may block, the frame
-//!   may not — [`stage_play`]), parked in `PENDING_PLAYS`, and the token re-posted; the
-//!   next drain finds the staged item and performs the ritual: `route::request_play_movie`
-//!   (+ the detail request) then `playback::start_playback`, exactly what the dev live-play
-//!   scenario does. A worker that fails (no PMS server selected yet, PMS has no such item,
+//!   may not — [`stage_play`]), parked in `PENDING_PLAYS` WITH THE PLAY'S GENERATION, and
+//!   an internal `api:playstaged:<rk>` token re-posted; the drain performs the ritual —
+//!   `route::request_play_movie` (+ the detail request) then `playback::start_playback`,
+//!   exactly what the dev live-play scenario does — ONLY while that generation is still
+//!   the latest. A stop, or a newer play, that bumped it in between drops the stale ritual:
+//!   a fetch that lands late cannot start playback after a Stop, or run its ritual over a
+//!   newer request. A worker that fails (no PMS server selected yet, PMS has no such item,
 //!   no playable part) logs the reason and posts nothing — re-write the token to retry.
 //! - `api:seek:<ms>`  — `player::request_seek(ms * 1_000_000)`.
 //! - `api:audio:<sid>` — the `playing()` item's audio `Stream` whose `id == sid`, through
 //!   `route::commit_audio_selection` with the panel's `audio_ordinal` mapping.
-//! - `api:sub:<sid>`  — the subtitle `Stream` whose `id == sid`, through
-//!   `route::commit_subtitle_selection` (`sub_idx` = its row, client-renderable).
+//! - `api:sub:<sid>`  — the subtitle `Stream` whose `id == sid`, through the track menu's
+//!   own commit, `route::commit_subtitle_and_sidecar`: the track's DEMUXER ordinal
+//!   (`metadata::sub_render_ordinal` — −1 for an external pick) and its sidecar (key +
+//!   codec) when the stream is sidecar-renderable, which `player::sidecar` fetches and
+//!   draws. No viewer memo is remembered (an agent's pick).
 //! - `api:quality:<rung>` — the `…` menu's own quality commit: `apply_more_action` with
 //!   `SetQuality` — the routing question re-asked for the stream on screen, which reloads only
 //!   when the answer changed (the live switch while the engine runs); a terminal engine gets
@@ -75,14 +81,21 @@ use plx_base::eventlog::log;
 
 /// Command tokens posted for the frame loop, drained once per frame by `run::ingest` and
 /// fed to `ingress_token` — the single input path. Fed by the roster auto-default (in
-/// [`publish`]) and the play-staging worker; the FIFO's own tokens enter the same path
-/// via `remote::drain_fifo`.
+/// [`take_pending`]) and the play-staging worker; the FIFO's own tokens enter the same
+/// path via `remote::drain_fifo`.
 static PENDING: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
 /// Staged plays: the rk a token asked for → the `PmsMovie` fetched from PMS on a worker
-/// thread, consumed (removed) by [`handle_play`] on the frame thread. A play whose
-/// staging failed is never parked here, so a drained `api:play:<rk>` with no entry is a
-/// fresh request to stage again.
-static PENDING_PLAYS: Mutex<Option<HashMap<String, plx_data::pms::PmsMovie>>> = Mutex::new(None);
+/// thread, WITH THE GENERATION OF THE PLAY REQUEST IT BELONGS TO, consumed (removed) by
+/// [`handle_play_staged`] on the frame thread. A play whose staging failed is never
+/// parked here, so a drained `api:play:<rk>` with no entry is a fresh request to stage
+/// again.
+static PENDING_PLAYS: Mutex<Option<HashMap<String, (plx_data::pms::PmsMovie, u64)>>> = Mutex::new(None);
+/// The play-intent generation: monotonically increasing; every `api:play` request and
+/// every `api:stop` bumps it (recording which kind). A staged play performs its ritual
+/// only while its generation is still the latest — a stop, or a newer play, in between
+/// makes it stale: the PMS fetch runs on a worker, and a late landing must not start a
+/// play after a Stop, nor run its ritual over a newer request.
+static PLAY_INTENT: Mutex<(u64, bool)> = Mutex::new((0, false)); // (generation, last was a stop)
 /// The last frame's snapshot, republished by `run::report`; the `state` FIFO token dumps
 /// it to `state.json`. `None` until the first frame (the app is booting).
 static SNAPSHOT: Mutex<Option<String>> = Mutex::new(None);
@@ -102,7 +115,31 @@ pub(crate) fn init() {
 
 /// Command tokens the frame loop has not yet performed: `run::ingest` calls this once per
 /// frame and feeds every token to `ingress_token` — the single input path.
-pub(crate) fn take_pending() -> Vec<String> {
+///
+/// The debug-flavour roster default is posted HERE, on the command path — not from
+/// [`publish`], the snapshot's construction, which stays a pure read: profile selection
+/// is an explicit commit, not a side effect of the state file's publication.
+pub(crate) unsafe fn take_pending(app: &crate::app::App) -> Vec<String> {
+    // The debug-flavour roster default (the user's rule): the "who's watching" screen is
+    // answered with the FIRST user — this household's admin — exactly once per app launch,
+    // so a debug install never sits on the picker. The flow's own phase change (Profiles →
+    // Switching) ends the condition; the flag keeps a refused pick from re-posting every
+    // frame. An explicit `api:profile:<index>` token still reaches every other user.
+    if plx_base::paths::flavour() == Some("debug") {
+        let snap = app.bridge.views().auth.0;
+        if snap.phase == plx_session::auth::Phase::Profiles
+            && !snap.users.is_empty()
+            && !PROFILE_DEFAULTED.swap(true, Ordering::Relaxed)
+        {
+            // The user's own name stays OUT of the event log: the scrub gate bans the `.title`
+            // spelling in a log call (household identity is scrubbed at write time anyway).
+            log(&format!(
+                "api: roster: auto-selecting first user (user 1 of {})",
+                snap.users.len()
+            ));
+            push("api:profile:0:-".to_string());
+        }
+    }
     let mut guard = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     if guard.is_empty() {
         return Vec::new();
@@ -137,12 +174,15 @@ pub(crate) fn state_file() {
 }
 
 /// The `api:play:<rk>` self-contained door: resolve the item from PMS on a WORKER thread
-/// (the fetch blocks on the network — the frame thread must never), park the parsed item,
-/// and re-post the token so the frame's next drain performs the ritual. Every failure is a
-/// logged no-post: the agent re-writes the token to retry. The client is the NON-PANICKING
-/// accessor — before sign-in no server is selected yet, and a worker must not take the app
-/// down with a panic.
-fn stage_play(rk: String) {
+/// (the fetch blocks on the network — the frame thread must never), park the parsed item
+/// WITH THE REQUEST'S GENERATION, and re-post the internal `api:playstaged` token so the
+/// frame's next drain performs the ritual — if this generation is still the latest then.
+/// A worker that lands after a newer play request for the same rk posts nothing (the
+/// newer one owns the entry); every other failure is a logged no-post, and the agent
+/// re-writes the token to retry. The client is the NON-PANICKING accessor — before
+/// sign-in no server is selected yet, and a worker must not take the app down with a
+/// panic.
+fn stage_play(rk: String, gen: u64) {
     let refused_msg = format!("api: play rk {rk}: the worker was refused — retry the token");
     let worker = plx_base::task::spawn("api-play-stage", move || {
         let Some(client) = plx_plex::plex::client_opt() else {
@@ -164,10 +204,16 @@ fn stage_play(rk: String) {
         {
             let mut guard = PENDING_PLAYS.lock().unwrap_or_else(|e| e.into_inner());
             let map = guard.get_or_insert_with(HashMap::new);
-            map.insert(rk.clone(), pmm);
+            if map.get(&rk).is_some_and(|(_, staged)| *staged > gen) {
+                // A newer request for this rk already owns the entry: this landing is
+                // superseded. No overwrite, no re-post — the newer one's token carries it.
+                log(&format!("api: play rk {rk}: landing superseded by a newer play — dropped"));
+                return;
+            }
+            map.insert(rk.clone(), (pmm, gen));
         }
-        log(&format!("api: play rk {rk}: item staged"));
-        push(format!("api:play:{rk}"));
+        log(&format!("api: play rk {rk}: item staged (gen {gen})"));
+        push(format!("api:playstaged:{rk}"));
     });
     if worker.is_none() {
         log(&refused_msg);
@@ -189,6 +235,7 @@ pub(crate) unsafe fn handle(app: &mut crate::app::App, fr: &mut crate::app::run:
     };
     match kind {
         "play" => handle_play(app, fr, arg),
+        "playstaged" => handle_play_staged(app, fr, arg),
         "pause" => handle_transport(app, fr, false),
         "resume" => handle_transport(app, fr, true),
         "stop" => handle_stop(app, fr),
@@ -211,26 +258,55 @@ pub(crate) unsafe fn handle(app: &mut crate::app::App, fr: &mut crate::app::run:
     }
 }
 
-/// The headless play ritual — the same three calls the dev live-play scenario makes, in
-/// the same order: request the item (which owns the resolve), ask for its detail (the
-/// HUD's context), then seat the engine. A token with nothing staged is NOT stale — it is
-/// the start of a self-contained play: stage from PMS on a worker and let the re-posted
-/// token perform the ritual on a later drain.
+/// A FRESH `api:play` request: bump the play-intent generation (a stop, or a later play,
+/// bumps again and supersedes this one) and stage from PMS on a worker — the re-posted
+/// `api:playstaged` token performs the ritual on a later drain, only if this generation
+/// is still the latest then.
 unsafe fn handle_play(
+    _app: &mut crate::app::App,
+    _fr: &mut crate::app::run::Frame,
+    rk: &str,
+) -> bool {
+    let gen = {
+        let mut intent = PLAY_INTENT.lock().unwrap_or_else(|e| e.into_inner());
+        intent.0 = intent.0.saturating_add(1);
+        intent.1 = false;
+        intent.0
+    };
+    log(&format!("api: play rk {rk}: nothing staged yet — resolving from PMS (worker)"));
+    stage_play(rk.to_string(), gen);
+    false
+}
+
+/// The STAGED half of `api:play` — the headless play ritual, the same three calls the dev
+/// live-play scenario makes, in the same order: request the item (which owns the resolve),
+/// ask for its detail (the HUD's context), then seat the engine. It runs only while the
+/// play's generation is still the latest: a stop or a newer play that bumped it in
+/// between drops the ritual here — logged — and the play never starts.
+unsafe fn handle_play_staged(
     app: &mut crate::app::App,
     _fr: &mut crate::app::run::Frame,
     rk: &str,
 ) -> bool {
-    let Some(pmm) = PENDING_PLAYS
+    let Some((pmm, gen)) = PENDING_PLAYS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .as_mut()
         .and_then(|map| map.remove(rk))
     else {
-        log(&format!("api: play rk {rk}: nothing staged yet — resolving from PMS (worker)"));
-        stage_play(rk.to_string());
+        log(&format!(
+            "api: play rk {rk}: staged item gone (superseded or stopped) — dropped"
+        ));
         return false;
     };
+    let (cur, is_stop) = *PLAY_INTENT.lock().unwrap_or_else(|e| e.into_inner());
+    if cur != gen {
+        log(&format!(
+            "api: play rk {rk}: stale — {} intervened; the ritual is dropped",
+            if is_stop { "a stop" } else { "a newer play" }
+        ));
+        return false;
+    }
     let requested = plx_media::route::request_play_movie(
         &mut app.player.session,
         app.bridge.metadata_mut(),
@@ -266,7 +342,8 @@ unsafe fn handle_play(
 /// (resume), `false` = the PAUSE key, so the commit value is `!play`. Seated-engine guard:
 /// `sink().pause` is a Starfish call and a session with no engine (idle, resolving,
 /// connecting, errored) has nothing for it to reach — those answer a log line and a false,
-/// never a guess at an engine.
+/// never a guess at an engine. EXPLICIT PAUSED PASSES the guard: a viewer-paused engine is
+/// seated, and `resume` is exactly what it is waiting for.
 unsafe fn handle_transport(
     app: &mut crate::app::App,
     fr: &mut crate::app::run::Frame,
@@ -277,6 +354,7 @@ unsafe fn handle_transport(
     if !matches!(
         st,
         plx_media::player::PlaybackState::Buffering
+            | plx_media::player::PlaybackState::Paused
             | plx_media::player::PlaybackState::Seeking
             | plx_media::player::PlaybackState::Playing
     ) {
@@ -301,8 +379,16 @@ unsafe fn handle_transport(
 /// `api:stop` — the one leave-playback ritual the STOP key performs, by the same direct path:
 /// `playback::exit_player` (supersede the play, close the overlays, stop the buffer feed,
 /// return to the origin page, arm the Continue-Watching refresh). An idle session has nothing
-/// to leave.
+/// to leave. The stop bumps the play-intent generation and clears the staging table FIRST —
+/// even an idle stop: an in-flight PMS fetch for a play request may land after this stop,
+/// and the stale check in [`handle_play_staged`] drops it then.
 unsafe fn handle_stop(app: &mut crate::app::App, _fr: &mut crate::app::run::Frame) -> bool {
+    {
+        let mut intent = PLAY_INTENT.lock().unwrap_or_else(|e| e.into_inner());
+        intent.0 = intent.0.saturating_add(1);
+        intent.1 = true;
+    }
+    PENDING_PLAYS.lock().unwrap_or_else(|e| e.into_inner()).take();
     let st = plx_media::player::state(&app.player.session);
     if matches!(st, plx_media::player::PlaybackState::Idle) {
         log("api: stop: nothing to leave (state Idle)");
@@ -349,10 +435,21 @@ unsafe fn handle_track(
             return false;
         };
         let s = &item.subs[i];
-        // A picked track is client-renderable by definition (an embedded demux ordinal
-        // or a sidecar the client draws); `Off` is the only non-renderable pick and it
-        // has no sid to arrive here with.
-        plx_media::route::commit_subtitle_selection(&mut app.player.session, i as i32, s.id, true);
+        // The track menu's own commit, field for field: the DEMUXER ordinal (the client
+        // renderer's input — −1 for an external pick, which the embedded renderer cannot
+        // draw), the sidecar the stream names (key + codec — the external pick
+        // `player::sidecar` fetches and draws), and no viewer memo (an agent's pick
+        // remembers nothing, the ladder's raw commit path).
+        let ridx = plx_data::metadata::sub_render_ordinal(&item.subs, i);
+        let sidecar = s.sidecar_renderable().then(|| (s.key.clone(), s.codec.clone()));
+        plx_media::route::commit_subtitle_and_sidecar(
+            &mut app.player.session,
+            ridx,
+            s.id,
+            sidecar.as_ref().map(|(k, _)| k.clone()),
+            sidecar.map(|(_, c)| c).unwrap_or_default(),
+            None,
+        );
         true
     }
 }
@@ -425,26 +522,6 @@ pub(crate) unsafe fn publish(app: &mut crate::app::App, fr: &mut crate::app::run
         plx_media::player::PlaybackState::Error => "error",
     };
     let views = app.bridge.views();
-    // The debug-flavour roster default (the user\u2019s rule): the \u201cwho\u2019s watching\u201d screen is
-    // answered with the FIRST user \u2014 this household\u2019s admin \u2014 exactly once per app launch, so a
-    // debug install never sits on the picker. The flow\u2019s own phase change (Profiles \u2192
-    // Switching) ends the condition; the flag keeps a refused pick from re-posting every frame.
-    // An explicit `api:profile:<index>` token still reaches every other user.
-    if plx_base::paths::flavour() == Some("debug") {
-        let snap = views.auth.0;
-        if snap.phase == plx_session::auth::Phase::Profiles
-            && !snap.users.is_empty()
-            && !PROFILE_DEFAULTED.swap(true, Ordering::Relaxed)
-        {
-            // The user's own name stays OUT of the event log: the scrub gate bans the `.title`
-            // spelling in a log call (household identity is scrubbed at write time anyway).
-            log(&format!(
-                "api: roster: auto-selecting first user (user 1 of {})",
-                snap.users.len()
-            ));
-            push("api:profile:0:-".to_string());
-        }
-    }
     // This frame's auth section: the sign-in flow's phase, the offered "who's watching"
     // roster (title, PIN flag, admin flag) and the flow's error line — the state file's
     // `auth` section.
