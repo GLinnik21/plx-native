@@ -99,7 +99,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-13T12:24:34Z",
+ "generated": "2026-11-13T12:27:03Z",
  "metrics": [
   {
    "change30_pct": 40.2,
@@ -165,18 +165,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.9,
+   "change30_pct": 33.5,
    "change7_pct": 5.3,
-   "d30": 357.0,
-   "delta30": 121.0,
-   "delta7": 24,
+   "d30": 358,
+   "delta30": 120.0,
+   "delta7": 24.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 153,
+   "n_now": 154,
    "n_prev": 185,
-   "now": 478,
+   "now": 478.0,
    "prev7": 454,
    "shown": true,
    "state": "flat",
@@ -186,18 +186,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 43.6,
-   "change7_pct": 2.9,
+   "change30_pct": 43.4,
+   "change7_pct": 2.8,
    "d30": 319,
-   "delta30": 139,
-   "delta7": 13,
+   "delta30": 138.5,
+   "delta7": 12.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 65,
+   "n_now": 66,
    "n_prev": 61,
-   "now": 458,
+   "now": 457.5,
    "prev7": 445,
    "shown": true,
    "state": "flat",
@@ -379,14 +379,14 @@
    "change7_pct": 8.6,
    "d30": 217.5,
    "delta30": 109.5,
-   "delta7": 26.0,
+   "delta7": 26,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 57,
-   "now": 327.0,
+   "now": 327,
    "prev7": 301,
    "shown": true,
    "state": "flat",
@@ -438,18 +438,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 67.9,
-   "change7_pct": 8.7,
+   "change30_pct": 67.2,
+   "change7_pct": 8.2,
    "d30": 134.0,
-   "delta30": 91.0,
-   "delta7": 18.0,
+   "delta30": 90.0,
+   "delta7": 17,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 57,
-   "now": 225.0,
+   "now": 224,
    "prev7": 207,
    "shown": true,
    "state": "flat",
@@ -459,18 +459,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -25.5,
-   "change7_pct": -4.0,
+   "change30_pct": -26.0,
+   "change7_pct": -4.7,
    "d30": 273.0,
-   "delta30": -69.5,
-   "delta7": -8.5,
+   "delta30": -71.0,
+   "delta7": -10,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 57,
-   "now": 203.5,
+   "now": 202,
    "prev7": 212,
    "shown": true,
    "state": "flat",
@@ -526,14 +526,14 @@
    "change7_pct": 0.0,
    "d30": 17.0,
    "delta30": 2.0,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 57,
-   "now": 19.0,
+   "now": 19,
    "prev7": 19,
    "shown": false,
    "state": "flat",
@@ -632,11 +632,6 @@
    "change_pct": 35.7,
    "commits": [
     {
-     "pr": 1345,
-     "sha": "0686bf703",
-     "title": "RC 2 polish: Yellow reaches SRT/ASS tracks, timed skip prompts follow the countdown, hero title gap"
-    },
-    {
      "pr": 1347,
      "sha": "b2dcd0c27",
      "title": "ASS subtitles: attached fonts, every-video-frame karaoke on the TV, straight colour over video"
@@ -680,6 +675,11 @@
      "pr": 1331,
      "sha": "2d565dc9f",
      "title": "URI on webOS 5: admit firmware major 5 to the exported-window table"
+    },
+    {
+     "pr": 1372,
+     "sha": "4abce8dab",
+     "title": "Preview: a trailer halted before its landing finishes its request Cancelled, not as a direct-play refusal"
     }
    ],
    "from": 23.1,
@@ -693,11 +693,6 @@
    "change_pct": 25.4,
    "commits": [
     {
-     "pr": 1345,
-     "sha": "0686bf703",
-     "title": "RC 2 polish: Yellow reaches SRT/ASS tracks, timed skip prompts follow the countdown, hero title gap"
-    },
-    {
      "pr": 1347,
      "sha": "b2dcd0c27",
      "title": "ASS subtitles: attached fonts, every-video-frame karaoke on the TV, straight colour over video"
@@ -741,6 +736,11 @@
      "pr": 1331,
      "sha": "2d565dc9f",
      "title": "URI on webOS 5: admit firmware major 5 to the exported-window table"
+    },
+    {
+     "pr": 1372,
+     "sha": "4abce8dab",
+     "title": "Preview: a trailer halted before its landing finishes its request Cancelled, not as a direct-play refusal"
     }
    ],
    "from": 50.4,
@@ -754,11 +754,6 @@
    "change_pct": 24.3,
    "commits": [
     {
-     "pr": 1345,
-     "sha": "0686bf703",
-     "title": "RC 2 polish: Yellow reaches SRT/ASS tracks, timed skip prompts follow the countdown, hero title gap"
-    },
-    {
      "pr": 1347,
      "sha": "b2dcd0c27",
      "title": "ASS subtitles: attached fonts, every-video-frame karaoke on the TV, straight colour over video"
@@ -802,6 +797,11 @@
      "pr": 1331,
      "sha": "2d565dc9f",
      "title": "URI on webOS 5: admit firmware major 5 to the exported-window table"
+    },
+    {
+     "pr": 1372,
+     "sha": "4abce8dab",
+     "title": "Preview: a trailer halted before its landing finishes its request Cancelled, not as a direct-play refusal"
     }
    ],
    "from": 201.5,
@@ -842,7 +842,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 327.0
+   "now": 327
   }
  ],
  "slowest_local": [
