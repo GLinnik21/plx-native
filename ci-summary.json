@@ -99,7 +99,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-13T11:41:15Z",
+ "generated": "2026-11-13T11:43:45Z",
  "metrics": [
   {
    "change30_pct": 40.2,
@@ -186,18 +186,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 43.7,
-   "change7_pct": 3.3,
+   "change30_pct": 43.6,
+   "change7_pct": 3.2,
    "d30": 319,
-   "delta30": 139.5,
-   "delta7": 14.5,
+   "delta30": 139,
+   "delta7": 14.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 60,
-   "now": 458.5,
+   "now": 458,
    "prev7": 444.0,
    "shown": true,
    "state": "flat",
@@ -375,18 +375,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 48.0,
-   "change7_pct": 7.2,
+   "change30_pct": 49.2,
+   "change7_pct": 8.0,
    "d30": 217.5,
-   "delta30": 104.5,
-   "delta7": 21.5,
+   "delta30": 107.0,
+   "delta7": 24.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 56,
-   "now": 322,
+   "now": 324.5,
    "prev7": 300.5,
    "shown": true,
    "state": "flat",
@@ -438,18 +438,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 67.2,
-   "change7_pct": 9.0,
+   "change30_pct": 67.9,
+   "change7_pct": 9.5,
    "d30": 134.0,
-   "delta30": 90.0,
-   "delta7": 18.5,
+   "delta30": 91.0,
+   "delta7": 19.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 56,
-   "now": 224,
+   "now": 225.0,
    "prev7": 205.5,
    "shown": true,
    "state": "flat",
@@ -459,18 +459,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -26.0,
-   "change7_pct": -4.5,
+   "change30_pct": -25.5,
+   "change7_pct": -3.8,
    "d30": 273.0,
-   "delta30": -71.0,
-   "delta7": -9.5,
+   "delta30": -69.5,
+   "delta7": -8.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 56,
-   "now": 202,
+   "now": 203.5,
    "prev7": 211.5,
    "shown": true,
    "state": "flat",
@@ -531,9 +531,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 56,
-   "now": 19,
+   "now": 19.0,
    "prev7": 19.5,
    "shown": false,
    "state": "flat",
@@ -632,11 +632,6 @@
    "change_pct": 35.7,
    "commits": [
     {
-     "pr": 1343,
-     "sha": "abd63570a",
-     "title": "Feed: audio interleaved ahead of a backpressured video sink is fed, not dropped as stale"
-    },
-    {
      "pr": 1342,
      "sha": "b59dc1ecb",
      "title": "Subtitle color: a Yellow tone and a Settings row beside Size and Position"
@@ -680,6 +675,11 @@
      "pr": 1364,
      "sha": "2f0431b16",
      "title": "CI: Bump softprops/action-gh-release from 3.0.3 to 3.0.4"
+    },
+    {
+     "pr": 1370,
+     "sha": "4c00cf1a2",
+     "title": "Crash reports: a record left by an earlier build is not filed under the release that uploads it"
     }
    ],
    "from": 23.1,
@@ -693,11 +693,6 @@
    "change_pct": 25.4,
    "commits": [
     {
-     "pr": 1343,
-     "sha": "abd63570a",
-     "title": "Feed: audio interleaved ahead of a backpressured video sink is fed, not dropped as stale"
-    },
-    {
      "pr": 1342,
      "sha": "b59dc1ecb",
      "title": "Subtitle color: a Yellow tone and a Settings row beside Size and Position"
@@ -741,6 +736,11 @@
      "pr": 1364,
      "sha": "2f0431b16",
      "title": "CI: Bump softprops/action-gh-release from 3.0.3 to 3.0.4"
+    },
+    {
+     "pr": 1370,
+     "sha": "4c00cf1a2",
+     "title": "Crash reports: a record left by an earlier build is not filed under the release that uploads it"
     }
    ],
    "from": 50.4,
@@ -754,11 +754,6 @@
    "change_pct": 23.3,
    "commits": [
     {
-     "pr": 1343,
-     "sha": "abd63570a",
-     "title": "Feed: audio interleaved ahead of a backpressured video sink is fed, not dropped as stale"
-    },
-    {
      "pr": 1342,
      "sha": "b59dc1ecb",
      "title": "Subtitle color: a Yellow tone and a Settings row beside Size and Position"
@@ -802,6 +797,11 @@
      "pr": 1364,
      "sha": "2f0431b16",
      "title": "CI: Bump softprops/action-gh-release from 3.0.3 to 3.0.4"
+    },
+    {
+     "pr": 1370,
+     "sha": "4c00cf1a2",
+     "title": "Crash reports: a record left by an earlier build is not filed under the release that uploads it"
     }
    ],
    "from": 202,
@@ -842,7 +842,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 322
+   "now": 324.5
   }
  ],
  "slowest_local": [
