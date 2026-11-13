@@ -16,7 +16,9 @@ use crate::player::subtitle_cue::{SideTracks, SubCue};
 use crate::player::SHARED;
 use crate::player::{ass, ass_source};
 use plx_media_codecs::subtitle_extract::{collect_manifest, detach_fonts, AssTrack};
-use plx_playback_contract::subtitle::{CaptionRetention, DecodeKind};
+use plx_playback_contract::demux::DemuxSubtitle;
+use plx_playback_contract::subtitle::{CaptionRetention, DecodeKind, Manifest, RawCue, TrackInfo};
+use std::cell::Cell;
 use std::sync::Arc;
 
 const TERMINATED_ASS_HEADER: &[u8] =
@@ -551,22 +553,49 @@ fn mkvmerge_zlib_subtitle_tracks_decode_like_uncompressed_ones() {
     );
 }
 
-/// How the demux loop hands the fixture's packets to `SubTracks`, in the cases its image gate has:
-/// a subtitle on from the start, one turned on after every packet was read, one turned on while the
-/// demuxer is part-way through the file, and one turned on after a seek discarded what was read.
+/// When, relative to the demux loop's two per-packet subtitle steps, the selection turns on:
+/// `SubTracks::release_if_selected` (every packet read) and `SubTracks::on_packet` (a subtitle
+/// stream's packet), the two calls `ff::demux` makes and these tests make.
 #[derive(Clone, Copy, PartialEq)]
 enum Selection {
     On,
     OffThenOn,
-    /// Turned on when the first packet at or after this time (ns) is read.
+    /// On from the first packet at or after this time (ns), seen by the release check.
     OffUntil(i64),
+    /// On from the first packet at or after this time (ns), but only AFTER that packet's release
+    /// check: the selection lands between the check and the decode, the race the decode gate closes.
+    LandsAfterReleaseCheck(i64),
     OffThenSeekThenOn,
 }
 
+/// The subtitle owner `demux` talks to (`DemuxSubtitle`) with the selection as a flag the fixture
+/// flips and every cue going to the common presentation, counting the image cues that were emitted
+/// while the selection was off.
+struct FixtureSubtitle<'a> {
+    on: &'a Cell<bool>,
+    presentation: &'a SideTracks,
+    image_cues_emitted_while_off: usize,
+}
+
+impl DemuxSubtitle for FixtureSubtitle<'_> {
+    fn plan(&mut self, _: &[TrackInfo]) -> Vec<DecodeKind> { Vec::new() }
+    fn max_header_bytes(&self) -> usize { 0 }
+    fn begin_sources(&mut self, _: &str, _: Manifest) -> Option<u64> { None }
+    fn record_tracks(&self) {}
+    fn selected_track(&self) -> i32 { if self.on.get() { 0 } else { -1 } }
+    fn bitmap_budget(&self) -> usize { crate::player::SUB_BITMAP_BUDGET }
+    fn emit(&mut self, generation: u64, cue: RawCue) {
+        if matches!(cue, RawCue::Bitmap { .. }) && !self.on.get() { self.image_cues_emitted_while_off += 1; }
+        self.presentation.decode(cue).push(generation, fixture_retention());
+    }
+    fn seek(&mut self, _: u64) {}
+}
+
 /// The cues `mkv_zlib_subs.mkv`'s image tracks put in the store as `(track, start_ns, end_ns,
-/// rects)`, and how many of them were emitted before the flip, when every packet is read the way
-/// the demux loop reads them under `selection` (`ff.rs`: `release_held` on every packet read once a
-/// subtitle is on, then `decode`, then `hold` while Off).
+/// rects)`, and how many image cues were emitted while the selection was off, when every packet is
+/// read the way the demux loop reads them under `selection`: `release_if_selected` on every packet
+/// read, then `on_packet` for a subtitle stream's. It calls the `SubTracks` methods `ff::demux`
+/// calls, so what it grades is what the loop does, not a copy of it.
 unsafe fn present_zlib_fixture(selection: Selection) -> (Vec<(i32, i64, i64, usize)>, usize) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/mkv_zlib_subs.mkv")
@@ -581,34 +610,28 @@ unsafe fn present_zlib_fixture(selection: Selection) -> (Vec<(i32, i64, i64, usi
         avformat_open_input(&mut fmt, url.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut()) >= 0,
         "open the fixture"
     );
-    let streams = (*fmt).streams;
-    let infos = SubTracks::inspect(fmt, streams);
+    let infos = SubTracks::inspect(fmt, (*fmt).streams);
     let presentation = SideTracks::new(&infos);
     let plan = presentation.decode_plan();
-    let mut subs = SubTracks::open(streams, infos, plan);
-    let mut on = selection == Selection::On;
-    let mut emitted_while_off = 0;
+    let mut subs = SubTracks::open((*fmt).streams, infos, plan);
+    let on = Cell::new(selection == Selection::On);
+    let mut subtitle = FixtureSubtitle { on: &on, presentation: &presentation, image_cues_emitted_while_off: 0 };
 
     let pkt = av_packet_alloc();
     while av_read_frame(fmt, pkt) >= 0 {
         let si = (*pkt).stream_index;
-        let st = *streams.add(si as usize);
+        let st = *(*fmt).streams.add(si as usize);
+        let read_ns = plx_media_codecs::subtitle_extract::pts_ns_opt(pkt, st);
+        let reached = |at_ns: i64| read_ns.is_some_and(|t| t >= at_ns);
         if let Selection::OffUntil(at_ns) = selection {
-            let read_ns = plx_media_codecs::subtitle_extract::pts_ns_opt(pkt, st);
-            if read_ns.is_some_and(|t| t >= at_ns) { on = true; }
+            if reached(at_ns) { on.set(true); }
         }
-        if on && subs.holds_images() {
-            subs.release_held(streams, crate::player::SUB_BITMAP_BUDGET, |raw| {
-                presentation.decode(raw).push(0, fixture_retention());
-            });
+        subs.release_if_selected(fmt, &mut subtitle, 0);
+        if let Selection::LandsAfterReleaseCheck(at_ns) = selection {
+            if reached(at_ns) { on.set(true); }
         }
         if let Some(pos) = subs.position(si) {
-            let decode_image = on && !subs.holds_images();
-            if let Some(raw) = subs.decode(pos, pkt, st, decode_image, crate::player::SUB_BITMAP_BUDGET) {
-                if matches!(subs.plan()[pos], DecodeKind::Bitmap) && !on { emitted_while_off += 1; }
-                presentation.decode(raw).push(0, fixture_retention());
-            }
-            if !decode_image { subs.hold(pos, pkt, st, || Some(fixture_retention())); }
+            subs.on_packet(pos, pkt, fmt, &mut subtitle, 0, || Some(fixture_retention()));
         }
         av_packet_unref(pkt);
     }
@@ -621,10 +644,10 @@ unsafe fn present_zlib_fixture(selection: Selection) -> (Vec<(i32, i64, i64, usi
         subs.discard_held();
     }
     // The first packet after the selection: everything held is decoded before it.
-    subs.release_held(streams, crate::player::SUB_BITMAP_BUDGET, |raw| {
-        presentation.decode(raw).push(0, fixture_retention());
-    });
+    on.set(true);
+    subs.release_if_selected(fmt, &mut subtitle, 0);
     assert!(!subs.holds_images(), "releasing leaves nothing held");
+    let emitted_while_off = subtitle.image_cues_emitted_while_off;
     subs.close();
     avformat_close_input(&mut fmt);
 
@@ -698,5 +721,27 @@ fn a_seek_discards_the_image_packets_held_while_subtitles_were_off() {
     unsafe {
         let (cues, _) = present_zlib_fixture(Selection::OffThenSeekThenOn);
         assert!(cues.is_empty(), "no stale cue lands after a seek, got {cues:?}");
+    }
+}
+
+/// The race the demux loop's decode gate closes. The selection turns on after a packet's release
+/// check and before its decode; the held display set has not been released, so decoding this packet
+/// now would put the 8 s clear ahead of the 0 s set it closes: the clear would close nothing, and
+/// the set, decoded after it, would be drawn open-ended or not at all. The packet is held instead
+/// and decoded with the rest at the next packet.
+#[test]
+#[ignore = "needs the host build of the bundled FFmpeg — run by `make check-ffmpeg`"]
+fn a_selection_landing_between_the_release_check_and_the_decode_keeps_file_order() {
+    let _g = plx_base::testlock::serial();
+    let _ffmpeg = bind_host_ffmpeg();
+    unsafe {
+        let (live, _) = present_zlib_fixture(Selection::On);
+        let (raced, emitted_while_off) = present_zlib_fixture(Selection::LandsAfterReleaseCheck(4_000_000_000));
+        assert_eq!(emitted_while_off, 0, "nothing is decoded while Off");
+        assert!(
+            raced.iter().any(|cue| cue.0 == 0 && cue.1 == 0 && cue.2 == 8_000_000_000),
+            "the PGS line is drawn from 0 s to the clear at 8 s, got {raced:?}"
+        );
+        assert_eq!(raced, live, "the held set first, the clear after, exactly as if it had been on throughout");
     }
 }
