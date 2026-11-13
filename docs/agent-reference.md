@@ -1233,8 +1233,11 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   (`plx_base::task::watchdog`) sends `SIGUSR2` to the main thread, `freeze_handler` in
   `src/crashtrace.c` writes a `*** FREEZE` record, the observer thread appends
   `freeze-at: seq=<n> leg=<word>` to the crash log (the loop leg the main thread was in, one of
-  `LoopPhase::word`'s eleven words; `LoopPhases::enter` stores it in every build, `threadcheck` or
-  not, so a release report says where the loop stood; the importer joins the two lines by probe
+  `LoopPhase::word`'s eleven words; `LoopPhases::enter` stores seven of them and `span_leg`, called
+  by `diag::spans::span`, the other four for the span's duration (`scen`, `pump`, `land`,
+  `dframe`; restored on return or unwind), in every build, `threadcheck` or not and the frame
+  instrument armed or not, so a release report says where the loop stood, a freeze inside the
+  playback pump included; the importer joins the two lines by probe
   number whichever came first), and the next launch reports it
   (`telemetry::crashreport`). The app is never stopped. A default (`threadcheck`) build aborts the
   stalled main thread at 2 s, before the 5 s probe, unless `/tmp/plxnative-guard` contains `log`:

@@ -274,9 +274,11 @@ pub fn present_scope() -> LabelScope {
 /// (`main-thread hang: 303ms in land results`) instead of reading `unlabeled`. They are not a
 /// third naming of the loop: each text is published by a mark or span the loop already has —
 /// a heartbeat leg (`heartbeat::Instruments::mark` opens the leg that follows its `Phase`) or a
-/// named FRAMEDROP span (`diag::spans::span`, via [`span_scope`]). Label-only, like `draw_scope`:
-/// no assertion, no permission to block, and none is a GPU phase, so the fatal policy sees each
-/// exactly as it sees `unlabeled`.
+/// named FRAMEDROP span (`diag::spans::span`, via [`span_scope`]). The label is label-only, like
+/// `draw_scope`: no assertion, no permission to block, and none is a GPU phase, so the fatal
+/// policy sees each exactly as it sees `unlabeled`. The leg itself is also recorded in every
+/// build for the freeze probe ([`current_leg`]): by the same marks, and by [`span_leg`] for the
+/// four spans.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoopPhase {
     EventIngest,
@@ -343,8 +345,7 @@ impl LoopPhase {
         }
     }
 
-    /// The phase a FRAMEDROP span of this name stands for, if the loop labels it.
-    #[cfg(feature = "threadcheck")]
+    /// The phase a FRAMEDROP span of this name stands for, if the loop names it.
     fn of_span(name: &str) -> Option<Self> {
         Some(match name {
             "scen" => Self::DevScenarios,
@@ -366,8 +367,9 @@ pub fn span_scope(name: &str) -> Option<LabelScope> {
 /// What the leg cell holds before the first leg is entered.
 const NO_LEG: u8 = 0;
 
-/// **The leg the main loop is in, in EVERY build.** [`LoopPhases::enter`] stores the leg's code
-/// here (one relaxed store per leg: no string, no thread-local, no allocation) and the observer
+/// **The leg the main loop is in, in EVERY build.** [`LoopPhases::enter`] (the seven heartbeat
+/// legs) and [`span_leg`] (the four a FRAMEDROP span names, for the span's duration) store the
+/// leg's code here (relaxed stores: no string, no thread-local, no allocation) and the observer
 /// reads it when it probes a freeze, because the label the `threadcheck` build publishes does not
 /// exist in a shipping one. A code is the leg's position in [`LoopPhase::ALL`] plus one, so
 /// [`NO_LEG`] is "none yet".
@@ -386,10 +388,47 @@ pub fn current_leg() -> Option<LoopPhase> {
     leg_of(CURRENT_LEG.load(Ordering::Relaxed))
 }
 
+/// A leg a FRAMEDROP span names, held for the span's duration: the previous leg comes back when
+/// the guard drops, on a normal return and on an unwind alike. Four of the loop's eleven legs
+/// (`scen`, `pump`, `land`, `dframe`) have no heartbeat mark, so this is the only thing that ever
+/// publishes them; without it a freeze inside the playback pump reads as the leg around it.
+#[must_use = "the leg is the span's: dropping the guard at once ends it"]
+pub struct LegScope {
+    cell: &'static AtomicU8,
+    previous: u8,
+}
+
+impl Drop for LegScope {
+    #[inline]
+    fn drop(&mut self) {
+        self.cell.store(self.previous, Ordering::Relaxed);
+    }
+}
+
+/// `diag::spans::span`'s leg, in EVERY build and armed or not: for the named spans the loop
+/// marks, the span's leg in [`CURRENT_LEG`] until the guard drops (a load and two relaxed stores,
+/// no string, no thread-local, no allocation); any other span name leaves the cell untouched. The
+/// span names are mapped here, beside the leg table, so `base` still names no app layer.
+#[inline]
+pub fn span_leg(name: &str) -> Option<LegScope> {
+    span_leg_on(&CURRENT_LEG, name)
+}
+
+#[inline]
+fn span_leg_on(cell: &'static AtomicU8, name: &str) -> Option<LegScope> {
+    let phase = LoopPhase::of_span(name)?;
+    // One writer at a time (the main loop; the four spans run on it), so load-then-store needs
+    // no read-modify-write.
+    let previous = cell.load(Ordering::Relaxed);
+    cell.store(leg_code(phase), Ordering::Relaxed);
+    Some(LegScope { cell, previous })
+}
+
 /// The heartbeat leg currently open. `enter` closes the previous leg and opens the next; the last
 /// stays open until the next `enter`. Owned by `heartbeat::Instruments`, whose `mark` is the only
-/// caller. In every build `enter` records the leg in [`CURRENT_LEG`] for the freeze probe; with
-/// `threadcheck` it also publishes the leg's label for the hang line.
+/// caller, and which enters seven of the eleven legs; the other four are [`span_leg`]'s. In every
+/// build `enter` records the leg in [`CURRENT_LEG`] for the freeze probe; with `threadcheck` it
+/// also publishes the leg's label for the hang line.
 pub struct LoopPhases {
     cell: &'static AtomicU8,
     #[cfg(feature = "threadcheck")]
@@ -1362,6 +1401,74 @@ mod tests {
             assert_eq!(leg_of(cell.load(Ordering::Relaxed)), Some(leg));
         }
         assert_eq!(leg_of(200), None, "a code outside the table names no leg");
+    }
+
+    fn private_cell() -> &'static AtomicU8 {
+        Box::leak(Box::new(AtomicU8::new(NO_LEG)))
+    }
+
+    #[test]
+    fn each_named_loop_span_publishes_its_leg_for_its_duration_and_restores_the_enclosing_one() {
+        let cell = private_cell();
+        let mut legs = LoopPhases::on(cell);
+        legs.enter(LoopPhase::Results);
+        for (name, leg) in [
+            ("scen", LoopPhase::DevScenarios),
+            ("pump", LoopPhase::PlaybackPump),
+            ("land", LoopPhase::LandResults),
+            ("dframe", LoopPhase::DispatcherFrame),
+        ] {
+            let scope = span_leg_on(cell, name);
+            assert!(scope.is_some(), "{name} names a leg");
+            assert_eq!(leg_of(cell.load(Ordering::Relaxed)), Some(leg), "inside {name}");
+            drop(scope);
+            assert_eq!(leg_of(cell.load(Ordering::Relaxed)), Some(LoopPhase::Results), "after {name}");
+        }
+    }
+
+    #[test]
+    fn a_span_before_the_first_leg_restores_none_yet() {
+        let cell = private_cell();
+        let scope = span_leg_on(cell, "pump");
+        assert_eq!(leg_of(cell.load(Ordering::Relaxed)), Some(LoopPhase::PlaybackPump));
+        drop(scope);
+        assert_eq!(leg_of(cell.load(Ordering::Relaxed)), None);
+    }
+
+    #[test]
+    fn a_span_that_names_no_leg_leaves_the_cell_alone_even_nested_inside_one_that_does() {
+        let cell = private_cell();
+        LoopPhases::on(cell).enter(LoopPhase::Update);
+        for name in ["", "text", "dpre", "feed", "results", "update", "sfv"] {
+            assert!(span_leg_on(cell, name).is_none(), "{name:?}");
+            assert_eq!(leg_of(cell.load(Ordering::Relaxed)), Some(LoopPhase::Update), "{name:?}");
+        }
+        let outer = span_leg_on(cell, "dframe");
+        assert!(span_leg_on(cell, "dstep").is_none());
+        assert_eq!(leg_of(cell.load(Ordering::Relaxed)), Some(LoopPhase::DispatcherFrame));
+        {
+            let inner = span_leg_on(cell, "land");
+            assert_eq!(leg_of(cell.load(Ordering::Relaxed)), Some(LoopPhase::LandResults));
+            drop(inner);
+        }
+        assert_eq!(leg_of(cell.load(Ordering::Relaxed)), Some(LoopPhase::DispatcherFrame), "the inner span restores the outer's leg");
+        drop(outer);
+        assert_eq!(leg_of(cell.load(Ordering::Relaxed)), Some(LoopPhase::Update));
+    }
+
+    #[test]
+    fn a_panic_unwinding_out_of_a_span_restores_the_enclosing_leg() {
+        let cell = private_cell();
+        LoopPhases::on(cell).enter(LoopPhase::Results);
+        let inside = std::cell::Cell::new(None);
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _scope = span_leg_on(cell, "pump");
+            inside.set(leg_of(cell.load(Ordering::Relaxed)));
+            panic!("a leg that panics");
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(inside.get(), Some(LoopPhase::PlaybackPump), "the span named its leg before it unwound");
+        assert_eq!(leg_of(cell.load(Ordering::Relaxed)), Some(LoopPhase::Results));
     }
 
     #[test]
