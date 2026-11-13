@@ -131,6 +131,14 @@ remove that requirement. The guide explains [how to renew the session](docs/inst
 For manual `.ipk` downloads, [verify the release checksum](docs/install-and-verify.md#verifying-the-package)
 before installing. Homebrew Channel verifies catalogue downloads for you.
 
+## Also for LG webOS
+
+Want a cleaner home screen for your LG TV? [**Clean Your TV**](https://github.com/Razdva122/clean-your-tv-lg-webos),
+a separate project by another developer, lets you rearrange your apps, customize the dock and pick a
+theme. The launcher has no sponsored rows, and on a regular TV it installs through LG Developer Mode.
+
+[Explore Clean Your TV →](https://github.com/Razdva122/clean-your-tv-lg-webos)
+
 ## Nightly builds
 
 Every day `main` moves, CI cuts a nightly `.ipk` from wherever it stands. It installs beside the

@@ -157,8 +157,9 @@ pub fn session_seek_mode(
 ///   StarfishMediaAPIs is a different object from the 4.5 one, and the first fast-forward on a
 ///   3.4.0 set crashed through those offsets. The old-ABI Feed (`sf_feed_abi_is_cow`) is the
 ///   direct evidence, and it covers 3.9.x too. A KNOWN release below 4 is refused as well; an
-///   UNKNOWN one (`major == 0`, os_info unreadable) with the C++11 Feed keeps in-place seek, as
-///   before #578, because that Feed says the library is 4.x or later.
+///   UNKNOWN one (`major == 0`: neither `os_info.json` nor `/usr/lib/os-release` named a release)
+///   with the C++11 Feed keeps in-place seek, as before #578, because that Feed says the library
+///   is 4.x or later.
 /// - A layout-unknown library on the ACB plane in a KNOWN webOS 3 release
 ///   ([`old_abi_seek_tested`]) -> [`SeekMode::NativeSeek`] too. `Seek` takes a `const char*`, so
 ///   its symbol and calling convention are the same on both C++ ABIs; that it also behaves the

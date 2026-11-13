@@ -193,7 +193,7 @@ A crash writes no core file.
 
 ### What it reads outside its own directory
 
-The television's codec table at `/etc/umediaserver/device_codec_capability_config.json`, and its firmware identity at `/var/run/nyx/os_info.json` and `/var/run/nyx/device_info.json`. All three are published by the platform, read once at boot, and never written.
+The television's codec table at `/etc/umediaserver/device_codec_capability_config.json`, and its firmware identity at `/var/run/nyx/os_info.json` and `/var/run/nyx/device_info.json`. All three are published by the platform, read once at boot, and never written. When `os_info.json` cannot be read it also reads the firmware release, and nothing else, from `/usr/lib/os-release`, which the platform publishes the same way.
 
 ### What it reaches
 

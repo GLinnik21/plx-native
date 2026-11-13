@@ -371,12 +371,12 @@
       ".cargo/config": null,
       ".cargo/config.toml": "82f061c716740e16cfee63a74d87159e0e0dc253e1092b87c54190c603515b14"
     },
-    "lock_sha256": "a1e4a5b1dc4a4ae661f41b037dc040caf348136efa23976da56786259897383f",
+    "lock_sha256": "c56af60124266be5ee0b7dfa7ae81b4f0ff38b047fe672f40a009f6e1c22d3d3",
     "manifests": {
       "Cargo.toml": "fbeb900767c6d3a7091b0366cdaf79753f45384be9b39a649dd8e7decbf40fb6",
       "appkit/Cargo.toml": "1e3a33f392110f269537b12f12879c6bc15309aca304b189d6b0346edf8a1186",
       "base/Cargo.toml": "ebe0b95553bd44f33f422f7d8e22b75ddeb53c7ee81bbe738f675690694568f7",
-      "data/Cargo.toml": "dc246544384d3cfe5648b13cfcbd67edff69f027d22a268dd6fdca53bdf1e794",
+      "data/Cargo.toml": "90a763a8a9e22bda7e95f8ede4dc10ec6e92a62b90bd0fd2e622c617d75ec6c7",
       "gfx/Cargo.toml": "c8889dd95a481938966c41635f85702695ce9c59956381768e6c56d215d8fc0e",
       "machine/Cargo.toml": "0bc99e95272916b8d00e1a8dad81440bc4998de12ccd9a00e7853f438c813d03",
       "media-codecs/Cargo.toml": "503c8681289314b5c8a63195aad6796cbad93fcb3eedd8d7cba9e8ed0233783f",
@@ -602,7 +602,7 @@
         ],
         "edition": "2021",
         "lib": "ui/src/lib.rs",
-        "lib_sha256": "1b5373566db1931371a191b5e0619d48fbc7cec93d07d95669668e481187517e"
+        "lib_sha256": "c77775a6faa9583579ee576ea9f9a51a7b9c92d7ef692161761c1e471faf3873"
       }
     },
     "text_hashing": "sha256-utf8-bytes-crlf-to-lf-local-root-version-v1"

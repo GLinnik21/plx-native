@@ -1,8 +1,8 @@
 {
  "_comment": "Inputs of ci/gen-third-party-notices.py (THIRD-PARTY-NOTICES.md section 2.4). Versions are NOT here: they come from rust-modules/Cargo.lock and the std snapshot below.",
  "toolchain": {
-  "pin": "1.99.1",
-  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "pin": "1.100.0",
+  "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
   "backtrace": "0.3.76"
  },
  "std_lock": {
@@ -21,6 +21,7 @@
  "std_not_shipped": [
   "cc",
   "dlmalloc",
+  "find-msvc-tools",
   "foldhash",
   "fortanix-sgx-abi",
   "getopts",

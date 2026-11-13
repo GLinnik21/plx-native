@@ -25,6 +25,7 @@
   "core.preview_domain_attempted_delivery": "entrega tentada",
   "core.preview_domain_source_video": "codec de vídeo de origem (apenas relatórios de recusa)",
   "core.preview_domain_source_audio": "codec de áudio de origem (apenas relatórios de recusa)",
+  "core.preview_domain_preview_refusal": "motivo da recusa de um trailer automático (apenas relatórios de recusa de trailer)",
   "core.preview_domain_quality": "qualidade",
   "core.preview_domain_observed_rate": "débito observado",
   "core.preview_domain_raster": "resolução",

@@ -252,8 +252,9 @@ mod uri_boot_tests {
     }
 
     /// The port the product composition builds for a viewer who opted in to the URI engine, over the
-    /// exported-window `Display`: production's binding for it (`Unbound`: the host has no handle, and
-    /// the product's exported-window table, `EXPORTED_STRATA`, is empty) handed through the debug-only override's
+    /// exported-window `Display`: the binding of a major the product's exported-window table,
+    /// `EXPORTED_STRATA`, has not admitted (`Unbound`: the host has no handle and the major is not
+    /// listed) handed through the debug-only override's
     /// `compose` (`dev::uri_exported`) as `install_uri_product` does, and the production evidence
     /// (`unqualified_on` the display's mode, which an opted-in request certifies).
     #[cfg(feature = "devtriggers")]

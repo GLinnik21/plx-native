@@ -206,6 +206,46 @@ account, and the session needs renewal) and Homebrew Channel (§1, §1.7). Every
 paragraph is the superseded 2026-08-23 analysis, kept as dated history; its QA findings
 (`docs/lg-self-checklist.md`) remain true statements about the app, not a submission plan.
 
+**LG's own seller guide says the same thing in print** (read 2026-11-13). The Seller Lounge user
+guide (`seller.lgappstv.com/seller/support/userGuide/RetrieveUserGuide.lge?pstgSeq=N`) has a working
+native path, and it gates it on a contract:
+
+- *Register New App* (`pstgSeq=19`): the file types a webOS IPK supports are *"Web / Native / Native
+  Game"*.
+- *File Upload* (`pstgSeq=20`, screenshot dated 2025-07-08): a non-web IPK is *"Automatically
+  configured as Seller-registered File Type (Native/Native Game)"*, and *"If you do not have a
+  separate standing contract with LGE, select web > All."* That sentence is the published form of the
+  2026-10-20 answer: native submission belongs to sellers with a separate LG contract. The guide does
+  not spell out what happens to a native file from a seller without one; the support answer does.
+- *Alpha Test* (`pstgSeq=23`) and *webOS Cloud Test Lab* (`pstgSeq=49`): a native file is tested per
+  chipset, and the Cloud Test Lab offers *"only devices with the same chipset as the chipset you
+  selected when uploading the file"* (§6, item 11).
+
+**A Flutter for webOS app, built and opened (2026-11-13).** LG's toolchain (flutter-webos with
+Flutter 3.38.10, NDK 11.2.0, ares 3.2.6) built a release counter app on Ubuntu 22.04 under WSL2.
+What it produced, and what that settles:
+
+- **It is an ordinary `native` package.** A 12.4 MB `.ipk` holding a C++ runner ELF (the app's own
+  `runner/main.cc` plus LG's `runner_base`), `libapp.so` (the Dart code, compiled ahead of time to
+  ARM), and LG's prebuilt `libflutter_engine.so`, `libflutter_webos_media.so` (the Wayland/Luna
+  embedder) and `libflutter_common.so`. Uploaded to Seller Lounge, it reads `File Type: Native` and
+  is offered the full chipset picker (from M14/H13, webOS 1.0, upward). Nothing in the upload form
+  tells a Flutter app from a hand-written native one.
+- **There is no `flutter` package type.** The SDK's build tool falls back to a type it calls
+  `flutter`, which links the embedder from `/usr/lib/flutter/<version>/` on the set instead of
+  bundling it. That build does not link on a host, and `ares-package` 3.2.6 rejects the manifest:
+  *"type is not one of enum values: web,stub,native,native_builtin,native_appshell,qml"*.
+- **Its reach is webOS 26 and later, and that is glibc, not CPU.** The runner and LG's prebuilt
+  libraries require `GLIBC_2.38` (and `GLIBCXX_3.4.32`); the NDK's sysroot is glibc 2.39. Our
+  toolchain targets glibc 2.12 (`docs/agent-reference.md`, toolchain section), so glibc is not what
+  bounds this binary's reach (§3.2 is). Anything compiled against NDK 11.2.0 cannot start on the sets
+  this app is for, and LG's engine is prebuilt, so its floor cannot be lowered from outside.
+- **Two setup corrections to LG's getting-started guide:** ares 3.2.6 refuses Node below 20 (the
+  guide says 14 to 16), and the NDK installer takes `-d <dir>`, so it does not need root.
+
+So the Flutter route is a route to webOS 26+ sets only, and it does not change what the portal or the
+seller guide require of a native package.
+
 ### Superseded 2026-08-23 analysis
 
 **[corrected 2026-08-23]** This section used to be headed *"LG Content Store — no"* and to argue
@@ -245,7 +285,8 @@ package cannot be submitted, which is the question, and which the portal has now
 
 **And LG's own tooling had already stopped agreeing with the quoted sentence.** LG publishes a webOS
 TV NDK on GitHub with no NDA or login — `github.com/lg-flutter-webos/ndk`, release 11.2.0 published
-2026-06-29, a 340 MB starfish `ca9v1` **32-bit ARM** cross toolchain, the same class we build with.
+2026-06-29, a 340 MB starfish `ca9v1` **32-bit ARM** cross toolchain: the same CPU target we build
+for, but not the same reach (the 2026-11-13 Flutter paragraph at the top of this section).
 "Flutter for webOS" is an official Develop guide (announced 2026-06-30), and **LG's own project
 template writes `"type": "native"` into `appinfo.json`** — the value the reference page says is not
 allowed. Two caveats on that path, unchanged and still true: Flutter for webOS requires **webOS 26
@@ -347,6 +388,17 @@ refinements the table understated:
   **Update 2026-10-09:** both reasons are gone (bundled FFmpeg; `Feed` and
   `SDL_webOSCursorVisibility` resolved at runtime), and a 3.4.3 set plays. The `>=4.0` catalogue
   bound in `docs/webosbrew-package.yml` is unchanged pending wider 3.x testing.
+
+**Next seam: ACG on webOS 27 (read 2026-11-13).** LG's ACG guide
+(`webostv.developer.lge.com/develop/guides/acg-guide`) gives Luna access control a version table:
+*"webOS TV 25 or lower: Not supported · webOS TV 26 Re:New: Supported (ACG enforcement is
+available.) · webOS TV 27 or higher: Required"*, and *"All apps must include the requiredACG field
+in appinfo.json — even if they do not make any Luna API calls."* `pkg/appinfo.json` declares the
+older `requiredPermissions` field instead (LG's own Flutter build tool deletes `requiredPermissions`
+and writes `requiredACG`), and the media stack's Luna access comes from the role file the Dev Mode
+installer writes (§3.5), not from anything the manifest declares. On webOS 27 both would have to be
+declared as `requiredACG` groups. Nothing changes on the firmware this app runs on today, which
+predates ACG; no webOS 26 or 27 set has been tried.
 
 ### 3.3 The pinning inside our own code (`audit:portability`, file-cited)
 
@@ -967,9 +1019,12 @@ Listed because each could change a decision above.
    `1920x1080` (cosmetic vs blocker) hangs entirely on this, and it's assumed.
 3. ~~`webosbrew-ipk-verify` has never been run on the real binary.~~ **RESOLVED 2026-08-02 — it
    passes.** See §9; the run also found two packaging bugs that made the ipk uninstallable.
-4. **LG's own terms are entirely uncovered** — nobody has read LG's SDK/NDK licence, the webOS TV
-   EULA, or any anti-reverse-engineering clause in either. That is the open question, and it is
-   genuinely unassessed.
+4. **LG's own terms are mostly uncovered** — nobody has read the webOS TV EULA or assessed any
+   anti-reverse-engineering clause against this project. That is the open question, and it is
+   genuinely unassessed. One fact since 2026-11-13: the NDK 11.2.0 installer presents LG's SDK
+   licence, which forbids decompiling or reverse engineering *the SDK* and treats SDK material as
+   LG's confidential information. This repository uses nothing from that SDK, and the licence's
+   terms are about the SDK, not about firmware libraries.
 
    The facts underneath it are public and unremarkable: `src/starfish.c` binds mangled C++ symbols
    in `libAcbAPI`/`libpf-1.0` from offsets derived by decompilation — the source says so in its own
@@ -1004,6 +1059,14 @@ Listed because each could change a decision above.
    create and from a 0600 survivor), not that Dev Manager's reader is in the group the file lands
    in on the television.
 10. ~~**`requiredMemory: 60`** vs a measured ~74 MB peak.~~ **RESOLVED 2026-08-22 — the “~74 MB” was never a measurement.** It was an uncited sentence written into this very section (“things nobody has verified”) and then copied verbatim into five other files, where it reads as established. The real figure, taken on the dev set (M16p3, webOS 4.10.2) from a `features=release` build via `VmHWM`: **35 MB** at boot, **119 MB** browsing Home/detail, **155,292 kB ≈ 152 MiB peak** with playback. Note `VmRSS` on this TV already INCLUDES Mali pages — proven arithmetically, `smaps_rollup` 38,540 kB + `/proc/gpu` 20,159×4 kB = 119,176 kB against `VmRSS` 119,044 kB — so roughly two thirds of the footprint is texture memory and adding `/proc/gpu` on top double-counts. `requiredMemory` is now **160**; it was raised because webOS substitutes a default of **120** when the field is absent or ≤ 0, which made 60 strictly worse than declaring nothing at all.
+11. **Does this binary run on webOS 26 at all?** Its glibc 2.12 floor does not stop it loading (§2,
+    2026-11-13), but whether the private media stack (`libplayerAPIs`, `libpf`, the exported window)
+    is present and permitted there is untested; no webOS 26 set has been tried. Seller Lounge's
+    webOS Cloud Test Lab offers remote devices matched to a native file's chipset (§2), which may
+    answer it without owning a set.
+12. **What is LG's "separate standing contract"?** The seller guide makes it the condition for a
+    native submission (§2). What it involves, and whether an independent developer can hold one,
+    is not documented anywhere public.
 
 ---
 
