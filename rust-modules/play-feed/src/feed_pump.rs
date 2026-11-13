@@ -951,9 +951,12 @@ fn w0_diag_sample(eng: &mut Engine) {
     let wall = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64);
+    // `vat` is the vclock_ms of the last presentation (position) callback: the report computes the
+    // position rate on callback time, deduplicated on `vpres`, not on the 190 ms W0D gate.
+    let vat = FEED_SHARED.dg_vpres_at.load(Relaxed);
     log(&format!(
-        "W0D t={now} wall={wall} pos={} vfed={} afed={} vspan={} aspan={} qv={} qa={} vpark={} apark={} \
-         sil={} disp={disp} drop={drop_} vpres={} frames={} paused={} prime={} stage={:?} seek={}",
+        "W0D base=branch t={now} wall={wall} pos={} vfed={} afed={} vspan={} aspan={} qv={} qa={} vpark={} apark={} \
+         sil={} vat={vat} disp={disp} drop={drop_} vpres={} frames={} paused={} prime={} stage={:?} seek={}",
         FEED_SHARED.pres_fed.load(Relaxed),
         eng.max_fed_video_pts,
         eng.max_fed_audio_pts,
