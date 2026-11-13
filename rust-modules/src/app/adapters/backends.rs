@@ -364,7 +364,7 @@ impl MonotonicClock for ProductUriClock {
 /// global read here, so a test passes its own. The line ends `major=<n> evidence=table|none`:
 /// `table` when `strata` admitted that major's exported window, `none` otherwise. `none` says only
 /// that the table admitted nothing, not that the play is Standard: an ACB set reads `none` and
-/// still plays URI through `Acb` for a viewer who opted in, while a webOS 5+ release with no entry
+/// still plays URI through `Acb` for a viewer who opted in, while a webOS 5+ major with no entry
 /// reads `none` and plays Standard. The debug override logs its own `evidence=override` line after
 /// this one.
 #[cfg(feature = "play-uri")]
@@ -663,10 +663,10 @@ mod tests {
         assert_eq!(uri_product_binding(&sink, &booted(&sink), 11, &[11]), UriBinding::Unbound);
     }
 
-    /// The exported window follows the firmware major through the composition: production's empty
-    /// table binds no major (a webOS 5+ release without an entry plays Standard), and a table that lists the
-    /// major binds it, on a display in the exported-window mode only. The URI engine's own handle
-    /// is not asked for: a 5+ set has none.
+    /// The exported window follows the firmware major through the composition: production's table
+    /// binds major 5 (webOS 5.6.2, `docs/uri-mode.md`) and no other (a webOS 5+ release without an
+    /// entry plays Standard), and a table that lists a major binds it, on a display in the
+    /// exported-window mode only. The URI engine's own handle is not asked for: a 5+ set has none.
     #[cfg(feature = "play-uri")]
     #[test]
     fn the_exported_window_is_composed_only_for_a_major_the_table_lists() {
@@ -674,11 +674,17 @@ mod tests {
         let exported = UriBinding::Exported { canvas: EXPORTED_CANVAS };
         let sink = BootSink::answering(VP_EXPORTED, vec![7, 8]);
         let owner = booted(&sink);
-        // Production's table is empty: every release, known or not, composes Unbound on this display. An entry
-        // lands with its Results row and the change to this test.
+        // Production's table admits major 5 and nothing else: every other release, known or not,
+        // composes Unbound on this display. An entry lands with its Results row and the change to
+        // this test.
         for major in 0..=30 {
-            assert_eq!(uri_product_binding(&sink, &owner, major, EXPORTED_STRATA), UriBinding::Unbound,
-                "major {major}");
+            let want = if major == 5 { exported } else { UriBinding::Unbound };
+            assert_eq!(uri_product_binding(&sink, &owner, major, EXPORTED_STRATA), want, "major {major}");
+        }
+        // The same display on a set whose mode is not the exported window: major 5 binds nothing there.
+        for mode in [VP_NONE, plx_platform::tv::sink::VP_ACB] {
+            let sink = BootSink::answering(mode, vec![7, 8]);
+            assert_ne!(uri_product_binding(&sink, &booted(&sink), 5, EXPORTED_STRATA), exported, "mode {mode}");
         }
         assert_eq!(uri_product_binding(&sink, &owner, 11, &[11]), exported);
         assert_eq!(uri_product_binding(&sink, &owner, 10, &[11]), UriBinding::Unbound, "an unlisted major");
@@ -706,6 +712,10 @@ mod tests {
         let unlisted = line(VP_EXPORTED, 11, &[]);
         assert!(unlisted.contains("uri: product binding=Unbound mode=2 "), "{unlisted}");
         assert!(unlisted.contains(" major=11 evidence=none\n"), "{unlisted}");
+        // Production's own table: the webOS 5.6.2 television's boot line reads `major=5 evidence=table`.
+        let shipped = line(VP_EXPORTED, 5, plx_play_uri::backend::EXPORTED_STRATA);
+        assert!(shipped.contains("uri: product binding=Exported { canvas: (1920, 1080) } mode=2 "), "{shipped}");
+        assert!(shipped.contains(" major=5 evidence=table\n"), "{shipped}");
         let acb = line(plx_platform::tv::sink::VP_ACB, 4, &[]);
         assert!(acb.contains("uri: product binding=Acb ") && acb.contains(" major=4 evidence=none\n"), "{acb}");
     }
