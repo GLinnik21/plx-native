@@ -32,8 +32,6 @@ impl HeldPacket {
         bytes.resize(payload.len() + INPUT_PADDING, 0);
         Self { time_ns, pts, dts, duration, flags, size: payload.len(), bytes }
     }
-
-    pub fn payload(&self) -> &[u8] { &self.bytes[..self.size] }
 }
 
 /// What the demuxer read of each image track while subtitles were Off. Text tracks are observed
@@ -85,11 +83,6 @@ impl ImageBacklog {
             out.extend(track.drain(..).map(|packet| (pos, packet)));
         }
         out
-    }
-
-    #[cfg(test)]
-    fn times(&self, pos: usize) -> Vec<Option<i64>> {
-        self.tracks[pos].iter().map(|packet| packet.time_ns).collect()
     }
 }
 
@@ -240,8 +233,12 @@ mod backlog_tests {
         HeldPacket::new(time_ns, time_ns.unwrap_or(0), time_ns.unwrap_or(0), 0, 0, &[1, 2, 3])
     }
 
+    fn times(backlog: &ImageBacklog, pos: usize) -> Vec<Option<i64>> {
+        backlog.tracks[pos].iter().map(|packet| packet.time_ns).collect()
+    }
+
     fn secs(backlog: &ImageBacklog, pos: usize) -> Vec<i64> {
-        backlog.times(pos).into_iter().map(|t| t.unwrap() / SEC).collect()
+        times(backlog, pos).into_iter().map(|t| t.unwrap() / SEC).collect()
     }
 
     /// The reported bug: subtitles Off, an image track chosen at 232 s with the demuxer ten seconds
@@ -293,7 +290,7 @@ mod backlog_tests {
         backlog.hold(0, packet(10), Some(15 * SEC));
         backlog.hold(0, packet_at(None), Some(15 * SEC));
         backlog.hold(0, packet(20), Some(15 * SEC));
-        assert_eq!(backlog.times(0), [Some(10 * SEC), None, Some(20 * SEC)]);
+        assert_eq!(times(&backlog, 0), [Some(10 * SEC), None, Some(20 * SEC)]);
         backlog.hold(0, packet(30), Some(25 * SEC));
         assert_eq!(secs(&backlog, 0), [20, 30]);
     }
@@ -326,7 +323,7 @@ mod backlog_tests {
     #[test]
     fn a_held_packet_carries_its_bytes_and_the_decoder_padding() {
         let held = HeldPacket::new(Some(1), 1, 1, 0, 0, &[9, 8, 7]);
-        assert_eq!(held.payload(), [9, 8, 7]);
+        assert_eq!(&held.bytes[..held.size], [9, 8, 7]);
         assert_eq!(held.bytes.len(), 3 + INPUT_PADDING);
         assert!(held.bytes[3..].iter().all(|&b| b == 0));
     }

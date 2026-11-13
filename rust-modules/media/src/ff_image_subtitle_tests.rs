@@ -551,20 +551,22 @@ fn mkvmerge_zlib_subtitle_tracks_decode_like_uncompressed_ones() {
     );
 }
 
-/// How the demux loop hands the fixture's packets to `SubTracks`, in the three cases its image
-/// gate has: a subtitle on from the start, one turned on after the packets were read, and one
-/// turned on after a seek discarded what was read.
+/// How the demux loop hands the fixture's packets to `SubTracks`, in the cases its image gate has:
+/// a subtitle on from the start, one turned on after every packet was read, one turned on while the
+/// demuxer is part-way through the file, and one turned on after a seek discarded what was read.
 #[derive(Clone, Copy, PartialEq)]
 enum Selection {
     On,
     OffThenOn,
+    /// Turned on when the first packet at or after this time (ns) is read.
+    OffUntil(i64),
     OffThenSeekThenOn,
 }
 
 /// The cues `mkv_zlib_subs.mkv`'s image tracks put in the store as `(track, start_ns, end_ns,
 /// rects)`, and how many of them were emitted before the flip, when every packet is read the way
-/// the demux loop reads them under `selection` (`ff.rs`: `decode`, then `hold` while Off, then
-/// `release_held` on the first packet after the selection).
+/// the demux loop reads them under `selection` (`ff.rs`: `release_held` on every packet read once a
+/// subtitle is on, then `decode`, then `hold` while Off).
 unsafe fn present_zlib_fixture(selection: Selection) -> (Vec<(i32, i64, i64, usize)>, usize) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/mkv_zlib_subs.mkv")
@@ -584,19 +586,29 @@ unsafe fn present_zlib_fixture(selection: Selection) -> (Vec<(i32, i64, i64, usi
     let presentation = SideTracks::new(&infos);
     let plan = presentation.decode_plan();
     let mut subs = SubTracks::open(streams, infos, plan);
-    let on = selection == Selection::On;
+    let mut on = selection == Selection::On;
     let mut emitted_while_off = 0;
 
     let pkt = av_packet_alloc();
     while av_read_frame(fmt, pkt) >= 0 {
         let si = (*pkt).stream_index;
+        let st = *streams.add(si as usize);
+        if let Selection::OffUntil(at_ns) = selection {
+            let read_ns = plx_media_codecs::subtitle_extract::pts_ns_opt(pkt, st);
+            if read_ns.is_some_and(|t| t >= at_ns) { on = true; }
+        }
+        if on && subs.holds_images() {
+            subs.release_held(streams, crate::player::SUB_BITMAP_BUDGET, |raw| {
+                presentation.decode(raw).push(0, fixture_retention());
+            });
+        }
         if let Some(pos) = subs.position(si) {
-            let st = *streams.add(si as usize);
-            if let Some(raw) = subs.decode(pos, pkt, st, on, crate::player::SUB_BITMAP_BUDGET) {
+            let decode_image = on && !subs.holds_images();
+            if let Some(raw) = subs.decode(pos, pkt, st, decode_image, crate::player::SUB_BITMAP_BUDGET) {
                 if matches!(subs.plan()[pos], DecodeKind::Bitmap) && !on { emitted_while_off += 1; }
                 presentation.decode(raw).push(0, fixture_retention());
             }
-            if !on { subs.hold(pos, pkt, st, || Some(fixture_retention())); }
+            if !decode_image { subs.hold(pos, pkt, st, || Some(fixture_retention())); }
         }
         av_packet_unref(pkt);
     }
@@ -652,6 +664,27 @@ fn image_packets_read_while_subtitles_are_off_decode_when_one_is_turned_on() {
             after_flip, live,
             "the image cue read while Off must be emitted once an image track is on"
         );
+    }
+}
+
+/// The same flip with the demuxer part-way through the file, which is how it happens on the
+/// television: the 0 s display set was read while Off, the track is turned on, and the 8 s clear
+/// then arrives live. The held set must be decoded BEFORE the clear, or the clear would close
+/// nothing and the line would never be drawn.
+#[test]
+#[ignore = "needs the host build of the bundled FFmpeg — run by `make check-ffmpeg`"]
+fn a_track_turned_on_between_two_packets_gets_the_held_set_before_the_live_one() {
+    let _g = plx_base::testlock::serial();
+    let _ffmpeg = bind_host_ffmpeg();
+    unsafe {
+        let (live, _) = present_zlib_fixture(Selection::On);
+        let (mid_read, emitted_while_off) = present_zlib_fixture(Selection::OffUntil(4_000_000_000));
+        assert_eq!(emitted_while_off, 0, "nothing is decoded while Off");
+        assert!(
+            mid_read.iter().any(|cue| cue.0 == 0 && cue.1 == 0 && cue.2 == 8_000_000_000),
+            "the PGS line is drawn from 0 s to the clear at 8 s, got {mid_read:?}"
+        );
+        assert_eq!(mid_read, live, "held first, live after, exactly as if it had been on throughout");
     }
 }
 

@@ -7049,7 +7049,9 @@ pub fn demux(
                         // are on; while they are Off an image packet is held instead of dropped, so
                         // a track chosen later has the read-ahead window to show (the release above);
                         // see ff_subs.rs. Subtitles carry no ES -> never fed to the pipeline.
-                        let decode_image = session.subtitle().selected_track() >= 0;
+                        // A selection that landed since the release check above waits for the next
+                        // packet's: decoding this one now would put it ahead of the held ones.
+                        let decode_image = session.subtitle().selected_track() >= 0 && !sub_tracks.holds_images();
                         let bitmap_budget = session.subtitle().bitmap_budget();
                         let sub_stream = *streams.add(si as usize);
                         if let Some(cue) = sub_tracks.decode(sub_pos, pkt, sub_stream, decode_image, bitmap_budget) {
