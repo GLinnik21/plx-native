@@ -35,6 +35,7 @@ pub mod legal;
 pub mod login;
 pub mod onboard;
 pub mod clock_readout;
+pub mod inputs;
 pub mod plaintext_question;
 pub mod player;
 pub mod profiles;

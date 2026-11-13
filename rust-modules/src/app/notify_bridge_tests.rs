@@ -56,7 +56,7 @@ fn ordered(port: &NotifyStreamPort, addr: Addr, _: &'static Client, req: NotifyS
 fn boot(bridge: &mut Bridge, held: bool) {
     SCRIPT.with(|s| s.borrow_mut().eligible = true);
     bridge.store_runner = if held { StoreRunner::held_all() } else {
-        StoreRunner::Held { parked: Vec::new(), live: &[LiveKind::NotifyStream], notify: NotifyTransport::Refuse }
+        StoreRunner::Held { parked: Vec::new(), live: &[LiveKind::NotifyStream], notify: NotifyTransport::Refuse, watchlist_write: None, watchlist_streams_held: false }
     };
     bridge.store_runner.set_notify_transport(NotifyTransport::Script { eligible, run: ordered });
 }
@@ -133,7 +133,7 @@ fn cursor_posts_and_terminal_map_in_connection_order_without_second_drain_or_lat
     assert_eq!(bridge.stores.reconcile.pending_for_test(),
         [(a, "a-first".into()), (b, "b-first".into()), (a, "a-late".into())]);
     SCRIPT.with(|s| assert_eq!(s.borrow().launches, [a, b]));
-    assert_eq!(plx_data::stores::Stores::NOTIFY_FILLS, [StoreId::Browse, StoreId::Hubs]);
+    assert_eq!(plx_data::stores::Stores::NOTIFY_FILLS, [StoreId::Browse, StoreId::Hubs, StoreId::Watchlist]);
     assert!(StoreId::Hubs.ord().0 < StoreId::Notify.ord().0);
     clean(&bridge); bridge.notify_suspend();
 }

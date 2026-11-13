@@ -764,6 +764,20 @@ pub(crate) fn rig_clear_opaque_region() {
     plx_platform::tv::window::clear_opaque_region();
 }
 
+/// **Simulator only: the television's compositor, over the frame the straighten pass just made.** The
+/// decoded picture under the UI when `plxnative-simvideo` holds one, black otherwise
+/// ([`plx_gfx::gfx::draw_under`]'s straight-alpha mix either way). The pass has no simulator switch, so
+/// this is not optional on a bound frame: a shot of the straight buffer would be the pass's own
+/// intermediate picture.
+#[cfg(feature = "hostsim")]
+fn composite_plane_under() {
+    #[cfg(feature = "play-feed")]
+    if crate::app::adapters::hostsim::composite_under() {
+        return;
+    }
+    plx_gfx::gfx::draw_under_black();
+}
+
 /// One idle iteration's font-warming slice: a key pressed during it waits at most this long more
 /// than the idle poll already makes it wait.
 const FONT_WARM_SLICE_US: u64 = 2_000;
@@ -784,6 +798,8 @@ unsafe fn present_and_swap(
         }
         // the glyph cache's frame serial (phase 11, text.rs's hot window): a drawn frame
         plx_gfx::text::begin_frame();
+        // …and the straighten pass's ledger: nothing drawn yet, the surface not yet straight.
+        plx_gfx::gfx::straighten::frame_begin();
         // A finished underlay-field reduction is read HERE, before framebuffer 0 holds anything
         // of this frame — a read between the page and the surfaces splits its render pass.
         plx_gfx::gfx::field_frame_begin();
@@ -800,11 +816,24 @@ unsafe fn present_and_swap(
             crate::capture::tick(fr.now);
         }
         app.instr.mark(plx_base::diag::heartbeat::Phase::Capture); // capture
-        // `plxnative-simvideo`: the decoded picture goes UNDER the finished UI, as the television's
-        // compositor puts its video plane under ours — before the capture, so shots include it.
-        #[cfg(all(feature = "hostsim", feature = "play-feed"))]
-        if fr.player {
-            crate::app::adapters::hostsim::composite_under();
+        // **THE FRAME'S LAST DRAW over the bound video plane: premultiplied -> straight.** The
+        // television's compositor multiplies our surface by its alpha (`panel = ui.rgb * ui.a + video
+        // * (1 - ui.a)`) and the framebuffer holds premultiplied colour, so every translucent pixel
+        // would be darkened by its own alpha a second time; this divides it back out, in place, on a
+        // frame that drew anything (`gfx/straighten.rs` has the measurement, the buffer-age argument
+        // and the cost). Keyed on the plane's BIT, like the capture above and the opaque region: the
+        // bound trailer preview is as translucent as the player. It is after every read of the
+        // framebuffer the frame makes (the capture tick above, which skips this very frame) and before
+        // the swap and everything that follows it; nothing the loop does after it samples
+        // framebuffer 0 on the television (`video_plane_refuses` shuts every door past it).
+        plx_gfx::gfx::straighten::straighten_surface(app.player.video_plane_bound);
+        // `plxnative-simvideo`, and the simulator's stand-in for the compositor the pass feeds: a
+        // bound frame goes through the television's straight-alpha mix over the decoded picture, or
+        // over black with none, so a shot is the panel and not the straight buffer. Before the
+        // screenshot seam below, so shots include it.
+        #[cfg(feature = "hostsim")]
+        if app.player.video_plane_bound {
+            composite_plane_under();
         }
         // Before the swap, never after: the back buffer is undefined once presented.
         // A dump decides here whether this frame is written (`dev::framedump`); otherwise the
@@ -2061,6 +2090,9 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         #[cfg(feature = "play-feed")]
         park_on_decoder_release(app);
         app.adapters.player.sync_request_metrics(&mut app.player.session);
+        // The subtitle registries' colour fact, delivered to the session's readout for the Subtitles
+        // menu to read (a field, not a registry): whichever backend plays.
+        plx_media::player::deliver_subtitle_ink(&mut app.player.session);
         let foreground = playback_may_run(app);
         let backend_at = app.adapters.player.backend_tick();
         let _ = app.adapters.player.backend_set_foreground_at(&mut app.player.session, foreground, backend_at);
@@ -2744,7 +2776,7 @@ fn follow_control_row(app: &mut App, ctrl: plx_appkit::player_hud::ControlSlot, 
             player.hud.nav = HudNav::HOME;
             // The ring goes back to the SCRUBBER for the engine as much as for `nav`: `PlayerScreen::key_ok`
             // acts on the element the engine holds, so a stale seat on the stand-in's item (an enabled
-            // Previous / Restart on an episode, which reconcile leaves alone) made the next OK
+            // Previous on an episode, which reconcile leaves alone) made the next OK
             // press a disc where `main`'s `nav`-driven OK toggled pause. On a movie `main` did not
             // honour this contract either: reconcile moved the stale item to Subtitles and mirrored
             // it into `nav`, so OK opened that menu. Following the contract is the one deliberate
@@ -4861,7 +4893,7 @@ mod lifecycle_regression_tests {
         assert_eq!(reqs, vec![plx_screens::registry::PlayerReq::Transport(None)], "OK toggles play");
     }
 
-    /// The same on an EPISODE, where the first disc (Previous / Restart) IS enabled, so the engine's
+    /// The same on an EPISODE, where the first disc (Previous) IS enabled, so the engine's
     /// reconcile has nothing to move: before the departure re-seated the engine, the ring said
     /// "scrubber" while the engine held that disc, and OK restarted the episode.
     #[test]
@@ -4870,7 +4902,7 @@ mod lifecycle_regression_tests {
         use plx_data::metadata::{Marker, MarkerKind};
         let _serial = plx_base::testlock::serial();
         let credits = Marker { kind: MarkerKind::Credits, start_ms: 0, end_ms: 60_000, final_seg: true };
-        let discs = ControlSlot::Discs(Controls::for_item(true, true, true, true));
+        let discs = ControlSlot::Discs(Controls::for_item(true, true, true));
         assert!(discs.enabled(plx_appkit::player_hud::BTN_PREVIOUS), "the fixture: the first disc is live");
         let (focus, engine, reqs) = depart_and_press_ok(ControlSlot::UpNext(credits), discs);
         assert_eq!(focus, GROUP_SCRUB, "nav");
@@ -5097,11 +5129,12 @@ mod lifecycle_regression_tests {
         );
     }
 
-    /// **Previous and Next are not interchangeable in the performer.** With the playhead past the
-    /// restart threshold, Previous restarts the item (`queue_transport::step(Previous)` seeks to 0);
-    /// Next, with no queue behind it, asks for no seek at all. A swap of the two steps fails both ways.
+    /// **Previous and Next are queue steps and never seeks.** With the playhead well into the item
+    /// (it used to be past Previous's five-second restart threshold, where `queue_transport::step`
+    /// seeked to 0 and rewrote the episode's resume point), neither step, with no queue behind or
+    /// after the item, asks for a seek: an item with no neighbour has nothing to step to.
     #[test]
-    fn previous_steps_the_queue_back_and_next_steps_it_forward() {
+    fn previous_and_next_with_no_neighbour_seek_nowhere() {
         use plx_appkit::player_hud::command::HudCommand;
         let _serial = plx_base::testlock::serial();
         let mut app = app();
@@ -5111,7 +5144,7 @@ mod lifecycle_regression_tests {
         perform_on_a_mounted_player(&mut app, HudCommand::Next, 100);
         assert_eq!(globals.seek_to(), -1, "Next, with nothing queued after it, seeks nowhere");
         perform_on_a_mounted_player(&mut app, HudCommand::Previous, 200);
-        assert_eq!(globals.seek_to(), 0, "Previous past the threshold restarts the item");
+        assert_eq!(globals.seek_to(), -1, "Previous, with nothing queued before it, seeks nowhere: it is not a restart");
     }
 
     /// **A section no control opens is reached through More, and focus ends on a drawn control.** The package places
@@ -5927,6 +5960,7 @@ mod lifecycle_regression_tests {
                 "First",
                 "",
                 None,
+                "",
             ));
             self.entered.recv_timeout(Duration::from_secs(3)).unwrap();
         }
@@ -6178,6 +6212,7 @@ mod lifecycle_regression_tests {
                 "Episode 1",
                 "",
                 None,
+                "",
             ));
             self.entered.recv_timeout(Duration::from_secs(3)).unwrap();
             self.resolve();
@@ -7706,6 +7741,7 @@ mod lifecycle_regression_tests {
             "Replacement",
             "",
             None,
+            "",
         ));
         rig.accept_start();
         assert!(plx_media::route::play_pending());
@@ -9782,6 +9818,191 @@ mod lifecycle_regression_tests {
             rig.requests.lock().unwrap(),
         );
     }
+
+    // ---- Previous and Next walk the queue, and never rewrite the episode they leave -------------
+    //
+    // The Previous disc used to be a RESTART from five seconds in (a seek to 0 that rewrote the
+    // playhead and the viewOffset of the episode the viewer meant to leave), and was disabled again
+    // before it: a play started fresh had a queue that began at the playing episode, so there was
+    // no episode before it to go to. These play an episode of a three-episode season fresh, the way
+    // a Continue Watching tile or the detail page's Play does, and press the controls.
+
+    /// One episode `n` of the season fixture as a PlayQueue row (ratingKey `n`, queue item `10 + n`).
+    fn season_row(n: usize) -> String {
+        format!(
+            r#"{{"ratingKey":"{n}","playQueueItemID":{},"type":"episode","title":"Episode {n}",
+            "grandparentRatingKey":"50","grandparentTitle":"Show","parentIndex":1,"index":{n},
+            "duration":60000,
+            "Media":[{{"videoCodec":"h264","audioCodec":"aac","width":1280,"height":720,
+            "Part":[{{"id":{n},"key":"/library/parts/{n}/file.mkv","Stream":[
+            {{"id":1,"streamType":1,"codec":"h264"}},
+            {{"id":2,"streamType":2,"codec":"aac","selected":true}}]}}]}}]}}"#,
+            10 + n
+        )
+    }
+
+    /// The fixture's answer to `POST /playQueues` for a show-keyed request (`key=` names the episode
+    /// to start on: the WHOLE season, that episode selected, the episodes before it included) or an
+    /// episode-only one (that episode and the ones after it), and to `GET /playQueues/1` (the whole
+    /// season). `/decision` direct-plays; the timeline and the scrobble answer empty.
+    fn season_body(request: &str) -> String {
+        if request.contains("/decision?") {
+            return queue_body(request, true).to_owned();
+        }
+        if request.contains("/:/") {
+            return r#"{"MediaContainer":{}}"#.into();
+        }
+        let after = |marker: &str| {
+            request.split_once(marker).and_then(|(_, rest)| rest.split(|c: char| !c.is_ascii_digit()).next()?.parse::<usize>().ok())
+        };
+        let (first, selected) = if request.starts_with("POST") {
+            match (after("key=%2Flibrary%2Fmetadata%2F"), after("metadata%2F")) {
+                (Some(keyed), _) => (1, keyed),
+                (None, Some(episode)) => (episode, episode),
+                _ => (1, 1),
+            }
+        } else {
+            (1, 1)
+        };
+        let rows: Vec<String> = (first..=3).map(season_row).collect();
+        format!(
+            r#"{{"MediaContainer":{{"machineIdentifier":"lifecycle-fixture","size":{},
+            "playQueueID":1,"playQueueSelectedItemID":{},"playQueueSelectedItemOffset":{},
+            "playQueueTotalCount":{},"Metadata":[{}]}}}}"#,
+            rows.len(),
+            10 + selected,
+            selected - first,
+            rows.len(),
+            rows.join(",")
+        )
+    }
+
+    /// Episode `rk` of the season fixture played FRESH (a show-keyed request, no queue handed over),
+    /// its plan landed and a real Engine over it with the playhead at `pos_ms` of 60 s.
+    fn playing_season_episode_at(rig: &mut Rig, rk: &str, pos_ms: i64) {
+        assert!(plx_media::route::request_play(
+            &mut rig.app.player.session,
+            rig.app.bridge.metadata_mut(),
+            plx_platform::devcaps::caps(),
+            rig.sid,
+            rk,
+            &format!("/library/parts/{rk}/file.mkv"),
+            "h264",
+            "aac",
+            "Episode",
+            "",
+            None,
+            "50",
+        ));
+        rig.entered.recv_timeout(Duration::from_secs(3)).unwrap();
+        rig.release.send(()).unwrap();
+        poll_until("the season fixture's plan did not land", || {
+            plx_media::route::pump_play(&mut rig.app.player.session, rig.app.bridge.metadata_mut()).is_some()
+        });
+        rig.accept_start();
+        frame(&mut rig.app, 16);
+        let _ = plx_platform::tv::launch::take_all();
+        assert!(rig.app.adapters.player.is_live(), "the fixture must create the actual Engine");
+        plx_play_feed::shared::FEED_SHARED.duration_ns.store(60_000_000_000, Ordering::Relaxed);
+        plx_play_feed::shared::FEED_SHARED.playpos_ns.store(pos_ms * 1_000_000, Ordering::Relaxed);
+        publish_feed_fixture_facts(&mut rig.app.player.session, |facts| {
+            facts.duration_ns = Some(60_000_000_000);
+            facts.position_ns = Some(pos_ms * 1_000_000);
+            facts.started = Some(true);
+        });
+    }
+
+    /// The `state=stopped` timeline reports episode `rk` sent, once the stop's worker has finished.
+    fn stop_reports(rig: &Rig, rk: &str) -> Vec<String> {
+        plx_media::route::drain_scrobble();
+        let needle = format!("ratingKey={rk}&");
+        rig.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.contains("/:/timeline") && l.contains(&needle) && l.contains("state=stopped"))
+            .cloned()
+            .collect()
+    }
+
+    /// **Previous goes to the episode before, and the episode it leaves reports where it was.** E2
+    /// of the season is played fresh and the viewer is 30 s into it. The queue the fresh play built
+    /// holds E1, so the Previous disc is enabled (the old disc was a Restart that seeked to 0); a
+    /// press stops E2 at the playhead it really reached (`time=30000`, never a rewound 0 and no
+    /// seek at all) and asks for E1.
+    #[test]
+    fn previous_plays_the_episode_before_and_the_one_it_leaves_reports_its_real_position() {
+        use plx_appkit::player_hud::command::HudCommand;
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request: &str| season_body(request)) else {
+            eprintln!("SKIPPED previous_plays_the_episode_before_and_the_one_it_leaves_reports_its_real_position: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        playing_season_episode_at(&mut rig, "2", 30_000);
+        let controls = plx_appkit::player_hud::Controls::now(&rig.app.player.session);
+        assert!(controls.previous, "a FRESH play of E2 has E1 before it: {:?}", rig.requests.lock().unwrap());
+        assert!(controls.next, "and E3 after it");
+        let globals = SeekGlobals::set(&mut rig.app, 30_000_000_000, 60_000_000_000);
+
+        perform_on_a_mounted_player(&mut rig.app, HudCommand::Previous, 100);
+
+        assert!(plx_media::route::play_pending(), "Previous asked for the episode before");
+        assert_eq!(globals.seek_to(), -1, "Previous is a queue step: it seeks nowhere");
+        let stops = stop_reports(&rig, "2");
+        assert_eq!(stops.len(), 1, "the outgoing episode was stopped once: {:?}", rig.requests.lock().unwrap());
+        assert!(stops[0].contains("time=30000&"), "it reports the playhead it reached, not 0: {}", stops[0]);
+    }
+
+    /// **The first episode of the queue has no Previous.** E1 of the season, played fresh, is the
+    /// first row: the disc is disabled, and a Previous press (the Previous key reaches the same
+    /// performer) changes nothing: no stop report, no request, no seek.
+    #[test]
+    fn previous_on_the_first_episode_of_the_queue_is_disabled_and_does_nothing() {
+        use plx_appkit::player_hud::command::HudCommand;
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request: &str| season_body(request)) else {
+            eprintln!("SKIPPED previous_on_the_first_episode_of_the_queue_is_disabled_and_does_nothing: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        playing_season_episode_at(&mut rig, "1", 30_000);
+        let controls = plx_appkit::player_hud::Controls::now(&rig.app.player.session);
+        assert!(!controls.previous, "nothing before the first episode: {:?}", rig.requests.lock().unwrap());
+        assert!(controls.next, "E2 follows");
+        assert!(!controls.enabled(plx_appkit::player_hud::BTN_PREVIOUS), "the disc has no focus stop");
+        assert_eq!(controls.command(plx_appkit::player_hud::BTN_PREVIOUS), None, "and nothing to press");
+        let globals = SeekGlobals::set(&mut rig.app, 30_000_000_000, 60_000_000_000);
+
+        perform_on_a_mounted_player(&mut rig.app, HudCommand::Previous, 100);
+
+        assert!(!plx_media::route::play_pending(), "no episode before E1 to request");
+        assert_eq!(globals.seek_to(), -1, "and it is not a restart either");
+        assert!(stop_reports(&rig, "1").is_empty(), "E1 plays on: {:?}", rig.requests.lock().unwrap());
+    }
+
+    /// **Next still steps forward, and the episode it leaves reports where it was.** The same E2 at
+    /// 30 s: Next stops it at `time=30000` and requests E3.
+    #[test]
+    fn next_plays_the_episode_after_and_the_one_it_leaves_reports_its_real_position() {
+        use plx_appkit::player_hud::command::HudCommand;
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(|request: &str| season_body(request)) else {
+            eprintln!("SKIPPED next_plays_the_episode_after_and_the_one_it_leaves_reports_its_real_position: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        playing_season_episode_at(&mut rig, "2", 30_000);
+        let globals = SeekGlobals::set(&mut rig.app, 30_000_000_000, 60_000_000_000);
+
+        perform_on_a_mounted_player(&mut rig.app, HudCommand::Next, 100);
+
+        assert!(plx_media::route::play_pending(), "Next asked for E3");
+        assert_eq!(globals.seek_to(), -1);
+        let stops = stop_reports(&rig, "2");
+        assert_eq!(stops.len(), 1, "{:?}", rig.requests.lock().unwrap());
+        assert!(stops[0].contains("time=30000&"), "{}", stops[0]);
+    }
 }
 
 #[cfg(test)]
@@ -10110,5 +10331,57 @@ mod wake_input_tests {
         ] {
             assert_eq!(wake_input(press, saved), want, "{press:?} over {saved:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod straighten_wiring_tests {
+    //! `present_and_swap` needs a real SDL/GL context, so the straighten pass's place in the frame is
+    //! pinned from the source text, the idiom `video_plane_gate_tests` and `pump_wiring_tests` use.
+
+    /// **The pass is the frame's last draw before the swap, and every readback is before it.** The
+    /// order in `present_and_swap`: the ledger opens (`frame_begin`), the frame draws, the dev capture
+    /// stream reads the framebuffer (and skips a bound frame, which is the only one the pass runs
+    /// on), THEN the pass, THEN the simulator's compositor stand-in, the simulator's two readers
+    /// (frame dump, screenshot) and the swap. A read between the pass and the compositor would see
+    /// the straight buffer; a pass after the swap would straighten an undefined back buffer.
+    ///
+    /// The pass takes the plane's BIT, unnested (it does its own gating on the bit and on whether the
+    /// frame drew), and the simulator's compositor runs on that same bit, so the two run together or
+    /// not at all: a straightened frame no reader may see uncomposited.
+    #[test]
+    fn the_straighten_pass_is_last_before_the_swap_and_after_every_readback() {
+        let whole = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/run.rs"),
+        )
+        .expect("read run.rs");
+        let src = whole.split("\n#[cfg(test)]\nmod ").next().expect("the loop's source");
+        const PASS: &str = "        plx_gfx::gfx::straighten::straighten_surface(app.player.video_plane_bound);";
+        assert_eq!(
+            src.lines().filter(|l| *l == PASS).count(),
+            1,
+            "the pass is called exactly once, at `present_and_swap`'s `if fr.present` depth, handed the plane's bit",
+        );
+        assert!(
+            !src.contains("straighten_surface(fr.player)"),
+            "keyed on the plane's bit, not the route: the bound trailer preview is not the player route",
+        );
+        let at = |needle: &str| src.find(needle).unwrap_or_else(|| panic!("`{needle}` is gone from run.rs"));
+        let begin = at("plx_gfx::gfx::straighten::frame_begin();");
+        let draw = at("let (_vx, _vy, _vw, _vh) = draw(app, fr);");
+        let capture = at("crate::capture::tick(fr.now);");
+        let pass = at(PASS.trim_start());
+        let compositor = at("composite_plane_under();\n        }");
+        let dump = at("crate::dev::framedump::after_draw(");
+        let shot = at("crate::shot::maybe_capture(");
+        let swap = at("SDL_GL_SwapWindow(app.win);");
+        assert!(begin < draw, "the ledger opens before the frame draws");
+        assert!(draw < capture && capture < pass, "the capture stream reads before the pass");
+        assert!(pass < compositor, "the simulator's compositor runs after the pass it models");
+        assert!(compositor < dump && compositor < shot, "no reader sees a straight, uncomposited frame");
+        assert!(shot < swap && dump < swap, "…and the pass is done before the swap");
+        // The compositor stand-in sits behind the same bit the pass is handed.
+        let guard = "        #[cfg(feature = \"hostsim\")]\n        if app.player.video_plane_bound {\n            composite_plane_under();";
+        assert!(src.contains(guard), "the simulator composites on exactly the frames the pass straightened");
     }
 }

@@ -54,6 +54,7 @@ impl LogicalState for PickerState {
 pub const SHAPE: &str = "PickerV3{field:u8,selection:u32,busy:bool,status:str,quality:u8,direct_play:u8,checked:u32,confirm:bool,affirm:bool,alert_scroll:u32,shown_marker_scope:u64,marker:{scope:u64,needs_refresh:bool,intro_grant:bool,credits_grant:bool,intro:u8,credits:u8}}";
 
 pub struct PickerPage {
+    inputs: crate::registry::ScreenInputs,
     marker_prefs: MarkerPrefsView,
     entry: EntryId,
     form: FormTable<OptionId, PickAction, SettingsPage>,
@@ -77,18 +78,18 @@ fn option_form(options: Vec<(String, Value)>, current: &Value, busy: bool, retry
 }
 
 impl PickerPage {
-    pub fn new(entry: EntryId, field: PickerKind) -> Self {
-        let mut s = Self { marker_prefs: Default::default(), entry, form: FormTable::new(BAND),
+    pub fn new(entry: EntryId, field: PickerKind, inputs: &crate::registry::ScreenInputs) -> Self {
+        let mut s = Self { inputs: inputs.clone(), marker_prefs: Default::default(), entry, form: FormTable::new(BAND),
             state: PickerState { shown_marker_scope: 0, marker_prefs: Default::default(), field, selected: 0, io: Io { busy: false, status: String::new() },
                 quality: plx_media::route::quality(), direct_play: plx_media::route::direct_play_mode(),
                 checked: u32::MAX, confirming: false, affirmative: false, alert_scroll: 0 },
-            copy: String::new(), txn: Txn::new(true),
+            copy: String::new(), txn: Txn::new(true, &inputs.profile),
             alert: DecisionPrompt::new(ALERT_GROUP, ALERT, ALERT + 1, plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::settings_playback_enable_force_c()) };
         s.rebuild(true);
         s
     }
     fn current(&self) -> Value {
-        resolve_with_marker(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs(), self.marker_prefs)
+        resolve_with_marker(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs(), self.marker_prefs, self.inputs.session.ui_resolution())
     }
     /// Whether the STORED setting already is `value`, for the profile seated now. Only Size and
     /// Position can differ from [`Self::current`]: they publish the live value before the write
@@ -97,11 +98,14 @@ impl PickerPage {
     /// falls back to; reading the legacy key alone would call a profile's own pick "not saved" and
     /// write it again on every OK.
     fn durable(&self, value: &Value) -> bool {
-        use plx_plex::plex::session::{current_seat, peek, stored_effective, SubtitlePositionPref, SubtitleSizePref, HdrOverlayBrightnessPref};
+        use plx_plex::plex::session::{stored_effective, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, HdrOverlayBrightnessPref};
+        let seat = self.inputs.profile.seat();
+        let session = &self.inputs.session;
         match value {
-            Value::SubtitleSize(v) => stored_effective::<SubtitleSizePref>(&peek(), &current_seat()) == *v,
-            Value::SubtitlePosition(v) => stored_effective::<SubtitlePositionPref>(&peek(), &current_seat()) == *v,
-            Value::HdrOverlay(v) => stored_effective::<HdrOverlayBrightnessPref>(&peek(), &current_seat()) == *v,
+            Value::SubtitleSize(v) => stored_effective::<SubtitleSizePref>(session, &seat) == *v,
+            Value::SubtitlePosition(v) => stored_effective::<SubtitlePositionPref>(session, &seat) == *v,
+            Value::SubtitleTone(v) => stored_effective::<SubtitleTonePref>(session, &seat) == *v,
+            Value::HdrOverlay(v) => stored_effective::<HdrOverlayBrightnessPref>(session, &seat) == *v,
             _ => true,
         }
     }
@@ -187,7 +191,7 @@ impl PickerPage {
     }
     fn commit(&mut self, value: Value, fx: &mut Effects<'_, InnerHost>) {
         match value {
-            Value::IntroSkip(_, _) | Value::CreditsSkip(_, _) | Value::InstantDpadSeeking(_) | Value::UriEngine(_) | Value::DolbyVision(_) | Value::Quality(_) | Value::DirectPlay(_) | Value::NextEpisode(_) | Value::DeckPress(_) | Value::SkipInterval(_) | Value::UiResolution(_) | Value::SubtitleSize(_) | Value::SubtitlePosition(_) | Value::HdrOverlay(_) => self.txn.save_local(&mut self.state.io, value, fx),
+            Value::IntroSkip(_, _) | Value::CreditsSkip(_, _) | Value::InstantDpadSeeking(_) | Value::UriEngine(_) | Value::DolbyVision(_) | Value::Quality(_) | Value::DirectPlay(_) | Value::NextEpisode(_) | Value::DeckPress(_) | Value::SkipInterval(_) | Value::UiResolution(_) | Value::SubtitleSize(_) | Value::SubtitlePosition(_) | Value::SubtitleTone(_) | Value::HdrOverlay(_) => self.txn.save_local(&mut self.state.io, value, fx),
             value => {
                 let mut update = PreferenceUpdate::default();
                 match (self.state.field, value) {
@@ -215,6 +219,13 @@ impl PickerPage {
 impl Machine<InnerHost> for PickerPage {
     type Ev = ScreenEvent<InnerHost>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Handled {
+        let inputs_changed = self.inputs.session_key() != cx.views.inputs.session_key()
+            || !std::sync::Arc::ptr_eq(&self.inputs.session, &cx.views.inputs.session);
+        self.inputs = cx.views.inputs.clone();
+        if inputs_changed {
+            self.rebuild(false);
+            fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
+        }
         if cx.views.marker_prefs != self.marker_prefs {
             self.marker_prefs = cx.views.marker_prefs;
             self.rebuild(false);
@@ -248,7 +259,7 @@ impl Machine<InnerHost> for PickerPage {
             ScreenEvent::Tick(t) => {
                 self.alert.update(t.dt());
                 let started = self.start_initial_load(fx);
-                if self.txn.stale() {
+                if self.txn.stale(&self.inputs.profile) {
                     // The profile changed under the list: nothing here can be saved any more. Leave;
                     // the field list beneath sees the same staleness and reloads.
                     self.txn.snapshot = None; self.txn.pending = None; self.state.io.busy = false;
@@ -256,7 +267,7 @@ impl Machine<InnerHost> for PickerPage {
                     return Handled::Yes;
                 }
                 let had_rows = self.form.table.n_rows() > 0;
-                let landed = self.txn.poll(&mut self.state.io, fx);
+                let landed = self.txn.poll(&mut self.state.io, fx, &self.inputs.profile);
                 match landed {
                     Landed::Saved => { self.pop(fx); }
                     Landed::Changed => {

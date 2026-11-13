@@ -1472,7 +1472,7 @@ fn a_home_roster_arriving_late_re_resolves_the_pin_table() {
         source.counts_done = true;
     }
     assert!(
-        !browse.state.discovery_needs_pump(&browse.adapter, &BrowseRosterInput {
+        !browse.state.discovery_needs_pump(&browse.adapter, &BrowseRosterInput { tenure: 0,
             keys: &browse.keys, session: &plx_plex::plex::session::peek(),
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),
@@ -1495,7 +1495,7 @@ fn a_home_roster_arriving_late_re_resolves_the_pin_table() {
     );
 
     assert!(
-        browse.state.discovery_needs_pump(&browse.adapter, &BrowseRosterInput {
+        browse.state.discovery_needs_pump(&browse.adapter, &BrowseRosterInput { tenure: 0,
             keys: &browse.keys, session: &plx_plex::plex::session::peek(),
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),
@@ -1530,7 +1530,7 @@ fn a_home_roster_arriving_late_re_resolves_the_pin_table() {
 
     // Idempotent: a second sync against the same roster is not a change.
     assert!(
-        !browse.state.discovery_needs_pump(&browse.adapter, &BrowseRosterInput {
+        !browse.state.discovery_needs_pump(&browse.adapter, &BrowseRosterInput { tenure: 0,
             keys: &browse.keys, session: &plx_plex::plex::session::peek(),
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),

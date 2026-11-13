@@ -202,7 +202,7 @@ mod tests {
     }
 
     fn order_of(compiled: &Compiled, open: u8) -> Order {
-        let slot = ControlSlot::Discs(Controls { previous: false, next: false, restart: false });
+        let slot = ControlSlot::Discs(Controls { previous: false, next: false });
         order(compiled, open, slot, true, false)
     }
 
@@ -279,7 +279,7 @@ mod tests {
     /// the tab group and this order all ask, and a disc reported there would be a second stop at the same rect.
     #[test]
     fn a_section_a_disc_opens_has_no_tab() {
-        let slot = ControlSlot::Discs(Controls { previous: false, next: false, restart: false });
+        let slot = ControlSlot::Discs(Controls { previous: false, next: false });
         let reference = reference();
         for open in [0, CHAPTERS, INFO, CHAPTERS | INFO] {
             let geo = geometry(&reference, open, slot, true, false);
@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn each_group_links_to_its_neighbours_both_ways() {
         let mut out = Vec::new();
-        let order = order(&classic_for_test(), 0, ControlSlot::Discs(Controls { previous: false, next: false, restart: false }), false, false);
+        let order = order(&classic_for_test(), 0, ControlSlot::Discs(Controls { previous: false, next: false }), false, false);
         order.links(&mut out);
         let link = |from, dir, to| Link { from, dir, to };
         assert_eq!(out.len(), 4);
@@ -350,7 +350,7 @@ mod tests {
     /// tabs' is the pills', and rising-tabs' pills stand wholly above the page in both its states, classic's wholly below.
     #[test]
     fn the_spans_the_lint_reads_are_the_orders_and_the_tabs_clear_the_page() {
-        let slot = ControlSlot::Discs(Controls { previous: false, next: false, restart: false });
+        let slot = ControlSlot::Discs(Controls { previous: false, next: false });
         for (compiled, tabs_above) in [(classic_for_test(), false), (rising_tabs(), true)] {
             for open in [CHAPTERS, INFO] {
                 let (state, skip) = frame_state(&compiled, open, slot, true, false).expect("the state");

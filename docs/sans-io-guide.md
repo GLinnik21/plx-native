@@ -21,13 +21,39 @@ release failure is an ordinary terminal at the observation frame, never a second
 admission. Production streams always run off-frame, including held real release;
 `Bridge::for_test` selects refusal, and finite scripts supply explicit eligibility.
 No stream callback runs inside data or while borrowing Stores across the runner.
-The coordinator reports post-retirement ledger totals of 5 workers / 81 globals /
+The Notify-only checkpoint had 5 workers / 81 globals /
 62 forks / 11 fxlanes, down from the S4 pre-Notify 6/89/65/11. The source-only
 stale-key test passed in orun-27; runtime tests, capture comparisons and full gates
 remain pending. These contracts are not runtime or replay acceptance; see
 `.empryo/reviews/verdict-notify-integration.md` for the handoff limits.
 
+The combined Session/W2/enforcement/Screens source checkpoint now has actual
+ledger totals **4 workers / 19 globals / 62 forks / 11 fxlanes** after Person and the
+remaining data captures, with exact pins.
+Session uses the strict `state`/`transition`/`from_init` binding and structurally
+proved immutable reads. Watchlist and Screens inputs are captured outside their
+machine windows. Source/Python checks are not Rust/runtime/Clippy acceptance;
+see the combined checkpoint in `docs/sans-io.md` for merge details and filters.
+
+## Person complete capture (source checkpoint; runtime acceptance pending)
+
+Person now takes `PersonInput` before Open and every pump: the host's ONE retained complete
+`ClientKeys` roster, settled session and visible generation, controlled/provider decisions, and
+dev biography/credits seeds. Never infer registered slots from key presence; append the origin
+once even if unregistered. Stable pumps borrow inputs; only emitted jobs copy request strings.
+Inputless Open/pump refuse, while Close, Reset and view edits remain independent. All 11 Person
+global sites are retired: the Person-only checkpoint is **4 workers / 43 globals / 62 forks /
+11 fxlanes**, down from 4/54/62/11. Source/Python checks do not claim Rust/replay acceptance.
+
 ## Which code is a machine
+
+Every entry in `ci/machines.ini` must bind its private state field, sole transition and constructor
+with `writer_policy = strict`; none of the ten registered machines has a privacy-only exemption.
+Add the matching module enum policy and an unconditional `deny`/`forbid` header for
+`clippy::wildcard_enum_match_arm`. Local `allow`, `expect` and `warn` (including `cfg_attr` and
+production children/includes) fail the source gate. Numeric/wire-string fallbacks are still valid.
+Shared state reads need structural immutable-payload proof; generic identities need a closed private
+seal, not a broad `Copy` bound. See "Machine shape" in `docs/sans-io.md`.
 
 `ci/check-deps.sh` (the `MACHINES` array) scans these for `workers` and `globals`:
 
@@ -54,12 +80,10 @@ actuator (`ForegroundActuator` in `media/src/player/foreground.rs`) and a seam t
 (`LiveCatalogIo`, called inside `finish_catalog_job`'s `catch_unwind` in `data/src/stores/catalog.rs`).
 CI still reads a body that sits in a scanned file, so give it what it needs as arguments too.
 
-Two leftovers look like that list and are not models. `LiveIo` (`data/src/watchlist.rs`) is a seam the
-Watchlist STEP calls (`reachable`, `roster`, `copy_rank`, `today`, `facts_gen`, `roster_gen`), and its
-methods hold the `ci/allow/globals/data-watchlist.txt` lines (its `client_for` and `current_server`
-reads, and the roster readers `server_ids`, `server_probe_result`, `server_roster_gen` and
-`server_facts_gen`) and the `today()` clock read `docs/sans-io.md` lists (W-2). `build_stream`'s registry reads and its fork are ledger lines too
-(`ci/allow/globals/media.txt`, `ci/allow/forks/media.txt`). Do not copy either.
+The old Watchlist `LiveIo` step readers were retired by W2; `WatchlistSnapshot` is the captured
+input, not a model for hiding registry access behind a trait. `build_stream`'s registry reads and
+its fork remain IO-boundary ledger lines (`ci/allow/globals/media.txt`, `ci/allow/forks/media.txt`),
+outside this data-step migration. Do not copy them into a machine.
 
 ## What counts as IO in a step
 
@@ -76,7 +100,10 @@ it. The ledgers freeze the sites that were found; they are not the definition.
   `devcaps::caps`, and the ones `docs/sans-io.md` lists as remaining:
   `plex::server_ids()`, `server_roster_gen()`, `server_facts_gen()`, `server_probe_result()`
   (re-exports in `plex/src/plex/mod.rs`), `session::peek_settled()` and `session::current_gen()`
-  (both in `plex/src/plex/session.rs`) and `tape::active()` (`data/src/stores/tape.rs`). A new use of
+  (both in `plex/src/plex/session.rs`), `tape::active()` (`data/src/stores/tape.rs`) and the subtitle
+  registries' `sidecar::takes_colour()` / `sidecar::selected()` / `ass_source::takes_colour()` /
+  `ass_source::selected()` (`media/src/player/`; the Subtitles menu reads their colour-pick fact as a
+  value of the session's readout, which the app delivers once a tick). A new use of
   any of these fails `make check` unless a ledger line names it, and is as wrong as a new `client_for`.
   (`transport::paused` is not a registry read any more: it takes the session and reads its
   `PlayerReadout`, a `ps`-addressed readout read, and the rule no longer matches it. `transport::viewer_paused`
@@ -143,8 +170,9 @@ input too: the Collection step asks `keys.key(sid)` of the `ClientKeys` it is ha
 in `data/src/collection.rs`), never `client_for`.
 
 A screen gets a session read the same way: the Bridge reads it and folds it into what a store
-publishes (`Bridge::household_ids` into `Stores::search_snapshot`). The screens' own `peek` and
-`client_for` reads are ledger lines (`ci/allow/globals/screens.txt`), not a pattern.
+publishes (`Bridge::household_ids` into `Stores::search_snapshot`). Screens also consume retained
+host-captured `ScreenInputs` through `Cx`; their former `peek` and `client_for` ledger entries
+are retired, and `ci/allow/globals/screens.txt` is empty.
 
 **(c) A stepped machine: `step` returns effects, a runner executes them.** The player lifecycle
 (#1003) is `step(&mut self, ev, fx: &mut Vec<ForegroundEffect>) -> Handled` (`lifecycle.rs`).
@@ -182,8 +210,10 @@ Never `Instant::now` or `SystemTime::now` in a step. The `wall` rule (`ci/check-
 instruments are listed in `ci/allow/wall.txt`) fails a clock read in most machine scope: `ui/`,
 `screens/`, `data/src/stores/`, the session owner and the migrated store files. Outside it, CI does
 not count the ones that remain (a diagnostic timer in `step_landings_with_scope` in `data/src/pms.rs`,
-one in the fetch body `fetch_full` in `data/src/metadata.rs`), and `WatchlistIo::today` is a
-documented remaining read; do not add to them.
+one in the fetch body `fetch_full` in `data/src/metadata.rs`); do not add to them. W2 retired
+the Watchlist step's ambient date read: the host captures the UTC date, worker ports return the
+captured value, and the step consumes the snapshot. `WatchlistIo::today` is not a remaining
+ambient step read.
 
 **(e) A test needs different behaviour: a seam or an argument, never a `cfg` branch.** A body takes
 the one call that reaches the world as a parameter. `finish_browse_page_job` passes the real read
@@ -197,8 +227,9 @@ fn finish_page_with(port: &BrowsePagePort, addr: Addr, client: &'static Client, 
     read: impl FnOnce(&Client, ServerId, &SectionQuery<'_>, bool, Option<&Restore>) -> ListingPage) {
 ```
 
-An IO trait works the same way when only the job body calls it (`CatalogIo`, `data/src/catalog.rs`);
-a trait the step calls (`WatchlistIo`) is a registry read with one more hop. The shape to avoid is
+An IO trait works the same way when only the job body calls it (`CatalogIo`, `data/src/catalog.rs`).
+`WatchlistIo` is worker transport over captured facts; W2 retired its former ambient step readers.
+A trait must not hide registry or clock access in a step. The shape to avoid is
 `#[cfg(not(test))]` or `if cfg!(test) { fake } else { real }` in production code:
 `ci/allow/forks/*.txt` list the ones that remain, to be deleted, not copied. An item only
 a test can see (`#[cfg(test)] fn`) is no fork.

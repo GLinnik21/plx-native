@@ -43,21 +43,26 @@ impl Host for TestHost {
     type Fx = AppFx;
     type Msg = super::super::registry::AppMsg;
     type Elem = u32;
-    type Views<'a> = HubsView<'a>;
+    type Views<'a> = (HubsView<'a>, Option<&'a plx_plex::plex::ClockFacts>, &'a crate::registry::ScreenInputs);
     type Init = super::super::family::NoInit;
     type Memory = PageMemory;
 }
 
+impl crate::registry::ScreenInputsLike for TestHost {
+    fn screen_inputs<'a>(cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { cx.views.2 }
+}
+
 impl HomeLike for TestHost {
+    fn clock_facts<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { cx.views.1 }
     fn hubs<'a>(cx: &Cx<'a, Self>) -> HubsView<'a> {
-        cx.views
+        cx.views.0
     }
 }
 
 fn cx<'a>(view: HubsView<'a>, focus: Option<FocusKey<u32>>) -> Cx<'a, TestHost> {
     static MEASURE: FixtureMeasure = FixtureMeasure;
     Cx {
-        views: view,
+        views: (view, None, crate::registry::publication_fixture()),
         tick: Tick::default(),
         measure: &MEASURE,
         press: PressRead::default(),
@@ -91,6 +96,15 @@ fn step(
         Machine::<TestHost>::step(s, event, &context, &mut fx)
     };
     (handled, out, present.peek(0))
+}
+
+fn step_clock<'a>(s: &mut HomeScreen, view: HubsView<'a>, facts: &'a plx_plex::plex::ClockFacts) {
+    let mut context = cx(view, None);
+    context.views.1 = Some(facts);
+    let mut out = Vec::new();
+    let mut present = plx_machine::present::Present::new();
+    let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(InstanceId(9)), &mut present);
+    Machine::<TestHost>::step(s, &ScreenEvent::Tick(Tick::default()), &context, &mut fx);
 }
 
 /// Pop `key`'s card the way a deliberate move does: the move, then `frames` ticks with the card
@@ -347,13 +361,13 @@ fn a_failed_home_stands_on_the_page_readout_lines() {
 /// reason having moved the action row.
 #[test]
 fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
-    use plx_net::net::keypin::{self, Blocked};
+    use plx_net::net::keypin::Blocked;
+    use plx_plex::plex::{ClockFacts, ServerId};
     use plx_ui::icons::Icon;
     let _guard = plx_base::testlock::serial();
     plx_plex::plex::grant::reset_for_test();
-    let key = keypin::key_of("home-clock.invalid", 32400);
-    let _scoped = keypin::Scoped::watch_machine("home-clock-machine", &key);
-    let _current = current_server_for_test("home-clock-machine");
+    let sid = ServerId::from_raw(77);
+    let facts = |reason| ClockFacts::scripted(7, sid, None, [(sid, "home-clock-machine".into(), reason)]);
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Failed);
@@ -362,16 +376,16 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
     let mut s = screen(view);
     let measure = FixtureMeasure;
 
-    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    step_clock(&mut s, view, &facts(None));
     let plain = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     assert_eq!((plain.reason, plain.glyph, plain.action), (None, Some(Icon::ServerBadgeMinus), Some(c"Try again")));
     let plain_row = plain.action_frame_measured(&measure).unwrap();
     let plain_caption = plain.caption.to_owned();
 
-    keypin::strict_failure(&key, 60, Some(10));
+
     let before_tick = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     assert_eq!(before_tick.reason, None, "the held fact does not change between ticks");
-    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    step_clock(&mut s, view, &facts(Some(Blocked::NoKey)));
     let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     assert_eq!(overlay.reason, Some(plx_platform::i18n::msg::browse_clock_no_key_c()));
     assert_eq!((overlay.glyph, overlay.action), (Some(Icon::ClockBadgeAlert), Some(c"Try again")));
@@ -381,8 +395,7 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
     let hit = s.hero_button_rect(view, 0, &measure).unwrap();
     assert_eq!([hit.x, hit.y, hit.w, hit.h], [drawn.x, drawn.y, drawn.w, drawn.h], "the hit rect is the drawn pill");
 
-    keypin::key_changed(&key);
-    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    step_clock(&mut s, view, &facts(Some(Blocked::KeyChanged)));
     let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     assert_eq!(s.clock.blocked(), Some(Blocked::KeyChanged));
     assert_eq!(overlay.reason, Some(plx_platform::i18n::msg::browse_clock_key_changed_c()));
@@ -402,7 +415,7 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
         choice: plx_plex::plex::session::PlaintextChoice::Undecided,
     };
     plx_plex::plex::grant::offered(plx_plex::plex::grant::scope(), verdict.clone());
-    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    step_clock(&mut s, view, &facts(Some(Blocked::KeyChanged)));
     let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     let offer = plx_session::auth::plaintext_copy(Some(&verdict), plx_session::auth::ReadoutSurface::SignedIn);
     assert_eq!(overlay.reason.and_then(|r| r.to_str().ok()), Some(offer.as_ref()));
@@ -412,30 +425,22 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
 
 /// Make `machine` the current server (the one a failed Home speaks about) for a test, and put the
 /// registry back when it ends.
-fn current_server_for_test(machine: &str) -> impl Drop {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            plx_plex::plex::reset_servers_for_test();
-        }
-    }
-    plx_plex::plex::reset_servers_for_test();
-    let sid = plx_plex::plex::register_pinned_with_client_id(machine, &plx_plex::plex::Origin::http("192.168.1.53", 32400),
-        "", None, "client", Default::default());
-    assert!(plx_plex::plex::set_current(sid) || plx_plex::plex::current_server() == sid, "the test server is current");
-    Reset
-}
+// Source identities in these tests are supplied as clock facts.
 
 /// **A fact about ANOTHER server does not colour a failed Home** (scenario B): Home asks
 /// `net::keypin::blocked_for` about the current server only.
 #[test]
 fn a_failed_home_ignores_a_clock_fact_about_another_server() {
-    use plx_net::net::keypin;
+    use plx_net::net::keypin::Blocked;
+    use plx_plex::plex::{ClockFacts, ServerId};
     let _guard = plx_base::testlock::serial();
     plx_plex::plex::grant::reset_for_test();
-    let elsewhere = keypin::key_of("home-elsewhere.invalid", 32400);
-    let _scoped = keypin::Scoped::watch_machine("home-elsewhere-machine", &elsewhere);
-    let _current = current_server_for_test("home-here-machine");
+    let here = ServerId::from_raw(78);
+    let other = ServerId::from_raw(79);
+    let facts = ClockFacts::scripted(8, here, None, [
+        (here, "home-here-machine".into(), None),
+        (other, "home-elsewhere-machine".into(), Some(Blocked::KeyChanged)),
+    ]);
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Failed);
@@ -443,9 +448,7 @@ fn a_failed_home_ignores_a_clock_fact_about_another_server() {
     let view = snapshot.view();
     let mut s = screen(view);
 
-    keypin::strict_failure(&elsewhere, 60, Some(10));
-    keypin::key_changed(&elsewhere);
-    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    step_clock(&mut s, view, &facts);
     assert_eq!(s.clock.blocked(), None);
     let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     assert_eq!((overlay.reason, overlay.glyph), (None, Some(plx_ui::icons::Icon::ServerBadgeMinus)));
@@ -2370,6 +2373,44 @@ fn addressed_item_menu_uses_the_current_owned_grid_item() {
         &out,
         |req| matches!(req, HomeReq::ItemMenu { rk, .. } if rk == "1")
     ));
+}
+
+/// **The item menu opens on a Continue Watching card while the page rests on the hero, and on no
+/// shelf card there.** The row stands in view on the hero's page ([`HomeScreen::holds_page`]), so
+/// focus lands on it with `snap.pos` at 0; the boot trigger's pre-check used to ask "is the page
+/// off the hero?" (`strip_reachable`), which is false for that row's whole stay, and the
+/// documentation scene of the menu never opened it. The pre-check and the command answer by the
+/// one rule ([`HomeScreen::item_menu_reachable`]), so a card the first would refuse is not one the
+/// second opens either.
+#[test]
+fn the_item_menu_is_reachable_on_the_deck_row_at_the_hero_page_and_on_a_shelf_only_on_the_grid_page() {
+    let _guard = plx_base::testlock::serial();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+
+    let mut deck = plx_data::pms::PmsState::default();
+    plx_data::pms::seed_continue_window_for_test(&mut deck, &adapter, 12, false);
+    let snapshot = plx_data::pms::hubs_snapshot(&deck);
+    let mut s = screen(snapshot.view());
+    assert!(s.holds_page(0), "premise: the deck is the first row");
+    assert_eq!(s.snap.pos, 0.0, "premise: the page rests on the hero");
+    let card = first_card(&s);
+    assert!(s.item_menu_reachable(Some(card)), "a deck card is reachable with the page on the hero");
+    assert!(!s.item_menu_reachable(None), "no focus is no card");
+    let (_, out, _) = step(&mut s, snapshot.view(), Some(card), &ScreenEvent::App(AppMsg::Home(HomeCmd::ItemMenu)));
+    assert!(has_home(&out, |r| matches!(r, HomeReq::ItemMenu { .. })), "and the command the trigger queues is answered");
+
+    let mut shelf = plx_data::pms::PmsState::default();
+    plx_data::pms::seed_grid_for_test(&mut shelf, &adapter, 2, 3);
+    let snapshot = plx_data::pms::hubs_snapshot(&shelf);
+    let mut s = screen(snapshot.view());
+    assert!(!s.holds_page(0), "premise: a plain shelf is no deck");
+    let card = first_card(&s);
+    assert!(!s.item_menu_reachable(Some(card)), "a shelf card is off the screen while the page rests on the hero");
+    let (_, out, _) = step(&mut s, snapshot.view(), Some(card), &ScreenEvent::App(AppMsg::Home(HomeCmd::ItemMenu)));
+    assert!(!has_home(&out, |r| matches!(r, HomeReq::ItemMenu { .. })), "and its command is not answered");
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    assert!(s.item_menu_reachable(Some(card)), "the same card is reachable once the page is on the grid");
 }
 
 /// The item-menu opener asks the page for its focused card (`Screen::focused_card`) instead of

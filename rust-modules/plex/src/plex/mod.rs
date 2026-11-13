@@ -114,7 +114,7 @@ pub use client::urlenc_str;
 pub use client::{decode_ip, decode_link, encode_ip, encode_link};
 #[allow(unused_imports)]
 pub use client::{Client, IpVersion, StreamUrl};
-pub use client_keys::{ClientKey, ClientKeys, KeyedClients};
+pub use client_keys::{ClientFacts, ClientKey, ClientKeys, ClockFacts, KeyedClients};
 // `Client::find_by_guids`' vocabulary (library.rs stays private).
 pub use library::{GuidKind, GuidLookupError, GuidMatch, Oldest, SectionTotal, GUIDS_PER_REQUEST};
 // WHERE a server is, as one value. `Origin` is what `register_origin`/`install` take and what a

@@ -50,6 +50,37 @@ fn home_opener_anchors_at_the_drawn_rect_of_a_grid_card_and_at_nothing_for_the_h
     assert!(live_differs_from_rest, "the fixture must catch the drawn rect off its settled one, or a rect/rest_rect swap is invisible");
 }
 
+/// **The `plxnative-itemmenu` boot trigger's question is answered on the Continue Watching row**,
+/// the card the documentation scene (`item-menu`) and the `fps:item-menu` scene open the menu on.
+/// The row stands in view on the hero's page, so focus lands on it with the page still at rest on
+/// the hero; the trigger's pre-check (`request_home_menu`) asked whether the page was OFF the hero
+/// and so refused it for as long as the scene ran ("expected log line missing: 'coldopen
+/// screen=itemmenu'"). It must queue the command, and the page must answer it with the menu's request.
+#[test]
+fn the_item_menu_trigger_is_answered_on_the_deck_row_while_the_page_rests_on_the_hero() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    rig.stores.hubs.seed_deck_home_for_test(3);
+    frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+    d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
+    for i in 1..20 { frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]); }
+    assert!(!rig.request_home_menu(&d), "premise: Home boots on the hero, which no menu opens on");
+
+    assert!(rig.home_command(HomeCmd::FocusGrid { row: 0, col: 0 }));
+    for i in 20..80 { frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]); }
+    assert!(rig.home_grid_focused(&d), "premise: the deck's first card is focused");
+    assert!(rig.with_home(&d, |home, _, _| home.snap_pos() < 0.5).unwrap(),
+        "premise: focus on the deck row left the page at rest on the hero");
+
+    assert!(rig.request_home_menu(&d), "the trigger's pre-check accepts a deck card with the page on the hero");
+    rig.take_home_reqs();
+    for i in 80..90 { frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]); }
+    let asked = rig.take_home_reqs();
+    assert!(asked.iter().any(|(_, request, _)| matches!(request, HomeReq::ItemMenu { rk, .. } if rk == "1")),
+        "Home answers the command with the first deck card's menu: {:?}", asked.iter().map(|(_, r, _)| r).collect::<Vec<_>>());
+}
+
 #[test]
 fn a_home_card_is_not_answered_by_the_library_search_or_content_builders() {
     let _guard = plx_base::testlock::serial();

@@ -50,7 +50,9 @@ fn map(stores: &mut Stores, out: &NotifyOut, pages: &[ContentArg]) -> super::not
 
 fn map_shown(stores: &mut Stores, out: &NotifyOut, pages: &[ContentArg], shown: Shown) -> super::notify_map::Spent {
     let dir = DirectorySnapshot::default();
-    stores.notify_map(out, pages, shown, dir.view(), &crate::pms::registry_keys_for_test())
+    let spent = stores.notify_map(out, pages, shown, dir.view(), &crate::pms::registry_keys_for_test());
+    stores.watchlist.dispatch_jobs_for_test();
+    spent
 }
 
 fn pending(stores: &Stores) -> Vec<String> {

@@ -19,6 +19,8 @@ impl ScreenArg for Arg {
 pub(super) struct HostFixture;
 #[derive(Clone, Copy)]
 pub(super) struct Views<'a> {
+    inputs: &'a crate::registry::ScreenInputs,
+    clock: Option<&'a plx_plex::plex::ClockFacts>,
     listing: plx_data::stores::browse::ListingView<'a>,
     directory: plx_data::stores::browse::DirectoryView<'a>,
     hubs: plx_data::stores::browse::HubsView<'a>,
@@ -32,7 +34,12 @@ impl Host for HostFixture {
     type Init = Arg;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for HostFixture {
+    fn screen_inputs<'a>(cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { cx.views.inputs }
+}
+
 impl LibraryLike for HostFixture {
+    fn clock_facts<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { cx.views.clock }
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.hubs }
@@ -442,19 +449,23 @@ fn retry_stop_matches_the_shared_measured_status_action_with_and_without_reason(
 /// and the *Try again* stop is the pill the same frame draws.
 #[test]
 fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
-    use plx_net::net::keypin::{self, Blocked};
+    use plx_net::net::keypin::Blocked;
+    use plx_plex::plex::ClockFacts;
     use plx_ui::icons::Icon;
     use plx_ui::widgets::StatusOverlay;
     let _guard = plx_base::testlock::serial();
     plx_plex::plex::grant::reset_for_test();
-    let key = keypin::key_of("library-clock.invalid", 32400);
-    let _scoped = keypin::Scoped::watch_machine("library-clock-machine", &key);
     plx_plex::plex::reset_servers_for_test();
     let failed_sid = plx_plex::plex::register_pinned_with_client_id("library-clock-machine",
         &plx_plex::plex::Origin::http("192.168.1.51", 32400), "", None, "client", Default::default());
     // `tick_damaged`: a fact appearing or clearing under a static Failed read-out moves the
     // action row, so the tick must damage the frame.
-    let tick = tick_damaged;
+    let tick = |page: &mut LibraryScreen, fixture: &Fixture, reason| {
+        let sid = fixture.directory.view().source().unwrap().0;
+        let machine = if sid == failed_sid { "library-clock-machine" } else { "lan-machine" };
+        let facts = ClockFacts::scripted(7, sid, None, [(sid, machine.into(), reason)]);
+        tick_with_clock(page, fixture, &facts)
+    };
     let read = |page: &LibraryScreen, fixture: &Fixture| {
         let cx = fixture.cx(Some(page.key(RETRY)));
         let (caption, reason) = page.status_text(&cx);
@@ -468,17 +479,17 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
     for owner in ["", "friend"] {
         let fixture = Fixture::failed_source(failed_sid, owner);
         let mut page = fixture.screen();
-        tick(&mut page, &fixture);
+        tick(&mut page, &fixture, None);
         let (shown, glyph, plain_row, caption) = read(&page, &fixture);
         let shared = plx_platform::i18n::msg::browse_library_shared_unreachable("friend");
         assert_eq!(shown.as_ref().and_then(|r| r.to_str().ok()), (!owner.is_empty()).then_some(shared.as_str()),
             "no fact: today's read-out");
         assert_eq!(glyph, Some(Icon::ServerBadgeMinus));
 
-        keypin::strict_failure(&key, 60, Some(10));
+
         let (stale, ..) = read(&page, &fixture);
         assert_eq!(stale, shown, "the held fact does not change between ticks");
-        assert!(tick(&mut page, &fixture), "a fact appearing under a static read-out damages the frame");
+        assert!(tick(&mut page, &fixture, Some(Blocked::NoKey)), "a fact appearing under a static read-out damages the frame");
         let (shown, glyph, row, clock_caption) = read(&page, &fixture);
         assert_eq!(shown.as_deref(), Some(plx_platform::i18n::msg::browse_clock_no_key_c()), "owner {owner:?}");
         assert_eq!(glyph, Some(Icon::ClockBadgeAlert));
@@ -489,14 +500,12 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
         }
         assert!(row.y >= StatusOverlay::FULL_ANCHOR_TOP);
 
-        keypin::key_changed(&key);
-        assert!(tick(&mut page, &fixture));
+        assert!(tick(&mut page, &fixture, Some(Blocked::KeyChanged)));
         assert_eq!(page.clock.blocked(), Some(Blocked::KeyChanged));
         let (shown, ..) = read(&page, &fixture);
         assert_eq!(shown.as_deref(), Some(plx_platform::i18n::msg::browse_clock_key_changed_c()));
 
-        keypin::strict_established(&key);
-        assert!(tick(&mut page, &fixture), "…and one clearing does too");
+        assert!(tick(&mut page, &fixture, None), "…and one clearing does too");
         let (shown, glyph, ..) = read(&page, &fixture);
         assert_eq!(shown.as_ref().and_then(|r| r.to_str().ok()), (!owner.is_empty()).then_some(shared.as_str()),
             "the fact cleared: the shared-by line is back");
@@ -505,17 +514,13 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
 
     // An offered plaintext server's reason outranks the clock's, glyph included.
     use plx_plex::plex::session::PlaintextChoice;
-    plx_plex::plex::reset_servers_for_test();
     let sid = plx_plex::plex::register_pinned_with_client_id("lan-machine", &plx_plex::plex::Origin::http("192.168.1.50", 32400), "", None, "client", Default::default());
     let fixture = Fixture::failed_source(sid, "friend");
     let mut page = fixture.screen();
-    let lan_key = keypin::key_of("192.168.1.50", 32400);
-    let _lan = keypin::Scoped::watch_machine("lan-machine", &lan_key);
-    keypin::strict_failure(&lan_key, 60, Some(10));
     plx_plex::plex::grant::offered(plx_plex::plex::grant::scope(),
         plx_plex::plex::grant::PlaintextVerdict { machine_id: "lan-machine".into(), name: "nas".into(), shared_by: String::new(),
             eligibility: plx_plex::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided });
-    tick(&mut page, &fixture);
+    tick(&mut page, &fixture, Some(Blocked::NoKey));
     assert!(page.clock.blocked().is_some(), "the clock fact stands");
     let (shown, glyph, ..) = read(&page, &fixture);
     assert!(shown.as_ref().and_then(|r| r.to_str().ok()).is_some_and(|r| r.contains("Select Connect")), "{shown:?}");
@@ -528,35 +533,29 @@ fn a_failed_source_names_a_wrong_clock_when_key_mode_cannot_help() {
 /// server's expired certificate leaves it alone, and a fact for the source's own machine shows.
 #[test]
 fn a_failed_source_ignores_a_clock_fact_about_another_server() {
-    use plx_net::net::keypin;
+    use plx_net::net::keypin::Blocked;
+    use plx_plex::plex::{ClockFacts, ServerId};
     use plx_ui::icons::Icon;
     let _guard = plx_base::testlock::serial();
     plx_plex::plex::grant::reset_for_test();
-    plx_plex::plex::reset_servers_for_test();
-    let here = keypin::key_of("library-here.invalid", 32400);
-    let elsewhere = keypin::key_of("library-elsewhere.invalid", 32400);
-    let _here = keypin::Scoped::watch_machine("library-here-machine", &here);
-    let _elsewhere = keypin::Scoped::watch_machine("library-elsewhere-machine", &elsewhere);
-    let sid = plx_plex::plex::register_pinned_with_client_id("library-here-machine",
-        &plx_plex::plex::Origin::http("192.168.1.52", 32400), "", None, "client", Default::default());
+    let sid = ServerId::from_raw(80);
+    let other = ServerId::from_raw(81);
     let fixture = Fixture::failed_source(sid, "");
     let mut page = fixture.screen();
-    let tick = |page: &mut LibraryScreen| tick_damaged(page, &fixture);
     let shown = |page: &LibraryScreen| {
         let cx = fixture.cx(Some(page.key(RETRY)));
         let (caption, reason) = page.status_text(&cx);
         let overlay = page.status_overlay(&cx, &caption, reason.as_deref());
         (overlay.reason.map(|r| r.to_owned()), overlay.glyph)
     };
-    tick(&mut page);
-    keypin::strict_failure(&elsewhere, 60, Some(10));
-    keypin::key_changed(&elsewhere);
-    tick(&mut page);
+    let facts = |reason| ClockFacts::scripted(9, sid, None, [
+        (sid, "library-here-machine".into(), reason),
+        (other, "library-elsewhere-machine".into(), Some(Blocked::KeyChanged)),
+    ]);
+    tick_with_clock(&mut page, &fixture, &facts(None));
     assert_eq!(page.clock.blocked(), None, "another server's fact is not this source's");
-    assert_eq!(shown(&page), (None, Some(Icon::ServerBadgeMinus)), "today's read-out");
-
-    keypin::strict_failure(&here, 60, Some(10));
-    tick(&mut page);
+    assert_eq!(shown(&page), (None, Some(Icon::ServerBadgeMinus)));
+    tick_with_clock(&mut page, &fixture, &facts(Some(Blocked::NoKey)));
     assert_eq!(shown(&page), (Some(plx_platform::i18n::msg::browse_clock_no_key_c().to_owned()), Some(Icon::ClockBadgeAlert)));
 }
 
@@ -921,6 +920,7 @@ fn a_failed_source_over_an_offered_server_asks_the_shared_question() {
 
     offer("lan-machine");
     tick(&mut page);
+    let cx = fixture.cx(Some(page.key(RETRY)));
     let (caption, reason) = page.status_text(&cx);
     assert!(reason.as_ref().and_then(|r| r.to_str().ok()).is_some_and(|r| r.contains("Select Connect")), "{reason:?}");
     assert_eq!(page.status_overlay(&cx, &caption, reason.as_deref()).action, Some(connect()));
@@ -1118,7 +1118,7 @@ impl Fixture {
         }
     }
     pub(super) fn cx(&self, focus: Option<FocusKey<u32>>) -> Cx<'_, HostFixture> {
-        Cx { views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
+        Cx { views: Views { inputs: crate::registry::publication_fixture(), listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view(), clock: None },
             tick: Tick::default(), measure: &self.measure, focus: FocusRead { current: focus , ..Default::default() },
             press: PressRead::default(), owner: OWNER }
     }
@@ -1138,12 +1138,14 @@ impl Fixture {
         fixture
     }
 }
-/// One Tick through the screen: whether it damaged the frame.
-fn tick_damaged(page: &mut LibraryScreen, fixture: &Fixture) -> bool {
+
+fn tick_with_clock<'a>(page: &mut LibraryScreen, fixture: &'a Fixture, facts: &'a plx_plex::plex::ClockFacts) -> bool {
     let mut out = Vec::new();
     let mut present = plx_machine::present::Present::new();
     present.take(0);
-    page.step(&ScreenEvent::Tick(Tick::default()), &fixture.cx(None),
+    let mut cx = fixture.cx(None);
+    cx.views.clock = Some(facts);
+    page.step(&ScreenEvent::Tick(Tick::default()), &cx,
         &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
     present.changed()
 }

@@ -94,6 +94,8 @@ def cfg_without_tests(tokens):
                 return {op(values) for values in itertools.product(*children)}, i
             return {False, True}, i
         if i < len(tokens) and tokens[i][1] == '=':
+            if name == 'feature' and i + 1 < len(tokens) and tokens[i + 1] == ('string', 'test-support'):
+                return {False}, i + 2
             return {False, True}, min(i + 2, len(tokens))
         return ({False} if name == 'test' else {False, True}), i
     return expr(0)[0]

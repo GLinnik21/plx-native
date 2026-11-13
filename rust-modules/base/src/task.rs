@@ -171,6 +171,7 @@ fn thread_name(what: &str) -> String {
 }
 
 fn try_spawn(what: &str, stack: Option<usize>, f: impl FnOnce() + Send + 'static) -> io::Result<JoinHandle<()>> {
+    crate::step::assert_io_allowed("task::try_spawn");
     let mut b = Builder::new().name(thread_name(what));
     if let Some(n) = stack {
         b = b.stack_size(n);
@@ -404,6 +405,7 @@ where
     T: Send + 'scope,
     F: FnOnce() -> T + Send + 'scope,
 {
+    crate::step::assert_io_allowed("task::beside_with");
     use std::sync::{Arc, Mutex};
     debug_assert!(!blocking::in_frame(), "beside was asked for on the frame thread");
     // The lock is never held while `f` runs, so a panic in `f` cannot poison it.
@@ -455,6 +457,54 @@ impl<T> Beside<'_, T> {
             Work::Taken => unreachable!("a Beside is finished once, and its work ran once"),
         }
     }
+}
+
+/// This thread's kernel thread id: what `ps -L`, `/proc/<pid>/task/` and `tools/tv-sched-trace.sh
+/// --tid` name. `None` off Linux and Android, where there is none to name.
+///
+/// The raw system call, which is what `gettid(2)` is: glibc grew the wrapper in 2.30, and the
+/// televisions' libc has it only from webOS 7 (`tools/fwcompat.py --lib libc.so.6 --grep gettid`),
+/// so naming `gettid` would stop the binary starting on older sets. `syscall` itself is in every
+/// release's libc.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn thread_id() -> Option<u32> {
+    // SAFETY: `SYS_gettid` takes no arguments and cannot fail.
+    u32::try_from(unsafe { libc::syscall(libc::SYS_gettid) }).ok()
+}
+
+/// See the Linux definition.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub fn thread_id() -> Option<u32> {
+    None
+}
+
+/// Run the calling thread at niceness `nice` (0 is the default a thread starts at, 19 the lowest
+/// priority; a level past either end is cut to it), so the threads that keep the frame loop on
+/// time win a core from it. Returns whether it took effect.
+///
+/// Linux keeps a niceness per kernel thread (NPTL threads are not "processes" in this one respect),
+/// so `setpriority(PRIO_PROCESS, tid, nice)` lowers this thread and no other, which is what a
+/// worker needs: the ASS render workers run at `+5` (the first) and `+10` (a helper), below the
+/// frame thread and the playback threads that stay at 0, on a four-core set where a moving cue's
+/// workers would otherwise take the cores the frame loop needs. Lowering one's own priority is
+/// always permitted; it is the other way (a worker that asks for less than the niceness it has)
+/// that the kernel refuses without `CAP_SYS_NICE`, which is why the result is a `bool` and not a
+/// panic: a refusal only leaves the thread where it was.
+///
+/// Off Linux and Android there is no per-thread niceness and the call does nothing (`false`): this
+/// is a platform difference in the OS interface, not a test fork.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn lower_priority(nice: i32) -> bool {
+    let Some(tid) = thread_id() else { return false };
+    // SAFETY: plain integers; `PRIO_PROCESS` is `c_int` in the binding and `c_uint` (glibc's
+    // `__priority_which_t`) in the signature, which `as _` settles for either libc.
+    unsafe { libc::setpriority(libc::PRIO_PROCESS as _, tid as libc::id_t, nice.clamp(0, 19)) == 0 }
+}
+
+/// See the Linux definition.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub fn lower_priority(_nice: i32) -> bool {
+    false
 }
 
 /// A join this long parked the SDL loop for ~15 frames — the shortest stall a person reads as a
@@ -569,6 +619,65 @@ mod tests {
         })
         .expect("spawn");
         assert_eq!(rx.recv().unwrap().trim_end(), "comm-probe");
+    }
+
+    /// The thread's own niceness, which is what a scheduler trace reads: Linux keeps a niceness
+    /// per kernel thread, and `setpriority(PRIO_PROCESS, tid)` reaches that thread alone.
+    #[cfg(target_os = "linux")]
+    fn nice_of(tid: u32) -> i32 {
+        // getpriority's -1 is a legitimate niceness, so a failure is told by errno; a test thread
+        // that has just read its own tid cannot fail it.
+        unsafe { *libc::__errno_location() = 0 };
+        let n = unsafe { libc::getpriority(libc::PRIO_PROCESS as _, tid as libc::id_t) };
+        assert_eq!(unsafe { *libc::__errno_location() }, 0, "getpriority of a live thread");
+        n
+    }
+
+    /// A worker that lowers its priority is niced and the thread that started it is not: the
+    /// niceness is per kernel thread, so the ASS workers' `+5`/`+10` never reach the frame thread.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lowering_priority_nices_the_calling_thread_alone() {
+        let parent = super::thread_id().expect("a Linux thread has an id");
+        let parent_before = nice_of(parent);
+        let (tx, rx) = mpsc::channel();
+        let h = super::spawn("nice-probe", move || {
+            let me = super::thread_id().expect("a Linux thread has an id");
+            let before = nice_of(me);
+            let applied = super::lower_priority(before + 7);
+            tx.send((before, applied, nice_of(me))).unwrap();
+        })
+        .expect("spawn");
+        let (before, applied, after) = rx.recv().unwrap();
+        h.join().unwrap();
+        assert!(applied, "lowering a thread's own priority is never refused");
+        assert_eq!(after, (before + 7).min(19));
+        assert_eq!(nice_of(parent), parent_before, "the spawning thread keeps its niceness");
+    }
+
+    /// The level is a niceness: past the ends it is cut to them, not refused.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_level_past_the_lowest_priority_is_cut_to_it() {
+        let (tx, rx) = mpsc::channel();
+        let h = super::spawn("nice-clamp", move || {
+            let me = super::thread_id().expect("a Linux thread has an id");
+            tx.send((super::lower_priority(1_000), nice_of(me))).unwrap();
+        })
+        .expect("spawn");
+        let (applied, nice) = rx.recv().unwrap();
+        h.join().unwrap();
+        assert!(applied);
+        assert_eq!(nice, 19);
+    }
+
+    /// Off Linux there is no per-thread niceness to set (the host simulator is the one place the
+    /// ASS workers run there): the call says so and changes nothing.
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    #[test]
+    fn lowering_priority_reports_that_it_did_nothing_off_linux() {
+        assert_eq!(super::thread_id(), None);
+        assert!(!super::lower_priority(5));
     }
 
     /// [`super::MainThread`] earns its keep entirely by NOT being `Send` — that absence is what

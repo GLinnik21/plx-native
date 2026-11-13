@@ -3399,6 +3399,53 @@ class NetcondRate(unittest.TestCase):
                              f"measured faster than the requested {self.KBPS:g} kbps "
                              f"(floor {self.FLOOR_S:.3f}s, took {slow_s:.3f}s)")
 
+    def test_rate_control_reloads_when_mtime_is_unchanged(self):
+        self.mode.read()
+        stamp = os.stat(self.ctl)
+        self._set(f"rate:{self.KBPS:g}")
+        os.utime(self.ctl, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        elapsed, body = self._pull()
+        self.assertEqual(len(body), self.N)
+        self.assertEqual(self.mode.read(), f"rate:{self.KBPS:g}")
+        self.assertLessEqual(len(body) * 8 / elapsed / 1000, self.KBPS * 1.35)
+
+    def test_control_cache_does_not_publish_before_reading_the_mode(self):
+        self.mode.read()
+        self._set(f"rate:{self.KBPS:g}")
+        stamp = os.stat(self.ctl)
+        os.utime(self.ctl, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1_000_000_000))
+        opened, release, second_done = threading.Event(), threading.Event(), threading.Event()
+        real_open = open
+        observed = []
+
+        def delayed_open(*args, **kwargs):
+            if threading.current_thread() is first:
+                opened.set()
+                if not release.wait(5):
+                    raise TimeoutError("control reader was not released")
+            return real_open(*args, **kwargs)
+
+        def read_second():
+            observed.append(self.mode.read())
+            second_done.set()
+
+        first = threading.Thread(target=self.mode.read)
+        second = threading.Thread(target=read_second)
+        with mock.patch.object(netcond, "open", side_effect=delayed_open, create=True):
+            first.start()
+            try:
+                self.assertTrue(opened.wait(5), "first reader did not open the control")
+                second.start()
+                second_done.wait(0.05)
+            finally:
+                release.set()
+                first.join(5)
+                if second.ident is not None:
+                    second.join(5)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(observed, [f"rate:{self.KBPS:g}"])
+
     def test_a_non_loopback_listener_requires_a_client_allowlist(self):
         """PMS URLs carry credentials; a LAN-wide forwarding proxy may not be open by default."""
         with self.assertRaisesRegex(ValueError, "requires at least one allowed client"):
@@ -9066,6 +9113,33 @@ impl PersonOwnerGateFixture {
         self.assertIn("threads:", out)
         self.assertIn("_check_deps_selftest_threads.rs", out)
 
+    def test_threads_gate_ignores_visible_test_modules_without_exempting_production(self):
+        files = {}
+        for i, visibility in enumerate(("pub", "pub(crate)", "pub(super)")):
+            files[f"_check_deps_visible_test_{i}.rs"] = (
+                f"#[cfg(test)]\n{visibility} mod fixture {{\n"
+                "    fn work() { std::thread::spawn(|| {}); }\n}\n")
+        r = self._plant_many(files, "data")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self._plant("_check_deps_visible_production.rs",
+                        "pub(super) mod fixture { fn work() { std::thread::spawn(|| {}); } }\n")
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("threads:", r.stdout + r.stderr)
+        self.assertIn("_check_deps_visible_production.rs", r.stdout + r.stderr)
+
+    def test_globals_ledger_ignores_field_labels_without_hiding_value_reads(self):
+        fields = ("struct Captured { current_server: u32, client_for: u32, screen_input_revision: u32 }\n"
+                  "fn captured() -> Captured { Captured { current_server: 1, client_for: 2, screen_input_revision: 3 } }\n")
+        r = self._plant("_check_deps_captured_fields.rs", fields, "screens")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self._plant("_check_deps_captured_fields.rs", fields +
+                        "fn actual() { let _ = Captured { current_server: current_server(), client_for: client_for, screen_input_revision: 0 }; }\n", "screens")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        key = "rust-modules/screens/src/_check_deps_captured_fields.rs::actual::"
+        self.assertIn(key + "current_server", out)
+        self.assertIn(key + "client_for", out)
+
     def test_blocking_gate_catches_a_new_allow_blocking_site(self):
         """A frame-thread blocking exception is a ledger entry in ci/allow/blocking.txt. RED: a new
         production `allow_blocking(` that the list does not name must fail `blocking`, naming the
@@ -9476,6 +9550,21 @@ impl PersonOwnerGateFixture {
             with self.subTest(not_a_read=stem):
                 self.assertNotIn(f"{base}{stem}.rs", out,
                                  "a `caps` parameter or an unimported `caps(` is not the capability answer\n" + out)
+
+    def test_globals_ledger_sees_screen_input_revision_without_allowance(self):
+        r = self._plant_many({
+            "stores/_check_deps_screen_revision_direct.rs": "fn read() { plx_plex::plex::session::screen_input_revision(); }\n",
+            "stores/_check_deps_screen_revision_bare.rs": "use plx_plex::plex::session::screen_input_revision;\nfn read() { screen_input_revision(); }\n",
+            "stores/_check_deps_screen_revision_glob.rs": "use plx_plex::plex::session::*;\nfn read() { let reader = screen_input_revision; }\n",
+            "stores/_check_deps_screen_revision_alias.rs": "use plx_plex::plex::session::screen_input_revision as hidden;\nfn read() { hidden(); }\n",
+        }, "data")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        base = "rust-modules/data/src/stores/_check_deps_screen_revision_"
+        self.assertIn(base + "direct.rs::read::session::screen_input_revision", out)
+        self.assertIn(base + "bare.rs::read::screen_input_revision", out)
+        self.assertIn(base + "glob.rs::read::screen_input_revision", out)
+        self.assertIn(base + "alias.rs:1", out)
 
     def test_globals_ledger_sees_the_registry_readers_the_old_closed_list_missed(self):
         """RED: the server registry's roster readers (`server_ids`, `server_roster_gen`, `server_facts_gen`,
@@ -9930,6 +10019,57 @@ impl PersonOwnerGateFixture {
         r = subprocess.run([os.path.join(self.ROOT, "ci", "check-statics.sh")], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_search_static_scanner_excludes_only_test_code_and_literals(self):
+        source = '''
+#[cfg(test)]
+mod tests {
+    mod allocation_probe {
+        #[global_allocator]
+        static ALLOCATOR: CountAlloc = CountAlloc;
+    }
+}
+// static COMMENT: u8 = 0;
+const TEXT: &str = r###"
+static RAW: u8 = 0;
+} "###;
+#[cfg(all(test, target_os = "linux"))]
+static TEST_ONLY: u8 = 0;
+#[cfg(any(test, target_os = "linux"))]
+static MAYBE_PRODUCTION: u8 = 0;
+#[cfg(not(test))]
+static ALLOCATOR: CountAlloc = CountAlloc;
+pub(crate) static STORE: Mutex<()> = Mutex::new(());
+static mut MUTABLE: u8 = 0;
+'''
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "probe.rs")
+            with open(path, "w") as f:
+                f.write(source)
+            env = dict(os.environ, LG_MODE="static")
+            result = subprocess.run(["awk", "-f", os.path.join(self.ROOT, "ci", "ledger.awk"), path],
+                                    capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(set(result.stdout.splitlines()), {
+            path + "\t" + name for name in ("MAYBE_PRODUCTION", "ALLOCATOR", "STORE", "MUTABLE")})
+        planted = os.path.join(self.tree, "rust-modules", "data", "src", "search", "_static_probe.rs")
+        fixtures = (
+            ("static ALLOCATOR: CountAlloc = CountAlloc;\n", False),
+            ('#[cfg(any(test, target_os = "linux"))]\nstatic ALLOCATOR: CountAlloc = CountAlloc;\n', False),
+            (source[:source.index('#[cfg(any(test, target_os = "linux"))]')], True),
+        )
+        for contents, green in fixtures:
+            with self.subTest(source=contents):
+                with open(planted, "w") as f:
+                    f.write(contents)
+                result = subprocess.run([os.path.join(self.tree, "ci", "check-statics.sh")],
+                                        capture_output=True, text=True)
+                output = result.stdout + result.stderr
+                if green:
+                    self.assertEqual(result.returncode, 0, output)
+                else:
+                    self.assertNotEqual(result.returncode, 0, output)
+                    self.assertIn("ALLOCATOR", output)
+
     def _heap_statics(self, files, lines=False):
         """`{(path, NAME)}` that `ci/check-statics-heap.py` reports over a scratch checkout holding
         `files` ({path under rust-modules/: Rust source}), plus a `target-fast` build tree full of
@@ -10123,7 +10263,7 @@ impl PersonOwnerGateFixture {
         ci = os.path.join(self.ROOT, "ci")
         with tempfile.TemporaryDirectory() as root:
             os.makedirs(os.path.join(root, "ci", "allow"))
-            for fn in ("check-statics.sh", "check-statics-heap.py", "module_graph.py", "rust_test_modules.py"):
+            for fn in ("check-statics.sh", "check-statics-heap.py", "module_graph.py", "rust_test_modules.py", "ledger.awk"):
                 shutil.copy(os.path.join(ci, fn), os.path.join(root, "ci", fn))
             mod = os.path.join(root, "rust-modules")
             for d in ("ui/src", "appkit/src", "screens/src", "data/src/metadata", "data/src/stores",
@@ -10268,7 +10408,8 @@ impl PersonOwnerGateFixture {
         # `spawn_small`), -1 on globals (its `client_for`).
         # Metadata M4: alt sources leave as MetaAltSources (-1 worker, -8 globals, -3 forks).
         # Notify retirement: -1 worker, -8 globals, -3 forks.
-        "workers": 5,  # production worker starts inside machines (`ci/allow/workers/`)
+        # W2 retires Watchlist resolve: -1 worker and -7 globals.
+        "workers": 4,  # production worker starts inside machines (`ci/allow/workers/`)
         # Sans-IO lifecycle PR B moved the pin by nothing: -3 (the three `lifecycle.rs` `player::TX` lines left with the
         # transport contract, `player/transport.rs`, the IO layer) and +3 (a relocation lowers no pin by itself, so the same
         # diff widened the spellings to the transport readers `transport::paused`, `transport::viewer_paused` and
@@ -10284,11 +10425,12 @@ impl PersonOwnerGateFixture {
         # `session::current_gen`, `tape::active`), +57 (57 -> 114); the forks rule gained the machine crates
         # screens/, ui/, appkit/ and machine/ (it read only data/, plex/, media/, session/), +17 (58 -> 75).
         # S4 Browse explicit roster inputs remove its 14 registry reads (103 -> 89).
-        "globals": 81,  # production process-global reads inside machines (`ci/allow/globals/`)
+        # Retained screen inputs remove the screen family's remaining registry reads.
+        "globals": 19,  # Person -11, then Search -14 / Metadata -5 / PMS -3 / ViewState -2.
         # Dolby Vision setting (#1156): -1 on forks (`build_stream` takes the DV probe from `ResolveEnv`, captured
         # at the request, so its test/production read of `devcaps::dv::capability` is gone).
         # Actual pre-M4 entries were 68 (the previous pin 71 was a loose ceiling).
-        "forks": 62,  # production test/production forks in every machine crate: data/, plex/, media/, session/, screens/, ui/, appkit/, machine/ (`ci/allow/forks/`)
+        "forks": 61,  # production test/production forks in every machine crate: data/, plex/, media/, session/, screens/, ui/, appkit/, machine/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
     }
 

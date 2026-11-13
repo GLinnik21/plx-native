@@ -56,7 +56,7 @@ fn a_settled_query_emits_one_request_per_slot_naming_the_client_it_decided_on() 
     let keys = crate::pms::registry_keys_for_test();
     let jobs = taken(&mut owner);
     assert_eq!(jobs.len(), 2, "one request per live slot");
-    for ((job, port), i) in jobs.iter().zip(slots()) {
+    for ((job, port), i) in jobs.iter().zip(fixture_slots()) {
         let sid = ServerId::from_raw(i as u16);
         assert_eq!(job.req.server(), (sid, keys.key(sid).expect("registered")));
         assert_eq!(job.addr, search_addr(owner.state.gen), "addressed by the query's generation");
@@ -74,14 +74,21 @@ fn a_settled_query_emits_one_request_per_slot_naming_the_client_it_decided_on() 
 #[test]
 fn a_slot_without_a_client_emits_nothing_and_lands_as_a_failure() {
     let (_fresh, mut owner) = settled(1);
-    let none = ClientKeys::default();
+    let fixture = fixture_input();
+    let captured = &fixture.keys;
+    let none = ClientKeys::captured(captured.current(), captured.roster_gen(), captured.facts_gen(),
+        captured.slots().map(|sid| (sid, None, captured.facts(sid).expect("registered facts").clone())));
+    let input = SearchInput { keys: &none, ..fixture.input() };
+    assert_eq!(none.slots().count(), 1, "the registered slot remains visible");
+    assert!(none.iter().next().is_none(), "the captured slot has no client key");
 
     pump_with_optional_directory(&mut owner.state, &owner.adapter, 0.3, None,
-        plx_machine::landgate::fixture_gate(), &none);
+        plx_machine::landgate::fixture_gate(), &input);
     assert!(owner.state.jobs.is_empty(), "no client, no request");
     assert!(owner.adapter.mailbox(0).has_mail(), "the failure is posted through the mailbox");
 
-    owner.pump(0.016);
+    pump_with_optional_directory(&mut owner.state, &owner.adapter, 0.016, None,
+        plx_machine::landgate::fixture_gate(), &input);
     assert_eq!(source(&owner.state, 0).status, Status::Failed);
     assert_eq!(owner.state.state(), State::Failed);
     assert!(!claim_held(&owner, 0), "the take of the failure released the claim");

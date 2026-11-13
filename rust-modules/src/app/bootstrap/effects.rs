@@ -281,11 +281,24 @@ pub(crate) fn message(message: &AppMsg) -> Result<Value, &'static str> {
         },
         AppMsg::PlaybackTrace(plx_platform::playback_trace::Status::Off) => json!({"playback_trace":"off"}),
         AppMsg::Store(command) => store(command)?,
+        AppMsg::PersonCommand { command, .. } => store(&plx_data::stores::StoreCmd::Person(command.clone()))?,
         AppMsg::StoreWork(work) => work_value(work)?,
         AppMsg::HubsResult(result) => plx_data::pms::record::encode(result),
         AppMsg::Home(command) => json!({"home_command":home_command(command)}),
         _ => return Err("unsupported Home message"),
     })
+}
+
+/// The retained Person sender duplicates the effect envelope, not the legacy delivery payload.
+/// Validate that equality before using the historical wire spelling; never erase forged provenance.
+pub(crate) fn encode_from(from: plx_machine::machine::MachineId,
+    effect: &Fx<super::super::bridge::AppHost>) -> Result<Value, &'static str> {
+    if let Fx::Deliver(to, Delivery::Machine(AppMsg::PersonCommand { from: sender, .. })) = effect {
+        if *sender != from || *to != plx_machine::machine::MachineId::Store(plx_data::stores::StoreId::Person.ord()) {
+            return Err("mismatched controlled Person sender or destination");
+        }
+    }
+    encode(effect)
 }
 
 pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value, &'static str> {
@@ -377,6 +390,37 @@ mod tests {
     use super::encode;
     use plx_screens::registry::AppArg;
     use plx_machine::machine::{Fx, NavOp};
+
+    #[test]
+    fn controlled_person_delivery_retains_the_recorded_open_close_and_reset_payloads() {
+        use plx_data::stores::{StoreCmd, person::PersonCmd};
+        use plx_machine::machine::{Delivery, MachineId};
+        use plx_screens::registry::AppMsg;
+        use serde_json::json;
+        let from = MachineId::Instance(plx_machine::machine::InstanceId(3));
+        let to = MachineId::Store(plx_data::stores::StoreId::Person.ord());
+        for (command, body) in [
+            (PersonCmd::Open { sid: plx_plex::plex::ServerId::from_raw(0), key: "19".into(),
+                guid: "sf06c144a".into(), name: "s025b413f".into(),
+                thumb: "/library/metadata/people/19/thumb/1".into() },
+                json!({"person":{"open":[0,"19","sf06c144a","s025b413f","/library/metadata/people/19/thumb/1"]}})),
+            (PersonCmd::Close, json!({"person":"close"})),
+            (PersonCmd::Reset, json!({"person":"reset"})),
+        ] {
+            let legacy = Fx::Deliver(to, Delivery::Machine(AppMsg::Store(StoreCmd::Person(command.clone()))));
+            let addressed = Fx::Deliver(to, Delivery::Machine(AppMsg::PersonCommand { from, command: command.clone() }));
+            let misrouted = Fx::Deliver(MachineId::Session, Delivery::Machine(AppMsg::PersonCommand { from, command }));
+            assert_eq!(super::encode_from(from, &misrouted),
+                Err("mismatched controlled Person sender or destination"));
+            let expected = json!({"to":"store:4","delivery":body});
+            assert_eq!(serde_json::to_vec(&encode(&legacy).unwrap()).unwrap(),
+                serde_json::to_vec(&super::encode_from(from, &addressed).unwrap()).unwrap());
+            assert_eq!(encode(&legacy), Ok(expected.clone()));
+            assert_eq!(super::encode_from(from, &addressed), Ok(expected));
+            assert_eq!(super::encode_from(MachineId::Nav, &addressed),
+                Err("mismatched controlled Person sender or destination"));
+        }
+    }
 
     #[test]
     fn controlled_diagnostics_only_records_the_deterministic_off_query() {

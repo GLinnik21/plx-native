@@ -70,6 +70,7 @@ pub use plx_base::detail_parts::{DetailPart, DetailParts};
 /// The signed-in profile, in-memory for the UI (the Home profile chip reads this). Set by the boot
 /// gate (from the stored session) and on every profile switch, so it survives an offline boot.
 static CURRENT: Mutex<Option<std::sync::Arc<CurrentProfile>>> = Mutex::new(None);
+static CURRENT_PUBLICATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Immutable worker publication. Identity and its explicit owner-assigned generation are one
 /// record, so a reader that needs both can retain one snapshot across subsequent publications.
@@ -204,8 +205,9 @@ impl ProfilePublisher {
             return;
         }
         {
-            *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::sync::Arc::new(
-                CurrentProfile { user: user.clone(), generation, stamp }));
+            let mut current = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
+            *current = Some(std::sync::Arc::new(CurrentProfile { user: user.clone(), generation, stamp }));
+            CURRENT_PUBLICATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         warm(user, generation);
     }
@@ -505,7 +507,7 @@ impl Drop for TempSession {
 
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct OpaqueExtensions(pub BTreeMap<String, Value>);
+pub struct OpaqueExtensions(pub BTreeMap<String, ::serde_json::Value>);
 
 impl OpaqueExtensions {
     fn is_empty(&self) -> bool {
@@ -970,15 +972,27 @@ impl PlaybackQuality {
 /// The persisted subtitle tones, lightest first. Like [`PlaybackQuality`] the spelling on disk is
 /// explicit: these strings are a file-format contract and must survive a variant rename.
 ///
-/// A ladder of GREYS rather than a colour wheel, because the job is brightness: over an HDR
+/// Mostly a ladder of GREYS rather than a colour wheel, because the job is brightness: over an HDR
 /// picture the panel maps graphics white far above where it sits in SDR, and the only thing that
-/// makes a caption comfortable there is less light. What each rung looks like is `ui::theme`'s
-/// (`subtitle_ink`); this type only names them.
+/// makes a caption comfortable there is less light. The one exception is a legibility colour,
+/// [`SubtitleTone::Yellow`] (a viewer asks for it for readability, discussion #1193). The greys
+/// are inks `ui::theme` tints a drawn caption with (`SUBTITLE_INKS`); a COLOUR rung has a text
+/// colour, [`SubtitleTone::text_rgb8`]: a synthesized text-subtitle header takes it as its primary
+/// colour (media cannot name `ui::theme`), and an authored ASS/SSA script takes it in the PrimaryColour of
+/// every pure-white style (`plx_media::player::ass_ink`), so a cue's own inline colours and a script's
+/// other-coloured styles are left alone, while the client's own drawn text takes the same colour from the matching
+/// `ui::theme::SUBTITLE_INKS` entry, which a test ties to it. Adding a colour is one variant, one
+/// `LADDER` rung, one arm of `text_rgb8` and that theme entry.
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubtitleTone {
     #[default]
     #[serde(rename = "white")]
     White,
+    /// Added after the greys were persisted, so a build from before it reads `"yellow"` as a value
+    /// it cannot parse: the per-profile field falls back to the install's older value and the
+    /// install key to white (both are parsed softly), never a failed load.
+    #[serde(rename = "yellow")]
+    Yellow,
     #[serde(rename = "grey_85")]
     Silver,
     #[serde(rename = "grey_70")]
@@ -993,8 +1007,9 @@ pub enum SubtitleTone {
 
 impl SubtitleTone {
     /// Every rung, lightest first — the order the picker draws them in.
-    pub const LADDER: [SubtitleTone; 6] = [
+    pub const LADDER: [SubtitleTone; 7] = [
         SubtitleTone::White,
+        SubtitleTone::Yellow,
         SubtitleTone::Silver,
         SubtitleTone::LightGrey,
         SubtitleTone::Grey,
@@ -1007,6 +1022,7 @@ impl SubtitleTone {
     pub fn label(self) -> &'static str {
         match self {
             SubtitleTone::White => "White",
+            SubtitleTone::Yellow => "Yellow",
             SubtitleTone::Silver => "Silver",
             SubtitleTone::LightGrey => "Light gray",
             SubtitleTone::Grey => "Gray",
@@ -1023,6 +1039,21 @@ impl SubtitleTone {
 
     pub fn index(self) -> u8 {
         Self::LADDER.iter().position(|&t| t == self).unwrap_or(0) as u8
+    }
+
+    /// The colour this rung paints text in, as 8-bit sRGB, or `None` for white and the greys (which
+    /// only dim: `ui::theme::SUBTITLE_INKS` tints with them). The colour code media's header reads;
+    /// see the type's own doc for the theme entry it is tied to.
+    pub const fn text_rgb8(self) -> Option<[u8; 3]> {
+        match self {
+            SubtitleTone::Yellow => Some([0xff, 0xe6, 0x1a]),
+            SubtitleTone::White
+            | SubtitleTone::Silver
+            | SubtitleTone::LightGrey
+            | SubtitleTone::Grey
+            | SubtitleTone::DarkGrey
+            | SubtitleTone::Charcoal => None,
+        }
     }
 }
 
@@ -3492,6 +3523,36 @@ pub fn install_transient_for_test(locked: bool) {
 
 pub fn visible_generation() -> u64 {
     VISIBLE_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Host-only publication fence for retained screen inputs, including signed-out defaults.
+/// The cache revision is read under CACHE: replace_cache assigns its content, advances the
+/// counter, and projects keys before releasing that same lock. CURRENT is read separately
+/// to avoid lock-order coupling; a before/after pair fences both publications without allocation.
+pub fn screen_input_revision() -> (u64, u64) {
+    let cache_revision = {
+        let _cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let profile_revision = {
+        let _current = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
+        CURRENT_PUBLICATION.load(std::sync::atomic::Ordering::Relaxed)
+    };
+    (cache_revision, profile_revision)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_cleared_for_test(ui_resolution: UiResolution) {
+    plx_base::testlock::assert_held("cleared screen input fixture");
+    let kept = Retained { language: plx_platform::i18n::Preference::System, ui_resolution };
+    set_cache_locked(Cached::Settled(std::sync::Arc::new(ReadState::Cleared { kept })));
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_locked_defaults_for_test(ui_resolution: UiResolution) {
+    plx_base::testlock::assert_held("locked screen input fixture");
+    let kept = Retained { language: plx_platform::i18n::Preference::System, ui_resolution };
+    set_cache_locked(Cached::Transient { state: std::sync::Arc::new(ReadState::Locked { kept }) });
 }
 
 /// Per-consumer cursor for cached session-derived views. Poll on Tick, including while storage
@@ -6757,5 +6818,40 @@ mod server_key_pin_tests {
         plx_base::storage_worker::drain_for_test();
         let _ = peek();
         assert_eq!(plx_net::net::keypin::pin_for_test(&key), None, "the late probe did not repopulate it");
+    }
+}
+
+#[cfg(test)]
+mod screen_input_revision_tests {
+    use super::*;
+    #[test]
+    fn screen_input_revision_observes_cleared_defaults_without_a_visible_generation_change() {
+        let _serial = plx_base::testlock::serial();
+        let _session = test_support::TempSession::new("screen-revision-defaults");
+        install_cleared_for_test(UiResolution::Auto);
+        let before = screen_input_revision();
+        let visible = visible_generation();
+        install_cleared_for_test(UiResolution::Hd720);
+        assert_ne!(screen_input_revision().0, before.0);
+        assert_eq!(visible_generation(), visible);
+        assert_eq!(peek_settled().unwrap().ui_resolution(), UiResolution::Hd720);
+    }
+    #[test]
+    fn screen_input_revision_waits_for_the_cache_publication_lock() {
+        let _serial = plx_base::testlock::serial();
+        let _session = test_support::TempSession::new("screen-revision-lock");
+        let expected = screen_input_revision();
+        let cache = CACHE.lock().unwrap();
+        let (started, start) = std::sync::mpsc::channel();
+        let (answer, result) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            answer.send(screen_input_revision()).unwrap();
+        });
+        start.recv().unwrap();
+        assert!(matches!(result.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+        drop(cache);
+        assert_eq!(result.recv_timeout(std::time::Duration::from_secs(2)).unwrap(), expected);
+        reader.join().unwrap();
     }
 }

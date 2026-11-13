@@ -23,10 +23,23 @@ ends the burst; a same-item seek reload preserves it. A dismissed immediate seek
 through the first new picture; ordinary rebuffering and failures retain their diagnostic read-out.
 
 The default control row is **Previous, Next**, a wider gap, then **Subtitles, Audio, More**.
-Previous restarts at five seconds or later and shows the restart arrow. Before five seconds it
-plays the preceding queue item. Unavailable buttons are dimmed, have no pointer stop and are
+Previous always plays the preceding queue item, whatever the playhead: it is the previous episode
+and nothing else, and it never seeks. The episode it leaves is stopped at the position it really
+reached, so its resume point is kept. It is dimmed on the first episode of the queue. Starting the
+current episode over is **From beginning** on the Info tab (and a `…` menu row in a HUD package
+that folds it), not a second meaning of Previous.
+Unavailable buttons are dimmed, have no pointer stop and are
 skipped by keyboard focus. Entering the row focuses Next when enabled, otherwise its first
-enabled button. Marker offers and Up Next retain their precedence over this row.
+enabled button. Marker offers and Up Next retain their precedence over this row: while one
+occupies it the discs, Previous and Next among them, are not drawn or focusable.
+
+A fresh play of an episode (a Continue Watching tile, the detail page's Play or Resume) creates its
+PlayQueue from the **show** with the episode as the queue's `key`, so the queue holds the episodes
+before the playing one as well as after it. (Previous, Next, Up Next and autoplay hand off inside
+the queue that exists and never create one.) An episode-only queue holds just the episode and its
+successors, and Previous then had nowhere to go.
+The show-based answer is believed only when its selected row is the episode asked for; otherwise
+the play falls back to the episode-only request.
 
 ## Queue continuity and maintenance
 
@@ -40,7 +53,8 @@ Its main files are:
 | `appkit/src/player_hud/seek_jump.rs` | Short-burst requested-target accumulation |
 | `appkit/src/player_hud/state.rs` | One default disc row and its availability |
 | `appkit/src/player_hud/classic.rs` | The baseline row's shared HStack geometry (width and band); `render.rs` draws the row and its icons from the compiled `builtin:classic` |
-| `media/src/route/queue_navigation.rs` | Queue neighbors, continuation and five-second rule |
+| `media/src/route/queue_navigation.rs` | Queue neighbors and continuation |
+| `plex/src/plex/timeline.rs` | `create_play_queue`: an episode's queue is built from its show, so the episodes before it are in it |
 | `plex/src/plex/session/playback_options.rs` | Independent preference types and defaults |
 | `plex/src/plex/queue_window.rs` | Read the existing PlayQueue around a target item |
 | `src/app/playback/queue_transport.rs` | Queue handoff shared with Up Next |
@@ -66,7 +80,7 @@ python3 tests/playback_navigation_sim.py --sim rust-modules/target-sim/debug/plx
   --media /tmp/navigation-media --out /tmp/navigation-evidence
 ```
 
-This exercises queue continuity, restart after five seconds, an immediate hidden-HUD FF tap,
+This exercises queue continuity, Previous disabled (and never a restart) on the first episode, an immediate hidden-HUD FF tap,
 and visible-HUD D-pad confirmation. Add `--instant-dpad` to exercise the optional D-pad path.
 For a repeated-keyframe regression, make a copy with 12-second keyframes (24 fps):
 

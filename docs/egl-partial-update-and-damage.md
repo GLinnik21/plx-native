@@ -382,7 +382,14 @@ shippable:
    hand-maintained list the motion capability exists to remove. Nothing measured here changes that.
 7. **There is no pixel gate in this project.** A missed rect is a smear only a television can
    show you. The two captures in §3b are the entire visual verification apparatus that exists.
-8. **The player route must stay out**, for the reason `system.rs:36-38` gives.
+8. **The player route must stay out**, for the reason `system.rs:36-38` gives. That is also the
+   straighten pass's rule (`rust-modules/gfx/src/gfx/straighten.rs`, "Buffer age"): while the video
+   plane is bound, the frame's last draw rewrites every pixel the frame drew into (the boxes its draw
+   calls declared; the rest is the clear) from premultiplied to straight colour for the compositor,
+   so a bound frame must be a COMPLETE redraw from the clear.
+   Any scheme that restricts a bound frame's draws to a damage rect would also have to clear the
+   damaged region first and straighten exactly that region — a pixel carried over from an earlier
+   frame is already straight and the pass would divide it by its alpha a second time.
 9. **ARM's own caveat applies and should be quoted at whoever proposes this**: *"Do not use either
    `EGL_KHR_partial_update` or `EGL_KHR_swap_buffers_with_damage` for applications that always
    re-render the whole frame, as there is an extra cost in doing so."* §2b says roughly half of a

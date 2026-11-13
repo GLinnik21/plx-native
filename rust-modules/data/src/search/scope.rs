@@ -69,20 +69,32 @@ impl SourceScopeSnapshot {
 
 #[derive(PartialEq, Eq)]
 struct Key {
-    /// The generation catches ordinary roster changes; the exact ids catch an equal-sized
-    /// replacement even if a test or a future registry path reuses the generation.
-    roster_gen: u32,
-    roster: Vec<ServerId>,
-    /// `facts_gen` covers authoritative descriptions. The pointer fingerprint also covers the
-    /// server's self-description path, which merges a name without advancing that revision.
-    facts_gen: u32,
-    facts: Vec<usize>,
-    /// `sections_gen` covers library title/table landings; `source_list_gen` covers reachability
-    /// and other source facts maintained by Browse.
+    clients: plx_plex::plex::ClientKeys,
     sections_gen: u32,
     source_list_gen: u32,
     profile_gen: u32,
+    profile_key: String,
+    tenure: u64,
     session_gen: u64,
+}
+
+impl Key {
+    fn matches(&self, input: &super::SearchInput<'_>, directory: Option<crate::stores::browse::DirectoryView<'_>>) -> bool {
+        self.clients == *input.keys
+            && self.profile_gen == input.recents.profile_generation
+            && self.profile_key == input.recents.profile_key
+            && self.tenure == input.recents.tenure
+            && self.session_gen == input.recents.session_generation
+            && self.sections_gen == directory.map_or(0, |d| d.sections_gen())
+            && self.source_list_gen == directory.map_or(0, |d| d.source_list_gen())
+    }
+    fn capture(input: &super::SearchInput<'_>, directory: Option<crate::stores::browse::DirectoryView<'_>>) -> Self {
+        Self { clients: input.keys.clone(), profile_gen: input.recents.profile_generation,
+            profile_key: input.recents.profile_key.to_owned(), tenure: input.recents.tenure,
+            session_gen: input.recents.session_generation,
+            sections_gen: directory.map_or(0, |d| d.sections_gen()),
+            source_list_gen: directory.map_or(0, |d| d.source_list_gen()) }
+    }
 }
 
 struct Cache {
@@ -146,40 +158,20 @@ pub struct ScopeCache {
     cache: RefCell<Option<Cache>>,
 }
 
-/// Read every registry input used by a standalone Search fixture. Production adds the retained
-/// Browse directory generations through [`read_key_with_directory`].
-fn read_key() -> Key {
-    read_registry_key()
-}
-
-fn read_key_with_directory(directory: crate::stores::browse::DirectoryView<'_>) -> Key {
-    let mut key = read_registry_key();
-    key.sections_gen = directory.sections_gen();
-    key.source_list_gen = directory.source_list_gen();
-    key
-}
-
-fn read_registry_key() -> Key {
-    // Every live server, however many: the fingerprint must move when ANY of them changes, so it
-    // cannot be a fixed-size prefix of the roster.
-    let roster: Vec<ServerId> = plx_plex::plex::server_ids().collect();
-    let facts = roster
-        .iter()
-        .map(|&sid| plx_plex::plex::server_facts(sid).map_or(0, |f| std::ptr::from_ref(f) as usize))
-        .collect();
-    Key {
-        roster_gen: plx_plex::plex::server_roster_gen(),
-        roster,
-        facts_gen: plx_plex::plex::server_facts_gen(),
-        facts,
-        sections_gen: 0,
-        source_list_gen: 0,
-        profile_gen: plx_plex::plex::session::current_gen(),
-        session_gen: plx_plex::plex::session::visible_generation(),
-    }
+#[cfg(test)]
+fn capture_key_for_test(directory: crate::stores::browse::DirectoryView<'_>) -> Key {
+    Key::capture(&super::fixture_input().input(), Some(directory))
 }
 
 impl ScopeCache {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn snapshot(&self, household: &[i64]) -> SourceScopeSnapshot {
+        self.snapshot_with_input(&super::fixture_input().input(), household)
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn snapshot_with_directory(&self, directory: crate::stores::browse::DirectoryView<'_>, household: &[i64]) -> SourceScopeSnapshot {
+        self.snapshot_with_directory_and_input(directory, &super::fixture_input().input(), household)
+    }
     /// Capture the current source facts, rebuilding only when a cheap semantic input moves.
     ///
     /// `household` is the signed-in profile's household member ids
@@ -187,18 +179,17 @@ impl ScopeCache {
     /// ViewState steps are handed their registry keys: this module reads the server registry and
     /// the session's two generation counters (`current_gen`, `visible_generation`, as memo keys),
     /// never the session's contents (`peek`).
-    pub fn snapshot(&self, household: &[i64]) -> SourceScopeSnapshot {
-        let key = read_key();
+    pub fn snapshot_with_input(&self, input: &super::SearchInput<'_>, household: &[i64]) -> SourceScopeSnapshot {
         let mut cache = self.cache.borrow_mut();
         let matches = cache.as_ref().is_some_and(|cached| {
-            cached.key == key && cached.household == household && cached.directory.is_none()
+            cached.key.matches(input, None) && cached.household == household && cached.directory.is_none()
         });
         if !matches {
             *cache = Some(Cache {
-                key,
+                key: Key::capture(input, None),
                 household: household.to_vec(),
                 directory: None,
-                publication: build(household),
+                publication: build(input.keys, household),
             });
         }
         cache
@@ -208,24 +199,24 @@ impl ScopeCache {
             .clone()
     }
 
-    pub fn snapshot_with_directory(
+    pub fn snapshot_with_directory_and_input(
         &self,
         directory: crate::stores::browse::DirectoryView<'_>,
+        input: &super::SearchInput<'_>,
         household: &[i64],
     ) -> SourceScopeSnapshot {
-        let key = read_key_with_directory(directory);
         let mut cache = self.cache.borrow_mut();
         let matches = cache.as_ref().is_some_and(|cached| {
-            cached.key == key
+            cached.key.matches(input, Some(directory))
                 && cached.household == household
                 && cached.directory.as_ref().is_some_and(|input| input.matches(directory))
         });
         if !matches {
             *cache = Some(Cache {
-                key,
+                key: Key::capture(input, Some(directory)),
                 household: household.to_vec(),
                 directory: Some(DirectoryInput::capture(directory)),
-                publication: build_with_directory(directory, household),
+                publication: build_with_directory(directory, input.keys, household),
             });
         }
         cache.as_ref().expect("source scope cache was just built").publication.clone()
@@ -250,11 +241,11 @@ fn grant_of(
     }
 }
 
-fn build(household: &[i64]) -> SourceScopeSnapshot {
-    let first = plx_plex::plex::server_ids().next();
-    let sources = plx_plex::plex::server_ids()
+fn build(keys: &plx_plex::plex::ClientKeys, household: &[i64]) -> SourceScopeSnapshot {
+    let first = keys.slots().next();
+    let sources = keys.slots()
         .map(|sid| {
-            let facts = plx_plex::plex::server_facts(sid);
+            let facts = keys.facts(sid).and_then(|facts| facts.described);
             // Registration order is the only honest ownership answer before the roster has
             // described a slot; the session server is registered first.
             let grant = grant_of(facts, Some(sid) == first);
@@ -279,11 +270,12 @@ fn build(household: &[i64]) -> SourceScopeSnapshot {
 
 fn build_with_directory(
     directory: crate::stores::browse::DirectoryView<'_>,
+    keys: &plx_plex::plex::ClientKeys,
     household: &[i64],
 ) -> SourceScopeSnapshot {
-    let first = plx_plex::plex::server_ids().next();
-    let sources = plx_plex::plex::server_ids().map(|sid| {
-        let facts = plx_plex::plex::server_facts(sid);
+    let first = keys.slots().next();
+    let sources = keys.slots().map(|sid| {
+        let facts = keys.facts(sid).and_then(|facts| facts.described);
         let grant = grant_of(facts, Some(sid) == first);
         ScopeSource {
             sid,
@@ -470,7 +462,7 @@ mod tests {
         );
         let alpha = directory("Alpha");
         let beta = directory("Beta");
-        assert!(read_key_with_directory(alpha.view()) == read_key_with_directory(beta.view()),
+        assert!(capture_key_for_test(alpha.view()) == capture_key_for_test(beta.view()),
             "the regression requires equal owner-local generations");
 
         let cache = ScopeCache::default();
@@ -516,7 +508,7 @@ mod tests {
         ]);
         let dir_a = directory("Owner A's Library");
         let dir_b = directory("Owner B's Library");
-        assert!(read_key_with_directory(dir_a.view()) == read_key_with_directory(dir_b.view()),
+        assert!(capture_key_for_test(dir_a.view()) == capture_key_for_test(dir_b.view()),
             "the regression requires equal owner-local generations");
 
         let owner_a = ScopeCache::default();
@@ -650,20 +642,20 @@ mod tests {
         stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
         let cache = ScopeCache::default();
         let old = cache.snapshot_with_directory(directory.view(), &household());
-        let before = read_key_with_directory(directory.view());
+        let before = capture_key_for_test(directory.view());
         assert!(old.sources().iter().all(|source| source.live));
 
         plx_plex::plex::describe_server(share, "renamed-share", "new-friend", plx_plex::plex::GrantEvidence::outside());
         let described = cache.snapshot_with_directory(directory.view(), &household());
-        let after = read_key_with_directory(directory.view());
+        let after = capture_key_for_test(directory.view());
         assert!(!old.same_publication(&described), "a described source is a new sentence");
         assert_eq!(described.sources()[1].handle, "new-friend");
         assert_eq!(
-            (after.roster_gen, &after.roster, after.sections_gen, after.source_list_gen),
-            (before.roster_gen, &before.roster, before.sections_gen, before.source_list_gen),
+            (after.clients.roster_gen(), after.clients.slots().collect::<Vec<_>>(), after.sections_gen, after.source_list_gen),
+            (before.clients.roster_gen(), before.clients.slots().collect::<Vec<_>>(), before.sections_gen, before.source_list_gen),
             "a pure description moves no roster, section or reachability counter"
         );
-        assert_ne!(after.facts, before.facts, "…it moves the facts fingerprint, and that is enough");
+        assert_ne!(after.clients, before.clients, "…it moves the facts fingerprint, and that is enough");
 
         stores.browse.borrow_mut().seed_sources_for_test(2, false);
         stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
@@ -672,7 +664,7 @@ mod tests {
         assert!(quiet.sources().iter().all(|source| !source.live));
         assert!(described.sources().iter().all(|source| source.live),
             "…and the retained publication keeps saying what it said");
-        assert_ne!(read_key_with_directory(directory.view()).source_list_gen, after.source_list_gen);
+        assert_ne!(capture_key_for_test(directory.view()).source_list_gen, after.source_list_gen);
     }
 
     #[test]

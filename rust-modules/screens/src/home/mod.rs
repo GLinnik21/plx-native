@@ -1831,9 +1831,10 @@ impl HomeScreen {
             self.snap_target = 0.0;
             self.snap.jump(0.0);
         }
-        let current = plx_plex::plex::client_for(plx_plex::plex::current_server()).map(|c| c.machine_id());
+        let facts = H::clock_facts(cx);
+        let current = facts.and_then(|facts| facts.current_machine());
         // `|` not `||`: both watches must re-read.
-        if self.plaintext.refresh(current, Near::First) | self.clock.refresh(current) {
+        if self.plaintext.refresh(&H::screen_inputs(cx).grants.offers, current, Near::First) | self.clock.refresh(facts, current) {
             fx.invalidate(Provenance::Landing(fx.from()));
         }
         if self.plaintext_alert.is_open()
@@ -2031,13 +2032,30 @@ impl HomeScreen {
         ));
     }
 
+    /// **The card the item menu may open on for the ENGINE's `focus`**: a focused card of the grid
+    /// page, or of the Continue Watching row ([`Self::holds_page`]), which stands in view on the
+    /// hero's page too, so the page is at rest on the hero while it holds focus. A shelf card at the
+    /// hero's rest is not one: its shelf is off the screen. The ONE rule for the hold
+    /// ([`Self::emit_item_menu`]) and for the boot trigger's pre-check
+    /// ([`Self::item_menu_reachable`]); the trigger asked `strip_reachable` (the page is at the
+    /// hero) instead, which is true for the whole of the Continue Watching row's stay on the hero's
+    /// page, so it never opened the menu there.
+    fn item_menu_card(&self, focus: Option<FocusKey<u32>>) -> Option<(usize, usize)> {
+        self.focused_grid(focus)
+            .filter(|&(row, _)| self.snap.pos >= 0.5 || self.holds_page(row))
+    }
+
+    /// Is a card focused that the item menu may open on now ([`Self::item_menu_card`])? The
+    /// `plxnative-itemmenu` boot trigger's question, so that it queues the command only when this
+    /// page would answer it.
+    pub fn item_menu_reachable(&self, focus: Option<FocusKey<u32>>) -> bool {
+        self.item_menu_card(focus).is_some()
+    }
+
     fn emit_item_menu<H: HomeLike>(&self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        let Some((row, col)) = self.focused_grid(cx.focus.current) else {
+        let Some((row, col)) = self.item_menu_card(cx.focus.current) else {
             return Handled::No;
         };
-        if self.snap.pos < 0.5 && !self.holds_page(row) {
-            return Handled::No;
-        }
         let Some(item) = self.item_at(H::hubs(cx), row, col) else {
             return Handled::No;
         };

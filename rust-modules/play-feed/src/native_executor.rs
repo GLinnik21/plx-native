@@ -489,6 +489,7 @@ pub fn launch_native_open(
         max_fed_video_pts: 0,
         max_fed_audio_pts: 0,
         audio_start_fp: None,
+        audio_stale_dropped: 0,
         pcm_sink_lead_ns: lead_at_start,
         pcm_lead_pending: lead_pending,
         feed_pace: FeedPace::default(),
@@ -910,7 +911,20 @@ pub const MAX_REBASE_DROPS: i32 = 240;
 // up to the poisoned mark → seconds of silence). Legit audio lead is bounded by the throttle to
 // ~MAX_FEED_AHEAD+AUDIO_SLACK (3.6s), so 5s has margin. It was 15s, and a stuck-retry seek fed
 // stale audio 14.9s ahead — 13s of user-audible silence after a rapid 10s-back tap burst.
+//
+// It applies only until the timeline's first audio AU has been accepted (see `audio_stale_ahead`):
+// stale audio is what the demuxer pushed before it took the seek, so it sits AT THE HEAD of the
+// audio queue, ahead of the first legitimate AU. Once audio has flowed, a later AU that is far past
+// the fed video is legitimate audio the demuxer read while the video sink answered BufferFull (a
+// full 10 MiB video queue is 4-6.6 s of a 4K remux, and the audio interleaved with it is as far
+// ahead). The throttle paces it; while a prime hold or an unknown presentation (PRES_NONE) lifts
+// the throttle, only the sink's BufferFull does, not this bound. (The stale check runs BEFORE the
+// throttle in the lane, so with the old unconditional bound a queued AU more than 5 s past the
+// accepted video was dropped before the throttle could hold it, throttle active or not.)
 pub const AUDIO_STALE_AHEAD_NS: i64 = 5_000_000_000;
+/// The stale-ahead drop is logged for the first AU dropped since an open or seek and then once per
+/// this many, so a long run of drops is visible in a device log without flooding it.
+const AUDIO_STALE_LOG_EVERY: u32 = 100;
 /// How far past the start of its timeline the audio lane may feed whatever the clock says.
 ///
 /// **A track whose audio starts late must still reach Starfish before the clock can move.** An
@@ -1715,6 +1729,27 @@ pub fn audio_lead_in(fp: i64, opens: bool, start: Option<i64>) -> bool {
     opens || start.is_some_and(|s| fp >= s && fp - s < AUDIO_LEAD_IN_NS)
 }
 
+/// Whether an audio AU at fed pts `fp` is stale audio from before a seek's reopen, to be dropped.
+///
+/// Stale audio is what the demuxer pushed after the seek flushed the queues and before it took the
+/// seek, so it is at the head of the audio queue, in front of the AU the demuxer marked as the
+/// first of the new timeline. The guard therefore only applies **until audio has been accepted
+/// since the open or seek**: `audio_opened` is the lane's `audio_start_fp.is_some()` or any audio
+/// fed past 0. After that, an AU far ahead of the fed video (`fed_video`, what the sink ACCEPTED)
+/// is not stale. It is audio the demuxer read while the video sink answered BufferFull: the
+/// demuxer is ahead of the sink by a whole video queue (4-6.6 s of a 4K remux), the interleaved
+/// audio with it. Dropping that took 75 s of audio out of a 204 s remux, silently. The
+/// feed-ahead throttle paces such audio; while a prime hold or an unknown presentation
+/// (`PRES_NONE`) lifts the throttle, only the sink's BufferFull does. The stale check runs before
+/// the throttle in the lane, so the old unconditional bound dropped an AU more than 5 s past the
+/// accepted video before the throttle could hold it, whether the throttle was active or not.
+///
+/// An AU in the timeline's lead-in ([`audio_lead_in`]) is never stale, and with no video accepted
+/// yet (`fed_video` 0) there is nothing to measure against.
+pub fn audio_stale_ahead(fp: i64, lead_in: bool, fed_video: i64, audio_opened: bool) -> bool {
+    !audio_opened && !lead_in && fed_video > 0 && fp > fed_video + AUDIO_STALE_AHEAD_NS
+}
+
 /// AUDIO lane feeder (two-lane ff path only). Independent of the video lane: its own queue, its
 /// own fed-pts high-water, its own BufferFull retry — so a video BufferFull never starves audio.
 /// HOLDS while a seek rebase is pending (the VIDEO lane sets pts_shift on its first post-seek
@@ -1761,11 +1796,23 @@ fn feed_audio_lane(mt: &MainThread, eng: &mut Engine, hooks: &FeedHooks) {
         let lead_in = audio_lead_in(fp, opens, eng.audio_start_fp);
         // Stale drifted audio from before a seek's reopen: far AHEAD of the freshly-anchored video.
         // Drop it (else it poisons max_fed_audio_pts and stalls the audio clock → playback sticks).
-        // A late-starting track is far ahead too, legitimately, so it is measured from its own
-        // start as well as from the video (see AUDIO_LEAD_IN_NS).
-        let stale_ref = eng.max_fed_video_pts.max(eng.audio_start_fp.unwrap_or(i64::MIN));
-        if !lead_in && eng.max_fed_video_pts > 0 && fp > stale_ref + AUDIO_STALE_AHEAD_NS {
+        // Only until audio has flowed since the open or seek: audio the demuxer read past a
+        // backpressured video sink is far ahead too, legitimately (see `audio_stale_ahead`).
+        let audio_opened = eng.audio_start_fp.is_some() || eng.max_fed_audio_pts > 0;
+        if audio_stale_ahead(fp, lead_in, eng.max_fed_video_pts, audio_opened) {
             eng.pending_audio = None;
+            eng.audio_stale_dropped = eng.audio_stale_dropped.saturating_add(1);
+            // Silent drops are how 75 s of a remux's audio went missing: say so (first, then paced).
+            if eng.audio_stale_dropped == 1 || eng.audio_stale_dropped % AUDIO_STALE_LOG_EVERY == 0 {
+                plx_base::eventlog::log(&format!(
+                    "feed: audio dropped as stale ahead: fed={}ms is {}ms past the video fed so far \
+                     ({}ms), before any audio of this timeline was accepted ({} dropped since the open/seek)",
+                    fp / 1_000_000,
+                    (fp - eng.max_fed_video_pts) / 1_000_000,
+                    eng.max_fed_video_pts / 1_000_000,
+                    eng.audio_stale_dropped
+                ));
+            }
             continue;
         }
         if fp < eng.max_fed_audio_pts - STALE_BACKJUMP_NS {
@@ -2166,6 +2213,36 @@ pub fn prepare_native_open(
         shared, open, sample, stream, payload_c, audio_lead,
         user_held, seek_preroll, side_reader, dv_landing,
     )
+}
+
+#[cfg(test)]
+mod audio_stale_ahead_tests {
+    use super::*;
+
+    const VIDEO: i64 = 20_000_000_000;
+
+    #[test]
+    fn audio_far_ahead_of_the_video_is_stale_until_audio_has_been_accepted() {
+        let far = VIDEO + AUDIO_STALE_AHEAD_NS + 1;
+        assert!(audio_stale_ahead(far, false, VIDEO, false), "the pre-seek audio at the head of the queue");
+        assert!(!audio_stale_ahead(VIDEO + AUDIO_STALE_AHEAD_NS, false, VIDEO, false), "the bound is exclusive");
+    }
+
+    /// The device failure: the demuxer reads a full video queue past what the sink accepted, and
+    /// the audio interleaved with it is that far ahead. Once audio has flowed it is legitimate.
+    #[test]
+    fn audio_the_demuxer_read_past_a_backpressured_video_sink_is_not_stale() {
+        for read_ahead in [AUDIO_STALE_AHEAD_NS + 500_000_000, 6_600_000_000, 40_000_000_000] {
+            assert!(!audio_stale_ahead(VIDEO + read_ahead, false, VIDEO, true), "{read_ahead}ns ahead");
+        }
+    }
+
+    #[test]
+    fn the_lead_in_and_a_timeline_with_no_video_yet_are_never_stale() {
+        let far = VIDEO + 11_000_000_000;
+        assert!(!audio_stale_ahead(far, true, VIDEO, false), "the late-starting track's own start");
+        assert!(!audio_stale_ahead(far, false, 0, false), "nothing to measure against before video is accepted");
+    }
 }
 
 #[cfg(all(test, feature = "hostsim"))]

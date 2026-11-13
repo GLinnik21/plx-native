@@ -48,7 +48,7 @@
   },
   "widgets.menu.previous_episode": {
     "value": "Previous Episode",
-    "description": "Row in the player overflow menu, shown when the playing episode has an earlier one (or can restart): starts the previous episode, or this one over. Same noun as widgets.next.episode, in the same capitalisation."
+    "description": "Row in the player overflow menu, shown when the playing episode has an earlier one: starts the previous episode. Same noun as widgets.next.episode, in the same capitalisation."
   },
   "widgets.badge.forced": {
     "value": "FORCED",
@@ -737,12 +737,16 @@
     "description": "Style page of the player's subtitle menu. Row label and page title for where the caption sits on screen; its value reads out the chosen height (Low, Middle, High)."
   },
   "widgets.tracks.style_image_note": {
-    "value": "Image subtitles keep their own size and position.",
-    "description": "Note under the Style rows when the subtitle on screen is a picture (PGS, VobSub): the Size and Position rows are dimmed because the picture carries its own geometry. No jargon."
+    "value": "Image subtitles keep their look; gray only dims.",
+    "description": "Note under the Style rows when the subtitle on screen is a picture (PGS, VobSub): the Size and Position rows are dimmed because the picture carries its own geometry, and a color choice such as yellow does not reach it (only the gray choices dim it). No jargon."
   },
   "widgets.tracks.style_styled_note": {
-    "value": "Styled subtitles keep their own size and position.",
-    "description": "Note under the Style rows when the subtitle on screen is a styled script (ASS/SSA) that positions and sizes its own text: the Size and Position rows are dimmed. No jargon."
+    "value": "Styled subtitles keep their look; white follows the color.",
+    "description": "Note under the Style rows when the subtitle on screen is a styled script (ASS/SSA) that positions, sizes and colors its own text and draws some of it in plain white (its default ink): the Size and Position rows are dimmed, the plain-white text follows the chosen color and every other color in the script is kept. No jargon."
+  },
+  "widgets.tracks.style_fixed_note": {
+    "value": "This subtitle sets its own colors; gray only dims.",
+    "description": "Note under the Style rows, and under the Color choices, when the subtitle on screen is a styled script (ASS/SSA) that sets all of its own colors and draws none of its text in plain white: the Size and Position rows are dimmed and the color choices such as yellow are dimmed too, because the chosen color cannot reach it; only the gray choices still dim it. No jargon."
   },
   "widgets.tracks.timing": {
     "value": "Timing",
@@ -755,6 +759,10 @@
   "widgets.tracks.tone_white": {
     "value": "White",
     "description": "tracks tone_white"
+  },
+  "widgets.tracks.tone_yellow": {
+    "value": "Yellow",
+    "description": "Subtitle color option (Settings picker and the Color section of the player's Subtitles menu): bright yellow text, chosen for readability. Sits beside White and the grays."
   },
   "widgets.tracks.tone_silver": {
     "value": "Silver",
@@ -870,10 +878,6 @@
   },
   "widgets.ass.init_failed": {
     "value": "Couldn’t initialize styled subtitles",
-    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
-  },
-  "widgets.ass.font_too_large": {
-    "value": "The installed subtitle font is too large",
     "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
   },
   "widgets.ass.unreadable": {

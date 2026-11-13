@@ -935,7 +935,7 @@ mod tests {
         directory: DirectoryView<'a>,
     ) -> Cx<'a, InnerHost> {
         Cx {
-            views: directory.into(),
+            views: crate::registry::InnerViews::new(directory, crate::registry::publication_fixture()),
             tick: plx_machine::machine::Tick::default(),
             measure: m,
             press: PressRead::default(),

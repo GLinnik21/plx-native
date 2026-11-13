@@ -198,7 +198,7 @@ fn a_read_out_with_no_claim_wakes_the_pump_that_settles_it() {
     );
     let session = plx_plex::plex::session::peek();
     let profile_key = plx_plex::plex::session::current_profile_key();
-    let input = BrowseRosterInput {
+    let input = BrowseRosterInput { tenure: 0,
         keys: &keys, session: &session,
         visible_generation: plx_plex::plex::session::visible_generation(),
         settled: plx_plex::plex::session::peek_settled().is_some(), profile_key: &profile_key,

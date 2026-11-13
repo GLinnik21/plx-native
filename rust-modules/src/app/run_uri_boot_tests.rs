@@ -1626,7 +1626,7 @@ mod uri_boot_tests {
         // The viewer asks for the title again.
         assert!(plx_media::route::request_play(&mut rig.app.player.session,
             rig.app.bridge.metadata_mut(), plx_platform::devcaps::caps(), rig.sid, "1",
-            "/library/parts/1/file.mkv", "h264", "aac", "First", "", None));
+            "/library/parts/1/file.mkv", "h264", "aac", "First", "", None, ""));
         let mut resolved = None;
         poll_until("the new request did not resolve", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,

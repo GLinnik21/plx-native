@@ -49,6 +49,7 @@ switch that waives it.
 from __future__ import annotations
 
 import argparse
+import configparser
 import ast
 import os
 import subprocess
@@ -192,6 +193,15 @@ def message(rows: list[tuple[str, int, int]], base: str, how: str) -> str:
     return "\n".join(lines)
 
 
+def port_paths(text: str, where: str) -> set[str]:
+    parser = configparser.ConfigParser(interpolation=None, strict=True)
+    try:
+        parser.read_string(text)
+    except configparser.Error as error:
+        raise Unavailable(f"{where} does not parse: {error}") from error
+    if parser.defaults(): raise Unavailable(f"{where}: DEFAULT exemptions are not permitted")
+    return set(parser.sections())
+
 def check(repo: Path, env=None) -> tuple[int, str]:
     """(exit status, the line(s) to print)."""
     env = os.environ if env is None else env
@@ -209,6 +219,16 @@ def check(repo: Path, env=None) -> tuple[int, str]:
         raise Unavailable(f"{HARNESS} no longer defines {', '.join(lost)}: the ratchet reads those pin tables")
     head_counts = {**counts(head_files), **flat(head_tables)}
     rows, new = compare({**counts(base_files), **flat(base_tables)}, head_counts)
+    # ports.ini is a file exemption SET: replacing one path is growth even at equal count.
+    ports_file = "ci/ports.ini"
+    old_ports = git(repo, "show", f"{base}:{ports_file}", check=False)
+    current_ports = repo / ports_file
+    head_ports = port_paths(current_ports.read_text(encoding="utf-8"), ports_file) if current_ports.exists() else set()
+    if old_ports.returncode == 0:
+        base_ports = port_paths(old_ports.stdout, f"{base[:9]}:{ports_file}")
+        rows.extend((f"{ports_file} [{path}]", 0, 1) for path in sorted(head_ports - base_ports))
+    elif current_ports.exists():
+        new.append((ports_file, len(head_ports)))
     if rows:
         return 1, message(rows, base, how)
     skipped = "; new, not compared: " + ", ".join(f"{name} ({value})" for name, value in new) if new else ""

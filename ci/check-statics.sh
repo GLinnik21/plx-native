@@ -19,7 +19,9 @@
 # wider spelling (`^\s*(pub(\(crate\))? )?static `, not just `static mut`) because that module
 # holds `recents.rs`'s two `Mutex`-guarded persistence-seam statics (STORE, PENDING) — real
 # process-wide state the narrower pattern cannot see. The wider pattern is NOT applied to the
-# other gated directories: run tree-wide it also matches every `thread_local! { static … }`
+# other gated directories. The Search scan uses the ledger lexer to exclude comments, literals
+# and cfg(test)-only items (including the test global allocator); production-visible immutable
+# statics still count. Run tree-wide it would also match every `thread_local! { static … }`
 # interior declaration (a different, safe, per-thread idiom used all over ui/ and screens/ for
 # render caches and test doubles), which would surface on the order of 80 unrelated hits in one
 # gate change. That widening is deliberately out of scope here — see the PR discussion — and
@@ -70,7 +72,7 @@ done
 # matches: `path<TAB>NAME` for every gated static declaration.
 matches() {
   { grep -rnE --include='*.rs' '^\s*static mut [A-Za-z_][A-Za-z_0-9]*' "${GATED_MUT_PATHS[@]}"
-    grep -rnE --include='*.rs' '^\s*(pub(\(crate\))? )?static (mut )?[A-Za-z_][A-Za-z_0-9]*' "${GATED_WIDE_PATHS[@]}"
+    printf '%s\n' "$wide"
     grep -nE '^\s*static mut SESSION\b' "$MEDIA/route/decision.rs" | sed "s|^|$MEDIA/route/decision.rs:|"
     grep -nE '^\s*static mut ENGINE\b' "$MEDIA/player/engine.rs" | sed "s|^|$MEDIA/player/engine.rs:|"
     grep -nE '^\s*static mut S\b' "$UI/press.rs" | sed "s|^|$UI/press.rs:|"
@@ -78,6 +80,7 @@ matches() {
 }
 
 echo "== check-statics =="
+wide=$(find "${GATED_WIDE_PATHS[@]}" -name '*.rs' -type f -exec env LG_MODE=static awk -f ci/ledger.awk {} +) || fail "Search static scanner failed"
 all=$(matches)   # once: under pipefail a piped grep -q fails on the early close
 # path<TAB>NAME<TAB>type — why. A crashed detector must be red, not an empty list the loop below calls ok.
 heap=$(python3 -I ci/check-statics-heap.py) || fail "ci/check-statics-heap.py failed — the heap rule below read nothing"

@@ -102,6 +102,7 @@ pub struct BlockingGuard {
 /// Formatting happens in [`BlockingGuard`]'s drop, which is already the slow branch.
 #[track_caller]
 pub fn assert_may_block(label: &'static BlockingLabel) -> BlockingGuard {
+    crate::step::assert_io_allowed(label.text);
     let at = Location::caller();
     let in_frame = in_frame();
     if cfg!(any(test, feature = "test-support")) && in_frame && !ALLOWED.with(|depth| depth.get() != 0) {

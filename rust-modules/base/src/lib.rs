@@ -14,6 +14,7 @@
 pub mod eventlog; // THE event log: `eventlog::log` is the one sink every module writes through
 pub mod paths; // where the app's own files live — /proc/self/exe, not a hardcoded install prefix
 pub mod process; // `exit_now`: the one way the app's own exits end the process (`_exit`, never libc `exit`, #1115)
+pub mod step; // test-time Sans-IO scope, shared by every layer
 pub mod clock; // `vclock_ms`/`vclock_us`: the one monotonic clock for stamps that are only differenced
 pub mod task; // the one spawn: a refused thread is a return value, not a panic that kills the app
 pub mod cbuf; // fixed NUL-terminated C-string buffer read/write
@@ -32,6 +33,8 @@ pub mod window; // `Window`: a stamp that is open for a span (the reachability m
 pub mod hold; // `HOLD_ROWS`, `clamp_hold`: the rows a paged store keeps, which the store and `ui::cards::HoldBand` both apply
 pub mod devtrig; // the /tmp trigger PRIMITIVES (`flag`, `read`, `latched_flag!`, `no_wan`...)
 pub mod diag; // the frame instruments (`heartbeat`, `spans`) and the zlib helper
+#[cfg(any(test, feature = "test-support"))]
+pub mod testheap; // the C heap's live bytes and a fresh process to measure in: the tests that pin how many copies of a buffer a path keeps
 #[cfg(any(test, feature = "test-support"))]
 pub mod testlock; // one lock for every test that touches a process-global
 #[cfg(any(test, feature = "test-support"))]

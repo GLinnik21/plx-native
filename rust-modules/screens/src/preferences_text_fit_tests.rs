@@ -150,14 +150,14 @@ fn every_picker_level_fits_its_column_in_every_language() {
         for kind in [Kind::Playback, Kind::AudioSubtitles] {
             let prefs = AudioPreferences::default();
             let fields: &[PickerKind] = match kind {
-                Kind::Playback => &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::UriEngine, PickerKind::DolbyVision, PickerKind::IntroSkip, PickerKind::CreditsSkip],
+                Kind::Playback => &[PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::UriEngine, PickerKind::DolbyVision, PickerKind::IntroSkip, PickerKind::CreditsSkip],
                 Kind::AudioSubtitles => &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles],
             };
             // The Interface resolution picker is opened from the Settings root, not a field list.
             let fields: Vec<PickerKind> = fields.iter().copied()
                 .chain((kind == Kind::Playback).then_some(PickerKind::UiResolution)).collect();
             for field in fields {
-                let current = resolve_with_marker(field, Quality::Original, DirectPlayMode::Auto, Some(&prefs), marker_grants());
+                let current = resolve_with_marker(field, Quality::Original, DirectPlayMode::Auto, Some(&prefs), marker_grants(), UiResolution::default());
                 let section = options_with_marker(field, Quality::Original, DirectPlayMode::Auto, Some(&prefs), marker_grants()).into_iter()
                     .fold(Section::new(""), |section, (label, value)| section.row(Row::new(&label).checked(value == current)));
                 out.extend(table_of(section).app_fit_failures(frame_w(), &format!("{tag} {field:?} picker")));
@@ -263,7 +263,7 @@ fn every_explanation_under_a_title_fits_the_column_in_every_language() {
     const MAX_COPY_LINES: usize = 5;
     let _serial = plx_base::testlock::serial();
     let layout = RouteLayout::settings_page();
-    let all_fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
+    let all_fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor,
         PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::UriEngine, PickerKind::DolbyVision, PickerKind::IntroSkip, PickerKind::CreditsSkip, PickerKind::UiResolution, PickerKind::AudioLanguage, PickerKind::SubtitleMode,
         PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles];
     let mut out = Vec::new();
@@ -333,7 +333,7 @@ fn the_playback_page_names_its_profile_or_asks_for_one_in_every_language() {
 #[test]
 fn each_local_picker_has_its_own_explanation_in_every_language() {
     let _serial = plx_base::testlock::serial();
-    let fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
+    let fields = [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor,
         PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::UriEngine, PickerKind::DolbyVision, PickerKind::IntroSkip, PickerKind::CreditsSkip];
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);

@@ -463,7 +463,14 @@ mod tests {
         type Init = plx_ui::fixture::FixtureArg;
         type Memory = PageMemory;
     }
-    impl LibraryLike for RailHost {
+    impl crate::registry::ScreenInputsLike for RailHost {
+    fn screen_inputs<'a>(_cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        crate::registry::empty_fixture()
+    }
+}
+
+impl LibraryLike for RailHost {
+    fn clock_facts<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { None }
         fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
         fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
         fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.hubs }

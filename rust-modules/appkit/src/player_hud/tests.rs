@@ -85,7 +85,7 @@ fn long_hud_titles_fit_before_every_control_slot() {
         let compiled = super::loaded::load_classic("test", plx_platform::i18n::current(), measure).compiled;
         let slots = [
             ControlSlot::Discs(Controls::NONE),
-            ControlSlot::Discs(Controls { previous: true, next: true, restart: true }),
+            ControlSlot::Discs(Controls { previous: true, next: true }),
             slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown),
             slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
         ];
@@ -541,26 +541,84 @@ fn assert_rect(r: Rect, x: f32, y: f32, w: f32, h: f32) {
     );
 }
 
-/// **Every tone has an ink, the first is the white every earlier build drew, and each rung
-/// under it is strictly darker** — the ladder's whole promise is "down is dimmer", and the
-/// table is indexed by position, so a rung added to `SubtitleTone::LADDER` without an ink
-/// here would silently draw white. Opaque and achromatic throughout: a tone gives up light,
-/// never coverage (the outline depends on it) and never hue (it tints image subtitles).
+/// **Every tone has a tint, the first is the white every earlier build drew, and each GREY
+/// under it is strictly darker** — the greys' whole promise is "down is dimmer", and the table
+/// is indexed by position, so a rung added to `SubtitleTone::LADDER` without a tint here would
+/// silently draw white. Opaque and achromatic throughout: a tint gives up light, never coverage
+/// (the outline depends on it) and never hue, because it multiplies the pixels of a picture
+/// subtitle or an authored ASS script. A COLOUR rung (yellow) is therefore the identity tint:
+/// its colour is `text_rgb8`, applied where the text is made.
 #[test]
-fn the_subtitle_tones_are_a_strictly_darkening_opaque_grey_ladder_from_white() {
+fn the_subtitle_tints_are_a_strictly_darkening_opaque_grey_ladder_from_white() {
     use plx_plex::plex::session::SubtitleTone;
     assert_eq!(theme::SUBTITLE_INKS.len(), SubtitleTone::LADDER.len());
-    assert_eq!(subtitle_ink_for(SubtitleTone::White), [1.0, 1.0, 1.0, 1.0]);
+    assert_eq!(subtitle_tint_for(SubtitleTone::White), [1.0, 1.0, 1.0, 1.0]);
     let mut prev = f32::MAX;
     for tone in SubtitleTone::LADDER {
-        let ink = subtitle_ink_for(tone);
-        assert!(ink[0] == ink[1] && ink[1] == ink[2], "{tone:?} has a hue");
-        assert_eq!(ink[3], 1.0, "{tone:?} is not opaque");
-        assert!(ink[0] < prev, "{tone:?} is not darker than the rung above it");
-        prev = ink[0];
+        let tint = subtitle_tint_for(tone);
+        assert!(tint[0] == tint[1] && tint[1] == tint[2], "{tone:?} has a hue");
+        assert_eq!(tint[3], 1.0, "{tone:?} is not opaque");
+        if tone.text_rgb8().is_some() {
+            assert_eq!(tint, [1.0, 1.0, 1.0, 1.0], "{tone:?} is a colour: it must not tint authored pixels");
+            continue;
+        }
+        assert!(tint[0] < prev || prev == f32::MAX, "{tone:?} is not darker than the grey above it");
+        prev = tint[0];
     }
     // the darkest rung still has to be READ over the 0.85 black outline it is drawn on
     assert!(prev > 0.25, "the darkest tone has sunk into its own outline");
+}
+
+/// **The theme's caption colours are the plex palette**: `SubtitleTone::text_rgb8` (what media's
+/// synthesized header paints) and the ink `theme::SUBTITLE_INKS` draws the client's own caption text
+/// with are one colour, for every colour rung. A retuned code in either place fails here.
+#[test]
+fn the_theme_caption_inks_are_tied_to_the_plex_palette() {
+    use plx_plex::plex::session::SubtitleTone;
+    let mut colours = 0;
+    for tone in SubtitleTone::LADDER {
+        if let Some([r, g, b]) = tone.text_rgb8() {
+            assert_eq!(subtitle_ink_for(tone), plx_gfx::gfx::tokens::rgb8(r, g, b), "{tone:?}");
+            colours += 1;
+        }
+    }
+    assert_eq!(colours, 1, "a new colour rung gets its theme ink and this tie");
+}
+
+/// **The colour pick reaches the caption draw call.** The client's own drawn caption (the fault
+/// message, the sidecar failure notice) takes the palette colour for its glyph ink, white by
+/// default and the grey rung for a grey, and every line keeps the dark outline runs under it that
+/// keep it readable on a bright or HDR scene. The bitmap tint stays the identity for a colour, so
+/// the tint never recolours an authored ASS script or a picture subtitle (an authored script takes the colour in its header instead, `player::ass_ink`).
+#[test]
+fn the_drawn_caption_takes_the_viewers_colour_and_keeps_its_outline() {
+    use plx_plex::plex::session::SubtitleTone;
+    let ink_runs = |tone: SubtitleTone| {
+        let mut model = HudModel::default();
+        model.sub_tone = tone;
+        plx_ui::draw_census::capture_runs(|| {
+            plx_ui::record_walk(|| draw_subtitle_message("Hello", false, HudBand::CLASSIC, &model, &FM))
+        })
+    };
+    let rgb = |c: [u8; 3]| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0];
+    let yellow = SubtitleTone::Yellow.text_rgb8().expect("yellow is a colour rung");
+    for (tone, want) in [
+        (SubtitleTone::White, [1.0, 1.0, 1.0, 1.0]),
+        (SubtitleTone::Yellow, rgb(yellow)),
+        (SubtitleTone::Grey, theme::SUBTITLE_INKS[SubtitleTone::Grey.index() as usize]),
+    ] {
+        let runs = ink_runs(tone);
+        assert_eq!(runs.len(), 5, "{tone:?}: four outline runs and the glyph run");
+        assert_eq!(runs.last().unwrap().ink, want, "{tone:?}: the glyph ink");
+        for outline in &runs[..4] {
+            assert_eq!(outline.ink, theme::scrim_black(0.85), "{tone:?}: the outline stays");
+        }
+    }
+    let mut model = HudModel::default();
+    model.sub_tone = SubtitleTone::Yellow;
+    assert_eq!(subtitle_tint(&model), [1.0, 1.0, 1.0, 1.0], "a colour never tints a bitmap");
+    model.sub_tone = SubtitleTone::DarkGrey;
+    assert_eq!(subtitle_tint(&model), theme::SUBTITLE_INKS[SubtitleTone::DarkGrey.index() as usize], "a grey still dims it");
 }
 
 /// A 1080p-authored PGS rect must land EXACTLY where it always did — the scale is identity,
@@ -1437,7 +1495,7 @@ fn the_layouts_band_is_classics_in_every_slot() {
     let compiled = super::loaded::classic_for_test();
     let slots = [
         ControlSlot::Discs(Controls::NONE),
-        ControlSlot::Discs(Controls { previous: true, next: true, restart: true }),
+        ControlSlot::Discs(Controls { previous: true, next: true }),
         slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown),
         slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
     ];
@@ -1511,7 +1569,7 @@ mod playback_navigation_tests {
     #[test]
     fn episode_pair_uses_custom_gap_without_moving_existing_discs() {
         let compiled = super::super::loaded::classic_for_test();
-        let pair = Controls::for_item(true, false, true, false);
+        let pair = Controls::for_item(true, false, true);
         let rects = |c: Controls| geometry(&compiled, 0, ControlSlot::Discs(c), false, false).items;
         let (pair_rects, none_rects) = (rects(pair), rects(Controls::NONE));
         for i in BTN_SUBTITLES..=BTN_MORE {
@@ -1528,19 +1586,32 @@ mod playback_navigation_tests {
         assert_eq!(pair.primary(), BTN_NEXT);
         assert_eq!(pair.action(BTN_PREVIOUS), None);
         assert_eq!(pair.icon(BTN_PREVIOUS), Icon::Previous);
-        let restarting = Controls::for_item(true, false, true, true);
-        assert_eq!(restarting.icon(BTN_PREVIOUS), Icon::Restart);
-        assert_eq!(restarting.action(BTN_PREVIOUS), Some(Action::Previous));
+    }
+
+    /// **Previous is the previous episode and nothing else.** Whatever the playhead, the disc is
+    /// enabled exactly when the queue has an episode before the playing one, and it always wears
+    /// the Previous glyph: there is no restart state to wear a different one.
+    #[test]
+    fn previous_is_enabled_by_a_predecessor_alone_and_always_wears_the_previous_glyph() {
+        let middle = Controls::for_item(true, true, true);
+        assert_eq!(middle.action(BTN_PREVIOUS), Some(Action::Previous));
+        assert_eq!(middle.icon(BTN_PREVIOUS), Icon::Previous);
+        let last = Controls::for_item(true, true, false);
+        assert_eq!(last.action(BTN_PREVIOUS), Some(Action::Previous));
+        assert_eq!(last.icon(BTN_PREVIOUS), Icon::Previous);
+        let first = Controls::for_item(true, false, true);
+        assert_eq!(first.action(BTN_PREVIOUS), None, "the first episode of the queue has no Previous");
+        assert!(!first.enabled(BTN_PREVIOUS));
     }
 
     #[test]
     fn episode_pair_is_absent_for_movies_extras_and_single_items() {
-        for controls in [Controls::for_item(false, true, true, true),
-            Controls::for_item(true, false, false, true)] {
+        for controls in [Controls::for_item(false, true, true),
+            Controls::for_item(true, false, false)] {
             assert_eq!(controls, Controls::NONE);
             assert_eq!(controls.primary(), BTN_SUBTITLES);
         }
-        let last = Controls::for_item(true, true, false, false);
+        let last = Controls::for_item(true, true, false);
         assert_eq!(last.primary(), BTN_PREVIOUS);
         assert_eq!(last.action(BTN_NEXT), None);
     }
@@ -1548,8 +1619,8 @@ mod playback_navigation_tests {
 
 /// **Under `builtin:classic`, the row resolved through the compile is the row resolved through `Controls`.**
 /// The page now asks the package's control at an index what a press performs and whether it has a stop;
-/// for classic's five discs that must be exactly classic's table, for every valuation of the pair and of
-/// Previous's restart target, and the cursor parks where `Controls::primary` parks it.
+/// for classic's five discs that must be exactly classic's table, for every valuation of the pair, and the
+/// cursor parks where `Controls::primary` parks it.
 #[test]
 fn classic_resolved_through_the_compile_is_classics_table() {
     use super::command::HudCommand;
@@ -1561,16 +1632,14 @@ fn classic_resolved_through_the_compile_is_classics_table() {
     for episode in [false, true] {
         for previous in [false, true] {
             for next in [false, true] {
-                for restart in [false, true] {
-                    let controls = Controls::for_item(episode, previous, next, restart);
-                    let slot = ControlSlot::Discs(controls);
-                    for i in -1..=BTN_N + 2 {
-                        let want: Option<HudCommand> = controls.command(i);
-                        assert_eq!(row_command(compiled, 0, slot, &model, i), want, "{controls:?} item {i}");
-                        assert_eq!(row_enabled(compiled, 0, slot, &model, i), controls.enabled(i), "{controls:?} item {i}");
-                    }
-                    assert_eq!(row_primary(compiled, 0, slot, &model), controls.primary(), "{controls:?}");
+                let controls = Controls::for_item(episode, previous, next);
+                let slot = ControlSlot::Discs(controls);
+                for i in -1..=BTN_N + 2 {
+                    let want: Option<HudCommand> = controls.command(i);
+                    assert_eq!(row_command(compiled, 0, slot, &model, i), want, "{controls:?} item {i}");
+                    assert_eq!(row_enabled(compiled, 0, slot, &model, i), controls.enabled(i), "{controls:?} item {i}");
                 }
+                assert_eq!(row_primary(compiled, 0, slot, &model), controls.primary(), "{controls:?}");
             }
         }
     }

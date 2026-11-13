@@ -4491,6 +4491,7 @@ impl DetailScreen {
                     title: title.to_string(),
                     context: plx_data::metadata::TRAILER_CONTEXT.into(),
                     version: None,
+                    show_rk: String::new(),
                 };
                 self.content(fx, ContentReq::Play { play, resume_ns: 0 });
             }
@@ -4605,6 +4606,9 @@ impl DetailScreen {
                     title: d.title.clone(),
                     context: String::new(),
                     version,
+                    // An episode page plays its own episode: its show keys the queue. A movie
+                    // page has none.
+                    show_rk: d.episodes_show_rk().to_owned(),
                 },
                 |m| PlayIntent::Movie { item: m.clone(), version },
             );
@@ -4685,6 +4689,7 @@ impl DetailScreen {
             title,
             context,
             version,
+            show_rk: d.episodes_show_rk().to_owned(),
         };
         self.content(fx, ContentReq::Play { play, resume_ns });
         true
