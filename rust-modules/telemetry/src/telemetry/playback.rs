@@ -504,8 +504,10 @@ pub fn preview_event() -> Vec<u8> {
             http_status: 404,
             pipeline_error: 601,
             // Representative of a `decision_refused` report's extra block, shown here so the
-            // consent screen's sample carries every key a report can; a real report has it only
-            // when the server refused the plan.
+            // consent screen's sample carries every key a report can, bar one: the
+            // `playback.preview_refusal` tag belongs to a `preview_not_direct` report and is
+            // listed by `preview_domains` instead. A real report has this block only when the
+            // server refused the plan.
             refusal: Some(RefusalContext {
                 general: DecisionCodeClass::C2000,
                 transcode: DecisionCodeClass::C4007,
@@ -582,7 +584,8 @@ fn codes<T: Copy>(values: &[T], code: fn(T) -> &'static str) -> String {
 
 /// Closed value domains for the representative handled-error payload above. Generated from the
 /// same enum `code()` methods as the serializer, so the consent screen does not imply that its one
-/// sample value is the only possible one.
+/// sample value is the only possible one. It also names the one key the sample cannot carry, the
+/// `playback.preview_refusal` tag of a `preview_not_direct` report.
 pub fn preview_domains() -> String {
     use crate::telemetry::classes::{
         BufferClass as B, DeliveryClass as D, DeliveryReason as W, ErrorBackendClass as U,
@@ -592,25 +595,14 @@ pub fn preview_domains() -> String {
         DemuxExitClass as E, TransferAgeClass as T, TransportClass as K,
     };
     use crate::telemetry::classes::{AudioCodecClass as Z, DecisionCodeClass as N, VideoCodecClass as V};
-    use crate::telemetry::classes::{AttemptOrdinal, AttemptOrigin};
+    use crate::telemetry::classes::{AttemptOrdinal, AttemptOrigin, PreviewRefusal};
     use FailureClass as F;
     use plx_platform::i18n::msg;
     // The labels are the reader's words; the codes after them are the wire values themselves.
-    let domains: [(&str, String); 27] = [
-        (msg::core_preview_domain_failure_kind(), codes(
-            &[
-                F::DecisionRefused,
-                F::PlaybackPolicy,
-                F::NoVideoTranscodeTarget,
-                F::NoVideoTrack,
-                F::MediaSource,
-                F::PlaybackInterrupted,
-                F::TvPipeline,
-                F::OriginalRollback,
-                F::Unspecified,
-            ],
-            F::code,
-        )),
+    let domains: [(&str, String); 28] = [
+        // Every class reaches the handled report (`FailureKind::class`), so the row is the whole
+        // enum: a class added to `FailureClass` appears here without anyone remembering to.
+        (msg::core_preview_domain_failure_kind(), codes(&F::ALL, F::code)),
         (msg::core_preview_domain_backend(), codes(&U::ALL, U::code)),
         (msg::core_preview_domain_terminal_stage(), codes(&S::ALL, S::code)),
         (msg::core_preview_domain_delivery(), codes(&[D::Unknown, D::Direct, D::Remux, D::Hls, D::Transcode], D::code)),
@@ -625,6 +617,10 @@ pub fn preview_domains() -> String {
         (msg::core_preview_domain_refusal_codes(), codes(&N::ALL, N::code)),
         (msg::core_preview_domain_source_video(), codes(&V::ALL, V::code)),
         (msg::core_preview_domain_source_audio(), codes(&Z::ALL, Z::code)),
+        // The `playback.preview_refusal` tag rides a `preview_not_direct` report only, so the
+        // sample above (a `playback_interrupted` one) cannot show it; the label says which
+        // reports carry it, and the list is the enum's own `ALL`.
+        (msg::core_preview_domain_preview_refusal(), codes(&PreviewRefusal::ALL, PreviewRefusal::code)),
         (msg::core_preview_domain_quality(), codes(
             &[
                 Q::Unknown,
@@ -1290,6 +1286,46 @@ mod tests {
             assert!(legend.contains(reason.code()), "the legend omitted {}", reason.code());
         }
         assert!(privacy.contains("`refusal_recovery`"), "PRIVACY.md omitted the facet rung's reason");
+    }
+
+    /// The values of the legend row headed `label`, read from the one line the legend wrote for it.
+    /// A code can be a substring of another (`not_direct` of `preview_not_direct`), so a test of a
+    /// row's domain reads the row it means and never searches the whole legend.
+    fn legend_row_values(label: &str) -> String {
+        let prefix = plx_platform::i18n::msg::core_preview_domain_line(label, "");
+        let legend = preview_domains();
+        let mut rows = legend.lines().filter_map(|line| line.strip_prefix(prefix.as_str()));
+        let values = rows.next().unwrap_or_else(|| panic!("the legend has no row {label:?}"));
+        assert!(rows.next().is_none(), "the legend has two rows {label:?}");
+        values.to_owned()
+    }
+
+    /// **Sentry PLX-NATIVE-23.** The consent screen shows every field a report can carry, and
+    /// `playback.preview_refusal` rides a `preview_not_direct` report, so its closed domain has a
+    /// row of its own and the failure-kind row names the kind that carries it. The sample event
+    /// cannot show the key (it is a `playback_interrupted` report), which is why the row's label
+    /// says which reports have it.
+    #[test]
+    fn consent_legend_lists_the_preview_refusal_domain_on_its_own_row() {
+        use crate::telemetry::classes::PreviewRefusal;
+        use plx_platform::i18n::msg;
+        let want: Vec<&str> = PreviewRefusal::ALL.iter().map(|r| r.code()).collect();
+        assert_eq!(want, ["not_direct", "no_part", "adaptive"], "the domain is closed at three");
+        let row = legend_row_values(msg::core_preview_domain_preview_refusal());
+        assert_eq!(row.split(" / ").collect::<Vec<_>>(), want, "the whole domain, in the enum's order");
+    }
+
+    /// The failure-kind row is the whole `FailureClass` domain, in declaration order: every kind
+    /// reaches the handled report through `FailureKind::class`, so a kind the row leaves out is a
+    /// value the person was never shown (`preview_not_direct`, `jail_missing_rtkmem` and the rest
+    /// were once missing).
+    #[test]
+    fn consent_legend_failure_kind_row_lists_every_failure_class() {
+        use plx_platform::i18n::msg;
+        let row = legend_row_values(msg::core_preview_domain_failure_kind());
+        let want: Vec<&str> = FailureClass::ALL.iter().map(|k| k.code()).collect();
+        assert_eq!(row.split(" / ").collect::<Vec<_>>(), want);
+        assert!(want.contains(&"preview_not_direct"));
     }
 
     #[test]

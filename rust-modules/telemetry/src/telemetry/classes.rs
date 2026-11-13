@@ -1193,9 +1193,9 @@ pub enum FailureClass {
 }
 
 impl FailureClass {
-    /// Every class, so a test can hold the declared `playback.failed` domain to the enum it is
-    /// built from.
-    #[cfg(any(test, feature = "test-support"))]
+    /// Every class, in declaration order. The consent legend's failure-kind row is built from it
+    /// (every class reaches the handled report), and a test holds the declared `playback.failed`
+    /// domain to the enum it is built from.
     pub const ALL: [Self; 15] = [
         Self::DecisionRefused,
         Self::PlaybackPolicy,
