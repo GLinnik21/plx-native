@@ -647,6 +647,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   workflow above for the full sequence). A macOS render is a preview; only the Linux workflow's
   artifact is adoptable. The film is `tests/video/feel.json`: positions and durations, never titles
   (the demo catalog's order, `tests/demo_library/catalog.json`, decides what is under each position).
+  The demo mock's rows carry the `Image[]` a modern PMS sends (`CatalogLibrary._image_list`: a stamped
+  `clearLogo` only where the catalog has a logo, an episode's or a season's naming its show's). A row with no list
+  reads as an older server's and gets the legacy `/clearLogo` lookup, a 404 for each `logo_none_approved` title
+  (Metropolis, in the Continue Watching deck), and the frame dump ends the run on a failed art request.
   It is the Home hero held under a second, `right` to the hero's Info button, `right` again (the
   carousel turns forward to the second page), `left` to Continue and `left` again (back to the first
   page), `down` onto the Continue Watching row, `right` twice to its third card and `ok` for that

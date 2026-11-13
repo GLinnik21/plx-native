@@ -139,7 +139,9 @@ fn dump_mode_an_alt_request_out_lands_on_the_pump_that_runs_whatever_the_worker(
     plx_plex::plex::reset_servers_for_test();
     alt_clear(test_state());
     let adapter = Arc::clone(test_adapter());
-    let roster = plx_plex::plex::server_roster_gen();
+    let keys = crate::pms::registry_keys_for_test();
+    test_state().alt.clients.clone_from(&keys);
+    let roster = keys.roster_gen();
     adapter.alt_roster_gen.store(roster, Ordering::SeqCst);
     let gen = adapter.alt_gen.fetch_add(1, Ordering::SeqCst) + 1; // a request is out: not settled
     let worker = Arc::clone(&adapter);
@@ -150,7 +152,7 @@ fn dump_mode_an_alt_request_out_lands_on_the_pump_that_runs_whatever_the_worker(
         });
     });
     let gate = dump_gate(std::time::Duration::from_secs(20));
-    assert!(pump_alt_sources_with_gate(test_state(), &adapter, &plx_plex::plex::ClientKeys::default(), false, None, &gate),
+    assert!(pump_alt_sources_with_gate(test_state(), &adapter, &keys, false, None, &gate),
         "the answer the pump owed must be taken by the pump that asked");
     assert!(alt_available(test_state(), SRV_A, "4"));
     assert_eq!(adapter.alt_done.load(Ordering::SeqCst), gen, "the take settled the request");
@@ -165,7 +167,9 @@ fn dump_mode_a_superseded_alt_requests_stale_answer_does_not_end_the_wait() {
     plx_plex::plex::reset_servers_for_test();
     alt_clear(test_state());
     let adapter = Arc::clone(test_adapter());
-    let roster = plx_plex::plex::server_roster_gen();
+    let keys = crate::pms::registry_keys_for_test();
+    test_state().alt.clients.clone_from(&keys);
+    let roster = keys.roster_gen();
     adapter.alt_roster_gen.store(roster, Ordering::SeqCst);
     let stale = adapter.alt_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let gen = adapter.alt_gen.fetch_add(1, Ordering::SeqCst) + 1; // supersedes the first
@@ -181,7 +185,7 @@ fn dump_mode_a_superseded_alt_requests_stale_answer_does_not_end_the_wait() {
         });
     });
     let gate = dump_gate(std::time::Duration::from_secs(20));
-    assert!(pump_alt_sources_with_gate(test_state(), &adapter, &plx_plex::plex::ClientKeys::default(), false, None, &gate),
+    assert!(pump_alt_sources_with_gate(test_state(), &adapter, &keys, false, None, &gate),
         "the current request was out when the pump ran, so its answer lands on this pump");
     assert!(alt_available(test_state(), SRV_A, "4"));
     join.join().unwrap();

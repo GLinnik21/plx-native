@@ -232,7 +232,8 @@
             </div>
             <p class="hero-meta" data-intro>
               <span class="hero-meta-item">Open source</span><span class="sep" aria-hidden="true">&nbsp;·</span>
-              <span class="hero-meta-item">Needs webOS 4.0+, no root</span>
+              <span class="hero-meta-item">Needs webOS 4.0+, no root</span><span class="sep" aria-hidden="true">&nbsp;·</span>
+              <span class="hero-meta-item">12 languages</span>
             </p>
             <p class="hero-version" data-intro>
               Version 0.9.0<span class="sep" aria-hidden="true">&nbsp;·</span>
@@ -336,7 +337,7 @@
             <div class="feature-card feature-card--half" data-reveal="card" data-spot>
               <div class="feature-stage feature-stage--fan" aria-hidden="true"><div class="feature-fan"><i></i><i></i><i></i></div></div>
               <h3>All your libraries</h3>
-              <p>Your own libraries and the ones shared with you.</p>
+              <p>Your own libraries, the ones shared with you, and your Plex Watchlist in its own tab, where any title can be added or removed.</p>
             </div>
             <div class="feature-card feature-card--wide feature-card--decode" data-reveal="card" data-spot>
               <div class="feature-stage feature-stage--decode" aria-hidden="true">
@@ -349,15 +350,29 @@
                 </span>
               </div>
               <h3>Video on the TV's own decoder</h3>
-              <p>Up to 4K HDR with Dolby Vision and Atmos where your set supports them. Before you press Play, it shows whether a title plays directly or converts on your server.</p>
+              <p>Up to 4K HDR with Dolby Vision and Atmos where your set supports them, plus AV1 and VP9. FLAC, ALAC and hi-res audio play without a trip through the server, and when a title has several versions, the one your TV can decode plays first. Before you press Play, it shows whether a title plays directly or converts on your server.</p>
             </div>
             <div class="feature-card feature-card--wide feature-card--shot" data-reveal="card" data-spot>
               <div class="feature-stage feature-stage--shot">
                 <img src="docs/screenshots/player.jpg" alt="PlxNative player with the transport bar over video" width="1600" height="900" loading="lazy" decoding="async" />
               </div>
-              <div class="feature-chips" aria-hidden="true"><span>Resume</span><span>Chapters</span><span>Audio tracks</span><span>Subtitles</span><span class="is-opt">Skip Intro</span></div>
+              <div class="feature-chips" aria-hidden="true"><span>Resume</span><span>Chapters</span><span>Audio tracks</span><span>ASS subtitles</span><span>Playback speed</span><span class="is-opt">Auto-skip intros</span></div>
               <h3>A full player</h3>
-              <p>Styled and image subtitles you can retime, and progress that syncs back to Plex.</p>
+              <p>Native ASS/SSA with styles, positioning and embedded fonts, image subtitles you can retime, intros and credits that can skip themselves, playback from 0.5× to 2×, and progress that syncs back to Plex.</p>
+            </div>
+            <div class="feature-card feature-card--half feature-card--hud" data-reveal="card" data-spot>
+              <div class="feature-stage feature-stage--hud" aria-hidden="true">
+                <div class="hud-stack">
+                  <span class="hud-skin hud-skin--back"><i class="hud-dot"></i><i class="hud-line"></i></span>
+                  <span class="hud-skin hud-skin--mid"><i class="hud-tick"></i><i class="hud-line"></i><i class="hud-tick"></i></span>
+                  <span class="hud-skin hud-skin--front">
+                    <span class="hud-transport"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5Z"></path></svg><span class="hud-track"><span></span></span><b>1:12:40</b></span>
+                    <span class="hud-picks"><span class="is-on">Built-in</span><span>Gallery</span><span>Your own</span></span>
+                  </span>
+                </div>
+              </div>
+              <h3>A player HUD you can swap</h3>
+              <p>Keep the built-in controls, or install another HUD from the gallery. Each profile picks its own.</p>
             </div>
             <div class="feature-card feature-card--half" data-reveal="card" data-spot>
               <div class="feature-stage feature-stage--net" aria-hidden="true">
@@ -402,10 +417,14 @@
             <ul class="works-row" style="--fit: 7.332" data-reveal><li class="is-key">Continue Watching</li><li>Recently Added</li></ul>
             <ul class="works-row" style="--fit: 6.756" data-reveal><li>Collections</li><li class="is-minor">Trailers &amp; extras</li><li class="is-minor">Cast &amp; Crew</li><li class="is-minor">A–Z rail</li><li class="is-minor">Sort &amp; filter</li></ul>
             <ul class="works-row" style="--fit: 7.51" data-reveal><li class="is-key">Plex Home profiles</li><li>Shared libraries</li></ul>
-            <ul class="works-row" style="--fit: 6.587" data-reveal><li>Search across servers</li><li>Subtitle search</li><li class="is-minor">Mark as Watched</li></ul>
-            <ul class="works-row" style="--fit: 6.655" data-reveal><li class="is-key">Skip Intro</li><li>Skip Credits</li><li class="is-minor">Chapters</li><li class="is-minor">Normalize loudness</li></ul>
-            <ul class="works-row" style="--fit: 6.507" data-reveal><li>Styled subtitles</li><li class="is-minor">Image subtitles</li><li class="is-minor">Subtitle timing</li><li class="is-minor">Forced subtitles</li></ul>
-            <ul class="works-row" style="--fit: 6.69" data-reveal><li class="is-key">Up Next</li><li>Language preferences</li><li class="is-minor">Remove from Deck</li></ul>
+            <ul class="works-row" style="--fit: 7.467" data-reveal><li>Search across servers</li><li>Language preferences</li></ul>
+            <ul class="works-row" style="--fit: 7.378" data-reveal><li class="is-key">Watchlist</li><li>Subtitle search</li><li class="is-minor">Normalize loudness</li></ul>
+            <ul class="works-row" style="--fit: 6.838" data-reveal><li>ASS subtitles</li><li class="is-minor">Image subtitles</li><li class="is-minor">Forced subtitles</li><li class="is-minor">Subtitle timing</li></ul>
+            <ul class="works-row" style="--fit: 7.348" data-reveal><li class="is-key">Skip Intro</li><li>Skip Credits</li><li>Auto-skip</li><li class="is-minor">Chapters</li></ul>
+            <ul class="works-row" style="--fit: 6.766" data-reveal><li>Remembered tracks</li><li>Per-profile settings</li><li class="is-minor">Boost dialog</li></ul>
+            <ul class="works-row" style="--fit: 6.862" data-reveal><li class="is-key">Playback speed</li><li>Play Version</li><li class="is-minor">Magic Remote</li></ul>
+            <ul class="works-row" style="--fit: 7.077" data-reveal><li>Next &amp; Previous</li><li>Scrub preview</li><li class="is-minor">Go to Show</li><li class="is-minor">End time</li></ul>
+            <ul class="works-row" style="--fit: 7.413" data-reveal><li class="is-key">Up Next</li><li>Mark as Watched</li><li class="is-minor">Remove from Deck</li></ul>
           </div>
         </section>
 
@@ -522,14 +541,6 @@
               </a>
             </li>
             <li data-reveal>
-              <a class="press-item" href="https://techolay.net/claude-code-sayesinde-lg-televizyona-yerel-plex-istemcisi-gelistirildi/" hreflang="tr">
-                <span class="press-meta"><span class="press-outlet">Techolay</span><span class="press-lang">Turkish</span></span>
-                <span class="press-headline" lang="tr">&ldquo;Claude Code Sayesinde LG Televizyona Yerel Plex İstemcisi Geliştirildi&rdquo;</span>
-                <span class="press-gloss">Translation: Thanks to Claude Code, a native Plex client was developed for LG TVs</span>
-                <time class="press-date" datetime="2026-10-22">Oct 22, 2026</time>
-              </a>
-            </li>
-            <li data-reveal>
               <a class="press-item" href="https://www.avpasion.com/app-grauita-plex-vuelva-volar-televisores-lg/" hreflang="es">
                 <span class="press-meta"><span class="press-outlet">AVPasión</span><span class="press-lang">Spanish</span></span>
                 <span class="press-headline" lang="es">&ldquo;PlxNative: la app gratuita para acelerar Plex en tu televisor LG con webOS&rdquo;</span>
@@ -543,6 +554,14 @@
                 <span class="press-headline" lang="fr">&ldquo;PlxNative&nbsp;: un client Plex natif pour TV LG webOS, signe du ras-le-bol des Smart TV&rdquo;</span>
                 <span class="press-gloss">Translation: PlxNative: a native Plex client for LG webOS TVs, a sign of how fed up people are with Smart TVs</span>
                 <time class="press-date" datetime="2026-10-09">Oct 9, 2026</time>
+              </a>
+            </li>
+            <li data-reveal>
+              <a class="press-item" href="https://techolay.net/claude-code-sayesinde-lg-televizyona-yerel-plex-istemcisi-gelistirildi/" hreflang="tr">
+                <span class="press-meta"><span class="press-outlet">Techolay</span><span class="press-lang">Turkish</span></span>
+                <span class="press-headline" lang="tr">&ldquo;Claude Code Sayesinde LG Televizyona Yerel Plex İstemcisi Geliştirildi&rdquo;</span>
+                <span class="press-gloss">Translation: Thanks to Claude Code, a native Plex client was developed for LG TVs</span>
+                <time class="press-date" datetime="2026-10-22">Oct 22, 2026</time>
               </a>
             </li>
             <li data-reveal>

@@ -138,7 +138,7 @@ fn opening_settings_never_writes_the_session_file() {
 fn the_signed_in_root_carries_no_sub_line_and_its_sentences_fit_elsewhere() {
     let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-detail-widths");
-    let page = RootPage::new(EntryId(0), plx_data::stores::browse::DirectoryView::empty_for_test());
+    let page = RootPage::new(EntryId(0), plx_data::stores::browse::DirectoryView::empty_for_test(), &crate::registry::capture_fixture());
     // Settings v2: a root row is a label and a value, a switch or a chevron; its sentence is said
     // in the left column while it has focus (`sentence_for`, fit in `settings_v2_tests`), and a
     // server's switch (which states a status) is the only row that may keep a sub-line.

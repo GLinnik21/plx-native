@@ -1,3 +1,4 @@
+#![deny(clippy::wildcard_enum_match_arm)]
 //! The player-HUD package store: which packages are installed, which one is selected, and the rules
 //! that admit a new one (`docs/hud-plugins.md`, "Storage per install mode", "Trust and safety").
 //!
@@ -519,6 +520,9 @@ impl Record {
         Record { sha, source, at, package_format: package_format.into(), hud_format: hud_format.into(), from: None }
     }
 
+    /// Move the previous operation out so its payload and cancellation debt stay owned.
+
+
     /// This record with the development source `from` names, when a record of `self.source` may carry one.
     fn from_dev_source(mut self, from: Option<&address::Address>) -> Self {
         self.from = from.filter(|address| self.source == Source::Address && address.dev_source()).cloned();
@@ -688,6 +692,731 @@ impl HudStore {
         }
     }
 
+    /// Move the old operation out with its payload and cancellation debt.
+fn transition(&mut self, ev: HudEvent, fx: &mut Vec<HudEffect>) -> Handled {
+let handled = 'reduce: {
+let (ev,): (HudEvent,) = (ev,);
+
+        match ev {
+            HudEvent::Catalog(event) => {
+                let mut work = Vec::new();
+                let handled = self.catalog.step(event, &mut work);
+                fx.extend(work.into_iter().map(HudEffect::Catalog));
+                if handled { Handled::Yes } else { Handled::No }
+            }
+            HudEvent::CancelRegistry { sha } => {
+                let cancels = match &self.op {
+                    Op::Installing(Installing { step: Step::Fetching { expected: Some(p), .. }, .. }) => p.sha() == sha,
+                    Op::Installing(Installing { step: Step::Validating(offer) | Step::Offered { offer, .. }, .. }) =>
+                        offer.source == Source::Registry && offer.sha == sha && offer.now.is_none(),
+                    Op::Idle | Op::Listing(_) | Op::Installing(_) | Op::Removing(_) => false,
+                };
+                if cancels { drop(std::mem::replace(&mut self.op, Op::Idle)); Handled::Yes } else { Handled::No }
+            }
+            HudEvent::FetchRegistry { sha, app, language } => {
+                if self.busy() || self.catalog.snapshot().revoked(sha).is_some() { break 'reduce Handled::No }
+                let Some(package) = self.catalog.snapshot().index.as_ref().and_then(|i| i.entries.iter().find(|p| p.sha() == sha))
+                    .filter(|p| p.compatible(&app, &language, self.setup.max_pack_bytes)).cloned() else { break 'reduce Handled::No };
+                let Ok(address) = address::parse(&package.url) else { break 'reduce Handled::No };
+                let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+                fx.push(HudEffect::FetchRegistry { tag, package: package.clone(), max_bytes: self.setup.max_pack_bytes });
+                drop(std::mem::replace(&mut self.op, Op::Installing(Installing { tag, step: Step::Fetching { address, expected: Some(package) } })));
+                Handled::Yes
+            }
+            HudEvent::Refresh { setup, selected } => {
+                // Always taken: it is how a store whose runner lost an answer recovers. Whatever it
+                // displaces wrote atomically and put the index last, so disk is consistent, and the
+                // answers the displaced work is still owed carry a stale tag.
+                {
+let (setup, selected,): (Setup, String,) = (setup, selected,);
+
+        let stray = {
+
+        let at = |candidates: &[Candidate], dir: usize, sha: Sha| candidates.get(dir).map(|c| (c.dir.clone(), sha));
+        let mut stray = Vec::new();
+        match std::mem::replace(&mut self.op, Op::Idle) {
+            Op::Idle | Op::Listing(_) => {}
+            Op::Installing(Installing { step, .. }) => {
+                let sha = match step {
+                    Step::Reading { sha, .. } => Some(sha),
+                    // A fetch that has not answered has no bytes, so no sha.
+                    Step::Fetching { .. } => None,
+                    Step::Validating(offer) | Step::Offered { offer, .. } => Some(offer.sha),
+                    Step::Writing { offer, dir, what, .. } => {
+                        // The pack is down or on its way. If the index write reached the disk the id's
+                        // old pack is the unlisted one, if not the new one is: only a re-read says.
+                        stray.extend(at(&self.setup.candidates, dir, offer.sha));
+                        if let Write::Index { replaced: Some(old), .. } = what {
+                            stray.extend(at(&self.setup.candidates, dir, old).filter(|_| old != offer.sha));
+                        }
+                        Some(offer.sha)
+                    }
+                };
+                Self::notice(fx, Notice::NotWritten { sha });
+            }
+            Op::Removing(Removing { id, flight, .. }) => {
+                if let Some(Rewrite { dir, gone, .. }) = flight {
+                    // The rewrite may have reached the disk: the packs it unlisted are the stray ones.
+                    stray.extend(gone.into_iter().filter_map(|sha| at(&self.setup.candidates, dir, sha)));
+                }
+                Self::notice(fx, Notice::RemoveIncomplete { id });
+            }
+        }
+        stray
+
+};
+        let n = setup.candidates.len();
+        self.dirs = vec![Dir::default(); n];
+        self.packs.clear();
+        self.drops.clear();
+        self.selected = if selected.is_empty() { BUILTIN_CLASSIC.to_string() } else { selected };
+        self.setup = setup;
+        let mut todo: VecDeque<Job> = (0..n).map(Job::Index).collect();
+        todo.push_back(Job::Plan);
+        todo.extend((0..n).map(Job::Scan));
+        // Issue the next listing request, or finish.
+        let next = 'advance: {
+let (mut listing,): (Listing,) = (Listing { todo, flight: None, stray },);
+
+        while let Some(job) = listing.todo.pop_front() {
+            let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+            let effect = match &job {
+                Job::Plan => {
+                    self.reclaim(std::mem::take(&mut listing.stray), fx);
+                    for planned in self.plan_packs().into_iter().rev() {
+                        listing.todo.push_front(planned);
+                    }
+                    continue;
+                }
+                Job::Index(dir) => self.read(tag, *dir, INDEX_FILE.to_string()),
+                Job::Pack { sha, dirs } => match dirs.front() {
+                    Some(dir) => self.read(tag, *dir, pack_rel(*sha)),
+                    None => continue,
+                },
+                Job::Scan(dir) => HudEffect::ScanDir { tag, at: self.loc(*dir, DROP_DIR.to_string()) },
+                Job::Drop { dir, name } => self.read(tag, *dir, format!("{DROP_DIR}/{name}")),
+            };
+            fx.push(effect);
+            listing.flight = Some(Flight { tag, job, stage: Stage::Io });
+            break 'advance Op::Listing(listing);
+        }
+        Op::Idle
+
+};
+                    drop(std::mem::replace(&mut self.op, next));
+
+};
+                Handled::Yes
+            }
+            HudEvent::Selected { id } => 'select: {
+let (id,): (String,) = (id,);
+
+        let allowed = id == BUILTIN_CLASSIC
+            || self.winners().get(id.as_str()).is_some_and(|w| w.loaded.loadable.is_ok() && self.catalog.snapshot().revoked(w.record.sha).is_none());
+        if !allowed {
+            break 'select Handled::No;
+        }
+        self.selected = id.clone();
+        fx.push(HudEffect::Selection { id });
+        Handled::Yes
+
+},
+            HudEvent::Install { bytes, source, now } => {
+                if self.busy() {
+                    break 'reduce Handled::No;
+                }
+                let sha = Sha::of(&bytes);
+                if bytes.len() > self.setup.max_pack_bytes {
+                    fx.push(HudEffect::Notice(Notice::Refused { sha, reason: Refusal::TooLarge }));
+                } else {
+                    // Ask the runner whether these bytes are a package this app can run.
+                    let next = {
+let (offer,): (Offer,) = (Offer { sha, source, now: Some(now), from: None, bytes: bytes.into(), expected: None },);
+
+        let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+        fx.push(HudEffect::Validate { tag, sha: offer.sha, bytes: offer.bytes.clone() });
+        Op::Installing(Installing { tag, step: Step::Validating(offer) })
+
+};
+                    drop(std::mem::replace(&mut self.op, next));
+                }
+                Handled::Yes
+            }
+            HudEvent::Fetch { address } => {
+                if self.busy() {
+                    break 'reduce Handled::No;
+                }
+                let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+                fx.push(HudEffect::Fetch { tag, address: address.clone(), max_bytes: self.setup.max_pack_bytes });
+                drop(std::mem::replace(&mut self.op, Op::Installing(Installing { tag, step: Step::Fetching { address, expected: None } })));
+                Handled::Yes
+            }
+            HudEvent::InstallOffer { sha, now } => match std::mem::replace(&mut self.op, Op::Idle) {
+                Op::Installing(Installing { step: Step::Offered { mut offer, meta }, .. }) if offer.sha == sha => {
+                    if self.catalog.snapshot().revoked(sha).is_some() {
+                        Self::notice(fx, Notice::Refused { sha, reason: Refusal::Unloadable(Unloadable::Revoked) });
+                        break 'reduce Handled::Yes;
+                    }
+                    offer.now = Some(now);
+                    // Write the pack to candidate `dir`; with no candidate left, nothing was installed.
+                    let next = 'write_pack: {
+let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, 0,);
+
+        // A candidate whose index is read-only cannot list the new package, so it is not a candidate.
+        let Some(dir) = (dir..self.dirs.len()).find(|d| self.dirs[*d].access == Access::Writable) else {
+            Self::notice(fx, Notice::NotWritten { sha: Some(offer.sha) });
+            break 'write_pack Op::Idle;
+        };
+        let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+        fx.push(HudEffect::WriteFile {
+            tag,
+            at: self.loc(dir, pack_rel(offer.sha)),
+            bytes: offer.bytes.clone(),
+        });
+        Op::Installing(Installing { tag, step: Step::Writing { offer, meta, dir, what: Write::Pack } })
+
+};
+                    drop(std::mem::replace(&mut self.op, next));
+                    Handled::Yes
+                }
+                other @ (Op::Idle | Op::Listing(_) | Op::Installing(_) | Op::Removing(_)) => {
+                    drop(std::mem::replace(&mut self.op, other));
+                    Handled::No
+                }
+            },
+            HudEvent::DeclineOffer { sha } => match std::mem::replace(&mut self.op, Op::Idle) {
+                Op::Installing(Installing { step: Step::Offered { offer, .. }, .. }) if offer.sha == sha => Handled::Yes,
+                other @ (Op::Idle | Op::Listing(_) | Op::Installing(_) | Op::Removing(_)) => {
+                    drop(std::mem::replace(&mut self.op, other));
+                    Handled::No
+                }
+            },
+            HudEvent::InstallDrop { sha, now } => {
+                if self.busy() {
+                    break 'reduce Handled::No;
+                }
+                let Some((dir, name)) = self.drops.iter().find_map(|d| match &d.found {
+                    Found::Parsed { sha: s, .. } if *s == sha => Some((d.dir, d.name.clone())),
+                    Found::TooLarge | Found::Parsed { .. } => None,
+                }) else {
+                    break 'reduce Handled::No;
+                };
+                let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+                fx.push(self.read(tag, dir, format!("{DROP_DIR}/{name}")));
+                drop(std::mem::replace(&mut self.op, Op::Installing(Installing { tag, step: Step::Reading { sha, now } })));
+                Handled::Yes
+            }
+            HudEvent::Removed { id } => 'begin_removal: {
+let (id,): (String,) = (id,);
+
+        if self.busy() || id == BUILTIN_CLASSIC {
+            break 'begin_removal Handled::No;
+        }
+        if !self.dirs.iter().any(|dir| dir.index.contains_key(&id)) {
+            break 'begin_removal Handled::No;
+        }
+        let dirs: VecDeque<usize> = (0..self.dirs.len())
+            .filter(|dir| self.dirs[*dir].access == Access::ReadOnly || self.dirs[*dir].index.contains_key(&id))
+            .collect();
+        let next = 'advance_removal: {
+let (mut removing,): (Removing,) = (Removing { id, dirs, incomplete: false, flight: None },);
+
+        while let Some(dir) = removing.dirs.pop_front() {
+            if self.dirs[dir].access == Access::ReadOnly {
+                // Cannot be taken out of an index nobody may write: the package stays listed.
+                removing.incomplete = true;
+                continue;
+            }
+            let mut index = self.dirs[dir].index.clone();
+            let Some(record) = index.remove(&removing.id) else { continue };
+            let gone = vec![record.sha];
+            let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+            fx.push(HudEffect::WriteFile {
+                tag,
+                at: self.loc(dir, INDEX_FILE.to_string()),
+                bytes: index_bytes(&index),
+            });
+            removing.flight = Some(Rewrite { tag, dir, index, gone });
+            break 'advance_removal Op::Removing(removing);
+        }
+        // Whatever no candidate lists any more is forgotten, and the selection follows the package.
+        let dirs = &self.dirs;
+        self.packs.retain(|sha, _| dirs.iter().any(|d| d.index.values().any(|r| r.sha == *sha)));
+        let listed = self.winners().contains_key(removing.id.as_str());
+        if !listed && self.selected == removing.id {
+            self.selected = BUILTIN_CLASSIC.to_string();
+            fx.push(HudEffect::Selection { id: self.selected.clone() });
+        }
+        let id = removing.id;
+        Self::notice(
+            fx,
+            if removing.incomplete || listed { Notice::RemoveIncomplete { id } } else { Notice::Removed { id } },
+        );
+        Op::Idle
+
+};
+                    drop(std::mem::replace(&mut self.op, next));
+        Handled::Yes
+
+},
+            result @ (HudEvent::Scanned { .. }
+            | HudEvent::Read { .. }
+            | HudEvent::Validated { .. }
+            | HudEvent::Written { .. }
+            | HudEvent::Fetched { .. }) => {
+                let (op, handled) = match std::mem::replace(&mut self.op, Op::Idle) {
+                    Op::Idle => (Op::Idle, Handled::No),
+                    Op::Listing(listing) => 'listing_result: {
+let (mut listing, ev,): (Listing, HudEvent,) = (listing, result,);
+
+        let Some(flight) = listing.flight.take() else { break 'listing_result (Op::Listing(listing), Handled::No) };
+        let Flight { tag, job, stage } = flight;
+        let addressed = match &ev {
+            HudEvent::Scanned { tag: t, .. }
+            | HudEvent::Read { tag: t, .. }
+            | HudEvent::Validated { tag: t, .. }
+            | HudEvent::Written { tag: t, .. } => *t == tag,
+            HudEvent::Catalog(_) | HudEvent::FetchRegistry { .. } | HudEvent::CancelRegistry { .. }
+            | HudEvent::Refresh { .. } | HudEvent::Install { .. } | HudEvent::Fetch { .. }
+            | HudEvent::Fetched { .. } | HudEvent::InstallOffer { .. } | HudEvent::DeclineOffer { .. }
+            | HudEvent::InstallDrop { .. } | HudEvent::Selected { .. } | HudEvent::Removed { .. } => false,
+        };
+        if !addressed {
+            listing.flight = Some(Flight { tag, job, stage });
+            break 'listing_result (Op::Listing(listing), Handled::No);
+        }
+        match (job, stage, ev) {
+            (Job::Index(dir), Stage::Io, HudEvent::Read { result, .. }) => {
+                self.dirs[dir] = match result {
+                    Ok(bytes) => parse_index(&bytes),
+                    // Nothing there yet: an empty candidate, free to take the first install.
+                    Err(ReadError::Missing) => Dir::default(),
+                    // Unknown, not empty: list nothing from it and write nothing to it.
+                    Err(ReadError::TooLarge | ReadError::Failed) => Dir { access: Access::ReadOnly, ..Dir::default() },
+                };
+            }
+            (Job::Scan(dir), Stage::Io, HudEvent::Scanned { result, .. }) => {
+                let names = result.unwrap_or_default();
+                for name in names.into_iter().filter(|n| drop_name_ok(n)).rev() {
+                    listing.todo.push_front(Job::Drop { dir, name });
+                }
+            }
+            (Job::Pack { sha, mut dirs }, Stage::Io, HudEvent::Read { result, .. }) => match result {
+                Ok(bytes) if Sha::of(&bytes) == sha => {
+                    let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+                    fx.push(HudEffect::Validate { tag, sha, bytes: bytes.into() });
+                    listing.flight = Some(Flight { tag, job: Job::Pack { sha, dirs }, stage: Stage::Validation(sha) });
+                    break 'listing_result (Op::Listing(listing), Handled::Yes);
+                }
+                _ => {
+                    // Missing, unreadable, too large or not what its name says: try the next copy.
+                    dirs.pop_front();
+                    if !dirs.is_empty() {
+                        listing.todo.push_front(Job::Pack { sha, dirs });
+                    }
+                }
+            },
+            (Job::Pack { sha, dirs }, Stage::Validation(asked), HudEvent::Validated { sha: got, verdict, .. })
+                if asked == got =>
+            {
+                let volatile = dirs.front().is_some_and(|d| self.volatile(*d));
+                match verdict {
+                    Verdict::Loadable(meta) => {
+                        self.packs.insert(sha, Loaded { meta, loadable: Ok(()), volatile });
+                    }
+                    Verdict::Unloadable(meta, why) => {
+                        self.packs.insert(sha, Loaded { meta, loadable: Err(why), volatile });
+                    }
+                    Verdict::Invalid => {}
+                }
+            }
+            (Job::Drop { dir, name }, Stage::Io, HudEvent::Read { result, .. }) => match result {
+                Ok(bytes) => {
+                    let sha = Sha::of(&bytes);
+                    let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+                    fx.push(HudEffect::Validate { tag, sha, bytes: bytes.into() });
+                    listing.flight = Some(Flight { tag, job: Job::Drop { dir, name }, stage: Stage::Validation(sha) });
+                    break 'listing_result (Op::Listing(listing), Handled::Yes);
+                }
+                Err(ReadError::TooLarge) => self.drops.push(Dropped { dir, name, found: Found::TooLarge }),
+                Err(ReadError::Missing | ReadError::Failed) => {}
+            },
+            (Job::Drop { dir, name }, Stage::Validation(asked), HudEvent::Validated { sha: got, verdict, .. })
+                if asked == got =>
+            {
+                self.drops.push(Dropped { dir, name, found: Found::Parsed { sha: got, verdict } });
+            }
+            (job, stage, _) => {
+                listing.flight = Some(Flight { tag, job, stage });
+                break 'listing_result (Op::Listing(listing), Handled::No);
+            }
+        }
+        (('advance: {
+let (mut listing,): (Listing,) = (listing,);
+
+        while let Some(job) = listing.todo.pop_front() {
+            let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+            let effect = match &job {
+                Job::Plan => {
+                    self.reclaim(std::mem::take(&mut listing.stray), fx);
+                    for planned in self.plan_packs().into_iter().rev() {
+                        listing.todo.push_front(planned);
+                    }
+                    continue;
+                }
+                Job::Index(dir) => self.read(tag, *dir, INDEX_FILE.to_string()),
+                Job::Pack { sha, dirs } => match dirs.front() {
+                    Some(dir) => self.read(tag, *dir, pack_rel(*sha)),
+                    None => continue,
+                },
+                Job::Scan(dir) => HudEffect::ScanDir { tag, at: self.loc(*dir, DROP_DIR.to_string()) },
+                Job::Drop { dir, name } => self.read(tag, *dir, format!("{DROP_DIR}/{name}")),
+            };
+            fx.push(effect);
+            listing.flight = Some(Flight { tag, job, stage: Stage::Io });
+            break 'advance Op::Listing(listing);
+        }
+        Op::Idle
+
+}), Handled::Yes)
+
+},
+                    Op::Installing(installing) => 'installing_result: {
+let (installing, ev,): (Installing, HudEvent,) = (installing, result,);
+
+        let Installing { tag, step } = installing;
+        let addressed = match &ev {
+            HudEvent::Scanned { tag: t, .. }
+            | HudEvent::Read { tag: t, .. }
+            | HudEvent::Validated { tag: t, .. }
+            | HudEvent::Written { tag: t, .. }
+            | HudEvent::Fetched { tag: t, .. } => *t == tag,
+            HudEvent::Catalog(_) | HudEvent::FetchRegistry { .. } | HudEvent::CancelRegistry { .. }
+            | HudEvent::Refresh { .. } | HudEvent::Install { .. } | HudEvent::Fetch { .. }
+            | HudEvent::InstallOffer { .. } | HudEvent::DeclineOffer { .. }
+            | HudEvent::InstallDrop { .. } | HudEvent::Selected { .. } | HudEvent::Removed { .. } => false,
+        };
+        if !addressed {
+            break 'installing_result (Op::Installing(Installing { tag, step }), Handled::No);
+        }
+        let op = match (step, ev) {
+            (Step::Reading { sha, now }, HudEvent::Read { result, .. }) => match result {
+                Ok(bytes) if Sha::of(&bytes) == sha => {
+                    {
+let (offer,): (Offer,) = (Offer { sha, source: Source::Drop, now: Some(now), from: None, bytes: bytes.into(), expected: None },);
+
+        let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+        fx.push(HudEffect::Validate { tag, sha: offer.sha, bytes: offer.bytes.clone() });
+        Op::Installing(Installing { tag, step: Step::Validating(offer) })
+
+}
+                }
+                _ => {
+                    Self::notice(fx, Notice::Refused { sha, reason: Refusal::Changed });
+                    Op::Idle
+                }
+            },
+            (Step::Fetching { address, expected }, HudEvent::Fetched { result, .. }) => match result {
+                Err(reason) => {
+                    Self::notice(fx, Notice::FetchFailed { reason });
+                    Op::Idle
+                }
+                Ok(bytes) => {
+                    let sha = Sha::of(&bytes);
+                    if expected.as_ref().is_some_and(|p| p.sha() != sha || p.bytes != bytes.len()) {
+                        Self::notice(fx, Notice::Refused { sha, reason: Refusal::Changed });
+                        Op::Idle
+                    } else if bytes.len() > self.setup.max_pack_bytes {
+                        Self::notice(fx, Notice::Refused { sha, reason: Refusal::TooLarge });
+                        Op::Idle
+                    } else {
+                        let source = if expected.is_some() { Source::Registry } else { Source::Address };
+                        let offer = Offer { sha, source, now: None, from: Some(address), bytes: bytes.into(), expected };
+                        {
+let (offer,): (Offer,) = (offer,);
+
+        let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+        fx.push(HudEffect::Validate { tag, sha: offer.sha, bytes: offer.bytes.clone() });
+        Op::Installing(Installing { tag, step: Step::Validating(offer) })
+
+}
+                    }
+                }
+            },
+            (Step::Validating(offer), HudEvent::Validated { sha, verdict, .. }) if sha == offer.sha => {
+                let checked = self.judge(offer.sha, &verdict).and_then(|meta| {
+                    if offer.expected.as_ref().is_some_and(|p| p.id != meta.id || p.name != meta.name || p.version != meta.version
+                        || p.package_format != meta.package_format || p.hud_format != meta.hud_format) { Err(Refusal::Changed) } else { Ok(meta) }
+                });
+                match checked {
+                    Err(reason) => {
+                        Self::notice(fx, Notice::Refused { sha: offer.sha, reason });
+                        Op::Idle
+                    }
+                    // The viewer has confirmed already (a drop file, `Install`): write it.
+                    Ok(meta) if offer.now.is_some() => 'write_pack: {
+let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, 0,);
+
+        // A candidate whose index is read-only cannot list the new package, so it is not a candidate.
+        let Some(dir) = (dir..self.dirs.len()).find(|d| self.dirs[*d].access == Access::Writable) else {
+            Self::notice(fx, Notice::NotWritten { sha: Some(offer.sha) });
+            break 'write_pack Op::Idle;
+        };
+        let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+        fx.push(HudEffect::WriteFile {
+            tag,
+            at: self.loc(dir, pack_rel(offer.sha)),
+            bytes: offer.bytes.clone(),
+        });
+        Op::Installing(Installing { tag, step: Step::Writing { offer, meta, dir, what: Write::Pack } })
+
+},
+                    // A fetch: nothing is written until the viewer has seen what it is.
+                    Ok(meta) => Op::Installing(Installing { tag, step: Step::Offered { offer, meta } }),
+                }
+            }
+            (Step::Writing { offer, meta, dir, what }, HudEvent::Written { outcome, .. }) => match (what, outcome) {
+                (Write::Pack, WriteOutcome::Done) => {
+                    // The pack is down: switch the candidate's index to it.
+                    let mut index = self.dirs[dir].index.clone();
+                    let replaced = index
+                        .insert(meta.id.clone(), Record::new(offer.sha, offer.source, offer.now.unwrap_or_default(), &meta.package_format, &meta.hud_format)
+                            .from_dev_source(offer.from.as_ref()))
+                        .map(|old| old.sha);
+                    let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+                    fx.push(HudEffect::WriteFile {
+                        tag,
+                        at: self.loc(dir, INDEX_FILE.to_string()),
+                        bytes: index_bytes(&index),
+                    });
+                    Op::Installing(Installing {
+                        tag,
+                        step: Step::Writing { offer, meta, dir, what: Write::Index { index, replaced } },
+                    })
+                }
+                (Write::Pack, WriteOutcome::Refused) => 'write_pack: {
+let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, dir + 1,);
+
+        // A candidate whose index is read-only cannot list the new package, so it is not a candidate.
+        let Some(dir) = (dir..self.dirs.len()).find(|d| self.dirs[*d].access == Access::Writable) else {
+            Self::notice(fx, Notice::NotWritten { sha: Some(offer.sha) });
+            break 'write_pack Op::Idle;
+        };
+        let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+        fx.push(HudEffect::WriteFile {
+            tag,
+            at: self.loc(dir, pack_rel(offer.sha)),
+            bytes: offer.bytes.clone(),
+        });
+        Op::Installing(Installing { tag, step: Step::Writing { offer, meta, dir, what: Write::Pack } })
+
+},
+                (Write::Index { index, replaced }, WriteOutcome::Done) => {
+                    self.dirs[dir].index = index;
+                    let until_restart = self.volatile(dir);
+                    self.packs
+                        .insert(offer.sha, Loaded { meta: meta.clone(), loadable: Ok(()), volatile: until_restart });
+                    if let Some(sha) = replaced {
+                        if sha != offer.sha && !self.referenced(dir, sha) {
+                            fx.push(HudEffect::Delete { at: self.loc(dir, pack_rel(sha)) });
+                        }
+                    }
+                    Self::notice(
+                        fx,
+                        Notice::Installed { id: meta.id, version: meta.version, sha: offer.sha, until_restart },
+                    );
+                    Op::Idle
+                }
+                (Write::Index { .. }, WriteOutcome::Refused) => {
+                    // The pack is on disk but unlisted there: take it back and try the next candidate.
+                    if !self.referenced(dir, offer.sha) {
+                        fx.push(HudEffect::Delete { at: self.loc(dir, pack_rel(offer.sha)) });
+                    }
+                    'write_pack: {
+let (offer, meta, dir,): (Offer, Meta, usize,) = (offer, meta, dir + 1,);
+
+        // A candidate whose index is read-only cannot list the new package, so it is not a candidate.
+        let Some(dir) = (dir..self.dirs.len()).find(|d| self.dirs[*d].access == Access::Writable) else {
+            Self::notice(fx, Notice::NotWritten { sha: Some(offer.sha) });
+            break 'write_pack Op::Idle;
+        };
+        let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+        fx.push(HudEffect::WriteFile {
+            tag,
+            at: self.loc(dir, pack_rel(offer.sha)),
+            bytes: offer.bytes.clone(),
+        });
+        Op::Installing(Installing { tag, step: Step::Writing { offer, meta, dir, what: Write::Pack } })
+
+}
+                }
+            },
+            (step, _) => break 'installing_result (Op::Installing(Installing { tag, step }), Handled::No),
+        };
+        (op, Handled::Yes)
+
+},
+                    Op::Removing(removing) => 'removing_result: {
+let (mut removing, ev,): (Removing, HudEvent,) = (removing, result,);
+
+        let HudEvent::Written { tag, outcome } = ev else { break 'removing_result (Op::Removing(removing), Handled::No) };
+        match removing.flight.take() {
+            Some(Rewrite { tag: awaited, dir, index, gone }) if awaited == tag => {
+                match outcome {
+                    WriteOutcome::Done => {
+                        self.dirs[dir].index = index;
+                        for sha in gone.into_iter().filter(|sha| !self.referenced(dir, *sha)) {
+                            fx.push(HudEffect::Delete { at: self.loc(dir, pack_rel(sha)) });
+                        }
+                    }
+                    WriteOutcome::Refused => removing.incomplete = true,
+                }
+                (('advance_removal: {
+let (mut removing,): (Removing,) = (removing,);
+
+        while let Some(dir) = removing.dirs.pop_front() {
+            if self.dirs[dir].access == Access::ReadOnly {
+                // Cannot be taken out of an index nobody may write: the package stays listed.
+                removing.incomplete = true;
+                continue;
+            }
+            let mut index = self.dirs[dir].index.clone();
+            let Some(record) = index.remove(&removing.id) else { continue };
+            let gone = vec![record.sha];
+            let tag = {
+
+        self.tags = self.tags.wrapping_add(1);
+        Tag(self.tags)
+
+};
+            fx.push(HudEffect::WriteFile {
+                tag,
+                at: self.loc(dir, INDEX_FILE.to_string()),
+                bytes: index_bytes(&index),
+            });
+            removing.flight = Some(Rewrite { tag, dir, index, gone });
+            break 'advance_removal Op::Removing(removing);
+        }
+        // Whatever no candidate lists any more is forgotten, and the selection follows the package.
+        let dirs = &self.dirs;
+        self.packs.retain(|sha, _| dirs.iter().any(|d| d.index.values().any(|r| r.sha == *sha)));
+        let listed = self.winners().contains_key(removing.id.as_str());
+        if !listed && self.selected == removing.id {
+            self.selected = BUILTIN_CLASSIC.to_string();
+            fx.push(HudEffect::Selection { id: self.selected.clone() });
+        }
+        let id = removing.id;
+        Self::notice(
+            fx,
+            if removing.incomplete || listed { Notice::RemoveIncomplete { id } } else { Notice::Removed { id } },
+        );
+        Op::Idle
+
+}), Handled::Yes)
+            }
+            other => {
+                removing.flight = other;
+                (Op::Removing(removing), Handled::No)
+            }
+        }
+
+},
+                };
+                drop(std::mem::replace(&mut self.op, op));
+                handled
+            }
+        }
+
+};
+// The cache can land before the installed-pack listing: apply the same rule after either.
+        if self.winners().get(self.selected.as_str()).is_some_and(|w| self.catalog.snapshot().revoked(w.record.sha).is_some()) {
+            self.selected = BUILTIN_CLASSIC.into();
+            fx.push(HudEffect::Selection { id: self.selected.clone() });
+        }
+        handled
+
+}
+
     // -------- readers --------
 
     /// The current gallery view, including dated cache status and revocation reasons.
@@ -763,7 +1492,7 @@ impl HudStore {
                 source: offer.source,
                 from: offer.from.clone(),
             }),
-            _ => None,
+            Op::Idle | Op::Listing(_) | Op::Installing(_) | Op::Removing(_) => None,
         }
     }
 
@@ -805,133 +1534,13 @@ impl HudStore {
 
     /// The one writer. The table is in the module doc; a pair it does not list answers
     /// [`Handled::No`] and changes nothing.
-    pub fn step(&mut self, ev: HudEvent, fx: &mut Vec<HudEffect>) -> Handled {
-        let handled = self.reduce(ev, fx);
-        // The cache can land before the installed-pack listing: apply the same rule after either.
-        if self.winners().get(self.selected.as_str()).is_some_and(|w| self.catalog.snapshot().revoked(w.record.sha).is_some()) {
-            self.selected = BUILTIN_CLASSIC.into();
-            fx.push(HudEffect::Selection { id: self.selected.clone() });
-        }
-        handled
-    }
+    pub fn step(&mut self, ev: HudEvent, fx: &mut Vec<HudEffect>) -> Handled { self.transition(ev, fx) }
 
-    fn reduce(&mut self, ev: HudEvent, fx: &mut Vec<HudEffect>) -> Handled {
-        match ev {
-            HudEvent::Catalog(event) => {
-                let mut work = Vec::new();
-                let handled = self.catalog.step(event, &mut work);
-                fx.extend(work.into_iter().map(HudEffect::Catalog));
-                if handled { Handled::Yes } else { Handled::No }
-            }
-            HudEvent::CancelRegistry { sha } => {
-                let cancels = match &self.op {
-                    Op::Installing(Installing { step: Step::Fetching { expected: Some(p), .. }, .. }) => p.sha() == sha,
-                    Op::Installing(Installing { step: Step::Validating(offer) | Step::Offered { offer, .. }, .. }) =>
-                        offer.source == Source::Registry && offer.sha == sha && offer.now.is_none(),
-                    _ => false,
-                };
-                if cancels { self.op = Op::Idle; Handled::Yes } else { Handled::No }
-            }
-            HudEvent::FetchRegistry { sha, app, language } => {
-                if self.busy() || self.catalog.snapshot().revoked(sha).is_some() { return Handled::No }
-                let Some(package) = self.catalog.snapshot().index.as_ref().and_then(|i| i.entries.iter().find(|p| p.sha() == sha))
-                    .filter(|p| p.compatible(&app, &language, self.setup.max_pack_bytes)).cloned() else { return Handled::No };
-                let Ok(address) = address::parse(&package.url) else { return Handled::No };
-                let tag = self.tag();
-                fx.push(HudEffect::FetchRegistry { tag, package: package.clone(), max_bytes: self.setup.max_pack_bytes });
-                self.op = Op::Installing(Installing { tag, step: Step::Fetching { address, expected: Some(package) } });
-                Handled::Yes
-            }
-            HudEvent::Refresh { setup, selected } => {
-                // Always taken: it is how a store whose runner lost an answer recovers. Whatever it
-                // displaces wrote atomically and put the index last, so disk is consistent, and the
-                // answers the displaced work is still owed carry a stale tag.
-                self.begin_listing(setup, selected, fx);
-                Handled::Yes
-            }
-            HudEvent::Selected { id } => self.select(id, fx),
-            HudEvent::Install { bytes, source, now } => {
-                if self.busy() {
-                    return Handled::No;
-                }
-                let sha = Sha::of(&bytes);
-                if bytes.len() > self.setup.max_pack_bytes {
-                    fx.push(HudEffect::Notice(Notice::Refused { sha, reason: Refusal::TooLarge }));
-                } else {
-                    self.op = self.validate(Offer { sha, source, now: Some(now), from: None, bytes: bytes.into(), expected: None }, fx);
-                }
-                Handled::Yes
-            }
-            HudEvent::Fetch { address } => {
-                if self.busy() {
-                    return Handled::No;
-                }
-                let tag = self.tag();
-                fx.push(HudEffect::Fetch { tag, address: address.clone(), max_bytes: self.setup.max_pack_bytes });
-                self.op = Op::Installing(Installing { tag, step: Step::Fetching { address, expected: None } });
-                Handled::Yes
-            }
-            HudEvent::InstallOffer { sha, now } => match std::mem::replace(&mut self.op, Op::Idle) {
-                Op::Installing(Installing { step: Step::Offered { mut offer, meta }, .. }) if offer.sha == sha => {
-                    if self.catalog.snapshot().revoked(sha).is_some() {
-                        Self::notice(fx, Notice::Refused { sha, reason: Refusal::Unloadable(Unloadable::Revoked) });
-                        return Handled::Yes;
-                    }
-                    offer.now = Some(now);
-                    self.op = self.write_pack(offer, meta, 0, fx);
-                    Handled::Yes
-                }
-                other => {
-                    self.op = other;
-                    Handled::No
-                }
-            },
-            HudEvent::DeclineOffer { sha } => match std::mem::replace(&mut self.op, Op::Idle) {
-                Op::Installing(Installing { step: Step::Offered { offer, .. }, .. }) if offer.sha == sha => Handled::Yes,
-                other => {
-                    self.op = other;
-                    Handled::No
-                }
-            },
-            HudEvent::InstallDrop { sha, now } => {
-                if self.busy() {
-                    return Handled::No;
-                }
-                let Some((dir, name)) = self.drops.iter().find_map(|d| match &d.found {
-                    Found::Parsed { sha: s, .. } if *s == sha => Some((d.dir, d.name.clone())),
-                    _ => None,
-                }) else {
-                    return Handled::No;
-                };
-                let tag = self.tag();
-                fx.push(self.read(tag, dir, format!("{DROP_DIR}/{name}")));
-                self.op = Op::Installing(Installing { tag, step: Step::Reading { sha, now } });
-                Handled::Yes
-            }
-            HudEvent::Removed { id } => self.begin_removal(id, fx),
-            result @ (HudEvent::Scanned { .. }
-            | HudEvent::Read { .. }
-            | HudEvent::Validated { .. }
-            | HudEvent::Written { .. }
-            | HudEvent::Fetched { .. }) => {
-                let (op, handled) = match std::mem::replace(&mut self.op, Op::Idle) {
-                    Op::Idle => (Op::Idle, Handled::No),
-                    Op::Listing(listing) => self.listing_result(listing, result, fx),
-                    Op::Installing(installing) => self.installing_result(installing, result, fx),
-                    Op::Removing(removing) => self.removing_result(removing, result, fx),
-                };
-                self.op = op;
-                handled
-            }
-        }
-    }
+
 
     // -------- helpers --------
 
-    fn tag(&mut self) -> Tag {
-        self.tags = self.tags.wrapping_add(1);
-        Tag(self.tags)
-    }
+
 
     fn loc(&self, dir: usize, rel: String) -> Loc {
         Loc { root: self.setup.candidates.get(dir).map(|c| c.dir.clone()).unwrap_or_default(), rel }
@@ -945,16 +1554,7 @@ impl HudStore {
         self.setup.candidates.get(dir).is_some_and(|c| c.volatile)
     }
 
-    fn select(&mut self, id: String, fx: &mut Vec<HudEffect>) -> Handled {
-        let allowed = id == BUILTIN_CLASSIC
-            || self.winners().get(id.as_str()).is_some_and(|w| w.loaded.loadable.is_ok() && self.catalog.snapshot().revoked(w.record.sha).is_none());
-        if !allowed {
-            return Handled::No;
-        }
-        self.selected = id.clone();
-        fx.push(HudEffect::Selection { id });
-        Handled::Yes
-    }
+
 
     /// The installed package of each id: across candidates the higher version wins, and on a tie the
     /// earlier candidate. An entry whose pack was not read, or whose pack declares another id, is not a
@@ -1020,53 +1620,9 @@ impl HudStore {
 
     /// End the install or removal a `Refresh` displaces with its notice, and return the packs it may
     /// have left behind. It must run before the new `Setup` replaces the candidates it indexes.
-    fn displaced(&mut self, fx: &mut Vec<HudEffect>) -> Vec<(PathBuf, Sha)> {
-        let at = |store: &Self, dir: usize, sha: Sha| store.setup.candidates.get(dir).map(|c| (c.dir.clone(), sha));
-        let mut stray = Vec::new();
-        match std::mem::replace(&mut self.op, Op::Idle) {
-            Op::Idle | Op::Listing(_) => {}
-            Op::Installing(Installing { step, .. }) => {
-                let sha = match step {
-                    Step::Reading { sha, .. } => Some(sha),
-                    // A fetch that has not answered has no bytes, so no sha.
-                    Step::Fetching { .. } => None,
-                    Step::Validating(offer) | Step::Offered { offer, .. } => Some(offer.sha),
-                    Step::Writing { offer, dir, what, .. } => {
-                        // The pack is down or on its way. If the index write reached the disk the id's
-                        // old pack is the unlisted one, if not the new one is: only a re-read says.
-                        stray.extend(at(self, dir, offer.sha));
-                        if let Write::Index { replaced: Some(old), .. } = what {
-                            stray.extend(at(self, dir, old).filter(|_| old != offer.sha));
-                        }
-                        Some(offer.sha)
-                    }
-                };
-                Self::notice(fx, Notice::NotWritten { sha });
-            }
-            Op::Removing(Removing { id, flight, .. }) => {
-                if let Some(Rewrite { dir, gone, .. }) = flight {
-                    // The rewrite may have reached the disk: the packs it unlisted are the stray ones.
-                    stray.extend(gone.into_iter().filter_map(|sha| at(self, dir, sha)));
-                }
-                Self::notice(fx, Notice::RemoveIncomplete { id });
-            }
-        }
-        stray
-    }
 
-    fn begin_listing(&mut self, setup: Setup, selected: String, fx: &mut Vec<HudEffect>) {
-        let stray = self.displaced(fx);
-        let n = setup.candidates.len();
-        self.dirs = vec![Dir::default(); n];
-        self.packs.clear();
-        self.drops.clear();
-        self.selected = if selected.is_empty() { BUILTIN_CLASSIC.to_string() } else { selected };
-        self.setup = setup;
-        let mut todo: VecDeque<Job> = (0..n).map(Job::Index).collect();
-        todo.push_back(Job::Plan);
-        todo.extend((0..n).map(Job::Scan));
-        self.op = self.advance(Listing { todo, flight: None, stray }, fx);
-    }
+
+
 
     /// Delete the packs a displaced operation may have left that no index names now that every index
     /// has been read again. A candidate whose index could not be read whole is left alone: it may name
@@ -1094,321 +1650,28 @@ impl HudStore {
         by_sha.into_iter().map(|(sha, dirs)| Job::Pack { sha, dirs }).collect()
     }
 
-    /// Issue the next listing request, or finish.
-    fn advance(&mut self, mut listing: Listing, fx: &mut Vec<HudEffect>) -> Op {
-        while let Some(job) = listing.todo.pop_front() {
-            let tag = self.tag();
-            let effect = match &job {
-                Job::Plan => {
-                    self.reclaim(std::mem::take(&mut listing.stray), fx);
-                    for planned in self.plan_packs().into_iter().rev() {
-                        listing.todo.push_front(planned);
-                    }
-                    continue;
-                }
-                Job::Index(dir) => self.read(tag, *dir, INDEX_FILE.to_string()),
-                Job::Pack { sha, dirs } => match dirs.front() {
-                    Some(dir) => self.read(tag, *dir, pack_rel(*sha)),
-                    None => continue,
-                },
-                Job::Scan(dir) => HudEffect::ScanDir { tag, at: self.loc(*dir, DROP_DIR.to_string()) },
-                Job::Drop { dir, name } => self.read(tag, *dir, format!("{DROP_DIR}/{name}")),
-            };
-            fx.push(effect);
-            listing.flight = Some(Flight { tag, job, stage: Stage::Io });
-            return Op::Listing(listing);
-        }
-        Op::Idle
-    }
 
-    fn listing_result(&mut self, mut listing: Listing, ev: HudEvent, fx: &mut Vec<HudEffect>) -> (Op, Handled) {
-        let Some(flight) = listing.flight.take() else { return (Op::Listing(listing), Handled::No) };
-        let Flight { tag, job, stage } = flight;
-        let addressed = match &ev {
-            HudEvent::Scanned { tag: t, .. }
-            | HudEvent::Read { tag: t, .. }
-            | HudEvent::Validated { tag: t, .. }
-            | HudEvent::Written { tag: t, .. } => *t == tag,
-            _ => false,
-        };
-        if !addressed {
-            listing.flight = Some(Flight { tag, job, stage });
-            return (Op::Listing(listing), Handled::No);
-        }
-        match (job, stage, ev) {
-            (Job::Index(dir), Stage::Io, HudEvent::Read { result, .. }) => {
-                self.dirs[dir] = match result {
-                    Ok(bytes) => parse_index(&bytes),
-                    // Nothing there yet: an empty candidate, free to take the first install.
-                    Err(ReadError::Missing) => Dir::default(),
-                    // Unknown, not empty: list nothing from it and write nothing to it.
-                    Err(ReadError::TooLarge | ReadError::Failed) => Dir { access: Access::ReadOnly, ..Dir::default() },
-                };
-            }
-            (Job::Scan(dir), Stage::Io, HudEvent::Scanned { result, .. }) => {
-                let names = result.unwrap_or_default();
-                for name in names.into_iter().filter(|n| drop_name_ok(n)).rev() {
-                    listing.todo.push_front(Job::Drop { dir, name });
-                }
-            }
-            (Job::Pack { sha, mut dirs }, Stage::Io, HudEvent::Read { result, .. }) => match result {
-                Ok(bytes) if Sha::of(&bytes) == sha => {
-                    let tag = self.tag();
-                    fx.push(HudEffect::Validate { tag, sha, bytes: bytes.into() });
-                    listing.flight = Some(Flight { tag, job: Job::Pack { sha, dirs }, stage: Stage::Validation(sha) });
-                    return (Op::Listing(listing), Handled::Yes);
-                }
-                _ => {
-                    // Missing, unreadable, too large or not what its name says: try the next copy.
-                    dirs.pop_front();
-                    if !dirs.is_empty() {
-                        listing.todo.push_front(Job::Pack { sha, dirs });
-                    }
-                }
-            },
-            (Job::Pack { sha, dirs }, Stage::Validation(asked), HudEvent::Validated { sha: got, verdict, .. })
-                if asked == got =>
-            {
-                let volatile = dirs.front().is_some_and(|d| self.volatile(*d));
-                match verdict {
-                    Verdict::Loadable(meta) => {
-                        self.packs.insert(sha, Loaded { meta, loadable: Ok(()), volatile });
-                    }
-                    Verdict::Unloadable(meta, why) => {
-                        self.packs.insert(sha, Loaded { meta, loadable: Err(why), volatile });
-                    }
-                    Verdict::Invalid => {}
-                }
-            }
-            (Job::Drop { dir, name }, Stage::Io, HudEvent::Read { result, .. }) => match result {
-                Ok(bytes) => {
-                    let sha = Sha::of(&bytes);
-                    let tag = self.tag();
-                    fx.push(HudEffect::Validate { tag, sha, bytes: bytes.into() });
-                    listing.flight = Some(Flight { tag, job: Job::Drop { dir, name }, stage: Stage::Validation(sha) });
-                    return (Op::Listing(listing), Handled::Yes);
-                }
-                Err(ReadError::TooLarge) => self.drops.push(Dropped { dir, name, found: Found::TooLarge }),
-                Err(ReadError::Missing | ReadError::Failed) => {}
-            },
-            (Job::Drop { dir, name }, Stage::Validation(asked), HudEvent::Validated { sha: got, verdict, .. })
-                if asked == got =>
-            {
-                self.drops.push(Dropped { dir, name, found: Found::Parsed { sha: got, verdict } });
-            }
-            (job, stage, _) => {
-                listing.flight = Some(Flight { tag, job, stage });
-                return (Op::Listing(listing), Handled::No);
-            }
-        }
-        (self.advance(listing, fx), Handled::Yes)
-    }
+
+
+
 
     // -------- install --------
 
-    /// Ask the runner whether these bytes are a package this app can run.
-    fn validate(&mut self, offer: Offer, fx: &mut Vec<HudEffect>) -> Op {
-        let tag = self.tag();
-        fx.push(HudEffect::Validate { tag, sha: offer.sha, bytes: offer.bytes.clone() });
-        Op::Installing(Installing { tag, step: Step::Validating(offer) })
-    }
 
-    fn installing_result(&mut self, installing: Installing, ev: HudEvent, fx: &mut Vec<HudEffect>) -> (Op, Handled) {
-        let Installing { tag, step } = installing;
-        let addressed = match &ev {
-            HudEvent::Scanned { tag: t, .. }
-            | HudEvent::Read { tag: t, .. }
-            | HudEvent::Validated { tag: t, .. }
-            | HudEvent::Written { tag: t, .. }
-            | HudEvent::Fetched { tag: t, .. } => *t == tag,
-            _ => false,
-        };
-        if !addressed {
-            return (Op::Installing(Installing { tag, step }), Handled::No);
-        }
-        let op = match (step, ev) {
-            (Step::Reading { sha, now }, HudEvent::Read { result, .. }) => match result {
-                Ok(bytes) if Sha::of(&bytes) == sha => {
-                    self.validate(Offer { sha, source: Source::Drop, now: Some(now), from: None, bytes: bytes.into(), expected: None }, fx)
-                }
-                _ => {
-                    Self::notice(fx, Notice::Refused { sha, reason: Refusal::Changed });
-                    Op::Idle
-                }
-            },
-            (Step::Fetching { address, expected }, HudEvent::Fetched { result, .. }) => match result {
-                Err(reason) => {
-                    Self::notice(fx, Notice::FetchFailed { reason });
-                    Op::Idle
-                }
-                Ok(bytes) => {
-                    let sha = Sha::of(&bytes);
-                    if expected.as_ref().is_some_and(|p| p.sha() != sha || p.bytes != bytes.len()) {
-                        Self::notice(fx, Notice::Refused { sha, reason: Refusal::Changed });
-                        Op::Idle
-                    } else if bytes.len() > self.setup.max_pack_bytes {
-                        Self::notice(fx, Notice::Refused { sha, reason: Refusal::TooLarge });
-                        Op::Idle
-                    } else {
-                        let source = if expected.is_some() { Source::Registry } else { Source::Address };
-                        let offer = Offer { sha, source, now: None, from: Some(address), bytes: bytes.into(), expected };
-                        self.validate(offer, fx)
-                    }
-                }
-            },
-            (Step::Validating(offer), HudEvent::Validated { sha, verdict, .. }) if sha == offer.sha => {
-                let checked = self.judge(offer.sha, &verdict).and_then(|meta| {
-                    if offer.expected.as_ref().is_some_and(|p| p.id != meta.id || p.name != meta.name || p.version != meta.version
-                        || p.package_format != meta.package_format || p.hud_format != meta.hud_format) { Err(Refusal::Changed) } else { Ok(meta) }
-                });
-                match checked {
-                    Err(reason) => {
-                        Self::notice(fx, Notice::Refused { sha: offer.sha, reason });
-                        Op::Idle
-                    }
-                    // The viewer has confirmed already (a drop file, `Install`): write it.
-                    Ok(meta) if offer.now.is_some() => self.write_pack(offer, meta, 0, fx),
-                    // A fetch: nothing is written until the viewer has seen what it is.
-                    Ok(meta) => Op::Installing(Installing { tag, step: Step::Offered { offer, meta } }),
-                }
-            }
-            (Step::Writing { offer, meta, dir, what }, HudEvent::Written { outcome, .. }) => match (what, outcome) {
-                (Write::Pack, WriteOutcome::Done) => {
-                    // The pack is down: switch the candidate's index to it.
-                    let mut index = self.dirs[dir].index.clone();
-                    let replaced = index
-                        .insert(meta.id.clone(), Record::new(offer.sha, offer.source, offer.now.unwrap_or_default(), &meta.package_format, &meta.hud_format)
-                            .from_dev_source(offer.from.as_ref()))
-                        .map(|old| old.sha);
-                    let tag = self.tag();
-                    fx.push(HudEffect::WriteFile {
-                        tag,
-                        at: self.loc(dir, INDEX_FILE.to_string()),
-                        bytes: index_bytes(&index),
-                    });
-                    Op::Installing(Installing {
-                        tag,
-                        step: Step::Writing { offer, meta, dir, what: Write::Index { index, replaced } },
-                    })
-                }
-                (Write::Pack, WriteOutcome::Refused) => self.write_pack(offer, meta, dir + 1, fx),
-                (Write::Index { index, replaced }, WriteOutcome::Done) => {
-                    self.dirs[dir].index = index;
-                    let until_restart = self.volatile(dir);
-                    self.packs
-                        .insert(offer.sha, Loaded { meta: meta.clone(), loadable: Ok(()), volatile: until_restart });
-                    if let Some(sha) = replaced {
-                        if sha != offer.sha && !self.referenced(dir, sha) {
-                            fx.push(HudEffect::Delete { at: self.loc(dir, pack_rel(sha)) });
-                        }
-                    }
-                    Self::notice(
-                        fx,
-                        Notice::Installed { id: meta.id, version: meta.version, sha: offer.sha, until_restart },
-                    );
-                    Op::Idle
-                }
-                (Write::Index { .. }, WriteOutcome::Refused) => {
-                    // The pack is on disk but unlisted there: take it back and try the next candidate.
-                    if !self.referenced(dir, offer.sha) {
-                        fx.push(HudEffect::Delete { at: self.loc(dir, pack_rel(offer.sha)) });
-                    }
-                    self.write_pack(offer, meta, dir + 1, fx)
-                }
-            },
-            (step, _) => return (Op::Installing(Installing { tag, step }), Handled::No),
-        };
-        (op, Handled::Yes)
-    }
 
-    /// Write the pack to candidate `dir`; with no candidate left, nothing was installed.
-    fn write_pack(&mut self, offer: Offer, meta: Meta, dir: usize, fx: &mut Vec<HudEffect>) -> Op {
-        // A candidate whose index is read-only cannot list the new package, so it is not a candidate.
-        let Some(dir) = (dir..self.dirs.len()).find(|d| self.dirs[*d].access == Access::Writable) else {
-            Self::notice(fx, Notice::NotWritten { sha: Some(offer.sha) });
-            return Op::Idle;
-        };
-        let tag = self.tag();
-        fx.push(HudEffect::WriteFile {
-            tag,
-            at: self.loc(dir, pack_rel(offer.sha)),
-            bytes: offer.bytes.clone(),
-        });
-        Op::Installing(Installing { tag, step: Step::Writing { offer, meta, dir, what: Write::Pack } })
-    }
+
+
+
+
+
 
     // -------- removal --------
 
-    fn begin_removal(&mut self, id: String, fx: &mut Vec<HudEffect>) -> Handled {
-        if self.busy() || id == BUILTIN_CLASSIC {
-            return Handled::No;
-        }
-        if !self.dirs.iter().any(|dir| dir.index.contains_key(&id)) {
-            return Handled::No;
-        }
-        let dirs: VecDeque<usize> = (0..self.dirs.len())
-            .filter(|dir| self.dirs[*dir].access == Access::ReadOnly || self.dirs[*dir].index.contains_key(&id))
-            .collect();
-        self.op = self.advance_removal(Removing { id, dirs, incomplete: false, flight: None }, fx);
-        Handled::Yes
-    }
 
-    fn advance_removal(&mut self, mut removing: Removing, fx: &mut Vec<HudEffect>) -> Op {
-        while let Some(dir) = removing.dirs.pop_front() {
-            if self.dirs[dir].access == Access::ReadOnly {
-                // Cannot be taken out of an index nobody may write: the package stays listed.
-                removing.incomplete = true;
-                continue;
-            }
-            let mut index = self.dirs[dir].index.clone();
-            let Some(record) = index.remove(&removing.id) else { continue };
-            let gone = vec![record.sha];
-            let tag = self.tag();
-            fx.push(HudEffect::WriteFile {
-                tag,
-                at: self.loc(dir, INDEX_FILE.to_string()),
-                bytes: index_bytes(&index),
-            });
-            removing.flight = Some(Rewrite { tag, dir, index, gone });
-            return Op::Removing(removing);
-        }
-        // Whatever no candidate lists any more is forgotten, and the selection follows the package.
-        let dirs = &self.dirs;
-        self.packs.retain(|sha, _| dirs.iter().any(|d| d.index.values().any(|r| r.sha == *sha)));
-        let listed = self.winners().contains_key(removing.id.as_str());
-        if !listed && self.selected == removing.id {
-            self.selected = BUILTIN_CLASSIC.to_string();
-            fx.push(HudEffect::Selection { id: self.selected.clone() });
-        }
-        let id = removing.id;
-        Self::notice(
-            fx,
-            if removing.incomplete || listed { Notice::RemoveIncomplete { id } } else { Notice::Removed { id } },
-        );
-        Op::Idle
-    }
 
-    fn removing_result(&mut self, mut removing: Removing, ev: HudEvent, fx: &mut Vec<HudEffect>) -> (Op, Handled) {
-        let HudEvent::Written { tag, outcome } = ev else { return (Op::Removing(removing), Handled::No) };
-        match removing.flight.take() {
-            Some(Rewrite { tag: awaited, dir, index, gone }) if awaited == tag => {
-                match outcome {
-                    WriteOutcome::Done => {
-                        self.dirs[dir].index = index;
-                        for sha in gone.into_iter().filter(|sha| !self.referenced(dir, *sha)) {
-                            fx.push(HudEffect::Delete { at: self.loc(dir, pack_rel(sha)) });
-                        }
-                    }
-                    WriteOutcome::Refused => removing.incomplete = true,
-                }
-                (self.advance_removal(removing, fx), Handled::Yes)
-            }
-            other => {
-                removing.flight = other;
-                (Op::Removing(removing), Handled::No)
-            }
-        }
-    }
+
+
+
 }
 
 /// The installed package of one id, as the list shows it.
@@ -1502,6 +1765,7 @@ where D: serde::Deserializer<'de> {
 fn parse_index(bytes: &[u8]) -> Dir {
     let readonly = || Dir { access: Access::ReadOnly, ..Dir::default() };
     let Ok(JsonObject(file)) = serde_json::from_slice::<JsonObject<IndexFile>>(bytes) else { return readonly() };
+    let file: IndexFile = file;
     if file.v != INDEX_FORMAT { return readonly(); }
     let mut index = Index::new();
     for (id, record) in file.packs {

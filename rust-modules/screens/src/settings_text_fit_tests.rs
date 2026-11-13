@@ -55,7 +55,7 @@ fn every_settings_row_fits_its_column_in_every_language() {
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         let tag = language.tag();
-        overflowing(&format!("{tag} root (signed out)"), &RootPage::new(EntryId(0), test_support::cx(None).views.directory).form.table, &mut out);
+        overflowing(&format!("{tag} root (signed out)"), &RootPage::new(EntryId(0), test_support::cx(None).views.directory, &crate::registry::capture_fixture()).form.table, &mut out);
         overflowing(&format!("{tag} language"), &LanguagePage::new(EntryId(0)).form.table, &mut out);
         // The Diagnostics page's Export row reads `trace_label(status)`: every status, through the
         // page's own constructor (the table it draws), not a table of the test's own.

@@ -4,9 +4,9 @@
 //! The store starts no worker. Its pump emits each request as a [`StoreJob`](super::StoreJob) that
 //! its owner takes and owes to a runner (`Stores::person_pump`'s caller, `Bridge::person_pump`),
 //! and the part of the registry it decides from, which client each server holds, arrives as
-//! [`ClientKeys`], filled by the host right before the call.
+//! [`plx_plex::plex::ClientKeys`] within PersonInput, filled by the host right before the call.
 
-use plx_plex::plex::{ClientKeys, ServerId};
+use plx_plex::plex::ServerId;
 use plx_machine::machine::{Cx, Effects, Handled, Host, Machine};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -104,6 +104,13 @@ impl PersonStore {
         }
         changed
     }
+    /// Open uses the exact captured roster/session; independent commands remain usable without it.
+    pub fn run_with_input(&mut self, cmd: PersonCmd, input: &crate::person::PersonInput<'_>) -> bool {
+        if !matches!(&cmd, PersonCmd::Open { .. }) { return self.run(cmd); }
+        let changed = self.state.run_with_input(&self.adapter, cmd, input);
+        if changed { self.bump(); }
+        changed
+    }
 
     /// Route-unconditional landing pass for this owner's adapter, and the requests the open page
     /// wants now. `keys` is the registry's answer as of this call. It does NOT start the requests
@@ -111,11 +118,16 @@ impl PersonStore {
     /// in the same turn (the one production caller is `Bridge::person_pump`; the application's test
     /// rigs fail a frame that ends with a job still here,
     /// `Bridge::assert_no_store_jobs_left_for_test`).
-    pub fn pump(&mut self, gate: &plx_machine::landgate::Gate, keys: &ClientKeys) -> bool {
-        let changed = self.state.pump_with_gate(&self.adapter, gate, keys);
-        if changed {
-            self.bump();
-        }
+pub fn pump(&mut self, gate: &plx_machine::landgate::Gate, input: &crate::person::PersonInput<'_>) -> bool {
+        let changed = self.state.pump_with_gate(&self.adapter, gate, input);
+        if changed { self.bump(); }
+        changed
+    }
+
+    /// Same-drain terminal pass after the runner attempted these requests. No admission is emitted.
+    pub fn land_launch_refusals(&mut self) -> bool {
+        let changed = self.state.land_launch_refusals(&self.adapter);
+        if changed { self.bump(); }
         changed
     }
 
@@ -195,17 +207,12 @@ impl PersonStore {
 
 impl<H: Host> Machine<H> for PersonStore {
     type Ev = StoreEv<PersonCmd>;
-    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {
+fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {
         match ev {
-            StoreEv::Cmd(command) => {
-                self.run(command.clone());
-            }
+            StoreEv::Cmd(command) => { self.run(command.clone()); }
             StoreEv::Pump { .. } => {
-                // Unreached: nothing sends `StoreEv::Pump`. A future sender must pass the host's
-                // keys and drain the jobs the pump emits: these empty keys read as "no server
-                // holds a client" (the per-server reads are held off), and the plex.tv reads it
-                // does emit would be stranded on the outbox.
-                self.pump(&plx_machine::landgate::Gate::default(), &ClientKeys::default());
+                plx_base::eventlog::log("person: pump requires captured inputs — refused");
+                debug_assert!(false, "Person pump requires captured inputs");
             }
         }
         Handled::Yes

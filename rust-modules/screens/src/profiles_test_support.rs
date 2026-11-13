@@ -16,14 +16,18 @@ impl plx_machine::machine::Host for SessionHost {
     type Fx = AppFx;
     type Msg = AppMsg;
     type Elem = u32;
-    type Views<'a> = auth::SessionRead<'a>;
+    type Views<'a> = (auth::SessionRead<'a>, &'a crate::registry::ScreenInputs);
     type Init = super::super::family::NoInit;
     type Memory = ();
 }
 
+impl crate::registry::ScreenInputsLike for SessionHost {
+    fn screen_inputs<'a>(cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { cx.views.1 }
+}
+
 impl AuthLike for SessionHost {
     fn auth<'a>(cx: &Cx<'a, Self>) -> auth::SessionRead<'a> {
-        cx.views
+        cx.views.0
     }
 }
 
@@ -73,7 +77,7 @@ pub fn cx_with<'a>(
     snapshot: &'a auth::owner::SessionSnapshot,
 ) -> Cx<'a, SessionHost> {
     Cx {
-        views: snapshot.read(),
+        views: (snapshot.read(), crate::registry::publication_fixture()),
         tick: Tick::default(),
         measure: &MEASURE,
         press: PressRead::default(),

@@ -25,7 +25,7 @@ pub enum ForegroundActivation {
 }
 
 pub trait ForegroundActuator {
-    type Attempt: Copy + PartialEq;
+    type Attempt: super::lifecycle::ForegroundIdentity;
 
     /// Prepare the resume at `resume_ns`: settled on the spot, or a flight the machine waits on
     /// ([`Self::land_prepare`]).
@@ -250,7 +250,7 @@ pub fn poll_foreground_flight<A: ForegroundActuator>(
 /// landing is discarded and only the replacement it registered is stopped — the same
 /// `suspend_bufferfeed` teardown an Engine's suspend takes) and park the session back where it was
 /// suspended, so the next foreground restores it from the start. False when no flight was pending.
-pub fn park_pending_foreground_flight<Attempt: Copy + PartialEq>(
+pub fn park_pending_foreground_flight<Attempt: super::lifecycle::ForegroundIdentity>(
     lifecycle: &mut ForegroundLifecycle<Attempt>,
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,

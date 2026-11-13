@@ -28,7 +28,7 @@ pub(super) enum ViewField {
 }
 
 /// The section's live state, as far as the record cares.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ViewSnapshot {
     /// The listing shown.
     pub(super) listing: LibraryType,

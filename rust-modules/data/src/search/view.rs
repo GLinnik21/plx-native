@@ -199,6 +199,8 @@ mod tests {
         answer[0].push(Item::Media(crate::pms::PmsMovie {
             sid, rk: "new-answer".into(), title: "Replacement result".into(), ..Default::default()
         }));
+        let input = crate::search::fixture_input();
+        crate::search::observe_inputs(&mut fx.state, &fx.adapter, &input.input());
         crate::search::record_for_test(&mut fx.state, sid.raw() as usize, Some(answer));
         crate::search::rebuild_for_test(&mut fx.state);
         let next = fx.snapshot();

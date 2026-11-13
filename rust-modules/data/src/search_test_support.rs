@@ -5,6 +5,11 @@ use super::*;
 /// **No library is enumerated**, which by [`section_is_fav`]'s unknown rule makes every hit a
 /// favourite — so every test below that does not care about ranking grades the round-robin
 /// merge exactly as it did before favourites existed. The ranking tests build their own table.
+pub(super) fn fixture_slots() -> Vec<usize> {
+    crate::pms::registry_keys_for_test().slots().map(|sid| sid.raw() as usize).collect()
+}
+pub(super) fn fixture_nsrc() -> usize { fixture_slots().len() }
+
 pub(super) const NO_FAVS: &[(ServerId, i64, bool)] = &[];
 
 /// [`merge`] with no favourite table, for the tests whose subject is the merge itself.
@@ -35,6 +40,7 @@ impl Default for Owner {
 
 impl Owner {
     pub(super) fn set_query(&mut self, q: &str) {
+        observe_inputs(&mut self.state, &self.adapter, &fixture_input().input());
         set_query(&mut self.state, &self.adapter, q);
     }
     pub(super) fn set_query_from_directory(
@@ -42,6 +48,7 @@ impl Owner {
         q: &str,
         directory: crate::stores::browse::DirectoryView<'_>,
     ) {
+        observe_inputs(&mut self.state, &self.adapter, &fixture_input().input());
         set_query_from_directory(&mut self.state, &self.adapter, q, directory);
     }
     pub(super) fn run_with_directory(
@@ -130,7 +137,7 @@ pub(super) fn fresh() -> Fresh {
 /// they inject themselves, and a request on the outbox would be one more thing for them to account
 /// for. Call it before every `pump()`.
 pub(super) fn hold_off(owner: &mut Owner) {
-    for i in slots() {
+    for i in fixture_slots() {
         source_mut(&mut owner.state, i).retry_cd = RETRY_FRAMES;
     }
     owner.state.armed = false;
@@ -152,8 +159,10 @@ pub(super) fn register(owner: &mut Owner, n: usize) {
     // Test setup finishes before any seeded mailbox/status. Production learns this boundary
     // from its first pump; fixtures that inject a landing directly must mark the just-built
     // roster as already observed so that first pump grades the landing rather than setup.
-    owner.state.visible = plx_plex::plex::server_roster_gen();
-    assert_eq!(nsrc(), n);
+    owner.state.clients = crate::pms::registry_keys_for_test();
+    owner.state.visible = owner.state.clients.roster_gen();
+    owner.state.live = Arc::new(owner.state.clients.slots().map(|sid| sid.raw() as usize).collect());
+    assert_eq!(fixture_nsrc(), n);
 }
 
 pub(super) fn hub(id: &str, kind: &str) -> Hub {

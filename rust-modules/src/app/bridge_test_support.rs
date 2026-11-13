@@ -649,6 +649,7 @@ impl World {
     pub(super) fn step(&mut self, inputs: Vec<InputEvent<u32>>) {
         self.frame += 1;
         if let Some(feed) = self.feed { feed(&mut self.d, &mut self.bridge); }
+        if self.script.is_some() { self.bridge.store_runner.run_held_watchlist_writes(); }
         plx_machine::idle::frame_begin(0.016);
         super::frame(&mut self.d, &mut self.bridge, tick(self.frame), inputs);
         let now = self.frame * 16;

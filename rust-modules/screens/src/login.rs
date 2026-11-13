@@ -2403,7 +2403,13 @@ mod tests {
         type Memory = ();
     }
 
-    impl AuthLike for SessionHost {
+    impl crate::registry::ScreenInputsLike for SessionHost {
+    fn screen_inputs<'a>(_cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        crate::registry::empty_fixture()
+    }
+}
+
+impl AuthLike for SessionHost {
         fn auth<'a>(cx: &Cx<'a, Self>) -> auth::SessionRead<'a> {
             cx.views
         }

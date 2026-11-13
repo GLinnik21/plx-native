@@ -298,6 +298,8 @@ fn a_server_without_the_film_contributes_no_row() {
 fn an_alt_sources_landing_for_another_servers_copy_with_the_same_key_is_refused() {
     let _serial = plx_base::testlock::serial();
     alt_clear(test_state());
+    let keys = crate::pms::registry_keys_for_test();
+    test_state().alt.clients.clone_from(&keys);
     // two copies on two sources — enough for the gate, which counts distinct SOURCES
     let copies = || {
         vec![
@@ -314,10 +316,10 @@ fn an_alt_sources_landing_for_another_servers_copy_with_the_same_key_is_refused(
         ]
     };
     let land = |gen: u32, sid: plx_plex::plex::ServerId, rk: &str| {
-        test_adapter().alt_roster_gen.store(plx_plex::plex::server_roster_gen(), Ordering::SeqCst);
+        test_adapter().alt_roster_gen.store(keys.roster_gen(), Ordering::SeqCst);
         *test_adapter().alt_slot.lock().unwrap() = Some(AltResult {
             gen,
-            roster_gen: plx_plex::plex::server_roster_gen(),
+            roster_gen: keys.roster_gen(),
             sid,
             rk: rk.to_string(),
             list: copies(),
@@ -328,7 +330,7 @@ fn an_alt_sources_landing_for_another_servers_copy_with_the_same_key_is_refused(
     let gen = test_adapter().alt_gen.fetch_add(1, Ordering::SeqCst) + 1;
     // …and while it is out the user lands on the SHARE's film 4
     land(gen, SRV_A, "4");
-    pump_alt_sources(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false, None);
+    pump_alt_sources(test_state(), test_adapter(), &keys, false, None);
     assert!(
         !alt_available(test_state(), SRV_B, "4"),
         "our copies are not news about the share's film"
@@ -342,7 +344,7 @@ fn an_alt_sources_landing_for_another_servers_copy_with_the_same_key_is_refused(
     let stale = test_adapter().alt_gen.fetch_add(1, Ordering::SeqCst) + 1;
     test_adapter().alt_gen.fetch_add(1, Ordering::SeqCst);
     land(stale, SRV_A, "4");
-    pump_alt_sources(test_state(), test_adapter(), &plx_plex::plex::ClientKeys::default(), false, None);
+    pump_alt_sources(test_state(), test_adapter(), &keys, false, None);
     assert!(
         !alt_available(test_state(), SRV_A, "4"),
         "a landing from a superseded resolve is dropped"
@@ -370,7 +372,7 @@ fn an_alt_source_from_a_revoked_slot_is_pruned_and_its_inflight_result_is_discar
         },
     ];
     alt_clear(test_state());
-    alt_install(test_state(), a, "4", copies.clone());
+    alt_install(test_state(), a, "4", copies.clone(), &crate::pms::registry_keys_for_test());
     assert!(alt_available(test_state(), a, "4"));
 
     let old_roster = plx_plex::plex::server_roster_gen();

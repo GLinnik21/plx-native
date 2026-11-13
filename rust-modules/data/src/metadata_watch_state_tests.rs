@@ -35,14 +35,16 @@ fn a_mounted_detail_page_follows_a_corrected_credit() {
         rk: "42".into(),
         ..Default::default()
     }));
+    pump_detail(test_state(), test_adapter(), &crate::pms::registry_keys_for_test(), false);
     assert_eq!(current(test_state()).unwrap().source(), "admin");
 
     // the roster refresh re-grades it, with nothing touching the mounted page
     plx_plex::plex::describe_server(house, "Mac mini", "", plx_plex::plex::GrantEvidence::outside());
+    pump_detail(test_state(), test_adapter(), &crate::pms::registry_keys_for_test(), false);
     assert_eq!(
         current(test_state()).unwrap().source(),
         "",
-        "the page re-asks the registry rather than carrying a copy taken at fetch time"
+        "the page follows captured facts rather than carrying a stale worker credit"
     );
 
     // and a share is still credited, so this is not a blanket clear
@@ -53,6 +55,7 @@ fn a_mounted_detail_page_follows_a_corrected_credit() {
         rk: "318".into(),
         ..Default::default()
     }));
+    pump_detail(test_state(), test_adapter(), &crate::pms::registry_keys_for_test(), false);
     assert_eq!(current(test_state()).unwrap().source(), "friend");
 
     set_current_for_test(test_state(), None);

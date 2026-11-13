@@ -76,6 +76,7 @@ use plx_data::pms::{launch_hubs_job, HubRequest, HubsPort};
 use plx_data::stores::{Admission, StoreJob};
 use plx_data::stores::notify_job::{finish_notify_stream_job, NotifyStreamReq, NotifyStreamPort, NotifyTerminal};
 use plx_data::search::recents::{finish_save_recents_job, SaveRecentsPort, SaveRecentsReq};
+use plx_data::browse::preferences_job::{finish_browse_preferences_job, BrowsePreferencesReq, BrowsePreferencesPort};
 use plx_data::search::{finish_search_job, SearchPort, SearchReq};
 use plx_data::subsearch::{finish_subsearch_job, SubSearchPort, SubSearchReq};
 use plx_data::viewstate::{finish_view_write_job, ViewWritePort, ViewWriteReq};
@@ -87,6 +88,69 @@ use crate::app::bootstrap::HomeIo;
 /// The viewer's time zone for a bands read, as the platform layer reads it from the OS: this runner is
 /// where the zone may be read (the data job takes it as two plain functions, `Zone`, and no machine
 /// reads it), and a calendar family's edges are converted with it.
+pub(crate) fn launch_watchlist_write(
+    job: Job<plx_data::stores::watchlist_job::WriteReq>,
+    port: plx_data::stores::watchlist_job::WritePort,
+    io: std::sync::Arc<dyn plx_data::watchlist::WatchlistIo>,
+) {
+    let addr = job.addr;
+    let refusal = port.clone();
+    if !plx_base::task::spawn_small("wlist-write", move || {
+        if port.start() {
+            plx_data::stores::watchlist_job::finish_write_job(&port, addr, job.req, &*io);
+        }
+    }) { refusal.refused(addr); }
+}
+
+fn launch_watchlist_resolve_with(
+    job: Job<plx_data::stores::watchlist_job::ResolveReq>,
+    port: plx_data::stores::watchlist_job::ResolvePort,
+    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> bool,
+) {
+    let addr = job.addr;
+    let refusal = port.clone();
+    if !spawn(Box::new(move || {
+        if port.start() {
+            plx_data::stores::watchlist_job::finish_resolve_job(&port, addr, job.req, plx_plex::plex::client_for);
+        }
+    })) { refusal.refused(addr); }
+}
+
+
+fn watchlist_day() -> Option<i64> {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    Some((secs / 86_400) as i64)
+}
+fn watchlist_auth_current(auth: &plx_data::watchlist::WatchlistAuth) -> bool {
+    let profile = plx_plex::plex::session::current_snapshot();
+    let credential = profile.user.as_ref().and_then(plx_plex::plex::session::plex_tv_credential);
+    auth.matches_lease(&profile, credential.as_deref())
+}
+fn watchlist_io(input: plx_data::stores::watchlist_job::Snapshot) -> std::sync::Arc<dyn plx_data::watchlist::WatchlistIo> {
+    std::sync::Arc::new(plx_data::stores::watchlist_job::ports::LiveWatchlistIo {
+        input, lookup: plx_plex::plex::client_for, lease: watchlist_auth_current,
+    })
+}
+fn launch_watchlist_stream_with(job: StoreJob, scripted: Option<std::sync::Arc<dyn plx_data::watchlist::WatchlistIo>>,
+    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> bool) {
+    use plx_data::stores::watchlist_job::{finish_list_job, finish_rematch_job, finish_delta_job};
+    let (addr, refusal, worker): (_, _, Box<dyn FnOnce() + Send>) = match job {
+        StoreJob::WatchlistList(job, port) => {
+            let io = scripted.unwrap_or_else(|| watchlist_io(job.req.input.clone()));
+            (job.addr, port.clone(), Box::new(move || finish_list_job(&port, job.addr, job.req, &*io)))
+        }
+        StoreJob::WatchlistRematch(job, port) => {
+            let io = scripted.unwrap_or_else(|| watchlist_io(job.req.input.clone()));
+            (job.addr, port.clone(), Box::new(move || finish_rematch_job(&port, job.addr, job.req, &*io)))
+        }
+        StoreJob::WatchlistDelta(job, port) => {
+            let io = scripted.unwrap_or_else(|| watchlist_io(job.req.input.clone()));
+            (job.addr, port.clone(), Box::new(move || finish_delta_job(&port, job.addr, job.req, &*io)))
+        }
+        _ => panic!("not a Watchlist stream job"),
+    };
+    if !spawn(worker) { refusal.refused(addr); }
+}
 fn os_zone() -> Zone {
     Zone { local_midnight: plx_platform::i18n::local_midnight, local_date: plx_platform::i18n::local_calendar_date }
 }
@@ -198,7 +262,8 @@ pub(crate) enum StoreRunner {
     /// (`run_held` resolves its client when it runs the job). A kind in `live` starts as `Live`
     /// starts it.
     #[cfg(test)]
-    Held { parked: Vec<StoreJob>, live: &'static [LiveKind], notify: NotifyTransport },
+    Held { parked: Vec<StoreJob>, live: &'static [LiveKind], notify: NotifyTransport,
+        watchlist_write: Option<std::sync::Arc<dyn plx_data::watchlist::WatchlistIo>>, watchlist_streams_held: bool },
 }
 
 /// Boot-selected transport, not a second Notify state machine. Scripts must be finite;
@@ -287,7 +352,7 @@ impl StoreRunner {
     /// worker (the Related rigs land the window with `land_related_for_test`), so those are parked.
     #[cfg(test)]
     pub(crate) fn held() -> Self {
-        Self::Held { parked: Vec::new(), live: &[LiveKind::Hubs, LiveKind::MetaSeason, LiveKind::BrowsePage, LiveKind::BrowseDiscovery, LiveKind::MetaAltSources, LiveKind::NotifyStream], notify: NotifyTransport::Refuse }
+        Self::Held { parked: Vec::new(), live: &[LiveKind::Hubs, LiveKind::MetaSeason, LiveKind::BrowsePage, LiveKind::BrowseDiscovery, LiveKind::MetaAltSources, LiveKind::NotifyStream], notify: NotifyTransport::Refuse, watchlist_write: None, watchlist_streams_held: false }
     }
 
     /// TEST ONLY: park the Library listing's page reads of a held runner too (the Home Hubs read
@@ -305,7 +370,7 @@ impl StoreRunner {
     /// chooses to settle them.
     #[cfg(test)]
     pub(crate) fn held_all() -> Self {
-        Self::Held { parked: Vec::new(), live: &[], notify: NotifyTransport::Refuse }
+        Self::Held { parked: Vec::new(), live: &[], notify: NotifyTransport::Refuse, watchlist_write: None, watchlist_streams_held: false }
     }
 
     /// Start `job`, admitting it through the tape when its kind is taped (Detail, Collection,
@@ -313,6 +378,11 @@ impl StoreRunner {
     /// port: the fetch's own, or a refusal when nothing was started.
     pub(crate) fn start(&mut self, job: StoreJob) {
         match job {
+            StoreJob::WatchlistList(job, port) => self.start_watchlist_stream(StoreJob::WatchlistList(job, port)),
+            StoreJob::WatchlistRematch(job, port) => self.start_watchlist_stream(StoreJob::WatchlistRematch(job, port)),
+            StoreJob::WatchlistDelta(job, port) => self.start_watchlist_stream(StoreJob::WatchlistDelta(job, port)),
+            StoreJob::WatchlistResolve(job, port) => self.start_watchlist_resolve(job, port),
+            StoreJob::WatchlistWrite(job, port) => self.start_watchlist_write(job, port),
             StoreJob::Detail(job, port) => self.start_detail(job, port),
             StoreJob::Collection(job, port) => self.start_collection(job, port),
             StoreJob::Person(job, port) => self.start_person(job, port),
@@ -325,6 +395,7 @@ impl StoreRunner {
             StoreJob::BrowsePage(job, port) => self.start_browse_page(job, port),
             StoreJob::BrowseDiscovery(job, port) => self.start_browse_discovery(job, port),
             StoreJob::Search(job, port) => self.start_search(job, port),
+            StoreJob::BrowsePreferences(job, port) => self.start_browse_preferences(job, port),
             StoreJob::SaveRecents(job, port) => self.start_save_recents(job, port),
             StoreJob::ViewWrite(job, port) => self.start_view_write(job, port),
             StoreJob::MetaSeason(job, port) => self.start_meta_season(job, port),
@@ -369,7 +440,9 @@ impl StoreRunner {
                 }
             }
             // Not a Home kind: `Admission::Home` routed here only the kinds the arm above names.
-            other @ (StoreJob::Detail(..)
+            other @ (StoreJob::WatchlistList(..) | StoreJob::WatchlistRematch(..) | StoreJob::WatchlistDelta(..)
+                | StoreJob::WatchlistWrite(..) | StoreJob::WatchlistResolve(..)
+                | StoreJob::Detail(..)
                 | StoreJob::Collection(..)
                 | StoreJob::Person(..)
                 | StoreJob::Catalog(..)
@@ -379,6 +452,7 @@ impl StoreRunner {
                 | StoreJob::BrowseDirectory(..)
                 | StoreJob::BrowsePage(..)
                 | StoreJob::Search(..)
+                | StoreJob::BrowsePreferences(..)
                 | StoreJob::SaveRecents(..)
                 | StoreJob::ViewWrite(..)
                 | StoreJob::MetaSeason(..)
@@ -467,7 +541,10 @@ impl StoreRunner {
                     old_port.done(old.addr, ((old.req.sid, old.req.rk), None));
                 }
                 kept @ (
-                    StoreJob::Collection(..)
+                    StoreJob::WatchlistList(..) | StoreJob::WatchlistRematch(..) | StoreJob::WatchlistDelta(..)
+                    | StoreJob::WatchlistWrite(..)
+                    | StoreJob::WatchlistResolve(..)
+                    | StoreJob::Collection(..)
                     | StoreJob::Person(..)
                     | StoreJob::Hubs(..)
                     | StoreJob::Catalog(..)
@@ -478,7 +555,8 @@ impl StoreRunner {
                     | StoreJob::BrowsePage(..)
                     | StoreJob::BrowseDiscovery(..)
                     | StoreJob::Search(..)
-                    | StoreJob::SaveRecents(..)
+                    | StoreJob::BrowsePreferences(..)
+                | StoreJob::SaveRecents(..)
                     | StoreJob::ViewWrite(..)
                     | StoreJob::MetaSeason(..)
                     | StoreJob::MetaEpisodes(..)
@@ -549,8 +627,8 @@ impl StoreRunner {
         let request = job.req.admission();
         let admission = port.clone();
         if !plx_data::stores::tape::admit(request, || self.launch_person(job, port)) {
-            // Nothing was started, so nothing will ever answer on its own: the refusal hands the
-            // slot's claim back, and the next pump asks again.
+            // An unstarted request still owes one addressed terminal. The Bridge consumes it
+            // in this drain; the owner releases its claim and applies its retry policy.
             admission.refused(addr);
         }
     }
@@ -585,6 +663,55 @@ impl StoreRunner {
         let refusal = port.clone();
         if !self.launch_catalog(job, port) {
             refusal.refused(addr);
+        }
+    }
+
+
+
+    pub(crate) fn watchlist_snapshot(&self, keys: &ClientKeys, cache: &mut plx_data::stores::watchlist_job::SnapshotCache) -> plx_data::stores::watchlist_job::Snapshot {
+        match self {
+            Self::Live => cache.capture(keys, watchlist_day()),
+            #[cfg(test)]
+            Self::Held { watchlist_write: Some(io), .. } => plx_data::stores::watchlist_job::Snapshot::scripted(&**io),
+            #[cfg(test)]
+            Self::Held { .. } => cache.capture(keys, watchlist_day()),
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn hold_watchlist_streams(&mut self, hold: bool) {
+        if let Self::Held { watchlist_streams_held, .. } = self { *watchlist_streams_held = hold; }
+        if !hold { self.run_held_where(|j| matches!(j, StoreJob::WatchlistList(..) | StoreJob::WatchlistRematch(..) | StoreJob::WatchlistDelta(..))); }
+    }
+fn start_watchlist_stream(&mut self, job: StoreJob) {
+        match self {
+            Self::Live => launch_watchlist_stream_with(job, None, |worker| plx_base::task::spawn_small("wlist", worker)),
+            #[cfg(test)]
+            Self::Held { watchlist_write: Some(io), watchlist_streams_held: false, .. } => {
+                launch_watchlist_stream_with(job, Some(io.clone()), |worker| { worker(); true });
+            }
+            #[cfg(test)]
+            Self::Held { parked, .. } => parked.push(job),
+        }
+    }
+    fn start_watchlist_resolve(&mut self, job: Job<plx_data::stores::watchlist_job::ResolveReq>,
+        port: plx_data::stores::watchlist_job::ResolvePort) {
+        match self {
+            Self::Live => {
+                launch_watchlist_resolve_with(job, port, |worker| plx_base::task::spawn_small("wlist-resolve", worker));
+            }
+            #[cfg(test)]
+            Self::Held { parked, .. } => parked.push(StoreJob::WatchlistResolve(job, port)),
+        }
+    }
+
+    fn start_watchlist_write(&mut self, job: Job<plx_data::stores::watchlist_job::WriteReq>,
+        port: plx_data::stores::watchlist_job::WritePort) {
+        match self {
+            Self::Live => {
+                launch_watchlist_write(job, port, watchlist_io(Default::default()));
+            }
+            #[cfg(test)]
+            Self::Held { parked, .. } => parked.push(StoreJob::WatchlistWrite(job, port)),
         }
     }
 
@@ -680,6 +807,30 @@ impl StoreRunner {
         if !self.launch_save_recents(job, port) {
             refusal.refused(addr);
         }
+    }
+
+    fn start_browse_preferences(&mut self, job: Job<BrowsePreferencesReq>, port: BrowsePreferencesPort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !job.req.matches_account(&plx_plex::plex::session::peek())
+            || !job.req.matches_tenure(plx_plex::plex::session::tenure()) {
+            refusal.refused(addr);
+            return;
+        }
+        let launched = match self {
+            Self::Live => {
+                let _ = plx_base::storage_worker::submit_retained(move || {
+                    finish_browse_preferences_job(&port, addr, job.req);
+                });
+                true
+            }
+            #[cfg(test)]
+            Self::Held { parked, .. } => {
+                parked.push(StoreJob::BrowsePreferences(job, port));
+                true
+            }
+        };
+        if !launched { refusal.refused(addr); }
     }
 
     fn launch_save_recents(&mut self, job: Job<SaveRecentsReq>, port: SaveRecentsPort) -> bool {
@@ -1051,6 +1202,11 @@ impl StoreRunner {
         if let Self::Held { notify, .. } = self { *notify = transport; }
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_watchlist_write_io(&mut self, io: std::sync::Arc<dyn plx_data::watchlist::WatchlistIo>) {
+        if let Self::Held { watchlist_write, .. } = self { *watchlist_write = Some(io); }
+    }
+
     fn start_notify_stream(&mut self, job: Job<NotifyStreamReq>, port: NotifyStreamPort) {
         let transport = self.notify_transport();
         self.start_notify_stream_with(job, port, |req| transport.resolve(req),
@@ -1117,15 +1273,47 @@ impl StoreRunner {
         self.run_held_where(|job| job.store() == id)
     }
 
+
+    #[cfg(test)]
+    pub(crate) fn run_held_watchlist_writes(&mut self) -> usize {
+        self.run_held_where(|job| matches!(job, StoreJob::WatchlistWrite(..)))
+    }
+
+
+    #[cfg(test)]
+    pub(crate) fn take_held_watchlist_resolves(&mut self) -> Vec<StoreJob> {
+        let Self::Held { parked, .. } = self else { return Vec::new() };
+        let (take, keep) = std::mem::take(parked).into_iter()
+            .partition(|job| matches!(job, StoreJob::WatchlistResolve(..)));
+        *parked = keep;
+        take
+    }
+
     #[cfg(test)]
     fn run_held_where(&mut self, wanted: impl Fn(&StoreJob) -> bool) -> usize {
         let transport = self.notify_transport();
+        let watchlist_write = match &*self { Self::Held { watchlist_write, .. } => watchlist_write.clone(), Self::Live => None };
         let Self::Held { parked, .. } = self else { return 0 };
         let (run, keep): (Vec<_>, Vec<_>) = std::mem::take(parked).into_iter().partition(|job| wanted(job));
         *parked = keep;
         let n = run.len();
         for job in run {
             match job {
+                stream @ (StoreJob::WatchlistList(..) | StoreJob::WatchlistRematch(..) | StoreJob::WatchlistDelta(..)) => {
+                    if let Some(io) = &watchlist_write {
+                        launch_watchlist_stream_with(stream, Some(io.clone()), |worker| { worker(); true });
+                    } else { launch_watchlist_stream_with(stream, None, |_| false); }
+                }
+                StoreJob::WatchlistResolve(job, port) => {
+                    if port.start() {
+                        plx_data::stores::watchlist_job::finish_resolve_job(&port, job.addr, job.req, plx_plex::plex::client_for);
+                    }
+                }
+                StoreJob::WatchlistWrite(job, port) => {
+                    if let Some(io) = &watchlist_write {
+                        if port.start() { plx_data::stores::watchlist_job::finish_write_job(&port, job.addr, job.req, &**io); }
+                    } else { port.refused(job.addr); }
+                },
                 StoreJob::Detail(job, port) => {
                     // The client is resolved when the job runs (a live one is resolved by
                     // `start_detail`, at the admission); a server with none answers the failure.
@@ -1225,6 +1413,7 @@ impl StoreRunner {
                         None => port.refused(job.addr),
                     }
                 }
+                StoreJob::BrowsePreferences(job, port) => finish_browse_preferences_job(&port, job.addr, job.req),
                 StoreJob::SaveRecents(job, port) => finish_save_recents_job(&port, job.addr, job.req),
                 StoreJob::ViewWrite(job, port) => {
                     // The registry may have moved on since the job was parked: a write whose
@@ -1588,9 +1777,17 @@ mod tests {
         assert_eq!(sid.raw(), 0, "slot arithmetic below assumes the first server");
         if controlled { tape::init(None, false); }
         let mut store = PersonStore::default();
-        assert!(store.run(PersonCmd::Open {
-            sid, key: "19".into(), guid: PERSON_GUID.into(), name: "Actor".into(), thumb: String::new() }));
-        store.pump(plx_machine::landgate::fixture_gate(), &registry_keys());
+        let keys = registry_keys();
+        let session = plx_plex::plex::session::peek_settled();
+        let input = plx_data::person::PersonInput { keys: &keys, session: session.as_ref(),
+                profile_scope: 0, owner_epoch: 0, profile_generation: 0, tenure: 0, profile_key: "",
+            visible_generation: plx_plex::plex::session::visible_generation(), controlled,
+            profile_refused: plx_plex::plex::discover::person_profile_refused(PERSON_GUID),
+            credits_refused: plx_plex::plex::discover::person_credits_refused(PERSON_GUID),
+            dev_bio: None, dev_credits: None };
+        assert!(store.run_with_input(PersonCmd::Open {
+            sid, key: "19".into(), guid: PERSON_GUID.into(), name: "Actor".into(), thumb: String::new() }, &input));
+        store.pump(plx_machine::landgate::fixture_gate(), &input);
         let (mut local, mut global) = (Vec::new(), Vec::new());
         for job in store.take_jobs() {
             let StoreJob::Person(ref j, _) = job else { panic!("not a person job") };
@@ -1629,7 +1826,15 @@ mod tests {
             "the request the runner admitted is the recorded shape, admitted");
         assert!(store.adapter_for_test().has_mail_for_test(MEDIA), "the worker answered");
         tape::reset_for_test();
-        store.pump(plx_machine::landgate::fixture_gate(), &registry_keys());
+        let (person_keys, person_session) = (registry_keys(), plx_plex::plex::session::peek_settled());
+        let person_input = plx_data::person::PersonInput {
+                profile_scope: 0, owner_epoch: 0, profile_generation: 0, tenure: 0, profile_key: "",
+            keys: &person_keys, session: person_session.as_ref(), controlled: false,
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            profile_refused: plx_plex::plex::discover::person_profile_refused(PERSON_GUID),
+            credits_refused: plx_plex::plex::discover::person_credits_refused(PERSON_GUID), dev_bio: None, dev_credits: None,
+        };
+        store.pump(plx_machine::landgate::fixture_gate(), &person_input);
         assert!(!store.adapter_for_test().busy_for_test(MEDIA), "taking the one answer released the claim");
     }
 
@@ -1659,12 +1864,16 @@ mod tests {
     fn a_person_job_the_tape_does_not_admit_is_refused_once_and_its_claim_comes_back() {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
-        let (sid, store, job, _) = person_requests(false);
+        let (sid, mut store, job, _) = person_requests(false);
         let admission = media_admission(sid, false);
         tape::init(None, true);
         tape::begin([admission.clone()].into(), Default::default());
 
         StoreRunner::live().start(job);
+        {
+            let _step = plx_base::step::StepScope::enter();
+            store.land_launch_refusals();
+        }
         plx_base::task::drain_workers_for_test();
 
         assert_eq!(tape::finish(), (vec![admission], None),
@@ -1699,11 +1908,15 @@ mod tests {
     fn a_person_job_whose_client_the_registry_has_moved_on_from_is_not_started() {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
-        let (sid, store, job, _) = person_requests(false);
+        let (sid, mut store, job, _) = person_requests(false);
         plx_plex::plex::client_for(sid).expect("registered").set_token("rotated");
         tape::init(None, false);
 
         StoreRunner::live().start(job);
+        {
+            let _step = plx_base::step::StepScope::enter();
+            store.land_launch_refusals();
+        }
         plx_base::task::drain_workers_for_test();
 
         assert_eq!(tape::finish(), (vec![media_admission(sid, false)], None),
@@ -1741,7 +1954,7 @@ mod tests {
     fn a_parked_person_job_whose_client_is_gone_when_it_runs_is_refused() {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
-        let (_, store, job, mut global) = person_requests(true);
+        let (_, mut store, job, mut global) = person_requests(true);
         let mut runner = StoreRunner::held();
 
         runner.start(job);
@@ -1750,6 +1963,10 @@ mod tests {
         assert!(adapter.busy_for_test(MEDIA) && adapter.busy_for_test(PROFILE), "parked, still out");
         plx_plex::plex::reset_servers_for_test();
         assert_eq!(runner.run_held(), 2);
+        {
+            let _step = plx_base::step::StepScope::enter();
+            store.land_launch_refusals();
+        }
 
         assert!(!adapter.busy_for_test(MEDIA), "the refusal handed the claim back");
         assert!(!adapter.has_mail_for_test(MEDIA));
@@ -1902,17 +2119,29 @@ mod tests {
         plx_plex::plex::reset_servers_for_test();
         let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", 9, "t", "cid");
         let mut store = SearchStore::default();
-        search_store_pump(&mut store, 0.0); // the first pump observes the roster
-        assert!(store.run(SearchCmd::SetQuery("wallace".into())));
-        search_store_pump(&mut store, 0.3);
+        let host_capture = plx_data::search::fixture_input();
+        let search_input = host_capture.input();
+        let directory = DirectorySnapshot::default();
+        search_store_pump_with_input(&mut store, 0.0, &search_input); // the first pump observes the roster
+        assert!(store.run_with_directory_and_input(
+            SearchCmd::SetQuery("wallace".into()), directory.view(), &search_input));
+        search_store_pump_with_input(&mut store, 0.3, &search_input);
         let mut jobs = store.take_jobs();
         assert_eq!(jobs.len(), 1, "one registered server, one request");
         (sid, store, jobs.remove(0))
     }
 
     fn search_store_pump(store: &mut SearchStore, dt: f32) {
+        let captured = plx_data::search::fixture_input();
+        search_store_pump_with_input(store, dt, &captured.input());
+    }
+
+    fn search_store_pump_with_input(
+        store: &mut SearchStore, dt: f32, input: &plx_data::search::SearchInput<'_>,
+    ) {
         let directory = DirectorySnapshot::default();
-        store.pump_with_directory_and_gate(dt, directory.view(), plx_machine::landgate::fixture_gate(), &registry_keys());
+        store.pump_with_directory_and_input_and_gate(
+            dt, directory.view(), plx_machine::landgate::fixture_gate(), input);
     }
 
     fn search_store_claim_held(store: &SearchStore, sid: ServerId) -> bool {
@@ -1970,6 +2199,10 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
         let (sid, mut store, job) = search_store_request();
+        // Keep the host publication that admitted this request: observing the retoken instead
+        // supersedes the query and intentionally retires its refusal/backoff with that scope.
+        let captured = plx_data::search::fixture_input();
+        let input = captured.input();
         plx_plex::plex::client_for(sid).expect("registered").set_token("rotated");
 
         StoreRunner::live().start(job);
@@ -1977,10 +2210,10 @@ mod tests {
 
         assert!(!search_store_claim_held(&store, sid), "the refusal handed the claim back");
         assert!(!search_store_has_mail(&store, sid), "nothing was read, so nothing answered");
-        search_store_pump(&mut store, 0.016);
+        search_store_pump_with_input(&mut store, 0.016, &input);
         assert!(!store.has_jobs(), "backed off: no request at once");
         for _ in 0..30 {
-            search_store_pump(&mut store, 0.016);
+            search_store_pump_with_input(&mut store, 0.016, &input);
             assert!(!store.has_jobs(), "and none while the wait runs");
         }
     }
@@ -2613,6 +2846,134 @@ mod tests {
         assert_eq!(io.reads.load(Ordering::SeqCst), 1);
     }
 
+
+// Watchlist write runner coverage lives with the bridge press fixture.
+    #[test]
+    fn watchlist_resolve_cancel_before_worker_entry_prevents_execution() {
+        use plx_data::stores::watchlist_job::{ResolveEnd, ResolveMailbox, ResolvePort, ResolveReq};
+        use plx_machine::machine::{Addr, MachineId, RequestId};
+        let tag = plx_data::watchlist::Tag { profile_gen: 1, epoch: 2, req: 3 };
+        let addr = Addr { to: MachineId::Store(plx_data::stores::StoreId::Watchlist.ord()), req: RequestId(tag.req) };
+        let req = ResolveReq { tag, keys: ClientKeys::default(), sid: ServerId::from_raw(0), rk: "7".into() };
+        let mailbox = Arc::new(ResolveMailbox::default());
+        let port = ResolvePort::new(addr, &req, Arc::clone(&mailbox));
+        let mut worker = None;
+        launch_watchlist_resolve_with(Job { addr, req }, port.clone(), |f| { worker = Some(f); true });
+        port.cancel_queued();
+        worker.unwrap()();
+        let answers = mailbox.take();
+        assert_eq!(answers.len(), 1);
+        assert!(matches!(answers[0].end, ResolveEnd::NotStarted));
+    }
+
+    fn watchlist_stream_fixture(kind: u8) -> (StoreJob, plx_data::stores::watchlist_job::WatchlistStreamPort,
+        Arc<plx_data::stores::watchlist_job::stream::StreamMailbox<plx_data::watchlist::What>>) {
+        use plx_data::stores::watchlist_job::*;
+        use plx_machine::machine::{Addr, MachineId, RequestId};
+        let tag = plx_data::watchlist::Tag { profile_gen: 1, epoch: 2, req: 3 };
+        let addr = Addr { to: MachineId::Store(plx_data::stores::StoreId::Watchlist.ord()), req: RequestId(tag.req) };
+        let mailbox = Arc::new(stream::StreamMailbox::default());
+        let port = WatchlistStreamPort::new(addr, tag, Arc::clone(&mailbox));
+        let job = match kind {
+            0 => StoreJob::WatchlistList(Job { addr, req: ListReq { tag, input: Snapshot::default(), auth: AuthValue(plx_data::watchlist::WatchlistInput::for_test(1).auth().unwrap().clone()), known: Default::default(), known_gen: 0, etag: None } }, port.clone()),
+            1 => StoreJob::WatchlistRematch(Job { addr, req: RematchReq { tag, input: Snapshot::default(), rows: Vec::new() } }, port.clone()),
+            _ => StoreJob::WatchlistDelta(Job { addr, req: DeltaReq { tag, input: Snapshot::default(), sid: ServerId::UNSET, rows: Vec::new().into() } }, port.clone()),
+        };
+        (job, port, mailbox)
+    }
+    #[test]
+    fn watchlist_stream_all_three_kinds_refuse_once_without_worker_entry() {
+        use plx_data::stores::watchlist_job::stream::{StreamEvent, StreamEnd};
+        for kind in 0..3 {
+            let (job, port, mail) = watchlist_stream_fixture(kind);
+            launch_watchlist_stream_with(job, None, |_| false);
+            assert!(port.start().is_none());
+            let batch = mail.take();
+            assert_eq!(batch.len(), 1);
+            assert!(matches!(batch[0].event, StreamEvent::End(StreamEnd::NotStarted)));
+            assert!(batch[0].ack_terminal());
+            assert!(!port.is_owed());
+        }
+    }
+    #[test]
+    fn watchlist_stream_all_three_kinds_cancel_at_actual_worker_entry() {
+        use plx_data::stores::watchlist_job::stream::{StreamEvent, StreamEnd};
+        for kind in 0..3 {
+            let (job, port, mail) = watchlist_stream_fixture(kind);
+            let mut worker = None;
+            launch_watchlist_stream_with(job, None, |f| { worker = Some(f); true });
+            assert!(mail.take().is_empty(), "admission is not entry");
+            port.cancel();
+            worker.unwrap()();
+            let batch = mail.take();
+            assert_eq!(batch.len(), 1);
+            assert!(matches!(batch[0].event, StreamEvent::End(StreamEnd::Cancelled)));
+            assert!(batch[0].ack_terminal());
+        }
+    }
+    #[test]
+    fn watchlist_stream_held_jobs_survive_detail_retirement_and_refuse_on_release() {
+        use plx_data::stores::watchlist_job::stream::{StreamEvent, StreamEnd};
+        let mut runner = StoreRunner::held();
+        let mut claims = Vec::new();
+        for kind in 0..3 {
+            let (job, port, mail) = watchlist_stream_fixture(kind);
+            runner.start(job);
+            claims.push((port, mail));
+        }
+        if let StoreRunner::Held { parked, .. } = &mut runner { StoreRunner::retire_parked_details(parked); }
+        assert_eq!(runner.run_held(), 3);
+        for (port, mail) in claims {
+            let batch = mail.take();
+            assert_eq!(batch.len(), 1);
+            assert!(matches!(batch[0].event, StreamEvent::End(StreamEnd::NotStarted)));
+            assert!(batch[0].ack_terminal());
+            assert!(!port.is_owed());
+        }
+    }
+
+    #[test]
+    fn watchlist_resolve_live_answers_and_releases_an_unanswered_claim() {
+        let _serial = plx_base::testlock::serial();
+        let mut store = plx_data::stores::watchlist::WatchlistStore::default();
+        let sid = ServerId::from_raw(0);
+        store.want_hex(sid, "7");
+        store.pump();
+        let job = store.take_jobs().pop().unwrap();
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+        store.pump();
+        assert_eq!(store.view().resolved_hex(sid, "7"), None);
+        store.want_hex(sid, "7");
+        store.pump();
+        assert_eq!(store.take_jobs().len(), 1, "unanswered is retryable");
+    }
+
+    #[test]
+    fn watchlist_resolve_held_cancel_cannot_run_or_settle_a_replacement() {
+        let _serial = plx_base::testlock::serial();
+        let mut store = plx_data::stores::watchlist::WatchlistStore::default();
+        let sid = ServerId::from_raw(0);
+        let mut runner = StoreRunner::held_all();
+        store.want_hex(sid, "7");
+        store.pump();
+        runner.start(store.take_jobs().pop().unwrap());
+        store.run(plx_data::stores::watchlist::WatchlistCmd::Reset);
+        store.want_hex(sid, "7");
+        store.pump();
+        let replacement = store.take_jobs().pop().unwrap();
+        assert_eq!(runner.run_held(), 1);
+        store.pump();
+        assert_eq!(store.view().resolved_hex(sid, "7"), None);
+        assert!(!store.has_jobs(), "the replacement is still claimed");
+        runner.start(replacement);
+        assert_eq!(runner.run_held(), 1);
+        store.pump();
+        store.want_hex(sid, "7");
+        store.pump();
+        assert_eq!(store.take_jobs().len(), 1, "the replacement answered once");
+    }
+
     /// A newer DETAIL request retires only the detail fetches parked before it: a catalog read is
     /// not a request it supersedes. `run_held_of` takes one store's jobs and leaves the rest.
     #[test]
@@ -2831,7 +3192,7 @@ mod tests {
         refill_client_keys(&mut keys);
         let session = plx_plex::plex::session::peek();
         let profile_key = plx_plex::plex::session::current_profile_key();
-        browse.run_with_input(cmd, &plx_data::browse::BrowseRosterInput {
+        browse.run_with_input(cmd, &plx_data::browse::BrowseRosterInput { tenure: 0,
             keys: &keys, session: &session,
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),
@@ -2907,7 +3268,7 @@ mod tests {
         browse.observe_pin_write();
         let mut keys = plx_plex::plex::ClientKeys::default();
         refill_client_keys(&mut keys);
-        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput {
+        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput { tenure: 0,
             keys: &keys, session: &plx_plex::plex::session::peek(),
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),
@@ -2974,7 +3335,7 @@ mod tests {
         browse.observe_pin_write();
         let mut keys = plx_plex::plex::ClientKeys::default();
         refill_client_keys(&mut keys);
-        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput {
+        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput { tenure: 0,
             keys: &keys, session: &plx_plex::plex::session::peek(),
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),
@@ -3081,7 +3442,7 @@ mod tests {
         browse.observe_pin_write();
         let mut keys = plx_plex::plex::ClientKeys::default();
         refill_client_keys(&mut keys);
-        let _ = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput {
+        let _ = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput { tenure: 0,
             keys: &keys, session: &plx_plex::plex::session::peek(),
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),
@@ -3428,7 +3789,7 @@ mod tests {
         browse.observe_pin_write();
         let mut keys = plx_plex::plex::ClientKeys::default();
         refill_client_keys(&mut keys);
-        let _ = browse.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput {
+        let _ = browse.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &plx_data::browse::BrowseRosterInput { tenure: 0,
             keys: &keys, session: &plx_plex::plex::session::peek(),
             visible_generation: plx_plex::plex::session::visible_generation(),
             settled: plx_plex::plex::session::peek_settled().is_some(),

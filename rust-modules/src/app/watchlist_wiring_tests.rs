@@ -116,6 +116,7 @@ fn mounted(script: &Arc<Script>) -> (Dispatcher<AppHost>, Bridge) {
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     *rig.watchlist_for_test() = WatchlistStore::with_io(script.clone()).with_spawn_for_test(inline);
+    rig.store_runner.set_watchlist_write_io(script.clone());
     rig.seat_watchlist_account_for_test(script.token);
     super::nav_root(&mut d, AppArg::Home);
     super::frame(&mut d, &mut rig, tick(0), vec![]);
@@ -128,6 +129,7 @@ fn mounted(script: &Arc<Script>) -> (Dispatcher<AppHost>, Bridge) {
 fn settle(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, from: u32) {
     for i in 0..6 {
         rig.watchlist_pump();
+        rig.store_runner.run_held_watchlist_writes();
         rig.watchlist_feed(d);
         super::frame(d, rig, tick(from + i), vec![]);
     }

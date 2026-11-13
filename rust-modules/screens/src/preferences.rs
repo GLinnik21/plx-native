@@ -141,10 +141,10 @@ impl Whose {
     /// the chip's own session accessors; `account_menu::chip_label` is that rule, but a screen never
     /// names a sibling. A seat implies a signed-in account, so the chip's signed-out arm (the Sign
     /// in label) cannot be this page's. Returns the publication generation it read, to notice a change.
-    fn now() -> (u32, Self) {
-        let profile = plx_plex::plex::session::current_snapshot();
+    fn now(inputs: &crate::registry::ScreenInputs) -> (u32, Self) {
+        let profile = &inputs.profile;
         if profile.seat() == plx_plex::plex::session::Seat::Unseated { return (profile.generation, Self::Nobody); }
-        let account = plx_plex::plex::session::peek().account(profile.user.as_ref());
+        let account = inputs.session.account(profile.user.as_ref());
         let name = account.name.unwrap_or_else(|| plx_platform::i18n::msg::settings_account_title().to_string());
         (profile.generation, Self::Profile(name))
     }
@@ -214,14 +214,16 @@ struct Txn {
 enum Landed { Nothing, Changed, Saved }
 
 impl Txn {
-    fn new(adopt_existing: bool) -> Self {
+    fn new(adopt_existing: bool, profile: &plx_plex::plex::session::CurrentProfile) -> Self {
         let mut txn = Self { request: None, snapshot: None, pending: None, retry: None, saving: false,
             seen: if adopt_existing { 0 } else { CONFIRMED.with(|c| c.borrow().0) } };
-        txn.adopt_shared();
+        txn.adopt_shared(profile);
         txn
     }
     fn prefs(&self) -> Option<&AudioPreferences> { self.snapshot.as_ref().map(|s| &s.preferences) }
-    fn stale(&self) -> bool { self.request.as_ref().is_some_and(|r| !r.is_current()) }
+    fn stale(&self, profile: &plx_plex::plex::session::CurrentProfile) -> bool {
+        self.request.as_ref().is_some_and(|r| !r.matches_profile(profile))
+    }
     /// Publish the confirmed snapshot for the other page of the pair.
     fn publish(&mut self) {
         let (Some(request), Some(snapshot)) = (self.request.clone(), self.snapshot.clone()) else { return; };
@@ -233,7 +235,7 @@ impl Txn {
         });
     }
     /// Take a newer published snapshot, unless a load/save of our own is in flight. True when taken.
-    fn adopt_shared(&mut self) -> bool {
+    fn adopt_shared(&mut self, profile: &plx_plex::plex::session::CurrentProfile) -> bool {
         if self.pending.is_some() { return false; }
         let taken = CONFIRMED.with(|c| {
             let c = c.borrow();
@@ -242,7 +244,7 @@ impl Txn {
         let Some((generation, shared)) = taken else { return false; };
         self.seen = generation;
         match shared {
-            Some((request, snapshot)) if request.is_current() => {
+            Some((request, snapshot)) if request.matches_profile(profile) => {
                 self.request = Some(request); self.snapshot = Some(snapshot); self.retry = None; true
             }
             _ => false,
@@ -301,7 +303,7 @@ impl Txn {
         self.snapshot = None; self.pending = None; io.busy = false;
         self.load(io, fx);
     }
-    fn poll(&mut self, io: &mut Io, fx: &mut Effects<'_, InnerHost>) -> Landed {
+    fn poll(&mut self, io: &mut Io, fx: &mut Effects<'_, InnerHost>, profile: &plx_plex::plex::session::CurrentProfile) -> Landed {
         enum Receipt { Account(AccountPreferenceReply), Local(bool), Failed }
         let receipt = match &self.pending {
             Some(Pending::Account(rx)) => match rx.try_recv() {
@@ -320,7 +322,7 @@ impl Txn {
         let mut landed = Landed::Changed;
         match receipt {
             Receipt::Account(reply) => {
-                if reply.request.as_ref().is_some_and(|request| !request.is_current()) {
+                if reply.request.as_ref().is_some_and(|request| !request.matches_profile(profile)) {
                     self.snapshot = None; self.load(io, fx);
                 } else if let Some(request) = reply.request {
                     self.request = Some(request);
@@ -402,6 +404,7 @@ impl LogicalState for State {
 }
 
 pub struct PreferencesPage {
+    inputs: crate::registry::ScreenInputs,
     marker_prefs: MarkerPrefsView,
     entry: EntryId,
     form: FormTable<RowId, Action, SettingsPage>,
@@ -429,16 +432,16 @@ pub struct PreferencesPage {
     whose: (u32, Whose),
 }
 impl PreferencesPage {
-    pub fn new(entry: EntryId, kind: Kind) -> Self {
-        let mut s = Self { marker_prefs: Default::default(), entry, form: FormTable::new(BAND),
+    pub fn new(entry: EntryId, kind: Kind, inputs: &crate::registry::ScreenInputs) -> Self {
+        let mut s = Self { inputs: inputs.clone(), marker_prefs: Default::default(), entry, form: FormTable::new(BAND),
             state: State { marker_prefs: Default::default(), kind, selected: 0, io: Io { busy: false, status: String::new() },
                 quality: plx_media::route::quality(), direct_play: plx_media::route::direct_play_mode(), values: Vec::new() },
-            copy: String::new(), follow: plx_ui::follow_copy::FollowCopy::new(""), txn: Txn::new(false),
+            copy: String::new(), follow: plx_ui::follow_copy::FollowCopy::new(""), txn: Txn::new(false, &inputs.profile),
             look: (plx_media::route::subtitle_size(), plx_media::route::subtitle_position(), plx_media::player::subtitle_tone(), plx_media::route::hdr_overlay_brightness()),
             next_episode: plx_media::route::next_episode_mode(), deck_press: plx_media::route::deck_press(),
             skip_interval: plx_media::route::skip_interval(), instant_dpad_seeking: plx_media::route::instant_dpad_seeking(),
             uri_engine: plx_media::route::uri_engine(),
-            dolby_vision: plx_media::route::dolby_vision_mode(), whose: Whose::now() };
+            dolby_vision: plx_media::route::dolby_vision_mode(), whose: Whose::now(inputs) };
         s.rebuild(None);
         // A page opens on its first row's sentence at once, with nothing fading.
         s.follow = plx_ui::follow_copy::FollowCopy::new(&s.sentence());
@@ -476,7 +479,7 @@ impl PreferencesPage {
         self.instant_dpad_seeking = plx_media::route::instant_dpad_seeking();
         self.uri_engine = plx_media::route::uri_engine();
         self.dolby_vision = plx_media::route::dolby_vision_mode();
-        self.whose = Whose::now();
+        self.whose = Whose::now(&self.inputs);
         self.copy = copy_text(Subject::Page(self.state.kind), &self.state.io.status, self.state.direct_play, &self.whose.1).into_owned();
         let inputs = FieldListInputs {
             kind: self.state.kind, quality: self.state.quality, direct_play: self.state.direct_play,
@@ -588,13 +591,7 @@ fn resolve_value(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
         PickerKind::InstantDpadSeeking => Value::InstantDpadSeeking(plx_media::route::instant_dpad_seeking()),
         PickerKind::UriEngine => Value::UriEngine(plx_media::route::uri_engine()),
         PickerKind::DolbyVision => Value::DolbyVision(plx_media::route::dolby_vision_mode()),
-        PickerKind::UiResolution | PickerKind::IpProtocol => {
-            let session = plx_plex::plex::session::peek();
-            match field {
-                PickerKind::UiResolution => Value::UiResolution(session.ui_resolution()),
-                _ => Value::IpMode(session.ip_mode()),
-            }
-        },
+        PickerKind::UiResolution | PickerKind::IpProtocol => unreachable!("install-wide values require retained inputs"),
         // A deprecated code (`pb`) resolves to its replacement so the picker checks that entry.
         PickerKind::AudioLanguage => Value::Language(prefs.and_then(|p| p.stated_language.as_deref()).map(plx_plex::plex::languages::canonical).unwrap_or_default().to_string()),
         PickerKind::SubtitleLanguage => Value::Language(prefs.and_then(|p| p.subtitle_language.as_deref()).map(plx_plex::plex::languages::canonical).unwrap_or_default().to_string()),
@@ -807,6 +804,14 @@ fn forced_readout(value: i64) -> &'static str {
 impl Machine<InnerHost> for PreferencesPage {
     type Ev = ScreenEvent<InnerHost>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Handled {
+        let inputs_changed = self.inputs.session_key() != cx.views.inputs.session_key()
+            || !std::sync::Arc::ptr_eq(&self.inputs.session, &cx.views.inputs.session)
+            || !std::sync::Arc::ptr_eq(&self.inputs.profile, &cx.views.inputs.profile);
+        self.inputs = cx.views.inputs.clone();
+        if inputs_changed {
+            self.rebuild_keeping();
+            fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
+        }
         let marker_prefs = cx.views.marker_prefs;
         if marker_prefs != self.marker_prefs {
             self.marker_prefs = marker_prefs;
@@ -819,7 +824,7 @@ impl Machine<InnerHost> for PreferencesPage {
         match ev {
             ScreenEvent::Enter(_) => {
                 // A return from a picker: its save may have confirmed a new snapshot.
-                let adopted = self.txn.adopt_shared();
+                let adopted = self.txn.adopt_shared(&self.inputs.profile);
                 if self.start_initial_load(fx) || adopted {
                     self.rebuild_keeping(); fx.invalidate(plx_machine::present::Provenance::Input);
                 }
@@ -827,11 +832,11 @@ impl Machine<InnerHost> for PreferencesPage {
             }
             ScreenEvent::Tick(t) => {
                 let started = self.start_initial_load(fx);
-                let stale = self.txn.stale();
+                let stale = self.txn.stale(&self.inputs.profile);
                 if stale { self.txn.recover_stale(&mut self.state.io, fx); }
-                let adopted = self.txn.adopt_shared();
+                let adopted = self.txn.adopt_shared(&self.inputs.profile);
                 let had_rows = self.form.table.n_rows() > 0;
-                let landed = self.txn.poll(&mut self.state.io, fx) != Landed::Nothing;
+                let landed = self.txn.poll(&mut self.state.io, fx, &self.inputs.profile) != Landed::Nothing;
                 if landed || stale || started || adopted || self.state.quality != plx_media::route::quality()
                     || self.state.direct_play != plx_media::route::direct_play_mode()
                     || self.look != (plx_media::route::subtitle_size(), plx_media::route::subtitle_position(), plx_media::player::subtitle_tone(), plx_media::route::hdr_overlay_brightness())
@@ -841,7 +846,7 @@ impl Machine<InnerHost> for PreferencesPage {
                     || self.instant_dpad_seeking != plx_media::route::instant_dpad_seeking()
                     || self.uri_engine != plx_media::route::uri_engine()
                     || self.dolby_vision != plx_media::route::dolby_vision_mode()
-                    || self.whose.0 != plx_plex::plex::session::current_gen() {
+                    {
                     self.rebuild_keeping();
                     // An empty loading table had no engine seat. Give its first landing (or
                     // Retry row) one so OK works immediately, without moving an existing
@@ -928,10 +933,12 @@ fn marker_label(mode: MarkerSkipMode) -> &'static str {
     }
 }
 fn resolve_with_marker(field: PickerKind, quality: Quality, direct_play: DirectPlayMode,
-    prefs: Option<&AudioPreferences>, marker: MarkerPrefsView) -> Value {
+    prefs: Option<&AudioPreferences>, marker: MarkerPrefsView, resolution: UiResolution, ip_mode: IpMode) -> Value {
     match field {
         PickerKind::IntroSkip => Value::IntroSkip(marker.intro, marker.scope),
         PickerKind::CreditsSkip => Value::CreditsSkip(marker.credits, marker.scope),
+        PickerKind::UiResolution => Value::UiResolution(resolution),
+        PickerKind::IpProtocol => Value::IpMode(ip_mode),
         _ => resolve_value(field, quality, direct_play, prefs),
     }
 }

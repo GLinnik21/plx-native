@@ -1,0 +1,84 @@
+{
+  "schema": "plx.readonly.generated-unit-enums.v1",
+  "package": "plx_platform",
+  "module": "platform/src/i18n/mod.rs",
+  "include": "include!(concat!(env!(\"OUT_DIR\"), \"/languages.rs\"));",
+  "sources": {
+    "platform/Cargo.toml": "4181b79fa53a7ff6e8b0157f4d1ffe258737896603d267b4802551dee0812472",
+    "platform/src/lib.rs": "0836abd640849f56afbe66af39632b28648609e6464fda0bd4c51087c1070acb",
+    "platform/src/i18n/mod.rs": [
+      "40a13d07a43c772b10587e510a69502684abfa1f582ce355b22fd935a8c46f45",
+      "2c978e3aa3a9215a2e96ebaec9dd5ae3cf3ee85cf1afb43a36b5f42f17ff4d52"
+    ],
+    "platform/build.rs": "58a7a2f8d8851b995648f40fb0a179c3ae743fb0e4e92dd3e19b93f9b86940c8",
+    "platform/build_support/catalog.rs": "b02769b2de34bf6cf53a60d05bc9fc3080e6012778e30b400b13f772b43f7083",
+    "build_support/install_identities.rs": "8039b85c09d27c1f9a80aded1245dd4a0c7b7ac3b633e28cb9b7a0f6d62ed621",
+    "machine/src/lib.rs": "105afdbb05fb762e6752cef260b6d928b1d828993350aaa71651f96cee0c3188",
+    "machine/src/machine.rs": [
+      "571415d64a9885248f852b402153feedd4660acbe03606e4796c59659726049f",
+      "03a6e18f576dcbaff66c3d7405923b155302bfb2996bb373dac115ece055a5bf"
+    ]
+  },
+  "text_hashing": "sha256-utf8-bytes-crlf-to-lf-local-root-version-v1",
+  "manifests": {
+    "Cargo.toml": "fbeb900767c6d3a7091b0366cdaf79753f45384be9b39a649dd8e7decbf40fb6",
+    "appkit/Cargo.toml": "1e3a33f392110f269537b12f12879c6bc15309aca304b189d6b0346edf8a1186",
+    "base/Cargo.toml": "ebe0b95553bd44f33f422f7d8e22b75ddeb53c7ee81bbe738f675690694568f7",
+    "data/Cargo.toml": "dc246544384d3cfe5648b13cfcbd67edff69f027d22a268dd6fdca53bdf1e794",
+    "gfx/Cargo.toml": "c8889dd95a481938966c41635f85702695ce9c59956381768e6c56d215d8fc0e",
+    "machine/Cargo.toml": "0bc99e95272916b8d00e1a8dad81440bc4998de12ccd9a00e7853f438c813d03",
+    "media/Cargo.toml": "2b3bb41264db9b9f30869015dfe0dd6656147c432728c9ea9301988c710a4202",
+    "media-codecs/Cargo.toml": "503c8681289314b5c8a63195aad6796cbad93fcb3eedd8d7cba9e8ed0233783f",
+    "net/Cargo.toml": "bfdb3a08200642eeeafc9762733718c407529f26dce8a7b90665bc77ac928171",
+    "platform/Cargo.toml": "4181b79fa53a7ff6e8b0157f4d1ffe258737896603d267b4802551dee0812472",
+    "play-feed/Cargo.toml": "b85320257da74a1affd81238b8fb6caa7f28960181d5ea0e07704ceef4800515",
+    "play-uri/Cargo.toml": "107832fa33c96b7d2a4150c294aea9cd40954c3aabf66f809fc771bb52f5c280",
+    "playback-contract/Cargo.toml": "bde335ea645552d4f7481b007b80204ecb5bb592caaca22af58a8361cd050dcf",
+    "plex/Cargo.toml": "886ef07d7de8881d1a01666ea6aea70f228b5e0c8b8bbfc79b8693c59e1c8af7",
+    "screens/Cargo.toml": "ebe7f8c0d22492de6bd494cfa760dd99999bfd616b7952e753fe5a26dafc6a73",
+    "session/Cargo.toml": "331a64ed32fbc88988e4c1c33c7b9aa954deab219d1e74fbdec70a4c30690e61",
+    "storage/Cargo.toml": "8865be804f87c69c5ab6fdf3f3f5388b8bfc254195329623c7b1f5cf614e3e81",
+    "telemetry/Cargo.toml": "19ccd3f933efcda0052c8f0fdd9c9275c566f6d445e77a1049d0c3bd16e71b36",
+    "ui/Cargo.toml": "0957d2057cadbd522ae2ee2446727c9c4022c75fba9cfb2347fd341a10fdacf4"
+  },
+  "configs": {
+    ".cargo/config": null,
+    ".cargo/config.toml": "82f061c716740e16cfee63a74d87159e0e0dc253e1092b87c54190c603515b14",
+    "../.cargo/config": null,
+    "../.cargo/config.toml": null
+  },
+  "lock": "a1e4a5b1dc4a4ae661f41b037dc040caf348136efa23976da56786259897383f",
+  "grammar": {
+    "Preference": {
+      "prefix": [
+        "System"
+      ],
+      "catalogue_unit_variants": true
+    },
+    "Language": {
+      "catalogue_unit_variants": true,
+      "suffix": [
+        "Pseudo"
+      ]
+    }
+  },
+  "machine_newtype": "reviewed local newtype macro emits pub struct Name(pub u32); doc attributes only",
+  "review": [
+    "build.rs -> catalog::build(locales, OUT_DIR), no cfg-dependent producer",
+    "parse_registry derives variant solely from validated ASCII tag",
+    "discover preserves validated LanguageSpec; compile sorts by row",
+    "languages_rs emits only unit variants; Pseudo cfg_attr only allows dead_code",
+    "string slots use Rust Debug escaping; numeric slots are integers",
+    "install_identities writes only install_identities.rs, never languages.rs"
+  ],
+  "assumptions": [
+    "Offline source-backed unit-enum proof; certificate changes require source review.",
+    "",
+    "No Cargo, cached output, generator execution, Copy axiom or type-name exemption.",
+    "The certificate pins the entire production pipeline and include namespace, not the",
+    "language list. Its reviewed template emits unit variants in every configuration.",
+    "Only enum values are certified: LocaleContext/OnceLock and methods are not.",
+    "Assumes ordinary Cargo/Rust/std/serde execution, no external build/config/compiler",
+    "overrides, output tampering or unsafe-code/compiler unsoundness attestation."
+  ]
+}
