@@ -284,28 +284,41 @@ fn serve(mut conn: UnixStream, rx: &mpsc::Receiver<(Option<u64>, Reply)>) {
     }
 }
 
-/// One request line: parse it and either post the typed request to the frame thread's
-/// input path (the response comes via [`reply`], later) or answer a protocol-level error
-/// immediately (a malformed line has no id to correlate with, and the frame thread
-/// should never parse it).
-fn handle_line(line: &str, pending: &mut VecDeque<(Option<u64>, Reply)>) {
+/// One line of the wire: a request object (`{"id": 42, "req": ...}`) or
+/// nothing. Returns the client's id and its verb when the line is a request
+/// object; a malformed line's reply is the protocol's only on-the-spot answer,
+/// and it names no id — there was none to echo.
+fn parse(line: &str) -> Option<(u64, Verb)> {
     #[derive(Deserialize)]
     struct Wire {
         id: u64,
         req: Verb,
     }
-    let Ok(w) = serde_json::from_str::<Wire>(line) else {
-        pending.push_back((
-            None,
-            Reply::err(ApiError::Malformed {
-                reason: "the line is not a request object".to_string(),
-            }),
-        ));
-        return;
+    serde_json::from_str::<Wire>(line).ok().map(|w| (w.id, w.req))
+}
+
+/// Post a well-formed request to the frame thread's input path (the response
+/// comes via [`reply`], later) or answer a protocol-level error immediately —
+/// a malformed line has no id to correlate with, and the frame thread should
+/// never parse it.
+fn handle_line(line: &str, pending: &mut VecDeque<(Option<u64>, Reply)>) {
+    let (id, verb) = match parse(line) {
+        Some(v) => v,
+        None => {
+            pending.push_back((
+                None,
+                Reply::err(ApiError::Malformed {
+                    reason: "the line is not a request object".to_string(),
+                }),
+            ));
+            return;
+        }
     };
-    if !crate::api::push_req(Request { id: w.id, verb: w.req }) {
-        pending.push_back((Some(w.id), Reply::err(ApiError::QueueFull)));
+    if !crate::api::push_req(Request { id, verb }) {
+        pending.push_back((Some(id), Reply::err(ApiError::QueueFull)));
     }
+    // No on-the-spot answer to a well-formed request: it sits on the frame
+    // thread's queue until the action's outcome lands.
 }
 
 /// One response line.
@@ -329,4 +342,205 @@ fn wire(id: Option<u64>, r: &Reply) -> String {
         r#"{"id":null,"ok":false,"error":{"code":"internal","reason":"response serialization failed"}}"#
             .to_string()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! The wire, pinned: every verb, every outcome, every error serializes to
+    //! the exact JSON a client may match on, and a full conversation round-trips
+    //! over a real socket — the reply channel included.
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+
+    fn verb(v: &Verb) -> &'static str {
+        match v {
+            Verb::Play { .. } => "play",
+            Verb::Seek { .. } => "seek",
+            Verb::Audio { .. } => "audio",
+            Verb::Sub { .. } => "sub",
+            Verb::Quality { .. } => "quality",
+            Verb::Profile { .. } => "profile",
+            Verb::Pause => "pause",
+            Verb::Resume => "resume",
+            Verb::Stop => "stop",
+            Verb::State => "state",
+            Verb::Shot => "shot",
+        }
+    }
+
+    #[test]
+    fn parse_the_whole_verb_vocabulary() {
+        let cases: [(&str, u64, Verb); 11] = [
+            (r#"{"id": 1, "req": {"kind": "play", "rk": "1$abc"}}"#, 1, Verb::Play { rk: "1$abc".into() }),
+            (r#"{"id": 2, "req": {"kind": "seek", "ms": 120000}}"#, 2, Verb::Seek { ms: 120_000 }),
+            (r#"{"id": 3, "req": {"kind": "audio", "sid": 2}}"#, 3, Verb::Audio { sid: 2 }),
+            (r#"{"id": 4, "req": {"kind": "sub", "sid": 1}}"#, 4, Verb::Sub { sid: 1 }),
+            (r#"{"id": 5, "req": {"kind": "quality", "rung": "720p_4_mbps"}}"#, 5, Verb::Quality { rung: "720p_4_mbps".into() }),
+            (r#"{"id": 6, "req": {"kind": "profile", "index": 1}}"#, 6, Verb::Profile { index: 1 }),
+            (r#"{"id": 7, "req": {"kind": "pause"}}"#, 7, Verb::Pause),
+            (r#"{"id": 8, "req": {"kind": "resume"}}"#, 8, Verb::Resume),
+            (r#"{"id": 9, "req": {"kind": "stop"}}"#, 9, Verb::Stop),
+            (r#"{"id": 10, "req": {"kind": "state"}}"#, 10, Verb::State),
+            (r#"{"id": 11, "req": {"kind": "shot"}}"#, 11, Verb::Shot),
+        ];
+        for (line, want_id, want) in cases {
+            let (id, got) = parse(line).unwrap_or_else(|| panic!("parse: {line}"));
+            assert_eq!(id, want_id, "the id for {line}");
+            assert_eq!(verb(&got), verb(&want), "the verb for {line}");
+        }
+        // The door: not a request object, and an unknown kind are not requests.
+        for bad in [
+            r#"not json at all"#,
+            r#"{"id": 1}"#,
+            r#"{"id": 1, "req": {"kind": "explode"}}"#,
+            r#"{"id": 1, "req": {"kind": "seek"}}"#,
+            r#"{"id": 1, "req": {"kind": "play"}}"#,
+            "{}",
+        ] {
+            assert!(parse(bad).is_none(), "the door: {bad}");
+        }
+    }
+
+    #[test]
+    fn the_outcome_vocabulary_is_wire_pinned() {
+        let o = |o: Outcome| {
+            let id: Option<u64> = Some(7);
+            let r = Reply { ok: true, outcome: Some(o), error: None };
+            wire(id, &r)
+        };
+        // The state snapshot is the app's own snapshot JSON, passed through
+        // (a Value map serializes with sorted keys).
+        assert_eq!(o(Outcome::State { snapshot: serde_json::json!({"state": "idle", "pos_ms": 0, "up_ms": 0}) }),
+            r#"{"id":7,"ok":true,"outcome":{"kind":"state","snapshot":{"pos_ms":0,"state":"idle","up_ms":0}}}"#);
+        assert_eq!(o(Outcome::PlayStarted { rk: "1$abc".into(), title: "Akira".into() }),
+            r#"{"id":7,"ok":true,"outcome":{"kind":"play_started","rk":"1$abc","title":"Akira"}}"#);
+        assert_eq!(o(Outcome::PlayFailed { rk: "1$abc".into(), reason: "no PMS server selected yet (sign-in pending)".into() }),
+            r#"{"id":7,"ok":true,"outcome":{"kind":"play_failed","rk":"1$abc","reason":"no PMS server selected yet (sign-in pending)"}}"#);
+        assert_eq!(o(Outcome::SeekLanded { ms: 120_000, pos_ms: 120_345 }),
+            r#"{"id":7,"ok":true,"outcome":{"kind":"seek_landed","ms":120000,"pos_ms":120345}}"#);
+        assert_eq!(o(Outcome::SeekFailed { ms: 120_000, reason: "the session left playback".into() }),
+            r#"{"id":7,"ok":true,"outcome":{"kind":"seek_failed","ms":120000,"reason":"the session left playback"}}"#);
+        assert_eq!(o(Outcome::TrackCommitted { track: "audio", sid: 2 }),
+            r#"{"id":7,"ok":true,"outcome":{"kind":"track_committed","track":"audio","sid":2}}"#);
+        assert_eq!(o(Outcome::QualityCommitted { rung: "720p_4_mbps".into() }),
+            r#"{"id":7,"ok":true,"outcome":{"kind":"quality_committed","rung":"720p_4_mbps"}}"#);
+        assert_eq!(o(Outcome::ProfileSeated { index: 1, title: "Kids".into() }),
+            r#"{"id":7,"ok":true,"outcome":{"kind":"profile_seated","index":1,"title":"Kids"}}"#);
+        assert_eq!(o(Outcome::ProfileFailed { index: 3, reason: "the flow left".into() }),
+            r#"{"id":7,"ok":true,"outcome":{"kind":"profile_failed","index":3,"reason":"the flow left"}}"#);
+        assert_eq!(o(Outcome::Paused), r#"{"id":7,"ok":true,"outcome":{"kind":"paused"}}"#);
+        assert_eq!(o(Outcome::Resumed), r#"{"id":7,"ok":true,"outcome":{"kind":"resumed"}}"#);
+        assert_eq!(o(Outcome::Stopped), r#"{"id":7,"ok":true,"outcome":{"kind":"stopped"}}"#);
+        assert_eq!(o(Outcome::ShotCaptured { path: "shot-7.png".into() }),
+            r#"{"id":7,"ok":true,"outcome":{"kind":"shot_captured","path":"shot-7.png"}}"#);
+        assert_eq!(o(Outcome::ShotFailed { reason: "the viewport was empty".into() }),
+            r#"{"id":7,"ok":true,"outcome":{"kind":"shot_failed","reason":"the viewport was empty"}}"#);
+    }
+
+    #[test]
+    fn the_error_vocabulary_is_wire_pinned() {
+        let e = |e: ApiError| {
+            let id: Option<u64> = Some(3);
+            let r = Reply { ok: false, outcome: None, error: Some(e) };
+            wire(id, &r)
+        };
+        assert_eq!(e(ApiError::Malformed { reason: "the line is not a request object".into() }),
+            r#"{"id":3,"ok":false,"error":{"code":"malformed","reason":"the line is not a request object"}}"#);
+        assert_eq!(e(ApiError::NoEngine { state: "idle" }),
+            r#"{"id":3,"ok":false,"error":{"code":"no_engine","state":"idle"}}"#);
+        assert_eq!(e(ApiError::NoTrack { sid: 2 }),
+            r#"{"id":3,"ok":false,"error":{"code":"no_track","sid":2}}"#);
+        assert_eq!(e(ApiError::UnknownRung { rung: "4k".into() }),
+            r#"{"id":3,"ok":false,"error":{"code":"unknown_rung","rung":"4k"}}"#);
+        assert_eq!(e(ApiError::NotOnRoster { phase: "auth".into() }),
+            r#"{"id":3,"ok":false,"error":{"code":"not_on_roster","phase":"auth"}}"#);
+        assert_eq!(e(ApiError::NoProfile { index: 9, count: 2 }),
+            r#"{"id":3,"ok":false,"error":{"code":"no_profile","index":9,"count":2}}"#);
+        assert_eq!(e(ApiError::NoSnapshot),
+            r#"{"id":3,"ok":false,"error":{"code":"no_snapshot"}}"#);
+        assert_eq!(e(ApiError::QueueFull), r#"{"id":3,"ok":false,"error":{"code":"queue_full"}}"#);
+        assert_eq!(e(ApiError::WorkerRefused), r#"{"id":3,"ok":false,"error":{"code":"worker_refused"}}"#);
+        assert_eq!(e(ApiError::Internal { reason: "the frame thread dropped it".into() }),
+            r#"{"id":3,"ok":false,"error":{"code":"internal","reason":"the frame thread dropped it"}}"#);
+        // The id-less door: a malformed line's reply carries no id.
+        assert_eq!(
+            {
+                let r = Reply { ok: false, outcome: None, error: Some(ApiError::Malformed { reason: "x".into() }) };
+                wire(None, &r)
+            },
+            r#"{"id":null,"ok":false,"error":{"code":"malformed","reason":"x"}}"#
+        );
+    }
+
+    fn start_serve() -> (String, mpsc::Sender<(Option<u64>, Reply)>) {
+        // The suite's TMPDIR hygiene check fails a binary that leaves anything behind,
+        // so the scratch dir comes from the base's per-process helper (removed at exit).
+        let dir = plx_base::testscratch::process_dir("api-sock");
+        let sock = dir.join("t.sock");
+        let _ = std::fs::remove_file(&sock);
+        let listener = UnixListener::bind(&sock).unwrap();
+        let path = sock.to_string_lossy().into_owned();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            serve(conn, &rx);
+        });
+        (path, tx)
+    }
+
+    fn read_line(conn: &UnixStream) -> String {
+        let mut reader = BufReader::new(conn);
+        let mut s = String::new();
+        reader.read_line(&mut s).unwrap();
+        s
+    }
+
+    #[test]
+    fn a_conversation_round_trips_over_the_socket() {
+        let (path, tx) = start_serve();
+        let mut conn = UnixStream::connect(&path).unwrap();
+        conn.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        conn.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+        use std::io::Read;
+
+        // 1. The door: a malformed line answers on the spot, with no id.
+        conn.write_all(b"garbage\n").unwrap();
+        let line = read_line(&conn);
+        assert!(line.contains("\"code\":\"malformed\""), "the door: {line}");
+        assert!(line.contains("\"id\":null"), "the door names no id: {line}");
+
+        // 2. A well-formed request gets NO on-the-spot answer: it sits on the
+        //    frame thread's queue until the outcome lands.
+        conn.write_all(b"{\"id\":7,\"req\":{\"kind\":\"state\"}}\n").unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let mut probe = [0u8; 1];
+        let blocked = conn.read(&mut probe).is_err();
+        assert!(blocked, "no on-the-spot answer to a queued request");
+
+        // 3. The reply channel: the frame thread's outcome rides back with the
+        //    request's id, and the conversation continues on the same
+        //    connection.
+        tx.send((
+            Some(7),
+            Reply {
+                ok: true,
+                outcome: Some(Outcome::State {
+                    snapshot: serde_json::json!({
+                        "state": "playing",
+                        "pos_ms": 354_000,
+                        "title": "Akira",
+                        "up_ms": 90_000
+                    }),
+                }),
+                error: None,
+            },
+        ))
+        .unwrap();
+        let line = read_line(&conn);
+        let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(v["id"], 7, "the reply carries the request's id");
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["outcome"]["kind"], "state");
+        assert_eq!(v["outcome"]["snapshot"]["pos_ms"], 354_000);
+    }
 }

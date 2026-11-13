@@ -346,12 +346,8 @@ fn ends_run(exit: bool, on_demand: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::ends_run;
+    use super::{ends_run, settled_due};
 
-    #[cfg(feature = "hostsim")]
-    use super::settled_due;
-
-    #[cfg(feature = "hostsim")]
     #[test]
     fn the_settled_capture_waits_for_quiet_age_and_idle_work() {
         assert!(settled_due(800, 3_000, 3_000, 800, false));
