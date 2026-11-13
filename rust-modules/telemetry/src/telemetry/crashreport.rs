@@ -1138,6 +1138,49 @@ fn debug_images(
     images
 }
 
+/// The `release` a recovered record may carry, and the honest label when it may not.
+///
+/// **A record is filed under the release that ran it, not the one that found it.** Recovery runs
+/// on the NEXT launch, so after an upgrade the binary building the body is a newer build than the
+/// one that crashed (PLX-NATIVE-26: a 0.9.0 SIGSEGV filed as `plxnative@0.10.0`). That poisons
+/// per-release crash counts and Sentry's regression detection right after every release, exactly
+/// when they are watched. The record names the executable it ran as, its `img:` line, and
+/// `running_build_id` is the build id of the binary recovering it:
+///
+/// - the two are equal, the record has no image line (nothing says it is another build), or the
+///   running id could not be read (empty): `release` is the running release, as it always was;
+/// - they differ: **`release` is omitted** and two tags are added, `crash.uploaded_by` (the running
+///   app version) and `crash.build_id` (the crashed build's id, from the record's image line). The
+///   record does not carry the crashed build's version (`src/main.c` calls
+///   `plx_crash_write_image_marker` before `enter_application`, so before the release is set), and
+///   a build id cannot be mapped back to one here, so no `release` is the only claim that is not
+///   false.
+///
+/// **Why the build id is a tag when `dist` already holds it.** Sentry ignores `dist` on an event
+/// that has no `release` (a distribution is a build OF a release), so without the tag the event
+/// would name no build at all, and the panic body has no `debug_meta` to name one either: for a
+/// panic `dist` was the only carrier. `dist` stays as it was. It names the build; it is not what
+/// ties an event to its symbols, which goes through `debug_meta` (`code_id` / `debug_id`) and is
+/// untouched here. Both tags are an app version and a binary build id, and the build id was already
+/// sent as `dist`, so this adds no new kind of data.
+///
+/// `sdk.version` is left alone: it names the binary that BUILT the body, which is true either way.
+///
+/// Called last, after the body's `tags` exist, by all four body builders: [`sentry_body`] assigns
+/// its whole `tags` object late, which would wipe a tag set earlier.
+fn stamp_release(body: &mut serde_json::Value, image: Option<&ImageIdentity>, running_build_id: &str) {
+    let recorded_by_another_build = image.filter(|i| {
+        !running_build_id.is_empty() && !i.build_id.eq_ignore_ascii_case(running_build_id)
+    });
+    match recorded_by_another_build {
+        Some(image) => {
+            body["tags"]["crash.uploaded_by"] = super::app_version().into();
+            body["tags"]["crash.build_id"] = image.build_id.as_str().into();
+        }
+        None => body["release"] = super::release().into(),
+    }
+}
+
 /// The Sentry event body for one fault.
 ///
 /// **The title's "address" is not always an address.** `SIGNAL at 0x…` prints `si_addr`, which for
@@ -1156,6 +1199,10 @@ fn debug_images(
 /// left no such record — the tracer is async-signal-safe and writes numbers), attached as
 /// `user.id` through the one shared [`super::sentry::attach_user`]. Passed in rather than read
 /// here so the preview can build this exact body with a placeholder.
+///
+/// `build_id` is the RUNNING binary's, the fallback for a record with no image line. The record's
+/// own image id wins for `dist` and the debug image, and a record from a different build than this
+/// one is not filed under this build's `release` ([`stamp_release`]).
 pub fn sentry_body(
     f: &Fault,
     event_id: &str,
@@ -1183,7 +1230,6 @@ pub fn sentry_body(
         "event_id": event_id,
         "platform": "native",
         "level": "fatal",
-        "release": super::release(),
         "environment": super::sender::ENVIRONMENT,
         "dist": effective_build_id,
         "sdk": {"name": "plxnative-fallback", "version": super::app_version()},
@@ -1233,6 +1279,7 @@ pub fn sentry_body(
     if let Some(fp) = fault_fingerprint(f, &plx_platform::tv::device::info().build, &extra.modules, debug_id) {
         body["fingerprint"] = serde_json::json!(fp);
     }
+    stamp_release(&mut body, f.image.as_ref(), build_id);
     super::sentry::attach_user(&mut body, errors_id);
     serde_json::to_vec(&body).unwrap_or_default()
 }
@@ -1250,16 +1297,19 @@ pub fn sentry_body(
 /// functions, so the same closed `native::{OS,WEBOS,HARDWARE}_FIELDS` vocabulary) and none of the
 /// fault-only `crash` context. Both are read from the process-wide device snapshot at the time this
 /// runs, on the next launch, which is the same television the panic was logged on.
+///
+/// `build_id` is the RUNNING binary's; a record from another build is not filed under this
+/// build's `release` ([`stamp_release`]), the same rule as [`sentry_body`].
 pub fn panic_sentry_body(
     p: &PanicReport,
     event_id: &str,
+    build_id: &str,
     errors_id: Option<&str>,
 ) -> Vec<u8> {
     let mut body = serde_json::json!({
         "event_id": event_id,
         "platform": "native",
         "level": "fatal",
-        "release": super::release(),
         "environment": super::sender::ENVIRONMENT,
         "sdk": {"name": "plxnative-fallback", "version": super::app_version()},
         "exception": {"values": [{
@@ -1285,6 +1335,7 @@ pub fn panic_sentry_body(
     // snapshot here takes no lock the panicking thread could have held.
     super::sentry::attach_os_context(&mut body);
     super::sentry::attach_hardware_context(&mut body);
+    stamp_release(&mut body, p.image.as_ref(), build_id);
     super::sentry::attach_user(&mut body, errors_id);
     serde_json::to_vec(&body).unwrap_or_default()
 }
@@ -1452,6 +1503,9 @@ fn freeze_fingerprint_site(f: &Freeze) -> String {
 ///
 /// The exception `type` and `value` are built from this crate's own strings and the bucket's fixed
 /// word, never from the record's text, like [`sentry_body`]'s.
+///
+/// `build_id` is the RUNNING binary's; a record from another build is not filed under this
+/// build's `release` ([`stamp_release`]), the same rule as [`sentry_body`].
 pub fn freeze_sentry_body(
     f: &Freeze,
     event_id: &str,
@@ -1485,7 +1539,6 @@ pub fn freeze_sentry_body(
         "event_id": event_id,
         "platform": "native",
         "level": "error",
-        "release": super::release(),
         "environment": super::sender::ENVIRONMENT,
         "dist": effective_build_id,
         "sdk": {"name": "plxnative-fallback", "version": super::app_version()},
@@ -1511,6 +1564,7 @@ pub fn freeze_sentry_body(
     }
     super::sentry::attach_os_context(&mut body);
     super::sentry::attach_hardware_context(&mut body);
+    stamp_release(&mut body, f.image.as_ref(), build_id);
     super::sentry::attach_user(&mut body, errors_id);
     serde_json::to_vec(&body).unwrap_or_default()
 }
@@ -1539,6 +1593,9 @@ fn exit_site(e: &ExitReport) -> Option<(String, u64, bool)> {
 /// once more, as it would a return address, and what it symbolicates is the address the fingerprint
 /// and the `at:` line were derived from. The thread is carried exactly as [`sentry_body`] carries a
 /// fault's.
+///
+/// `build_id` is the RUNNING binary's; a record from another build is not filed under this
+/// build's `release` ([`stamp_release`]), the same rule as [`sentry_body`].
 pub fn exit_sentry_body(
     e: &ExitReport,
     event_id: &str,
@@ -1580,7 +1637,6 @@ pub fn exit_sentry_body(
         "event_id": event_id,
         "platform": "native",
         "level": "error",
-        "release": super::release(),
         "environment": super::sender::ENVIRONMENT,
         "dist": effective_build_id,
         "sdk": {"name": "plxnative-fallback", "version": super::app_version()},
@@ -1614,6 +1670,7 @@ pub fn exit_sentry_body(
     }
     super::sentry::attach_os_context(&mut body);
     super::sentry::attach_hardware_context(&mut body);
+    stamp_release(&mut body, e.image.as_ref(), build_id);
     super::sentry::attach_user(&mut body, errors_id);
     serde_json::to_vec(&body).unwrap_or_default()
 }
@@ -1625,6 +1682,10 @@ const FALLBACK_PROBE_PLACEHOLDER: &str = "<ok / no_keys / unreadable / unprobed 
 /// Representative fallback payloads built by the real serializers, with every runtime value
 /// replaced afterwards by an explicit placeholder. The consent screen can therefore show both
 /// degraded schemas without minting an id or inspecting the crash log before consent.
+///
+/// The panic sample is the shape of a report recovered by a later build than the one that crashed
+/// (no `release`; the `crash.uploaded_by` and `crash.build_id` tags), the fault sample the ordinary
+/// one ([`stamp_release`]): a key either shape can carry appears in one of the two.
 pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
     let image = ImageIdentity {
         build_id: "0".repeat(40),
@@ -1742,9 +1803,17 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
         image: Some(image),
         crash_time: Some(now_secs()),
     };
+    // This sample is the report of a panic that a LATER build recovered (an app update between the
+    // panic and the next launch), the shape [`stamp_release`] gives a record from another build:
+    // no `release`, and the two tags instead. It is built that way by handing the serializer a
+    // running build id that is not the panic's, so the real code path emits the keys; the fault
+    // sample above is the ordinary shape, with `release`. Together they show every key either
+    // shape can carry.
+    let upgraded_build_id = "1".repeat(40);
     let mut panic_json: serde_json::Value = serde_json::from_slice(&panic_sentry_body(
         &panic,
         &"0".repeat(32),
+        &upgraded_build_id,
         Some(super::native::PREVIEW_USER_ID),
     ))
     .unwrap_or_default();
@@ -1752,6 +1821,16 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
     let source = "<validated compile-time source:line>";
     panic_json["event_id"] = serde_json::json!("<stable id for this crash-log record>");
     panic_json["dist"] = serde_json::json!("<crashed ELF build id>");
+    // Only a tag the serializer really wrote is replaced: indexing would mint one, and a preview
+    // that shows a key the report does not carry is as wrong as one that hides a key it does.
+    for (tag, placeholder) in [
+        ("crash.uploaded_by", "<app version>"),
+        ("crash.build_id", "<crashed ELF build id>"),
+    ] {
+        if let Some(value) = panic_json.get_mut("tags").and_then(|tags| tags.get_mut(tag)) {
+            *value = serde_json::json!(placeholder);
+        }
+    }
     panic_json["timestamp"] = serde_json::json!("<crash time>");
     panic_json["exception"]["values"][0]["value"] = serde_json::json!(
         "Rust panic at <validated compile-time source:line> (msg <message hash>)"
@@ -1980,6 +2059,58 @@ fn reconcile(reports: &[Report], natives: &[Option<super::native::CrashKey>], cu
     plan
 }
 
+/// The binary identity a recovered record names, whichever kind of record it is.
+fn report_image(r: &Report) -> Option<&ImageIdentity> {
+    match r {
+        Report::Fault(f) => f.image.as_ref(),
+        Report::Panic(p) => p.image.as_ref(),
+        Report::Freeze(f) => f.image.as_ref(),
+        Report::Exit(e) => e.image.as_ref(),
+    }
+}
+
+/// The Sentry body for one recovered record of any kind, as [`recover_pending`] queues it.
+///
+/// `running_build_id` is the build id of the binary doing the recovery, NOT the record's: every
+/// body compares it with the record's own image to decide whether the report may carry the running
+/// release ([`stamp_release`]). It is a separate function from the queueing so a test can drive the
+/// exact wiring without a spool.
+fn report_body(
+    r: &Report,
+    event_id: &str,
+    running_build_id: &str,
+    errors_id: Option<&str>,
+    native_path: NativePath,
+    read: impl Fn(&ModuleMapping) -> Option<Vec<u8>>,
+) -> Vec<u8> {
+    // The debug id follows the RECORD's image (the symbols of the build that crashed); the bodies
+    // are handed the running id so they can tell a record from another build.
+    let did = super::sentry::debug_id(report_image(r).map_or(running_build_id, |x| x.build_id.as_str()));
+    match r {
+        Report::Fault(f) => {
+            let extra = FaultExtra { native_path, modules: module_images(f, read) };
+            sentry_body(f, event_id, running_build_id, did.as_deref(), errors_id, &extra)
+        }
+        Report::Panic(p) => panic_sentry_body(p, event_id, running_build_id, errors_id),
+        Report::Freeze(f) => freeze_sentry_body(
+            f,
+            event_id,
+            running_build_id,
+            did.as_deref(),
+            errors_id,
+            &images_of_mappings(&f.modules, read),
+        ),
+        Report::Exit(e) => exit_sentry_body(
+            e,
+            event_id,
+            running_build_id,
+            did.as_deref(),
+            errors_id,
+            &images_of_mappings(e.module.as_slice(), read),
+        ),
+    }
+}
+
 /// The side effects of a recovery pass, behind a seam so their ORDER is testable.
 trait Recovery {
     /// Durably queue fresh report `i`.
@@ -2144,42 +2275,16 @@ fn recover_pending_at(path: &std::path::Path) -> usize {
     impl Recovery for Io<'_> {
         fn queue_report(&mut self, i: usize) -> bool {
             let r = &self.reports[i];
-            let bid = match r {
-                Report::Fault(f) => f.image.as_ref(),
-                Report::Panic(p) => p.image.as_ref(),
-                Report::Freeze(f) => f.image.as_ref(),
-                Report::Exit(e) => e.image.as_ref(),
-            }
-            .map(|x| x.build_id.as_str())
-            .unwrap_or(self.current_build_id);
-            let did = super::sentry::debug_id(bid);
+            let bid = report_image(r).map_or(self.current_build_id, |x| x.build_id.as_str());
             let event_id = event_id_for(bid, self.from + i, r);
-            let body = match r {
-                Report::Fault(f) => {
-                    let extra = FaultExtra {
-                        native_path: self.native_path[i].unwrap_or(NativePath::NoEnvelope),
-                        modules: module_images(f, read_module_head),
-                    };
-                    sentry_body(f, &event_id, bid, did.as_deref(), self.errors_id.as_deref(), &extra)
-                }
-                Report::Panic(p) => panic_sentry_body(p, &event_id, self.errors_id.as_deref()),
-                Report::Freeze(f) => freeze_sentry_body(
-                    f,
-                    &event_id,
-                    bid,
-                    did.as_deref(),
-                    self.errors_id.as_deref(),
-                    &images_of_mappings(&f.modules, read_module_head),
-                ),
-                Report::Exit(e) => exit_sentry_body(
-                    e,
-                    &event_id,
-                    bid,
-                    did.as_deref(),
-                    self.errors_id.as_deref(),
-                    &images_of_mappings(e.module.as_slice(), read_module_head),
-                ),
-            };
+            let body = report_body(
+                r,
+                &event_id,
+                self.current_build_id,
+                self.errors_id.as_deref(),
+                self.native_path[i].unwrap_or(NativePath::NoEnvelope),
+                read_module_head,
+            );
             let ok = super::spool::append(&super::queue::Record {
                 category: super::queue::Category::Errors,
                 dest: super::queue::Dest::Sentry,
@@ -2459,14 +2564,14 @@ mod tests {
         let id = "0123456789abcdef0123456789abcdef";
         for body in [
             sentry_body(&f, "e", "bid", Some("did"), Some(id), &extra()),
-            panic_sentry_body(&p, "e", Some(id)),
+            panic_sentry_body(&p, "e", "bid", Some(id)),
         ] {
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(v["user"], serde_json::json!({"id": id}));
         }
         for body in [
             sentry_body(&f, "e", "bid", Some("did"), None, &extra()),
-            panic_sentry_body(&p, "e", None),
+            panic_sentry_body(&p, "e", "bid", None),
         ] {
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert!(
@@ -2553,7 +2658,7 @@ mod tests {
             crash_time: None,
         };
         let panic: serde_json::Value =
-            serde_json::from_slice(&panic_sentry_body(&p, "e", None)).unwrap();
+            serde_json::from_slice(&panic_sentry_body(&p, "e", "bid", None)).unwrap();
         let fault: serde_json::Value = serde_json::from_slice(&sentry_body(
             &only_fault(REC), "e", BUILD, Some("did"), None, &extra(),
         ))
@@ -2676,10 +2781,10 @@ mod tests {
         let log = format!("*** RUST PANIC [t] at src/a.rs:1: boom\n{}\n", crash_time_record(t));
         let Some(Report::Panic(p)) = parse(&log).into_iter().next() else { panic!("a panic") };
         assert_eq!(p.crash_time, Some(t));
-        let v: serde_json::Value = serde_json::from_slice(&panic_sentry_body(&p, "e", None)).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&panic_sentry_body(&p, "e", "bid", None)).unwrap();
         assert_eq!(v["timestamp"], serde_json::json!(t));
         let bare = PanicReport { crash_time: None, ..p };
-        let v: serde_json::Value = serde_json::from_slice(&panic_sentry_body(&bare, "e", None)).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&panic_sentry_body(&bare, "e", "bid", None)).unwrap();
         assert!(v.get("timestamp").is_none());
     }
 
@@ -3177,6 +3282,25 @@ mod tests {
         assert!(panic["contexts"].get("crash").is_none(), "a panic has no native_path");
     }
 
+    /// The consent screen promises a field added to a schema shows up in front of the person being
+    /// asked, so the shape a report takes when a LATER build recovers it (no `release`, the
+    /// `crash.uploaded_by` and `crash.build_id` tags) must be on screen too: the panic sample is
+    /// that shape, and the fault sample stays the ordinary one. Both tags are placeholders from the
+    /// consent screen's own translated set, never this build's version or a real id.
+    #[test]
+    fn the_panic_preview_shows_the_straddled_shape_and_the_fault_preview_the_ordinary_one() {
+        let preview = preview_events();
+        let fault: serde_json::Value = serde_json::from_slice(&preview[0].1).unwrap();
+        let panic: serde_json::Value = serde_json::from_slice(&preview[1].1).unwrap();
+        assert_eq!(panic["tags"]["crash.uploaded_by"], "<app version>");
+        assert_eq!(panic["tags"]["crash.build_id"], "<crashed ELF build id>");
+        assert!(panic.get("release").is_none(), "the sample is the shape with no release");
+        assert_eq!(panic["dist"], "<crashed ELF build id>");
+        assert_eq!(fault["release"], super::super::release(), "the fault sample is the ordinary shape");
+        assert!(fault["tags"].get("crash.uploaded_by").is_none());
+        assert!(fault["tags"].get("crash.build_id").is_none());
+    }
+
     /// The report belongs to the binary that CRASHED, not to whichever binary happens to read the
     /// append-only log on the next launch. A deploy between those two moments is ordinary during
     /// development and makes current-process build identity actively wrong.
@@ -3225,6 +3349,102 @@ mod tests {
             v["exception"]["values"][0]["stacktrace"]["registers"]["sp"],
             "0xbe8f1a90"
         );
+    }
+
+    /// PLX-NATIVE-26: a 0.9.0 process crashed, the next launch was 0.10.0, and the report it queued
+    /// from 0.9.0's crash log was filed under `plxnative@0.10.0`, which poisons per-release crash
+    /// counts and regression detection right after every release. The record names the image it ran
+    /// (its `img:` line); a recovering binary whose own build id differs may not claim the report.
+    ///
+    /// Driven through [`report_body`], the function `recover_pending` queues through, with all four
+    /// kinds of record: the bodies themselves are handed the RECORD's id as their fallback, so a
+    /// check inside them alone would pass here and do nothing in the field.
+    fn every_kind_of_record() -> Vec<(&'static str, Report)> {
+        let fault = parse(REC).remove(0);
+        assert!(matches!(fault, Report::Fault(_)));
+        let freeze = Report::Freeze(only_freeze(FRZ));
+        let exit = Report::Exit(only_exit(&exit_log()));
+        let all = vec![("fault", fault), ("panic", panic_report()), ("freeze", freeze), ("exit", exit)];
+        for (kind, r) in &all {
+            assert_eq!(report_image(r).map(|i| i.build_id.as_str()), Some(BUILD), "{kind}: the fixture names its image");
+        }
+        all
+    }
+
+    fn recovered_body(r: &Report, running_build_id: &str) -> serde_json::Value {
+        serde_json::from_slice(&report_body(
+            r,
+            &"e".repeat(32),
+            running_build_id,
+            None,
+            NativePath::NoEnvelope,
+            |_| None,
+        ))
+        .unwrap()
+    }
+
+    /// A running build that is not the one the fixtures' records came from (an upgraded install).
+    const UPGRADED_TO: &str = "e074ee2be074ee2be074ee2be074ee2be074ee2b";
+
+    #[test]
+    fn a_record_from_another_build_is_not_filed_under_the_running_release() {
+        for (kind, r) in every_kind_of_record() {
+            let body = recovered_body(&r, UPGRADED_TO);
+            assert!(
+                body.get("release").is_none(),
+                "{kind}: a record from build {BUILD} was filed under the running release {}",
+                body["release"]
+            );
+            assert_eq!(body["dist"], BUILD, "{kind}: dist stays the crashed build's id");
+            assert_eq!(
+                body["tags"]["crash.uploaded_by"],
+                super::super::app_version(),
+                "{kind}: the uploader is named instead"
+            );
+            // Sentry ignores `dist` on an event with no `release`, and the panic body has no
+            // `debug_meta`: without this tag the event would name no build at all.
+            assert_eq!(
+                body["tags"]["crash.build_id"], BUILD,
+                "{kind}: the crashed build is named by a tag, not only by `dist`"
+            );
+            assert_eq!(
+                body["sdk"]["version"],
+                super::super::app_version(),
+                "{kind}: the SDK version still names the binary that built the body"
+            );
+        }
+    }
+
+    #[test]
+    fn a_record_from_the_running_build_keeps_the_running_release() {
+        for (kind, r) in every_kind_of_record() {
+            // The id compares case-insensitively: an upper-case read of the same ELF is the same build.
+            for running in [BUILD.to_string(), BUILD.to_ascii_uppercase()] {
+                let body = recovered_body(&r, &running);
+                assert_eq!(body["release"], super::super::release(), "{kind}");
+                assert!(body["tags"].get("crash.uploaded_by").is_none(), "{kind}: nothing to disclaim");
+                assert!(body["tags"].get("crash.build_id").is_none(), "{kind}: `release` and `dist` already name it");
+            }
+        }
+    }
+
+    /// Where the two cannot be compared the report is stamped as before: no image line in the
+    /// record, or a running build whose ELF could not be read (`build_id()` is empty then).
+    #[test]
+    fn a_record_that_cannot_be_compared_is_stamped_as_before() {
+        for (kind, r) in every_kind_of_record() {
+            let body = recovered_body(&r, "");
+            assert_eq!(body["release"], super::super::release(), "{kind}: unknown running build");
+            assert!(body["tags"].get("crash.uploaded_by").is_none(), "{kind}");
+            assert!(body["tags"].get("crash.build_id").is_none(), "{kind}");
+        }
+        let no_image = REC.lines().filter(|l| !l.starts_with("img: ")).collect::<Vec<_>>().join("\n");
+        let fault = parse(&no_image).remove(0);
+        assert!(report_image(&fault).is_none());
+        let body = recovered_body(&fault, UPGRADED_TO);
+        assert_eq!(body["release"], super::super::release(), "no image line: nothing says it is another build");
+        assert!(body["tags"].get("crash.uploaded_by").is_none());
+        assert!(body["tags"].get("crash.build_id").is_none());
     }
 
     /// The image path is a constant, so the report does not say WHICH of the two install prefixes
@@ -3382,7 +3602,7 @@ mod tests {
         let Report::Panic(p) = &parse(PANIC_LINE)[0] else {
             panic!("expected a panic")
         };
-        let body = String::from_utf8(panic_sentry_body(p, &"e".repeat(32), None)).expect("utf-8");
+        let body = String::from_utf8(panic_sentry_body(p, &"e".repeat(32), BUILD, None)).expect("utf-8");
         assert!(!body.contains("Dune"), "a title reached the wire");
         assert!(!body.contains("/media/"), "a path reached the wire");
         assert!(!body.contains("unwrap"), "the message reached the wire");

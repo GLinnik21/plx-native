@@ -45,7 +45,9 @@ const RELEASE_PREFIX: &str = "plxnative@";
 static RELEASE: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
 
 /// Record the release string every outbound report carries (Sentry `release`, the SDK and client
-/// version, the usage context's `app_version`).
+/// version, the usage context's `app_version`). The one exception to `release` is a crash-log
+/// record left by another build than this one, which `crashreport::stamp_release` files under no
+/// release rather than this one.
 ///
 /// **The application hands it in**: `PLX_VERSION` is published by the application's build script, a
 /// `cargo:rustc-env` reaches that one crate only, and the rule that derives it is written once
