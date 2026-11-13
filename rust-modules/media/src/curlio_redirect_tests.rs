@@ -194,7 +194,10 @@ impl KeepAlive {
 /// **A redirect's connection is not wasted.** The hop is left only after its body has been read to its
 /// end, so libcurl keeps the connection, and the next request to the same server finds it in the
 /// source's connection cache: one connection for the redirect and the media, where a hop left
-/// mid-body would cost a second.
+/// mid-body would cost a second. That holds for the libcurl a host test binds; with the bundled curl
+/// and Alt-Svc off, a first request to an origin not yet heard from is `CURLOPT_FORBID_REUSE`
+/// (`closes_after_transfer`), so a redirect there costs a second connection, which this test, never
+/// binding the bundle, cannot see.
 #[test]
 fn the_connection_a_redirect_arrived_on_carries_the_next_hop_when_its_body_was_read() {
     let _serial = plx_base::testlock::serial();

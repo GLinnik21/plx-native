@@ -125,9 +125,24 @@
 //! [`ConnLedger`]): libcurl hands a request the oldest matching idle connection, so a busy one
 //! stays choosable until libcurl itself refuses it as idle too long (`CURLOPT_MAXAGE_CONN`, 118 s
 //! by default in 7.82 and 8.23 alike). HTTP/3 cancels per stream and is left alone, as is a
-//! transfer that finished. The busy connection itself is left to libcurl's cache rather than
-//! closed: `CURLOPT_FORBID_REUSE` would have to be set on a transfer in progress, which
-//! `curl_easy_setopt`'s contract calls undefined, and the measured fix did not need it.
+//! transfer that finished. With a firmware libcurl the busy connection itself is left to libcurl's
+//! cache rather than closed: `CURLOPT_FORBID_REUSE` would have to be set on a transfer in
+//! progress, which `curl_easy_setopt`'s contract calls undefined ("Changing options ... while a
+//! transfer is still in progress may cause undefined and undesired behavior"), and the measured
+//! fix did not need it. The bundled curl (a `CURLSTACK=1` build) did: with every request after a
+//! seek already dialling fresh, a seek still took 1.7x as long as over HTTP/1.1 (254 against 148
+//! ms to resume at 8 Mbit/s, ~10 ms from Traefik, on a webOS 5.6.2 set; that set's firmware 7.61
+//! asked for HTTP/2 under the same rule took 152 ms), with up to four abandoned connections left
+//! open beside the new one. So a bundled media transfer that may be HTTP/2 is set
+//! `CURLOPT_FORBID_REUSE` BEFORE it enters the multi ([`closes_after_transfer`]) and its connection
+//! closes with it: 136 ms in the same runs, and [`stop`](CurlSource::stop) then records no busy
+//! connection for it. Not for an origin last heard over HTTP/1.1 (closing a keep-alive only costs a
+//! dial) or HTTP/3, nor for one not yet heard from while Alt-Svc may route the handle to QUIC, nor
+//! once a source has been reopened for another URL ([`CurlSource::reopen_until`], which only HLS
+//! does): its playlist and segment requests finish cleanly and keep their connection, and the busy
+//! mark above still covers its cancels (an HLS session's first request, on a fresh source, may
+//! still close its connection: one extra dial). A
+//! redirect hop the rule chose closes its connection too, so its next hop dials its own.
 //!
 //! # Why the abort handle lives in a module-global REGISTRY
 //!
@@ -290,10 +305,26 @@ const CURL_HTTP_VERSION_3: c_long = 30;
 /// HTTP/1.1 does not: libcurl closes a connection whose transfer was removed unfinished, so the next
 /// request dials anyway. HTTP/3 does not either: QUIC cancels per stream, with no shared byte stream
 /// to wait behind. A transfer that finished cleanly left nothing queued, whatever its version, and a
-/// handle set `CURLOPT_FORBID_REUSE` (`reuse_forbidden`, key mode) took its connection down with it.
+/// handle set `CURLOPT_FORBID_REUSE` (`reuse_forbidden`: key mode, or a bundled transfer
+/// [`closes_after_transfer`] chose) took its connection down with it.
 /// `finished_cleanly` is `done && !failed`: a failed transfer is `done` too.
 fn left_backlog(version: c_long, finished_cleanly: bool, reuse_forbidden: bool) -> bool {
     !finished_cleanly && !reuse_forbidden && version == CURL_HTTP_VERSION_2_0
+}
+
+/// Whether a media transfer is set `CURLOPT_FORBID_REUSE` before it enters the multi, so its
+/// connection closes when the transfer ends instead of staying cached (module doc, "A seek that
+/// cancels an HTTP/2 transfer dials a fresh connection"). Only with the bundled curl (`bundled`),
+/// where a seek past an abandoned connection measured 1.7x HTTP/1.1 even dialling fresh, and never
+/// once a source has been reopened for HLS (`segmented`, [`CurlSource::reopen_until`]), whose
+/// requests finish cleanly and would otherwise each pay a handshake. Always for an origin last heard over HTTP/2; for one not
+/// yet heard from (`origin_version` 0) only while this handle cannot be routed to QUIC (`alt_svc`
+/// off), because closing a QUIC connection costs the next request a handshake; never for HTTP/1.1
+/// or HTTP/3.
+fn closes_after_transfer(bundled: bool, segmented: bool, alt_svc: bool, origin_version: c_long) -> bool {
+    bundled
+        && !segmented
+        && (origin_version == CURL_HTTP_VERSION_2_0 || (origin_version == 0 && !alt_svc))
 }
 
 /// [`CurlSource::stop`]'s judgement of the handle it detaches, as a pure function of what it reads.
@@ -310,10 +341,10 @@ fn detach_leaves_backlog(
     done: bool,
     failed: bool,
     rc: c_int,
-    key_mode: bool,
+    reuse_forbidden: bool,
 ) -> bool {
     let version = if own_version != 0 { own_version } else { origin_version };
-    attached && !(failed && never_connected(rc)) && left_backlog(version, done && !failed, key_mode)
+    attached && !(failed && never_connected(rc)) && left_backlog(version, done && !failed, reuse_forbidden)
 }
 
 /// Whether a transfer that failed with `rc` failed before it had a working connection, so it can
@@ -977,6 +1008,12 @@ pub struct CurlSource<A: UrlAuthorizer> {
     /// read for every easy handle. A busy mark lasts [`BUSY_FOR`] and is cleared when the multi is
     /// rebuilt.
     conns: ConnLedger,
+    /// Whether [`easy`](Self::easy) was set `CURLOPT_FORBID_REUSE` by [`closes_after_transfer`]:
+    /// its connection closes with it, so [`stop`](Self::stop) records no busy connection for it.
+    forbid_reuse: bool,
+    /// Whether this source has been reopened for another URL ([`reopen_until`](Self::reopen_until),
+    /// which only HLS does): [`closes_after_transfer`] then leaves its connections to libcurl's cache.
+    segmented: bool,
     /// Whether [`easy`](Self::easy) entered the multi (`curl_multi_add_handle` succeeded). A handle
     /// refused before that never sent anything, so [`stop`](Self::stop) judges no connection by it.
     attached: bool,
@@ -1160,6 +1197,8 @@ impl<A: UrlAuthorizer> CurlSource<A> {
             readable: false,
             poisoned: false,
             conns: ConnLedger::default(),
+            forbid_reuse: false,
+            segmented: false,
             attached: false,
             authorizer: std::marker::PhantomData,
         });
@@ -1185,6 +1224,7 @@ impl<A: UrlAuthorizer> CurlSource<A> {
         let (origin, _) = crate::net::origin::split(url);
         self.resolve_entry = resolve_entry_for(&origin)?;
         self.url = CString::new(url).map_err(|_| OpenErr::Local)?;
+        self.segmented = true;
         self.off = 0;
         self.size = -1;
         self.poisoned = false;
@@ -1581,6 +1621,25 @@ impl<A: UrlAuthorizer> CurlSource<A> {
                     ));
                 }
             }
+            // The bundled curl's connection closes with this transfer rather than staying cached for
+            // a later seek to abandon (`closes_after_transfer`). Set here, before the handle enters
+            // the multi: on a transfer in progress `curl_easy_setopt` is undefined. Not
+            // `require_setopt!`: a libcurl that refuses keeps the connection cached, as before.
+            self.forbid_reuse = false;
+            if let Some(o) = &self.hop_origin {
+                let alt = matches!(mode, keypin::Mode::Strict) && crate::net::alt_svc();
+                let bundled = crate::net::bundled_curl().is_some();
+                if closes_after_transfer(bundled, self.segmented, alt, self.conns.version(o)) {
+                    let rc = crate::net::curl_easy_setopt_long(easy, crate::net::CURLOPT_FORBID_REUSE, 1);
+                    if rc == 0 {
+                        self.forbid_reuse = true;
+                    } else {
+                        plx_base::eventlog::log(&format!(
+                            "curlio: libcurl refused CURLOPT_FORBID_REUSE (rc={rc}); this connection stays cached"
+                        ));
+                    }
+                }
+            }
             // NB no CURLOPT_TIMEOUT: a whole movie has no deadline. The low-speed pair above is
             // what bounds a stall, and unlike a total timeout it cannot kill a healthy transfer.
             // NB no CURLOPT_ACCEPT_ENCODING either — the demuxer wants the bytes the file has.
@@ -1820,6 +1879,9 @@ impl<A: UrlAuthorizer> CurlSource<A> {
     /// finished is one whose connection libcurl keeps for the next request; one removed mid-body is
     /// closed on HTTP/1.1, while on HTTP/2 it stays cached with the cancelled stream's queued bytes,
     /// which `stop()` records as a backlog so requests to that origin dial past it for [`BUSY_FOR`].
+    /// The exception is a bundled-curl hop [`closes_after_transfer`] chose (an origin on HTTP/2, or
+    /// one not yet heard from with Alt-Svc off): its connection closes whether or not the body was
+    /// read, and `stop()` marks nothing busy, so there the drain saves no connection.
     /// Best effort by design: a body that does not finish inside the bounds, an abort, or a multi
     /// failure costs the connection (and, on HTTP/2, a fresh dial per request to that origin for
     /// [`BUSY_FOR`]) and nothing else — the `Location` is already in hand and
@@ -1916,12 +1978,13 @@ impl<A: UrlAuthorizer> CurlSource<A> {
             // connection to its origin, so that origin's last version stands in (per origin: a
             // chain's hops may be on different versions). A failed transfer is `done` too, and an
             // HTTP/2 error resets only its stream. A key-mode handle was set `CURLOPT_FORBID_REUSE`
-            // (`keypin::apply`): its connection closes with it, whatever it left queued.
+            // (`keypin::apply`), as was a bundled one `closes_after_transfer` chose: its connection
+            // closes with it, whatever it left queued.
             if let Some(o) = self.hop_origin.clone() {
                 let own = if self.attached { http_version(self.easy) } else { 0 };
                 let origin_version = self.conns.version(&o);
-                let key_mode = self.key_pin.is_some();
-                if detach_leaves_backlog(self.attached, own, origin_version, self.done, self.failed, self.rc, key_mode) {
+                let reuse_forbidden = self.key_pin.is_some() || self.forbid_reuse;
+                if detach_leaves_backlog(self.attached, own, origin_version, self.done, self.failed, self.rc, reuse_forbidden) {
                     self.conns.note_busy(&o, std::time::Instant::now());
                 }
             }
@@ -3309,6 +3372,29 @@ mod tests {
         for v in [0, 1, 2, 30] {
             for (finished, forbidden) in [(false, false), (true, false), (false, true)] {
                 assert!(!left_backlog(v, finished, forbidden), "version {v}");
+            }
+        }
+    }
+
+    /// Which media transfers close their connection (`closes_after_transfer`): the bundled curl
+    /// only, and never on an HLS source; an origin last heard over HTTP/2 always; one not yet heard
+    /// from only while Alt-Svc cannot route the handle to QUIC; never one on HTTP/1.1 or HTTP/3.
+    #[test]
+    fn only_a_bundled_transfer_that_may_be_http2_closes_its_connection() {
+        let h2 = CURL_HTTP_VERSION_2_0;
+        // (bundled, segmented, Alt-Svc, origin's version)
+        assert!(closes_after_transfer(true, false, false, h2));
+        assert!(closes_after_transfer(true, false, true, h2), "known HTTP/2 even with Alt-Svc on");
+        assert!(closes_after_transfer(true, false, false, 0), "not yet heard from, Alt-Svc off");
+        assert!(!closes_after_transfer(true, false, true, 0), "not yet heard from: may be routed to QUIC");
+        for alt in [false, true] {
+            assert!(!closes_after_transfer(true, false, alt, 2), "HTTP/1.1");
+            assert!(!closes_after_transfer(true, false, alt, CURL_HTTP_VERSION_3), "HTTP/3");
+            for v in [0, 2, h2, CURL_HTTP_VERSION_3] {
+                assert!(!closes_after_transfer(true, true, alt, v), "an HLS source, version {v}");
+                for seg in [false, true] {
+                    assert!(!closes_after_transfer(false, seg, alt, v), "a firmware libcurl, version {v}");
+                }
             }
         }
     }

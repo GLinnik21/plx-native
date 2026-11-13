@@ -173,10 +173,12 @@ const CURLOPT_NOSIGNAL: c_int = 99;
 /// connection for this handle, and never leave this handle's connection in the cache. Read off
 /// `curl/curl.h`; both have existed since libcurl 7.7. Set by [`keypin::apply`] on every key-mode
 /// handle; `CURLOPT_FRESH_CONNECT` alone also by `curlio` for a request to an origin whose cached
-/// HTTP/2 connection still carries a cancelled stream (`curlio::ConnLedger`). A libcurl that refuses
-/// it there reuses the connection, so that refusal is logged and never fatal.
+/// HTTP/2 connection still carries a cancelled stream (`curlio::ConnLedger`), and
+/// `CURLOPT_FORBID_REUSE` alone by `curlio` for a bundled-curl media transfer that may be HTTP/2
+/// (`curlio::closes_after_transfer`). A libcurl that refuses either there keeps or reuses the
+/// connection, so that refusal is logged and never fatal.
 pub(crate) const CURLOPT_FRESH_CONNECT: c_int = 74;
-const CURLOPT_FORBID_REUSE: c_int = 75;
+pub(crate) const CURLOPT_FORBID_REUSE: c_int = 75;
 /// `CURLOPT_SSL_SESSIONID_CACHE` (LONG + 150): `0` stops libcurl from looking up a cached TLS
 /// session for this handle AND from storing the one it negotiates, so the handshake is a full one.
 /// Read off `curl/curl.h`; the option has existed since libcurl 7.16.0, long before the television's
