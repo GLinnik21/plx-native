@@ -6163,6 +6163,10 @@ mod native_seek_pump_tests {
 #[path = "dv_start_pump_tests.rs"]
 mod dv_start_pump_tests;
 
+#[cfg(all(test, feature = "hostsim"))]
+#[path = "progressive_rebuffer_pump_tests.rs"]
+mod progressive_rebuffer_pump_tests;
+
 /// **A film whose audio outlasts its video ends on the host sink too (#865).** The pipeline stops
 /// its clock at the last video frame, so the playhead never comes within [`EOS_TAIL_NS`](crate::player::readout::EOS_TAIL_NS) of the
 /// container's duration (the longest track's) and only the pipeline's own end-of-stream can end
@@ -6188,10 +6192,10 @@ mod end_of_film_tests {
     /// Steps a run may take: 23 s at one tick per step is 115.
     const STEP_BUDGET: usize = 400;
 
-    struct Rig {
-        ps: crate::route::PlaybackSession,
-        pa: super::super::adapter::PlayerAdapter,
-        now: u32,
+    pub(super) struct Rig {
+        pub(super) ps: crate::route::PlaybackSession,
+        pub(super) pa: super::super::adapter::PlayerAdapter,
+        pub(super) now: u32,
     }
 
     impl Rig {
@@ -6199,6 +6203,12 @@ mod end_of_film_tests {
         /// callback gate is open: otherwise the sink reports nothing and a red run would be a dead
         /// instrument, not the defect), holding 20 s of video and 23 s of audio, primed to play.
         fn new() -> Rig {
+            Self::with_media(VIDEO_END_NS, AUDIO_END_NS)
+        }
+
+        /// [`Self::new`] with its own lane lengths: the same real session, holding `video_end_ns` of
+        /// video and `audio_end_ns` of audio, the producer done with neither (no EOF is set).
+        pub(super) fn with_media(video_end_ns: i64, audio_end_ns: i64) -> Rig {
             crate::player::reset_session_for_test();
             FEED_TX.reset();
             super::super::claim_hold::clear();
@@ -6217,15 +6227,15 @@ mod end_of_film_tests {
             assert!(eng.stage >= Stage::Playing, "PRECONDITION FAILED, not the defect: the engine is not past its Load");
             let au = [0u8; 64];
             let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
-            for i in 0..VIDEO_END_NS / V_STEP_NS {
+            for i in 0..video_end_ns / V_STEP_NS {
                 plx_play_feed::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, i * V_STEP_NS, c_int::from(i == 0), 1);
             }
             let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
-            for i in 0..AUDIO_END_NS / A_STEP_NS {
+            for i in 0..audio_end_ns / A_STEP_NS {
                 plx_play_feed::aq::aq_push(qa, au.as_ptr(), au.len() as c_int, i * A_STEP_NS, 1, 2);
             }
             pa.install(eng);
-            FEED_SHARED.duration_ns.store(AUDIO_END_NS, Relaxed);
+            FEED_SHARED.duration_ns.store(audio_end_ns, Relaxed);
             // The pump's `present` addresses the attempt the session's view began for: the readout is
             // what `player::state` and `player::ended` read, so the rig owes it that attempt.
             let mut ps = crate::route::PlaybackSession::IDLE;
@@ -6233,12 +6243,12 @@ mod end_of_film_tests {
             Rig { ps, pa, now: 1_000 }
         }
 
-        fn eng(&mut self) -> std::cell::RefMut<'_, Engine> {
+        pub(super) fn eng(&mut self) -> std::cell::RefMut<'_, Engine> {
             self.pa.engine().expect("engine")
         }
 
         /// The demuxer reached the end of the file: both lanes are complete.
-        fn producer_done(&mut self) {
+        pub(super) fn producer_done(&mut self) {
             let mut guard = self.eng();
             let eng = &mut *guard;
             for q in [eng.aq_video.as_mut().unwrap(), eng.aq_audio.as_mut().unwrap()] {
@@ -6247,7 +6257,7 @@ mod end_of_film_tests {
         }
 
         /// One pipeline period: the clock runs 200 ms, the sink takes its tick, the frame runs.
-        fn step(&mut self) {
+        pub(super) fn step(&mut self) {
             ffi_host::advance_clock_for_test(TICK_MS);
             ffi_host::tick_for_test();
             let _frame = plx_base::task::FrameScope::enter();
@@ -6267,7 +6277,7 @@ mod end_of_film_tests {
         }
 
         /// What a failure message needs to explain itself.
-        fn facts(&mut self) -> String {
+        pub(super) fn facts(&mut self) -> String {
             let (clock_ns, running) = ffi_host::clock_state_for_test();
             let ended = crate::player::feed_ended(&self.ps);
             let streaming = self.eng().stage >= Stage::Streaming;
