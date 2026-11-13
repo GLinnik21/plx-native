@@ -12,7 +12,7 @@ use std::{
     cell::Cell,
     marker::PhantomData,
     rc::Rc,
-    sync::{atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering}, OnceLock},
+    sync::{atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU8, AtomicUsize, Ordering}, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -76,6 +76,14 @@ impl FreezeBucket {
 /// number the tracer's `*** FREEZE seq=<n>` record carries (the n-th probe this process sent).
 pub fn freeze_end_record(seq: u32, bucket: FreezeBucket) -> String {
     format!("freeze-end: seq={seq} bucket={}", bucket.word())
+}
+
+/// The crash-log line that says where the loop was when probe `seq` was sent:
+/// `freeze-at: seq=<n> leg=<word>`. Written by the observer thread at probe time, so it is on disk
+/// even if the freeze is never recovered; the importer joins it to the `*** FREEZE seq=<n>` record
+/// of the same process. `leg` is one of [`LoopPhase::word`]'s fixed words.
+pub fn freeze_at_record(seq: u32, leg: LoopPhase) -> String {
+    format!("freeze-at: seq={seq} leg={}", leg.word())
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -291,6 +299,33 @@ impl LoopPhase {
         Self::PresentAndSwap, Self::FrameReport,
     ];
 
+    /// The word the crash log and the report carry for this leg of the frame loop. **The one
+    /// table**, read by the writer here ([`freeze_at_record`]) and the importer
+    /// (`telemetry::crashreport`), so a leg on the wire is always one of these eleven fixed words
+    /// of the app's own loop and never free text. Single tokens (the log line is split on
+    /// whitespace); not the `threadcheck` descriptor texts, which have spaces and exist only in a
+    /// developer build.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::EventIngest => "event-ingest",
+            Self::Results => "results",
+            Self::DevScenarios => "dev-scenarios",
+            Self::PlaybackPump => "playback-pump",
+            Self::LandResults => "land-results",
+            Self::Navcommit => "navcommit",
+            Self::DispatcherFrame => "dispatcher-frame",
+            Self::Update => "update",
+            Self::PrepareWindow => "prepare-window",
+            Self::PresentAndSwap => "present-and-swap",
+            Self::FrameReport => "frame-report",
+        }
+    }
+
+    /// The inverse of [`word`](Self::word); anything that is not exactly one of the words is `None`.
+    pub fn from_word(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|leg| leg.word() == word)
+    }
+
     #[cfg(feature = "threadcheck")]
     const fn descriptor(self) -> &'static BlockingLabel {
         match self {
@@ -328,19 +363,57 @@ pub fn span_scope(name: &str) -> Option<LabelScope> {
     LoopPhase::of_span(name).map(|phase| enter_label(phase.descriptor()))
 }
 
+/// What the leg cell holds before the first leg is entered.
+const NO_LEG: u8 = 0;
+
+/// **The leg the main loop is in, in EVERY build.** [`LoopPhases::enter`] stores the leg's code
+/// here (one relaxed store per leg: no string, no thread-local, no allocation) and the observer
+/// reads it when it probes a freeze, because the label the `threadcheck` build publishes does not
+/// exist in a shipping one. A code is the leg's position in [`LoopPhase::ALL`] plus one, so
+/// [`NO_LEG`] is "none yet".
+static CURRENT_LEG: AtomicU8 = AtomicU8::new(NO_LEG);
+
+fn leg_code(phase: LoopPhase) -> u8 {
+    phase as u8 + 1
+}
+
+fn leg_of(code: u8) -> Option<LoopPhase> {
+    usize::from(code).checked_sub(1).and_then(|i| LoopPhase::ALL.get(i).copied())
+}
+
+/// The leg the main loop is in now: `None` before it has entered its first.
+pub fn current_leg() -> Option<LoopPhase> {
+    leg_of(CURRENT_LEG.load(Ordering::Relaxed))
+}
+
 /// The heartbeat leg currently open. `enter` closes the previous leg and opens the next; the last
 /// stays open until the next `enter`. Owned by `heartbeat::Instruments`, whose `mark` is the only
-/// caller. Without `threadcheck` this is a zero-sized no-op.
-#[derive(Default)]
+/// caller. In every build `enter` records the leg in [`CURRENT_LEG`] for the freeze probe; with
+/// `threadcheck` it also publishes the leg's label for the hang line.
 pub struct LoopPhases {
+    cell: &'static AtomicU8,
     #[cfg(feature = "threadcheck")]
     open: Option<LabelScope>,
 }
 
+impl Default for LoopPhases {
+    fn default() -> Self {
+        Self::on(&CURRENT_LEG)
+    }
+}
+
 impl LoopPhases {
+    fn on(cell: &'static AtomicU8) -> Self {
+        Self {
+            cell,
+            #[cfg(feature = "threadcheck")]
+            open: None,
+        }
+    }
+
     #[inline]
-    #[cfg_attr(not(feature = "threadcheck"), allow(unused_variables))]
     pub fn enter(&mut self, phase: LoopPhase) {
+        self.cell.store(leg_code(phase), Ordering::Relaxed);
         #[cfg(feature = "threadcheck")]
         {
             self.open = None; // restores the label that was current before the first leg
@@ -612,6 +685,32 @@ fn handler_is_ours(handler: libc::sighandler_t) -> bool {
     }
 }
 
+/// The observer's answer to a freeze probe: send it, and when it went out write
+/// `freeze-at: seq=<n> leg=<word>` to the crash log. Returns whether the probe was sent and the
+/// event-log line to write (which names the leg whether or not the probe was sent).
+///
+/// The record is written on the OBSERVER thread (never in the signal handler) and at probe time,
+/// not at recovery, so a freeze the platform ends by killing the app still carries its leg. It
+/// follows the send, so it can land before, between or after the lines the handler writes on the
+/// stuck thread; the importer joins it to its `*** FREEZE` by number whichever order they came in.
+/// An unsent probe writes nothing: no `*** FREEZE` exists for a leg to belong to, and the number is
+/// reused by the next probe. Without a leg (the loop has not entered one) nothing is written
+/// either: there is no word to write.
+fn answer_probe(
+    crash_log: &std::path::Path,
+    seq: u32,
+    ms: u64,
+    leg: Option<LoopPhase>,
+    send: impl FnOnce(u32) -> bool,
+) -> (bool, String) {
+    let sent = send(seq);
+    if let (true, Some(leg)) = (sent, leg) {
+        let _ = crate::eventlog::append_record(crash_log, &freeze_at_record(seq, leg));
+    }
+    let at = leg.map(|leg| format!(" in {}", leg.word())).unwrap_or_default();
+    (sent, format!("main-thread freeze: {ms}ms without loop progress{at} (probe {seq}, recorded={sent})"))
+}
+
 fn observe_loop(main_thread: usize, #[cfg(feature = "threadcheck")] log_only: bool) {
     let origin = Instant::now();
     let mut freezes = Freezes::default();
@@ -639,11 +738,13 @@ fn observe_loop(main_thread: usize, #[cfg(feature = "threadcheck")] log_only: bo
         let event = detector.observe(now, progress, label);
         match freezes.observe(now, progress, SIGNALS.foreground.load(Ordering::Acquire)) {
             Some(FreezeEvent::Probe { seq, ms }) => {
-                let sent = probe_main_thread(main_thread, seq);
+                let crash_log = crate::paths::in_runtime_dir(crate::paths::runtime_file::CRASH);
+                let (sent, line) =
+                    answer_probe(&crash_log, seq, ms, current_leg(), |seq| probe_main_thread(main_thread, seq));
                 if !sent {
                     freezes.unsent();
                 }
-                crate::eventlog::log(&format!("main-thread freeze: {ms}ms without loop progress (probe {seq}, recorded={sent})"));
+                crate::eventlog::log(&line);
                 probed = sent.then_some(seq);
             }
             Some(FreezeEvent::Recovered { seq, ms }) => {
@@ -1224,6 +1325,90 @@ mod tests {
         assert_eq!(FreezeBucket::from_word("unrecovered"), None, "a recovery line never says unrecovered");
         assert_eq!(FreezeBucket::from_word("12345ms"), None, "raw durations are not a bucket");
         assert_eq!(freeze_end_record(2, FreezeBucket::Medium), "freeze-end: seq=2 bucket=10-30s");
+    }
+
+    #[test]
+    fn every_loop_leg_has_one_single_token_word_and_round_trips() {
+        let mut seen = std::collections::HashSet::new();
+        for (i, leg) in LoopPhase::ALL.into_iter().enumerate() {
+            let word = leg.word();
+            assert!(!word.is_empty() && word.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'), "{word:?}");
+            assert!(seen.insert(word), "{word:?} names two legs");
+            assert_eq!(LoopPhase::from_word(word), Some(leg));
+            assert_eq!(leg as usize, i, "the leg cell's code is the position in ALL");
+        }
+        for not_a_leg in ["", "unlabeled", "event ingest", "Update", "update ", "7"] {
+            assert_eq!(LoopPhase::from_word(not_a_leg), None, "{not_a_leg:?}");
+        }
+    }
+
+    #[test]
+    fn the_leg_record_names_the_probe_and_a_fixed_word() {
+        assert_eq!(freeze_at_record(3, LoopPhase::Update), "freeze-at: seq=3 leg=update");
+        assert_eq!(freeze_at_record(1, LoopPhase::PresentAndSwap), "freeze-at: seq=1 leg=present-and-swap");
+    }
+
+    #[test]
+    fn entering_a_leg_publishes_it_to_the_cell_in_every_build() {
+        let cell: &'static AtomicU8 = Box::leak(Box::new(AtomicU8::new(NO_LEG)));
+        let mut legs = LoopPhases::on(cell);
+        assert_eq!(leg_of(cell.load(Ordering::Relaxed)), None, "no leg before the first mark");
+        legs.enter(LoopPhase::Update);
+        assert_eq!(leg_of(cell.load(Ordering::Relaxed)), Some(LoopPhase::Update));
+        legs.enter(LoopPhase::PresentAndSwap);
+        assert_eq!(leg_of(cell.load(Ordering::Relaxed)), Some(LoopPhase::PresentAndSwap));
+        for leg in LoopPhase::ALL {
+            legs.enter(leg);
+            assert_eq!(leg_of(cell.load(Ordering::Relaxed)), Some(leg));
+        }
+        assert_eq!(leg_of(200), None, "a code outside the table names no leg");
+    }
+
+    #[test]
+    fn the_default_legs_publish_to_the_process_cell_the_observer_reads() {
+        LoopPhases::default().enter(LoopPhase::Navcommit);
+        // Other tests may enter a leg too, so only "a leg is published" is stable here; which
+        // one is the private-cell test's business.
+        assert!(current_leg().is_some());
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let path = crate::testscratch::process_dir("freeze-at").join(name);
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn a_probe_that_was_sent_writes_the_leg_record_and_names_the_leg_in_the_log_line() {
+        let log = scratch("sent");
+        let (sent, line) = answer_probe(&log, 2, 5_000, Some(LoopPhase::PresentAndSwap), |seq| {
+            assert_eq!(seq, 2);
+            true
+        });
+        assert!(sent);
+        assert_eq!(
+            line,
+            "main-thread freeze: 5000ms without loop progress in present-and-swap (probe 2, recorded=true)"
+        );
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "freeze-at: seq=2 leg=present-and-swap\n");
+    }
+
+    #[test]
+    fn a_probe_that_was_not_sent_writes_no_record_but_the_line_still_names_the_leg() {
+        let log = scratch("unsent");
+        let (sent, line) = answer_probe(&log, 1, 6_100, Some(LoopPhase::Update), |_| false);
+        assert!(!sent);
+        assert_eq!(line, "main-thread freeze: 6100ms without loop progress in update (probe 1, recorded=false)");
+        assert!(!log.exists(), "an unsent probe has no `*** FREEZE` for a leg to belong to");
+    }
+
+    #[test]
+    fn a_probe_before_any_leg_was_entered_names_none() {
+        let log = scratch("noleg");
+        let (sent, line) = answer_probe(&log, 1, 5_000, None, |_| true);
+        assert!(sent);
+        assert_eq!(line, "main-thread freeze: 5000ms without loop progress (probe 1, recorded=true)");
+        assert!(!log.exists(), "no leg, no record: nothing is written that names nothing");
     }
 
     #[test]
