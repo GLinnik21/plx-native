@@ -645,9 +645,13 @@ const FACTS_BITS: usize = 8;
 fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
     match plx_media::route::playback_preview(d) {
         Some(plx_media::route::Preview::DirectPlay | plx_media::route::Preview::Remux) => ([Bit::Air(0.0); FACTS_BITS], 0),
-        Some(preview) => play_mode_bits_for(preview, d.hdr, item_subscription(d), after),
+        Some(preview) => play_mode_bits_for(preview, played_hdr(d), item_subscription(d), after),
         None => ([Bit::Air(0.0); FACTS_BITS], 0),
     }
+}
+
+fn played_hdr(d: &Detail) -> bool {
+    plx_media::route::detail_play_version(d).map_or(d.hdr, |v| v.hdr)
 }
 
 /// [`play_mode_bits`] once the item's route has been read: the line's play-mode clause, behind a
@@ -902,6 +906,32 @@ pub fn draw_facts(p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::mac
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hdr_warning_follows_the_version_play_starts() {
+        let version = |id: i64, resolution: &str, width: i64, height: i64, vcodec: &str, hdr: bool| plx_data::pms::MediaVersion {
+            id: plx_plex::plex::MediaId(id),
+            resolution: resolution.into(),
+            width,
+            height,
+            vcodec: vcodec.into(),
+            hdr,
+            ..Default::default()
+        };
+        let mut d = Detail {
+            kind: "movie".into(),
+            part: "/library/parts/1/1/uhd.mkv".into(),
+            vcodec: "vp9".into(),
+            width: 3840,
+            height: 2160,
+            hdr: true,
+            versions: vec![version(1, "4k", 3840, 2160, "vp9", true), version(2, "1080", 1920, 1080, "h264", false)],
+            ..Default::default()
+        };
+        assert!(!played_hdr(&d), "the 1080p SDR copy plays, not the 4K HDR one");
+        d.versions.clear();
+        assert!(played_hdr(&d), "a single version is described by the item itself");
+    }
 
     // TEST ONLY: this module's few call sites still read/write metadata as free functions, a
     // shape written for the old crate-global statics. A thread-confined store (same pattern as
