@@ -2011,6 +2011,8 @@ struct Winner {
     candidate: Candidate,
     origin: Origin,
     score: i32,
+    /// Network round-trip of the verified identity probe (not the whole race).
+    latency: Duration,
 }
 
 struct ProbeMessage {
@@ -2018,6 +2020,8 @@ struct ProbeMessage {
     on_time: bool,
     outcome: Outcome,
     route: RouteOutcome,
+    /// Wall time spent dialling this candidate, for family-selection diagnostics.
+    latency: Duration,
     /// [`ProbeReply::untrusted`] of this candidate's reply.
     untrusted: Option<u8>,
 }
@@ -2028,6 +2032,7 @@ const PROBE_EXPIRED: u8 = 2;
 
 #[derive(Clone)]
 struct PendingProbe {
+    started: Instant,
     deadline: Instant,
     state: Arc<AtomicU8>,
 }
@@ -2117,12 +2122,25 @@ fn settle_probe_message(
         return;
     }
     let c = &plan.candidates[message.index];
+    let family = if c.ipv6 { "IPv6" } else { "IPv4" };
+    let outcome = match message.outcome {
+        Outcome::Reachable => "verified",
+        Outcome::Unauthorized => "unauthorized",
+        Outcome::WrongServer => "wrong_server",
+        Outcome::Unreachable => "unreachable",
+        Outcome::InsecureOnly => "insecure_only",
+    };
+    log(&format!(
+        "auth: probe family={family} result={outcome} latency_ms={}",
+        message.latency.as_millis()
+    ));
     match message.outcome {
         Outcome::Reachable => {
             let Some(origin) = dial_target(c) else { return };
             let winner = Winner {
                 index: message.index,
                 score: candidate_score(c, &origin),
+                latency: message.latency,
                 candidate: c.clone(),
                 origin,
             };
@@ -2199,14 +2217,39 @@ fn could_outrank(plan: &ProbePlan, index: usize, best: &Winner) -> bool {
     score > best.score || (score == best.score && index < best.index)
 }
 
+/// Short grace for a still-probing IPv6 peer once its same-tier IPv4 fallback answered.
+const IPV6_FALLBACK_GRACE: Duration = Duration::from_millis(250);
+
+fn grace_for_pending(
+    plan: &ProbePlan, undecided: &[usize], best: Option<&Winner>, default: Duration,
+) -> Duration {
+    let Some(best) = best else { return default };
+    if best.candidate.ipv6 {
+        return default;
+    }
+    let mut outrankers = undecided.iter().copied()
+        .filter(|&index| could_outrank(plan, index, best))
+        .peekable();
+    if outrankers.peek().is_some() && outrankers.all(|index| {
+        let candidate = &plan.candidates[index];
+        candidate.ipv6
+            && candidate.location == best.candidate.location
+            && candidate.scheme == best.candidate.scheme
+            && dial_target(candidate)
+                .is_some_and(|origin| candidate_score(candidate, &origin) == best.score)
+    }) {
+        return default.min(IPV6_FALLBACK_GRACE);
+    }
+    default
+}
+
 /// **Is the race over, with some candidates still unanswered?** Pure, so the rule is gradeable
 /// on the host without a socket or a clock.
 ///
-/// A race has to wait for every candidate only while one of them could still change the answer.
-/// Once a verified, eligible winner exists, a candidate that cannot outrank it is irrelevant, and
-/// one that could (a better-ranked route) is given `grace` from the first win and no longer.
-/// `since_first_win` is `None` before any win. This is what keeps a healthy sign-in from waiting
-/// out a dead route's full deadline (5 s local, 10 s remote) behind an answer it already has.
+/// A race waits only for candidates that could improve on the verified winner.
+/// Better locations/security tiers keep the ordinary `grace` from the first answer;
+/// the sole remaining better candidate being an IPv6 twin gets up to 250 ms.
+/// A race with no verified winner still waits up to the candidate deadlines.
 fn race_decided(
     plan: &ProbePlan,
     undecided: &[usize],
@@ -2215,7 +2258,8 @@ fn race_decided(
     grace: Duration,
 ) -> bool {
     let (Some(best), Some(since)) = (best, since_first_win) else { return false };
-    since >= grace || !undecided.iter().any(|&i| could_outrank(plan, i, best))
+    since >= grace_for_pending(plan, undecided, Some(best), grace)
+        || !undecided.iter().any(|&i| could_outrank(plan, i, best))
 }
 
 /// Race one phase of a server's candidates. The spawner is injected because refusal is a result
@@ -2298,6 +2342,11 @@ fn probe_server_racing(
     if first.index != best.index {
         activate(plan, &best.candidate, &best.origin);
     }
+    log(&format!(
+        "auth: selected family={} probe_latency_ms={}",
+        if best.candidate.ipv6 { "IPv6" } else { "IPv4" },
+        best.latency.as_millis(),
+    ));
     Reach::At(best.candidate, best.origin)
 }
 

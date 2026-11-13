@@ -1661,12 +1661,5 @@
   "settings.audio.page_copy": {
     "value": "Audio and subtitle language preferences sync with your Plex account. Playback settings belong to each profile.",
     "description": "Sentence beside the Audio & subtitles page when no row has a sentence of its own: the account preferences sync with Plex, the Look group belongs to each profile. Two sentences."
-  },
-  "settings.network.section": {"value": "Network", "description": "Network preference: settings.network.section"},
-  "settings.ip_protocol.title": {"value": "IP protocol", "description": "Network preference: settings.ip_protocol.title"},
-  "settings.ip_protocol.detail": {"value": "Choose the address family for Plex and media connections. Restart PlxNative to reconnect after changing this setting.", "description": "Network preference: settings.ip_protocol.detail"},
-  "settings.ip_protocol.v4_preferred": {"value": "IPv4 preferred (IPv6 fallback)", "description": "Network preference: settings.ip_protocol.v4_preferred"},
-  "settings.ip_protocol.v6_preferred": {"value": "IPv6 preferred (IPv4 fallback)", "description": "Network preference: settings.ip_protocol.v6_preferred"},
-  "settings.ip_protocol.v6_only": {"value": "IPv6 only", "description": "Network preference: settings.ip_protocol.v6_only"},
-  "settings.ip_protocol.v4_only": {"value": "IPv4 only", "description": "Network preference: settings.ip_protocol.v4_only"}
+  }
 }

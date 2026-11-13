@@ -393,43 +393,6 @@ fn the_interface_resolution_picker_writes_install_wide_and_reverts_on_a_refused_
 }
 
 #[test]
-fn ip_protocol_picker_is_install_wide_and_defaults_to_ipv4_with_ipv6_fallback() {
-    use plx_plex::plex::session::IpMode;
-    let _guard = plx_base::testlock::serial();
-    let _session = plx_plex::plex::session::TempSession::new("picker-ip-protocol");
-    assert_eq!(PickerKind::IpProtocol.kind(), None, "network is on Settings root");
-    assert_eq!(PickerKind::IpProtocol.parent_title(), plx_platform::i18n::msg::settings_title());
-    assert_eq!(field_options(PickerKind::IpProtocol, Quality::Original, DirectPlayMode::Auto, None), [
-        (plx_platform::i18n::msg::settings_ip_protocol_v4_preferred().into(), Value::IpMode(IpMode::Ipv4Preferred)),
-        (plx_platform::i18n::msg::settings_ip_protocol_v6_preferred().into(), Value::IpMode(IpMode::Ipv6Preferred)),
-        (plx_platform::i18n::msg::settings_ip_protocol_v4_only().into(), Value::IpMode(IpMode::Ipv4Only)),
-        (plx_platform::i18n::msg::settings_ip_protocol_v6_only().into(), Value::IpMode(IpMode::Ipv6Only)),
-    ]);
-    let page = PickerPage::new(EntryId(0), PickerKind::IpProtocol, &crate::registry::capture_fixture());
-    assert_eq!(page.state.checked, 0, "new installations retain IPv4-first behaviour");
-}
-
-#[test]
-fn ip_protocol_picker_emits_an_effect_and_waits_for_a_durable_receipt() {
-    use plx_plex::plex::session::IpMode;
-    let _guard = plx_base::testlock::serial();
-    let _session = plx_plex::plex::session::TempSession::new("picker-ip-effect");
-    let mut page = PickerPage::new(EntryId(0), PickerKind::IpProtocol, &crate::registry::capture_fixture());
-    let key = key_of(&page, &Value::IpMode(IpMode::Ipv4Only));
-    let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
-    assert!(!popped(&emitted), "the screen cannot claim persistence before a receipt");
-    let (mode, reply) = emitted.into_iter().find_map(|e| match e.fx {
-        Fx::App(AppFx::Preferences(PreferenceCmd::IpProtocol { mode, reply })) => Some((mode, reply)),
-        _ => None,
-    }).expect("the network picker must request an app effect, not write itself");
-    assert_eq!(mode, IpMode::Ipv4Only);
-    reply.send(false).unwrap();
-    let emitted = drive(&mut page, tick(), key);
-    assert!(!popped(&emitted), "failed persistence must not silently close the picker");
-    assert!(!page.state.io.status.is_empty(), "show failure");
-}
-
-#[test]
 fn retained_resolution_and_durable_profile_values_ignore_ambient_replacement() {
     use plx_plex::plex::session::{put_own, SubtitleSizePref};
     let _serial = plx_base::testlock::serial();
@@ -449,5 +412,4 @@ fn retained_resolution_and_durable_profile_values_ignore_ambient_replacement() {
     injected.session = std::sync::Arc::new(injected.session.with_ui_resolution(UiResolution::Hd720));
     let page = PickerPage::new(EntryId(0), PickerKind::UiResolution, &injected);
     assert_eq!(page.current(), Value::UiResolution(UiResolution::Hd720));
-
 }

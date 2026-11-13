@@ -408,12 +408,5 @@
   "settings.audio.group_subtitles": "Napisy",
   "settings.audio.group_look": "Wygląd",
   "settings.playback.overridden_value": "Nadpisana",
-  "settings.audio.page_copy": "Preferencje języka dźwięku i napisów synchronizują się z kontem Plex. Ustawienia odtwarzania należą do każdego profilu.",
-  "settings.network.section": "Sieć",
-  "settings.ip_protocol.title": "Protokół IP",
-  "settings.ip_protocol.detail": "Wybierz rodzinę adresów dla Plex i wideo. Uruchom PlxNative ponownie po zmianie.",
-  "settings.ip_protocol.v4_preferred": "Preferuj IPv4 (zapasowe IPv6)",
-  "settings.ip_protocol.v6_preferred": "Preferuj IPv6 (zapasowe IPv4)",
-  "settings.ip_protocol.v6_only": "Tylko IPv6",
-  "settings.ip_protocol.v4_only": "Tylko IPv4"
+  "settings.audio.page_copy": "Preferencje języka dźwięku i napisów synchronizują się z kontem Plex. Ustawienia odtwarzania należą do każdego profilu."
 }

@@ -155,10 +155,9 @@ fn every_picker_level_fits_its_column_in_every_language() {
             };
             // The Interface resolution picker is opened from the Settings root, not a field list.
             let fields: Vec<PickerKind> = fields.iter().copied()
-                .chain((kind == Kind::Playback).then_some(PickerKind::UiResolution))
-                .chain((kind == Kind::Playback).then_some(PickerKind::IpProtocol)).collect();
+                .chain((kind == Kind::Playback).then_some(PickerKind::UiResolution)).collect();
             for field in fields {
-                let current = resolve_with_marker(field, Quality::Original, DirectPlayMode::Auto, Some(&prefs), marker_grants(), UiResolution::default(), IpMode::Ipv4Preferred);
+                let current = resolve_with_marker(field, Quality::Original, DirectPlayMode::Auto, Some(&prefs), marker_grants(), UiResolution::default());
                 let section = options_with_marker(field, Quality::Original, DirectPlayMode::Auto, Some(&prefs), marker_grants()).into_iter()
                     .fold(Section::new(""), |section, (label, value)| section.row(Row::new(&label).checked(value == current)));
                 out.extend(table_of(section).app_fit_failures(frame_w(), &format!("{tag} {field:?} picker")));

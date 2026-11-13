@@ -334,7 +334,8 @@ fn the_race_ends_early_only_when_no_unanswered_route_could_outrank_the_winner() 
     let winner = |index: usize| {
         let candidate = plan.candidates[index].clone();
         let origin = dial_target(&candidate).unwrap();
-        Winner { index, score: candidate_score(&candidate, &origin), candidate, origin }
+        Winner { index, score: candidate_score(&candidate, &origin),
+            latency: Duration::ZERO, candidate, origin }
     };
     let (local, remote) = (winner(0), winner(1));
     assert!(!race_decided(&plan, &[1], None, None, grace), "no winner, nothing to decide");
@@ -345,6 +346,112 @@ fn the_race_ends_early_only_when_no_unanswered_route_could_outrank_the_winner() 
     assert!(race_decided(&plan, &[0], Some(&remote), Some(grace), grace),
         "…and is not waited for once the grace is spent");
     assert!(race_decided(&plan, &[], Some(&remote), Some(Duration::ZERO), grace));
+}
+
+/// One Plex server with a v6/v4 pair in the same location/security tier.
+fn dual_stack_race_plan() -> ProbePlan {
+    let mut plan = race_plan();
+    plan.candidates[0].address = "2001:db8::10".into();
+    plan.candidates[0].url = "https://[2001:db8::10]:32400".into();
+    plan.candidates[0].ipv6 = true;
+    plan.candidates[1].location = probe::Location::Local;
+    plan.candidates[1].address = "192.0.2.10".into();
+    plan.candidates[1].url = "https://192.0.2.10:32400".into();
+    plan
+}
+
+/// A black-holed IPv6 route must not make the working IPv4 route wait 1.5 seconds.
+#[test]
+fn dual_stack_dead_ipv6_costs_at_most_a_quarter_second_after_ipv4_answers() {
+    let plan = dual_stack_race_plan();
+    let dial = status_dial(|origin, _, _| {
+        if origin.host().contains(':') {
+            std::thread::sleep(Duration::from_secs(1));
+            return (0, vec![]);
+        }
+        (200, identity_json("race-machine"))
+    });
+    let policy = ProbeDeadlines {
+        local: Duration::from_secs(3),
+        remote: Duration::from_secs(3),
+        grace: Duration::from_millis(1_500),
+    };
+    let started = Instant::now();
+    let reached = probe_server_racing(&plan, dial, &threaded_spawn, policy, &mut |_, _, _| {});
+    let elapsed = started.elapsed();
+    assert!(matches!(reached, Reach::At(ref c, _) if !c.ipv6));
+    assert!(elapsed >= Duration::from_millis(230), "IPv6 gets a real chance: {elapsed:?}");
+    assert!(elapsed < Duration::from_millis(750), "IPv4 must not pay the 1.5s grace: {elapsed:?}");
+}
+
+#[test]
+fn dual_stack_ipv6_that_answers_inside_the_quarter_second_wins() {
+    let plan = dual_stack_race_plan();
+    let dial = status_dial(|origin, _, _| {
+        if origin.host().contains(':') {
+            std::thread::sleep(Duration::from_millis(90));
+        }
+        (200, identity_json("race-machine"))
+    });
+    let mut activated = Vec::new();
+    let reached = probe_server_racing(&plan, dial, &threaded_spawn,
+        PROBE_DEADLINES, &mut |_, candidate, _| activated.push(candidate.ipv6));
+    assert!(matches!(reached, Reach::At(ref c, _) if c.ipv6));
+    assert_eq!(activated, [false, true], "IPv4 is usable immediately; IPv6 can replace it");
+}
+
+#[test]
+fn dual_stack_slow_but_working_ipv6_does_not_override_fast_ipv4() {
+    let plan = dual_stack_race_plan();
+    let dial = status_dial(|origin, _, _| {
+        if origin.host().contains(':') {
+            std::thread::sleep(Duration::from_millis(700));
+        }
+        (200, identity_json("race-machine"))
+    });
+    let started = Instant::now();
+    let reached = probe_server_racing(&plan, dial, &threaded_spawn,
+        PROBE_DEADLINES, &mut |_, _, _| {});
+    assert!(matches!(reached, Reach::At(ref c, _) if !c.ipv6));
+    assert!(started.elapsed() < Duration::from_millis(600),
+        "the fast IPv4 answer is not displaced after 250ms");
+}
+
+#[test]
+fn short_ipv6_grace_applies_only_to_the_same_tier_and_scheme() {
+    let plan = dual_stack_race_plan();
+    let winner = |plan: &ProbePlan, index: usize| {
+        let candidate = plan.candidates[index].clone();
+        let origin = dial_target(&candidate).unwrap();
+        Winner { index, score: candidate_score(&candidate, &origin),
+            latency: Duration::ZERO, candidate, origin }
+    };
+    let ipv4 = winner(&plan, 1);
+    assert_eq!(
+        grace_for_pending(&plan, &[0], Some(&ipv4), PROBE_DEADLINES.grace),
+        Duration::from_millis(250),
+    );
+    assert_eq!(
+        grace_for_pending(&plan, &[0], None, PROBE_DEADLINES.grace),
+        PROBE_DEADLINES.grace,
+    );
+    let mut different_location = plan;
+    different_location.candidates[1].location = probe::Location::Remote;
+    let remote = winner(&different_location, 1);
+    assert_eq!(
+        grace_for_pending(&different_location, &[0], Some(&remote), PROBE_DEADLINES.grace),
+        PROBE_DEADLINES.grace,
+        "local IPv6 is a genuinely better tier, not a same-tier twin",
+    );
+    let mut different_scheme = different_location;
+    different_scheme.candidates[1].location = probe::Location::Local;
+    different_scheme.candidates[1].scheme = probe::Scheme::Http;
+    let insecure = winner(&different_scheme, 1);
+    assert_eq!(
+        grace_for_pending(&different_scheme, &[0], Some(&insecure), PROBE_DEADLINES.grace),
+        PROBE_DEADLINES.grace,
+        "HTTPS has a stronger security tier, not a same-scheme twin",
+    );
 }
 
 /// Pending means a worker really exists. Refusing one launch cannot leave the coordinator
@@ -1958,7 +2065,7 @@ fn only_an_address_that_answered_is_ever_chosen_and_stored() {
         Reach::At(c, o) => {
             assert_eq!(
                 c.address, "2001:db8::1",
-                "IPv6 leads the plaintext fallbacks by default"
+                "IPv6 leads the plaintext fallbacks"
             );
             assert_eq!(
                 o.base(),
@@ -1966,7 +2073,7 @@ fn only_an_address_that_answered_is_ever_chosen_and_stored() {
                 "…and the origin recorded is what was dialled"
             );
         }
-        _ => panic!("the LAN IPv6 candidate answers: {:?}", d.seen()),
+        _ => panic!("the LAN IPv6 answers: {:?}", d.seen()),
     }
     assert_eq!(
         d.seen(),
@@ -1975,11 +2082,13 @@ fn only_an_address_that_answered_is_ever_chosen_and_stored() {
             "https://192-168-0-10.h.plex.direct:32400",
             "[2001:db8::1]:32400",
         ],
-        "TLS is tried first and costs two probes here; the IPv6 twin is the fallback that answers"
+        "TLS is tried first, then the IPv6 plaintext fallback answers"
     );
-    // The first usable IPv6 endpoint is selected; no later candidate is dialled.
+    // The first working IPv6 candidate answers; later fallback addresses need no probe.
     assert!(
-        !d.seen().iter().any(|s| s.contains("fd00") || s.contains("192.168.0.10")),
+        !d.seen()
+            .iter()
+            .any(|s| s.contains("fd00") || s.contains("192.168.0.10")),
         "{:?}",
         d.seen()
     );

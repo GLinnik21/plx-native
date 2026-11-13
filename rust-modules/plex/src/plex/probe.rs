@@ -26,8 +26,9 @@
 //!    transcodes down to fit, a last resort and never a preference. The SCHEME order flipped when
 //!    the TLS control plane landed — https is the only connection a certificate can authenticate
 //!    and the only one that works from outside the LAN, so it now leads (see
-//!    [`Scheme`](super::origin::Scheme), whose declaration order IS this ranking). Then IPv4 before
-//!    IPv6, and a numeric literal before a HOSTNAME ([`is_numeric_address`]) — a WEAKER tiebreak
+//!    [`Scheme`](super::origin::Scheme), whose declaration order IS this ranking). Then IPv6 before
+//!    IPv4 within a tier (IPv4 remains eligible), and a numeric literal before a HOSTNAME
+//!    ([`is_numeric_address`]) — a WEAKER tiebreak
 //!    than it was, because both transports resolve names now, and one that is still worth having:
 //!    a literal costs no DNS round trip, and on a LAN with no route to the internet it is the only
 //!    thing that resolves at all.
@@ -427,25 +428,8 @@ fn is_numeric_address(a: &str) -> bool {
 /// verified-but-ineligible answer is still evidence the server is alive on that address; see the
 /// field's own doc and `auth.rs`'s race semantics for what that answer is allowed to mean.
 pub fn candidates(res: &Resource, policy: CredentialPolicy) -> Vec<Candidate> {
-    // Pure cached read, not a storage I/O request. It is already populated at boot.
-    let saved = super::session::peek();
-    candidates_with_ip_mode(res, policy, saved.ip_mode())
-}
-
-/// Build candidate URLs under the explicit four-way address-family policy, including
-/// the original main ordering for the default IPv4-preferred mode.
-pub fn candidates_with_ip_mode(
-    res: &Resource, policy: CredentialPolicy, mode: super::session::IpMode,
-) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
-    for c in res.connections.iter().filter(|c| {
-        let is_v6 = c.ipv6 || c.address.contains(':');
-        is_usable(c) && match mode {
-            super::session::IpMode::Ipv6Only => is_v6,
-            super::session::IpMode::Ipv4Only => !is_v6,
-            _ => true,
-        }
-    }) {
+    for c in res.connections.iter().filter(|c| is_usable(c)) {
         let location = tier(c);
         let ipv6 = c.ipv6 || c.address.contains(':');
         let mut push = |url: String, scheme: Scheme| {
@@ -486,17 +470,17 @@ pub fn candidates_with_ip_mode(
             );
         }
     }
-    // Exact upstream main sort in IPv4-preferred mode: location, HTTPS, resolvability,
-    // then IPv4 before IPv6. Preserve Plex's advertised order for equal keys.
-    // Only the opt-in IPv6-preferred mode moves the address family ahead of
-    // resolvability to explicitly prioritise IPv6 endpoints within the tier.
+    // IPv6 gets the first opportunity within the same location/scheme tier; IPv4
+    // stays in the race as fallback. Keep the DNS-independent literal preference inside
+    // each family, and preserve Plex's advertised order for equal keys (stable sort).
+    // Read resolvability from the URL's own host, not the advertised address.
     out.sort_by_key(|c| {
-        let unresolved = !is_numeric_address(url_host(&c.url));
-        match mode {
-            super::session::IpMode::Ipv6Preferred =>
-                (c.location, c.scheme, !c.ipv6, unresolved),
-            _ => (c.location, c.scheme, unresolved, c.ipv6),
-        }
+        (
+            c.location,
+            c.scheme,
+            !c.ipv6,
+            !is_numeric_address(url_host(&c.url)),
+        )
     });
     out
 }
@@ -1408,22 +1392,22 @@ mod tests {
             ],
             "{cs:#?}"
         );
-        // The default is the exact order from main: HTTPS first, then IPv4 ahead of IPv6
-        // at equal location and resolvability. The IPv6 fallback is still present.
+        // Within the same location and scheme, IPv6 leads and IPv4 remains a fallback.
+        // `Candidate::ipv6` is metadata from Plex, not inferred from the plex.direct hostname.
         assert_eq!(
-            cs[0].url, "https://192-168-0-10.hash1.plex.direct:32400",
-            "TLS leads its tier: {cs:#?}"
+            cs[0].url, "https://2001-db8--1.hash1.plex.direct:32400",
+            "IPv6 TLS leads its tier: {cs:#?}"
         );
         assert!(
-            !cs[0].ipv6 && cs[1].ipv6,
-            "the v6 uri is next, not first: {cs:#?}"
+            cs[0].ipv6 && !cs[1].ipv6,
+            "IPv4 must remain eligible immediately after IPv6: {cs:#?}"
         );
         assert_eq!(
             cs.iter()
                 .find(|c| c.scheme == Scheme::Http)
                 .map(|c| c.url.as_str()),
-            Some("http://192.168.0.10:32400"),
-            "the plaintext fallbacks retain main's ordering: {cs:#?}"
+            Some("http://[2001:db8::1]:32400"),
+            "the IPv6 plaintext twin leads the IPv4 fallback: {cs:#?}"
         );
 
         let last = cs.last().expect("a relay candidate");
@@ -1873,28 +1857,4 @@ mod tests {
         let timeout = plx_net::net::test_response_failure(28, 0, 0, false).err().expect("a failure");
         assert_eq!(classify(Some(Err(timeout))), (LinkClass::Timeout, None, Some(28)));
     }
-    #[test]
-    fn protocol_preference_retains_fallback_and_strict_modes_filter() {
-        use super::super::session::IpMode;
-        let res = owned_server();
-        let ipv4 = candidates_with_ip_mode(&res, CredentialPolicy::HttpsOnly, IpMode::Ipv4Preferred);
-        let ipv6 = candidates_with_ip_mode(&res, CredentialPolicy::HttpsOnly, IpMode::Ipv6Preferred);
-        let v4_lan: Vec<_> = ipv4.iter().filter(|c| c.location == Location::Local && c.scheme == Scheme::Https).collect();
-        let v6_lan: Vec<_> = ipv6.iter().filter(|c| c.location == Location::Local && c.scheme == Scheme::Https).collect();
-        assert!(v4_lan.len() >= 2 && v6_lan.len() >= 2);
-        assert!(!v4_lan[0].ipv6, "default preference is IPv4 first");
-        assert!(v4_lan.iter().any(|c| c.ipv6), "default must retain IPv6 fallback");
-        assert!(v6_lan[0].ipv6, "explicit preference is IPv6 first");
-        assert!(v6_lan.iter().any(|c| !c.ipv6), "IPv6 preference retains IPv4 fallback");
-
-        let v4_only = candidates_with_ip_mode(&res, CredentialPolicy::HttpsOnly, IpMode::Ipv4Only);
-        assert!(!v4_only.is_empty() && v4_only.iter().all(|c| !c.ipv6),
-            "strict IPv4 excludes all IPv6 endpoints");
-        let v6_only = candidates_with_ip_mode(&res, CredentialPolicy::HttpsOnly, IpMode::Ipv6Only);
-        assert!(!v6_only.is_empty() && v6_only.iter().all(|c| c.ipv6),
-            "strict IPv6 excludes all IPv4 endpoints");
-        assert!(candidates_with_ip_mode(&shared_server(), CredentialPolicy::HttpsOnly, IpMode::Ipv6Only).is_empty(),
-            "IPv4-only servers are intentionally unreachable in strict IPv6");
-    }
-
 }

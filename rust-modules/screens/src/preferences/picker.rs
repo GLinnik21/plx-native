@@ -89,7 +89,7 @@ impl PickerPage {
         s
     }
     fn current(&self) -> Value {
-        resolve_with_marker(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs(), self.marker_prefs, self.inputs.session.ui_resolution(), self.inputs.session.ip_mode())
+        resolve_with_marker(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs(), self.marker_prefs, self.inputs.session.ui_resolution())
     }
     /// Whether the STORED setting already is `value`, for the profile seated now. Only Size and
     /// Position can differ from [`Self::current`]: they publish the live value before the write
@@ -191,7 +191,7 @@ impl PickerPage {
     }
     fn commit(&mut self, value: Value, fx: &mut Effects<'_, InnerHost>) {
         match value {
-            Value::IntroSkip(_, _) | Value::CreditsSkip(_, _) | Value::InstantDpadSeeking(_) | Value::UriEngine(_) | Value::DolbyVision(_) | Value::Quality(_) | Value::DirectPlay(_) | Value::NextEpisode(_) | Value::DeckPress(_) | Value::SkipInterval(_) | Value::UiResolution(_) | Value::IpMode(_) | Value::SubtitleSize(_) | Value::SubtitlePosition(_) | Value::SubtitleTone(_) | Value::HdrOverlay(_) => self.txn.save_local(&mut self.state.io, value, fx),
+            Value::IntroSkip(_, _) | Value::CreditsSkip(_, _) | Value::InstantDpadSeeking(_) | Value::UriEngine(_) | Value::DolbyVision(_) | Value::Quality(_) | Value::DirectPlay(_) | Value::NextEpisode(_) | Value::DeckPress(_) | Value::SkipInterval(_) | Value::UiResolution(_) | Value::SubtitleSize(_) | Value::SubtitlePosition(_) | Value::SubtitleTone(_) | Value::HdrOverlay(_) => self.txn.save_local(&mut self.state.io, value, fx),
             value => {
                 let mut update = PreferenceUpdate::default();
                 match (self.state.field, value) {

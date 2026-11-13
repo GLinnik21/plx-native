@@ -995,11 +995,7 @@ unsafe fn resolve(host: &str, port: c_int) -> Option<AddrList> {
     let node = std::ffi::CString::new(host).ok()?;
     let service = std::ffi::CString::new(port.to_string()).ok()?;
     let mut hints: libc::addrinfo = std::mem::zeroed();
-    hints.ai_family = match crate::net::ip_family() {
-        crate::net::IpFamily::Any => libc::AF_UNSPEC,
-        crate::net::IpFamily::V4 => libc::AF_INET,
-        crate::net::IpFamily::V6 => libc::AF_INET6,
-    };
+    hints.ai_family = libc::AF_UNSPEC;
     hints.ai_socktype = libc::SOCK_STREAM;
     hints.ai_flags = libc::AI_NUMERICSERV
         | if is_numeric_host(host) {

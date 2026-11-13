@@ -5,6 +5,8 @@
 
 use super::*;
 use super::test_support::{frame, tick, Pms};
+#[cfg(feature = "play-feed")]
+use super::test_support::PreviewReset;
 use crate::app::deeplink::{self, DeepLink};
 use crate::app::input;
 use plx_plex::plex::ServerId;
@@ -236,14 +238,6 @@ fn a_serverless_link_that_waited_across_sign_in_is_dropped() {
 #[cfg(feature = "play-feed")]
 fn play_payload(rk: &str) -> String {
     format!(r#"{{"event":"launch","parameters":{{"plex":{{"ratingKey":"{rk}","action":"play"}}}}}}"#)
-}
-
-/// Puts a preview back to Idle when the test ends, however it ends (the machine is process-wide).
-#[cfg(feature = "play-feed")]
-struct PreviewReset;
-#[cfg(feature = "play-feed")]
-impl Drop for PreviewReset {
-    fn drop(&mut self) { plx_media::player::preview::reset_for_test(); }
 }
 
 #[cfg(feature = "play-feed")]

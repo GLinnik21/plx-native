@@ -211,7 +211,9 @@ pub(super) fn race_batch(
         let pin = plx_plex::plex::ResolvePin::for_origin(&origin, &c.address);
         let location = c.location;
         let job = Box::new(move || {
+            let dial_started = clock_now();
             let reply = dial(&origin, pin.as_ref(), budget);
+            let latency = clock_elapsed(dial_started);
             let untrusted = reply.untrusted();
             let (outcome, route) = reply.grade_learning(&machine_id, location);
             let on_time = clock_now() <= deadline;
@@ -233,12 +235,13 @@ pub(super) fn race_batch(
                     on_time,
                     outcome,
                     route,
+                    latency,
                     untrusted,
                 });
             }
         });
         if spawn(index, job) {
-            pending[index] = Some(PendingProbe { deadline, state });
+            pending[index] = Some(PendingProbe { started, deadline, state });
             live += 1;
         }
     }
@@ -292,13 +295,15 @@ pub(super) fn race_batch(
                         .is_ok()
             });
             if expired {
+                let waited = pending[index].as_ref()
+                    .map_or(Duration::ZERO, |p| clock_elapsed(p.started));
                 pending[index] = None;
                 live -= 1;
                 result.observed[index] = Some(RouteOutcome::Timeout);
                 let c = &plan.candidates[index];
                 log(&format!(
-                    "auth: '{}' probe timed out at {}:{}",
-                    plan.name, c.address, c.port
+                    "auth: probe family={} result=timeout waited_ms={}",
+                    if c.ipv6 { "IPv6" } else { "IPv4" }, waited.as_millis()
                 ));
             }
         }
@@ -342,6 +347,12 @@ pub(super) fn race_batch(
                         .is_ok()
                     {
                         left_behind += 1;
+                        let c = &plan.candidates[index];
+                        log(&format!(
+                            "auth: probe family={} result=not_waited waited_ms={}",
+                            if c.ipv6 { "IPv6" } else { "IPv4" },
+                            clock_elapsed(p.started).as_millis(),
+                        ));
                     }
                 }
             }
@@ -360,7 +371,9 @@ pub(super) fn race_batch(
             .map(|p| p.deadline)
             // Wake for the end of the grace too, but only while it is still ahead: a past one
             // would turn the wait below into a zero-timeout spin.
-            .chain(first_win.map(|at| at + policy.grace).filter(|end| *end > clock_now()))
+            .chain(first_win.map(|at| at + grace_for_pending(
+                plan, &undecided, result.best.as_ref(), policy.grace,
+            )).filter(|end| *end > clock_now()))
             .min();
         let received = match next {
             Some(next) => rx.recv_timeout(next.saturating_duration_since(clock_now())),

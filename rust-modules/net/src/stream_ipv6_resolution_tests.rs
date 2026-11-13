@@ -428,18 +428,3 @@ fn an_interrupt_with_fd_closed_does_not_dial() {
     http_close(&mut *next);
     h.join().unwrap();
 }
-
-
-/// No preferred-family fallback is allowed in a strict mode, including direct HTTP.
-#[test]
-fn ip_family_modes_constrain_plain_http_literal_resolution() {
-    use crate::net::{IpFamily, set_ip_family};
-    let _guard = plx_base::testlock::serial();
-    set_ip_family(IpFamily::V4);
-    assert!(unsafe { resolve("127.0.0.1", 80) }.is_some());
-    assert!(unsafe { resolve("::1", 80) }.is_none());
-    set_ip_family(IpFamily::V6);
-    assert!(unsafe { resolve("127.0.0.1", 80) }.is_none());
-    assert!(unsafe { resolve("::1", 80) }.is_some());
-    set_ip_family(IpFamily::Any);
-}

@@ -11,7 +11,7 @@ use plx_platform::playback_trace::{Command, Status};
 fn inputs(signed_in: bool) -> RootInputs {
     RootInputs {
         trace: Status::Off,
-        signed_in, multi_user: false, library_count: 3, auto_sign_in: false, trailer_autoplay: true, ip_mode: plx_plex::plex::session::IpMode::Ipv4Preferred,
+        signed_in, multi_user: false, library_count: 3, auto_sign_in: false, trailer_autoplay: true,
         resolution: UiResolution::Auto, resolution_offered: false,
         language: plx_platform::i18n::Preference::System,
         under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(),
@@ -24,16 +24,15 @@ fn ids(inputs: &RootInputs) -> Vec<RootId> {
     (0..form.table.n_rows() as usize).filter_map(|i| form.id_at(i).cloned()).collect()
 }
 
-/// The board's root (Sv2-1): five groups in order, including the IP protocol picker, for a signed-in multi-profile
+/// The board's root (Sv2-1): four groups in order, eleven rows for a signed-in multi-profile
 /// set — and no row carries a sub-line, because the sentence lives beside the table.
 #[test]
-fn the_root_has_network_picker_and_no_sub_lines() {
+fn the_root_is_four_groups_of_rows_without_sub_lines() {
     let inputs = RootInputs { multi_user: true, ..inputs(true) };
     assert_eq!(ids(&inputs), vec![
         RootId::Favourites, RootId::UnderPosters,
         RootId::Playback, RootId::AudioSubtitles,
         RootId::Language, RootId::AutoSignIn, RootId::TrailerAutoplay,
-        RootId::IpProtocol,
         RootId::Privacy, RootId::Diagnostics, RootId::Legal, RootId::About,
     ]);
     let mut form = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
@@ -52,7 +51,6 @@ fn the_root_has_network_picker_and_no_sub_lines() {
 fn the_signed_out_root_drops_every_signed_in_row() {
     assert_eq!(ids(&inputs(false)), vec![
         RootId::Playback, RootId::Language,
-        RootId::IpProtocol,
         RootId::Privacy, RootId::Diagnostics, RootId::Legal, RootId::About,
     ]);
     assert!(!ids(&inputs(true)).contains(&RootId::AutoSignIn), "one profile skips the picker already");
@@ -62,6 +60,9 @@ fn the_signed_out_root_drops_every_signed_in_row() {
 /// metrics, in the Settings layout's own table frame), and how far it may drift before this test
 /// says the row heights or the section break moved. It is a pin of our geometry, not a number
 /// read off the board.
+const ALL_ROWS_SCROLL: f32 = 244.0;
+const ALL_ROWS_SCROLL_TOLERANCE: f32 = 6.0;
+
 /// Sv2s-R2: every conditional row at once is the board's longest root, and it scrolls.
 #[test]
 fn the_root_with_every_conditional_row_scrolls_with_focus() {
@@ -82,7 +83,9 @@ fn the_root_with_every_conditional_row_scrolls_with_focus() {
     };
     let full = scroll_to_last(&all);
     let short = scroll_to_last(&inputs(false));
-    assert!(full > short, "the fully populated root must scroll further than a signed-out root: full={full}, short={short}");
+    assert!((full - ALL_ROWS_SCROLL).abs() < ALL_ROWS_SCROLL_TOLERANCE,
+        "the longest root scrolls {ALL_ROWS_SCROLL}px (+-{ALL_ROWS_SCROLL_TOLERANCE}) to reach About: {full}");
+    assert_eq!(short, 0.0, "the signed-out root fits without scrolling");
     assert!(full > scroll_to_last(&RootInputs { multi_user: true, ..inputs(true) }), "more rows, more scroll");
 }
 

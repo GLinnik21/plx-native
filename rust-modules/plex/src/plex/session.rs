@@ -53,24 +53,6 @@
 use super::origin::Origin;
 use super::probe::Location;
 mod playback_options;
-/// Application-wide policy for Plex discovery and network transports.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IpMode { Ipv4Preferred, Ipv6Preferred, Ipv4Only, Ipv6Only }
-
-impl IpMode {
-    pub const LADDER: [Self; 4] =
-        [Self::Ipv4Preferred, Self::Ipv6Preferred, Self::Ipv4Only, Self::Ipv6Only];
-
-    pub fn transport_family(self) -> plx_net::net::IpFamily {
-        match self {
-            Self::Ipv4Preferred | Self::Ipv6Preferred => plx_net::net::IpFamily::Any,
-            Self::Ipv4Only => plx_net::net::IpFamily::V4,
-            Self::Ipv6Only => plx_net::net::IpFamily::V6,
-        }
-    }
-}
-
 pub use playback_options::{MarkerSkipMode, DolbyVisionMode, InstantDpadSeeking, UriEngine};
 
 pub use prefs::{IntroSkipPref, CreditsSkipPref, DolbyVisionModePref, InstantDpadSeekingPref, UriEnginePref, HoldHintTaughtPref, effective, effective_hud, own_prefs, persist_profile_hud, persist_profile_pref, put_own, stored_effective, stored_effective_hud, tenure, HudSelectionPref, AudioEnhancementsPref,
@@ -2638,24 +2620,6 @@ impl Session {
 
     pub fn auto_sign_in(&self) -> bool {
         self.prefs.auto_sign_in
-    }
-
-    /// The new four-mode selection overrides the optional three-mode preferences from
-    /// earlier development installs. A missing selection retains upstream's IPv4-first
-    /// ordering; previously saved explicit choices retain their meaning.
-    pub fn ip_mode(&self) -> IpMode {
-        if let Some(mode) = self.prefs.ip_mode { return mode; }
-        if self.prefs.ipv6_only == Some(true) { IpMode::Ipv6Only }
-        else if self.prefs.prefer_ipv6 == Some(false) { IpMode::Ipv4Only }
-        else if self.prefs.prefer_ipv6 == Some(true) { IpMode::Ipv6Preferred }
-        else { IpMode::Ipv4Preferred }
-    }
-
-    pub fn with_ip_mode(&self, mode: IpMode) -> Self {
-        let mut next = self.clone();
-        // Leave the old booleans intact for safe rollbacks to the previous test build.
-        next.prefs.ip_mode = Some(mode);
-        next
     }
 
     /// The Interface resolution the NEXT launch draws at; see [`UiResolution`].

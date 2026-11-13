@@ -518,7 +518,7 @@ fn the_settings_surface_owns_input_and_walks_its_own_stack() {
     assert_eq!(overlay_word(&d), Some("settings"));
     assert_ne!(d.nav.input_owner(), home_owner, "Settings takes input from its Home host");
     assert!(host_frozen(&d));
-    // DOWN x5 to Legal notices (signed out: Playback, Language, IP protocol, Privacy, Diagnostics, Legal, About)
+    // DOWN x4 to Legal notices (signed out: Playback, Language, Privacy, Diagnostics, Legal, About)
     let mut t = 2;
     let mut press = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, key: Key| {
         let ev = script_key(key, tick(t));
@@ -527,7 +527,7 @@ fn the_settings_surface_owns_input_and_walks_its_own_stack() {
         frame(d, rig, AppArg::Home, tick(t), vec![]);
         t += 1;
     };
-    for _ in 0..5 {
+    for _ in 0..4 {
         press(&mut d, &mut rig, Key::Down);
     }
     press(&mut d, &mut rig, Key::Ok);

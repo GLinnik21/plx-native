@@ -408,12 +408,5 @@
   "settings.audio.group_subtitles": "Субтитры",
   "settings.audio.group_look": "Внешний вид",
   "settings.playback.overridden_value": "Переопределено",
-  "settings.audio.page_copy": "Языковые предпочтения для звука и субтитров синхронизируются с аккаунтом Plex. Настройки воспроизведения относятся к каждому профилю.",
-  "settings.network.section": "Сеть",
-  "settings.ip_protocol.title": "Протокол IP",
-  "settings.ip_protocol.detail": "Выберите семейство адресов для Plex и видео. Перезапустите PlxNative после изменения.",
-  "settings.ip_protocol.v4_preferred": "Предпочитать IPv4 (резервный IPv6)",
-  "settings.ip_protocol.v6_preferred": "Предпочитать IPv6 (резервный IPv4)",
-  "settings.ip_protocol.v6_only": "Только IPv6",
-  "settings.ip_protocol.v4_only": "Только IPv4"
+  "settings.audio.page_copy": "Языковые предпочтения для звука и субтитров синхронизируются с аккаунтом Plex. Настройки воспроизведения относятся к каждому профилю."
 }

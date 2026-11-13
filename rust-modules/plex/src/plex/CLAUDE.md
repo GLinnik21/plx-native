@@ -301,7 +301,10 @@ local/remote probe opportunity. **The race does not wait for a route that cannot
 answer** (`auth::race_decided`): once a verified, credential-eligible winner exists, a candidate
 that cannot outrank it (`candidate_score` is a function of the candidate alone) is left behind, and
 a better-ranked one that has not answered gets `ProbeDeadlines::grace` (1.5 s) from the first
-win, not its own 5 s/10 s deadline. Waiting for every candidate made a healthy sign-in cost a
+win, not its own 5 s/10 s deadline. The sole exception is a same-tier, same-scheme
+IPv6 twin pending after a usable IPv4 answer: it gets 250 ms (Happy-Eyeballs-like);
+other better-ranked routes keep the 1.5 s grace. Candidate ranking is IPv6-first
+within location/scheme, with both families retained and no user preference. Waiting for every candidate made a healthy sign-in cost a
 dead public address's full deadline, so "taking longer than usual" ran on every sign-in
 (`screens/login.rs`'s `DISCOVERY_ESCAPE_AFTER_MS` derives its number from this cost). A race with
 no winner still runs every candidate to its deadline, and the relay phase still starts only then. Authenticated fallback attempts share a separate 20-second budget,

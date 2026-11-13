@@ -402,12 +402,5 @@
   "settings.audio.group_subtitles": "Ondertitels",
   "settings.audio.group_look": "Uiterlijk",
   "settings.playback.overridden_value": "Overschreven",
-  "settings.audio.page_copy": "Taalvoorkeuren voor audio en ondertitels worden gesynchroniseerd met je Plex-account. Afspeelinstellingen horen bij elk profiel.",
-  "settings.network.section": "Netwerk",
-  "settings.ip_protocol.title": "IP-protocol",
-  "settings.ip_protocol.detail": "Kies de adresfamilie voor Plex en video. Start PlxNative opnieuw na een wijziging.",
-  "settings.ip_protocol.v4_preferred": "IPv4 voorkeur (IPv6 als terugval)",
-  "settings.ip_protocol.v6_preferred": "IPv6 voorkeur (IPv4 als terugval)",
-  "settings.ip_protocol.v6_only": "Alleen IPv6",
-  "settings.ip_protocol.v4_only": "Alleen IPv4"
+  "settings.audio.page_copy": "Taalvoorkeuren voor audio en ondertitels worden gesynchroniseerd met je Plex-account. Afspeelinstellingen horen bij elk profiel."
 }

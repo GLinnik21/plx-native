@@ -405,12 +405,5 @@
   "settings.audio.group_subtitles": "Subtítols",
   "settings.audio.group_look": "Aspecte",
   "settings.playback.overridden_value": "Substituïda",
-  "settings.audio.page_copy": "Les preferències d'idioma de l'àudio i dels subtítols se sincronitzen amb el teu compte de Plex. Els paràmetres de reproducció pertanyen a cada perfil.",
-  "settings.network.section": "Xarxa",
-  "settings.ip_protocol.title": "Protocol IP",
-  "settings.ip_protocol.detail": "Trieu la família d'adreces per a Plex i la reproducció. Reinicieu PlxNative després de canviar-la.",
-  "settings.ip_protocol.v4_preferred": "Prioritza IPv4 (IPv6 alternatiu)",
-  "settings.ip_protocol.v6_preferred": "Prioritza IPv6 (IPv4 alternatiu)",
-  "settings.ip_protocol.v6_only": "Només IPv6",
-  "settings.ip_protocol.v4_only": "Només IPv4"
+  "settings.audio.page_copy": "Les preferències d'idioma de l'àudio i dels subtítols se sincronitzen amb el teu compte de Plex. Els paràmetres de reproducció pertanyen a cada perfil."
 }

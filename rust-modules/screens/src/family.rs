@@ -95,8 +95,6 @@ pub enum PickerKind {
     ForcedSubtitles,
     /// Settings > System > Interface resolution (install-wide; pushed from the Settings root).
     UiResolution,
-    /// Install-wide address-family picker; offered on the Settings root.
-    IpProtocol,
     /// Optional immediate D-pad jumps.
     InstantDpadSeeking,
     /// The viewer's opt-in to the URI engine (Standard / Experimental).
@@ -173,7 +171,7 @@ impl PickerKind {
         match self {
             PickerKind::Quality | PickerKind::DirectPlay | PickerKind::HdrOverlay | PickerKind::NextEpisode | PickerKind::DeckPress | PickerKind::SkipInterval | PickerKind::InstantDpadSeeking | PickerKind::UriEngine | PickerKind::DolbyVision | PickerKind::IntroSkip | PickerKind::CreditsSkip => SettingsPage::Playback,
             PickerKind::AudioLanguage | PickerKind::SubtitleMode | PickerKind::SubtitleLanguage | PickerKind::ForcedSubtitles | PickerKind::SubtitleSize | PickerKind::SubtitlePosition | PickerKind::SubtitleColor => SettingsPage::AudioSubtitles,
-            PickerKind::UiResolution | PickerKind::IpProtocol => SettingsPage::Root,
+            PickerKind::UiResolution => SettingsPage::Root,
         }
     }
 }

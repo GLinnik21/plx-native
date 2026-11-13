@@ -1381,10 +1381,6 @@ impl<A: UrlAuthorizer> CurlSource<A> {
             }
             let xp = &mut *self.xfer as *mut Xfer as *mut c_void;
             crate::net::curl_easy_setopt_ptr(easy, CURLOPT_URL, self.hop_url.as_ptr() as *const c_void);
-            require_setopt!(
-                crate::net::curl_easy_setopt_long(easy, crate::net::CURLOPT_IPRESOLVE, crate::net::curl_ipresolve()),
-                "CURLOPT_IPRESOLVE"
-            );
             crate::net::curl_easy_setopt_ptr(
                 easy,
                 CURLOPT_WRITEFUNCTION,
