@@ -69,8 +69,8 @@ that carries a subtitle stream (whether or not a subtitle is switched on) or a b
 subtitle, a trailer preview, a non-1x speed, a relay link and Auto quality away from the LAN also still
 play in Standard. On webOS 5+, originals with multiple audio tracks also stay in Standard
 because the TV service can order tracks differently from Plex. Which sets reach the TV's pipeline at all
-is decided per firmware major: webOS 4.x through ACB, and webOS 5.x through the TV's exported window (its
-PRODUCT run is the 5.6.2 row of `docs/uri-mode.md`); a later major (6 and up) plays Standard until `EXPORTED_STRATA` admits it under the rule in `docs/uri-mode.md`. An Experimental failure takes at most one handoff per play: the video restarts in Standard
+is decided per firmware major: webOS 4.x through ACB, and webOS 5.x and firmware major 10 (every 10.x) through the TV's exported window (their
+PRODUCT runs are the 5.6.2 and the 9.2.4 / 10.3.1 rows of `docs/uri-mode.md`); every other major (6 to 9, 11 and up) plays Standard until `EXPORTED_STRATA` admits it under the rule in `docs/uri-mode.md`. An Experimental failure takes at most one handoff per play: the video restarts in Standard
 (`route::backend_policy`). On webOS 4.x the Experimental engine binds the screen through ACB and waits for each
 release's completion callback before the next title; when that never arrives the plane stays
 quarantined until the app restarts, the next title's Experimental bind is refused and that title takes the
