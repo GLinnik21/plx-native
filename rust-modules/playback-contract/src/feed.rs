@@ -303,6 +303,31 @@ pub struct LoadTick {
     pub speed_fallback: Option<&'static str>,
 }
 
+/// Which internal clock-hold rule the Feed applies to the stream it presents this tick. The route
+/// is the common player's fact (`is_segmented_hls`, `is_preview`); the Feed adds its own source
+/// (a looped local sample is never held) when it decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoldRoute {
+    /// Segmented HLS: its worker's request or its measured reserve starts a hold.
+    SegmentedHls,
+    /// A direct-play (progressive) stream: the reserve boundary starts a hold.
+    Progressive,
+    /// Never held: a trailer preview. Its stall ends the preview, never the player's read-out.
+    Preview,
+}
+
+impl HoldRoute {
+    pub const fn of(segmented_hls: bool, preview: bool) -> Self {
+        if preview {
+            Self::Preview
+        } else if segmented_hls {
+            Self::SegmentedHls
+        } else {
+            Self::Progressive
+        }
+    }
+}
+
 /// The physical presentation state after one tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PresentationTick {
@@ -813,7 +838,7 @@ pub trait FeedLoad {
     /// Physical Load and Play transition. `no_audio` is the common player's no-audio arming.
     fn tick_load(&mut self, mt: &MainThread, now: u32, segmented_hls: bool,
         speed_deadline_ms: u32, no_audio: bool) -> LoadTick;
-    fn tick_presentation(&mut self, mt: &MainThread, segmented_hls: bool, immersive: bool)
+    fn tick_presentation(&mut self, mt: &MainThread, route: HoldRoute, immersive: bool)
         -> PresentationTick;
     /// Whether native construction is callable yet.
     fn ctor_gate(&mut self, mt: &MainThread) -> CtorGate;

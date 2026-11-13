@@ -22,7 +22,7 @@ use plx_base::task::MainThread;
 use plx_playback_contract::feed::{
     AcceptedLoadOutcome, CtorGate, DvWithdrawal, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedSeek,
     FeedOpen, FeedStop, FeedTransportAction, LoadTick, OpenRequest, PausedSeekStep,
-    PresentationTick, ReleaseHandoff, ResetScope, SeekMode, SeekPause, StuckSeekAction,
+    HoldRoute, PresentationTick, ReleaseHandoff, ResetScope, SeekMode, SeekPause, StuckSeekAction,
     UnblockFacts, UserPauseOutcome, UserResumeOutcome,
 };
 use plx_playback_contract::demux::DemuxSession;
@@ -131,9 +131,9 @@ impl FeedLoad for FeedBackend {
         feed_pump::tick_load(&mut self.resources, mt, now, segmented_hls, speed_deadline_ms, no_audio)
     }
 
-    fn tick_presentation(&mut self, mt: &MainThread, segmented_hls: bool, immersive: bool)
+    fn tick_presentation(&mut self, mt: &MainThread, route: HoldRoute, immersive: bool)
         -> PresentationTick {
-        feed_pump::tick_presentation(&mut self.resources, mt, segmented_hls, immersive)
+        feed_pump::tick_presentation(&mut self.resources, mt, route, immersive)
     }
 
     fn ctor_gate(&mut self, mt: &MainThread) -> CtorGate {

@@ -1256,6 +1256,7 @@ mod prime_livelock_tests {
             segment_landing: None,
                 flushed: false,
             presentation_rearm_pending: false,
+            stall_watch: plx_play_feed::feed_pump::StallWatch::Unarmed,
             max_fed_video_pts: 0,
             max_fed_audio_pts: 0,
             audio_start_fp: None,
@@ -1431,7 +1432,13 @@ mod prime_livelock_tests {
         eng.seek_base_pts = eng.max_fed_video_pts; // `arm_live_clock_prime` at the presented point
         eng.audio_start_fp = Some(0);
         assert!(FEED_SHARED.hls_rebuffering.load(Ordering::Acquire), "Buffering is up for the hold");
-        assert!(FEED_SHARED.progressive_stall_since_ms().is_some());
+        assert!(
+            matches!(
+                FEED_SHARED.hls_prime_kind(),
+                Some(plx_play_feed::shared::HlsPrimeKind::ProgressiveRebuffer { .. })
+            ),
+            "the hold owns its own certificate"
+        );
         eng
     }
 
@@ -1457,7 +1464,7 @@ mod prime_livelock_tests {
             !FEED_SHARED.hls_rebuffering.load(Ordering::Acquire),
             "Buffering ends with the Play"
         );
-        assert!(FEED_SHARED.progressive_stall_since_ms().is_none());
+        assert_eq!(FEED_SHARED.hls_prime_kind(), None, "the clock is running again");
     }
 
     #[test]
@@ -1478,6 +1485,51 @@ mod prime_livelock_tests {
         tick(&mt, &mut eng);
         assert!(!eng.prime_play, "the stream ended: playing out the rest is the only thing left");
         assert!(!FEED_SHARED.hls_rebuffering.load(Ordering::Acquire));
+        // ... and the release is not the end of the story: the rest drains and the pipeline is told
+        // the stream is over, once, or the film would hang on its last frames.
+        for _ in 0..20 {
+            if eng.eos_pushed {
+                break;
+            }
+            tick(&mt, &mut eng);
+        }
+        assert!(eng.eos_pushed, "pushEOS must follow the EOF release once the video lane drains");
+    }
+
+    /// A bitrate whose byte cap fills before the runway does (at 80 Mbps the 10 MiB video queue is
+    /// about a second) parks the demuxer, and a hold that waited on the time target would wait for
+    /// media that cannot be read until the clock plays: the full queue releases it, naming why.
+    #[test]
+    fn progressive_rebuffer_a_full_video_queue_releases_a_hold_short_of_the_runway() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = StallRig::arm();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        let mut eng = engine_in_a_stall_hold(&mt);
+        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
+        let base = eng.max_fed_video_pts + V_STEP_NS;
+        let au = [0u8; 64];
+        plx_play_feed::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, base, 1, 1);
+        tick(&mt, &mut eng);
+        assert!(eng.prime_play, "PRECONDITION FAILED, not the defect: a runway of one frame released the hold");
+        assert!(!plx_play_feed::aq::aq_would_park(qv), "PRECONDITION FAILED, not the defect: the queue is full");
+
+        // One access unit larger than the whole cap: the queue is now at its producer-park
+        // predicate (`queued_bytes > max_bytes`), the demuxer parked on it.
+        let big = vec![0u8; plx_play_feed::aq::aq_cap(qv) as usize + 1];
+        plx_play_feed::aq::aq_push(qv, big.as_ptr(), big.len() as c_int, base + V_STEP_NS, 0, 1);
+        assert!(plx_play_feed::aq::aq_would_park(qv), "PRECONDITION FAILED, not the defect: the queue did not fill");
+        // The prime check alone, without a feed pass first: the host sink takes every access unit,
+        // so a feed pass would drain the queue the real sink (full native buffers, which is why the
+        // demuxer parked) would have left standing.
+        let text = plx_base::eventlog::with_private_log(|| {
+            try_prime(&mt, &mut eng);
+            std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+        });
+        assert!(!eng.prime_play, "the full queue did not release the hold");
+        assert!(
+            text.contains("progressive rebuffer resume reason=full"),
+            "the full queue did not release the hold, or did not say why: {text}"
+        );
     }
 
     /// The HLS hold's certificate is untouched: a Rebuffer hold with no credited segment still
@@ -1495,7 +1547,11 @@ mod prime_livelock_tests {
         FEED_SHARED.complete_hls_rebuffer_pause(token, true);
         eng.prime_play = true;
         eng.seek_base_pts = eng.max_fed_video_pts;
-        assert!(FEED_SHARED.progressive_stall_since_ms().is_none(), "an HLS hold is not a stall hold");
+        assert_eq!(
+            FEED_SHARED.hls_prime_kind(),
+            Some(plx_play_feed::shared::HlsPrimeKind::Rebuffer),
+            "an HLS hold is not a progressive stall hold"
+        );
         push_segment_at(&mut eng, 2 * 1_000_000_000);
         push_segment_at(&mut eng, 4 * 1_000_000_000);
         tick(&mt, &mut eng);

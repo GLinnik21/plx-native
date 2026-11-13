@@ -90,6 +90,18 @@ enum ClockHold {
     Seek,
     /// ABR stopped the clock at a measured starvation boundary.
     Rebuffer,
+    /// A PROGRESSIVE (direct play) stream ran out of media and the pump stopped the clock at
+    /// `since_ms` ([`vclock_ms`]). Its own hold, not a flavour of `Rebuffer`: it owns no recovery
+    /// epoch (a progressive stream completes no HLS segment to credit), so its certificate is the
+    /// runway of media that arrives while it waits, and a seek may take the clock from it at once.
+    ///
+    /// Every site that decides what a `Rebuffer` hold is must decide this one too, and the
+    /// compiler cannot make it: most are `matches!` / `==`. The decisions are: it clears the
+    /// Buffering mirror on its Play (`complete_hls_prime_play`), converts to a seek hold
+    /// (`prepare_seek_pause`, `hand_hold_to_seek_prime`), and is deliberately NOT one of the holds
+    /// an ABR quality-down transition or a candidate settlement may join (they are HLS-only: a
+    /// progressive stream publishes no rungs).
+    ProgressiveRebuffer { since_ms: u32 },
     /// The viewer explicitly paused a running clock.
     User,
     /// The viewer resumed a queued stream; feeding is open, but the physical clock remains held
@@ -101,6 +113,8 @@ enum ClockHold {
 pub enum HlsPrimeKind {
     Fresh,
     Rebuffer,
+    /// The certificate of a progressive stall hold that began at `since_ms`.
+    ProgressiveRebuffer { since_ms: u32 },
     Resume,
 }
 
@@ -109,6 +123,7 @@ impl ClockHold {
         match self {
             Self::Initial | Self::Seek => Some(HlsPrimeKind::Fresh),
             Self::Rebuffer => Some(HlsPrimeKind::Rebuffer),
+            Self::ProgressiveRebuffer { since_ms } => Some(HlsPrimeKind::ProgressiveRebuffer { since_ms }),
             Self::ResumePrime => Some(HlsPrimeKind::Resume),
             Self::User => None,
         }
@@ -153,12 +168,6 @@ struct HlsClockState {
     /// mutex, but its lease token stays here through commit/rollback so another actuator cannot
     /// pass the same precondition concurrently.
     automatic: Option<HlsAutomaticOwner>,
-    /// `vclock_ms` instant a PROGRESSIVE (direct play) stall hold began, `Some` for exactly the
-    /// lifetime of that hold. It is what tells `try_prime` which certificate the held
-    /// [`ClockHold::Rebuffer`] clock waits for: an HLS hold waits for credited segments
-    /// (`recovery`), a progressive one for a runway of queued media. It lives in this mutex, beside
-    /// the phase it describes, so the two cannot disagree.
-    stall_since_ms: Option<u32>,
 }
 
 impl HlsClockState {
@@ -171,7 +180,6 @@ impl HlsClockState {
             user_sequence: 0,
             resume_acb_pending: false,
             automatic: None,
-            stall_since_ms: None,
         }
     }
 
@@ -1235,19 +1243,19 @@ impl Shared {
     /// segment committed in the call window is retained if Pause succeeds and discarded if it is
     /// refused, so the first useful recovery object can no longer disappear between two flags.
     pub fn prepare_hls_rebuffer_pause(&self) -> Option<u64> {
-        self.prepare_rebuffer_pause(None)
+        self.prepare_rebuffer_pause(ClockHold::Rebuffer)
     }
 
     /// The same internal Pause for a PROGRESSIVE stream that ran out of media. Everything the HLS
-    /// hold does applies (the same phase, the same `hls_rebuffering` mirror the viewer's Buffering
-    /// state reads, the same `try_prime` Play) except the recovery epoch, which credits HLS
-    /// segments a progressive stream does not have. `now_ms` stamps the hold
-    /// ([`Self::progressive_stall_since_ms`]).
+    /// hold does applies (the same phase machine, the same `hls_rebuffering` mirror the viewer's
+    /// Buffering state reads, the same `try_prime` Play) except the recovery epoch, which credits
+    /// HLS segments a progressive stream does not have. `now_ms` stamps the hold
+    /// ([`ClockHold::ProgressiveRebuffer`]).
     pub fn prepare_progressive_rebuffer_pause(&self, now_ms: u32) -> Option<u64> {
-        self.prepare_rebuffer_pause(Some(now_ms))
+        self.prepare_rebuffer_pause(ClockHold::ProgressiveRebuffer { since_ms: now_ms })
     }
 
-    fn prepare_rebuffer_pause(&self, stall_since_ms: Option<u32>) -> Option<u64> {
+    fn prepare_rebuffer_pause(&self, hold: ClockHold) -> Option<u64> {
         let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
         // Trial and Pause spend the same reserve. Whichever reserves this mutex first owns it; the
         // loser retries after the transaction settles instead of creating two physical clocks.
@@ -1257,40 +1265,30 @@ impl Shared {
             return None;
         }
         let token = clock.token();
-        if stall_since_ms.is_none() {
+        // An HLS hold opens its recovery epoch BEFORE the native Pause; a progressive one has none.
+        if hold == ClockHold::Rebuffer {
             clock.recovery.begin();
         }
-        clock.stall_since_ms = stall_since_ms;
-        clock.phase = HlsClockPhase::PauseIssuing {
-            token,
-            hold: ClockHold::Rebuffer,
-        };
+        clock.phase = HlsClockPhase::PauseIssuing { token, hold };
         Some(token)
     }
 
-    /// When the progressive stall hold that now owns the clock began; `None` for any other state,
-    /// including an HLS rebuffer hold.
-    pub fn progressive_stall_since_ms(&self) -> Option<u32> {
-        let clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
-        match clock.phase {
-            HlsClockPhase::Held {
-                hold: ClockHold::Rebuffer,
-            } => clock.stall_since_ms,
-            _ => None,
-        }
-    }
-
-    /// A seek takes the clock from a hold it may take it from. The one thing a stall hold has that
-    /// an HLS one does not is a viewer who can ask to go elsewhere while it waits, and a seek that
-    /// waited for the hold to release would wait as long as the link stays dead. The viewer's
-    /// pause, if any, moves with the seek exactly as it does from a user hold, and the Buffering
-    /// mirror goes with the hold.
+    /// A seek takes the clock from a hold it may take it from. The one thing a progressive stall
+    /// hold has that an HLS one does not is a viewer who can ask to go elsewhere while it waits, and
+    /// a seek that waited for the hold to release would wait as long as the link stays dead. The
+    /// viewer's pause, if any, moves with the seek exactly as it does from a user hold, and the
+    /// Buffering mirror goes with a stall hold.
     fn seek_takes_hold(&self, clock: &mut HlsClockState) {
         if clock.user_held {
             clock.user_held = false;
             clock.resume_acb_pending = true;
         }
-        if clock.stall_since_ms.take().is_some() {
+        if matches!(
+            clock.phase,
+            HlsClockPhase::Held {
+                hold: ClockHold::ProgressiveRebuffer { .. }
+            }
+        ) {
             self.hls_rebuffering.store(false, Ordering::Release);
         }
         clock.phase = HlsClockPhase::Held {
@@ -1304,24 +1302,23 @@ impl Shared {
         accepted: bool,
     ) -> HlsPauseCompletion {
         let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
-        if clock.phase
-            != (HlsClockPhase::PauseIssuing {
-                token,
-                hold: ClockHold::Rebuffer,
-            })
-        {
+        let HlsClockPhase::PauseIssuing {
+            token: active,
+            hold: hold @ (ClockHold::Rebuffer | ClockHold::ProgressiveRebuffer { .. }),
+        } = clock.phase
+        else {
+            return HlsPauseCompletion::Stale;
+        };
+        if active != token {
             return HlsPauseCompletion::Stale;
         }
         if accepted {
-            clock.phase = HlsClockPhase::Held {
-                hold: ClockHold::Rebuffer,
-            };
+            clock.phase = HlsClockPhase::Held { hold };
             self.hls_rebuffering.store(true, Ordering::Release);
             self.hls_internal_hold_epoch.fetch_add(1, Ordering::AcqRel);
         } else {
             clock.phase = HlsClockPhase::Running;
             clock.recovery = HlsRecoveryEpoch::idle();
-            clock.stall_since_ms = None;
         }
         self.hls_clock_changed.notify_all();
         if accepted {
@@ -1401,22 +1398,17 @@ impl Shared {
                 };
                 Some(HlsSeekPause::Issue(token))
             }
+            // A progressive stall hold is taken at once, like the holds the viewer's own actions
+            // made: a seek that waited for it would wait as long as the link stays dead
+            // (`Busy`, requeued every tick). The HLS hold keeps returning `None` below.
             HlsClockPhase::Held {
                 hold:
-                    ClockHold::User | ClockHold::Initial | ClockHold::Seek | ClockHold::ResumePrime,
+                    ClockHold::User
+                    | ClockHold::Initial
+                    | ClockHold::Seek
+                    | ClockHold::ResumePrime
+                    | ClockHold::ProgressiveRebuffer { .. },
             } => {
-                if clock.user_held {
-                    clock.user_held = false;
-                    clock.resume_acb_pending = true;
-                }
-                clock.phase = HlsClockPhase::Held {
-                    hold: ClockHold::Seek,
-                };
-                Some(HlsSeekPause::AlreadyHeld)
-            }
-            HlsClockPhase::Held {
-                hold: ClockHold::Rebuffer,
-            } if clock.stall_since_ms.is_some() => {
                 self.seek_takes_hold(&mut clock);
                 Some(HlsSeekPause::AlreadyHeld)
             }
@@ -1437,19 +1429,18 @@ impl Shared {
     /// clock is not held (transitioning, running, rebuffering): the caller tries again next tick.
     pub fn hand_hold_to_seek_prime(&self) -> bool {
         let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
-        let hand_over = match clock.phase {
-            HlsClockPhase::Held {
-                hold:
-                    ClockHold::User | ClockHold::Initial | ClockHold::Seek | ClockHold::ResumePrime,
-            } => true,
-            HlsClockPhase::Held {
-                hold: ClockHold::Rebuffer,
-            } => clock.stall_since_ms.is_some(),
-            _ => false,
-        };
-        if !hand_over {
+        // An HLS `Rebuffer` hold is not handed over (it owns a recovery epoch): the caller waits.
+        let HlsClockPhase::Held {
+            hold:
+                ClockHold::User
+                | ClockHold::Initial
+                | ClockHold::Seek
+                | ClockHold::ResumePrime
+                | ClockHold::ProgressiveRebuffer { .. },
+        } = clock.phase
+        else {
             return false;
-        }
+        };
         self.seek_takes_hold(&mut clock);
         true
     }
@@ -1577,13 +1568,12 @@ impl Shared {
         if accepted {
             clock.phase = HlsClockPhase::Running;
             clock.recovery = HlsRecoveryEpoch::idle();
-            clock.stall_since_ms = None;
             clock.user_held = false;
             clock.resume_acb_pending = false;
             if hold == ClockHold::User {
                 clock.advance_user_sequence();
             }
-            if hold == ClockHold::Rebuffer {
+            if matches!(hold, ClockHold::Rebuffer | ClockHold::ProgressiveRebuffer { .. }) {
                 self.hls_rebuffering.store(false, Ordering::Release);
             }
         } else {
@@ -1623,6 +1613,8 @@ impl Shared {
                     clock.phase == HlsClockPhase::Running
                         && !self.hls_rebuffer_requested.load(Ordering::Acquire)
                 }
+                // HLS-only, as at `begin_hls_automatic_transition_at`: a progressive stall hold
+                // publishes no rungs and is not joined.
                 HlsAutomaticTransition::QualityDown => matches!(
                     clock.phase,
                     HlsClockPhase::Running
@@ -1664,19 +1656,17 @@ impl Shared {
         let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
         // The mutex phase is authoritative. During PauseIssuing the diagnostics mirror is still
         // false, but the recovery epoch already exists and a rung publication must rebase it. A
-        // progressive stall hold has no recovery epoch (and no rungs: only an HLS worker reaches
-        // here), so it must never be handed one.
-        if clock.stall_since_ms.is_none()
-            && matches!(
-                clock.phase,
-                HlsClockPhase::PauseIssuing {
-                    hold: ClockHold::Rebuffer,
-                    ..
-                } | HlsClockPhase::Held {
-                    hold: ClockHold::Rebuffer,
-                }
-            )
-        {
+        // progressive stall hold ([`ClockHold::ProgressiveRebuffer`]) has no recovery epoch (and no
+        // rungs: only an HLS worker reaches here), so it is not matched and is never handed one.
+        if matches!(
+            clock.phase,
+            HlsClockPhase::PauseIssuing {
+                hold: ClockHold::Rebuffer,
+                ..
+            } | HlsClockPhase::Held {
+                hold: ClockHold::Rebuffer,
+            }
+        ) {
             clock.recovery.begin();
         }
         let Some(settled) = generation.checked_add(1) else {
@@ -1770,6 +1760,8 @@ impl Shared {
                 clock.phase == HlsClockPhase::Running
                     && !self.hls_rebuffer_requested.load(Ordering::Acquire)
             }
+            // HLS-only: a progressive stall hold ([`ClockHold::ProgressiveRebuffer`]) publishes no
+            // rungs, so it is deliberately not one of the holds a quality-down may join.
             HlsAutomaticTransition::QualityDown => matches!(
                 clock.phase,
                 HlsClockPhase::Running
@@ -1851,6 +1843,8 @@ impl Shared {
                 clock.phase == HlsClockPhase::Running
                     && !self.hls_rebuffer_requested.load(Ordering::Acquire)
             }
+            // HLS-only: a progressive stall hold ([`ClockHold::ProgressiveRebuffer`]) publishes no
+            // rungs, so it is deliberately not one of the holds a quality-down may join.
             HlsAutomaticTransition::QualityDown => matches!(
                 clock.phase,
                 HlsClockPhase::Running
@@ -1869,7 +1863,6 @@ impl Shared {
         let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
         clock.phase = HlsClockPhase::Stopping;
         clock.recovery = HlsRecoveryEpoch::idle();
-        clock.stall_since_ms = None;
         clock.user_held = false;
         clock.resume_acb_pending = false;
         clock.automatic = None;
@@ -2618,11 +2611,14 @@ mod tests {
         let token = s.prepare_progressive_rebuffer_pause(1_000).expect("running");
         assert_eq!(s.complete_hls_rebuffer_pause(token, true), HlsPauseCompletion::Accepted);
         assert!(s.hls_rebuffering.load(Ordering::Acquire));
-        assert_eq!(s.progressive_stall_since_ms(), Some(1_000));
+        assert_eq!(
+            s.hls_prime_kind(),
+            Some(HlsPrimeKind::ProgressiveRebuffer { since_ms: 1_000 }),
+            "the hold has its own certificate"
+        );
 
         assert_eq!(s.prepare_seek_pause(), Some(HlsSeekPause::AlreadyHeld), "no Busy retry");
         assert!(!s.hls_rebuffering.load(Ordering::Acquire), "the hold is over: Seeking takes the readout");
-        assert_eq!(s.progressive_stall_since_ms(), None);
         assert_eq!(s.hls_prime_kind(), Some(HlsPrimeKind::Fresh), "the seek's own prime owns the clock");
     }
 
@@ -2643,7 +2639,7 @@ mod tests {
         let s = Shared::new();
         let token = s.prepare_hls_rebuffer_pause().expect("running");
         s.complete_hls_rebuffer_pause(token, true);
-        assert_eq!(s.progressive_stall_since_ms(), None);
+        assert_eq!(s.hls_prime_kind(), Some(HlsPrimeKind::Rebuffer), "an HLS hold is not a progressive one");
         assert!(s.hls_recovery().active, "an HLS hold opens its recovery epoch");
         assert_eq!(s.prepare_seek_pause(), None, "HLS keeps returning Busy");
         assert!(!s.hand_hold_to_seek_prime());
@@ -2653,7 +2649,49 @@ mod tests {
         let token = p.prepare_progressive_rebuffer_pause(5).expect("running");
         assert!(!p.hls_recovery().active, "a stall hold has no segments to credit");
         assert_eq!(p.complete_hls_rebuffer_pause(token, false), HlsPauseCompletion::Refused);
-        assert_eq!(p.progressive_stall_since_ms(), None, "a refused Pause leaves no hold behind");
+        assert_eq!(p.hls_prime_kind(), None, "a refused Pause leaves no hold behind");
+    }
+
+    /// The viewer's Pause and Resume inside a progressive hold stay inside it: the Resume is
+    /// `Deferred` (the hold keeps its own certificate), the Play that ends the hold carries the ACB
+    /// half the Resume owed, and the Buffering mirror goes with that Play and not before.
+    #[test]
+    fn progressive_rebuffer_a_user_pause_and_resume_stay_inside_the_hold() {
+        let s = Shared::new();
+        let token = s.prepare_progressive_rebuffer_pause(7).expect("running");
+        s.complete_hls_rebuffer_pause(token, true);
+        let kind = HlsPrimeKind::ProgressiveRebuffer { since_ms: 7 };
+        assert_eq!(s.prepare_hls_user_pause(), Some(HlsUserPause::AlreadyHeld));
+        assert!(
+            s.reserve_hls_prime_play(kind, 0, s.hls_recovery()).is_none(),
+            "a viewer-paused clock is not started by the hold's certificate"
+        );
+        assert_eq!(s.prepare_hls_user_resume(true), Some(HlsUserResume::Deferred));
+        assert_eq!(s.hls_prime_kind(), Some(kind), "the hold keeps its own certificate across Pause/Resume");
+        assert!(s.hls_rebuffering.load(Ordering::Acquire), "still Buffering until the hold's Play");
+        let (play, _) = s.reserve_hls_prime_play(kind, 0, s.hls_recovery()).expect("the certificate owns the Play");
+        assert_eq!(
+            s.complete_hls_prime_play(play, true),
+            HlsPlayCompletion::Accepted { resume_acb: true },
+            "the deferred ACB half rides on the hold's Play"
+        );
+        assert!(!s.hls_rebuffering.load(Ordering::Acquire), "Buffering ends with the Play");
+        assert_eq!(s.hls_prime_kind(), None, "the clock is running again");
+    }
+
+    /// A progressive hold is not a place an ABR quality-down may join: it publishes no rungs.
+    #[test]
+    fn progressive_rebuffer_is_not_a_hold_a_quality_down_may_join() {
+        let hls = Shared::new();
+        let token = hls.prepare_hls_rebuffer_pause().expect("running");
+        hls.complete_hls_rebuffer_pause(token, true);
+        assert!(hls.hls_automatic_transition_permitted(HlsAutomaticTransition::QualityDown));
+
+        let p = Shared::new();
+        let token = p.prepare_progressive_rebuffer_pause(5).expect("running");
+        p.complete_hls_rebuffer_pause(token, true);
+        assert!(!p.hls_automatic_transition_permitted(HlsAutomaticTransition::QualityDown));
+        assert!(p.begin_hls_automatic_transition(HlsAutomaticTransition::QualityDown).is_none());
     }
 
     #[test]

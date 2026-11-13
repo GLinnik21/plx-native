@@ -486,6 +486,7 @@ pub fn launch_native_open(
         seek_retries: 0,
         flushed: false,
         presentation_rearm_pending: false,
+        stall_watch: crate::feed_pump::StallWatch::Unarmed,
         max_fed_video_pts: 0,
         max_fed_audio_pts: 0,
         audio_start_fp: None,
@@ -905,6 +906,13 @@ pub struct LaneTail {
     pub queued_ns: i64,
 }
 
+impl LaneTail {
+    /// The pts the demuxer has read this lane to: what Starfish accepted plus what is queued behind it.
+    pub fn tail_ns(self) -> i64 {
+        self.fed_ns.saturating_add(self.queued_ns.max(0))
+    }
+}
+
 /// **The playable reserve of a progressive stream, in the fed-pts coordinate.** How much media
 /// lies between the presented `position_ns` (`FEED_SHARED.pres_fed`) and the point the demuxer has
 /// read to: each lane's tail is what Starfish accepted plus what the app's AU queue still holds
@@ -925,31 +933,60 @@ pub fn progressive_reserve_ns(position_ns: i64, video: LaneTail, audio: Option<L
     if position_ns == crate::feed_state::PRES_NONE {
         return None;
     }
-    let tail = |lane: LaneTail| lane.fed_ns.saturating_add(lane.queued_ns.max(0));
-    let furthest = audio.map_or(tail(video), |a| tail(video).max(tail(a)));
+    let furthest = audio.map_or(video.tail_ns(), |a| video.tail_ns().max(a.tail_ns()));
     Some(furthest.saturating_sub(position_ns).max(0))
 }
 
-/// Whether a progressive stall hold may release the clock. Three reasons, because a time-only
-/// target can be unreachable:
+/// Which clause let a progressive stall hold release the clock, as the resume line names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProgressiveRelease {
+    /// The runway reached [`PROGRESSIVE_RUNWAY_NS`] with both decoder lanes primed.
+    Target,
+    /// The video queue is at its byte cap: nothing more can be buffered ahead of Play.
+    Full,
+    /// The demuxer finished: nothing more will arrive.
+    Eof,
+}
+
+impl ProgressiveRelease {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Target => "target",
+            Self::Full => "full",
+            Self::Eof => "eof",
+        }
+    }
+}
+
+/// Whether a progressive stall hold may release the clock, and by which clause. Three reasons,
+/// because a time-only target can be unreachable:
 ///
-/// * the runway is [`PROGRESSIVE_RUNWAY_NS`] of playable media AND both decoder lanes are primed
-///   (`decoder_ready`, the same accepted-data condition every prime requires);
-/// * the video queue is at its byte cap (`video_queue_full`, the queue's own producer-park
-///   predicate `queued_bytes > max_bytes`, so granted headroom counts): the demuxer is parked on
-///   it, so nothing more can be buffered ahead of Play, and holding on would deadlock with the
-///   sink also full. At 80 Mbps the 10 MiB queue is about 1 s, never 3 s;
-/// * the demuxer finished (`producer_done`): nothing more will ever arrive, and the last
+/// * `Target`: the runway is [`PROGRESSIVE_RUNWAY_NS`] of playable media AND both decoder lanes are
+///   primed (`decoder_ready`, the same accepted-data condition every prime requires);
+/// * `Full`: the video queue is at its byte cap (`video_queue_full`, the queue's own
+///   producer-park predicate `queued_bytes > max_bytes`, so granted headroom counts): the demuxer
+///   is parked on it, so nothing more can be buffered ahead of Play, and holding on would deadlock
+///   with the sink also full. At 80 Mbps the 10 MiB queue is about 1 s, never 3 s;
+/// * `Eof`: the demuxer finished (`producer_done`): nothing more will ever arrive, and the last
 ///   seconds of a film do not hold 700 ms of fresh media past the playhead.
 ///
-/// The last two play what there is, so they do not wait for `decoder_ready`.
+/// The last two play what there is, so they do not wait for `decoder_ready`. When several hold the
+/// stronger fact is named: the end of the stream, then the target, then the full queue.
 pub fn progressive_hold_releases(
     runway_ns: i64,
     decoder_ready: bool,
     video_queue_full: bool,
     producer_done: bool,
-) -> bool {
-    (runway_ns >= PROGRESSIVE_RUNWAY_NS && decoder_ready) || video_queue_full || producer_done
+) -> Option<ProgressiveRelease> {
+    if producer_done {
+        Some(ProgressiveRelease::Eof)
+    } else if runway_ns >= PROGRESSIVE_RUNWAY_NS && decoder_ready {
+        Some(ProgressiveRelease::Target)
+    } else if video_queue_full {
+        Some(ProgressiveRelease::Full)
+    } else {
+        None
+    }
 }
 
 fn queue_ptr(q: &mut Option<Box<AuQueue>>) -> *mut AuQueue {
@@ -1314,6 +1351,8 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
     // rebuffer or ResumePrime) reads the full pipeline high-water. Initial Load/seek remains
     // accepted-only because it is a fresh clock boundary whose old queued tail is not proof about
     // the newly loaded/landed timeline.
+    // A progressive stall hold measures its own runway below (the queues, not the demux-published
+    // tails), so it does not take the HLS pipeline high-water.
     let queued_runway = matches!(prime_kind, HlsPrimeKind::Rebuffer | HlsPrimeKind::Resume);
     let shift = shared.pts_shift.load(Ordering::Relaxed);
     let queued_video = shared.hls_video_tail_ns.load(Ordering::Acquire);
@@ -1377,36 +1416,37 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
         // An automatic rebuffer remains Rebuffer even across user Pause/Resume and must still
         // close its own pause-local recovery epoch above.
         HlsPrimeKind::Resume => true,
+        // Nothing to credit: a progressive stream completes no segment. Its certificate is
+        // `progressive_release` below, measured from the presented position the hold began at.
+        HlsPrimeKind::ProgressiveRebuffer { .. } => true,
     };
-    // A PROGRESSIVE stall hold (the Rebuffer hold `maybe_begin_rebuffer` takes on a direct-play
-    // stream that ran out of media) has no segments to credit, so `recovery` never becomes ready
-    // for it: its certificate is the playable runway, measured from the presented position the
-    // hold began at, or a queue that cannot grow, or the end of the stream. Everything else about
-    // the Play (the token, the refusal and the stale paths) is the HLS hold's, unchanged.
-    let stall_since = if prime_kind == HlsPrimeKind::Rebuffer {
-        shared.progressive_stall_since_ms()
-    } else {
-        None
-    };
+    // A PROGRESSIVE stall hold (the `ProgressiveRebuffer` hold `maybe_begin_rebuffer` takes on a
+    // direct-play stream that ran out of media) has no segments to credit, so `recovery` never
+    // becomes ready for it: its certificate is the playable runway, or a queue that cannot grow, or
+    // the end of the stream. Everything else about the Play (the token, the refusal and the stale
+    // paths) is the HLS hold's, unchanged.
     let vq = queue_ptr(&mut eng.aq_video);
-    let stall_ready = stall_since.map(|_| {
-        let video = LaneTail {
-            fed_ns: eng.max_fed_video_pts,
-            queued_ns: aq::aq_span_ns(vq),
-        };
-        let audio = Some(LaneTail {
-            fed_ns: eng.max_fed_audio_pts,
-            queued_ns: aq::aq_span_ns(queue_ptr(&mut eng.aq_audio)),
-        });
-        let runway_ns = progressive_reserve_ns(eng.seek_base_pts, video, audio).unwrap_or(0);
-        progressive_hold_releases(
-            runway_ns,
-            decoder_ready,
-            aq::aq_would_park(vq),
-            aq::aq_producer_done(vq),
-        )
-    });
-    if stall_ready.unwrap_or(decoder_ready && boundary_ready) && transport.feed_allowed() {
+    let progressive_release = match prime_kind {
+        HlsPrimeKind::ProgressiveRebuffer { .. } => {
+            let video = LaneTail {
+                fed_ns: eng.max_fed_video_pts,
+                queued_ns: aq::aq_span_ns(vq),
+            };
+            let audio = Some(LaneTail {
+                fed_ns: eng.max_fed_audio_pts,
+                queued_ns: aq::aq_span_ns(queue_ptr(&mut eng.aq_audio)),
+            });
+            let runway_ns = progressive_reserve_ns(eng.seek_base_pts, video, audio).unwrap_or(0);
+            progressive_hold_releases(runway_ns, decoder_ready, aq::aq_would_park(vq), aq::aq_producer_done(vq))
+                .map(|release| (release, runway_ns))
+        }
+        _ => None,
+    };
+    let ready = match prime_kind {
+        HlsPrimeKind::ProgressiveRebuffer { .. } => progressive_release.is_some(),
+        _ => decoder_ready && boundary_ready,
+    };
+    if ready && transport.feed_allowed() {
         let Some((play_token, recovery)) =
             shared.reserve_hls_prime_play(prime_kind, candidate_generation, recovery)
         else {
@@ -1440,11 +1480,14 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
                 } else if eng.segment_landing.is_none() {
                     shared.seek_landed_epoch.store(shared.seek_epoch.load(Ordering::Relaxed), Ordering::Release);
                 }
-                if let Some(since) = stall_since {
+                if let (HlsPrimeKind::ProgressiveRebuffer { since_ms }, Some((release, runway_ns))) =
+                    (prime_kind, progressive_release)
+                {
                     plx_base::eventlog::log(&format!(
-                        "feed: auto-rebuffer resume after={}ms vq={}B",
-                        crate::shared::vclock_ms().wrapping_sub(since),
-                        aq::aq_bytes(vq),
+                        "feed: progressive rebuffer resume reason={} held={}ms reserve={}ms",
+                        release.name(),
+                        crate::shared::vclock_ms().wrapping_sub(since_ms),
+                        runway_ns / 1_000_000,
                     ));
                 } else if prime_kind == HlsPrimeKind::Rebuffer {
                     plx_base::eventlog::log(&format!(
@@ -2520,20 +2563,35 @@ mod progressive_stall_tests {
         assert_eq!(progressive_reserve_ns(crate::feed_state::PRES_NONE, lane(12, 2), None), None);
     }
 
-    /// The viewer-visible rule, one case per clause.
+    /// The viewer-visible rule, one case per clause; the clause is what the resume line names.
     #[test]
     fn the_hold_releases_on_the_runway_or_a_full_queue_or_the_end_of_the_stream() {
+        use ProgressiveRelease::{Eof, Full, Target};
         let r = PROGRESSIVE_RUNWAY_NS;
-        assert!(!progressive_hold_releases(r - 1, true, false, false), "under the runway keeps holding");
-        assert!(progressive_hold_releases(r, true, false, false), "the runway reached");
-        assert!(
-            !progressive_hold_releases(r, false, false, false),
+        assert_eq!(progressive_hold_releases(r - 1, true, false, false), None, "under the runway keeps holding");
+        assert_eq!(progressive_hold_releases(r, true, false, false), Some(Target));
+        assert_eq!(
+            progressive_hold_releases(r, false, false, false),
+            None,
             "the runway alone does not start a clock whose decoder lanes are not primed"
         );
-        assert!(
+        assert_eq!(
             progressive_hold_releases(r / 3, false, true, false),
+            Some(Full),
             "a queue at its byte cap cannot grow: at 80 Mbps 10 MiB is about 1 s, never 3 s"
         );
-        assert!(progressive_hold_releases(0, false, false, true), "the stream ended: nothing more will arrive");
+        assert_eq!(
+            progressive_hold_releases(0, false, false, true),
+            Some(Eof),
+            "the stream ended: nothing more will arrive"
+        );
+        // several at once name the stronger fact
+        assert_eq!(progressive_hold_releases(r, true, true, true), Some(Eof));
+        assert_eq!(progressive_hold_releases(r, true, true, false), Some(Target));
+        assert_eq!(
+            [Target.name(), Full.name(), Eof.name()],
+            ["target", "full", "eof"],
+            "the names the resume line prints and the field checks grep for"
+        );
     }
 }

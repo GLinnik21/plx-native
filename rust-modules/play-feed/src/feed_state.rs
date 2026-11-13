@@ -134,6 +134,9 @@ pub struct Engine {
     /// The post-seek keyframe has installed its segment but has not yet been accepted by
     /// Starfish. Native presentation callbacks remain fenced until that exact AU returns `O`.
     pub presentation_rearm_pending: bool,
+    /// The progressive stall hold's per-Play arming latch ([`crate::feed_pump::StallWatch`]): read and
+    /// stepped by the pump's begin decision only.
+    pub stall_watch: crate::feed_pump::StallWatch,
     pub max_fed_video_pts: i64, // high-water fed pts, VIDEO lane (g_max_fed_pts)
     pub max_fed_audio_pts: i64, // high-water fed pts, AUDIO lane (two-lane feed)
     /// Fed pts of the AU that opened this timeline's audio — the one the demuxer marked as its

@@ -1744,7 +1744,8 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
 
     // Load and speed policy are settled. Borrow the physical feed for ACB, feeding and EOS.
     let physical = pa.tick_feed_presentation(
-        crate::route::is_segmented_hls(ps), crate::route::stream_immersive(ps),
+        plx_playback_contract::feed::HoldRoute::of(crate::route::is_segmented_hls(ps), crate::route::is_preview(ps)),
+        crate::route::stream_immersive(ps),
     );
 
     // ---------- the derived UI state and the end of stream ----------
@@ -6266,7 +6267,7 @@ mod end_of_film_tests {
         }
 
         /// Step until `done`, within [`STEP_BUDGET`].
-        fn run_until(&mut self, done: impl Fn(&mut Rig) -> bool) -> bool {
+        pub(super) fn run_until(&mut self, done: impl Fn(&mut Rig) -> bool) -> bool {
             for _ in 0..STEP_BUDGET {
                 self.step();
                 if done(self) {

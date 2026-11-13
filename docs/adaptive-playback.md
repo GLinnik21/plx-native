@@ -537,6 +537,19 @@ HTTP bodies with a declared `Content-Length` count as completed only after all d
 arrive. A short body cannot be credited with the segment's full `EXTINF`, which previously allowed
 the model to resume on media that did not exist.
 
+A direct-play (progressive) stream has no rungs and no segments, so none of the above can credit
+it, but a link that stops delivering starves it the same way, and without a hold the sink only
+drops late frames. It takes the same internal hold (one Pause, the Buffering read-out, the same
+`try_prime` Play) with a certificate of its own. It begins when the furthest lane tail (what the
+sink accepted plus what is queued behind it) is within one native position period (201 ms) of the
+presented position, or the native clock has stopped over a remnant it will never spend, and only
+on a Play whose reserve has reached the decoder prime depth, so a start that begins with a
+near-empty reserve is never mistaken for starvation. It releases on the first of the end of the
+stream, a 3 s runway with both decoder lanes primed, or a video queue at its byte cap (the demuxer
+is parked, so no more runway can arrive until the clock plays). A trailer preview, the looped
+sample, a viewer Pause and a seek are never held. The Auto watchdog's inputs (delivered bytes,
+demuxed reserve, the viewer's pause) are not altered by the hold.
+
 ## 6. Original is a mode, not the top HLS rung
 
 An HLS rung swap can continue on the same normalized media timeline and is intended to be invisible.

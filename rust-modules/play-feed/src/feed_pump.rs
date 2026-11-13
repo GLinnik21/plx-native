@@ -28,7 +28,7 @@ use std::time::Duration;
 // The verdict types a tick returns are contract vocabulary (`plx_playback_contract::feed`); the
 // old paths stay for this crate's own code.
 pub use plx_playback_contract::feed::{
-    CtorGate, LoadTick, LoadTimeout, PausedSeekStep, PresentationTick, SeekPause, StuckSeekAction,
+    CtorGate, HoldRoute, LoadTick, LoadTimeout, PausedSeekStep, PresentationTick, SeekPause, StuckSeekAction,
 };
 
 pub struct LoadGate {
@@ -899,10 +899,10 @@ pub const NATIVE_CLOCK_STOPPED_MS: u32 = NATIVE_POSITION_PERIOD_MS * NATIVE_CLOC
 
 /// When the silence observation was last restarted, in [`crate::shared::vclock_ms`] milliseconds.
 ///
-/// Every state that legitimately stops the native clock — user Pause, an internal rebuffer hold,
-/// a stage below `Playing`, a route that is not segmented HLS — restarts it, because otherwise a
-/// viewer who paused for a minute would resume straight into an internal hold. Main-thread only;
-/// an atomic merely to avoid a `static mut`.
+/// Every state that legitimately stops the native clock — user Pause, an internal rebuffer hold
+/// (segmented HLS or progressive), a stage below `Playing`, a stream that is never held (a trailer
+/// preview, a looped sample) — restarts it, because otherwise a viewer who paused for a minute would
+/// resume straight into an internal hold. Main-thread only; an atomic merely to avoid a `static mut`.
 pub static CLOCK_WATCH_SINCE_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Everything that stops the clock on purpose restarts the silence observation with it.
@@ -1006,6 +1006,45 @@ pub struct ProgressiveStall {
     /// heard from since its Play; without this a hold that releases on a runway shorter than the
     /// silence threshold would read the first second of its own resume as a dead clock.
     pub presented_since_play: bool,
+    /// This Play has shown a reserve worth protecting ([`StallWatch`]). An immediate start, or a
+    /// post-seek prime, begins with a near-empty reserve by design: until it has filled, the
+    /// stream is starting, not starving.
+    pub armed: bool,
+}
+
+/// The per-Play arming latch of the progressive hold (`Engine::stall_watch`): armed once the reserve
+/// has reached [`PROGRESSIVE_ARM_RESERVE_MS`] since the last Play, initial or resumed, and disarmed
+/// by anything that stops the clock on purpose (a prime, a seek, a user pause, a reload's new
+/// Engine). It gates BOTH arms of the begin rule: a start whose first ticks are slow must not hold
+/// through the clock-silence arm before it has buffered what a Play needs, and a start that never
+/// reaches it is left to the existing startup handling, as before the hold existed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StallWatch {
+    /// This Play has not yet shown the reserve.
+    Unarmed,
+    /// It has: a reserve that runs out from here is starvation.
+    Armed,
+}
+
+/// The reserve a Play must show before a progressive hold is credible: the decoder prime
+/// (`PRIME_NS`, 700 ms).
+pub const PROGRESSIVE_ARM_RESERVE_MS: i64 = crate::native_executor::PRIME_NS / 1_000_000;
+
+/// The reserve at or under which a progressive stream is about to run dry: one native position
+/// period. The playhead is only known at the 5 Hz callback, so a reserve under one period may
+/// already be spent by the next one; an exact-zero boundary is reached only after frames are late.
+pub const PROGRESSIVE_LOW_WATER_MS: i64 = NATIVE_POSITION_PERIOD_MS as i64;
+
+impl StallWatch {
+    /// The latch after one tick: disarmed by a clock stopped on purpose, armed by a reserve at the
+    /// prime depth, otherwise unchanged.
+    pub fn observe(self, clock_stopped_on_purpose: bool, reserve_ms: Option<i64>) -> Self {
+        match (clock_stopped_on_purpose, self, reserve_ms) {
+            (true, _, _) => Self::Unarmed,
+            (false, Self::Unarmed, Some(r)) if r >= PROGRESSIVE_ARM_RESERVE_MS => Self::Armed,
+            (false, state, _) => state,
+        }
+    }
 }
 
 impl ProgressiveStall {
@@ -1026,15 +1065,37 @@ pub fn tick_since_watch_restart(last_tick_ms: u32, watch_since_ms: u32) -> bool 
     last_tick_ms != 0 && (last_tick_ms.wrapping_sub(watch_since_ms) as i32) > 0
 }
 
-/// Begin a hold on a PROGRESSIVE stream: the same coefficient-free observations the HLS hold uses
-/// (the reserve is exactly zero, or the native clock has physically stopped over a remnant it will
-/// never spend), and none of the states that stop the clock on purpose.
+/// Begin a hold on a PROGRESSIVE stream, on an armed Play ([`StallWatch`]) and in none of the states
+/// that stop the clock on purpose: the reserve is at or under [`PROGRESSIVE_LOW_WATER_MS`] (about to
+/// run dry; a reserve the next position callback may already have spent), or the native clock has
+/// physically stopped over a remnant it will never spend ([`native_clock_stopped`], the HLS hold's
+/// own coefficient-free observation, unchanged).
 pub fn should_begin_progressive_rebuffer(s: &ProgressiveStall) -> bool {
-    if s.clock_stopped_on_purpose() {
+    if s.clock_stopped_on_purpose() || !s.armed {
         return false;
     }
     let silence_ms = if s.presented_since_play { s.silence_ms } else { None };
-    s.reserve_ms == Some(0) || native_clock_stopped(silence_ms, s.reserve_ms)
+    s.reserve_ms.is_some_and(|r| r <= PROGRESSIVE_LOW_WATER_MS) || native_clock_stopped(silence_ms, s.reserve_ms)
+}
+
+/// The rule [`maybe_begin_rebuffer`] applies to the stream this tick, if any.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RebufferRule {
+    /// Segmented HLS: its worker's request or its measured reserve.
+    SegmentedHls,
+    /// A streamed direct-play file: the reserve boundary ([`should_begin_progressive_rebuffer`]).
+    Progressive,
+}
+
+/// Which streams are ever held. A trailer preview is not (its stall ends the preview, never the
+/// player's read-out), and neither is the looped local sample (`source_is_stream` false): it has no
+/// AU queues and nothing a link could starve, and a hold on it would never release.
+fn rebuffer_rule(route: HoldRoute, source_is_stream: bool) -> Option<RebufferRule> {
+    match route {
+        HoldRoute::Preview => None,
+        HoldRoute::SegmentedHls => Some(RebufferRule::SegmentedHls),
+        HoldRoute::Progressive => source_is_stream.then_some(RebufferRule::Progressive),
+    }
 }
 
 pub fn rebuffer_request_is_current(
@@ -1053,15 +1114,20 @@ pub fn rebuffer_request_is_current(
 /// stream holds on the same two coefficient-free observations of its own ([`ProgressiveStall`]).
 /// Both take the same Pause, show the same Buffering state, and are released by the same
 /// `try_prime`, each against its own certificate of fresh media.
-fn maybe_begin_rebuffer(segmented_hls: bool, mt: &MainThread, eng: &mut Engine, hooks: &NativeHooks) {
+fn maybe_begin_rebuffer(route: HoldRoute, mt: &MainThread, eng: &mut Engine, hooks: &NativeHooks) {
+    let Some(rule) = rebuffer_rule(route, matches!(eng.source, Source::Stream)) else {
+        restart_native_clock_watch();
+        return;
+    };
     if eng.stage < Stage::Playing || eng.prime_play || FEED_TX.paused.load(Relaxed) {
         // Each of these legitimately stops the native clock, so none of them may be read later as
         // a stalled one: a viewer paused for a minute must resume into playback, not into an
         // instant internal hold, and the tick after this hold releases must start counting again.
         restart_native_clock_watch();
+        eng.stall_watch = StallWatch::Unarmed;
         return;
     }
-    if !segmented_hls {
+    if rule == RebufferRule::Progressive {
         maybe_begin_progressive_rebuffer(mt, eng, hooks);
         return;
     }
@@ -1147,29 +1213,32 @@ fn maybe_begin_rebuffer(segmented_hls: bool, mt: &MainThread, eng: &mut Engine, 
 
 
 /// The progressive half of [`maybe_begin_rebuffer`]: sample the stream, decide purely
-/// ([`should_begin_progressive_rebuffer`]), and issue the HLS hold's own Pause.
+/// ([`should_begin_progressive_rebuffer`]), and issue the hold's Pause.
 ///
 /// **No "audio expected" flag is needed, and none is read or written.** The reserve counts the
 /// FURTHER of the two lanes ([`crate::native_executor::progressive_reserve_ns`]): an audio lane that
 /// never opened (`max_fed_audio_pts` still 0 after the open or a seek) cannot be the further one,
 /// so a late-audio file is not held for audio that has not begun, and `try_prime`'s
-/// `hls_audio_expected` (which decides the video-only start) is left exactly as it was.
+/// `hls_audio_expected` (which decides the video-only start) is left exactly as it was. The cost is
+/// stated: a file whose audio runs ahead of its video in the mux reads a reserve the video does not
+/// have, so it holds a little late; and its `Target` release counts that lane too.
 fn maybe_begin_progressive_rebuffer(mt: &MainThread, eng: &mut Engine, hooks: &NativeHooks) {
     use crate::native_executor::{progressive_reserve_ns, LaneTail};
     let queue = |q: &mut Option<Box<crate::aq::AuQueue>>| {
         q.as_mut().map_or(std::ptr::null_mut(), |q| &mut **q as *mut crate::aq::AuQueue)
     };
     let vq = queue(&mut eng.aq_video);
+    let aq = queue(&mut eng.aq_audio);
     let video = LaneTail {
         fed_ns: eng.max_fed_video_pts,
         queued_ns: crate::aq::aq_span_ns(vq),
     };
-    let audio = Some(LaneTail {
+    let audio = LaneTail {
         fed_ns: eng.max_fed_audio_pts,
-        queued_ns: crate::aq::aq_span_ns(queue(&mut eng.aq_audio)),
-    });
-    let reserve_ms = progressive_reserve_ns(FEED_SHARED.pres_fed.load(Relaxed), video, audio)
-        .map(|ns| ns / 1_000_000);
+        queued_ns: crate::aq::aq_span_ns(aq),
+    };
+    let position_ns = FEED_SHARED.pres_fed.load(Relaxed);
+    let reserve_ms = progressive_reserve_ns(position_ns, video, Some(audio)).map(|ns| ns / 1_000_000);
     let silence_ms = native_clock_silence_ms();
     let sample = ProgressiveStall {
         user_paused: FEED_TX.paused.load(Relaxed),
@@ -1187,11 +1256,15 @@ fn maybe_begin_progressive_rebuffer(mt: &MainThread, eng: &mut Engine, hooks: &N
             FEED_SHARED.dg_vpres_at.load(Relaxed),
             CLOCK_WATCH_SINCE_MS.load(Relaxed),
         ),
+        armed: false,
     };
-    if sample.clock_stopped_on_purpose() {
+    let stopped_on_purpose = sample.clock_stopped_on_purpose();
+    eng.stall_watch = eng.stall_watch.observe(stopped_on_purpose, reserve_ms);
+    if stopped_on_purpose {
         restart_native_clock_watch();
         return;
     }
+    let sample = ProgressiveStall { armed: eng.stall_watch == StallWatch::Armed, ..sample };
     if !should_begin_progressive_rebuffer(&sample) {
         return;
     }
@@ -1203,19 +1276,22 @@ fn maybe_begin_progressive_rebuffer(mt: &MainThread, eng: &mut Engine, hooks: &N
     match FEED_SHARED.complete_hls_rebuffer_pause(pause_token, paused != 0) {
         HlsPauseCompletion::Accepted => {}
         HlsPauseCompletion::Refused => {
-            log("feed: auto-rebuffer pause refused by Starfish; will retry");
+            log("feed: progressive rebuffer pause refused by Starfish; will retry");
             return;
         }
         HlsPauseCompletion::Stale => {
-            log("feed: auto-rebuffer pause result was stale; will retry");
+            log("feed: progressive rebuffer pause result was stale; will retry");
             return;
         }
     }
     arm_live_clock_prime(eng);
     log(&format!(
-        "feed: auto-rebuffer pause reserve={}ms vq={}B silent={}ms",
-        reserve_ms.unwrap_or(-1),
+        "feed: progressive rebuffer hold pos={position_ns} vtail={} atail={} qv={}B qa={}B reserve={}ms silent={}ms",
+        video.tail_ns(),
+        audio.tail_ns(),
         crate::aq::aq_bytes(vq),
+        crate::aq::aq_bytes(aq),
+        reserve_ms.unwrap_or(-1),
         silence_ms.map_or(-1, i64::from),
     ));
 }
@@ -1239,7 +1315,7 @@ fn acb_bind_frames_needed(preroll_open: bool) -> i32 {
 /// Common route policy supplies immutable source facts and receives only the state needed for
 /// its HUD and terminal decision after physical work completes.
 pub fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
-    segmented_hls: bool, immersive: bool) -> PresentationTick {
+    route: HoldRoute, immersive: bool) -> PresentationTick {
     let hooks = feed.hooks();
     let eng = feed.engine().expect("presentation tick belongs to live feed");
     let stream = matches!(eng.source, Source::Stream);
@@ -1356,7 +1432,7 @@ pub fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
     // issuing Play. NOT while a seek is armed: on a resume the seek is armed before PLAYING, so
     // feeding first would present the file start for a frame before the seek repositions — a
     // visible jump. ----------
-    maybe_begin_rebuffer(segmented_hls, mt, eng, hooks);
+    maybe_begin_rebuffer(route, mt, eng, hooks);
     if eng.stage >= Stage::Playing && FEED_TX.feed_allowed() && FEED_TX.seek_to_ns.load(Relaxed) < 0 {
         if stream {
             // Two-lane feed, then the prime attempt — the ordering and the reason both live in
@@ -1669,6 +1745,7 @@ mod progressive_begin_tests {
             reserve_ms: Some(0),
             silence_ms: Some(0),
             presented_since_play: true,
+            armed: true,
         }
     }
 
@@ -1735,5 +1812,50 @@ mod progressive_begin_tests {
         ] {
             assert!(!should_begin_progressive_rebuffer(&s), "{what}");
         }
+    }
+
+    /// A Play that has not shown the reserve is starting, not starving: neither arm of the rule may
+    /// hold it, the clock-silence arm included (a start whose first ticks are slow).
+    #[test]
+    fn an_unarmed_play_begins_no_hold_by_either_arm() {
+        let empty = ProgressiveStall { armed: false, ..starved() };
+        assert!(!should_begin_progressive_rebuffer(&empty), "the reserve arm");
+        let silent = ProgressiveStall {
+            armed: false,
+            reserve_ms: Some(258),
+            silence_ms: Some(NATIVE_CLOCK_STOPPED_MS),
+            ..starved()
+        };
+        assert!(!should_begin_progressive_rebuffer(&silent), "the clock-silence arm");
+        assert!(should_begin_progressive_rebuffer(&ProgressiveStall { armed: true, ..silent }));
+    }
+
+    /// One native position period, as literals: a reserve the next callback may already have spent
+    /// begins a hold, one more millisecond of reserve does not.
+    #[test]
+    fn the_low_water_boundary_is_one_native_period_of_reserve() {
+        assert!(should_begin_progressive_rebuffer(&ProgressiveStall { reserve_ms: Some(201), ..starved() }));
+        assert!(!should_begin_progressive_rebuffer(&ProgressiveStall { reserve_ms: Some(202), ..starved() }));
+    }
+
+    #[test]
+    fn the_latch_arms_at_the_prime_depth_and_only_a_stopped_clock_disarms_it() {
+        use StallWatch::{Armed, Unarmed};
+        assert_eq!(Unarmed.observe(false, Some(699)), Unarmed, "under the prime depth");
+        assert_eq!(Unarmed.observe(false, Some(700)), Armed, "at the prime depth");
+        assert_eq!(Unarmed.observe(false, None), Unarmed, "no tail to judge");
+        assert_eq!(Armed.observe(false, Some(0)), Armed, "a reserve that runs out keeps it armed");
+        assert_eq!(Armed.observe(false, None), Armed);
+        assert_eq!(Armed.observe(true, Some(5_000)), Unarmed, "a clock stopped on purpose disarms it");
+        assert_eq!(Unarmed.observe(true, Some(5_000)), Unarmed, "and a stopped clock never arms it");
+    }
+
+    #[test]
+    fn only_a_streamed_direct_play_file_that_is_not_a_preview_is_ever_held() {
+        assert_eq!(rebuffer_rule(HoldRoute::Progressive, true), Some(RebufferRule::Progressive));
+        assert_eq!(rebuffer_rule(HoldRoute::Progressive, false), None, "the looped sample has nothing to starve");
+        assert_eq!(rebuffer_rule(HoldRoute::Preview, true), None, "a preview's stall ends the preview");
+        assert_eq!(rebuffer_rule(HoldRoute::Preview, false), None);
+        assert_eq!(rebuffer_rule(HoldRoute::SegmentedHls, true), Some(RebufferRule::SegmentedHls));
     }
 }

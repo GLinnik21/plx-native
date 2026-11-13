@@ -22,7 +22,7 @@ use plx_playback_contract::demux::DemuxSession;
 use plx_playback_contract::feed::{
     AcceptedLoadOutcome, CtorGate, DvWithdrawal, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedOpen,
     FeedSeek, FeedStop, FeedTransportAction, LoadTick, OpenRequest, PausedSeekStep, PhysicalSet,
-    PresentationTick, ReleaseHandoff, ResetScope, SeekMode, SeekPause, StuckSeekAction,
+    HoldRoute, PresentationTick, ReleaseHandoff, ResetScope, SeekMode, SeekPause, StuckSeekAction,
     UnblockFacts, UserPauseOutcome, UserResumeOutcome,
 };
 use plx_playback_contract::{
@@ -131,7 +131,7 @@ impl FeedLoad for SharedFeedSet {
     forward_mut! {
         tick_load(mt: &MainThread, now: u32, segmented_hls: bool,
             speed_deadline_ms: u32, no_audio: bool) -> LoadTick;
-        tick_presentation(mt: &MainThread, segmented_hls: bool, immersive: bool)
+        tick_presentation(mt: &MainThread, route: HoldRoute, immersive: bool)
             -> PresentationTick;
         ctor_gate(mt: &MainThread) -> CtorGate;
         take_load_outcomes() -> Vec<AcceptedLoadOutcome>;

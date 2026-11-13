@@ -1925,14 +1925,14 @@ impl PlayerAdapter {
                 super::no_audio_armed()))
     }
 
-    pub(super) fn tick_feed_presentation(&mut self, segmented_hls: bool,
+    pub(super) fn tick_feed_presentation(&mut self, route: plx_playback_contract::feed::HoldRoute,
         immersive: bool) -> plx_playback_contract::feed::PresentationTick {
         let mt = &self.mt;
         self.physical.feed().map_or(
             plx_playback_contract::feed::PresentationTick {
                 stage: plx_playback_contract::feed::Stage::Loading, eos_pushed: false,
             },
-            |feed| feed.tick_presentation(mt, segmented_hls, immersive))
+            |feed| feed.tick_presentation(mt, route, immersive))
     }
 
     /// Is a session live? Answered from the bound attempt, which the one start that installs the

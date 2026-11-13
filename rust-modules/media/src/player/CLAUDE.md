@@ -431,6 +431,25 @@ something.
     `Prepared` (the candidate's projection and remux follow the rebuilt stream), a refusal as
     `OriginalTrial(Failed)`, a second suspend as `Prepared`; a failed open of the rebuilt Original
     still rolls back to the retained HLS. A trial that is `Starting` or `AwaitingFrame` is refused.
+- **A starved direct-play (progressive) stream is HELD and reads Buffering, like a starved HLS one**
+  (`feed_pump::maybe_begin_rebuffer`, `PlayerAdapter` -> `HoldRoute`). Direct play has no rungs and
+  no segments, so nothing but the sink's late-frame drop used to answer a link that stopped
+  delivering. The hold is the HLS hold's own machine (`ClockHold::ProgressiveRebuffer`, the same
+  Pause, `hls_rebuffering` mirror and `try_prime` Play) with its own certificate, because
+  `recovery` never becomes ready on a stream that credits no segment. It begins when the furthest
+  lane tail (`max_fed_*` + the queued span) is within one native position period (201 ms) of the
+  presented position, or the native clock has gone silent over a remnant it will never spend, and
+  only on a Play whose reserve has reached the decoder prime depth (`StallWatch`, an `Engine`
+  field reset by every clock-stopping state: an immediate start or a post-seek prime begins with a
+  near-empty reserve and is starting, not starving). It never holds a trailer preview, the looped
+  `Source::Sample`, a viewer Pause, a seek, the first picture, or a stream whose demuxer is done.
+  It releases on the first of: the end of the stream (`reason=eof`; `pushEOS` follows once the video
+  lane drains), a 3 s runway with both decoder lanes primed (`reason=target`), or a full video queue
+  (`reason=full`: the demuxer is parked on its byte cap, so a time target could never be met). The
+  hold and resume lines in the event log carry `pos`, `vtail`, `atail`, `qv`, `qa` and `reserve`.
+  A viewer Resume inside a hold stays held (the hold's own certificate plays it); the Auto
+  watchdog's inputs (bytes, demuxed reserve, the viewer's pause) are untouched by it.
+  `progressive_rebuffer_pump_tests.rs` drives the whole chain through the real `pump()`.
 - **The k5lp/k3lp sandbox preflight refuses native playback when `/dev/rtkmem` is unreadable.**
   The device fact is cached at boot, while the refusal belongs to `PlaybackSession` and clears
   on exit. Explicit Repair confirmation spends `Player.repair` once for the whole app lifetime;
