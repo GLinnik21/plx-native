@@ -194,14 +194,21 @@ pub fn displayed_counter_type(major: u32) -> c_int {
 /// `major` (the callback thread passes the device's own). A displayed-frame counter with a
 /// positive `num` is the only presentation instrument measured on the device (`presented: 24.1
 /// fps` in `docs/measurements/`); `FRAMEREADY` (type 0) is a 5 Hz position tick and never counts.
+pub static W0_DISPLAYED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static W0_DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub(crate) fn note_sink_counter(shared: &shared::Shared, ty: c_int, num: i64, major: u32) {
     match sink_counter_kind(ty, major) {
         Some(SinkCounter::Displayed) => {
+            W0_DISPLAYED.fetch_add(num.max(0) as u64, Relaxed);
             shared.dg_sink_displayed_cb.fetch_add(1, Relaxed);
             shared.note_displayed_frames(num);
             log(&format!("sink: displayed={num} (type={ty})"));
         }
-        Some(SinkCounter::Dropped) => log(&format!("sink: dropped={num} (type={ty})")),
+        Some(SinkCounter::Dropped) => {
+            W0_DROPPED.fetch_add(num.max(0) as u64, Relaxed);
+            log(&format!("sink: dropped={num} (type={ty})"))
+        }
         None if (46..=49).contains(&ty) => {
             shared.dg_sink_other_cb.fetch_add(1, Relaxed);
         }

@@ -926,6 +926,54 @@ pub fn native_clock_silence_ms() -> Option<u32> {
     Some(crate::shared::vclock_ms().saturating_sub(since))
 }
 
+/// W0-DIAG (scratch branch only, never merged): observation-only. One `W0D` line at most every 190 ms
+/// of the monotonic clock (about 5 Hz), from EVERY tick whatever the begin rule would decide, so the
+/// W0 report can compute any candidate signal offline. `t` is `vclock_ms` (monotonic), `wall` is the
+/// unix ms of the TV's own clock (offset to the host measured per run); the lane fields are raw so
+/// the report derives tails, leads and reserve itself; `disp`/`drop` are frame counts from the
+/// sink counters since the previous W0D line.
+fn w0_diag_sample(eng: &mut Engine) {
+    use std::sync::atomic::{AtomicU32, AtomicU64};
+    static LAST_MS: AtomicU32 = AtomicU32::new(0);
+    static LAST_DISP: AtomicU64 = AtomicU64::new(0);
+    static LAST_DROP: AtomicU64 = AtomicU64::new(0);
+    let now = crate::shared::vclock_ms();
+    if now.wrapping_sub(LAST_MS.load(Relaxed)) < 190 {
+        return;
+    }
+    LAST_MS.store(now, Relaxed);
+    let disp_total = crate::sf_event::W0_DISPLAYED.load(Relaxed);
+    let drop_total = crate::sf_event::W0_DROPPED.load(Relaxed);
+    let disp = disp_total.wrapping_sub(LAST_DISP.swap(disp_total, Relaxed));
+    let drop_ = drop_total.wrapping_sub(LAST_DROP.swap(drop_total, Relaxed));
+    let vq = eng.aq_video.as_mut().map_or(std::ptr::null_mut(), |q| &mut **q as *mut crate::aq::AuQueue);
+    let aq = eng.aq_audio.as_mut().map_or(std::ptr::null_mut(), |q| &mut **q as *mut crate::aq::AuQueue);
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    log(&format!(
+        "W0D t={now} wall={wall} pos={} vfed={} afed={} vspan={} aspan={} qv={} qa={} vpark={} apark={} \
+         sil={} disp={disp} drop={drop_} vpres={} frames={} paused={} prime={} stage={:?} seek={}",
+        FEED_SHARED.pres_fed.load(Relaxed),
+        eng.max_fed_video_pts,
+        eng.max_fed_audio_pts,
+        crate::aq::aq_span_ns(vq),
+        crate::aq::aq_span_ns(aq),
+        crate::aq::aq_bytes(vq),
+        crate::aq::aq_bytes(aq),
+        crate::aq::aq_would_park(vq) as u8,
+        crate::aq::aq_would_park(aq) as u8,
+        native_clock_silence_ms().map_or(-1, i64::from),
+        FEED_SHARED.dg_vpres_ct.load(Relaxed),
+        FEED_SHARED.frames.load(Relaxed),
+        FEED_TX.paused.load(Relaxed) as u8,
+        eng.prime_play as u8,
+        eng.stage,
+        (FEED_TX.seek_to_ns.load(Relaxed) >= 0) as u8,
+    ));
+}
+
+
 /// **The terminal reserve boundary as a PHYSICAL fact rather than an arithmetic one.**
 ///
 /// `hls_buffered_ms` is content-time bookkeeping: the demuxed tail minus the playhead. It reaches
@@ -1438,6 +1486,7 @@ pub fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
     // issuing Play. NOT while a seek is armed: on a resume the seek is armed before PLAYING, so
     // feeding first would present the file start for a frame before the seek repositions — a
     // visible jump. ----------
+    w0_diag_sample(eng);
     maybe_begin_rebuffer(route, mt, eng, hooks);
     if eng.stage >= Stage::Playing && FEED_TX.feed_allowed() && FEED_TX.seek_to_ns.load(Relaxed) < 0 {
         if stream {
