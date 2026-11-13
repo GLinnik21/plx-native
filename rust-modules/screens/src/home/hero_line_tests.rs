@@ -139,6 +139,21 @@ fn the_page_draws_episode_show_and_movie_metadata() {
     assert!(!ep.contains("left"), "{ep:?}");
 }
 
+/// **An HDR film says so beside its resolution**; a show (which has no video of its own) and an
+/// SDR film do not.
+#[test]
+fn an_hdr_hero_names_its_dynamic_range_beside_the_resolution() {
+    let range = |hero: &PmsMovie| match hero_line(hero) {
+        Some(HeroLine::Metadata { range, .. }) => range,
+        _ => panic!("the identity band was expected"),
+    };
+    let film = PmsMovie { video_resolution: Some("4k".into()), hdr: true, ..movie() };
+    assert_eq!(range(&film), Some("HDR"));
+    assert_eq!(range(&PmsMovie { dolby_vision: true, ..film.clone() }), Some("Dolby Vision"));
+    assert_eq!(range(&PmsMovie { hdr: false, ..film.clone() }), None);
+    assert_eq!(range(&PmsMovie { kind: plx_data::pms::KIND_SHOW, ..film }), None);
+}
+
 #[test]
 fn sparse_episode_uses_its_title_or_omits_the_empty_row() {
     let mut ep = PmsMovie { kind: plx_data::pms::KIND_EPISODE, show_title: "Series".into(), title: "Pilot".into(), ..Default::default() };

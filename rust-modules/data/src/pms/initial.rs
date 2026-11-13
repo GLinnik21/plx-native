@@ -200,7 +200,7 @@ fn movie(m: &PmsMovie, w: &mut impl Sink) {
         ep_index, unwatched, watched, aired, child_count, guid, show_guid,
         // CONTRACT FREEZE: the caption facts are not in the canonical encoding yet, so every
         // recorded hash stays what it was. P2 decides whether to hash them (which re-records).
-        subtype: _, smart: _, genre: _, secondary_genre: _, video_resolution: _, hdr: _, audience_rating: _,
+        subtype: _, smart: _, genre: _, secondary_genre: _, video_resolution: _, hdr: _, dolby_vision: _, audience_rating: _,
         leaf_count: _, viewed_leaf_count: _, added_at: _,
         // a listing's versions only feed the item menu's row, which the menu captures at open
         versions: _, edition: _, sort_info: _,

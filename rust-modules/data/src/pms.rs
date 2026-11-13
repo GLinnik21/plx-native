@@ -173,6 +173,9 @@ pub struct PmsMovie {
     /// The first video stream is HDR (HDR10 / HLG / Dolby Vision).
     #[serde(default, skip_serializing_if = "is_false")]
     pub hdr: bool,
+    /// A video stream of the first media carries Dolby Vision (then `hdr` is set too).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dolby_vision: bool,
     /// `audienceRating` (0..10), or `None` when the server sent none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience_rating: Option<f32>,
@@ -578,6 +581,7 @@ fn fill_caption_facts(m: &mut PmsMovie, it: &plx_plex::plex::Metadata) {
     }
     m.video_resolution = facts.video_resolution;
     m.hdr = facts.hdr;
+    m.dolby_vision = facts.dolby_vision;
     m.audience_rating = facts.audience_rating;
     m.leaf_count = facts.leaf_count;
     m.viewed_leaf_count = facts.viewed_leaf_count;
@@ -4563,7 +4567,7 @@ mod caption_fact_tests {
         assert_eq!(m.genre.as_deref(), Some("Drama"), "the FIRST genre");
         assert_eq!(m.secondary_genre.as_deref(), Some("Crime"));
         assert_eq!(m.video_resolution.as_deref(), Some("4k"));
-        assert!(m.hdr);
+        assert!(m.hdr && !m.dolby_vision, "HDR10 is HDR without Dolby Vision");
         assert_eq!(m.audience_rating, Some(7.8));
         assert_eq!(m.added_at, Some(1_700_000_000));
         assert!(!m.smart && m.leaf_count.is_none() && m.child_count == 0);
@@ -4592,7 +4596,7 @@ mod caption_fact_tests {
     fn dolby_vision_without_a_transfer_characteristic_is_hdr() {
         let m = row(r#"{"type":"movie","title":"M","Media":[{"Part":[{"Stream":[
             {"streamType":1,"DOVIPresent":true}]}]}]}"#);
-        assert!(m.hdr);
+        assert!(m.hdr && m.dolby_vision);
     }
 
     #[test]
