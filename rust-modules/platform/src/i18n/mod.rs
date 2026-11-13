@@ -521,7 +521,7 @@ pub fn normalize(s: &str) -> Option<String> {
     let l = base.parse::<Locale>().ok()?;
     (l.id.language.as_str() != "und").then(|| l.to_string())
 }
-/// `webOS 4.10.2`, or the English "webOS unknown" read-out when the firmware file could not
+/// `webOS 4.10.2`, or the English "webOS unknown" read-out when neither firmware file could
 /// be read — the release is the one field a stranger's report needs, and "unknown" is the honest
 /// reading of an empty one rather than a plausible default. Shared by the support lines of the
 /// failure read-out and of the sign-in report.

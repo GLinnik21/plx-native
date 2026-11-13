@@ -468,6 +468,18 @@ impl Diagnostics {
     }
 }
 
+/// The firmware on the identity line: [`plx_platform::i18n::webos_release_line`] and, when the
+/// platform file named one, the API version. A release that only `/usr/lib/os-release` named has
+/// no API version, and the line must not end in an `api` label with nothing after it.
+fn firmware_head(w: &plx_platform::tv::device::Info) -> String {
+    let release = plx_platform::i18n::webos_release_line(w);
+    if w.major == 0 || w.api.is_empty() {
+        release
+    } else {
+        format!("{release} · api {}", w.api)
+    }
+}
+
 /// The two header facts: **who this build is** and **what the pipeline thinks it is doing**.
 ///
 /// It was THREE — build, firmware, verdict — and the draw only ever emits two, which is how the
@@ -476,12 +488,7 @@ impl Diagnostics {
 /// firmware where the failure reason should have been. Both facts are now wrapped independently
 /// and drawn in full, so the array's length remains the semantic contract.
 fn header(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag, now: u32, paused: Option<bool>) -> [String; 2] {
-    let w = plx_platform::tv::device::info();
-    let os = if w.major == 0 {
-        plx_platform::i18n::msg::browse_diagnostics_unknown_os().to_string()
-    } else {
-        format!("webOS {} · api {}", w.release, w.api)
-    };
+    let os = firmware_head(plx_platform::tv::device::info());
     let (_, _, vw, vh) = plx_base::surface::viewport();
     [
         // via `plex::identity`, not a literal + `env!`: that module exists precisely so the
@@ -598,9 +605,10 @@ fn device_rows() -> Vec<Field> {
     v.push(Field::new(
         plx_platform::i18n::msg::browse_diagnostics_field_firmware(),
         match (i.name.as_str(), i.codename.as_str()) {
-            // Bare "unknown": the head line above already carries the REASON in this state
-            // ("webOS unknown — os_info.json unreadable"), and a photograph should not spend two
-            // of its compact rows on one fact.
+            // Bare "unknown": the head line above already carries the firmware in this state, the
+            // REASON it is missing ("webOS unknown — os_info.json unreadable") or the release alone
+            // when `/usr/lib/os-release` named it and nyx's file named no codename; a photograph
+            // should not spend two of its compact rows on one fact.
             ("", "") => plx_platform::i18n::msg::browse_diagnostics_unknown().to_string(),
             ("", cn) => cn.to_string(),
             (n, "") => n.to_string(),
@@ -3518,6 +3526,20 @@ mod tests {
         assert_eq!(mb(2048), "2 kB");
         assert_eq!(mb(8 * 1024 * 1024), "8.0 MB");
         assert_eq!(mb(3 * 1024 * 1024 * 1024), "3.00 GB");
+    }
+
+    /// The firmware text on the identity line: the release and, only when the platform file named
+    /// one, the API version. A release that `/usr/lib/os-release` named has no API version, and the
+    /// line must not end in an `api` label with nothing after it.
+    #[test]
+    fn the_firmware_text_names_the_api_only_when_it_is_known() {
+        use plx_platform::tv::device::Info;
+        let _g = plx_base::testlock::serial();
+        let nyx = Info { release: "4.10.2".into(), api: "4.1.0".into(), major: 4, ..Info::default() };
+        assert_eq!(firmware_head(&nyx), "webOS 4.10.2 · api 4.1.0", "the nyx spelling is unchanged");
+        let os_release = Info { release: "6.5.3".into(), major: 6, ..Info::default() };
+        assert_eq!(firmware_head(&os_release), "webOS 6.5.3");
+        assert_eq!(firmware_head(&Info::default()), plx_platform::i18n::msg::browse_diagnostics_unknown_os());
     }
 
     /// An unreadable `os_info.json` must say so rather than print a plausible version — the panel
