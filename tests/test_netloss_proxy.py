@@ -471,5 +471,120 @@ class MockAdvertisesTheProxy(unittest.TestCase):
         self.assertEqual(pms2.account_resource["connections"][0]["port"], srv2.server_address[1])
 
 
+class RateLog(ThrottleCase):
+    """`--rate-log`: bytes DELIVERED per interval, the proof of which side limited a run."""
+
+    def setUp(self):
+        unittest.TestCase.setUp(self)
+        self.lines = []
+        self.bulk = Bulk()
+        self.addCleanup(self.bulk.close)
+        self.proxy = np.NetlossProxy(("127.0.0.1", self.bulk.port), log=self.lines.append,
+                                     rate_log=0.25).start()
+        self.addCleanup(self.proxy.stop)
+        self.socks = []
+
+    def rates(self):
+        import re
+        out = []
+        for line in list(self.lines):
+            m = re.search(r" rate down=(\d+)B up=(\d+)B over=(\d+)ms mode=(\S+) conns=(\d+)(?: top=#(\d+):(\d+)B)?", line)
+            if m:
+                out.append({"down": int(m[1]), "up": int(m[2]), "over": int(m[3]), "mode": m[4],
+                            "top": (int(m[6]), int(m[7])) if m[6] else None})
+        return out
+
+    def settle(self):
+        deadline = time.time() + 3
+        while time.time() < deadline and not (self.rates() and self.rates()[-1]["down"] == 0):
+            time.sleep(0.05)
+
+    def test_a_pass_download_is_counted_in_full_and_names_its_connection(self):
+        s = self.connect(timeout=15)
+        self.fetch(s, 6_000_000)
+        self.settle()
+        rates = self.rates()
+        self.assertEqual(sum(r["down"] for r in rates), 6_000_000)
+        self.assertGreater(sum(r["up"] for r in rates), 0)  # the GET line itself
+        busy = [r for r in rates if r["down"]]
+        self.assertTrue(all(r["top"] == (1, r["down"]) for r in busy), busy)
+        self.assertTrue(all(150 <= r["over"] <= 600 for r in rates), rates)
+        self.assertEqual({r["mode"] for r in rates}, {"pass"})
+
+    def test_a_throttled_download_is_logged_at_the_link_rate(self):
+        self.ctl("throttle", kbps=20000)  # 2.5 MB/s
+        s = self.connect(timeout=15)
+        self.fetch(s, 6_000_000)
+        self.settle()
+        rates = [r for r in self.rates() if r["down"]]
+        self.assertGreaterEqual(len(rates), 4, rates)
+        for r in rates[1:-1]:  # the first and last intervals are partial
+            want = 2_500_000 * r["over"] / 1000
+            self.assertAlmostEqual(r["down"] / want, 1.0, delta=0.25, msg=str(r))
+        self.assertEqual({r["mode"] for r in rates}, {"throttle:20000"})
+
+    def test_a_silent_link_is_logged_once_not_every_interval(self):
+        s = self.connect(timeout=15)
+        self.fetch(s, 100_000)
+        self.settle()
+        n = len(self.rates())
+        self.assertEqual(self.rates()[-1]["down"], 0)
+        time.sleep(0.8)  # three more intervals with nothing moving
+        self.assertEqual(len(self.rates()), n)
+
+    def test_off_by_default_and_validated(self):
+        echo = Echo()
+        self.addCleanup(echo.close)
+        lines = []
+        quiet = np.NetlossProxy(("127.0.0.1", echo.port), log=lines.append).start()
+        self.addCleanup(quiet.stop)
+        s = socket.create_connection(quiet.listen_addr, timeout=2)
+        self.addCleanup(s.close)
+        s.sendall(b"hello")
+        self.assertEqual(s.recv(10), b"hello")
+        time.sleep(0.4)
+        self.assertFalse([l for l in lines if " rate " in l])
+        with self.assertRaises(SystemExit):
+            np.main(["--upstream", "127.0.0.1:1", "--rate-log", "-1"])
+
+
+class ServeMeter(unittest.TestCase):
+    """`mock_pms.py --serve-rate-log`: media bytes served per interval and where the time went."""
+
+    def test_sample_sums_the_interval_and_reports_silence_once(self):
+        m = mock_pms.ServeMeter(1.0, log=lambda line: None)
+        m.add(1000, 0.010, 0.020, 1)
+        m.add(500, 0.005, 0.020, 2)
+        line = m.sample(1000)
+        self.assertRegex(line, r"^mock_pms: served \d\d:\d\d:\d\d\.\d{3} bytes=1500 read_ms=15 write_ms=40 "
+                               r"over=1000ms streams=2$")
+        self.assertIn("bytes=0 ", m.sample(1000))  # the first silent interval after traffic
+        self.assertIsNone(m.sample(1000))          # then nothing until bytes flow again
+        m.add(1, 0.0, 0.0, 1)
+        self.assertIn("bytes=1 ", m.sample(1000))
+
+    def test_a_ranged_body_is_metered_and_off_by_default(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = pathlib.Path(tmp) / "fixture.mkv"
+            clip.write_bytes(bytes(range(256)) * 8192)  # 2 MiB
+            plain, _ = mock_pms.serve(0, movies=0, transcode_fixture=clip)
+            self.addCleanup(lambda s=plain: (s.shutdown(), s.server_close()))
+            self.assertIsNone(plain.serve_meter)
+            srv, _ = mock_pms.serve(0, movies=0, transcode_fixture=clip, serve_rate_log=0.1)
+            self.addCleanup(lambda s=srv: (s.shutdown(), s.server_close(), s.serve_meter.stop()))
+            lines = []
+            srv.serve_meter._log = lines.append
+            url = "http://127.0.0.1:%d/video/:/transcode/universal/start.mkv?path=x" % srv.server_address[1]
+            self.assertEqual(urllib.request.urlopen(url, timeout=5).read(), clip.read_bytes())
+            deadline = time.time() + 3
+            while time.time() < deadline and not any("bytes=0 " in l for l in lines):
+                time.sleep(0.05)
+            import re
+            got = [int(re.search(r"bytes=(\d+)", l)[1]) for l in lines]
+            self.assertEqual(sum(got), 2 * 1024 * 1024, lines)
+            self.assertTrue(all("streams=1" in l for l in lines if "bytes=0 " not in l), lines)
+
+
 if __name__ == "__main__":
     unittest.main()

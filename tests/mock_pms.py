@@ -4095,6 +4095,70 @@ class MockPms:
         return j(self.container())
 
 
+class ServeMeter:
+    """`--serve-rate-log SECONDS`: once per interval, how many media-body bytes the mock wrote and where
+    the serving threads spent their time, so a run can say whether the SOURCE or the LINK limited it.
+
+        mock_pms: served 06:04:57.012 bytes=3375104 read_ms=41 write_ms=1790 over=1000ms streams=1
+
+    `bytes` is what was handed to the kernel (a full send buffer is back-pressure from the proxy / the
+    TV, so under a throttle it tracks the link). `read_ms` is the time spent reading the file and
+    `write_ms` the time blocked in the send, both summed over the serving threads: write_ms near the
+    interval (per stream) with a small read_ms means the sink was the limit and the source had more to
+    give; read_ms near the interval means the disk was. A silent interval is logged once, then not
+    repeated until a body is served again."""
+
+    def __init__(self, interval=1.0, log=None, clock=time.monotonic):
+        self.interval = interval
+        self._log = log or (lambda line: print(line, flush=True))
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._acc = self._fresh()
+        self._quiet = True
+        self._stop = threading.Event()
+        self._thread = None
+
+    @staticmethod
+    def _fresh():
+        return {"bytes": 0, "read_s": 0.0, "write_s": 0.0, "streams": set()}
+
+    def add(self, nbytes, read_s, write_s, stream):
+        with self._lock:
+            self._acc["bytes"] += nbytes
+            self._acc["read_s"] += read_s
+            self._acc["write_s"] += write_s
+            self._acc["streams"].add(stream)
+
+    def sample(self, over_ms):
+        """Take the interval's counters and return its log line (None: silent and already reported)."""
+        with self._lock:
+            taken, self._acc = self._acc, self._fresh()
+        silent = taken["bytes"] == 0
+        if silent and self._quiet:
+            return None
+        self._quiet = silent
+        now = time.time()
+        stamp = time.strftime("%H:%M:%S", time.localtime(now)) + ".%03d" % (int(now * 1000) % 1000)
+        return (f"mock_pms: served {stamp} bytes={taken['bytes']} read_ms={int(taken['read_s'] * 1000)} "
+                f"write_ms={int(taken['write_s'] * 1000)} over={over_ms}ms streams={len(taken['streams'])}")
+
+    def start(self):
+        def loop():
+            last = self._clock()
+            while not self._stop.wait(self.interval):
+                now = self._clock()
+                line = self.sample(int((now - last) * 1000))
+                last = now
+                if line:
+                    self._log(line)
+        self._thread = threading.Thread(target=loop, name="serve-meter", daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self):
+        self._stop.set()
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "MockPMS/0"
@@ -4156,11 +4220,17 @@ class Handler(BaseHTTPRequestHandler):
                     left = cut_after
                     # The head promised `length`; the connection ends after `cut_after`.
                     self.close_connection = True
+                meter = self.server.serve_meter
                 while left:
+                    t_read = time.perf_counter()
                     block = src.read(min(left, 256 * 1024))
                     if not block:
                         break
+                    t_write = time.perf_counter()
                     link_conditioner.write_throttled(self.wfile.write, block, self.server.media_kbit)
+                    if meter is not None:
+                        meter.add(len(block), t_write - t_read, time.perf_counter() - t_write,
+                                  threading.get_ident())
                     left -= len(block)
                 if self.close_connection:
                     self.wfile.flush()
@@ -4384,6 +4454,7 @@ class Server(ThreadingHTTPServer):
     # Opt-in media pacing uses the same writer as conditioned catalog responses. Test drivers
     # can keep a tiny local fixture from reaching EOF before a repeated-seek scenario finishes.
     media_kbit = 0
+    serve_meter = None  # a ServeMeter while --serve-rate-log is on
     daemon_threads = True
     allow_reuse_address = True
 
@@ -4425,7 +4496,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
           resume_fixture=False, media_next_episode=False, next_episode_remux=False,
           media_forced_subtitle=False, smart_collections=False,
           caption_edge_cases=False, multi_version=False, band_fixture=False, extra_media_audio=None,
-          extra_media_subtitle=None, cw_art_fixture=None, cw_art_twin=()):
+          extra_media_subtitle=None, cw_art_fixture=None, cw_art_twin=(), serve_rate_log=0.0):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
     app on the simulator is on this machine, and a LAN-facing listener would be one more thing
     the outbound guard has to reason about. `catalog` serves the demo library instead of a seed.
@@ -4508,6 +4579,8 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     srv = Server((host, port), Handler)
     srv.pms = pms
     srv.verbose = verbose
+    if serve_rate_log > 0:  # `--serve-rate-log`: one line per interval of media bytes served
+        srv.serve_meter = ServeMeter(serve_rate_log).start()
     srv.insecure_fail_listener = None
     account_ip = advertise_ip or ("127.0.0.1" if host in ("0.0.0.0", "::") else host)
     account_port = advertise_port or srv.server_address[1]
@@ -5422,6 +5495,10 @@ def main():
     ap.add_argument("--part-range-answers-200", action="store_true",
                     help="answer a /library/parts/<id> GET whose Range starts past byte 0 with a "
                          "200 and the whole file, as a server that ignores Range does (default off)")
+    ap.add_argument("--serve-rate-log", type=float, default=0.0, metavar="SECONDS",
+                    help="log, every SECONDS, the media-body bytes served and the time spent reading "
+                         "the file vs blocked in the send (a source limit vs a link limit); default 0 "
+                         "= off")
     ap.add_argument("--decision-delay-ms", type=int, default=0, metavar="N",
                     help="sleep N ms before answering a /video/:/transcode/universal/decision or "
                          "start.* request, so a route flight is observably in flight (default 0)")
@@ -5501,6 +5578,8 @@ def main():
         ap.error("--section-hubs-linked must not exceed --section-hubs")
     if a.decision_delay_ms < 0:
         ap.error("--decision-delay-ms must not be negative")
+    if not (a.serve_rate_log >= 0 and math.isfinite(a.serve_rate_log)):
+        ap.error("--serve-rate-log must be a finite number of seconds, 0 or more")
     link = list(a.link)
     explicit = {k: v for k, v in (("latency", a.link_latency_ms), ("jitter", a.link_jitter_ms),
                                   ("kbit", a.link_kbit), ("error", a.link_error_rate),
@@ -5555,7 +5634,7 @@ def main():
                          smart_collections=a.smart_collections,
                          caption_edge_cases=a.caption_edge_cases, multi_version=a.multi_version,
                          band_fixture=a.band_fixture, cw_art_fixture=a.cw_art_fixture,
-                         cw_art_twin=a.cw_art_twin)
+                         cw_art_twin=a.cw_art_twin, serve_rate_log=a.serve_rate_log)
     except ValueError as e:
         ap.error(str(e))
     what = f"catalog={a.catalog}" if a.catalog else f"seed={a.seed}"

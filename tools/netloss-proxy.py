@@ -55,6 +55,16 @@ LOGGING. Every mode change and every connection (open, close with the byte count
 logged to stdout with a wall-clock timestamp, flushed per line. The control endpoint binds loopback
 only. `--schedule MODE@SECONDS,...` flips modes on a timer from the start of the run (for one-lease
 runs), e.g. `throttle:27000@10,blackhole@60,pass@90`; the log shows each flip.
+
+`--rate-log SECONDS` (default off) adds one line per interval with the bytes DELIVERED in it, summed over
+every connection and per direction ("delivered" = handed to the receiving socket, so TCP back-pressure
+from a slow peer shows up as a lower number), plus the connection that carried the most downstream bytes:
+
+    netloss 06:04:57.012 rate down=3375000B up=1210B over=1000ms mode=throttle:27000 conns=3 top=#12:3374100B
+
+That is the proof a run needs that the link, not the source, was the limit: with the source able to
+serve more, the downstream rate in a `throttle:N` window sits at N kbps, and in `pass` it is whatever the
+sender could offer. A silent interval is logged once (down=0B) and then not repeated until traffic returns.
 """
 import argparse
 import http.server
@@ -206,8 +216,12 @@ class Conn:
 
 
 class NetlossProxy:
-    def __init__(self, upstream, listen=("127.0.0.1", 0), control=("127.0.0.1", 0), log=None):
+    def __init__(self, upstream, listen=("127.0.0.1", 0), control=("127.0.0.1", 0), log=None,
+                 rate_log=0.0):
         self.upstream = upstream
+        self.rate_log = rate_log  # seconds between rate lines; 0 = off
+        self._meter_lock = threading.Lock()
+        self._meter = {"down": 0, "up": 0, "per_conn": {}}  # bytes delivered since the last rate line
         self.listen_addr = listen
         self.control_addr = control
         self._log = log or (lambda line: print(line, flush=True))
@@ -234,6 +248,8 @@ class NetlossProxy:
         self._ctl.daemon_threads = True
         self.control_addr = self._ctl.server_address[:2]
         threading.Thread(target=self._ctl.serve_forever, name="netloss-ctl", daemon=True).start()
+        if self.rate_log > 0:
+            threading.Thread(target=self._rate_loop, name="netloss-rate", daemon=True).start()
         self.log(f"listening on {self.listen_addr[0]}:{self.listen_addr[1]} -> "
                  f"{self.upstream[0]}:{self.upstream[1]}; control http://{self.control_addr[0]}:"
                  f"{self.control_addr[1]}/_proxy/mode; mode={self.mode}")
@@ -267,6 +283,46 @@ class NetlossProxy:
             self._ctl.server_close()
         for c in list(self.conns.values()):
             self._kill(c, "proxy stopped", rst=False)
+
+    # ---- delivered-byte meter ----
+    def _count(self, way, n, cid):
+        with self._meter_lock:
+            self._meter[way] += n
+            if way == "down":
+                per = self._meter["per_conn"]
+                per[cid] = per.get(cid, 0) + n
+
+    def _take_meter(self):
+        with self._meter_lock:
+            taken = self._meter
+            self._meter = {"down": 0, "up": 0, "per_conn": {}}
+        return taken
+
+    def _rate_line(self, taken, over_ms):
+        per = taken["per_conn"]
+        top = max(per, key=per.get) if per else None
+        line = (f"rate down={taken['down']}B up={taken['up']}B over={over_ms}ms "
+                f"mode={self._label()} conns={len(self.conns)}")
+        if top is not None:
+            line += f" top=#{top}:{per[top]}B"
+        return line
+
+    def _rate_loop(self):
+        """One line per `rate_log` seconds: bytes delivered in that interval (`over` is the measured
+        interval, not the nominal one). The first all-silent interval after traffic is logged, later
+        ones are not."""
+        last = time.monotonic()
+        quiet = True
+        while not self._stop.wait(self.rate_log):
+            now = time.monotonic()
+            taken = self._take_meter()
+            over_ms = int((now - last) * 1000)
+            last = now
+            silent = taken["down"] == 0 and taken["up"] == 0
+            if silent and quiet:
+                continue
+            quiet = silent
+            self.log(self._rate_line(taken, over_ms))
 
     # ---- mode ----
     def _label(self):
@@ -410,6 +466,8 @@ class NetlossProxy:
                         conn.up += len(data)
                     else:
                         conn.down += len(data)
+                if self.rate_log > 0:
+                    self._count(way, len(data), conn.cid)
         except OSError:
             if not conn.dead:
                 conn.reason = conn.reason or "socket error"
@@ -520,12 +578,18 @@ def main(argv=None):
     ap.add_argument("--schedule", default="", metavar="MODE@SECONDS,...",
                     help="flip modes on a timer from start, e.g. blackhole@10,pass@70 or "
                          "throttle:27000@10,pass@70")
+    ap.add_argument("--rate-log", type=float, default=0.0, metavar="SECONDS",
+                    help="log the bytes delivered per interval (both directions, all connections) every "
+                         "SECONDS, e.g. 1; default 0 = off (see the module doc, LOGGING)")
     a = ap.parse_args(argv)
+    if not (a.rate_log >= 0 and math.isfinite(a.rate_log)):
+        ap.error("--rate-log must be a finite number of seconds, 0 or more")
     try:
         initial = parse_mode_spec(a.mode)
         schedule = parse_schedule(a.schedule)
         proxy = NetlossProxy(parse_hostport(a.upstream, "127.0.0.1"),
-                             parse_hostport(a.listen, "0.0.0.0"), ("127.0.0.1", a.control_port))
+                             parse_hostport(a.listen, "0.0.0.0"), ("127.0.0.1", a.control_port),
+                             rate_log=a.rate_log)
     except ValueError as e:
         ap.error(str(e))
     proxy.start()
