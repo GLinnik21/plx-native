@@ -7,8 +7,9 @@ use plx_playback_contract::demux::DemuxSubtitle;
 use plx_playback_contract::subtitle::{CaptionRetention, DecodeKind, RawCue, TrackInfo};
 use std::collections::VecDeque;
 
-/// `AV_INPUT_BUFFER_PADDING_SIZE` of every FFmpeg this app links: the zeroed tail a decoder may
-/// read past a packet's `size`.
+/// `AV_INPUT_BUFFER_PADDING_SIZE` of the FFmpeg this app bundles: the zeroed tail a decoder may
+/// read past a packet's `size`. `ci/ffabi-assert.c` pins it against the bundled headers, so a bump
+/// of the bundled FFmpeg that moves it fails the build until this follows.
 const INPUT_PADDING: usize = 64;
 
 /// The segment type that opens a PGS display set (`pgssubdec.c`'s `PRESENTATION_SEGMENT`). The
@@ -40,6 +41,9 @@ impl SetFraming {
 /// its bytes (the demuxer's packet is unreferenced as soon as the loop moves on) with the zero
 /// padding libavcodec's decoders may read past `size`.
 pub struct HeldPacket {
+    /// The packet's place in the demuxer's read order across every track, stamped by
+    /// [`ImageBacklog::hold`]; what [`ImageBacklog::take`] merges the tracks back by.
+    seq: u64,
     time_ns: Option<i64>,
     pts: i64,
     dts: i64,
@@ -56,7 +60,7 @@ impl HeldPacket {
         let mut bytes = Vec::with_capacity(payload.len() + INPUT_PADDING);
         bytes.extend_from_slice(payload);
         bytes.resize(payload.len() + INPUT_PADDING, 0);
-        Self { time_ns, pts, dts, duration, flags, size: payload.len(), bytes }
+        Self { seq: 0, time_ns, pts, dts, duration, flags, size: payload.len(), bytes }
     }
 
     /// Whether the payload opens with a PGS presentation segment: the start of a display set.
@@ -69,8 +73,9 @@ impl HeldPacket {
 /// whatever the selection, so the cues of the read-ahead window are in the store the moment a text
 /// track is chosen; an image packet had no such afterlife, and the window it covers (the demuxer runs
 /// ahead of the playhead) was thrown away, leaving a gap as long as the read-ahead after an image
-/// track was chosen mid-play. This keeps the packets instead, and the choice decodes them in file
-/// order, per track, through the decoder a live packet takes.
+/// track was chosen mid-play. This keeps the packets instead, and the choice decodes them in the
+/// order they were read (demux order, every track interleaved as the file has them), through the
+/// decoder a live packet takes.
 ///
 /// Retention is the read-ahead window, with no cap of its own: per track, a display set is kept from
 /// the one on screen at the playhead onward, because that one supersedes everything behind it for
@@ -82,20 +87,24 @@ pub struct ImageBacklog {
     tracks: Vec<VecDeque<HeldPacket>>,
     framing: Vec<SetFraming>,
     held: usize,
+    /// The read sequence number the next held packet takes. Never reset: it only has to grow.
+    next_seq: u64,
 }
 
 impl ImageBacklog {
     /// One track per entry of `framing`, in file order.
     pub fn new(framing: Vec<SetFraming>) -> Self {
-        Self { tracks: framing.iter().map(|_| VecDeque::new()).collect(), framing, held: 0 }
+        Self { tracks: framing.iter().map(|_| VecDeque::new()).collect(), framing, held: 0, next_seq: 0 }
     }
 
     pub fn is_empty(&self) -> bool { self.held == 0 }
 
     /// Keep `packet` as the newest of track `pos`, then retire what the playhead (`anchor_ns`,
     /// [`CaptionRetention::anchor_ns`]) leaves superseded.
-    pub fn hold(&mut self, pos: usize, packet: HeldPacket, anchor_ns: Option<i64>) {
+    pub fn hold(&mut self, pos: usize, mut packet: HeldPacket, anchor_ns: Option<i64>) {
         let Some(track) = self.tracks.get_mut(pos) else { return; };
+        packet.seq = self.next_seq;
+        self.next_seq += 1;
         track.push_back(packet);
         self.held += 1;
         let Some(anchor_ns) = anchor_ns else { return; };
@@ -124,13 +133,18 @@ impl ImageBacklog {
         self.held = 0;
     }
 
-    /// Everything held, each track in file order, leaving the backlog empty.
+    /// Everything held, in the order the demuxer read it across all tracks, leaving the backlog
+    /// empty. The sequence number [`hold`](Self::hold) stamped is demux order itself (it needs no
+    /// timestamp, which a packet may lack), and each track's own queue is already in it, so this is
+    /// a stable merge of the tracks. The bitmap store the cues are published to is in demux order
+    /// and evicts by it: a track-grouped batch would break that.
     pub fn take(&mut self) -> Vec<(usize, HeldPacket)> {
         self.held = 0;
         let mut out = Vec::new();
         for (pos, track) in self.tracks.iter_mut().enumerate() {
             out.extend(track.drain(..).map(|packet| (pos, packet)));
         }
+        out.sort_by_key(|(_, packet)| packet.seq);
         out
     }
 }
@@ -245,8 +259,8 @@ impl SubTracks {
     }
 
     /// Run on EVERY packet the demuxer reads, whatever its stream, before the packet is looked at:
-    /// if a subtitle was turned on since image packets were held, decode them now (each track in
-    /// file order) and hand the cues to `subtitle`, so they precede the cues of the packet that
+    /// if a subtitle was turned on since image packets were held, decode them now (in the order they
+    /// were read) and hand the cues to `subtitle`, so they precede the cues of the packet that
     /// comes next.
     ///
     /// # Safety
@@ -276,15 +290,19 @@ impl SubTracks {
     /// Whether any image packet waits for a subtitle to be turned on.
     pub fn holds_images(&self) -> bool { !self.held.is_empty() }
 
-    /// Decode everything [`hold`](Self::hold) kept, each track in file order, and hand every cue to
-    /// `emit` exactly as a live packet's would be.
+    /// Decode everything [`hold`](Self::hold) kept, in the order it was read, and hand every cue to
+    /// `emit` exactly as a live packet's would be. If the scratch packet cannot be allocated nothing
+    /// is taken: the backlog stays held and the next packet's check retries.
     unsafe fn release_held(
         &mut self, fmt: *mut AVFormatContext, bitmap_budget: usize, mut emit: impl FnMut(RawCue),
     ) {
-        let held = self.held.take();
-        if held.is_empty() { return; }
+        if self.held.is_empty() { return; }
         let mut scratch = av_packet_alloc();
-        if scratch.is_null() { return; }
+        if scratch.is_null() {
+            plx_base::eventlog::log("ff: image-subtitle release deferred, av_packet_alloc failed");
+            return;
+        }
+        let held = self.held.take();
         for (pos, packet) in &held {
             let Some(info) = self.infos.get(*pos) else { continue; };
             let Some(st) = live_stream(fmt, info.stream_index) else { continue; };
@@ -410,7 +428,7 @@ mod backlog_tests {
     }
 
     #[test]
-    fn take_returns_each_track_in_file_order_and_empties_the_backlog() {
+    fn take_returns_every_track_interleaved_in_demux_order_and_empties_the_backlog() {
         let mut backlog = per_packet(3);
         backlog.hold(2, packet(1), None);
         backlog.hold(0, packet(2), None);
@@ -418,9 +436,33 @@ mod backlog_tests {
         backlog.hold(0, packet(4), None);
         let order: Vec<(usize, Option<i64>)> = backlog.take().into_iter()
             .map(|(pos, held)| (pos, held.time_ns.map(|t| t / SEC))).collect();
-        assert_eq!(order, [(0, Some(2)), (0, Some(4)), (2, Some(1)), (2, Some(3))]);
+        assert_eq!(order, [(2, Some(1)), (0, Some(2)), (2, Some(3)), (0, Some(4))]);
         assert!(backlog.is_empty());
         assert!(backlog.take().is_empty());
+    }
+
+    /// The read order, not the timestamps, is what is kept: a packet with no time, or one stamped out
+    /// of step with its neighbours', stays where the demuxer read it, and retiring behind the playhead
+    /// leaves the survivors in that order.
+    #[test]
+    fn take_keeps_read_order_for_untimed_and_out_of_order_stamps_and_after_retirement() {
+        let mut backlog = per_packet(2);
+        backlog.hold(1, packet(50), None);
+        backlog.hold(0, packet_at(None), None);
+        backlog.hold(1, packet(10), None);
+        backlog.hold(0, packet(5), None);
+        let order: Vec<(usize, Option<i64>)> = backlog.take().into_iter()
+            .map(|(pos, held)| (pos, held.time_ns.map(|t| t / SEC))).collect();
+        assert_eq!(order, [(1, Some(50)), (0, None), (1, Some(10)), (0, Some(5))]);
+
+        let mut backlog = per_packet(2);
+        for (pos, sec) in [(0, 10), (1, 11), (0, 20), (1, 21), (0, 30), (1, 31)] {
+            backlog.hold(pos, packet(sec), Some(20 * SEC));
+        }
+        let order: Vec<(usize, i64)> = backlog.take().into_iter()
+            .map(|(pos, held)| (pos, held.time_ns.unwrap() / SEC)).collect();
+        assert_eq!(order, [(1, 11), (0, 20), (1, 21), (0, 30), (1, 31)],
+            "track 0 retires its 10 s packet at 20 s; track 1's 11 s one is the newest at or before the playhead");
     }
 
     #[test]

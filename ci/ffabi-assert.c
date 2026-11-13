@@ -134,6 +134,9 @@ SAME(sizeof(((AVChannelLayout *)0)->u.mask), 8, "the channel mask is 64 bits");
 /* `av_opt_set`'s search flag, passed by ff_pcm.rs to reach the DTS decoder's private `core_only` option; a moved
    value would make that call fail silently and a DTS-HD stream decode its extensions. */
 SAME(AV_OPT_SEARCH_CHILDREN, 1, "ff_pcm::AV_OPT_SEARCH_CHILDREN");
+/* The zero tail a decoder may read past an AVPacket's `size`: play-feed's ff_subs.rs copies held image-subtitle
+   packets into buffers padded by its own INPUT_PADDING, so a larger bundled padding would be a silent overread. */
+SAME(AV_INPUT_BUFFER_PADDING_SIZE, 64, "ff_subs::INPUT_PADDING != AV_INPUT_BUFFER_PADDING_SIZE");
 SAME(AV_SAMPLE_FMT_U8, 0, "speed_audio::SampleFormat::from_av U8");
 SAME(AV_SAMPLE_FMT_S16, 1, "speed_audio::SampleFormat::from_av S16");
 SAME(AV_SAMPLE_FMT_S32, 2, "speed_audio::SampleFormat::from_av S32");

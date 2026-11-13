@@ -2280,8 +2280,10 @@ pub fn desired_sub_idx() -> i32 {
 pub fn request_subtitle(idx: i32) {
     SHARED.desired_sub_idx.store(idx, Relaxed);
     if idx < 0 {
-        // subs Off: free the image-cue store now (the demuxer also stops decoding new
-        // bitmap cues while off — see ff.rs's desired_sub_idx gate)
+        // subs Off: free the image-cue store now. The demuxer also stops decoding new bitmap cues
+        // while off and HOLDS the image packets it reads instead (`SubTracks::on_packet` in
+        // play-feed's `ff_subs.rs`), so a track chosen later decodes the read-ahead window it
+        // would otherwise have lost.
         SHARED.sub_bitmaps.lock().unwrap().clear();
     }
 }
