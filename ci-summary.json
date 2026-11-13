@@ -99,7 +99,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-13T07:35:41Z",
+ "generated": "2026-11-13T08:35:03Z",
  "metrics": [
   {
    "change30_pct": 44.3,
@@ -123,10 +123,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 43.9,
+   "change30_pct": 43.5,
    "change7_pct": 23.6,
-   "d30": 173,
-   "delta30": 76,
+   "d30": 173.5,
+   "delta30": 75.5,
    "delta7": 47.5,
    "group": "ci",
    "id": "ci|host lint + type-checks",
@@ -144,18 +144,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 36.6,
-   "change7_pct": 6.3,
+   "change30_pct": 36.5,
+   "change7_pct": 6.2,
    "d30": 352.0,
-   "delta30": 129.0,
-   "delta7": 28.5,
+   "delta30": 128.5,
+   "delta7": 28.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 145,
+   "n_now": 146,
    "n_prev": 186,
-   "now": 481,
+   "now": 480.5,
    "prev7": 452.5,
    "shown": true,
    "state": "flat",
@@ -165,10 +165,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 43.7,
+   "change30_pct": 43.5,
    "change7_pct": 3.5,
-   "d30": 319,
-   "delta30": 139.5,
+   "d30": 319.5,
+   "delta30": 139.0,
    "delta7": 15.5,
    "group": "ci",
    "id": "push_wait",
@@ -270,10 +270,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 44.1,
+   "change30_pct": 44.0,
    "change7_pct": 2.8,
-   "d30": 1904,
-   "delta30": 840,
+   "d30": 1905.0,
+   "delta30": 839.0,
    "delta7": 75.5,
    "group": "ci",
    "id": "minutes",
@@ -314,8 +314,8 @@
   {
    "change30_pct": 63.6,
    "change7_pct": 2.5,
-   "d30": 272,
-   "delta30": 173,
+   "d30": 272.0,
+   "delta30": 173.0,
    "delta7": 11,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
@@ -333,10 +333,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 100.0,
+   "change30_pct": 99.5,
    "change7_pct": 11.3,
-   "d30": 212,
-   "delta30": 212,
+   "d30": 212.5,
+   "delta30": 211.5,
    "delta7": 43,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
@@ -375,10 +375,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 47.0,
+   "change30_pct": 46.4,
    "change7_pct": 7.0,
-   "d30": 219.0,
-   "delta30": 103.0,
+   "d30": 220,
+   "delta30": 102,
    "delta7": 21,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -396,10 +396,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 109.1,
+   "change30_pct": 109.8,
    "change7_pct": -18.8,
-   "d30": 143,
-   "delta30": 156,
+   "d30": 142.5,
+   "delta30": 156.5,
    "delta7": -69.0,
    "group": "ci",
    "id": "ci|host harness tests",
@@ -419,8 +419,8 @@
   {
    "change30_pct": 75.2,
    "change7_pct": -24.3,
-   "d30": 129,
-   "delta30": 97,
+   "d30": 129.0,
+   "delta30": 97.0,
    "delta7": -72.5,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
@@ -438,10 +438,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 66.5,
+   "change30_pct": 65.9,
    "change7_pct": 8.2,
-   "d30": 134.5,
-   "delta30": 89.5,
+   "d30": 135,
+   "delta30": 89,
    "delta7": 17,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
@@ -461,8 +461,8 @@
   {
    "change30_pct": -31.5,
    "change7_pct": -4.3,
-   "d30": 295.0,
-   "delta30": -93.0,
+   "d30": 295,
+   "delta30": -93,
    "delta7": -9,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -524,8 +524,8 @@
   {
    "change30_pct": 11.8,
    "change7_pct": 0.0,
-   "d30": 17.0,
-   "delta30": 2.0,
+   "d30": 17,
+   "delta30": 2,
    "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
@@ -566,8 +566,8 @@
   {
    "change30_pct": -99.0,
    "change7_pct": 0.0,
-   "d30": 306,
-   "delta30": -303,
+   "d30": 306.5,
+   "delta30": -303.5,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -585,10 +585,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -25.0,
+   "change30_pct": -14.3,
    "change7_pct": -25.0,
-   "d30": 4,
-   "delta30": -1,
+   "d30": 3.5,
+   "delta30": -0.5,
    "delta7": -1,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
