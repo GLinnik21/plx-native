@@ -605,10 +605,11 @@ fn device_rows() -> Vec<Field> {
     v.push(Field::new(
         plx_platform::i18n::msg::browse_diagnostics_field_firmware(),
         match (i.name.as_str(), i.codename.as_str()) {
-            // Bare "unknown": the head line above already carries the firmware in this state, the
-            // REASON it is missing ("webOS unknown — os_info.json unreadable") or the release alone
-            // when `/usr/lib/os-release` named it and nyx's file named no codename; a photograph
-            // should not spend two of its compact rows on one fact.
+            // Bare "unknown": with neither file read the head line above already carries the REASON
+            // ("webOS unknown — os_info.json unreadable"). When `/usr/lib/os-release` named the
+            // release instead, the head line reads `webOS 6.5.3` and this row is the codename,
+            // which that file does not carry; a photograph should not spend two of its compact
+            // rows on one fact.
             ("", "") => plx_platform::i18n::msg::browse_diagnostics_unknown().to_string(),
             ("", cn) => cn.to_string(),
             (n, "") => n.to_string(),

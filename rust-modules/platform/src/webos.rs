@@ -158,6 +158,10 @@ fn os_info_from(text: Option<&str>) -> (Info, NyxFile) {
 /// firmware image from 5.5 to 11.2 that was checked.
 const OS_RELEASE: &str = "/usr/lib/os-release";
 
+/// The lowest major whose firmware ships [`OS_RELEASE`]. Measured on every unpacked image: none of
+/// 3.4.3, 3.9.2, 4.4.2, 4.4.3, 4.10.0 and 4.10.2 has the file, every one from 5.5.0 to 11.2.0 has it.
+const OS_RELEASE_FIRST_MAJOR: u32 = 5;
+
 /// The value of `key` in an os-release(5) text: `KEY=value`, the value bare or in one pair of
 /// single or double quotes. The last assignment of a key wins, as it does when a shell sources the
 /// file; a comment line or a longer key that merely ends in `key` never answers.
@@ -175,9 +179,12 @@ fn os_release_value<'a>(s: &'a str, key: &str) -> Option<&'a str> {
 }
 
 /// PURE: the release an `/usr/lib/os-release` text names, from `VERSION_ID` (`6.5.3`) and its first
-/// component, or `None` when the text is not webOS TV's (`ID=starfish` on every image checked) or
-/// `VERSION_ID` is missing or not dotted decimal numbers. The ID check is what keeps a Linux host
-/// that runs the simulator from reading its distribution's `VERSION_ID` as a firmware.
+/// component, or `None` when the text is not webOS TV's (`ID=starfish` on every image checked),
+/// `VERSION_ID` is missing or not dotted decimal numbers, or its major is below
+/// [`OS_RELEASE_FIRST_MAJOR`]: no firmware older than that writes this file, so such a text is not
+/// this set's own, and a major 1 to 4 would flip the decisions that read it (the credential
+/// default, VP9 10-bit, the DV platform gate, the old-ABI seek). The ID check is what keeps a Linux
+/// host that runs the simulator from reading its distribution's `VERSION_ID` as a firmware.
 ///
 /// The file carries no codename, API version or build id, so those stay empty rather than invented;
 /// in particular [`Info::build`] stays empty, not the release, so that this boot and a nyx boot of
@@ -190,7 +197,7 @@ fn os_release_info(s: &str) -> Option<Info> {
     if !release.split('.').all(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_digit())) {
         return None;
     }
-    let major = release.split('.').next()?.parse::<u32>().ok().filter(|m| *m > 0)?;
+    let major = release.split('.').next()?.parse::<u32>().ok().filter(|m| *m >= OS_RELEASE_FIRST_MAJOR)?;
     Some(Info { release: release.to_string(), major, ..Info::default() })
 }
 
@@ -1371,6 +1378,21 @@ mod tests {
         assert!(os_release_info("VERSION_ID=\"6.5.3\"\n").is_none(), "no ID at all");
     }
 
+    /// No 3.x or 4.x firmware image ships `/usr/lib/os-release` (measured on every unpacked image:
+    /// 3.4.3, 3.9.2, 4.4.2, 4.4.3, 4.10.0 and 4.10.2 have none; 5.5.0 to 11.2.0 all have it), so a
+    /// `VERSION_ID` below 5 is not a file this firmware wrote. Naming a major 1 to 4 would flip the
+    /// decisions that read it (credential default, VP9 10-bit, DV gate, the old-ABI seek).
+    #[test]
+    fn an_os_release_below_webos_5_names_nothing() {
+        for release in ["4.10.2", "4.4.3", "3.9.2", "1.0.0"] {
+            let text = format!("ID=starfish\nVERSION_ID=\"{release}\"\n");
+            assert!(os_release_info(&text).is_none(), "{release}");
+            let fw = firmware_from(None, Some(&text));
+            assert_eq!((fw.info.major, fw.os_info, fw.from_os_release), (0, NyxFile::Unreadable, false), "{release}");
+        }
+        assert_eq!(os_release_info("ID=starfish\nVERSION_ID=\"5.0.0\"\n").map(|i| i.major), Some(5), "5 is the lowest");
+    }
+
     #[test]
     fn a_nyx_file_that_was_read_is_never_second_guessed() {
         let fw = firmware_from(Some(REAL), Some(OS_RELEASE_653));
@@ -1390,8 +1412,8 @@ mod tests {
         let fw = firmware_from(None, Some(OS_RELEASE_653));
         assert_eq!((fw.info.release.as_str(), fw.info.major), ("6.5.3", 6));
         assert!(fw.info.codename.is_empty() && fw.info.api.is_empty() && fw.info.build.is_empty());
-        // Diagnostics and the crash report print the verdict on nyx's own file, not on whether the
-        // release is known.
+        // The verdict on nyx's own file (the event log line and the crash report's `hardware.probe`
+        // field) stays `unreadable`; it is not a statement about whether the release is known.
         assert_eq!(fw.os_info, NyxFile::Unreadable);
         assert!(fw.from_os_release);
     }
