@@ -117,12 +117,15 @@ mod tests {
 
     /// The bug this guards: only the heartbeat marks wrote the leg cell, so a freeze inside
     /// `span("pump", ..)` (the Starfish/ACB pump) was reported as the enclosing `results`. This
-    /// reads the real process cell, and other tests step it with heartbeat marks (never these
-    /// four legs), so one read can be overwritten from outside: a span that names its leg shows
-    /// it on the first try in practice, and one that does not never shows it on any.
+    /// reads the real process cell. The serial lock keeps it from restoring "none yet" under the
+    /// other test that publishes a leg there; heartbeat tests step the cell without the lock, but
+    /// only to the seven legs they mark, so one read can still be overwritten from outside: a span
+    /// that names its leg shows it on the first try in practice, and one that does not never
+    /// shows it on any.
     #[test]
     fn a_loop_span_names_its_leg_whether_or_not_the_frame_instrument_is_armed() {
         use crate::task::watchdog::{current_leg, LoopPhase};
+        let _lock = crate::testlock::serial();
         for (name, leg) in [
             ("scen", LoopPhase::DevScenarios),
             ("pump", LoopPhase::PlaybackPump),

@@ -1473,6 +1473,9 @@ mod tests {
 
     #[test]
     fn the_default_legs_publish_to_the_process_cell_the_observer_reads() {
+        // `diag::spans`' process-cell test restores the cell it found, which can be "none yet":
+        // under the same lock that cannot land between this store and the read.
+        let _lock = crate::testlock::serial();
         LoopPhases::default().enter(LoopPhase::Navcommit);
         // Other tests may enter a leg too, so only "a leg is published" is stable here; which
         // one is the private-cell test's business.
