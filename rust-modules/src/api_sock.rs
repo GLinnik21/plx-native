@@ -5,14 +5,25 @@
 //! The FIFO is a one-way byte pipe: a token in, a log line as the only answer, and the
 //! state file as the only read-out. A typed control API needs a CONVERSATION: every
 //! request carries a client-chosen request id, and exactly one response carries it back —
-//! a structured outcome (what actually happened: staged, committed, paused) or a
-//! structured error (a machine-readable code and the human-readable reason).
+//! a structured outcome (what actually happened) or a structured error (a
+//! machine-readable code and the human-readable reason).
+//!
+//! The response is produced when the OUTCOME is known, not when the request is queued.
+//! The synchronous verbs answer their commit on the spot — the same commit path the
+//! app's own actions use (`no_engine` with the state instead of a bare "no", the
+//! committed track's `sid`, a refused commit as a structured error). The asynchronous
+//! ones (play, seek, profile, shot) park in `api`'s AWAITING table and answer on the
+//! frame their outcome lands: `play_started` with the title, `seek_landed` with the
+//! position, `profile_seated` with the seated profile's title, `shot_captured` with the
+//! numbered file — or the structured failure that explains why.
 //!
 //! The protocol is one JSON object per line (UTF-8, `\n`-terminated):
 //!
 //! ```text
+//! client → {"id": 1, "req": {"kind": "state"}}
+//! app    → {"id": 1, "ok": true, "outcome": {"kind": "state", "snapshot": {"state": "playing", "pos_ms": 354000, "title": "…", …}}}
 //! client → {"id": 3, "req": {"kind": "play", "rk": "1$abc"}}
-//! app    → {"id": 3, "ok": true, "outcome": {"kind": "play_staged", "rk": "1$abc"}}
+//! app    → {"id": 3, "ok": true, "outcome": {"kind": "play_started", "rk": "1$abc", "title": "…"}}   (on the first playing frame)
 //! app    → {"id": 4, "ok": false, "error": {"code": "no_engine", "state": "idle"}}
 //! app    → {"id": null, "ok": false, "error": {"code": "malformed", "reason": "..."}}
 //! ```
@@ -81,33 +92,49 @@ pub enum Verb {
     Shot,
 }
 
-/// A structured outcome: what actually happened, in the action's own vocabulary. The
-/// commit-2 semantics are the COMMIT itself — the play answers `play_staged` (the
-/// request was accepted, the item resolves, the ritual performs on a later frame), the
-/// seek answers `seek_committed` (the engine's seek request was made); the completion
-/// outcomes (the first frame for a play, the landed position for a seek, the captured
-/// file for a shot) ride in with the request→outcome correlation rework.
+/// A structured outcome: what actually happened, in the action's own vocabulary — never
+/// an acknowledgement. The synchronous verbs (audio, sub, quality, pause, resume, stop)
+/// answer their COMMIT: the media layer accepts or refuses on the spot. The asynchronous
+/// ones (play, seek, profile, shot) are parked in `api`'s AWAITING table when the
+/// request's frame commits them, and answered on the frame their OUTCOME lands:
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Outcome {
-    /// play: the request was accepted and the item is resolving from PMS.
-    PlayStaged { rk: String },
-    /// seek: the engine's seek request was committed.
-    SeekCommitted { ms: u64 },
+    /// play: the play actually started — the first frame reached `playing`; `title` is
+    /// what is playing now.
+    PlayStarted { rk: String, title: String },
+    /// play: the play never started, with the reason from the layer that refused it —
+    /// the staging worker (no PMS selected, no such item, no playable part), the routing
+    /// question, the engine's verdict, a supersession (a stop or a newer play), or the
+    /// 120 s deadline.
+    PlayFailed { rk: String, reason: String },
+    /// seek: the engine landed; `pos_ms` is the position it settled at (within 3 s of
+    /// the target — the engine's landing, not an echo of the request).
+    SeekLanded { ms: u64, pos_ms: i64 },
+    /// seek: the seek never landed — the session left playback, or no landing in 10 s.
+    SeekFailed { ms: u64, reason: String },
     /// audio/sub: the track menu's commit was performed for the stream with this id
     /// (`track` is `audio` or `sub`; it is not named `kind` — that is the tag).
     TrackCommitted { track: &'static str, sid: i64 },
     /// quality: the `…` menu's commit was performed for this rung.
     QualityCommitted { rung: String },
-    /// profile: the session machine's profile commit was performed.
-    ProfileCommitted { index: usize },
+    /// profile: the switch LANDED — the session's auth flow reached `ready` after the
+    /// pick; `title` is the seated profile's.
+    ProfileSeated { index: usize, title: String },
+    /// profile: the switch failed — the flow's own error line, or the flow left the
+    /// switch without this pick (a sign-out, the 60 s deadline), naming the phase.
+    ProfileFailed { index: usize, reason: String },
     Paused,
     Resumed,
     Stopped,
     /// state: the frame thread's snapshot — the same value `state.json` holds.
     State { snapshot: serde_json::Value },
-    /// shot: the read-back is armed; the numbered file lands on the next swap.
-    ShotRequested,
+    /// shot: the capture landed; `path` is the numbered `shot-<n>.png` in the runtime
+    /// directory, written on the frame swap that followed the request.
+    ShotCaptured { path: String },
+    /// shot: the capture failed (empty viewport, encode/write error) — or no capture in
+    /// 10 s.
+    ShotFailed { reason: String },
 }
 
 /// A structured error: a machine-readable code (the stable vocabulary a client may
@@ -124,6 +151,12 @@ pub enum ApiError {
     NoTrack { sid: i64 },
     /// The quality rung is not one the routing vocabulary knows.
     UnknownRung { rung: String },
+    /// The profile pick needs the roster screen; the session's auth flow is in the named
+    /// phase instead (a pick outside the roster phase is one the session machine would
+    /// silently drop — the typed surface says so).
+    NotOnRoster { phase: String },
+    /// The roster has no profile at that index.
+    NoProfile { index: usize, count: usize },
     /// The read has no answer yet (the frame thread has not published a frame).
     NoSnapshot,
     /// The frame loop's command queue was full when the request was posted.
