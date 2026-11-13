@@ -25,6 +25,7 @@
   "core.preview_domain_attempted_delivery": "способ передачи при неудачной попытке",
   "core.preview_domain_source_video": "видеокодек источника (только при отказе)",
   "core.preview_domain_source_audio": "аудиокодек источника (только при отказе)",
+  "core.preview_domain_preview_refusal": "причина отказа в автозапуске трейлера (только при отказе в автозапуске)",
   "core.preview_domain_quality": "качество",
   "core.preview_domain_observed_rate": "измеренный битрейт",
   "core.preview_domain_raster": "размер кадра",

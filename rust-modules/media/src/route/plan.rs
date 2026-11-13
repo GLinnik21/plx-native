@@ -1210,8 +1210,10 @@ pub enum PlayVerdict {
     /// Force Direct Play is on, and this is why the original cannot play.
     Forced(ForcedFailure),
     /// A hero/trailer preview resolved to a route that is not a direct play. A muted preview takes
-    /// only the original, so the plan is refused here, with no URL.
-    PreviewNeedsDirectPlay,
+    /// only the original, so the plan is refused here, with no URL. `reason` is the first failing
+    /// condition in [`crate::player::preview::refusal`]'s fixed order; it is typed data for the
+    /// failure report (`playback.preview_refusal`) and changes nothing about how the refusal reads.
+    PreviewNeedsDirectPlay { reason: plx_telemetry::telemetry::classes::PreviewRefusal },
     /// This build has no Feed executor and no source-specific URI qualification was granted.
     NoQualifiedBackend,
 }
@@ -1244,7 +1246,7 @@ impl PlayVerdict {
         match self {
             Self::Server(sentence, _) => Borrowed(sentence),
             Self::DirectPlayDisabled => Borrowed(msg::widgets_verdict_direct_play_disabled()),
-            Self::PreviewNeedsDirectPlay => Borrowed(msg::widgets_reason_open()),
+            Self::PreviewNeedsDirectPlay { .. } => Borrowed(msg::widgets_reason_open()),
             Self::NoQualifiedBackend => Borrowed(msg::widgets_reason_open()),
             Self::Forced(why) => match why {
                 ForcedFailure::NoOriginal => Borrowed(msg::widgets_verdict_forced_no_original()),
@@ -2729,6 +2731,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             }
             let auto_original = decision.as_ref().is_some_and(|d| d.original);
             let adaptive = auto_uses_hls(playback_quality, auto_original);
+            // Whether a direct play was on offer BEFORE the override just below sets `directplay` false
+            // for HLS. The preview gate's reason needs it: after the override `directplay` is false for
+            // every Auto-quality HLS pick, so the gate's own inputs cannot tell a preview Auto sent to
+            // HLS from one the server would have transcoded anyway.
+            let direct_play_offered = directplay;
             if adaptive {
                 allowed = flavors_allowed(
                     link,
@@ -2886,11 +2893,13 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 plan.memory_note = true;
             }
             log_memory(memory_unshown.is_some());
-            if env.preview && !crate::player::preview::accepts_direct_play(directplay, !part.is_empty(), adaptive) {
-                crate::player::log("preview: refused — not a direct play");
-                plan.url.clear();
-                plan.verdict = Some(PlayVerdict::PreviewNeedsDirectPlay);
-                return plan;
+            if env.preview {
+                if let Some(reason) = crate::player::preview::refusal(directplay, direct_play_offered, !part.is_empty(), adaptive) {
+                    crate::player::log(&format!("preview: refused — not a direct play ({})", reason.code()));
+                    plan.url.clear();
+                    plan.verdict = Some(PlayVerdict::PreviewNeedsDirectPlay { reason });
+                    return plan;
+                }
             }
             if (directplay || rk.is_empty()) && !part.is_empty()
                 && (rk.is_empty() || !pms_uri_possible || env.feed_original_eligible) {

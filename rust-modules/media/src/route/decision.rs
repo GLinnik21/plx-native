@@ -6866,7 +6866,15 @@ pub fn play_refused(ps: &PlaybackSession) -> bool {
 /// Did the resolve refuse this as a PREVIEW that was not a direct play
 /// ([`PlayVerdict::PreviewNeedsDirectPlay`])? Our own refusal, not the server's.
 pub(crate) fn play_refused_as_preview(ps: &PlaybackSession) -> bool {
-    matches!(ps.play_verdict, Some(PlayVerdict::PreviewNeedsDirectPlay))
+    preview_refusal(ps).is_some()
+}
+/// Which condition refused this PREVIEW ([`PlayVerdict::PreviewNeedsDirectPlay`]'s `reason`), or
+/// `None` for any other session. The failure report's `playback.preview_refusal` tag reads it.
+pub(crate) fn preview_refusal(ps: &PlaybackSession) -> Option<plx_telemetry::telemetry::classes::PreviewRefusal> {
+    match ps.play_verdict {
+        Some(PlayVerdict::PreviewNeedsDirectPlay { reason }) => Some(reason),
+        _ => None,
+    }
 }
 /// The app/worker failed to produce a playable plan, as distinct from a PMS `/decision` refusal.
 /// There is no Engine whose pump could publish Error, so `player::state()` derives it beside the

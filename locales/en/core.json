@@ -149,6 +149,10 @@
     "value": "source audio codec (refused-plan reports only)",
     "description": "Field name in the consent preview's list of possible playback-error values: the audio format class of the file the server refused. Only reports about a refusal carry it."
   },
+  "core.preview_domain_preview_refusal": {
+    "value": "reason an automatic trailer was refused (refused-trailer reports only)",
+    "description": "Field name in the consent preview's list of possible playback-error values: which condition refused the trailer that plays behind a detail page before it opened (the title has no media file, a direct play was not on offer, or Auto quality did not keep the original). Only reports about a refused trailer carry it."
+  },
   "core.preview_domain_quality": {
     "value": "quality",
     "description": "Field name in the consent preview's list of possible playback-error values."

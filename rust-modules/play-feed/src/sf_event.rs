@@ -172,7 +172,8 @@ pub fn media_to_fed(media_ns: i64) -> i64 {
 /// libpf on webOS 4.10 (`CustomPipeline::updateDroppedFrame` → 0x2e = 46,
 /// `updateDisplayedFrame` → 0x2f = 47); every type above 0x1c is two higher on webOS 5+
 /// (Kodi's `if (webOSVersion < 5 && type > ENDOFSTREAM) type += 2`), so 48/49 there. An unknown
-/// major (0, os_info unreadable) is read as the numbering this project has actually measured.
+/// major (0: neither `os_info.json` nor `/usr/lib/os-release` named a release) is read as the
+/// numbering this project has actually measured.
 pub fn sink_counter_kind(ty: c_int, major: u32) -> Option<SinkCounter> {
     let normalised = if major == 0 || major < 5 { ty + 2 } else { ty };
     match normalised {

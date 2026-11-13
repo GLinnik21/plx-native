@@ -125,9 +125,18 @@ or `development`), the time of the panic (read and bounded as above), the same k
 webOS and hardware compatibility details (including the `probe` fact and the firmware `build`) that the fault fallback report carries, and
 the Crash report ID below. It carries none of the library details above.
 
-A main-thread freeze (the app not responding for five seconds or more while it is open on screen) is reported like a crash, under the same choice: code addresses and register values, one of three duration ranges (5 to 10 s, 10 to 30 s, 30 s or more) or "unrecovered", and the details above, without stopping the app.
+A main-thread freeze (the app not responding for five seconds or more while it is open on screen) is reported like a crash, under the same choice: code addresses and register values, one of three duration ranges (5 to 10 s, 10 to 30 s, 30 s or more) or "unrecovered", the step of the app's own frame loop the app was in when it stopped responding (`freeze.leg`: one fixed word from a list of eleven naming a phase of the loop, never anything about what was on screen or playing: `event-ingest`, `results`, `dev-scenarios`, `playback-pump`, `land-results`, `navcommit`, `dispatcher-frame`, `update`, `prepare-window`, `present-and-swap` or `frame-report`), and the details above, without stopping the app.
 
 When another part of the television's software ends PlxNative by calling `exit()` (for example the system closing it), the app records the call and reports it like a crash, under the same choice: the exit status (a number), which thread made the call (its number, whether it was the main thread, and its own name, a technical label set by PlxNative or a library), the library the call came from (its file name, never the folder, with its build identifier, load address and size, as for a crash report above) and the code address of the call, the time of the call to the second, and the details above.
+
+A report built from the crash log (a fault, a Rust panic, a freeze or an `exit()` call, as above) is
+sent the next time the app starts, which after an update is a newer build than the one that left
+the record. When the record names a different build of PlxNative than the one sending it, the report's
+`release` (the app version it is filed under) is left out rather than filed under the newer
+version, and it carries two tags instead: `crash.uploaded_by`, the app version that sent it, and
+`crash.build_id`, the build identifier of the build that crashed. Both are an app version and a
+binary build identifier, which these reports already carried; nothing new is collected. A report from the same
+build as the one sending it, or one whose build cannot be compared, carries `release` and neither tag.
 
 Every crash and error report carries a **Crash report ID**: a random identifier created on this
 television when you turn crash reports on, sent as the report's `user.id`. It exists so that
@@ -211,11 +220,21 @@ after the app returned to the foreground) / `preview` (the trailer that plays qu
 detail page, which the viewer did not press Play for); and `attempt_ordinal`, which open of this
 playback it was, `1` to `9` and then `9+`, counting the first open, every retry and every handoff.
 The count starts again at `1` with each new Play and is kept only in memory. Both appear as a tag
-and in the playback context. A trailer preview that fails is reported with the same fields and no
-more: it is marked `preview`, it counts as the first open, it names direct play as the attempted
-delivery (the only route a preview ever opens), and its `started` and `attempt_started` fields
-say whether the trailer actually showed a picture before it failed. Sentry files it in an issue of
-its own, apart from playback failures.
+and in the playback context. A trailer preview that fails is reported with the same fields and one
+more, below: it is marked `preview`, it counts as the first open, it names direct play as the
+attempted delivery (the only route a preview ever opens), and its `started` and `attempt_started`
+fields say whether the trailer actually showed a picture before it failed. Sentry files it in an
+issue of its own, apart from playback failures.
+
+A trailer preview that the app refuses to open, because a preview only ever plays an unmodified
+direct play (the failure kind `preview_not_direct`), also names which condition refused it, as one
+closed tag, `preview_refusal`: `no_part` (the item has no media file to play), `not_direct` (a direct
+play was not available, so the route would have been a transcode or a remux, whatever the reason:
+the server's answer, the connection's or the quality setting's rules, or a track the television
+cannot play as it is) or `adaptive` (a direct play was available, but Auto quality chose a
+bandwidth-adapted stream instead). The first condition that fails in that order is the one named.
+No other failure carries it, and it appears as a tag only, not in the playback context. It is one
+of those three words and nothing the server said.
 
 The report also names `backend` — `unknown` / `feed` / `uri` — and `terminal_stage` —
 `unknown` / `planning` / `open` / `decode` / `presentation` / `release`. These describe only the
