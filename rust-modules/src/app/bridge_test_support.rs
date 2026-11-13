@@ -329,6 +329,17 @@ impl Drop for ImageHeld {
     fn drop(&mut self) { plx_ui::containers::transition::set_page_image_held(false); }
 }
 
+/// Puts a preview back to Idle when the test ends, however it ends (the machine is process-wide,
+/// so a test that panics with one held would leave `preview::occupies()` true for every later test
+/// in the binary). Bind it as `let _preview = PreviewReset;` right after `testlock::serial()`.
+#[cfg(feature = "play-feed")]
+pub(crate) struct PreviewReset;
+
+#[cfg(feature = "play-feed")]
+impl Drop for PreviewReset {
+    fn drop(&mut self) { plx_media::player::preview::reset_for_test(); }
+}
+
 /// How many collections the rig's probe stands in for on every section it seeds (a server the rig
 /// has no network to ask): enough that the Library header's Collections control is on the row.
 pub(crate) const RIG_COLLECTIONS: u32 = 4;
