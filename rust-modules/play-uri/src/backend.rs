@@ -44,7 +44,7 @@ pub use plx_playback_contract::uri::Binding;
 ///     parameter (never a `cfg(test)` constant) so a test passes its own. A major of 0, the
 ///     unknown answer, is never admitted, whatever the table lists, and nothing is inferred from a
 ///     neighbouring major;
-///   - otherwise nothing: a webOS 5+ release without an entry plays Standard.
+///   - otherwise nothing: a webOS 5+ major without an entry plays Standard.
 ///
 /// `plane` and `initialized` are the URI engine's own handle's (player type 0, the plane owner's
 /// `facts_of(PlaneHandle::Uri)` and `initialized(PlaneHandle::Uri)`), never Feed's: a normal boot
@@ -65,8 +65,8 @@ pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneF
 /// The firmware majors on which the product backend selects the exported window
 /// ([`product_binding`]): the only way production ever composes [`Binding::Exported`]. An entry is
 /// a webOS firmware major as `device::info().major` reports it (5 for 5.x, 11 for 11.x). The table
-/// is empty, so every webOS 5+ release plays Standard until a major earns an entry (a webOS 4.x set
-/// takes the ACB plane, which this table does not touch).
+/// admits major 5 and no other, so every other webOS 5+ major plays Standard until it earns an entry
+/// (a webOS 4.x set takes the ACB plane, which this table does not touch).
 ///
 /// A major is admitted only with all three parts of the evidence in `docs/uri-mode.md`'s Results
 /// table, each recorded there with the tester log's decisive lines. A release is never admitted on
@@ -78,9 +78,14 @@ pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneF
 ///     `evidence=override`) shows a moving picture with sound, placed and proportioned right,
 ///     supported by the probe's summary tokens `load=ok`, `playing=yes`,
 ///     `currentTime_advanced=yes` and `window=exported`;
-///   - (c) controls: the probe's `drive` tokens (`pause=froze`, `resume=sent` with `resume_from=`
-///     at or after the paused position minus 1000 ms, `seek=hit`, and `audio=ok` or an
-///     `audio_at_load=`) AND the product run's pause, seek and audio doing what the viewer asked.
+///   - (c) controls: the probe's `drive` tokens (`pause=froze` on either `pause_basis`, `resume=sent`
+///     with `resume_from=` at or after the paused position minus 1000 ms, `seek=hit`, and `audio=ok`
+///     or an `audio_at_load=`) AND the product run's pause, seek and audio doing what the viewer
+///     asked. Two amendments, each named in the row that uses it. (1) A run made before the current
+///     grader may stand on the current grader's verdict on that run's recorded numbers, replayed in
+///     a unit test: the row names the test and says the run itself printed `pause=unconfirmed`.
+///     (2) A control the product run showed failing is acceptable only when the route now sends that
+///     case to Standard; the row names it, and the admission covers only the route as it now stands.
 ///
 /// One exception: a major with (a) but no tester run is admitted when BOTH neighbouring majors
 /// (`major - 1` and `major + 1`) are already admitted on tester evidence, and its own image shows
@@ -89,7 +94,17 @@ pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneF
 ///
 /// Each entry carries a comment naming its Results row. `0` is never an entry: it is the unknown
 /// answer.
-pub const EXPORTED_STRATA: &[u32] = &[];
+pub const EXPORTED_STRATA: &[u32] = &[
+    // webOS 5.6.2, LG OLED CX (build 5.6.2-21): `docs/uri-mode.md` Results row "webOS 5.6.2 (build
+    // 5.6.2-21)", #1064. (a) the 5.5.0 and 5.6.2 images read `option.windowId`; (b) a product run on a
+    // debug build of main at e8442d5e (carries #1314; single audio track, SDR and Dolby Vision) played
+    // a placed, correctly letterboxed picture with sound; (c) the drive probe on that build printed
+    // pause=froze (pause_basis=paused_event_and_resume), seek=hit and audio_at_load=0, and the
+    // product run's pause, seek and sound answered, so amendment (1) is not used. The earlier
+    // four-audio-track run's audio-track switch failed; such a file now starts in Standard (#1314,
+    // amendment (2); `exported_uri_leaves_multi_audio_originals_on_standard` pins the route).
+    5,
+];
 
 /// The canvas the exported window is placed over: the destination of EVERY placement, the whole
 /// 1920x1080 canvas, as Feed (`feed_pump`) and the developer probe (`uriprobe_drive`) place it. Only
