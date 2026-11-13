@@ -618,6 +618,42 @@ fn a_collapse_leaves_original_for_the_best_sustainable_state() {
     );
 }
 
+/// **The progressive stall hold cannot hide a starving link from this watchdog.** A direct-play
+/// stream is held only once its reserve is within one native position period of empty
+/// (`PROGRESSIVE_LOW_WATER_MS`), and the hold feeds the watchdog nothing of its own (it is not the
+/// viewer's pause and not a seek). A link that cannot carry the file drains the reserve long
+/// before that point, so the watchdog has abandoned Original on the way down, on a reserve far
+/// above the hold's begin point: the sequence below is what it sees with or without the hold.
+#[test]
+fn a_draining_reserve_is_abandoned_long_before_the_progressive_hold_begins() {
+    let mut mode = original(28_000);
+    let low_water_ms = plx_play_feed::feed_pump::PROGRESSIVE_LOW_WATER_MS;
+    let mut abandoned = None;
+    for window in 1..=5u64 {
+        // 4 Mbit/s into a 28 Mbit/s file: the reserve falls about 640 ms per 750 ms window.
+        let buffered = 3_000 - (window as i64 - 1) * 640;
+        let observation = mode
+            .observe_saturated(
+                window_bytes(4_000) * window,
+                ORIGINAL_WINDOW_US * window,
+                Some(buffered),
+                HOUR_MS,
+            )
+            .unwrap();
+        if let Some(exit) = observation.fallback {
+            abandoned = Some((window, buffered, exit));
+            break;
+        }
+    }
+    let (window, buffered, exit) =
+        abandoned.expect("a reserve draining 640 ms per window was never abandoned");
+    assert!(
+        buffered > 2 * low_water_ms,
+        "abandoned at window {window} ({exit:?}) on {buffered} ms: the hold begins at {low_water_ms} ms, \
+         so it would have been entered first"
+    );
+}
+
 /// **The device finding, as an assertion** (`docs/measurements/orig-first-window-fallback.md`).
 /// A 42 365 kbps link carrying a 25 264 kbps file: the link comfortably covers it, the reserve is
 /// 85 ms only because the prime was just consumed, and it is GROWING. The old code returned

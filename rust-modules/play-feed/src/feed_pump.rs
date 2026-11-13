@@ -997,6 +997,10 @@ pub struct ProgressiveStall {
     pub first_picture_seen: bool,
     /// The demuxer finished: a hold could never be released by arriving media.
     pub producer_done: bool,
+    /// The Dolby Vision landing guard holds the landing keyframe for its reload
+    /// ([`crate::dv_start::Guard::landing_held`]): neither lane feeds, so the reserve it leaves is
+    /// the guard's doing and the Engine is about to be replaced.
+    pub landing_held: bool,
     /// [`crate::native_executor::progressive_reserve_ns`] in milliseconds; `None` if unknowable.
     pub reserve_ms: Option<i64>,
     /// [`native_clock_silence_ms`].
@@ -1055,6 +1059,7 @@ impl ProgressiveStall {
             || self.seek_in_flight
             || !self.first_picture_seen
             || self.producer_done
+            || self.landing_held
     }
 }
 
@@ -1250,6 +1255,7 @@ fn maybe_begin_progressive_rebuffer(mt: &MainThread, eng: &mut Engine, hooks: &N
             || FEED_SHARED.seeking.load(Relaxed),
         first_picture_seen: FEED_SHARED.seen_frame.load(Relaxed),
         producer_done: crate::aq::aq_producer_done(vq),
+        landing_held: eng.dv_start.landing_held(),
         reserve_ms,
         silence_ms,
         presented_since_play: tick_since_watch_restart(
@@ -1742,6 +1748,7 @@ mod progressive_begin_tests {
             seek_in_flight: false,
             first_picture_seen: true,
             producer_done: false,
+            landing_held: false,
             reserve_ms: Some(0),
             silence_ms: Some(0),
             presented_since_play: true,
@@ -1809,6 +1816,7 @@ mod progressive_begin_tests {
             ("a seek in flight", ProgressiveStall { seek_in_flight: true, ..starved() }),
             ("before the first picture", ProgressiveStall { first_picture_seen: false, ..starved() }),
             ("the demuxer is done: nothing more can arrive", ProgressiveStall { producer_done: true, ..starved() }),
+            ("the Dolby Vision guard holds the landing keyframe", ProgressiveStall { landing_held: true, ..starved() }),
         ] {
             assert!(!should_begin_progressive_rebuffer(&s), "{what}");
         }

@@ -446,9 +446,13 @@ something.
   It releases on the first of: the end of the stream (`reason=eof`; `pushEOS` follows once the video
   lane drains), a 3 s runway with both decoder lanes primed (`reason=target`), or a full video queue
   (`reason=full`: the demuxer is parked on its byte cap, so a time target could never be met). The
-  hold and resume lines in the event log carry `pos`, `vtail`, `atail`, `qv`, `qa` and `reserve`.
-  A viewer Resume inside a hold stays held (the hold's own certificate plays it); the Auto
-  watchdog's inputs (bytes, demuxed reserve, the viewer's pause) are untouched by it.
+  hold line in the event log carries `pos`, `vtail`, `atail`, `qv`, `qa`, `reserve` and `silent`;
+  the resume line `reason`, `held` and `reserve`. A viewer Resume inside a hold stays held (the
+  hold's own certificate plays it). The Auto watchdog (`OriginalQuantum`: bytes, active read time,
+  the demuxed reserve, remaining playback, the VIEWER's pause) reads the same inputs it always
+  did, and the hold raises neither the viewer's pause nor a seek; it begins only within one period
+  of an empty reserve, so a falling reserve has already crossed the watchdog's 2 s emergency floor
+  (`EmergencyLowBuffer`) by then.
   `progressive_rebuffer_pump_tests.rs` drives the whole chain through the real `pump()`.
 - **The k5lp/k3lp sandbox preflight refuses native playback when `/dev/rtkmem` is unreadable.**
   The device fact is cached at boot, while the refusal belongs to `PlaybackSession` and clears

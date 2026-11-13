@@ -547,8 +547,10 @@ on a Play whose reserve has reached the decoder prime depth, so a start that beg
 near-empty reserve is never mistaken for starvation. It releases on the first of the end of the
 stream, a 3 s runway with both decoder lanes primed, or a video queue at its byte cap (the demuxer
 is parked, so no more runway can arrive until the clock plays). A trailer preview, the looped
-sample, a viewer Pause and a seek are never held. The Auto watchdog's inputs (delivered bytes,
-demuxed reserve, the viewer's pause) are not altered by the hold.
+sample, a viewer Pause and a seek are never held. The Auto watchdog reads the same inputs as
+before (delivered bytes, active read time, the demuxed reserve, the viewer's pause); the hold is
+not a viewer Pause and not a seek, and it begins only within one position period of an empty
+reserve, by which point a falling reserve has already crossed the watchdog's emergency floor.
 
 ## 6. Original is a mode, not the top HLS rung
 

@@ -276,11 +276,27 @@ mod never_held {
         pauses()
     }
 
+    /// **The arming latch, through the pump.** 800 ms is just enough for the first Play (the decoder
+    /// prime wants 700 ms accepted) and the clock then plays it out: the reserve the Play shows is
+    /// never the prime depth, so the start is a start and not a starvation, and running dry at its
+    /// tail is left to the existing handling, as before the hold existed. Without the latch the
+    /// reserve boundary alone would hold this stream at its first sub-period reserve.
+    #[test]
+    fn a_play_whose_reserve_never_reached_the_prime_depth_is_not_held() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::with_media(4 * S / 5, 4 * S / 5);
+        ffi_host::reset_volume_probe_for_test();
+        assert_eq!(pauses_over(&mut rig, 40), 0, "a Play that never showed the prime reserve was held");
+        assert!(!FEED_SHARED.hls_rebuffering.load(Relaxed), "it reads as a rebuffer: {}", rig.facts());
+        assert!(
+            ffi_host::clock_state_for_test().0 >= 500_000_000,
+            "PRECONDITION FAILED, not the defect: the Play never started the clock on 800 ms: {}",
+            rig.facts()
+        );
+    }
+
     /// A start that never reached the prime depth stays in the existing startup handling: its first
-    /// Play is still owed, so there is no clock to stall and nothing for the hold to wait on. (The
-    /// arming latch itself, a Play whose reserve never rose to the prime depth, is graded in
-    /// `feed_pump`'s `StallWatch` tests: the pump never Plays below the prime depth, so this rig
-    /// cannot reach it.)
+    /// Play is still owed, so there is no clock to stall and nothing for the hold to wait on.
     #[test]
     fn a_start_that_never_reached_the_prime_depth_is_not_held() {
         let _serial = plx_base::testlock::serial();
@@ -343,13 +359,16 @@ mod never_held {
     }
 }
 
-/// **The hold is invisible to the Auto watchdog's inputs (t7).** The progressive Original watchdog
-/// (`adaptive::ProgressiveOriginalSession::observe`, fed by the demux worker) decides a fallback to
-/// HLS from the bytes delivered, the demuxed reserve, the remaining playback and the VIEWER's pause
-/// (`FEED_TX.pause_state_sample`, the pause lane). A hold sets none of them: it is not a viewer
-/// Pause, so the watchdog neither skips its quanta nor restarts its resume window, and a sustained
-/// deficit is still read as one. This pins the inputs the hold could have disturbed; the decision
-/// itself is graded where it lives (`route::decision`, `abr`).
+/// **The hold does not read as a viewer Pause or a seek to the Auto watchdog (t7, narrowed).** The
+/// progressive Original watchdog (`adaptive::ProgressiveOriginalSession::observe`, fed an
+/// `OriginalQuantum` by the demux worker) skips a quantum while `paused` (the VIEWER's pause,
+/// `FEED_TX.pause_state_sample`) and restarts its windows on a seek. A hold is neither, so the
+/// watchdog neither skips its quanta nor restarts its resume window. This pins those two inputs
+/// through the real pump; that the watchdog still abandons a draining reserve before the hold can
+/// begin is graded on the controller itself
+/// (`abr::tests::a_draining_reserve_is_abandoned_long_before_the_progressive_hold_begins`). The
+/// end-to-end `OriginalToHls` publication with a hold active is NOT driven here (the demux worker
+/// is not part of this rig).
 #[test]
 fn a_hold_does_not_read_as_a_viewer_pause_to_the_auto_watchdog() {
     let _serial = plx_base::testlock::serial();
