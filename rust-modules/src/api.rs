@@ -68,6 +68,16 @@
 //! `X-Plex-Token=...` parameter out of the state file's `url` (present while anything has
 //! played) and query the Plex Media Server yourself; the items' `ratingKey` field is the
 //! `rk` for `api:play:<rk>`.
+//!
+//! The surface is carried by two transports over that one command set. The FIFO speaks
+//! its free-form `api:*` tokens (above); `api_sock` speaks the TYPED Unix-socket
+//! protocol — each request carries a client-chosen id and answers with a structured
+//! OUTCOME: what actually happened, in the action's own vocabulary. The synchronous
+//! verbs answer their commit on the spot; the asynchronous ones (play, seek, profile,
+//! shot) park in the [`AWAITING`] table and are answered by the per-frame scan in
+//! [`publish`] when the outcome lands — or by the commit-time failure hooks
+//! ([`drop_plays`], [`play_dropped`], `shot::shot_failed`) when it is refused on the
+//! spot. A response is a real outcome, never an acknowledgement.
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -108,6 +118,310 @@ static PLAY_INTENT: Mutex<(u64, bool)> = Mutex::new((0, false)); // (generation,
 /// The last frame's snapshot, republished by `run::report`; the `state` FIFO token dumps
 /// it to `state.json`. `None` until the first frame (the app is booting).
 static SNAPSHOT: Mutex<Option<String>> = Mutex::new(None);
+/// Typed requests whose OUTCOME was not known on the request's frame: the play's first
+/// frame, the seek's landing, the profile switch's phase change, the shot's capture. The
+/// frame thread's handlers COMMIT these on the request's frame; the outcome is known only
+/// later — when the app shows it. So the request parks here with its id, and the answer
+/// goes over the socket when the outcome lands: [`resolve_awaiting`] runs on every frame
+/// (from [`publish`], the one place that reads state, position, auth and title
+/// together), and the commit-time failure hooks answer on the spot — a superseded play
+/// (a stop, a newer play), a refused staging worker, a refused routing question, a failed
+/// capture. A response is a real outcome, never an acknowledgement.
+static AWAITING: Mutex<VecDeque<InFlight>> = Mutex::new(VecDeque::new());
+/// What a parked request is waiting for.
+enum What {
+    /// `play:<rk>` — answers `play_started` (with the title) on the first frame that
+    /// reaches `playing`; `play_failed` on the engine's verdict, a supersession, a
+    /// staging failure, or the deadline.
+    Play { rk: String },
+    /// `seek:<ms>` — answers `seek_landed` when the position settles within 3 s of the
+    /// target; `seek_failed` when the session leaves playback or on the deadline.
+    Seek { ms: u64 },
+    /// `profile:<index>` — the switch is `profiles → switching → ready|error`, so the
+    /// entry waits OUT the `switching` leg: `ready` is the seated profile (with its
+    /// title), `error` is the flow's error line, a return to the roster after the switch
+    /// began is a dead pick, and any other phase is the flow leaving without it.
+    /// `seen_switching` tells the first still-on-the-roster frames (the command is
+    /// processed a frame or two after the pick) from a return to the roster.
+    Profile {
+        index: usize,
+        from: plx_session::auth::Phase,
+        seen_switching: bool,
+    },
+    /// `shot` — answers `shot_captured` when the numbered PNG is written (shot.rs) or
+    /// `shot_failed` when the capture fails or on the deadline.
+    Shot,
+}
+/// One parked typed request: the id its answer must echo, and the instant it parked.
+struct InFlight {
+    id: u64,
+    since: Instant,
+    what: What,
+}
+/// In-flight horizons: a play that never seats, a seek that never lands, a switch that
+/// never settles, a capture that never fires — each answers its `*failed` outcome at the
+/// deadline instead of leaving the client hanging.
+const AWAIT_PLAY_SECS: u64 = 120;
+const AWAIT_SEEK_SECS: u64 = 10;
+const AWAIT_PROFILE_SECS: u64 = 60;
+const AWAIT_SHOT_SECS: u64 = 10;
+/// The parked table is bounded like the command queue: a flooded client cannot park the
+/// frame thread with an unbounded table. The overflow answers the OLDEST entry with
+/// `queue_full` (its id still has to be echoed exactly once).
+const AWAITING_MAX: usize = 16;
+/// Park one typed request for its later outcome — no response now; the OUTCOME is the
+/// response.
+fn arm_awaiting(id: u64, what: What) {
+    let mut guard = AWAITING.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.len() >= AWAITING_MAX {
+        let Some(old) = guard.pop_front() else {
+            return;
+        };
+        crate::api_sock::reply(old.id, crate::api_sock::Reply::err(crate::api_sock::ApiError::QueueFull));
+        log(&format!("api: in-flight table full — answered id {} with queue_full", old.id));
+    }
+    guard.push_back(InFlight { id, since: Instant::now(), what });
+}
+/// Every parked play request answers now with the named reason: a stop or a newer play
+/// just bumped the play-intent generation, so their rituals can no longer run — the
+/// answer is due at the bump, not at the deadline.
+fn drop_plays(reason: &str) {
+    let mut guard = AWAITING.lock().unwrap_or_else(|e| e.into_inner());
+    let mut keep = VecDeque::new();
+    while let Some(f) = guard.pop_front() {
+        if let What::Play { rk } = f.what {
+            crate::api_sock::reply(
+                f.id,
+                crate::api_sock::Reply::ok(crate::api_sock::Outcome::PlayFailed {
+                    rk,
+                    reason: reason.to_string(),
+                }),
+            );
+        } else {
+            keep.push_back(f);
+        }
+    }
+    *guard = keep;
+}
+/// A play request's staging failed (the worker thread: no PMS selected, no such item, no
+/// playable part — or the frame thread: the routing question refused the item): the
+/// parked request for THIS rk answers now. A FIFO-originated play has no parked entry —
+/// a no-op.
+pub(crate) fn play_dropped(rk: &str, reason: String) {
+    let mut guard = AWAITING.lock().unwrap_or_else(|e| e.into_inner());
+    let pos = guard.iter().position(|f| {
+        matches!(&f.what, What::Play { rk: rk_p } if rk_p == rk)
+    });
+    if let Some(i) = pos {
+        let f = guard.remove(i).expect("checked above");
+        crate::api_sock::reply(
+            f.id,
+            crate::api_sock::Reply::ok(crate::api_sock::Outcome::PlayFailed {
+                rk: rk.to_string(),
+                reason,
+            }),
+        );
+    }
+}
+/// A shot capture landed (shot.rs, frame thread): the parked shot read answers with the
+/// numbered file. A capture fired by the FIFO (no parked entry) is a no-op.
+pub(crate) fn shot_landed(path: String) {
+    resolve_shot(
+        crate::api_sock::Reply::ok(crate::api_sock::Outcome::ShotCaptured { path }),
+    );
+}
+/// A shot capture failed (shot.rs, frame thread): the parked shot read answers with the
+/// reason.
+pub(crate) fn shot_failed(reason: String) {
+    resolve_shot(
+        crate::api_sock::Reply::ok(crate::api_sock::Outcome::ShotFailed { reason }),
+    );
+}
+/// The shot's answer goes to the OLDEST parked shot read and only to it: a capture is
+/// one-shot, and a second parked read that got no capture of its own answers at its
+/// deadline.
+fn resolve_shot(r: crate::api_sock::Reply) {
+    let mut guard = AWAITING.lock().unwrap_or_else(|e| e.into_inner());
+    let pos = guard.iter().position(|f| matches!(f.what, What::Shot));
+    if let Some(i) = pos {
+        let f = guard.remove(i).expect("checked above");
+        crate::api_sock::reply(f.id, r);
+    }
+}
+/// The per-frame half of the request→outcome correlation: [`publish`] calls this once
+/// per frame — the one place that reads the state, the position, the auth flow and the
+/// title together, which is exactly the data every parked request's answer needs. An
+/// entry resolves when the frame it waited for has arrived; the response goes over the
+/// socket under the entry's id.
+unsafe fn resolve_awaiting(app: &crate::app::App, st: plx_media::player::PlaybackState) {
+    let mut guard = AWAITING.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.is_empty() {
+        return;
+    }
+    let views = app.bridge.views();
+    let ps = &app.player.session;
+    let auth = views.auth.0;
+    let state_name = state_str(st);
+    let pos_ms = plx_media::player::playpos_ns(ps).unwrap_or(0) / 1_000_000;
+    let now = Instant::now();
+    let mut keep = VecDeque::new();
+    while let Some(mut f) = guard.pop_front() {
+        let r = match &mut f.what {
+            What::Play { rk } => {
+                if st == plx_media::player::PlaybackState::Playing {
+                    let title = views
+                        .metadata
+                        .now_playing()
+                        .map(|n| n.title.clone())
+                        .unwrap_or_default();
+                    Some(crate::api_sock::Reply::ok(
+                        crate::api_sock::Outcome::PlayStarted { rk: rk.clone(), title },
+                    ))
+                } else if st == plx_media::player::PlaybackState::Error {
+                    let verdict = plx_media::route::play_verdict(ps).map(|s| s.to_string());
+                    Some(crate::api_sock::Reply::ok(
+                        crate::api_sock::Outcome::PlayFailed {
+                            rk: rk.clone(),
+                            reason: format!(
+                                "the engine errored (state {state_name}, verdict {})",
+                                verdict.unwrap_or_else(|| "none".to_string())
+                            ),
+                        },
+                    ))
+                } else if now.duration_since(f.since) > std::time::Duration::from_secs(AWAIT_PLAY_SECS) {
+                    Some(crate::api_sock::Reply::ok(
+                        crate::api_sock::Outcome::PlayFailed {
+                            rk: rk.clone(),
+                            reason: format!("no first frame within {AWAIT_PLAY_SECS} s (state {state_name})"),
+                        },
+                    ))
+                } else {
+                    None
+                }
+            }
+            What::Seek { ms } => {
+                if !is_seated(st) {
+                    Some(crate::api_sock::Reply::ok(
+                        crate::api_sock::Outcome::SeekFailed {
+                            ms: *ms,
+                            reason: format!("the session left playback (state {state_name})"),
+                        },
+                    ))
+                } else if pos_ms.abs_diff(*ms as i64) <= 3_000 {
+                    Some(crate::api_sock::Reply::ok(crate::api_sock::Outcome::SeekLanded {
+                        ms: *ms,
+                        pos_ms,
+                    }))
+                } else if now
+                    .duration_since(f.since)
+                    > std::time::Duration::from_secs(AWAIT_SEEK_SECS)
+                {
+                    Some(crate::api_sock::Reply::ok(
+                        crate::api_sock::Outcome::SeekFailed {
+                            ms: *ms,
+                            reason: format!(
+                                "no landing within {AWAIT_SEEK_SECS} s (state {state_name}, pos {pos_ms} ms)"
+                            ),
+                        },
+                    ))
+                } else {
+                    None
+                }
+            }
+            What::Profile {
+                index,
+                from,
+                seen_switching,
+            } => {
+                // The switch is `profiles → switching → ready|error`: the `switching`
+                // leg is in progress, not a failure.
+                *seen_switching =
+                    *seen_switching || auth.phase == plx_session::auth::Phase::Switching;
+                if auth.phase == plx_session::auth::Phase::Ready {
+                    // Seated: the title from the seated profile itself (the roster may
+                    // already be cleared), falling back to the picked tile.
+                    let title = auth
+                        .profile
+                        .as_ref()
+                        .map(|p| p.title.clone())
+                        .or_else(|| auth.users.get(*index).map(|u| u.title.clone()))
+                        .unwrap_or_default();
+                    Some(crate::api_sock::Reply::ok(
+                        crate::api_sock::Outcome::ProfileSeated { index: *index, title },
+                    ))
+                } else if auth.phase == plx_session::auth::Phase::Error {
+                    Some(crate::api_sock::Reply::ok(
+                        crate::api_sock::Outcome::ProfileFailed {
+                            index: *index,
+                            reason: if auth.error.is_empty() {
+                                "the flow reported an error".to_string()
+                            } else {
+                                auth.error.to_string()
+                            },
+                        },
+                    ))
+                } else if *seen_switching && auth.phase == plx_session::auth::Phase::Profiles {
+                    // The switch began, then went back to the roster without seating (a
+                    // denied PIN, a cancel): this pick is dead.
+                    Some(crate::api_sock::Reply::ok(
+                        crate::api_sock::Outcome::ProfileFailed {
+                            index: *index,
+                            reason: "the flow returned to the roster without seating".to_string(),
+                        },
+                    ))
+                } else if !matches!(
+                    auth.phase,
+                    plx_session::auth::Phase::Profiles | plx_session::auth::Phase::Switching
+                ) {
+                    // Any other phase (idle, a re-sign-in in flight, erased local state)
+                    // is the flow leaving the switch without this pick.
+                    Some(crate::api_sock::Reply::ok(
+                        crate::api_sock::Outcome::ProfileFailed {
+                            index: *index,
+                            reason: format!("the flow left the switch (phase {:?})", auth.phase)
+                                .to_lowercase(),
+                        },
+                    ))
+                } else if now
+                    .duration_since(f.since)
+                    > std::time::Duration::from_secs(AWAIT_PROFILE_SECS)
+                {
+                    // Still on the roster or still switching after the horizon: the
+                    // switch will not land.
+                    Some(crate::api_sock::Reply::ok(
+                        crate::api_sock::Outcome::ProfileFailed {
+                            index: *index,
+                            reason: format!(
+                                "the switch did not land within {AWAIT_PROFILE_SECS} s (from {from:?}, now {:?})",
+                                auth.phase
+                            )
+                            .to_lowercase(),
+                        },
+                    ))
+                } else {
+                    None
+                }
+            }
+            What::Shot => {
+                if now.duration_since(f.since) > std::time::Duration::from_secs(AWAIT_SHOT_SECS) {
+                    Some(crate::api_sock::Reply::ok(
+                        crate::api_sock::Outcome::ShotFailed {
+                            reason: format!("no capture within {AWAIT_SHOT_SECS} s"),
+                        },
+                    ))
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(r) = r {
+            crate::api_sock::reply(f.id, r);
+        } else {
+            keep.push_back(f);
+        }
+    }
+    *guard = keep;
+}
 /// The debug-flavour roster default: the "who's watching" screen is answered with the FIRST
 /// user (this household's admin) exactly once per app launch. `true` after the pick has been
 /// posted — or stays `false` for the whole launch when the flow never reached a roster.
@@ -212,16 +526,20 @@ fn stage_play(rk: String, gen: u64) -> bool {
             log(&format!(
                 "api: play rk {rk}: no PMS server selected yet (sign-in pending) — retry the token"
             ));
+            // A typed play request parked for this rk answers now, with this refusal.
+            crate::api::play_dropped(&rk, "no PMS server selected yet (sign-in pending)".to_string());
             return;
         };
         let Some(meta) = client.metadata(&rk) else {
             log(&format!("api: play rk {rk}: PMS has no such item — check the rk"));
+            crate::api::play_dropped(&rk, format!("PMS has no such item — check the rk ({rk})"));
             return;
         };
         let sid = plx_media::route::surface_sid();
         let pmm = plx_data::pms::parse_item(&meta, sid);
         if pmm.part.is_empty() {
             log(&format!("api: play rk {rk}: item has no playable part"));
+            crate::api::play_dropped(&rk, format!("item {rk} has no playable part"));
             return;
         }
         {
@@ -299,15 +617,16 @@ pub(crate) unsafe fn execute_request(
     let no_engine = Reply::err(ApiError::NoEngine { state: state_str(st) });
     match req.verb {
         Verb::Play { rk } => {
+            // Commit, then park: the response is the OUTCOME — the first playing frame,
+            // or the refusal that lands in between (a refusal the frame can already see
+            // answers now, the ones only time reveals ride the per-frame scan) — never
+            // this acceptance.
             let accepted = handle_play(app, fr, &rk);
-            crate::api_sock::reply(
-                id,
-                if accepted {
-                    Reply::ok(Outcome::PlayStaged { rk })
-                } else {
-                    Reply::err(ApiError::WorkerRefused)
-                },
-            );
+            if accepted {
+                arm_awaiting(id, What::Play { rk: rk.clone() });
+            } else {
+                crate::api_sock::reply(id, Reply::err(ApiError::WorkerRefused));
+            }
         }
         Verb::Seek { ms } => {
             // The seek target is a `i64` of NANOSECONDS: a ms beyond ~292 years is not a
@@ -321,7 +640,9 @@ pub(crate) unsafe fn execute_request(
                         &mut app.adapters.player,
                         ns,
                     );
-                    crate::api_sock::reply(id, Reply::ok(Outcome::SeekCommitted { ms }));
+                    // Parked: the response is the LANDING (the position within 3 s of
+                    // the target), not this commit.
+                    arm_awaiting(id, What::Seek { ms });
                 } else {
                     crate::api_sock::reply(id, Reply::err(ApiError::Internal {
                         reason: "the seek target overflows nanoseconds".to_string(),
@@ -365,8 +686,36 @@ pub(crate) unsafe fn execute_request(
             );
         }
         Verb::Profile { index } => {
-            commit_profile(app, index, None);
-            crate::api_sock::reply(id, Reply::ok(Outcome::ProfileCommitted { index }));
+            // Structured pre-checks the FIFO's token cannot express: the session machine
+            // silently drops a pick made outside the roster phase — say so — and the
+            // roster must have that index.
+            let (auth_phase, user_count) = {
+                let views = app.bridge.views();
+                (views.auth.0.phase, views.auth.0.users.len())
+            };
+            if auth_phase != plx_session::auth::Phase::Profiles {
+                crate::api_sock::reply(
+                    id,
+                    Reply::err(ApiError::NotOnRoster {
+                        phase: format!("{auth_phase:?}").to_lowercase(),
+                    }),
+                );
+            } else if index >= user_count {
+                crate::api_sock::reply(
+                    id,
+                    Reply::err(ApiError::NoProfile { index, count: user_count }),
+                );
+            } else {
+                commit_profile(app, index, None);
+                // Parked: the response is the SEATING — the flow reaching `ready` after
+                // this pick (with the profile's title) — or the flow's error line, or
+                // the flow moving on without the pick.
+                arm_awaiting(id, What::Profile {
+                    index,
+                    from: auth_phase,
+                    seen_switching: false,
+                });
+            }
         }
         Verb::Pause => {
             let ok = handle_transport(app, fr, false);
@@ -399,8 +748,10 @@ pub(crate) unsafe fn execute_request(
             crate::api_sock::reply(id, r);
         }
         Verb::Shot => {
+            // Parked: the response is the CAPTURE (the numbered PNG, written on the
+            // frame swap after this one) or the capture's refusal — not this request.
             crate::shot::request();
-            crate::api_sock::reply(id, Reply::ok(Outcome::ShotRequested));
+            arm_awaiting(id, What::Shot);
         }
     }
 }
@@ -443,6 +794,9 @@ unsafe fn handle_play(
     _fr: &mut crate::app::run::Frame,
     rk: &str,
 ) -> bool {
+    // A newer play supersedes every play still waiting for its first frame: answer each
+    // parked typed one now (an id must never go unanswered), then commit this one.
+    drop_plays("superseded by a newer play");
     let gen = {
         let mut intent = PLAY_INTENT.lock().unwrap_or_else(|e| e.into_inner());
         intent.0 = intent.0.saturating_add(1);
@@ -476,6 +830,8 @@ unsafe fn handle_play_staged(
     };
     let (cur, is_stop) = *PLAY_INTENT.lock().unwrap_or_else(|e| e.into_inner());
     if cur != gen {
+        // A typed play request parked for this rk was already answered at the bump —
+        // `drop_plays` in `handle_play`/`handle_stop` — so only the log is due here.
         log(&format!(
             "api: play rk {rk}: stale — {} intervened; the ritual is dropped",
             if is_stop { "a stop" } else { "a newer play" }
@@ -507,6 +863,19 @@ unsafe fn handle_play_staged(
             &mut app.pages,
             &mut app.bridge,
         );
+    } else {
+        // The routing question refused the item: a typed play request parked for this
+        // rk is still waiting for its first frame — answer it now with the refusal.
+        crate::api::play_dropped(
+            rk,
+            format!(
+                "the routing question refused the item (state {})",
+                state_str(plx_media::player::state(&app.player.session))
+            ),
+        );
+        log(&format!(
+            "api:playstaged:{rk}: the routing question refused the item — no replay"
+        ));
     }
     requested
 }
@@ -563,6 +932,9 @@ unsafe fn handle_stop(app: &mut crate::app::App, _fr: &mut crate::app::run::Fram
         intent.0 = intent.0.saturating_add(1);
         intent.1 = true;
     }
+    // A stop supersedes every play still waiting for its first frame — answer the parked
+    // typed ones now, before the exit ritual tears the session down.
+    drop_plays("superseded by a stop");
     PENDING_PLAYS.lock().unwrap_or_else(|e| e.into_inner()).take();
     let st = plx_media::player::state(&app.player.session);
     if matches!(st, plx_media::player::PlaybackState::Idle) {
@@ -694,6 +1066,7 @@ unsafe fn commit_profile(app: &mut crate::app::App, index: usize, pin: Option<St
 pub(crate) unsafe fn publish(app: &mut crate::app::App, fr: &mut crate::app::run::Frame) {
     let ps = &app.player.session;
     let st = plx_media::player::state(ps);
+    resolve_awaiting(app, st);
     let state_name = state_str(st);
     let views = app.bridge.views();
     // This frame's auth section: the sign-in flow's phase, the offered "who's watching"

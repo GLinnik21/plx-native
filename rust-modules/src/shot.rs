@@ -292,6 +292,9 @@ pub(crate) fn maybe_capture(now: u32, busy: bool, last_change_ms: u32, vx: c_int
     let ends_run = ends_run(cfg.exit, on_demand);
     if vw <= 0 || vh <= 0 {
         plx_base::eventlog::log("shot: viewport is empty — nothing to capture");
+        // A typed shot read parked on this request answers with the refusal (no-op for a
+        // capture nobody asked for over the socket).
+        crate::api::shot_failed("the viewport is empty — nothing to capture".to_string());
         return ends_run;
     }
 
@@ -315,8 +318,15 @@ pub(crate) fn maybe_capture(now: u32, busy: bool, last_change_ms: u32, vx: c_int
         // captures (simulator) have no such pairing and keep `save_buffer`.
         let png = encode_png(&rgb, w as u32, h as u32, color);
         match std::fs::write(&out, &png) {
-            Ok(()) => plx_base::eventlog::log(&format!("shot: wrote {}x{} to {}", w, h, out.display())),
-            Err(e) => plx_base::eventlog::log(&format!("shot: could not write {}: {e}", out.display())),
+            Ok(()) => {
+                plx_base::eventlog::log(&format!("shot: wrote {}x{} to {}", w, h, out.display()));
+                // The typed shot read parked on this request answers with the numbered file.
+                crate::api::shot_landed(out.display().to_string());
+            }
+            Err(e) => {
+                plx_base::eventlog::log(&format!("shot: could not write {}: {e}", out.display()));
+                crate::api::shot_failed(format!("could not write {}: {e}", out.display()));
+            }
         }
     } else {
         match image::save_buffer(&out, &rgb, w as u32, h as u32, color) {
