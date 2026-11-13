@@ -1394,6 +1394,136 @@ mod prime_livelock_tests {
         );
     }
 
+    /// Disarms the host clock sink and returns the clock to the state a fresh session leaves.
+    struct StallRig;
+    impl StallRig {
+        fn arm() -> Self {
+            plx_play_feed::ffi_host::force_clocksink_for_test(true);
+            FEED_SHARED.reset_hls_clock_for_test();
+            FEED_SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+            FEED_SHARED.seek_to_ns.store(-1, Ordering::Relaxed);
+            StallRig
+        }
+    }
+    impl Drop for StallRig {
+        fn drop(&mut self) {
+            FEED_SHARED.reset_hls_clock_for_test();
+            plx_play_feed::ffi_host::force_clocksink_for_test(false);
+        }
+    }
+
+    /// A progressive stream mid-playback whose clock was Running and is now held by the PROGRESSIVE
+    /// stall hold, exactly as `maybe_begin_rebuffer` leaves it: Paused, `prime_play` armed at the
+    /// presented point, Buffering mirror up.
+    fn engine_in_a_stall_hold(mt: &plx_base::task::MainThread) -> Engine {
+        let mut eng = engine_after_reload();
+        push_one_segment(&mut eng);
+        tick(mt, &mut eng);
+        assert!(!eng.prime_play, "PRECONDITION: the initial prime started the clock");
+        let token = FEED_SHARED
+            .prepare_progressive_rebuffer_pause(plx_play_feed::shared::vclock_ms())
+            .expect("a running clock takes the hold");
+        assert_eq!(
+            FEED_SHARED.complete_hls_rebuffer_pause(token, true),
+            plx_playback_contract::feed::HlsPauseCompletion::Accepted,
+        );
+        eng.prime_play = true;
+        eng.seek_base_pts = eng.max_fed_video_pts; // `arm_live_clock_prime` at the presented point
+        eng.audio_start_fp = Some(0);
+        assert!(FEED_SHARED.hls_rebuffering.load(Ordering::Acquire), "Buffering is up for the hold");
+        assert!(FEED_SHARED.progressive_stall_since_ms().is_some());
+        eng
+    }
+
+    /// A progressive hold has no HLS segments to credit, so it must be released by the runway of
+    /// media that arrived during it. Under the HLS certificate (`recovery.ready`, which needs a
+    /// credited segment) it would hold forever.
+    #[test]
+    fn progressive_rebuffer_a_stall_hold_resumes_on_the_runway_and_not_before() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = StallRig::arm();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        let mut eng = engine_in_a_stall_hold(&mt);
+
+        push_segment_at(&mut eng, 2 * 1_000_000_000);
+        tick(&mt, &mut eng);
+        assert!(eng.prime_play, "about 2 s buffered: under the 3 s runway the hold stays");
+        assert!(FEED_SHARED.hls_rebuffering.load(Ordering::Acquire), "still Buffering");
+
+        push_segment_at(&mut eng, 4 * 1_000_000_000);
+        tick(&mt, &mut eng);
+        assert!(!eng.prime_play, "about 4 s buffered: the hold releases");
+        assert!(
+            !FEED_SHARED.hls_rebuffering.load(Ordering::Acquire),
+            "Buffering ends with the Play"
+        );
+        assert!(FEED_SHARED.progressive_stall_since_ms().is_none());
+    }
+
+    #[test]
+    fn progressive_rebuffer_the_end_of_the_stream_releases_a_hold_without_the_decoder_prime() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = StallRig::arm();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        let mut eng = engine_in_a_stall_hold(&mt);
+
+        // The last 0.4 s of the film: under the 700 ms the decoder prime wants, and never more.
+        let au = [0u8; 64];
+        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
+        let base = eng.max_fed_video_pts + V_STEP_NS;
+        for i in 0..10 {
+            plx_play_feed::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, base + i * V_STEP_NS, c_int::from(i == 0), 1);
+        }
+        plx_play_feed::aq::aq_set_eof(qv);
+        tick(&mt, &mut eng);
+        assert!(!eng.prime_play, "the stream ended: playing out the rest is the only thing left");
+        assert!(!FEED_SHARED.hls_rebuffering.load(Ordering::Acquire));
+    }
+
+    /// The HLS hold's certificate is untouched: a Rebuffer hold with no credited segment still
+    /// does not resume on queued media alone.
+    #[test]
+    fn progressive_rebuffer_leaves_the_hls_hold_waiting_for_its_own_certificate() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = StallRig::arm();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        let mut eng = engine_after_reload();
+        push_one_segment(&mut eng);
+        tick(&mt, &mut eng);
+        assert!(!eng.prime_play);
+        let token = FEED_SHARED.prepare_hls_rebuffer_pause().expect("running");
+        FEED_SHARED.complete_hls_rebuffer_pause(token, true);
+        eng.prime_play = true;
+        eng.seek_base_pts = eng.max_fed_video_pts;
+        assert!(FEED_SHARED.progressive_stall_since_ms().is_none(), "an HLS hold is not a stall hold");
+        push_segment_at(&mut eng, 2 * 1_000_000_000);
+        push_segment_at(&mut eng, 4 * 1_000_000_000);
+        tick(&mt, &mut eng);
+        assert!(eng.prime_play, "no credited HLS segment: the recovery certificate is not met");
+    }
+
+    /// A progressive A/V file whose audio is absent past a seek still starts on video alone: the
+    /// stall hold's own audio rule never reaches `try_prime`'s Fresh decision.
+    #[test]
+    fn progressive_rebuffer_a_start_with_no_audio_still_takes_the_video_only_escape() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = StallRig::arm();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        let mut eng = engine_after_reload();
+        let au = [0u8; 64];
+        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
+        // 3.2 s of video, no audio at all: past PRIME_VIDEO_MAX_NS.
+        for i in 0..77 {
+            plx_play_feed::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, i * V_STEP_NS, c_int::from(i == 0), 1);
+        }
+        tick(&mt, &mut eng);
+        assert!(!eng.prime_play, "video alone past the escape starts the clock, as on main");
+        assert!(
+            !FEED_SHARED.hls_audio_expected.load(Ordering::Acquire),
+            "the hold's audio rule must not publish the flag try_prime reads"
+        );
+    }
+
     /// Arm the host clock sink and a per-read feed-clock cost; restored on drop (both are
     /// process-globals).
     struct SlowFeed;
