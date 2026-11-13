@@ -107,10 +107,11 @@ pub const EXPORTED_STRATA: &[u32] = &[
     5,
     // webOS 25 (firmware 10.3.1, 33.31.68), LG C2: `docs/uri-mode.md` Results row "webOS 9.2.4 / 10.3.1
     // (33.31.68)", #1064. (a) the 10.3 image reads `option.windowId` at load; (b) two product runs on
-    // debug builds with the override armed: the first reported picture size and aspect right, the
-    // spinner clearing and the remaining time counting down (no lines pasted); the second, a Dolby
-    // Vision MKV with one audio track and no subtitles, logged `evidence=override` and `uri: exported
-    // window placed src=3840x2160 rv=1` and reported sound, pause, resume and seek; (c) a drive probe
+    // debug builds: the first reported picture size and aspect right, the spinner clearing and the
+    // remaining time counting down (no lines pasted, so no boot line shows the override armed); the
+    // second, a Dolby Vision MKV with one audio track and no subtitles, "also successful", logged
+    // `evidence=override` and `uri: exported window placed src=3840x2160 rv=1` and reported sound,
+    // pause, resume and seek (rule (b)'s boot line is shown by this run only); (c) a drive probe
     // on an older build printed seek=hit and audio=ok but pause=unconfirmed (paused_event=yes, no
     // position while paused), so amendment (1) is used: the replay test
     // `uri_drive_webos_25_c2_run_replays_to_pause_froze_from_the_paused_event_and_resume` grades its
