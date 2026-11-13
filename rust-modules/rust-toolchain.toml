@@ -17,7 +17,7 @@
 # `targets` is the ARMv7 std the cross-build links (`armv7-unknown-linux-gnueabi`): a prebuilt
 # rust-std component, so the build needs neither nightly, `rust-src` nor `-Z build-std`.
 [toolchain]
-channel = "1.99.1"
+channel = "1.100.0"
 profile = "minimal"
 components = ["clippy", "rustfmt"]
 targets = ["armv7-unknown-linux-gnueabi"]
