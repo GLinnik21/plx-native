@@ -211,11 +211,21 @@ after the app returned to the foreground) / `preview` (the trailer that plays qu
 detail page, which the viewer did not press Play for); and `attempt_ordinal`, which open of this
 playback it was, `1` to `9` and then `9+`, counting the first open, every retry and every handoff.
 The count starts again at `1` with each new Play and is kept only in memory. Both appear as a tag
-and in the playback context. A trailer preview that fails is reported with the same fields and no
-more: it is marked `preview`, it counts as the first open, it names direct play as the attempted
-delivery (the only route a preview ever opens), and its `started` and `attempt_started` fields
-say whether the trailer actually showed a picture before it failed. Sentry files it in an issue of
-its own, apart from playback failures.
+and in the playback context. A trailer preview that fails is reported with the same fields and one
+more, below: it is marked `preview`, it counts as the first open, it names direct play as the
+attempted delivery (the only route a preview ever opens), and its `started` and `attempt_started`
+fields say whether the trailer actually showed a picture before it failed. Sentry files it in an
+issue of its own, apart from playback failures.
+
+A trailer preview that the app refuses to open, because a preview only ever plays an unmodified
+direct play (the failure kind `preview_not_direct`), also names which condition refused it, as one
+closed tag, `preview_refusal`: `no_part` (the item has no media file to play), `not_direct` (a direct
+play was not available, so the route would have been a transcode or a remux, whatever the reason:
+the server's answer, the connection's or the quality setting's rules, or a track the television
+cannot play as it is) or `adaptive` (a direct play was available, but Auto quality chose a
+bandwidth-adapted stream instead). The first condition that fails in that order is the one named.
+No other failure carries it, and it appears as a tag only, not in the playback context. It is one
+of those three words and nothing the server said.
 
 The report also names `backend` — `unknown` / `feed` / `uri` — and `terminal_stage` —
 `unknown` / `planning` / `open` / `decode` / `presentation` / `release`. These describe only the

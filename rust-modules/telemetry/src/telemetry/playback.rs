@@ -208,6 +208,12 @@ pub fn event_body(
         }},
         "breadcrumbs": {"values": breadcrumbs},
     });
+    // Which condition refused a trailer preview: one closed tag, and only on the kind it explains
+    // (the failtest and jail shapes outrank the preview verdict in the kind, and must not carry a
+    // reason that is no longer the cause). The fingerprint above is untouched: one issue.
+    if let (FailureClass::PreviewNotDirect, Some(reason)) = (kind, context.preview_refusal) {
+        body["tags"]["playback.preview_refusal"] = Value::String(reason.code().to_string());
+    }
     if let Some(r) = context.refusal {
         // Tags so an issue can be searched and grouped on them, a context so one event reads in
         // one place. Every value is the `code()` of a closed enum; the server's own sentence has
@@ -507,6 +513,8 @@ pub fn preview_event() -> Vec<u8> {
                 source_video: VideoCodecClass::Vp9,
                 source_audio: AudioCodecClass::Eac3,
             }),
+            // Only a `preview_not_direct` report carries one, and this sample is not that kind.
+            preview_refusal: None,
         },
         &trace,
     )
@@ -761,6 +769,7 @@ mod tests {
             http_status: 0,
             pipeline_error: 0,
             refusal: None,
+            preview_refusal: None,
         }
     }
 
@@ -1189,6 +1198,50 @@ mod tests {
         assert_eq!(v["tags"]["playback.source_video"], "hevc");
         // Grouping is unchanged: the fingerprint is the failure kind, as before.
         assert_eq!(v["fingerprint"], serde_json::json!(["playback-error", "decision_refused"]));
+    }
+
+    /// **Sentry PLX-NATIVE-23.** A refused trailer preview says WHICH condition refused it, as one
+    /// closed tag, and only on the `preview_not_direct` kind (a failtest or jail shape can outrank
+    /// the verdict in the kind, and must not carry a stale reason). The issue stays one group.
+    #[test]
+    fn a_preview_refusal_is_tagged_only_on_the_preview_not_direct_kind() {
+        use crate::telemetry::classes::PreviewRefusal;
+        let body = |kind: FailureClass, reason: Option<PreviewRefusal>| -> Value {
+            let mut ctx = context();
+            ctx.attempt_origin = AttemptOrigin::Preview;
+            ctx.preview_refusal = reason;
+            serde_json::from_slice(&event_body(&"a".repeat(32), "", None, kind, ctx, &[])).expect("handled event JSON")
+        };
+        for reason in PreviewRefusal::ALL {
+            let v = body(FailureClass::PreviewNotDirect, Some(reason));
+            assert_eq!(v["tags"]["playback.preview_refusal"], reason.code(), "{reason:?}");
+            assert_eq!(
+                v["fingerprint"],
+                serde_json::json!(["playback-error", "preview", "preview_not_direct"]),
+                "the reason refines the issue, it never splits its group"
+            );
+            assert!(v["contexts"]["playback"].get("preview_refusal").is_none());
+            assert!(
+                body(FailureClass::TvPipeline, Some(reason))["tags"].get("playback.preview_refusal").is_none(),
+                "another kind carries no refusal reason: {reason:?}"
+            );
+        }
+        assert!(
+            body(FailureClass::PreviewNotDirect, None)["tags"].get("playback.preview_refusal").is_none(),
+            "no verdict, no tag"
+        );
+    }
+
+    #[test]
+    fn privacy_names_the_preview_refusal_tag_and_every_value() {
+        use crate::telemetry::classes::PreviewRefusal;
+        let privacy = include_str!("../../../../PRIVACY.md");
+        assert!(privacy.contains("`preview_refusal`"), "PRIVACY.md omitted the tag");
+        let codes: Vec<_> = PreviewRefusal::ALL.iter().map(|r| r.code()).collect();
+        assert_eq!(codes, ["not_direct", "no_part", "adaptive"]);
+        for code in codes {
+            assert!(privacy.contains(&format!("`{code}`")), "PRIVACY.md omitted {code}");
+        }
     }
 
     #[test]
