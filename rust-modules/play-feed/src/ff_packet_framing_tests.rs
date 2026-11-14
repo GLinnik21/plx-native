@@ -258,7 +258,7 @@ fn irap_class_h264_av1_vp9_keyframes_are_clean() {
     let mut out = Vec::new();
     let flagged = unsafe {
         let buf = avcc(&[&[0x21, 0x88, 0xAA, 0xBB]]);
-        packet_to_annexb(buf.as_ptr(), buf.len(), 4, false, false, None, true, &[], &mut out)
+        packet_to_annexb(buf.as_ptr(), buf.len(), 4, false, false, &mut DvActiveArea::default(), true, &[], &mut out)
     };
     assert_eq!((flagged, flagged.au_key()), (Keyframe::Clean, crate::aq::AU_KEY));
     // AV1 and VP9 answer a bool, which the demux loop wraps: a keyframe is always `Clean`.
@@ -531,8 +531,9 @@ fn an_unconvertible_rpu_is_dropped_on_an_armed_feed() {
     assert_eq!(out, vec![0, 0, 0, 1, 0x02, 0x01, 0xAA]);
 }
 
-/// Unarmed (every stream that is not a converted Profile 7) nothing changes: enhancement-layer
-/// NALs and RPUs pass through exactly as they always did.
+/// Unarmed (every stream that is not a converted Profile 7) the conversion changes nothing:
+/// enhancement-layer NALs and RPUs pass through it exactly as they always did. (The active-area
+/// check, which can rewrite an RPU, has no raster here, so it judges nothing.)
 #[test]
 fn an_unarmed_feed_is_untouched_by_the_conversion() {
     let el_wrapped = [0x7Eu8, 0x01, 0xBB];
@@ -588,6 +589,11 @@ fn all_but_the_offsets(nal: &[u8]) -> String {
     format!("P{} {:?} {:?} {:?}", rpu.dovi_profile, rpu.header, rpu.rpu_data_mapping, rpu.vdr_dm_data)
 }
 
+/// One RPU judged on a fresh stream whose demuxer reports `w` x `h`.
+fn clear(nal: &[u8], w: i32, h: i32) -> Option<Vec<u8>> {
+    clear_foreign_active_area(nal, &mut DvActiveArea::new(w, h))
+}
+
 /// A packet holding a base-layer slice and `rpu`, as a demuxer hands it over.
 fn packet_with_rpu(rpu: &[u8]) -> Vec<u8> {
     avcc(&[&[0x02u8, 0x01, 0xAA], rpu])
@@ -605,7 +611,7 @@ fn fed_rpu(out: &[u8]) -> Vec<u8> {
 #[test]
 fn the_reporters_leftover_master_offsets_are_cleared_and_nothing_else_changes() {
     let nal = rpu_with_l5(P81, Some((0, 0, 276, 277)));
-    let out = clear_foreign_active_area(&nal, 1920, 802).expect("offsets that leave 249 rows are cleared");
+    let out = clear(&nal, 1920, 802).expect("offsets that leave 249 rows are cleared");
     assert_eq!(&out[..2], &nal[..2], "still the same UNSPEC62 NAL header");
     let after = parse_rpu(&out);
     assert_eq!(dv_rpu_active_area(&out), Some((0, 0, 0, 0)));
@@ -619,16 +625,16 @@ fn the_reporters_leftover_master_offsets_are_cleared_and_nothing_else_changes() 
 #[test]
 fn a_genuine_letterbox_is_fed_byte_for_byte() {
     let nal = rpu_with_l5(P81, Some((0, 0, 138, 139)));
-    assert_eq!(clear_foreign_active_area(&nal, 1920, 1080), None);
-    let out = to_annexb_dv(&packet_with_rpu(&nal), false, Some((1920, 1080)));
+    assert_eq!(clear(&nal, 1920, 1080), None);
+    let out = to_annexb_dv(&packet_with_rpu(&nal), false, &mut DvActiveArea::new(1920, 1080));
     assert_eq!(fed_rpu(&out), nal);
 }
 
 #[test]
 fn an_rpu_with_no_l5_block_is_fed_unchanged() {
     let nal = rpu_with_l5(P81, None);
-    assert_eq!(clear_foreign_active_area(&nal, 1920, 802), None);
-    let out = to_annexb_dv(&packet_with_rpu(&nal), false, Some((1920, 802)));
+    assert_eq!(clear(&nal, 1920, 802), None);
+    let out = to_annexb_dv(&packet_with_rpu(&nal), false, &mut DvActiveArea::new(1920, 802));
     assert_eq!(fed_rpu(&out), nal);
 }
 
@@ -637,7 +643,7 @@ fn an_rpu_with_no_l5_block_is_fed_unchanged() {
 #[test]
 fn leftover_pillarbox_offsets_are_cleared() {
     let nal = rpu_with_l5(P81, Some((480, 480, 0, 0)));
-    let out = clear_foreign_active_area(&nal, 1440, 1080).expect("0.44:1 cannot be a picture");
+    let out = clear(&nal, 1440, 1080).expect("0.44:1 cannot be a picture");
     assert_eq!(dv_rpu_active_area(&out), Some((0, 0, 0, 0)));
 }
 
@@ -645,7 +651,7 @@ fn leftover_pillarbox_offsets_are_cleared() {
 #[test]
 fn a_feed_clears_a_foreign_active_area_on_a_profile_8_stream() {
     let nal = rpu_with_l5(P81, Some((0, 0, 276, 277)));
-    let out = to_annexb_dv(&packet_with_rpu(&nal), false, Some((1920, 802)));
+    let out = to_annexb_dv(&packet_with_rpu(&nal), false, &mut DvActiveArea::new(1920, 802));
     let fed = fed_rpu(&out);
     assert_ne!(fed, nal);
     assert_eq!(dv_rpu_active_area(&fed), Some((0, 0, 0, 0)));
@@ -657,10 +663,10 @@ fn a_feed_clears_a_foreign_active_area_on_a_profile_8_stream() {
 fn a_converted_profile_7_rpu_is_cleared_too() {
     let nal = rpu_with_l5(P7, Some((0, 0, 276, 277)));
     assert_eq!(parse_rpu(&nal).dovi_profile, 7);
-    let fed = fed_rpu(&to_annexb_dv(&packet_with_rpu(&nal), true, Some((1920, 802))));
+    let fed = fed_rpu(&to_annexb_dv(&packet_with_rpu(&nal), true, &mut DvActiveArea::new(1920, 802)));
     assert_eq!(parse_rpu(&fed).dovi_profile, 8, "converted");
     assert_eq!(dv_rpu_active_area(&fed), Some((0, 0, 0, 0)), "and cleared");
-    let kept = fed_rpu(&to_annexb_dv(&packet_with_rpu(&nal), true, None));
+    let kept = fed_rpu(&to_annexb_dv(&packet_with_rpu(&nal), true, &mut DvActiveArea::default()));
     assert_eq!(dv_rpu_active_area(&kept), Some((0, 0, 276, 277)), "no raster, no judgement");
 }
 
@@ -669,13 +675,13 @@ fn a_converted_profile_7_rpu_is_cleared_too() {
 #[test]
 fn an_unknown_raster_or_an_unparsable_rpu_is_left_alone() {
     let nal = rpu_with_l5(P81, Some((0, 0, 276, 277)));
-    assert_eq!(clear_foreign_active_area(&nal, 0, 802), None);
-    assert_eq!(clear_foreign_active_area(&nal, 1920, 0), None);
-    assert_eq!(clear_foreign_active_area(&[0x7C, 0x01, 0x19, 0x08], 1920, 802), None);
-    let out = to_annexb_dv(&packet_with_rpu(&nal), false, None);
+    assert_eq!(clear(&nal, 0, 802), None);
+    assert_eq!(clear(&nal, 1920, 0), None);
+    assert_eq!(clear(&[0x7C, 0x01, 0x19, 0x08], 1920, 802), None);
+    let out = to_annexb_dv(&packet_with_rpu(&nal), false, &mut DvActiveArea::default());
     assert_eq!(fed_rpu(&out), nal);
     let junk = [0x7Cu8, 0x01, 0x19, 0x08];
-    assert_eq!(fed_rpu(&to_annexb_dv(&packet_with_rpu(&junk), false, Some((1920, 802)))), junk);
+    assert_eq!(fed_rpu(&to_annexb_dv(&packet_with_rpu(&junk), false, &mut DvActiveArea::new(1920, 802))), junk);
 }
 
 /// An RPU that already says "no offsets" has nothing to clear, even on a picture so wide that the
@@ -683,7 +689,80 @@ fn an_unknown_raster_or_an_unparsable_rpu_is_left_alone() {
 #[test]
 fn zero_offsets_are_never_rewritten() {
     let nal = rpu_with_l5(P81, Some((0, 0, 0, 0)));
-    assert_eq!(clear_foreign_active_area(&nal, 2560, 700), None);
+    assert_eq!(clear(&nal, 2560, 700), None);
+}
+
+/// A cropped picture has no bars for an active area to describe, whatever the area's shape: a
+/// 1.85:1 master (`t = b = 42`) cropped to 1920x1038 still says 84 rows, and 2.01:1 looks like a
+/// picture. Nor does a 2.00:1 master (`t = b = 120`) cropped to 1920x960, 2.67:1.
+#[test]
+fn a_cropped_raster_has_its_plausible_looking_master_offsets_cleared() {
+    for (w, h, (l, r, t, b)) in [
+        (1920, 1038, (0, 0, 42, 42)),
+        (1920, 960, (0, 0, 120, 120)),
+        (3840, 1600, (0, 0, 100, 100)),
+        (4096, 2160, (0, 0, 138, 139)),
+    ] {
+        assert!(
+            dv_active_area_fits(w as u32, h as u32, l, r, t, b),
+            "{w}x{h} with {t}/{b}: the area alone would pass"
+        );
+        let nal = rpu_with_l5(P81, Some((l as u16, r as u16, t as u16, b as u16)));
+        let out = clear(&nal, w, h).unwrap_or_else(|| panic!("{w}x{h} with {t}/{b} is cleared"));
+        assert_eq!(dv_rpu_active_area(&out), Some((0, 0, 0, 0)));
+        assert_eq!(all_but_the_offsets(&nal), all_but_the_offsets(&out));
+    }
+}
+
+/// A 3840x2160 master's own bars are the picture's: kept as they came.
+#[test]
+fn a_genuine_4k_letterbox_is_fed_byte_for_byte() {
+    let nal = rpu_with_l5(P81, Some((0, 0, 276, 277)));
+    assert_eq!(clear(&nal, 3840, 2160), None);
+    let out = to_annexb_dv(&packet_with_rpu(&nal), false, &mut DvActiveArea::new(3840, 2160));
+    assert_eq!(fed_rpu(&out), nal);
+}
+
+/// A variable-aspect 4K master downscaled to 1080p: the first scene's `276 / 277` cannot describe
+/// 1920x1080, and once a stream has shown that it carries the master's offsets, its later RPUs
+/// (the 1.90:1 scenes' `69 / 70`, plausible alone) are cleared too. The latch is the stream's:
+/// the same RPU on a fresh stream is kept.
+#[test]
+fn once_a_stream_has_shown_foreign_offsets_its_later_plausible_ones_are_cleared_too() {
+    let first = rpu_with_l5(P81, Some((0, 0, 276, 277)));
+    let later = rpu_with_l5(P81, Some((0, 0, 69, 70)));
+    let mut area = DvActiveArea::new(1920, 1080);
+    assert!(clear_foreign_active_area(&first, &mut area).is_some());
+    let out = clear_foreign_active_area(&later, &mut area).expect("cleared on the latched stream");
+    assert_eq!(dv_rpu_active_area(&out), Some((0, 0, 0, 0)));
+    let zero = rpu_with_l5(P81, Some((0, 0, 0, 0)));
+    assert_eq!(clear_foreign_active_area(&zero, &mut area), None, "no offsets, nothing to clear");
+
+    assert_eq!(clear(&later, 1920, 1080), None, "alone, on a fresh stream, it is a letterbox");
+    let kept = to_annexb_dv(&packet_with_rpu(&later), false, &mut DvActiveArea::new(1920, 1080));
+    assert_eq!(fed_rpu(&kept), later);
+
+    // the same two RPUs through the feed, one packet each
+    let mut area = DvActiveArea::new(1920, 1080);
+    to_annexb_dv(&packet_with_rpu(&first), false, &mut area);
+    let fed = fed_rpu(&to_annexb_dv(&packet_with_rpu(&later), false, &mut area));
+    assert_eq!(dv_rpu_active_area(&fed), Some((0, 0, 0, 0)));
+}
+
+#[test]
+fn the_rule_for_foreign_offsets() {
+    // (w, h, l, r, t, b, foreign_seen)
+    assert!(!dv_active_area_is_foreign(1920, 802, 0, 0, 0, 0, true), "no offsets are nothing to clear");
+    assert!(dv_active_area_is_foreign(1920, 802, 0, 0, 1, 0, false), "not 16:9: any offsets");
+    assert!(dv_active_area_is_foreign(1920, 1038, 0, 0, 42, 42, false));
+    assert!(dv_active_area_is_foreign(4096, 2160, 0, 0, 138, 139, false), "DCI is not 16:9");
+    assert!(dv_active_area_is_foreign(1440, 1080, 480, 480, 0, 0, false));
+    assert!(!dv_active_area_is_foreign(1920, 1080, 0, 0, 138, 139, false), "16:9 and plausible");
+    assert!(!dv_active_area_is_foreign(3840, 2160, 0, 0, 276, 277, false));
+    assert!(dv_active_area_is_foreign(1920, 1080, 0, 0, 276, 277, false), "16:9 and 3.6:1");
+    assert!(dv_active_area_is_foreign(1920, 1080, 0, 0, 69, 70, true), "plausible, but latched");
+    assert!(dv_active_area_is_foreign(1280, 720, 0, 0, 92, 92, true));
+    assert!(!dv_active_area_is_foreign(1280, 720, 0, 0, 92, 92, false));
 }
 
 #[test]
