@@ -99,13 +99,13 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-14T13:01:12Z",
+ "generated": "2026-11-14T14:16:51Z",
  "metrics": [
   {
-   "change30_pct": 44.7,
+   "change30_pct": 43.9,
    "change7_pct": 38.2,
-   "d30": 182.5,
-   "delta30": 81.5,
+   "d30": 183.5,
+   "delta30": 80.5,
    "delta7": 73,
    "group": "ci",
    "id": "ci|host lint + type-checks",
@@ -125,15 +125,15 @@
   {
    "change30_pct": 3.2,
    "change7_pct": 2.1,
-   "d30": 463.0,
-   "delta30": 15.0,
+   "d30": 463,
+   "delta30": 15,
    "delta7": 10,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 149,
-   "n_prev": 177,
+   "n_prev": 175,
    "now": 478,
    "prev7": 468,
    "shown": true,
@@ -144,18 +144,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 15.0,
-   "change7_pct": 1.0,
-   "d30": 396.0,
-   "delta30": 59.5,
-   "delta7": 4.5,
+   "change30_pct": 12.4,
+   "change7_pct": 0.7,
+   "d30": 404.0,
+   "delta30": 50.0,
+   "delta7": 3,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 70,
+   "n_now": 71,
    "n_prev": 57,
-   "now": 455.5,
+   "now": 454,
    "prev7": 451,
    "shown": true,
    "state": "flat",
@@ -303,10 +303,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 32.7,
+   "change30_pct": 32.5,
    "change7_pct": 0.7,
-   "d30": 2072,
-   "delta30": 678,
+   "d30": 2075.5,
+   "delta30": 674.5,
    "delta7": 20.0,
    "group": "ci",
    "id": "minutes",
@@ -345,10 +345,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 17.9,
+   "change30_pct": 17.3,
    "change7_pct": -2.1,
-   "d30": 369.0,
-   "delta30": 66.0,
+   "d30": 371.0,
+   "delta30": 64.0,
    "delta7": -9.5,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
@@ -387,10 +387,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 10.3,
+   "change30_pct": 6.9,
    "change7_pct": -4.4,
-   "d30": 345.5,
-   "delta30": 35.5,
+   "d30": 356.5,
+   "delta30": 24.5,
    "delta7": -17.5,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
@@ -410,16 +410,16 @@
   {
    "change30_pct": 48.9,
    "change7_pct": 8.4,
-   "d30": 221.0,
-   "delta30": 108.0,
+   "d30": 221,
+   "delta30": 108,
    "delta7": 25.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 60,
+   "n_now": 61,
    "n_prev": 54,
-   "now": 329.0,
+   "now": 329,
    "prev7": 303.5,
    "shown": true,
    "state": "flat",
@@ -450,10 +450,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 61.4,
+   "change30_pct": 59.7,
    "change7_pct": -25.4,
-   "d30": 140.0,
-   "delta30": 86.0,
+   "d30": 141.5,
+   "delta30": 84.5,
    "delta7": -77,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
@@ -473,16 +473,16 @@
   {
    "change30_pct": 60.0,
    "change7_pct": 4.4,
-   "d30": 140.0,
-   "delta30": 84.0,
+   "d30": 140,
+   "delta30": 84,
    "delta7": 9.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 60,
+   "n_now": 61,
    "n_prev": 54,
-   "now": 224.0,
+   "now": 224,
    "prev7": 214.5,
    "shown": true,
    "state": "flat",
@@ -492,18 +492,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 6.8,
+   "change30_pct": 6.5,
    "change7_pct": -8.8,
-   "d30": 184.5,
-   "delta30": 12.5,
+   "d30": 185,
+   "delta30": 12,
    "delta7": -19.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 60,
+   "n_now": 61,
    "n_prev": 54,
-   "now": 197.0,
+   "now": 197,
    "prev7": 216.0,
    "shown": true,
    "state": "flat",
@@ -601,16 +601,16 @@
   {
    "change30_pct": 11.8,
    "change7_pct": -5.0,
-   "d30": 17.0,
-   "delta30": 2.0,
+   "d30": 17,
+   "delta30": 2,
    "delta7": -1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 60,
+   "n_now": 61,
    "n_prev": 54,
-   "now": 19.0,
+   "now": 19,
    "prev7": 20.0,
    "shown": false,
    "state": "flat",
@@ -709,11 +709,6 @@
    "change_pct": 38.2,
    "commits": [
     {
-     "pr": null,
-     "sha": "6a74d2a8b",
-     "title": "refactor(ui): complete owned input and frame scheduling"
-    },
-    {
      "pr": 1380,
      "sha": "5ca2777b5",
      "title": "Net: bound a never-pausing peer's cancel latency by what the transport controls"
@@ -757,6 +752,11 @@
      "pr": 1391,
      "sha": "8859e4bad",
      "title": "Dolby Vision: clear active-area offsets that cannot describe the picture"
+    },
+    {
+     "pr": 1393,
+     "sha": "5570be823",
+     "title": "Image subtitles turned on mid-play show the read-ahead window's lines instead of a ~10 s gap"
     }
    ],
    "from": 191,
@@ -797,7 +797,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 329.0
+   "now": 329
   }
  ],
  "slowest_local": [
