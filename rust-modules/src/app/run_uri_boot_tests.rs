@@ -1644,4 +1644,163 @@ mod uri_boot_tests {
         assert!(matches!(started, plx_media::player::BufferfeedStartOutcome::Failed),
             "the start over the quarantined registration is refused, not launched: {started:?}");
     }
+    // ---- #1394: the URI engine's ACB handle is created when its first play is OFFERED, not by the boot ----
+
+    /// The URI driver composed over a scripted ACB display (`create_ids` is what its creates answer)
+    /// with production's ACB evidence and `qualifier` standing in for the viewer's engine choice.
+    fn compose_acb(rig: &mut Rig, create_ids: &[c_long], qualifier: Arc<dyn OriginalQualifier>)
+        -> (&'static Bus, &'static plx_platform::tv::sink::ScriptedPlaneSink) {
+        use plx_platform::tv::sink::{PlaneUnload, ScriptedPlaneSink};
+        plx_platform::tv::plane::installed().reset_for_test();
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static ScriptedPlaneSink =
+            Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })));
+        display.create_ids.lock().unwrap().extend(create_ids.iter().copied());
+        let caps = Capabilities { progressive_uri: true, hls_uri: false,
+            packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: true, audio_off: false, subtitle_off: false };
+        let port = ResolvePort::new(ProductEvidence { display_exported: false, binding: Binding::Acb,
+            callable: caps, certified: caps, preview_rectangle: false }, qualifier);
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
+        assert!(display.created_player_types().is_empty(), "composing the driver creates no handle");
+        (bus, display)
+    }
+
+    /// Let the pending request resolve and return what the route landed.
+    fn resolve_pending(rig: &mut Rig) -> plx_media::route::ResolvedStart {
+        rig.release.send(()).unwrap();
+        let mut resolved = None;
+        poll_until("the request did not resolve", || {
+            resolved = plx_media::route::pump_play(&mut rig.app.player.session,
+                rig.app.bridge.metadata_mut());
+            resolved.is_some()
+        });
+        resolved.unwrap()
+    }
+
+    /// `offer_qualified_uri` as the app loop calls it, with the event log it wrote.
+    fn offer_with_log(rig: &mut Rig, offer: plx_media::route::QualifiedUriOffer)
+        -> (Result<(), plx_playback_contract::Failure>, String) {
+        plx_base::eventlog::with_private_log(|| {
+            let offered = rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session, offer);
+            (offered, std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default())
+        })
+    }
+
+    /// An offer whose handle cannot be made, declined as the app loop declines it, and the Feed
+    /// resolve it hands the same play to.
+    fn decline_and_resolve_feed(rig: &mut Rig, resolved: plx_media::route::ResolvedStart) -> (String, plx_media::route::ResolvedStart) {
+        let offer = resolved.uri_offer.expect("the viewer's original is offered");
+        let offer_id = offer.offer_id();
+        let (offered, log) = offer_with_log(rig, offer);
+        assert!(offered.is_err(), "the offer is declined");
+        assert!(plx_media::route::retry_declined_uri_source(&mut rig.app.player.session,
+            rig.app.bridge.metadata_mut(), resolved.route_start.expect("route start"), offer_id));
+        let feed = resolve_pending(rig);
+        assert!(feed.uri_offer.is_none(), "a declined original is not offered twice");
+        assert!(matches!(rig.app.player.session.backend_offer(),
+            plx_media::route::backend_policy::Selection::Open(choice)
+                if choice.backend == BackendKind::Feed));
+        (log, feed)
+    }
+
+    /// Start the Feed play a declined offer was handed to.
+    fn start_feed(rig: &mut Rig, feed: &plx_media::route::ResolvedStart) {
+        assert!(matches!(plx_media::player::begin_resume(&mut rig.app.player.session,
+            &mut rig.app.adapters.player, feed.resume_ns), plx_media::player::ResumeStart::Settled(
+                plx_media::player::ResumeOutcome::Prepared)));
+        assert!(matches!(plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player),
+            plx_media::player::BufferfeedStartOutcome::Launched(_)), "Feed starts the play");
+    }
+
+    /// An Experimental viewer's offer on an ACB display makes the URI engine's handle (player type 0)
+    /// at the offer, once, and is taken; the Start after it finds the handle there.
+    #[test]
+    fn an_acb_offer_creates_the_uri_handle_at_the_offer_and_is_taken() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        let (bus, display) = compose_acb(&mut rig, &[22], Arc::new(QualifiedOriginal));
+        rig.request();
+        let resolved = resolve_pending(&mut rig);
+        let (offered, log) = offer_with_log(&mut rig, resolved.uri_offer.expect("original offered"));
+        assert!(offered.is_ok());
+        assert_eq!(display.created_player_types(), [plx_platform::tv::plane::URI_PLAYER_TYPE],
+            "the offer made the handle, before any Start");
+        assert!(log.contains("acb handle=uri ptype=0 create=22 initialized=true\n"), "{log}");
+        assert!(bus.shapes().is_empty(), "nothing is opened by an offer");
+        assert!(matches!(plx_media::player::start_playback_tracked(
+            &mut rig.app.player.session, &mut rig.app.adapters.player),
+            plx_media::player::BufferfeedStartOutcome::Launched(_)));
+        window_frame(&mut rig);
+        assert_eq!(bus.shapes(), [Shape::Named], "the service is opened over the handle the offer made");
+        assert_eq!(display.created_player_types(), [0], "the Start made no second handle");
+        plx_platform::tv::plane::installed().reset_for_test();
+    }
+
+    /// A create that fails declines the offer with the reason, and the same play goes to Feed.
+    #[test]
+    fn an_acb_offer_whose_handle_cannot_be_created_is_declined_and_feed_plays() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        let (bus, display) = compose_acb(&mut rig, &[], Arc::new(QualifiedOriginal));
+        rig.request();
+        let resolved = resolve_pending(&mut rig);
+        let (log, feed) = decline_and_resolve_feed(&mut rig, resolved);
+        assert!(log.contains("acb handle=uri ptype=0 create=0 initialized=false\n"), "{log}");
+        assert!(log.contains("uri: original declined (the ACB handle for the URI engine could not be created)\n"),
+            "{log}");
+        start_feed(&mut rig, &feed);
+        assert_eq!(rig.app.adapters.player.backend_snapshot().backend, Some(BackendKind::Feed));
+        assert!(bus.shapes().is_empty(), "the URI service was never opened");
+        assert_eq!(display.created_player_types(), [0], "one attempt");
+        plx_platform::tv::plane::installed().reset_for_test();
+    }
+
+    /// The failed create is recorded: a later offer in the same process declines at once and makes
+    /// no second attempt.
+    #[test]
+    fn a_second_acb_offer_after_a_failed_create_declines_without_another_attempt() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        let (_, display) = compose_acb(&mut rig, &[], Arc::new(QualifiedOriginal));
+        rig.request();
+        let resolved = resolve_pending(&mut rig);
+        let (_, feed) = decline_and_resolve_feed(&mut rig, resolved);
+        start_feed(&mut rig, &feed);
+        plx_media::player::stop_playback(&mut rig.app.player.session, &mut rig.app.adapters.player);
+        assert_eq!(display.created_player_types(), [0]);
+        assert!(plx_media::route::request_play(&mut rig.app.player.session,
+            rig.app.bridge.metadata_mut(), plx_platform::devcaps::caps(), rig.sid, "1",
+            "/library/parts/1/file.mkv", "h264", "aac", "First", "", None, ""));
+        let resolved = resolve_pending(&mut rig);
+        let (log, _) = decline_and_resolve_feed(&mut rig, resolved);
+        assert!(log.contains("uri: original declined (the ACB handle for the URI engine could not be created)\n"),
+            "{log}");
+        assert!(!log.contains("acb handle=uri"), "no second attempt is logged: {log}");
+        assert_eq!(display.created_player_types(), [0], "a failed create is not retried");
+        plx_platform::tv::plane::installed().reset_for_test();
+    }
+
+    /// A viewer on Standard (the production qualifier answers `NotOptedIn`) is never offered the URI
+    /// engine, so nothing creates its handle: the boot made Feed's alone and a play leaves it so.
+    #[test]
+    fn a_standard_viewers_play_on_an_acb_display_creates_no_uri_handle() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        let (bus, display) = compose_acb(&mut rig, &[22], Arc::new(plx_media::route::uri_preflight::ProductQualifier));
+        rig.request();
+        let resolved = resolve_pending(&mut rig);
+        assert!(resolved.uri_offer.is_none(), "Standard is never offered the URI engine");
+        assert!(matches!(rig.app.player.session.backend_offer(),
+            plx_media::route::backend_policy::Selection::Open(choice)
+                if choice.backend == BackendKind::Feed));
+        window_frame(&mut rig);
+        assert!(display.created_player_types().is_empty(), "no handle was made for a Standard play");
+        assert!(bus.shapes().is_empty());
+        plx_platform::tv::plane::installed().reset_for_test();
+    }
 }

@@ -230,9 +230,11 @@ an entry plays Standard, with no handoff.
 2. Arm a variant in the install's runtime root:
    `echo load > /tmp/com.beb.plxnative.debug/plxnative-uriprobe` (empty, `load`, `late`, `none`, or
    `drive`). The separate controlled `acb-control` and `acb-dass` arms need no `ptype` trigger since the
-   boot gave the URI engine its own ACB handle (player type 0, created beside Feed's player type 10;
-   the boot log names both: `acb handle=uri ptype=0 create=.. initialized=true`, and `uri: product
-   binding=Acb ..` at composition), but the harness cases keep arming `ptype=0` as the
+   URI engine has its own ACB handle (player type 0), which the offer of an Experimental play's source (or the probe's gate) creates on
+   demand (the boot creates only Feed's, player type 10: `acb handle=feed ptype=10 ..`; the log names
+   the URI engine's `acb handle=uri ptype=0 create=.. initialized=true` when the probe or an
+   Experimental play first needs it, and `uri: product binding=Acb .. handle=deferred ..` at
+   composition), but the harness cases keep arming `ptype=0` as the
    2026-11-02 measurements did (it now sets Feed's handle type, which those arms do not bind), and the fixture
    constraints in the measurement linked above. The 2026-11-02 pair each ran in a fresh process; a second
    arm in the same process binds only after the previous release's fence is proven. A `plex.direct` URL needs
@@ -401,6 +403,7 @@ that fails over from the URI engine to Standard writes the `already tried` line 
 | `subtitle streams keep a play in Standard today; try a file without subtitle streams` | a subtitle is selected and the certificate does not carry it: no qualifier certifies a subtitle render yet, so every selected embedded subtitle ends here (by design, not a bug) | a file without subtitle streams |
 | `no exported-window evidence for this firmware` | the display path has no evidence on this firmware (no exported window with a canvas, no ACB plane) | none: report the `uri: product binding=... major=...` boot line and the `devcaps: firmware=... build=...` line |
 | `the qualifier did not certify the file` | a developer qualifier declined it | none |
+| `the ACB handle for the URI engine could not be created` | on a webOS 4.x ACB display the offer makes the URI engine's own handle (player type 0) and its create or initialize failed; the failure is recorded, so every later offer in this run declines at once | none: the play goes to Standard; report it with the `acb handle=uri` line |
 
 The reasons are local diagnostics: they route nothing, and nothing about them is sent to telemetry.
 

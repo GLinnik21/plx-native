@@ -27,7 +27,7 @@
 //! retry is the product driver's ladder (`register_ladder`, the one decision both call): it waits in
 //! `AwaitingClose`, then arms the new register deadline after `Closed`.
 //!
-//! The ACB arms require an existing boot-created playerType0 handle and a known SDR720p24
+//! The ACB arms require an ACB display (the gate creates the playerType0 handle on demand) and a known SDR720p24
 //! fixture unless a validated native sourceInfo envelope arrives. They start service Play at
 //! loadCompleted independently of the staged 200/200/200/300ms bind. Bus release triggers one
 //! main-thread UNLOADED, then plane ownership stays quarantined until process exit: each arm

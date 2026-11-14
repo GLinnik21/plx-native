@@ -1694,8 +1694,9 @@ pub struct Diag {
     pub feed_composed: bool,
     pub vp_mode: c_int,
     pub window_id: String,
-    /// This boot created an ACB handle (either backend's): a URI-only build has the URI engine's with
-    /// Feed's absent, and its diagnostics must not read that as a missing video plane.
+    /// An ACB handle has been created (either backend's; Feed's at the boot, the URI engine's at the
+    /// first Experimental offer or, while a release is in flight, at the Start's gate). A URI-only ACB
+    /// build therefore reads false until then.
     pub acb_ok: bool,
     pub place_rv: i32,
     pub placed_w: i32,
