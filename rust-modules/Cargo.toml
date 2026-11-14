@@ -321,6 +321,20 @@ inherits = "release"
 lto = "off"
 codegen-units = 16
 
+# The host UNIT-TEST build (`cargo test`: `make check`'s `check-cargo-unit-*`, `make test-fast`,
+# `make test-crate`, `make test-hostsim`, `make build-bench`): every unit of such a build, the
+# workspace libraries and the third-party crates under the test binaries included, is built with
+# THIS profile and not with `dev` (`cargo test --unit-graph` names the profile of each unit). Line
+# tables keep a panic backtrace's file:line and drop the variable-level DWARF, which is most of what
+# rustc's codegen and the linker carry for 18 test binaries and which nothing here attaches a debugger
+# to. `[profile.dev]` is untouched: the simulator, clippy and `cargo check` keep full DWARF in a
+# developer's checkout. Lanes and CI already trim `dev` through a cargo config (tools/build-gc.sh,
+# .github/actions/host-rust/action.yml), which `test` inherits, so for them this line changes nothing;
+# the main checkout is where it takes effect. A debugger on a host test needs
+# `CARGO_PROFILE_TEST_DEBUG=2` (the `dev` variable no longer reaches a `cargo test` build).
+[profile.test]
+debug = "line-tables-only"
+
 [dev-dependencies]
 # The `cfg(test)` fixtures of the base layer (`testlock`, `testnet`, ...): a dependency is never
 # built `cfg(test)`, so the tests here ask for them by feature.
