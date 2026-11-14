@@ -53,9 +53,17 @@ def ports(root, ini):
 
 # `wall_sites` needs one of these words in the source: `WALL` spells `Instant::`, `SystemTime::` or
 # `.elapsed(`, and the alias test needs the token `Instant` or `SystemTime`. A file without any of
-# them cannot hold a wall-clock operation, so it is neither tokenized nor classified: lexing the
+# them cannot hold a wall-clock operation, so this rule does not lex or classify it: lexing the
 # ~690 files of the scopes (and the wholly-test classification of every scope) was most of this
 # gate's 4.6 s of CPU, run once per `ci/check-deps.sh` and so ~100 times by tests/test_harness.py.
+# The skip changes what an UNLEXABLE file does here, never what a wall site does: a file with no
+# wall word and an unterminated raw string no longer fails THIS rule. `ci/check-list-caps.py` (a step
+# of ci/check-python-steps.txt) reports it instead: it runs `rtm.lex` over every production file under
+# every `rust-modules/*/src` and `rust-modules/src` (all these scopes), and `rtm.wholly_test_files` over
+# each of those roots, and lets the ValueError fail the step. Test-named files (`*_tests.rs`, `tests.rs`,
+# a `tests/` directory) and wholly-test files are the ones it does not lex: test code, which rustc rejects
+# when it is not Rust. `wholly_test_files(scope)` is computed only for a scope holding a wall site, so an
+# unbalanced token group fails this rule only then (ci/test_check_ports.py pins both halves).
 NEEDS_WALL_WORD = re.compile(r'Instant|SystemTime|elapsed')
 
 def check(root=ROOT, ini=None):
@@ -79,7 +87,15 @@ def check(root=ROOT, ini=None):
         if name in exempt: continue
         source = path.read_text(encoding='utf-8')
         if not NEEDS_WALL_WORD.search(source): continue
-        if wall_sites(shape.production_tokens(source)) and not is_wholly_test(path):
+        try: has_wall_site = wall_sites(shape.production_tokens(source))
+        except ValueError:
+            # A file with a wall word that cannot be lexed fails this gate, EXCEPT a wholly-test file,
+            # which this rule never lexed (it skipped those first). Classifying before lexing every
+            # such file would compute all seven scopes' wholly-test sets (about twice this gate's time);
+            # classifying only the file that failed to lex costs nothing on a valid tree.
+            if is_wholly_test(path): continue
+            raise
+        if has_wall_site and not is_wholly_test(path):
             problems.append(f'{name}: wall clock outside ci/ports.ini')
     return problems
 

@@ -21,10 +21,11 @@
 # `ci/test_check_collisions.py` runs these steps side by side to check the first rule; a step that
 # breaks one of them shows up there rather than as a flake in somebody else's `make check`.
 #
-# ORDER is only the START order: the sixteen slowest steps (measured 2026-10-07) come first, so the
-# last one to start is a short one; the run lasts as long as the longest step plus the queue. A new
-# step goes at the END; move it up only after measuring (`make check-python-rest` prints each step's
-# wall and CPU time and the slowest three).
+# ORDER is only the START order: the nine slowest steps of the CI run measured 2026-11-14 (the first
+# block below) come first, then the thirteen others of the sixteen slowest measured 2026-10-07 (three of
+# those sixteen are among the nine), so the last one to start is a short one; the run lasts as long as
+# the longest step plus the queue. A new step goes at the END; move it up only after measuring
+# (`make check-python-rest` prints each step's wall and CPU time and the slowest three).
 
 # The nine slowest steps (CI, 2026-11-14: machine-shape 225 s, build-gc 98 s, arm-profile 71 s, check-elf 56 s,
 # transition-arguments 47 s, disk-budget 44 s, disk-preflight 44 s, tv-lock 43 s, collisions 40 s) start first:
