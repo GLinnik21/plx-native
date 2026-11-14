@@ -164,8 +164,8 @@ ok()   { echo "  ok — $*"; }
 #   ci/check-deps.sh --only blocking,workers   run just those rules, the code the full run runs for
 #                                              them: their verdict lines, a summary, exit 0 or 1
 #   ci/check-deps.sh --list-rules              the rule names (RULES below), one a line, no rule run
-# A name that is no rule, an empty list or any other argument exits 2 before any rule runs, so a
-# misspelt selector is an error and never "ran nothing, green". A rule's NAME is what its verdict
+# A name that is no rule, an empty list, a second --only or any other argument exits 2 before any
+# rule runs, so a misspelt selector is an error and never "ran nothing (or less than asked), green". A rule's NAME is what its verdict
 # line starts with (`ok — <name>` / `check-deps: <name>: ...`); `allowlist-counts` is the one rule that
 # prints nothing when green.
 #
@@ -198,8 +198,16 @@ only_arg=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --list-rules) printf '%s\n' "${RULES[@]}"; exit 0 ;;
-    --only) [ $# -ge 2 ] || deps_usage "--only needs a rule list"; have_only=1; only_arg="$2"; shift 2 ;;
-    --only=*) have_only=1; only_arg="${1#--only=}"; shift ;;
+    --only|--only=*)
+      # one way to say it: a second --only would overwrite the first and run a smaller set, green
+      [ "$have_only" -eq 0 ] || deps_usage "--only is given once; join the rules with commas (--only a,b)"
+      have_only=1
+      if [ "$1" = "--only" ]; then
+        [ $# -ge 2 ] || deps_usage "--only needs a rule list"
+        only_arg="$2"; shift 2
+      else
+        only_arg="${1#--only=}"; shift
+      fi ;;
     *) deps_usage "unknown argument '$1'" ;;
   esac
 done

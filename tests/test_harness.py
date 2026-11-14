@@ -8831,11 +8831,14 @@ class DepGates(unittest.TestCase):
                           "check-deps: the selected gates are green (--only fpflags,present,ticks)"])
 
     def test_a_misspelt_or_empty_selector_is_an_error_not_a_green_run(self):
-        """A selector that names no rule must not run nothing and pass: exit 2, before any rule runs."""
+        """A selector that names no rule, or a second --only, must not run less than asked and pass: exit 2, before any rule runs."""
         script = os.path.join(self.ROOT, "ci", "check-deps.sh")
         for argv in (["--only", "bloking"], ["--only", "libm,nope"], ["--only", ""], ["--only", "libm,"],
                      ["--only", ",libm"], ["--only", "libm,,ticks"], ["--only"], ["--only=zzz"], ["--only=libm "],
-                     ["--list"], ["libm"], ["--only", "libm", "--bogus"]):
+                     ["--list"], ["libm"], ["--only", "libm", "--bogus"],
+                     # a repeated --only would overwrite the first and run the smaller set, green
+                     ["--only", "wall", "--only", "libm"], ["--only=wall", "--only=libm"],
+                     ["--only", "wall", "--only=libm"]):
             with self.subTest(argv=argv):
                 r = subprocess.run([script] + argv, capture_output=True, text=True)
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
