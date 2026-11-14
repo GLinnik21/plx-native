@@ -94,9 +94,11 @@ cargo can see a python file).
 everybody quotes is `cargo test --lib` alone, and that part is itself tens of seconds now (the per-crate test binaries, `UNIT_SUITE` in the Makefile, run side by side through
 `tools/cargo-test-parallel.py`; `make test-crate C=<crate>` runs just the one you touched); end to end the
 gate runs in MINUTES warm. The bulk of it is `python3 tests/test_harness.py`, which shells out to
-`ci/check-deps.sh` (11 s a run) once or more per self-test to prove each structure gate still
-catches a planted violation — 661 s of a 1100 s run, measured 2026-10-01 on a cold lane at load
-~5, before those self-tests moved to private tree copies and a thread pool (175 s after). The lab selftest's **~7 s is mostly two DELIBERATE rate-limit waits** — so
+`ci/check-deps.sh` to prove each structure gate still catches a planted violation: each DepGates
+self-test runs only the rule or rules it plants for (`--only <rules>`), and only the whole-script
+tests, with the one shared run over the real tree, run every rule. That was 661 s of a 1100 s run,
+measured 2026-10-01 on a cold lane at load ~5, before those self-tests moved to private tree
+copies and a thread pool (175 s after). The lab selftest's **~7 s is mostly two DELIBERATE rate-limit waits** — so
 a ten-second-plus pause there is the target working, not a hang. (That step
 also SSDP-probes the LAN to report whether a UPnP gateway is present; still no television, still no
 lock.) Do not write a new number here: measure it if you need one — this file has already carried a

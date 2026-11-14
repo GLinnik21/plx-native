@@ -8593,6 +8593,61 @@ class PresentedRate(unittest.TestCase):
 # ends it: a `DepGates` test still running on the pool then starts no further gate run.
 _run_stopped = threading.Event()
 
+# A rule of `ci/check-deps.sh` that prints nothing when it passes (`ci/check-deps.sh --list-rules`
+# names every rule; `test_every_rule_is_selectable_and_nothing_else_reports` pins this set).
+_DEPS_RULES_SILENT_WHEN_GREEN = frozenset({"allowlist-counts"})
+
+
+def _grades(*rules):
+    """The rules of `ci/check-deps.sh` a `DepGates` test runs: its self-test plants ONE violation, so
+    it runs the script with `--only <those rules>` (a few seconds) rather than every rule (~25 s of
+    CPU a run, which was ~70 runs and nine tenths of this module). Name the rule or rules whose
+    verdict the test asserts. `_run_check_deps` then refuses a run in which one of them printed no
+    verdict, and `_assert_flagged` refuses a rule the test did not select, so a test that selects
+    the wrong rule fails instead of passing against a rule that never ran."""
+    assert rules and len(set(rules)) == len(rules), rules
+
+    def mark(test):
+        test.deps_rules = rules
+        return test
+    return mark
+
+
+def _grades_whole_script(test):
+    """For a `DepGates` test that grades `ci/check-deps.sh` as a whole (it reads the exit code or
+    the summary of every rule), not one planted violation: it runs every rule."""
+    test.deps_rules = None
+    return test
+
+
+def _check_deps_verdict(r, rules):
+    """`r`, a finished `ci/check-deps.sh` run that selected `rules` (None: all), if it is a verdict.
+
+    It must exit 0 or 1 (2 is a usage or internal error), may not trip `set -u` (an unset prelude
+    read inside `$( ... )` kills only that subshell and its rule reads green), and must print a
+    verdict line for EVERY selected rule, so a selection that ran nothing, or not the rule the test
+    is about, is a failure here and not a quiet pass. The result carries `deps_rules`."""
+    out = r.stdout + r.stderr
+    if r.returncode not in (0, 1):
+        raise AssertionError(f"ci/check-deps.sh exited {r.returncode}, which is no verdict\n{out}")
+    if "unbound variable" in r.stderr:
+        raise AssertionError(f"ci/check-deps.sh read an unset variable (a rule reading a prelude it was not named for?)\n{out}")
+    for rule in rules or ():
+        if rule in _DEPS_RULES_SILENT_WHEN_GREEN:
+            continue
+        if not re.search(rf"^(  ok — |::error::check-deps: ){re.escape(rule)}(?=[ :(]|$)", r.stdout, re.M):
+            raise AssertionError(f"--only {rule} printed no verdict line for {rule}\n{out}")
+    r.deps_rules = rules
+    return r
+
+
+def _run_check_deps(root, rules):
+    """Run `root`'s `ci/check-deps.sh`: every rule when `rules` is None, else `--only <rules>`."""
+    cmd = [os.path.join(root, "ci", "check-deps.sh")]
+    if rules is not None:
+        cmd += ["--only", ",".join(rules)]
+    return _check_deps_verdict(subprocess.run(cmd, capture_output=True, text=True), rules)
+
 
 class DepGates(unittest.TestCase):
     """Restructure spec §15.2: `ci/check-deps.sh` is green, and every allowlist under ci/allow/
@@ -8657,7 +8712,7 @@ class DepGates(unittest.TestCase):
     @property
     def tree(self):
         """The private copy of the gate's inputs. Every gate run builds its command from this, so a
-        stopped run (`_run_stopped`) raises here instead of starting one more ~11 s `check-deps.sh`:
+        stopped run (`_run_stopped`) raises here instead of starting one more `check-deps.sh` run:
         the one `make check`'s stop signal never reached would outlive its 10 s grace and be
         SIGKILLed with the copy still on disk."""
         if _run_stopped.is_set():
@@ -8697,17 +8752,131 @@ class DepGates(unittest.TestCase):
     def _real_tree(cls):
         """One run of the gate over the CHECKOUT, shared by the two tests that read it. Nothing in
         this class edits the checkout (`test_self_tests_never_touch_the_real_tree`), so the second
-        reader would only repeat the first's ~25 s of CPU."""
+        reader would only repeat the first's ~25 s of CPU (every rule runs)."""
         with cls._real_tree_lock:
             if cls._real_tree_run is None:
-                cls._real_tree_run = subprocess.run([os.path.join(cls.ROOT, "ci", "check-deps.sh")],
-                                                    capture_output=True, text=True)
+                cls._real_tree_run = _run_check_deps(cls.ROOT, None)
             return cls._real_tree_run
+
+    def _deps(self):
+        """THE way a test runs `ci/check-deps.sh` over its private copy (every helper below ends here):
+        the rules its `_grades(...)` names, or all of them for `_grades_whole_script`. A test that
+        declares neither fails here, so none runs the whole script by default or a subset by accident."""
+        test = getattr(type(self), self._testMethodName)
+        if not hasattr(test, "deps_rules"):
+            raise AssertionError(f"{self._testMethodName} runs ci/check-deps.sh without saying which rules it "
+                                 "grades: decorate it with @_grades(<rule>...) or @_grades_whole_script")
+        return _run_check_deps(self.tree, test.deps_rules)
 
     def test_check_deps_is_green(self):
         r = self._real_tree()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def _rule_names(self, root):
+        r = subprocess.run([os.path.join(root, "ci", "check-deps.sh"), "--list-rules"], capture_output=True, text=True)
+        self.assertEqual((r.returncode, r.stderr), (0, ""), r.stdout)
+        return r.stdout.split()
+
+    def test_every_rule_is_selectable_and_nothing_else_reports(self):
+        """The full run reports exactly the rules `--list-rules` names (in that order), so no rule can
+        sit outside the selector: a rule that prints a verdict but has no `want` guard (it would run
+        in every `--only` run and could never be selected) or a name with no rule behind it fails
+        here. The one rule that prints nothing when green is `_DEPS_RULES_SILENT_WHEN_GREEN`."""
+        known = self._rule_names(self.ROOT)
+        self.assertEqual(len(known), len(set(known)), known)
+        self.assertTrue(_DEPS_RULES_SILENT_WHEN_GREEN <= set(known), known)
+        reported = []
+        for name in re.findall(r"^  ok — ([a-z][a-z-]*)(?=[ :(]|$)", self._real_tree().stdout, re.M):
+            if name not in reported:
+                reported.append(name)
+        self.assertEqual(reported, [n for n in known if n not in _DEPS_RULES_SILENT_WHEN_GREEN])
+
+    def test_every_rule_prints_the_same_alone_as_in_the_full_run(self):
+        """Each rule run ALONE (`--only <rule>`) prints exactly the lines the full run printed for it,
+        and nothing to stderr. A rule block that leans on a variable another rule's block computed
+        (a "trapped definition"), or on a prelude it was not named for, reads an unset variable
+        inside `$( ... )` and reports green, which only a run of that rule by itself shows; an
+        unguarded block shows as an extra line. The rules run on a small pool inside this test."""
+        full = self._real_tree().stdout.splitlines()
+        self.assertEqual(full[0], "== check-deps ==")
+        segments, pending = {}, []
+        for line in full[1:-1]:
+            pending.append(line)
+            m = re.match(r"  ok — ([a-z][a-z-]*)(?=[ :(]|$)", line)
+            if m:
+                segments.setdefault(m.group(1), []).extend(pending)
+                pending = []
+        self.assertEqual((pending, full[-1]), ([], "check-deps: all gates green"))  # `wall`'s own line is in its segment
+        rules = self._rule_names(self.ROOT)
+
+        def alone(rule):
+            try:
+                return rule, _run_check_deps(self.tree, (rule,)), None
+            except AssertionError as e:
+                return rule, None, e
+        self.tree  # build the private copy once, here: its cached_property has no lock on Python 3.12+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(alone, rules))
+        for rule, r, error in results:
+            with self.subTest(rule=rule):
+                self.assertIsNone(error)
+                self.assertEqual((r.returncode, r.stderr), (0, ""))
+                self.assertEqual(r.stdout.splitlines(), ["== check-deps =="] + segments.get(rule, []) +
+                                 [f"check-deps: the selected gates are green (--only {rule})"])
+
+    def test_a_selection_runs_its_rules_in_the_scripts_order(self):
+        r = _run_check_deps(self.tree, ("fpflags", "present", "ticks"))
+        self.assertEqual(r.stdout.splitlines(),
+                         ["== check-deps ==", "  ok — ticks", "  ok — fpflags", "  ok — present: one worker door",
+                          "check-deps: the selected gates are green (--only fpflags,present,ticks)"])
+
+    def test_a_misspelt_or_empty_selector_is_an_error_not_a_green_run(self):
+        """A selector that names no rule, or a second --only, must not run less than asked and pass: exit 2, before any rule runs."""
+        script = os.path.join(self.ROOT, "ci", "check-deps.sh")
+        for argv in (["--only", "bloking"], ["--only", "libm,nope"], ["--only", ""], ["--only", "libm,"],
+                     ["--only", ",libm"], ["--only", "libm,,ticks"], ["--only"], ["--only=zzz"], ["--only=libm "],
+                     ["--list"], ["libm"], ["--only", "libm", "--bogus"],
+                     # a repeated --only would overwrite the first and run the smaller set, green
+                     ["--only", "wall", "--only", "libm"], ["--only=wall", "--only=libm"],
+                     ["--only", "wall", "--only=libm"]):
+            with self.subTest(argv=argv):
+                r = subprocess.run([script] + argv, capture_output=True, text=True)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertEqual(r.stdout, "", "a rule ran")
+                self.assertIn("usage: ci/check-deps.sh", r.stderr)
+
+    @_grades("ticks")
+    def test_a_test_that_selects_the_wrong_rule_fails_instead_of_passing(self):
+        """The violation planted here is `libm`'s, and this test selects `ticks`: the run is green
+        because `libm` never ran, and grading it as `libm`'s verdict must fail."""
+        name = "_check_deps_selftest_wrong_rule.rs"
+        r = self._plant(name, "pub fn f(x: f32) -> f32 { x.powf(2.0) }\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("libm", r.stdout)
+        with self.assertRaises(AssertionError):
+            self._assert_flagged(r, "libm", [(name, "powf")])
+
+    def test_the_gate_runner_refuses_a_run_that_is_no_verdict_for_its_rules(self):
+        def fake(code, stdout, stderr=""):
+            return subprocess.CompletedProcess([], code, stdout=stdout, stderr=stderr)
+        green = "== check-deps ==\n  ok — ticks\n  ok — mutators-visibility\n"
+        self.assertEqual(_check_deps_verdict(fake(0, green), ("ticks",)).deps_rules, ("ticks",))
+        self.assertIsNone(_check_deps_verdict(fake(1, green), None).deps_rules)
+        # `mutators` is a prefix of the name of another rule, not a verdict line of it
+        for case, r, rules, why in (
+                ("no verdict line", fake(0, green), ("ticks", "libm"), "no verdict line for libm"),
+                ("a prefix of another rule", fake(0, green), ("mutators",), "no verdict line for mutators"),
+                ("usage error", fake(2, ""), ("ticks",), "no verdict"),
+                ("unset variable", fake(0, green, "check-deps.sh: line 9: x: unbound variable"), ("ticks",),
+                 "unset variable")):
+            with self.subTest(case):
+                with self.assertRaisesRegex(AssertionError, why):
+                    _check_deps_verdict(r, rules)
+        failed = fake(1, "== check-deps ==\n::error::check-deps: libm: 1 line(s) outside ci/allow/libm.txt\n")
+        self.assertEqual(_check_deps_verdict(failed, ("libm",)).returncode, 1)
+        _check_deps_verdict(fake(0, "== check-deps ==\n"), ("allowlist-counts",))  # silent when green
+
+    @_grades("browse-owner")
     def test_self_tests_never_touch_the_real_tree(self):
         """Red-first for the parallel gate self-tests: every planting helper below edits a private
         copy of the gate's inputs, never the checkout. A helper that wrote into the checkout
@@ -8719,13 +8888,15 @@ class DepGates(unittest.TestCase):
         self.assertEqual(self._prepend("browse/mod.rs", "\n").returncode, 0)
         self.assertEqual(os.stat(real).st_mtime_ns, before, "a self-test wrote into the real tree")
 
+    @_grades_whole_script
     def test_the_private_copy_grades_exactly_like_the_real_tree(self):
         """The copy must carry every input `ci/check-deps.sh` reads: a missing one makes a gate see
         nothing and pass (or fail) for a reason the real tree would not share."""
         real = self._real_tree()
-        copy = subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")], capture_output=True, text=True)
+        copy = self._deps()
         self.assertEqual((copy.returncode, copy.stdout), (real.returncode, real.stdout), copy.stderr)
 
+    @_grades("fpflags")
     def test_the_private_copy_carries_every_fpflags_input(self):
         """The untouched copy above cannot see an input that was left out of `TREE_INPUTS` -- a
         gate that scans nothing is green. So plant what the `fpflags` rule looks for in each file
@@ -8734,8 +8905,7 @@ class DepGates(unittest.TestCase):
         All of them are planted at once and graded by ONE run: the rule prints one `path:line:text`
         match per offending file, so a file the rule did not scan (or the copy did not carry)
         is missing from the output and that input's subtest fails by name. Run one file at a
-        time this was 17 of the 73 `ci/check-deps.sh` runs in this class (about a quarter of
-        the module's CPU)."""
+        time this was 17 of the 73 `ci/check-deps.sh` runs this class made when each ran every rule."""
         inputs = ("rust-modules/Cargo.toml", "rust-modules/build.rs", "rust-modules/net/Cargo.toml", "rust-modules/plex/Cargo.toml", "rust-modules/telemetry/Cargo.toml", "rust-modules/data/Cargo.toml", "rust-modules/session/Cargo.toml", "rust-modules/media/Cargo.toml", "rust-modules/appkit/Cargo.toml", "rust-modules/appkit/build.rs", "rust-modules/screens/Cargo.toml", "rust-modules/screens/build.rs", "rust-modules/platform/Cargo.toml",
                   "rust-modules/platform/build.rs", "rust-modules/gfx/Cargo.toml",
                   "rust-modules/gfx/build.rs", "rust-modules/ui/Cargo.toml", "rust-modules/ui/build.rs",
@@ -8746,8 +8916,7 @@ class DepGates(unittest.TestCase):
             self.assertTrue(os.path.exists(target), f"{rel} is not in the private copy (TREE_INPUTS)")
             with open(target, "a", encoding="utf-8") as f:
                 f.write("\nrustflags = [\"-C\", \"target-feature=+fma\"]\n")
-        r = subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
-                           capture_output=True, text=True)
+        r = self._deps()
         out = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0, out)
         self.assertIn("fpflags:", out)
@@ -8768,8 +8937,7 @@ class DepGates(unittest.TestCase):
         try:
             with open(target, "w", encoding="utf-8") as f:
                 f.write(content)
-            return subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
-                                   capture_output=True, text=True)
+            return self._deps()
         finally:
             if os.path.exists(target):
                 os.remove(target)
@@ -8786,7 +8954,7 @@ class DepGates(unittest.TestCase):
         `plants` is a list of `(name, content, crate_dir)`, each with its own file name, so the one
         run still shows which variants the gate caught: a gate prints the `path:line:text` (or the
         path) of every file it flags, and the caller requires each variant's file by name. Run
-        one variant at a time, a test with N variants cost N runs (about 25 s of CPU apiece)."""
+        one variant at a time, a test with N variants cost N runs."""
         written = []
         try:
             for name, content, crate_dir in plants:
@@ -8795,8 +8963,7 @@ class DepGates(unittest.TestCase):
                 written.append(target)
                 with open(target, "w", encoding="utf-8") as f:
                     f.write(content)
-            return subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
-                                  capture_output=True, text=True)
+            return self._deps()
         finally:
             for target in written:
                 if os.path.exists(target):
@@ -8817,8 +8984,7 @@ class DepGates(unittest.TestCase):
         try:
             with open(target, "w", encoding="utf-8") as f:
                 f.write(original.replace(needle, replacement, 1))
-            return subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
-                                   capture_output=True, text=True)
+            return self._deps()
         finally:
             with open(target, "w", encoding="utf-8") as f:
                 f.write(original)
@@ -8839,8 +9005,7 @@ class DepGates(unittest.TestCase):
         try:
             with open(target, "w", encoding="utf-8") as f:
                 f.write(content + original)
-            return subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
-                                  capture_output=True, text=True)
+            return self._deps()
         finally:
             with open(target, "w", encoding="utf-8") as f:
                 f.write(original)
@@ -8851,8 +9016,8 @@ class DepGates(unittest.TestCase):
         `fixtures` maps a store-relative path to the module-level text to prepend. Each variant
         a self-test wants to prove is rejected gets its OWN declaration (a distinct name), so the
         one run still shows which variants the gate caught: `_assert_flagged` requires every one
-        by name. Run one variant at a time these were 34 of the 73 gate runs in this class, and a
-        run is ~7 s of CPU."""
+        by name. Run one variant at a time these were 34 of the 73 gate runs this class made when
+        each ran every rule."""
         originals = {}
         try:
             for relpath, content in fixtures.items():
@@ -8861,8 +9026,7 @@ class DepGates(unittest.TestCase):
                     originals[target] = f.read()
                 with open(target, "w", encoding="utf-8") as f:
                     f.write(content + originals[target])
-            return subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
-                                  capture_output=True, text=True)
+            return self._deps()
         finally:
             for target, original in originals.items():
                 with open(target, "w", encoding="utf-8") as f:
@@ -8873,6 +9037,8 @@ class DepGates(unittest.TestCase):
         a `path:line:text` line of THAT file whose text holds `marker` -- so a variant the gate
         missed fails by name even though the others were caught in the same run."""
         out = r.stdout + r.stderr
+        self.assertTrue(r.deps_rules is None or rule in r.deps_rules,
+                        f"{rule} is not among the rules this test selected, {r.deps_rules}: it never ran\n{out}")
         self.assertNotEqual(r.returncode, 0, out)
         self.assertIn(f"{rule}:", out)
         for relpath, marker in flagged:
@@ -8881,6 +9047,7 @@ class DepGates(unittest.TestCase):
                     any(f"/src/{relpath}:" in line and marker in line for line in out.splitlines()),
                     f"{rule} did not flag {marker!r} in {relpath}\n{out}")
 
+    @_grades("browse-owner")
     def test_browse_owner_gate_rejects_a_republished_free_mutator(self):
         """A valid module-level declaration is rejected even without a call site."""
         r = self._prepend("browse/mod.rs", "\npub(crate) fn set_cur(i: usize) {}\n")
@@ -8889,6 +9056,7 @@ class DepGates(unittest.TestCase):
         self.assertIn("browse-owner:", out)
         self.assertIn("fn set_cur", out)
 
+    @_grades("browse-owner")
     def test_browse_owner_gate_rejects_all_free_declaration_modifiers(self):
         declarations = (
             ("set_cur", "    pub(super) fn set_cur(i: usize) {}\n"),
@@ -8899,6 +9067,7 @@ class DepGates(unittest.TestCase):
         r = self._prepend_files({"browse/mod.rs": "".join("\n" + d for _, d in declarations)})
         self._assert_flagged(r, "browse-owner", [("browse/mod.rs", f"fn {n}") for n, _ in declarations])
 
+    @_grades("browse-owner")
     def test_browse_owner_gate_rejects_attributes_and_split_free_declarations(self):
         declarations = (
             ("set_cur", "#[inline] pub(super) const fn set_cur(i: usize) {}\n"),
@@ -8907,11 +9076,13 @@ class DepGates(unittest.TestCase):
         r = self._prepend_files({"browse/mod.rs": "".join("\n" + d for _, d in declarations)})
         self._assert_flagged(r, "browse-owner", [("browse/mod.rs", name) for name, _ in declarations])
 
+    @_grades("browse-owner")
     def test_browse_owner_gate_is_nonvacuous_for_indented_free_declarations(self):
         r = self._prepend("browse/mod.rs", "\n    pub fn set_cur(i: usize) {}\n")
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("browse/mod.rs", r.stdout + r.stderr)
 
+    @_grades("browse-owner")
     def test_browse_owner_gate_ignores_normal_string_braces_before_a_free_const_fn(self):
         """Compiling counterexample for the old raw brace counter: the `{` belongs to LABEL,
         so the indented const fn after it is still a module-level retired facade and must fail."""
@@ -8924,6 +9095,7 @@ class DepGates(unittest.TestCase):
         self.assertIn("browse-owner:", out)
         self.assertIn("const fn set_cur", out)
 
+    @_grades("browse-owner")
     def test_browse_owner_gate_ignores_every_rust_noncode_brace_before_a_free_fn(self):
         fixtures = (
             '// {\n',
@@ -8946,6 +9118,7 @@ class DepGates(unittest.TestCase):
         r = self._prepend_files({"browse/mod.rs": text})
         self._assert_flagged(r, "browse-owner", [("browse/mod.rs", f"fn {n}(") for n in names])
 
+    @_grades("browse-owner")
     def test_browse_owner_gate_ignores_noncode_closing_braces_inside_an_impl(self):
         """A compiling impl fixture remains receiver-bound even when every Rust literal/comment
         form contains `}`. The old counter escaped the impl and falsely reported `cur`."""
@@ -8968,6 +9141,7 @@ impl BrowseScopeFixture {
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("ok — browse-owner", r.stdout)
 
+    @_grades("browse-owner")
     def test_browse_owner_gate_rejects_retired_transport_declarations(self):
         declarations = (
             ("browse/mod.rs", "LEGACY_ADAPTER", "    pub(crate) static LEGACY_ADAPTER: () = ();\n"),
@@ -8980,6 +9154,7 @@ impl BrowseScopeFixture {
         r = self._prepend_files(by_file)
         self._assert_flagged(r, "browse-owner", [(relpath, name) for relpath, name, _ in declarations])
 
+    @_grades("browse-owner")
     def test_browse_owner_gate_rejects_retired_thread_local_selectors(self):
         selectors = (("browse/mod.rs", "LEGACY_ADAPTER"), ("stores/browse.rs", "ACTIVE"))
         r = self._prepend_files({
@@ -8987,6 +9162,7 @@ impl BrowseScopeFixture {
             for relpath, selector in selectors})
         self._assert_flagged(r, "browse-owner", [(relpath, f"static {selector}") for relpath, selector in selectors])
 
+    @_grades("browse-owner")
     def test_browse_owner_gate_accepts_unrelated_thread_local_state(self):
         r = self._prepend(
             "browse/mod.rs",
@@ -8995,6 +9171,7 @@ impl BrowseScopeFixture {
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("ok — browse-owner", r.stdout)
 
+    @_grades("browse-owner")
     def test_browse_owner_gate_fails_closed_when_a_scanner_input_is_missing(self):
         target = self._store_file(os.path.join("browse", "view.rs"))
         hidden = target + ".check-deps-selftest"
@@ -9002,11 +9179,7 @@ impl BrowseScopeFixture {
         self.assertFalse(os.path.exists(hidden), f"stale self-test artifact at {hidden}")
         try:
             os.replace(target, hidden)
-            r = subprocess.run(
-                [os.path.join(self.tree, "ci", "check-deps.sh")],
-                capture_output=True,
-                text=True,
-            )
+            r = self._deps()
         finally:
             if os.path.exists(hidden):
                 os.replace(hidden, target)
@@ -9015,6 +9188,7 @@ impl BrowseScopeFixture {
         self.assertIn("browse declaration scanner failed", out)
         self.assertIn("browse-owner:", out)
 
+    @_grades("browse-owner")
     def test_browse_owner_gate_accepts_receiver_bound_owned_methods(self):
         """A BrowseState selector is safe when it requires an explicit receiver. GREEN:
         re-declare the owned `cur(&self)` method (already `pub` since the data crate split, so the
@@ -9028,6 +9202,7 @@ impl BrowseScopeFixture {
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("ok — browse-owner", r.stdout)
 
+    @_grades("viewstate-owner")
     def test_viewstate_owner_gate_rejects_a_republished_free_state_facade(self):
         """A free pump can only reach process state; the owned spelling requires a receiver."""
         declarations = (
@@ -9037,6 +9212,7 @@ impl BrowseScopeFixture {
         r = self._prepend_files({"viewstate.rs": "".join("\n" + d for _, d in declarations)})
         self._assert_flagged(r, "viewstate-owner", [("viewstate.rs", name) for name, _ in declarations])
 
+    @_grades("viewstate-owner")
     def test_viewstate_owner_gate_rejects_storage_transport_and_selector_statics(self):
         fixtures = (
             ("viewstate.rs", "QUEUE", "static mut QUEUE: Vec<()> = Vec::new();\n"),
@@ -9050,6 +9226,7 @@ impl BrowseScopeFixture {
         r = self._prepend_files(by_file)
         self._assert_flagged(r, "viewstate-owner", [(relpath, name) for relpath, name, _ in fixtures])
 
+    @_grades("viewstate-owner")
     def test_viewstate_owner_gate_accepts_receiver_bound_owned_methods(self):
         fixture = """
 struct ViewStateOwnerGateFixture;
@@ -9078,15 +9255,16 @@ impl ViewStateOwnerGateFixture {
             target = os.path.join(directory, "support.rs")
             with open(target, "w", encoding="utf-8") as output:
                 output.write('pub fn helper() { std::thread::spawn(|| {}); let _ = 0.5f32.powf(2.4); }\n')
-            result = subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
-                                    capture_output=True, text=True)
+            result = self._deps()
             return result, os.path.relpath(target, self.tree)
 
+    @_grades("threads", "libm")
     def test_cfg_test_path_modules_are_excluded_from_production_gates(self):
         result, target = self._module_path_fixture(False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn(target + ":", result.stdout)
 
+    @_grades("threads", "libm")
     def test_production_path_reference_prevents_test_file_exemption(self):
         result, target = self._module_path_fixture(True)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -9094,6 +9272,7 @@ impl ViewStateOwnerGateFixture {
         self.assertIn("libm:", result.stdout)
         self.assertIn(target + ":", result.stdout)
 
+    @_grades("person-owner")
     def test_person_owner_gate_rejects_free_read_and_mutation_facades(self):
         declarations = (
             ("current", "pub(crate) fn current() -> Option<()> { None }\n"),
@@ -9103,6 +9282,7 @@ impl ViewStateOwnerGateFixture {
         r = self._prepend_files({"person.rs": "".join("\n" + d for _, d in declarations)})
         self._assert_flagged(r, "person-owner", [("person.rs", name) for name, _ in declarations])
 
+    @_grades("person-owner")
     def test_person_owner_gate_rejects_model_transport_and_selector_statics(self):
         fixtures = (
             ("person.rs", "CURRENT", "static mut CURRENT: Option<Person> = None;\n"),
@@ -9117,6 +9297,7 @@ impl ViewStateOwnerGateFixture {
         r = self._prepend_files(by_file)
         self._assert_flagged(r, "person-owner", [(relpath, name) for relpath, name, _ in fixtures])
 
+    @_grades("person-owner")
     def test_person_owner_gate_accepts_receiver_bound_owned_methods(self):
         fixture = """
 struct PersonOwnerGateFixture;
@@ -9130,6 +9311,7 @@ impl PersonOwnerGateFixture {
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("ok — person-owner", r.stdout)
 
+    @_grades("mutators")
     def test_metadata_pure_builder_allowed_but_mutator_rejected_in_dev(self):
         pure = "fn gate_fixture() { let _ = plx_data::metadata::alt_stand_in(); }\n"
         r = self._plant("dev/_check_deps_metadata_builder.rs", pure)
@@ -9139,6 +9321,7 @@ impl PersonOwnerGateFixture {
         self._assert_flagged(r, "mutators", [("dev/_check_deps_metadata_builder.rs", "alt_install(")])
         self.assertNotIn("alt_stand_in(", r.stdout + r.stderr)
 
+    @_grades("threads")
     def test_threads_gate_catches_a_bare_thread_spawn_after_use_std_thread(self):
         """The gate used to match only the fully-qualified `std::thread::spawn(` spelling, so a
         file that does `use std::thread;` and then calls the bare `thread::spawn(` — exactly the
@@ -9153,6 +9336,7 @@ impl PersonOwnerGateFixture {
         self.assertIn("threads:", out)
         self.assertIn("_check_deps_selftest_threads.rs", out)
 
+    @_grades("threads")
     def test_threads_gate_ignores_visible_test_modules_without_exempting_production(self):
         files = {}
         for i, visibility in enumerate(("pub", "pub(crate)", "pub(super)")):
@@ -9167,6 +9351,7 @@ impl PersonOwnerGateFixture {
         self.assertIn("threads:", r.stdout + r.stderr)
         self.assertIn("_check_deps_visible_production.rs", r.stdout + r.stderr)
 
+    @_grades("globals")
     def test_globals_ledger_ignores_field_labels_without_hiding_value_reads(self):
         fields = ("struct Captured { current_server: u32, client_for: u32, screen_input_revision: u32 }\n"
                   "fn captured() -> Captured { Captured { current_server: 1, client_for: 2, screen_input_revision: 3 } }\n")
@@ -9180,6 +9365,7 @@ impl PersonOwnerGateFixture {
         self.assertIn(key + "current_server", out)
         self.assertIn(key + "client_for", out)
 
+    @_grades("blocking")
     def test_blocking_gate_catches_a_new_allow_blocking_site(self):
         """A frame-thread blocking exception is a ledger entry in ci/allow/blocking.txt. RED: a new
         production `allow_blocking(` that the list does not name must fail `blocking`, naming the
@@ -9192,6 +9378,7 @@ impl PersonOwnerGateFixture {
         self.assertIn("blocking:", out)
         self.assertIn("_check_deps_selftest_blocking.rs::sneaky", out)
 
+    @_grades("blocking")
     def test_blocking_gate_ignores_tests_comments_and_declarations(self):
         """GREEN: the same call inside a `#[cfg(test)] mod`, in a comment, or as an `fn` declaration
         is not a call site."""
@@ -9204,6 +9391,7 @@ impl PersonOwnerGateFixture {
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("ok — blocking", r.stdout)
 
+    @_grades("blocking")
     def test_blocking_gate_catches_an_aliased_allow_blocking(self):
         """The call-site grep cannot see `use ...::allow_blocking as x; x(..)` or `let f =
         allow_blocking;`. RED: a production mention of the bare identifier that is not a call, the
@@ -9216,6 +9404,7 @@ impl PersonOwnerGateFixture {
         self.assertIn("blocking:", out)
         self.assertIn("_check_deps_selftest_blocking_alias.rs:1", out)
 
+    @_grades("blocking")
     def test_blocking_gate_catches_a_stale_entry(self):
         """The ledger only shrinks: an entry whose site is gone must fail `blocking`, so a migration
         has to delete its line (and a line cannot be left behind to excuse a later regrowth)."""
@@ -9228,7 +9417,7 @@ impl PersonOwnerGateFixture {
             stale += "rust-modules/media/src/route/decision.rs::no_such_fn\tgone\n"
             with open(allow, "w", encoding="utf-8") as f:
                 f.write(stale)
-            r = subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")], capture_output=True, text=True)
+            r = self._deps()
         finally:
             with open(allow, "w", encoding="utf-8") as f:
                 f.write(original)
@@ -9243,13 +9432,12 @@ impl PersonOwnerGateFixture {
     # in different areas never edit the same `# count:` header.
     LEDGER_RULES = ("workers", "globals", "forks", "fxlanes")
 
-    def _deps(self):
-        return subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")], capture_output=True, text=True)
 
     def _ledger_files(self, rule):
         root = os.path.join(self.tree, "ci", "allow", rule)
         return sorted(os.path.join(root, fn) for fn in os.listdir(root) if fn.endswith(".txt"))
 
+    @_grades("blocking")
     def test_blocking_ledger_keeps_its_multiset_shape_after_the_refactor(self):
         """`blocking` now runs on the shared ledger scanner and must grade as it always did: every
         call is its own ledger line (two calls in one fn are two lines), a call in a closure
@@ -9268,6 +9456,7 @@ impl PersonOwnerGateFixture {
         self.assertEqual(new, ["closure", "one_liner", "two", "two"], out)
         self.assertIn("new: 4, stale: 0, aliased: 0", out)
 
+    @_grades("workers")
     def test_workers_ledger_catches_a_new_worker_start_in_a_machine(self):
         """RED: a production worker start in a machine (a data/ store, a screen, the session owner ...)
         that no ci/allow/workers/<area>.txt names must fail `workers`, keyed by file, enclosing fn
@@ -9290,6 +9479,7 @@ impl PersonOwnerGateFixture {
                 self.assertIn(f"{key}::{site}", out)
         self.assertIn("ci/allow/workers/data-_check_deps_selftest_workers.txt", out)
 
+    @_grades("globals")
     def test_globals_ledger_catches_a_new_registry_read_in_a_machine(self):
         """RED: a production read of a process-global registry in a machine fails `globals`: the
         getters, the qualified `session::peek`, and a bare `peek` only because this file imports it
@@ -9317,6 +9507,7 @@ impl PersonOwnerGateFixture {
         self.assertEqual(out.count(f"{key}::peek  (ledger: "), 1, "`it.peek()` is not a registry read\n" + out)
         self.assertIn("ci/allow/globals/screens.txt", out)
 
+    @_grades("forks")
     def test_forks_ledger_catches_a_new_production_test_fork(self):
         """RED: a `#[cfg(not(test))]` / `cfg!(not(test))` / `not(feature = \"test-support\")` fork in
         any machine crate (data/, plex/, media/, session/, screens/, ui/, appkit/, machine/) that no
@@ -9340,6 +9531,7 @@ impl PersonOwnerGateFixture {
                 self.assertIn(f"{key}::{item}  (ledger: ", out)
         self.assertIn("ci/allow/forks/session.txt", out)
 
+    @_grades("forks")
     def test_forks_ledger_reads_every_machine_crate_not_only_the_four_that_own_the_data(self):
         """RED: a machine in screens/, ui/, appkit/ or machine/ forks on `cfg(test)` as surely as one in data/ does
         (`screens/src/legal.rs` `build_sha`, `screens/src/login.rs` `harness_driven` were the live cases), so the
@@ -9369,6 +9561,7 @@ impl PersonOwnerGateFixture {
                 with self.subTest(crate=crate, test_item=item):
                     self.assertNotIn(f"{key}::{item}", out, "an item only a test can see is no fork\n" + out)
 
+    @_grades("fxlanes")
     def test_fxlanes_ledger_fails_a_new_appfx_side_queue_but_not_a_deliver_arm(self):
         """RED: in `Bridge::app_effect` an `AppFx` arm that pushes `Fx::Deliver(` rides the ordered
         FIFO and costs nothing; an arm that parks its request on a side queue must be a ledger line,
@@ -9386,6 +9579,7 @@ impl PersonOwnerGateFixture {
         self.assertNotIn("AppFx::Orderly", out)
         self.assertIn("ci/allow/fxlanes/app.txt", out)
 
+    @_grades("workers", "globals", "forks")
     def test_ledgers_ignore_tests_comments_strings_and_declarations(self):
         """GREEN: the same shapes inside a `#[cfg(test)] mod`, under a test-only `cfg(any(test, ..))`
         item, in a comment, a doc line or a string literal, are no site of any ledger -- so all
@@ -9406,7 +9600,7 @@ impl PersonOwnerGateFixture {
                 self.assertRegex(r.stdout, rf"ok — {rule} \(\d+ sites\)")
 
     def _plant_many(self, files, crate_dir):
-        """`_plant` for several orphan files of ONE crate, graded by a single gate run (a run is ~11 s):
+        """`_plant` for several orphan files of ONE crate, graded by a single gate run:
         each file isolates one import shape, because a `use` statement applies to its whole file."""
         written = []
         try:
@@ -9430,6 +9624,7 @@ impl PersonOwnerGateFixture {
             f.write(text)
         return self._deps()
 
+    @_grades("globals")
     def test_globals_ledger_sees_renamed_and_bare_keypin_and_grant_getters(self):
         """RED: `keypin::revision`, `keypin::blocked_for` and `grant::offers` are registry reads like
         `session::peek`, so the two ways to hide one from the call-site scan are shut the same way:
@@ -9463,6 +9658,7 @@ impl PersonOwnerGateFixture {
         self.assertEqual(out.count(f"{base}bare.rs::bare::revision  (ledger: "), 1,
                          "`it.revision()` is not a registry read\n" + out)
 
+    @_grades("globals")
     def test_globals_ledger_sees_the_player_transport_readers_in_a_machine(self):
         """RED: `transport::viewer_paused` (the pause-hold claim) and `preview::paused` (the preview machine's
         process-global phase) still read process-wide state, so a machine that calls one is a site, as a
@@ -9526,6 +9722,7 @@ impl PersonOwnerGateFixture {
                 self.assertNotIn(f"{base}{stem}.rs", out,
                                  "`..._preview::*` / `..._transport::{..}` is not `preview` / `transport`\n" + out)
 
+    @_grades("globals")
     def test_globals_ledger_sees_the_capability_answer_readers_in_a_machine(self):
         """RED: `devcaps::caps()` is the device's capability answer, a process-wide registry read. It has been
         write-once since #1047: it is the boot snapshot, a stored refusal never moves it, and the stored rows reach
@@ -9591,6 +9788,7 @@ impl PersonOwnerGateFixture {
                 self.assertNotIn(f"{base}{stem}.rs", out,
                                  "a `caps` parameter or an unimported `caps(` is not the capability answer\n" + out)
 
+    @_grades("globals")
     def test_globals_ledger_sees_screen_input_revision_without_allowance(self):
         r = self._plant_many({
             "stores/_check_deps_screen_revision_direct.rs": "fn read() { plx_plex::plex::session::screen_input_revision(); }\n",
@@ -9606,6 +9804,7 @@ impl PersonOwnerGateFixture {
         self.assertIn(base + "glob.rs::read::screen_input_revision", out)
         self.assertIn(base + "alias.rs:1", out)
 
+    @_grades("globals")
     def test_globals_ledger_sees_the_registry_readers_the_old_closed_list_missed(self):
         """RED: the server registry's roster readers (`server_ids`, `server_roster_gen`, `server_facts_gen`,
         `server_probe_result`), the session cache's two readers (`session::peek_settled`, `session::current_gen`)
@@ -9618,7 +9817,7 @@ impl PersonOwnerGateFixture {
         `plex/src/plex/session.rs` calls its own `peek_settled()` / `current_gen()` with no `use` to say so, as
         it always did for `peek`; a bare call planted there is a site. `data/src/stores/tape.rs` is the
         registry the stores call through, not a machine, so its own bare `active()` is NOT one. All of it is
-        graded by ONE gate run (a run is ~14 s)."""
+        graded by ONE gate run."""
         crate = "data"
         session = "rust-modules/plex/src/plex/session.rs"
         tape = "rust-modules/data/src/stores/tape.rs"
@@ -9705,6 +9904,7 @@ impl PersonOwnerGateFixture {
         self.assertEqual(len(naming), 1,
                          "`stores/tape.rs` is the registry, not a machine: its own bare `active()` is no site\n" + out)
 
+    @_grades("workers", "globals")
     def test_a_bare_name_that_ends_a_braced_import_is_still_imported(self):
         """RED: `use plx_base::task::{self, spawn};` imports `spawn` as surely as `{spawn, self}` does, and
         so for `submit` and `peek`; the import pattern used to eat the closing `}` of a group whose
@@ -9736,6 +9936,7 @@ impl PersonOwnerGateFixture {
                 self.assertIn(f"{base}{stem}.rs::{fn}::{spelling}  (ledger: ", out)
         self.assertNotIn(f"{base}other.rs", out, "`{self, spawn_small}` imports no bare `spawn`\n" + out)
 
+    @_grades("fxlanes")
     def test_fxlanes_ledger_sees_every_variant_of_an_arm_and_a_catch_all_arm(self):
         """RED: an or-pattern arm (`AppFx::A(r) | AppFx::B(r) => ..`, on one line or wrapped) is a site
         for EVERY variant on its head, and an arm with no `AppFx::` head (`other => ..`, `_ => ..`) is a
@@ -9758,6 +9959,7 @@ impl PersonOwnerGateFixture {
         self.assertNotIn("PlantedOk", out)
         self.assertNotIn(f"{key}Loop", out, "the variant the ledger already holds is not new")
 
+    @_grades("globals")
     def test_globals_ledger_sees_every_spelling_of_the_player_transport_in_lifecycle(self):
         """RED: lifecycle.rs, the machine, reads no `crate::player::TX` (the transport contract lives in
         player/transport.rs), and the spellings stay pinned there as a zero-guard: planting `super::TX`,
@@ -9784,6 +9986,7 @@ impl PersonOwnerGateFixture {
         rename_line = before + appended.split("\n").index("use super::TX as Transport2;") + 1
         self.assertIn(f"{rel}:{rename_line}\n", out + "\n")
 
+    @_grades("workers", "globals", "forks")
     def test_a_cfg_test_fn_with_a_where_clause_is_skipped_whole(self):
         """RED: an item under `#[cfg(test)]` is skipped to the end of ITS body. A signature that spills
         over several lines -- a long parameter list, a `where` clause whose bounds end in a comma -- used
@@ -9804,6 +10007,7 @@ impl PersonOwnerGateFixture {
         self.assertNotIn(f"{key}::?", out, "a test fn's body was graded as production\n" + out)
         self.assertEqual(out.count(key), 1, out)
 
+    @_grades("forks")
     def test_forks_ledger_names_a_path_qualified_macro_item_and_counts_an_inline_cfg_test(self):
         """RED: `#[cfg(..)]` on `plx_base::devtrig::latched_flag!(..);` is an item named for its macro, like
         an unqualified `cache!` is, not the unnamed `?`. And `cfg!(test)` still counts as a fork whatever it
@@ -9832,6 +10036,7 @@ impl PersonOwnerGateFixture {
                             self.assertFalse(key.endswith("::?") or "::?::" in key,
                                              f"{os.path.relpath(path, self.tree)}: {key}")
 
+    @_grades("workers", "globals")
     def test_worker_and_global_aliases_fail_because_the_scan_cannot_count_them(self):
         """RED: `use ...::spawn_small as go;` renames a worker start or a registry getter, so every
         `go(..)` after it is invisible to the call-site scan: the `use ... as` line fails its rule
@@ -9853,6 +10058,7 @@ impl PersonOwnerGateFixture {
             with self.subTest(site=site):
                 self.assertIn(f"{path}::{site}  (ledger: ", out)
 
+    @_grades("workers", "globals", "forks", "fxlanes")
     def test_ledger_files_must_be_exact_stale_lines_and_misfiled_lines_fail(self):
         """Every ledger only shrinks: a line whose site is gone fails its rule (so a migration has to
         delete it), and a line filed under the wrong area fails too, so the layout cannot drift."""
@@ -9885,6 +10091,7 @@ impl PersonOwnerGateFixture {
         self.assertIn("misfiled ledger line: rust-modules/gfx/src/_selftest_misfiled.rs::f", out)
         self.assertIn("belongs in ci/allow/forks/gfx.txt", out)
 
+    @_grades("allowlist-counts")
     def test_ledger_count_header_must_equal_its_entries_in_every_area_file(self):
         """The `# count:` header of every ci/allow/<rule>/<area>.txt is held to its entries, exactly
         like the flat allowlists: a line added or deleted without moving the header fails by name."""
@@ -9904,6 +10111,7 @@ impl PersonOwnerGateFixture {
             with self.subTest(rule=rule):
                 self.assertIn(f"{rel} declares count", out)
 
+    @_grades("tmppath")
     def test_tmppath_gate_catches_a_path_built_on_one_line_and_opened_on_the_next(self):
         """The gate used to require the literal and a filesystem-open verb on the SAME line, so a
         value built on one line and opened on the next passed silently. RED: planting that split
@@ -9918,6 +10126,7 @@ impl PersonOwnerGateFixture {
         self.assertIn("tmppath:", out)
         self.assertIn("_check_deps_selftest_tmppath_open.rs", out)
 
+    @_grades("tmppath")
     def test_tmppath_gate_exempts_a_log_message_mention(self):
         """D4's own exemption: a `/tmp/plxnative-` literal that is only message text passed to
         `log`/`crate::eventlog::log`/`log!` must not fail the gate. GREEN: planting one, including a nested
@@ -9932,6 +10141,7 @@ impl PersonOwnerGateFixture {
         self.assertEqual(r.returncode, 0, out)
         self.assertIn("ok — tmppath", out)
 
+    @_grades("cards")
     def test_cards_gate_catches_a_screen_assembling_its_own_strip(self):
         """Shared-card-sections L1: a screen draws card sections with `plx_ui::cards::{Shelf, Grid}`.
         `card_row` / `poster_grid` are `pub(crate)`, so the gate polices what `plx_ui::cards`
@@ -9955,6 +10165,7 @@ impl PersonOwnerGateFixture {
         for line in (2, 4, 5, 6, 7, 8, 9):
             self.assertIn(f"_check_deps_selftest_cards_strip.rs:{line}", out)
 
+    @_grades("cards")
     def test_cards_gate_allows_the_shared_component(self):
         r = self._plant(
             "_check_deps_selftest_cards_ok.rs",
@@ -9965,6 +10176,7 @@ impl PersonOwnerGateFixture {
         self.assertEqual(r.returncode, 0, out)
         self.assertIn("ok — cards", out)
 
+    @_grades("sink")
     def test_sink_gate_catches_the_video_sink_named_outside_the_player(self):
         """Step L15: the Starfish/ACB verbs are the player's alone. RED: a module outside
         `player/`, `port.rs` and `tv/` that reaches `tv::sink::installed()` must fail `sink`."""
@@ -9977,6 +10189,7 @@ impl PersonOwnerGateFixture {
         self.assertIn("sink:", out)
         self.assertIn("_check_deps_selftest_sink_out.rs", out)
 
+    @_grades("sink")
     def test_sink_gate_allows_the_player_to_name_the_video_sink(self):
         """GREEN: the same call from a file under `player/` leaves `sink` (and the script) green."""
         r = self._plant(
@@ -9987,6 +10200,7 @@ impl PersonOwnerGateFixture {
         self.assertEqual(r.returncode, 0, out)
         self.assertIn("ok — sink", out)
 
+    @_grades("textmeasure")
     def test_textmeasure_gate_catches_a_bare_call_outside_the_seam(self):
         """Phase 12, D4: `textmeasure` went from an allowlist to zero-tolerance. RED: a raw
         `crate::text::text_width(` call in a file that is neither one of the three seam files
@@ -10003,6 +10217,7 @@ impl PersonOwnerGateFixture {
         self.assertIn("textmeasure:", out)
         self.assertIn("_check_deps_selftest_textmeasure_bare.rs", out)
 
+    @_grades("textmeasure")
     def test_textmeasure_gate_exempts_the_body_of_a_measure_impl(self):
         """The exemption is STRUCTURAL, not a path allowlist: any `impl … Measure for …` block,
         anywhere in the tree, may call the raw functions it wraps — `widgets.rs`'s `LegacyMeasure`
@@ -10022,6 +10237,7 @@ impl PersonOwnerGateFixture {
         self.assertEqual(r.returncode, 0, out)
         self.assertIn("ok — textmeasure", out)
 
+    @_grades("dt")
     def test_dt_gate_catches_a_raw_accumulator(self):
         """Phase 12, D4: `dt` went from a 12-file allowlist to zero-tolerance everywhere but
         `machine/src/motion.rs`. RED: a `self.t += dt;`-shaped accumulator in a new file must fail — this
@@ -10038,6 +10254,7 @@ impl PersonOwnerGateFixture {
         self.assertIn("dt:", out)
         self.assertIn("_check_deps_selftest_dt_accum.rs", out)
 
+    @_grades("dt")
     def test_dt_gate_catches_idle_dt_by_name(self):
         """`idle::dt()` is deleted from `machine/src/idle.rs` — the accessor callers used to sum themselves.
         RED: a call spelled `idle::dt()` anywhere must fail even with no `+=`/`-=` beside it, since
@@ -10051,6 +10268,7 @@ impl PersonOwnerGateFixture {
         self.assertIn("dt:", out)
         self.assertIn("_check_deps_selftest_dt_fn.rs", out)
 
+    @_grades("nav", "ui-owner-legacy")
     def test_ui_owner_gate_rejects_retired_global_readers(self):
         readers = (
             ("nav", "plx_ui::nav::page_alpha()"),
@@ -10073,6 +10291,7 @@ impl PersonOwnerGateFixture {
                     any(f"_check_deps_selftest_owner_{name}.rs:" in line for line in output.splitlines()),
                     f"{rule} did not flag the {name} reader\n{output}")
 
+    @_grades("ui-owner-files")
     def test_ui_owner_gate_rejects_resurrected_modules(self):
         modules = (("ui", "nav.rs"), ("ui", "press.rs"), ("machine", "idle.rs"))
         result = self._plant_all([(name, "// Retired module must remain absent.\n", crate) for crate, name in modules])
@@ -10083,6 +10302,7 @@ impl PersonOwnerGateFixture {
             with self.subTest(crate=crate, module=name):
                 self.assertIn(f"ui-owner-files: retired module rust-modules/{crate}/src/{name} exists", output)
 
+    @_grades("owned-damage")
     def test_owned_damage_gate_rejects_a_retired_transport_call(self):
         result = self._plant("_check_deps_selftest_damage_adapter.rs",
                              "pub fn repaint() { plx_machine::motion::report::invalidate(); }\n")
@@ -10090,6 +10310,7 @@ impl PersonOwnerGateFixture {
         self.assertNotEqual(result.returncode, 0, output)
         self.assertIn("owned-damage:", output)
 
+    @_grades("owned-wake")
     def test_owned_wake_gate_rejects_worker_door_from_ui(self):
         result = self._plant("_check_deps_selftest_render_worker_door.rs",
                              "pub fn deferred_draw() { plx_machine::present::wake_from_worker(); }\n", crate_dir="ui")
@@ -10097,12 +10318,12 @@ impl PersonOwnerGateFixture {
         self.assertNotEqual(result.returncode, 0, output)
         self.assertIn("owned-wake:", output)
 
+    @_grades("owned-damage")
     def test_owned_damage_gate_rejects_a_report_global(self):
         target = os.path.join(self.tree, "rust-modules", "machine", "src", "motion", "report.rs")
         with open(target, "a", encoding="utf-8") as stream:
             stream.write("\nstatic PAINT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);\n")
-        result = subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
-                                capture_output=True, text=True)
+        result = self._deps()
         output = result.stdout + result.stderr
         self.assertNotEqual(result.returncode, 0, output)
         self.assertIn("owned-damage:", output)
@@ -10790,10 +11011,10 @@ class _ParallelSuite(unittest.TestSuite):
     """Runs its tests on a thread pool and replays each one's outcome into the real result.
 
     Only for tests whose work is a subprocess and that share no state (`DepGates`: each runs
-    `ci/check-deps.sh` over its own private copy of the tree, about 11 s apiece (a few of them run it
-    several times),
-    which was 630 of the 645 s this module took when they ran one after another). Threads are
-    enough because the time is spent waiting on the child. A test runs against a private
+    `ci/check-deps.sh` over its own private copy of the tree, which was 630 of the 645 s this
+    module took when they ran one after another and each ran every rule; now each selects only
+    the rule it plants for, `_grades`). Threads are enough because the time is spent waiting on
+    the child. A test runs against a private
     `TestResult`, then its counters and failure lists are folded into the shared one on the
     calling thread, so the shared result is only ever touched from one thread.
 

@@ -155,6 +155,88 @@ fails=0
 fail() { echo "::error::check-deps: $*"; fails=$((fails+1)); }
 ok()   { echo "  ok — $*"; }
 
+# ---- selecting rules ---------------------------------------------------------------------------
+# `ci/check-deps.sh` with no argument runs EVERY rule: that is what `make check`, CI and
+# ci/check-python-steps.txt run, and nothing but an argument changes it (an environment variable left
+# exported in a shell would quietly shrink the gate; an argument cannot be inherited). The gate
+# self-tests of tests/test_harness.py prove each rule still catches a planted violation, and each
+# used to run the whole script for that, ~25 s of CPU a run and ~70 runs. So:
+#   ci/check-deps.sh --only blocking,workers   run just those rules, the code the full run runs for
+#                                              them: their verdict lines, a summary, exit 0 or 1
+#   ci/check-deps.sh --list-rules              the rule names (RULES below), one a line, no rule run
+# A name that is no rule, an empty list, a second --only or any other argument exits 2 before any
+# rule runs, so a misspelt selector is an error and never "ran nothing (or less than asked), green". A rule's NAME is what its verdict
+# line starts with (`ok — <name>` / `check-deps: <name>: ...`); `allowlist-counts` is the one rule that
+# prints nothing when green.
+#
+# A rule is a block `if want <name>; then ... fi # <name>` (or `want <name> && gate ...`) whose body
+# is left at the margin, not indented, so the diff and blame of the rules stay what they were. Inside
+# a block, use only what the block itself computes, a shared definition (a function, a constant, a
+# pattern) outside every block, or one of the three PRELUDES below, which are computed only when a
+# rule that reads them is selected (`any_wanted`; a rule that reads one is named in its list). Under
+# `set -u` an unset prelude read inside `$( ... )` kills just that subshell and the rule reads
+# green, so a rule that reads a prelude it was not named for is loud, not quiet: `is_wholly_test`
+# exits 2 and the others print `unbound variable` on stderr (tests/test_harness.py fails on both).
+# RULES must name the `want` calls in order; every run ends by checking that, whatever it selected.
+RULES=(browse-owner viewstate-owner person-owner search-owner hubs-owner metadata-owner libm ticks wall
+  fpflags present effect mutators mutators-visibility nav ui-owner-legacy ui-owner-files owned-damage
+  owned-wake cards layer sessionwrite uistorage legacypage sibling textmeasure dt ladder hittest frame
+  sink route fnlen testmod threads blocking workers globals forks fxlanes tmppath paging allowlist-counts)
+deps_usage() {
+  echo "check-deps: $*" >&2
+  echo "usage: ci/check-deps.sh [--only RULE[,RULE...] | --list-rules]" >&2
+  exit 2
+}
+known_rule() {
+  local r
+  for r in "${RULES[@]}"; do [ "$r" = "$1" ] && return 0; done
+  return 1
+}
+only=""       # ",rule,rule," once --only was given, else empty: every rule
+have_only=0
+only_arg=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --list-rules) printf '%s\n' "${RULES[@]}"; exit 0 ;;
+    --only|--only=*)
+      # one way to say it: a second --only would overwrite the first and run a smaller set, green
+      [ "$have_only" -eq 0 ] || deps_usage "--only is given once; join the rules with commas (--only a,b)"
+      have_only=1
+      if [ "$1" = "--only" ]; then
+        [ $# -ge 2 ] || deps_usage "--only needs a rule list"
+        only_arg="$2"; shift 2
+      else
+        only_arg="${1#--only=}"; shift
+      fi ;;
+    *) deps_usage "unknown argument '$1'" ;;
+  esac
+done
+if [ "$have_only" -eq 1 ]; then
+  [ -n "$only_arg" ] || deps_usage "--only needs at least one rule"
+  case "$only_arg" in ,*|*,|*,,*) deps_usage "--only '$only_arg' has an empty rule name" ;; esac
+  IFS=, read -r -a only_names <<< "$only_arg"
+  for only_rule in "${only_names[@]}"; do
+    known_rule "$only_rule" || deps_usage "--only names '$only_rule', which is no rule (--list-rules says which are)"
+  done
+  only=",$only_arg,"
+fi
+rules_seen=""
+# want <rule>: is this rule selected? The guard of every rule, always in the main shell.
+want() {
+  known_rule "$1" || { echo "check-deps: internal: want '$1' names no rule of RULES" >&2; exit 2; }
+  rules_seen="$rules_seen $1"
+  case "$only" in "") return 0 ;; *",$1,"*) return 0 ;; esac
+  return 1
+}
+# any_wanted <rule>...: is no selector given, or is one of these rules selected? Gates a prelude.
+any_wanted() {
+  local r
+  for r in "$@"; do known_rule "$r" || { echo "check-deps: internal: any_wanted '$r' names no rule" >&2; exit 2; }; done
+  [ -z "$only" ] && return 0
+  for r in "$@"; do case "$only" in *",$r,"*) return 0 ;; esac; done
+  return 1
+}
+
 # grep_code <pattern> <paths...>: matching lines, minus comment-only lines, as `path:line:text`.
 grep_code() {
   local pat="$1"; shift
@@ -172,7 +254,10 @@ grep_code() {
 # filters that list with its real pattern. The verdict and the output are unchanged, but the
 # prefix alternation must stay a NECESSARY part of every owner pattern, never a loose sample.
 OWNER_PREFIX='(crate|plx_data)::(browse|viewstate|person|search|pms|metadata)::|stores::(browse|viewstate|person|search|hubs|metadata)::'
+# PRELUDE 1 of 3 (see "selecting rules"): computed only when one of the six owner rules is selected.
+if any_wanted browse-owner viewstate-owner person-owner search-owner hubs-owner metadata-owner; then
 OWNER_LINES="$(grep -HrnE --include='*.rs' "$OWNER_PREFIX" "$SRC" "$SRC_DATA" "$SRC_APPKIT" "$SRC_SCREENS" 2>/dev/null || true)"
+fi
 grep_code_owner() {
   printf '%s\n' "$OWNER_LINES" | grep -E -- "$1" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true
 }
@@ -272,12 +357,19 @@ wholly_test_files() {
 # question once per candidate file or line with `echo "$wholly_test" | grep -qxF`, which is two
 # processes an answer.
 WHOLLY_TEST_INDEX=""
+WHOLLY_TEST_READY=0
 wholly_test_index_init() {
   WHOLLY_TEST_INDEX="
 $1
 "
+  WHOLLY_TEST_READY=1
 }
 is_wholly_test() {
+  # a rule asking before the prelude ran would read an empty index, i.e. "no file is a test file"
+  [ "$WHOLLY_TEST_READY" -eq 1 ] || {
+    echo "check-deps: internal: is_wholly_test before the wholly_test prelude (name the rule in its any_wanted list)" >&2
+    exit 2
+  }
   case "$WHOLLY_TEST_INDEX" in
     *"
 $1
@@ -299,8 +391,13 @@ gate() {
 }
 
 echo "== check-deps =="
+# PRELUDE 2 of 3: the test-module classification, 17 `rust_test_modules.py` runs (~3.7 s of CPU),
+# computed only when a rule that reads `$wholly_test` / `is_wholly_test` (directly, or through
+# `ledger_scan`) is selected. A run with no selector computes it first, as it always did.
+if any_wanted libm mutators cards sink threads blocking workers globals forks fxlanes paging; then
 wholly_test="$(wholly_test_files)" || { fail "Rust test-module classification failed"; exit 1; }
 wholly_test_index_init "$wholly_test"
+fi
 
 # browse-owner: Browse has one physical owner per `Stores`; the migration allowlist ended at zero
 # and is deliberately gone. Reject both the old storage/selector machinery and every free
@@ -472,6 +569,7 @@ owner_declarations() {
     ' "$file" || echo "$file:0:browse declaration scanner failed"
   done
 }
+if want browse-owner; then
 browse_owner_matches=$({
   owner_declarations "$browse_facades" 'ACTIVE|LEGACY_ADAPTER|BOOTSTRAP_AVAILABLE' \
     'BrowseState|BrowseAdapter|BrowseStore' "$SRC_DATA/browse/mod.rs"
@@ -489,12 +587,14 @@ else
   echo "$browse_owner_matches" | sed 's/^/    /'
   fail "browse-owner: retired Browse compatibility surface returned"
 fi
+fi # browse-owner
 
 # viewstate-owner: ViewState's physical state, Arc transport and notice live on ViewStateStore.
 # Zero tolerance, no allowlist: a free facade or storage/transport static can only select process
 # state, which would silently reconnect separate Bridges and let a retired worker cross reset.
 viewstate_facades='apply|run|run_with_browse|run_with_owners|pump|pump_with_owners|is_busy|take_landed_views|take_landed|request|request_with_browse|request_with_owners|reset|hold_inflight_for_test|owe_hubs_refresh_for_test|seed_ownership_fixture_for_test|ownership_fixture_for_test|late_completion_for_test|seed_post_reset_flight_for_test'
 viewstate_selectors='ACTIVE|OWNER|QUEUE|SENT|RETRY_CD|WANT_HUBS|LANDED|MAIL|VIEWSTATE|VIEW_STATE|LEGACY_ADAPTER'
+if want viewstate-owner; then
 viewstate_owner_matches=$({
   owner_declarations "$viewstate_facades" "$viewstate_selectors" \
     'ViewStateState|ViewStateAdapter|ViewStateStore|Req|Completion|Done' \
@@ -507,6 +607,7 @@ else
   echo "$viewstate_owner_matches" | sed 's/^/    /'
   fail "viewstate-owner: retired ViewState compatibility surface returned"
 fi
+fi # viewstate-owner
 
 # person-owner: Person's model/generation/retry/dev seed live in PersonState, its indexed fetch
 # claims/mailboxes live in the rotated Arc<PersonAdapter>, and both belong to one PersonStore per
@@ -514,6 +615,7 @@ fi
 # owners and lets an unaddressed reset, pump or optimistic edit cross the Bridge boundary.
 person_facades='current|loading|run|pump|apply|install_for_test|install_source_for_test|install_credits_for_test'
 person_selectors='ACTIVE|OWNER|CURRENT|GEN|RETRY_CD|FETCH|MAIL|PERSON|PERSON_STATE|LEGACY_ADAPTER|HELD'
+if want person-owner; then
 person_owner_matches=$({
   owner_declarations "$person_facades" "$person_selectors" \
     'PersonState|PersonAdapter|PersonStore|Person|Fetch|Mail|Landing' \
@@ -526,6 +628,7 @@ else
   echo "$person_owner_matches" | sed 's/^/    /'
   fail "person-owner: retired Person compatibility surface returned"
 fi
+fi # person-owner
 
 # search-owner: Search's query/generation/shelf model lives in SearchState, its per-source fetch
 # claims/mailboxes live in the rotated Arc<SearchAdapter>, and both belong to one SearchStore per
@@ -540,6 +643,7 @@ fi
 # rotates the adapter — only a bare, parameterless global `reset()` would be the retired shape.
 search_facades='apply|snapshot|snapshot_with_directory|run_with_directory|pump_with_directory|query|state|query_gen|publish_shelves_for_test|settling|debounce_elapsed_for_test'
 search_selectors='ACTIVE|OWNER|QUERY|GEN|STATE|SHELVES|SRC|ARMED|FAV_GEN|IN_FLIGHT|MAIL|SLOT|SEARCH|SEARCH_STATE|LEGACY_ADAPTER'
+if want search-owner; then
 search_owner_matches=$({
   owner_declarations "$search_facades" "$search_selectors" \
     'SearchState|SearchAdapter|SearchStore|Fetch|Projection|Shelf' \
@@ -552,6 +656,7 @@ else
   echo "$search_owner_matches" | sed 's/^/    /'
   fail "search-owner: retired Search compatibility surface returned"
 fi
+fi # search-owner
 
 # hubs-owner: Home's hub catalog model (`PmsState`) and its rotated worker mailbox/minter
 # (`Arc<PmsAdapter>`) belong to one `HubsStore` per Bridge (`app/bridge.rs`'s `hubs_run`/
@@ -566,6 +671,7 @@ fi
 # `state`/`adapter` in, exactly like search's own `reset(state, adapter)`.
 hubs_facades='apply|apply_with_directory|controlled|controlled_with_directory'
 hubs_selectors='RESULTS|NEXT_REQUEST|HUB_GEN|CATALOG_GEN|LAST_SECTIONS_GEN|ACTIVE|OWNER|LEGACY_ADAPTER'
+if want hubs-owner; then
 hubs_owner_matches=$({
   owner_declarations "$hubs_facades" "$hubs_selectors" \
     'PmsState|PmsAdapter|HubsStore|Landing|Src|SourceBuild' \
@@ -578,6 +684,7 @@ else
   echo "$hubs_owner_matches" | sed 's/^/    /'
   fail "hubs-owner: retired Hubs compatibility surface returned"
 fi
+fi # hubs-owner
 
 # metadata-owner: Detail's item/season/playing model (`MetadataState`) and its worker adapter
 # (`Arc<MetadataAdapter>`, D3's `record::Tracker` included) belong to one `MetadataStore` per
@@ -591,6 +698,7 @@ fi
 # hubs' and search's own owned stores.
 metadata_facades='apply'
 metadata_selectors='DETAIL_LANDING|SEASON_LANDING|ALT_LANDING|NOW|CURRENT|TRACKER|NOTICES'
+if want metadata-owner; then
 metadata_owner_matches=$({
   owner_declarations "$metadata_facades" "$metadata_selectors" \
     'MetadataState|MetadataAdapter|MetadataStore|Tracker' \
@@ -603,11 +711,13 @@ else
   echo "$metadata_owner_matches" | sed 's/^/    /'
   fail "metadata-owner: retired Metadata compatibility surface returned"
 fi
+fi # metadata-owner
 
 # libm: the method-call spelling, OUTSIDE machine/src/motion.rs (which owns the integrators and their
 # table test); `.log(&…`/`.log("…` is a logger, not a logarithm.
 # Wholly-test files (see `wholly_test_files`) are skipped like inline `#[cfg(test)]` blocks: a
 # test's reference colour maths is not logical state.
+if want libm; then
 libm_lines=$(grep_code '\.(exp|ln|log|powf|powi|cbrt|sin|cos|tan|atan2|hypot|mul_add|sin_cos)\(' "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_NET" "$SRC_UI" "$SRC_PLEX" "$SRC_TELEMETRY" "$SRC_DATA" "$SRC_SESSION" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS" \
   | grep -vE '\.log\((&|")' | grep -v "^$SRC_MACHINE/motion.rs:")
 libm_bad=0
@@ -618,19 +728,28 @@ while IFS= read -r line; do
   if ! allowed libm "$p"; then echo "    $line"; libm_bad=$((libm_bad+1)); fi
 done <<< "$libm_lines"
 if [ "$libm_bad" -eq 0 ]; then ok "libm"; else fail "libm: $libm_bad line(s) outside ci/allow/libm.txt"; fi
+fi # libm
 
-gate ticks 'SDL_GetTicks\(' "$SRC" "$SRC_BASE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_NET" "$SRC_UI" "$SRC_PLEX" "$SRC_TELEMETRY" "$SRC_DATA" "$SRC_SESSION" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS"
+want ticks && gate ticks 'SDL_GetTicks\(' "$SRC" "$SRC_BASE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_NET" "$SRC_UI" "$SRC_PLEX" "$SRC_TELEMETRY" "$SRC_DATA" "$SRC_SESSION" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS"
 # Every data/session module is logic unless its exact reviewed IO/instrument file is in ports.ini.
+if want wall; then
 if python3 ci/check-ports.py; then ok "wall"; else fail "wall: outside exact ci/ports.ini files"; fi
+fi # wall
 
+if want fpflags; then
 if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/net/Cargo.toml rust-modules/plex/Cargo.toml rust-modules/telemetry/Cargo.toml rust-modules/data/Cargo.toml rust-modules/session/Cargo.toml rust-modules/media/Cargo.toml rust-modules/appkit/Cargo.toml rust-modules/screens/Cargo.toml rust-modules/platform/Cargo.toml rust-modules/platform/build.rs rust-modules/gfx/Cargo.toml rust-modules/gfx/build.rs rust-modules/ui/Cargo.toml rust-modules/ui/build.rs rust-modules/appkit/build.rs rust-modules/screens/build.rs rust-modules/storage/Cargo.toml rust-modules/storage/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^[[:space:]]*#'; then
   fail "fpflags: a floating-point contraction flag is set (spec §4.2 assumes none)"
 else ok "fpflags"; fi
+fi # fpflags
 
+if want present; then
 n=$(grep -cE '^static [A-Z_]+: Atomic' "$SRC_MACHINE/present.rs"); d=$(grep -c 'pub fn wake_from_worker' "$SRC_MACHINE/present.rs")
 if [ "$n" -eq 1 ] && [ "$d" -eq 1 ]; then ok "present: one worker door"; else fail "present: $n atomic statics, $d doors (one of each)"; fi
+fi # present
 
+if want effect; then
 if [ -n "$(grep_code '\bEffect::' "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_NET" "$SRC_UI" "$SRC_PLEX" "$SRC_TELEMETRY" "$SRC_DATA" "$SRC_SESSION" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS")" ]; then fail "effect: \`Effect::\` is spelled (use Fx:: / AppFx::)"; else ok "effect"; fi
+fi # effect
 
 # mutators: production lines of ui/, screens/ and app/ (everything before the file's first
 # `#[cfg(test)]` + `mod` pair, which is where every screen keeps its tests) — PLUS, since D3, every
@@ -663,6 +782,7 @@ MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library
 # production lines of ui/detail.rs go unscanned. `stores::<store>::apply(` lines are the new
 # spelling and are excluded by name; a SCREEN's own `crate::ui::person::open(` is not a store
 # call and is masked before the match.
+if want mutators; then
 mut_bad=0
 while IFS= read -r f; do
   if is_wholly_test "$f"; then continue; fi
@@ -678,6 +798,7 @@ while IFS= read -r f; do
 # that can produce a hit.
 done < <(grep -rlE --include='*.rs' "$MUTATORS" "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT" "$SRC_SCREENS" "$SRC/app" "$SRC_MEDIA/route" "$SRC_MEDIA/player" "$SRC/dev" 2>/dev/null | sort)
 if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use the owner's run/step method, e.g. Bridge::<store>_run)"; fi
+fi # mutators
 
 # mutators-visibility (D3): the call-site rule above can only ever prove "nobody currently calls
 # this directly" — it says nothing about whether they COULD. This reads the DECLARATION line of
@@ -718,6 +839,7 @@ MUT_FNS_TABLE=(
 store_seamed() {
   grep -qE "^${1}::${2}(	|$)" ci/allow/store-seams.txt 2>/dev/null
 }
+if want mutators-visibility; then
 vis_bad=0
 for entry in "${MUT_FNS_TABLE[@]}"; do
   relf="${entry%%|*}"
@@ -732,15 +854,19 @@ for entry in "${MUT_FNS_TABLE[@]}"; do
   done
 done
 if [ "$vis_bad" -eq 0 ]; then ok "mutators-visibility"; else fail "mutators-visibility: $vis_bad fn(s) still crate-visible"; fi
+fi # mutators-visibility
 
-gate nav '(crate::ui|plx_ui)::nav::' "$SRC" "$SRC_UI" "$SRC_APPKIT" "$SRC_SCREENS"
+want nav && gate nav '(crate::ui|plx_ui)::nav::' "$SRC" "$SRC_UI" "$SRC_APPKIT" "$SRC_SCREENS"
 
 # Completed ownership migration: legacy publications and the old gate cannot return.
+if want ui-owner-legacy; then
 ui_owner_hits=$(grep_code '(plx_ui|crate::ui)::press::|(plx_machine|crate)::idle::' "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_NET" "$SRC_UI" "$SRC_PLEX" "$SRC_TELEMETRY" "$SRC_DATA" "$SRC_SESSION" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS")
 if [ -z "$ui_owner_hits" ]; then ok "ui-owner-legacy"; else
   printf '%s\n' "$ui_owner_hits"
   fail "ui-owner-legacy: retired global readers must not return"
 fi
+fi # ui-owner-legacy
+if want ui-owner-files; then
 legacy_owners=0
 for legacy in "$SRC_UI/nav.rs" "$SRC_UI/press.rs" "$SRC_MACHINE/idle.rs"; do
   if [ -e "$legacy" ]; then
@@ -749,21 +875,26 @@ for legacy in "$SRC_UI/nav.rs" "$SRC_UI/press.rs" "$SRC_MACHINE/idle.rs"; do
   fi
 done
 if [ "$legacy_owners" -eq 0 ]; then ok "ui-owner-files"; fi
+fi # ui-owner-files
 
 # Motion collectors may not own generic damage or a second process-global notification adapter.
+if want owned-damage; then
 owned_damage_hits=$(grep_code 'motion::report::(invalidate|take_damage|select_damage|take_page_damage|OwnScope)' "$SRC" "$SRC_UI" "$SRC_APPKIT" "$SRC_SCREENS" "$SRC_DATA" "$SRC_PLEX" "$SRC_MEDIA" "$SRC_PLATFORM")
 report_adapter=$(grep_code '\bAtomic[A-Za-z0-9_]*\b|pub fn (invalidate|take_damage|select_damage|take_page_damage|present_dirty|wake)\b' "$SRC_MACHINE/motion/report.rs")
 if [ -z "$owned_damage_hits$report_adapter" ]; then ok "owned-damage"; else
   printf '%s\n%s\n' "$owned_damage_hits" "$report_adapter"
   fail "owned-damage: presentation changes must reach the owned gate, never a global damage adapter"
 fi
+fi # owned-damage
 
 # Main-thread render/deferred work must address its owner; only actual IO workers use the atomic door.
+if want owned-wake; then
 main_wake_hits=$(grep_code 'motion::report::wake|wake_from_worker[[:space:]]*\(' "$SRC_UI" "$SRC/dev" "$SRC/app/run.rs")
 if [ -z "$main_wake_hits" ]; then ok "owned-wake"; else
   printf '%s\n' "$main_wake_hits"
   fail "owned-wake: main-thread work must request PresentEvent::Wake from its owner"
 fi
+fi # owned-wake
 
 # cards: a screen's card shelves and grids come from `plx_ui::cards::{Shelf, Grid}` (the
 # shared-card-sections plan, layer L1), which own the pop, press, stops, restore and paging a
@@ -781,6 +912,7 @@ fi
 # allowlist (empty) is the screens that still assemble their own, one line per file, and only
 # SHRINKS.
 cards_pat='cards::(paint_visible|draw_tile|draw_focused)\b|use [^;]*cards::\{[^}]*\b(paint_visible|draw_tile|draw_focused)\b|\bCardRow\b|\bGridPop\b|\bGridBands\b|press::scale\(\)'
+if want cards; then
 cards_bad=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue
@@ -795,6 +927,7 @@ while IFS= read -r line; do
   echo "    $line"; cards_bad=$((cards_bad+1))
 done < <(grep_code '\bAvatarRow\b' "$SRC_SCREENS")
 if [ "$cards_bad" -eq 0 ]; then ok "cards"; else fail "cards: $cards_bad line(s) outside ci/allow/cards.txt (or AvatarRow outside profiles.rs) — draw card sections with plx_ui::cards::Shelf / Grid"; fi
+fi # cards
 
 # layer: a SCREEN never names the application. §2.1's table says `screens/` may name `ui/`,
 # `stores/`, `plex/` and `player/` and never `app/`, and until phase 10 that half of the rule was
@@ -805,24 +938,28 @@ if [ "$cards_bad" -eq 0 ]; then ok "cards"; else fail "cards: $cards_bad line(s)
 # and nothing else) is only worth as much as the boundary underneath it. Count is zero, with no
 # allowlist: a screen that needs something of the loop's asks for it as an effect (`AppFx`,
 # `LoopReq`) — that is what the bundle in `registry.rs` is.
+if want layer; then
 if [ -n "$(grep_code '(crate|super)::app::' "$SRC_SCREENS")" ]; then
   grep_code '(crate|super)::app::' "$SRC_SCREENS" | sed 's/^/    /'
   fail "layer: a screen names the application (§2.1) — ask for it as an AppFx/LoopReq instead"
 else ok "layer"; fi
-gate sessionwrite 'session::load\(' "$SRC_SCREENS" "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT"
+fi # layer
+want sessionwrite && gate sessionwrite 'session::load\(' "$SRC_SCREENS" "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT"
 # uistorage: the LIBRARY (`ui/`) never names the storage layer (§2.1: `ui/` may name only
 # `crate::{gfx,text,paths,task}`). A ui-owned sweep that needs the app's removal rule takes it as an
 # injected `fn` (`ui::rec::erase_owned_artifacts`). Zero, no allowlist. The wider table is not a
 # grep yet: ui/ still names other application modules, mostly from tests and dev instruments.
-gate uistorage '(crate|super|plx_platform)::storage::' "$SRC_UI" "$SRC_MACHINE"
+want uistorage && gate uistorage '(crate|super|plx_platform)::storage::' "$SRC_UI" "$SRC_MACHINE"
 
 # legacypage: the word itself, anywhere under src — a doc that still describes the type is as much
 # a hit as a declaration, which is the point (nothing compiles the prose either).
+if want legacypage; then
 legacy_hits=$(grep -rn --include='*.rs' 'LegacyPage' "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_NET" "$SRC_UI" "$SRC_PLEX" "$SRC_TELEMETRY" "$SRC_DATA" "$SRC_SESSION" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS" 2>/dev/null || true)
 if [ -z "$legacy_hits" ]; then ok "legacypage"; else
   echo "$legacy_hits" | sed 's/^/    /'
   fail "legacypage: $(echo "$legacy_hits" | wc -l | tr -d ' ') mention(s) — the type is retired (§15.2)"
 fi
+fi # legacypage
 
 # sibling: one screen family per directory; `<a>` is the first path component under screens/.
 #
@@ -832,6 +969,7 @@ fi
 # gate that forbade it would forbid the structure the spec asks for. It was an allowlist entry
 # until phase 10 moved the mounter into it; an entry would have had to say "this file names all of
 # them, permanently", which is a rule and not a migration.
+if want sibling; then
 sib_bad=0
 while IFS= read -r f; do
   [ "$f" = "$SRC_SCREENS/registry.rs" ] && continue
@@ -849,6 +987,7 @@ while IFS= read -r f; do
 done < <(grep -rlE --include='*.rs' 'crate::[a-z_]+' "$SRC_SCREENS" 2>/dev/null | sort)
 if [ "$sib_bad" -eq 0 ]; then ok "sibling"
 else fail "sibling: $sib_bad file(s) name a sibling screen (use crate::registry)"; fi
+fi # sibling
 
 # ============================================================================================
 # Phase 12 rules (spec §15.2, D4): the gates the earlier phases' own comments above never wrote,
@@ -878,6 +1017,7 @@ else fail "sibling: $sib_bad file(s) name a sibling screen (use crate::registry)
 # `impl Measure for` added later still only exempts ITS OWN body, and any other raw call anywhere
 # in the tree fails.
 tm_seams="$SRC_UI/text_view.rs $SRC_UI/text_buffer.rs $SRC_GFX/text.rs"
+if want textmeasure; then
 tm_bad=0
 while IFS= read -r f; do
   is_seam=0
@@ -895,6 +1035,7 @@ while IFS= read -r f; do
 # an `impl … Measure for …` block, so a file with no raw call has nothing for it to find.
 done < <(grep -rlE --include='*.rs' '(crate|plx_gfx)::text::(text_width|elide|cap_h)\(' "$SRC" "$SRC_GFX" "$SRC_UI" "$SRC_APPKIT" "$SRC_SCREENS" 2>/dev/null | sort)
 if [ "$tm_bad" -eq 0 ]; then ok "textmeasure"; else fail "textmeasure: $tm_bad line(s) outside the Measure seam"; fi
+fi # textmeasure
 
 # dt (phase 12, D4 — ZERO now, was an allowlist): idle::dt() (deleted from machine/src/idle.rs entirely —
 # card_row.rs's focused-title marquee, its last caller, now reads the absolute idle::now_ms()
@@ -906,11 +1047,13 @@ if [ "$tm_bad" -eq 0 ]; then ok "textmeasure"; else fail "textmeasure: $tm_bad l
 # class this whole gate exists to catch. motion.rs currently has no hit either; the exclusion is
 # the documented intent (spec §4.2: the ONLY file licensed to touch a raw per-frame delta), not a
 # live carve-out.
+if want dt; then
 dt_hits=$(grep_code 'idle::dt\(\)|(\+=|-=)\s*dt\b' "$SRC" "$SRC_MACHINE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_NET" "$SRC_UI" "$SRC_PLEX" "$SRC_TELEMETRY" "$SRC_DATA" "$SRC_SESSION" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS" | grep -v "^$SRC_MACHINE/motion.rs:")
 if [ -z "$dt_hits" ]; then ok "dt"; else
   echo "$dt_hits" | sed 's/^/    /'
   fail "dt: $(echo "$dt_hits" | wc -l | tr -d ' ') line(s) — see rule comment above"
 fi
+fi # dt
 
 # ladder: the old per-screen focus/hit ladder shape, zero across ui/ + screens/ once every Screen
 # answers FocusSource::Engine/HitSource::Engine (D2). No allowlist: every remaining hit is a
@@ -923,13 +1066,13 @@ gate_zero() {
     fail "$rule: $(echo "$hits" | wc -l | tr -d ' ') line(s) — see rule comment above"
   fi
 }
-gate_zero ladder 'fn move_focus|fn pointer_focus|fn top_focus|fn zones\b|fn key\(sym|fn focus_is_card|fn focus_is_ctl' "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT" "$SRC_SCREENS"
+want ladder && gate_zero ladder 'fn move_focus|fn pointer_focus|fn top_focus|fn zones\b|fn key\(sym|fn focus_is_card|fn focus_is_ctl' "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT" "$SRC_SCREENS"
 
 # hittest: the narrowed raw hit-tester call shape, zero in app/ once the player's HUD registers
 # its stops through DrawFrame::stop (D2) instead of app/run.rs testing raw coordinates against
 # player_hud's geometry by hand. Deliberately NOT a blanket `_at(` — that false-positives on
 # resume_at/memory_at/open_settings_at/write_at, which are unrelated lookups.
-gate_zero hittest 'pointer_focus\(|\b(failure_quality|icon|scrub)_hit\(' "$SRC/app"
+want hittest && gate_zero hittest 'pointer_focus\(|\b(failure_quality|icon|scrub)_hit\(' "$SRC/app"
 
 # frame: the three privileged OS-primitive calls, ZERO-TOLERANCE outside `app/run.rs` (D4) — no
 # allowlist file, because there is exactly one legitimate home once D1 lands: `app/run.rs` is the
@@ -946,6 +1089,7 @@ gate_zero hittest 'pointer_focus\(|\b(failure_quality|icon|scrub)_hit\(' "$SRC/a
 # actual call typed outside a string still fails this gate. `// `-prefixed comment lines (`app/run.rs` keeps one, describing where a call
 # used to live) are stripped the same way `grep_code` above does for every other rule.
 frame_pat='(crate|plx_platform)::tv::window::(pump_bus|opaque_route|clear_opaque_region)\('
+if want frame; then
 frame_bad=0
 while IFS= read -r f; do
   [ "$f" = "$SRC/app/run.rs" ] && continue
@@ -964,6 +1108,7 @@ while IFS= read -r f; do
 done < <(grep -rlE --include='*.rs' "$frame_pat" "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_NET" "$SRC_UI" "$SRC_PLEX" "$SRC_TELEMETRY" "$SRC_DATA" "$SRC_SESSION" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS" 2>/dev/null | sort)
 if [ "$frame_bad" -eq 0 ]; then ok "frame"
 else fail "frame: $frame_bad line(s) of a privileged OS-primitive call outside app/run.rs"; fi
+fi # frame
 
 # sink: the Starfish/ACB verbs (`tv::sink::VideoSink`) are the player's alone (step L15). Only
 # `player/`, `play-uri/`, the native `webos/` port, and `port.rs` (which installs one)
@@ -972,6 +1117,7 @@ else fail "frame: $frame_bad line(s) of a privileged OS-primitive call outside a
 # ACB plane's boot and hands it on (it was `player/plane_boot.rs`; the composition root is where the
 # driver set is built). Every other module reaches the television through the narrower `tv` interfaces. Wholly-test files are skipped like inline
 # `#[cfg(test)]` blocks. Zero, no allowlist.
+if want sink; then
 sink_bad=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue
@@ -987,9 +1133,11 @@ while IFS= read -r line; do
 done < <(grep_code 'tv::sink::(installed|display_installed)|\b(VideoSink|DisplaySink)\b' "$SRC" "$SRC_PLATFORM" "$SRC_UI" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS")
 if [ "$sink_bad" -eq 0 ]; then ok "sink"
 else fail "sink: $sink_bad line(s) naming the video sink outside playback execution, port.rs, tv.rs and tv/"; fi
+fi # sink
 
 # route: `Route::` in app/ = 0, and `enum Route` gone from the whole tree (D1/D4). No allowlist:
 # the type is meant to be retired, not narrowed.
+if want route; then
 route_app=$(grep_code 'Route::' "$SRC/app")
 if [ -z "$route_app" ]; then ok "route: Route:: in app/"
 else fail "route: $(echo "$route_app" | wc -l | tr -d ' ') \`Route::\` use(s) in app/ — the page alphabet is \`AppArg\` (D1)"; fi
@@ -999,6 +1147,7 @@ else
   echo "$route_enum" | sed 's/^/    /'
   fail "route: enum Route re-declared — the page alphabet is \`AppArg\` (D1)"
 fi
+fi # route
 
 # fnlen: app/run.rs::run <= 200 lines, run_application (app/mod.rs, the D4 skeleton) <= 10 and
 # plex_run (port.rs: install, then hand over) <= 10 — counted by brace
@@ -1014,6 +1163,7 @@ fn_body_lines() {
     }
   ' "$file"
 }
+if want fnlen; then
 run_len=$(fn_body_lines "$SRC/app/run.rs" 'run')
 if [ -n "$run_len" ] && [ "$run_len" -le 200 ]; then ok "fnlen: app/run.rs::run ($run_len lines)"
 else fail "fnlen: app/run.rs::run is ${run_len:-unknown} lines, budget 200 — a phase of the frame belongs in its own function (see run.rs's own doc)"; fi
@@ -1023,14 +1173,17 @@ else fail "fnlen: run_application (app/mod.rs) is ${runapp_len:-unknown} lines, 
 plexrun_len=$(fn_body_lines "$SRC/port.rs" 'plex_run')
 if [ -n "$plexrun_len" ] && [ "$plexrun_len" -le 10 ]; then ok "fnlen: plex_run (port.rs) ($plexrun_len lines)"
 else fail "fnlen: plex_run (port.rs) is ${plexrun_len:-unknown} lines, budget 10"; fi
+fi # fnlen
 
 # testmod: `#[cfg(test)] mod` count in app/mod.rs = 0 (D4/D8) — every test module named in D8's
 # table is meant to have moved to its subject's own file by the time this gate is added.
+if want testmod; then
 testmod_n=$(grep -c '^#\[cfg(test)\]$' "$SRC/app/mod.rs" 2>/dev/null || echo 0)
 # only count ones immediately followed by `mod `, matching the mutators gate's own convention
 testmod_n=$(awk '/^#\[cfg\(test\)\]$/{p=1;next} p && /^mod /{c++} {p=0} END{print c+0}' "$SRC/app/mod.rs")
 if [ "$testmod_n" -eq 0 ]; then ok "testmod: app/mod.rs"
 else fail "testmod: $testmod_n \`#[cfg(test)] mod\` block(s) in app/mod.rs — a test lives beside its subject (D8)"; fi
+fi # testmod
 
 # threads: `thread::spawn(` outside task.rs, PRODUCTION lines only, EVERY spelling — a
 # `#[cfg(test)] mod` block is skipped by brace depth, the same convention the `mutators` gate
@@ -1049,6 +1202,7 @@ else fail "testmod: $testmod_n \`#[cfg(test)] mod\` block(s) in app/mod.rs — a
 #     `use std::thread::{..spawn..}` lines outside task.rs itself), so this spelling adds nothing
 #     to the count yet — it exists so a FUTURE import cannot go unmatched the way the bare
 #     `thread::spawn(` spelling used to.
+if want threads; then
 threads_bad=0
 while IFS= read -r f; do
   # a wholly-test file is test code exactly like an inline `#[cfg(test)] mod` block, which the
@@ -1071,6 +1225,7 @@ done < <(grep -rlE --include='*.rs' '\bspawn\(' "$SRC" "$SRC_BASE" "$SRC_MACHINE
 threads_declared=$(sed -n 's/^# count: *//p' ci/allow/threads.txt | head -1)
 if [ "$threads_bad" -eq "${threads_declared:-0}" ]; then ok "threads"
 else fail "threads: $threads_bad line(s) outside ci/allow/threads.txt (declared count is exactly ${threads_declared:-0}, not a ceiling)"; fi
+fi # threads
 
 # ---- the ledger rules: blocking, workers, globals, forks, fxlanes -------------------------------
 # A LEDGER is an exact multiset of production SITES, one line per site, held under ci/allow and only
@@ -1209,6 +1364,7 @@ EOF_STALE
 # The enclosing fn is the innermost `fn <name>` whose body holds the call, tracked by
 # brace depth; a call in a closure belongs to the fn around the closure. The scan is the shared
 # `ci/ledger.awk` (the ledger machinery above).
+if want blocking; then
 blocking_sites=$(
   grep -rlE --include='*.rs' 'allow_blocking' "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_NET" "$SRC_UI" "$SRC_PLEX" "$SRC_TELEMETRY" "$SRC_DATA" "$SRC_SESSION" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS" 2>/dev/null \
     | grep -v "^$SRC_BASE/task/blocking.rs\$" | sort \
@@ -1224,6 +1380,7 @@ LG_LEDGERS=ci/allow/blocking.txt LG_COUNT_FILE=ci/allow/blocking.txt \
   LG_NOUN='the frame-thread exception ledger' \
   LG_TAIL='a new allow_blocking site moves its work to a worker instead; the list only shrinks' \
   ledger_check blocking "$blocking_sites"
+fi # blocking
 
 # ---- the Sans-IO ledgers (docs/sans-io.md): workers, globals, forks, fxlanes ------------------------
 # The rule they prepare: logic never performs IO. A MACHINE (a screen, a data/ store, the session
@@ -1268,6 +1425,8 @@ globals_pat='client_for|current_server|current_snapshot|keypin::(revision|blocke
 # candidate: an item under it is skipped whole.
 forks_pat='cfg.*test|test.*cfg|#!?\[cfg\([^]]*$|cfg!\([^)]*$'
 forks_plain_re='^[[:space:]]*#\[cfg\((test|any\(test, feature = "test-support"\)|all\((test|any\(test, feature = "test-support"\)), [^()]*\))\)\][[:space:]]*$'
+# PRELUDE 3 of 3: computed only when workers, globals or forks is selected.
+if any_wanted workers globals forks; then
 ledger_hits=$(
   find "$SRC_DATA" "$SRC_SESSION" "$SRC_PLEX" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE" "$SRC_PLATFORM/tv/plane.rs" \
       -name '*.rs' -type f 2>/dev/null \
@@ -1283,6 +1442,7 @@ ledger_hits=$(
         !df && $0 ~ f && $0 !~ p { print "F\t" FILENAME; df = 1 }
       '
 )
+fi
 # ledger_candidates <W|G|F>: the files of that rule's scope the prefilter kept
 ledger_candidates() {
   printf '%s\n' "$ledger_hits" | awk -F'\t' -v r="$1" '$1 == r { print $2 }' | sort -u
@@ -1299,6 +1459,7 @@ ledger_candidates() {
 # although no machine calls it today, because a machine that did would be starting a worker. A worker
 # named without a call (`.map(spawn_small)`) is a site too; only a rename (`use ... as`) is refused,
 # because the renamed calls are invisible.
+if want workers; then
 workers_sites=$(
   ledger_candidates W \
     | LG_MODE=call LG_KEYSPELL=1 LG_USE_OK=1 LG_REF_USE_ONLY=1 \
@@ -1315,6 +1476,7 @@ LG_LEDGERS="$(echo ci/allow/workers/*.txt)" LG_AREA_CHECK=1 \
   LG_NOUN='the worker-start ledger' \
   LG_TAIL='a machine starts no worker: its work leaves as a typed effect the app runs (docs/sans-io.md); the ledgers only shrink' \
   ledger_check workers "$workers_sites"
+fi # workers
 
 # globals: a production read of a process-global registry in a MACHINE — `client_for(`, `current_server(`,
 # `current_snapshot(`, `keypin::revision(`, `keypin::blocked_for(`, `session::peek(`, `grant::offers(`, the
@@ -1358,6 +1520,7 @@ LG_LEDGERS="$(echo ci/allow/workers/*.txt)" LG_AREA_CHECK=1 \
 # a call (`.and_then(client_for)`) reads the registry as surely as a call does, so it is a site too; only a
 # rename (`use ... as`) is refused, because the renamed calls are invisible. Each getter's own definition is
 # not a site.
+if want globals; then
 globals_sites=$(
   { ledger_candidates G
     printf '%s\n' rust-modules/plex/src/plex/session.rs "$SRC_MEDIA/player/lifecycle.rs"; } \
@@ -1376,6 +1539,7 @@ LG_LEDGERS="$(echo ci/allow/globals/*.txt)" LG_AREA_CHECK=1 \
   LG_NOUN='the process-global read ledger' \
   LG_TAIL='a machine reads no registry: the value arrives in an event or an argument (docs/sans-io.md); the ledgers only shrink' \
   ledger_check globals "$globals_sites"
+fi # globals
 
 # forks: a production test/production fork across every machine crate (FORK_SCOPE: all of data/, plex/, media/,
 # session/, screens/, ui/, appkit/ and machine/) — a `#[cfg(..)]`
@@ -1390,6 +1554,7 @@ LG_LEDGERS="$(echo ci/allow/globals/*.txt)" LG_AREA_CHECK=1 \
 # it) — never a line number. A file can
 # hold a fork only if it has a cfg line that is not a plain test-only attribute (an item under one is
 # skipped whole), which is what the candidates are.
+if want forks; then
 forks_sites=$(
   ledger_candidates F \
     | LG_MODE=fork ledger_scan | sort
@@ -1401,6 +1566,7 @@ LG_LEDGERS="$(echo ci/allow/forks/*.txt)" LG_AREA_CHECK=1 \
   LG_NOUN='the test/production fork ledger' \
   LG_TAIL='logic has no cfg(test) fork: the seam is a typed effect tests and replay deliver events through (docs/sans-io.md); the ledgers only shrink' \
   ledger_check forks "$forks_sites"
+fi # forks
 
 # fxlanes: in `Bridge::app_effect` every `AppFx::<Variant>` arm either pushes `Fx::Deliver(` — the ordered
 # FIFO, where a result returns as one addressed event in the same drain — or is a ledger line: an arm that
@@ -1408,6 +1574,7 @@ LG_LEDGERS="$(echo ci/allow/forks/*.txt)" LG_AREA_CHECK=1 \
 # own timing. A NEW variant with a side queue fails; so does a new arm that is not on the FIFO. Keyed
 # `<path>::AppFx::<Variant>`, one line for EACH variant on an arm's head (`AppFx::A(r) | AppFx::B(r) => ..`
 # is two), and `<path>::AppFx::_` for an arm whose head names none (`other => ..`, `_ => ..`).
+if want fxlanes; then
 fxlanes_sites=$(
   grep -rlE --include='*.rs' 'fn app_effect' "$SRC" 2>/dev/null | sort \
     | LG_MODE=arm LG_ARM_FN=app_effect LG_ARM_MATCH='(^|[^A-Za-z0-9_])match[[:space:]]+fx[[:space:]]*\{' LG_ARM_OK='Fx::Deliver\(' \
@@ -1420,6 +1587,7 @@ LG_LEDGERS="$(echo ci/allow/fxlanes/*.txt)" LG_AREA_CHECK=1 \
   LG_NOUN='the Bridge::app_effect lane ledger' \
   LG_TAIL='an AppFx arm pushes Fx::Deliver(..) onto the one ordered FIFO instead of a side queue (docs/sans-io.md); the ledgers only shrink' \
   ledger_check fxlanes "$fxlanes_sites"
+fi # fxlanes
 
 # tmppath: a literal `/tmp/plxnative-` string outside dev.rs and the log sinks, = 0 (D4). The
 # earlier version matched only a literal and a filesystem-open VERB co-occurring on the SAME
@@ -1445,6 +1613,7 @@ LG_LEDGERS="$(echo ci/allow/fxlanes/*.txt)" LG_AREA_CHECK=1 \
 # path through `paths::in_runtime_dir("plxnative-…")`, a bare filename with no `/tmp/` prefix, so
 # neither one is a `/tmp/plxnative-` literal in the first place and there is no second file to
 # name here (re-verify this if a log sink is ever given a hardcoded `/tmp/` path).
+if want tmppath; then
 tmp_hits=$(python3 - "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_NET" "$SRC_UI" "$SRC_PLEX" "$SRC_TELEMETRY" "$SRC_DATA" "$SRC_SESSION" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS" <<'PY'
 import os, sys
 
@@ -1536,6 +1705,7 @@ else
   echo "$tmp_hits" | sed 's/^/    /'
   fail "tmppath: $(echo "$tmp_hits" | grep -c . ) line(s) of a literal /tmp/plxnative- path outside dev.rs, not comment or log-message text"
 fi
+fi # tmppath
 
 
 # paging: the two Plex paging parameter names are spelled in ONE non-test file, the `paged_path`
@@ -1544,6 +1714,7 @@ fi
 # not counted (they cannot build a request), and test code is: whole test files (the `wholly_test`
 # classification above) and `#[cfg(test)]` items, found from tokens so a literal inside a string is
 # never mistaken for a comment. Zero, no allowlist. Scans every crate root, not only plex's.
+if want paging; then
 paging_hits=$(WHOLLY_TEST="$wholly_test" python3 - "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_NET" "$SRC_UI" "$SRC_PLEX" "$SRC_TELEMETRY" "$SRC_DATA" "$SRC_SESSION" "$SRC_MEDIA" "$SRC_PLAYBACK_CONTRACT" "$SRC_PLAY_URI" "$SRC_PLAY_FEED" "$SRC_MEDIA_CODECS" "$SRC_APPKIT" "$SRC_SCREENS" <<'PY'
 import os, sys
 sys.path.insert(0, "ci")
@@ -1609,15 +1780,23 @@ else
   echo "$paging_hits" | sed 's/^/    /'
   fail "paging: $(echo "$paging_hits" | grep -c . ) production literal(s) spell X-Plex-Container- outside rust-modules/plex/src/plex/paging.rs (use paged_path)"
 fi
+fi # paging
 
 # every allowlist's declared count equals its entries — the flat lists, and the per-area ledger files
 # under ci/allow/<rule>/ (workers, globals, forks, fxlanes)
+if want allowlist-counts; then
 for f in ci/allow/*.txt ci/allow/*/*.txt; do
   [ -f "$f" ] || continue
   declared=$(sed -n 's/^# count: *//p' "$f" | head -1)
   entries=$(grep -cvE '^[[:space:]]*(#|$)' "$f")
   [ "$declared" = "$entries" ] || fail "$f declares count $declared but has $entries entries"
 done
+fi # allowlist-counts
 
+# RULES and the `want` calls above must name the same rules in the same order, whatever was selected
+# (every guard is visited whether or not its rule runs): a rule outside RULES cannot be selected by
+# name, and a name without a guard would be "selected" and run nothing.
+[ "$rules_seen" = " ${RULES[*]}" ] || fail "RULES and the want guards disagree: RULES is [${RULES[*]}], the guards are [${rules_seen# }]"
+if [ -n "$only" ] && [ "$fails" -eq 0 ]; then echo "check-deps: the selected gates are green (--only $only_arg)"; exit 0; fi
 [ "$fails" -eq 0 ] && { echo "check-deps: all gates green"; exit 0; }
 echo "check-deps: $fails gate(s) failed"; exit 1
