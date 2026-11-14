@@ -51,7 +51,7 @@ pub mod ff_test_support {
         // The counters the diag sample reads outside the mailboxes: a fresh session's are zero.
         store_diag_counters(0, 0, false);
     }
-    pub use crate::ff::subs::SubTracks;
+    pub use crate::ff::subs::{live_stream, SubTracks};
     pub use crate::ff::{annexb_start, arm_active_stall_guard, candidate_reserve_deadline,
         classify_curl_open_err, classify_hls_avio_facts, classify_hls_deadline,
         classify_plaintext_open_failure, drain_keep_polling,

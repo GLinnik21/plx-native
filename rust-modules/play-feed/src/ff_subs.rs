@@ -152,8 +152,13 @@ impl ImageBacklog {
 /// Stream `index` of the context's table AS IT IS NOW. The table is read through `fmt` each time,
 /// with its bound, because a transport stream can grow streams while it is read
 /// (`AVFMTCTX_NOHEADER`), which reallocates `streams`: the pointer taken at open is not the table
-/// the live `nb_streams` describes.
-unsafe fn live_stream(fmt: *mut AVFormatContext, index: c_int) -> Option<*mut AVStream> {
+/// the live `nb_streams` describes. `None` for a null table or an index outside `0..nb_streams`.
+/// Public so the real-demux fixtures in `plx_media` resolve a packet's stream the same bounded way
+/// the demux loop does.
+///
+/// # Safety
+/// `fmt` must point to a live `AVFormatContext`.
+pub unsafe fn live_stream(fmt: *mut AVFormatContext, index: c_int) -> Option<*mut AVStream> {
     let streams = (*fmt).streams;
     if streams.is_null() || index < 0 || index as c_uint >= (*fmt).nb_streams { return None; }
     Some(*streams.add(index as usize))

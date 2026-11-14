@@ -620,7 +620,12 @@ unsafe fn present_zlib_fixture(selection: Selection) -> (Vec<(i32, i64, i64, usi
     let pkt = av_packet_alloc();
     while av_read_frame(fmt, pkt) >= 0 {
         let si = (*pkt).stream_index;
-        let st = *(*fmt).streams.add(si as usize);
+        // The demux loop's bounded lookup: a packet of a stream the table does not (or no longer)
+        // describe is skipped, not read through a pointer past the table.
+        let Some(st) = live_stream(fmt, si) else {
+            av_packet_unref(pkt);
+            continue;
+        };
         let read_ns = plx_media_codecs::subtitle_extract::pts_ns_opt(pkt, st);
         let reached = |at_ns: i64| read_ns.is_some_and(|t| t >= at_ns);
         if let Selection::OffUntil(at_ns) = selection {
