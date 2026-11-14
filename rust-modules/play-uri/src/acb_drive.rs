@@ -39,6 +39,25 @@ impl Executed {
     fn invoked(accepted: bool) -> Self { Self { verdict: Verdict::Invoked(accepted), touched: false } }
 }
 
+/// The ACB gate's facts for the URI engine's handle, making the handle first when it does not exist.
+/// The URI engine's own handle (player type 0) is not a boot's: the owner creates it here, once, on
+/// the main thread (`PlaneOwner::ensure_handle` logs `acb handle=uri ..`), and every later call reads
+/// what that found, a failed create included. Its facts and the library's confirmation of its
+/// `AcbAPI_initialize` are the owner's. A display that is not ACB has no handle to make. Both the
+/// first check of a bind ([`Op::Check`]) and the offer-time readiness of the production driver ask
+/// it, so the handle is made by whichever comes first.
+pub fn uri_handle_gate(mt: &MainThread, sink: &dyn DisplaySink, plane: &PlaneOwner, app_id: &str,
+    dass: bool, dass_available: bool) -> crate::acb_bind::Gate {
+    let facts = if sink.window_mode() == VP_ACB {
+        let app_id = std::ffi::CString::new(app_id).ok();
+        plane.ensure_handle(sink, mt, PlaneHandle::Uri, app_id.as_deref(), URI_PLAYER_TYPE)
+    } else {
+        plane.facts_of(PlaneHandle::Uri)
+    };
+    gate(dass, sink.window_mode(), facts.handle, facts.player_type, dass_available,
+        plane.initialized(PlaneHandle::Uri))
+}
+
 /// Perform `op`. `app_id` is the install's app id, the one the URI engine's handle is initialized
 /// for (the boot's `paths::app_id`). `descriptor` resolves the video-data envelope for the media id
 /// and the observed facts, or says why it cannot (nothing is fabricated here).
@@ -49,23 +68,11 @@ pub fn execute(op: &Op, mt: &MainThread, sink: &dyn DisplaySink, plane: &PlaneOw
     // and each pointer argument is a NUL-terminated string that outlives the call.
     match op {
         Op::Check { dass } => {
-            // The URI engine's own handle (player type 0) is not a boot's: this check is the first
-            // thing a URI-engine bind does, so the owner creates it here, once, on the main thread
-            // (`PlaneOwner::ensure_handle` logs `acb handle=uri ..`), and every later check reads what
-            // that found, a failed create included. Its facts and the library's confirmation of its
-            // `AcbAPI_initialize` are the owner's. A display that is not ACB has no handle to make.
-            let facts = if sink.window_mode() == VP_ACB {
-                let app_id = std::ffi::CString::new(app_id).ok();
-                plane.ensure_handle(sink, mt, PlaneHandle::Uri, app_id.as_deref(), URI_PLAYER_TYPE)
-            } else {
-                plane.facts_of(PlaneHandle::Uri)
-            };
             #[cfg(feature = "devtriggers")]
             let dass_available = unsafe { sink.plane_probe_dass_available(mt) };
             #[cfg(not(feature = "devtriggers"))]
             let dass_available = false;
-            let check = gate(*dass, sink.window_mode(), facts.handle, facts.player_type, dass_available,
-                plane.initialized(PlaneHandle::Uri));
+            let check = uri_handle_gate(mt, sink, plane, app_id, *dass, dass_available);
             log(Stamp::Timed, &format!("acb gate mode={} boot_handle={} actual_ptype={} dass_available={} initialized={}",
                 check.mode, check.boot_handle, check.ptype, check.dass_available, check.initialized));
             Executed::invoked(check.ready)

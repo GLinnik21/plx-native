@@ -292,14 +292,14 @@ int acb_select(long handle) {
     return 0;
 }
 /* The URI bind (the production backend and the developer probe, both through play-uri's
- * `acb_bind`) uses its own process-lifetime handle (player type 0, created on demand by the first bind that needs it, selected by the plane owner)
+ * `acb_bind`) uses its own process-lifetime handle (player type 0, created on demand when its first source is offered, selected by the plane owner)
  * and the same callback as BF. These split the existing bind solely to preserve observed inter-call
  * delays. */
 /* Same device SHA pinned above: initialize wrapper@0x15c4c forwards core@0xcd5c.
  * Core returns exactly 1 only after valid parameters and callback installation; 0 refuses.
  * Answers for the CURRENT handle, so it is only meaningful right after that handle's acb_create:
- * the plane owner reads it once per handle (`PlaneOwner::ensure_handle`: at the boot for Feed's, at
- * its first bind for the URI engine's), which the URI gate reads afterwards. normal acb_create still returns its historical handle result. */
+ * the plane owner reads it once per handle (`PlaneOwner::ensure_handle`: at the boot for Feed's, when
+ * its first source is offered, for the URI engine's), which the URI gate reads afterwards. normal acb_create still returns its historical handle result. */
 int acb_initialized(void) { return g_acb && acb.probe_initialize_result == 1; }
 int acb_probe_dass_available(void) { return g_acb && acb.connectDass; }
 int acb_media_id(const char *mediaId) {

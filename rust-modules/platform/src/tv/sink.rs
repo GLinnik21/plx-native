@@ -106,8 +106,8 @@ pub trait DisplaySink: Sync {
     unsafe fn plane_select(&self, _mt: &MainThread, _handle: c_long) -> bool { false }
     /// The library confirmed `AcbAPI_initialize` (its answer was exactly 1) for the CURRENT handle. A
     /// created handle alone is not that. Only meaningful right after that handle's create: the plane
-    /// owner reads it once per handle (`PlaneOwner::ensure_handle`: at the boot for Feed's, at its
-    /// first bind for the URI engine's) into `HandleSeat::initialized`, which is what the paced URI
+    /// owner reads it once per handle (`PlaneOwner::ensure_handle`: at the boot for Feed's, when its
+    /// first source is offered, for the URI engine's) into `HandleSeat::initialized`, which is what the paced URI
     /// bind's gate and the product binding read afterwards.
     unsafe fn plane_initialized(&self, mt: &MainThread) -> bool;
     #[cfg(feature = "devtriggers")]

@@ -36,7 +36,7 @@ pub use plx_playback_contract::uri::Binding;
 /// boot report:
 ///
 ///   - the ACB plane when the display is in ACB mode: the URI engine's own handle (player type 0)
-///     is created by the first Start that needs it, and the gate the executor re-checks at every
+///     is created when the first source is offered (the Start's gate makes it if nothing did), and the gate the executor re-checks at every
 ///     Start (a handle the library confirmed initialized, player type 0; `connectDass` is a
 ///     developer arm and is not asked for) then decides that play, so composition cannot say
 ///     "unbound" for a handle that has not been asked for yet;
@@ -125,7 +125,7 @@ pub struct Config {
 }
 
 pub use plx_playback_contract::uri::{NativeTrackIndex, UriSource};
-use plx_playback_contract::uri::native_index;
+use plx_playback_contract::uri::{native_index, UriNotReady};
 
 struct StagedSource { attempt: AttemptId, key: SourceKey, source: UriSource, deadline_ms: u64 }
 
@@ -1080,6 +1080,18 @@ impl UriDriver for UriBackend {
     fn plane_owned(&self) -> bool { UriBackend::plane_owned(self) }
 
     fn maps_track(&self, selection: TrackSelection) -> bool { UriBackend::maps_track(self, selection) }
+
+    /// On an ACB display the URI engine's handle is made here, when the first source is offered
+    /// (#1394), so a create or initialize that fails declines the offer and Feed plays the title.
+    /// The Start's own gate stays the backstop. Every other binding has nothing to set up.
+    fn ready_to_start(&mut self, mt: &MainThread) -> Result<(), UriNotReady> {
+        if self.config.binding != Binding::Acb || self.config.display.window_mode() != VP_ACB {
+            return Ok(());
+        }
+        let gate = acb_drive::uri_handle_gate(mt, self.config.display, self.config.plane,
+            &self.config.app_id, false, false);
+        if gate.ready { Ok(()) } else { Err(UriNotReady::AcbHandle) }
+    }
 }
 
 #[cfg(test)]
@@ -1087,7 +1099,7 @@ mod tests {
     #[test]
     fn composition_selects_the_acb_plane_on_an_acb_display_before_its_handle_exists() {
         use plx_platform::tv::sink::{VP_ACB, VP_NONE};
-        // The URI engine's handle is created by the first Start that needs it (#1394), so an ACB
+        // The URI engine's handle is created when the first source is offered (#1394), so an ACB
         // display is able to take URI plays at composition: "not created yet" is not "unbound". The
         // gate the Start re-checks decides each play. The exported-window table has no say on an
         // ACB display: not even a listed major changes the answer.
@@ -1212,7 +1224,7 @@ mod tests {
         }
         /// An ACB-bound backend over a scripted sink and its own plane owner with both handles already
         /// made: Feed's (player type 10, a boot's) and the URI engine's (player type 0, the measured
-        /// sequence, which a Start would otherwise create on demand), each confirmed initialized.
+        /// sequence, which an offer would otherwise create on demand), each confirmed initialized.
         fn acb() -> (Self, &'static ScriptedPlaneSink, &'static plx_platform::tv::plane::PlaneOwner) {
             let sink: &'static ScriptedPlaneSink =
                 Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })));
@@ -2294,8 +2306,9 @@ mod tests {
         (sink, plane)
     }
 
-    /// #1394: the boot no longer makes the URI engine's handle. The first Start that needs it makes it
-    /// (player type 0, on the main thread, before anything is opened) and every later Start reuses it.
+    /// #1394: the boot no longer makes the URI engine's handle. The offer makes it; where no offer did
+    /// (the probe, a driver started without one) the Start's own gate makes it (player type 0, on the
+    /// main thread, before anything is opened) and every later Start reuses it.
     #[test]
     fn the_first_acb_start_creates_the_uri_handle_once_and_a_later_start_reuses_it() {
         let (sink, plane) = boot_without_the_uri_handle(&[22]);
@@ -2331,6 +2344,50 @@ mod tests {
         let mut again = Rig::with(Binding::Acb, sink, plane);
         assert_eq!(again.start(A), DispatchResult::Refused(Failure::Unsupported));
         assert_eq!(sink.created_player_types(), [0], "a failed create is not retried");
+    }
+
+    /// #1394: the offer is where the handle is made. A driver on an ACB display whose handle is not
+    /// there yet makes it when asked whether it is ready, once, and a Start after it finds it.
+    #[test]
+    fn readiness_on_an_acb_display_creates_the_uri_handle_once() {
+        let (sink, plane) = boot_without_the_uri_handle(&[22]);
+        let mut rig = Rig::with(Binding::Acb, sink, plane);
+        assert!(sink.created_player_types().is_empty());
+        let log = plx_base::eventlog::with_private_log(|| {
+            assert_eq!(rig.driver.ready_to_start(&rig.mt), Ok(()));
+            std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+        });
+        assert_eq!(sink.created_player_types(), [0]);
+        assert!(log.contains("acb handle=uri ptype=0 create=22 initialized=true\n"), "{log}");
+        assert_eq!(rig.driver.ready_to_start(&rig.mt), Ok(()));
+        assert_eq!(rig.start(A), DispatchResult::Queued);
+        assert_eq!(sink.created_player_types(), [0], "neither the second ask nor the Start made another");
+    }
+
+    /// A create that fails makes the driver not ready, with the reason the offer logs; the failure is
+    /// recorded, so asking again makes no second attempt. The Start's gate still refuses.
+    #[test]
+    fn readiness_after_a_failed_create_says_so_and_is_not_retried() {
+        let (sink, plane) = boot_without_the_uri_handle(&[]);
+        let mut rig = Rig::with(Binding::Acb, sink, plane);
+        assert_eq!(rig.driver.ready_to_start(&rig.mt), Err(UriNotReady::AcbHandle));
+        assert_eq!(rig.driver.ready_to_start(&rig.mt), Err(UriNotReady::AcbHandle));
+        assert_eq!(sink.created_player_types(), [0], "one attempt");
+        assert_eq!(rig.start(A), DispatchResult::Refused(Failure::Unsupported), "the backstop");
+        assert_eq!(sink.created_player_types(), [0]);
+    }
+
+    /// Nothing to set up off the ACB display: an exported-window driver is ready, as is an ACB-bound
+    /// driver over a display that is not ACB (its Start refuses), and neither makes a handle.
+    #[test]
+    fn readiness_off_the_acb_display_is_ready_and_makes_no_handle() {
+        let (sink, plane) = boot_without_the_uri_handle(&[22]);
+        let mut exported = Rig::with(Binding::Exported { canvas: (1920, 1080) }, sink, plane);
+        assert_eq!(exported.driver.ready_to_start(&exported.mt), Ok(()));
+        let mut elsewhere = Rig::with(Binding::Acb, Box::leak(Box::new(NoSink)), plane);
+        assert_eq!(elsewhere.driver.ready_to_start(&elsewhere.mt), Ok(()));
+        assert!(sink.created_player_types().is_empty());
+        assert!(!plane.attempted(plx_platform::tv::plane::PlaneHandle::Uri));
     }
 
     /// The handle is made for a display that can have one: a driver composed over any other display

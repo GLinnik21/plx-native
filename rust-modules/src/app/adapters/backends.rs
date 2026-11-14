@@ -6,8 +6,8 @@
 //!     EVERY backend set. It used to live in the Feed engine, so a URI-only build never created the
 //!     ACB handle, and a webOS 4.x television then stalled URI HLS for want of a bound plane. On an
 //!     ACB display it creates Feed's handle (player type 10) and no other: the URI engine's handle
-//!     (player type 0, which its product binding is gated on) is created by the first URI-engine bind
-//!     that needs it (`PlaneOwner::ensure_handle`, run by the URI driver's gate), so a viewer who
+//!     (player type 0, which its product binding is gated on) is created when the first source is offered
+//!     to it (`PlaneOwner::ensure_handle`, run by `UriDriver::ready_to_start`), so a viewer who
 //!     never plays through it never has a second ACB core (#1394), while a normal boot still
 //!     composes the URI driver `Acb` with no `ptype` trigger.
 //!   - [`compose_backends`] installs the product URI driver and then tells the route session which
@@ -102,9 +102,9 @@ fn feed_player_type() -> c_int {
 /// The webOS 4.x half of [`acb_init_with`]: Feed's handle, created and initialized ONCE and never
 /// destroyed (a destroy races `LSClient::stop`), player type 10 (what a normal boot has always
 /// initialized), with exactly the calls and log lines it always had. The URI engine's handle (player
-/// type 0, the one its product binding is gated on) is NOT a boot's: the first URI-engine bind that
-/// needs it creates it, once, on the main thread (`PlaneOwner::ensure_handle`, reached from the URI
-/// driver's gate), so a viewer on Standard never has a second core; two cores in one process are
+/// type 0, the one its product binding is gated on) is NOT a boot's: the offer of its first source
+/// creates it, once, on the main thread (`PlaneOwner::ensure_handle`, reached from the URI
+/// driver's `ready_to_start`), so a viewer on Standard never has a second core; two cores in one process are
 /// independent (`tv::plane`'s module doc). A build with no Feed boots Feed's facts absent.
 #[cfg_attr(not(feature = "play-feed"), allow(unused_variables))]
 fn acb_init_acb(mt: &MainThread, display: &dyn DisplaySink, owner: &PlaneOwner) {
@@ -345,7 +345,7 @@ impl MonotonicClock for ProductUriClock {
 
 /// The display path the product URI driver is composed with, and the boot log line that names it
 /// and the gate's inputs (so the television shows it without a trigger). On an ACB display the URI
-/// engine's own handle (player type 0) does not exist yet: the first URI-engine bind creates it, so the
+/// engine's own handle (player type 0) does not exist yet: the offer of its first source creates it, so the
 /// line says `handle=deferred` and the binding is `Acb`, and each Start's gate decides that play.
 /// `firmware_major` (`device::info().major`, read by the caller at the
 /// IO side, 0 when unknown) and `strata` (production's `EXPORTED_STRATA`) are parameters, never a
@@ -577,7 +577,7 @@ mod tests {
     }
 
     /// The player types an ACB boot of this build creates: Feed's alone. The URI engine's handle is
-    /// created on demand, by the first URI-engine bind that needs it (`PlaneOwner::ensure_handle`).
+    /// created on demand, when its first source is offered (`PlaneOwner::ensure_handle`).
     fn created_player_types() -> Vec<c_int> {
         let mut types = Vec::new();
         #[cfg(feature = "play-feed")]

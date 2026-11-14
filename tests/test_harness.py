@@ -6825,7 +6825,7 @@ class UriProductRunner(unittest.TestCase):
         self.assertEqual(got["plxnative-play"], str(run.mock_fps.CARRIER_RK))
         self.assertEqual((got["plxnative-quality"], got["plxnative-audioenh"]), ("original", "off"))
         self.assertNotIn("plxnative-ptype", got,
-                         "a product run boots as production does: the URI engine has its own player type 0 handle, created by its first bind")
+                         "a product run boots as production does: the URI engine has its own player type 0 handle, created when its first play is offered")
         self.assertEqual(got["plxnative-uridev"],
                          f"acb part={run.mock_fps.CARRIER_PART_ID} pms={self.HOST}:{self.PORT} "
                          f"url=http://192.0.2.10:8020/pipe_hls_720p24_20m/index.m3u8")

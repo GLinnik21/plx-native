@@ -4,8 +4,8 @@
 //! **Why.** A handle is created and initialized once per process (`AcbAPI_create` +
 //! `AcbAPI_initialize`; a repeat initialize returns 0). There are up to two, one per backend
 //! ([`PlaneHandle`]: Feed's, player type 10, and the URI engine's, player type 0), each created once
-//! and never destroyed. The boot creates Feed's; the URI engine's is created on demand, by the first
-//! URI-engine bind that needs it (an Experimental viewer's play the route sends to it), so a viewer
+//! and never destroyed. The boot creates Feed's; the URI engine's is created on demand, when the first
+//! source the route would send to it is offered (an Experimental viewer's play; the Start's gate makes it if nothing did), so a viewer
 //! on Standard never has a second core (#1394). Two cores in one process are independent (each has its own anonymous bus
 //! client, callback, appId, sink and type; `/Volumes/DAS/lgfw/reports/acb-two-cores/report.md`), so
 //! this owner keeps the invariant that matters on top of them: ONE binding at a time, across both.
@@ -684,7 +684,7 @@ impl PlaneOwner {
         self.lock().boot(handle, facts, seat);
     }
     /// Make `handle` exist, once: the first call creates and initializes it through `sink` (the
-    /// boot's Feed, or the URI engine's before its first bind) and records the boot; every later
+    /// boot's Feed, or the URI engine's when its first source is offered) and records the boot; every later
     /// call, and a handle whose create failed, answers what the first found without touching the
     /// sink. Main thread only (the witness): the create verb and the library's confirmation of the
     /// initialize are the sink's current handle's.
