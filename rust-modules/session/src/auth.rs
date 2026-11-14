@@ -2013,6 +2013,8 @@ struct Winner {
     score: i32,
     /// Network round-trip of the verified identity probe (not the whole race).
     latency: Duration,
+    /// Moment the worker completed its verified reply, not when the coordinator read it.
+    answered_at: Instant,
 }
 
 struct ProbeMessage {
@@ -2022,6 +2024,7 @@ struct ProbeMessage {
     route: RouteOutcome,
     /// Wall time spent dialling this candidate, for family-selection diagnostics.
     latency: Duration,
+    answered_at: Instant,
     /// [`ProbeReply::untrusted`] of this candidate's reply.
     untrusted: Option<u8>,
 }
@@ -2108,6 +2111,7 @@ fn settle_probe_message(
     pending: &mut [Option<PendingProbe>],
     live: &mut usize,
     result: &mut BatchResult,
+    grace: Duration,
     activate: &mut dyn FnMut(&ProbePlan, &Candidate, &Origin),
 ) {
     let Some(_pending) = pending.get_mut(message.index).and_then(Option::take) else {
@@ -2130,10 +2134,14 @@ fn settle_probe_message(
         Outcome::Unreachable => "unreachable",
         Outcome::InsecureOnly => "insecure_only",
     };
-    log(&format!(
-        "auth: probe family={family} result={outcome} latency_ms={}",
-        message.latency.as_millis()
-    ));
+    // The transport already logs unreachable probes; avoid turning a DNS/timeout failure
+    // into an additional per-candidate diagnostic line (see Outcome::Unreachable below).
+    if !matches!(message.outcome, Outcome::Unreachable) {
+        log(&format!(
+            "auth: '{}' probe at {}:{} tier={:?} scheme={:?} family={family} result={outcome} latency_ms={}",
+            plan.name, c.address, c.port, c.location, c.scheme, message.latency.as_millis(),
+        ));
+    }
     match message.outcome {
         Outcome::Reachable => {
             let Some(origin) = dial_target(c) else { return };
@@ -2141,6 +2149,7 @@ fn settle_probe_message(
                 index: message.index,
                 score: candidate_score(c, &origin),
                 latency: message.latency,
+                answered_at: message.answered_at,
                 candidate: c.clone(),
                 origin,
             };
@@ -2173,7 +2182,12 @@ fn settle_probe_message(
                 activate(plan, &winner.candidate, &winner.origin);
                 result.first = Some(winner.clone());
             }
-            if result.best.as_ref().is_none_or(|old| better(&winner, old)) {
+            // A candidate that finishes after its individual winning window cannot
+            // displace an already-verified route, even if another tier keeps the race open.
+            let first_at = result.first.as_ref().expect("first set above").answered_at;
+            if result.best.as_ref().is_none_or(|old| {
+                candidate_can_replace(&winner, old, first_at, grace)
+            }) {
                 result.best = Some(winner);
             }
         }
@@ -2203,63 +2217,98 @@ fn settle_probe_message(
     }
 }
 
-/// Could candidate `index`, which has not answered yet, still replace `best`? Its score is a
-/// function of the candidate alone ([`candidate_score`]), so this is known BEFORE it answers; a
-/// candidate this build cannot put a credential on never becomes `best` ([`settle_probe_message`])
-/// and so never counts.
-fn could_outrank(plan: &ProbePlan, index: usize, best: &Winner) -> bool {
-    let c = &plan.candidates[index];
-    if !c.credential_eligible {
-        return false;
-    }
-    let Some(origin) = dial_target(c) else { return false };
-    let score = candidate_score(c, &origin);
-    score > best.score || (score == best.score && index < best.index)
+/// An individual candidate's ability to improve a verified winner. Candidate score is
+/// authoritative, but index *alone* cannot replace a successful same-family address.
+/// An IPv6 candidate at the same location/scheme/score gets a bounded opportunity
+/// after its IPv4 counterpart answers; genuinely better routes retain the usual grace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WinWindow {
+    BetterTier,
+    Ipv6Twin,
 }
 
-/// Short grace for a still-probing IPv6 peer once its same-tier IPv4 fallback answered.
 const IPV6_FALLBACK_GRACE: Duration = Duration::from_millis(250);
 
-fn grace_for_pending(
-    plan: &ProbePlan, undecided: &[usize], best: Option<&Winner>, default: Duration,
-) -> Duration {
-    let Some(best) = best else { return default };
-    if best.candidate.ipv6 {
-        return default;
+fn winning_window(index: usize, candidate: &Candidate, score: i32, best: &Winner) -> Option<WinWindow> {
+    if !candidate.credential_eligible {
+        return None;
     }
-    let mut outrankers = undecided.iter().copied()
-        .filter(|&index| could_outrank(plan, index, best))
-        .peekable();
-    if outrankers.peek().is_some() && outrankers.all(|index| {
-        let candidate = &plan.candidates[index];
-        candidate.ipv6
-            && candidate.location == best.candidate.location
-            && candidate.scheme == best.candidate.scheme
-            && dial_target(candidate)
-                .is_some_and(|origin| candidate_score(candidate, &origin) == best.score)
-    }) {
-        return default.min(IPV6_FALLBACK_GRACE);
+    let better_tier = score > best.score
+        || (score == best.score
+            && index < best.index
+            && (candidate.location, candidate.scheme)
+                < (best.candidate.location, best.candidate.scheme));
+    if better_tier {
+        return Some(WinWindow::BetterTier);
     }
-    default
+    if score == best.score
+        && index < best.index
+        && candidate.ipv6 && !best.candidate.ipv6
+        && candidate.location == best.candidate.location
+        && candidate.scheme == best.candidate.scheme
+    {
+        return Some(WinWindow::Ipv6Twin);
+    }
+    None
 }
 
-/// **Is the race over, with some candidates still unanswered?** Pure, so the rule is gradeable
-/// on the host without a socket or a clock.
-///
-/// A race waits only for candidates that could improve on the verified winner.
-/// Better locations/security tiers keep the ordinary `grace` from the first answer;
-/// the sole remaining better candidate being an IPv6 twin gets up to 250 ms.
-/// A race with no verified winner still waits up to the candidate deadlines.
+fn candidate_can_replace(
+    candidate: &Winner, best: &Winner, first_at: Instant, grace: Duration,
+) -> bool {
+    match winning_window(candidate.index, &candidate.candidate, candidate.score, best) {
+        Some(WinWindow::BetterTier) => candidate.answered_at < first_at + grace,
+        Some(WinWindow::Ipv6Twin) =>
+            candidate.answered_at < best.answered_at + IPV6_FALLBACK_GRACE,
+        None => false,
+    }
+}
+
+/// A pending candidate's remaining *individual* opportunity to become the winner.
+/// Pure, so test clocks can advance without any worker, socket or real sleep.
+fn pending_win_time(
+    plan: &ProbePlan, index: usize, best: &Winner,
+    since_first: Duration, since_best: Duration, grace: Duration,
+) -> Option<Duration> {
+    let candidate = plan.candidates.get(index)?;
+    if !candidate.credential_eligible {
+        return None;
+    }
+    let origin = dial_target(candidate)?;
+    let score = candidate_score(candidate, &origin);
+    let window = match winning_window(index, candidate, score, best) {
+        Some(WinWindow::BetterTier) => grace.saturating_sub(since_first),
+        Some(WinWindow::Ipv6Twin) => IPV6_FALLBACK_GRACE.saturating_sub(since_best),
+        None => Duration::ZERO,
+    };
+    (window > Duration::ZERO).then_some(window)
+}
+
+fn max_pending_win_time(
+    plan: &ProbePlan, undecided: &[usize], best: Option<&Winner>,
+    since_first: Option<Duration>, since_best: Option<Duration>, grace: Duration,
+) -> Option<Duration> {
+    let (Some(best), Some(since_first), Some(since_best)) = (best, since_first, since_best)
+        else { return None };
+    undecided.iter().filter_map(|&index| {
+        pending_win_time(plan, index, best, since_first, since_best, grace)
+    }).max()
+}
+
+/// The decision is complete when *no* pending route still has a winning window.
+/// Better tiers get 1.5 s from the first answer; equivalent IPv6 gets 250 ms from
+/// the current IPv4 winner's own answer, even if another tier keeps the race open.
+/// Pending same-family ties never hold the race open.
 fn race_decided(
     plan: &ProbePlan,
     undecided: &[usize],
     best: Option<&Winner>,
     since_first_win: Option<Duration>,
+    since_best_win: Option<Duration>,
     grace: Duration,
 ) -> bool {
-    let (Some(best), Some(since)) = (best, since_first_win) else { return false };
-    since >= grace_for_pending(plan, undecided, Some(best), grace)
-        || !undecided.iter().any(|&i| could_outrank(plan, i, best))
+    best.is_some() && max_pending_win_time(
+        plan, undecided, best, since_first_win, since_best_win, grace,
+    ).is_none()
 }
 
 /// Race one phase of a server's candidates. The spawner is injected because refusal is a result

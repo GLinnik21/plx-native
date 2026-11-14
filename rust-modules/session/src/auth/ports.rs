@@ -213,7 +213,8 @@ pub(super) fn race_batch(
         let job = Box::new(move || {
             let dial_started = clock_now();
             let reply = dial(&origin, pin.as_ref(), budget);
-            let latency = clock_elapsed(dial_started);
+            let answered_at = clock_now();
+            let latency = answered_at.saturating_duration_since(dial_started);
             let untrusted = reply.untrusted();
             let (outcome, route) = reply.grade_learning(&machine_id, location);
             let on_time = clock_now() <= deadline;
@@ -236,6 +237,7 @@ pub(super) fn race_batch(
                     outcome,
                     route,
                     latency,
+                    answered_at,
                     untrusted,
                 });
             }
@@ -253,7 +255,6 @@ pub(super) fn race_batch(
         observed: vec![None; plan.candidates.len()],
         ..BatchResult::default()
     };
-    let mut first_win: Option<Instant> = None;
     while live > 0 {
         // Drain results that completed on time BEFORE expiring by the coordinator's current clock.
         // Spawn setup and queue backlog are allowed to delay observation; `finished` is the fact
@@ -266,6 +267,7 @@ pub(super) fn race_batch(
                     &mut pending,
                     &mut live,
                     &mut result,
+                    policy.grace,
                     activate,
                 ),
                 Err(mpsc::TryRecvError::Empty) => break,
@@ -302,17 +304,20 @@ pub(super) fn race_batch(
                 result.observed[index] = Some(RouteOutcome::Timeout);
                 let c = &plan.candidates[index];
                 log(&format!(
-                    "auth: probe family={} result=timeout waited_ms={}",
-                    if c.ipv6 { "IPv6" } else { "IPv4" }, waited.as_millis()
+                    "auth: '{}' probe timed out at {}:{} tier={:?} scheme={:?} family={} waited_ms={}",
+                    plan.name, c.address, c.port, c.location, c.scheme,
+                    if c.ipv6 { "IPv6" } else { "IPv4" }, waited.as_millis(),
                 ));
             }
         }
         if live == 0 {
             break;
         }
-        if first_win.is_none() && result.first.is_some() {
-            first_win = Some(clock_now());
-        }
+        // Both deadlines are anchored to the worker's verified answer, not the time
+        // the coordinator read the message. A newly promoted IPv4 route gets its OWN
+        // 250ms IPv6 window, independently of an earlier remote answer.
+        let first_win = result.first.as_ref().map(|w| w.answered_at);
+        let best_win = result.best.as_ref().map(|w| w.answered_at);
         // A candidate whose worker already claimed completion owes a message that is about to
         // land, so it is never skipped; only one still dialling can be left behind.
         let undecided: Vec<usize> = indices
@@ -330,6 +335,7 @@ pub(super) fn race_batch(
                 &undecided,
                 result.best.as_ref(),
                 first_win.map(clock_elapsed),
+                best_win.map(clock_elapsed),
                 policy.grace,
             )
         {
@@ -349,7 +355,8 @@ pub(super) fn race_batch(
                         left_behind += 1;
                         let c = &plan.candidates[index];
                         log(&format!(
-                            "auth: probe family={} result=not_waited waited_ms={}",
+                            "auth: '{}' probe not waited for at {}:{} tier={:?} scheme={:?} family={} waited_ms={}",
+                            plan.name, c.address, c.port, c.location, c.scheme,
                             if c.ipv6 { "IPv6" } else { "IPv4" },
                             clock_elapsed(p.started).as_millis(),
                         ));
@@ -369,11 +376,12 @@ pub(super) fn race_batch(
             .filter_map(|&i| pending[i].as_ref())
             .filter(|p| p.state.load(Ordering::Acquire) == PROBE_PENDING)
             .map(|p| p.deadline)
-            // Wake for the end of the grace too, but only while it is still ahead: a past one
-            // would turn the wait below into a zero-timeout spin.
-            .chain(first_win.map(|at| at + grace_for_pending(
-                plan, &undecided, result.best.as_ref(), policy.grace,
-            )).filter(|end| *end > clock_now()))
+            // Wake when the *last eligible* pending route's window expires; a
+            // same-family dead address cannot extend another IPv6 answer's window.
+            .chain(max_pending_win_time(
+                plan, &undecided, result.best.as_ref(),
+                first_win.map(clock_elapsed), best_win.map(clock_elapsed), policy.grace,
+            ).map(|wait| clock_now() + wait))
             .min();
         let received = match next {
             Some(next) => rx.recv_timeout(next.saturating_duration_since(clock_now())),
@@ -388,6 +396,7 @@ pub(super) fn race_batch(
                 &mut pending,
                 &mut live,
                 &mut result,
+                policy.grace,
                 activate,
             ),
             Err(mpsc::RecvTimeoutError::Timeout) => {}

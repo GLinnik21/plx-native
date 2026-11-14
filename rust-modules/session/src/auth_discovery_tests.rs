@@ -335,17 +335,17 @@ fn the_race_ends_early_only_when_no_unanswered_route_could_outrank_the_winner() 
         let candidate = plan.candidates[index].clone();
         let origin = dial_target(&candidate).unwrap();
         Winner { index, score: candidate_score(&candidate, &origin),
-            latency: Duration::ZERO, candidate, origin }
+            latency: Duration::ZERO, answered_at: Instant::now(), candidate, origin }
     };
     let (local, remote) = (winner(0), winner(1));
-    assert!(!race_decided(&plan, &[1], None, None, grace), "no winner, nothing to decide");
-    assert!(race_decided(&plan, &[1], Some(&local), Some(Duration::ZERO), grace),
+    assert!(!race_decided(&plan, &[1], None, None, None, grace), "no winner, nothing to decide");
+    assert!(race_decided(&plan, &[1], Some(&local), Some(Duration::ZERO), Some(Duration::ZERO), grace),
         "a pending remote cannot outrank the local winner");
-    assert!(!race_decided(&plan, &[0], Some(&remote), Some(Duration::from_millis(1_499)), grace),
+    assert!(!race_decided(&plan, &[0], Some(&remote), Some(Duration::from_millis(1_499)), Some(Duration::from_millis(1_499)), grace),
         "a pending local could still outrank a remote winner, inside the grace");
-    assert!(race_decided(&plan, &[0], Some(&remote), Some(grace), grace),
+    assert!(race_decided(&plan, &[0], Some(&remote), Some(grace), Some(grace), grace),
         "…and is not waited for once the grace is spent");
-    assert!(race_decided(&plan, &[], Some(&remote), Some(Duration::ZERO), grace));
+    assert!(race_decided(&plan, &[], Some(&remote), Some(Duration::ZERO), Some(Duration::ZERO), grace));
 }
 
 /// One Plex server with a v6/v4 pair in the same location/security tier.
@@ -386,18 +386,15 @@ fn dual_stack_dead_ipv6_costs_at_most_a_quarter_second_after_ipv4_answers() {
 
 #[test]
 fn dual_stack_ipv6_that_answers_inside_the_quarter_second_wins() {
+    // Fixed-clock replacement check: no scheduler race or exact activation-order assertion.
     let plan = dual_stack_race_plan();
-    let dial = status_dial(|origin, _, _| {
-        if origin.host().contains(':') {
-            std::thread::sleep(Duration::from_millis(90));
-        }
-        (200, identity_json("race-machine"))
-    });
-    let mut activated = Vec::new();
-    let reached = probe_server_racing(&plan, dial, &threaded_spawn,
-        PROBE_DEADLINES, &mut |_, candidate, _| activated.push(candidate.ipv6));
-    assert!(matches!(reached, Reach::At(ref c, _) if c.ipv6));
-    assert_eq!(activated, [false, true], "IPv4 is usable immediately; IPv6 can replace it");
+    let base = Instant::now();
+    let mut ipv4 = review_winner(&plan, 1);
+    let mut ipv6 = review_winner(&plan, 0);
+    ipv4.answered_at = base + Duration::from_millis(20);
+    ipv6.answered_at = base + Duration::from_millis(120);
+    assert!(candidate_can_replace(&ipv6, &ipv4, ipv4.answered_at, PROBE_DEADLINES.grace),
+        "IPv6 remains the preferred winner when it replies 100ms after same-tier IPv4");
 }
 
 #[test]
@@ -424,23 +421,23 @@ fn short_ipv6_grace_applies_only_to_the_same_tier_and_scheme() {
         let candidate = plan.candidates[index].clone();
         let origin = dial_target(&candidate).unwrap();
         Winner { index, score: candidate_score(&candidate, &origin),
-            latency: Duration::ZERO, candidate, origin }
+            latency: Duration::ZERO, answered_at: Instant::now(), candidate, origin }
     };
     let ipv4 = winner(&plan, 1);
     assert_eq!(
-        grace_for_pending(&plan, &[0], Some(&ipv4), PROBE_DEADLINES.grace),
-        Duration::from_millis(250),
+        pending_win_time(&plan, 0, &ipv4, Duration::ZERO, Duration::ZERO, PROBE_DEADLINES.grace),
+        Some(Duration::from_millis(250)),
     );
     assert_eq!(
-        grace_for_pending(&plan, &[0], None, PROBE_DEADLINES.grace),
-        PROBE_DEADLINES.grace,
+        max_pending_win_time(&plan, &[0], None, None, None, PROBE_DEADLINES.grace),
+        None,
     );
     let mut different_location = plan;
     different_location.candidates[1].location = probe::Location::Remote;
     let remote = winner(&different_location, 1);
     assert_eq!(
-        grace_for_pending(&different_location, &[0], Some(&remote), PROBE_DEADLINES.grace),
-        PROBE_DEADLINES.grace,
+        pending_win_time(&different_location, 0, &remote, Duration::ZERO, Duration::ZERO, PROBE_DEADLINES.grace),
+        Some(PROBE_DEADLINES.grace),
         "local IPv6 is a genuinely better tier, not a same-tier twin",
     );
     let mut different_scheme = different_location;
@@ -448,10 +445,127 @@ fn short_ipv6_grace_applies_only_to_the_same_tier_and_scheme() {
     different_scheme.candidates[1].scheme = probe::Scheme::Http;
     let insecure = winner(&different_scheme, 1);
     assert_eq!(
-        grace_for_pending(&different_scheme, &[0], Some(&insecure), PROBE_DEADLINES.grace),
-        PROBE_DEADLINES.grace,
+        pending_win_time(&different_scheme, 0, &insecure, Duration::ZERO, Duration::ZERO, PROBE_DEADLINES.grace),
+        Some(PROBE_DEADLINES.grace),
         "HTTPS has a stronger security tier, not a same-scheme twin",
     );
+}
+
+// Review #1320: fixed-clock regressions, deliberately added before the race fix.
+fn review_winner(plan: &ProbePlan, index: usize) -> Winner {
+    let candidate = plan.candidates[index].clone();
+    let origin = dial_target(&candidate).expect("fixture origin");
+    Winner {
+        index, score: candidate_score(&candidate, &origin),
+        latency: Duration::ZERO, answered_at: Instant::now(), candidate, origin,
+    }
+}
+
+#[test]
+fn review_two_ipv6_addresses_do_not_wait_for_a_dead_same_family_peer() {
+    let mut plan = dual_stack_race_plan();
+    let mut v6b = plan.candidates[0].clone();
+    v6b.url = "https://[2001:db8::11]:32400".into();
+    v6b.address = "2001:db8::11".into();
+    plan.candidates.insert(1, v6b);
+    // v4 answered at t=0; working v6b answers at t=100ms; v6a is silent.
+    let v6b = review_winner(&plan, 1);
+    assert!(race_decided(&plan, &[0], Some(&v6b),
+        Some(Duration::from_millis(100)), Some(Duration::ZERO), Duration::from_millis(1_500)),
+        "an earlier index of the same family/tier must not hold a completed IPv6 race open");
+}
+
+#[test]
+fn review_slow_ipv6_cannot_replace_remote_ipv4_while_local_is_hung() {
+    let mut plan = dual_stack_race_plan();
+    plan.candidates[0].location = probe::Location::Remote;
+    plan.candidates[1].location = probe::Location::Remote;
+    let local = race_plan().candidates[0].clone(); // hanging local HTTPS
+    plan.candidates.insert(0, local);
+    let v4 = review_winner(&plan, 2);
+    let mut v6 = review_winner(&plan, 1);
+    // The two remote routes are equivalent; the actual reply timings are fixed here.
+    // v4 replies at 30ms; v6 replies at 1230ms while local is still hanging.
+    let base = Instant::now();
+    let mut fast_v4 = v4;
+    fast_v4.answered_at = base + Duration::from_millis(30);
+    v6.answered_at = base + Duration::from_millis(1_230);
+    assert!(!candidate_can_replace(&v6, &fast_v4, fast_v4.answered_at,
+        Duration::from_millis(1_500)),
+        "same-tier IPv6 answering 1.2s later cannot replace an already-usable IPv4 route");
+}
+
+#[test]
+fn review_new_local_ipv4_starts_its_own_ipv6_window_not_the_remote_first_win() {
+    let mut plan = dual_stack_race_plan();
+    // Remote v4 wins at t=0; local v4 becomes best at t=800ms.
+    let mut remote_v4 = plan.candidates[1].clone();
+    remote_v4.location = probe::Location::Remote;
+    plan.candidates.push(remote_v4);
+    let mut local_v4 = review_winner(&plan, 1);
+    let mut remote = review_winner(&plan, 2);
+    let base = Instant::now();
+    remote.answered_at = base;
+    local_v4.answered_at = base + Duration::from_millis(800);
+    assert!(candidate_can_replace(&local_v4, &remote, remote.answered_at,
+        Duration::from_millis(1_500)), "a better local route can replace remote inside the full grace");
+    assert!(!race_decided(&plan, &[0], Some(&local_v4),
+        Some(Duration::from_millis(800)), Some(Duration::ZERO), Duration::from_millis(1_500)),
+        "local v6 still has 250ms from the local v4 answer despite the earlier remote win");
+    assert!(race_decided(&plan, &[0], Some(&local_v4),
+        Some(Duration::from_millis(1_050)), Some(Duration::from_millis(250)), Duration::from_millis(1_500)),
+        "the local IPv6 window must close 250ms after its local IPv4 twin answered");
+}
+
+#[test]
+fn review_higher_rank_local_route_keeps_full_grace_from_first_answer() {
+    let plan = race_plan();
+    let remote = review_winner(&plan, 1);
+    assert!(!race_decided(&plan, &[0], Some(&remote),
+        Some(Duration::from_millis(1_499)), Some(Duration::from_millis(1_499)), Duration::from_millis(1_500)));
+    assert!(race_decided(&plan, &[0], Some(&remote),
+        Some(Duration::from_millis(1_500)), Some(Duration::from_millis(1_500)), Duration::from_millis(1_500)));
+}
+
+#[test]
+fn review_same_tier_ipv6_fallback_window_works_for_relay_too() {
+    let mut plan = dual_stack_race_plan();
+    for candidate in &mut plan.candidates {
+        candidate.location = probe::Location::Relay;
+    }
+    let relay_v4 = review_winner(&plan, 1);
+    assert!(!race_decided(&plan, &[0], Some(&relay_v4),
+        Some(Duration::from_millis(249)), Some(Duration::from_millis(249)), Duration::from_millis(1_500)));
+    assert!(race_decided(&plan, &[0], Some(&relay_v4),
+        Some(Duration::from_millis(250)), Some(Duration::from_millis(250)), Duration::from_millis(1_500)));
+}
+
+#[test]
+fn review_ipv6_twin_window_survives_first_win_grace_expiry() {
+    let plan = dual_stack_race_plan();
+    let local_v4 = review_winner(&plan, 1);
+    // A remote answer arrived first, then this local IPv4 only at t=1490ms.
+    // At t=1600ms the generic first-answer grace is over, but this IPv6 twin
+    // still has 140ms left in its OWN window.
+    assert!(!race_decided(&plan, &[0], Some(&local_v4),
+        Some(Duration::from_millis(1_600)), Some(Duration::from_millis(110)),
+        Duration::from_millis(1_500)));
+    assert!(race_decided(&plan, &[0], Some(&local_v4),
+        Some(Duration::from_millis(1_740)), Some(Duration::from_millis(250)),
+        Duration::from_millis(1_500)));
+}
+
+#[test]
+fn review_ipv6_candidate_is_not_promoted_at_or_after_its_250ms_deadline() {
+    let plan = dual_stack_race_plan();
+    let base = Instant::now();
+    let mut v4 = review_winner(&plan, 1);
+    let mut v6 = review_winner(&plan, 0);
+    v4.answered_at = base;
+    v6.answered_at = base + Duration::from_millis(249);
+    assert!(candidate_can_replace(&v6, &v4, base, Duration::from_millis(1_500)));
+    v6.answered_at = base + Duration::from_millis(250);
+    assert!(!candidate_can_replace(&v6, &v4, base, Duration::from_millis(1_500)));
 }
 
 /// Pending means a worker really exists. Refusing one launch cannot leave the coordinator
