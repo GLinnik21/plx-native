@@ -99,7 +99,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-14T05:47:02Z",
+ "generated": "2026-11-14T05:47:30Z",
  "metrics": [
   {
    "change30_pct": 47.0,
@@ -144,10 +144,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 4.9,
+   "change30_pct": 5.0,
    "change7_pct": 3.3,
-   "d30": 458.5,
-   "delta30": 22.5,
+   "d30": 458,
+   "delta30": 23,
    "delta7": 15.5,
    "group": "ci",
    "id": "pr_wait",
@@ -165,18 +165,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 25.4,
-   "change7_pct": 3.1,
+   "change30_pct": 24.7,
+   "change7_pct": 2.6,
    "d30": 368,
-   "delta30": 93.5,
-   "delta7": 14.0,
+   "delta30": 91,
+   "delta7": 11.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 68,
+   "n_now": 69,
    "n_prev": 60,
-   "now": 461.5,
+   "now": 459,
    "prev7": 447.5,
    "shown": true,
    "state": "flat",
@@ -378,15 +378,15 @@
    "change30_pct": 52.3,
    "change7_pct": 8.9,
    "d30": 216,
-   "delta30": 113.0,
-   "delta7": 27.0,
+   "delta30": 113,
+   "delta7": 27,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 60,
+   "n_now": 61,
    "n_prev": 57,
-   "now": 329.0,
+   "now": 329,
    "prev7": 302,
    "shown": true,
    "state": "flat",
@@ -441,15 +441,15 @@
    "change30_pct": 63.5,
    "change7_pct": 4.2,
    "d30": 137,
-   "delta30": 87.0,
-   "delta7": 9.0,
+   "delta30": 87,
+   "delta7": 9,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 60,
+   "n_now": 61,
    "n_prev": 57,
-   "now": 224.0,
+   "now": 224,
    "prev7": 215,
    "shown": true,
    "state": "flat",
@@ -459,18 +459,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 5.9,
-   "change7_pct": -7.9,
+   "change30_pct": 5.3,
+   "change7_pct": -8.4,
    "d30": 187,
-   "delta30": 11.0,
-   "delta7": -17.0,
+   "delta30": 10,
+   "delta7": -18,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 60,
+   "n_now": 61,
    "n_prev": 57,
-   "now": 198.0,
+   "now": 197,
    "prev7": 215,
    "shown": true,
    "state": "flat",
@@ -525,15 +525,15 @@
    "change30_pct": 11.8,
    "change7_pct": -5.0,
    "d30": 17,
-   "delta30": 2.0,
-   "delta7": -1.0,
+   "delta30": 2,
+   "delta7": -1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 60,
+   "n_now": 61,
    "n_prev": 57,
-   "now": 19.0,
+   "now": 19,
    "prev7": 20,
    "shown": false,
    "state": "flat",
@@ -632,11 +632,6 @@
    "change_pct": 31.8,
    "commits": [
     {
-     "pr": 1373,
-     "sha": "ed3c72066",
-     "title": "Preview: a refused trailer's report names which condition refused it"
-    },
-    {
      "pr": 1376,
      "sha": "fbec5ed32",
      "title": "webOS version: read /usr/lib/os-release when nyx's os_info.json is unreadable"
@@ -680,6 +675,11 @@
      "pr": 1383,
      "sha": "a8e460b3c",
      "title": "CI: build the host crates with line tables only"
+    },
+    {
+     "pr": 1381,
+     "sha": "f5bb31d41",
+     "title": "Check: run the hostsim unit pass only over the crates that declare hostsim"
     }
    ],
    "from": 198.0,
@@ -693,11 +693,6 @@
    "change_pct": 28.7,
    "commits": [
     {
-     "pr": 1373,
-     "sha": "ed3c72066",
-     "title": "Preview: a refused trailer's report names which condition refused it"
-    },
-    {
      "pr": 1376,
      "sha": "fbec5ed32",
      "title": "webOS version: read /usr/lib/os-release when nyx's os_info.json is unreadable"
@@ -741,6 +736,11 @@
      "pr": 1383,
      "sha": "a8e460b3c",
      "title": "CI: build the host crates with line tables only"
+    },
+    {
+     "pr": 1381,
+     "sha": "f5bb31d41",
+     "title": "Check: run the hostsim unit pass only over the crates that declare hostsim"
     }
    ],
    "from": 24.3,
@@ -781,7 +781,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 329.0
+   "now": 329
   }
  ],
  "slowest_local": [
