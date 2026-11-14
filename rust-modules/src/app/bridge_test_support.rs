@@ -75,49 +75,47 @@ pub(super) fn tick(i: u32) -> Tick {
     }
 }
 
-/// **Perform the page navigations the screens asked for this frame**, through the SAME functions
-/// the loop's `content_requests` calls (`content::library_navigation`, `content_back`,
-/// `watchlist_navigation`), under the same two guards: the asking page still holds input, and the
-/// route is one that answers the request. A test that presses a key and wants the BACK, the
-/// header link or the strip pill to take effect calls this once per frame, in the order the loop
-/// does (after the dispatcher's frame).
-///
-/// Returns one label per request it PERFORMED (`"library:BackToHome { kind: Movie }"`,
-/// `"content:Back"`, `"watchlist:Back"`, `"home:FoldToHero"`, `"home:Detail"`), so a table can assert which request a key
-/// produced. A request that is not a navigation (a menu, a play) is labelled
-/// `"unperformed ..."` and left undone: this pump does not stand in for the rest of the loop, and
-/// a test that needs one of those should say so rather than have it dropped (a shelf publication is the
-/// store's business and is not listed). [`Pump`] is the one
-/// that performs the menus and the poster presses too.
+/// Observe terminal labels from the product frame's runner. No command is executed here.
 pub(super) fn pump_navigation(d: &mut Dispatcher<AppHost>, rig: &mut Bridge) -> Vec<String> {
     pump_requests(d, rig, None)
 }
 
-/// **What the loop owns that a poster press or a menu needs beyond the dispatcher and the
-/// bridge**: the playback session, the player adapter, the show/season Play continuation and the
-/// OK-armed flag. [`Pump::run`] is [`pump_navigation`] plus the requests that need them, performed
-/// by the loop's own `content::library_page_request` and the Collection/Detail pushes by
-/// `bridge::nav_push_with_return`: a test that presses OK on a poster sees the page the TV opens.
-/// It also drains the item menu's committed rows (`content::drain_item_menu_requests`, the Watchlist
-/// disc's Add/Remove among them), performs the Watchlist page's own requests
-/// (`content::watchlist_request`: the Sort & Filter menu and the value it chooses) and a Home shelf
-/// card's Detail (`perform_home_detail`). The BACK fold (`content::fold_to_hero`) needs none of this
-/// state, so [`pump_navigation`] performs it too; Home's other requests are drained and left undone.
-pub(super) struct Pump {
-    ps: plx_media::route::PlaybackSession,
-    pa: plx_media::player::adapter::PlayerAdapter,
-    menu_play_await: Option<crate::app::input::MenuPlayAwait>,
 
+/// Fixture-owned physical resources, borrowed by the same CommandRig as the product frame.
+pub(super) struct TestCommandResources {
+    player: plx_media::player::machine::Player,
+    adapters: crate::app::Adapters,
+    menu_play_await: Option<crate::app::input::MenuPlayAwait>,
+    playback: crate::app::playback::LivePlaybackResources,
+        repause_at: i64,
+        refresh_hubs: bool,
+        ptr: crate::app::input::Pointer,
+        rec: crate::app::recorder::Recplay,
+        boot_initial: Option<crate::app::bootstrap::Initial>,
 }
 
-impl Pump {
-    pub(super) fn new() -> Pump {
-        // SAFETY: the test thread is the main thread of its own world; `port.rs` installs `NoSink`
-        // under `cfg(test)`, so no player verb is reached.
+impl TestCommandResources {
+    pub(super) fn new() -> Self {
+        // SAFETY: this serial fixture thread owns its no-sink player adapter.
         let mt = unsafe { plx_base::task::MainThread::assume() };
-        Pump { ps: Default::default(), pa: plx_media::player::adapter::PlayerAdapter::new(mt),
-            menu_play_await: None }
+        Self { player: Default::default(), adapters: crate::app::Adapters {
+            player: plx_media::player::adapter::PlayerAdapter::new(mt),
+        }, menu_play_await: None, playback: crate::app::playback::LivePlaybackResources,
+                    repause_at: 0, refresh_hubs: false, ptr: crate::app::input::Pointer::IDLE,
+                    rec: crate::app::recorder::Recplay::Off, boot_initial: None }
     }
+    pub(super) fn borrow(&mut self) -> crate::app::content::CommandResources<'_> {
+        crate::app::content::CommandResources { player: &mut self.player,
+            adapters: &mut self.adapters, menu_play_await: &mut self.menu_play_await, playback: &mut self.playback,
+                        repause_at: &mut self.repause_at, refresh_hubs: &mut self.refresh_hubs, ptr: &mut self.ptr,
+                        rec: &mut self.rec, boot_initial: &mut self.boot_initial }
+    }
+}
+
+pub(super) struct Pump;
+
+impl Pump {
+    pub(super) fn new() -> Pump { Pump }
 
     /// One frame's requests, `now` being the frame clock in ms.
     pub(super) fn run(&mut self, d: &mut Dispatcher<AppHost>, rig: &mut Bridge, now: u32) -> Vec<String> {
@@ -125,125 +123,15 @@ impl Pump {
     }
 }
 
-fn pump_requests(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, mut item: Option<(&mut Pump, u32)>) -> Vec<String> {
-    use crate::app::content::{content_back, library_navigation, library_page_request, library_publish_shelves, watchlist_navigation, watchlist_request};
-    use plx_screens::registry::ContentReq;
-    use plx_screens::watchlist::page::WatchlistOut;
-    // The entry that asked, while it is still the one holding input.
-    fn asker(d: &Dispatcher<AppHost>, source: MachineId) -> Option<EntryId> {
-        let MachineId::Instance(instance) = source else { return None };
-        let entry = d.nav.entry_of_instance(instance)?;
-        (d.nav.input_owner() == Some(InputOwner::Entry(entry))).then_some(entry)
-    }
-    let mut seen = Vec::new();
-    // The item menu's committed row, and the hero disc's Add/Remove, are requests the loop drains
-    // right after the dispatcher and before the page requests (`content::drain_item_menu_requests`).
-    if let Some((pump, now)) = item.as_mut() {
-        crate::app::content::drain_item_menu_requests(&mut pump.ps, &mut pump.pa, d, rig,
-            &mut crate::app::playback::LivePlaybackResources, &mut pump.menu_play_await, *now);
-    }
-    for (source, request, ret) in rig.take_library_reqs() {
-        let (Some(entry), MachineId::Instance(instance)) = (asker(d, source), source) else { continue };
-        if !d.top_arg().is_some_and(|arg| arg.is_library_family()) { continue; }
-        // The publication is the store's business and the page re-asks every frame until it lands,
-        // so it is performed as the loop does and never listed among what a key caused.
-        if let plx_screens::registry::LibraryReq::PublishShelves { target, hidden_page, at_head } = request {
-            if item.is_some() { library_publish_shelves(d, rig, entry, target, hidden_page, at_head); }
-            continue;
-        }
-        let label = format!("{request:?}");
-        let Some(ret) = library_navigation(d, rig, &request, ret) else { seen.push(format!("library:{label}")); continue };
-        match (&request, item.as_mut()) {
-            (_, None) => seen.push(format!("unperformed library:{label}")),
-            (_, Some((pump, now))) => {
-                // SAFETY: the player seam is this pump's own `NoSink` session.
-                unsafe {
-                    library_page_request(&mut pump.ps, &mut pump.pa, &mut pump.menu_play_await,
-                        *now, d, rig, instance, entry, request, ret);
-                }
-                seen.push(format!("library:{label}"));
-            }
-        }
-    }
-    for (source, request, ret) in rig.take_content_reqs() {
-        let Some(entry) = asker(d, source) else { continue };
-        match request {
-            ContentReq::Back => { content_back(d, source, entry, ret); seen.push("content:Back".into()); }
-            ContentReq::Push(arg) if item.is_some() => {
-                nav_push_with_return(d, AppArg::Content(arg), ret);
-                seen.push("content:Push".into());
-            }
-            _ => seen.push("unperformed content:request".into()),
-        }
-    }
-    // Home's requests (`content::home_requests`), under the loop's guards: the asking page holds input and Home is the
-    // route. Two are performed: the BACK fold, the one request of Home's that moves focus rather than navigating (the loop
-    // runs `content::fold_to_hero`, so the world does, or a BACK on a shelf would fold the picture and leave the engine's
-    // focus where it was), which needs none of the Pump's resources and so is performed for `pump_navigation` as well, and a
-    // card's Detail (`perform_home_detail`, the Pump only). The rest are drained and left undone, as they were before this
-    // arm (nothing read them), so a test that presses OK on the hero or a pill sees what it always saw.
-    for (source, request, ret) in rig.take_home_reqs() {
-        let Some(entry) = asker(d, source) else { continue };
-        if d.top_arg() != Some(&AppArg::Home) { continue; }
-        match (request, item.as_mut()) {
-            (plx_screens::registry::HomeReq::FoldToHero, _) => {
-                crate::app::content::fold_to_hero(d, source, entry);
-                seen.push("home:FoldToHero".into());
-            }
-            (plx_screens::registry::HomeReq::Detail { sid, rk }, Some((pump, now))) => {
-                perform_home_detail(pump, *now, d, rig, sid, &rk, ret);
-                seen.push("home:Detail".into());
-            }
-            _ => {}
-        }
-    }
-    for (source, request, ret) in rig.take_watchlist_reqs() {
-        let MachineId::Instance(instance) = source else { continue };
-        let Some(entry) = d.nav.entry_of_instance(instance) else { continue };
-        // The Sort & Filter value comes from the surface over the page: the loop gates it on
-        // nothing but a Watchlist page being on the stack, so the page need not hold input.
-        if !matches!(request, WatchlistOut::SetOptions(_))
-            && (asker(d, source).is_none() || d.top_arg() != Some(&AppArg::Watchlist))
-        {
-            continue;
-        }
-        let label = format!("{request:?}");
-        seen.push(match (watchlist_navigation(d, rig, &request, ret), item.as_mut()) {
-            (None, _) => format!("watchlist:{label}"),
-            (Some(ret), Some(_)) => {
-                watchlist_request(d, rig, entry, request, ret);
-                format!("watchlist:{label}")
-            }
-            (Some(_), None) => format!("unperformed watchlist:{label}"),
-        });
-    }
-    // The requests above include an item menu's Play, whose `describe_movie` emits a store job: the
-    // drain after it must have started it, as the loop's own `update` pump is not run here.
+fn pump_requests(_d: &mut Dispatcher<AppHost>, rig: &mut Bridge, _item: Option<(&mut Pump, u32)>) -> Vec<String> {
+    // Every screen command already executed through CommandRig during the product frame.
+    // These passive terminal labels cannot cause a second navigation or store mutation.
     rig.assert_no_store_jobs_left_for_test();
-    seen
+    std::mem::take(&mut rig.completed_screen_commands)
 }
 
-/// **A Home card's Detail request, performed with the loop's own opener.** `content::home_requests` hands
-/// `HomeReq::Detail` to `activate_home_item`, which finds the card in the published hubs and opens it with
-/// `input::activate_deck_card` and the page's `ReturnState`. This finds the card the same way and calls that
-/// same `activate_deck_card`, so `activate_card`'s and `open_detail`'s handling of the return state is the
-/// loop's. `from_deck` is false: a World's Home has no Continue Watching deck to press. It does NOT run
-/// `activate_home_item` itself, which takes the whole `App` this rig does not build, so a loop that dropped
-/// `ret` between `home_requests` and `activate_deck_card` is not caught by a test that uses this.
-fn perform_home_detail(pump: &mut Pump, now: u32, d: &mut Dispatcher<AppHost>, rig: &mut Bridge,
-    sid: plx_plex::plex::ServerId, rk: &str, ret: plx_ui::screen::ReturnState<u32, plx_screens::registry::PageMemory>) {
-    let item = {
-        let snapshot = rig.hubs_snapshot();
-        let view = snapshot.view();
-        (0..view.hub_count()).find_map(|i| view.hub(i)?.items.iter()
-            .find(|item| plx_plex::plex::same_item((item.sid, &item.rk), (sid, rk))).map(|item| (**item).clone()))
-    }.expect("the card the request names is in the published hubs");
-    // SAFETY: the player seam is this pump's own `NoSink` session (`Pump::new`).
-    unsafe {
-        crate::app::input::activate_deck_card(&mut pump.ps, &mut pump.pa, &item, false, false,
-            plx_screens::player::input::HUD_LINGER_MS, Some(ret), d, rig, &mut pump.menu_play_await, now);
-    }
-}
+
+
 
 /// The section table's index of "Film Club" (a Movie library of the second source): the library the
 /// world pins beside "Movies" (index 0) when it is asked for two.

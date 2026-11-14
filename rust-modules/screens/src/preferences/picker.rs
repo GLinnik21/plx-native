@@ -81,7 +81,7 @@ impl PickerPage {
     pub fn new(entry: EntryId, field: PickerKind, inputs: &crate::registry::ScreenInputs) -> Self {
         let mut s = Self { inputs: inputs.clone(), marker_prefs: Default::default(), entry, form: FormTable::new(BAND),
             state: PickerState { shown_marker_scope: 0, marker_prefs: Default::default(), field, selected: 0, io: Io { busy: false, status: String::new() },
-                quality: plx_media::route::quality(), direct_play: plx_media::route::direct_play_mode(),
+                quality: inputs.preference::<QualityPref>(), direct_play: inputs.preference::<DirectPlayModePref>(),
                 checked: u32::MAX, confirming: false, affirmative: false, alert_scroll: 0 },
             copy: String::new(), txn: Txn::new(true, &inputs.profile),
             alert: DecisionPrompt::new(ALERT_GROUP, ALERT, ALERT + 1, plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::settings_playback_enable_force_c()) };
@@ -89,7 +89,7 @@ impl PickerPage {
         s
     }
     fn current(&self) -> Value {
-        resolve_with_marker(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs(), self.marker_prefs, self.inputs.session.ui_resolution())
+        resolve_with_marker(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs(), self.marker_prefs, self.inputs.session.ui_resolution(), &self.inputs)
     }
     /// Whether the STORED setting already is `value`, for the profile seated now. Only Size and
     /// Position can differ from [`Self::current`]: they publish the live value before the write
@@ -138,8 +138,8 @@ impl PickerPage {
     /// landing); otherwise the cursor stays on its row by identity.
     fn rebuild(&mut self, seat_current: bool) {
         self.state.marker_prefs = self.marker_prefs;
-        self.state.quality = plx_media::route::quality();
-        self.state.direct_play = plx_media::route::direct_play_mode();
+        self.state.quality = self.inputs.preference::<QualityPref>();
+        self.state.direct_play = self.inputs.preference::<DirectPlayModePref>();
         self.copy = copy_text(Subject::Picker(self.state.field), &self.state.io.status, self.state.direct_play, &Whose::Nobody).into_owned();
         self.state.confirming = self.alert.is_open(); self.state.affirmative = self.alert.choice();
         self.state.alert_scroll = self.alert.scroll_target_bits();
@@ -220,6 +220,7 @@ impl Machine<InnerHost> for PickerPage {
     type Ev = ScreenEvent<InnerHost>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Handled {
         let inputs_changed = self.inputs.session_key() != cx.views.inputs.session_key()
+            || !self.inputs.same_facts(cx.views.inputs)
             || !std::sync::Arc::ptr_eq(&self.inputs.session, &cx.views.inputs.session);
         self.inputs = cx.views.inputs.clone();
         if inputs_changed {

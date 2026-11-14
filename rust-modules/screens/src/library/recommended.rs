@@ -205,6 +205,7 @@ pub(super) enum Readout {
 
 /// The Recommended page: a vertical stack of the library's hub rows.
 pub struct RecommendedScreen {
+    caption_policy: plx_ui::caption_policy::CaptionPolicy,
     pub(super) entry: EntryId,
     instance: InstanceId,
     kind: SecKind,
@@ -393,6 +394,7 @@ fn settled(hubs: plx_data::stores::browse::HubsView<'_>) -> bool {
 impl RecommendedScreen {
     pub fn new(entry: EntryId, instance: InstanceId, kind: SecKind) -> Self {
         Self {
+            caption_policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT),
             entry, instance, kind, keys: KeyRegistry::default(), shelves: Vec::new(),
             section: None, epoch: None, query: None, shelf_publication: None,
             run: ShelfRun::default(), target_run: ShelfRun::default(),
@@ -450,6 +452,7 @@ impl RecommendedScreen {
 
     /// Follow the store: the section on view, and the publication of its hubs.
     pub(super) fn sync<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
+        self.caption_policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
         let listing = H::listing(cx);
         let directory = H::directory(cx);
         let identity = listing.id().map(|id| LibrarySectionIdentity { sid: id.sid, key: id.section });
@@ -620,7 +623,7 @@ impl RecommendedScreen {
         // The poster rows follow the Under posters setting; a landscape episode row is not a poster
         // and keeps its own two-line block and band; the landscape Continue Watching deck is Home's
         // still deck, which hangs nothing under its stills.
-        let policy = crate::registry::captions::policy();
+        let policy = self.caption_policy;
         for row in &mut self.shelves {
             let policy = if row.deck { crate::registry::captions::deck_policy(&policy) } else { policy };
             let policy = if row.still_deck { Some(crate::registry::captions::NOTHING_UNDER_STILLS) } else { Some(policy).filter(|_| !row.landscape) };
@@ -846,7 +849,7 @@ impl RecommendedScreen {
             let shelf = hubs.shelves().get(index);
             let at = focus.and_then(|elem| row.elems.iter().position(|key| *key == elem));
             let paging = at.is_some_and(|col| col.saturating_add(ui_cards::PAGE_EDGE_CARDS) >= row.elems.len());
-            let src = HubSrc { elems: &row.elems, shelf, paging, deck: Some(&row.basis) };
+            let src = HubSrc { policy: self.caption_policy, elems: &row.elems, shelf, paging, deck: Some(&row.basis), deck_press: H::screen_inputs(cx).preference::<plx_plex::plex::session::DeckPressPref>() };
             row.cards.dormant(unseen);
             let want = row.cards.on(ev, cx, &src, fx);
             if !ticking && at.is_none() { row.cards.reset_page_requests(); }
@@ -945,7 +948,7 @@ impl RecommendedScreen {
             let from_deck = self.from_deck(elem, cx);
             let req = if held {
                 LibraryReq::ItemMenu { sid: item.sid, rk: item.rk.clone(), from_deck }
-            } else if from_deck && plx_media::route::deck_press().press_plays() {
+            } else if from_deck && H::screen_inputs(cx).preference::<plx_plex::plex::session::DeckPressPref>().press_plays() {
                 LibraryReq::Play { sid: item.sid, rk: item.rk.clone(), resume_ns: plx_data::metadata::resume_ns(item.resume_ms, item.dur_ns / 1_000_000) }
             } else { LibraryReq::Detail { sid: item.sid, rk: item.rk.clone(), from_deck } };
             fx.push(Fx::App(AppFx::Library(req)));
@@ -1146,7 +1149,7 @@ impl RecommendedScreen {
     /// Row `index`'s content, read off the published hub (borrows only).
     pub(super) fn hub_src<'a, 'v: 'a, H: LibraryLike>(&'a self, index: usize, cx: &Cx<'v, H>) -> HubSrc<'a> {
         let row = &self.shelves[index];
-        HubSrc { elems: &row.elems, shelf: H::section_hubs(cx).shelves().get(index), paging: false, deck: Some(&row.basis) }
+        HubSrc { policy: self.caption_policy, elems: &row.elems, shelf: H::section_hubs(cx).shelves().get(index), paging: false, deck: Some(&row.basis), deck_press: H::screen_inputs(cx).preference::<plx_plex::plex::session::DeckPressPref>() }
     }
 
     /// The card `elem` of row `index` as drawn now: the component's placement (pop and press
@@ -1458,6 +1461,8 @@ impl LogicalState for RecommendedScreen {
 /// the page's element ids. Built from borrows (no copy), so a call can hold it while the row's
 /// own state is borrowed mutably.
 pub(super) struct HubSrc<'a> {
+    pub(super) policy: plx_ui::caption_policy::CaptionPolicy,
+    pub(super) deck_press: plx_plex::plex::session::DeckPress,
     pub(super) elems: &'a [u32],
     /// `None` while the page still names a hub the store has not published (a frame between a
     /// store change and the next `sync`): its cards draw nothing.
@@ -1507,7 +1512,7 @@ impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
         }
     }
     fn label(&self, i: usize) -> ui_cards::TileLabel {
-        self.shelf.map_or_else(ui_cards::TileLabel::default, |shelf| shelf_label(shelf, i))
+        self.shelf.map_or_else(ui_cards::TileLabel::default, |shelf| shelf_label_with_policy(shelf, i, &self.policy))
     }
     fn progress(&self, i: usize) -> Option<f32> {
         self.shelf.filter(|shelf| !shelf.landscape).and_then(|_| self.item(i)).and_then(|item| item.resume_frac())
@@ -1519,19 +1524,24 @@ impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
     fn overlay(&self, p: plx_ui::Painter, i: usize, tile: &Tile, measure: &dyn plx_machine::machine::Measure) {
         let (Some(shelf), Some(facts)) = (self.shelf, self.facts(i)) else { return };
         if is_still_deck(shelf) {
-            tile_facts::deck_overlay(p, &facts, tile, measure);
+            tile_facts::deck_overlay(p, &facts, tile, measure, self.deck_press);
         } else if shelf.landscape {
             plx_ui::widgets::still_overlay(p, &facts, tile.rect, tile.radius, plx_ui::widgets::StillFooter::Shelf, measure);
         }
     }
 }
 
+#[cfg(test)]
 pub(super) fn shelf_label(shelf: &plx_data::browse::section_hubs::Shelf, col: usize) -> ui_cards::TileLabel {
+    shelf_label_with_policy(shelf, col, &crate::registry::captions::policy())
+}
+
+fn shelf_label_with_policy(shelf: &plx_data::browse::section_hubs::Shelf, col: usize, policy: &plx_ui::caption_policy::CaptionPolicy) -> ui_cards::TileLabel {
     let Some(item) = shelf.items.get(col) else { return ui_cards::TileLabel::default() };
     // The still deck's footer is on the tile (`HubSrc::overlay`): nothing hangs under it.
     if is_still_deck(shelf) { return ui_cards::TileLabel::default(); }
     if shelf.landscape { return crate::registry::captions::still_label(item, ""); }
-    crate::registry::captions::shelf_label(&crate::registry::captions::policy(), item, shelf.is_continue)
+    crate::registry::captions::shelf_label(policy, item, shelf.is_continue)
 }
 
 #[cfg(test)]

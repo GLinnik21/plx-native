@@ -59,6 +59,7 @@ class GeneratedProofTests(unittest.TestCase):
         module = self.root / 'machine/src/machine.rs'
         mutations = [
             ('machine/src/lib.rs', 'pub mod machine;', '#[path="other.rs"] pub mod machine;'),
+            ('machine/src/machine.rs', 'pub struct AppCommandId(pub u64);', 'pub struct AppCommandId(pub std::cell::Cell<u64>);'),
             ('machine/src/machine.rs', 'pub struct $name(pub u32);', 'pub struct $name(pub std::cell::Cell<u32>);'),
             ('machine/src/machine.rs', '$(#[$m])*', '#[cfg_attr(feature="rogue", payload)] $(#[$m])*'),
             ('machine/src/machine.rs', 'StoreOrd\n', 'StoreOrd, Callback\n'),

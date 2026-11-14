@@ -107,6 +107,31 @@ newtype!(
     PartId
 );
 
+/// One external app-command obligation, monotonically minted by its dispatcher.
+/// Tokens are local to that dispatcher, not portable between independent runtimes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppCommandId(pub u64);
+
+/// Terminal execution/admission result, distinct from a later asynchronous job result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppCommandOutcome {
+    Completed,
+    Failed,
+    Refused,
+    Cancelled,
+    RetiredSender,
+}
+
+/// Owned handoff at the head of a dispatcher's FIFO. No screen/store borrow crosses IO.
+/// `from` includes the mounted lifetime; effect-specific request identities remain in `F`.
+/// A retired sender yields an error instead of an executable effect.
+pub struct AppCommand<F, R> {
+    pub id: AppCommandId,
+    pub from: MachineId,
+    pub return_state: R,
+    pub effect: Result<F, AppCommandOutcome>,
+}
+
 /// Why an entry is left (§3.4).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Leave {

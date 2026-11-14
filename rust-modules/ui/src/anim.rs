@@ -45,6 +45,22 @@ thread_local! {
     static ENTRIES: RefCell<Vec<Entry>> = const { RefCell::new(Vec::new()) };
 }
 
+// Diagnostic outcomes only: never app commands or a sink callback invoked by a step.
+#[cfg(feature = "devtriggers")]
+const SETTLE_LOG_MAX: usize = 96;
+#[cfg(feature = "devtriggers")]
+thread_local! {
+    static SETTLE_LOG: RefCell<(Vec<String>, usize)> = const { RefCell::new((Vec::new(), 0)) };
+}
+
+/// App runner takes ordered diagnostic outcomes, outside every machine scope.
+/// Overflow drops newest records; the returned count makes that loss explicit.
+#[cfg(feature = "devtriggers")]
+pub fn take_settle_log() -> (Vec<String>, usize) {
+    plx_base::step::assert_io_allowed("take animation diagnostic outcomes");
+    SETTLE_LOG.with(|pending| std::mem::take(&mut *pending.borrow_mut()))
+}
+
 #[inline]
 fn eps(target: f32) -> f32 {
     (target.abs() * 0.002).max(0.0015)
@@ -120,8 +136,8 @@ fn record(es: &mut Vec<Entry>, name: &'static str, pos: f32, vel: f32, target: f
     }
 }
 
-// Separate stream from the main event log — the per-settle (and, if extended, per-frame) trace can
-// get large, and it should never drown the primary /tmp/plxnative-events.log debugging surface.
+// Queue settle facts only. The app runner owns admission and the separate diagnostic sink;
+// probe/record never read a path, open a file, launch a worker or invoke a sink callback.
 //
 // Gated on `devtriggers` — like every other per-trigger diagnostic sink (`gpu_timer`'s
 // `plxnative-gputime.jsonl`, `ui::profile`'s `plxnative-hwcnt.jsonl`) — rather than left to
@@ -133,14 +149,14 @@ fn record(es: &mut Vec<Entry>, name: &'static str, pos: f32, vel: f32, target: f
 // `ci/check-package.py`'s dev-trigger-catalog check now audits for.
 #[cfg(feature = "devtriggers")]
 fn log(m: &str) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&plx_base::paths::in_runtime_dir(plx_base::paths::runtime_file::ANIMATION))
-    {
-        let _ = writeln!(f, "{m}");
-    }
+    SETTLE_LOG.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        if pending.0.len() < SETTLE_LOG_MAX {
+            pending.0.push(m.to_owned());
+        } else {
+            pending.1 = pending.1.saturating_add(1);
+        }
+    });
 }
 #[cfg(not(feature = "devtriggers"))]
 fn log(_m: &str) {}
@@ -231,5 +247,46 @@ fn paint_overlay(es: &[Entry]) {
             p.rect(Rect::new(px - 1.0, py - 1.0, 2.5, 2.5), 1.25, dc, dc, 0.0);
         }
         y += row;
+    }
+}
+
+#[cfg(all(test, feature = "devtriggers"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn armed_probe_settles_inside_step_without_io() {
+        let _lock = plx_base::testlock::serial();
+        struct Disable;
+        impl Drop for Disable {
+            fn drop(&mut self) { set_enabled(false); }
+        }
+        let _disable = Disable;
+        set_enabled(true);
+        let step = plx_base::step::StepScope::enter();
+        probe("step-oracle", 0.0, 1.0, 1.0, 0.016);
+        probe("step-oracle", 1.0, 0.0, 1.0, 0.016);
+        ENTRIES.with(|entries| assert_eq!(entries.borrow().last().unwrap().last.unwrap().0, 2));
+        assert!(std::panic::catch_unwind(take_settle_log).is_err());
+        drop(step);
+        let (records, dropped) = take_settle_log();
+        assert_eq!(records, ["anim step-oracle: 2f 32ms overshoot=0.0%"]);
+        assert_eq!(dropped, 0);
+        assert!(take_settle_log().0.is_empty());
+    }
+
+    #[test]
+    fn settle_outcomes_are_ordered_bounded_and_thread_local() {
+        let _ = take_settle_log();
+        let step = plx_base::step::StepScope::enter();
+        for i in 0..SETTLE_LOG_MAX + 3 { log(&i.to_string()); }
+        drop(step);
+        std::thread::spawn(|| assert_eq!(take_settle_log(), (Vec::new(), 0))).join().unwrap();
+        let (records, dropped) = take_settle_log();
+        assert_eq!(records.len(), SETTLE_LOG_MAX);
+        assert_eq!(records.first().unwrap(), "0");
+        assert_eq!(records.last().unwrap(), &(SETTLE_LOG_MAX - 1).to_string());
+        assert_eq!(dropped, 3);
+        assert_eq!(take_settle_log(), (Vec::new(), 0));
     }
 }

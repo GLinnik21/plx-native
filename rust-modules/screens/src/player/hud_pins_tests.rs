@@ -288,6 +288,7 @@ impl Run {
         let mut d: Dispatcher<TestHost> = Dispatcher::new();
         let mut rig = PinRig { mounter: PinMounter { package }, measure: FixtureMeasure,
             session: super::playback_session(0, 0), reqs: Vec::new(), perform };
+        super::publish_presentation_fixture(Default::default());
         d.request(MachineId::Nav, NavOp::Root(FixtureArg::VideoPlane));
         d.frame_with(&mut rig, tick(0), vec![], vec![], &mut NoTap, false);
         let id = d.nav.top_page().expect("the player page mounted").id;
@@ -310,6 +311,9 @@ impl Run {
     }
 
     fn frame(&mut self, ms: u32, inputs: Vec<InputEvent<u32>>) {
+        let mut presentation = self.screen().presentation.clone();
+        presentation.busy = self.screen().busy;
+        super::publish_presentation_fixture(presentation);
         self.d.frame_with(&mut self.rig, tick(ms), inputs, vec![], &mut NoTap, false);
     }
 
@@ -563,6 +567,8 @@ struct Census {
 fn census_screen(occupant: Occupant, failed: bool) -> PlayerScreen {
     let mut screen = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
     screen.slot = slot_of(occupant);
+    // The census probes inactive failure geometry too; supply its complete explicit model.
+    screen.presentation.failure = Some(std::sync::Arc::new(super::failure_fixture(plx_media::route::idle_session_for_test())));
     if failed {
         screen.busy = Busy::Readout(
             plx_ui::widgets::StatusKind::Failed,

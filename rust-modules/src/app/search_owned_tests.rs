@@ -608,18 +608,14 @@ fn owned_search_result_keys_are_server_scoped_and_survive_same_query_reordering(
         items: vec![item(b), item(a)] }]);
     frame(&mut d, &mut rig, AppArg::Search, tick(3), vec![]);
     assert_eq!(d.focus(), Some(second), "identity survives the changed catalog order");
-    frame(&mut d, &mut rig, AppArg::Search, tick(4), script_key(Key::Ok, tick(4)));
-    for i in 5..35 { frame(&mut d, &mut rig, AppArg::Search, tick(i), vec![]); }
-    assert!(rig.search_reqs.iter().any(|(_, req, _)| matches!(req,
-        plx_screens::registry::SearchReq::Detail { sid, rk } if *sid == b && rk == "same-local-key")));
-    assert!(!rig.search_reqs.iter().any(|(_, req, _)| matches!(req,
-        plx_screens::registry::SearchReq::Detail { sid, .. } if *sid == a)));
-    let requests = rig.take_search_reqs();
-    assert!(!requests.is_empty());
-    assert!(rig.take_search_reqs().is_empty(), "requests execute only once");
-    let (_, _, ret) = requests.iter().find(|(_, req, _)| matches!(req,
-        plx_screens::registry::SearchReq::Detail { .. })).unwrap();
     let entry = d.nav.top_page().unwrap().id;
+    frame(&mut d, &mut rig, AppArg::Search, tick(4), script_key(Key::Ok, tick(4)));
+    for i in 5..35 { super::frame(&mut d, &mut rig, tick(i), vec![]); }
+    assert!(matches!(d.top_arg(), Some(AppArg::Content(ContentArg::Detail { sid, rk }))
+        if *sid == b && rk == "same-local-key"), "the selected server's detail actually opens");
+    assert_eq!(rig.completed_screen_commands.iter().filter(|label| label.starts_with("search:Detail")).count(),
+        1, "the command executes once across later frames");
+    let ret = &d.nav.entry(entry).expect("Search retained below Detail").ret;
     let (selected, opener) = rig.search_selection(&d, entry, ret.focus).unwrap();
     assert!(matches!(selected, plx_data::search::Item::Media(item) if item.sid == b));
     let page = d.nav.entry(entry).unwrap().inst.as_ref().unwrap().screen.as_any().unwrap()
@@ -632,9 +628,14 @@ fn owned_search_result_keys_are_server_scoped_and_survive_same_query_reordering(
     let mut foreign = ret.focus.unwrap();
     foreign.entry = EntryId(entry.0 + 100);
     assert!(rig.search_selection(&d, entry, Some(foreign)).is_none());
-    frame(&mut d, &mut rig, AppArg::Search, tick(35), script_key(Key::Back, tick(35)));
-    assert!(rig.take_search_reqs().iter().any(|(_, req, _)| matches!(req,
-        plx_screens::registry::SearchReq::Back)), "BACK differs from selecting the Home pill");
+    nav_pop(&mut d);
+    for i in 35..65 { super::frame(&mut d, &mut rig, tick(i), vec![]); }
+    assert_eq!(d.nav.top_page().unwrap().id, entry, "BACK restores the original Search owner");
+    super::frame(&mut d, &mut rig, tick(65), script_key(Key::Back, tick(65)));
+    for i in 66..96 { super::frame(&mut d, &mut rig, tick(i), vec![]); }
+    assert!(rig.completed_screen_commands.iter().any(|label| label == "search:Back"),
+        "BACK differs from selecting the Home pill");
+    assert!(d.top_arg() == Some(&AppArg::Home));
     plx_plex::plex::reset_servers_for_test();
 }
 
@@ -1083,16 +1084,14 @@ fn owned_search_ok_on_a_collection_requests_its_collection_page() {
         kind: plx_data::search::Kind::Collection, items: vec![hit] }]);
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     frame(&mut d, &mut rig, AppArg::Search, tick(1), script_key(Key::Down, tick(1)));
-    frame(&mut d, &mut rig, AppArg::Search, tick(2), script_key(Key::Ok, tick(2)));
-    for i in 3..33 { frame(&mut d, &mut rig, AppArg::Search, tick(i), vec![]); }
-    let requests = rig.take_search_reqs();
-    let (_, _, ret) = requests.iter().find(|(_, req, _)| matches!(req,
-        plx_screens::registry::SearchReq::Collection { sid, rk, tag }
-            if *sid == a && rk == "50007" && *tag == 7))
-        .expect("OK on a collection requests its page");
-    assert!(!requests.iter().any(|(_, req, _)| matches!(req,
-        plx_screens::registry::SearchReq::Detail { .. })), "never an item detail");
     let entry = d.nav.top_page().unwrap().id;
+    frame(&mut d, &mut rig, AppArg::Search, tick(2), script_key(Key::Ok, tick(2)));
+    for i in 3..33 { super::frame(&mut d, &mut rig, tick(i), vec![]); }
+    assert!(matches!(d.top_arg(), Some(AppArg::Content(ContentArg::Collection(c)))
+        if c.sid == a && c.rk == "50007" && c.tag == 7), "OK actually opens the collection, never item detail");
+    assert_eq!(rig.completed_screen_commands.iter().filter(|label| label.starts_with("search:Collection")).count(), 1);
+    assert!(!rig.completed_screen_commands.iter().any(|label| label.starts_with("search:Detail")));
+    let ret = &d.nav.entry(entry).expect("Search retained below Collection").ret;
     let (selected, _) = rig.search_selection(&d, entry, ret.focus).unwrap();
     assert!(matches!(selected, plx_data::search::Item::Collection(c) if c.item.rk == "50007"));
     plx_plex::plex::reset_servers_for_test();

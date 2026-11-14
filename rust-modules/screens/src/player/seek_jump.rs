@@ -14,8 +14,8 @@ pub(super) fn seek_stays_hidden(ps: &plx_media::route::PlaybackSession, dismisse
 }
 
 /// One scrub step toward `forward`'s end of the bar.
-fn signed_step(forward: bool) -> i64 {
-    input::scrub_step_ns() * if forward { 1 } else { -1 }
+fn signed_step(forward: bool, interval: plx_plex::plex::session::SkipInterval) -> i64 {
+    input::scrub_step_ns(interval) * if forward { 1 } else { -1 }
 }
 
 impl PlayerScreen {
@@ -36,8 +36,8 @@ impl PlayerScreen {
     }
 
     fn commit_jump<H: AppLike>(&mut self, ps: &plx_media::route::PlaybackSession,
-        forward: bool, now: u32, fx: &mut Effects<'_, H>) {
-        if let Some(target) = self.jump_by(ps, signed_step(forward), false, now) {
+        forward: bool, now: u32, fx: &mut Effects<'_, H>, interval: plx_plex::plex::session::SkipInterval) {
+        if let Some(target) = self.jump_by(ps, signed_step(forward, interval), false, now) {
             Self::ask(fx, PlayerReq::CommitSeek(target));
         }
     }
@@ -65,7 +65,7 @@ impl PlayerScreen {
     }
 
     pub(super) fn jump_key<H: AppLike>(&mut self, ps: &plx_media::route::PlaybackSession,
-        key: consts::Key, edge: Edge, now: u32, fx: &mut Effects<'_, H>) -> bool {
+        key: consts::Key, edge: Edge, now: u32, fx: &mut Effects<'_, H>, instant_dpad_seeking: InstantDpadSeeking, interval: plx_plex::plex::session::SkipInterval) -> bool {
         let (forward, transport) = match key {
             consts::Key::Left { alt } => (false, alt),
             consts::Key::Right { alt } => (true, alt),
@@ -98,7 +98,7 @@ impl PlayerScreen {
                     if self.transport_tap && self.hud.visible_at_press {
                         if let Some(duration) = plx_media::player::duration_ns(ps) {
                             self.scrub.ns = Scrub::clamp_target(
-                                self.scrub.ns.saturating_add(signed_step(forward)), duration);
+                                self.scrub.ns.saturating_add(signed_step(forward, interval)), duration);
                         }
                         self.scrub.reveal = false;
                     }
@@ -111,7 +111,7 @@ impl PlayerScreen {
                     if self.transport_tap {
                         self.transport_tap = false;
                         // `commit_jump` publishes its own result
-                        self.commit_jump(ps, forward, now, fx);
+                        self.commit_jump(ps, forward, now, fx, interval);
                         return true;
                     }
                     self.key_scrub_release(now);
@@ -121,11 +121,11 @@ impl PlayerScreen {
             return true;
         }
         if edge == Edge::Down { self.drop_transport_tap(); }
-        if plx_media::route::instant_dpad_seeking() != InstantDpadSeeking::On || self.hud.visible_at_press {
+        if instant_dpad_seeking != InstantDpadSeeking::On || self.hud.visible_at_press {
             self.seek_burst.reset();
             return false;
         }
-        if edge == Edge::Down { self.commit_jump(ps, forward, now, fx); }
+        if edge == Edge::Down { self.commit_jump(ps, forward, now, fx, interval); }
         // The opt-in D-pad path is one immediate jump per fresh press, without a held scrub.
         true
     }
@@ -148,10 +148,10 @@ mod tests {
         fn new() -> Self {
             let mut saved = Self {
                 session: super::super::overlay_tests::playback_session(40_000_000_000, 100_000_000_000),
-                dpad_seeking: plx_media::route::instant_dpad_seeking(),
+                dpad_seeking: super::super::overlay_tests::dpad_input(),
             };
             super::super::overlay_tests::derive_state(&mut saved.session, plx_media::player::PlaybackState::Playing);
-            plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::On);
+            super::super::overlay_tests::set_dpad_input(InstantDpadSeeking::On);
             saved
         }
 
@@ -176,7 +176,7 @@ mod tests {
     }
     impl Drop for PlaybackFixture {
         fn drop(&mut self) {
-            plx_media::route::restore_instant_dpad_seeking(self.dpad_seeking);
+            super::super::overlay_tests::set_dpad_input(self.dpad_seeking);
         }
     }
 
@@ -215,11 +215,30 @@ mod tests {
     }
 
     #[test]
+    fn census_f3_owner_interval_changes_on_the_next_press() {
+        use plx_plex::plex::session::SkipInterval;
+        let _g = plx_base::testlock::serial();
+        let playback = PlaybackFixture::new();
+        super::super::overlay_tests::set_dpad_input(InstantDpadSeeking::On);
+        let mut a = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
+        a.hud.dismissed = true;
+        super::super::overlay_tests::set_skip_input(SkipInterval::Seconds5);
+        assert_eq!(key(&playback.session, &mut a, consts::SDLK_RIGHT, Edge::Down, 1_000), vec![PlayerReq::CommitSeek(45_000_000_000)]);
+        let mut b = PlayerScreen::new(EntryId(10), plx_appkit::player_hud::loaded::classic_for_test());
+        b.hud.dismissed = true;
+        super::super::overlay_tests::set_skip_input(SkipInterval::Seconds30);
+        assert_eq!(key(&playback.session, &mut b, consts::SDLK_RIGHT, Edge::Down, 1_000), vec![PlayerReq::CommitSeek(70_000_000_000)]);
+        super::super::overlay_tests::set_skip_input(SkipInterval::Seconds15);
+        assert_eq!(key(&playback.session, &mut a, consts::SDLK_RIGHT, Edge::Down, 1_100), vec![PlayerReq::CommitSeek(60_000_000_000)]);
+        super::super::overlay_tests::set_skip_input(SkipInterval::Seconds10);
+    }
+
+    #[test]
     fn transport_ff_tap_jumps_without_the_dpad_option_or_hud() {
         let _g = plx_base::testlock::serial();
         let playback = PlaybackFixture::new();
-        plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
-        let _interval = player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
+        super::super::overlay_tests::set_dpad_input(InstantDpadSeeking::Off);
+        let _interval = super::super::overlay_tests::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         page.hud.dismissed = true;
         assert!(key(&playback.session, &mut page, consts::WCODE_FASTFORWARD, Edge::Down, 1_000).is_empty());
@@ -232,8 +251,8 @@ mod tests {
     fn seek_jump_ff_burst_accumulates_and_rew_reverses_with_dpad_off() {
         let _g = plx_base::testlock::serial();
         let mut playback = PlaybackFixture::new();
-        plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
-        let _interval = player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
+        super::super::overlay_tests::set_dpad_input(InstantDpadSeeking::Off);
+        let _interval = super::super::overlay_tests::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         for (sym, at, target) in [(consts::WCODE_FASTFORWARD, 1_000, 50_000_000_000),
             (consts::WCODE_FASTFORWARD, 1_300, 60_000_000_000),
@@ -248,7 +267,7 @@ mod tests {
     fn seek_jump_ff_hold_scrubs_and_waits_for_ok_without_an_initial_seek() {
         let _g = plx_base::testlock::serial();
         let playback = PlaybackFixture::new();
-        plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
+        super::super::overlay_tests::set_dpad_input(InstantDpadSeeking::Off);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         page.hud.dismissed = true;
         assert!(key(&playback.session, &mut page, consts::WCODE_FASTFORWARD, Edge::Down, 1_000).is_empty());
@@ -311,7 +330,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let mut playback = PlaybackFixture::new();
         let _interval =
-            player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
+            super::super::overlay_tests::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         page.hud.dismissed = true;
         // A +10s request lands on the preceding keyframe at 40s again. A second tap must
@@ -336,7 +355,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let mut playback = PlaybackFixture::new();
         let _interval =
-            player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
+            super::super::overlay_tests::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         let right = consts::SDLK_RIGHT;
         assert_eq!(
@@ -370,7 +389,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let playback = PlaybackFixture::new();
         let _interval =
-            player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
+            super::super::overlay_tests::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         assert_eq!(
             key(&playback.session, &mut page, consts::SDLK_RIGHT, Edge::Down, 1_000),
@@ -393,7 +412,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let playback = PlaybackFixture::new();
         let _interval =
-            player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
+            super::super::overlay_tests::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
         for (sym, target) in [
             (consts::SDLK_RIGHT, 50_000_000_000),
             (consts::SDLK_LEFT, 30_000_000_000),
@@ -419,7 +438,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let playback = PlaybackFixture::new();
         let _interval =
-            player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
+            super::super::overlay_tests::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         page.hud.until = 5_000;
         assert!(key(&playback.session, &mut page, consts::SDLK_RIGHT, Edge::Down, 1_000).is_empty());
@@ -455,7 +474,7 @@ mod tests {
     fn seek_jump_off_keeps_the_reveal_first_behavior() {
         let _g = plx_base::testlock::serial();
         let playback = PlaybackFixture::new();
-        plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
+        super::super::overlay_tests::set_dpad_input(InstantDpadSeeking::Off);
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         assert!(key(&playback.session, &mut page, consts::SDLK_RIGHT, Edge::Down, 1_000).is_empty());
         assert!(page.scrub.reveal);
@@ -467,7 +486,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let playback = PlaybackFixture::new();
         let _interval =
-            player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds60);
+            super::super::overlay_tests::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds60);
         for (sym, target) in [(consts::SDLK_RIGHT, 97_000_000_000), (consts::SDLK_LEFT, 0)] {
             let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
             assert_eq!(
@@ -546,6 +565,7 @@ mod tests {
                 command,
                 &mut Effects::new(&mut out, MachineId::Instance(InstanceId(3)), &mut present),
                 plx_data::stores::metadata::MetadataStore::default().view(),
+                super::super::overlay_tests::dpad_input(), plx_plex::plex::session::SkipInterval::Seconds10,
             )
         };
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());

@@ -285,7 +285,7 @@ fn the_watchlists_sort_and_filter_lifts_its_pill_while_the_menu_is_up() {
 /// Play, Go to Show, the watch disc; no bookmark without a catalog guid), its verb unfurls inside the capsule and
 /// nothing is drawn in the band under the row (a focused icon-only control draws no caption), OK
 /// opens the SHOW's page seeded on the episode's season, and BACK returns to the episode page with
-/// the disc focused. The seed is read the frame the request is performed, before the mount spends it.
+/// the disc focused. Inspect the mounted Detail's restored season, not a consumed mounter seed.
 #[test]
 fn an_episode_pages_go_to_show_disc_opens_the_show_on_the_episodes_season_and_back_returns_to_it() {
     use plx_platform::i18n::msg::browse_menu_go_show;
@@ -314,17 +314,26 @@ fn an_episode_pages_go_to_show_disc_opens_the_show_on_the_episodes_season_and_ba
     let in_band: Vec<_> = drawn.words.iter().filter(|(_, at)| band.contains(&at.y)).collect();
     assert!(in_band.is_empty(), "nothing stands under the control row: {in_band:?}");
 
-    // OK: the request is performed in the frame that raises it; the mount that follows spends the seed.
-    let mut seed = None;
+    // The FIFO runner can mount the destination in this frame and consume its one-shot seed.
+    let mut season = None;
     w.step(script_key(Key::Ok, tick(w.frame + 1)));
     for _ in 0..40 {
-        seed = seed.or_else(|| w.bridge.mounter.seed.clone());
-        if seed.is_some() { break; }
+        if w.on(&detail_arg_for(sid, "show-7")) {
+            let detail = w.d.top_screen().unwrap().as_any().unwrap()
+                .downcast_ref::<plx_screens::detail::DetailScreen>().unwrap();
+            season = detail.restore_target_for_test().and_then(|(spot, episode)| {
+                assert!(episode.is_none(), "Go to Show restores a season, not an episode target");
+                spot.season
+            });
+            if season.is_none() {
+                if let PageMemory::Detail(memory) = w.d.return_state().memory { season = memory.spot.season; }
+            }
+            if season.is_some() { break; }
+        }
         w.step(vec![]);
     }
-    let seed = seed.expect("OK on the disc seeds a Detail page");
-    assert_eq!((seed.sid, seed.rk.as_str(), seed.spot.season), (sid, "show-7", Some(3)),
-        "the show's page, on the episode's season, on the episode's server");
+    assert_eq!(season, Some(3), "the mounted show's page restores the episode's season");
+    assert!(w.on(&detail_arg_for(sid, "show-7")), "the destination retains server and show identity");
     w.frames(60);
     assert!(w.on(&detail_arg_for(sid, "show-7")), "the show's page is on top");
 

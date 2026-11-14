@@ -325,6 +325,7 @@ fn cstr_elide(s: &str, w: f32, sz: std::os::raw::c_int, bold: std::os::raw::c_in
 /// move an item between shelves without moving the engine cursor off that item: each shelf's
 /// `index_of` simply stops (or starts) answering for it.
 struct ShelfCards<'a> {
+    policy: plx_ui::caption_policy::CaptionPolicy,
     person: &'a Person,
     kind: usize,
     cards: &'a CardKeys,
@@ -360,7 +361,7 @@ impl<H: ContentLike> CardSource<H> for ShelfCards<'_> {
         match self.person.shelf(self.kind).get(i) {
             Some(m) => {
                 let role = Some(self.person.role(self.kind, i)).filter(|role| !role.is_empty()).map(str::to_owned);
-                crate::registry::captions::label(&crate::registry::captions::policy(), &tile_facts::caption_facts(m), role)
+                crate::registry::captions::label(&self.policy, &tile_facts::caption_facts(m), role)
             }
             None => TileLabel::default(),
         }
@@ -1126,13 +1127,14 @@ impl<H: ContentLike + PersonLike> StackPage<H> for Page {
     }
 
     /// Every filmography shelf is a row of posters: they follow the Under posters setting.
-    fn caption_policy(&self, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
-        matches!(k, Sec::Shelf(_)).then(crate::registry::captions::policy)
+    fn caption_policy(&self, cx: &Cx<'_, H>, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
+        matches!(k, Sec::Shelf(_)).then(|| crate::registry::captions::policy_for(H::screen_inputs(cx)))
     }
 
     fn cards<'a>(&'a self, cx: &'a Cx<'_, H>, k: Sec) -> Option<ShelfCards<'a>> {
         match k {
-            Sec::Shelf(kind) => self.person(cx).map(|person| ShelfCards { person, kind, cards: &self.cards }),
+            Sec::Shelf(kind) => self.person(cx).map(|person| ShelfCards { person, kind, cards: &self.cards,
+                policy: crate::registry::captions::policy_for(H::screen_inputs(cx)) }),
             _ => None,
         }
     }
@@ -1459,6 +1461,9 @@ mod tests {
         type Memory = PageMemory;
     }
 
+    impl crate::registry::ScreenInputsLike for PersonHost {
+        fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+    }
     impl PersonLike for PersonHost {
         fn person<'a>(cx: &Cx<'a, Self>) -> plx_data::person::PersonView<'a> { cx.views }
     }

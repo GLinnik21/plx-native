@@ -487,7 +487,7 @@ fn mount_page(
 ) -> Box<dyn Screen<InnerHost>> {
     match arg {
         SettingsPage::Root => Box::new(RootPage::new(entry, cx.views.directory, &cx.views.inputs)),
-        SettingsPage::Language => Box::new(LanguagePage::new(entry)),
+        SettingsPage::Language => Box::new(LanguagePage::new(entry, cx.views.inputs)),
         SettingsPage::UnderPosters => Box::new(under_posters::UnderPostersPage::new(entry)),
         SettingsPage::UnderPostersDetails(kind) => Box::new(under_posters::DetailsPage::new(entry, kind)),
         SettingsPage::Contribute => Box::new(super::legal::DocumentPage::contribute(entry)),
@@ -1463,8 +1463,8 @@ impl RootPage {
         let multi_user = sess.home_users.len() > 1;
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;
-        self.state.language = plx_platform::i18n::saved_preference();
-        self.state.under_posters = plx_media::route::under_posters();
+        self.state.language = self.inputs.install_language;
+        self.state.under_posters = self.inputs.preference::<plx_plex::plex::session::UnderPostersPref>();
         let plaintext = if signed_in { self.plaintext_inputs() } else { Vec::new() };
         let form = root_form(&RootInputs {
             trace: self.state.trace,
@@ -1673,7 +1673,9 @@ impl Machine<InnerHost> for RootPage {
                     self.under_ask.step(cx, fx);
                 }
                 let key = self.inputs.session_key();
-                let mut landed = self.session_watch != Some(key);
+                let mut landed = self.session_watch != Some(key)
+                    || self.state.language != self.inputs.install_language
+                    || self.state.under_posters != self.inputs.preference::<plx_plex::plex::session::UnderPostersPref>();
                 self.session_watch = Some(key);
                 if let Some((value, ticket)) = &self.pending_auto {
                     if self.auto_receipt.is_none() {
@@ -1973,6 +1975,7 @@ struct LanguagePage {
     form: FormTable<LangId, LangAction, SettingsPage>,
     state: LanguageState,
     save: Option<(plx_platform::i18n::Preference, std::sync::mpsc::Receiver<bool>)>,
+    running_language: plx_platform::i18n::Preference,
 }
 
 struct LanguageState {
@@ -2000,16 +2003,16 @@ fn restart_hint() -> plx_ui::widgets::KeyHint<'static> {
 }
 
 impl LanguagePage {
-    fn new(entry: EntryId) -> Self {
-        let selected = plx_platform::i18n::saved_preference();
+    fn new(entry: EntryId, inputs: &crate::registry::ScreenInputs) -> Self {
+        let selected = inputs.install_language;
         let sel = LangId::Choice(selected).key();
-        let mut page = Self { entry, form: FormTable::new(super::registry::BAND), state: LanguageState { selected, sel, failed: false, busy: false }, save: None };
+        let mut page = Self { entry, form: FormTable::new(super::registry::BAND), state: LanguageState { selected, sel, failed: false, busy: false }, save: None, running_language: inputs.running_language };
         page.rebuild();
         page
     }
 
     fn pending(&self) -> bool {
-        self.state.selected != plx_platform::i18n::current().preference()
+        self.state.selected != self.running_language
     }
 
     /// Re-derive the rows, keeping the cursor on its row by identity (the saved language on the

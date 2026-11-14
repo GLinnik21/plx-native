@@ -27,6 +27,10 @@ impl Host for WatchHost {
     type Memory = PageMemory;
 }
 
+impl crate::registry::ScreenInputsLike for WatchHost {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+}
+
 pub(crate) const ENTRY: EntryId = EntryId(9);
 
 /// A row titled `<i>`, a movie of 2000 + i.

@@ -820,7 +820,7 @@ fn the_card_menu_is_a_surface_over_the_page_the_hold_happened_on() {
         );
         assert_eq!(d.nav.top_page().map(|e| e.id), Some(host), "{word}: …and nothing else");
         // …and it reported nothing: a dismissal is not a commit.
-        assert!(rig.take_item_menu_reqs().is_empty(), "{word}");
+        assert!(rig.take_observed_item_menu_commands().is_empty(), "{word}");
     }
 }
 
@@ -1025,7 +1025,7 @@ fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
     assert_eq!(d.focus().map(|k| (k.entry, k.elem)), Some((menu, plx_screens::item_menu::ItemRow::PlayFromStart.focus_key())));
     press(&mut d, &mut rig, Key::Ok);
 
-    let reqs = rig.take_item_menu_reqs();
+    let reqs = rig.take_observed_item_menu_commands();
     assert_eq!(reqs.len(), 1, "one commit, one request");
     assert!(matches!(&reqs[0].act, plx_screens::item_menu::Action::PlayFromStart(rk) if rk == "42"));
     assert!(reqs[0].from_home, "…and the trail reset the HOME root earns (`menu_leave`)");
@@ -1035,12 +1035,10 @@ fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
         Some("/library/parts/42/file.mkv"),
         "the WHOLE row rides on the request — a key alone cannot start playback"
     );
-    assert_eq!(
-        d.nav.modals.surfaces.iter().find(|s| s.entry.id == menu).map(|s| s.phase),
-        Some(Phase::Closing),
-        "every commit dismisses, exactly as the legacy `on_ok` closed first"
-    );
-    assert_eq!(d.nav.top_page().map(|e| e.id), Some(host), "the page never moved");
+    assert_eq!(d.nav.instance_of(menu), None,
+        "the same-frame Play commit retires its already-dismissed menu");
+    assert!(d.nav.entry(host).is_some(), "the launch retains its originating page");
+    assert!(matches!(d.top_arg(), Some(AppArg::Player)), "the product runner performs the captured Play");
 }
 
 /// **The Settings row hands one surface to another without ever un-freezing the host** (§16.5).
@@ -1111,7 +1109,7 @@ fn account_to_settings_never_unfreezes_the_host() {
     let mut renders = vec![d.host_policy().1];
 
     // …and the loop's drain performs the request on the next frame.
-    let reqs = rig.take_reqs();
+    let reqs = rig.take_observed_loop_commands();
     assert_eq!(
         reqs,
         vec![LoopReq::OpenSettings(plx_screens::family::SettingsPage::Root)],
@@ -1443,10 +1441,10 @@ fn back_at_the_first_consent_stage_is_the_root_press_and_leaves_the_question_up(
     frame(&mut d, &mut rig, AppArg::Profiles, tick(1), vec![]);
     assert!(consent_up(&d));
     assert_eq!(overlay_word(&d), Some("consent"));
-    let _ = rig.take_reqs(); // the mount's own effects are not what this grades
+    let _ = rig.take_observed_loop_commands(); // the mount's own effects are not what this grades
     frame(&mut d, &mut rig, AppArg::Profiles, tick(2), script_key(Key::Back, tick(2)));
     assert_eq!(
-        rig.take_reqs(),
+        rig.take_observed_loop_commands(),
         vec![LoopReq::BackAtRoot],
         "the screen asks the loop for the root press rather than swallowing the key"
     );

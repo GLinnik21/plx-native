@@ -7,6 +7,104 @@ use super::test_support::*;
 use super::test_support::{frame, frame_with_results};
 
 #[test]
+fn mixed_remaining_commands_admit_in_fifo_order_and_reply_before_the_next_head() {
+    use plx_machine::machine::AppCommandOutcome;
+    use plx_screens::registry::{PreferenceCmd, PlayerReq};
+    struct Observe { receipt: std::sync::mpsc::Receiver<bool>, checked: bool }
+    impl plx_ui::dispatch::Tap<AppHost> for Observe {
+        fn effect(&mut self, _: u64, effect: &plx_machine::machine::Stamped<AppHost>) {
+            if matches!(effect.fx, Fx::App(AppFx::Catalog(_))) {
+                assert_eq!(self.receipt.try_recv(), Ok(false),
+                    "the preceding preference refusal must complete before Catalog admission");
+                self.checked = true;
+            }
+        }
+    }
+    let _guard = plx_base::testlock::serial();
+    let _session = plx_plex::plex::session::TempSession::new("mixed-remaining-fifo");
+    let mut rig = Bridge::for_test(|| 0);
+    let mut d = Dispatcher::<AppHost>::new();
+    let (reply, receipt) = std::sync::mpsc::channel();
+    let mut observer = Observe { receipt, checked: false };
+    let effects = [
+        (MachineId::Nav, AppFx::Preferences(PreferenceCmd::ChooseMarker {
+            kind: plx_data::metadata::MarkerKind::Intro,
+            mode: plx_plex::plex::session::MarkerSkipMode::Manual, scope: 0, reply })),
+        (MachineId::Nav, AppFx::Catalog(plx_screens::catalog::CatalogOut::Add { hex: [0; 12] })),
+        (MachineId::Nav, AppFx::Player(PlayerReq::CommitSeek(123))),
+        (MachineId::Session, AppFx::SessionEffect(plx_session::auth::owner::SessionFx::Pump)),
+        (MachineId::Nav, AppFx::Loop(LoopReq::OnboardDone)),
+    ];
+    for (from, effect) in effects { d.emit(from, Fx::App(effect)); }
+    super::frame_with_tap(&mut d, &mut rig, Tick::default(), vec![], &mut observer);
+    assert!(observer.checked);
+    let receipts = rig.screen_command_receipts[..5].to_vec();
+    assert_eq!(receipts.iter().map(|(_, from, outcome)| (*from, *outcome)).collect::<Vec<_>>(),
+        vec![(MachineId::Nav, AppCommandOutcome::Completed), (MachineId::Nav, AppCommandOutcome::Completed),
+            (MachineId::Nav, AppCommandOutcome::Completed), (MachineId::Session, AppCommandOutcome::Completed),
+            (MachineId::Nav, AppCommandOutcome::Completed)]);
+    assert!(receipts.windows(2).all(|pair| pair[0].0.0 < pair[1].0.0));
+    super::frame(&mut d, &mut rig, Tick { ms: 16, dt_us: 16_000 }, vec![]);
+    for (id, _, _) in receipts {
+        assert_eq!(rig.screen_command_receipts.iter().filter(|receipt| receipt.0 == id).count(), 1);
+    }
+}
+
+#[test]
+fn controlled_remaining_commands_refuse_before_any_resource_execution() {
+    use plx_machine::machine::AppCommandOutcome;
+    use plx_screens::registry::{PreferenceCmd, PlayerReq};
+    let _guard = plx_base::testlock::serial();
+    let mt = unsafe { plx_base::task::MainThread::assume() };
+    let initial = super::super::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
+    let mut rig = Bridge::controlled_home(|| 0, &initial, &mt, true);
+    let before = rig.session_subhash();
+    let mut d = Dispatcher::<AppHost>::new();
+    let (reply, receipt) = std::sync::mpsc::channel();
+    for effect in [AppFx::Preferences(PreferenceCmd::Load { reply }),
+        AppFx::Loop(LoopReq::AccountSignOut), AppFx::Player(PlayerReq::RepairSandbox),
+        AppFx::Catalog(plx_screens::catalog::CatalogOut::Add { hex: [0; 12] }),
+        AppFx::SessionEffect(plx_session::auth::owner::SessionFx::Coordinator(
+            plx_session::auth::owner::CoordinatorAction::CloseTelemetry))] {
+        d.emit(MachineId::Nav, Fx::App(effect));
+    }
+    super::frame(&mut d, &mut rig, Tick::default(), vec![]);
+    assert_eq!(rig.session_subhash(), before);
+    assert_eq!(rig.screen_command_receipts.len(), 5);
+    assert!(rig.screen_command_receipts.iter().all(|(_, _, outcome)| *outcome == AppCommandOutcome::Refused));
+    assert!(matches!(receipt.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
+    assert!(rig.take_observed_loop_commands().is_empty());
+    assert!(rig.controlled_failure().is_some());
+    assert!(d.top_arg().is_none());
+}
+
+#[test]
+fn remaining_main_thread_commands_yield_before_resource_execution() {
+    let _guard = plx_base::testlock::serial();
+    let rig = Bridge::for_test(|| 0);
+    for effect in [AppFx::Loop(LoopReq::OnboardDone),
+        AppFx::Player(plx_screens::registry::PlayerReq::CommitSeek(123))] {
+        assert!(plx_ui::dispatch::Rig::external_app_fx(&rig, &effect),
+            "MainThread commands must execute at their FIFO head, not park a family queue");
+    }
+}
+
+#[test]
+fn remaining_bridge_io_commands_yield_before_resource_execution() {
+    let _guard = plx_base::testlock::serial();
+    let rig = Bridge::for_test(|| 0);
+    let (reply, _receipt) = std::sync::mpsc::channel();
+    for effect in [
+        AppFx::SessionEffect(plx_session::auth::owner::SessionFx::Pump),
+        AppFx::Preferences(plx_screens::registry::PreferenceCmd::Load { reply }),
+        AppFx::Catalog(plx_screens::catalog::CatalogOut::Add { hex: [0; 12] }),
+    ] {
+        assert!(plx_ui::dispatch::Rig::external_app_fx(&rig, &effect),
+            "resource admission must yield outside the dispatcher step, before the FIFO tail");
+    }
+}
+
+#[test]
 fn browse_tab_generation_is_owned_and_chrome_never_replays_a_stale_shape() {
     let _guard = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("bridge-browse-tabs");

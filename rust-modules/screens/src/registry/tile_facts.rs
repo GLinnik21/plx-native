@@ -182,8 +182,9 @@ pub fn deck_overlay(
     facts: &TileFacts<'_>,
     tile: &plx_ui::cards::Tile,
     measure: &dyn plx_machine::machine::Measure,
+    press: plx_plex::plex::session::DeckPress,
 ) {
-    let cue = if plx_media::route::deck_press().press_plays() { plx_ui::still_footer::Cue::Play } else { plx_ui::still_footer::Cue::Info };
+    let cue = if press.press_plays() { plx_ui::still_footer::Cue::Play } else { plx_ui::still_footer::Cue::Info };
     plx_ui::widgets::still_overlay(p, facts, tile.rect, tile.radius, plx_ui::widgets::StillFooter::Continue { cue, pop: tile.pop }, measure);
 }
 
@@ -563,7 +564,7 @@ mod tests {
         let measure = plx_ui::fixture::FixtureMeasure;
         for (mode, shown, absent) in [(DeckPress::Play, Icon::Play, Icon::Info), (DeckPress::Details, Icon::Info, Icon::Play)] {
             restore_deck_press(mode);
-            let icons: Vec<Icon> = plx_ui::draw_census::capture_icons(|| deck_overlay(plx_ui::Painter::recording(), &facts, &tile, &measure))
+            let icons: Vec<Icon> = plx_ui::draw_census::capture_icons(|| deck_overlay(plx_ui::Painter::recording(), &facts, &tile, &measure, mode))
                 .into_iter()
                 .map(|(icon, _)| icon)
                 .collect();
