@@ -1,4 +1,4 @@
-{"updated":"2026-11-14T22:52:49Z",
+{"updated":"2026-11-14T23:04:17Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5179,7 +5179,8 @@
 {"id":43635800906,"at":"2026-11-14T20:07:34Z","sha":"e47fbee18","title":"Re-certify the generated-enums read-only proof for the [profile.test] manifest change","pr":1389,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":145,"macOS tests against bundled FFmpeg and ASS":183,"Windows launcher syntax":18,"Linux simulator build + launch":315}},
 {"id":43637654130,"at":"2026-11-14T20:28:16Z","sha":"bc1262309","title":"Host test builds carry line tables only, not full DWARF","pr":1389,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":229,"Windows launcher syntax":21,"Linux simulator build + launch":435,"macOS simulator build + launch":208}},
 {"id":43645441499,"at":"2026-11-14T21:56:36Z","sha":"e6200fece","title":"feat(network): prefer IPv6 with a bounded IPv4 fallback","pr":1320,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":366,"macOS simulator build + launch":216,"macOS tests against bundled FFmpeg and ASS":209,"Windows launcher syntax":16}},
-{"id":43649788694,"at":"2026-11-14T22:45:56Z","sha":"320a3b09e","title":"uri-mode: major 10's rule (b) now rests on the 2026-11-14 wider-than-16:9 product run","pr":1377,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":324,"macOS simulator build + launch":109,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":241}}
+{"id":43649788694,"at":"2026-11-14T22:45:56Z","sha":"320a3b09e","title":"uri-mode: major 10's rule (b) now rests on the 2026-11-14 wider-than-16:9 product run","pr":1377,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":324,"macOS simulator build + launch":109,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":241}},
+{"id":43650774800,"at":"2026-11-14T22:57:42Z","sha":"9f6ac6695","title":"URI on webOS 25: admit firmware major 10 to the exported-window table","pr":1377,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":187,"macOS tests against bundled FFmpeg and ASS":167,"Windows launcher syntax":18,"Linux simulator build + launch":384}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
