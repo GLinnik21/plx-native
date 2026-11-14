@@ -99,7 +99,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-14T03:49:07Z",
+ "generated": "2026-11-14T03:49:30Z",
  "metrics": [
   {
    "change30_pct": 45.2,
@@ -165,18 +165,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 26.9,
-   "change7_pct": 3.2,
+   "change30_pct": 26.7,
+   "change7_pct": 3.0,
    "d30": 361,
-   "delta30": 97,
-   "delta7": 14.0,
+   "delta30": 96.5,
+   "delta7": 13.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 63,
+   "n_now": 64,
    "n_prev": 62,
-   "now": 458,
+   "now": 457.5,
    "prev7": 444.0,
    "shown": true,
    "state": "flat",
@@ -378,15 +378,15 @@
    "change30_pct": 52.3,
    "change7_pct": 8.9,
    "d30": 216,
-   "delta30": 113,
-   "delta7": 27,
+   "delta30": 113.0,
+   "delta7": 27.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 59,
-   "now": 329,
+   "now": 329.0,
    "prev7": 302,
    "shown": true,
    "state": "flat",
@@ -417,6 +417,27 @@
    "unit": "s"
   },
   {
+   "change30_pct": 61.8,
+   "change7_pct": 5.3,
+   "d30": 140,
+   "delta30": 86.5,
+   "delta7": 11.5,
+   "group": "ci",
+   "id": "sim|macOS tests against bundled FFmpeg and ASS",
+   "kind": "job",
+   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
+   "n_now": 58,
+   "n_prev": 59,
+   "now": 226.5,
+   "prev7": 215,
+   "shown": true,
+   "state": "flat",
+   "state30": "worse",
+   "threshold_abs": 30.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
    "change30_pct": 63.4,
    "change7_pct": -25.2,
    "d30": 138.0,
@@ -438,39 +459,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 60.0,
-   "change7_pct": 4.2,
-   "d30": 140,
-   "delta30": 84,
-   "delta7": 9,
-   "group": "ci",
-   "id": "sim|macOS tests against bundled FFmpeg and ASS",
-   "kind": "job",
-   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 57,
-   "n_prev": 59,
-   "now": 224,
-   "prev7": 215,
-   "shown": true,
-   "state": "flat",
-   "state30": "worse",
-   "threshold_abs": 30.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": 5.9,
-   "change7_pct": -6.1,
+   "change30_pct": 5.3,
+   "change7_pct": -6.6,
    "d30": 188,
-   "delta30": 11,
-   "delta7": -13,
+   "delta30": 10.0,
+   "delta7": -14.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 59,
-   "now": 199,
+   "now": 198.0,
    "prev7": 212,
    "shown": true,
    "state": "flat",
@@ -525,15 +525,15 @@
    "change30_pct": 11.8,
    "change7_pct": -5.0,
    "d30": 17,
-   "delta30": 2,
-   "delta7": -1,
+   "delta30": 2.0,
+   "delta7": -1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 59,
-   "now": 19,
+   "now": 19.0,
    "prev7": 20,
    "shown": false,
    "state": "flat",
@@ -632,11 +632,6 @@
    "change_pct": 31.5,
    "commits": [
     {
-     "pr": 1358,
-     "sha": "6f2c15a54",
-     "title": "refactor(sans-io): complete machine input and effect boundaries"
-    },
-    {
      "pr": 1364,
      "sha": "2f0431b16",
      "title": "CI: Bump softprops/action-gh-release from 3.0.3 to 3.0.4"
@@ -680,6 +675,11 @@
      "pr": null,
      "sha": "6a74d2a8b",
      "title": "refactor(ui): complete owned input and frame scheduling"
+    },
+    {
+     "pr": 1380,
+     "sha": "5ca2777b5",
+     "title": "Net: bound a never-pausing peer's cancel latency by what the transport controls"
     }
    ],
    "from": 195.5,
@@ -693,11 +693,6 @@
    "change_pct": 28.7,
    "commits": [
     {
-     "pr": 1358,
-     "sha": "6f2c15a54",
-     "title": "refactor(sans-io): complete machine input and effect boundaries"
-    },
-    {
      "pr": 1364,
      "sha": "2f0431b16",
      "title": "CI: Bump softprops/action-gh-release from 3.0.3 to 3.0.4"
@@ -741,6 +736,11 @@
      "pr": null,
      "sha": "6a74d2a8b",
      "title": "refactor(ui): complete owned input and frame scheduling"
+    },
+    {
+     "pr": 1380,
+     "sha": "5ca2777b5",
+     "title": "Net: bound a never-pausing peer's cancel latency by what the transport controls"
     }
    ],
    "from": 24.3,
@@ -781,7 +781,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 329
+   "now": 329.0
   }
  ],
  "slowest_local": [
