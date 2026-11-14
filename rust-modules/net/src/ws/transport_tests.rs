@@ -413,16 +413,26 @@ fn an_address_keeps_its_query_and_gains_a_root_path() {
     assert_eq!(split("ws://relay.example/v1/ws?x=1"), Some((false, "relay.example", "/v1/ws?x=1".to_owned())));
 }
 
+/// A peer that writes without a pause keeps the socket readable, so the pass that reads it must end
+/// by its byte budget ([`PASS_BUDGET`]) for the loop to see a cancel at all. The bound is stated in
+/// what the transport controls, not in wall time: the callback below is the test's own cost (a
+/// 200 us sleep per message, which a coarse timer, such as a virtualised macOS runner's, stretches to
+/// over a millisecond: the pass in flight then took longer than the second the old assertion
+/// allowed, on every run, with the transport doing exactly what it should). So it asserts (a) how
+/// many messages arrive after the cancel was raised, which a missing budget would leave at tens of
+/// thousands (the peer writes for ten seconds), and (b) that the time the transport spent outside
+/// the callback between the cancel and its return, the going-away close included, is under a second.
 #[test]
 fn a_peer_that_never_pauses_cannot_hold_off_a_cancel() {
     let _serial = plx_base::testlock::serial();
     if !curl_ready() {
         return;
     }
+    const FRAME: usize = 1000 + 4; // a 1000-byte text frame has a four-byte header
     let (url, server) = serve_ws(|mut peer, _| {
         let mut burst = Vec::new();
         while burst.len() < 1 << 16 {
-            encode(Opcode::Text, true, "x".repeat(1000).as_bytes(), None, &mut burst);
+            encode(Opcode::Text, true, "x".repeat(FRAME - 4).as_bytes(), None, &mut burst);
         }
         let until = Instant::now() + Duration::from_secs(10);
         while Instant::now() < until && peer.io.write_all(&burst).is_ok() {}
@@ -430,19 +440,29 @@ fn a_peer_that_never_pauses_cannot_hold_off_a_cancel() {
     let cancel = AtomicBool::new(false);
     let (_outbox, inbox) = channel().unwrap();
     let mut first = None;
+    let mut after_cancel = 0usize;
+    let mut in_callback = Duration::ZERO;
     let end = run(&OffFrame::for_test(), plain(&url), &cancel, inbox, &mut |event| {
         if matches!(event, Event::Text(_)) {
-            thread::sleep(Duration::from_micros(200));
+            let entered = Instant::now();
             if first.is_none() {
-                first = Some(Instant::now());
+                first = Some(entered);
                 cancel.store(true, Ordering::Release);
+            } else {
+                after_cancel += 1;
             }
+            thread::sleep(Duration::from_micros(200));
+            in_callback += entered.elapsed();
         }
     });
     let took = first.unwrap().elapsed();
     server.join().unwrap();
     assert_eq!(end, End::Cancelled);
-    assert!(took < Duration::from_secs(1), "{took:?}");
+    // the pass in flight stops once it has read its budget, plus the chunk that crossed it
+    let one_pass = (PASS_BUDGET + READ_CHUNK) / FRAME + 2;
+    assert!(after_cancel <= one_pass, "{after_cancel} messages after the cancel, one pass is at most {one_pass}");
+    let transport = took.saturating_sub(in_callback);
+    assert!(transport < Duration::from_secs(1), "{transport:?} in the transport of {took:?}");
 }
 
 #[test]
