@@ -36,6 +36,11 @@
 //! agent session uses: drive the UI, then ask for the frame. Those are NUMBERED (`shot-1.png`,
 //! `shot-2.png`, …) so a sequence of them does not overwrite one file and race whoever is reading
 //! it, and they never exit the process — the caller is still driving.
+//!
+//! On the television the same `shot` FIFO token is the on-demand door (the token works
+//! wherever the FIFO does — the devtrig builds; `events.rs`'s dispatch arm), arming this
+//! very `ON_DEMAND` flag. The frame the agent gets is the numbered file in the instance
+//! root, fetched over SSH; the event log line is the confirmation it waits for.
 
 use std::os::raw::{c_int, c_uint, c_void};
 use std::path::PathBuf;
@@ -123,6 +128,9 @@ fn confirm_settled(requested: bool, ready: bool, fired: &AtomicBool) -> bool {
 /// Once per loop iteration, BEFORE the present decision (`app::run`): arm the settled capture when
 /// the screen has been at rest long enough. A settled screen does not present, so this invalidates
 /// to make the next frame present — and that frame, drawn from unchanged state, is the capture.
+/// Simulator-only: the television never arms the settled capture (its one door is the on-demand
+/// `shot` token), so the loop's call is hostsim-gated too.
+#[cfg(feature = "hostsim")]
 pub(crate) fn tick(now: u32, busy: bool, last_change_ms: u32) -> bool {
     let cfg = cfg();
     let Some(settle) = cfg.settle else { return false };
@@ -143,7 +151,9 @@ pub(crate) fn tick(now: u32, busy: bool, last_change_ms: u32) -> bool {
     false
 }
 
-/// Ask for a capture of the next frame. The remote-FIFO entry point (`app.rs`'s token dispatch).
+/// Ask for a capture of the next frame — the `shot` FIFO token's one effect
+/// (`events.rs`'s dispatch arm; the command API's screenshot door in both the simulator
+/// and the devtrig televisions).
 ///
 /// Deliberately one-shot and idempotent: two `shot` tokens in a row produce one file, because the
 /// second arrives before anything has repainted and would otherwise overwrite the first with the
@@ -155,6 +165,16 @@ pub(crate) fn request() {
     // moving. So a `shot` token sent to a UI that has come to rest — which is exactly when an
     // agent wants one, after driving and waiting — would set this flag and then wait forever for a
     // frame that never comes. Observed as a token that logged nothing at all.
+}
+
+/// Encode a read-back buffer as PNG in memory. `image::save_buffer` does the same work for a
+/// path; the on-demand capture keeps the bytes in memory so the numbered file lands with the
+/// encode and the write as one step.
+fn encode_png(rgb: &[u8], w: u32, h: u32, color: image::ColorType) -> Vec<u8> {
+    use image::ImageEncoder;
+    let mut out: Vec<u8> = Vec::new();
+    let _ = image::codecs::png::PngEncoder::new(&mut out).write_image(rgb, w, h, color.into());
+    out
 }
 
 /// `dir/stem-N.ext`, N counting up per on-demand shot within this process.
@@ -272,6 +292,9 @@ pub(crate) fn maybe_capture(now: u32, busy: bool, last_change_ms: u32, vx: c_int
     let ends_run = ends_run(cfg.exit, on_demand);
     if vw <= 0 || vh <= 0 {
         plx_base::eventlog::log("shot: viewport is empty — nothing to capture");
+        // A typed shot read parked on this request answers with the refusal (no-op for a
+        // capture nobody asked for over the socket).
+        crate::api::shot_failed("the viewport is empty — nothing to capture".to_string());
         return ends_run;
     }
 
@@ -289,9 +312,27 @@ pub(crate) fn maybe_capture(now: u32, busy: bool, last_change_ms: u32, vx: c_int
     } else {
         cfg.path.clone()
     };
-    match image::save_buffer(&out, &rgb, w as u32, h as u32, color) {
-        Ok(()) => plx_base::eventlog::log(&format!("shot: wrote {}x{} to {}", w, h, out.display())),
-        Err(e) => plx_base::eventlog::log(&format!("shot: could not write {}: {e}", out.display())),
+    if on_demand {
+        // The on-demand capture keeps its encode in memory (encode, then one write) so the
+        // numbered file and the log line that names it come from the same bytes. Automatic
+        // captures (simulator) have no such pairing and keep `save_buffer`.
+        let png = encode_png(&rgb, w as u32, h as u32, color);
+        match std::fs::write(&out, &png) {
+            Ok(()) => {
+                plx_base::eventlog::log(&format!("shot: wrote {}x{} to {}", w, h, out.display()));
+                // The typed shot read parked on this request answers with the numbered file.
+                crate::api::shot_landed(out.display().to_string());
+            }
+            Err(e) => {
+                plx_base::eventlog::log(&format!("shot: could not write {}: {e}", out.display()));
+                crate::api::shot_failed(format!("could not write {}: {e}", out.display()));
+            }
+        }
+    } else {
+        match image::save_buffer(&out, &rgb, w as u32, h as u32, color) {
+            Ok(()) => plx_base::eventlog::log(&format!("shot: wrote {}x{} to {}", w, h, out.display())),
+            Err(e) => plx_base::eventlog::log(&format!("shot: could not write {}: {e}", out.display())),
+        }
     }
 
     ends_run

@@ -14,6 +14,8 @@
 #[cfg(all(target_arch = "arm", target_os = "linux", not(feature = "hostsim"),
     not(any(feature = "play-uri", feature = "play-feed"))))]
 compile_error!("native playback requires play-uri or play-feed");
+mod api; // command API: a FIFO-only surface for an agent (an LLM over SSH, a test harness) — see the module doc
+mod api_sock; // the typed control surface: a UDS socket beside the FIFO — typed requests, structured outcomes and errors — see the module doc
 mod app; // run_application — the Rust app core / event loop (the entry inverted from main.c; port.rs's `plex_run` hands over to it)
 mod capture; // dev live UI capture stream: own-GLES-frame grab → MPEG1/TS or JPEG → TCP (UI plane only)
 mod coldstart; // retires old last-page bookmarks; authenticated cold boots now stay on Home
@@ -36,8 +38,8 @@ mod lab; // Cloud Lab bridge: pinned diagnostic uploads + optional outbound comm
 #[cfg(test)]
 mod release_line;
 mod remote; // dev/testing remote-control channel: a FIFO the loop drains into synthetic SDL keys
-#[cfg(feature = "hostsim")]
-mod shot; // simulator screenshots: read the frame back and write a PNG (see the module doc)
+mod shot; // screenshots: read the frame back as a PNG — the simulator's file capture, and on
+// the television the command API's shot door (`shot-<N>.png` in the instance root); see the module doc
 mod system;
 
 mod textinput; // the TV's own on-screen keyboard, via plain SDL_StartTextInput (see the module doc)
