@@ -359,13 +359,13 @@ class Proof:
     def dependency_certificate(self, path, tokens):
         """Cache exact dependency evidence only within this immutable source snapshot."""
         try:
-            from readonly_dependencies import certify, provenance
+            from readonly_dependencies import provenance
         except ModuleNotFoundError as error:
             if error.name == 'readonly_dependencies': return None
             raise
         namespace = self.module(path)
         context = {'imports': namespace[3], 'definitions': list(namespace[2])}
-        if not certify(self.root, Path(path), tokens, namespace_context=context): return None
+        # `certify` is `provenance(...) is not None`: one verification, not two.
         return provenance(self.root, Path(path), tokens, namespace_context=context)
 
     def shared_method(self, path, state_type, method):

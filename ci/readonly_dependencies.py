@@ -51,8 +51,17 @@ def _json(data):
     return json.dumps(data, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii')
 
 
+_RAW_STRING = re.compile(r'(?:b|c)?r(#+)?"')
+_LITERAL = re.compile(r'(?:b|c)?"(?:\\.|[^"\\])*"|(?:b)?\'(?:\\.|[^\'\\])\'')
+_TOKEN = re.compile(r'r#[A-Za-z_]\w*|[A-Za-z_]\w*|::|[^\s]')
+
+
 def _tokens(text):
-    """Lex comments/literals before examining Rust identifiers; never expand macros."""
+    """Lex comments/literals before examining Rust identifiers; never expand macros.
+
+    Each pattern matches AT the cursor (`pattern.match(text, i)`): slicing `text[i:]` per token
+    copied the rest of the file every time and made a 700 KB source cost seconds.
+    """
     result, i = [], 0
     while i < len(text):
         if text[i].isspace():
@@ -67,17 +76,17 @@ def _tokens(text):
                 elif text.startswith('*/', i): depth -= 1; i += 2
                 else: i += 1
         else:
-            raw = re.match(r'(?:b|c)?r(#+)?"', text[i:])
+            raw = _RAW_STRING.match(text, i)
             if raw:
                 end = '"' + (raw[1] or '')
-                stop = text.find(end, i + raw.end())
+                stop = text.find(end, raw.end())
                 if stop < 0: raise ValueError('unclosed raw string')
                 result.append('"<raw>"'); i = stop + len(end); continue
-            literal = re.match(r'(?:b|c)?"(?:\\.|[^"\\])*"|(?:b)?\'(?:\\.|[^\'\\])\'', text[i:])
+            literal = _LITERAL.match(text, i)
             if literal:
-                result.append(literal[0]); i += literal.end(); continue
-            token = re.match(r'r#[A-Za-z_]\w*|[A-Za-z_]\w*|::|[^\s]', text[i:])
-            result.append(token[0].removeprefix('r#')); i += token.end()
+                result.append(literal[0]); i = literal.end(); continue
+            token = _TOKEN.match(text, i)
+            result.append(token[0].removeprefix('r#')); i = token.end()
     return result
 
 
