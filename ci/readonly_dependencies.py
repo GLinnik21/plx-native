@@ -9,6 +9,7 @@ Assumptions match the local structural checker: sound Rust/std owned containers,
 Cargo honoring the checked-in locked graph/config, and no out-of-tree compiler or
 Cargo overrides. This cannot attest an arbitrary build environment or unsafe code.
 """
+from functools import lru_cache
 from pathlib import Path
 import argparse
 import hashlib
@@ -410,6 +411,13 @@ def _root_modules_only(text):
     return True
 
 
+@lru_cache(maxsize=128)
+def _crate_tokens(text):
+    """_tokens of one crate source TEXT, shared by every namespace check of the same file; the list is
+    only read (a changed file is new text, so a stale entry cannot answer for it)."""
+    return _tokens(text)
+
+
 def _namespace_safe(crate, source, context):
     if context is not None:
         if not isinstance(context, dict) or set(context) - {'imports', 'definitions'}: return False
@@ -417,7 +425,7 @@ def _namespace_safe(crate, source, context):
         if any(entry[0] == 'serde_json' for entry in context.get('imports', ())): return False
     for path in sorted((crate / 'src').rglob('*.rs')):
         if path.is_symlink() or not path.resolve().is_relative_to(crate.resolve()): return False
-        tokens = _tokens(path.read_text(encoding='utf-8'))
+        tokens = _crate_tokens(path.read_text(encoding='utf-8'))
         for i, token in enumerate(tokens):
             if token == 'serde_json' and i and tokens[i - 1] in ('mod', 'type', 'struct', 'enum', 'union', 'trait', 'as', 'crate'):
                 return False

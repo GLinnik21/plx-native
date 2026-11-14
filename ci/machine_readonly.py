@@ -4,6 +4,7 @@ Only immutable standard containers are axioms. Local fields and aliases are foll
 module imports; opaque/ambiguous types, callbacks, raw pointers and interior authority fail closed.
 Safe Rust then prevents an &self method from changing the proved owned state.
 """
+from functools import lru_cache
 from pathlib import Path
 import re
 
@@ -71,6 +72,15 @@ def shadows_of(tokens):
     return derived(tokens, 'shadows', Shadows)
 
 
+@lru_cache(maxsize=64)
+def lexed(source):
+    """(raw lexer tokens, their bracket ends) of one source TEXT, shared and never changed: the module
+    walk and each child lookup read the same file's text once per check, so this lexes it once."""
+    import rust_test_modules as rtm
+    tokens = rtm.lex(source)
+    return Tokens(tokens), rtm.group_ends(tokens)
+
+
 def macro_invocation(tokens, bang, ends):
     """A bang after an identifier is a macro, unlike logical negation after if/return."""
     return (bang > 0 and bang + 1 in ends and tokens[bang - 1].isidentifier() and
@@ -104,6 +114,8 @@ class Proof:
     def __init__(self, root, shape):
         self.root, self.shape = Path(root), shape
         self.cache, self.visiting, self.audit = {}, set(), set()
+        self.real_paths = {}
+        self.real_root = self.real(self.root)
         self.crates = {}
         for manifest in self.root.glob('*/Cargo.toml'):
             text = manifest.read_text(encoding='utf-8')
@@ -113,13 +125,22 @@ class Proof:
             name = match[1].replace('-', '_') if match else ''
             if name: self.crates[name] = manifest.parent / 'src/lib.rs'
 
+    def real(self, path):
+        """Path(path).resolve(), looked up once per path for this proof's lifetime: the tree is not
+        changed while a proof is being made (module() already memoizes every file it reads)."""
+        if path not in self.real_paths: self.real_paths[path] = Path(path).resolve()
+        return self.real_paths[path]
+
     def module(self, path):
-        path = Path(path).resolve()
+        path = self.real(path)
         if path in self.cache: return self.cache[path]
         from readonly_generated import declarations
         generated = declarations(self.root, path)
-        tokens = self.shape.production_tokens(path.read_text(encoding='utf-8') + '\n' + generated)
-        if generated: self.audit.add('source-backed generated data ' + path.relative_to(self.root.resolve()).as_posix())
+        text = path.read_text(encoding='utf-8')
+        # With nothing generated the appended newline lexes to no token; leaving it off lets the module
+        # share the memoized tokens of the same text the checker's own walk already lexed.
+        tokens = self.shape.production_tokens(text + '\n' + generated if generated else text)
+        if generated: self.audit.add('source-backed generated data ' + path.relative_to(self.real_root).as_posix())
         ends = self.shape.ends_of(tokens)
         reverse = {end: begin for begin, end in ends.items()}
         definitions, uses = {}, []
@@ -198,11 +219,11 @@ class Proof:
     def child(self, path, name):
         """Resolve one declared child, including a literal path attribute; conditional paths fail."""
         import rust_test_modules as rtm
-        path = Path(path).resolve()
-        tokens = rtm.lex(path.read_text(encoding='utf-8'))
-        ends = rtm.group_ends(tokens)
+        path = self.real(path)
+        tokens, ends = lexed(path.read_text(encoding='utf-8'))
         reverse = {b: a for a, b in ends.items()}
-        matches = [i for i in range(len(tokens) - 2) if tokens[i:i + 3] == [('code', 'mod'), ('code', name), ('code', ';')]]
+        mods = derived(tokens, 'mods', lambda t: [i for i in range(len(t) - 2) if t[i] == ('code', 'mod')])
+        matches = [i for i in mods if tokens[i:i + 3] == [('code', 'mod'), ('code', name), ('code', ';')]]
         if len(matches) != 1: return None
         before = matches[0] - 1
         if tokens[before:before + 1] == [('code', 'pub')]: before -= 1
@@ -219,7 +240,7 @@ class Proof:
             before = begin - 2
         directory = path.parent if path.name in ('lib.rs', 'mod.rs', 'main.rs') else path.with_suffix('')
         candidates = [path.parent / paths[0]] if len(paths) == 1 else [directory / (name + '.rs'), directory / name / 'mod.rs'] if not paths else []
-        found = [p.resolve() for p in candidates if p.is_file() and p.resolve().is_relative_to(self.root.resolve())]
+        found = [p.resolve() for p in candidates if p.is_file() and p.resolve().is_relative_to(self.real_root)]
         if len(found) != 1: return None
         from readonly_generated import canonical_child
         if not canonical_child(self.root, path, name, found[0]): return None
@@ -237,7 +258,7 @@ class Proof:
 
     @cache_proof
     def resolve(self, path, names, seen=None):
-        path, names = Path(path).resolve(), tuple(names)
+        path, names = self.real(path), tuple(names)
         key = (path, names)
         seen = set() if seen is None else seen
         if key in seen: return None
@@ -349,7 +370,7 @@ class Proof:
         # Cache only completed roots: recursive coinductive successes are provisional.
         substitutions = substitutions or {}
         concrete = tuple(part for token in tokens for part in substitutions.get(token, [token]))
-        key = (Path(path).resolve(), concrete)
+        key = (self.real(path), concrete)
         if self.visiting: return self._inert(path, list(concrete))
         if not hasattr(self, 'inert_roots'): self.inert_roots = {}
         if key not in self.inert_roots:
@@ -395,7 +416,7 @@ class Proof:
         sub = dict(zip(parameters, args))
         result = all(self.inert(owner, field, sub) for field in payloads)
         self.visiting.remove(key)
-        if result: self.audit.add(owner.relative_to(self.root.resolve()).as_posix() + '::' + name)
+        if result: self.audit.add(owner.relative_to(self.real_root).as_posix() + '::' + name)
         return result
 
     @cache_proof
@@ -488,7 +509,7 @@ class Proof:
 
 
     def builtin(self, path, name, seen=None):
-        path = Path(path).resolve()
+        path = self.real(path)
         seen = set() if seen is None else seen
         if path in seen: return True
         seen = seen | {path}

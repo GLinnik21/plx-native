@@ -8,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 import configparser
 import sys
-from machine_readonly import Tokens, derived, macro_invocation, shadows_of
+from machine_readonly import Tokens, derived, lexed, macro_invocation, shadows_of
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rust_test_modules as rtm  # noqa: E402
@@ -71,10 +71,13 @@ def shape(index, tokens):
 # (every machine's analysis re-reads its production closure and every module a type resolves through,
 # and the registry's mutation matrix re-checks each machine dozens of times with one file changed).
 # They memoize on that text, never on a path or an mtime, and hand out one shared read-only `Tokens`.
-@lru_cache(maxsize=256)
+@lru_cache(maxsize=64)
 def rust_tokens(source):
     """Code tokens with raw identifiers normalized; literals cannot join adjacent code."""
-    raw = [text if kind == 'code' else '<literal>' for kind, text in rtm.lex(source)]
+    # Interned: a lexed file is mostly a few hundred distinct words repeated, and the memo below keeps
+    # many of these lists alive at once.
+    raw = [sys.intern(text) if kind == 'code' else '<literal>' for kind, text in rtm.lex(source)]
+    if not any(raw[i] == 'r' and raw[i + 1] == '#' for i in range(len(raw) - 2)): return Tokens(raw)
     out, i = [], 0
     while i < len(raw):
         if raw[i:i + 2] == ['r', '#'] and i + 2 < len(raw):
@@ -91,7 +94,7 @@ def ends_of(tokens):
     return derived(tokens, 'ends', lambda t: rtm.group_ends([('code', token) for token in t]))
 
 
-@lru_cache(maxsize=256)
+@lru_cache(maxsize=384)
 def production_tokens(source):
     """Erase items proven cfg(test)-only, keeping item boundaries."""
     tokens = list(rust_tokens(source))
@@ -442,9 +445,10 @@ def writer_problems(source, name, field, transition, constructor, label, require
             problems.append(f'{label}::{method}: consuming the machine must use an owner event')
     machine_methods = {n: [(a, b, sig) for a, b, m, sig in declared if m == n] for _, _, n, _ in declared}
     all_inert = proof is not None and substitutions is not None and all(proof.inert(state_path, [part for token in t for part in substitutions.get(token, [token])]) for _, _, t in fields)
-    def machine_body(i): return any(a < i < b and inherent_target(h[h.index('for') + 1:] if 'for' in h else h, name) for a, b, h in impls)
-    for i, token in enumerate(tokens):
-        if not machine_body(i): continue
+    machine_body = sorted({i for a, b, h in impls if inherent_target(h[h.index('for') + 1:] if 'for' in h else h, name)
+                           for i in range(a + 1, b)})
+    for i in machine_body:
+        token = tokens[i]
         if token == 'unsafe': problems.append(f'{label}: unsafe machine authority cannot be proved')
         if token == 'self' and tokens[i + 1:i + 2] == ['.'] and tokens[i + 3:i + 4] == ['(']:
             method = tokens[i + 2]
@@ -802,9 +806,7 @@ def production_sources(path, root):
             raise ValueError(f'production include escapes rust-modules: {current}')
         if current in seen: continue
         seen.add(current)
-        source = current.read_text(encoding='utf-8')
-        tokens = rtm.lex(source)
-        ends = rtm.group_ends(tokens)
+        tokens, ends = lexed(current.read_text(encoding='utf-8'))
         module_dir = current.parent if current.name in ('mod.rs', 'lib.rs', 'main.rs') else current.with_suffix('')
         def walk(start, stop, directory, attribute_base, inherited_test=False):
             i, attrs = start, []
