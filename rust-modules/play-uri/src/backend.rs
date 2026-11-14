@@ -307,7 +307,7 @@ impl UriBackend {
         if self.config.binding == Binding::Acb
             && (self.config.display.window_mode() != VP_ACB || !self.acb_gate(mt)) {
             plx_base::eventlog::log(
-                "uri-acb: the ACB gate refused this start (see the `acb gate` and `acb handle=uri` lines); the play goes to Standard");
+                "uri-acb: the ACB gate refused this start (see the `acb gate` and `acb handle=uri` lines); nothing was opened and the Start is refused");
             return self.refuse_before_open(attempt, Failure::Unsupported);
         }
         let window_id = match self.config.binding {
@@ -2314,10 +2314,10 @@ mod tests {
         assert_eq!(sink.created_player_types(), [0], "a second play creates no second handle");
     }
 
-    /// A create that fails sends THAT play to Standard (a refused Start is the route's existing
-    /// fallback), with the reason in the log, before anything is opened; it is not retried.
+    /// A create that fails refuses THAT Start (`Failure::Unsupported`, the route's existing refused-Start
+    /// path), with the reason in the log, before anything is opened; it is not retried.
     #[test]
-    fn a_failed_on_demand_create_refuses_the_start_for_standard_with_a_reason_and_is_not_retried() {
+    fn a_failed_on_demand_create_refuses_the_start_with_a_reason_and_is_not_retried() {
         let (sink, plane) = boot_without_the_uri_handle(&[]);
         let mut rig = Rig::with(Binding::Acb, sink, plane);
         let log = plx_base::eventlog::with_private_log(|| {
@@ -2325,7 +2325,7 @@ mod tests {
             std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
         });
         assert!(log.contains("acb handle=uri ptype=0 create=0 initialized=false\n"), "{log}");
-        assert!(log.contains("the play goes to Standard"), "{log}");
+        assert!(log.contains("nothing was opened and the Start is refused"), "{log}");
         assert!(rig.bus_methods().is_empty(), "nothing was opened");
         assert!(rig.driver.exit_disposition() == ExitDisposition::Clean);
         let mut again = Rig::with(Binding::Acb, sink, plane);
