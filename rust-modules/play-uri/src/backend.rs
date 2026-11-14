@@ -103,14 +103,16 @@ pub const EXPORTED_STRATA: &[u32] = &[
     // amendment (2); `exported_uri_leaves_multi_audio_originals_on_standard` pins the route).
     5,
     // webOS 25 (firmware 10.3.1, 33.31.68), LG C2: `docs/uri-mode.md` Results row "webOS 9.2.4 / 10.3.1
-    // (33.31.68)", #1064. (a) the 10.3 image reads `option.windowId` at load; (b) two product runs on
-    // debug builds: the first reported picture size and aspect right, the spinner clearing and the
-    // remaining time counting down (no lines pasted, so no boot line shows the override armed); the
-    // second, a Dolby Vision MKV with one audio track and no subtitles, "also successful", logged
-    // `evidence=override` and `uri: exported window placed src=3840x2160 rv=1` and reported sound,
-    // pause, resume and seek (rule (b)'s boot line is shown by this run only); (c) a drive probe
-    // on an older build printed seek=hit and audio=ok but pause=unconfirmed (paused_event=yes, no
-    // position while paused), so amendment (1) is used: the replay test
+    // (33.31.68)", #1064. (a) the 10.3 image reads `option.windowId` at load; (b) the product run of
+    // 2026-11-14 (a debug build the tester does not name, answering the request for the CI build of
+    // run 43421880266, main at 2d565dc9f; one audio track, no subtitles) logged `evidence=override`
+    // and `uri: exported window placed src=3840x1608 rv=1` (2.39:1), both seeks landing on seekDone,
+    // and reported "aspect ratio correct, picture is full width with black bars, audio is playing,
+    // pause, resume, seek working" (pause and resume rest on those words: the paste has no pause
+    // line); two earlier product runs, one on main at 68527cb2 that pasted no lines and one on a 16:9
+    // Dolby Vision MKV, support it and are not relied on; (c) a drive probe on an older build
+    // printed seek=hit and audio=ok but pause=unconfirmed (paused_event=yes, no position while
+    // paused), so amendment (1) is used: the replay test
     // `uri_drive_webos_25_c2_run_replays_to_pause_froze_from_the_paused_event_and_resume` grades its
     // recorded numbers (pause at 2410, first position after resume 2729) pause=froze on
     // pause_basis=paused_event_and_resume. Amendment (2) is not used; major 9 has no entry.
