@@ -99,7 +99,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-14T04:07:21Z",
+ "generated": "2026-11-14T04:16:48Z",
  "metrics": [
   {
    "change30_pct": 44.6,
@@ -144,10 +144,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 5.4,
+   "change30_pct": 5.0,
    "change7_pct": 3.9,
-   "d30": 455.5,
-   "delta30": 24.5,
+   "d30": 457.0,
+   "delta30": 23.0,
    "delta7": 18,
    "group": "ci",
    "id": "pr_wait",
@@ -165,18 +165,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 24.6,
-   "change7_pct": 3.0,
+   "change30_pct": 24.5,
+   "change7_pct": 2.9,
    "d30": 368.0,
-   "delta30": 90.5,
-   "delta7": 13.5,
+   "delta30": 90.0,
+   "delta7": 13,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 64,
+   "n_now": 65,
    "n_prev": 61,
-   "now": 458.5,
+   "now": 458,
    "prev7": 445,
    "shown": true,
    "state": "flat",
@@ -291,19 +291,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 12.9,
-   "change7_pct": 0.1,
+   "change30_pct": 12.6,
+   "change7_pct": -0.3,
    "d30": 987.5,
-   "delta30": 127.5,
-   "delta7": 1,
+   "delta30": 124.0,
+   "delta7": -3.0,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 11,
-   "n_prev": 41,
-   "now": 1115,
-   "prev7": 1114,
+   "n_now": 10,
+   "n_prev": 42,
+   "now": 1111.5,
+   "prev7": 1114.5,
    "shown": true,
    "state": "flat",
    "state30": "flat",
@@ -384,9 +384,9 @@
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 58,
-   "now": 329.0,
+   "now": 329,
    "prev7": 302.0,
    "shown": true,
    "state": "flat",
@@ -417,27 +417,6 @@
    "unit": "s"
   },
   {
-   "change30_pct": 62.4,
-   "change7_pct": 5.3,
-   "d30": 139.5,
-   "delta30": 87.0,
-   "delta7": 11.5,
-   "group": "ci",
-   "id": "sim|macOS tests against bundled FFmpeg and ASS",
-   "kind": "job",
-   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 58,
-   "n_prev": 58,
-   "now": 226.5,
-   "prev7": 215.0,
-   "shown": true,
-   "state": "flat",
-   "state30": "worse",
-   "threshold_abs": 30.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": 63.8,
    "change7_pct": -25.4,
    "d30": 138,
@@ -459,18 +438,39 @@
    "unit": "s"
   },
   {
-   "change30_pct": 5.3,
-   "change7_pct": -7.3,
+   "change30_pct": 60.6,
+   "change7_pct": 4.2,
+   "d30": 139.5,
+   "delta30": 84.5,
+   "delta7": 9.0,
+   "group": "ci",
+   "id": "sim|macOS tests against bundled FFmpeg and ASS",
+   "kind": "job",
+   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
+   "n_now": 59,
+   "n_prev": 58,
+   "now": 224,
+   "prev7": 215.0,
+   "shown": true,
+   "state": "flat",
+   "state30": "worse",
+   "threshold_abs": 30.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 5.9,
+   "change7_pct": -6.8,
    "d30": 188.0,
-   "delta30": 10.0,
-   "delta7": -15.5,
+   "delta30": 11.0,
+   "delta7": -14.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 58,
-   "now": 198.0,
+   "now": 199,
    "prev7": 213.5,
    "shown": true,
    "state": "flat",
@@ -480,19 +480,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 35.3,
-   "change7_pct": -8.0,
+   "change30_pct": 38.2,
+   "change7_pct": -4.1,
    "d30": 17.0,
-   "delta30": 6.0,
-   "delta7": -2,
+   "delta30": 6.5,
+   "delta7": -1.0,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
-   "n_now": 11,
-   "n_prev": 41,
-   "now": 23,
-   "prev7": 25,
+   "n_now": 10,
+   "n_prev": 42,
+   "now": 23.5,
+   "prev7": 24.5,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -501,19 +501,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 46.7,
-   "change7_pct": 10.0,
+   "change30_pct": 53.3,
+   "change7_pct": 15.0,
    "d30": 15.0,
-   "delta30": 7.0,
-   "delta7": 2,
+   "delta30": 8.0,
+   "delta7": 3.0,
    "group": "ci",
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
-   "n_now": 11,
-   "n_prev": 41,
-   "now": 22,
-   "prev7": 20,
+   "n_now": 10,
+   "n_prev": 42,
+   "now": 23.0,
+   "prev7": 20.0,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -531,9 +531,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 58,
+   "n_now": 59,
    "n_prev": 58,
-   "now": 19.0,
+   "now": 19,
    "prev7": 19.5,
    "shown": false,
    "state": "flat",
@@ -675,6 +675,11 @@
      "pr": 1380,
      "sha": "5ca2777b5",
      "title": "Net: bound a never-pausing peer's cancel latency by what the transport controls"
+    },
+    {
+     "pr": 1382,
+     "sha": "a3ea02c1f",
+     "title": "Media: the window-reread test times its wait from before the stop's sleep"
     }
    ],
    "from": 196,
@@ -687,11 +692,6 @@
   {
    "change_pct": 28.7,
    "commits": [
-    {
-     "pr": 1364,
-     "sha": "2f0431b16",
-     "title": "CI: Bump softprops/action-gh-release from 3.0.3 to 3.0.4"
-    },
     {
      "pr": 1370,
      "sha": "4c00cf1a2",
@@ -736,6 +736,11 @@
      "pr": 1380,
      "sha": "5ca2777b5",
      "title": "Net: bound a never-pausing peer's cancel latency by what the transport controls"
+    },
+    {
+     "pr": 1382,
+     "sha": "a3ea02c1f",
+     "title": "Media: the window-reread test times its wait from before the stop's sleep"
     }
    ],
    "from": 24.3,
@@ -752,7 +757,7 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 1115
+   "now": 1111.5
   },
   {
    "group": "ci",
@@ -776,7 +781,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 329.0
+   "now": 329
   }
  ],
  "slowest_local": [
