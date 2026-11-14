@@ -1644,4 +1644,47 @@ mod uri_boot_tests {
         assert!(matches!(started, plx_media::player::BufferfeedStartOutcome::Failed),
             "the start over the quarantined registration is refused, not launched: {started:?}");
     }
+    // ---- #1394: the URI engine's ACB handle is created by its first play, not by the boot ----
+
+    /// A rig whose URI driver is composed over a scripted ACB display (`create_ids` is what its
+    /// creates answer) with production's ACB evidence, and the Experimental viewer's request
+    /// launched on it: the bus, the display and the request.
+    fn launch_acb_uri(rig: &mut Rig, create_ids: &[c_long])
+        -> (&'static Bus, &'static plx_platform::tv::sink::ScriptedPlaneSink, plx_media::player::backend::LogicalRequestId) {
+        use plx_platform::tv::sink::{PlaneUnload, ScriptedPlaneSink};
+        plx_platform::tv::plane::installed().reset_for_test();
+        plx_plex::plex::client_for(rig.sid).unwrap()
+            .set_link(plx_plex::plex::probe::Location::Local);
+        let bus: &'static Bus = Box::leak(Box::new(Bus::new()));
+        let display: &'static ScriptedPlaneSink =
+            Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })));
+        display.create_ids.lock().unwrap().extend(create_ids.iter().copied());
+        let caps = Capabilities { progressive_uri: true, hls_uri: false,
+            packet_feed: false, pause: true, seek: true, audio_track: true,
+            subtitle_track: true, audio_off: false, subtitle_off: false };
+        let port = ResolvePort::new(ProductEvidence { display_exported: false, binding: Binding::Acb,
+            callable: caps, certified: caps, preview_rectangle: false }, Arc::new(QualifiedOriginal));
+        assert!(crate::app::adapters::backends::install_uri_product_with_ports(
+            &mut rig.app.adapters.player, &mut rig.app.player.session, port, bus, display));
+        assert!(display.created_player_types().is_empty(), "composing the driver creates no handle");
+        rig.request();
+        let request = rig.app.player.session.metric_request().expect("logical request");
+        launch_uri(rig);
+        (bus, display, request)
+    }
+
+    /// The first Experimental play on an ACB display creates the URI engine's handle, player type 0,
+    /// once, before the URI service is opened.
+    #[test]
+    fn an_experimental_play_on_an_acb_display_creates_the_uri_handle_on_its_first_start() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else { return };
+        let (bus, display, _) = launch_acb_uri(&mut rig, &[22]);
+        window_frame(&mut rig);
+        assert_eq!(display.created_player_types(), [plx_platform::tv::plane::URI_PLAYER_TYPE]);
+        assert_eq!(bus.shapes(), [Shape::Named], "the service is opened after the handle exists");
+        window_frame(&mut rig);
+        assert_eq!(display.created_player_types(), [0], "a frame later it is still one handle");
+        plx_platform::tv::plane::installed().reset_for_test();
+    }
 }

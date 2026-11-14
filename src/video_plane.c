@@ -185,9 +185,9 @@ void vp_destroy_window(void) {
 #define PLAYSTATE_PLAYING   2
 #define PLAYSTATE_PAUSED    3
 
-/* `g_acb` is the handle every ACB verb below addresses. The boot may create two (one per backend:
- * `tv::plane::PlaneHandle`, Feed's and the URI engine's, each created and initialized once and never
- * destroyed); `acb_select` moves `g_acb` between them and only the plane owner calls it, on the
+/* `g_acb` is the handle every ACB verb below addresses. A process may create two (one per backend:
+ * `tv::plane::PlaneHandle`, Feed's at the boot and the URI engine's on demand, each created and
+ * initialized once and never destroyed); `acb_select` moves `g_acb` between them and only the plane owner calls it, on the
  * grant of a bind, so exactly the bound handle is current. A slot keeps the library's answer to its
  * own `AcbAPI_initialize`, which `acb_initialized` reports for the current handle. */
 #define ACB_SLOTS 2
@@ -292,14 +292,14 @@ int acb_select(long handle) {
     return 0;
 }
 /* The URI bind (the production backend and the developer probe, both through play-uri's
- * `acb_bind`) uses its own process-lifetime boot handle (player type 0, selected by the plane owner)
+ * `acb_bind`) uses its own process-lifetime handle (player type 0, created on demand by the first bind that needs it, selected by the plane owner)
  * and the same callback as BF. These split the existing bind solely to preserve observed inter-call
  * delays. */
 /* Same device SHA pinned above: initialize wrapper@0x15c4c forwards core@0xcd5c.
  * Core returns exactly 1 only after valid parameters and callback installation; 0 refuses.
- * Answers for the CURRENT handle, so it is only meaningful at the boot right after that handle's
- * acb_create: the boot reads it once per handle into the plane owner, which the URI gate reads
- * afterwards. normal acb_create still returns its historical handle result. */
+ * Answers for the CURRENT handle, so it is only meaningful right after that handle's acb_create:
+ * the plane owner reads it once per handle (`PlaneOwner::ensure_handle`: at the boot for Feed's, at
+ * its first bind for the URI engine's), which the URI gate reads afterwards. normal acb_create still returns its historical handle result. */
 int acb_initialized(void) { return g_acb && acb.probe_initialize_result == 1; }
 int acb_probe_dass_available(void) { return g_acb && acb.connectDass; }
 int acb_media_id(const char *mediaId) {
