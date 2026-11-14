@@ -446,9 +446,11 @@ jobs:
       - name: make check-python-rest
         run: make check-python-rest
 
-  # tests/test_harness.py alone: about 190 s of what used to be a 360 s `check-python` job. Most of
-  # it is its `DepGates` class running ci/check-deps.sh over private copies of the tree on every
-  # core of the runner, so it gains nothing from sharing a runner with the other gates.
+  # tests/test_harness.py alone, split off a 360 s `check-python` job. Most of it is its `DepGates`
+  # class: about 70 self-tests that each run only the rules they plant a violation for
+  # (`ci/check-deps.sh --only`, #1386) over private copies of the tree, spread over every core of
+  # the runner, so it gains nothing from sharing a runner with the other gates. The step took
+  # 144-196 s on main's commits of 2026-11-14 after #1386 (380-500 s on the ones before it).
   # `make check-python` is still the two halves, run side by side locally.
   host-python-harness:
     name: host harness tests

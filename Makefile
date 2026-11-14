@@ -1957,15 +1957,15 @@ check-python:
 	  harness='$(MAKE) --no-print-directory check-python-harness'
 
 check-python-harness:
-	@# The harness's own host unit tests (tests/test_harness.py, stdlib unittest). THE MOST
-	@# EXPENSIVE STEP IN `check` BY FAR — 661 s of a 1100 s run, measured 2026-10-01 on a cold lane
-	@# at load ~5, and 630 s of that is the `DepGates` class running the whole of
-	@# `ci/check-deps.sh` (11 s a run) once or more per test to prove each structure gate still
-	@# catches a planted violation. Those self-tests now edit a private copy of the gate's inputs
-	@# and run on a thread pool (`PLX_TEST_JOBS`, default min(8, cpus)): the module takes 175 s
-	@# instead of 661 s. (It was 980 s of 1217 s before `check-deps.sh` stopped forking a process
-	@# per candidate line.) Measure before budgeting, and if this number needs to come down
-	@# further, `check-deps.sh` itself is the place. run.py
+	@# The harness's own host unit tests (tests/test_harness.py, stdlib unittest): the harness
+	@# branch of `check-python` and the whole of CI's `host-python-harness` job. Most of it is the
+	@# `DepGates` class: about 70 self-tests, each planting ONE violation in a private copy of the
+	@# gate's inputs and running `ci/check-deps.sh --only <the rules it plants for>` to prove that
+	@# rule still catches it (since #1386 a self-test runs its own rules, not all 43), on a thread
+	@# pool (`PLX_TEST_JOBS`, default min(8, cpus)). Measured 2026-11-14 on CI: this step took
+	@# 144-196 s on the commits since #1386 and 380-500 s on the ones before it. Measure before
+	@# budgeting; `check-deps.sh`'s per-rule cost, then the self-test count, is where more would
+	@# come from. run.py
 	@# decides WHAT gets driven on the one television and had no test of any kind until 2026-08-22.
 	@# What it pins is the code path a full manifest.local.json never enters: an `item` key this
 	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A
