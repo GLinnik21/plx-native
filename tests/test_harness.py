@@ -8780,7 +8780,7 @@ class DepGates(unittest.TestCase):
         crate = crate_dir or ("media" if name.split("/")[0] in ("player", "route") else None)
         return os.path.join(self.tree, "rust-modules", *([crate] if crate else []), "src", name)
 
-    def _plant_many(self, plants):
+    def _plant_all(self, plants):
         """`_plant` for several files at once, graded by ONE `ci/check-deps.sh` run.
 
         `plants` is a list of `(name, content, crate_dir)`, each with its own file name, so the one
@@ -10057,7 +10057,7 @@ impl PersonOwnerGateFixture {
             ("press", "plx_ui::press::scale()"),
             ("idle", "plx_machine::idle::invalidate()"),
         )
-        result = self._plant_many([
+        result = self._plant_all([
             (f"_check_deps_selftest_owner_{name}.rs", f"pub fn retired_reader() {{ {body}; }}\n", None)
             for name, body in readers
         ])
@@ -10075,7 +10075,7 @@ impl PersonOwnerGateFixture {
 
     def test_ui_owner_gate_rejects_resurrected_modules(self):
         modules = (("ui", "nav.rs"), ("ui", "press.rs"), ("machine", "idle.rs"))
-        result = self._plant_many([(name, "// Retired module must remain absent.\n", crate) for crate, name in modules])
+        result = self._plant_all([(name, "// Retired module must remain absent.\n", crate) for crate, name in modules])
         output = result.stdout + result.stderr
         self.assertNotEqual(result.returncode, 0, output)
         self.assertIn("ui-owner-files:", output)
