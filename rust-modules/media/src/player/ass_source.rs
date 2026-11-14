@@ -1259,18 +1259,24 @@ mod tests {
     fn a_backward_seek_after_a_deep_read_keeps_the_events_at_the_target() {
         let mut s = Store::new();
         let g = s.begin("fixture", vec![(0, TrackHeader::Authored(b"header".to_vec()))], vec![]);
-        // A typeset-heavy file read 30 000 events in; the window holds the latest 8 192.
-        for n in 0..30_000 {
+        // A typeset-heavy file read past the window: the window holds the latest 8 192, and every
+        // event the file has to give is behind its first one. (A push copies and ranks the whole
+        // window, so reading further than this only repeats the same eviction at a quadratic cost;
+        // the 30 000 events this once read held the identical 8 192 latest at the seek.)
+        let read = MAX_EVENTS as i64 + 300;
+        for n in 0..read {
             s.push(g, 0, timed(n), 0);
         }
-        // The viewer rewinds to event 10 000 (the floor follows the rebased clock).
+        assert_eq!(embedded(&s, 0).len(), MAX_EVENTS, "the window is full");
+        // The viewer rewinds to event 100, more than `STALE_AHEAD_MS` behind everything the window
+        // holds (the floor follows the rebased clock).
         s.seek(g);
-        let floor_ms = 10_000_000 - 62_000;
-        for n in 10_000..10_100 {
+        let floor_ms = 100_000 - 62_000;
+        for n in 100..200 {
             s.push(g, 0, timed(n), floor_ms);
         }
         let held = embedded(&s, 0);
-        for n in 10_000..10_100 {
+        for n in 100..200 {
             assert!(held.contains(&timed(n)), "event {n} at the seek target was lost");
         }
         assert!(held.len() <= 8192);

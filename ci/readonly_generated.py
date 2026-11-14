@@ -13,7 +13,7 @@ import re
 from readonly_dependencies import _local_sha, _sha, _json, _manifest_paths, _configs, _workspace_hashes, WORKSPACE_HASHING
 
 CERTIFICATE_PATH = Path(__file__).with_name('proofs') / 'platform-generated-enums.json'
-CERTIFICATE_SHA256 = 'd7cf4ee3937fa0fb7ec2460d49c41219a40b0263a81612240123f11fd1c52663'
+CERTIFICATE_SHA256 = 'b61be9b470960a80bbb097dfa466fa5fd4229f89ef8f1234bb302edabf9f8396'
 SOURCES = ['platform/Cargo.toml', 'platform/src/lib.rs', 'platform/src/i18n/mod.rs',
            'platform/build.rs', 'platform/build_support/catalog.rs', 'build_support/install_identities.rs',
            'machine/src/lib.rs', 'machine/src/machine.rs']
@@ -23,7 +23,8 @@ GRAMMAR = {'Preference': {'prefix': ['System'], 'catalogue_unit_variants': True}
 
 MACHINE_SOURCES = ['571415d64a9885248f852b402153feedd4660acbe03606e4796c59659726049f',
                    '03a6e18f576dcbaff66c3d7405923b155302bfb2996bb373dac115ece055a5bf',
-                   'd08b44dbff241962286eb7e1f85897073ba9f2f712a2ba935837f901635369a8']
+                   'd08b44dbff241962286eb7e1f85897073ba9f2f712a2ba935837f901635369a8',
+                   '9b1ffb66c7ba2eb9fdffcb4bcbf0a29cda87a003cce69b16c73567c8bc0a65b0']
 MACHINE_LIB_SOURCES = ['105afdbb05fb762e6752cef260b6d928b1d828993350aaa71651f96cee0c3188',
                        'c35d39ae620b5607e7035222ab1023799adaf091d6a4f737a847dd70b26c1b36']
 
@@ -33,8 +34,9 @@ I18N_SOURCES = ['40a13d07a43c772b10587e510a69502684abfa1f582ce355b22fd935a8c46f4
 
 def source_hashes(root):
     sources = {p: _local_sha((root / p).read_bytes()) for p in SOURCES}
-    # Reviewed variants add NavOp::SelectTabWithChild or PressRead identity/live/active;
-    # the complete doc-only newtype producer and its u32 invocations are unchanged.
+    # Reviewed variants add NavOp::SelectTabWithChild or PressRead identity/live/active, or rewrite
+    # the Canon byte-feed loops; the complete doc-only newtype producer and its u32 invocations
+    # are unchanged.
     if sources['machine/src/machine.rs'] not in MACHINE_SOURCES: raise ValueError('unreviewed machine source')
     sources['machine/src/machine.rs'] = MACHINE_SOURCES
     # Owned-present migration changes sibling/test modules, never the canonical machine child.
@@ -62,7 +64,8 @@ def produce_certificate(root):
                        'languages_rs emits only unit variants; Pseudo cfg_attr only allows dead_code',
                        'string slots use Rust Debug escaping; numeric slots are integers',
                        'install_identities writes only install_identities.rs, never languages.rs',
-                       'PR1366: PressRead identity/live/active and owned-present sibling/test modules; canonical machine child and doc-only u32 newtype producer unchanged'],
+                       'PR1366: PressRead identity/live/active and owned-present sibling/test modules; canonical machine child and doc-only u32 newtype producer unchanged',
+                       'PR1385: Canon byte-feed loops inlined (impl Canon and canon_tests only, FNV-1a byte stream unchanged); newtype macro and its ten u32 invocations unchanged'],
             'assumptions': __doc__.splitlines()}
 
 
