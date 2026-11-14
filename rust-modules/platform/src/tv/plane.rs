@@ -77,7 +77,7 @@ pub const DEFAULT_PLAYER_TYPE: i32 = 10;
 /// on (`play-uri`'s `acb_bind::gate`), the sequence the device measurements ran.
 pub const URI_PLAYER_TYPE: i32 = 0;
 
-/// Which of the boot's ACB handles a binding runs over.
+/// Which of the process's ACB handles a binding runs over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlaneHandle {
     /// Buffer-feed's handle: [`DEFAULT_PLAYER_TYPE`] unless `/tmp/plxnative-ptype` says otherwise.
@@ -104,7 +104,7 @@ impl std::fmt::Display for PlaneHandle {
     }
 }
 
-/// What the boot learned about one ACB handle. Owned by the [`PlaneOwner`] from the `Boot` event on
+/// What was learned when one ACB handle was created. Owned by the [`PlaneOwner`] from the `Boot` event on
 /// (the Feed handle's is what [`PlaneOwner::facts`] answers); it replaces the old `ACB_OK`/`PTYPE`
 /// statics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -527,9 +527,9 @@ pub enum BindVerdict {
     Refused(Refusal),
 }
 
-/// What the runner holds of one boot handle beyond the machine's facts: the id the sink's
+/// What the runner holds of one ACB handle beyond the machine's facts: the id the sink's
 /// `plane_create` returned (0 = none, nothing to select) and the library's confirmation of
-/// `AcbAPI_initialize`, read once at the boot while that handle was the sink's current one.
+/// `AcbAPI_initialize`, read once at its create while that handle was the sink's current one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HandleSeat {
     pub id: c_long,
@@ -710,13 +710,13 @@ impl PlaneOwner {
     pub fn facts_of(&self, handle: PlaneHandle) -> PlaneFacts {
         self.lock().plane.facts_of(handle)
     }
-    /// The library confirmed `AcbAPI_initialize` for `handle` at the boot (a created handle alone is
+    /// The library confirmed `AcbAPI_initialize` for `handle` at its create (a created handle alone is
     /// not that); false for a handle that was never booted.
     pub fn initialized(&self, handle: PlaneHandle) -> bool {
         self.lock().seats[handle.slot()].initialized
     }
-    /// Whether this boot created either ACB handle (Feed's or the URI engine's): the device has an
-    /// ACB plane at all, which a build with only the URI engine has with Feed's handle absent.
+    /// Whether either ACB handle has been created (Feed's at the boot, the URI engine's at its first
+    /// bind): on a build with only the URI engine this is false until that first URI Start.
     pub fn any_handle(&self) -> bool {
         self.lock().plane.any_handle()
     }

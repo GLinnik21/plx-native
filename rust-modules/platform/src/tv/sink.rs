@@ -9,7 +9,7 @@ pub use super::plane::PlaneCompletion;
 /// Which video-plane binding this television has. See `src/starfish.h`'s `VP_*` and the long
 /// comment at the top of `src/video_plane.c`.
 pub const VP_NONE: c_int = 0;
-/// The legacy ACB plane; controlled URI experiments require this mode and a boot-created handle.
+/// The legacy ACB plane; controlled URI experiments require this mode.
 pub const VP_ACB: c_int = 1;
 pub const VP_EXPORTED: c_int = 2;
 
@@ -105,9 +105,10 @@ pub trait DisplaySink: Sync {
     /// nothing to select, and says so.
     unsafe fn plane_select(&self, _mt: &MainThread, _handle: c_long) -> bool { false }
     /// The library confirmed `AcbAPI_initialize` (its answer was exactly 1) for the CURRENT handle. A
-    /// created handle alone is not that. Only meaningful at the boot, right after that handle's
-    /// create: the boot reads it once per handle into the plane owner (`HandleSeat::initialized`),
-    /// which is what the paced URI bind's gate and the product binding read afterwards.
+    /// created handle alone is not that. Only meaningful right after that handle's create: the plane
+    /// owner reads it once per handle (`PlaneOwner::ensure_handle`: at the boot for Feed's, at its
+    /// first bind for the URI engine's) into `HandleSeat::initialized`, which is what the paced URI
+    /// bind's gate and the product binding read afterwards.
     unsafe fn plane_initialized(&self, mt: &MainThread) -> bool;
     #[cfg(feature = "devtriggers")]
     unsafe fn plane_probe_dass_available(&self, mt: &MainThread) -> bool;

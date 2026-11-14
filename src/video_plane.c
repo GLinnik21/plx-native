@@ -279,7 +279,7 @@ long acb_create(const char *appId, int playerType) {
     return handle;
 }
 /* Make `handle` (a value `acb_create` returned) the one every verb below addresses. 1 = it is one of
- * this process's boot handles and now current, 0 = unknown, nothing changed. Only the plane owner
+ * this process's handles and now current, 0 = unknown, nothing changed. Only the plane owner
  * calls it, when it grants a bind: one binding at a time means the current handle IS the bound one. */
 int acb_select(long handle) {
     for (int i = 0; i < g_nslots; i++) {
