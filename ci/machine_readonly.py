@@ -28,6 +28,49 @@ def cache_proof(method):
         return self.memo[key]
     return cached
 
+class Tokens(list):
+    """A token list that is built once and never changed, so one lexed source can be shared and can
+    remember what is derived from it (`derived`) instead of every consumer recomputing it.
+
+    Every mutator raises: a caller that needs a changeable copy writes `list(tokens)`."""
+    def __init__(self, tokens=()):
+        super().__init__(tokens)
+        self.derived = {}
+
+    def _frozen(self, *args, **kwargs):
+        raise TypeError('Tokens are shared and read-only; copy with list(tokens)')
+    __setitem__ = __delitem__ = __iadd__ = __imul__ = _frozen
+    append = extend = insert = pop = remove = clear = reverse = sort = _frozen
+
+
+def derived(tokens, key, compute):
+    """compute(tokens), remembered on a shared `Tokens` list; a plain list is computed every time."""
+    if not isinstance(tokens, Tokens): return compute(tokens)
+    if key not in tokens.derived: tokens.derived[key] = compute(tokens)
+    return tokens.derived[key]
+
+
+class Shadows:
+    """What in one token list can shadow a builtin macro or the `std` crate: its macro definitions,
+    every token of its `use` items and whether `mod std` / `as std` appear. One pass over the list
+    answers what a rescan at every macro call used to."""
+    def __init__(self, tokens):
+        self.macro_rules, self.macro_items, self.imported, self.std_named = set(), set(), set(), False
+        count = len(tokens)
+        for j, token in enumerate(tokens):
+            if token == 'macro_rules' and j + 2 < count and tokens[j + 1] == '!': self.macro_rules.add(tokens[j + 2])
+            elif token == 'macro' and j + 2 < count: self.macro_items.add(tokens[j + 1])
+            elif token == 'use':
+                end = j + 1
+                while end < count and tokens[end] != ';': end += 1
+                self.imported.update(tokens[j + 1:end])
+            elif token in ('mod', 'as') and j + 1 < count and tokens[j + 1] == 'std': self.std_named = True
+
+
+def shadows_of(tokens):
+    return derived(tokens, 'shadows', Shadows)
+
+
 def macro_invocation(tokens, bang, ends):
     """A bang after an identifier is a macro, unlike logical negation after if/return."""
     return (bang > 0 and bang + 1 in ends and tokens[bang - 1].isidentifier() and
@@ -451,8 +494,8 @@ class Proof:
         seen = seen | {path}
         tokens, _, _, uses = self.module(path)
         if 'macro_use' in tokens: return False
-        if any(tokens[i:i + 3] == ['macro_rules', '!', name] or tokens[i:i + 2] == ['macro', name] for i in range(len(tokens) - 2)):
-            return False
+        shadows = shadows_of(tokens)
+        if name in shadows.macro_rules or name in shadows.macro_items: return False
         if any(alias == name for alias, _ in uses): return False
         for alias, target in uses:
             if alias != '*': continue
