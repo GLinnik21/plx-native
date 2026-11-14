@@ -137,14 +137,20 @@ incremental = false
 # 11% cut to the whole tree and a 26% cut to the object files directly, from ONE crate's `--lib`
 # closure. The saving is modest, plainly: most of the object-file bulk is code, not DWARF.
 #
-# `CARGO_PROFILE_DEV_DEBUG=2` in the environment still overrides this, the same escape hatch as
-# `CARGO_INCREMENTAL=1` above: an env var outranks a config file, so a lane genuinely attaching
-# `lldb`/`rust-lldb` to a host test can buy full DWARF back for itself without touching this file.
+# `CARGO_PROFILE_DEV_DEBUG=2` in the environment still overrides this for a `dev` build (the
+# simulator, clippy, `cargo check`), the same escape hatch as `CARGO_INCREMENTAL=1` above: an env
+# var outranks a config file. A host TEST is another profile (since 2026-11-14): `cargo test` builds
+# every unit, third-party crates included, with `[profile.test]`, and rust-modules/Cargo.toml sets
+# that one to line tables itself, which a `[profile.dev]` setting (this file's or the
+# environment's) no longer reaches. A lane genuinely attaching `lldb`/`rust-lldb` to a host test
+# buys full DWARF back for itself with `CARGO_PROFILE_TEST_DEBUG=2`; third-party crates keep the
+# `debug = false` below either way.
 #
 # Checked before landing that nothing else in the nearer config chain already sets this and would
-# make the addition a no-op or a conflict: neither `rust-modules/Cargo.toml` (only
-# `[profile.release]`) nor `rust-modules/.cargo/config.toml` (only `[target...]` rustflags and
-# formerly `[unstable] build-std`) mentions `[profile.dev]` debug. Cargo resolves a manifest `[profile]`
+# make the addition a no-op or a conflict: neither `rust-modules/Cargo.toml` (its profiles are
+# `release`, `tvdev` and, since 2026-11-14, `test`; none is `dev`) nor `rust-modules/.cargo/config.toml`
+# (only `[target...]` rustflags and formerly `[unstable] build-std`) mentions `[profile.dev]`
+# debug. Cargo resolves a manifest `[profile]`
 # against a config `[profile]` by letting config win, and the nearest config wins over a farther
 # one — both rules favour this file over anything upstream, which is the reason it is safe to add
 # here rather than in the crate manifest.

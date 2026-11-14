@@ -26,7 +26,7 @@ What makes this safe, in order of importance:
 * **It clones or it does nothing.** `clonefile(2)` is called directly (not `cp -c`, which quietly
   falls back to a full copy, spending the very disk this exists to save). Another volume, a
   filesystem without cloning, or any platform other than macOS: a no-op, never a copy.
-* **Linked worktrees only.** The main checkout keeps its own incremental cache and full DWARF,
+* **Linked worktrees only.** The main checkout keeps its own incremental cache and full DWARF in `dev` builds,
   which no lane could share, so the Makefile does not call this there and the script refuses
   too. `PLX_CARGO_SEED=off` disables it everywhere.
 * **A key guards the seed**: the sha256 of the toolchain (`rustc +<pinned toolchain> -vV` and `rustc -vV`),
