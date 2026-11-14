@@ -67,8 +67,9 @@ pub fn product_binding(display_mode: i32, firmware_major: u32, strata: &[u32]) -
 /// it earns an entry (a webOS 4.x set takes the ACB plane, which this table does not touch).
 ///
 /// A major is admitted only with all three parts of the evidence in `docs/uri-mode.md`'s Results
-/// table, each recorded there with the tester log's decisive lines. A release is never admitted on
-/// the developer probe's evidence alone: a run of the product backend is required.
+/// table, each recorded there with the tester log's decisive lines (one exception follows the
+/// list). A release is never admitted on the developer probe's evidence alone: a run of the product
+/// backend is required.
 ///
 ///   - (a) decompile: that major's own firmware image reads `option.windowId` at load
 ///     (`parseLoadMessage`);
