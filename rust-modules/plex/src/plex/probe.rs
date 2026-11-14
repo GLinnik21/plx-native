@@ -26,8 +26,9 @@
 //!    transcodes down to fit, a last resort and never a preference. The SCHEME order flipped when
 //!    the TLS control plane landed — https is the only connection a certificate can authenticate
 //!    and the only one that works from outside the LAN, so it now leads (see
-//!    [`Scheme`](super::origin::Scheme), whose declaration order IS this ranking). Then IPv4 before
-//!    IPv6, and a numeric literal before a HOSTNAME ([`is_numeric_address`]) — a WEAKER tiebreak
+//!    [`Scheme`](super::origin::Scheme), whose declaration order IS this ranking). Then IPv6 before
+//!    IPv4 within a tier (IPv4 remains eligible), and a numeric literal before a HOSTNAME
+//!    ([`is_numeric_address`]) — a WEAKER tiebreak
 //!    than it was, because both transports resolve names now, and one that is still worth having:
 //!    a literal costs no DNS round trip, and on a LAN with no route to the internet it is the only
 //!    thing that resolves at all.
@@ -469,16 +470,16 @@ pub fn candidates(res: &Resource, policy: CredentialPolicy) -> Vec<Candidate> {
             );
         }
     }
-    // Stable, so plex.tv's own order survives inside a tier — it is the only tiebreak left once
-    // location, scheme, resolvability and address family have spoken, and it is not ours to reorder.
-    // Resolvability is read off the URL's own host, not `address` — see `origin::url_host`, which
-    // is the difference between scoring the `plex.direct` uri and scoring the quad hiding behind it.
+    // IPv6 gets the first opportunity within the same location/scheme tier; IPv4
+    // stays in the race as fallback. Keep the DNS-independent literal preference inside
+    // each family, and preserve Plex's advertised order for equal keys (stable sort).
+    // Read resolvability from the URL's own host, not the advertised address.
     out.sort_by_key(|c| {
         (
             c.location,
             c.scheme,
+            !c.ipv6,
             !is_numeric_address(url_host(&c.url)),
-            c.ipv6,
         )
     });
     out
@@ -1391,23 +1392,22 @@ mod tests {
             ],
             "{cs:#?}"
         );
-        // https first inside the tier, and IPv4 before IPv6 within that — the second key and the
-        // fourth, in that order. `2001-db8--1.hash1.plex.direct` is a NAME whose address family is
-        // v6, which is exactly why `Candidate::ipv6` is carried rather than re-read off the url.
+        // Within the same location and scheme, IPv6 leads and IPv4 remains a fallback.
+        // `Candidate::ipv6` is metadata from Plex, not inferred from the plex.direct hostname.
         assert_eq!(
-            cs[0].url, "https://192-168-0-10.hash1.plex.direct:32400",
-            "TLS leads its tier: {cs:#?}"
+            cs[0].url, "https://2001-db8--1.hash1.plex.direct:32400",
+            "IPv6 TLS leads its tier: {cs:#?}"
         );
         assert!(
-            !cs[0].ipv6 && cs[1].ipv6,
-            "the v6 uri is next, not first: {cs:#?}"
+            cs[0].ipv6 && !cs[1].ipv6,
+            "IPv4 must remain eligible immediately after IPv6: {cs:#?}"
         );
         assert_eq!(
             cs.iter()
                 .find(|c| c.scheme == Scheme::Http)
                 .map(|c| c.url.as_str()),
-            Some("http://192.168.0.10:32400"),
-            "…and the plaintext fallbacks are ordered the same way: {cs:#?}"
+            Some("http://[2001:db8::1]:32400"),
+            "the IPv6 plaintext twin leads the IPv4 fallback: {cs:#?}"
         );
 
         let last = cs.last().expect("a relay candidate");
