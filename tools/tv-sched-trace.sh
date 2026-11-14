@@ -100,7 +100,9 @@ case "$read_timeout" in ''|*[!0-9]*) echo "tv-sched-trace: --read-timeout needs 
 [ "$read_timeout" -ge 1 ] || { echo "tv-sched-trace: --read-timeout must be >= 1" >&2; exit 2; }
 case "$tid" in *[!0-9]*) echo "tv-sched-trace: --tid needs a thread id" >&2; exit 2 ;; esac
 [ -z "$app" ] || [ -z "$tid" ] || { echo "tv-sched-trace: --tid and --app are mutually exclusive" >&2; exit 2; }
-case "$flavor" in ''|*[!a-z]*) echo "tv-sched-trace: --app needs a flavour name (debug, stable, nightly)" >&2; exit 2 ;; esac
+# Spelled out, not `[!a-z]`: a range collates by LOCALE, and in a UTF-8 one (macOS bash 3.2 under
+# en_US.UTF-8) it takes "Debug" for lower case.
+case "$flavor" in ''|*[!abcdefghijklmnopqrstuvwxyz]*) echo "tv-sched-trace: --app needs a flavour name (debug, stable, nightly)" >&2; exit 2 ;; esac
 [ -n "$out" ] || out="tv-sched-trace-$(date +%Y%m%d-%H%M%S).gz"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
