@@ -57,7 +57,7 @@ fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
         .downcast_ref::<plx_screens::library::LibraryScreen>()
         .unwrap();
     assert_eq!(page.probe_viewport(d.focus()).0, "rail");
-    rig.take_library_reqs();
+    rig.take_observed_library_commands();
     #[derive(Default)]
     struct PressTap(usize);
     impl plx_ui::dispatch::Tap<AppHost> for PressTap {
@@ -96,7 +96,7 @@ fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
             !d.input.press.is_live(),
             "rail OK must not arm a card press on its returned grid item"
         );
-        assert!(rig.take_library_reqs().iter().all(|(_, req, _)| !matches!(
+        assert!(rig.take_observed_library_commands().iter().all(|(_, req, _)| !matches!(
             req,
             LibraryReq::Detail { .. } | LibraryReq::Play { .. } | LibraryReq::ItemMenu { .. }
         )));

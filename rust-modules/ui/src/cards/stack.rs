@@ -253,7 +253,7 @@ pub trait StackPage<H: Host> {
     /// 112 px, `caption_policy::band_h`). `None` keeps the legacy band (title and caption, 114 px): a
     /// section whose tiles are not posters (a landscape still row, a headshot row) keeps it. The
     /// stack hands it to the section every frame, so a setting changed elsewhere reaches a standing page.
-    fn caption_policy(&self, _k: Self::Key) -> Option<crate::caption_policy::CaptionPolicy> {
+    fn caption_policy(&self, _cx: &Cx<'_, H>, _k: Self::Key) -> Option<crate::caption_policy::CaptionPolicy> {
         None
     }
     /// The cards grid section `k`'s landing is fading out, painted BEFORE the grid's own cards so
@@ -611,12 +611,12 @@ impl<K: Copy + Eq> Stack<K> {
         for i in 0..self.bodies.len() {
             match &mut self.bodies[i] {
                 Body::Grid(g) => {
-                    let policy = p.caption_policy(self.specs[i].key);
+                    let policy = p.caption_policy(cx, self.specs[i].key);
                     if g.caption_policy() != policy {
                         g.set_caption_policy(policy);
                     }
                 }
-                Body::Shelf(s) => s.set_caption_policy(p.caption_policy(self.specs[i].key)),
+                Body::Shelf(s) => s.set_caption_policy(p.caption_policy(cx, self.specs[i].key)),
                 Body::Plain => {}
             }
         }

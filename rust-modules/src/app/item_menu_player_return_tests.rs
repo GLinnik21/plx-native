@@ -1,4 +1,4 @@
-//! Real menu input -> emitted bridge queue -> production drain/performer -> production launch
+//! Real menu input -> yielded FIFO command -> production runner/performer -> production launch
 //! policy -> player mount -> shared exit decision. Only resource acceptance and metadata I/O
 //! are substituted. The fixture has no origin, navigation, or Bridge capability.
 
@@ -64,6 +64,19 @@ impl playback::PlaybackResources for Resources {
     ) -> bool {
         self.calls.push(ResourceCall::Start(resume_ns));
         self.accept_start
+    }
+}
+
+#[derive(Default)]
+struct CommandOrder(Vec<&'static str>);
+impl plx_ui::dispatch::Tap<AppHost> for CommandOrder {
+    fn effect(&mut self, _: u64, stamped: &plx_machine::machine::Stamped<AppHost>) {
+        use plx_machine::machine::Fx;
+        match &stamped.fx {
+
+            Fx::App(plx_screens::registry::AppFx::ItemMenu(_)) => self.0.push("item"),
+            _ => {}
+        }
     }
 }
 
@@ -150,21 +163,41 @@ fn chain(host: AppArg, episode: bool, accept_request: bool, accept_start: bool) 
         d.focus().map(|f| (f.entry, f.elem)),
         Some((menu, plx_screens::item_menu::ItemRow::PlayFromStart.focus_key()))
     );
-    frame(&mut d, &mut rig, &mut now, Some(Key::Ok));
-    assert_eq!(
-        d.nav.modals.top().unwrap().phase,
-        plx_ui::containers::modal::Phase::Closing
-    );
-
-    let mut ps = plx_media::route::PlaybackSession::default();
-    let mut pa =
-        plx_media::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
-    let mut resources = Resources {
-        calls: Vec::new(),
-        accept_request,
-        accept_start,
-    };
-    content::drain_item_menu_requests(&mut ps, &mut pa, &mut d, &mut rig, &mut resources, &mut None, 0);
+    let mut player = plx_media::player::machine::Player::new();
+    let mut adapters = crate::app::Adapters { player:
+        plx_media::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() }) };
+    let mut resources = Resources { calls: Vec::new(), accept_request, accept_start };
+    let mut menu_play_await = None;
+        let mut repause_at = 0;
+        let mut refresh_hubs = false;
+        let mut ptr = crate::app::input::Pointer::IDLE;
+        let mut rec = crate::app::recorder::Recplay::Off;
+        let mut boot_initial = None;
+    now += 16;
+    let tick = plx_ui::fixture::tick(now);
+    let sender = plx_machine::machine::MachineId::Instance(d.nav.instance_of(menu).unwrap());
+    let mut order = CommandOrder::default();
+    bridge::frame_with_commands(&mut d, &mut rig, &mut content::CommandResources {
+        player: &mut player, adapters: &mut adapters, menu_play_await: &mut menu_play_await,
+        playback: &mut resources,
+                repause_at: &mut repause_at, refresh_hubs: &mut refresh_hubs, ptr: &mut ptr,
+                rec: &mut rec, boot_initial: &mut boot_initial,
+    }, tick, bridge::script_key(Key::Ok, tick), &mut order);
+    // absorb parks screen navigation directly, so effect taps observe App commands, not Dismiss.
+    assert_eq!(order.0, ["item"], "one activation reaches the product runner exactly once");
+    if accept_request && accept_start {
+        assert_eq!(d.nav.instance_of(menu), None, "Play retires the dismissed menu in this commit");
+    } else {
+        assert_eq!(d.nav.modals.surfaces.iter().find(|s| s.entry.id == menu).map(|s| s.phase),
+            Some(plx_ui::containers::modal::Phase::Closing),
+            "even a refused action dismisses its captured menu at this frame's commit");
+    }
+    let expected_outcome = if accept_request && accept_start {
+        plx_machine::machine::AppCommandOutcome::Completed
+    } else { plx_machine::machine::AppCommandOutcome::Refused };
+    assert_eq!(rig.screen_command_receipts.iter().filter(|(_, from, outcome)|
+        *from == sender && *outcome == expected_outcome).count(), 1,
+        "the real command has one explicit terminal outcome");
     let mut expected = if episode {
         vec![ResourceCall::Episode(row.rk.clone())]
     } else {
@@ -182,10 +215,16 @@ fn chain(host: AppArg, episode: bool, accept_request: bool, accept_start: bool) 
         expected.push(ResourceCall::Start(0)); // real PlayFromStart policy drops the captured resume
     }
     assert_eq!(resources.calls, expected);
-    content::drain_item_menu_requests(&mut ps, &mut pa, &mut d, &mut rig, &mut resources, &mut None, 0);
+    now += 16;
+    bridge::frame_with_commands(&mut d, &mut rig, &mut content::CommandResources {
+        player: &mut player, adapters: &mut adapters, menu_play_await: &mut menu_play_await,
+        playback: &mut resources,
+                repause_at: &mut repause_at, refresh_hubs: &mut refresh_hubs, ptr: &mut ptr,
+                rec: &mut rec, boot_initial: &mut boot_initial,
+    }, plx_ui::fixture::tick(now), vec![], &mut plx_ui::dispatch::NoTap);
     assert_eq!(
         resources.calls, expected,
-        "one activation is drained exactly once"
+        "one activation executes exactly once through the product FIFO runner"
     );
     settle(&mut d, &mut rig, &mut now);
     if accept_request && accept_start {

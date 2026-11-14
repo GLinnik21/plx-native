@@ -504,7 +504,7 @@ impl SearchScreen {
         let _clip = f.clip(painter, Rect::new(0.0, floor, SCR_W, SCR_H - floor));
         let cx = f.cx;
         let view = H::search(cx);
-        let Some(src) = self.row_cards(view, row) else { return };
+        let Some(src) = self.row_cards(view, row, crate::registry::captions::policy_for(H::screen_inputs(cx))) else { return };
         let Some((frame, shelf)) = self.row_frame(cx, row) else { return };
         shelf.redraw_focused(f, painter, &src, frame, Some(key));
     }
@@ -575,10 +575,10 @@ impl SearchScreen {
         Some((self.stack.shelf_frame(self, cx, k)?, self.stack.shelf(k)?))
     }
     /// Result row `row`'s cards over `view`; `None` when the view has no such shelf.
-    fn row_cards<'a>(&'a self, view: plx_data::search::view::SearchView<'a>, row: usize) -> Option<RowCards<'a>> {
+    fn row_cards<'a>(&'a self, view: plx_data::search::view::SearchView<'a>, row: usize, policy: plx_ui::caption_policy::CaptionPolicy) -> Option<RowCards<'a>> {
         let model = self.rows.get(row)?;
         let shelf = view.shelves().get(row)?;
-        Some(RowCards { kind: model.kind, elems: &model.elems, items: &shelf.items,
+        Some(RowCards { policy, kind: model.kind, elems: &model.elems, items: &shelf.items,
             sources: view.scope().sources(), window: shelf.window, epoch: shelf.epoch })
     }
     fn tick<H: SearchLike>(&mut self, tick: plx_machine::machine::Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
@@ -680,13 +680,13 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
     fn fallback(&self, _cx: &Cx<'_, H>, out: &mut Vec<Sec>) { out.push(Sec::Head); }
     /// The poster rows follow the Under posters setting; the Episode still row and the Person
     /// headshot row are not posters and keep the legacy band.
-    fn caption_policy(&self, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
-        matches!(k, Sec::Row(kind, _) if layout::is_poster(kind)).then(crate::registry::captions::policy)
+    fn caption_policy(&self, cx: &Cx<'_, H>, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
+        matches!(k, Sec::Row(kind, _) if layout::is_poster(kind)).then(|| crate::registry::captions::policy_for(H::screen_inputs(cx)))
     }
     fn cards<'a>(&'a self, cx: &'a Cx<'_, H>, k: Sec) -> Option<RowCards<'a>> {
         let Sec::Row(kind, _) = k else { return None };
         let row = self.rows.iter().position(|row| row.kind == kind)?;
-        self.row_cards(H::search(cx), row)
+        self.row_cards(H::search(cx), row, crate::registry::captions::policy_for(H::screen_inputs(cx)))
     }
     /// Only a library item opens an item menu on a hold; a collection hit opens its page.
     fn card_has_menu(&self, cx: &Cx<'_, H>, _k: Sec, elem: &u32) -> bool {

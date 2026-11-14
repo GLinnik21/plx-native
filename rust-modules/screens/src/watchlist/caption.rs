@@ -1,7 +1,7 @@
 //! The focus caption (plan §1.9, boards Watchlist and TileStates): what the focused tile's band shows.
 //!
-//! **Under posters.** The band is the global Under posters setting's, the one the Library reads
-//! ([`policy`]): the Title switch (default Off) opens the title line, the Details picker the second,
+//! **Under posters.** The band follows the host's retained effective Under posters policy, as the Library does
+//! (`registry::captions::policy_for`): the Title switch (default Off) opens the title line, the Details picker the second,
 //! and the band is 0 / 80 / 112 px tall by what it will show (`Stack::caption_policy`); the lines are
 //! built by the one builder the poster screens share ([`crate::registry::captions::label`]). A Watchlist row
 //! carries a title, a year and a kind; the rest of what a caption words (genre, video, age rating and
@@ -10,7 +10,7 @@
 //! An unplayable title's state sentence (below) REPLACES the details line whenever the setting shows
 //! one, **and with no part ticked it still shows** (the tile says nothing in words, so the sentence is
 //! the tile's own: [`crate::registry::captions::label_with_states`]); the band opens for it
-//! ([`band_policy`]), a title with no state and no part having an empty second line.
+//! (`registry::captions::status_policy`), a title with no state and no part having an empty second line.
 //!
 //! A playable title reads like any poster under the setting (its copy's year and length, genre, stream or age
 //! rating and score), and falls to its year when it has no copy. An unplayable title carries its state as
@@ -48,11 +48,10 @@ pub fn state_sentence(state: TileState, release: Option<&str>) -> Option<String>
 
 /// The Under posters setting as the caption policy this page's band follows: the same value every
 /// poster shelf reads ([`crate::registry::captions::policy`]).
+#[cfg(test)]
 pub fn policy() -> CaptionPolicy { crate::registry::captions::policy() }
 
-/// The policy the focused band is reserved by: the setting's, with the status sentence counted as a
-/// details line under an empty set of parts ([`crate::registry::captions::status_policy`]).
-pub fn band_policy() -> CaptionPolicy { crate::registry::captions::status_policy(&policy()) }
+// The page reserves its band with captions::status_policy of the same explicit frame policy.
 
 /// The focused tile's label under `policy`: `[title, details]` as the setting words them, the
 /// details line being the state sentence when the title has one. `copy` is what the matched copy's

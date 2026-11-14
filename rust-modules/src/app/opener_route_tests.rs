@@ -74,9 +74,9 @@ fn the_item_menu_trigger_is_answered_on_the_deck_row_while_the_page_rests_on_the
         "premise: focus on the deck row left the page at rest on the hero");
 
     assert!(rig.request_home_menu(&d), "the trigger's pre-check accepts a deck card with the page on the hero");
-    rig.take_home_reqs();
+    rig.take_observed_home_commands();
     for i in 80..90 { frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]); }
-    let asked = rig.take_home_reqs();
+    let asked = rig.take_observed_home_commands();
     assert!(asked.iter().any(|(_, request, _)| matches!(request, HomeReq::ItemMenu { rk, .. } if rk == "1")),
         "Home answers the command with the first deck card's menu: {:?}", asked.iter().map(|(_, r, _)| r).collect::<Vec<_>>());
 }

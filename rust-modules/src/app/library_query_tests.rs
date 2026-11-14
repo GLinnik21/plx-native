@@ -206,7 +206,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         "toolbar",
         "toolbar seat: {toolbar:?}"
     );
-    rig.take_library_reqs();
+    rig.take_observed_library_commands();
     frame(
         &mut d,
         &mut rig,
@@ -217,7 +217,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
     for i in 83..106 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
-    let requests = rig.take_library_reqs();
+    let requests = rig.take_observed_library_commands();
     let evidence = format!(
         "focus={:?} live={} requests={:?}",
         d.focus(),
@@ -238,20 +238,15 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         })
         .unwrap_or_else(|| panic!("the real toolbar activation must request its menu: {evidence}"));
     assert_eq!(kind, plx_screens::registry::LibraryMenuKind::SortFilter);
-    d.nav.next_style = plx_ui::containers::modal::Style::Compact;
-    d.request(
-        MachineId::Nav,
-        NavOp::Present(AppArg::LibraryMenu(
-            plx_screens::registry::LibraryMenuArg {
-                host: instance,
-                kind,
-                anchor,
-                target,
-                folded,
-                opener: Some((d.nav.entry_of_instance(instance).unwrap(), control)),
-            },
-        )),
-    );
+    let AppArg::LibraryMenu(arg) = &d.nav.modals.top().expect("the product runner presented the menu").entry.arg
+        else { panic!("the actual toolbar menu") };
+    assert_eq!(arg.host, instance);
+    assert_eq!(arg.kind, kind);
+    assert_eq!(arg.anchor, anchor);
+    assert_eq!(arg.target, target);
+    assert_eq!(arg.folded, folded);
+    assert_eq!(arg.opener, Some((entry, control)));
+    assert_eq!(d.nav.modals.surfaces.len(), 1, "observation must not present the menu twice");
     for i in 106..140 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }

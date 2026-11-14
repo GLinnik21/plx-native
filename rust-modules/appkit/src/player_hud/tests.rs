@@ -39,6 +39,14 @@ fn chapter_panel_retains_selection_without_borrowing_hud_focus() {
 }
 
 use super::*;
+
+// Explicit fixture IO adapter; product helpers receive the already captured caption.
+fn busy_surface(ps: &plx_media::route::PlaybackSession, st: S, seen: bool) -> Busy {
+    super::busy_surface(plx_media::player::error_caption(ps), st, seen)
+}
+fn busy_surface_with(ps: &plx_media::route::PlaybackSession, st: S, seen: bool, audio: bool) -> Busy {
+    super::busy_surface_with(plx_media::player::error_caption(ps), st, seen, audio)
+}
 use plx_ui::widgets::{StatusKind, StatusOverlay};
 use super::classic::*;
 use super::geometry::*;

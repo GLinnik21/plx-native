@@ -4,10 +4,123 @@ use super::*;
 use plx_data::stores::tape;
 use crate::app::adapters::stores::StoreRunner;
 
+// Exercise the CLI's typed producer and the product recorder, not a hand-built header.
+#[test]
+fn flow12_default_producer_long_recording_passes_current_preflight() {
+    let _serial = plx_base::testlock::serial();
+    let encoded = crate::app::synthetic_home_initial(1, 32517, Some("flow12".into())).unwrap();
+    let initial = Initial::from_value(serde_json::from_str(&encoded).unwrap()).unwrap();
+    let path = std::env::temp_dir().join(format!("plx-v11-roundtrip-{}",std::process::id()));
+    std::fs::create_dir(&path).unwrap();
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+    let _cleanup = Cleanup(path.clone());
+    let sink = plx_ui::rec::DirSink::create(&path).unwrap();
+    let mut recorder = super::super::recorder::Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
+    for f in 0..3000 {
+        recorder.tick(f * 16, if f == 0 { 0.0 } else { 0.016 });
+        recorder.capture_readiness(plx_ui::rec::Readiness::default());
+        use plx_ui::dispatch::Tap;
+        recorder.resolve_focus(u64::from(f), 0, plx_machine::machine::EntryId(1), Some(plx_ui::dispatch::FocusAnswer {
+            outcome: plx_ui::focus::Outcome::Nothing, focus: None, group: None,
+        }));
+        recorder.effect(u64::from(f), &plx_machine::machine::Stamped {
+            from: plx_machine::machine::MachineId::Nav,
+            fx: plx_machine::machine::Fx::Remember { group: plx_machine::machine::GroupId(1), elem: 0x1001 },
+        });
+        recorder.present(false);
+        recorder.end_frame(&|| 17);
+    }
+    assert!(!recorder.finish(plx_machine::landgate::fixture_gate()));
+    let recording = Recording::load(&path, super::super::recorder::state_fp()).unwrap();
+    assert_eq!(recording.frames.len(), 3000);
+    let decoded = Initial::decode_profile(recording.header.init_data.clone(),recording.header.init_hash,recording.header.state_fp).unwrap();
+    assert_eq!(decoded.hash(), initial.hash());
+    assert_eq!(decoded.to_v6_value().unwrap(),initial.to_v6_value().unwrap());
+    super::super::recorder::validate_controlled(&recording,&decoded).unwrap();
+    super::super::recorder::validate_resolution_recording(&recording).unwrap();
+}
+
+#[test]
+fn adjacent_v11_install_boot_facts_are_strict_hashed_and_legacy_owned() {
+    use plx_platform::i18n::Preference;
+    let initial = Initial::synthetic_home(17, 32517, Some("root".into())).unwrap();
+    let fp = super::super::recorder::state_fp();
+    let value = initial.to_v6_value().unwrap();
+    assert_eq!(Initial::decode_profile(value.clone(), initial.hash(), fp).unwrap().hash(), initial.hash());
+    for key in ["install_language", "running_language"] {
+        let mut changed = initial.clone();
+        if key == "install_language" { changed.install_language = Some(Preference::Be); }
+        else { changed.running_language = Some(Preference::Be); }
+        assert_ne!(changed.hash(), initial.hash(), "{key} is a canonical fact");
+        assert!(Initial::decode_profile(changed.to_v6_value().unwrap(), initial.hash(), fp).is_err());
+        assert_eq!(Initial::decode_profile(changed.to_v6_value().unwrap(), changed.hash(), fp).unwrap().hash(), changed.hash());
+        for invalid in [serde_json::Value::Null, json!(1), json!(false), json!("unknown-language"), json!({})] {
+            let mut invalid_value = value.clone(); invalid_value[key] = invalid;
+            assert!(Initial::decode_profile(invalid_value, initial.hash(), fp).is_err(), "{key}");
+        }
+        let mut missing = initial.clone();
+        if key == "install_language" { missing.install_language = None; } else { missing.running_language = None; }
+        assert!(Initial::decode_profile(missing.to_v6_value().unwrap(), missing.hash(), fp).is_err());
+        assert!(super::super::recorder::Recplay::recording_with_sink(&missing, Box::new(plx_ui::rec::MemSink::default())).is_err());
+    }
+    let mut unknown = value.clone(); unknown["install_unknown"] = json!(true);
+    assert!(Initial::decode_profile(unknown, initial.hash(), fp).is_err());
+    assert!(Initial::decode_profile(value, initial.hash(), super::super::recorder::state_fp_v10()).is_err());
+    assert_eq!(serde_json::to_value(initial.ui_preferences.as_ref().unwrap()).unwrap().as_object().unwrap().len(), 13);
+}
+
+#[test]
+fn controlled_boot_binds_policy_and_keeps_legacy_default_explicit() {
+    let _serial = plx_base::testlock::serial();
+    let mt = unsafe { plx_base::task::MainThread::assume() };
+    let mut initial = Initial::synthetic_home(17, 32517, None).unwrap();
+    initial.runtime_policy = Some(RuntimePolicy { harness_driven: true, lookahead_rows: 0 });
+    let first = crate::app::bridge::Bridge::controlled_home(|| 0, &initial, &mt, true);
+    initial.runtime_policy = Some(RuntimePolicy { harness_driven: false, lookahead_rows: 4 });
+    let second = crate::app::bridge::Bridge::controlled_home(|| 0, &initial, &mt, true);
+    assert!(first.views().inputs.runtime_policy.harness_driven);
+    assert_eq!(first.views().inputs.runtime_policy.lookahead_rows, 0);
+    assert!(!second.views().inputs.runtime_policy.harness_driven);
+    assert_eq!(second.views().inputs.runtime_policy.lookahead_rows, 4);
+    assert!(!first.views().inputs.same_facts(second.views().inputs));
+    assert!(!first.views().native_preview_available && !second.views().native_preview_available,
+        "controlled owners never expose a native preview port, independent of harness policy");
+    initial.runtime_policy = None;
+    let legacy = crate::app::bridge::Bridge::controlled_home(|| 0, &initial, &mt, true);
+    assert_eq!(legacy.views().inputs.runtime_policy, plx_screens::inputs::RuntimePolicy::default());
+    assert!(crate::app::recorder::Recplay::recording_with_sink(&initial, Box::new(plx_ui::rec::MemSink::default())).is_err());
+}
+
+#[test]
+fn controlled_initial_records_runtime_policy() {
+    let initial = Initial::synthetic_home(17, 32517, None).unwrap();
+    let value = serde_json::to_value(&initial).unwrap();
+    assert!(value.get("runtime_policy").is_some(), "controlled bootstrap must record runtime policy");
+    let mut changed = initial.clone();
+    changed.runtime_policy.as_mut().unwrap().lookahead_rows = 0;
+    assert_ne!(initial.hash(), changed.hash());
+    changed.runtime_policy.as_mut().unwrap().harness_driven = false;
+    let value = changed.to_v6_value().unwrap();
+    let decoded = Initial::decode_profile(value, changed.hash(), super::super::recorder::state_fp()).unwrap();
+    assert!(!decoded.runtime_policy.unwrap().harness_driven);
+    assert_eq!(decoded.runtime_policy.unwrap().lookahead_rows, 0);
+    let mut invalid = changed.to_v6_value().unwrap();
+    invalid["runtime_policy"]["lookahead_rows"] = serde_json::json!(5);
+    assert!(Initial::decode_profile(invalid, changed.hash(), super::super::recorder::state_fp()).is_err());
+}
+
 #[test]
 fn session_codec_profiles_require_canonical_exact_matching_envelopes() {
     let initial = Initial::synthetic_home(17, 32517, None).unwrap();
-    let legacy = serde_json::to_value(&initial).unwrap();
+    let mut historical = initial.clone();
+    historical.runtime_policy = None;
+    historical.ui_preferences = None;
+    historical.install_language = None;
+    historical.running_language = None;
+    let legacy = serde_json::to_value(&historical).unwrap();
+    let legacy_v6 = historical.to_v6_value().unwrap();
+    let legacy_hash = historical.hash();
     let current = initial.to_v6_value().unwrap();
     let prior = super::super::recorder::FP_PRIOR;
     let v6 = super::super::recorder::FP_V6;
@@ -15,8 +128,12 @@ fn session_codec_profiles_require_canonical_exact_matching_envelopes() {
     assert_eq!(Initial::decode_profile(current.clone(), initial.hash(), owned).unwrap().hash(), initial.hash());
     assert!(Initial::decode_profile(legacy.clone(), initial.hash(), owned).is_err());
     assert_eq!(current["session"], serde_json::json!({"codec":6,"boot":legacy["session"]}));
-    assert_eq!(Initial::decode_profile(legacy.clone(), initial.hash(), prior).unwrap().hash(), initial.hash());
-    assert_eq!(Initial::decode_profile(current.clone(), initial.hash(), v6).unwrap().hash(), initial.hash());
+    assert_eq!(Initial::decode_profile(legacy.clone(), legacy_hash, prior).unwrap().hash(), legacy_hash);
+    assert_eq!(Initial::decode_profile(legacy_v6.clone(), legacy_hash, v6).unwrap().hash(), legacy_hash);
+    assert_eq!(Initial::decode_profile(legacy_v6.clone(), legacy_hash, super::super::recorder::state_fp_v7()).unwrap().hash(), legacy_hash);
+    assert!(Initial::decode_profile(legacy_v6, legacy_hash, owned).is_err());
+    assert!(Initial::decode_profile(current.clone(), initial.hash(), prior).is_err());
+    assert!(Initial::decode_profile(current.clone(), initial.hash(), v6).is_err());
     assert!(Initial::decode_profile(current.clone(), initial.hash(), prior).is_err());
     assert!(Initial::decode_profile(legacy.clone(), initial.hash(), v6).is_err());
     for historic in [5612583773909772043u64, 14623229906352324261u64] {
@@ -24,27 +141,31 @@ fn session_codec_profiles_require_canonical_exact_matching_envelopes() {
         assert!(Initial::decode_profile(current.clone(), initial.hash(), historic).is_err());
     }
     assert!(Initial::decode_profile(current.clone(), initial.hash(), v6 ^ 1).is_err());
-    assert!(Initial::decode_profile(current.clone(), initial.hash() ^ 1, v6).is_err());
+    assert!(Initial::decode_profile(current.clone(), initial.hash() ^ 1, owned).is_err());
     let mut bad = current.clone(); bad["version"] = serde_json::json!(2);
-    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    assert!(Initial::decode_profile(bad, initial.hash(), owned).is_err());
     let mut bad = current.clone(); bad["session"].as_object_mut().unwrap().remove("boot");
-    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    assert!(Initial::decode_profile(bad, initial.hash(), owned).is_err());
     let mut bad = current.clone(); bad["session"]["codec"] = serde_json::json!(5);
-    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    assert!(Initial::decode_profile(bad, initial.hash(), owned).is_err());
     let mut bad = current.clone(); bad["session"]["extra"] = serde_json::json!(true);
-    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    assert!(Initial::decode_profile(bad, initial.hash(), owned).is_err());
     let mut bad = current.clone(); bad["session"]["boot"]["signin_account"] = serde_json::json!("private");
-    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    assert!(Initial::decode_profile(bad, initial.hash(), owned).is_err());
     let mut bad = current.clone(); bad["session"]["boot"].as_object_mut().unwrap().remove("next_req");
-    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    assert!(Initial::decode_profile(bad, initial.hash(), owned).is_err());
     let mut bad = current; bad["session"]["boot"]["next_req"] = serde_json::json!(1);
-    assert!(Initial::decode_profile(bad, initial.hash(), v6).is_err());
+    assert!(Initial::decode_profile(bad, initial.hash(), owned).is_err());
 }
 
 // Probe only until the coordinator captures and installs literal bytes and hashes.
 #[test]
 fn session_app_initial_probe_only() {
-    let initial = Initial::synthetic_home(17, 32517, None).unwrap();
+    let mut initial = Initial::synthetic_home(17, 32517, None).unwrap();
+    initial.runtime_policy = None; // Explicit frozen V5 fixture, not the current writer.
+    initial.ui_preferences = None;
+    initial.install_language = None;
+    initial.running_language = None;
     let value = serde_json::to_value(&initial).unwrap();
     let bytes = serde_json::to_vec(&initial).unwrap();
     assert_eq!(bytes.as_slice(), include_bytes!("../fixtures/session-codec-v5/initial-v5.json"));
@@ -199,12 +320,16 @@ fn committed_replay_initials_remain_canonical_and_hash_bound() {
         ("1-boot-home-chip-grid", include_str!("../../../../tests/fixtures/replay/1-boot-home-chip-grid/manifest.json")),
         ("6-settings-family", include_str!("../../../../tests/fixtures/replay/6-settings-family/manifest.json")),
         ("12-filmography-detail-return", include_str!("../../../../tests/fixtures/replay/12-filmography-detail-return/manifest.json")),
+        ("12-filmography-detail-return-current", include_str!("../../../../tests/fixtures/replay/12-filmography-detail-return-current/manifest.json")),
     ] {
         let manifest: serde_json::Value = serde_json::from_str(manifest).unwrap();
         let value = manifest["init"]["data"].clone();
         let expected_hash = manifest["init"]["hash"].as_u64().unwrap();
-        Initial::from_value(value.clone()).unwrap_or_else(|error| panic!("{name}: {error}"));
-        let decoded = Initial::decode(value, expected_hash)
+        let fp = manifest["state_fp"].as_u64().unwrap();
+        if fp == super::super::recorder::FP_PRIOR {
+            Initial::from_value(value.clone()).unwrap_or_else(|error| panic!("{name}: {error}"));
+        }
+        let decoded = Initial::decode_profile(value, expected_hash, fp)
             .unwrap_or_else(|error| panic!("{name}: {error}"));
         assert_eq!(decoded.hash(), expected_hash, "{name}");
     }
@@ -343,6 +468,91 @@ fn controlled_home_arms_the_detail_tracker_when_content_initial_is_present() {
     plx_machine::landgate::disarm();
     plx_data::stores::tape::reset_for_test();
     plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+fn captured_preference_bootstrap_is_canonical_hashed_and_current_profile_required() {
+    use plx_plex::plex::session::DeckPress;
+    let mut initial = Initial::synthetic_home(23, 32517, None).unwrap();
+    let original = initial.hash();
+    initial.ui_preferences.as_mut().unwrap().deck_press = Some(DeckPress::Play);
+    assert_ne!(initial.hash(), original);
+    let value = initial.to_v6_value().unwrap();
+    let fp = super::super::recorder::state_fp();
+    assert!(Initial::decode_profile(value.clone(), initial.hash(), fp).is_ok());
+    let mut missing = value.clone();
+    missing.as_object_mut().unwrap().remove("ui_preferences");
+    assert!(Initial::decode_profile(missing, initial.hash(), fp).is_err());
+    for (key, value) in [("deck_press", json!("invalid")), ("unexpected", json!(true))] {
+        let mut raw = serde_json::to_value(&initial).unwrap();
+        raw["ui_preferences"][key] = value;
+        assert!(Initial::from_value(raw).is_err(), "{key}");
+    }
+    let mut raw = serde_json::to_value(&initial).unwrap();
+    raw["ui_preferences"].as_object_mut().unwrap().remove("deck_press");
+    assert!(Initial::from_value(raw).is_err());
+}
+
+#[test]
+fn v10_preferences_bind_every_typed_field_and_refuse_noncanonical_profiles() {
+    let initial = Initial::synthetic_home(23, 32517, None).unwrap();
+    let fp = super::super::recorder::state_fp();
+    let value = initial.to_v6_value().unwrap();
+    let alternatives = [
+        ("playback_quality", json!("auto")), ("direct_play_mode", json!("forced")),
+        ("subtitle_tone", json!("yellow")), ("subtitle_size", json!("large")),
+        ("subtitle_position", json!("high")), ("hdr_overlay_brightness", json!("half")),
+        ("next_episode_mode", json!("off")), ("skip_interval", json!("30s")),
+        ("instant_dpad_seeking", json!("on")), ("uri_engine", json!("on")),
+        ("dolby_vision_mode", json!("off")), ("deck_press", json!("play")),
+    ];
+    assert_eq!(value["ui_preferences"].as_object().unwrap().len(), 13);
+    assert_eq!(Initial::decode_profile(value.clone(), initial.hash(), fp).unwrap().hash(), initial.hash());
+    for (key, alternate) in alternatives {
+        let mut raw = serde_json::to_value(&initial).unwrap();
+        assert_ne!(raw["ui_preferences"][key], alternate, "{key}");
+        raw["ui_preferences"][key] = alternate;
+        let changed = Initial::from_value(raw).unwrap();
+        assert_ne!(changed.hash(), initial.hash(), "{key}");
+        assert!(Initial::decode_profile(changed.to_v6_value().unwrap(), initial.hash(), fp).is_err(), "{key}");
+        assert_eq!(Initial::decode_profile(changed.to_v6_value().unwrap(), changed.hash(), fp).unwrap().hash(), changed.hash());
+    }
+    let mut changed = initial.clone();
+    let under = changed.ui_preferences.as_mut().unwrap().under_posters.as_mut().unwrap();
+    under.title = !under.title;
+    assert_ne!(changed.hash(), initial.hash(), "under_posters");
+    assert_eq!(Initial::decode_profile(changed.to_v6_value().unwrap(), changed.hash(), fp).unwrap().hash(), changed.hash());
+    for key in value["ui_preferences"].as_object().unwrap().keys() {
+        let mut missing = value.clone();
+        missing["ui_preferences"].as_object_mut().unwrap().remove(key);
+        assert!(Initial::decode_profile(missing, initial.hash(), fp).is_err(), "missing {key}");
+        for malformed in [json!(null), json!(42), json!([]), json!({}), json!("unknown")] {
+            let mut bad = value.clone();
+            bad["ui_preferences"][key] = malformed;
+            assert!(Initial::decode_profile(bad, initial.hash(), fp).is_err(), "malformed {key}");
+        }
+    }
+    for (key, extra) in [("trailer_autoplay", json!(true)), ("unknown", json!(true))] {
+        let mut bad = value.clone();
+        bad["ui_preferences"][key] = extra;
+        assert!(Initial::decode_profile(bad, initial.hash(), fp).is_err(), "extra {key}");
+    }
+    let mut bad = value.clone();
+    bad["ui_preferences"]["under_posters"]["detail_parts"] = json!(["unknown"]);
+    assert!(Initial::decode_profile(bad, initial.hash(), fp).is_err());
+    for fingerprint in [super::super::recorder::FP_PRIOR, super::super::recorder::FP_V6,
+        super::super::recorder::state_fp_v7(), super::super::recorder::state_fp_v9(), fp ^ 1] {
+        assert!(Initial::decode_profile(value.clone(), initial.hash(), fingerprint).is_err());
+    }
+    assert!(Initial::decode_profile(value.clone(), initial.hash() ^ 1, fp).is_err());
+    let mut six = value;
+    six["ui_preferences"].as_object_mut().unwrap().retain(|key, _| matches!(key.as_str(),
+        "deck_press" | "under_posters" | "instant_dpad_seeking" | "playback_quality" | "subtitle_size" | "subtitle_position"));
+    assert!(Initial::decode_profile(six.clone(), initial.hash(), fp).is_err());
+    assert!(Initial::decode_profile(six, initial.hash(), super::super::recorder::state_fp_v9()).is_err());
+    let mut missing = initial;
+    missing.ui_preferences = None;
+    assert!(super::super::recorder::Recplay::recording_with_sink(&missing, Box::new(plx_ui::rec::MemSink::default())).is_err());
 }
 
 fn recording(initial: &Initial) -> Recording {

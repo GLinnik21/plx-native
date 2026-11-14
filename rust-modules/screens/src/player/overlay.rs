@@ -305,17 +305,31 @@ impl PlayerOverlayScreen {
         anchor: Option<Rect>,
         folded: Vec<plx_appkit::more_menu::FoldedRow>,
     ) -> Self {
+        Self::new_captured(ps, meta, entry, kind, offer_search, anchor, folded, &crate::registry::ScreenInputs::default())
+    }
+
+    pub fn new_captured(
+        ps: &plx_media::route::PlaybackSession,
+        meta: plx_data::metadata::MetadataView<'_>,
+        entry: EntryId,
+        kind: OverlayKind,
+        offer_search: bool,
+        anchor: Option<Rect>,
+        folded: Vec<plx_appkit::more_menu::FoldedRow>,
+        inputs: &crate::registry::ScreenInputs,
+    ) -> Self {
         let anchor = anchor.unwrap_or_else(menu_anchor);
         let panel = match kind {
             OverlayKind::Tracks { tab } => Panel::Tracks(plx_base::diag::spans::span("tmnew", || {
-                plx_appkit::track_menu::TrackMenuState::new_with(ps, meta, tab, subtitle_yours_langs(ps, meta), offer_search)
+                plx_appkit::track_menu::TrackMenuState::new_with_preferences(ps, meta, tab, subtitle_yours_langs(ps, meta), offer_search,
+                                    inputs.preference::<plx_plex::plex::session::SubtitleSizePref>(), inputs.preference::<plx_plex::plex::session::SubtitlePositionPref>())
                     .with_anchor(anchor)
             })),
             // A quality entry is the ordinary menu under Force Direct Play, which offers no
             // Quality section so there is no rung to land on, and so is a Speed entry when the
             // playback takes one speed only: `MoreMenuState::new_on` falls back to the root.
             OverlayKind::More { page } => {
-                Panel::More(plx_appkit::more_menu::MoreMenuState::new_folded(ps, page, folded).with_anchor(anchor))
+                Panel::More(plx_appkit::more_menu::MoreMenuState::new_folded_with_quality(ps, page, folded, inputs.preference::<plx_plex::plex::session::QualityPref>()).with_anchor(anchor))
             }
             OverlayKind::Timing => {
                 let (lo, hi) = plx_media::player::subtitle_offset_range_ms();
@@ -848,7 +862,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
                         }
                         p.update(dt, cx.measure, ps, H::metadata(cx))
                     }
-                    Panel::More(p) => p.update(dt, cx.measure, ps),
+                    Panel::More(p) => p.update_with_quality(dt, cx.measure, ps, H::screen_inputs(cx).preference::<plx_plex::plex::session::QualityPref>()),
                     Panel::Timing(p) => p.update(dt),
                 }
                 // The transport must not auto-hide out from under a panel a viewer is reading —
@@ -973,7 +987,7 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Screen<H> f
         None
     }
     fn prepare(&mut self, _b: &mut Budget, cx: &Cx<'_, H>) {
-        self.suppressed = plx_appkit::player_hud::transport_hidden(H::session(cx))
+        self.suppressed = plx_appkit::player_hud::transport_hidden(&H::screen_inputs(cx).player_presentation)
             && !self.kind.survives_failure();
         // The first `update` is a frame behind the mount, so the root page's strings are queued
         // here for the open frame's drain instead (`TrackMenuState::warm_open`).
@@ -1004,11 +1018,11 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Screen<H> f
         }
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
-        let ps = H::session(f.cx);
+
         // Stale content panels are gone with the transport when a playback has FAILED; the `…`
         // popover is the deliberate exception, because the read-out opened it as its own recovery
         // path (`OverlayKind::survives_failure`).
-        if plx_appkit::player_hud::transport_hidden(ps) && !self.kind.survives_failure() {
+        if plx_appkit::player_hud::transport_hidden(&H::screen_inputs(f.cx).player_presentation) && !self.kind.survives_failure() {
             return;
         }
         // The container owns the appear spring; `DrawFrame::page_alpha` IS `Surface::motion.appear`

@@ -723,6 +723,19 @@ impl TrackMenuState {
         yours: Vec<String>,
         offer_search: bool,
     ) -> Self {
+        Self::new_with_preferences(ps, meta, tab, yours, offer_search,
+            plx_plex::plex::session::SubtitleSize::Medium, plx_plex::plex::session::SubtitlePosition::Low)
+    }
+
+    pub fn new_with_preferences(
+        ps: &plx_media::route::PlaybackSession,
+        meta: metadata::MetadataView<'_>,
+        tab: c_int,
+        yours: Vec<String>,
+        offer_search: bool,
+        size: plx_plex::plex::session::SubtitleSize,
+        position: plx_plex::plex::session::SubtitlePosition,
+    ) -> Self {
         let mut s = TrackMenuState {
             tab,
             active_audio: 0,
@@ -732,8 +745,8 @@ impl TrackMenuState {
             form: TrackTable::new(BAND_BASE),
             offset_ms: plx_media::player::subtitle_offset_ms(),
             tone: plx_media::player::subtitle_tone(),
-            size: plx_media::route::subtitle_size(),
-            position: plx_media::route::subtitle_position(),
+            size,
+            position,
             pages: PageStack::new(),
             renderer: SubRenderer::Text,
             takes_colour: true,
@@ -7608,6 +7621,22 @@ mod classic_placement_tests {
     }
 
     /// The overscan audit's rect is the placer's, and sits inside SAFE.
+    #[test]
+    fn captured_preference_tracks_keep_the_opening_size_and_position() {
+        use plx_plex::plex::session::{SubtitleSize, SubtitlePosition};
+        let _serial = plx_base::testlock::serial();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let meta = plx_data::stores::metadata::MetadataStore::default();
+        let mut a = TrackMenuState::new_with_preferences(&ps, meta.view(), 0, Vec::new(), false,
+            SubtitleSize::Large, SubtitlePosition::Low);
+        let b = TrackMenuState::new_with_preferences(&ps, meta.view(), 0, Vec::new(), false,
+            SubtitleSize::Small, SubtitlePosition::Low);
+        a.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, meta.view());
+        assert_eq!(a.size, SubtitleSize::Large);
+        assert_eq!(b.size, SubtitleSize::Small);
+        assert_eq!(a.position, SubtitlePosition::Low);
+    }
+
     #[test]
     fn the_overscan_rect_comes_from_the_placer() {
         let mut out = Vec::new();

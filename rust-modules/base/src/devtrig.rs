@@ -80,6 +80,7 @@ pub fn listed(_triggers: &[String], _name: &str) -> bool {
 /// Is the trigger `name` (bare, without the `plxnative-` prefix) present?
 #[cfg(feature = "devtriggers")]
 pub fn flag(name: &str) -> bool {
+    crate::step::assert_io_allowed("developer trigger flag");
     path(name).exists()
 }
 #[cfg(not(feature = "devtriggers"))]
@@ -128,6 +129,7 @@ pub use __latched_flag as latched_flag;
 /// empty file must not read the same as an absent one.
 #[cfg(feature = "devtriggers")]
 pub fn read(name: &str) -> Option<String> {
+    crate::step::assert_io_allowed("developer trigger read");
     std::fs::read_to_string(path(name))
         .ok()
         .map(|s| s.trim().to_string())

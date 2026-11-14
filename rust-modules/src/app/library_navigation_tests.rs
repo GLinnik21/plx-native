@@ -129,7 +129,7 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
         Some(5),
         "Search's displayed slot is not its stable control identity"
     );
-    rig.take_library_reqs();
+    rig.take_observed_library_commands();
     let key = |edge, i| {
         vec![InputEvent {
             at: tick(i),
@@ -156,7 +156,7 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     assert!(!rig
-        .take_library_reqs()
+        .take_observed_library_commands()
         .iter()
         .any(|(_, req, _)| matches!(req, LibraryReq::Tab(_))));
     frame(
@@ -169,7 +169,7 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
     for i in 96..130 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
-    let requests = rig.take_library_reqs();
+    let requests = rig.take_observed_library_commands();
     let tabs: Vec<_> = requests
         .iter()
         .filter_map(|(_, req, ret)| match req {

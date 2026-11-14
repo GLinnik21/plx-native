@@ -18,6 +18,10 @@ impl ScreenArg for Arg {
     fn same_instance(&self, other: &Self) -> bool { self == other }
 }
 struct TestHost;
+impl crate::registry::ScreenInputsLike for TestHost {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::empty_fixture() }
+}
+
 impl crate::registry::PlayerLike for TestHost {
     fn session<'a>(_cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession {
         plx_media::route::idle_session_for_test()
@@ -60,6 +64,7 @@ impl crate::registry::MetadataLike for TestHost {
 // container lifecycle seams, without requiring a configured server or a graphics context.
 fn body(entry: EntryId, rk: &str) -> DetailScreen {
     DetailScreen {
+        caption_policy: crate::registry::captions::policy(),
         entry, sid: ServerId::UNSET, rk: rk.into(), pending_season: None,
         keys: vec![], next_elem: FIRST_ITEM_ELEM, key_by_local: Default::default(),
         local_by_key: Default::default(), prev_by_key: Default::default(), gone: Default::default(), return_pending: false,
@@ -963,7 +968,7 @@ fn a_refused_way_back_read_is_repeated_while_focus_stands_at_the_leading_edge() 
 fn related_cards_are_named_in_head_then_listing_order() {
     let global = |d: &Detail, which, i| {
         let keys = std::collections::HashMap::new();
-        plx_ui::cards::CardSource::<TestHost>::global(&cards::Cards::new(which, d, &keys, &keys), i)
+        plx_ui::cards::CardSource::<TestHost>::global(&cards::Cards::new(which, d, crate::registry::captions::policy(), &keys, &keys), i)
     };
     let (opening, slid) = (with_tail(0), with_tail(12));
     assert_eq!(global(&opening, cards::Which::Related, 2), 2, "the last head card");

@@ -10,8 +10,33 @@ pub struct GrantInputs {
     pub connected: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuntimePolicy {
+    pub harness_driven: bool,
+    pub lookahead_rows: usize,
+}
+impl RuntimePolicy {
+    /// Shared product/fixture rule; the app owns any trigger read and its latch.
+    pub fn lookahead_rows_for(trigger: Option<&str>) -> usize {
+        trigger.and_then(|text| text.trim().parse::<usize>().ok()).map(|rows| rows.min(4)).unwrap_or(3)
+    }
+}
+impl Default for RuntimePolicy {
+    fn default() -> Self { Self { harness_driven: false, lookahead_rows: 3 } }
+}
+
 #[derive(Clone)]
 pub struct ScreenInputs {
+    pub runtime_policy: RuntimePolicy,
+    /// Confirmed install-wide next-launch choice, independent of the seated profile/cache.
+    pub install_language: plx_platform::i18n::Preference,
+    /// Boot-fixed preference used for restart decisions, not the display catalog accessor.
+    pub running_language: plx_platform::i18n::Preference,
+    /// Complete app-boundary presentation; controlled hosts never sample live diagnostics.
+    pub player_presentation: plx_appkit::player_hud::Presentation,
+    /// Effective app-boundary capture, including optimistic picks not yet persisted.
+    /// Absent in cold/legacy hosts: resolve only this host's retained Session and Profile.
+    pub preferences: Option<plx_plex::plex::session::ProfilePrefs>,
     pub session: Arc<Session>,
     pub settled: bool,
     pub visible_generation: u64,
@@ -31,13 +56,27 @@ impl Default for ScreenInputs {
         Self { session: Arc::new(Session::default()), settled: false, visible_generation: 0, revision: 0,
             profile: Arc::new(CurrentProfile { user: None, generation: 0, stamp: String::new() }),
             current_server: ServerId::UNSET, servers: Default::default(), grants: Arc::new(GrantInputs::default()),
-            grant_generation: 0, resolution_offered: false }
+            grant_generation: 0, resolution_offered: false, runtime_policy: RuntimePolicy::default(), preferences: None,
+            install_language: Default::default(), running_language: Default::default(), player_presentation: Default::default() }
     }
 }
 impl ScreenInputs {
+    pub fn preference<S: plx_plex::plex::session::ProfileSetting>(&self) -> S::Value {
+        if let Some(value) = self.preferences.as_ref().and_then(S::own) { return value; }
+        // Resolve the retained stamp directly: Seat::of also logs an unstamped publication.
+        let own = self.profile.user.as_ref().filter(|_| !self.profile.stamp.is_empty()).and_then(|user|
+            plx_plex::plex::session::own_prefs(&self.session.prefs.profile_prefs, &user.uuid, &self.profile.stamp));
+        plx_plex::plex::session::effective::<S>(&self.session.prefs, own)
+
+    }
     pub fn settled_session(&self) -> Option<&Arc<Session>> { self.settled.then_some(&self.session) }
     pub fn same_facts(&self, other: &Self) -> bool {
-        self.visible_generation == other.visible_generation
+        self.runtime_policy == other.runtime_policy
+            && self.install_language == other.install_language
+            && self.running_language == other.running_language
+            && self.player_presentation == other.player_presentation
+                    && self.preferences == other.preferences
+            && self.visible_generation == other.visible_generation
             && self.settled == other.settled
             && self.session.ui_resolution() == other.session.ui_resolution()
             && self.current_server == other.current_server
@@ -82,7 +121,20 @@ pub(crate) fn capture_fixture() -> ScreenInputs {
         revision: { let (cache, profile) = session::screen_input_revision(); cache.wrapping_add(profile) },
         profile: session::current_snapshot(),
         current_server: plx_plex::plex::current_server(), servers: Arc::new(servers), grant_generation: grant::revision(),
-        resolution_offered: plx_platform::tv::device::ui_resolution_offered() }
+        resolution_offered: plx_platform::tv::device::ui_resolution_offered(), runtime_policy: RuntimePolicy::default(),
+        install_language: plx_platform::i18n::saved_preference(), running_language: plx_platform::i18n::current().preference(), player_presentation: Default::default(),
+        preferences: crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.get()).map(|setting|
+            session::ProfilePrefs { under_posters: Some(setting), ..Default::default() }) }
+}
+
+/// Explicit caption-policy input for neutral card fixtures; never a production fallback.
+#[cfg(test)]
+pub(crate) fn caption_fixture() -> &'static ScreenInputs {
+    Box::leak(Box::new(ScreenInputs {
+        preferences: Some(plx_plex::plex::session::ProfilePrefs {
+            under_posters: Some(crate::registry::captions::fixture_setting()), ..Default::default()
+        }), ..Default::default()
+    }))
 }
 
 /// Immutable publications for legacy fixture contexts that outlive their helper call.

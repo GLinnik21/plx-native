@@ -7,6 +7,27 @@ player machine: `player/lifecycle.rs` is the machine alone (private state, one w
 `player/foreground.rs` its drivers and `player/transport.rs` the transport-pause contract; its shape
 is gated by `ci/machines.ini` (see "Machine shape" below).
 
+## Project UI review (in progress; not acceptance)
+
+The project-wide review in `.empryo/reviews/project-ui-architecture-audit-2026-11-13.md` remains
+incomplete. Its original 4 workers / 19 globals / 61 forks / 11 fxlanes were tracked sites, not
+95 proven machine violations: scans include IO job bodies, runners and fixture seams. The current
+integration comparison retires the login/lookahead and card-motion forks plus eleven family
+app-command lanes (4/19/61/11 to 4/19/58/0); explicit captured policy and same-FIFO
+yield/execute/resume replace them. Remaining settings,
+render-policy and full call-path review are not closed. `build_stream(&OffFrame)` remains a valid
+off-frame IO body, not a pure reducer; storage/registry executors and GL/fixture seams must not be
+removed to reach zero ledgers. Source gates do not prove runtime ordering or full project coverage.
+
+Step-8 replacement evidence is `.empryo/reviews/step8-recovery-result-2026-11-14.md`.
+Pinned compiler feature checks pass in an isolated snapshot, but full default/hostsim gates fail
+on a media timing assertion; Python 3.12 also retains generated-proof/Session-shape and lock
+selftest failures. The unchanged ambient oracle still fails two groups. Source scan scope and
+IO-port registries remain intact; source inventory is not complete runtime acceptance. No ARM
+artifact, authorized CI publication, CURRENT Filmography roundtrip or device acceptance was obtained.
+The earlier Git-isolation incident report is retained as history, not attributed to this run.
+Historical checkpoints below are not rewritten as current gate results.
+
 ## Combined verdict source checkpoint (historical; not acceptance)
 
 The integration tree retains full ancestry from base `f8f6dbb7`, Session `33f18e52`,
@@ -120,7 +141,8 @@ Allowlists only shrink.
 
 The reason is testing. A machine that is a pure function of (state, event) has no seam to fake:
 a test and a replay feed it the same events the product does, so what the tests prove is what
-ships. Every site below is a place where that is not true yet. `docs/stores-as-machines.md` is how
+ships. Ledger sites below require classification by call path: a scanner also sees IO boundaries and
+fixture seams in scanned files. `docs/stores-as-machines.md` is how
 the `data/` stores became machines; this is the rule that finishes the job.
 
 ## What the four ledgers cover

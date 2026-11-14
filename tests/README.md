@@ -43,6 +43,32 @@ half is bypassed and a regression there passes it green. Nor does it reach resum
 timeline reporting, subtitle or audio-track *selection*, or any transcode. **Never ship on the
 default alone.**
 
+## Current renderer replay anchor (host, no television)
+
+`tests/replay_fixtures.py` discovers four recording directories by default and executes each in
+Targets and Resolve. `make check-replay` and Simulator CI use that same discovery, not a private
+fixture list. Expected outcomes: **SAME=6, REFUSED_EXPECTED=2, unexpected=0**.
+
+- Home: 200 fully graded frames in each mode; Settings: 621 in each.
+- `12-filmography-detail-return-current`: the current V11 default Flow 12 producer's typed
+  Person → Filmography → item Detail → Back → Back/focus-memory flow, 2287 fully graded frames
+  in each mode. Both require raw exit 0, exactly one SAME, and all eight difference counters zero.
+  Any current refusal, including a historical scheduler reason, fails the gate.
+- Immutable `12-filmography-detail-return`: historical content scheduling is incompatible;
+  both modes require the exact early scheduler REFUSED (raw exit 1), before any graded frame.
+  This is a typed compatibility outcome, not a supported replay, SAME, quarantine or skip.
+
+The current recording was independently privacy-checked, then added with the official
+`tools/plxnative-rec import` command, byte-for-byte; no old recording, fingerprint, hash or alphabet
+was rewritten. Manifest preference/language strings pass only the checker's closed exact-path enums;
+all remaining text and metric bytes retain the synthetic alphabet gate. Rust fixture preflight and
+canonical initial-hash tests include the new recording. No production name/path/hash whitelist exists.
+
+Private Xvfb/GLX llvmpipe replay verifies logical renderer-backed behavior, not accepted visuals,
+native/TV/ARM behavior, glyph/video composition, performance, or all-domain UI acceptance.
+The preserved fixture README's earlier three-anchor accounts describe historical captures; this
+additional current anchor does not make the old Content recording supported.
+
 ## The synthetic PMS and the focus-fingerprint flows (host, no television)
 
 Two more host-side pieces landed with phase 0 of the UI restructure (2026-09-06), and both exist

@@ -265,6 +265,7 @@ impl Transport {
         now: u32,
         dur_ns: i64,
         live_ns: i64,
+        interval: plx_plex::plex::session::SkipInterval,
     ) -> Option<i64> {
         if dur_ns <= 0 {
             return None;
@@ -279,11 +280,7 @@ impl Transport {
         }
         self.scrub_commit_at = 0; // more input → cancel a pending tap commit
         if !self.scrub_key.engaged {
-            let step = if fwd {
-                plx_appkit::player_hud::scrub_step_ns()
-            } else {
-                -plx_appkit::player_hud::scrub_step_ns()
-            };
+            let step = plx_appkit::player_hud::scrub_step_ns(interval) * if fwd { 1 } else { -1 };
             self.scrub_ns =
                 plx_appkit::player_hud::scrub_clamp_target(self.scrub_ns.max(0) + step, dur_ns);
         }
@@ -619,7 +616,7 @@ mod tests {
         let dur = 120_000_000_000i64;
         let live = 30_000_000_000i64;
 
-        t.scrub_fresh(true, 0, dur, live);
+        t.scrub_fresh(true, 0, dur, live, plx_plex::plex::session::SkipInterval::Seconds10);
         assert!(t.scrubbing(), "a fresh press starts a gesture");
         assert_eq!(
             t.scrub_ns,
@@ -649,12 +646,12 @@ mod tests {
         const S: i64 = 1_000_000_000;
         let (dur, live) = (200 * S, 100 * S);
         for interval in SkipInterval::LADDER {
-            let _i = plx_appkit::player_hud::SkipIntervalGuard::set(interval);
+            // Each press receives its own captured value, without changing a global.
             let mut t = Transport::IDLE;
-            t.scrub_fresh(true, 0, dur, live);
+            t.scrub_fresh(true, 0, dur, live, interval);
             assert_eq!(t.scrub_ns, live + interval.ns(), "{interval:?} forward");
             let mut t = Transport::IDLE;
-            t.scrub_fresh(false, 0, dur, live);
+            t.scrub_fresh(false, 0, dur, live, interval);
             assert_eq!(t.scrub_ns, live - interval.ns(), "{interval:?} back");
         }
     }
@@ -668,7 +665,7 @@ mod tests {
         let dur = 600_000_000_000i64;
         let live = 100_000_000_000i64;
 
-        t.scrub_fresh(true, 0, dur, live);
+        t.scrub_fresh(true, 0, dur, live, plx_plex::plex::session::SkipInterval::Seconds10);
         let after_hop = t.scrub_ns;
         let mut now = 0u32;
         t.scrub_repeat(now);
@@ -708,7 +705,7 @@ mod tests {
         let mut t = Transport::IDLE;
         let dur = 600_000_000_000i64;
         let live = 100_000_000_000i64;
-        t.scrub_fresh(true, 0, dur, live);
+        t.scrub_fresh(true, 0, dur, live, plx_plex::plex::session::SkipInterval::Seconds10);
         t.scrub_repeat(500);
         for (i, now) in (516..=1_500).step_by(16).enumerate() {
             t.step_scrub_hold(now, dur);
@@ -719,7 +716,7 @@ mod tests {
         let (before, since) = (t.scrub_ns, t.scrub_key.since);
 
         t.scrub_release(1_504);
-        assert_eq!(t.scrub_fresh(true, 1_505, dur, live), None, "the bounce commits nothing");
+        assert_eq!(t.scrub_fresh(true, 1_505, dur, live, plx_plex::plex::session::SkipInterval::Seconds10), None, "the bounce commits nothing");
         assert!(t.scrubbing() && t.scrub_key.engaged, "the hold goes on");
         assert_eq!(t.scrub_key.since, since, "…and the ramp keeps its speed");
         assert_eq!(t.scrub_ns, before, "…with no extra hop");
@@ -738,13 +735,13 @@ mod tests {
         let mut t = Transport::IDLE;
         let dur = 600_000_000_000i64;
         let live = 100_000_000_000i64;
-        t.scrub_fresh(true, 0, dur, live);
+        t.scrub_fresh(true, 0, dur, live, plx_plex::plex::session::SkipInterval::Seconds10);
         t.scrub_repeat(500);
         t.step_scrub_hold(600, dur);
         let held = t.scrub_ns;
         t.scrub_release(610);
         assert_eq!(
-            t.scrub_fresh(false, 615, dur, live),
+            t.scrub_fresh(false, 615, dur, live, plx_plex::plex::session::SkipInterval::Seconds10),
             Some(held),
             "the held scrub commits where it was released"
         );
@@ -761,7 +758,7 @@ mod tests {
         let dur = 600_000_000_000i64;
         let live = 100_000_000_000i64;
 
-        t.scrub_fresh(false, 0, dur, live);
+        t.scrub_fresh(false, 0, dur, live, plx_plex::plex::session::SkipInterval::Seconds10);
         t.scrub_repeat(0);
         assert_eq!(t.step_scrub_hold(100, dur), None, "well inside the alive window");
         let target = t.step_scrub_hold(100 + plx_appkit::player_hud::SCRUB_LOST_MS + 1, dur);
@@ -780,7 +777,7 @@ mod tests {
         let dur = 600_000_000_000i64;
         let live = 100_000_000_000i64;
         let mut now = 0u32;
-        t.scrub_fresh(true, now, dur, live);
+        t.scrub_fresh(true, now, dur, live, plx_plex::plex::session::SkipInterval::Seconds10);
         t.scrub_repeat(now);
         // 400 frames * 16ms ~= 6.4s, comfortably past LINGER_MS (4.5s) if nothing kept reviving it.
         // A repeat every ~96ms (well inside SCRUB_LOST_MS) keeps the hold alive throughout, same

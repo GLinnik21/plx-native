@@ -114,11 +114,9 @@ fn a_deep_recommended_page_returns_from_detail_onto_the_same_card_with_its_shelv
 
 /// **Home -> a card's Detail -> BACK lands on the card it left, and every released card is at exact
 /// rest** (#858's remount path and #861's rest together). The OK raises `HomeReq::Detail` with the page's
-/// `ReturnState`, and the World's pump performs it the way the loop does for a shelf card
-/// (`perform_home_detail`: the loop's own `activate_deck_card`, so `activate_card` and `open_detail` carry the
-/// return state). What this does NOT cover: `content::home_requests`' own arm and `activate_home_item` take the
-/// whole `App`, which the World does not build, so a loop that dropped the `ReturnState` between them and
-/// `activate_deck_card` passes this test.
+/// `ReturnState`; the product FIFO runner performs `home_command` and `activate_home_item` with
+/// the fixture's borrowed resources. The same path carries the return state through `activate_deck_card`
+/// and `open_detail` in both the application and this World.
 #[test]
 fn home_back_from_detail_lands_on_the_card_it_left_at_rest() {
     let mut w = World::home_grid("route-home-return", 5, 8);

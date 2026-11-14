@@ -40,6 +40,9 @@ impl Host for HostFixture {
     type Init = Arg;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for HostFixture {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+}
 impl SearchLike for HostFixture {
     fn search<'a>(cx: &Cx<'a, Self>) -> SearchView<'a> { cx.views }
 }
@@ -1037,7 +1040,7 @@ fn scroll_row(screen: &mut SearchScreen, fixture: &Fixture, row: usize, x: f32) 
 
 /// The pop of `elem` on result row `row`, as the row's shelf would draw it now.
 fn pop_of(screen: &SearchScreen, fixture: &Fixture, focus: Option<FocusKey<u32>>, row: usize, elem: u32) -> Option<f32> {
-    let src = screen.row_cards(fixture.search.view(), row)?;
+    let src = screen.row_cards(fixture.search.view(), row, crate::registry::captions::policy())?;
     shelf_of(screen, row).scale_of::<HostFixture, _>(&fixture.cx(focus), &src, &elem)
 }
 
@@ -1593,7 +1596,7 @@ fn no_landing_on_a_search_row_ever_moves_the_card_under_the_focus() {
 #[test]
 fn a_slid_row_names_its_cards_by_listing_position() {
     let window = plx_data::search::Window { start: 12, before: true, after: true };
-    let slid = cards::RowCards { kind: Kind::Movie, elems: &[], items: &[], sources: &[], window, epoch: 1 };
+    let slid = cards::RowCards { policy: crate::registry::captions::policy(), kind: Kind::Movie, elems: &[], items: &[], sources: &[], window, epoch: 1 };
     assert_eq!(plx_ui::cards::CardSource::<HostFixture>::global(&slid, 11), 23);
     let opening = cards::RowCards { window: Default::default(), ..slid };
     assert_eq!(plx_ui::cards::CardSource::<HostFixture>::global(&opening, 11), 11);
@@ -1619,7 +1622,7 @@ fn a_poster_result_is_worded_by_the_under_posters_builder() {
     }];
     let label_of = |kind, item: Item, sources: &[ScopeSource]| {
         let items = [item];
-        let cards = cards::RowCards { kind, elems: &[7], items: &items, sources, window: Default::default(), epoch: 0 };
+        let cards = cards::RowCards { policy: crate::registry::captions::policy(), kind, elems: &[7], items: &items, sources, window: Default::default(), epoch: 0 };
         plx_ui::cards::CardSource::<HostFixture>::label(&cards, 0)
     };
     let heat = || Item::Media(PmsMovie { title: "Heat".into(), year: 1995, genre: Some("Crime".into()), ..Default::default() });

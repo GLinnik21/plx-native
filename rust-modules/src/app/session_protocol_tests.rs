@@ -804,7 +804,7 @@ fn erased_publication_waits_for_carried_resource_completion() {
     assert!(erased.pin_code.is_empty());
     assert_eq!(rig.auth_read().0.delete_leftovers, 2);
     assert!(rig.session.snapshot_init().pending_erase.is_none());
-    assert!(rig.take_reqs().iter().any(|req| matches!(req, LoopReq::LocalDataErased)));
+    assert!(rig.take_observed_loop_commands().iter().any(|req| matches!(req, LoopReq::LocalDataErased)));
     let events = &rig.session_adapter.fixture_resources().coordinator_events;
     assert!(matches!(events.first(), Some(plx_session::auth::owner::CoordinatorAction::CloseTelemetry)));
     assert!(!events.iter().any(|event| matches!(event, plx_session::auth::owner::CoordinatorAction::SignInStarted)),
@@ -929,7 +929,8 @@ fn full_transfer_and_refilled_landing_use_production_ingest_and_carried_owner_ac
     let mut d = Dispatcher::<AppHost>::new();
     for _ in 0..200 { execute_session_command(&mut d, Command::DismissPinError); }
     let mut first = Vec::new();
-    let (_, report) = frame_ingest(&mut d, &mut rig, Tick::default(), Vec::new(), |rig| {
+    let mut resources = super::test_support::TestCommandResources::new();
+    let (_, report) = frame_ingest(&mut d, &mut rig, &mut resources.borrow(), Tick::default(), Vec::new(), |rig| {
         first = rig.session_adapter.take_results();
         assert_eq!(first.len(), SESSION_TRANSFER_RECORDS);
         first.iter().cloned().map(|record| (record.addr, AppMsg::Session(SessionEvent::Result(record)))).collect()
@@ -951,7 +952,7 @@ fn full_transfer_and_refilled_landing_use_production_ingest_and_carried_owner_ac
     let mut frame = 1;
     while first.iter().any(|record| rig.session_adapter.admitted(record)) {
         assert!(frame < 12, "bounded normal frames must drain the owned FIFO");
-        frame_ingest(&mut d, &mut rig, Tick { ms: frame * 16, dt_us: 16_000 }, Vec::new(), |rig| {
+        frame_ingest(&mut d, &mut rig, &mut resources.borrow(), Tick { ms: frame * 16, dt_us: 16_000 }, Vec::new(), |rig| {
             let blocked = rig.session_adapter.take_results();
             assert!(blocked.is_empty(), "no second transfer while any unique old credit remains");
             Vec::new()
@@ -967,7 +968,7 @@ fn full_transfer_and_refilled_landing_use_production_ingest_and_carried_owner_ac
     }
     assert!(frame > 2, "the test must retain work across several real frames");
     let mut second = Vec::new();
-    frame_ingest(&mut d, &mut rig, Tick { ms: frame * 16, dt_us: 16_000 }, Vec::new(), |rig| {
+    frame_ingest(&mut d, &mut rig, &mut resources.borrow(), Tick { ms: frame * 16, dt_us: 16_000 }, Vec::new(), |rig| {
         second = rig.session_adapter.take_results();
         assert_eq!(second.len(), SESSION_TRANSFER_RECORDS);
         second.iter().cloned().map(|record| (record.addr, AppMsg::Session(SessionEvent::Result(record)))).collect()
@@ -977,7 +978,7 @@ fn full_transfer_and_refilled_landing_use_production_ingest_and_carried_owner_ac
     while second.iter().any(|record| rig.session_adapter.admitted(record)) {
         frame += 1;
         assert!(frame < 24);
-        frame_ingest(&mut d, &mut rig, Tick { ms: frame * 16, dt_us: 16_000 }, Vec::new(), |_| Vec::new(), &mut NoTap);
+        frame_ingest(&mut d, &mut rig, &mut resources.borrow(), Tick { ms: frame * 16, dt_us: 16_000 }, Vec::new(), |_| Vec::new(), &mut NoTap);
     }
     let state = rig.session.snapshot_init();
     assert!(state.pending.is_empty());

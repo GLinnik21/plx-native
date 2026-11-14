@@ -54,6 +54,51 @@ captured at admission. Late draw effects therefore survive the actual swap.
 `changed_after_admission` observes those late generations without confusing an owner's
 pre-admission scheduling request with new work.
 
+## Ordered app commands and UI acceptance
+
+An external app command yields at its position in the dispatcher's FIFO. Its sender,
+mounted lifetime and frozen ReturnState travel with that command; a terminal receipt
+resumes the same drain without letting the tail overtake it. Admission is not an async
+completion: a later result still needs its addressed owner and scope/epoch fences.
+Neither successful execution nor a worker wake alone grants page damage. The landing
+boundary applies damage to the actual Page/Surface owner when visible content changes;
+refusal, cancellation, stale ownership and failure must not fabricate a successful payload.
+
+The current registry-derived scenario inventory and its per-scenario evidence status are
+in `.empryo/reviews/project-ui-architecture-audit-2026-11-13.md`, section Step-7.
+Source inventory completeness is not runtime acceptance. Keyboard, pointer, long hold,
+back/restore, profile replacement, async arrival, failed/refused results, settled idle
+and reopening require separate observations, including surfaces over their real host.
+A screenshot request itself requests a frame; that image cannot prove settled idle.
+Controlled replay proves only the recorded frames accepted by the current codec and
+shape. Preserve a refused historical fixture's raw nonzero result, never rewrite its hashes.
+An approved historical FIFO-scheduler refusal needs a separate compatibility oracle:
+exact typed reason plus early-no-execution assertions, with negative controls rejecting
+unexpected refusal or failure. This is not supported-recording SAME acceptance. Fresh
+CURRENT Filmography dynamic-Content recordings must replay in targets and resolve modes;
+postfinal captures must identify the actual integrated binary, not an earlier build.
+
+Simulator captures must be opened at a 1920×1080 drawable, with an isolated RuntimeDir
+and mock PMS/Discover stand-in. Simulator FPS is not a UI correctness oracle. Cached
+modal ground, device text rasterization, video-plane composition and platform root/home
+remain unverified until separate TV evidence is collected under `tv-lock`; lack of that
+evidence is a limitation, never a passing skipped test.
+
+Step-8's isolated replacement compiler/source results do not upgrade any scenario status.
+Feature checks pass, but full default/hostsim runs retain a media timing failure and supported-Python
+source gates retain proof/shape/selftest failures. The replacement leaves original HEAD, staged
+entries and tracked bytes unchanged; raw index hashes differ and are reported, not reset.
+See `.empryo/reviews/step8-recovery-result-2026-11-14.md`; the earlier isolation incident remains
+historical evidence. Missing simulator/idle/native evidence remains missing, not a passing skip.
+Step-7's single user-authorized WSL restart briefly restored `use_gfxredir=1` and
+D3D12 acceleration, but transport subsequently reverted to `0`. Twenty opened
+postrestart captures lack a per-capture transport timeline and remain diagnostic,
+not accepted evidence. The retained CURRENT Filmography tape proves typed navigation
+and focus restoration offline; its targets/resolve roundtrip is still outstanding.
+Exact tape/profile hashes, raw legacy nonzero results and separate reason-specific
+compatibility checks: `.empryo/reviews/step7-final-evidence-2026-11-13.json`.
+Full registry/runtime/idle/native acceptance remains open; see the recovery-result report.
+
 ## Regression coverage
 
 Independent Present owners, typed page/surface capture, mutation-only caches without a

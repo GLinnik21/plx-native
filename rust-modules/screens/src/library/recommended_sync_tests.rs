@@ -145,14 +145,14 @@ fn only_a_landscape_continue_watching_deck_holds_artwork_keys_and_a_new_backgrou
         assert!(Basis::of(&other, 7).deck.is_empty(), "continue={is_continue} landscape={landscape}");
     }
     // the card reads its keys by position, and only through the basis its item was published for
-    let src = HubSrc { elems: &[1, 2], shelf: Some(&held), paging: false, deck: Some(&basis) };
+    let src = HubSrc { policy: crate::registry::captions::policy(), elems: &[1, 2], shelf: Some(&held), paging: false, deck: Some(&basis), deck_press: plx_plex::plex::session::DeckPress::Details };
     let facts = src.facts(1).expect("a card");
     assert_eq!(facts.deck.map(|d| d.cover), Some(basis.deck[1].cover.as_str()), "opted in");
     let stale = Shelf { items: vec![episode("9002", "/library/metadata/77/art/5"), episode("9001", "/library/metadata/77/art/5")], ..held.clone() };
-    let src = HubSrc { elems: &[1, 2], shelf: Some(&stale), paging: false, deck: Some(&basis) };
+    let src = HubSrc { policy: crate::registry::captions::policy(), elems: &[1, 2], shelf: Some(&stale), paging: false, deck: Some(&basis), deck_press: plx_plex::plex::session::DeckPress::Details };
     assert!(src.facts(0).expect("a card").deck.is_none(), "another title at that place: the old chain, never another title's cover");
     let poster = Shelf { is_continue: false, ..held.clone() };
-    let src = HubSrc { elems: &[1, 2], shelf: Some(&poster), paging: false, deck: Some(&Basis::of(&poster, 7)) };
+    let src = HubSrc { policy: crate::registry::captions::policy(), elems: &[1, 2], shelf: Some(&poster), paging: false, deck: Some(&Basis::of(&poster, 7)), deck_press: plx_plex::plex::session::DeckPress::Details };
     assert!(src.facts(0).expect("a card").deck.is_none(), "a shelf that is not the deck never opts in");
 }
 

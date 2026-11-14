@@ -44,6 +44,47 @@ impl Host for TestHost {
     type Memory = PageMemory;
 }
 
+thread_local! {
+    static INPUTS: std::cell::Cell<&'static crate::registry::ScreenInputs> =
+        std::cell::Cell::new(crate::registry::empty_fixture());
+}
+
+impl crate::registry::ScreenInputsLike for TestHost {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        INPUTS.with(|inputs| inputs.get())
+    }
+}
+
+pub(super) fn dpad_input() -> plx_plex::plex::session::InstantDpadSeeking {
+    INPUTS.with(|inputs| inputs.get().preference::<plx_plex::plex::session::InstantDpadSeekingPref>())
+}
+
+pub(super) struct SkipIntervalGuard(crate::registry::ScreenInputs);
+impl SkipIntervalGuard {
+    pub(super) fn set(value: plx_plex::plex::session::SkipInterval) -> Self {
+        let prior = INPUTS.with(|inputs| inputs.get().clone());
+        set_skip_input(value);
+        Self(prior)
+    }
+}
+impl Drop for SkipIntervalGuard {
+    fn drop(&mut self) {
+        INPUTS.with(|current| current.set(Box::leak(Box::new(self.0.clone()))));
+    }
+}
+
+pub(super) fn set_skip_input(value: plx_plex::plex::session::SkipInterval) {
+    let mut inputs = INPUTS.with(|inputs| inputs.get().clone());
+    inputs.preferences.get_or_insert_with(Default::default).skip_interval = Some(value);
+    INPUTS.with(|current| current.set(Box::leak(Box::new(inputs))));
+}
+
+pub(super) fn set_dpad_input(value: plx_plex::plex::session::InstantDpadSeeking) {
+    let mut inputs = INPUTS.with(|inputs| inputs.get().clone());
+    inputs.preferences.get_or_insert_with(Default::default).instant_dpad_seeking = Some(value);
+    INPUTS.with(|current| current.set(Box::leak(Box::new(inputs))));
+}
+
 impl crate::registry::PlayerLike for TestHost {
     fn session<'a>(cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession {
         cx.views
@@ -73,6 +114,111 @@ pub(super) fn playback_session(position_ns: i64, duration_ns: i64) -> plx_media:
 /// never writes a global, and there is nothing to restore.
 pub(super) fn derive_state(ps: &mut plx_media::route::PlaybackSession, state: plx_media::player::PlaybackState) {
     ps.step_readout(plx_media::player::readout::ReadoutEvent::StateDerived(state));
+}
+
+/// Test-host IO port, called before entering a machine window, never from a host getter.
+pub(super) fn failure_fixture(ps: &plx_media::route::PlaybackSession) -> plx_appkit::player_hud::FailureReadout {
+    use plx_media::player;
+    let error = player::error_now(ps);
+    let actions = player::failure_actions(error.kind, player::failure_context(ps));
+    let support = player::support_line(error.kind);
+    plx_appkit::player_hud::FailureReadout::captured(error, actions, support, ps.repair_status)
+}
+
+pub(super) fn presentation_fixture(ps: &plx_media::route::PlaybackSession) -> plx_appkit::player_hud::Presentation {
+    use plx_media::player;
+    use plx_appkit::player_hud::{Busy, Presentation};
+    let state = player::state(ps);
+    if state == player::PlaybackState::Error || plx_base::devtrig::flag("failtest") {
+        Presentation { busy: Busy::Readout(plx_ui::widgets::StatusKind::Failed, player::error_caption(ps)),
+            failure: Some(std::sync::Arc::new(failure_fixture(ps))) }
+    } else {
+        Presentation { busy: plx_appkit::player_hud::busy_surface_with(c"", state,
+            player::reported_frame(ps).unwrap_or(false), player::audio_switching()), failure: None }
+    }
+}
+
+pub(super) fn retained_inputs_fixture() -> &'static crate::registry::ScreenInputs {
+    INPUTS.with(|current| current.get())
+}
+
+pub(super) fn publish_presentation_fixture(presentation: plx_appkit::player_hud::Presentation) {
+    let mut inputs = INPUTS.with(|current| current.get().clone());
+    inputs.player_presentation = presentation;
+    INPUTS.with(|current| current.set(Box::leak(Box::new(inputs))));
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn adjacent_player_input_hash_and_overlay_use_retained_diagnostics() {
+    use plx_ui::screen::Screen;
+    let _serial = plx_base::testlock::serial();
+    plx_base::devtrig::with_private_triggers(|| {
+        let original = INPUTS.with(|inputs| inputs.get());
+        let ps = plx_media::route::idle_session_for_test();
+        let path = plx_base::devtrig::path("failtest");
+        std::fs::write(&path, "policy").unwrap();
+        let mut page = super::PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+        let inputs = crate::registry::ScreenInputs::default();
+        INPUTS.with(|current| current.set(Box::leak(Box::new(inputs))));
+        let mut context = cx();
+        context.views = &ps;
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        {
+            let _step = plx_base::step::StepScope::enter();
+            page.step(&ScreenEvent::Input(InputEvent { at: Tick::default(), source: Source::Sdl,
+                kind: InputKind::Click { hit: None, x: 10.0, y: 10.0 } }), &context,
+                &mut Effects::new(&mut out, MachineId::Instance(INST), &mut present));
+            let _ = page.clock_fingerprint(&ps, 0);
+            let mut panel = PlayerOverlayScreen::new(&ps, test_store().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
+            Screen::<TestHost>::prepare(&mut panel, &mut plx_ui::frame::Budget::new(), &context);
+        }
+        INPUTS.with(|current| current.set(original));
+        assert!(out.iter().any(|effect| matches!(effect.fx, Fx::App(AppFx::Player(PlayerReq::Transport(None))))),
+            "a controlled owner's picture click must ignore a foreign live diagnostic flag");
+    });
+}
+
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn adjacent_captured_failure_drives_keys_clicks_hash_and_render_after_live_clear() {
+    use plx_ui::screen::{DrawFrame, Screen};
+    let _serial = plx_base::testlock::serial();
+    plx_base::devtrig::with_private_triggers(|| {
+        let original = retained_inputs_fixture();
+        let ps = plx_media::route::idle_session_for_test();
+        let path = plx_base::devtrig::path("failtest");
+        std::fs::write(&path, "policy").unwrap();
+        let captured = presentation_fixture(ps);
+        std::fs::remove_file(&path).unwrap();
+        publish_presentation_fixture(captured.clone());
+        let mut page = super::PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+        let context = cx();
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        {
+            let _step = plx_base::step::StepScope::enter();
+            page.step(&ScreenEvent::Input(InputEvent { at: Tick::default(), source: Source::Sdl,
+                kind: InputKind::Key { key: plx_machine::machine::Key::Other, sym: 0, wcode: WCODE_PLAYPAUSE, edge: Edge::Down, at_edge: false } }), &context,
+                &mut Effects::new(&mut out, MachineId::Instance(INST), &mut present));
+            assert!(!out.iter().any(|effect| matches!(effect.fx, Fx::App(AppFx::Player(PlayerReq::Transport(_))))));
+            let failed_hash = page.clock_fingerprint(ps, 0);
+            page.step(&ScreenEvent::Input(InputEvent { at: Tick::default(), source: Source::Sdl,
+                kind: InputKind::Click { hit: Some(plx_appkit::player_hud::ELEM_FAILURE_BASE), x: 10.0, y: 10.0 } }), &context,
+                &mut Effects::new(&mut out, MachineId::Instance(INST), &mut present));
+            let drawn = plx_ui::record_walk(|| plx_ui::draw_census::capture(|| {
+                let mut frame = DrawFrame::new(&context, plx_ui::Painter::root());
+                Screen::<TestHost>::draw(&mut page, &mut frame);
+            }));
+            assert!(!drawn.is_empty());
+            page.set_presentation(Default::default());
+            assert_ne!(failed_hash, page.clock_fingerprint(ps, 0), "clearing the owned presentation changes the frame fingerprint");
+        }
+        assert!(out.iter().any(|effect| matches!(effect.fx, Fx::App(AppFx::Player(PlayerReq::Exit)))));
+        INPUTS.with(|current| current.set(original));
+    });
 }
 
 pub(super) fn publish_facts(ps: &mut plx_media::route::PlaybackSession, facts: plx_media::player::attempt_view::AttemptFacts) {

@@ -11,9 +11,8 @@
 //! landscape row off both is the Continue Watching STILL deck, Home's and Recommended's alike: its
 //! footer stands on the tile and nothing hangs under it, [`NOTHING_UNDER_STILLS`].)
 //!
-//! - [`policy`] is the stored setting as the ui's [`CaptionPolicy`], read through
-//!   `plx_media::route::under_posters()`. A test pins one setting for its thread with
-//!   [`TEST_UNDER_POSTERS`] instead of writing the process-wide cell.
+//! - [`policy_for`] maps this host's retained effective preference to [`CaptionPolicy`].
+//!   Labels and geometry consume that same owner/frame value. Test pins are fixture inputs only.
 //! - [`label`] words the focused block from `(policy, facts)`: the Title switch decides whether the
 //!   title line shows, the ticked detail parts of the Movie / TV show details pickers (`DetailParts`) what the second line says. **A line the setting turns on
 //!   is never drawn empty, for any kind of tile** (`plx_ui::caption_policy::caption_lines`): the title
@@ -42,25 +41,28 @@ use plx_ui::caption_policy::{caption_lines, CaptionFacts, CaptionPolicy, DetailP
 use plx_ui::cards::TileLabel;
 
 /// Whether library grids sorted by something that has a value (not Title, Random or the Show order) show the
-/// sort value under every card (the Under posters page's Sort value switch), with the same test override as policy().
-pub fn sort_value() -> bool {
-    #[cfg(test)]
-    if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {
-        return setting.sort_value;
-    }
-    plx_media::route::under_posters().sort_value
+/// sort value under every card, from the same effective owner/frame capture as policy_for().
+pub fn sort_value_for(inputs: &crate::registry::ScreenInputs) -> bool {
+    inputs.preference::<plx_plex::plex::session::UnderPostersPref>().sort_value
 }
+
+#[cfg(test)]
+pub(crate) fn sort_value() -> bool { fixture_setting().sort_value }
 
 /// The standard focused-poster policy; a movie or TV show library grid (movies, shows, seasons or episodes) showing
 /// its sort value (Sort value On, sorted by something that has a value for that kind of row) draws that one line under
 /// every card instead.
-pub fn policy() -> CaptionPolicy {
-    #[cfg(test)]
-    if let Some(setting) = TEST_UNDER_POSTERS.with(|cell| cell.get()) {
-        return crate::registry::caption_policy_of(setting);
-    }
-    crate::registry::caption_policy_of(plx_media::route::under_posters())
+pub fn policy_for(inputs: &crate::registry::ScreenInputs) -> CaptionPolicy {
+    crate::registry::caption_policy_of(inputs.preference::<plx_plex::plex::session::UnderPostersPref>())
 }
+
+#[cfg(test)]
+pub(crate) fn fixture_setting() -> plx_plex::plex::session::UnderPosters {
+    TEST_UNDER_POSTERS.with(|cell| cell.get()).unwrap_or(plx_plex::plex::session::UnderPosters::DEFAULT)
+}
+
+#[cfg(test)]
+pub(crate) fn policy() -> CaptionPolicy { crate::registry::caption_policy_of(fixture_setting()) }
 
 #[cfg(test)]
 thread_local! {
@@ -70,16 +72,9 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-/// **Pins the thread's Under posters setting to its default while it lives**, for a test fixture that
-/// draws a grid or a shelf and does not take `testlock::serial()` (or that must not depend on what the
-/// Settings tests last wrote). The grid and the shelves read the setting every frame ([`policy`]) to
-/// size the focused row's caption band, 80 px under one line and 112 under two; unpinned, that read is
-/// the process-wide cell the Settings tests write (`restore_under_posters`), and a write between two
-/// frames of a fixture moves every row under the focused one by the 32 px between the bands
-/// (`watchlist::page_tests::a_remove_changes_nothing_on_the_grid_until_the_landing_starts`,
-/// intermittent). The pin is the per-thread override above, so it writes nothing another thread can
-/// read. A setting the test pinned itself before the guard stands (the pin is the default only where
-/// nothing was pinned), and what was there is put back on the way out, a panic included.
+/// Pins an explicit test fixture's Under posters input until dropped. Fixture hosts capture this
+/// choice into ScreenInputs; production policy readers never consult it. Existing pins are retained
+/// and restored on drop, including during unwinding; no process-wide cell is written.
 #[cfg(test)]
 pub(crate) struct PolicyPin(Option<plx_plex::plex::session::UnderPosters>);
 

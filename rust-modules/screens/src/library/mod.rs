@@ -209,6 +209,8 @@ pub enum Listing {
 
 /// A retained page body, also remountable from its entry-owned LibraryMemory.
 pub struct LibraryScreen {
+    /// Derived from retained effective frame inputs, shared by live/target grid geometry.
+    caption_policy: plx_ui::caption_policy::CaptionPolicy,
     /// Which listing the page shows. Fixed at mount by the `AppArg` that mounted it, so it is not
     /// part of the canon: `LibraryCollections` / `LibraryRecommended` already say it.
     listing: Listing,
@@ -353,6 +355,7 @@ impl LibraryScreen {
     pub fn new(entry: EntryId, instance: InstanceId, kind: SecKind) -> Self {
         let layout = Layout::new(false, 0);
         Self {
+            caption_policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT),
             listing: Listing::All,
             entry, instance, kind, wanted_kind: Some(kind), listed: Default::default(), values: false, keys: KeyRegistry::default(),
             pair: MasterDetail::new(
@@ -554,10 +557,11 @@ impl LibraryScreen {
         // a grid lists ONE kind of tile, so its band is sized by that kind's own line (a TV shows
         // grid by the show line; Movies, Seasons and Collections by the movie line, `details_for`)
         let shows = self.listed == LibraryType::Primary && self.kind == SecKind::Show;
-        (self.listed != LibraryType::Episodes).then(|| parts::caption_policy().only(shows))
+        (self.listed != LibraryType::Episodes).then(|| self.caption_policy.only(shows))
     }
 
     fn sync<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
+        self.caption_policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
         let listing = H::listing(cx);
         self.listed = listing.library_type();
         self.layout = self.layout.with_episodes(self.listed == plx_data::browse::LibraryType::Episodes);
@@ -628,7 +632,7 @@ impl LibraryScreen {
                 self.wanted_kind = None;
             }
         }
-        let values = shows_sort_values(self.kind, self.listed, crate::registry::captions::sort_value(),
+        let values = shows_sort_values(self.kind, self.listed, crate::registry::captions::sort_value_for(H::screen_inputs(cx)),
             listing.sorts().get(listing.sort_index()).map(|sort| sort.key.as_str()));
         // The rows' pitch changes with the value lines (60 <-> 40 px) under a grid that is already
         // laid out and held at a scroll of its own: not a first layout, a restore still to be

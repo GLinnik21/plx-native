@@ -620,6 +620,9 @@ impl HubKeys {
 }
 
 pub struct HomeScreen {
+    deck_press: plx_plex::plex::session::DeckPress,
+    /// Derived from the retained frame inputs before layout; labels and geometry share it.
+    caption_policy: plx_ui::caption_policy::CaptionPolicy,
     entry: EntryId,
     instance: InstanceId,
 
@@ -740,6 +743,8 @@ impl HomeScreen {
         Self {
             entry,
             instance: id,
+            deck_press: plx_plex::plex::session::DeckPress::Details,
+            caption_policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT),
             groups: Vec::new(),
             items: Arc::default(),
             next_group: FIRST_HUB_GROUP,
@@ -1000,6 +1005,7 @@ impl HomeScreen {
     /// above the rest moves them, and then every row from there on is projected again (`last_row`
     /// is where a card's key remembers it sat).
     fn sync_catalog<H: HomeLike>(&mut self, cx: &Cx<'_, H>) {
+        self.caption_policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
         let view = H::hubs(cx);
         if self.projected_generation == Some(view.generation) {
             return;
@@ -1602,7 +1608,7 @@ impl HomeScreen {
 
     /// The shelf column's geometry over this page's rows ([`ShelfColumn`]).
     fn column(&self) -> ShelfColumn<impl Fn(usize) -> bool + '_> {
-        ShelfColumn { rows: self.rows.len(), is_deck: move |i| self.rows.get(i).is_some_and(|r| r.identity == HomeHubIdentity::ContinueWatching) }
+        ShelfColumn { rows: self.rows.len(), policy: self.caption_policy, is_deck: move |i| self.rows.get(i).is_some_and(|r| r.identity == HomeHubIdentity::ContinueWatching) }
     }
 
     /// **The SETTLED top of shelf `row`** ([`ShelfColumn::top`]). A scroll target and a settled rect
@@ -1626,8 +1632,8 @@ impl HomeScreen {
     /// The band the shelf at `row` opens when focused (`None`, a linked heading focused, opens none):
     /// the Continue Watching deck's is its own ([`shelf_policy`]).
     fn band_open_at(&self, row: Option<usize>) -> f32 {
-        row.and_then(|row| self.rows.get(row)).map_or_else(|| band_open_of(false),
-            |hub| band_open_of(hub.identity == HomeHubIdentity::ContinueWatching))
+        row.and_then(|row| self.rows.get(row)).map_or_else(|| band_open_of(false, self.caption_policy),
+            |hub| band_open_of(hub.identity == HomeHubIdentity::ContinueWatching, self.caption_policy))
     }
 
     fn band_row(&self, focus: Option<FocusKey<u32>>, fallback: usize) -> Option<usize> {
@@ -1698,7 +1704,7 @@ impl HomeScreen {
     /// them out before it adopts them as `self.rows`).
     fn layout_grid_of(&mut self, rows: &[HubProjection]) {
         for (shelf, hub) in self.grid.shelves.iter_mut().zip(rows) {
-            shelf.set_caption_policy(Some(shelf_policy(hub.identity == HomeHubIdentity::ContinueWatching)));
+            shelf.set_caption_policy(Some(shelf_policy(hub.identity == HomeHubIdentity::ContinueWatching, self.caption_policy)));
         }
         let top = PEEK_Y + (GRID_TOP_Y - PEEK_Y) * self.snap.pos;
         let mut flow = 0.0;
@@ -2227,7 +2233,7 @@ impl HomeScreen {
                     .rows
                     .get(row)
                     .is_some_and(|h| h.identity == HomeHubIdentity::ContinueWatching)
-                    && plx_media::route::deck_press().press_plays()
+                    && H::screen_inputs(cx).preference::<plx_plex::plex::session::DeckPressPref>().press_plays()
                 {
                     let resume_ns =
                         plx_data::metadata::resume_ns(item.resume_ms, item.dur_ns / 1_000_000);
@@ -2525,7 +2531,7 @@ impl HomeScreen {
 
     /// The cards `shelf`'s landing is fading out, in the order it names them.
     fn ghost_source(&self, shelf: &Shelf) -> GhostCards<'_> {
-        GhostCards { cards: shelf.ghost_keys().map(|key| self.ghost_cards.get(&key)).collect() }
+        GhostCards { cards: shelf.ghost_keys().map(|key| self.ghost_cards.get(&key)).collect(), deck_press: self.deck_press }
     }
 
     /// Row `row`'s cards as `cards::Shelf` reads them.
@@ -2727,7 +2733,7 @@ impl LogicalState for HomeScreen {
         // last tick (`seen`, `left`) and its wake latch (`slept`, `dormant`) are hand-offs from an
         // event to the next `Tick`, not motion, and are not encoded (`dormant` is re-derived from
         // `snap` on every `Tick`).
-        let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
+        let Self { deck_press: _, caption_policy: _, entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
             // `elem_at` is derived from `rows`, which the census already covers via its elems.
             // `item_index` / `group_index` are caches of `items` / `groups`, which are covered.
             rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, cw_cards: _, cw_offset: _, carousel_anchor: _, rebound: _, ghost_cards: _, restored_scroll: _, restore_reveal: _, hold: _, since_prune: _, #[cfg(test)] cost: _, carousel: _,
@@ -2875,7 +2881,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                     MARGIN_X,
                     top + CARD_DY,
                     SCR_W - 2.0 * MARGIN_X,
-                    style_of(&projection.identity).h + band_h_of(projection.identity == HomeHubIdentity::ContinueWatching),
+                    style_of(&projection.identity).h + band_h_of(projection.identity == HomeHubIdentity::ContinueWatching, self.caption_policy),
                 ),
                 len: projection.elems.len(),
                 elem: ElemKind::Card,
@@ -3230,6 +3236,8 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
     type Ev = ScreenEvent<H>;
 
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        self.deck_press = H::screen_inputs(cx).preference::<plx_plex::plex::session::DeckPressPref>();
+        self.caption_policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
         match self.plaintext_alert.step(ev, cx) {
             AlertStep::Pass => {}
             AlertStep::Done(handled) => return handled,
@@ -3879,19 +3887,19 @@ fn heading_y(row_y: f32, lift: f32) -> f32 {
 }
 /// The caption policy a shelf here follows: the stored Under posters setting, and for the Continue
 /// Watching deck (`deck`) [`NOTHING_UNDER_STILLS`](crate::registry::captions::NOTHING_UNDER_STILLS) (nothing under the stills: the status and bar are the still's own footer line).
-fn shelf_policy(deck: bool) -> plx_ui::caption_policy::CaptionPolicy {
+fn shelf_policy(deck: bool, policy: plx_ui::caption_policy::CaptionPolicy) -> plx_ui::caption_policy::CaptionPolicy {
     if deck { return crate::registry::captions::NOTHING_UNDER_STILLS }
-    crate::registry::captions::policy()
+    policy
 }
 /// The focused shelf's caption band (0 / 80 / 112 px) under [`shelf_policy`]: the height the shelf
 /// reserves, opens and reveals by (`Shelf::set_caption_policy`).
-fn band_h_of(deck: bool) -> f32 {
-    plx_ui::caption_policy::band_h(&shelf_policy(deck))
+fn band_h_of(deck: bool, policy: plx_ui::caption_policy::CaptionPolicy) -> f32 {
+    plx_ui::caption_policy::band_h(&shelf_policy(deck, policy))
 }
 /// How far the focused band carries the rows below it down: the band of the shelf holding focus
 /// (`deck` when it is the Continue Watching deck), per shelf and never per tile.
-fn band_open_of(deck: bool) -> f32 {
-    ui_cards::band_open_for(band_h_of(deck))
+fn band_open_of(deck: bool, policy: plx_ui::caption_policy::CaptionPolicy) -> f32 {
+    ui_cards::band_open_for(band_h_of(deck, policy))
 }
 /// How far the document runs on under the last shelf's band, past the bottom margin
 /// ([`ShelfColumn::max_scroll`]).
@@ -3904,6 +3912,7 @@ const DOCUMENT_END_PAD: f32 = 60.0;
 /// this one type, never a uniform-pitch copy of it.
 struct ShelfColumn<D: Fn(usize) -> bool> {
     rows: usize,
+    policy: plx_ui::caption_policy::CaptionPolicy,
     is_deck: D,
 }
 
@@ -3957,7 +3966,7 @@ impl<D: Fn(usize) -> bool> ShelfColumn<D> {
     /// The document's end, with the LAST shelf's band open ([`band_open_of`]).
     fn max_scroll(&self) -> f32 {
         let n = self.rows.max(1);
-        let last_open = band_open_of((self.is_deck)(n - 1));
+        let last_open = band_open_of((self.is_deck)(n - 1), self.policy);
         let h = self.top(n, Some(n - 1), last_open);
         (h - (SCR_H - CONTENT_Y) + DOCUMENT_END_PAD).max(0.0)
     }
@@ -4178,6 +4187,7 @@ pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_test
 /// The cards a landing removed, each under the element it had, in the order the shelf names them
 /// (`Shelf::ghost_keys`); a card the screen did not keep is `None` and is not drawn.
 struct GhostCards<'a> {
+    deck_press: plx_plex::plex::session::DeckPress,
     cards: Vec<Option<&'a (u32, Arc<PmsMovie>, tile_facts::DeckKeys)>>,
 }
 
@@ -4217,7 +4227,7 @@ impl<H: HomeLike> CardSource<H> for GhostCards<'_> {
     }
     /// The fading still keeps the footer it had ([`tile_facts::deck_overlay`](crate::registry::tile_facts::deck_overlay)).
     fn overlay(&self, p: Painter, i: usize, tile: &ui_cards::Tile, measure: &dyn plx_machine::machine::Measure) {
-        if let Some(facts) = self.facts(i) { crate::registry::tile_facts::deck_overlay(p, &facts, tile, measure) }
+        if let Some(facts) = self.facts(i) { crate::registry::tile_facts::deck_overlay(p, &facts, tile, measure, self.deck_press) }
     }
     fn loaded(&self, i: usize) -> bool {
         self.item(i).is_some_and(|item| !item.rk.is_empty())
@@ -4321,7 +4331,7 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
     fn label(&self, i: usize) -> ui_cards::TileLabel {
         let Some(item) = self.item(i) else { return ui_cards::TileLabel::default() };
         if self.deck() { return ui_cards::TileLabel::default() }
-        crate::registry::captions::shelf_label(&crate::registry::captions::policy(), item, false)
+        crate::registry::captions::shelf_label(&self.home.caption_policy, item, false)
     }
 
     /// A poster wears the resume bar through the shelf; a still draws its own in its footer.
@@ -4338,7 +4348,7 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
     fn overlay(&self, p: Painter, i: usize, tile: &ui_cards::Tile, measure: &dyn plx_machine::machine::Measure) {
         if !self.deck() { return }
         let Some(facts) = self.facts(i) else { return };
-        crate::registry::tile_facts::deck_overlay(p, &facts, tile, measure);
+        crate::registry::tile_facts::deck_overlay(p, &facts, tile, measure, self.home.deck_press);
     }
 
     /// A card has landed once it has a rating key; the ring's placeholder slot is an empty movie.

@@ -2,7 +2,7 @@
 """plxnative-rec — inspect, verify and compare recordings (restructure spec §5.3–§5.6).
 
     plxnative-rec info  <dir>                 frames, event frames, present count, header
-    plxnative-rec check <dir>                 every string value is in the synthetic alphabet
+    plxnative-rec check <dir>                 synthetic alphabet plus closed, path-typed manifest enums
     plxnative-rec diff  <a> <b> [--unsafe]    the st streams, pointwise; --safe is the default
     plxnative-rec import <dir> <name>         copy a CHECKED recording into tests/fixtures/replay/<name>
     plxnative-rec rebaseline <dir> <name> --log <events.log>
@@ -80,15 +80,98 @@ def alphabet():
     return frozenset(a.get("literals", [])), [re.compile("^(?:%s)$" % p) for p in a.get("patterns", [])]
 
 
-def strings(node, out):
+# Canonical wire spellings, NOT display labels or the soft persisted-preference parser.
+# tests/test_harness.py ties these closed domains to the Rust encoders/locale registry.
+UI_ENUMS = {
+    'playback_quality': ('auto', 'original', '1080p_20_mbps', '1080p_8_mbps', '720p_4_mbps', '720p_2_mbps', '480p_720_kbps'),
+    'direct_play_mode': ('auto', 'forced', 'disabled'),
+    'subtitle_tone': ('white', 'yellow', 'grey_85', 'grey_70', 'grey_55', 'grey_40', 'grey_28'),
+    'subtitle_size': ('small', 'medium', 'large', 'extra_large', 'huge'),
+    'subtitle_position': ('low', 'middle', 'high'),
+    'hdr_overlay_brightness': ('full', 'three_quarters', 'half'),
+    'next_episode_mode': ('countdown', 'after_credits', 'off'),
+    'skip_interval': ('5s', '10s', '15s', '30s', '60s'),
+    'instant_dpad_seeking': ('off', 'on'),
+    'uri_engine': ('off', 'on'),
+    'dolby_vision_mode': ('auto', 'off'),
+    'deck_press': ('details', 'play'),
+}
+LANGUAGE_ENUM = ('system', 'en', 'es', 'be', 'ca', 'fr', 'it', 'pt', 'de', 'hu', 'ru', 'pl', 'nl')
+POSTER_LADDER = ('year_length', 'genre', 'video', 'age_rating_score', 'none')
+POSTER_PARTS = {
+    'detail_parts': ('year', 'length', 'genre', 'video_quality', 'age_rating', 'score'),
+    'show_detail_parts': ('year', 'seasons', 'genre', 'age_rating', 'score'),
+}
+
+
+def structural_enum_paths(doc):
+    """Validate only manifest.init.data's typed enum slots; return exact admitted paths.
+
+    This privacy boundary is independent of state_fp compatibility/semantic replay preflight.
+    Everything outside these slots is still scanned, including unknown initial-state domains.
+    Historical initial states without these optional domains keep their existing alphabet gate.
+    """
+    if not isinstance(doc, dict) or not isinstance(doc.get('init'), dict):
+        return True, set()
+    initial = doc['init']
+    data = initial.get('data')
+    if not isinstance(data, dict):
+        return True, set()
+    languages = {'install_language', 'running_language'}
+    if not (set(data) & (languages | {'ui_preferences'})):
+        return True, set()
+    if (initial.get('probe') != 'controlled=home version=1'
+            or not _canonical_int(initial.get('hash'), 0, U64_MAX)
+            or type(data.get('version')) is not int or data['version'] != 1):
+        return False, set()
+    paths = set()
+    base = ('init', 'data')
+    if set(data) & languages:
+        if not languages <= set(data):
+            return False, set()
+        for key in languages:
+            if type(data[key]) is not str or data[key] not in LANGUAGE_ENUM:
+                return False, set()
+            paths.add(base + (key,))
+    if 'ui_preferences' in data:
+        prefs = data['ui_preferences']
+        if not isinstance(prefs, dict) or set(prefs) != set(UI_ENUMS) | {'under_posters'}:
+            return False, set()
+        base += ('ui_preferences',)
+        for key, variants in UI_ENUMS.items():
+            if type(prefs[key]) is not str or prefs[key] not in variants:
+                return False, set()
+            paths.add(base + (key,))
+        poster = prefs['under_posters']
+        required = {'title', 'details', 'show_details', 'detail_parts', 'show_detail_parts'}
+        if not isinstance(poster, dict) or not required <= set(poster) or set(poster) - required - {'sort_value_off'}:
+            return False, set()
+        if type(poster['title']) is not bool or ('sort_value_off' in poster and poster['sort_value_off'] is not True):
+            return False, set()
+        for key in ('details', 'show_details'):
+            if type(poster[key]) is not str or poster[key] not in POSTER_LADDER:
+                return False, set()
+            paths.add(base + ('under_posters', key))
+        for key, variants in POSTER_PARTS.items():
+            parts = poster[key]
+            if (not isinstance(parts, list) or len(parts) > 4
+                    or any(type(v) is not str or v not in variants for v in parts)
+                    or parts != [v for v in variants if v in parts]):
+                return False, set()
+            paths.update(base + ('under_posters', key, i) for i in range(len(parts)))
+    return True, paths
+
+
+def strings(node, out, path=(), structural=frozenset()):
     if isinstance(node, str):
-        out.append(node)
+        if path not in structural:
+            out.append(node)
     elif isinstance(node, dict):
-        for v in node.values():
-            strings(v, out)
+        for key, value in node.items():
+            strings(value, out, path + (key,), structural)
     elif isinstance(node, list):
-        for v in node:
-            strings(v, out)
+        for index, value in enumerate(node):
+            strings(value, out, path + (index,), structural)
 
 
 def _canonical_int(value, low, high):
@@ -167,7 +250,11 @@ def check(d):
             continue
         for doc in docs:
             vals = []
-            strings(doc, vals)
+            structural_ok, paths = structural_enum_paths(doc) if n == 'manifest.json' else (True, set())
+            if not structural_ok:
+                bad += 1
+                print("  %s: malformed structural enum context" % n)
+            strings(doc, vals, structural=paths)
             metric_ok, metric_vals = metric_strings(doc)
             vals.extend(metric_vals)
             if not metric_ok:
