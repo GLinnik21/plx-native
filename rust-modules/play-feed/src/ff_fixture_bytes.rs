@@ -19,22 +19,30 @@ pub fn to_annexb(buf: &[u8], is_hevc: bool, param: &[u8]) -> (bool, Vec<u8>) {
 pub fn to_annexb_class(buf: &[u8], is_hevc: bool, param: &[u8]) -> (Keyframe, Vec<u8>) {
     let mut out = Vec::new();
     let key =
-        unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, is_hevc, false, false, param, &mut out) };
+        unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, is_hevc, false, None, false, param, &mut out) };
     (key, out)
 }
 
 /// [`to_annexb`] for an H.264 packet the container flags as a keyframe (`AV_PKT_FLAG_KEY`).
 pub fn to_annexb_flagged(buf: &[u8], param: &[u8]) -> (bool, Vec<u8>) {
     let mut out = Vec::new();
-    let key = unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, false, false, true, param, &mut out) };
+    let key = unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, false, false, None, true, param, &mut out) };
     (key.is_key(), out)
 }
 
 /// [`to_annexb`] for an HEVC stream with the Dolby Vision Profile 7 -> 8.1 conversion armed.
 pub fn to_annexb_p7(buf: &[u8], param: &[u8]) -> (bool, Vec<u8>) {
     let mut out = Vec::new();
-    let key = unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, true, true, false, param, &mut out) };
+    let key = unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, true, true, None, false, param, &mut out) };
     (key.is_key(), out)
+}
+
+/// [`to_annexb`] for an HEVC stream whose demuxer reports `raster` (`dv_p7`: with the Profile 7 -> 8.1
+/// conversion armed), so each RPU is checked against that picture.
+pub fn to_annexb_dv(buf: &[u8], dv_p7: bool, raster: Option<(u32, u32)>) -> Vec<u8> {
+    let mut out = Vec::new();
+    unsafe { packet_to_annexb(buf.as_ptr(), buf.len(), 4, true, dv_p7, raster, false, &[], &mut out) };
+    out
 }
 
 /// One of `tests/fixtures/dovi-p7-*-rpu.bin` (an RPU as `dovi_tool` writes it: a 4-byte start

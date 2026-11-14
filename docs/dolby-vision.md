@@ -106,6 +106,39 @@ the same Dolby Vision tail was measured on a webOS 6 set (LG C1, webOS 6.5.3, 20
 AV1 Profile 10.1 file direct-played with the node put the panel in Dolby Vision and played through,
 where without it the same file showed HDR10. It is unmeasured on any other firmware, and the webOS 4.5 dev set never reaches it (no AV1 row in its codec table).
 
+### 1a. Active-area offsets from another raster (#1367)
+
+**The bug class.** An RPU's Level 5 block is the picture's active area, as four offsets (`left`,
+`right`, `top`, `bottom`), and the TV's Dolby Vision engine blanks everything outside it. A
+re-encode cropped from a letterboxed master keeps the master's L5 in every RPU. The report: a
+1920x802 Profile 8.1 file cut from a 3840x2160 master (`dovi_tool info -s`: `L5 offsets: top=276,
+bottom=277, left=0, right=0`) played on an LG C8 (webOS 4.4.3, Feed) as a strip 249 rows high,
+802 - 553; with Dolby Vision off the HDR10 base layer, which carries no RPU, played whole.
+
+**The rule.** `ff::dv_active_area_fits` says offsets cannot describe a picture of the demuxer's
+`codecpar` raster (the displayed one, 1920x802, not the coded 808) when `left + right >= width`,
+`top + bottom >= height`, or the area they leave is wider than 3:1 or narrower than 1:2
+(`DV_AREA_WIDEST`, `DV_AREA_NARROWEST`). No released picture is wider than 2.76:1 (Ultra Panavision
+70) or narrower than 9:16 portrait, so an area outside that range can only be offsets authored for
+another raster. A genuine 1920x1080 letterbox (`top=138`, `bottom=139`, 2.39:1) is kept; the same
+offsets on 1920x802 leave 7.7:1; a 4:3 film cropped to 1440x1080 that still says `left=right=480`
+leaves 0.44:1 and is cleared too.
+
+**What is fed.** `ff::packet_to_annexb` checks every HEVC RPU of every profile, the Profile 7
+conversion's output included. When the rule fires, `ff::clear_foreign_active_area` zeroes the four
+offsets (`DoviRpu::crop`, what `dovi_tool --crop` does) and writes the RPU again, every other field
+kept; the event log says `ff: DV RPU #n active area ... cannot describe WxH; cleared`. Any other RPU
+(offsets that fit, no L5 block, one that does not parse, a raster the demuxer did not report) is fed
+byte for byte as it came, and a Profile 7 RPU that does not parse is still dropped.
+
+**Firmware evidence.** W18O `libkadaptor.so.2.0.1`, `dolbyGenerateRegNLuts_IP` at `0xe620c`, writes
+the L5 offsets into the DM registers `Active_area_*`.
+
+**Limits.** The URI engine, where the TV reads the file itself, is not covered: nothing of the file
+passes through this app. It is not verified on a device: our dev set's W19H `libkadaptor` has no
+`active_area` string, so it cannot reproduce the strip, and the reporter's C8 is where the failure
+was seen.
+
 ---
 
 ## 2. The Load payload: two nodes, both recovered from the set's own binaries

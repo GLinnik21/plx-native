@@ -2301,6 +2301,7 @@ static SEI_STRIPPED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64
 static DV_EL_DROPPED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 static DV_RPU_REWRITTEN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 static DV_RPU_FAILED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static DV_AREA_CLEARED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 /// HEVC `UNSPEC62`: the NAL type Dolby Vision carries its RPU (the dynamic metadata) in.
 const HEVC_NAL_DV_RPU: u8 = 62;
@@ -2348,6 +2349,85 @@ pub fn rewrite_dv_rpu_p7_to_p81(nal: &[u8]) -> Option<Vec<u8>> {
     }
     rpu.convert_with_mode(dolby_vision::rpu::ConversionMode::To81).ok()?;
     rpu.write_hevc_unspec62_nalu().ok()
+}
+
+/// The widest picture an RPU's active area (Dolby Vision Level 5) may describe, as width : height.
+/// No released picture is wider than 2.76:1 (Ultra Panavision 70), so a 3:1 ceiling keeps every
+/// real one. Together with [`DV_AREA_NARROWEST`] it tells offsets that belong to this picture from
+/// offsets authored for another raster, which is the only way an area outside the range can arise.
+const DV_AREA_WIDEST: (u64, u64) = (3, 1);
+/// The narrowest: 1:2. No released picture is narrower than 9:16 portrait (0.5625).
+const DV_AREA_NARROWEST: (u64, u64) = (1, 2);
+
+/// PURE: can the Level 5 active-area offsets `l`, `r`, `t`, `b` describe a `w` x `h` picture?
+///
+/// The TV's Dolby Vision engine blanks everything outside the active area. An encode cropped from
+/// a letterboxed master keeps the master's offsets in its RPUs (#1367: `top=276 bottom=277`, a 4K
+/// master's bars, on a 1920x802 file, leaves 249 rows). Offsets cannot describe the picture when
+/// they leave nothing (`l + r >= w` or `t + b >= h`) or leave an area wider than
+/// [`DV_AREA_WIDEST`] or narrower than [`DV_AREA_NARROWEST`]: a genuine 1920x1080 letterbox
+/// (`t = 138`, `b = 139`) leaves 2.39:1 and fits, 1920x802 with those offsets leaves 7.7:1, and a
+/// 4:3 film cropped to 1440x1080 that still says `l = r = 480` leaves 0.44:1.
+pub fn dv_active_area_fits(w: u32, h: u32, l: u32, r: u32, t: u32, b: u32) -> bool {
+    let [w, h, l, r, t, b] = [w, h, l, r, t, b].map(u64::from);
+    if l + r >= w || t + b >= h {
+        return false;
+    }
+    let (aw, ah) = (w - l - r, h - t - b);
+    aw * DV_AREA_WIDEST.1 <= ah * DV_AREA_WIDEST.0 && aw * DV_AREA_NARROWEST.1 >= ah * DV_AREA_NARROWEST.0
+}
+
+/// Zero the Level 5 offsets of a Dolby Vision RPU NAL (`UNSPEC62`, 2-byte header + payload) whose
+/// offsets cannot describe the `w` x `h` picture it travels with ([`dv_active_area_fits`]), as
+/// `dovi_tool --crop` does, and write it again; every other field is kept. `Some` is the rewritten
+/// NAL; `None` means the NAL goes out as it is: the offsets fit, are already zero, or there are none
+/// (no L5 block), the RPU does not parse (any profile), the raster is not known (`w` or `h` zero),
+/// or the rewrite failed.
+pub fn clear_foreign_active_area(nal: &[u8], w: u32, h: u32) -> Option<Vec<u8>> {
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let mut rpu = dolby_vision::rpu::dovi_rpu::DoviRpu::parse_unspec62_nalu(nal).ok()?;
+    let (l, r, t, b) = rpu_active_area(&rpu)?;
+    if (l, r, t, b) == (0, 0, 0, 0) || dv_active_area_fits(w, h, l.into(), r.into(), t.into(), b.into()) {
+        return None;
+    }
+    rpu.crop().ok()?;
+    rpu.write_hevc_unspec62_nalu().ok()
+}
+
+/// The L5 offsets `(left, right, top, bottom)` an RPU NAL carries, for the log line.
+fn dv_rpu_active_area(nal: &[u8]) -> Option<(u16, u16, u16, u16)> {
+    let rpu = dolby_vision::rpu::dovi_rpu::DoviRpu::parse_unspec62_nalu(nal).ok()?;
+    rpu_active_area(&rpu)
+}
+
+fn rpu_active_area(rpu: &dolby_vision::rpu::dovi_rpu::DoviRpu) -> Option<(u16, u16, u16, u16)> {
+    match rpu.vdr_dm_data.as_ref()?.get_block(5)? {
+        dolby_vision::rpu::extension_metadata::blocks::ExtMetadataBlock::Level5(l5) => Some(l5.get_offsets()),
+        _ => None,
+    }
+}
+
+/// The RPU as fed: `nal` itself unless [`clear_foreign_active_area`] rewrote it for the picture
+/// `raster` (the demuxer's `(width, height)`, `None` when it reported none). Counts and logs each clear.
+fn fit_active_area(nal: &[u8], raster: Option<(u32, u32)>) -> std::borrow::Cow<'_, [u8]> {
+    let Some((w, h)) = raster else {
+        return std::borrow::Cow::Borrowed(nal);
+    };
+    match clear_foreign_active_area(nal, w, h) {
+        Some(cleared) => {
+            let n = DV_AREA_CLEARED.fetch_add(1, Ordering::Relaxed) + 1;
+            if n <= 3 || n % 5000 == 0 {
+                let (l, r, t, b) = dv_rpu_active_area(nal).unwrap_or_default();
+                plx_base::eventlog::log(&format!(
+                    "ff: DV RPU #{n} active area l={l} r={r} t={t} b={b} cannot describe {w}x{h}; cleared"
+                ));
+            }
+            std::borrow::Cow::Owned(cleared)
+        }
+        None => std::borrow::Cow::Borrowed(nal),
+    }
 }
 
 /// What to do with one HEVC NAL on its way to the decoder.
@@ -2580,12 +2660,18 @@ impl Keyframe {
 /// ([`dovi_converts_to_p81`]). Every enhancement-layer NAL ([`is_dv_enhancement_layer`]) is
 /// dropped and every RPU is rewritten by [`rewrite_dv_rpu_p7_to_p81`], so what leaves here is the
 /// single-layer stream the Load payload declares (`DolbyHdrInfo profileId 8`).
+///
+/// `raster`: the picture's `(width, height)` as the demuxer reports it, `None` when it reports
+/// none. Every HEVC RPU, converted or not, is checked against it, and one whose active area cannot
+/// describe that picture is fed with the offsets zeroed ([`clear_foreign_active_area`]); any other
+/// RPU leaves as it came.
 pub unsafe fn packet_to_annexb(
     data: *const u8,
     size: usize,
     nls: usize,
     is_hevc: bool,
     dv_p7: bool,
+    raster: Option<(u32, u32)>,
     container_key: bool,
     param: &[u8],
     out: &mut Vec<u8>,
@@ -2668,7 +2754,7 @@ pub unsafe fn packet_to_annexb(
                             ));
                         }
                         out.extend_from_slice(&sc);
-                        out.extend_from_slice(&rpu);
+                        out.extend_from_slice(&fit_active_area(&rpu, raster));
                     }
                     None => {
                         let n = DV_RPU_FAILED.fetch_add(1, Ordering::Relaxed) + 1;
@@ -2685,7 +2771,12 @@ pub unsafe fn packet_to_annexb(
         }
         let mut nal = nal;
         let rewritten;
+        let fitted;
         if is_hevc {
+            if ((nal[0] >> 1) & 0x3f) == HEVC_NAL_DV_RPU {
+                fitted = fit_active_area(nal, raster);
+                nal = &fitted;
+            }
             match strip_hdr10plus_sei(nal) {
                 SeiStrip::Keep => {}
                 strip => {
@@ -6608,6 +6699,13 @@ pub fn demux(
                         "ff: Dolby Vision P7 -> P8.1 conversion armed (EL dropped, RPUs rewritten)",
                     );
                 }
+                // The picture the RPUs travel with: the raster the demuxer reports (the displayed
+                // one, not the coded one), which `packet_to_annexb` checks each RPU's active area
+                // against. A non-positive size is "not reported".
+                let dv_raster = u32::try_from((*vcp).width)
+                    .ok()
+                    .zip(u32::try_from((*vcp).height).ok())
+                    .filter(|&(w, h)| w > 0 && h > 0);
                 let is_av1 = framing == VideoFraming::Av1;
                 let is_vp9 = framing == VideoFraming::Vp9;
                 let (param_blob, nal_len_size) = if is_av1 || is_vp9 {
@@ -6808,6 +6906,7 @@ pub fn demux(
                                 nal_len_size,
                                 is_hevc,
                                 dv_p7,
+                                dv_raster,
                                 (*pkt).flags & AV_PKT_FLAG_KEY != 0,
                                 &param_blob,
                                 &mut aubuf,
