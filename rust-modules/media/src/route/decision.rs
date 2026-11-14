@@ -10000,10 +10000,52 @@ pub fn playback_preview(d: &plx_data::metadata::Detail) -> Option<Preview> {
     playback_preview_with_capability(d, None)
 }
 
-fn playback_preview_with_capability(
-    d: &plx_data::metadata::Detail,
-    capability: Option<plx_platform::devcaps::dv::DvCapability>,
-) -> Option<Preview> {
+pub fn detail_play_version(d: &plx_data::metadata::Detail) -> Option<&plx_data::pms::MediaVersion> {
+    let caps = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
+    detail_version_with(d, direct_play_mode(), &caps)
+}
+
+fn detail_version_with<'a>(
+    d: &'a plx_data::metadata::Detail,
+    mode: DirectPlayMode,
+    caps: &plx_platform::devcaps::Caps,
+) -> Option<&'a plx_data::pms::MediaVersion> {
+    let versions = match d.on_deck.as_ref().filter(|_| d.part.is_empty()) {
+        Some(ep) => &ep.versions,
+        None if d.part.is_empty() => return None,
+        None => &d.versions,
+    };
+    version_play_starts(versions, mode, caps)
+}
+
+struct PreviewFile<'a> {
+    part: &'a str,
+    vcodec: &'a str,
+    width: i64,
+    height: i64,
+    kbps: i64,
+    acodec: &'a str,
+    audio: &'a [plx_data::metadata::Stream],
+    subs: &'a [plx_data::metadata::Stream],
+    substituted: bool,
+}
+
+fn preview_file<'a>(
+    d: &'a plx_data::metadata::Detail,
+    mode: DirectPlayMode,
+    caps: &plx_platform::devcaps::Caps,
+) -> Option<PreviewFile<'a>> {
+    let own = |part: &'a str, vcodec: &'a str| PreviewFile {
+        part,
+        vcodec,
+        width: d.width,
+        height: d.height,
+        kbps: d.bitrate,
+        acodec: &d.acodec,
+        audio: &d.audio,
+        subs: &d.subs,
+        substituted: false,
+    };
     // A SHOW's container carries no file of its own, so the page answers for the episode its Play
     // button would start — the one the hero is already about. Its frame size and audio list are
     // the show Detail's, which `fetch_item_streams` backfilled from that same episode.
@@ -10011,57 +10053,83 @@ fn playback_preview_with_capability(
         Some(ep) => (ep.part.as_str(), ep.vcodec.as_str()),
         None => (d.part.as_str(), d.vcodec.as_str()),
     };
-    // The page answers for the play a press would start, so it plans from the same gated
-    // capability `ResolveEnv::dolby_vision_mode` hands the resolve.
-    let capability = dolby_vision_mode()
-        .gate(capability.unwrap_or_else(plx_platform::devcaps::dv::capability));
-    let presentation = d.dovi.presentation(
-        !plx_data::metadata::dv_withheld(),
-        capability,
-        plx_data::metadata::dv_video_codec(vcodec),
-    );
+    let Some(v) = detail_version_with(d, mode, caps) else {
+        return Some(own(part, vcodec));
+    };
+    let file = d.version_parts.iter().find(|p| p.id == v.id)?;
+    Some(PreviewFile {
+        part: &file.part,
+        vcodec: &v.vcodec,
+        width: v.width,
+        height: v.height,
+        kbps: v.kbps,
+        acodec: &v.acodec,
+        audio: &file.audio,
+        subs: &file.subs,
+        substituted: true,
+    })
+}
+
+fn playback_preview_with_capability(
+    d: &plx_data::metadata::Detail,
+    capability: Option<plx_platform::devcaps::dv::DvCapability>,
+) -> Option<Preview> {
     let mode = direct_play_mode();
     // The facts row is a read-out of what the device would do NOW, with no attempt behind it, so it
     // is a start edge of its own: the value a play started this moment would begin on (the boot
     // snapshot less the install's stored refusals), read once here and passed down to every gate it
     // asks. With no stored row in force it is the boot `Arc` itself: one `peek()`, no clone.
     let caps = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
+    let file = preview_file(d, mode, &caps)?;
+    // The page answers for the play a press would start, so it plans from the same gated
+    // capability `ResolveEnv::dolby_vision_mode` hands the resolve.
+    let capability = dolby_vision_mode()
+        .gate(capability.unwrap_or_else(plx_platform::devcaps::dv::capability));
+    let presentation = if file.substituted {
+        plx_data::metadata::DvPresentation::NotDv
+    } else {
+        d.dovi.presentation(
+            !plx_data::metadata::dv_withheld(),
+            capability,
+            plx_data::metadata::dv_video_codec(file.vcodec),
+        )
+    };
     if mode == DirectPlayMode::Forced {
-        return (!part.is_empty() && part_is_streamable(part)
-            && video_feed_supported(vcodec, presentation, &caps)
-            && d.audio.iter().any(|a| audio_direct_plays_with(&caps, mode, &a.codec, a.channels, a.sampling_rate)))
+        return (!file.part.is_empty() && part_is_streamable(file.part)
+            && video_feed_supported(file.vcodec, presentation, &caps)
+            && file.audio.iter().any(|a| audio_direct_plays_with(&caps, mode, &a.codec, a.channels, a.sampling_rate)))
             .then_some(Preview::DirectPlay);
     }
     let p = playback_preview_with_audio(
         &caps,
-        part,
-        vcodec,
-        d.width,
-        d.height,
+        file.part,
+        file.vcodec,
+        file.width,
+        file.height,
         presentation,
-        &d.audio,
+        file.audio,
         AudioPreviewInputs {
-            default_acodec: &d.acodec,
-            sub_selected: pick_dp_subtitle(&d.subs).is_some(),
+            default_acodec: file.acodec,
+            sub_selected: pick_dp_subtitle(file.subs).is_some(),
             quality: quality(),
             dv_declared: false, // filled from `presentation` by the preview itself
             local_link: plx_plex::plex::client_for(d.sid)
                 .is_some_and(|c| c.link() == Some(plx_plex::plex::probe::Location::Local)),
-            part_kbps: d.bitrate,
+            part_kbps: file.kbps,
         },
     )?;
     // The user's quality ceiling is the LAST gate `build_stream` applies, so it is the last one
     // here too — and it can only ever downgrade, never promote. Without this the facts row would
     // promise "Direct Play" for a source the rung is about to send to an encoder, which is the
-    // exact mismatch this preview's doc says it exists to avoid. `d.bitrate`/`width`/`height` are
-    // `Media[0]`'s, i.e. the same numbers `ResolveEnv` hands the resolve.
+    // exact mismatch this preview's doc says it exists to avoid. `file.kbps`/`width`/`height` are
+    // those of the version Play starts, i.e. the same numbers `ResolveEnv` hands the resolve.
     let location = plx_plex::plex::client_for(d.sid).and_then(|client| client.link());
     // A detail page has not downloaded the file yet, so it reports what can preserve the source,
     // not a fictitious failed bandwidth result. Remote Auto is measured at Play. Relay remains a
     // conversion because its independent link policy refuses both original-rate flavors.
     let policy = direct_play_policy(mode, flavors_allowed(
         plx_plex::plex::link_policy(location),
-        quality_policy(quality(), true, d.bitrate, d.width, d.height),
+        quality_policy(quality(), true, file.kbps, file.width, file.height),
     ));
     Some(match p {
         Preview::DirectPlay if !policy.direct_play && policy.remux && mode == DirectPlayMode::Disabled => Preview::Remux,

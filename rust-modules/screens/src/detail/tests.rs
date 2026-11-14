@@ -5315,6 +5315,34 @@ fn an_empty_identity_run_leaves_no_gap_before_the_first_chip() {
     assert!((res.0 - plx_ui::consts::MARGIN_X).abs() < 0.5, "no run, no gap: chip at {}", res.0);
 }
 
+#[test]
+fn the_resolution_badge_names_the_version_play_starts() {
+    let _guard = plx_base::testlock::serial();
+    let screen = bare_held(ServerId::UNSET, "rk");
+    let version = |id: i64, resolution: &str, width: i64, height: i64, vcodec: &str| plx_data::pms::MediaVersion {
+        id: plx_plex::plex::MediaId(id),
+        resolution: resolution.into(),
+        width,
+        height,
+        vcodec: vcodec.into(),
+        ..Default::default()
+    };
+    let d = Detail {
+        kind: "movie".into(),
+        part: "/library/parts/1/1/uhd.mkv".into(),
+        vcodec: "vp9".into(),
+        video_resolution: "4k".into(),
+        width: 3840,
+        height: 2160,
+        versions: vec![version(1, "4k", 3840, 2160, "vp9"), version(2, "1080", 1920, 1080, "h264")],
+        ..Default::default()
+    };
+    let m = &plx_base::fontcov::advances::ShippedMeasure;
+    let runs = plx_ui::draw_census::capture_runs(|| screen.identity_row(plx_ui::Painter::recording(), &d, 300.0, m));
+    assert!(painted_x(&runs, "1080p").is_some(), "the badge names the version Play starts: {runs:?}");
+    assert!(painted_x(&runs, "4K").is_none(), "not the first version: {runs:?}");
+}
+
 /// **The held episode still is drawn ONCE while its hold menu is up.** The page pass (a frame
 /// carrying `lifted`, like a card section's) leaves the whole cell out - still AND label-block
 /// platter - and says so (`popover::lift_owns`); the opener lift (`redraw_focused`, a frame with no

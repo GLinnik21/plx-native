@@ -1737,6 +1737,8 @@ pub struct Detail {
     /// hero's Play Version disc; empty for a single-version item and for a show or season.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub versions: Vec<crate::pms::MediaVersion>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub version_parts: Vec<VersionPart>,
 }
 
 impl Detail {
@@ -2369,6 +2371,7 @@ fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::Se
         extras: Vec::new(),
         trailer_rk: String::new(),
         versions: if it.kind == "movie" || it.kind == "episode" { crate::pms::versions_of(&it) } else { Vec::new() },
+        version_parts: Vec::new(),
     };
     // audio/subtitle streams (movies carry Media/Part/Stream; a show does not — its
     // episodes do, so load_detail backfills a show's streams from its first episode).
@@ -2448,6 +2451,25 @@ pub struct Streams {
     pub fps: f64,
     pub hdr: bool,
     pub dovi: Dovi,
+}
+
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct VersionPart {
+    pub id: plx_plex::plex::MediaId,
+    pub part: String,
+    pub audio: Vec<Stream>,
+    pub subs: Vec<Stream>,
+}
+
+fn version_parts_of(it: &plx_plex::plex::Metadata) -> Vec<VersionPart> {
+    it.media
+        .iter()
+        .filter_map(|m| {
+            let p = m.part.first()?;
+            let s = convert_streams(&p.stream);
+            Some(VersionPart { id: m.id, part: p.key.clone(), audio: s.audio, subs: s.subs })
+        })
+        .collect()
 }
 
 fn convert_streams(streams: &[plx_plex::plex::Stream]) -> Streams {
@@ -2573,6 +2595,54 @@ mod convert_streams_tests {
         assert!(!s.audio[1].can_normalize_loudness);
         assert!(!s.video.expect("video track").can_normalize_loudness);
     }
+
+    #[test]
+    fn each_version_keeps_its_own_part_and_tracks() {
+        fn media(id: i64, key: &str, acodec: &str, sub_lang: &str) -> plx_plex::plex::Media {
+            plx_plex::plex::Media {
+                id: plx_plex::plex::MediaId(id),
+                part: vec![plx_plex::plex::MediaPart {
+                    key: key.into(),
+                    stream: vec![
+                        plx_plex::plex::Stream { stream_type: 1, codec: "hevc".into(), ..Default::default() },
+                        plx_plex::plex::Stream { stream_type: 2, codec: acodec.into(), ..Default::default() },
+                        plx_plex::plex::Stream { stream_type: 3, language_code: sub_lang.into(), ..Default::default() },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }
+        }
+        let it = plx_plex::plex::Metadata {
+            media: vec![
+                media(11, "/library/parts/21/1/uhd.mkv", "truehd", "ita"),
+                media(12, "/library/parts/22/1/fhd.mkv", "ac3", "eng"),
+                plx_plex::plex::Media { id: plx_plex::plex::MediaId(13), ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        let parts = version_parts_of(&it);
+        let seen: Vec<_> = parts
+            .iter()
+            .map(|p| (p.id.0, p.part.as_str(), p.audio.iter().map(|a| a.codec.as_str()).collect::<Vec<_>>(), p.subs.iter().map(|s| s.lang_code.as_str()).collect::<Vec<_>>()))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                (11, "/library/parts/21/1/uhd.mkv", vec!["truehd"], vec!["ita"]),
+                (12, "/library/parts/22/1/fhd.mkv", vec!["ac3"], vec!["eng"]),
+            ]
+        );
+        let mut d = Detail::default();
+        parse_streams(&it, &mut d);
+        assert_eq!(d.version_parts.len(), 2, "the backfill a show page takes from its episode keeps them too");
+        let single = plx_plex::plex::Metadata {
+            media: vec![media(11, "/library/parts/21/1/uhd.mkv", "truehd", "ita")],
+            ..Default::default()
+        };
+        parse_streams(&single, &mut d);
+        assert!(d.version_parts.is_empty(), "a single version keeps none");
+    }
 }
 
 /// parse an item's Media[0].Part[0].Stream[] into d.audio / d.subs (the About footer), plus that
@@ -2580,6 +2650,7 @@ mod convert_streams_tests {
 /// the ONE version (see `plex::Metadata::media_version`), and both are borrowed from a show's
 /// first episode by the same call in `fetch_item_streams`, so they can't describe different files.
 fn parse_streams(it: &plx_plex::plex::Metadata, d: &mut Detail) {
+    d.version_parts = if crate::pms::versions_of(it).is_empty() { Vec::new() } else { version_parts_of(it) };
     if let Some(m) = it.media_version(None).map(|(_, m)| m) {
         d.video_resolution = m.video_resolution.clone();
         d.width = m.width;
