@@ -62,8 +62,9 @@ pub fn product_binding(display_mode: i32, firmware_major: u32, strata: &[u32]) -
 /// The firmware majors on which the product backend selects the exported window
 /// ([`product_binding`]): the only way production ever composes [`Binding::Exported`]. An entry is
 /// a webOS firmware major as `device::info().major` reports it (5 for 5.x, 11 for 11.x). The table
-/// admits major 5 and no other, so every other webOS 5+ major plays Standard until it earns an entry
-/// (a webOS 4.x set takes the ACB plane, which this table does not touch).
+/// admits majors 5 and 10 and no other, so every other webOS 5+ major (9 and 11 included) plays
+/// Standard until it earns an entry (a webOS 4.x set takes the ACB plane, which this table does not
+/// touch).
 ///
 /// A major is admitted only with all three parts of the evidence in `docs/uri-mode.md`'s Results
 /// table, each recorded there with the tester log's decisive lines. A release is never admitted on
@@ -101,6 +102,21 @@ pub const EXPORTED_STRATA: &[u32] = &[
     // four-audio-track run's audio-track switch failed; such a file now starts in Standard (#1314,
     // amendment (2); `exported_uri_leaves_multi_audio_originals_on_standard` pins the route).
     5,
+    // webOS 25 (firmware 10.3.1, 33.31.68), LG C2: `docs/uri-mode.md` Results row "webOS 9.2.4 / 10.3.1
+    // (33.31.68)", #1064. (a) the 10.3 image reads `option.windowId` at load; (b) the product run of
+    // 2026-11-14 (a debug build the tester does not name, answering the request for the CI build of
+    // run 43421880266, main at 2d565dc9f; one audio track, no subtitles) logged `evidence=override`
+    // and `uri: exported window placed src=3840x1608 rv=1` (2.39:1), both seeks landing on seekDone,
+    // and reported "aspect ratio correct, picture is full width with black bars, audio is playing,
+    // pause, resume, seek working" (pause and resume rest on those words: the paste has no pause
+    // line); two earlier product runs, one on main at 68527cb2 that pasted no lines and one on a 16:9
+    // Dolby Vision MKV, support it and are not relied on; (c) a drive probe on an older build
+    // printed seek=hit and audio=ok but pause=unconfirmed (paused_event=yes, no position while
+    // paused), so amendment (1) is used: the replay test
+    // `uri_drive_webos_25_c2_run_replays_to_pause_froze_from_the_paused_event_and_resume` grades its
+    // recorded numbers (pause at 2410, first position after resume 2729) pause=froze on
+    // pause_basis=paused_event_and_resume. Amendment (2) is not used; major 9 has no entry.
+    10,
 ];
 
 /// The canvas the exported window is placed over: the destination of EVERY placement, the whole
