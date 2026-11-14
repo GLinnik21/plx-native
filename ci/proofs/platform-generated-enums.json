@@ -20,7 +20,8 @@
     "machine/src/machine.rs": [
       "571415d64a9885248f852b402153feedd4660acbe03606e4796c59659726049f",
       "03a6e18f576dcbaff66c3d7405923b155302bfb2996bb373dac115ece055a5bf",
-      "d08b44dbff241962286eb7e1f85897073ba9f2f712a2ba935837f901635369a8"
+      "d08b44dbff241962286eb7e1f85897073ba9f2f712a2ba935837f901635369a8",
+      "9b1ffb66c7ba2eb9fdffcb4bcbf0a29cda87a003cce69b16c73567c8bc0a65b0"
     ]
   },
   "text_hashing": "sha256-utf8-bytes-crlf-to-lf-local-root-version-v1",
@@ -74,7 +75,8 @@
     "languages_rs emits only unit variants; Pseudo cfg_attr only allows dead_code",
     "string slots use Rust Debug escaping; numeric slots are integers",
     "install_identities writes only install_identities.rs, never languages.rs",
-    "PR1366: PressRead identity/live/active and owned-present sibling/test modules; canonical machine child and doc-only u32 newtype producer unchanged"
+    "PR1366: PressRead identity/live/active and owned-present sibling/test modules; canonical machine child and doc-only u32 newtype producer unchanged",
+    "PR1385: Canon byte-feed loops inlined (impl Canon and canon_tests only, FNV-1a byte stream unchanged); newtype macro and its ten u32 invocations unchanged"
   ],
   "assumptions": [
     "Offline source-backed unit-enum proof; certificate changes require source review.",

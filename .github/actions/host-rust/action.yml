@@ -42,8 +42,39 @@ runs:
       # is byte-for-byte the one `make check` ran against, and the ARM cross-build's.
       uses: ./.github/actions/rust-toolchain
 
+    - name: Build the host crates with line tables only
+      # Nothing in CI attaches a debugger to a host test binary, and a panic backtrace needs only the
+      # line table. The default `dev`/`test` profile writes full DWARF for every crate, dependencies
+      # included, which is most of what rustc's codegen, the linker and the cache archive carry for
+      # the 18 test binaries. This is the per-user cargo config, so it reaches the bare `cargo`
+      # lines and every `make` target of the host jobs alike. A dependency built with the old
+      # profile is a different unit to cargo, and rust-cache's key does not see this file (it hashes
+      # the manifests, the lockfile, the toolchain files and the workspace's `.cargo/config.toml`,
+      # not the home one), so the cache step below carries its own `prefix-key`: without it the
+      # full-DWARF cache restores as an exact hit, every dependency is rebuilt, and the post step
+      # finds the cache up to date and saves nothing. It is NOT the manifest: a developer's checkout
+      # keeps full DWARF (docs/agent-reference.md, the lane policy), and the profiles the ARM binary
+      # is built with do not inherit `dev`, so the shipped library is untouched.
+      shell: bash
+      run: |
+        mkdir -p "$HOME/.cargo"
+        cat >> "$HOME/.cargo/config.toml" <<'EOF'
+        [profile.dev]
+        debug = "line-tables-only"
+        [profile.dev.package."*"]
+        debug = false
+        EOF
+
     - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # The cache key already carries the calling job's id, so the three Rust jobs each keep their
       # own `target/` instead of racing to save one.
+      #
+      # The `prefix-key` names the profile the cached `target/` was built with: the line-tables
+      # config above is not an input to rust-cache's key, so the profile has to be in the prefix.
+      # Change that config and bump the number here, or the old entry restores as an exact hit. The
+      # entry is built cold once per lockfile or toolchain change, like any other key of this cache.
+      # The host jobs' old `v0-rust-` entries are never read again; GitHub drops an entry that
+      # nothing has restored for seven days.
       with:
+        prefix-key: v1-rust-linetables
         workspaces: rust-modules

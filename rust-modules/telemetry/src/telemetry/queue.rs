@@ -334,11 +334,15 @@ mod tests {
     #[test]
     fn at_the_byte_cap_sessions_are_dropped_before_crash_reports() {
         let session = rec("sess", Category::Errors, br#"{"attrs":{"release":"r"},"did":"d","sid":"s","started":"t"}"#);
-        // The largest crash body for which four crash reports fit and no session does.
-        let mut n = 90_000;
-        while 4 * encode(&rec("c", Category::Errors, &vec![b'x'; n + 3])).unwrap().len() <= MAX_BYTES {
-            n += 3;
-        }
+        // The largest crash body for which four crash reports fit and no session does. A frame is a
+        // fixed overhead (header, JSON fields, an empty body) plus four base64 characters per three
+        // body bytes, so the body is derived from the overhead instead of searched for by framing
+        // a ~100 KB record thousands of times; the two asserts pin the derivation to `encode`.
+        let framed = |n: usize| encode(&rec("c", Category::Errors, &vec![b'x'; n])).unwrap().len();
+        let overhead = framed(0);
+        let n = 3 * ((MAX_BYTES / 4 - overhead) / 4);
+        assert!(4 * framed(n) <= MAX_BYTES, "four crash reports of {n} bytes fit");
+        assert!(4 * framed(n + 3) > MAX_BYTES, "and one base64 group more does not");
         let crash = |id: &str| rec(id, Category::Errors, &vec![b'x'; n]);
         let all = vec![crash("c1"), crash("c2"), crash("c3"), crash("c4"), session];
         let (kept, dropped) = trim(all);
