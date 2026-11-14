@@ -1,4 +1,4 @@
-{"updated":"2026-11-14T03:15:43Z",
+{"updated":"2026-11-14T03:35:18Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5107,7 +5107,8 @@
 {"id":43527081661,"at":"2026-11-13T23:26:06Z","sha":"88d993213","title":"ci(harness): allow measured Python suite runtime","pr":1366,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":370,"macOS tests against bundled FFmpeg and ASS":234,"macOS simulator build + launch":160,"Windows launcher syntax":20}},
 {"id":43528579800,"at":"2026-11-13T23:38:14Z","sha":"6a74d2a8b","title":"refactor(ui): complete owned input and frame scheduling","pr":null,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":183,"macOS tests against bundled FFmpeg and ASS":243,"Linux simulator build + launch":260,"Windows launcher syntax":18}},
 {"id":43537750832,"at":"2026-11-14T00:59:34Z","sha":"4678b8f8f","title":"Detail: the resolution badge and the HDR warning name the version Play starts","pr":1379,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"Linux simulator build + launch":323,"macOS simulator build + launch":212,"macOS tests against bundled FFmpeg and ASS":258}},
-{"id":43514884062,"at":"2026-11-14T03:07:40Z","sha":"e021420a3","title":"ci: retrigger PR checks after flaky hostsim timing test","pr":1320,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"macOS simulator build + launch":230,"Linux simulator build + launch":368,"Windows launcher syntax":18,"macOS tests against bundled FFmpeg and ASS":279},"wall":19125}
+{"id":43514884062,"at":"2026-11-14T03:07:40Z","sha":"e021420a3","title":"ci: retrigger PR checks after flaky hostsim timing test","pr":1320,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"macOS simulator build + launch":230,"Linux simulator build + launch":368,"Windows launcher syntax":18,"macOS tests against bundled FFmpeg and ASS":279},"wall":19125},
+{"id":43551876264,"at":"2026-11-14T03:29:16Z","sha":"2c98ca3ba","title":"Net: bound a never-pausing peer's cancel latency by what the transport controls","pr":1380,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":203,"Windows launcher syntax":16,"macOS simulator build + launch":150,"Linux simulator build + launch":350}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
