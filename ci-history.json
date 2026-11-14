@@ -1,11 +1,5 @@
-{"updated":"2026-11-13T23:46:10Z",
+{"updated":"2026-11-14T01:05:10Z",
 "ci":[
-{"id":31880517917,"at":"2026-08-15T10:50:16Z","sha":"28dba47c5","title":"redact: the friend's handle and library name are theirs, and this repo is public","pr":47,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"host checks (NOT a device gate)":72,"cross-build (armv7) + artifact assertions":86}},
-{"id":31880722984,"at":"2026-08-15T10:55:05Z","sha":"51ebf79df","title":"detail: pin the call the whole design turns on \u2014 OK NAVIGATES","pr":47,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"cross-build (armv7) + artifact assertions":84,"host checks (NOT a device gate)":80}},
-{"id":31891971387,"at":"2026-08-15T15:10:31Z","sha":"01644ad67","title":"review fixes: harness redaction, ports, dev-trigger precedence, docs","pr":47,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"host checks (NOT a device gate)":93,"cross-build (armv7) + artifact assertions":95}},
-{"id":31892060315,"at":"2026-08-15T15:12:24Z","sha":"a4de7a5fc","title":"review fixes: harness redaction, ports, dev-trigger precedence, docs","pr":47,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"cross-build (armv7) + artifact assertions":109,"host checks (NOT a device gate)":88}},
-{"id":31892197594,"at":"2026-08-15T15:15:21Z","sha":"bafb25de8","title":"shared servers + Search: a friend's library beside your own, and a way to find anything in either","jobs":{"host checks (NOT a device gate)":112,"cross-build (armv7) + artifact assertions":87},"pr":47,"conclusion":"success","attempt":1},
-{"id":31912175110,"at":"2026-08-15T22:27:26Z","sha":"146f680e9","title":"build: warnings are errors, in both languages, with the gates proven to fail","jobs":{"host checks (NOT a device gate)":86,"cross-build (armv7) + artifact assertions":87},"pr":null,"conclusion":"success","attempt":1},
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
 {"id":32564179981,"at":"2026-08-22T09:09:26Z","sha":"7e1e82b1d","title":"tests: a twenty-minute device suite that shows nothing until it ends","jobs":{"cross-build (armv7) + artifact assertions":89,"host checks (NOT a device gate)":109},"pr":null,"conclusion":"success","attempt":1},
@@ -5109,7 +5103,8 @@
 {"id":43518541140,"at":"2026-11-13T22:20:59Z","sha":"6f9bbc9ee","title":"Deps: bump the Rust toolchain from 1.99.1 to 1.100.0","pr":null,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":403,"macOS tests against bundled FFmpeg and ASS":148,"macOS simulator build + launch":270,"Windows launcher syntax":19}},
 {"id":43523957742,"at":"2026-11-13T23:01:45Z","sha":"e1e5b4558","title":"merge(ui): resolve main conflicts for PR #1366","pr":1366,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":205,"macOS simulator build + launch":214,"Windows launcher syntax":21,"Linux simulator build + launch":336}},
 {"id":43527081661,"at":"2026-11-13T23:26:06Z","sha":"88d993213","title":"ci(harness): allow measured Python suite runtime","pr":1366,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":370,"macOS tests against bundled FFmpeg and ASS":234,"macOS simulator build + launch":160,"Windows launcher syntax":20}},
-{"id":43528579800,"at":"2026-11-13T23:38:14Z","sha":"6a74d2a8b","title":"refactor(ui): complete owned input and frame scheduling","pr":null,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":183,"macOS tests against bundled FFmpeg and ASS":243,"Linux simulator build + launch":260,"Windows launcher syntax":18}}
+{"id":43528579800,"at":"2026-11-13T23:38:14Z","sha":"6a74d2a8b","title":"refactor(ui): complete owned input and frame scheduling","pr":null,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":183,"macOS tests against bundled FFmpeg and ASS":243,"Linux simulator build + launch":260,"Windows launcher syntax":18}},
+{"id":43537750832,"at":"2026-11-14T00:59:34Z","sha":"4678b8f8f","title":"Detail: the resolution badge and the HDR warning name the version Play starts","pr":1379,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"Linux simulator build + launch":323,"macOS simulator build + launch":212,"macOS tests against bundled FFmpeg and ASS":258}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
@@ -5370,7 +5365,9 @@
 {"day":"2026-08-13","wf":"ci","event":"pull_request","runs":20,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":85,"host checks (NOT a device gate)":76},"longest":86},
 {"day":"2026-08-13","wf":"ci","event":"push","runs":1,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":83,"host checks (NOT a device gate)":71},"longest":83},
 {"day":"2026-08-14","wf":"ci","event":"pull_request","runs":17,"failed":2,"jobs":{"cross-build (armv7) + artifact assertions":88,"host checks (NOT a device gate)":77},"longest":89},
-{"day":"2026-08-14","wf":"ci","event":"push","runs":3,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":80,"host checks (NOT a device gate)":75},"longest":80}
+{"day":"2026-08-14","wf":"ci","event":"push","runs":3,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":80,"host checks (NOT a device gate)":75},"longest":80},
+{"day":"2026-08-15","wf":"ci","event":"pull_request","runs":4,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":90,"host checks (NOT a device gate)":84},"longest":90},
+{"day":"2026-08-15","wf":"ci","event":"push","runs":2,"failed":0,"jobs":{"cross-build (armv7) + artifact assertions":87,"host checks (NOT a device gate)":99},"longest":100}
 ],
 "flaky":[
 {"run":40071490036,"at":"2026-10-24T06:58:17Z","sha":"f596f952d","pr":977,"job":"host unit tests (default features)","test":"plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once","fail":[1],"pass":[2]},
