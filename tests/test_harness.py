@@ -8690,8 +8690,22 @@ class DepGates(unittest.TestCase):
             self.doCleanups()
             raise
 
+    _real_tree_lock = threading.Lock()
+    _real_tree_run = None
+
+    @classmethod
+    def _real_tree(cls):
+        """One run of the gate over the CHECKOUT, shared by the two tests that read it. Nothing in
+        this class edits the checkout (`test_self_tests_never_touch_the_real_tree`), so the second
+        reader would only repeat the first's ~25 s of CPU."""
+        with cls._real_tree_lock:
+            if cls._real_tree_run is None:
+                cls._real_tree_run = subprocess.run([os.path.join(cls.ROOT, "ci", "check-deps.sh")],
+                                                    capture_output=True, text=True)
+            return cls._real_tree_run
+
     def test_check_deps_is_green(self):
-        r = subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")], capture_output=True, text=True)
+        r = self._real_tree()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_self_tests_never_touch_the_real_tree(self):
@@ -8708,7 +8722,7 @@ class DepGates(unittest.TestCase):
     def test_the_private_copy_grades_exactly_like_the_real_tree(self):
         """The copy must carry every input `ci/check-deps.sh` reads: a missing one makes a gate see
         nothing and pass (or fail) for a reason the real tree would not share."""
-        real = subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")], capture_output=True, text=True)
+        real = self._real_tree()
         copy = subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")], capture_output=True, text=True)
         self.assertEqual((copy.returncode, copy.stdout), (real.returncode, real.stdout), copy.stderr)
 
@@ -8749,9 +8763,7 @@ class DepGates(unittest.TestCase):
         it is invisible to cargo (nothing declares it part of the crate) but not to `find … -name
         '*.rs'`, which is all these gates scan with — so this is the cheapest way to prove a gate
         catches a shape without touching a real, permanent source file."""
-        # `player/` and `route/` are the media layer crate's now (docs/module-layers.md, Split 11).
-        crate = crate_dir or ("media" if name.split("/")[0] in ("player", "route") else None)
-        target = os.path.join(self.tree, "rust-modules", *([crate] if crate else []), "src", name)
+        target = self._plant_target(name, crate_dir)
         self.assertFalse(os.path.exists(target), f"stale self-test artifact at {target} — remove it by hand")
         try:
             with open(target, "w", encoding="utf-8") as f:
@@ -8761,6 +8773,34 @@ class DepGates(unittest.TestCase):
         finally:
             if os.path.exists(target):
                 os.remove(target)
+
+    def _plant_target(self, name, crate_dir=None):
+        """Where `_plant` writes `name` in the private copy."""
+        # `player/` and `route/` are the media layer crate's now (docs/module-layers.md, Split 11).
+        crate = crate_dir or ("media" if name.split("/")[0] in ("player", "route") else None)
+        return os.path.join(self.tree, "rust-modules", *([crate] if crate else []), "src", name)
+
+    def _plant_all(self, plants):
+        """`_plant` for several files at once, graded by ONE `ci/check-deps.sh` run.
+
+        `plants` is a list of `(name, content, crate_dir)`, each with its own file name, so the one
+        run still shows which variants the gate caught: a gate prints the `path:line:text` (or the
+        path) of every file it flags, and the caller requires each variant's file by name. Run
+        one variant at a time, a test with N variants cost N runs (about 25 s of CPU apiece)."""
+        written = []
+        try:
+            for name, content, crate_dir in plants:
+                target = self._plant_target(name, crate_dir)
+                self.assertFalse(os.path.exists(target), f"stale self-test artifact at {target} — remove it by hand")
+                written.append(target)
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write(content)
+            return subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")],
+                                  capture_output=True, text=True)
+        finally:
+            for target in written:
+                if os.path.exists(target):
+                    os.remove(target)
 
     def _mutate(self, relpath, needle, replacement):
         """Temporarily replace ONE occurrence of `needle` with `replacement` in a REAL tracked
@@ -10012,27 +10052,36 @@ impl PersonOwnerGateFixture {
         self.assertIn("_check_deps_selftest_dt_fn.rs", out)
 
     def test_ui_owner_gate_rejects_retired_global_readers(self):
-        for name, body in (
+        readers = (
             ("nav", "plx_ui::nav::page_alpha()"),
             ("press", "plx_ui::press::scale()"),
             ("idle", "plx_machine::idle::invalidate()"),
-        ):
+        )
+        result = self._plant_all([
+            (f"_check_deps_selftest_owner_{name}.rs", f"pub fn retired_reader() {{ {body}; }}\n", None)
+            for name, body in readers
+        ])
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        for name, _ in readers:
+            rule = "nav" if name == "nav" else "ui-owner-legacy"
             with self.subTest(reader=name):
-                result = self._plant(
-                    f"_check_deps_selftest_owner_{name}.rs",
-                    f"pub fn retired_reader() {{ {body}; }}\n",
-                )
-                output = result.stdout + result.stderr
-                self.assertNotEqual(result.returncode, 0, output)
-                self.assertIn("nav:" if name == "nav" else "ui-owner-legacy:", output)
+                # The rule's own report, `path:line:text`, names each planted file: a reader the
+                # gate missed is absent from the one run's output by name.
+                self.assertIn(f"{rule}:", output)
+                self.assertTrue(
+                    any(f"_check_deps_selftest_owner_{name}.rs:" in line for line in output.splitlines()),
+                    f"{rule} did not flag the {name} reader\n{output}")
 
     def test_ui_owner_gate_rejects_resurrected_modules(self):
-        for crate, name in (("ui", "nav.rs"), ("ui", "press.rs"), ("machine", "idle.rs")):
+        modules = (("ui", "nav.rs"), ("ui", "press.rs"), ("machine", "idle.rs"))
+        result = self._plant_all([(name, "// Retired module must remain absent.\n", crate) for crate, name in modules])
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("ui-owner-files:", output)
+        for crate, name in modules:
             with self.subTest(crate=crate, module=name):
-                result = self._plant(name, "// Retired module must remain absent.\n", crate_dir=crate)
-                output = result.stdout + result.stderr
-                self.assertNotEqual(result.returncode, 0, output)
-                self.assertIn("ui-owner-files:", output)
+                self.assertIn(f"ui-owner-files: retired module rust-modules/{crate}/src/{name} exists", output)
 
     def test_owned_damage_gate_rejects_a_retired_transport_call(self):
         result = self._plant("_check_deps_selftest_damage_adapter.rs",
