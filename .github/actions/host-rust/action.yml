@@ -44,17 +44,21 @@ runs:
 
     - name: Build the host crates with line tables only
       # Nothing in CI attaches a debugger to a host test binary, and a panic backtrace needs only the
-      # line table. The default `dev`/`test` profile writes full DWARF for every crate, dependencies
-      # included, which is most of what rustc's codegen, the linker and the cache archive carry for
-      # the 18 test binaries. This is the per-user cargo config, so it reaches the bare `cargo`
-      # lines and every `make` target of the host jobs alike. A dependency built with the old
+      # line table. A `dev` build writes full DWARF for every crate, dependencies included, which is
+      # most of what rustc's codegen, the linker and the cache archive carry (the 18 test binaries
+      # too, before rust-modules/Cargo.toml gave `[profile.test]` line tables of its own: `cargo test`
+      # builds with `test`, which inherits `dev`). This is the per-user cargo config, so it reaches
+      # the bare `cargo` lines and every `make` target of the host jobs alike, and it trims what the
+      # manifest does not: the `dev` builds (clippy, `cargo check`) and the third-party crates'
+      # debug info (`debug = false`). A dependency built with the old
       # profile is a different unit to cargo, and rust-cache's key does not see this file (it hashes
       # the manifests, the lockfile, the toolchain files and the workspace's `.cargo/config.toml`,
       # not the home one), so the cache step below carries its own `prefix-key`: without it the
       # full-DWARF cache restores as an exact hit, every dependency is rebuilt, and the post step
-      # finds the cache up to date and saves nothing. It is NOT the manifest: a developer's checkout
-      # keeps full DWARF (docs/agent-reference.md, the lane policy), and the profiles the ARM binary
-      # is built with do not inherit `dev`, so the shipped library is untouched.
+      # finds the cache up to date and saves nothing. The `dev` half is NOT in the manifest: a developer's checkout
+      # keeps full DWARF in `dev` builds (docs/agent-reference.md, the lane policy; its host tests
+      # get line tables from the manifest's `[profile.test]`), and the profiles the ARM binary is
+      # built with do not inherit `dev`, so the shipped library is untouched.
       shell: bash
       run: |
         mkdir -p "$HOME/.cargo"

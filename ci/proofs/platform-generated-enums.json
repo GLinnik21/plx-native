@@ -26,7 +26,7 @@
   },
   "text_hashing": "sha256-utf8-bytes-crlf-to-lf-local-root-version-v1",
   "manifests": {
-    "Cargo.toml": "fbeb900767c6d3a7091b0366cdaf79753f45384be9b39a649dd8e7decbf40fb6",
+    "Cargo.toml": "c57b1c2d662d460a6d71f6de158397f1cb2f2fecb167bfa738631d77b661248b",
     "appkit/Cargo.toml": "1e3a33f392110f269537b12f12879c6bc15309aca304b189d6b0346edf8a1186",
     "base/Cargo.toml": "ebe0b95553bd44f33f422f7d8e22b75ddeb53c7ee81bbe738f675690694568f7",
     "data/Cargo.toml": "90a763a8a9e22bda7e95f8ede4dc10ec6e92a62b90bd0fd2e622c617d75ec6c7",
