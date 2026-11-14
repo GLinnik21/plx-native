@@ -1689,6 +1689,18 @@ check-cargo-lint: lint
 # ci/test_test_crate.py pins the two equal.
 UNIT_RUN = python3 ../tools/cargo-test-parallel.py
 UNIT_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_net plx_ui plx_plex plx_telemetry plx_data plx_session plx_media plx_playback_contract plx_play_uri plx_play_feed plx_media_codecs plx_appkit plx_screens
+# The `hostsim` pass runs only the crates that DECLARE a `hostsim` feature (HOSTSIM_SUITE, a subset of
+# UNIT_SUITE in the same order; ci/test_test_crate.py pins both the subset and the recipe). The seven that
+# do not (plx_net, plx_ui, plx_appkit, plx_screens, plx_media_codecs, plx_play_uri, plx_playback_contract)
+# have no `feature = "hostsim"` in their source and the same test names in both passes (14 crates did in
+# CI run 43528579834; the three that differ are `plxnative-modules`, `plx_media` and `plx_play_feed`,
+# all kept). Their own test set is therefore identical in the two passes. The old second run did link
+# their test binaries against hostsim-built `plx_base`, `plx_gfx`, `plx_platform`, `plx_media` and
+# `plx_play_feed` (steerable `ENV_STEERABLE` paths, larger glyph-cache sizes, `ffi_host` present), but
+# none of their tests observes those dependency-side differences; the guard does not check that, it
+# checks that the crate declares no `hostsim` feature and has no `feature = "hostsim"` in its src, and
+# fails when one gains either, which is the moment it must join the list.
+HOSTSIM_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_plex plx_telemetry plx_data plx_session plx_media plx_play_feed
 
 # The default-feature unit suite and everything that drives cargo through ci/ self-tests.
 check-cargo-unit-default:
@@ -1740,7 +1752,7 @@ check-cargo-unit-default:
 
 # The `hostsim` unit suite (the host feed seam exists only there).
 check-cargo-unit-hostsim:
-	@# The SAME suite as `check-cargo-unit-default`'s `cargo test --lib`, again under `hostsim`, which is
+	@# The crates of HOSTSIM_SUITE (the ones that declare `hostsim`) again under `hostsim`, which is
 	@# not a duplicate run: the host feed seam (`play-feed/src/ffi_host.rs`) only exists in that configuration,
 	@# so every test that drives an AU through `sf_feed` is COMPILED OUT of the default pass and cannot fail it. The prime-livelock
 	@# regression is one of those, and it guards the 94-second freeze of 2026-08-29 — a defect that
@@ -1751,7 +1763,7 @@ check-cargo-unit-hostsim:
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
-	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --features hostsim
+	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_play_feed --features hostsim
 
 # OPT-IN incremental inner loop: the default-feature unit suite (the same `cargo test --lib` as
 # `check-cargo-unit-default`, same throwaway runtime root and telemetry env) with
