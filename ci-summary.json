@@ -99,7 +99,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-14T23:31:46Z",
+ "generated": "2026-11-14T23:40:12Z",
  "metrics": [
   {
    "change30_pct": 42.9,
@@ -125,7 +125,7 @@
   {
    "change30_pct": 0.0,
    "change7_pct": 0.4,
-   "d30": 474.0,
+   "d30": 474,
    "delta30": 0.0,
    "delta7": 2.0,
    "group": "ci",
@@ -133,9 +133,9 @@
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 150,
-   "n_prev": 164,
+   "n_prev": 163,
    "now": 474.0,
-   "prev7": 472.0,
+   "prev7": 472,
    "shown": true,
    "state": "flat",
    "state30": "flat",
@@ -144,18 +144,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 8.0,
-   "change7_pct": -1.8,
+   "change30_pct": 7.7,
+   "change7_pct": -2.0,
    "d30": 414,
-   "delta30": 33,
-   "delta7": -8,
+   "delta30": 32.0,
+   "delta7": -9.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 73,
+   "n_now": 74,
    "n_prev": 53,
-   "now": 447,
+   "now": 446.0,
    "prev7": 455,
    "shown": true,
    "state": "flat",
@@ -417,9 +417,9 @@
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 63,
+   "n_now": 64,
    "n_prev": 50,
-   "now": 334,
+   "now": 334.0,
    "prev7": 305.0,
    "shown": true,
    "state": "flat",
@@ -471,18 +471,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 54.5,
-   "change7_pct": 4.2,
+   "change30_pct": 55.2,
+   "change7_pct": 4.7,
    "d30": 145.0,
-   "delta30": 79.0,
-   "delta7": 9.0,
+   "delta30": 80.0,
+   "delta7": 10.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 63,
+   "n_now": 64,
    "n_prev": 50,
-   "now": 224,
+   "now": 225.0,
    "prev7": 215.0,
    "shown": true,
    "state": "flat",
@@ -501,9 +501,9 @@
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 63,
+   "n_now": 64,
    "n_prev": 50,
-   "now": 197,
+   "now": 197.0,
    "prev7": 215.5,
    "shown": true,
    "state": "flat",
@@ -608,9 +608,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 63,
+   "n_now": 64,
    "n_prev": 50,
-   "now": 19,
+   "now": 19.0,
    "prev7": 20.0,
    "shown": false,
    "state": "flat",
@@ -709,11 +709,6 @@
    "change_pct": 41.1,
    "commits": [
     {
-     "pr": 1383,
-     "sha": "a8e460b3c",
-     "title": "CI: build the host crates with line tables only"
-    },
-    {
      "pr": 1381,
      "sha": "f5bb31d41",
      "title": "Check: run the hostsim unit pass only over the crates that declare hostsim"
@@ -757,6 +752,11 @@
      "pr": 1377,
      "sha": "9f6ac6695",
      "title": "URI on webOS 25: admit firmware major 10 to the exported-window table"
+    },
+    {
+     "pr": 1397,
+     "sha": "92e63a8ec",
+     "title": "URI on webOS 5+: admit firmware majors 6, 7 and 9, bracketed, no tester run"
     }
    ],
    "from": 190,
@@ -797,7 +797,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 334
+   "now": 334.0
   }
  ],
  "slowest_local": [
