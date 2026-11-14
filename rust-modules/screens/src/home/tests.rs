@@ -591,6 +591,10 @@ fn drawn_hero_geometry_follows_slide_and_the_captured_press_scale() {
             for press in [0.93, 1.0, 1.025] {
                 let mut context = cx(snapshot.view(), Some(key));
                 context.press.scale = press;
+                context.press.live = press != 1.0;
+                context.press.active = press != 1.0;
+                context.press.identity = 1;
+                context.press.owner = Some(key);
                 let base = s.hero_button_rect(snapshot.view(), 0, context.measure).unwrap();
                 let drawn = Focusable::<TestHost>::place(&s, &key.elem, &context, At::Drawn).unwrap();
                 let target = Focusable::<TestHost>::place(&s, &key.elem, &context, At::SpringTarget).unwrap();
@@ -2530,9 +2534,8 @@ fn a_settled_hero_counting_down_lets_the_gate_close_and_still_flips() {
     let mut s = screen(view);
     let context = cx(view, None);
     let mut present = plx_machine::present::Present::new();
-    // `take` at tick_ms 0 throughout keeps the keepalive term out: this counts only what the
-    // screen itself asked for. The first take drains the fresh gate's first-frame `dirty`.
-    present.take(0);
+    // Simulated swaps at tick_ms 0 keep the keepalive term out of the screen's requests.
+    swap_requested_frame(&mut present);
     let mut asked_while_counting = 0u32;
     let mut flipped_at = None;
     // 10 s of 16 ms ticks: past HERO_AUTO_S, so the countdown expires exactly once.
@@ -2547,7 +2550,7 @@ fn a_settled_hero_counting_down_lets_the_gate_close_and_still_flips() {
             let tick = ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_000 });
             Machine::<TestHost>::step(&mut s, &tick, &context, &mut fx);
         }
-        let asked = present.take(0);
+        let asked = swap_requested_frame(&mut present);
         if s.outgoing.is_some() {
             flipped_at.get_or_insert(frame);
             assert!(asked, "the flip's slide is motion and must present");
@@ -2569,10 +2572,17 @@ fn a_settled_hero_counting_down_lets_the_gate_close_and_still_flips() {
 /// Step `s` through `ticks` 16 ms frames with `focus` held, on one shared gate (`take` at tick ms 0
 /// keeps the keepalive term out: this counts only what the screen itself asks for). Returns the frame
 /// the hero first began a slide on (if it did) and how many frames before that asked to present.
+/// Admit and acknowledge only frames the test actually simulates presenting.
+fn swap_requested_frame(present: &mut plx_machine::present::Present) -> bool {
+    let asked = present.take(0);
+    if asked { present.acknowledge(0); }
+    asked
+}
+
 fn run_hero_frames(s: &mut HomeScreen, view: HubsView<'_>, focus: Option<FocusKey<u32>>, ticks: u32) -> (Option<u32>, u32) {
     let context = cx(view, focus);
     let mut present = plx_machine::present::Present::new();
-    present.take(0);
+    swap_requested_frame(&mut present);
     let (mut flipped_at, mut asked_before) = (None, 0u32);
     for frame in 1..=ticks {
         let mut out = Vec::new();
@@ -2581,7 +2591,7 @@ fn run_hero_frames(s: &mut HomeScreen, view: HubsView<'_>, focus: Option<FocusKe
             let tick = ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_000 });
             Machine::<TestHost>::step(s, &tick, &context, &mut fx);
         }
-        let asked = present.take(0);
+        let asked = swap_requested_frame(&mut present);
         if s.outgoing.is_some() {
             flipped_at.get_or_insert(frame);
         } else if flipped_at.is_none() && asked {
@@ -3370,10 +3380,10 @@ fn decorative_wash_and_hero_pop_do_not_hold_page_quiescence() {
     let mut saw_decor = false;
     let mut layout_moving_frames = 0;
     for i in 1..40u32 {
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         step(&mut s, snapshot.view(), Some(key), &ScreenEvent::Tick(Tick { ms: i * 16, dt_us: 16_667 }));
-        saw_decor |= plx_machine::idle::page_moving();
-        layout_moving_frames += usize::from(plx_machine::idle::page_layout_moving());
+        saw_decor |= plx_machine::motion::report::page_moving();
+        layout_moving_frames += usize::from(plx_machine::motion::report::page_layout_moving());
     }
     assert!(saw_decor, "the hero pop / wash dissolve must still report visible page motion");
     assert_eq!(layout_moving_frames, 0, "decorative springs must not count as page layout motion");
@@ -4002,11 +4012,11 @@ fn the_hint_never_shows_while_the_page_is_still_gliding() {
 fn a_held_ok_fills_the_cap_from_the_press_clock_and_shows_the_hint_early() {
     with_hint_home(|mut s, view| {
         let card = Some(first_card(&s));
-        let half = plx_ui::press::LONG_MS / 2;
+        let half = plx_ui::dispatch::press::LONG_MS / 2;
         hint_ticks(&mut s, view, card, Some(half), 0, 30);
         assert!(s.hold_hint.visible(), "the hold shows it without waiting out the dwell");
         assert!((s.hold_hint.fill() - 0.5).abs() < 1e-6, "half of LONG_MS held is a half-filled cap");
-        let input = s.hint_input(&{ let mut c = cx(view, card); c.press.held_ms = Some(plx_ui::press::LONG_MS * 2); c }, false);
+        let input = s.hint_input(&{ let mut c = cx(view, card); c.press.held_ms = Some(plx_ui::dispatch::press::LONG_MS * 2); c }, false);
         assert_eq!(input.hold, Some(1.0), "the constructor clamps the fraction; no screen divides");
         // released early: the fill drains
         hint_ticks(&mut s, view, card, None, 0, hint_secs(0.4));
@@ -4039,7 +4049,7 @@ fn a_settled_hint_lets_the_gate_close() {
         // Home settled with the hint standing still: nothing in the tick may ask for a present.
         let context = cx(view, card);
         let mut present = plx_machine::present::Present::new();
-        present.take(0);
+        swap_requested_frame(&mut present);
         let mut out = Vec::new();
         let mut asked = 0;
         for i in 1..=60u32 {
@@ -4048,7 +4058,7 @@ fn a_settled_hint_lets_the_gate_close() {
                 let tick = ScreenEvent::Tick(Tick { ms: ms + i * HINT_TICK_MS, dt_us: HINT_TICK_MS * 1000 });
                 Machine::<TestHost>::step(&mut s, &tick, &context, &mut fx);
             }
-            asked += u32::from(present.take(0));
+            asked += u32::from(swap_requested_frame(&mut present));
         }
         assert_eq!(asked, 0, "a hint at rest must not hold the loop at full rate");
     });
@@ -4066,7 +4076,7 @@ fn the_hint_does_not_stand_up_by_itself_while_the_screenshot_clocks_are_held() {
         assert!(!s.hold_hint.visible(), "pinned clocks: no self-appearing hint in a documentation figure");
         let ms = hint_ticks(&mut s, view, card, Some(100), ms, 30);
         assert!(!s.hold_hint.visible(), "a short click stays hidden even with pinned clocks");
-        hint_ticks(&mut s, view, card, Some(plx_ui::press::LONG_MS / 2), ms, 30);
+        hint_ticks(&mut s, view, card, Some(plx_ui::dispatch::press::LONG_MS / 2), ms, 30);
         assert!(s.hold_hint.visible(), "a deliberate hold is input and still shows it");
         plx_machine::motion::hold_phase_clocks(None);
     });

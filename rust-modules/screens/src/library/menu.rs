@@ -888,7 +888,7 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
         // container's appear: the panel begins and ends as the control it grows from.
         let field = f.underlay;
         let frame = self.frame(measure);
-        let m = self.popover.content_painter_on(f.painter, 0.0);
+        let m = self.popover.content_painter_on(f.painter.alpha(f.nav_page_alpha), 0.0);
         plx_ui::profile::phase("lb.menu", || {
             let shown = self.motion.shown(frame);
             self.popover.panel(m, shown, PANEL_RADIUS, field, plx_ui::widgets::Ground::Menu);

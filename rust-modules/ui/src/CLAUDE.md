@@ -328,9 +328,13 @@ which the orphan rule forbids.
 references: `Session` (auth, profile, the one `ProfileScope`), `Consent`, `Input` (press, key-repeat
 edges, pointer visibility, the double-buffered hit map, and the `FocusEngine` that holds THE
 current focus — screens keep no copy), `Present` (the gate), `Navigation` (the container tree and
-every entry/instance), `Player`, `Stores`, `Adapters`. Ownerships that used to be double are now
-single: the press belongs to `Input`, the modal phase to `ModalStack`, the present gate to
-`Present`, `ProfileScope` to `Session`.
+every entry/instance), `Player`, `Stores`, `Adapters`. Press belongs to `Input`, the modal phase
+to `ModalStack`, and `ProfileScope` to `Session`. `Dispatcher::present` is the runtime
+frame gate; `App` does not own a second gate. `Input` supplies the explicit `PressRead`, and
+`NavStack` supplies `NavPresentation` through `DrawFrame`. Rendering scopes report only
+frame-captured motion through `plx_machine::motion::report`. Content damage and its page/surface
+attribution are typed effects on the owning `Present`, never an ambient generation or collector.
+Admission retains pending work until the loop acknowledges an actual swap.
 
 **Navigation is a model, not a route word (§6.2).** `containers/` is the fold:
 TabContainer → NavStack → ModalStack. A screen is an owned INSTANCE with logical state inside and
@@ -351,7 +355,7 @@ Keymanager and LS2 calls. Tests panic (catchably). In developer builds (`threadc
 `main-thread block: <label> at <file:line> (fatal; aborting)`, then aborts on the frame thread before the call runs.
 Release builds retain elapsed-time logging once per (label, call site):
 `main-thread block: <label> <ms>ms at <file:line> [under <exception label> at <file:line>]`. Use cached reads and, in the IO layer, the bounded `storage_worker` queue, then observe the landing
-on the frame thread and call `idle::invalidate()` only when visible content changed. Boot's synchronous loads run before the frame scope; a new blocking exception
+on the frame thread and apply typed damage through its owned `PresentHandle` only when visible content changed. Boot's synchronous loads run before the frame scope; a new blocking exception
 must be explicit and justified through `task::allow_blocking`, never added to a tick — and every production
 `allow_blocking(` site is a line in `ci/allow/blocking.txt`, which the `blocking` gate holds exact (a
 new site or a stale line fails; the list only shrinks). Move the work off the frame: in machine code (`ui/`,
@@ -413,13 +417,13 @@ implementations — `TtfMeasure` (device/sim), `TableMeasure` (replay, from the 
 table) and `FixtureMeasure` (host tests) — and travels on `Cx`/`DrawFrame`. The point of both is
 §5: real scenarios record and replay deterministically.
 
-**What has NOT landed** — the guide says so rather than letting `lib.rs` imply otherwise:
+**Ownership migration and remaining acceptance**:
 
-- §11 lists `nav.rs`, `trail.rs` and `press.rs` for deletion. Only `trail.rs` is gone; `nav.rs`
-  (164 lines) and `press.rs` (619) are still here and still used.
-- §11 says `present.rs` REPLACES `idle.rs`. Both exist (in `rust-modules/machine/src/`, since the
-  machine split) — `idle.rs` at 1127 lines against `present.rs`'s 242 — so the gate has two homes
-  and `idle.rs` is still the larger one.
+- The ownership migration removes `nav.rs`, `trail.rs`, root `press.rs` and `machine/src/idle.rs`.
+  The press machine lives in `ui/src/dispatch/press.rs`; consumers take explicit readouts.
+- `machine/src/present.rs` owns admission and actual-swap accounting; `motion/report.rs`
+  contains scoped frame motion only; the global damage adapter is removed. Runtime and device acceptance must be
+  reported separately from these source-level ownership guarantees.
 - §0's done-criterion 9 (`doc_claim_auditor` clean against §11's prose list) is not met.
 
 Modules with no product caller yet carry `#![allow(dead_code)]` with a one-line reason; that is
@@ -918,18 +922,14 @@ Note the asymmetry, because it tells you where to put a new test: `card_row.rs` 
 `CardRow`, so its tests are ordinary and parallel; an owned screen's tests hold no focus of their
 own (the `FocusEngine` does). Tests that seed the shared registry or the remaining global stores
 take `testlock::serial()`; tests using separate production BrowseStore owners isolate their state
-and landings. **`xfade.rs` is
-the cautionary case**: its tests were ordinary and parallel until `tick` started reporting to
-`plx_machine::idle`'s process-global flag, at which point driving a fader began mutating state *another
-module's* assertions read. They all take `testlock::serial()` now. Anything you make report to the
-frame gate inherits that obligation — and the lock is ENFORCED rather than merely documented since
-2026-09-10: it records the holding thread, and the shared stores (plus the app frame trunk, which
-pumps all of them) call `testlock::assert_held`, so an unguarded write panics in the test that made
-it rather than in whichever bystander it happened to land on.
+and landings. Present damage is owner-local, and motion reports are frame-local to the driving
+thread. Tests touching the documented worker wake or shared caches still take the serial lock.
+The lock records the holding thread; shared stores and the app frame trunk call
+`testlock::assert_held`, so an unguarded shared write fails at its source.
 
 **If you add anything that ANIMATES, it owes two tests**, because the failure modes are opposite and
 each is invisible to the other's gate. Host: it reports while running **and** goes quiet at rest —
-`machine/src/idle.rs`'s and `ui/xfade.rs`'s test modules are the pattern, including a settled-tree case that
+`machine/src/idle_regression_tests.rs` and `ui/xfade.rs`'s test modules are the pattern, including a settled-tree case that
 steps 439 springs and asserts *nothing* is requested. Device: an `fps_floor` scene proving it
 still animates under the gate, and (if its screen settles) an `fps_ceiling` proving it stops. An
 over-reporting animator costs the entire ~38-points-of-a-core saving while every `floor` in the

@@ -1492,7 +1492,8 @@ pub(crate) fn note_server_stop(playback: &str, wire_session: &str, reason: &str,
         };
         SHARED.server_stopped.store(true, std::sync::atomic::Ordering::Release);
     }
-    plx_machine::idle::invalidate();
+    // The addressed server-stop note is observed by the foreground runner; no UI provenance
+    // is published by this notification worker.
 }
 
 fn with_server_stop<T>(playback: &str, read: impl FnOnce(&ServerStopNote) -> T) -> Option<T> {
@@ -1693,8 +1694,9 @@ pub struct Diag {
     pub feed_composed: bool,
     pub vp_mode: c_int,
     pub window_id: String,
-    /// This boot created an ACB handle (either backend's): a URI-only build has the URI engine's with
-    /// Feed's absent, and its diagnostics must not read that as a missing video plane.
+    /// An ACB handle has been created (either backend's; Feed's at the boot, the URI engine's at the
+    /// first Experimental offer or, while a release is in flight, at the Start's gate). A URI-only ACB
+    /// build therefore reads false until then.
     pub acb_ok: bool,
     pub place_rv: i32,
     pub placed_w: i32,
@@ -2280,8 +2282,10 @@ pub fn desired_sub_idx() -> i32 {
 pub fn request_subtitle(idx: i32) {
     SHARED.desired_sub_idx.store(idx, Relaxed);
     if idx < 0 {
-        // subs Off: free the image-cue store now (the demuxer also stops decoding new
-        // bitmap cues while off — see ff.rs's desired_sub_idx gate)
+        // subs Off: free the image-cue store now. The demuxer also stops decoding new bitmap cues
+        // while off and HOLDS the image packets it reads instead (`SubTracks::on_packet` in
+        // play-feed's `ff_subs.rs`), so a track chosen later decodes the read-ahead window it
+        // would otherwise have lost.
         SHARED.sub_bitmaps.lock().unwrap().clear();
     }
 }
@@ -2457,8 +2461,8 @@ pub fn sidecar_clock_ns(ps: &crate::route::PlaybackSession, playhead_ns: i64) ->
 /// reads ahead of the playhead, which this floor never prunes. What bounds memory is each store's
 /// budget and eviction order ([`SUB_BITMAP_BUDGET`]), not this floor.
 fn subtitle_floor_ns(retention: plx_playback_contract::subtitle::CaptionRetention) -> i64 {
-    let Some(playhead_ns) = retention.playhead_ns else { return i64::MIN; };
-    subtitle_floor_for(playhead_ns, retention.seek_target_ns.is_some(), retention.seek_target_ns.unwrap_or(-1))
+    let Some(anchor_ns) = retention.anchor_ns() else { return i64::MIN; };
+    subtitle_floor_for(anchor_ns, false, -1)
 }
 
 fn subtitle_floor_for(position_ns: i64, seeking: bool, target_ns: i64) -> i64 {
@@ -2543,8 +2547,7 @@ pub fn set_audio_enhancements(a: plx_plex::plex::AudioEnhancements) {
 pub fn request_audio_enhancement(ps: &mut crate::route::PlaybackSession, a: plx_plex::plex::AudioEnhancements) {
     set_audio_enhancements(a);
     crate::route::reconcile_enhancement(ps, false);
-    // the rows' checkmarks move on this — see `route::choose`
-    plx_machine::idle::invalidate();
+    // The input owner repaints the rows; route::preference_values observes confirmed writes.
 }
 
 /// Restore the persisted preference without writing it back (what `route::restore_profile_rows`
@@ -2566,7 +2569,7 @@ pub fn set_subtitle_tone(tone: plx_plex::plex::session::SubtitleTone) {
 /// (`route::persist_subtitle_offset`) — see [`SUBTITLE_OFFSET_MS`].
 pub fn set_subtitle_offset(offset_ms: i64) {
     SUBTITLE_OFFSET_MS.store(clamp_subtitle_offset_ms(offset_ms), Relaxed);
-    plx_machine::idle::invalidate();
+    // The input owner repaints the subtitle controls; no ambient damage side effect.
 }
 
 /// Carry a retry's offset through [`reset_subtitle`] (`route::reset_track_selection`). The

@@ -405,31 +405,31 @@ fn a_failing_source_leaves_a_populated_home_completely_intact() {
 #[test]
 fn a_source_landing_repaints_a_settled_home() {
     let _g = plx_base::testlock::serial();
-    let mut o = Owner::default();
-    reset(&mut o.state, &o.adapter);
-    plx_machine::idle::set_enabled(true);
-    seed(&mut o.state, vec![
-        src(0, "", HubState::Ready, Some(build_test(1))),
-        src(1, "friend", HubState::Loading, None),
-    ]);
-
-    for (what, build) in [
-        ("a share arriving", Some(build_test(2))),
-        ("a share failing", None),
-    ] {
-        plx_machine::idle::should_present(0); // takes-and-clears whatever was already pending
-        assert!(
-            !plx_machine::idle::should_present(0),
-            "the panel is settled with nothing happening"
-        );
+    for (what, build) in [("a share arriving", Some(build_test(2))), ("a share failing", None)] {
+        let mut o = Owner::default();
+        reset(&mut o.state, &o.adapter);
+        let own = if build.is_some() { src(0, "", HubState::Ready, Some(build_test(1))) }
+            else { src(0, "", HubState::Failed, None) };
+        seed(&mut o.state, vec![own, src(1, "friend", HubState::Loading, None)]);
+        let mut present = plx_machine::present::Present::new();
+        present.take(0);
+        present.acknowledge(0);
+        assert!(!present.peek(0));
+        let before = (o.state.catalog_gen, hub_state(&o.state));
         land(&o.state, &o.adapter, 1, build);
-        pump(&mut o.state, &o.adapter, 0.0);
-        assert!(
-            plx_machine::idle::should_present(0),
-            "{what} must invalidate the frame"
-        );
+        let mut changed = false;
+        for result in take_landings(&o.adapter) {
+            changed |= super::land(&mut o.state, &o.adapter, &result).changed;
+        }
+        assert_ne!((o.state.catalog_gen, hub_state(&o.state)), before, "{what} changes the actual publication");
+        assert!(changed, "{what} must return its visible change to the frame owner");
+        assert!(!present.peek(0), "a data mutation cannot paint through a global adapter");
+        if changed { present.note(plx_machine::present::PresentEvent::Damage(
+            plx_machine::present::Provenance::Landing(plx_machine::machine::MachineId::Store(
+                crate::stores::StoreId::Hubs.ord())))); }
+        assert!(present.take(0), "{what} must repaint its owning frame");
+        reset(&mut o.state, &o.adapter);
     }
-    reset(&mut o.state, &o.adapter);
 }
 
 /// The total-failure read-out is reserved for a total failure. Any source answering makes Home

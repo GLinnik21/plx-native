@@ -285,6 +285,7 @@ pub(crate) struct App {
     /// nine `static mut`s in `ui/stats.rs`. Not a `ModalStack` surface, and `diagnostics.rs`'s
     /// `Diagnostics` doc says why — the panel takes no keys and draws at two different z-positions.
     pub(crate) diagnostics: diagnostics::Diagnostics,
+    pub(crate) lab_toast: crate::lab::ToastObserver,
     /// **The Player machine** (restructure spec §2.2, phase 9): the playback session that was
     /// `route::decision::SESSION`, the app-switch lifecycle that was `App.foreground`, and this
     /// frame's tick. Reached as a parameter from here down — `plx_media::player::machine`'s doc says
@@ -302,7 +303,7 @@ pub(crate) struct App {
     /// DID edge withdraws them), as `(grant revision at the refusal, retries left)`; the frame
     /// step claims again once the revision moves (`run::retry_refused_foreground`).
     foreground_retry: Option<(u64, u8)>,
-    pub(crate) ok_armed: bool,
+
     last_route_reported: &'static str,
     pub(crate) ptr: Pointer,
     // (`route`, `play_from`, `trail` and `nav_pending` stood here — four fields that between them
@@ -353,17 +354,14 @@ pub(crate) struct App {
     /// Every dev-trigger arm's own state — oscillator phases, retry latches, boot-time flags
     /// (formerly `DevFlags`) — gathered on ONE struct (spec: `dev/scenarios.rs`'s module doc).
     pub(crate) scenarios: crate::dev::scenarios::Scenarios,
-    /// The Input machine: owner of the press (restructure spec §2.2); the ladders borrow it.
-    pub(crate) input: plx_ui::input::Input,
+
     /// `text::take_measure_fault` has been reported once (the report is once per process).
     measure_fault_logged: bool,
     /// The recorder / replay driver (`plxnative-rec` / `plxnative-recplay`, spec §5.3/§5.5).
     pub(crate) rec: recorder::Recplay,
     pub(crate) boot_initial: Option<bootstrap::Initial>,
     pub(crate) telemetry_guard: Option<plx_telemetry::telemetry::native::Guard>,
-    /// The present gate as a machine (spec §4.4). `plx_machine::idle` is still the product's verdict on
-    /// this loop; this one receives the render cache's notes and is what `dispatch` takes over.
-    present: plx_machine::present::Present,
+
     /// The frame plan's GLASS half (spec §8.3): the layer/region source registry, shared chrome
     /// material and dev load dial. The budget half lives on the `Dispatcher` (§2.2).
     pub(crate) glass: plx_ui::frame::glass::GlassPlan,
@@ -385,6 +383,20 @@ pub(crate) struct App {
     /// What that dispatcher borrows: the mounter, the real `TtfMeasure`, the store deliveries,
     /// the consent machine and the queue of requests an owned screen makes of this loop.
     pub(crate) bridge: bridge::Bridge,
+}
+
+impl App {
+    /// Application/runner mutations belong to the page, never an ambient damage queue.
+    pub(crate) fn note_presentation_damage(&mut self, why: plx_machine::present::Provenance) {
+        self.pages.present.note_in_scope(plx_machine::present::Scope::Page,
+            plx_machine::present::PresentEvent::Damage(why));
+    }
+
+    pub(crate) fn note_input_damage(&mut self) {
+        let scope = self.pages.input_scope();
+        self.pages.present.note_in_scope(scope,
+            plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
+    }
 }
 
 impl App {

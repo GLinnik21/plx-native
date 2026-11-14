@@ -176,7 +176,7 @@ fn the_alert_index_mapping_is_pinned_through_a_real_press_commit() {
         clip: Rect::FULL,
         index: None,
     };
-    let seated = Focusable::<InnerHost>::seat(&page.view(), ALERT_GROUP, placed, &c);
+    let seated = Focusable::<InnerHost>::seat(&page.view(plx_machine::machine::PressRead::<u32>::default()), ALERT_GROUP, placed, &c);
     assert_eq!(seated.elem, ALERT, "a freshly opened alert seats on Cancel, element 0 — never the destructive answer");
 
     // Element 0 (Cancel) must never delete anything, driven through the real event `step`
@@ -345,7 +345,7 @@ fn reconcile_keeps_the_alerts_own_choice_when_a_stray_key_names_something_outsid
     // A stray pointer hover on some unrelated table row — exactly what `FocusEngine::set`
     // parks into the engine's persisted scope with no regard for the modal being up.
     let stray = FocusKey { entry: EntryId(1), elem: 0 };
-    let reconciled = Focusable::<InnerHost>::reconcile(&page.view(), stray, &c);
+    let reconciled = Focusable::<InnerHost>::reconcile(&page.view(plx_machine::machine::PressRead::<u32>::default()), stray, &c);
     assert_eq!(
         reconciled,
         FocusKey { entry: EntryId(1), elem: ALERT + 1 },

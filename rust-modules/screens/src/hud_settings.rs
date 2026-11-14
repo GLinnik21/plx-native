@@ -1052,7 +1052,9 @@ impl Machine<InnerHost> for HudPage {
                     }
                 }
                 let mut cycle = std::mem::take(&mut self.preview_cycle);
-                cycle.set_frames(&self.preview_frames());
+                if cycle.set_frames(&self.preview_frames()) {
+                    fx.invalidate(plx_machine::present::Provenance::Resource(plx_machine::present::ResourceKind::Texture));
+                }
                 cycle.tick(*t, self.preview_active(), &mut fx.present());
                 self.preview_cycle = cycle;
                 self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);

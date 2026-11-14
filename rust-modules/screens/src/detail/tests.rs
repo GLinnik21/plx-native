@@ -5335,7 +5335,7 @@ fn the_held_episode_still_is_left_out_of_the_page_pass_and_drawn_once_by_the_lif
     }
     const DIP: f32 = 0.918;
     let mut context = cx(&measure, Some(key.elem));
-    context.press = PressRead { scale: DIP, is_long: true, held_ms: Some(400), owner: Some(key) };
+    context.press = PressRead { scale: DIP, is_long: true, held_ms: Some(400), owner: Some(key), ..Default::default() };
 
     let mut census = |lifted: Option<FocusKey<u32>>, lift: bool| {
         plx_ui::popover::set_lift_owns(false);
@@ -5402,7 +5402,7 @@ fn the_hold_hint_over_an_episode_still_waits_while_the_season_loads() {
     let measure = plx_ui::fixture::FixtureMeasure;
     let elem = episode_key(&screen, 0, episodes::Row::Still).unwrap();
     let mut context = cx(&measure, Some(elem));
-    context.press = PressRead { scale: 1.0, is_long: false, held_ms: Some(200), owner: None };
+    context.press = PressRead { scale: 1.0, is_long: false, held_ms: Some(200), owner: None, ..Default::default() };
     let located = Some(Located::Episode(0, episodes::Row::Still));
     let hinted = |screen: &DetailScreen| screen.hint_input(&context, located).focus.is_some();
 

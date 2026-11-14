@@ -42,7 +42,8 @@ paragraph); while Force is on, Default quality reads "Overridden" and its senten
 quality is overridden. Returning to Auto or
 Disabled needs no confirmation.
 
-Audio passthrough remains the television's Digital Sound Output setting.
+Audio passthrough remains the television's Digital Sound Output setting; if Atmos or E-AC3 audio
+comes out slow or deep on a soundbar, see [the troubleshooting note](troubleshooting.md#audio-is-slow-deep-or-drifting-out-of-sync-on-a-soundbar).
 
 ## Playback engine
 

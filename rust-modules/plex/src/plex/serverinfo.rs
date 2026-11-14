@@ -68,7 +68,7 @@ struct Entry {
     /// The owner's Plex Pass answer, `Unknown` until a fetch lands.
     sub: Subscription,
     /// The server's full build string ("1.43.3.10861-cd85035e7"), "" until its fetch lands.
-    version: String,
+    version: std::sync::Arc<str>,
     /// Single-flight: boot registers a server and a profile pick re-registers it moments later;
     /// two live workers would answer the same question twice and double the log line. Per server
     /// rather than global because two servers' fetches are different questions — a shared server
@@ -103,12 +103,28 @@ pub fn subscription_of(id: ServerId) -> Subscription {
     with_table(|t| t.get(&id.raw()).map_or(Subscription::Unknown, |e| e.sub))
 }
 
+/// One addressed answer, cheaply retained by the app's visual-input observer.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct ServerInfoFacts {
+    pub subscription: Subscription,
+    pub version: std::sync::Arc<str>,
+}
+
+pub fn facts_of(id: ServerId) -> ServerInfoFacts {
+    if super::client_for(id).is_none() {
+        return ServerInfoFacts::default();
+    }
+    with_table(|t| t.get(&id.raw()).map(|e| ServerInfoFacts {
+        subscription: e.sub, version: e.version.clone(),
+    }).unwrap_or_default())
+}
+
 /// [`version`] for a NAMED server; "" while unknown.
 pub fn version_of(id: ServerId) -> String {
     if super::client_for(id).is_none() {
         return String::new();
     }
-    with_table(|t| t.get(&id.raw()).map(|e| e.version.clone()).unwrap_or_default())
+    with_table(|t| t.get(&id.raw()).map(|e| e.version.to_string()).unwrap_or_default())
 }
 
 /// The CURRENT server owner's Plex Pass state, for DIAGNOSTICS — the stats panel and the playback
@@ -256,15 +272,9 @@ fn fetch_once(id: ServerId, c: &Client) {
 /// and the property that matters — one server's answer never reaching another's reader — lives
 /// entirely below.
 ///
-/// **This is an async LANDING, so it owes the present gate a poke.** It runs on a worker, seconds
-/// after boot or after a share is registered, and it changes what a SETTLED screen says: the stats
-/// panel's Server row, the detail hero's "hardware conversion needs \[PLEX PASS\]" note, and the
-/// failure read-out's capsule all read it. Without the [`plx_machine::idle::invalidate`] call the new
-/// fact arrives invisibly and the screen keeps stating the old one until the next keypress — bounded
-/// only by the 2 s keepalive, which is insurance and not pacing (that module's rule: *a new async
-/// landing that repaints must add a call there*). Unconditional rather than change-guarded: a
-/// re-registration that stores the same answer costs one frame, and a guard here would be a second
-/// place that has to agree with what the readers draw.
+/// This worker publishes addressed server facts only. The app captures [`facts_of`] before
+/// admission and attributes changed facts to its owned Page gate, including arrivals while a
+/// settled page or a surface is visible. No worker claims UI provenance.
 fn store(id: ServerId, sub: Subscription, version: &str) {
     if !id.is_set() {
         return;
@@ -276,9 +286,9 @@ fn store(id: ServerId, sub: Subscription, version: &str) {
         }
         let e = t.entry(id.raw()).or_default();
         e.sub = sub;
-        e.version = version.to_owned();
+        e.version = version.into();
     });
-    plx_machine::idle::invalidate();
+
 }
 
 /// Test-only: publish one server's answer without a round trip.
@@ -503,49 +513,31 @@ mod tests {
         assert!(servers::ids().any(|id| id == far), "the far server is in the roster the readers walk");
     }
 
-    /// **This is an async LANDING, so it owes the frame gate a poke.** The answer arrives on a
-    /// worker seconds after boot — later still for a share registered while the user is reading a
-    /// page — by which time the screen that reads it has settled and stopped presenting: the stats
-    /// panel's Server row, the detail hero's "hardware conversion needs [PLEX PASS]" note, and the
-    /// failure read-out's capsule. Without the `plx_machine::idle::invalidate` inside [`store`] the new fact
-    /// reaches the panel only on the next keypress (bounded by the 2 s keepalive, which is
-    /// insurance and not pacing) — the "arrives invisibly" failure `plx_machine::idle::invalidate`'s
-    /// call-site list exists to prevent.
-    ///
-    /// Takes `testlock::serial()`: the gate's flag is a crate global that `plx_machine::idle`'s own
-    /// "a settled screen does not repaint" assertions read, so an unlocked test here would fail
-    /// ANOTHER module's tests intermittently — `ui::xfade`'s test module states the same rule, and
-    /// this borrows its isolation helper.
+    /// A worker publishes facts; only their main-thread observation damages an owned Page gate.
     #[test]
     fn a_landed_server_fact_asks_the_frame_gate_to_repaint() {
+        use plx_machine::present::{Present, PresentEvent, Provenance, Scope};
         let _g = plx_base::testlock::serial();
-        // `frame_begin` forgets last frame's motion, `note_present` retires the 2 s keepalive, and
-        // `should_present` TAKES-AND-CLEARS — so each call answers for exactly the frames since the
-        // previous one, and nothing but the store below can be what answered.
-        let asked = || {
-            plx_machine::idle::set_enabled(true); // a test that disabled the gate leaves it off
-            plx_machine::idle::frame_begin(1.0 / 60.0);
-            plx_machine::idle::note_present(0);
-            plx_machine::idle::should_present(0)
-        };
-        asked(); // drain whatever the previous test left on the shared flag
-        assert!(
-            !asked(),
-            "the gate is quiet before the landing — or this proves nothing"
-        );
-
-        let id = ServerId::from_raw(0);
+        super::super::servers::reset_for_test();
+        let id = super::super::servers::register_with_client_id("facts-test", "127.0.0.1", 32400, "tok", "cid");
+        let before = facts_of(id);
+        let mut present = Present::new();
+        present.take(0);
+        present.acknowledge(0);
         store(id, Subscription::No, "1.32.0.6918-free");
-        assert!(
-            asked(),
-            "a subscription that just landed must reach the screen stating it"
-        );
-
-        store(id, Subscription::Unknown, "");
-        assert!(asked(), "…and so must the boot state being put back");
-
-        // a write through an id that names no server publishes nothing, so it wakes nothing
+        assert!(!present.take(1), "publication alone cannot attribute UI damage");
+        let after = facts_of(id);
+        assert_ne!(before, after);
+        assert_eq!(after.subscription, Subscription::No);
+        present.set_scope(Scope::Page);
+        plx_machine::machine::PresentHandle::of(&mut present)
+            .note(PresentEvent::Damage(Provenance::Lifecycle));
+        assert!(present.take(1), "main-thread observation repaints without keepalive");
+        present.acknowledge(1);
+        let before = facts_of(id);
         store(ServerId::UNSET, Subscription::Yes, "nowhere");
-        assert!(!asked(), "a write that landed in no slot changed no screen");
+        assert_eq!(before, facts_of(id));
+        assert!(!present.take(2));
+        super::super::servers::reset_for_test();
     }
 }

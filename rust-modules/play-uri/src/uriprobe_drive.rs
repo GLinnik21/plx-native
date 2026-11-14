@@ -345,7 +345,7 @@ impl<A: Copy> UriSession<A> {
                 .ok_or("no observed envelope or exact SDR720p24 fixture")
         };
         let log = self.log;
-        let executed = execute(op, mt, self.sink, self.plane, &mut descriptor, &mut |stamp, line| match stamp {
+        let executed = execute(op, mt, self.sink, self.plane, &self.app_id, &mut descriptor, &mut |stamp, line| match stamp {
             Stamp::Plain => log(&format!("uriprobe: {line}")),
             Stamp::Timed => log(&format!("uriprobe: t={now_ms} {line}")),
         });

@@ -2746,18 +2746,18 @@ mod tests {
         let frame = Rect::new(0.0, 0.0, 500.0, 400.0);
         let t = marquee_table(0);
         ROW_MARQUEE.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
-        let _ = plx_machine::idle::take_local_damage();
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
+        let _ = plx_machine::motion::report::take_local_motion();
         let rest = row_text_xs(&t, frame, 0);
         assert_eq!(rest.len(), 2, "a run and its follower: {rest:?}");
-        assert_eq!(plx_machine::idle::take_local_damage(), 0, "resting is not damage");
+        assert_eq!(plx_machine::motion::report::take_local_motion(), 0, "resting is not damage");
         let x0 = rest.iter().copied().fold(f32::MAX, f32::min);
 
-        plx_machine::idle::frame_begin((crate::marquee::ROW.hold_ms + 500.0) / 1000.0);
+        plx_machine::motion::report::frame_begin((crate::marquee::ROW.hold_ms + 500.0) / 1000.0);
         let gliding = row_text_xs(&t, frame, 0);
         let x1 = gliding.iter().copied().fold(f32::MAX, f32::min);
         assert!(x1 < x0, "the run has moved left: {x0} -> {x1}");
-        assert!(plx_machine::idle::take_local_damage() > 0, "a gliding frame reports");
+        assert!(plx_machine::motion::report::take_local_motion() > 0, "a gliding frame reports");
     }
 
     /// **An Arabic release name scrolls mirrored**: it rests with its right edge (its first
@@ -2782,7 +2782,7 @@ mod tests {
         };
         // the label's column: its left edge is where a Latin label rests, its width the row's
         ROW_MARQUEE.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let col_x = row_text_xs(&marquee_table(0), frame, 0).into_iter().fold(f32::MAX, f32::min);
         let col_w = t.label_width(&Row::new(long).server_label(), frame.w, &crate::fixture::FixtureMeasure);
         ROW_MARQUEE.with(|c| c.release());
@@ -2792,7 +2792,7 @@ mod tests {
         assert!(w > col_w, "the fixture label overflows its column");
         assert!((rest[1].at.x + w - (col_x + col_w)).abs() < 0.01, "flush right: {rest:?} w {w} column {col_x}+{col_w}");
         assert!((rest[0].at.x + w + crate::marquee::GAP - rest[1].at.x).abs() < 0.01, "follower on the left");
-        plx_machine::idle::frame_begin((crate::marquee::ROW.hold_ms + 500.0) / 1000.0);
+        plx_machine::motion::report::frame_begin((crate::marquee::ROW.hold_ms + 500.0) / 1000.0);
         let moved = draw();
         assert!((moved[1].at.x - rest[1].at.x - 20.0).abs() < 0.01, "it glides right: {rest:?} -> {moved:?}");
         ROW_MARQUEE.with(|c| c.release());
@@ -2806,11 +2806,11 @@ mod tests {
         let frame = Rect::new(0.0, 0.0, 500.0, 400.0);
         let t = marquee_table(1); // focus on "Off"; the long row is unfocused
         for _ in 0..3 {
-            plx_machine::idle::frame_begin(1.5);
-            let _ = plx_machine::idle::take_local_damage();
+            plx_machine::motion::report::frame_begin(1.5);
+            let _ = plx_machine::motion::report::take_local_motion();
             assert_eq!(row_text_xs(&t, frame, 1).len(), 1, "a fitting focused label: one run");
             assert_eq!(row_text_xs(&t, frame, 0).len(), 1, "an unfocused overflowing label: one elided run");
-            assert_eq!(plx_machine::idle::take_local_damage(), 0, "nothing animates, nothing reports");
+            assert_eq!(plx_machine::motion::report::take_local_motion(), 0, "nothing animates, nothing reports");
         }
     }
 

@@ -275,10 +275,10 @@ impl HeroTint {
             return;
         }
         // decorative, like the wash's own dissolve: must not hold the page-freeze snapshot
-        plx_machine::idle::decorative(|| {
+        plx_machine::motion::report::decorative(|| {
             for (spring, v) in self.key.iter_mut().zip(target) {
                 spring.step(v, AmbientWash::K, dt);
-                if plx_machine::idle::settled(spring.pos, v, spring.vel) {
+                if plx_machine::motion::report::settled(spring.pos, v, spring.vel) {
                     spring.jump(v);
                 }
             }
@@ -492,7 +492,7 @@ impl Backdrop {
     ) {
         self.bind(hero, outgoing, selected, snap);
         // decorative hero-art reveal dissolve (same reason as the wash below)
-        plx_machine::idle::decorative(|| {
+        plx_machine::motion::report::decorative(|| {
             // A layer that has arrived is LANDED on 1.0 (`Spring::land`), as the wash below lands its
             // own springs: `step` parks one ulp short (0.9999998, a velocity of ~7.7e-7) and walks that
             // last ulp seconds later on a jittering frame time, and the art's tint alpha is an argument
@@ -519,7 +519,7 @@ impl Backdrop {
             self.grid_target = AmbientWash::keyed(item.blur, PageGround::CARD_W);
         }
         // decorative colour dissolve under the page — must not hold the page-freeze snapshot
-        plx_machine::idle::decorative(|| {
+        plx_machine::motion::report::decorative(|| {
             self.wash.step(
                 wash_corners(hero.map(|h| h.item), self.grid_target, snap),
                 AmbientWash::K,
@@ -1912,7 +1912,7 @@ impl HomeScreen {
         };
         // decorative: an in-place scale of the focused control, no layout — must not hold the
         // page-freeze snapshot (`idle::decorative`)
-        plx_machine::idle::decorative(|| self.hero_pop.step(hero_focus, dt));
+        plx_machine::motion::report::decorative(|| self.hero_pop.step(hero_focus, dt));
         // The bookmark disc: the title it is for (read by the application's feed) and its flip.
         self.disc.shown = status_read(view)
             .is_none()
@@ -2282,7 +2282,7 @@ impl HomeScreen {
                     f.page_alpha,
                     focus,
                     f.measure,
-                    f.press.scale,
+                    f.press,
                 )
             });
         }
@@ -2320,7 +2320,7 @@ impl HomeScreen {
         page_alpha: f32,
         focus: Option<Located>,
         measure: &dyn Measure,
-        press_scale: f32,
+        press_scale: plx_machine::machine::PressRead<u32>,
     ) {
         let Some(hero) = self.selected_hero(view) else {
             return;
@@ -2394,7 +2394,7 @@ impl HomeScreen {
         page_alpha: f32,
         focus: Option<Located>,
         measure: &dyn Measure,
-        press_scale: f32,
+        press_scale: plx_machine::machine::PressRead<u32>,
     ) {
         let (label, progress) = hero_action(hero);
         let HeroRects { play: pill, disc, info } = hero_rects(measure, hero, &label, progress.is_some());
@@ -2951,7 +2951,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                     base.x += self.slide_offsets().map_or(0.0, |(_, incoming)| incoming);
                 }
                 let scale = match at {
-                    At::Drawn => self.hero_pop.scale_with(index, cx.press.scale),
+                    At::Drawn => self.hero_pop.scale_with(index, cx.press),
                     At::SpringTarget => {
                         if self.focused_loc(cx.focus.current) == Some(Located::Hero(index)) {
                             plx_ui::widgets::CTRL_FOCUS_SCALE

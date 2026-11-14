@@ -444,7 +444,7 @@ impl LibraryScreen {
         // the control's whole menu-open stretch, during which the engine's focus is on the menu's
         // rows and the row's motion HOLDS.
         let lifted = f.lifted.filter(|key| key.entry == self.entry).map(|key| key.elem);
-        row.draw_with(p, self.scroll.pos, &self.header_capsules, self.header_pop.scale_with(0, f.press.scale), lifted, &self.header_swap);
+        row.draw_with(p, self.scroll.pos, &self.header_capsules, self.header_pop.scale_with(0, f.press), lifted, &self.header_swap);
     }
 
     /// **The opener lift for a header control** (`Screen::redraw_focused`): `elem`, the control a
@@ -458,6 +458,6 @@ impl LibraryScreen {
     pub(super) fn draw_header_opener<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>, elem: u32) {
         let Some(row) = self.header.row() else { return };
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha() * self.handoff.clearance(layout::HEADER_Y - self.scroll.pos));
-        row.draw_opener_with(p, self.scroll.pos, self.header_pop.scale_with(0, f.press.scale), elem, &self.header_swap);
+        row.draw_opener_with(p, self.scroll.pos, self.header_pop.scale_with(0, f.press), elem, &self.header_swap);
     }
 }

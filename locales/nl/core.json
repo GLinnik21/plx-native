@@ -25,6 +25,7 @@
   "core.preview_domain_attempted_delivery": "geprobeerde leveringswijze",
   "core.preview_domain_source_video": "videocodec van de bron (alleen weigeringsrapporten)",
   "core.preview_domain_source_audio": "audiocodec van de bron (alleen weigeringsrapporten)",
+  "core.preview_domain_preview_refusal": "reden voor de weigering van een automatische trailer (alleen rapporten over geweigerde trailers)",
   "core.preview_domain_quality": "kwaliteit",
   "core.preview_domain_observed_rate": "gemeten bitrate",
   "core.preview_domain_raster": "beeldformaat",

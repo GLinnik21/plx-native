@@ -79,13 +79,17 @@ impl GlassPlan {
     }
 
     /// Advance the dial one presented frame, BEFORE the page draws.
-    pub fn prepare_dial(&mut self, now_ms: u32) {
-        self.dial.prepare(now_ms);
+    pub fn prepare_dial(&mut self, now_ms: u32, present: &mut plx_machine::present::Present) {
+        self.dial.prepare(now_ms, present);
     }
 
     /// Draw the blurred route transition, if one is in flight. Returns whether it drew.
-    pub fn draw_nav_blur(&mut self) -> bool {
-        self.dial.draw_nav_blur()
+    pub fn draw_nav_blur(&mut self, nav: crate::screen::NavPresentation) -> bool {
+        self.dial.draw_nav_blur(nav)
+    }
+
+    pub fn blur_dissolve(&self) -> bool {
+        self.dial.blur_dissolve()
     }
 
     /// Draw the dial's glass surfaces over whatever screen is up.
@@ -133,6 +137,20 @@ mod tests {
         drop(GlassPlan::new());
         assert_eq!(crate::glassload::step_index(), -1);
         assert!(!crate::glassload::armed());
+    }
+
+    #[test]
+    fn blur_policy_belongs_to_the_plan_and_pinned_slabs_keep_the_page_dip() {
+        let _guard = plx_base::testlock::serial();
+        let mut riding = GlassPlan::new();
+        let mut pinned = GlassPlan::new();
+        riding.configure_navblur("1");
+        pinned.configure_navblur("1p");
+        assert!(riding.blur_dissolve());
+        assert!(!pinned.blur_dissolve());
+        assert!(!GlassPlan::new().blur_dissolve());
+        assert!(riding.blur_dissolve(), "another plan cannot disarm this owner");
+        drop(GlassPlan::new());
     }
 
     /// **The move changed no cadence**, which recon risk 3 makes the load-bearing claim: the glass

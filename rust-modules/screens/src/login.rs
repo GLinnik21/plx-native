@@ -1147,6 +1147,7 @@ impl LoginScreen {
     /// the alert down when the offer it asks about has gone, and step the motion.
     fn tick_report<H: AuthLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         use auth::owner::IncidentState as S;
+        let alert_was_visible = self.report.alert.visible();
         let offer = self.report.offer.clone();
         let id = offer.as_ref().map(|o| o.id);
         if self.report.support_for != id {
@@ -1215,7 +1216,12 @@ impl LoginScreen {
             use plx_ui::decision_alert::Answers;
             let body = self.report.details_body();
             let answers = if self.report.sendable() { Answers::Two } else { Answers::One };
-            self.report.alert.reconcile_card(plx_platform::i18n::msg::settings_login_details_c(), body, answers);
+            if self.report.alert.reconcile_card(plx_platform::i18n::msg::settings_login_details_c(), body, answers) {
+                fx.invalidate(plx_machine::present::Provenance::Lifecycle);
+            }
+        }
+        if alert_was_visible != self.report.alert.visible() {
+            fx.invalidate(plx_machine::present::Provenance::Lifecycle);
         }
         self.report.alert.update(t.dt());
         let focused = cx
@@ -1639,7 +1645,7 @@ impl LoginScreen {
         mut o: StatusOverlay<'_>,
         focus: Option<u32>,
     ) {
-        let press = f.press.scale;
+        let press = f.press;
         let pop = &self.report.pop;
         if o.action.is_some() {
             o = o
@@ -1842,7 +1848,7 @@ impl LoginScreen {
         if let Some(rect) = details {
             Button::new(plx_platform::i18n::msg::settings_login_details_c().as_ptr(), theme::size::BODY, rect)
                 .focused(focus == Some(DETAILS))
-                .scale(self.report.pop.scale_with(1, f.press.scale))
+                .scale(self.report.pop.scale_with(1, f.press))
                 .draw(&Env::inert(), p);
         }
         self.draw_disclosure(p, layout, f.measure);
@@ -1889,13 +1895,13 @@ impl LoginScreen {
         if !self.report.alert.visible() {
             return;
         }
-        self.report.alert.draw_scrim();
+        self.report.alert.draw_scrim(f);
         let (cancel, affirm) = match self.report.sheet {
             Sheet::Question => (plx_platform::i18n::msg::settings_plaintext_not_now_c(), plx_platform::i18n::msg::settings_login_send_report_c()),
             Sheet::Details => (plx_platform::i18n::msg::settings_login_close_c(), plx_platform::i18n::msg::settings_login_send_report_c()),
             Sheet::Plaintext => PlaintextQuestion::verbs(),
         };
-        self.report.alert.draw(cancel, affirm, f.measure);
+        self.report.alert.draw(cancel, affirm, f.measure, f.route_navigation(), f.press);
         let frames = self.report.alert.frames(f.measure);
         if self.report.alert.is_open() && self.report.alert.settled() {
             for &elem in self.alert_elems() {

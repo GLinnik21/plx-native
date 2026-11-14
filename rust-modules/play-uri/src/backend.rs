@@ -35,9 +35,11 @@ pub use plx_playback_contract::uri::Binding;
 /// The display path composition chooses for the executor, a pure function of what the set and the
 /// boot report:
 ///
-///   - the ACB plane when the display is in ACB mode and the same gate the executor re-checks at
-///     every Start holds (a handle the library confirmed initialized, player type 0 (the URI
-///     engine's own boot handle); `connectDass` is a developer arm and is not asked for);
+///   - the ACB plane when the display is in ACB mode: the URI engine's own handle (player type 0)
+///     is created when the first source is offered (the Start's gate makes it if nothing did), and the gate the executor re-checks at every
+///     Start (a handle the library confirmed initialized, player type 0; `connectDass` is a
+///     developer arm and is not asked for) then decides that play, so composition cannot say
+///     "unbound" for a handle that has not been asked for yet;
 ///   - the exported window ([`Binding::Exported`] on [`EXPORTED_CANVAS`]) when the display is in
 ///     `VP_EXPORTED` mode and `firmware_major` is one the table `strata` lists. Production passes
 ///     [`EXPORTED_STRATA`], whose doc comment is the evidence rule for an entry; the table is a
@@ -46,14 +48,9 @@ pub use plx_playback_contract::uri::Binding;
 ///     neighbouring major;
 ///   - otherwise nothing: a webOS 5+ major without an entry plays Standard.
 ///
-/// `plane` and `initialized` are the URI engine's own handle's (player type 0, the plane owner's
-/// `facts_of(PlaneHandle::Uri)` and `initialized(PlaneHandle::Uri)`), never Feed's: a normal boot
-/// initializes Feed's handle as player type 10 and the URI engine's as 0. A 5+ set has no ACB
-/// handle, so the exported window's answer does not read them.
-pub fn product_binding(display_mode: i32, plane: plx_platform::tv::plane::PlaneFacts, initialized: bool,
-    firmware_major: u32, strata: &[u32]) -> Binding {
-    let gate = crate::acb_bind::gate(false, display_mode, plane.handle, plane.player_type, false, initialized);
-    if gate.ready {
+/// A 5+ set has no ACB handle, and the exported window's answer reads none.
+pub fn product_binding(display_mode: i32, firmware_major: u32, strata: &[u32]) -> Binding {
+    if display_mode == VP_ACB {
         Binding::Acb
     } else if display_mode == VP_EXPORTED && firmware_major != 0 && strata.contains(&firmware_major) {
         Binding::Exported { canvas: EXPORTED_CANVAS }
@@ -142,7 +139,7 @@ pub struct Config {
 }
 
 pub use plx_playback_contract::uri::{NativeTrackIndex, UriSource};
-use plx_playback_contract::uri::native_index;
+use plx_playback_contract::uri::{native_index, UriNotReady};
 
 struct StagedSource { attempt: AttemptId, key: SourceKey, source: UriSource, deadline_ms: u64 }
 
@@ -323,6 +320,8 @@ impl UriBackend {
         }
         if self.config.binding == Binding::Acb
             && (self.config.display.window_mode() != VP_ACB || !self.acb_gate(mt)) {
+            plx_base::eventlog::log(
+                "uri-acb: the ACB gate refused this start (see the `acb gate` and `acb handle=uri` lines); nothing was opened and the Start is refused");
             return self.refuse_before_open(attempt, Failure::Unsupported);
         }
         let window_id = match self.config.binding {
@@ -798,7 +797,8 @@ impl UriBackend {
                     label: if source.is_derived() { "derived-envelope" } else { "observed-envelope" } })
                 .ok_or("the service reported no source envelope for these video facts")
         };
-        let executed = acb_drive::execute(op, mt, self.config.display, self.config.plane, &mut descriptor,
+        let executed = acb_drive::execute(op, mt, self.config.display, self.config.plane, &self.config.app_id,
+            &mut descriptor,
             &mut |_, line| plx_base::eventlog::log(&format!("uri-acb: {line}")));
         if let (true, Some(session)) = (executed.touched, self.lifecycle.session()) {
             self.feed(LifeEvent::AcbTouched { session }, mt, now_ms);
@@ -1094,24 +1094,33 @@ impl UriDriver for UriBackend {
     fn plane_owned(&self) -> bool { UriBackend::plane_owned(self) }
 
     fn maps_track(&self, selection: TrackSelection) -> bool { UriBackend::maps_track(self, selection) }
+
+    /// On an ACB display the URI engine's handle is made here, when the first source is offered
+    /// (#1394), so a create or initialize that fails declines the offer and Feed plays the title.
+    /// The Start's own gate stays the backstop. Every other binding has nothing to set up.
+    fn ready_to_start(&mut self, mt: &MainThread) -> Result<(), UriNotReady> {
+        if self.config.binding != Binding::Acb || self.config.display.window_mode() != VP_ACB {
+            return Ok(());
+        }
+        let gate = acb_drive::uri_handle_gate(mt, self.config.display, self.config.plane,
+            &self.config.app_id, false, false);
+        if gate.ready { Ok(()) } else { Err(UriNotReady::AcbHandle) }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
-    fn composition_selects_the_acb_plane_only_when_the_gate_holds() {
-        use plx_platform::tv::plane::PlaneFacts;
+    fn composition_selects_the_acb_plane_on_an_acb_display_before_its_handle_exists() {
         use plx_platform::tv::sink::{VP_ACB, VP_NONE};
-        let facts = PlaneFacts { handle: true, player_type: 0 };
-        // The exported-window table has no say on an ACB display: not even a listed major changes
-        // the ACB answer, and a failed gate stays Unbound rather than falling to the exported window.
+        // The URI engine's handle is created when the first source is offered (#1394), so an ACB
+        // display is able to take URI plays at composition: "not created yet" is not "unbound". The
+        // gate the Start re-checks decides each play. The exported-window table has no say on an
+        // ACB display: not even a listed major changes the answer.
         for (major, strata) in [(0, &[][..]), (4, &[][..]), (11, &[11][..]), (11, &[][..])] {
-            let at = |mode, plane, initialized| product_binding(mode, plane, initialized, major, strata);
-            assert_eq!(at(VP_ACB, facts, true), Binding::Acb, "major {major}");
-            assert_eq!(at(VP_ACB, facts, false), Binding::Unbound, "a created handle is not an initialized one");
-            assert_eq!(at(VP_ACB, PlaneFacts { handle: true, player_type: 10 }, true), Binding::Unbound);
-            assert_eq!(at(VP_ACB, PlaneFacts::ABSENT, true), Binding::Unbound);
-            assert_eq!(at(VP_NONE, facts, true), Binding::Unbound);
+            let at = |mode| product_binding(mode, major, strata);
+            assert_eq!(at(VP_ACB), Binding::Acb, "major {major}");
+            assert_eq!(at(VP_NONE), Binding::Unbound);
         }
     }
 
@@ -1119,25 +1128,19 @@ mod tests {
     /// (production's is `EXPORTED_STRATA`; a test passes its own, so no table forks the build).
     #[test]
     fn the_exported_window_is_selected_only_for_a_listed_firmware_major() {
-        use plx_platform::tv::plane::PlaneFacts;
         use plx_platform::tv::sink::{VP_ACB, VP_NONE};
         let exported = Binding::Exported { canvas: EXPORTED_CANVAS };
         assert_eq!(EXPORTED_CANVAS, (1_920, 1_080));
-        // A 5+ set has no ACB handle; a handle that exists must not change the answer either.
-        for plane in [PlaneFacts::ABSENT, PlaneFacts { handle: true, player_type: 0 }] {
-            for initialized in [false, true] {
-                let at = |mode, major, strata: &[u32]| product_binding(mode, plane, initialized, major, strata);
-                assert_eq!(at(VP_EXPORTED, 11, &[11]), exported, "a listed major");
-                assert_eq!(at(VP_EXPORTED, 5, &[5, 11]), exported, "one of several");
-                assert_eq!(at(VP_EXPORTED, 10, &[11]), Binding::Unbound, "an unlisted major");
-                assert_eq!(at(VP_EXPORTED, 12, &[11]), Binding::Unbound, "nothing is inferred from a neighbour");
-                assert_eq!(at(VP_EXPORTED, 0, &[11]), Binding::Unbound, "unknown firmware");
-                assert_eq!(at(VP_EXPORTED, 0, &[0, 11]), Binding::Unbound, "0 is never admitted, even if listed");
-                assert_eq!(at(VP_EXPORTED, 11, &[]), Binding::Unbound, "an empty table admits nothing");
-                assert_eq!(at(VP_NONE, 11, &[11]), Binding::Unbound, "no window path to bind");
-                assert_ne!(at(VP_ACB, 11, &[11]), exported, "the table is for the exported window only");
-            }
-        }
+        let at = |mode, major, strata: &[u32]| product_binding(mode, major, strata);
+        assert_eq!(at(VP_EXPORTED, 11, &[11]), exported, "a listed major");
+        assert_eq!(at(VP_EXPORTED, 5, &[5, 11]), exported, "one of several");
+        assert_eq!(at(VP_EXPORTED, 10, &[11]), Binding::Unbound, "an unlisted major");
+        assert_eq!(at(VP_EXPORTED, 12, &[11]), Binding::Unbound, "nothing is inferred from a neighbour");
+        assert_eq!(at(VP_EXPORTED, 0, &[11]), Binding::Unbound, "unknown firmware");
+        assert_eq!(at(VP_EXPORTED, 0, &[0, 11]), Binding::Unbound, "0 is never admitted, even if listed");
+        assert_eq!(at(VP_EXPORTED, 11, &[]), Binding::Unbound, "an empty table admits nothing");
+        assert_eq!(at(VP_NONE, 11, &[11]), Binding::Unbound, "no window path to bind");
+        assert_ne!(at(VP_ACB, 11, &[11]), exported, "the table is for the exported window only");
     }
 
     use super::*;
@@ -1233,9 +1236,9 @@ mod tests {
             Self::with(Binding::Unbound, Box::leak(Box::new(NoSink)),
                 Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new())))
         }
-        /// An ACB-bound backend over a scripted sink and its own plane owner, booted as a normal boot
-        /// boots it: Feed's handle (player type 10) and the URI engine's (player type 0, the
-        /// measured sequence), each confirmed initialized.
+        /// An ACB-bound backend over a scripted sink and its own plane owner with both handles already
+        /// made: Feed's (player type 10, a boot's) and the URI engine's (player type 0, the measured
+        /// sequence, which an offer would otherwise create on demand), each confirmed initialized.
         fn acb() -> (Self, &'static ScriptedPlaneSink, &'static plx_platform::tv::plane::PlaneOwner) {
             let sink: &'static ScriptedPlaneSink =
                 Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })));
@@ -2302,6 +2305,111 @@ mod tests {
             // The refusal leaves the backend startable.
             assert!(rig.driver.exit_disposition() == ExitDisposition::Clean, "{case}");
         }
+    }
+
+    /// What a normal boot leaves: Feed's handle (player type 10) booted and the URI engine's NOT. The
+    /// sink answers `ids` to the creates it is asked for.
+    fn boot_without_the_uri_handle(ids: &[std::os::raw::c_long])
+        -> (&'static ScriptedPlaneSink, &'static plx_platform::tv::plane::PlaneOwner) {
+        let sink: &'static ScriptedPlaneSink =
+            Box::leak(Box::new(ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 })));
+        sink.create_ids.lock().unwrap().extend(ids.iter().copied());
+        let plane: &'static plx_platform::tv::plane::PlaneOwner =
+            Box::leak(Box::new(plx_platform::tv::plane::PlaneOwner::new()));
+        plane.boot(plx_platform::tv::plane::PlaneFacts { handle: true, player_type: 10 });
+        (sink, plane)
+    }
+
+    /// #1394: the boot no longer makes the URI engine's handle. The offer makes it; where no offer did
+    /// (the probe, a driver started without one) the Start's own gate makes it (player type 0, on the
+    /// main thread, before anything is opened) and every later Start reuses it.
+    #[test]
+    fn the_first_acb_start_creates_the_uri_handle_once_and_a_later_start_reuses_it() {
+        let (sink, plane) = boot_without_the_uri_handle(&[22]);
+        let mut first = Rig::with(Binding::Acb, sink, plane);
+        assert!(sink.created_player_types().is_empty(), "composing the driver creates nothing");
+        let log = plx_base::eventlog::with_private_log(|| {
+            assert_eq!(first.start(A), DispatchResult::Queued);
+            std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+        });
+        assert_eq!(sink.created_player_types(), [0], "player type 0, once");
+        assert!(plane.initialized(plx_platform::tv::plane::PlaneHandle::Uri));
+        assert!(log.contains("acb handle=uri ptype=0 create=22 initialized=true\n"), "{log}");
+        let mut second = Rig::with(Binding::Acb, sink, plane);
+        assert_eq!(second.start(A), DispatchResult::Queued);
+        assert_eq!(sink.created_player_types(), [0], "a second play creates no second handle");
+    }
+
+    /// A create that fails refuses THAT Start (`Failure::Unsupported`, the route's existing refused-Start
+    /// path), with the reason in the log, before anything is opened; it is not retried.
+    #[test]
+    fn a_failed_on_demand_create_refuses_the_start_with_a_reason_and_is_not_retried() {
+        let (sink, plane) = boot_without_the_uri_handle(&[]);
+        let mut rig = Rig::with(Binding::Acb, sink, plane);
+        let log = plx_base::eventlog::with_private_log(|| {
+            assert_eq!(rig.start(A), DispatchResult::Refused(Failure::Unsupported));
+            std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+        });
+        assert!(log.contains("acb handle=uri ptype=0 create=0 initialized=false\n"), "{log}");
+        assert!(log.contains("nothing was opened and the Start is refused"), "{log}");
+        assert!(rig.bus_methods().is_empty(), "nothing was opened");
+        assert!(rig.driver.exit_disposition() == ExitDisposition::Clean);
+        let mut again = Rig::with(Binding::Acb, sink, plane);
+        assert_eq!(again.start(A), DispatchResult::Refused(Failure::Unsupported));
+        assert_eq!(sink.created_player_types(), [0], "a failed create is not retried");
+    }
+
+    /// #1394: the offer is where the handle is made. A driver on an ACB display whose handle is not
+    /// there yet makes it when asked whether it is ready, once, and a Start after it finds it.
+    #[test]
+    fn readiness_on_an_acb_display_creates_the_uri_handle_once() {
+        let (sink, plane) = boot_without_the_uri_handle(&[22]);
+        let mut rig = Rig::with(Binding::Acb, sink, plane);
+        assert!(sink.created_player_types().is_empty());
+        let log = plx_base::eventlog::with_private_log(|| {
+            assert_eq!(rig.driver.ready_to_start(&rig.mt), Ok(()));
+            std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+        });
+        assert_eq!(sink.created_player_types(), [0]);
+        assert!(log.contains("acb handle=uri ptype=0 create=22 initialized=true\n"), "{log}");
+        assert_eq!(rig.driver.ready_to_start(&rig.mt), Ok(()));
+        assert_eq!(rig.start(A), DispatchResult::Queued);
+        assert_eq!(sink.created_player_types(), [0], "neither the second ask nor the Start made another");
+    }
+
+    /// A create that fails makes the driver not ready, with the reason the offer logs; the failure is
+    /// recorded, so asking again makes no second attempt. The Start's gate still refuses.
+    #[test]
+    fn readiness_after_a_failed_create_says_so_and_is_not_retried() {
+        let (sink, plane) = boot_without_the_uri_handle(&[]);
+        let mut rig = Rig::with(Binding::Acb, sink, plane);
+        assert_eq!(rig.driver.ready_to_start(&rig.mt), Err(UriNotReady::AcbHandle));
+        assert_eq!(rig.driver.ready_to_start(&rig.mt), Err(UriNotReady::AcbHandle));
+        assert_eq!(sink.created_player_types(), [0], "one attempt");
+        assert_eq!(rig.start(A), DispatchResult::Refused(Failure::Unsupported), "the backstop");
+        assert_eq!(sink.created_player_types(), [0]);
+    }
+
+    /// Nothing to set up off the ACB display: an exported-window driver is ready, as is an ACB-bound
+    /// driver over a display that is not ACB (its Start refuses), and neither makes a handle.
+    #[test]
+    fn readiness_off_the_acb_display_is_ready_and_makes_no_handle() {
+        let (sink, plane) = boot_without_the_uri_handle(&[22]);
+        let mut exported = Rig::with(Binding::Exported { canvas: (1920, 1080) }, sink, plane);
+        assert_eq!(exported.driver.ready_to_start(&exported.mt), Ok(()));
+        let mut elsewhere = Rig::with(Binding::Acb, Box::leak(Box::new(NoSink)), plane);
+        assert_eq!(elsewhere.driver.ready_to_start(&elsewhere.mt), Ok(()));
+        assert!(sink.created_player_types().is_empty());
+    }
+
+    /// The handle is made for a display that can have one: a driver composed over any other display
+    /// refuses its Start before the gate and so makes none.
+    #[test]
+    fn a_start_on_a_display_that_is_not_acb_creates_no_handle() {
+        let (sink, plane) = boot_without_the_uri_handle(&[22]);
+        let mut rig = Rig::with(Binding::Acb, Box::leak(Box::new(NoSink)), plane);
+        assert_eq!(rig.start(A), DispatchResult::Refused(Failure::Unsupported));
+        assert!(sink.created_player_types().is_empty());
     }
 
     #[test]

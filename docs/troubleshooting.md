@@ -210,6 +210,18 @@ decodes AV1 or VP9 and you want to try it:
    `av1=false` (`vp9=false`) when it doesn't, which tells us right away whether the TV or the app is
    at fault.
 
+## Audio is slow, deep or drifting out of sync on a soundbar
+
+With a soundbar or receiver on HDMI (e)ARC, usually on Dolby Atmos or E-AC3 titles, the sound comes
+out slow and low-pitched, drifts out of sync with the picture, and sometimes starts with a loud
+crack. It may hit some starts of a title and not others, and the TV's own speakers play the same
+title fine.
+
+In the TV's **Settings > Sound > Advanced Settings > Digital Sound Out**, choose **Auto** or **Pass
+Through** instead of **PCM**, then start the title again. With PCM the TV decodes the Atmos track
+itself and sends PCM over (e)ARC; that path is LG's, and the app cannot change it. The report this
+comes from is [issue #1351](https://github.com/GLinnik21/plx-native/issues/1351).
+
 ## Other playback failures
 
 Try the current release first, then photograph the failure screen and [collect the

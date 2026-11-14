@@ -281,7 +281,7 @@ impl Scope {
             }
             None => HISTORY.with(|h| h.borrow().art_of(slot)),
         };
-        if matches!(phase, ArtPhase::Arriving { .. }) { plx_machine::idle::invalidate(); }
+        if matches!(phase, ArtPhase::Arriving { .. }) { plx_machine::motion::report::note_motion(); }
         shown
     }
     #[cfg(any(test, feature = "test-support"))]
@@ -343,12 +343,38 @@ fn declines_in(dump: bool, verdict: Option<Verdict>, moving_declines: bool) -> b
     }
 }
 
-/// A declined miss has no worker whose completion could wake it. The next sample
-/// MUST present, including an unknown card first appearing on an otherwise idle page.
-pub fn deferred() { plx_machine::idle::invalidate(); }
+/// A declined motion sample needs another frame to establish its speed. This is
+/// frame-captured motion infrastructure, not resource damage or a worker wake.
+pub fn deferred() { plx_machine::motion::report::note_motion(); }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mutation_only_caches_do_not_publish_damage_or_worker_wakes() {
+        use plx_machine::{machine::PresentHandle, present::{Present, PresentEvent, Provenance}};
+        let _serial = plx_base::testlock::serial();
+        plx_machine::motion::report::reset_for_test();
+        let mut a = Present::global();
+        let mut b = Present::global();
+        a.take(0);
+        a.acknowledge(0);
+        b.take(0);
+        b.acknowledge(0);
+        let mut art = crate::widgets::ArtCycle::default();
+        art.set_frames(&["one", "two"]);
+        begin_frame(16);
+        assert!(crate::testpat::set("ramp"));
+        // Exercise the production capture boundary: the removed global adapter used
+        // to damage whichever unrelated owner happened to collect first.
+        plx_machine::motion::report::collect_into(&mut a, 16);
+        plx_machine::motion::report::collect_into(&mut b, 16);
+        assert!(!a.changed(), "cache mutation cannot leak damage or a global worker wake");
+        assert!(!b.changed(), "independent owner remains idle after the same mutations");
+        assert!(crate::testpat::set("off"));
+        PresentHandle::of(&mut a).note(PresentEvent::Damage(Provenance::Input));
+        assert!(a.page_damaged(), "the runner applies the successful UI effect to its owner");
+        assert!(!b.changed(), "an addressed UI effect never damages another owner");
+    }
     use super::*;
     const ID: Identity = Identity { owner: 1, asset: 7 };
     fn sample(h: &mut History, x: f32, y: f32, ms: u32) -> Verdict {
@@ -529,9 +555,9 @@ mod tests {
             assert!(!declines_request());
         }
         assert!(!declines_request(), "hero/heading work outside card() has no motion scope");
-        plx_machine::idle::take_local_damage();
+        plx_machine::motion::report::take_local_motion();
         deferred();
-        assert!(plx_machine::idle::take_local_damage() > 0, "a declined miss must request its next observation");
+        assert!(plx_machine::motion::report::take_local_motion() > 0, "a declined miss must request its next observation");
     }
 
     #[test]

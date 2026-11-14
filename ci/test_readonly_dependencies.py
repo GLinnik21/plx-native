@@ -62,6 +62,20 @@ class LockedJsonProofTests(unittest.TestCase):
         self.assertEqual(evidence['owner_manifest'], 'plex/Cargo.toml')
         self.assertEqual(evidence['certificate_sha256'], proof.CERTIFICATE_SHA256)
 
+    def test_lexer_tokens_are_the_cursor_matched_stream(self):
+        # Golden stream from the slicing implementation (text[i:] per probe) that matching at the
+        # cursor replaced: nested comments, a lifetime, r#ident, char/byte/string literals, raw strings.
+        source = ("use serde_json::Value; /* a /* nested */ comment */ // line\n"
+                  "fn f<'a>(x: &'a str) -> r#type { let c = 'x'; let b = b'\\n'; let s = \"a\\\"b\"; let raw = r#\"q\"#; "
+                  "let rb = br##\"x\"##;\n  mod serde_json; ::serde_json::Value }\n")
+        self.assertEqual(proof._tokens(source), [
+            'use', 'serde_json', '::', 'Value', ';', 'fn', 'f', '<', "'", 'a', '>', '(', 'x', ':', '&', "'", 'a',
+            'str', ')', '-', '>', 'type', '{', 'let', 'c', '=', "'x'", ';', 'let', 'b', '=', "b'\\n'", ';', 'let',
+            's', '=', '"a\\"b"', ';', 'let', 'raw', '=', '"<raw>"', ';', 'let', 'rb', '=', '"<raw>"', ';', 'mod',
+            'serde_json', ';', '::', 'serde_json', '::', 'Value', '}'])
+        with self.assertRaises(ValueError): proof._tokens('/* /* one */')
+        with self.assertRaises(ValueError): proof._tokens('let r = r#"open')
+
     def test_separate_colon_tokens(self):
         self.assertTrue(self.valid([':', ':', 'serde_json', ':', ':', 'Value']))
 

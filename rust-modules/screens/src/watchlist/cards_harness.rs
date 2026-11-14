@@ -246,7 +246,7 @@ impl Harness {
     pub(crate) fn step_fx(&mut self, ev: ScreenEvent<WatchHost>) -> (Vec<plx_machine::machine::Stamped<WatchHost>>, bool) {
         let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
-        let (_, moving) = plx_machine::idle::scoped_motion(|| {
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
             let cx = Cx {
                 views: (),
                 tick: Tick { ms: self.ms, dt_us: 16_667 },

@@ -89,6 +89,7 @@ pub fn name(s: &RouteSurface) -> &'static str {
 
 pub struct DrawProbe {
     pub(super) id: u32,
+    pub(super) wake: bool,
     pub(super) seen: std::rc::Rc<std::cell::RefCell<Vec<(u32, plx_ui::screen::NavPresentation)>>>,
 }
 
@@ -116,6 +117,7 @@ impl Screen<InnerHost> for DrawProbe {
     fn crumb(&self, _: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { None }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
+        if self.wake { f.request_frame(); }
         self.seen.borrow_mut().push((self.id, plx_ui::screen::NavPresentation {
             page_alpha: f.page_alpha,
             chrome_alpha: f.chrome_alpha,

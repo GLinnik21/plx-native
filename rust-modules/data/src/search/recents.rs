@@ -118,7 +118,7 @@ fn edit(input: &Input<'_>, profile_generation: u32, change: impl FnOnce(&[String
         true
     });
     if changed || retry_drain { submit(); }
-    if changed { plx_machine::idle::invalidate(); }
+    if changed {  }
     changed
 }
 

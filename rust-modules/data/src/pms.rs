@@ -792,6 +792,11 @@ pub fn hubs_snapshot(state: &PmsState) -> HubsSnapshot {
     }
 }
 
+/// The visible publication includes its readout, even when no catalog rows were replaced.
+pub(crate) fn visible_projection(state: &PmsState) -> (u32, HubState) {
+    (state.catalog_gen, hub_state(state))
+}
+
 impl HubsSnapshot {
     /// An explicit empty retained publication; fixture construction must not capture globals.
     #[cfg(any(test, feature = "test-support"))]
@@ -3220,7 +3225,7 @@ fn commit(state: &mut PmsState, build: HubBuild) -> c_int {
     let n = new_cat.len();
     state.published = Some(Arc::new(HomeCatalog { items: new_cat, hubs: new_hubs, heroes: new_pool }));
     state.catalog_gen = state.catalog_gen.wrapping_add(1);
-    plx_machine::idle::invalidate();
+
     n as c_int
 }
 
@@ -3362,7 +3367,7 @@ fn settle_refused(state: &mut PmsState, adapter: &PmsAdapter) -> crate::stores::
         }
         endpoints.insert(landed_fail(s));
     }
-    if settled { plx_machine::idle::invalidate(); }
+    if settled {  }
     endpoints
 }
 
@@ -3573,9 +3578,9 @@ fn apply_landing(state: &mut PmsState, adapter: &Arc<PmsAdapter>, landing: &Land
 /// Test-only compatibility landing for fixtures without a retained directory.
 #[cfg(any(test, feature = "test-support"))]
 pub fn land(state: &mut PmsState, adapter: &Arc<PmsAdapter>, landing: &Landing) -> crate::stores::StoreOutcome {
-    let before = state.catalog_gen;
+    let before = visible_projection(state);
     let endpoints = apply_landing(state, adapter, landing);
-    crate::stores::StoreOutcome { changed: state.catalog_gen != before, endpoints }
+    crate::stores::StoreOutcome { changed: visible_projection(state) != before, endpoints }
 }
 
 /// Apply one addressed landing under the same retained directory policy the frame publishes.
@@ -3586,10 +3591,10 @@ pub fn land_with_directory(
     directory: crate::stores::browse::DirectoryView<'_>,
     clients: &ClientKeys,
 ) -> crate::stores::StoreOutcome {
-    let before = state.catalog_gen;
+    let before = visible_projection(state);
     let endpoints = emitting(state, adapter, |state, launch| step_landings_with_scope(state, adapter, None,
         || vec![landing.clone()], &BrowseScope::retained(directory, clients), launch));
-    crate::stores::StoreOutcome { changed: state.catalog_gen != before, endpoints }
+    crate::stores::StoreOutcome { changed: visible_projection(state) != before, endpoints }
 }
 
 /// `stores::hubs::HubsStore`'s one door onto every [`HubsCmd`](crate::stores::hubs::HubsCmd) (D3):
@@ -3638,18 +3643,18 @@ fn run_settled(
     use crate::stores::hubs::HubsCmd;
     match cmd {
         paging @ (HubsCmd::Page { .. } | HubsCmd::CancelPage { .. }) => {
-            let before = state.catalog_gen;
+            let before = visible_projection(state);
             let endpoints = run_page_cmd(state, adapter, scope, paging, launch);
-            crate::stores::StoreOutcome { changed: before != state.catalog_gen, endpoints }
+            crate::stores::StoreOutcome { changed: before != visible_projection(state), endpoints }
         }
         HubsCmd::RefetchHubs => crate::stores::StoreOutcome {
             changed: true,
             endpoints: request_refetch_hubs_with_scope(state, adapter, scope, launch),
         },
         HubsCmd::Hold { lo, hi } => {
-            let before = state.catalog_gen;
+            let before = visible_projection(state);
             let endpoints = run_hold(state, adapter, scope, lo, hi, launch);
-            crate::stores::StoreOutcome { changed: before != state.catalog_gen, endpoints }
+            crate::stores::StoreOutcome { changed: before != visible_projection(state), endpoints }
         }
         HubsCmd::Retry => {
             let gen = state.hub_gen;
@@ -3673,9 +3678,9 @@ fn run_settled(
             endpoints: refetch_source_quiet(state, adapter, scope, sid, launch),
         },
         HubsCmd::Publish { home_top_visible, focused_hub, press_live } => {
-            let before = state.catalog_gen;
+            let before = visible_projection(state);
             publish_staged(state, scope, home_top_visible, focused_hub, press_live);
-            crate::stores::StoreOutcome::changed(state.catalog_gen != before)
+            crate::stores::StoreOutcome::changed(visible_projection(state) != before)
         }
     }
 }
@@ -3691,9 +3696,9 @@ pub fn controlled_work(state: &mut PmsState, adapter: &Arc<PmsAdapter>, cmd: Opt
     let out = match cmd {
         Some(cmd) => run_with_scope(state, adapter, cmd, &BrowseScope::standalone()),
         None => {
-            let before = state.catalog_gen;
+            let before = visible_projection(state);
             let endpoints = pump_with_landings(state, adapter, dt, Vec::new);
-            crate::stores::StoreOutcome { changed: state.catalog_gen != before, endpoints }
+            crate::stores::StoreOutcome { changed: visible_projection(state) != before, endpoints }
         }
     };
     start_for_test(state, launch);
@@ -3853,7 +3858,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         // A landing that COMMITS repaints from inside `commit`; this is the one that does not —
         // a failure rewrites no shelf but does change the status caption, under a Home screen that
         // may have gone idle with nothing else on it to move.
-        plx_machine::idle::invalidate();
+
     }
     if let Some((build, took)) = build {
         let bytes = catalog_bytes(&build.0);

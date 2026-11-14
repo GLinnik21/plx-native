@@ -1981,16 +1981,20 @@ mod tests {
     #[test]
     fn the_trailer_unfurl_spring_reports_while_opening_and_is_quiet_at_rest() {
         let _g = plx_base::testlock::serial();
-        plx_machine::idle::reset_for_test();
+        plx_machine::motion::report::reset_for_test();
         // What the spring REPORTS is graded on this thread's own motion channel (`scoped_motion`),
         // not through `should_present`: that also reads the process-wide `DIRTY`, which an unlocked
         // test's repaint on another thread sets at any moment, so a quiet-frame assertion on it
         // failed at random under load. The `invalidate` from another thread between the steps below
         // is that repaint, raised on purpose: the verdict must not read it.
         let step = |spring: &mut plx_ui::Spring, target: f32| {
-            plx_machine::idle::scoped_motion(|| spring.step(target, plx_ui::widgets::K_DISC_UNFURL, 1.0 / 60.0)).1
+            plx_machine::motion::report::scoped_motion(|| spring.step(target, plx_ui::widgets::K_DISC_UNFURL, 1.0 / 60.0)).1
         };
-        let foreign_repaint = || std::thread::spawn(plx_machine::idle::invalidate).join().expect("the repaint thread");
+        let foreign_repaint = || std::thread::spawn(|| {
+            let mut other = plx_machine::present::Present::new();
+            other.note(plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
+            assert!(other.page_damaged());
+        }).join().expect("the repaint thread");
         let mut springs = [plx_ui::Spring::at(0.0); 3];
         for spring in springs.iter_mut() {
             foreign_repaint();

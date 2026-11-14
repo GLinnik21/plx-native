@@ -738,7 +738,7 @@ impl<H: ContentLike> StackPage<H> for Page {
                 // stands in while the scroll is still bringing it home (`Handoff::clearance`).
                 let p = p.alpha(self.handoff.head_alpha(r.y));
                 let row = self.header_row(f.measure);
-                row.draw(p, r.y, &self.header_capsules, self.header_pop.scale_with(0, f.press.scale), lifted, &self.header_swap.borrow());
+                row.draw(p, r.y, &self.header_capsules, self.header_pop.scale_with(0, f.press), lifted, &self.header_swap.borrow());
                 #[cfg(feature = "devtriggers")]
                 if self.dev_blocked {
                     header::draw_dev_blocked(p, r.y);
@@ -950,7 +950,7 @@ impl WatchlistScreen {
         let row = self.page.header_row(f.measure);
         let dy = placed.rect.y - row.plate().y;
         let p = f.painter.alpha(f.page_alpha).alpha(self.page.handoff.head_alpha(dy));
-        row.draw_opener(p, dy, self.page.header_pop.scale_with(0, f.press.scale), &self.page.header_swap.borrow());
+        row.draw_opener(p, dy, self.page.header_pop.scale_with(0, f.press), &self.page.header_swap.borrow());
     }
 
     /// The Sort & Filter control as the focused pill draws it, in the page's document space: the

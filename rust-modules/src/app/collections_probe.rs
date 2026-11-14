@@ -92,9 +92,7 @@ fn shown(answer: Option<CollectionsCount>) -> Option<Result<u32, Forbidden>> {
     }
 }
 
-/// Record what a finished probe learned, then ask for a frame: a resting page runs no ticks, so
-/// without the wake the header would keep the control off the row after its count landed (or keep
-/// a control the answer says to hide) until the next input.
+/// Record actual domain state only. The App observer compares visible answers and owns damage.
 fn land(key: Key, learned: CollectionsCount) {
     {
         let mut cache = lock();
@@ -105,7 +103,18 @@ fn land(key: Key, learned: CollectionsCount) {
             entry.probing = false;
         }
     }
-    plx_machine::idle::invalidate();
+
+}
+
+/// Actual visible answers, retained by the App's Plex observer. Unknown answers and scheduling
+/// metadata cannot change the header. Sort by address so insertion order is not visual damage.
+pub(super) fn visual_facts() -> Vec<((u16, u32, i64), Option<u32>)> {
+    if plx_data::stores::tape::active() { return Vec::new(); }
+    let mut facts: Vec<_> = lock().iter().filter_map(|(key, entry)| {
+        shown(entry.answer).map(|answer| (*key, answer.ok()))
+    }).collect();
+    facts.sort_unstable_by_key(|(key, _)| *key);
+    facts
 }
 
 /// The cache's answer for `key`, and whether the schedule says the caller now OWNS a probe of it
@@ -567,11 +576,28 @@ mod tests {
 
     #[test]
     fn a_landed_answer_wakes_a_frame() {
+        use plx_machine::present::{Present, Scope};
+        let _guard = plx_base::testlock::serial();
         let key: Key = (u16::MAX, u32::MAX, -7);
         lock().push((key, Entry { answer: None, at: None, settled: false, probing: true }));
-        let _ = plx_machine::idle::take_local_damage();
+        let mut bridge = crate::app::bridge::Bridge::for_visual_inputs_test();
+        let mut gate = Present::new();
+        let mut unrelated = Present::new();
+        bridge.observe_plex_visual_inputs(&mut gate);
+        gate.take(0);
+        gate.acknowledge(0);
+        unrelated.take(0);
+        unrelated.acknowledge(0);
         land(key, CollectionsCount::Count(4));
-        assert!(plx_machine::idle::take_local_damage() > 0, "the landing must request a frame");
+        assert!(!gate.take(1), "worker mutation has no presentation authority");
+        gate.set_scope(Scope::Surface);
+        bridge.observe_plex_visual_inputs(&mut gate);
+        assert!(gate.page_damaged(), "header changes belong to the page beneath a surface");
+        assert!(gate.take(1), "the actual owner observes the landed answer");
+        gate.acknowledge(1);
+        bridge.observe_plex_visual_inputs(&mut gate);
+        assert!(!gate.take(2), "unchanged answers do not repaint");
+        assert!(!unrelated.take(2), "no other owned gate is woken");
         let mut cache = lock();
         let at = cache.iter().position(|(k, _)| *k == key).unwrap();
         let entry = cache.remove(at).1;

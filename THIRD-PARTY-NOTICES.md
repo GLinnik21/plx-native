@@ -304,7 +304,7 @@ stated; election does not alter your rights under the other arms.
 
 | Package | Version(s) | Declared licence | Copyright |
 |---|---|---|---|
-| The Rust standard library (`core`, `alloc`, `std`, `panic_unwind`, `unwind`, and the `rustc-std-workspace-*` shims) | rustc 1.99.1 (58cf8f9c3 2026-10-13) | MIT OR Apache-2.0 | The Rust Project Developers |
+| The Rust standard library (`core`, `alloc`, `std`, `panic_unwind`, `unwind`, and the `rustc-std-workspace-*` shims) | rustc 1.100.0 (0ef1bc386 2026-11-09) | MIT OR Apache-2.0 | The Rust Project Developers |
 | — its in-tree backtrace support (`library/backtrace`) | 0.3.76 | MIT OR Apache-2.0 | 2014 Alex Crichton |
 | — its in-tree mpmc channels (`library/std/src/sync/mpmc`) | in-tree | MIT OR Apache-2.0 | 2019 The Crossbeam Project Developers |
 | addr2line | 0.27.1 | Apache-2.0 OR MIT | The `addr2line` authors |
@@ -319,7 +319,7 @@ stated; election does not alter your rights under the other arms.
 | crc | 3.4.0 | MIT OR Apache-2.0 | 2017 crc-rs Developers |
 | crc-catalog | 2.5.0 | MIT OR Apache-2.0 | Akhil Velagapudi |
 | crc32fast | 1.5.0 | MIT OR Apache-2.0 | 2018 Sam Rijs, Alex Crichton and contributors |
-| ed25519-compact | 2.6.0 | MIT | 2020-2026 Frank Denis |
+| ed25519-compact | 2.6.1 | MIT | 2020-2026 Frank Denis |
 | either | 1.18.0 | MIT OR Apache-2.0 | Copyright (c) 2015 (the upstream notice names no holder) |
 | encoding_rs | 0.8.44 | (Apache-2.0 OR MIT) AND BSD-3-Clause | Mozilla Foundation. Its encoding tables derive from the WHATWG Encoding Standard, whose data files are BSD-3-Clause (`licenses/WHATWG-BSD-3-Clause.txt`) |
 | equivalent | 1.0.3 | Apache-2.0 OR MIT | 2016–2023 The equivalent authors |
@@ -371,7 +371,7 @@ stated; election does not alter your rights under the other arms.
 | tap | 1.0.1 | Copyright (c) 2017 Elliot Linder |
 | wyz | 0.5.1 | Copyright (c) 2018 myrrlyn (Alexander Payne) |
 | zmij | 1.0.21 | David Tolnay (a Rust port of Victor Zverovich's C++ `zmij`) |
-| rust-lang/libm — compiled *inside* `compiler_builtins` and exposed as intrinsics on this target | as vendored in rustc 1.99.1 | (c) 2018 Jorge Aparicio; musl libc (c) 2005-2020 Rich Felker, et al.; CORE-MATH; and the fdlibm-derived notice: (c) 1993, 2004 Sun Microsystems; (c) 2003-2011 David Schultz; (c) 2003-2009 Steven G. Kargl; (c) 2003-2009 Bruce D. Evans; (c) 2008 Stephen L. Moshier; (c) 2017-2018 Arm Limited |
+| rust-lang/libm — compiled *inside* `compiler_builtins` and exposed as intrinsics on this target | as vendored in rustc 1.100.0 | (c) 2018 Jorge Aparicio; musl libc (c) 2005-2020 Rich Felker, et al.; CORE-MATH; and the fdlibm-derived notice: (c) 1993, 2004 Sun Microsystems; (c) 2003-2011 David Schultz; (c) 2003-2009 Steven G. Kargl; (c) 2003-2009 Bruce D. Evans; (c) 2008 Stephen L. Moshier; (c) 2017-2018 Arm Limited |
 
 <!-- END GENERATED notices:mit-only -->
 

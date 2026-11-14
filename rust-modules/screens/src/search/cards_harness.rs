@@ -80,7 +80,7 @@ impl Harness {
     fn step(&mut self, ev: ScreenEvent<SearchHost>) -> bool {
         let mut present = Present::new();
         let mut out = Vec::new();
-        let (_, moving) = plx_machine::idle::scoped_motion(|| {
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
             let cx: Cx<'_, SearchHost> = Cx { views: self.snap.view(), tick: Tick { ms: self.ms, dt_us: 16_667 },
                 measure: &FixtureMeasure, press: PressRead { scale: self.press, ..Default::default() },
                 focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };

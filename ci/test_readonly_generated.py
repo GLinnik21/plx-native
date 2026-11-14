@@ -55,6 +55,27 @@ class GeneratedProofTests(unittest.TestCase):
         module.write_text(original.replace('pub u32', 'pub std::cell::Cell<u32>', 1), encoding='utf-8')
         self.assertFalse(Proof(self.root, gate).inert(module, ['StoreOrd']))
 
+    def test_machine_producer_and_namespace_mutations_fail_closed(self):
+        module = self.root / 'machine/src/machine.rs'
+        mutations = [
+            ('machine/src/lib.rs', 'pub mod machine;', '#[path="other.rs"] pub mod machine;'),
+            ('machine/src/machine.rs', 'pub struct $name(pub u32);', 'pub struct $name(pub std::cell::Cell<u32>);'),
+            ('machine/src/machine.rs', '$(#[$m])*', '#[cfg_attr(feature="rogue", payload)] $(#[$m])*'),
+            ('machine/src/machine.rs', 'StoreOrd\n', 'StoreOrd, Callback\n'),
+            ('machine/src/machine.rs', 'StoreOrd\n', '#[cfg_attr(feature="rogue", payload)] StoreOrd\n'),
+        ]
+        for relative, old, new in mutations:
+            with self.subTest(path=relative, mutation=new):
+                path = self.root / relative
+                original = path.read_text(encoding='utf-8')
+                self.assertIn(old, original)
+                path.write_text(original.replace(old, new, 1), encoding='utf-8')
+                self.assertIsNone(generated.provenance(self.root, module))
+                self.assertFalse(Proof(self.root, gate).inert(module, ['StoreOrd']))
+                path.write_text(original, encoding='utf-8')
+        self.assertIsNotNone(generated.provenance(self.root, module))
+        self.assertTrue(Proof(self.root, gate).inert(module, ['StoreOrd']))
+
     def test_additional_language_remains_data_only(self):
         entries = json.loads(self.catalogue.read_text(encoding='utf-8'))
         entries.append(dict(tag='sv', native_name='Svenska', region='sv-SE', script='Latn', plurals=['one', 'other'], row=entries[-1]['row'] + 1))

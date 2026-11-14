@@ -3699,7 +3699,7 @@ mod cache_timing_tests {
     // serial fixture: a later test's time zero would otherwise wrap the keepalive arithmetic.
     struct ResetIdle;
     impl Drop for ResetIdle {
-        fn drop(&mut self) { plx_machine::idle::reset_for_test(); }
+        fn drop(&mut self) { plx_machine::motion::report::reset_for_test(); }
     }
 
     /// What a frame thread's landing step reads of the cache: whether the visible generation moved
@@ -3763,7 +3763,7 @@ mod cache_timing_tests {
             READ_RETURNED.store(true, std::sync::atomic::Ordering::SeqCst);
             ReadState::Ready { session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false }
         })));
-        plx_machine::idle::reset_for_test();
+        plx_machine::motion::report::reset_for_test();
         let ticket = plx_base::storage_worker::submit_retained(refresh_cache_job(need.generation));
         CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
         entered.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
@@ -3775,8 +3775,12 @@ mod cache_timing_tests {
         release.send(()).unwrap();
         assert_eq!(ticket.wait_blocking().unwrap(), CacheRefreshOutcome::Settled);
         plx_base::storage_worker::drain_for_test();
-        assert!(!plx_machine::idle::should_present(0), "the worker only publishes data");
-        assert_eq!(plx_machine::idle::take_local_damage(), 0, "the peeks raise no frame damage of their own");
+        let mut present = plx_machine::present::Present::new();
+        present.take(0);
+        present.acknowledge(0);
+        plx_machine::motion::report::collect_into(&mut present, 0);
+        assert!(!present.take(0), "the worker only publishes data");
+        assert!(!present.take(1), "the peeks raise no owned frame damage of their own");
         let _frame = plx_base::task::FrameScope::enter();
         assert!(frame_step.lands(), "the frame step observes the published session");
         assert_eq!(peek().client_id, "cid-1");
@@ -3904,19 +3908,27 @@ mod cache_timing_tests {
                 session: std::sync::Arc::new(test_support::signed_in()), plaintext: true, retry_canonical: false,
             }) as fn() -> ReadState, false),
         ] {
-            plx_machine::idle::reset_for_test();
-            plx_machine::idle::note_present(10_000);
+            plx_machine::motion::report::reset_for_test();
+            let mut present = plx_machine::present::Present::new();
+            present.take(10_000);
+            present.acknowledge(10_000);
             CACHE_READ_FOR_TEST.with(|slot| slot.set(Some(read)));
             let job = refresh_cache_job(CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed));
             CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
             drop(plx_base::storage_worker::submit_retained(job));
             plx_base::storage_worker::drain_for_test();
-            assert!(!plx_machine::idle::should_present(10_001), "workers cannot wake the UI");
-            assert_eq!(plx_machine::idle::take_local_damage(), 0);
+            plx_machine::motion::report::collect_into(&mut present, 10_001);
+            assert!(!present.take(10_001), "workers cannot wake the UI");
+            assert!(!present.take(10_001), "only the owned landing boundary can damage the gate");
             let _frame = plx_base::task::FrameScope::enter();
             assert_eq!(frame_step.lands(), landed);
             assert!(!frame_step.lands(), "one landing per change");
-            assert_eq!(plx_machine::idle::take_local_damage(), 0, "landing the cache raises no frame damage of its own");
+            assert!(!present.take(10_001), "landing the cache raises no owned damage of its own");
+            if landed {
+                plx_machine::machine::PresentHandle::of(&mut present).note(
+                    plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Lifecycle));
+            }
+            assert_eq!(present.take(10_001), landed, "the caller attributes the typed landing once");
         }
     }
 

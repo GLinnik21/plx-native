@@ -6866,7 +6866,15 @@ pub fn play_refused(ps: &PlaybackSession) -> bool {
 /// Did the resolve refuse this as a PREVIEW that was not a direct play
 /// ([`PlayVerdict::PreviewNeedsDirectPlay`])? Our own refusal, not the server's.
 pub(crate) fn play_refused_as_preview(ps: &PlaybackSession) -> bool {
-    matches!(ps.play_verdict, Some(PlayVerdict::PreviewNeedsDirectPlay))
+    preview_refusal(ps).is_some()
+}
+/// Which condition refused this PREVIEW ([`PlayVerdict::PreviewNeedsDirectPlay`]'s `reason`), or
+/// `None` for any other session. The failure report's `playback.preview_refusal` tag reads it.
+pub(crate) fn preview_refusal(ps: &PlaybackSession) -> Option<plx_telemetry::telemetry::classes::PreviewRefusal> {
+    match ps.play_verdict {
+        Some(PlayVerdict::PreviewNeedsDirectPlay { reason }) => Some(reason),
+        _ => None,
+    }
 }
 /// The app/worker failed to produce a playable plan, as distinct from a PMS `/decision` refusal.
 /// There is no Engine whose pump could publish Error, so `player::state()` derives it beside the
@@ -11541,13 +11549,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
     // (`reset_track_selection`); hold it to the range of the subtitle that actually landed, so an
     // advance never outlives its sidecar.
     crate::player::reclamp_subtitle_offset();
-    // A landing is a DISCRETE change to what is on screen, so it owes the present gate a poke —
-    // `plx_machine::idle::invalidate`'s call-site list is that module's correctness argument. The caller
-    // (`app.rs`'s pump) invalidates only when `pump_play` returns TRUE, and a REFUSING plan returns
-    // false by construction (empty url) while flipping the player from Resolving to Error. That it
-    // still repainted was an accident of the player route bypassing the gate entirely; here it is
-    // the rule instead.
-    plx_machine::idle::invalidate();
+    // pump_play returns Some(ResolvedStart) for accepted AND refusing plans. The main-thread
+    // runner owns the landing damage, even when this start contract is None (the Error page).
+
     start
 }
 

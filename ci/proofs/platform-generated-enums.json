@@ -13,18 +13,23 @@
     "platform/build.rs": "58a7a2f8d8851b995648f40fb0a179c3ae743fb0e4e92dd3e19b93f9b86940c8",
     "platform/build_support/catalog.rs": "b02769b2de34bf6cf53a60d05bc9fc3080e6012778e30b400b13f772b43f7083",
     "build_support/install_identities.rs": "8039b85c09d27c1f9a80aded1245dd4a0c7b7ac3b633e28cb9b7a0f6d62ed621",
-    "machine/src/lib.rs": "105afdbb05fb762e6752cef260b6d928b1d828993350aaa71651f96cee0c3188",
+    "machine/src/lib.rs": [
+      "105afdbb05fb762e6752cef260b6d928b1d828993350aaa71651f96cee0c3188",
+      "c35d39ae620b5607e7035222ab1023799adaf091d6a4f737a847dd70b26c1b36"
+    ],
     "machine/src/machine.rs": [
       "571415d64a9885248f852b402153feedd4660acbe03606e4796c59659726049f",
-      "03a6e18f576dcbaff66c3d7405923b155302bfb2996bb373dac115ece055a5bf"
+      "03a6e18f576dcbaff66c3d7405923b155302bfb2996bb373dac115ece055a5bf",
+      "d08b44dbff241962286eb7e1f85897073ba9f2f712a2ba935837f901635369a8",
+      "9b1ffb66c7ba2eb9fdffcb4bcbf0a29cda87a003cce69b16c73567c8bc0a65b0"
     ]
   },
   "text_hashing": "sha256-utf8-bytes-crlf-to-lf-local-root-version-v1",
   "manifests": {
-    "Cargo.toml": "fbeb900767c6d3a7091b0366cdaf79753f45384be9b39a649dd8e7decbf40fb6",
+    "Cargo.toml": "c57b1c2d662d460a6d71f6de158397f1cb2f2fecb167bfa738631d77b661248b",
     "appkit/Cargo.toml": "1e3a33f392110f269537b12f12879c6bc15309aca304b189d6b0346edf8a1186",
     "base/Cargo.toml": "ebe0b95553bd44f33f422f7d8e22b75ddeb53c7ee81bbe738f675690694568f7",
-    "data/Cargo.toml": "dc246544384d3cfe5648b13cfcbd67edff69f027d22a268dd6fdca53bdf1e794",
+    "data/Cargo.toml": "90a763a8a9e22bda7e95f8ede4dc10ec6e92a62b90bd0fd2e622c617d75ec6c7",
     "gfx/Cargo.toml": "c8889dd95a481938966c41635f85702695ce9c59956381768e6c56d215d8fc0e",
     "machine/Cargo.toml": "0bc99e95272916b8d00e1a8dad81440bc4998de12ccd9a00e7853f438c813d03",
     "media/Cargo.toml": "2b3bb41264db9b9f30869015dfe0dd6656147c432728c9ea9301988c710a4202",
@@ -47,7 +52,7 @@
     "../.cargo/config": null,
     "../.cargo/config.toml": null
   },
-  "lock": "a1e4a5b1dc4a4ae661f41b037dc040caf348136efa23976da56786259897383f",
+  "lock": "c56af60124266be5ee0b7dfa7ae81b4f0ff38b047fe672f40a009f6e1c22d3d3",
   "grammar": {
     "Preference": {
       "prefix": [
@@ -69,7 +74,9 @@
     "discover preserves validated LanguageSpec; compile sorts by row",
     "languages_rs emits only unit variants; Pseudo cfg_attr only allows dead_code",
     "string slots use Rust Debug escaping; numeric slots are integers",
-    "install_identities writes only install_identities.rs, never languages.rs"
+    "install_identities writes only install_identities.rs, never languages.rs",
+    "PR1366: PressRead identity/live/active and owned-present sibling/test modules; canonical machine child and doc-only u32 newtype producer unchanged",
+    "PR1385: Canon byte-feed loops inlined (impl Canon and canon_tests only, FNV-1a byte stream unchanged); newtype macro and its ten u32 invocations unchanged"
   ],
   "assumptions": [
     "Offline source-backed unit-enum proof; certificate changes require source review.",

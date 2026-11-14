@@ -512,8 +512,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &mut Frame) {
             &mut app.refresh_hubs,
             &mut app.pages,
             &mut app.bridge,
-            &mut app.ok_armed,
-            &mut app.input.press,
+
         )
     };
     // …and the item context menu's committed row, for the same reason and at the same moment: it
@@ -653,7 +652,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &mut Frame) {
                 // was arranging by hand.
                 if let Some(arg) = app.bridge.content_menu_arg(&app.pages, entry, &ret) {
                     bridge::open_item_menu(&mut app.pages, arg);
-                    app.ok_armed = false;
+
                 }
             }
         }
@@ -736,7 +735,7 @@ fn home_requests(app: &mut App, now: u32) {
                 app.bridge.watchlist_open_if_idle();
                 arg.watchlist = app.bridge.watchlist_card_face(item);
                 bridge::open_item_menu(&mut app.pages, arg);
-                app.ok_armed = false;
+
             }
         }
     }
@@ -801,7 +800,7 @@ fn search_requests(app: &mut App) {
                 app.bridge.watchlist_open_if_idle();
                 arg.watchlist = app.bridge.watchlist_card_face(&item);
                 bridge::open_item_menu(&mut app.pages, arg);
-                app.ok_armed = false;
+
             }
         }
     }
@@ -822,7 +821,7 @@ fn watchlist_requests(app: &mut App) {
         {
             continue;
         }
-        watchlist_request(&mut app.pages, &mut app.bridge, entry, request, ret, &mut app.ok_armed);
+        watchlist_request(&mut app.pages, &mut app.bridge, entry, request, ret);
     }
 }
 
@@ -832,7 +831,7 @@ fn watchlist_requests(app: &mut App) {
 /// [`library_navigation`] is: a test that presses OK on the pill sees the menu the TV opens.
 pub(crate) fn watchlist_request(
     pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>, rig: &mut bridge::Bridge, entry: EntryId,
-    request: plx_screens::watchlist::page::WatchlistOut, ret: ReturnState<u32, PageMemory>, ok_armed: &mut bool,
+    request: plx_screens::watchlist::page::WatchlistOut, ret: ReturnState<u32, PageMemory>,
 ) {
     use plx_screens::watchlist::page::WatchlistOut;
     match request {
@@ -852,7 +851,7 @@ pub(crate) fn watchlist_request(
         WatchlistOut::Hold { guid, state, copy, .. } => {
             let Some(arg) = rig.watchlist_hold_arg(pages, entry, ret.focus, &guid, state, copy) else { return };
             bridge::open_item_menu(pages, arg);
-            *ok_armed = false;
+
         }
         // The catalog page of a title no server holds, by the tile's guid (a guid the service
         // does not form as `plex://movie|show/<hex>` has no page to open).
@@ -947,7 +946,7 @@ fn library_requests(app: &mut App, now: u32) {
         let Some(ret) = library_navigation(&mut app.pages, &mut app.bridge, &request, ret) else { continue };
         unsafe {
             library_page_request(&mut app.player.session, &mut app.adapters.player, &mut app.menu_play_await,
-                &mut app.ok_armed, now, &mut app.pages, &mut app.bridge, instance, entry, request, ret);
+                now, &mut app.pages, &mut app.bridge, instance, entry, request, ret);
         }
     }
 }
@@ -984,7 +983,7 @@ pub(crate) unsafe fn library_page_request(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
     menu_play_await: &mut Option<super::input::MenuPlayAwait>,
-    ok_armed: &mut bool,
+
     now: u32,
     pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>,
     bridge: &mut bridge::Bridge,
@@ -1013,7 +1012,7 @@ pub(crate) unsafe fn library_page_request(
             bridge.watchlist_open_if_idle();
             arg.watchlist = bridge.watchlist_card_face(&item);
             bridge::open_item_menu(pages, arg);
-            *ok_armed = false;
+
         }
         LibraryReq::Detail { sid, ref rk, .. } | LibraryReq::Play { sid, ref rk, .. } => {
             let Some((mut item, _)) = bridge.library_selection(pages, entry, ret.focus) else { return };

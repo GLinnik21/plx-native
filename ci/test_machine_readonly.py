@@ -215,4 +215,30 @@ class ConvergenceProjectionRegression(unittest.TestCase):
         self.assertTrue(verdict(source, INI, extra))
         self.assertTrue(verdict(source, INI, extra))
 
+
+class SharedTokens(unittest.TestCase):
+    """The lexed-once token lists the proof and the machine-shape gate share."""
+    def test_a_shared_list_is_read_only_and_one_text_is_one_list(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('check_machine_shape', Path(__file__).with_name('check-machine-shape.py'))
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+        tokens = gate.production_tokens('struct A { x: u8 } #[cfg(test)] mod tests { fn t() {} }')
+        self.assertIs(gate.production_tokens('struct A { x: u8 } #[cfg(test)] mod tests { fn t() {} }'), tokens)
+        self.assertNotIn('tests', tokens)
+        for mutate in (lambda: tokens.append('x'), lambda: tokens.__setitem__(0, 'x'), lambda: tokens.pop(), lambda: tokens.sort()):
+            with self.assertRaises(TypeError): mutate()
+        self.assertEqual(list(tokens)[:3], ['struct', 'A', '{'])
+
+    def test_shadows_are_exactly_what_a_rescan_would_find(self):
+        from machine_readonly import Shadows
+        tokens = ['macro_rules', '!', 'm', '{', '}', 'macro', 'n', 'use', 'a', ':', ':', '*', ';', 'use', 'b', ';',
+                  'mod', 'std', ';', 'macro_rules', '!']
+        facts = Shadows(tokens)
+        self.assertEqual(facts.macro_rules, {'m'})        # the trailing `macro_rules !` has no name to take
+        self.assertEqual(facts.macro_items, {'n'})
+        self.assertEqual(facts.imported, {'a', ':', '*', 'b'})
+        self.assertTrue(facts.std_named)
+        self.assertFalse(Shadows(['use', 'std', ':', ':', 'mem', ';']).std_named)   # importing std is not naming it as a module
+
 if __name__ == '__main__': unittest.main()

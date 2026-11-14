@@ -32,7 +32,14 @@ and contrasting-ambient replay with outbound IO denied, malformed-input refusals
 supported-effect discriminator. Its private recording must pass `tools/plxnative-rec check`
 before `import`/`rerecord`; a live-mock focus smoke alone is not replay acceptance.
 
-The hash includes `AppFrameV4{route,overlay,focus,tree,session,consent,initial}`: the press machine, the route/overlay words and the
+These historical key-only fixtures retain their original `AppFrameV4` ledger and expected
+hashes. Controlled preflight proves all inputs are owned keys; the grader then writes the
+frozen idle bytes of the retired app press before the unchanged V4 frame fields. No
+legacy press is constructed/stepped in production and no frame grades are skipped. Legacy
+pointer/direct-token profiles cannot prove idle shadow state and are refused. New
+recordings use `AppFrameV5` and the current codec-6 bootstrap envelope.
+
+The historical hash includes `AppFrameV4{route,overlay,focus,tree,session,consent,initial}`: the press machine, the route/overlay words and the
 focus fingerprint from phase 2, plus — since phase 5b — `tree`, which is `Dispatcher::state_hash`
 (every live container instance's `LogicalState`, the tree's shape and surface phases, saved entry
 arguments and return memory even after eviction, the engine's focus and the queue depth), plus

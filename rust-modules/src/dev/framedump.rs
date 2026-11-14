@@ -565,7 +565,7 @@ thread_local! {
     static IDLE_DT: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
 }
 
-/// The `dt` the idle gate's rest test ([`plx_machine::idle::frame_begin_judging_rest_with`]) uses this iteration.
+/// The `dt` the idle gate's rest test ([`plx_machine::motion::report::frame_begin_judging_rest_with`]) uses this iteration.
 ///
 /// A spring is "at rest" when its position is near its target AND `velocity * dt` is under the
 /// rest threshold (`idle::settled`), so a held repeat at `dt == 0` reads every spring that is

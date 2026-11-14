@@ -270,18 +270,11 @@ pub enum PlayerReq {
     /// `super::bridge::open_player_overlay` straight from the loop's key ladder; `PlayerScreen`
     /// may not name that function itself (§2.2), so it asks instead.
     OpenOverlay(crate::player::overlay::OverlayKind),
-    /// **A pointer click landed on the transport's own control row** — whichever disc, the Skip
-    /// pill or the Up Next tile currently occupies it. Arms a tvOS press dip;
-    /// the loop's commit-frame dispatch
-    /// (`app/run.rs`'s `Route::Player => activate_player_row(...)`) performs whatever the row
-    /// decides once the spring-back has played, through the same performer OK reaches by
-    /// [`Command`](PlayerReq::Command) and [`StandIn`](PlayerReq::StandIn). OK on the row does not
-    /// ask this: the focus engine presses the control itself.
-    ArmControlRow,
+
     /// **A press on a control of the discs committed**, after the engine's tvOS dip has played
     /// (`PressCommit`, [`PlayerScreen`](crate::player::PlayerScreen)): perform this command. The screen resolves the command of the control the
     /// engine holds, so the app's performer (`app::playback::perform_hud_command`) never reads a
-    /// cursor. OK on the row is this; a pointer click on the row is still [`ArmControlRow`](PlayerReq::ArmControlRow).
+    /// cursor. Keyboard and pointer presses use this same commit path.
     Command(plx_appkit::player_hud::command::HudCommand),
     /// **A press on a stand-in committed** — the Skip pill, or one of the Up Next pair — after the
     /// same dip. A stand-in's meaning depends on the segment it offers, which the app resolves on
