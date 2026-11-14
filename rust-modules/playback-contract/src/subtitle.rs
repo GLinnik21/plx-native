@@ -126,6 +126,20 @@ pub struct CaptionRetention {
     pub seek_target_ns: Option<i64>,
 }
 
+impl CaptionRetention {
+    /// The time every retention rule measures from: the playhead, or the seek target while that is
+    /// earlier. The demuxer can already be reading at a backward seek's target while the native
+    /// clock still reports the old picture, and whatever it reads there must survive the rebase.
+    /// `None` when the playhead is unknown: nothing may then be retired by time.
+    pub fn anchor_ns(self) -> Option<i64> {
+        let playhead = self.playhead_ns?;
+        Some(match self.seek_target_ns {
+            Some(target) if target >= 0 => playhead.min(target),
+            _ => playhead,
+        })
+    }
+}
+
 /// The ordinal of a side-reader run that reads no subtitle and only measures the remux's clock
 /// against the Part's (a sidecar is drawn by the app). Negative, so it is never a track position and
 /// two runs of different roles never compare equal when a reader is asked to switch.
@@ -290,6 +304,24 @@ impl std::fmt::Debug for Spec {
             .field("offset_ns", &self.offset_ns).field("part_kbps", &self.part_kbps)
             .field("ordinal", &self.ordinal).field("from_playhead", &self.from_playhead)
             .field("delta", &self.delta).finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+
+    fn retention(playhead_ns: Option<i64>, seek_target_ns: Option<i64>) -> CaptionRetention {
+        CaptionRetention { playhead_ns, seek_target_ns }
+    }
+
+    #[test]
+    fn the_anchor_is_the_playhead_or_the_earlier_seek_target() {
+        assert_eq!(retention(Some(90), None).anchor_ns(), Some(90));
+        assert_eq!(retention(Some(90), Some(10)).anchor_ns(), Some(10), "a backward seek reads at its target");
+        assert_eq!(retention(Some(10), Some(90)).anchor_ns(), Some(10), "a forward seek still shows the old picture");
+        assert_eq!(retention(Some(90), Some(-1)).anchor_ns(), Some(90), "a negative target is no target");
+        assert_eq!(retention(None, Some(10)).anchor_ns(), None, "an unknown playhead justifies no pruning");
     }
 }
 

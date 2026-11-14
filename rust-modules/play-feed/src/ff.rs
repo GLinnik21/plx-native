@@ -6725,6 +6725,8 @@ pub fn demux(
                     begin_ass_sources(session.as_mut(), &url, streams, &sub_tracks, font_attachments).unwrap_or(0)
                 };
                 if !side_owner { session.subtitle().record_tracks(); }
+                // The playhead a held image packet is retired against (`SubTracks::on_packet`).
+                let observer = session.observer();
 
                 // Hand-roll length-prefix -> Annex-B + prepend VPS/SPS/PPS at every keyframe (the
                 // format Starfish decodes). FFmpeg's hevc_mp4toannexb does NOT reliably prepend the
@@ -6856,6 +6858,8 @@ pub fn demux(
                         let ts = av_rescale_q(seek_ns.saturating_add(origin_ns), NS_TB, stream_time_base(vst));
                         // Fence completed renders from the old position before new packets arrive.
                         session.subtitle().seek(ass_generation);
+                        // Image packets held for a later selection belong to the old position too.
+                        sub_tracks.discard_held();
                         session.media().record(&format!("ff: seek begin {}s", seek_ns / 1_000_000_000));
                         let seek_began = std::time::Instant::now();
                         let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
@@ -6887,6 +6891,9 @@ pub fn demux(
                         }
                         break;
                     }
+                    // A subtitle was turned on since the image packets held below were read: decode
+                    // them now, on whatever packet comes next, ahead of it so cues stay in file order.
+                    sub_tracks.release_if_selected(fmt, session.subtitle(), ass_generation);
                     let si = (*pkt).stream_index;
                     // The array is read LIVE, with its bound: a transport stream can grow new streams
                     // while it is read (`AVFMTCTX_NOHEADER`), which reallocates `streams`, so the
@@ -7173,14 +7180,13 @@ pub fn demux(
                         }
                         session.media().publish(DemuxEffect::AudioTailNs(pts));
                     } else if let Some(sub_pos) = sub_tracks.position(si) {
-                        // Subtitle packet: `SubTracks::decode` yields a cue for EVERY text track
-                        // (not just the selected one) and decodes every image track while subtitles
-                        // are on; see ff_subs.rs. Subtitles carry no ES -> never fed to the pipeline.
-                        let decode_image = session.subtitle().selected_track() >= 0;
-                        let bitmap_budget = session.subtitle().bitmap_budget();
-                        if let Some(cue) = sub_tracks.decode(sub_pos, pkt, *streams.add(si as usize), decode_image, bitmap_budget) {
-                            session.subtitle().emit(ass_generation, cue);
-                        }
+                        // Subtitle packet: a cue for EVERY text track (not just the selected one), a
+                        // decode of every image track while subtitles are on, and while they are Off
+                        // an image packet is held instead of dropped, so a track chosen later has the
+                        // read-ahead window to show (the release above); see `SubTracks::on_packet`.
+                        // Subtitles carry no ES -> never fed to the pipeline.
+                        sub_tracks.on_packet(sub_pos, pkt, fmt, session.subtitle(), ass_generation,
+                            || observer.caption_retention());
                         av_packet_unref(pkt);
                     } else {
                         av_packet_unref(pkt);
