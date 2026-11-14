@@ -92,6 +92,22 @@ fn long_hud_titles_fit_before_every_control_slot() {
         for slot in slots {
             let right = compiled_title_right(&compiled, slot);
             let items = geometry(&compiled, 0, slot, true, false).items;
+            // What a title draws depends on the cell's right edge and the title, never on which
+            // control holds the focus or how far its pop has run (an unpaused title reads no clock):
+            // drawn once per slot and kicker, not again for every focused control and pop frame.
+            for kicker in [Kicker::Episode(long.as_ptr()), Kicker::Context(long.as_ptr())] {
+                let runs = plx_ui::draw_census::capture_runs(|| {
+                    draw_player_title(Painter::recording(), kicker, long.as_ptr(),
+                        right, measure, false, &clock);
+                });
+                assert_eq!(runs.len(), 2);
+                for run in runs {
+                    assert!(run.text.ends_with('…'), "{}: expected ellipsis: {run:?}", language.tag());
+                    assert_eq!(run.at.x, SB_X);
+                    assert!(measure.width_str(&run.text, run.size, run.bold) <= right - SB_X + 1.0,
+                        "{}: fitted title exceeds the control boundary: {run:?}", language.tag());
+                }
+            }
             let mut row = HudMotion::new();
             for focused in 0..slot.items() {
                 for _ in 0..30 {
@@ -99,19 +115,6 @@ fn long_hud_titles_fit_before_every_control_slot() {
                     for i in 0..slot.items() {
                         let Some(rect) = items[i as usize] else { continue };
                         assert!(right + theme::space::MD <= rect.scaled(row.scale(i, Default::default())).x + 0.001);
-                    }
-                    for kicker in [Kicker::Episode(long.as_ptr()), Kicker::Context(long.as_ptr())] {
-                        let runs = plx_ui::draw_census::capture_runs(|| {
-                            draw_player_title(Painter::recording(), kicker, long.as_ptr(),
-                                right, measure, false, &clock);
-                        });
-                        assert_eq!(runs.len(), 2);
-                        for run in runs {
-                            assert!(run.text.ends_with('…'), "{}: expected ellipsis: {run:?}", language.tag());
-                            assert_eq!(run.at.x, SB_X);
-                            assert!(measure.width_str(&run.text, run.size, run.bold) <= right - SB_X + 1.0,
-                                "{}: fitted title exceeds the control boundary: {run:?}", language.tag());
-                        }
                     }
                 }
             }

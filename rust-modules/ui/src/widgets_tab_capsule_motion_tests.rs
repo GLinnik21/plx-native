@@ -672,16 +672,29 @@ fn backing_at_xy(strip: &TabStrip, ground: TabGround, x: f32, y: f32) -> [f32; 4
 /// the 2-D grade the column-only ones could not give.
 fn worst_contrast_2d(strip: &TabStrip, ground: TabGround, pill: (f32, f32), ink_of: fn(f32, f32) -> [f32; 4]) -> (f32, f32, f32) {
     let rect = Rect::new(pill.0, 0.0, pill.1, INK_H);
+    // The ink regions are a fact about the strip, the ground and the pill, so they are decided once
+    // and asked per pixel (`ink_at` is `pill_ink(..).at(..)`: it re-derived them for every one of
+    // the ~5 000 pixels). A pixel's ratio is a function of its backing and its ink alone, and
+    // neighbouring pixels nearly always share both, so the last one is kept.
+    let regions = strip.pill_ink(rect, ground);
+    let mut last: Option<([f32; 4], [f32; 4], f32)> = None;
     let mut worst = (f32::MAX, pill.0, 0.0);
     for column in (pill.0.floor() as i32)..((pill.0 + pill.1).ceil() as i32) {
         let x = column as f32 + 0.5;
         if x < pill.0 + 12.0 || x >= pill.0 + pill.1 - 12.0 { continue; }
         for k in -17..17 {
             let y = INK_H * 0.5 + k as f32 + 0.5;
-            let (focus, selected) = strip.ink_at(rect, ground, x, y);
+            let (focus, selected) = regions.at(x, y);
             let backing = backing_at_xy(strip, ground, x, y);
             let ink = ink_of(focus, selected);
-            let ratio = contrast(theme::cross(backing, [ink[0], ink[1], ink[2], 1.0], ink[3]), backing);
+            let ratio = match last {
+                Some((b, i, r)) if b == backing && i == ink => r,
+                _ => {
+                    let r = contrast(theme::cross(backing, [ink[0], ink[1], ink[2], 1.0], ink[3]), backing);
+                    last = Some((backing, ink, r));
+                    r
+                }
+            };
             if ratio < worst.0 { worst = (ratio, x, y - INK_H * 0.5); }
         }
     }
