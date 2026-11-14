@@ -1,15 +1,15 @@
 {
  "flaky": [
   {
-   "count": 1,
+   "count": 2,
    "first_seen": "2026-11-12T17:23:43Z",
    "job": "host unit tests (hostsim)",
    "last": {
-    "pr": 1355,
-    "run": 43260437068,
-    "sha": "7a712870b"
+    "pr": 1380,
+    "run": 43551876055,
+    "sha": "2c98ca3ba"
    },
-   "last_seen": "2026-11-12T17:23:43Z",
+   "last_seen": "2026-11-14T03:37:54Z",
    "new": false,
    "status": "Active",
    "test": "plx_media::route::decision::queue_predecessor_tests::the_window_reread_waits_for_the_outgoing_stop_within_its_bound"
@@ -99,7 +99,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-14T03:43:41Z",
+ "generated": "2026-11-14T03:44:35Z",
  "metrics": [
   {
    "change30_pct": 45.2,
@@ -144,18 +144,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 6.7,
-   "change7_pct": 3.8,
-   "d30": 449.0,
-   "delta30": 30.0,
-   "delta7": 17.5,
+   "change30_pct": 6.2,
+   "change7_pct": 4.0,
+   "d30": 452,
+   "delta30": 28,
+   "delta7": 18.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 138,
+   "n_now": 139,
    "n_prev": 182,
-   "now": 479.0,
+   "now": 480,
    "prev7": 461.5,
    "shown": true,
    "state": "flat",
