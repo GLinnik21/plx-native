@@ -301,9 +301,13 @@ fn the_window_reread_waits_for_the_outgoing_stop_within_its_bound() {
     // The outgoing episode's stop is announced and still on its way.
     let stop = TIMELINE_STOP_FENCE.announce();
     let waiting = continuation.clone().awaiting(TIMELINE_STOP_FENCE.announced());
+    // The clock starts HERE, before the reader exists and so before the sleep below can begin: a
+    // reader the scheduler starts late (a loaded runner) must not shorten what this measures. Taken
+    // inside the reader, a late start put its clock after the sleep's, and a read that did wait for
+    // the stop measured under 250 ms.
+    let started = std::time::Instant::now();
     let read = std::thread::scope(|scope| {
         let reader = scope.spawn(|| {
-            let started = std::time::Instant::now();
             let _ = waiting.refreshed_within(client, Duration::from_secs(20));
             started.elapsed()
         });
