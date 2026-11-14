@@ -55,7 +55,8 @@ def ports(root, ini):
 # `.elapsed(`, and the alias test needs the token `Instant` or `SystemTime`. A file without any of
 # them cannot hold a wall-clock operation, so this rule does not lex or classify it: lexing the
 # ~690 files of the scopes (and the wholly-test classification of every scope) was most of this
-# gate's 4.6 s of CPU, run once per `ci/check-deps.sh` and so ~100 times by tests/test_harness.py.
+# gate's 4.6 s of CPU, run once per `ci/check-deps.sh` that selects `wall` (every full run; the
+# harness's gate self-tests run only the rule they plant for, so only its whole-script tests run it).
 # The skip changes what an UNLEXABLE file does here, never what a wall site does: a file with no
 # wall word and an unterminated raw string no longer fails THIS rule. `ci/check-list-caps.py` (a step
 # of ci/check-python-steps.txt) reports it instead: it runs `rtm.lex` over every production file under
