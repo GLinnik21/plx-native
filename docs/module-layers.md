@@ -1941,8 +1941,8 @@ The last no-LTO figure is over the 12,426,000 limit, which made Splits 9 and 10 
 because whole-program optimisation with a single codegen unit sees the same code the single crate
 did. They also restore the cross-crate inlining the single crate had, which the per-frame UI code
 leans on. Only release-profile builds pay for it (the ARM staticlib and the storage helper when built as `release`, the
-Linux simulator of `make sim-linux` and `make macapp`); the dev profile that `make check`, the host
-tests and the macOS simulator use is untouched. The price is build time: CI's ARM library build
+Linux simulator of `make sim-linux` and `make macapp`); the `dev` and `test` profiles that the macOS
+simulator, `make check` and the host tests use are untouched. The price is build time: CI's ARM library build
 went from 2m40 to 4m15, and a local `ARM_PROFILE=release` one from 44 s to 94 s. A plain local `make` / `make deploy` no
 longer pays it: the Makefile builds the ARM staticlib with `[profile.tvdev]` (no LTO, 16 codegen
 units), which is faster and larger, and keeps `release` for CI, `RELEASE=1`, `SYMBOLS=1` and
