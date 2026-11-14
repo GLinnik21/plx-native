@@ -50,8 +50,8 @@ runs:
       # lines and every `make` target of the host jobs alike. A cached dependency built with the old
       # profile is a different unit to cargo, so the first run after this landed rebuilt the
       # dependencies once. It is NOT the manifest: a developer's checkout keeps full DWARF
-      # (docs/agent-reference.md, the lane policy), and the `release` and `tvdev` profiles the ARM
-      # binary is built with do not inherit `dev`, so the shipped library is untouched.
+      # (docs/agent-reference.md, the lane policy), and the profiles the ARM binary is built with
+      # do not inherit `dev`, so the shipped library is untouched.
       shell: bash
       run: |
         mkdir -p "$HOME/.cargo"
