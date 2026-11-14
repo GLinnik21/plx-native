@@ -1,4 +1,4 @@
-{"updated":"2026-11-14T03:57:53Z",
+{"updated":"2026-11-14T04:03:38Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5115,7 +5115,8 @@
 {"id":43551876264,"at":"2026-11-14T03:29:16Z","sha":"2c98ca3ba","title":"Net: bound a never-pausing peer's cancel latency by what the transport controls","pr":1380,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":203,"Windows launcher syntax":16,"macOS simulator build + launch":150,"Linux simulator build + launch":350}},
 {"id":43552124769,"at":"2026-11-14T03:32:05Z","sha":"2561618bd","title":"Check: run the hostsim unit pass only over the crates that declare hostsim","pr":1381,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":140,"Linux simulator build + launch":354,"Windows launcher syntax":20,"macOS tests against bundled FFmpeg and ASS":230}},
 {"id":43553185730,"at":"2026-11-14T03:44:41Z","sha":"5ca2777b5","title":"Net: bound a never-pausing peer's cancel latency by what the transport controls","pr":1380,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":245,"Windows launcher syntax":15,"macOS simulator build + launch":144,"Linux simulator build + launch":257}},
-{"id":43553308324,"at":"2026-11-14T03:46:05Z","sha":"bd5e77ae2","title":"Merge origin/main into lane/unit-test-speed-2","pr":1381,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":116,"Linux simulator build + launch":318,"Windows launcher syntax":18,"macOS simulator build + launch":197}}
+{"id":43553308324,"at":"2026-11-14T03:46:05Z","sha":"bd5e77ae2","title":"Merge origin/main into lane/unit-test-speed-2","pr":1381,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":116,"Linux simulator build + launch":318,"Windows launcher syntax":18,"macOS simulator build + launch":197}},
+{"id":43554304234,"at":"2026-11-14T03:58:33Z","sha":"50d47759b","title":"Media: the window-reread test times its wait from before the stop's sleep","pr":1382,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":192,"Linux simulator build + launch":287,"macOS simulator build + launch":192,"Windows launcher syntax":16}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
