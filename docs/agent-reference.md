@@ -222,8 +222,11 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   CI runs the three cargo targets plus those two as five parallel jobs
   (`host-lint`, `host-unit-default`, `host-unit-hostsim`, `host-python`, `host-python-harness`) behind an aggregator named
   `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens`
-  **twice: once on the default feature set and once with `--features hostsim`**, which is not a
-  duplicate run. The host feed seam (`play-feed/src/ffi_host.rs`) exists ONLY in the hostsim
+  **on the default feature set, and again with `--features hostsim` for the crates that declare it
+  (`HOSTSIM_SUITE`: all of `UNIT_SUITE` except `plx_net`, `plx_ui`, `plx_appkit`, `plx_screens`,
+  `plx_media_codecs`, `plx_play_uri` and `plx_playback_contract`, which have no `hostsim` cfg and run the
+  same test names in both passes; `ci/test_test_crate.py` fails if one gains the feature or a cfg)**,
+  which is not a duplicate run. The host feed seam (`play-feed/src/ffi_host.rs`) exists ONLY in the hostsim
   configuration, so every test that drives an access unit through `sf_feed` is compiled out of the
   default pass and cannot fail it — which is how the prime-livelock regression
   (`player::engine::prime_livelock_tests`) sat outside the gate entirely while 1398 default-feature

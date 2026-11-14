@@ -200,10 +200,41 @@ class MakeWiring(unittest.TestCase):
         text = (ROOT / "Makefile").read_text()
         suite = re.search(r"^UNIT_SUITE\s*=\s*(.+)$", text, flags=re.M).group(1).split()
         flags = " ".join(f"-p {p}" for p in suite)
-        for target in ("check-cargo-unit-default", "check-cargo-unit-hostsim", "test-fast"):
+        for target in ("check-cargo-unit-default", "test-fast"):
             start = text.index(f"\n{target}:")
             recipe = text[start:start + 6000].split("\n\n")[0]
             self.assertIn(f"test --lib {flags}", recipe, target)
+
+    def test_the_hostsim_pass_is_exactly_the_crates_that_declare_hostsim(self):
+        """The `hostsim` pass runs HOSTSIM_SUITE, a subset of UNIT_SUITE (`make check`'s first run of
+        every binary is the default pass). The crates left out must be ones the feature cannot reach: no
+        `hostsim` feature in the manifest and no `feature = "hostsim"` in the source. A crate that
+        gains either fails here until it is added to HOSTSIM_SUITE (and the recipe's `-p` list)."""
+        text = (ROOT / "Makefile").read_text()
+        unit = re.search(r"^UNIT_SUITE\s*=\s*(.+)$", text, flags=re.M).group(1).split()
+        hostsim = re.search(r"^HOSTSIM_SUITE\s*=\s*(.+)$", text, flags=re.M).group(1).split()
+        self.assertEqual(hostsim, [p for p in unit if p in hostsim], "HOSTSIM_SUITE is UNIT_SUITE's order")
+        self.assertTrue(set(hostsim) <= set(unit))
+        start = text.index("\ncheck-cargo-unit-hostsim:")
+        recipe = text[start:start + 6000].split("\n\n")[0]
+        self.assertIn("test --lib " + " ".join(f"-p {p}" for p in hostsim) + " --features hostsim", recipe)
+        manifests = {"plxnative-modules": ROOT / "rust-modules"}
+        for member in (ROOT / "rust-modules").iterdir():
+            manifest = member / "Cargo.toml"
+            if manifest.is_file():
+                name = re.search(r'^name\s*=\s*"([^"]+)"', manifest.read_text(), flags=re.M)
+                if name:
+                    manifests[name.group(1)] = member
+        for crate in unit:
+            root = manifests[crate]
+            declares = re.search(r"^hostsim\s*=", (root / "Cargo.toml").read_text(), flags=re.M) is not None
+            sources = (root / "src").rglob("*.rs")
+            cfgs = [str(f.relative_to(ROOT)) for f in sources if 'feature = "hostsim"' in f.read_text(errors="replace")]
+            if crate in hostsim:
+                self.assertTrue(declares, f"{crate} is in HOSTSIM_SUITE but declares no `hostsim` feature, which `--features hostsim -p {crate}` needs")
+            else:
+                self.assertFalse(declares, f"{crate} declares `hostsim`: add it to HOSTSIM_SUITE and the recipe")
+                self.assertEqual(cfgs, [], f"{crate} has a hostsim cfg: add it to HOSTSIM_SUITE and the recipe")
 
     def test_check_never_names_test_crate(self):
         text = (ROOT / "Makefile").read_text()
