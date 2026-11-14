@@ -1694,8 +1694,12 @@ UNIT_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_net
 # do not (plx_net, plx_ui, plx_appkit, plx_screens, plx_media_codecs, plx_play_uri, plx_playback_contract)
 # have no `feature = "hostsim"` in their source and the same test names in both passes (14 crates did in
 # CI run 43528579834; the three that differ are `plxnative-modules`, `plx_media` and `plx_play_feed`,
-# all kept), so the second run of their binaries repeated the default pass. The same test also fails
-# the gate when one of them gains a `hostsim` cfg or feature, which is the moment it must join the list.
+# all kept). Their own test set is therefore identical in the two passes. The old second run did link
+# their test binaries against hostsim-built `plx_base`, `plx_gfx`, `plx_platform`, `plx_media` and
+# `plx_play_feed` (steerable `ENV_STEERABLE` paths, larger glyph-cache sizes, `ffi_host` present), but
+# none of their tests observes those dependency-side differences; the guard does not check that, it
+# checks that the crate declares no `hostsim` feature and has no `feature = "hostsim"` in its src, and
+# fails when one gains either, which is the moment it must join the list.
 HOSTSIM_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_plex plx_telemetry plx_data plx_session plx_media plx_play_feed
 
 # The default-feature unit suite and everything that drives cargo through ci/ self-tests.

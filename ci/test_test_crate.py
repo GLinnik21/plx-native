@@ -207,9 +207,13 @@ class MakeWiring(unittest.TestCase):
 
     def test_the_hostsim_pass_is_exactly_the_crates_that_declare_hostsim(self):
         """The `hostsim` pass runs HOSTSIM_SUITE, a subset of UNIT_SUITE (`make check`'s first run of
-        every binary is the default pass). The crates left out must be ones the feature cannot reach: no
-        `hostsim` feature in the manifest and no `feature = "hostsim"` in the source. A crate that
-        gains either fails here until it is added to HOSTSIM_SUITE (and the recipe's `-p` list)."""
+        every binary is the default pass). A crate left out has an identical test set in both passes:
+        no `hostsim` feature in its manifest and no `feature = "hostsim"` in its source. What the guard
+        does not check is the dependency side: the old pass linked those crates' test binaries
+        against hostsim-built `plx_base`, `plx_gfx`, `plx_platform`, `plx_media` and `plx_play_feed`
+        (`ENV_STEERABLE` paths, glyph-cache sizes, `ffi_host` present), and none of their tests
+        observes those differences. A crate that gains the feature or a cfg fails here until it is
+        added to HOSTSIM_SUITE (and the recipe's `-p` list)."""
         text = (ROOT / "Makefile").read_text()
         unit = re.search(r"^UNIT_SUITE\s*=\s*(.+)$", text, flags=re.M).group(1).split()
         hostsim = re.search(r"^HOSTSIM_SUITE\s*=\s*(.+)$", text, flags=re.M).group(1).split()
