@@ -1694,8 +1694,9 @@ pub struct Diag {
     pub feed_composed: bool,
     pub vp_mode: c_int,
     pub window_id: String,
-    /// An ACB handle has been created (either backend's; Feed's at the boot, the URI engine's at its
-    /// first bind). A URI-only ACB build therefore reads false until its first URI Start.
+    /// An ACB handle has been created (either backend's; Feed's at the boot, the URI engine's at the
+    /// first Experimental offer or, while a release is in flight, at the Start's gate). A URI-only ACB
+    /// build therefore reads false until then.
     pub acb_ok: bool,
     pub place_rv: i32,
     pub placed_w: i32,

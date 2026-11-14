@@ -676,10 +676,13 @@ impl PlaneOwner {
 
     /// Record what the boot learned of the Feed handle. Taken once; a later call is ignored.
     pub fn boot(&self, facts: PlaneFacts) {
-        self.boot_handle(PlaneHandle::Feed, facts, HandleSeat::NONE);
+        self.lock().boot(PlaneHandle::Feed, facts, HandleSeat::NONE);
     }
-    /// Record what the boot learned of `handle`, and the `seat` the sink knows it by. Taken once per
-    /// handle; a later call is ignored.
+    /// Record what a boot learned of `handle`, and the `seat` the sink knows it by, without a sink
+    /// (a fixture's way to seat a handle). Taken once per handle; a later call is ignored. Production
+    /// never calls it: Feed's handle is seated by [`ensure_handle`](Self::ensure_handle) (or
+    /// [`boot`](Self::boot) when the build has no Feed) and the URI engine's only by `ensure_handle`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn boot_handle(&self, handle: PlaneHandle, facts: PlaneFacts, seat: HandleSeat) {
         self.lock().boot(handle, facts, seat);
     }
@@ -700,6 +703,7 @@ impl PlaneOwner {
     }
     /// Whether `handle`'s boot is recorded: it was created (or its create failed), so no later
     /// [`ensure_handle`](Self::ensure_handle) will make it again.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn attempted(&self, handle: PlaneHandle) -> bool {
         self.lock().plane.booted_of(handle)
     }
@@ -715,8 +719,9 @@ impl PlaneOwner {
     pub fn initialized(&self, handle: PlaneHandle) -> bool {
         self.lock().seats[handle.slot()].initialized
     }
-    /// Whether either ACB handle has been created (Feed's at the boot, the URI engine's at its first
-    /// bind): on a build with only the URI engine this is false until that first URI Start.
+    /// Whether either ACB handle has been created (Feed's at the boot, the URI engine's at the first
+    /// Experimental offer or, while a release is in flight, at the Start's gate): on a build with
+    /// only the URI engine this is false until then.
     pub fn any_handle(&self) -> bool {
         self.lock().plane.any_handle()
     }

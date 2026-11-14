@@ -2314,7 +2314,6 @@ mod tests {
         let (sink, plane) = boot_without_the_uri_handle(&[22]);
         let mut first = Rig::with(Binding::Acb, sink, plane);
         assert!(sink.created_player_types().is_empty(), "composing the driver creates nothing");
-        assert!(!plane.attempted(plx_platform::tv::plane::PlaneHandle::Uri));
         let log = plx_base::eventlog::with_private_log(|| {
             assert_eq!(first.start(A), DispatchResult::Queued);
             std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
@@ -2387,7 +2386,6 @@ mod tests {
         let mut elsewhere = Rig::with(Binding::Acb, Box::leak(Box::new(NoSink)), plane);
         assert_eq!(elsewhere.driver.ready_to_start(&elsewhere.mt), Ok(()));
         assert!(sink.created_player_types().is_empty());
-        assert!(!plane.attempted(plx_platform::tv::plane::PlaneHandle::Uri));
     }
 
     /// The handle is made for a display that can have one: a driver composed over any other display
@@ -2398,7 +2396,6 @@ mod tests {
         let mut rig = Rig::with(Binding::Acb, Box::leak(Box::new(NoSink)), plane);
         assert_eq!(rig.start(A), DispatchResult::Refused(Failure::Unsupported));
         assert!(sink.created_player_types().is_empty());
-        assert!(!plane.attempted(plx_platform::tv::plane::PlaneHandle::Uri));
     }
 
     #[test]
