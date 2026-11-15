@@ -11,12 +11,15 @@ How a label is chosen:
   (`author_association` NONE, FIRST_TIMER or FIRST_TIME_CONTRIBUTOR), which is what "reported by a
   user of a released build" means for an issue filed here. The owner, members, collaborators and
   CONTRIBUTORs (who file the flaky-test and tracking issues) are not user reports.
-* The kind and areas come from Claude (MODEL, through the Anthropic Messages API with the
-  `ANTHROPIC_API_KEY` Actions secret), given the repository's labels and their descriptions as
+* The kind and areas come from Claude (MODEL, through the Anthropic Messages API), given the repository's labels and their descriptions as
   they are right now, so a label added to the repository is a candidate the next time without
   touching this file. The answer is untrusted text: anything that is not one of the candidate
   labels is dropped, at most one kind and MAX_AREAS areas survive. An issue that already carries a
   kind (the bug form files one as `bug`) is told so and never gets a second, different kind.
+* The workflow holds no API key. It signs in with Workload Identity Federation: GitHub's OIDC token
+  for the run is exchanged for a short-lived Anthropic access token (`federation_token`), by the
+  federation rule named in the repository variables ANTHROPIC_FEDERATION_RULE_ID,
+  ANTHROPIC_ORGANIZATION_ID, ANTHROPIC_SERVICE_ACCOUNT_ID and (optional) ANTHROPIC_WORKSPACE_ID.
 * There is no keyword fallback. A guess from single words ("play", "ass", "skip") put wrong areas
   on most issues, and a silent fallback hid that the model had stopped answering for weeks. When
   the key is missing or the model fails or answers nonsense, only `user-report` is added, the
@@ -27,7 +30,7 @@ maintainer's call and are never candidates. `question` is retired (questions go 
 Q&A) and is never a candidate either.
 
     ci/label-issue.py --issue 478            # label one issue (GITHUB_TOKEN, GITHUB_REPOSITORY,
-                                             # ANTHROPIC_API_KEY)
+                                             # ACTIONS_ID_TOKEN_REQUEST_*, ANTHROPIC_* federation ids)
     ci/label-issue.py --unlabeled            # label every open issue that has no labels
     ci/label-issue.py --issue 478 --dry-run  # print the decision, change nothing
     ci/label-issue.py --selftest             # pure logic, no network; `make check` runs it
@@ -44,6 +47,10 @@ import urllib.request
 
 API = "https://api.github.com"
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+TOKEN_URL = "https://api.anthropic.com/v1/oauth/token"
+# The `aud` the federation rule expects on GitHub's identity token.
+AUDIENCE = "https://api.anthropic.com"
+FEDERATION_VARS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID")
 # A label pick is a short classification over a few hundred tokens; the small model is plenty.
 MODEL = "claude-haiku-5-5"
 
@@ -169,13 +176,45 @@ def paged(url, token):
         page += 1
 
 
-def model_asker(api_key):
-    """`ask(messages) -> str | None` against the Anthropic Messages API; None without a key or on an API error."""
+def federation_token(env):
+    """A short-lived Anthropic access token for this workflow run, or None (reason printed).
+
+    Needs the job's `id-token: write` permission (ACTIONS_ID_TOKEN_REQUEST_URL / _TOKEN) and the
+    federation ids in `env`; the workspace id is only needed when the rule covers several."""
+    missing = [v for v in FEDERATION_VARS if not env.get(v)]
+    if missing:
+        print(f"::error::missing {', '.join(missing)}: set them as repository variables", file=sys.stderr)
+        return None
+    url, bearer = env.get("ACTIONS_ID_TOKEN_REQUEST_URL"), env.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+    if not url or not bearer:
+        print("::error::no GitHub identity token: the job needs `permissions: id-token: write`", file=sys.stderr)
+        return None
+    try:
+        # A fresh identity token per exchange: Anthropic accepts each one once.
+        jwt = request("GET", f"{url}&audience={AUDIENCE}", bearer)["value"]
+        body = {"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": jwt,
+                "federation_rule_id": env["ANTHROPIC_FEDERATION_RULE_ID"],
+                "organization_id": env["ANTHROPIC_ORGANIZATION_ID"],
+                "service_account_id": env["ANTHROPIC_SERVICE_ACCOUNT_ID"]}
+        if env.get("ANTHROPIC_WORKSPACE_ID"):
+            body["workspace_id"] = env["ANTHROPIC_WORKSPACE_ID"]
+        return request("POST", TOKEN_URL, None, body, {"content-type": "application/json"})["access_token"]
+    except (urllib.error.URLError, KeyError, TypeError, ValueError, TimeoutError) as e:
+        # A refused exchange is an opaque 401; the reason is on the Console's authentication history page.
+        print(f"::error::Anthropic sign-in failed ({e}); see Console > Workload identity > history", file=sys.stderr)
+        return None
+
+
+def model_asker(get_token):
+    """`ask(messages) -> str | None` against the Anthropic Messages API, signed in by `get_token()`;
+    None when there is no token or on an API error."""
     def ask(messages):
-        if not api_key:
+        token = get_token()
+        if not token:
             return None
         system, user = messages[0]["content"], messages[1:]
-        headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+        headers = {"authorization": f"Bearer {token}", "anthropic-version": "2023-06-01",
+                   "content-type": "application/json"}
         payload = {"model": MODEL, "max_tokens": 200, "system": system, "messages": user}
         try:
             resp = request("POST", ANTHROPIC_URL, None, payload, headers)
@@ -235,11 +274,8 @@ def main():
             print("every open issue already has a label")
             return 0
         sys.exit("nothing to do: pass --issue N or --unlabeled")
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("::error::ANTHROPIC_API_KEY is not set: add it as an Actions secret; only user-report will be added")
     print(f"classifier: {MODEL}")
-    ask = model_asker(api_key)
+    ask = model_asker(lambda: federation_token(os.environ))
     results = [label_issue(repo, n, token, repo_labels, ask, args.dry_run, args.only_if_unlabeled or args.unlabeled)
                for n in numbers]
     return 0 if all(results) else 1
@@ -314,8 +350,39 @@ def selftest():
             system = prompt(arabic, candidates(labels))[0]["content"]
             self.assertIn("not single words", system)
 
-        def test_no_api_key_means_no_answer(self):
-            self.assertIsNone(model_asker(None)(prompt(arabic, candidates(labels))))
+        def test_no_token_means_no_answer(self):
+            self.assertIsNone(model_asker(lambda: None)(prompt(arabic, candidates(labels))))
+
+        def test_federation_needs_its_ids_and_the_identity_token(self):
+            ids = dict(zip(FEDERATION_VARS, ("fdrl_1", "org-1", "svac_1")))
+            self.assertIsNone(federation_token({}))
+            self.assertIsNone(federation_token({k: v for k, v in ids.items() if k != "ANTHROPIC_FEDERATION_RULE_ID"}))
+            self.assertIsNone(federation_token(ids))  # no id-token permission
+
+        def test_federation_exchange_request(self):
+            global request
+            real, calls = request, []
+
+            def fake(method, url, token, payload=None, headers=None):
+                calls.append((method, url, token, payload))
+                return {"value": "gh-jwt"} if method == "GET" else {"access_token": "sk-ant-oat01-x"}
+            request = fake
+            try:
+                env = {"ANTHROPIC_FEDERATION_RULE_ID": "fdrl_1", "ANTHROPIC_ORGANIZATION_ID": "org-1",
+                       "ANTHROPIC_SERVICE_ACCOUNT_ID": "svac_1", "ANTHROPIC_WORKSPACE_ID": "wrkspc_1",
+                       "ACTIONS_ID_TOKEN_REQUEST_URL": "https://gh/oidc?x=1", "ACTIONS_ID_TOKEN_REQUEST_TOKEN": "req"}
+                self.assertEqual(federation_token(env), "sk-ant-oat01-x")
+                bare = {k: v for k, v in env.items() if k != "ANTHROPIC_WORKSPACE_ID"}
+                federation_token(bare)
+            finally:
+                request = real
+            self.assertEqual(calls[0][:3], ("GET", "https://gh/oidc?x=1&audience=https://api.anthropic.com", "req"))
+            self.assertEqual(calls[1][1], TOKEN_URL)
+            self.assertEqual(calls[1][3], {
+                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": "gh-jwt",
+                "federation_rule_id": "fdrl_1", "organization_id": "org-1",
+                "service_account_id": "svac_1", "workspace_id": "wrkspc_1"})
+            self.assertNotIn("workspace_id", calls[3][3])
 
         def test_model_is_the_current_haiku(self):
             self.assertEqual(MODEL, "claude-haiku-5-5")

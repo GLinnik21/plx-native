@@ -14,10 +14,14 @@ name: Issue labels
 # whatever the model answers is filtered down to the repository's own labels before anything is
 # written. The token can write issues and nothing else.
 #
-# Claude Haiku picks the labels through the Anthropic API: the repository needs an
-# `ANTHROPIC_API_KEY` Actions secret. There is no keyword fallback: when the key is missing or the
-# model fails, only `user-report` is added and the job FAILS, so a dead key shows up as a red run
-# instead of weeks of silently wrong labels.
+# Claude Haiku picks the labels through the Anthropic API. The job holds no API key: it signs in with
+# Workload Identity Federation (the `id-token: write` permission below; ci/label-issue.py exchanges
+# GitHub's identity token for a short-lived Anthropic token). The federation rule's ids are not
+# secrets; they live in the repository VARIABLES ANTHROPIC_FEDERATION_RULE_ID,
+# ANTHROPIC_ORGANIZATION_ID, ANTHROPIC_SERVICE_ACCOUNT_ID and, if the rule covers several
+# workspaces, ANTHROPIC_WORKSPACE_ID. The rule should accept only this repository's default branch.
+# There is no keyword fallback: when sign-in or the model fails, only `user-report` is added and the
+# job FAILS, so a broken rule shows up as a red run instead of weeks of silently wrong labels.
 
 on:
   issues:
@@ -37,6 +41,7 @@ on:
 permissions:
   contents: read
   issues: write
+  id-token: write
 
 concurrency:
   group: issue-labels-${{ github.event.issue.number || github.run_id }}
@@ -56,7 +61,10 @@ jobs:
       - name: Label
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
           EVENT: ${{ github.event_name }}
           ACTION: ${{ github.event.action }}
           ISSUE: ${{ github.event.issue.number }}
