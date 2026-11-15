@@ -144,6 +144,9 @@ def decide(issue, repo_labels, ask_model):
     answer = ask_model(prompt(issue, cands))
     parsed = parse_answer(answer) if answer is not None else None
     ok = parsed is not None
+    if answer is not None and not ok:
+        # The one case where the model answered but not in the shape asked for: show what it said.
+        print(f"::warning::unusable model answer: {answer.strip()[:300]!r}", file=sys.stderr)
     picked = sanitize(parsed, cands) if ok else []
     names = {l["name"] for l in repo_labels}
     if is_user_report(issue) and USER_REPORT in names:
@@ -215,7 +218,7 @@ def model_asker(get_token):
         system, user = messages[0]["content"], messages[1:]
         headers = {"authorization": f"Bearer {token}", "anthropic-version": "2023-06-01",
                    "content-type": "application/json"}
-        payload = {"model": MODEL, "max_tokens": 200, "system": system, "messages": user}
+        payload = {"model": MODEL, "max_tokens": 600, "system": system, "messages": user}
         try:
             resp = request("POST", ANTHROPIC_URL, None, payload, headers)
             return "".join(b.get("text", "") for b in resp["content"] if b.get("type") == "text")
@@ -241,6 +244,8 @@ def label_issue(repo, number, token, repo_labels, ask, dry_run, only_if_unlabele
         add = new_labels(picks, have)
         print(f"#{number} {issue.get('title', '')!r}: picks {', '.join(picks) or 'nothing'}; "
               f"would add {', '.join(add) or 'nothing'}")
+        if not ok:
+            print(f"::error::#{number}: the model gave no usable answer")
         return ok
     add, ok = decide(issue, repo_labels, ask)
     print(f"#{number} {issue.get('title', '')!r}: {', '.join(add) if add else 'nothing to add'}")
