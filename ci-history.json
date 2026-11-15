@@ -1,4 +1,4 @@
-{"updated":"2026-11-15T23:31:24Z",
+{"updated":"2026-11-15T23:38:12Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5211,7 +5211,8 @@
 {"id":43755967341,"at":"2026-11-15T20:04:34Z","sha":"91d69752c","title":"Continue Watching: a server that answers second no longer hides its newest cards behind the deck","pr":1405,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":16,"macOS simulator build + launch":216,"Linux simulator build + launch":263,"macOS tests against bundled FFmpeg and ASS":119}},
 {"id":43758415153,"at":"2026-11-15T20:30:07Z","sha":"96e2de4d4","title":"Point every live link at the plxnative organization","pr":1406,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":189,"Windows launcher syntax":18,"macOS simulator build + launch":260,"Linux simulator build + launch":448}},
 {"id":43771838746,"at":"2026-11-15T22:54:09Z","sha":"118fa28be","title":"Re-pin the read-only proof certificates to the zip 9.5.1 lockfile","pr":1402,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":398,"macOS simulator build + launch":180,"Windows launcher syntax":15,"macOS tests against bundled FFmpeg and ASS":210}},
-{"id":43774620180,"at":"2026-11-15T23:24:22Z","sha":"2c20048de","title":"fix(ci): reconcile generated enum certificate","pr":1392,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":109,"Windows launcher syntax":17,"macOS simulator build + launch":230,"Linux simulator build + launch":428}}
+{"id":43774620180,"at":"2026-11-15T23:24:22Z","sha":"2c20048de","title":"fix(ci): reconcile generated enum certificate","pr":1392,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":109,"Windows launcher syntax":17,"macOS simulator build + launch":230,"Linux simulator build + launch":428}},
+{"id":43775338537,"at":"2026-11-15T23:32:09Z","sha":"fe6efc1bc","title":"refactor(ui): complete owned presentation and replay inputs","pr":1392,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":112,"macOS simulator build + launch":262,"Linux simulator build + launch":345,"Windows launcher syntax":21}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
