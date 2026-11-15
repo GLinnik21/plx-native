@@ -105,7 +105,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
                 },
             }]
         };
-        rig.take_library_reqs();
+        rig.take_observed_library_commands();
         frame(
             &mut d,
             &mut rig,
@@ -120,7 +120,13 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
         let rect = |r: plx_ui::Rect| [r.x, r.y, r.w, r.h];
         for n in i + 1..i + 80 {
             frame(&mut d, &mut rig, RECOMMENDED, tick(n), vec![]);
-            assert_eq!(d.focus(), Some(key));
+            if super::item_menu_up(&d) {
+                assert_ne!(d.focus().map(|focus| focus.entry), Some(key.entry),
+                    "the product runner transfers input to the held card's menu");
+                assert_eq!(d.nav.top_page().unwrap().id, key.entry, "the host stays retained");
+            } else {
+                assert_eq!(d.focus(), Some(key));
+            }
             let page = d
                 .nav
                 .entry(key.entry)
@@ -157,7 +163,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
                     "the bridge opener must not inherit the pressed card's shrink"
                 );
             }
-            requests.extend(rig.take_library_reqs().into_iter().filter(|(_, req, _)| {
+            requests.extend(rig.take_observed_library_commands().into_iter().filter(|(_, req, _)| {
                 matches!(
                     req,
                     LibraryReq::ItemMenu { .. }
@@ -199,7 +205,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
             frame(&mut d, &mut rig, RECOMMENDED, tick(n), vec![]);
         }
         assert!(
-            !rig.take_library_reqs().iter().any(|(_, req, _)| matches!(
+            !rig.take_observed_library_commands().iter().any(|(_, req, _)| matches!(
                 req,
                 LibraryReq::ItemMenu { .. } | LibraryReq::Play { .. } | LibraryReq::Detail { .. }
             )),

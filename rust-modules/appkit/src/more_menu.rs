@@ -465,10 +465,10 @@ fn quality_form(
 }
 
 impl MoreMenuState {
-    fn open_focused(ps: &plx_media::route::PlaybackSession, page: Option<MorePage>, folded: Vec<FoldedRow>) -> Self {
+    fn open_focused(ps: &plx_media::route::PlaybackSession, page: Option<MorePage>, folded: Vec<FoldedRow>, current: plx_media::route::Quality) -> Self {
         let forced = plx_media::route::forced_direct_play(ps);
         let rows = rows_for(forced);
-        let current = plx_media::route::quality();
+
         let speed = plx_media::player::selected_rate(ps).unwrap_or(plx_media::player::RATE_NORMAL);
         let speeds = plx_media::player::speed_offer(ps);
         let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
@@ -594,12 +594,16 @@ impl MoreMenuState {
     /// pick), and the page pops to the root when Quality stops being offered. The panel's height
     /// follows, and the card animates to it ([`Self::update`]). Returns whether it rebuilt.
     pub fn refresh(&mut self, ps: &plx_media::route::PlaybackSession) -> bool {
+        self.refresh_with_quality(ps, self.current)
+    }
+
+    pub fn refresh_with_quality(&mut self, ps: &plx_media::route::PlaybackSession, current: plx_media::route::Quality) -> bool {
         let forced = plx_media::route::forced_direct_play(ps);
         self.refresh_to(
             ps,
             forced,
             rows_for(forced),
-            plx_media::route::quality(),
+            current,
             plx_media::player::selected_rate(ps).unwrap_or(plx_media::player::RATE_NORMAL),
             plx_media::player::speed_offer(ps),
         )
@@ -692,13 +696,13 @@ impl MoreMenuState {
     /// row. A page that is not offered for this playback (Quality under Force Direct Play, Speed
     /// when the playback takes only one) opens the root instead.
     pub fn new_on(ps: &plx_media::route::PlaybackSession, page: Option<MorePage>) -> Self {
-        Self::open_focused(ps, page, Vec::new())
+        Self::open_focused(ps, page, Vec::new(), plx_media::route::Quality::Original)
     }
 
     /// [`Self::new_on`] with the folded rows ([`folded_rows`]) listed on the root between Speed and Options.
     /// A page opened directly still pops to that root, so its folded rows are there on BACK.
     pub fn new_folded(ps: &plx_media::route::PlaybackSession, page: Option<MorePage>, folded: Vec<FoldedRow>) -> Self {
-        Self::open_focused(ps, page, folded)
+        Self::open_focused(ps, page, folded, plx_media::route::Quality::Original)
     }
 
     /// Every row's focus key, in drawn order (for a test that walks the rows).
@@ -778,6 +782,16 @@ impl MoreMenuState {
     /// the frame the panel mounts — see `TrackMenuState::warm_open`, which this mirrors.
     pub fn warm_open(&self, measure: &dyn plx_machine::machine::Measure) {
         self.motion.warm_open(&self.form.table, || self.panel_rect(measure), measure);
+    }
+
+    /// Construction from the host's captured effective quality, never a process preference read.
+    pub fn new_folded_with_quality(ps: &plx_media::route::PlaybackSession, page: Option<MorePage>, folded: Vec<FoldedRow>, current: plx_media::route::Quality) -> Self {
+        Self::open_focused(ps, page, folded, current)
+    }
+
+    pub fn update_with_quality(&mut self, dt: f32, measure: &dyn plx_machine::machine::Measure, ps: &plx_media::route::PlaybackSession, current: plx_media::route::Quality) {
+        self.refresh_with_quality(ps, current);
+        self.update(dt, measure, ps);
     }
 
     pub fn update(&mut self, dt: f32, measure: &dyn plx_machine::machine::Measure, ps: &plx_media::route::PlaybackSession) {
@@ -1884,9 +1898,9 @@ mod focus_tests {
     fn quality_row(fixture: plx_media::route::EnhTestFixture, rung: Option<plx_media::abr::Rung>) -> (String, String) {
         let (ps, _) = plx_media::route::enhancement_test_session(plx_media::route::EnhTestFixture { rung, ..fixture });
         let current = plx_media::route::quality();
-        let mut root = MoreMenuState::new(&ps);
+        let mut root = MoreMenuState::new_folded_with_quality(&ps, None, Vec::new(), current);
         let value = super::tests::value_of(&mut root, MoreRow::OpenQuality).expect("a value");
-        let mut page = MoreMenuState::new(&ps);
+        let mut page = MoreMenuState::new_folded_with_quality(&ps, None, Vec::new(), current);
         page.rows = rows_for(false);
         page.focus_key(MoreRow::OpenQuality.key().0);
         page.push(&ps, MorePage::Quality);
@@ -2276,6 +2290,20 @@ mod folded_tests {
 
     /// The three numbers [`need_h`] is built from are the real table's: the root at its tallest standard shape, with
     /// zero to seven folded rows (the most a package can fold), is as tall as the formula says.
+    #[test]
+    fn captured_preference_quality_opens_and_refreshes_from_owner_inputs() {
+        use plx_media::route::{PlaybackSession, Quality};
+        let ps = PlaybackSession::IDLE;
+        let mut a = MoreMenuState::new_folded_with_quality(&ps, None, Vec::new(), Quality::P720);
+        let b = MoreMenuState::new_folded_with_quality(&ps, None, Vec::new(), Quality::Original);
+        assert_eq!(a.current, Quality::P720);
+        assert_eq!(b.current, Quality::Original);
+        assert!(a.refresh_with_quality(&ps, Quality::P1080));
+        assert_eq!(a.current, Quality::P1080);
+        assert_eq!(b.current, Quality::Original);
+        assert!(!a.refresh_with_quality(&ps, Quality::P1080));
+    }
+
     #[test]
     fn root_height_is_the_tables() {
         plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg

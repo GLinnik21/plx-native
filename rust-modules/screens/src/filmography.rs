@@ -1106,6 +1106,9 @@ mod tests {
         type Init = super::super::family::NoInit;
         type Memory = PageMemory;
     }
+    impl crate::registry::ScreenInputsLike for FilmographyHost {
+        fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+    }
     impl PersonLike for FilmographyHost {
         fn person<'a>(cx: &Cx<'a, Self>) -> plx_data::person::PersonView<'a> { cx.views }
     }

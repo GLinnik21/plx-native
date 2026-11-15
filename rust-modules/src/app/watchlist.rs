@@ -29,14 +29,14 @@
 //! * **Re-read.** A burst of landed writes owes one re-read (`take_reread_owed`), issued two
 //!   seconds later so the burst is over.
 //!
-//! What the application does with the page's requests is `content::watchlist_requests`.
+//! Page commands execute at their dispatcher FIFO position through `content::execute_watchlist_command`.
 use std::collections::HashMap;
 
 use plx_data::stores::watchlist::{Status, WatchlistCmd};
 use plx_data::watchlist::ledger::Intent;
 use plx_screens::registry::{AppArg, WatchlistMenuArg};
 use plx_screens::watchlist::options::WatchlistOptionsState;
-use plx_screens::watchlist::page::{ListState, MatchedFacts, WatchTile, WatchlistIn, WatchlistOut, WatchlistScreen};
+use plx_screens::watchlist::page::{ListState, MatchedFacts, WatchTile, WatchlistIn, WatchlistScreen};
 
 use super::*;
 
@@ -406,16 +406,6 @@ impl Bridge {
         }
     }
 
-    /// A page's request as the bridge would have collected it from the dispatcher (tests that drive
-    /// `content::watchlist_requests` without the page's key path).
-    #[cfg(all(test, feature = "hostsim"))]
-    pub(crate) fn push_watchlist_req_for_test(&mut self, from: MachineId, req: WatchlistOut) {
-        self.watchlist_reqs.push((from, req, ReturnState::default()));
-    }
-
-    pub(crate) fn take_watchlist_reqs(&mut self) -> Vec<(MachineId, WatchlistOut, ReturnState<u32, PageMemory>)> {
-        std::mem::take(&mut self.watchlist_reqs)
-    }
 
     /// Is this catalog id on the watchlist, intents in flight counted? (The Detail and catalog
     /// bookmark faces read it.)

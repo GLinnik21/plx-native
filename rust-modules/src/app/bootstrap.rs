@@ -109,6 +109,58 @@ pub(crate) const SHAPE_V7: &str = "ControlledHomeInitV7{locale:capturedSessionPr
 #[cfg(test)]
 pub(crate) const PRE_SETTINGS_SHAPE: &str = "ControlledHomeInitV1{version:u32,session:SessionInit,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
 
+/// V8 binds the once-captured UI policy. Older profiles keep absent-policy bytes and hashes.
+pub(crate) const RUNTIME_POLICY_SHAPE: &str = "ControlledRuntimePolicyV1{harness_driven:bool,lookahead_rows:u32}";
+// V10 captures the exact thirteen fields consumed by Preferences, ItemMenu and scrub machines.
+pub(crate) const UI_PREFERENCES_SHAPE: &str = "ControlledUiPreferencesV2{playback_quality:PlaybackQuality,direct_play_mode:DirectPlayMode,subtitle_tone:SubtitleTone,subtitle_size:SubtitleSize,subtitle_position:SubtitlePosition,hdr_overlay_brightness:HdrOverlayBrightness,next_episode_mode:NextEpisodeMode,skip_interval:SkipInterval,instant_dpad_seeking:InstantDpadSeeking,uri_engine:UriEngine,dolby_vision_mode:DolbyVisionMode,deck_press:DeckPress,under_posters:UnderPosters}";
+
+/// Controlled boots have no seated profile yet. Capture their effective saved values,
+/// not live cells left behind by another owner or a pending session-cache publication.
+fn ui_preferences(saved: &plx_plex::plex::session::Session) -> plx_plex::plex::session::ProfilePrefs {
+    use plx_plex::plex::session::*;
+    ProfilePrefs {
+        deck_press: Some(stored_effective::<DeckPressPref>(saved, &Seat::Unseated)),
+        under_posters: Some(stored_effective::<UnderPostersPref>(saved, &Seat::Unseated)),
+        instant_dpad_seeking: Some(stored_effective::<InstantDpadSeekingPref>(saved, &Seat::Unseated)),
+        playback_quality: Some(stored_effective::<QualityPref>(saved, &Seat::Unseated)),
+        subtitle_size: Some(stored_effective::<SubtitleSizePref>(saved, &Seat::Unseated)),
+        subtitle_position: Some(stored_effective::<SubtitlePositionPref>(saved, &Seat::Unseated)),
+        direct_play_mode: Some(stored_effective::<DirectPlayModePref>(saved, &Seat::Unseated)),
+        subtitle_tone: Some(stored_effective::<SubtitleTonePref>(saved, &Seat::Unseated)),
+        hdr_overlay_brightness: Some(stored_effective::<HdrOverlayBrightnessPref>(saved, &Seat::Unseated)),
+        next_episode_mode: Some(stored_effective::<NextEpisodeModePref>(saved, &Seat::Unseated)),
+        skip_interval: Some(stored_effective::<SkipIntervalPref>(saved, &Seat::Unseated)),
+        uri_engine: Some(stored_effective::<UriEnginePref>(saved, &Seat::Unseated)),
+        dolby_vision_mode: Some(stored_effective::<DolbyVisionModePref>(saved, &Seat::Unseated)),
+        ..Default::default()
+    }
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RuntimePolicy {
+    pub harness_driven: bool,
+    pub lookahead_rows: u32,
+}
+impl RuntimePolicy {
+    pub(crate) fn inputs(self) -> plx_screens::inputs::RuntimePolicy {
+        plx_screens::inputs::RuntimePolicy { harness_driven: self.harness_driven, lookahead_rows: self.lookahead_rows as usize }
+    }
+    /// App-owned IO boundary, called once for a live owner or a captured controlled boot.
+    pub(crate) fn capture() -> Self {
+        let lookahead = plx_base::devtrig::read("lookahead");
+        #[cfg(feature = "devtriggers")]
+        let recorder = matches!(plx_ui::rec::mode_value(&plx_base::devtrig::path("rec")), Ok(Some(_)));
+        #[cfg(not(feature = "devtriggers"))]
+        let recorder = false;
+        Self {
+            harness_driven: plx_base::devtrig::read("token").is_some_and(|token| !token.is_empty())
+                || plx_base::devtrig::read("pickuser").is_some() || recorder,
+            lookahead_rows: plx_screens::inputs::RuntimePolicy::lookahead_rows_for(lookahead.as_deref()) as u32,
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum Entropy {
     /// Actual bytes used by normal first-boot minting, or no draw for an existing identity.
@@ -121,6 +173,16 @@ pub(crate) enum Entropy {
 #[serde(deny_unknown_fields)]
 pub(crate) struct Initial {
     pub version: u32,
+    /// None is exclusively the frozen legacy profile: harness off, three rows, no ambient fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_policy: Option<RuntimePolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_preferences: Option<plx_plex::plex::session::ProfilePrefs>,
+    /// V11: explicit install fact, not a profile preference. Historical boots use captured Session.language.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_language: Option<plx_platform::i18n::Preference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_language: Option<plx_platform::i18n::Preference>,
     pub session: plx_session::auth::SessionInit,
     pub consent: plx_telemetry::telemetry::consent::Consent,
     pub home: plx_data::pms::initial::Initial,
@@ -161,7 +223,7 @@ impl Initial {
         let primary = plx_plex::plex::session::ServerRef { address:"127.0.0.1".into(), port:i64::from(port),
             origin_url:origin.base(),token:format!("s{:08x}",seed.wrapping_add(1)),
             tier:Some(plx_plex::plex::probe::Location::Local), ..Default::default() };
-        let initial = Self { version:1, session:plx_session::auth::SessionInit::captured_boot(saved,Some(primary),Vec::new()),
+        let initial = Self { version:1, install_language:Some(saved.language), running_language:Some(saved.language), runtime_policy:Some(RuntimePolicy { harness_driven:true, lookahead_rows:3 }), ui_preferences:Some(ui_preferences(&saved)), session:plx_session::auth::SessionInit::captured_boot(saved,Some(primary),Vec::new()),
             consent:Default::default(),home:plx_data::pms::initial::Initial::fresh(),clock_start:0,
             entropy:Entropy::Seeded(seed),primary_client:1,automated:true,settings:settings.clone(),
             content:None, triggers:vec!["plxnative-app-init".into(),"plxnative-rec".into(),
@@ -182,7 +244,7 @@ impl Initial {
             origin_url: plx_plex::plex::Origin::http(host, port).base(), token,
             tier: Some(plx_plex::plex::probe::configured_tier(host)), ..Default::default()
         });
-        let initial = Self { version: 1,
+        let initial = Self { version: 1, install_language: Some(saved.language), running_language: Some(saved.language), runtime_policy: Some(RuntimePolicy::capture()), ui_preferences: Some(ui_preferences(&saved)),
             session: plx_session::auth::SessionInit::captured_boot(saved, primary, Vec::new()),
             consent: plx_telemetry::telemetry::capture_initial(), clock_start: 0, entropy: Entropy::Captured(entropy),
             primary_client: plx_plex::plex::Client::capture_generation_seed(),
@@ -199,6 +261,18 @@ impl Initial {
         use plx_session::auth::owner::BootstrapAuthority;
         let s = &self.session;
         if self.version != 1 { return Err("unsupported initial version"); }
+        if let Some(prefs) = &self.ui_preferences {
+            let value = serde_json::to_value(prefs).map_err(|_| "invalid UI preferences")?;
+            let expected = ["playback_quality", "direct_play_mode", "subtitle_tone", "subtitle_size", "subtitle_position",
+                "hdr_overlay_brightness", "next_episode_mode", "skip_interval", "instant_dpad_seeking",
+                "uri_engine", "dolby_vision_mode", "deck_press", "under_posters"];
+            if value.as_object().is_none_or(|values| values.len() != expected.len() || expected.iter().any(|key| !values.contains_key(*key))) {
+                return Err("incomplete UI preferences");
+            }
+        }
+        if self.runtime_policy.is_some_and(|policy| policy.lookahead_rows > 4) {
+            return Err("invalid runtime policy");
+        }
         if self.primary_client == 0 { return Err("invalid primary client binding"); }
         if plx_screens::consent::should_show(&self.consent, self.automated) {
             return Err("unsupported initial consent route");
@@ -277,9 +351,17 @@ impl Initial {
     pub(crate) fn decode_profile(mut value: serde_json::Value, expected_hash: u64, fingerprint: u64)
         -> Result<Self, &'static str> {
         use super::recorder::{FP_PRIOR, FP_V6};
+        // Unpublished V9 captured only six preferences. Missing machine inputs cannot be
+        // reconstructed honestly from ambient cells or silently filled with today's defaults.
+        if fingerprint == super::recorder::state_fp_v9() { return Err("incompatible six-field UI preference profile; requires V10 capture"); }
+        let current = fingerprint == super::recorder::state_fp();
+        if value.get("runtime_policy").is_some() != current { return Err("incompatible runtime policy profile"); }
+        if value.get("ui_preferences").is_some() != current { return Err("incompatible UI preference profile"); }
+        if fingerprint == super::recorder::state_fp_v10() { return Err("incompatible install fact profile; requires V11 capture"); }
+        if value.get("install_language").is_some() != current || value.get("running_language").is_some() != current { return Err("incompatible install language profile"); }
         match fingerprint {
             FP_PRIOR => Self::decode(value, expected_hash),
-            fp if fp == FP_V6 || fp == super::recorder::state_fp() => {
+            fp if fp == FP_V6 || fp == super::recorder::state_fp_v7() || current => {
                 let session = value.get_mut("session").ok_or("invalid session codec")?;
                 let envelope = session.as_object_mut().ok_or("invalid session codec")?;
                 if envelope.len() != 2 || envelope.get("codec").and_then(|v| v.as_u64()) != Some(6) {
@@ -321,6 +403,18 @@ impl LogicalState for Initial {
         }
         c.seq(self.triggers.len());
         for trigger in &self.triggers { c.str(trigger); }
+        if let Some(policy) = self.runtime_policy {
+            c.str(RUNTIME_POLICY_SHAPE).bool(policy.harness_driven).u32(policy.lookahead_rows);
+        }
+        if let Some(language) = self.install_language {
+            c.str("ControlledInstallLanguageV1").str(language.tag());
+        }
+        if let Some(language) = self.running_language {
+            c.str("ControlledRunningLanguageV1").str(language.tag());
+        }
+        if let Some(prefs) = &self.ui_preferences {
+            c.str(UI_PREFERENCES_SHAPE).str(&serde_json::to_string(prefs).expect("finite typed UI preferences"));
+        }
     }
     fn probe(&self, out: &mut String) { out.push_str("controlled=home version=1"); }
 }
@@ -342,6 +436,7 @@ impl Preflight {
                 let (mode, path) = super::recorder::ReplayMode::parse(&path)?;
                 let path = std::path::Path::new(path);
                 let recording = Recording::load(path, super::recorder::state_fp())
+                    .or_else(|_| Recording::load(path, super::recorder::state_fp_v7()))
                     .or_else(|_| Recording::load(path, super::recorder::FP_PRIOR))
                     .map_err(|_| "invalid or incompatible recording")?;
                 let initial = Initial::decode_profile(recording.header.init_data.clone(), recording.header.init_hash,

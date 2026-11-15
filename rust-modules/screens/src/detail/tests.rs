@@ -32,6 +32,10 @@ impl ScreenArg for TestArg {
 
 pub(super) struct TestHost;
 
+impl crate::registry::ScreenInputsLike for TestHost {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::empty_fixture() }
+}
+
 impl crate::registry::PlayerLike for TestHost {
     fn session<'a>(_cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession {
         plx_media::route::idle_session_for_test()
@@ -110,6 +114,32 @@ pub(super) fn drawn_stops(screen: &mut DetailScreen, context: &Cx<'_, TestHost>)
     f.into_stops()
 }
 
+#[test]
+#[cfg(feature = "devtriggers")]
+fn adjacent_cold_controlled_detail_never_initializes_native_preview_latch() {
+    const CHILD: &str = "PLX_COLD_CONTROLLED_PREVIEW_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--nocapture"])
+            .env_clear().envs(std::env::vars_os().filter(|(key, _)| !key.to_string_lossy().starts_with("GIT_")))
+            .env(CHILD, "1").output().unwrap();
+        assert!(output.status.success(), "cold child failed: {}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    let guard = install(detail(ServerId::UNSET, "cold-controlled"));
+    plx_base::devtrig::with_private_triggers(|| {
+        std::fs::write(plx_base::devtrig::path("nopreview"), "").unwrap();
+        let mut screen = bare(&guard, ServerId::UNSET, "cold-controlled");
+        let scope = plx_base::step::StepScope::enter();
+        assert!(std::panic::catch_unwind(plx_media::player::preview::enabled).is_err(), "fresh process must start with an uninitialized latch");
+        step(&mut screen, &ScreenEvent::Tick(plx_machine::machine::Tick { ms: 16, dt_us: 16_667 }), None);
+        assert!(std::panic::catch_unwind(plx_media::player::preview::enabled).is_err(), "controlled Detail must not prime the native latch");
+        drop(scope);
+    });
+    clear();
+}
+
 fn bare(_guard: &plx_base::testlock::Serial, sid: ServerId, rk: &str) -> DetailScreen {
     bare_held(sid, rk)
 }
@@ -118,6 +148,7 @@ fn bare(_guard: &plx_base::testlock::Serial, sid: ServerId, rk: &str) -> DetailS
 /// card-conformance matrix runs every harness inside `run_all`'s guard, `cards_harness`).
 pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
     let mut screen = DetailScreen {
+        caption_policy: crate::registry::captions::policy(),
         entry: EntryId(7),
         sid,
         rk: rk.into(),
@@ -2213,7 +2244,7 @@ fn trailer_act_edge_with_pause(
         plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
         &mut present,
     );
-    screen.trailer_act::<TestHost>(act, edge, now, Some(0), Some(DurationFixture::DUR), preview_paused, &mut sink);
+    screen.trailer_act::<TestHost>(act, edge, now, Some(0), Some(DurationFixture::DUR), preview_paused, plx_plex::plex::session::SkipInterval::Seconds10, &mut sink);
     drop(sink);
     effects
 }

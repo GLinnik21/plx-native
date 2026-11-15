@@ -42,11 +42,11 @@ fn controlled_view_state_writes_fail_closed_before_any_io() {
             let detail_hero = AppFx::Store(StoreId::ViewState, StoreCmd::ViewState(ViewStateCmd::Request {
                 sid, rk: "1".into(), write, scope: Scope::Leaf, guid: String::new(),
             }));
-            let (failure, mut bridge, emitted) = refused(replay, detail_hero);
+            let (failure, bridge, emitted) = refused(replay, detail_hero);
             assert_eq!(failure, Some("unsupported Home store command"),
                 "the detail hero's {write:?} must be refused (replay = {replay})");
             assert_eq!(emitted, 0, "a refused store command is not delivered");
-            assert!(bridge.take_item_menu_reqs().is_empty());
+            assert!(bridge.screen_command_receipts.is_empty());
             assert!(!bridge.stores.has_jobs(), "nothing sits on an outbox");
             assert!(!bridge.stores.viewstate.borrow().is_busy_for_test(), "no write was queued");
         }
@@ -54,11 +54,11 @@ fn controlled_view_state_writes_fail_closed_before_any_io() {
             let item_menu = AppFx::ItemMenu(ItemMenuReq {
                 act: act.clone(), sid, item: None, season: None, loaded_episode: false, from_home: true,
             });
-            let (failure, mut bridge, emitted) = refused(replay, item_menu);
+            let (failure, bridge, emitted) = refused(replay, item_menu);
             assert_eq!(failure, Some("unsupported Home application effect"),
                 "the item menu's {act:?} must be refused (replay = {replay})");
             assert_eq!(emitted, 0);
-            assert!(bridge.take_item_menu_reqs().is_empty(),
+            assert!(bridge.screen_command_receipts.is_empty(),
                 "the committed row never reaches the loop that would write it");
             assert!(!bridge.stores.has_jobs());
             assert!(!bridge.stores.viewstate.borrow().is_busy_for_test());

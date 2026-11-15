@@ -16,6 +16,9 @@ impl Host for CollectionHost {
     type Init = super::super::family::NoInit;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for CollectionHost {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+}
 impl CollectionLike for CollectionHost {
     fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> { cx.views }
 }

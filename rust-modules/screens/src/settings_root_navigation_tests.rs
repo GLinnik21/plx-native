@@ -1003,3 +1003,57 @@ fn a_success_receipt_waits_for_the_next_captured_authority() {
     assert!(page.pending_auto.is_none());
     assert!(page.state.auto_sign_in);
 }
+
+#[test]
+fn adjacent_root_rows_use_independent_retained_profile_and_install_facts() {
+    use plx_plex::plex::session::{ProfilePrefs, UnderPosters};
+    use plx_platform::i18n::Preference;
+    let _serial = plx_base::testlock::serial();
+    let before = plx_platform::i18n::saved_preference_for_test(Preference::En);
+    let off = UnderPosters { title: false, ..UnderPosters::DEFAULT };
+    let a = crate::registry::ScreenInputs { install_language: Preference::Be,
+        preferences: Some(ProfilePrefs { under_posters: Some(off), ..Default::default() }), ..Default::default() };
+    let b = crate::registry::ScreenInputs { install_language: Preference::Es,
+        preferences: Some(ProfilePrefs { under_posters: Some(UnderPosters::DEFAULT), ..Default::default() }), ..a.clone() };
+    let directory = plx_data::stores::browse::DirectoryView::empty_for_test();
+    let (first, second) = {
+        let _step = plx_base::step::StepScope::enter();
+        (RootPage::new(EntryId(1), directory, &a), RootPage::new(EntryId(2), directory, &b))
+    };
+    plx_platform::i18n::saved_preference_for_test(before);
+    assert_eq!(first.state.language, Preference::Be);
+    assert_eq!(second.state.language, Preference::Es);
+    assert_eq!(first.state.under_posters, off);
+    assert_eq!(second.state.under_posters, UnderPosters::DEFAULT);
+}
+
+#[test]
+fn adjacent_root_pending_install_pick_refreshes_with_unchanged_cache_and_profile() {
+    use plx_platform::i18n::Preference;
+    let _serial = plx_base::testlock::serial();
+    let mut inputs = crate::registry::ScreenInputs::default();
+    inputs.install_language = plx_platform::i18n::saved_preference();
+    let mut context = cx(None);
+    context.views.inputs = &inputs;
+    let mut page = RootPage::new(EntryId(0), context.views.directory, &inputs);
+    let mut initial_out = Vec::new();
+    let mut initial_present = Present::new();
+    {
+        let _step = plx_base::step::StepScope::enter();
+        page.step(&ScreenEvent::Tick(Default::default()), &context,
+            &mut Effects::new(&mut initial_out, MachineId::Instance(InstanceId(0)), &mut initial_present));
+    }
+    let mut pending = inputs.clone();
+    pending.install_language = if inputs.install_language == Preference::Be { Preference::Es } else { Preference::Be };
+    assert!(std::sync::Arc::ptr_eq(&pending.session, &inputs.session));
+    assert_eq!(pending.session_key(), inputs.session_key());
+    context.views.inputs = &pending;
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    {
+        let _step = plx_base::step::StepScope::enter();
+        page.step(&ScreenEvent::Tick(Default::default()), &context,
+            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
+    }
+    assert_eq!(page.state.language, pending.install_language, "a retained next-launch pick must not wait for the stored Session Arc");
+}

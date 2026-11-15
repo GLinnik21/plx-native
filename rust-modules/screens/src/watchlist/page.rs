@@ -306,9 +306,9 @@ impl Page {
 
     /// The caption of the tile at `i` under the Under posters setting: its row and state, and the
     /// facts of its matched copy.
-    fn label(&self, i: usize) -> TileLabel {
+    fn label(&self, i: usize, policy: &plx_ui::caption_policy::CaptionPolicy) -> TileLabel {
         match self.tiles.get(i).zip(self.cells.get(i)) {
-            Some((t, c)) => caption::label(&t.row, t.state, &caption::policy(), &c.listing),
+            Some((t, c)) => caption::label(&t.row, t.state, policy, &c.listing),
             None => TileLabel::default(),
         }
     }
@@ -498,6 +498,7 @@ fn tile_facts<'a>(t: &'a WatchTile, c: &'a Cell) -> TileFacts<'a> {
 
 /// The grid's content (`CardSource`): the snapshot's titles and what was derived for them.
 struct Titles<'a> {
+    policy: plx_ui::caption_policy::CaptionPolicy,
     page: &'a Page,
 }
 
@@ -528,7 +529,7 @@ impl<H: ContentLike> CardSource<H> for Titles<'_> {
         }
     }
     fn label(&self, i: usize) -> TileLabel {
-        self.page.label(i)
+        self.page.label(i, &self.policy)
     }
     fn progress(&self, i: usize) -> Option<f32> {
         self.page.cells.get(i)?.resume
@@ -570,6 +571,7 @@ struct CountHold {
 /// The tiles a landing is fading out, in the order the grid names them (`Grid::ghost_keys`); one
 /// the page did not keep is `None` and is not drawn.
 struct GhostTitles<'a> {
+    policy: plx_ui::caption_policy::CaptionPolicy,
     tiles: Vec<Option<&'a (WatchTile, Cell)>>,
     /// Test support: the ghost posters actually asked for (`Page::ghost_draws`).
     #[cfg(test)]
@@ -600,7 +602,7 @@ impl<H: ContentLike> CardSource<H> for GhostTitles<'_> {
     /// Read only for the focused card's ghost, which keeps its caption until the landing steps.
     fn label(&self, i: usize) -> TileLabel {
         match self.tiles.get(i).copied().flatten() {
-            Some((t, c)) => caption::label(&t.row, t.state, &caption::policy(), &c.listing),
+            Some((t, c)) => caption::label(&t.row, t.state, &self.policy, &c.listing),
             None => TileLabel::default(),
         }
     }
@@ -647,8 +649,9 @@ impl<H: ContentLike> StackPage<H> for Page {
         out.extend([Sec::Items, Sec::Status, Sec::Head]);
     }
 
-    fn cards<'a>(&'a self, _cx: &'a Cx<'_, H>, k: Sec) -> Option<Titles<'a>> {
-        (k == Sec::Items && !self.cells.is_empty()).then_some(Titles { page: self })
+    fn cards<'a>(&'a self, cx: &'a Cx<'_, H>, k: Sec) -> Option<Titles<'a>> {
+        (k == Sec::Items && !self.cells.is_empty()).then_some(Titles { page: self,
+            policy: crate::registry::captions::policy_for(H::screen_inputs(cx)) })
     }
 
     /// A reserved cell whose row has landed: the title now keyed in the same cell stands for it.
@@ -684,6 +687,7 @@ impl<H: ContentLike> StackPage<H> for Page {
     /// DS4: the removed tile fades where it stood, under the survivors that spring over its cell.
     fn paint_ghosts(&self, _k: Sec, grid: &Grid, f: &mut DrawFrame<'_, '_, H>, p: Painter) {
         let ghosts = GhostTitles {
+            policy: crate::registry::captions::policy_for(H::screen_inputs(f.cx)),
             tiles: grid.ghost_keys().map(|key| self.ghosts.get(&key)).collect(),
             #[cfg(test)]
             drawn: &self.ghost_draws,
@@ -694,8 +698,8 @@ impl<H: ContentLike> StackPage<H> for Page {
     }
 
     /// The grid's focused band follows the Under posters setting, as the Library's does.
-    fn caption_policy(&self, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
-        (k == Sec::Items).then(caption::band_policy)
+    fn caption_policy(&self, cx: &Cx<'_, H>, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
+        (k == Sec::Items).then(|| crate::registry::captions::status_policy(&crate::registry::captions::policy_for(H::screen_inputs(cx))))
     }
 
     /// The header section's group is the shared row's (`HeaderFocus::group_spec`: a Control row,
@@ -1374,7 +1378,7 @@ impl WatchlistScreen {
     /// Test support: the grid's content, as the stack reads it.
     #[cfg(test)]
     pub(crate) fn cards_for_test(&self) -> impl ui_cards::CardSource<crate::watchlist::cards_harness::WatchHost> + '_ {
-        Titles { page: &self.page }
+        Titles { page: &self.page, policy: crate::registry::captions::policy() }
     }
 
     /// Test support: the reserved cells drawn since the last call, by index.

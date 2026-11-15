@@ -172,6 +172,8 @@ const EP_RETRY_MS: u32 = 1000;
 
 
 pub struct DetailScreen {
+    /// Derived frame input, shared by shelf captions and live/target section geometry.
+    caption_policy: plx_ui::caption_policy::CaptionPolicy,
     entry: EntryId,
     sid: ServerId,
     rk: String,
@@ -543,6 +545,7 @@ impl DetailScreen {
             ground.jump(AmbientWash::keyed(m.blur, [AmbientWash::GROUND_W; 4]));
         }
         Self {
+            caption_policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT),
             entry,
             sid,
             rk,
@@ -965,7 +968,7 @@ impl DetailScreen {
 
     /// Shelf `which`'s cards over the published item `d` and the page's key projections.
     fn cards<'a>(&'a self, which: cards::Which, d: &'a Detail) -> cards::Cards<'a> {
-        Self::cards_of(&self.key_by_local, &self.local_by_key, which, d)
+        Self::cards_of(&self.key_by_local, &self.local_by_key, which, d, self.caption_policy)
     }
 
     /// [`cards`](Self::cards) without borrowing the whole screen, for a call that also borrows a
@@ -975,8 +978,9 @@ impl DetailScreen {
         local_by_key: &'a std::collections::HashMap<u32, u32>,
         which: cards::Which,
         d: &'a Detail,
+        policy: plx_ui::caption_policy::CaptionPolicy,
     ) -> cards::Cards<'a> {
-        cards::Cards::new(which, d, key_by_local, local_by_key)
+        cards::Cards::new(which, d, policy, key_by_local, local_by_key)
     }
 
     fn detail<'a>(&self, meta: plx_data::metadata::MetadataView<'a>) -> Option<&'a Detail> {
@@ -2032,14 +2036,15 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
         // Related and the collection's members are POSTER shelves: they follow the Under posters
         // setting, so the band each reserves and the caption `cards::label` builds cannot disagree.
         // Extras (landscape stills) and Cast (headshots) are not posters and keep the legacy block.
-        let policy = Some(crate::registry::captions::policy());
+        self.caption_policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
+        let policy = Some(self.caption_policy);
         self.related.set_caption_policy(policy);
         self.collection.set_caption_policy(policy);
         // The cards component's one entry: every event reaches every shelf it owns (its pop,
         // scroll and let-go ride the Tick, its placement the FocusMoved). What a card DOES stays
         // in `activate` below.
         if let Some(d) = self.detail(meta) {
-            let related = Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Related, d);
+            let related = Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Related, d, self.caption_policy);
             let wanted = matches!(self.related.on(ev, cx, &related, fx), Some(ui_cards::CardEvent::Want(_)));
             if matches!(ev, ScreenEvent::Tick(_)) && !d.related_tail.hubs.is_empty() {
                 // The row is the head and a window of the tail. The shelf's leading edge is the
@@ -2062,9 +2067,9 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                     )));
                 }
             }
-            self.collection.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Collection, d), fx);
-            self.extras.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Extras, d), fx);
-            self.cast.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Cast, d), fx);
+            self.collection.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Collection, d, self.caption_policy), fx);
+            self.extras.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Extras, d, self.caption_policy), fx);
+            self.cast.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Cast, d, self.caption_policy), fx);
         }
         match ev {
             ScreenEvent::Mount => {
@@ -2227,7 +2232,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                         if let Some(act) = trailer::trailer_key(key, sym, wcode) {
                             let ps = H::session(cx);
                             self.trailer_act(act, edge, input.at.ms, plx_media::player::playpos_ns(ps), plx_media::player::duration_ns(ps),
-                                plx_media::route::is_preview(ps) && H::transport_paused(cx), fx);
+                                plx_media::route::is_preview(ps) && H::transport_paused(cx), H::screen_inputs(cx).preference::<plx_plex::plex::session::SkipIntervalPref>(), fx);
                             return Handled::Yes;
                         }
                     }
@@ -3549,7 +3554,7 @@ impl DetailScreen {
             else if sec == SectionId::Cast.raw() { Some(cards::Which::Cast) }
             else { None };
         if let Some(which) = which {
-            let len = Self::cards_of(&self.key_by_local, &self.local_by_key, which, d).count();
+            let len = Self::cards_of(&self.key_by_local, &self.local_by_key, which, d, self.caption_policy).count();
             let shelf = match which {
                 cards::Which::Related => &mut self.related,
                 cards::Which::Collection => &mut self.collection,
@@ -3943,8 +3948,10 @@ impl DetailScreen {
         if moving || meta.season_loading() {
             fx.note(PresentEvent::Motion);
         }
-        self.preview_tick(t.ms, dt, focused, plx_media::player::duration_ns(H::session(cx)),
-            plx_media::route::is_preview(H::session(cx)) && H::transport_paused(cx), fx, meta);
+        if H::native_preview_available(cx) {
+            self.preview_tick(t.ms, dt, focused, plx_media::player::duration_ns(H::session(cx)),
+                plx_media::route::is_preview(H::session(cx)) && H::transport_paused(cx), fx, meta);
+        }
         let hint = self.hint_input(cx, focused);
         self.hold_hint.step(hint, t.ms, dt, &mut |ev| fx.note(ev));
     }
@@ -4244,13 +4251,14 @@ impl DetailScreen {
         live_ns: Option<i64>,
         duration_ns: Option<i64>,
         preview_paused: bool,
+        interval: plx_plex::plex::session::SkipInterval,
         fx: &mut Effects<'_, H>,
     ) {
         use trailer::TrailerKey;
         if let TrailerKey::Scrub(fwd) = act {
             let commit = match edge {
                 Edge::Down => duration_ns.zip(live_ns).and_then(|(duration_ns, live_ns)| {
-                    self.trailer_ctl.scrub_fresh(fwd, now, duration_ns, live_ns)
+                    self.trailer_ctl.scrub_fresh(fwd, now, duration_ns, live_ns, interval)
                 }),
                 Edge::Repeat => {
                     self.trailer_ctl.scrub_repeat(now);

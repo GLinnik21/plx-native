@@ -4,8 +4,11 @@
 This is the other half, for the moment you are writing a store, a screen or a machine step. The
 rule (AGENTS.md, "Logic never performs IO"): a machine's step starts no worker, reads no
 process-global registry and has no `cfg(test)` fork. Its work leaves as a typed effect or job that
-the app's runners execute, and the result returns as one addressed event. The reason is that a
-step then has no seam to fake: a test and a replay feed it the events the product feeds it.
+the app's runners execute, and the result returns through the addressed event or job port. Some
+existing store ports land through a gated mailbox rather than the same dispatcher drain; their
+replay and refusal timing are documented in `docs/sans-io.md`, "The store job lane". The reason
+for the rule is that a step then has no seam to fake: a test and a replay feed it the inputs the
+product feeds it.
 
 ## Notify stream integration (written; acceptance pending)
 
@@ -71,7 +74,12 @@ seal, not a broad `Copy` bound. See "Machine shape" in `docs/sans-io.md`.
 `play-feed/` and `media-codecs/`. `platform/` is not in it: it holds forks that are not ledgered, so
 `plane.rs` is scanned for workers and globals only.
 
-The scan is by file; the rule is about what a `run`, `pump`, `tick` or `step` body does. These are
+The scan is by file; an entry is a site to classify, not proof that its enclosing function is a
+machine. Follow its callers and distinguish the state owner from its runner, job body or fixture.
+See the in-progress `.empryo/reviews/project-ui-architecture-audit-2026-11-13.md`; it is not yet
+a complete project verdict.
+
+The rule is about what a `run`, `pump`, `tick` or `step` body does. These are
 NOT steps, and are where IO belongs: a job's body (`finish_collection_job` in `data/src/collection.rs`,
 which lives in `data/` and runs on the worker the runner started), a function that takes `&OffFrame`
 (`build_stream` in `media/src/route/plan.rs`), the runner (`StoreRunner`,
@@ -193,8 +201,43 @@ while let Some(ev) = next.take() {
             }
 ```
 
-A screen is the same kind of machine: it pushes an `AppFx` (`screens/src/registry.rs`) and the
-Bridge's `app_effect` runs it; an arm that does IO without pushing `Fx::Deliver(` is a new `fxlanes` site.
+A screen is the same kind of machine: it pushes an `AppFx` (`screens/src/registry.rs`).
+Direct deliveries stay in the dispatcher FIFO; external commands yield its head to
+`Bridge::execute_yielded_command`, outside the machine step, then resume the same drain.
+The envelope retains sender and captured return state; budget/carry and terminal refusal
+remain dispatcher obligations. Do not retain requests by family or take a second head in
+another drain. `ci/check-app-command-routing.py` checks explicit classification, runner arms,
+unique head-taking and retained command-vector shapes. It is a source guard, not proof of
+all runtime ordering or of aliases/types not spelled by the guard.
+
+Dev and harness policy that a machine uses is an explicit host-captured input, including in tests
+and controlled replay. Capture it at the appropriate app boundary without silently reading live
+environment during replay; preserve any established latch timing and shipping feature gates. Render
+and IO ports need their own ownership review rather than being classified by filename alone.
+
+`ci/ui_boundaries.py`, invoked by `check-deps.sh`, rejects screen-local filesystem/devtrig
+reads and imports, including helper bodies and import aliases. It tokenizes strings/comments,
+excludes structurally test-only items/files, and scans every possibly-production feature
+combination, including devtriggers. A filename ending in `_tests` is not an exemption.
+Real IO job bodies outside the screen root remain ports, not machines. This bounded guard
+does not resolve calls through other crates, traits, macros or arbitrary aliases; review
+those call paths separately. A green source scan is not the full runtime census or replay
+acceptance; the project audit records the remaining settings, render-policy and call-path census work.
+
+Card-motion admission similarly takes an `AdmissionPolicy` scoped across the app's render walks.
+Each Bridge owns a once-captured cardspeed choice; a controlled draw supplies an explicit neutral
+policy without consulting the ambient reader. The guard restores the enclosing owner's choice,
+so a second host cannot inherit the first host's gate. UI classification and poster admission
+read that same captured value; frame dumps retain their admission bypass. No trigger read or
+production/test-default fork belongs in the card primitive. Capture occurs before the first app
+draw rather than lazily inside its first card; changes to the file after capture remain ignored.
+
+Animation diagnostics illustrate the split: `ui::anim::probe` emits bounded ordered settle facts,
+not file IO. The app report phase takes them outside `StepScope`, and
+`app::anim_diagnostics` admits a batch to the existing storage executor. The worker owns the
+separate sink. Newest overflow is counted; admission refusal drops the batch, and write failure
+stops it without retry. This is best-effort diagnostic output, not guaranteed durable persistence.
+`devtriggers` still gates the records and sink; no diagnostic filesystem work runs in a screen step.
 
 **(d) The step needs time: count the `dt` it is handed.** `Tick` is "the ONLY clock a machine sees"
 (`machine/src/machine.rs`). Search's debounce accumulates whole microseconds, an exact integer
@@ -267,6 +310,26 @@ A one-for-one rename of the fn that already holds a site, the site itself unchan
 `mod.rs::sink` to `mod.rs::raw_sink` in `ci/allow/forks/media.txt`), changes only its key; say so in
 the PR. It never covers a new call. A migration deletes lines (`docs/sans-io.md`, "How a migration
 shrinks a ledger"). The ledgers hold today's numbers; read the files, do not copy totals into prose.
+
+## Integration evidence and Git isolation
+
+Run the pinned toolchain gates against an identified, stable source tree. Keep source/ledger
+checks, compiled feature configurations, renderer-backed replay, inspected captures and native
+verification as separate evidence; none substitutes for a tier it cannot observe. Historical
+recordings must not be rehashed to accept changed behavior or codecs.
+
+Strip **all `GIT_*` variables** from gate/test subprocess environments, not only `GIT_DIR` and
+`GIT_WORK_TREE`: nested Git fixtures must use their own repository. A Windows-linked worktree
+needs independent Git metadata in an isolated verification snapshot, not process-wide path overrides.
+Restrict any original-worktree path arguments to individual read-only Git probes. Record original
+HEAD, raw index hash, logical staged entries and tracked-byte hashes before/after; an index-byte
+change is not automatically a content change, but cannot be silently called byte-identical.
+Use supported Python (3.11 or newer for `tomllib`) and the pinned Rust toolchain without changing
+shared system installations. Preserve failed raw gates when retrying with a corrected environment.
+The nonmutating decoy/fixture oracle and actual isolated replacement outcomes are recorded in
+`.empryo/reviews/step8-recovery-result-2026-11-14.md`. They do not close the incomplete census,
+unexpected gate failures, renderer-backed replay or native acceptance. The earlier incident stays
+in `.empryo/reviews/step8-integration-2026-11-13.md`; no recovery is implied by a later HEAD probe.
 
 ## Before you commit machine code
 
