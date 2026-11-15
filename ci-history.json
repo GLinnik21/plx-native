@@ -1,4 +1,4 @@
-{"updated":"2026-11-15T11:56:08Z",
+{"updated":"2026-11-15T11:57:21Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5189,7 +5189,8 @@
 {"id":43653075635,"at":"2026-11-14T23:24:20Z","sha":"d750d7e4a","title":"URI on webOS 5+: say what the 6.5.3, 7.6.0 and 9.2.4 reads did not identify","pr":1397,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":378,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":174,"macOS simulator build + launch":161}},
 {"id":43653988484,"at":"2026-11-14T23:35:16Z","sha":"92e63a8ec","title":"URI on webOS 5+: admit firmware majors 6, 7 and 9, bracketed, no tester run","pr":1397,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":204,"Windows launcher syntax":14,"Linux simulator build + launch":267,"macOS tests against bundled FFmpeg and ASS":226}},
 {"id":43662205594,"at":"2026-11-15T01:15:15Z","sha":"797f7068f","title":"api: expose the live subtitle pick in the snapshot","pr":1387,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":20,"macOS simulator build + launch":192,"Linux simulator build + launch":380,"macOS tests against bundled FFmpeg and ASS":202}},
-{"id":43710744074,"at":"2026-11-15T11:49:05Z","sha":"3080b198d","title":"URI: log the service's hdrType on videoInfo","pr":1398,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":17,"macOS simulator build + launch":201,"macOS tests against bundled FFmpeg and ASS":181,"Linux simulator build + launch":293}}
+{"id":43710744074,"at":"2026-11-15T11:49:05Z","sha":"3080b198d","title":"URI: log the service's hdrType on videoInfo","pr":1398,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":17,"macOS simulator build + launch":201,"macOS tests against bundled FFmpeg and ASS":181,"Linux simulator build + launch":293}},
+{"id":43710969492,"at":"2026-11-15T11:51:54Z","sha":"36e6038a7","title":"URI: declare Dolby Vision on the Load as Standard does","pr":1399,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":201,"macOS tests against bundled FFmpeg and ASS":138,"Linux simulator build + launch":317,"Windows launcher syntax":21}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
