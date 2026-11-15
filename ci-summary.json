@@ -99,7 +99,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-15T13:26:10Z",
+ "generated": "2026-11-15T13:32:10Z",
  "metrics": [
   {
    "change30_pct": 46.5,
@@ -123,18 +123,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -1.9,
-   "change7_pct": -1.9,
-   "d30": 478,
-   "delta30": -9.0,
-   "delta7": -9.0,
+   "change30_pct": -2.1,
+   "change7_pct": -2.1,
+   "d30": 478.0,
+   "delta30": -10.0,
+   "delta7": -10,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 148,
+   "n_now": 149,
    "n_prev": 153,
-   "now": 469.0,
+   "now": 468,
    "prev7": 478,
    "shown": true,
    "state": "flat",
@@ -324,10 +324,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 15.4,
+   "change30_pct": 15.5,
    "change7_pct": 4.1,
-   "d30": 1005,
-   "delta30": 155,
+   "d30": 1004.5,
+   "delta30": 155.5,
    "delta7": 46,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -559,8 +559,8 @@
   {
    "change30_pct": 66.7,
    "change7_pct": 19.0,
-   "d30": 15,
-   "delta30": 10,
+   "d30": 15.0,
+   "delta30": 10.0,
    "delta7": 4,
    "group": "ci",
    "id": "nightly|plan today's nightly",
@@ -578,10 +578,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.3,
+   "change30_pct": 29.7,
    "change7_pct": 0.0,
-   "d30": 18,
-   "delta30": 6,
+   "d30": 18.5,
+   "delta30": 5.5,
    "delta7": 0,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
