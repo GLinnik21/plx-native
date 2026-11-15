@@ -316,6 +316,7 @@ stated; election does not alter your rights under the other arms.
 | byteorder-lite | 0.1.0 | Unlicense OR MIT | 2015 Andrew Gallant |
 | cfg-if | 1.0.4 | MIT OR Apache-2.0 | 2014 Alex Crichton |
 | chardetng | 1.0.0 | Apache-2.0 OR MIT | Mozilla Foundation |
+| constant_time_eq | 0.6.1 | CC0-1.0 OR MIT-0 OR Apache-2.0 | Cesar Eduardo Barros |
 | crc | 3.4.0 | MIT OR Apache-2.0 | 2017 crc-rs Developers |
 | crc-catalog | 2.5.0 | MIT OR Apache-2.0 | Akhil Velagapudi |
 | crc32fast | 1.5.0 | MIT OR Apache-2.0 | 2018 Sam Rijs, Alex Crichton and contributors |
@@ -347,7 +348,8 @@ stated; election does not alter your rights under the other arms.
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 | Copyright (c) 2017 Robert Grosse |
 | tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT | 2019 Daniel "Lokathor" Gee |
 | typed-path | 0.13.0 | MIT OR Apache-2.0 | The typed-path authors |
-| zip | 9.2.2 | MIT | 2014 Mathijs van de Nes |
+| zeroize | 1.9.0 | Apache-2.0 OR MIT | The RustCrypto Project Developers |
+| zip | 9.5.1 | MIT | 2014 Mathijs van de Nes |
 | zune-core | 0.5.1 | MIT OR Apache-2.0 OR Zlib | The zune-image developers |
 | zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib | The zune-image developers |
 
