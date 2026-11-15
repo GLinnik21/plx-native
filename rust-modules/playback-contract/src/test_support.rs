@@ -22,6 +22,8 @@ struct Script {
     refuse_start: Option<Failure>,
     refuse_track: Option<Failure>,
     exit_preserved: bool,
+    not_ready: Option<crate::uri::UriNotReady>,
+    ready_asked: u32,
 }
 
 /// A scriptable [`UriDriver`]. It answers [`DriverSet::capabilities`] with the set it was built
@@ -82,6 +84,12 @@ impl FakeUriHandle {
     pub fn set_exit_preserved(&self, preserved: bool) {
         self.0.lock().unwrap().exit_preserved = preserved;
     }
+    /// Make [`UriDriver::ready_to_start`] answer this (`None`: ready).
+    pub fn set_not_ready(&self, why: Option<crate::uri::UriNotReady>) {
+        self.0.lock().unwrap().not_ready = why;
+    }
+    /// How many times the adapter has asked whether the driver is ready.
+    pub fn ready_asked(&self) -> u32 { self.0.lock().unwrap().ready_asked }
 }
 
 impl DriverSet for FakeUriDriver {
@@ -150,6 +158,12 @@ impl UriDriver for FakeUriDriver {
 
     fn maps_track(&self, selection: TrackSelection) -> bool {
         self.script.lock().unwrap().mapped.contains(&selection)
+    }
+
+    fn ready_to_start(&mut self, _: &MainThread) -> Result<(), crate::uri::UriNotReady> {
+        let mut script = self.script.lock().unwrap();
+        script.ready_asked += 1;
+        script.not_ready.map_or(Ok(()), Err)
     }
 }
 

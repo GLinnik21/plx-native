@@ -753,7 +753,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `tools/build-gc.sh` now installs `.claude/worktrees/.cargo/config.toml` with
   `incremental = false`, which every cargo reads and which stops above the main checkout. Since
   2026-09-18 the same file also sets `[profile.dev] debug = "line-tables-only"` and `debug = false`
-  for third-party packages in lanes (main keeps full DWARF). A lane's target dirs are also no longer
+  for third-party packages in lanes (main keeps full DWARF for `dev`: the simulator, clippy and
+  `cargo check`). A host `cargo test` build is the `test` profile, whose line tables
+  `rust-modules/Cargo.toml` sets for every checkout, main included; a debugger on a host test needs
+  `CARGO_PROFILE_TEST_DEBUG=2`. A lane's target dirs are also no longer
   all built from scratch: in a linked worktree the Makefile seeds an ABSENT target dir with an APFS
   clone of the third-party output (registry crates, once also the build-std sysroot, about 40% of a lane's
   target bytes then) from `~/.cache/plxnative/cargo-seed/`, via `tools/cargo-seed.py`; the app crate is

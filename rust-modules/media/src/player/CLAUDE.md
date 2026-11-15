@@ -44,7 +44,7 @@ accepted pause/resume to the plane once the bind has completed. Release is `UNLO
 plane owner's fence on that call's completion callback, pumped from the backend's `poll`
 (`docs/measurements/acb-release-fence-2026-11-04.md`); a quarantine until process exit is only the
 outcome of a failed fence, not the normal one. `plx_play_uri::backend::product_binding` selects it at
-composition (ACB display mode and the URI engine's own boot handle, initialized, player type 0: the boot creates it beside Feed's player type 10 handle, each once and never destroyed, and the plane owner binds one at a time across both); media's `uri_preflight` only receives the result as
+composition (an ACB display; the URI engine's own handle, player type 0, is created ON DEMAND when the first source is OFFERED (`UriDriver::ready_to_start`, asked by `offer_qualified_uri`, runs `PlaneOwner::ensure_handle`; the driver's gate `Op::Check` makes it if nothing did), while the boot creates only Feed's player type 10 handle, each created once and never destroyed, and the plane owner binds one at a time across both; a create or initialize that fails DECLINES the offer, `uri: original declined (the ACB handle for the URI engine could not be created)`, and Feed plays the title; the failure is recorded, so a later offer declines without a new attempt, and the Start's own gate stays the backstop); media's `uri_preflight` only receives the result as
 `ProductEvidence::unqualified_on(.., binding)`. `ProductEvidence::permits` and
 `ResolvePort::could_qualify_pms` accept `Binding::Acb` as an offerable display path beside an exported
 canvas, but only through `certified` capabilities: the production evidence certifies nothing and

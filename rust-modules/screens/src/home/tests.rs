@@ -1476,6 +1476,155 @@ fn engine_links_hero_to_the_first_shelf_and_back() {
     assert_eq!(to.elem, s.rows[0].elems[0]);
 }
 
+/// The household's own server (slot 1) has five recent cards, a server shared with it (slot 2) older
+/// ones: `(rating key, last viewed)`, newest first.
+const OWN_DECK: [(&str, i64); 5] = [("o1", 5000), ("o2", 4990), ("o3", 4980), ("o4", 4970), ("o5", 4960)];
+const SHARED_DECK: [(&str, i64); 3] = [("s1", 1000), ("s2", 990), ("s3", 980)];
+
+/// The rating keys of the Continue Watching row's cards, left to right.
+fn deck_rks(s: &HomeScreen) -> Vec<&str> {
+    s.rows[0].cards.iter().map(|card| card.rk.as_str()).collect()
+}
+
+/// The servers answer in `order` (a slot and what it answers), each landing a publication the page
+/// projects (`sync_catalog`) before the next arrives. The page opens on the first, as it does when
+/// one server is slower than the other.
+fn cold_home_after<'a>(
+    state: &mut plx_data::pms::PmsState,
+    adapter: &std::sync::Arc<plx_data::pms::PmsAdapter>,
+    order: &[(u16, &[(&str, i64)])],
+) -> (HomeScreen, plx_data::pms::HubsSnapshot) {
+    let mut s = None;
+    let mut last = None;
+    for &(slot, cards) in order {
+        plx_data::pms::land_deck_lane_for_test(state, adapter, slot, cards);
+        let snapshot = plx_data::pms::hubs_snapshot(state);
+        match s.as_mut() {
+            None => s = Some(screen(snapshot.view())),
+            Some(s) => {
+                s.sync_catalog(&cx(snapshot.view(), None));
+                s.layout_grid();
+            }
+        }
+        last = Some(snapshot);
+    }
+    (s.expect("a server answered"), last.expect("a server answered"))
+}
+
+/// DOWN from the hero, through the engine and the page's own seat rule: the card it lands on.
+fn down_from_the_hero(s: &HomeScreen, view: HubsView<'_>) -> u32 {
+    let owner = InputOwner::Entry(s.entry);
+    let hero = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+    let context = cx(view, Some(hero));
+    let mut engine = FocusEngine::new();
+    engine.set(owner, hero, Some(HERO_GROUP), By::Restore);
+    let mut links = Vec::new();
+    <HomeScreen as Screen<TestHost>>::links(s, &mut links);
+    let Outcome::Moved { to, .. } = engine.move_dir(owner, s, &links, Dir::Down, &context) else {
+        panic!("hero DOWN must move")
+    };
+    to.elem
+}
+
+/// **A cold Home opens its Continue Watching row on its newest card, whichever server answered
+/// first (#1395).** The shared server's older cards landed first and the household's own newer ones
+/// then joined a deck nobody had moved: they were held BEHIND the window (the row's offset 5, its
+/// first card the shared server's, the skeleton of an unloaded card before it), so DOWN from the hero
+/// reached "card 6" and five LEFTs the newest. The deck is the merge of both listings from its head.
+fn a_cold_deck_opens_on_its_newest_card(order: &[(u16, &[(&str, i64)])]) {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let (mut s, snapshot) = cold_home_after(&mut state, &adapter, order);
+    let view = snapshot.view();
+    assert_eq!(deck_rks(&s), ["o1", "o2", "o3", "o4", "o5", "s1", "s2", "s3"], "both servers' cards, by last viewed");
+    assert_eq!(s.hub(view, 0).map(|hub| hub.offset), Some(0), "nothing is held before a deck nobody moved");
+    let hero = Some(FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM });
+    for frame in 0..30 {
+        step(&mut s, view, hero, &ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 }));
+    }
+    assert_eq!(s.grid.shelves[0].scroll(), 0.0, "the row opens at its leading edge");
+    assert_eq!(down_from_the_hero(&s, view), s.rows[0].elems[0], "DOWN lands on the first card");
+}
+
+#[test]
+fn a_cold_deck_opens_on_its_newest_card_when_the_shared_server_answers_first() {
+    a_cold_deck_opens_on_its_newest_card(&[(2, &SHARED_DECK), (1, &OWN_DECK)]);
+}
+
+#[test]
+fn a_cold_deck_opens_on_its_newest_card_when_the_own_server_answers_first() {
+    a_cold_deck_opens_on_its_newest_card(&[(1, &OWN_DECK), (2, &SHARED_DECK)]);
+}
+
+#[test]
+fn a_cold_deck_opens_on_its_newest_card_when_a_refresh_re_joins_after_a_failed_reload() {
+    // a refresh whose reload failed re-answers a server whose cards are already on the page: it
+    // joins the deck the other server holds through `place`, as a first answer does (a reload that
+    // succeeds does not pass through `place`)
+    a_cold_deck_opens_on_its_newest_card(&[(2, &SHARED_DECK), (1, &OWN_DECK[1..]), (1, &OWN_DECK)]);
+}
+
+#[test]
+fn a_cold_deck_opens_on_its_newest_card_when_a_server_with_nothing_answers_in_between() {
+    // the shared server answers, then a server whose Continue Watching is empty, then the own one:
+    // the empty one holds no card the deck could have moved past
+    a_cold_deck_opens_on_its_newest_card(&[(2, &SHARED_DECK), (3, &[]), (1, &OWN_DECK)]);
+}
+
+#[test]
+fn a_single_server_deck_opens_on_its_first_card() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let (mut s, snapshot) = cold_home_after(&mut state, &adapter, &[(1, &OWN_DECK)]);
+    let view = snapshot.view();
+    assert_eq!(deck_rks(&s), ["o1", "o2", "o3", "o4", "o5"]);
+    assert_eq!(s.hub(view, 0).map(|hub| hub.offset), Some(0));
+    let hero = Some(FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM });
+    for frame in 0..30 {
+        step(&mut s, view, hero, &ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 }));
+    }
+    assert_eq!(s.grid.shelves[0].scroll(), 0.0);
+    assert_eq!(down_from_the_hero(&s, view), s.rows[0].elems[0]);
+}
+
+/// What the head rule must not change: a reader who has moved onto a card keeps it when the other
+/// server's newer cards then land in front of it. The pop follows the card to its new place; the
+/// row does not yank focus onto the new leading card. Three cards and five fit the bound together,
+/// so nothing overflows here; a full window at its head lets go of its oldest shown cards instead
+/// (`deck`'s own test).
+#[test]
+fn a_server_that_joins_in_front_keeps_the_reader_on_the_same_card_when_nothing_overflows() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let (mut s, snapshot) = cold_home_after(&mut state, &adapter, &[(2, &SHARED_DECK)]);
+    let view = snapshot.view();
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[0] };
+    assert_eq!(deck_rks(&s), ["s1", "s2", "s3"]);
+    pop_card(&mut s, view, key, 60);
+    assert!(pop_of(&s, view, Some(key), 0, 0) > 1.05, "the premise: the reader is on the first card");
+    plx_data::pms::land_deck_lane_for_test(&mut state, &adapter, 1, &OWN_DECK);
+    let landed = plx_data::pms::hubs_snapshot(&state);
+    let view = landed.view();
+    s.sync_catalog(&cx(view, Some(key)));
+    assert_eq!(s.rows[0].elems.iter().position(|&e| e == key.elem), Some(5), "the reader's card moved behind the five");
+    for frame in 0..40 {
+        step(&mut s, view, Some(key), &ScreenEvent::Tick(Tick { ms: 5_000 + frame * 16, dt_us: 16_667 }));
+    }
+    for col in 0..8 {
+        let pop = pop_of(&s, view, Some(key), 0, col);
+        if col == 5 {
+            assert!(pop > 1.05, "the pop follows the card the reader is on, {pop}");
+        } else {
+            assert!((pop - 1.0).abs() < 0.001, "column {col} is lifted, {pop}");
+        }
+    }
+}
+
 #[test]
 fn down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero() {
     let _guard = plx_base::testlock::serial();

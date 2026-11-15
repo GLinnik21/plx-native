@@ -299,9 +299,9 @@ serde = { version = "1", default-features = false, features = ["derive", "alloc"
 # back the cross-crate inlining that the UI's per-frame code relied on.
 #
 # What it costs is build time, paid only by release-profile builds: CI's ARM library build went from
-# 2m40 to 4m15 and a local `ARM_PROFILE=release` one from 44 s to 94 s. `make check` and the host tests run the dev profile
-# and do not pay it, and neither does a plain local `make` / `make deploy`: the Makefile builds those
-# with `[profile.tvdev]` below. Release-profile builds are CI, `RELEASE=1`, `SYMBOLS=1`,
+# 2m40 to 4m15 and a local `ARM_PROFILE=release` one from 44 s to 94 s. `make check` and the host tests (the `test`
+# profile, which inherits `dev`) do not pay it, and neither does a plain local `make` / `make deploy`:
+# the Makefile builds those with `[profile.tvdev]` below. Release-profile builds are CI, `RELEASE=1`, `SYMBOLS=1`,
 # `FLAVOR=stable|nightly` and `make ARM_PROFILE=release`.
 [profile.release]
 opt-level = 2
@@ -320,6 +320,25 @@ codegen-units = 1
 inherits = "release"
 lto = "off"
 codegen-units = 16
+
+# The host UNIT-TEST build (`cargo test`: `make check`'s `check-cargo-unit-*`, `make test-fast`,
+# `make test-crate`, `make test-hostsim`, `make build-bench`): every unit of such a build, the
+# workspace libraries and the third-party crates under the test binaries included, is built with
+# THIS profile and not with `dev` (`cargo test --unit-graph` names the profile of each unit). Line
+# tables keep a panic backtrace's file:line and drop the variable-level DWARF; nothing here attaches
+# a debugger to a test binary. Measured 2026-11-14 on a checkout with full-DWARF `dev` (the main
+# checkout's setting), `make build-bench`, medians: the non-incremental edit rebuild of the test
+# build took 14-22% less (plx_base leaf 39.8-43.5 s -> 33.9-35.9 s; plx_ui leaf 21.7-23.4 s ->
+# 18.5-20.1 s) and `target/` + `target-fast/` shrank 19% (9.6 GB -> 7.8 GB); the incremental
+# `make test-fast` loop was not clearly moved (a plx_ui edit 6.0 -> 6.2 s, a plx_base edit 16.1-21.8 s
+# -> 15.5-16.1 s with the baseline drifting between runs). `[profile.dev]` is untouched: the
+# simulator, clippy and `cargo check` keep full DWARF in a developer's checkout. Lanes and CI already
+# trim `dev` through a cargo config (tools/build-gc.sh, .github/actions/host-rust/action.yml),
+# which `test` inherits, so for them this line changes nothing (the unit graph is identical); the
+# main checkout is where it takes effect. A debugger on a host test needs
+# `CARGO_PROFILE_TEST_DEBUG=2` (`CARGO_PROFILE_DEV_DEBUG` no longer reaches a `cargo test` build).
+[profile.test]
+debug = "line-tables-only"
 
 [dev-dependencies]
 # The `cfg(test)` fixtures of the base layer (`testlock`, `testnet`, ...): a dependency is never
