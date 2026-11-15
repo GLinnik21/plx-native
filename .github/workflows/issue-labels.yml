@@ -14,10 +14,10 @@ name: Issue labels
 # whatever the model answers is filtered down to the repository's own labels before anything is
 # written. The token can write issues and nothing else.
 #
-# A model picks the labels when the repository has a `COPILOT_GITHUB_TOKEN` Actions secret (a
-# fine-grained personal access token with the "Copilot Requests" permission; Copilot Free works) or
-# an `ANTHROPIC_API_KEY` one. Without either the job still runs and labels from keyword rules (one
-# kind, one area, `user-report`).
+# Claude Haiku picks the labels through the Anthropic API: the repository needs an
+# `ANTHROPIC_API_KEY` Actions secret. There is no keyword fallback: when the key is missing or the
+# model fails, only `user-report` is added and the job FAILS, so a dead key shows up as a red run
+# instead of weeks of silently wrong labels.
 
 on:
   issues:
@@ -47,26 +47,15 @@ jobs:
     name: label issues
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      HAS_COPILOT: ${{ secrets.COPILOT_GITHUB_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: |
             ci/label-issue.py
-            tools/package.json
-            tools/package-lock.json
           sparse-checkout-cone-mode: false
-      - name: Install the Copilot CLI
-        if: env.HAS_COPILOT == 'true'
-        # The version pinned in tools/package.json (Dependabot bumps it with its lockfile); ci/label-issue.py finds `copilot` on PATH.
-        run: |
-          npm ci --prefix tools
-          echo "$PWD/tools/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Label
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           EVENT: ${{ github.event_name }}
           ACTION: ${{ github.event.action }}
