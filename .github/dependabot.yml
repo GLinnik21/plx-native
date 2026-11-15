@@ -95,7 +95,7 @@ updates:
       python-tools:
         patterns: ["*"]
 
-  # tools/package.json: the Sentry CLI and the Copilot CLI that the Makefile and workflows run.
+  # tools/package.json: the Sentry CLI that the Makefile and workflows run.
   - package-ecosystem: npm
     directory: /tools
     schedule:
