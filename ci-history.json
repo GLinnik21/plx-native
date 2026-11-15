@@ -1,4 +1,4 @@
-{"updated":"2026-11-15T13:35:17Z",
+{"updated":"2026-11-15T20:01:50Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5201,7 +5201,8 @@
 {"id":43710744074,"at":"2026-11-15T11:49:05Z","sha":"3080b198d","title":"URI: log the service's hdrType on videoInfo","pr":1398,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":17,"macOS simulator build + launch":201,"macOS tests against bundled FFmpeg and ASS":181,"Linux simulator build + launch":293}},
 {"id":43710969492,"at":"2026-11-15T11:51:54Z","sha":"36e6038a7","title":"URI: declare Dolby Vision on the Load as Standard does","pr":1399,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":201,"macOS tests against bundled FFmpeg and ASS":138,"Linux simulator build + launch":317,"Windows launcher syntax":21}},
 {"id":43711121117,"at":"2026-11-15T11:53:49Z","sha":"6b1accf8b","title":"Home hero: a Dolby Vision title says so, as its detail page does","pr":1348,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":198,"macOS simulator build + launch":221,"Linux simulator build + launch":285,"Windows launcher syntax":20}},
-{"id":43718345174,"at":"2026-11-15T13:18:56Z","sha":"4dd548b98","title":"Deps: Bump zip in /rust-modules in the rust-minor-patch group","pr":1402,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":309,"Windows launcher syntax":21,"macOS tests against bundled FFmpeg and ASS":197,"macOS simulator build + launch":99}}
+{"id":43718345174,"at":"2026-11-15T13:18:56Z","sha":"4dd548b98","title":"Deps: Bump zip in /rust-modules in the rust-minor-patch group","pr":1402,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":309,"Windows launcher syntax":21,"macOS tests against bundled FFmpeg and ASS":197,"macOS simulator build + launch":99}},
+{"id":43755134384,"at":"2026-11-15T19:55:41Z","sha":"c56b98fb4","title":"Continue Watching: an empty server no longer reads as a lane the deck moved past","pr":1405,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":121,"macOS simulator build + launch":198,"Windows launcher syntax":19,"Linux simulator build + launch":357}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
