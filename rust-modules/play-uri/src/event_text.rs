@@ -59,6 +59,14 @@ mod tests {
                 "ev=videoInfo width=1920 height=1080 codec=H264 frameRate=24000/1001"),
             (r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"codec":"H264","currentBitrate":2000000,"contentBitrate":8000000}}"#,
                 "ev=videoInfo width=1280 height=720 codec=H264 currentBitrate=2000000 contentBitrate=8000000"),
+            // the service's own `hdrType` word, as the 4.5 set and the Feed envelope spell it
+            (r#"{"mediaId":"_m1","videoInfo":{"width":3840,"height":2160,"frameRate":24,"hdrType":"HDR10"}}"#,
+                "ev=videoInfo width=3840 height=2160 frameRate=24 hdrType=HDR10"),
+            (r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"hdrType":"none"}}"#,
+                "ev=videoInfo width=1280 height=720 hdrType=none"),
+            // anything that is not one short word is never repeated
+            (r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"hdrType":"abc.plex.direct"}}"#,
+                "ev=videoInfo width=1280 height=720"),
             (r#"{"mediaId":"_m1","bufferRange":{"beginTime":0,"endTime":58,"remainingTime":12,"percent":40}}"#,
                 "ev=bufferRange beginTime=0 endTime=58 remainingTime=12 percent=40"),
             (r#"{"mediaId":"_m1","bufferRange":{"beginTime":3,"endTime":9}}"#,

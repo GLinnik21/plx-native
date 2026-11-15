@@ -402,6 +402,15 @@ fn details_by(value: &Value, keys: &[&str], show: fn(&Value) -> Option<String>) 
     parts.join(" ")
 }
 
+/// The `hdrType` the service names for the stream it decoded (`"none"`, `"HDR10"`, `"HLG"` on the
+/// sets read so far; the Dolby Vision spelling is not known yet): a short word of ASCII letters,
+/// digits and underscores, so no host or URL can pass.
+fn hdr_type(value: &Value) -> Option<String> {
+    let word = value.as_str()?;
+    (!word.is_empty() && word.len() <= 16 && word.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+        .then(|| word.to_owned())
+}
+
 /// [`details_by`] with [`scalar`]: numbers, booleans and the finite codec vocabulary.
 fn details(value: &Value, keys: &[&str]) -> String {
     details_by(value, keys, scalar)
@@ -540,10 +549,15 @@ pub fn parse_event(payload: &str) -> Message {
             continue;
         }
         let detail = match ev {
-            Ev::VideoInfo => details(
-                value,
-                &["width", "height", "codec", "frameRate", "hdr", "currentBitrate", "contentBitrate"],
-            ),
+            Ev::VideoInfo => {
+                let mut text = details(value, &["width", "height", "codec", "frameRate", "hdr", "currentBitrate", "contentBitrate"]);
+                if let Some(word) = value.get("hdrType").and_then(hdr_type) {
+                    if !text.is_empty() { text.push(' '); }
+                    text.push_str("hdrType=");
+                    text.push_str(&word);
+                }
+                text
+            }
             Ev::AudioInfo => details(value, &["codec", "channels", "sampleRate", "track"]),
             Ev::BufferRange => details(value, &["beginTime", "endTime", "remainingTime", "percent"]),
             // The track kind and index the service says it selected, when it names them: already
