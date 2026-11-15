@@ -1139,6 +1139,10 @@ pub(crate) unsafe fn publish(app: &mut crate::app::App, fr: &mut crate::app::run
         "transcode": plx_media::route::transcode_session(ps),
         "kbps": plx_media::route::transport_kbps(ps),
         "audio_sid": plx_media::route::cur_audio_sid(ps),
+        // The session's live subtitle pick (0 = Off), the read-out an agent verifies a `sub`
+        // commit against: `subs[].selected` mirrors the metadata the plan set, which a live
+        // commit does not rewrite.
+        "sub_sid": plx_media::route::cur_sub_sid(ps),
         "verdict": verdict,
         "audio": tracks(playing, true),
         "subs": tracks(playing, false),
