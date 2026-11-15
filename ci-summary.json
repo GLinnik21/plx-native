@@ -99,7 +99,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-15T12:18:27Z",
+ "generated": "2026-11-15T13:00:06Z",
  "metrics": [
   {
    "change30_pct": 45.6,
@@ -123,19 +123,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -1.6,
-   "change7_pct": -1.1,
-   "d30": 478,
-   "delta30": -7.5,
-   "delta7": -5.0,
+   "change30_pct": -1.7,
+   "change7_pct": -1.6,
+   "d30": 478.0,
+   "delta30": -8.0,
+   "delta7": -7.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 146,
-   "n_prev": 156,
-   "now": 470.5,
-   "prev7": 475.5,
+   "n_prev": 154,
+   "now": 470.0,
+   "prev7": 477.5,
    "shown": true,
    "state": "flat",
    "state30": "flat",
@@ -303,10 +303,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 27.7,
+   "change30_pct": 27.1,
    "change7_pct": 0.2,
-   "d30": 2148.0,
-   "delta30": 594.0,
+   "d30": 2157.0,
+   "delta30": 585.0,
    "delta7": 6.5,
    "group": "ci",
    "id": "minutes",
@@ -387,10 +387,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -7.5,
+   "change30_pct": -8.1,
    "change7_pct": -10.7,
-   "d30": 404.5,
-   "delta30": -30.5,
+   "d30": 407.0,
+   "delta30": -33.0,
    "delta7": -45,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
@@ -408,10 +408,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 46.2,
+   "change30_pct": 46.5,
    "change7_pct": 9.5,
-   "d30": 228.5,
-   "delta30": 105.5,
+   "d30": 228,
+   "delta30": 106.0,
    "delta7": 29.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -429,10 +429,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 89.8,
+   "change30_pct": 93.5,
    "change7_pct": -18.6,
-   "d30": 157.5,
-   "delta30": 141.5,
+   "d30": 154.5,
+   "delta30": 144.5,
    "delta7": -68.5,
    "group": "ci",
    "id": "ci|host harness tests",
@@ -450,10 +450,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 52.2,
+   "change30_pct": 51.7,
    "change7_pct": 6.3,
-   "d30": 149.5,
-   "delta30": 78.0,
+   "d30": 150,
+   "delta30": 77.5,
    "delta7": 13.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
@@ -471,10 +471,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 49.0,
+   "change30_pct": 48.5,
    "change7_pct": -27.1,
-   "d30": 149.0,
-   "delta30": 73.0,
+   "d30": 149.5,
+   "delta30": 72.5,
    "delta7": -82.5,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
@@ -492,10 +492,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 6.5,
+   "change30_pct": 6.8,
    "change7_pct": -8.8,
-   "d30": 184.5,
-   "delta30": 12.0,
+   "d30": 184,
+   "delta30": 12.5,
    "delta7": -19.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -601,7 +601,7 @@
   {
    "change30_pct": 11.8,
    "change7_pct": -5.0,
-   "d30": 17.0,
+   "d30": 17,
    "delta30": 2.0,
    "delta7": -1.0,
    "group": "ci",
@@ -643,8 +643,8 @@
   {
    "change30_pct": -99.1,
    "change7_pct": 0.0,
-   "d30": 323.0,
-   "delta30": -320.0,
+   "d30": 322.5,
+   "delta30": -319.5,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
