@@ -1550,10 +1550,18 @@ fn a_cold_deck_opens_on_its_newest_card_when_the_own_server_answers_first() {
 }
 
 #[test]
-fn a_cold_deck_opens_on_its_newest_card_when_the_own_server_answers_again() {
-    // a refresh re-answers a server whose cards are already on the page: it joins the deck the
-    // other server holds, as a first answer does
+fn a_cold_deck_opens_on_its_newest_card_when_a_refresh_re_joins_after_a_failed_reload() {
+    // a refresh whose reload failed re-answers a server whose cards are already on the page: it
+    // joins the deck the other server holds through `place`, as a first answer does (a reload that
+    // succeeds does not pass through `place`)
     a_cold_deck_opens_on_its_newest_card(&[(2, &SHARED_DECK), (1, &OWN_DECK[1..]), (1, &OWN_DECK)]);
+}
+
+#[test]
+fn a_cold_deck_opens_on_its_newest_card_when_a_server_with_nothing_answers_in_between() {
+    // the shared server answers, then a server whose Continue Watching is empty, then the own one:
+    // the empty one holds no card the deck could have moved past
+    a_cold_deck_opens_on_its_newest_card(&[(2, &SHARED_DECK), (3, &[]), (1, &OWN_DECK)]);
 }
 
 #[test]
@@ -1575,9 +1583,11 @@ fn a_single_server_deck_opens_on_its_first_card() {
 
 /// What the head rule must not change: a reader who has moved onto a card keeps it when the other
 /// server's newer cards then land in front of it. The pop follows the card to its new place; the
-/// row does not yank focus onto the new leading card.
+/// row does not yank focus onto the new leading card. Three cards and five fit the bound together,
+/// so nothing overflows here; a full window at its head lets go of its oldest shown cards instead
+/// (`deck`'s own test).
 #[test]
-fn a_deck_refresh_that_inserts_in_front_keeps_the_reader_on_the_same_card() {
+fn a_server_that_joins_in_front_keeps_the_reader_on_the_same_card_when_nothing_overflows() {
     let _guard = plx_base::testlock::serial();
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());

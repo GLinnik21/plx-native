@@ -4307,8 +4307,10 @@ pub fn seed_continue_window_for_test(state: &mut PmsState, adapter: &Arc<PmsAdap
 /// Test hook: ONE server's Continue Watching answer lands on the store the way a whole-source answer
 /// lands it (`landed_ok`, `settle_deck`, the merge, the commit), so a test sees what a household sees
 /// when its servers answer one after the other, in either order. `cards` is `(rating key, last viewed)`,
-/// newest first, and `slot` names the server; the first call starts from an empty table and a server
-/// named again answers again, as a refresh does.
+/// newest first (empty for a server with nothing to continue), and `slot` names the server; the first
+/// call starts from an empty table. The hook lands a first answer, or a refresh whose reload failed
+/// (both join the deck through `place`); a refresh whose reload succeeds goes through `deck::reload`,
+/// which this hook does not stand for.
 #[cfg(any(test, feature = "test-support"))]
 pub fn land_deck_lane_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, slot: u16, cards: &[(&str, i64)]) {
     plx_base::testlock::assert_held("the pms hub catalog (land_deck_lane_for_test)");
@@ -4321,7 +4323,9 @@ pub fn land_deck_lane_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, 
         position,
     }).collect();
     let key = |card: Option<&(&str, i64)>| card.map_or_else(String::new, |card| card.0.to_string());
-    let lane = deck::Lane::preview(&key(cards.first()), &key(cards.last()), cards.len(), cards.len(), true);
+    // A server with nothing to continue keeps the default lane, as `project_deck` leaves it.
+    let lane = if cards.is_empty() { deck::Lane::default() }
+        else { deck::Lane::preview(&key(cards.first()), &key(cards.last()), cards.len(), cards.len(), true) };
     let mut srcs = std::mem::take(&mut state.srcs);
     let at = srcs.iter().position(|source| source.sid == sid).unwrap_or_else(|| {
         srcs.push(Src::new(sid, String::new(), &registry_keys_for_test()));
