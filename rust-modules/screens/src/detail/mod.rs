@@ -841,6 +841,19 @@ impl DetailScreen {
         }
     }
 
+    /// The item's own menu when the hero has no separate on-deck subject.
+    pub fn hero_menu_subject(&self, focus: Option<FocusKey<u32>>, meta: plx_data::metadata::MetadataView<'_>)
+        -> Option<(String, crate::registry::ItemMenuKind)> {
+        let key = focus.filter(|key| key.entry == self.entry)?;
+        if key.elem != hero::ELEM_MORE { return None; }
+        let d = self.detail(meta)?;
+        let kind = match d.kind.as_str() { "movie" => 0, "show" => 1, "season" => 2, "episode" => 3, _ => return None };
+        let title = if kind == 3 { format!("{} · S{} E{} · {}", d.show_title, d.season, d.index, d.title) }
+            else { d.title.clone() };
+        Some((d.rk.clone(), crate::registry::ItemMenuKind::Detail { kind, title,
+            show_rk: if kind == 2 { d.parent_rk.clone() } else { d.show_rk.clone() }, mark: hero::hero_mark(d) }))
+    }
+
     /// The More disc follows the on-deck subject even when a different season is loaded below it.
     pub fn hero_menu_episode<'a>(&self, focus: Option<FocusKey<u32>>, meta: plx_data::metadata::MetadataView<'a>)
         -> Option<(&'a plx_data::metadata::Episode, PosterMark)> {
@@ -4324,7 +4337,7 @@ impl DetailScreen {
         // `!hero_set().trailer` and then drive `ELEM_TRAILER` directly to prove `activate_hero`'s
         // handling stays correct even though the disc itself is never shown.)
         hero::HeroSet {
-            more: self.detail(meta).is_some_and(|d| hero::hero_episode(d).is_some()),
+            more: self.detail(meta).is_some_and(|d| matches!(d.kind.as_str(), "movie" | "episode" | "show" | "season")),
             version: self.detail(meta).is_some_and(|d| hero_versions(d).len() >= 2),
             go_show: self.detail(meta).is_some_and(|d| hero::go_to_show_target(d).is_some()),
             restart,

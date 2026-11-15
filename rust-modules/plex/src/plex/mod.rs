@@ -17,6 +17,8 @@
 #![allow(dead_code)]
 
 mod client;
+mod media_delete;
+pub use media_delete::DeleteResult;
 // WHICH client a slot holds, as a value a step is handed instead of reading the registry itself.
 mod client_keys;
 pub mod identity; // ONE X-Plex-* identity for both transports (plex.tv headers + PMS query)

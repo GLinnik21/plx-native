@@ -364,8 +364,8 @@ impl Client {
                 self.grant_epoch.store(next_gen(), Relaxed);
             }
             *g = token.to_owned();
+            self.token_gen.store(next_gen(), Relaxed);
         }
-        self.token_gen.store(next_gen(), Relaxed);
     }
     /// **Revoke a live token that `token` would replace**, when the caller cannot prove the two
     /// speak for one identity: the live one is blanked, so the replacement lands across a
@@ -376,13 +376,11 @@ impl Client {
             Ok(mut g) if !g.is_empty() && g.as_str() != token => {
                 g.clear();
                 self.grant_epoch.store(next_gen(), Relaxed);
+                self.token_gen.store(next_gen(), Relaxed);
                 true
             }
             _ => false,
         };
-        if revoked {
-            self.token_gen.store(next_gen(), Relaxed);
-        }
         revoked
     }
     /// The identity epoch of this server's credential — see the field. Unchanged by a live-to-live
@@ -784,6 +782,17 @@ impl Client {
             .map(|reply| reply.status)
     }
 
+    /// One destructive request with the credential captured by its confirmation. Never borrows
+    /// a replacement token after a profile switch, and never follows redirects.
+    pub(super) fn delete_status(&self, path: &str, expected: super::ClientKey) -> Option<i32> {
+        if !self.may_send() { return None; }
+        let path = self.with_token_at(path, Some(expected))?;
+        let owned = pms_headers(&[ACCEPT_JSON]);
+        let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
+        http::request(&self.origin, &path, Method::Delete, &headers, self.resolve_pin.as_ref())
+            .map(|reply| reply.status)
+    }
+
     /// Deadline-bearing GET status for one phase of a larger media transaction.
     #[track_caller]
     pub(super) fn get_status_until(
@@ -850,9 +859,17 @@ impl Client {
 
     /// THE token choke point. Appends `X-Plex-Token=…` with the right separator.
     pub(super) fn with_token(&self, path: &str) -> String {
+        self.with_token_at(path, None).unwrap_or_else(|| {
+            let sep = if path.contains('?') { '&' } else { '?' };
+            format!("{path}{sep}X-Plex-Token=")
+        })
+    }
+
+    fn with_token_at(&self, path: &str, expected: Option<super::ClientKey>) -> Option<String> {
         let sep = if path.contains('?') { '&' } else { '?' };
-        let tok = self.token.read().map(|g| g.clone()).unwrap_or_default();
-        format!("{path}{sep}X-Plex-Token={tok}")
+        let tok = self.token.read().ok()?;
+        if expected.is_some_and(|key| key != super::ClientKey::of(self)) { return None; }
+        Some(format!("{path}{sep}X-Plex-Token={tok}"))
     }
 }
 

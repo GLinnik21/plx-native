@@ -3246,6 +3246,9 @@ class MockPms:
                              "defaultSubtitleForced": 0, "defaultSubtitleAccessibility": 0}
         # #266: myPlexSubscription on `/`/`/identity`; `serve(plex_pass=False)` or
         # `POST /_mock/config {"plex_pass": false}` flips it live.
+        self.allow_media_deletion = False
+        self.refuse_media_deletion = False
+        self.fail_media_deletion = False
         self.plex_pass = True
         # Viewer capabilities are independent of the connected server owner's subscription.
         self.viewer_intro_skip = True
@@ -3539,7 +3542,7 @@ class MockPms:
                 return j({"error": "invalid JSON body"}, 400)
             if not isinstance(patch, dict):
                 return j({"error": "body must be a JSON object"}, 400)
-            allowed = {"refuse_enhancements", "ignore_enhancements", "refuse_conversions", "plex_pass", "viewer_intro_skip", "viewer_credits_skip"}
+            allowed = {"refuse_enhancements", "ignore_enhancements", "refuse_conversions", "plex_pass", "viewer_intro_skip", "viewer_credits_skip", "allow_media_deletion", "refuse_media_deletion", "fail_media_deletion"}
             unknown = set(patch) - allowed
             if unknown:
                 return j({"error": f"unknown config key(s): {sorted(unknown)}"}, 400)
@@ -3663,8 +3666,32 @@ class MockPms:
         if p == "/" or p == "/identity":
             return j(self.container(machineIdentifier=lib.machine, friendlyName=lib.friendly,
                                     version="1.41.0.0000-synthetic",
-                                    myPlexSubscription=self.plex_pass,
+                                    myPlexSubscription=self.plex_pass, allowMediaDeletion=self.allow_media_deletion,
                                     platform="Linux", myPlex=True))
+        if method == "DELETE" and len(segs) == 3 and segs[:2] == ["library", "metadata"]:
+            if not self.allow_media_deletion or self.refuse_media_deletion:
+                return j({"error": "deletion not permitted"}, 403)
+            if self.fail_media_deletion:
+                return j({"error": "synthetic server failure"}, 503)
+            if not segs[2].isdigit():
+                return j({"error": "one rating key required"}, 400)
+            rk = int(segs[2])
+            with self.lock:
+                if rk not in lib.items:
+                    return j({"error": "not found"}, 404)
+                gone = {rk}
+                while True:
+                    children = {key for key, item in lib.items.items()
+                                if str(item.get("parentRatingKey", "")) in {str(k) for k in gone}}
+                    if children <= gone:
+                        break
+                    gone |= children
+                for key in gone:
+                    lib.items.pop(key, None)
+                lib.on_deck = {key: value for key, value in lib.on_deck.items()
+                               if key not in gone and int(value["ratingKey"]) not in gone}
+            self.note_write(method, path, body)
+            return j({})
         if p == "/library/sections":
             return j(self.container(Directory=[dict(s, agent="tv.plex.agents.movie",
                                                     scanner="Plex Movie", language="en-US",

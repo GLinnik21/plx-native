@@ -85,11 +85,12 @@ fn the_item_menu_trigger_is_answered_on_the_deck_row_while_the_page_rests_on_the
 fn a_home_card_is_not_answered_by_the_library_search_or_content_builders() {
     let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = home_rig();
+    for i in 1..20 { frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]); }
     let entry = d.nav.top_page().unwrap().id;
     let instance = d.nav.instance_of(entry).unwrap();
     d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
         Delivery::Screen(ScreenEvent::App(AppMsg::Home(HomeCmd::FocusGrid { row: 1, col: 1 })))));
-    for i in 1..80 { frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]); }
+    for i in 20..100 { frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]); }
     assert!(rig.home_grid_focused(&d));
     let focus = d.focus();
     // `focused_card` yields a PmsMovie with actions on this page; the route is what says no.
@@ -175,6 +176,10 @@ fn a_detail_related_card_opens_its_menu_at_the_drawn_rect_and_other_shelves_open
     let interned = 1u32 << 31;
     for elem in (0..4096u32 + 2048).chain(interned..interned + 256) {
         let Some(arg) = answers(&d, &rig, elem) else { continue };
+        if matches!(arg.kind, ItemMenuKind::Detail { .. }) {
+            assert_eq!(arg.rk, "movie");
+            continue;
+        }
         assert!(matches!(arg.kind, ItemMenuKind::Card { from_deck: false, .. }) && !arg.from_home);
         cards.push((arg.rk, elem));
     }

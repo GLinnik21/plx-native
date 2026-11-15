@@ -1692,20 +1692,20 @@ mod tests {
         assert!(opened, "the sweep must exercise a real open capsule");
     }
 
-    /// **The widest row with all five discs** (bookmark, Go to Show, Play Version, Restart, Alt,
-    /// the watch toggle, Trailer drawn as well): every real verb, measured, either unfurls inside
+    /// **The widest shipped row** (bookmark, Go to Show, Play Version, Restart, Alt,
+    /// the watch toggle and More): every real verb, measured, either unfurls inside
     /// the People column or the row stays circles. Never across.
     #[test]
-    fn five_discs_never_cross_the_people_column_in_any_language() {
+    fn the_widest_shipped_row_never_crosses_the_people_column_in_any_language() {
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
-        // Go to Show belongs to an episode page; the on-deck More disc is absent there.
-        let wide = HeroSet { more: false,
+        // The item's More disc also appears beside Go to Show on an episode page.
+        let wide = HeroSet { more: true,
             watchlist: true,
             go_show: true,
             version: true,
             restart: true,
-            trailer: true,
+            trailer: false, // previews replaced the Trailer disc
             alt: true,
             mark: PosterMark::InProgress,
         };

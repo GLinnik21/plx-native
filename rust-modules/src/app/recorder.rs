@@ -227,16 +227,11 @@ pub(crate) fn state_fp() -> u64 {
 
 // Probe only: install complete vector and numeric literals after the production probe run.
 #[cfg(test)]
-fn session_app_prior_vector() -> Vec<&'static str> {
-    let mut shapes = APP_SHAPES.to_vec();
-    // This test's session-codec census is frozen history, not today's product shape.
-    shapes[3] = "AppFrameV4{route:str,overlay:str,focus:str,tree:u64,session:u64,consent:u64,initial:u64}";
-    shapes.push(super::bootstrap::CONTENT_SHAPE);
-    shapes.push(RESOLUTION_SHAPE);
-    shapes.push("CaptureReadinessV2{before_dispatch:pending:bool,text:bool}");
-    shapes.push("MeasurementV1{query:Width(text:bytes,sz:i32,bold:bool)|Cap(sz:i32)|Line(sz:i32),answer:f32bits:u32}");
-    shapes.extend_from_slice(plx_screens::registry::SCREEN_SHAPES);
-    shapes
+fn session_app_prior_vector() -> Vec<String> {
+    // The codec-5 census is historical. Current screen shapes belong only to state_fp().
+    let frozen: Value = serde_json::from_str(include_str!("fixtures/session-codec-v5/current-base-fingerprints.json")).unwrap();
+    frozen["prior_vector"].as_array().unwrap().iter()
+        .map(|shape| shape.as_str().unwrap().to_owned()).collect()
 }
 
 #[cfg(test)]
@@ -258,10 +253,12 @@ fn session_app_fingerprint_probe_only() {
     let frozen: Value = serde_json::from_str(include_str!("fixtures/session-codec-v5/current-base-fingerprints.json")).unwrap();
     let prior = session_app_prior_vector();
     assert_eq!(serde_json::to_value(&prior).unwrap(), frozen["prior_vector"]);
-    let fp_prior = plx_ui::rec::state_fp(&prior);
+    let refs = prior.iter().map(String::as_str).collect::<Vec<_>>();
+    let fp_prior = plx_ui::rec::state_fp(&refs);
     assert_eq!(fp_prior, FP_PRIOR);
     assert_eq!(frozen["fp_prior"].as_u64(), Some(FP_PRIOR));
-    assert_eq!(plx_ui::rec::state_fp(&prior), fp_prior);
+    assert_eq!(plx_ui::rec::state_fp(&refs), fp_prior);
+    assert_ne!(state_fp(), fp_prior);
     let mut prospective = prior.clone();
     let indices: Vec<_> = prior.iter().enumerate().filter(|(_, shape)| **shape == super::bootstrap::SHAPE).map(|(i, _)| i).collect();
     assert_eq!(indices.len(), 1);
@@ -270,10 +267,11 @@ fn session_app_fingerprint_probe_only() {
     assert_eq!(outer.matches("session:SessionInitV5").count(), 1);
     let new_outer = outer.replacen("ControlledHomeInitV6{", "ControlledHomeInitV7{", 1)
         .replacen("session:SessionInitV5", "session:SessionInitV6", 1);
-    prospective[indices[0]] = &new_outer;
+    prospective[indices[0]] = new_outer;
     assert_eq!(serde_json::to_value(&prospective).unwrap(), frozen["prospective_vector"]);
     assert_eq!(prior.iter().zip(&prospective).filter(|(a, b)| a != b).count(), 1);
-    let prospective_fp_v6 = plx_ui::rec::state_fp(&prospective);
+    let prospective_refs = prospective.iter().map(String::as_str).collect::<Vec<_>>();
+    let prospective_fp_v6 = plx_ui::rec::state_fp(&prospective_refs);
     assert_eq!(prospective_fp_v6, FP_V6);
     assert_ne!(state_fp(), prospective_fp_v6, "AppFrameV5 retires the legacy press contribution");
     let manifest = format!(r#"{{"schema":{},"state_fp":{prospective_fp_v6}}}"#, plx_ui::rec::SCHEMA);

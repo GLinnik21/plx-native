@@ -1590,7 +1590,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                         "the preview path replaced the Trailer disc"
                     );
                     let (controls, n) = hero::hero_ctls(set);
-                    assert_eq!(n, 3 + usize::from(restart) + usize::from(alt));
+                    assert_eq!(n, 4 + usize::from(restart) + usize::from(alt));
                     sizes.insert(n);
                     for unfurl in [
                         [0.0, 0.0, 0.0, 0.0, 0.0],
@@ -1644,7 +1644,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
             }
         }
     }
-    assert_eq!(sizes.into_iter().collect::<Vec<_>>(), vec![3, 4, 5]);
+    assert_eq!(sizes.into_iter().collect::<Vec<_>>(), vec![4, 5, 6]);
     assert_eq!(cases, 192);
     clear();
     plx_plex::plex::reset_servers_for_test();
@@ -5674,7 +5674,7 @@ fn an_episode_gets_a_go_to_show_disc_that_presses_the_item_menus_navigation() {
     let mut screen = bare(&_guard, ServerId::UNSET, "ep");
     let set = screen.hero_set(test_store().view());
     assert!(set.go_show);
-    assert!(!set.more, "More belongs to a show’s on-deck hero, not this episode page");
+    assert!(set.more, "the episode page offers its own item menu");
     assert!(!set.watchlist, "no plex guid: the bookmark disc is not in this row");
     assert_eq!(hero::index_of(set, hero::HeroCtl::GoToShow), Some(1));
     let (_, fx) = step(

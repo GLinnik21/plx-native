@@ -964,10 +964,12 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Where:* plex/library.rs (new `rate(rating_key, value)` → GET /:/rate?key={rk}&identifier=com.plexapp.plugins.library&rating={0..10}), plex/models.rs (`userRating`), metadata.rs (Detail field), ui/item_menu.rs + ui/detail.rs for the control.
   *Verified:* CONFIRMED. grep for userRating/user_rating/audienceRating/:/rate over rust-modules/src returns literally nothing. plex/models.rs:124-125 carries only `contentRating` (the MPAA string) — no rating float of any kind, user or audience; plex/library.rs has no rate op; docs/pms-api.md documents no rate verb. Effort should be SMALL not medium for the thumbs/stars write path: client.rs:110 `get_void()` already exists and GET /:/rate?key=…&identifier=com.plexapp.plugins.library&rating=N is a one-line library.rs fn, mirroring scrobble at library.rs:90. Medium is only right if you build the star/thumbs
 
-- **No Delete (admin media deletion) and no confirmation-dialog primitive to gate it with** — `minor` / `medium`
-  The reference More menu's last row is Delete. We have no delete call, no admin/ownership check, and — importantly — no confirm-dialog component anywhere in ui/, so a destructive action has nothing to be guarded by.
-  *Where:* stream.rs + plex/client.rs (a DELETE verb), plex/library.rs (`delete_item(rating_key)` → DELETE /library/metadata/{rk}), a new confirm-dialog View in ui/widgets.rs or ui/popover.rs, ui/item_menu.rs for the row (gated on the server being owned).
-  *Verified:* CONFIRMED on both halves. plex/client.rs's transport choke points are get_json(:97)/get_bytes(:104)/get_void(:110)/put(:117)/post_void(:122)/post_json(:127) — no DELETE; stream.rs exposes only http_get(:507)/http_put(:533)/http_post(:556). Grep for confirm/are you sure/dialog finds only unrelated prose. account.rs:144's `owned` on Resource is the only ownership signal and nothing surfaces it to the UI. TWO EFFORT CORRECTIONS, both downward: (1) stream.rs::http_open ALREADY takes an arbitrary `method: &str` (stream.rs:204-205), so http_delete is a ~15-line clone of http_put (:533) plus a client
+- **Admin media deletion** — landed in the item menu
+  Owned servers with media deletion enabled offer **Delete** for movies, episodes, seasons and shows under the signed-in owner profile.
+  The shared `DecisionAlert` names the target and scope, explains permanent file deletion, and defaults to Cancel.
+  Confirmation sends one credential-bound `DELETE /library/metadata/{rk}` request. The client does not retry uncertain outcomes.
+  A successful response refreshes the affected server's lists. Refusals and failures retain the item and show an error.
+  The in-player menu remains outside this change.
 
 - **No Share (send an item to a friend)** — `minor` / `large`
   "Share Episode" is row 5 of the reference context menu. There is no sharing surface: no friends list, no share endpoint, no share sheet.

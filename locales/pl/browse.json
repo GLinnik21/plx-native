@@ -296,5 +296,17 @@
   "browse.clock.key_changed": "Klucz Twojego serwera się zmienił. Połącz raz TV z internetem, aby aplikacja mogła go ponownie sprawdzić.",
   "browse.detail.mark_episode_watched": "Oznacz odcinek jako obejrzany",
   "browse.detail.mark_episode_unwatched": "Oznacz odcinek jako nieobejrzany",
-  "browse.detail.minutes_left": "Pozostało: {minutes} min"
+  "browse.detail.minutes_left": "Pozostało: {minutes} min",
+  "browse.delete.action": "Usuń…",
+  "browse.delete.question": "Usunąć ten element?",
+  "browse.delete.leaf": "Usuwa element i wszystkie wersje jego plików z serwera Plex. Tej czynności nie można cofnąć.",
+  "browse.delete.season": "Usuwa wszystkie odcinki i wersje plików tego sezonu z serwera Plex. Tej czynności nie można cofnąć.",
+  "browse.delete.show": "Usuwa wszystkie sezony, odcinki i wersje plików tego serialu z serwera Plex. Tej czynności nie można cofnąć.",
+  "browse.delete.working": "Usuwanie…",
+  "browse.delete.wait": "Oczekiwanie na serwer. Zamknięcie tego okna nie anuluje usuwania.",
+  "browse.delete.failed": "Nie udało się usunąć elementu",
+  "browse.delete.forbidden": "Serwer odmówił usunięcia. Zaloguj się jako właściciel i sprawdź, czy usuwanie multimediów jest włączone.",
+  "browse.delete.missing": "Element już nie istnieje na serwerze. Odśwież bibliotekę.",
+  "browse.delete.uncertain": "Serwer nie potwierdził usunięcia. Odśwież bibliotekę przed ponowną próbą.",
+  "browse.delete.changed": "Profil lub połączenie uległy zmianie. Otwórz ponownie menu elementu przed usunięciem."
 }

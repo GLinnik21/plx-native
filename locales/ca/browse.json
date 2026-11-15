@@ -284,5 +284,17 @@
   "browse.clock.key_changed": "La clau del teu servidor ha canviat. Connecta el televisor a Internet una vegada perquè l'aplicació la pugui verificar de nou.",
   "browse.detail.mark_episode_watched": "Marca l'episodi com a vist",
   "browse.detail.mark_episode_unwatched": "Marca l'episodi com a no vist",
-  "browse.detail.minutes_left": "Queden {minutes} min"
+  "browse.detail.minutes_left": "Queden {minutes} min",
+  "browse.delete.action": "Suprimeix…",
+  "browse.delete.question": "Voleu suprimir aquest element?",
+  "browse.delete.leaf": "Suprimeix l'element i totes les versions dels fitxers del servidor Plex. Aquesta acció no es pot desfer.",
+  "browse.delete.season": "Suprimeix tots els episodis i les versions dels fitxers d'aquesta temporada del servidor Plex. Aquesta acció no es pot desfer.",
+  "browse.delete.show": "Suprimeix totes les temporades, els episodis i les versions dels fitxers d'aquesta sèrie del servidor Plex. Aquesta acció no es pot desfer.",
+  "browse.delete.working": "S'està suprimint…",
+  "browse.delete.wait": "S'està esperant el servidor. Tancar aquest diàleg no cancel·la la supressió.",
+  "browse.delete.failed": "No s'ha pogut suprimir l'element",
+  "browse.delete.forbidden": "El servidor ha rebutjat la supressió. Inicia la sessió com a propietari i comprova que la supressió de contingut està activada.",
+  "browse.delete.missing": "L'element ja no existeix al servidor. Actualitza la biblioteca.",
+  "browse.delete.uncertain": "El servidor no ha confirmat la supressió. Actualitza la biblioteca abans de tornar-ho a provar.",
+  "browse.delete.changed": "El perfil o la connexió han canviat. Torna a obrir el menú de l'element abans de suprimir-lo."
 }

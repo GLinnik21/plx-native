@@ -596,6 +596,8 @@ pub(crate) struct Bridge {
     huds_profile_seated: bool,
     /// What the last install or removal said, for the page, until it is opened again.
     huds_notice: Option<plx_data::hudpacks::Notice>,
+    media_delete: super::adapters::media_delete::MediaDeleteRunner,
+    deleted_media: Vec<plx_screens::registry::MediaDeleteRequest>,
     trace_save: Option<(MachineId, u64, plx_base::storage_worker::TypedTicket<plx_platform::playback_trace::Status>)>,
     consent_adapter: super::adapters::consent::ConsentAdapter,
     /// Starts the jobs the stores emit (`adapters::stores`). Chosen when the Bridge is built: `Live`
@@ -917,7 +919,7 @@ impl Bridge {
             huds_pages: Vec::new(),
             huds_profile_seated: false,
             huds_notice: None,
-            trace_save: None,
+            trace_save: None, media_delete: Default::default(), deleted_media: Vec::new(),
             consent_adapter,
             store_runner,
             metadata_alt_host: crate::dev::scenarios::metadata_alt_stand_in,
@@ -1591,6 +1593,14 @@ impl Bridge {
             next.servers = std::sync::Arc::new(self.client_keys.iter().filter_map(|(sid, _)| self.client_keys.facts(sid)
                 .map(|facts| (facts.machine_id.clone(), sid))).collect());
         }
+        let deletable = if next.settled && next.session.active_profile_is_admin()
+            && !next.session.account_token.is_empty() {
+            self.client_keys.iter().filter_map(|(sid, key)| {
+                let owned = self.client_keys.facts(sid).is_some_and(|f| f.described.is_some_and(|facts| facts.owned));
+                (owned && plx_plex::plex::serverinfo::facts_of(sid).allow_media_deletion).then_some((sid, key))
+            }).collect::<Vec<_>>()
+        } else { Vec::new() };
+        if *next.deletable != deletable { next.deletable = std::sync::Arc::new(deletable); }
         next.resolution_offered = plx_platform::tv::device::ui_resolution_offered();
         if self.screen_grant_key != Some(key) {
             let session = &grant_session;
@@ -1751,6 +1761,9 @@ impl Bridge {
                 arg.loaded_episode = false;
                 arg.watchlist = self.watchlist_face(page.watchlist_hex(), plx_data::watchlist::model::Kind::Show, true);
                 return Some(arg);
+            }
+            if let Some((rk, kind)) = page.hero_menu_subject(ret.focus, meta) {
+                return Some(strip_menu_arg(sid, &rk, kind, entry, ret.focus, rect));
             }
             if let Some((rk, show_rk, index, mark)) = page.focused_season(ret.focus, meta) {
                 // the season's address rides on the menu: the strip's item is no catalog row, so
@@ -2380,7 +2393,17 @@ fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
             self.stores.notify_settle_admission(&mut pass, &mut turn);
             self.stores.notify_finish_turn(&mut pass, turn, &input);
         }
-        let out = self.stores.notify_end(pass);
+        let mut out = self.stores.notify_end(pass);
+        // A successful local delete owes exactly the same per-server refresh as a server event.
+        // This also works when that server's event stream is unavailable.
+        for target in self.deleted_media.drain(..) {
+            use plx_plex::plex::notify::{LibraryEntry, LibraryKind, LibraryState};
+            out.library.push(plx_data::stores::notify::NotifyLibrary { sid: target.sid, entries: vec![LibraryEntry {
+                item_id: if target.kind >= 2 && !target.show_rk.is_empty() { target.show_rk } else { target.rk },
+                kind: if target.kind == 0 { LibraryKind::Movie } else { LibraryKind::Show },
+                state: LibraryState::Deleted, section: None,
+            }] });
+        }
         self.stores.watchlist.observe_snapshot(self.store_runner.watchlist_snapshot(&self.client_keys, &mut self.watchlist_capture));
         let mut spent = self.stores.notify_map(&out, pages, shown, self.directory.view(), &self.client_keys);
         self.start_store_jobs_in(plx_data::stores::Stores::NOTIFY_FILLS);
@@ -3207,6 +3230,44 @@ impl Bridge {
         }
     }
 
+    pub(crate) fn media_delete_poll(&mut self) -> Option<(MachineId, plx_screens::registry::MediaDeleteRequest, plx_plex::plex::DeleteResult)> {
+        let result = self.media_delete.poll()?;
+        if result.2 == plx_plex::plex::DeleteResult::Deleted {
+            self.refresh_deleted_media_lists(result.1.sid);
+            self.deleted_media.push(result.1.clone());
+        }
+        Some(result)
+    }
+
+    /// A confirmed delete changes list membership. View-state read-back cannot remove missing
+    /// rows, so supersede retained list reads and reuse their ordinary server-backed open paths.
+    fn refresh_deleted_media_lists(&mut self, sid: plx_plex::plex::ServerId) {
+        use plx_data::stores::{search::SearchCmd, person::PersonCmd, collection::CollectionCmd};
+        let query = self.capture_search_publication().view().query().to_owned();
+        if !query.trim().is_empty() {
+            self.search_run(SearchCmd::Reset);
+            self.search_run(SearchCmd::SetQuery(query));
+        }
+        // Person and Search merge multiple servers. Reopening keeps their original subject and
+        // query while retiring every in-flight result that could still contain the deleted item.
+        if self.pending_person_open.is_none() {
+            let person = self.stores.person_view().current().map(|p| PersonCmd::Open {
+                sid: p.sid, key: p.key.clone(), guid: p.guid.clone(), name: p.name.clone(), thumb: p.thumb.clone(),
+            });
+            if let Some(command) = person {
+                let owner = self.person_owner;
+                self.person_run(PersonCmd::Reset);
+                self.person_run_from(owner, command);
+            }
+        }
+        let collection = self.stores.collection_view().current().filter(|c| c.id.sid == sid)
+            .map(|c| plx_data::collection::CollectionTarget { id: c.id.clone(), want: plx_data::collection::PAGE_SIZE });
+        if let Some(target) = collection {
+            self.collection_run(CollectionCmd::Reset);
+            self.collection_run(CollectionCmd::Open { target });
+        }
+    }
+
     pub(crate) fn playback_trace_poll(&mut self) -> Option<(MachineId, plx_platform::playback_trace::Status)> {
         use std::sync::mpsc::TryRecvError;
         let (_, generation, ticket) = self.trace_save.as_ref()?;
@@ -3250,6 +3311,10 @@ impl Bridge {
                     other => super::preferences::execute(other),
                 }
             },
+            AppFx::MediaDelete(request) => {
+                let result = self.media_delete.start(from, request);
+                out.push(Fx::Deliver(from, Delivery::Screen(ScreenEvent::App(AppMsg::MediaDelete(result)))));
+            }
             AppFx::PlaybackTrace(command) => {
                 let status = self.playback_trace_command(from, command);
                 out.push(Fx::Deliver(from, Delivery::Screen(ScreenEvent::App(AppMsg::PlaybackTrace(status)))));
@@ -5578,6 +5643,59 @@ mod card_rest_route_tests;
 #[cfg(test)]
 #[path = "deep_shelves_route_tests.rs"]
 mod deep_shelves_route_tests;
+
+#[cfg(test)]
+mod media_delete_refresh_tests {
+    use super::*;
+    use plx_data::stores::{collection::CollectionCmd, person::PersonCmd, search::SearchCmd};
+
+    #[test]
+    fn confirmed_delete_retires_retained_list_membership_without_changing_the_subjects() {
+        let _serial = plx_base::testlock::serial();
+        let session = plx_plex::plex::session::TempSession::new("media-delete-refresh");
+        session.watching("synthetic-delete-refresh");
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("delete-refresh", "127.0.0.1", 9, "synthetic", "fixture");
+        let mut bridge = Bridge::for_test(|| 0);
+        let item = plx_data::pms::PmsMovie { sid, rk: "42".into(), title: "Disposable item".into(), ..Default::default() };
+        bridge.search_run(SearchCmd::SetQuery("disposable".into()));
+        bridge.stores.search.publish_shelves_for_test(vec![plx_data::search::Shelf {
+            epoch: 0, window: Default::default(), kind: plx_data::search::Kind::Movie,
+            items: vec![plx_data::search::Item::Media(item.clone())],
+        }]);
+        let query_epoch = bridge.stores.search.query_gen();
+        bridge.person_run(PersonCmd::Open { sid, key: "7".into(), guid: String::new(), name: "Actor".into(), thumb: String::new() });
+        bridge.stores.person.install_for_test(vec![item.clone()], Vec::new());
+        let id = plx_plex::plex::collections::CollectionRef::by_tag(sid, 1, 7, "Disposable collection");
+        bridge.collection_run(CollectionCmd::Open { target: plx_data::collection::CollectionTarget {
+            id: id.clone(), want: plx_data::collection::PAGE_SIZE,
+        }});
+        bridge.stores.collection.install_for_test(vec![item], plx_data::collection::CollectionStatus::Ready);
+        let generation = bridge.stores.collection.generation_for_test();
+
+        bridge.refresh_deleted_media_lists(sid);
+
+        assert_eq!(bridge.stores.search.query(), "disposable");
+        assert!(bridge.stores.search.query_gen() > query_epoch, "retire in-flight search results");
+        assert!(bridge.stores.search.held_keys().is_empty(), "a missing tile must not remain actionable");
+        assert_eq!(bridge.stores.search.state(), plx_data::search::State::Searching);
+        let person = bridge.stores.person_view();
+        assert_eq!(person.current().unwrap().key, "7");
+        assert!(person.current().unwrap().shelves.iter().all(|shelf| shelf.items.is_empty()));
+        let collection = bridge.stores.collection_view();
+        let current = collection.current().unwrap();
+        assert_eq!(current.id, id);
+        assert!(current.generation() > generation, "retire in-flight collection pages");
+        assert_eq!(current.loaded_rows().count(), 0);
+        assert_eq!(current.status, plx_data::collection::CollectionStatus::Loading);
+
+        let other = plx_plex::plex::register_for_test("other-delete-refresh", "127.0.0.1", 9, "synthetic", "fixture");
+        let generation = current.generation();
+        bridge.refresh_deleted_media_lists(other);
+        assert_eq!(bridge.stores.collection_view().current().unwrap().generation(), generation,
+            "another server's collection must remain intact");
+    }
+}
 
 #[cfg(test)]
 mod preference_effect_tests {

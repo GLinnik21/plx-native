@@ -284,5 +284,17 @@
   "browse.clock.key_changed": "La clé de votre serveur a changé. Connectez la TV à internet une fois pour que l’application puisse la vérifier de nouveau.",
   "browse.detail.mark_episode_watched": "Marquer l’épisode comme vu",
   "browse.detail.mark_episode_unwatched": "Marquer l’épisode comme non vu",
-  "browse.detail.minutes_left": "{minutes} min restantes"
+  "browse.detail.minutes_left": "{minutes} min restantes",
+  "browse.delete.action": "Supprimer…",
+  "browse.delete.question": "Supprimer cet élément ?",
+  "browse.delete.leaf": "Supprime l'élément et toutes ses versions du serveur Plex. Cette action est irréversible.",
+  "browse.delete.season": "Supprime tous les épisodes et toutes les versions de cette saison du serveur Plex. Cette action est irréversible.",
+  "browse.delete.show": "Supprime toutes les saisons, tous les épisodes et toutes les versions de cette série du serveur Plex. Cette action est irréversible.",
+  "browse.delete.working": "Suppression…",
+  "browse.delete.wait": "En attente du serveur. Fermer cette fenêtre n'annule pas la suppression.",
+  "browse.delete.failed": "Impossible de supprimer l'élément",
+  "browse.delete.forbidden": "Le serveur a refusé la suppression. Connectez-vous en tant que propriétaire et vérifiez que la suppression des médias est activée.",
+  "browse.delete.missing": "L'élément n'existe plus sur le serveur. Actualisez la bibliothèque.",
+  "browse.delete.uncertain": "Le serveur n'a pas confirmé la suppression. Actualisez la bibliothèque avant de réessayer.",
+  "browse.delete.changed": "Votre profil ou la connexion a changé. Rouvrez le menu de l'élément avant de le supprimer."
 }

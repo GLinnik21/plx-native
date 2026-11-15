@@ -1630,7 +1630,8 @@ class Enhancement266(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), {
             "refuse_enhancements": True, "ignore_enhancements": False, "refuse_conversions": False,
-            "plex_pass": True, "viewer_intro_skip": True, "viewer_credits_skip": True})
+            "plex_pass": True, "viewer_intro_skip": True, "viewer_credits_skip": True,
+            "allow_media_deletion": False, "refuse_media_deletion": False, "fail_media_deletion": False})
         self.assertIs(pms.refuse_enhancements, True)
         self.assertIs(pms.ignore_enhancements, False)
 
@@ -2452,6 +2453,55 @@ class PmsAudioVocabulary(unittest.TestCase):
         media = Library(movies=1)._media(__import__("random").Random(1), 5, 50, 1000, acodec="dts")[0]
         self.assertEqual(media["audioCodec"], "dca")
         self.assertEqual(media["Part"][0]["Stream"][1]["codec"], "dca")
+
+
+class MediaDeletionTests(unittest.TestCase):
+    def setUp(self):
+        self.pms = MockPms(Library(movies=3, shows=2, seasons=2, episodes=3, multi_version=True))
+        self.pms.allow_media_deletion = True
+
+    def delete(self, key):
+        return self.pms.handle("DELETE", f"/library/metadata/{key}")[0]
+
+    def item(self, kind):
+        return next((k, v) for k, v in self.pms.lib.items.items() if v["type"] == kind)
+
+    def test_delete_movie_removes_all_versions_and_keeps_other_movies(self):
+        key, movie = self.item("movie")
+        controls = {k for k, v in self.pms.lib.items.items() if v["type"] == "movie" and k != key}
+        self.assertEqual(self.delete(key), 200)
+        self.assertNotIn(key, self.pms.lib.items)
+        self.assertTrue(controls <= self.pms.lib.items.keys())
+        self.assertEqual(self.delete(key), 404)
+        self.assertEqual(len(self.pms.writes), 1)
+
+    def test_delete_episode_keeps_its_siblings(self):
+        key, episode = self.item("episode")
+        siblings = {k for k, v in self.pms.lib.items.items() if v.get("parentRatingKey") == episode["parentRatingKey"] and k != key}
+        self.assertEqual(self.delete(key), 200)
+        self.assertNotIn(key, self.pms.lib.items)
+        self.assertTrue(siblings <= self.pms.lib.items.keys())
+
+    def test_delete_season_and_show_are_scoped_to_their_descendants(self):
+        for kind in ("season", "show"):
+            with self.subTest(kind=kind):
+                self.setUp()
+                key, item = self.item(kind)
+                before = dict(self.pms.lib.items)
+                self.assertEqual(self.delete(key), 200)
+                self.assertNotIn(key, self.pms.lib.items)
+                for other, row in before.items():
+                    descendant = row.get("parentRatingKey") == item["ratingKey"] or (kind == "show" and row.get("grandparentRatingKey") == item["ratingKey"])
+                    self.assertEqual(other in self.pms.lib.items, other != key and not descendant)
+
+    def test_permission_and_server_failures_preserve_media(self):
+        key, _ = self.item("movie")
+        for setting, status in (("refuse_media_deletion", 403), ("fail_media_deletion", 503)):
+            setattr(self.pms, setting, True)
+            self.assertEqual(self.delete(key), status)
+            self.assertIn(key, self.pms.lib.items)
+            setattr(self.pms, setting, False)
+        self.assertEqual(self.pms.writes, [])
 
 
 if __name__ == "__main__":

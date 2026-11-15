@@ -65,6 +65,7 @@ impl Subscription {
 /// `Unknown`, no build string, no fetch in flight.
 #[derive(Default)]
 struct Entry {
+    allow_media_deletion: bool,
     /// The owner's Plex Pass answer, `Unknown` until a fetch lands.
     sub: Subscription,
     /// The server's full build string ("1.43.3.10861-cd85035e7"), "" until its fetch lands.
@@ -106,6 +107,7 @@ pub fn subscription_of(id: ServerId) -> Subscription {
 /// One addressed answer, cheaply retained by the app's visual-input observer.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ServerInfoFacts {
+    pub allow_media_deletion: bool,
     pub subscription: Subscription,
     pub version: std::sync::Arc<str>,
 }
@@ -115,7 +117,7 @@ pub fn facts_of(id: ServerId) -> ServerInfoFacts {
         return ServerInfoFacts::default();
     }
     with_table(|t| t.get(&id.raw()).map(|e| ServerInfoFacts {
-        subscription: e.sub, version: e.version.clone(),
+        subscription: e.sub, version: e.version.clone(), allow_media_deletion: e.allow_media_deletion,
     }).unwrap_or_default())
 }
 
@@ -247,6 +249,11 @@ fn fetch_once(id: ServerId, c: &Client) {
         sub = Subscription::No;
     }
     store(id, sub, &mc.version);
+    with_table(|t| {
+        if let Some(entry) = t.get_mut(&id.raw()) {
+            entry.allow_media_deletion = mc.allow_media_deletion.is_some_and(|v| v != 0);
+        }
+    });
     // The version + subscription bit identify a RELEASE, not a household — safe to log, and safe
     // for the stats panel to photograph. The SLOT number names which server said it, because the
     // `machineIdentifier` that really identifies one is a permanent household fingerprint
@@ -306,9 +313,9 @@ pub fn store_for_test(id: ServerId, sub: Subscription, version: &str) {
 
 impl Client {
     /// `GET /` — the server root: its self-description envelope (version, capabilities, and the
-    /// owner's `myPlexSubscription`). The two fields consumed live on the shared `MediaContainer`
+    /// owner's `myPlexSubscription`). The fields consumed live on the shared `MediaContainer`
     /// (see `models.rs`) so the ordinary envelope parse serves this too.
-    fn server_root(&self) -> Option<super::models::MediaContainer> {
+    pub(super) fn server_root(&self) -> Option<super::models::MediaContainer> {
         self.get_json("/")
     }
 }

@@ -272,5 +272,17 @@
   "browse.clock.key_changed": "Der Schlüssel deines Servers hat sich geändert. Verbinde den Fernseher einmal mit dem Internet, damit die App ihn neu prüfen kann.",
   "browse.detail.mark_episode_watched": "Episode als gesehen markieren",
   "browse.detail.mark_episode_unwatched": "Episode als ungesehen markieren",
-  "browse.detail.minutes_left": "Noch {minutes} Min."
+  "browse.detail.minutes_left": "Noch {minutes} Min.",
+  "browse.delete.action": "Löschen…",
+  "browse.delete.question": "Dieses Element löschen?",
+  "browse.delete.leaf": "Löscht das Element und alle Dateiversionen vom Plex-Server. Dies kann nicht rückgängig gemacht werden.",
+  "browse.delete.season": "Löscht alle Episoden und Dateiversionen dieser Staffel vom Plex-Server. Dies kann nicht rückgängig gemacht werden.",
+  "browse.delete.show": "Löscht alle Staffeln, Episoden und Dateiversionen dieser Serie vom Plex-Server. Dies kann nicht rückgängig gemacht werden.",
+  "browse.delete.working": "Wird gelöscht…",
+  "browse.delete.wait": "Warten auf den Server. Das Schließen dieses Dialogs bricht das Löschen nicht ab.",
+  "browse.delete.failed": "Element konnte nicht gelöscht werden",
+  "browse.delete.forbidden": "Der Server hat das Löschen verweigert. Melde dich als Eigentümer an und prüfe, ob das Löschen von Medien aktiviert ist.",
+  "browse.delete.missing": "Das Element ist nicht mehr auf dem Server vorhanden. Aktualisiere die Mediathek.",
+  "browse.delete.uncertain": "Der Server hat die Löschung nicht bestätigt. Aktualisiere die Mediathek, bevor du es erneut versuchst.",
+  "browse.delete.changed": "Dein Profil oder die Verbindung hat sich geändert. Öffne vor dem Löschen das Menü des Elements erneut."
 }
