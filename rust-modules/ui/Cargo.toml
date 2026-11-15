@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "PlxNative ui layer: the UI library (theme, widgets, containers, the frame, the focus engine, the recorder), with no application type in it."
-repository = "https://github.com/GLinnik21/plx-native"
+repository = "https://github.com/plxnative/plx-native"
 publish = false
 build = "build.rs"
 

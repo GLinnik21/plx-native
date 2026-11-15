@@ -236,7 +236,7 @@ could have revealed it except asking.
 
 > **2026-08-11 — item 1 is SETTLED, in the affirmative.** The webosbrew reviewer ran v0.2.1 on a
 > real LG 65UP7560AUD (webOS **6.5.2**, `Rockhopper 6.5.2-43`):
-> [issue #22](https://github.com/GLinnik21/plx-native/issues/22). The whole `VP_EXPORTED`
+> [issue #22](https://github.com/plxnative/plx-native/issues/22). The whole `VP_EXPORTED`
 > sequence ran — created, `windowId` spliced into the Load payload, placed `rv=1`, VDEC/ADEC
 > allocated, fed to EOS with clean teardown. Six of eight playbacks worked: H.264 1080p, H.264
 > 4K, HEVC, AAC and AC3, episodes, end-of-file. The two failures were server-side and

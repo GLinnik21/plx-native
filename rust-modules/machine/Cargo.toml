@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "PlxNative machine layer: the deterministic state-machine runtime (machines, effects, the present gate, the idle wake, the landing schedule, motion) the stores, auth and screens are written against."
-repository = "https://github.com/GLinnik21/plx-native"
+repository = "https://github.com/plxnative/plx-native"
 publish = false
 
 [lib]

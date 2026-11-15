@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "PlxNative screens layer: the application's screens (Home, library, detail, search, the player screen, Settings and its family, the account and item menus), each a Screen over the ui library, the data layer and the appkit widgets."
-repository = "https://github.com/GLinnik21/plx-native"
+repository = "https://github.com/plxnative/plx-native"
 publish = false
 build = "build.rs"
 

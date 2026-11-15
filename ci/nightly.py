@@ -560,7 +560,7 @@ def _selftest() -> int:
     body = render_notes(
         label="0.7.0-nightly-20260919", sha="abc1234def5678900000000000000000000000",
         prev_tag="nightly/v0.7.0-nightly-20260918", ipk="plxnative-v0.7.0-nightly-20260919.ipk",
-        sha256="deadbeef" * 8, repo="GLinnik21/plx-native",
+        sha256="deadbeef" * 8, repo="plxnative/plx-native",
         changes=["- session: one in-memory cache owned by the session module (#136)"],
     )
     check("PlxNative Nightly" in body, "notes name the nightly tile")
@@ -579,7 +579,7 @@ def _selftest() -> int:
           "the first paragraph is not internally hard-wrapped")
     first_notes = render_notes(
         label="0.7.0-nightly-20260919", sha="0" * 40, prev_tag=None,
-        ipk="plxnative-v0.7.0-nightly-20260919.ipk", sha256="0" * 64, repo="GLinnik21/plx-native",
+        ipk="plxnative-v0.7.0-nightly-20260919.ipk", sha256="0" * 64, repo="plxnative/plx-native",
         changes=[],
     )
     check("First nightly." in first_notes, "no prev_tag -> 'First nightly.'")
@@ -591,7 +591,7 @@ def _selftest() -> int:
     fake_release = {
         "tag_name": "nightly/v0.7.0-nightly-20260919",
         "target_commitish": "abc1234def5678900000000000000000000000",
-        "html_url": "https://github.com/GLinnik21/plx-native/releases/tag/nightly%2Fv0.7.0-nightly-20260919",
+        "html_url": "https://github.com/plxnative/plx-native/releases/tag/nightly%2Fv0.7.0-nightly-20260919",
         "assets": [
             {"name": "plxnative-v0.7.0-nightly-20260919.ipk",
              "browser_download_url": "https://example.invalid/ipk"},
@@ -633,7 +633,7 @@ def _selftest() -> int:
         "ipkHash": {"sha256": "ab" * 32}, "iconUri": "https://example.invalid/i.png",
     }
     ipk_name = "plxnative-v0.8.0-nightly-20261006.ipk"
-    ipk_url = "https://github.com/GLinnik21/plx-native/releases/download/x/plxnative-v0.8.0.ipk"
+    ipk_url = "https://github.com/plxnative/plx-native/releases/download/x/plxnative-v0.8.0.ipk"
     out = repo_manifest(good_manifest, ipk_url=ipk_url, ipk_name=ipk_name,
                         sha256=("ab" * 32) + "  file.ipk\n", label=label)
     check(out["ipkUrl"] == ipk_url and out["version"] == "0.8.20261006",
@@ -668,7 +668,7 @@ def _selftest() -> int:
     check(refuses(good_manifest, lbl="0.6.2-nightly-20261006"),
           "a trunk manifest (0.8.<date>) does not match a 0.6.2 maintenance-line label")
 
-    index = repo_index("GLinnik21/plx-native")
+    index = repo_index("plxnative/plx-native")
     pkg = index["packages"][0]
     check(pkg["id"] == PACKAGE_ID and pkg["manifestUrl"] == f"{SITE_ORIGIN}/nightly/{MANIFEST_NAME}",
           "repo.json names the nightly id and the manifest staged beside it")
@@ -676,12 +676,12 @@ def _selftest() -> int:
     check(pkg["fullDescriptionUrl"].startswith("https://") and pkg["iconUri"].startswith("https://"),
           "repo.json's description and icon URLs are absolute https")
 
-    rel = {**fake_release, "html_url": "https://github.com/GLinnik21/plx-native/releases/tag/x",
+    rel = {**fake_release, "html_url": "https://github.com/plxnative/plx-native/releases/tag/x",
            "assets": fake_release["assets"] + [{"name": MANIFEST_NAME,
                                                 "browser_download_url": "https://example.invalid/m"}]}
     rel["assets"][0] = {"name": "plxnative-v0.8.0-nightly-20261006.ipk", "browser_download_url": ipk_url}
     rel["tag_name"] = "nightly/v" + label
-    files = build_repo_files(rel, ("ab" * 32) + "  x\n", json.dumps(good_manifest), "GLinnik21/plx-native")
+    files = build_repo_files(rel, ("ab" * 32) + "  x\n", json.dumps(good_manifest), "plxnative/plx-native")
     check(set(files) == {"repo.json", MANIFEST_NAME, "description.html"},
           "a nightly with a manifest yields the index, the manifest and the description page")
     check(json.loads(files[MANIFEST_NAME])["ipkUrl"] == ipk_url, "the served manifest points at the release's .ipk")

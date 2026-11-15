@@ -549,7 +549,7 @@ class BuildBenchWorkflow(unittest.TestCase):
     def test_it_runs_only_for_this_repository_and_its_default_branch(self):
         for job in ("measure", "gate"):
             body = job_body(self.NAME, job)
-            self.assertIn("github.repository == 'GLinnik21/plx-native'", body, job)
+            self.assertIn("github.repository == 'plxnative/plx-native'", body, job)
             self.assertIn("github.ref_name == github.event.repository.default_branch", body, job)
 
     def test_the_workflow_grants_nothing_and_only_publish_may_write(self):

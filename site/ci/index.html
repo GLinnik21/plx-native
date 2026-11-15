@@ -269,12 +269,12 @@ code { font-family: var(--font-mono); font-size: 0.92em; background: var(--chip)
 
   <footer>
     <p>Host checks ran as one job until Oct 1; since then they are parallel jobs plus a short aggregator, and the chart shows each separately. Runner timings on shared GitHub machines are noisy, so read the median, not single runs. The thresholds that decide worse, better and flat are in <code>tools/ci-summary.py</code>.</p>
-    <p>The data is <a href="https://raw.githubusercontent.com/GLinnik21/plx-native/ci-metrics/ci-history.json"><code>ci-history.json</code></a>, <code>build-history.json</code> and <code>ci-summary.json</code> on the <code>ci-metrics</code> branch. Runs older than 90 days are folded into one row per day.</p>
+    <p>The data is <a href="https://raw.githubusercontent.com/plxnative/plx-native/ci-metrics/ci-history.json"><code>ci-history.json</code></a>, <code>build-history.json</code> and <code>ci-summary.json</code> on the <code>ci-metrics</code> branch. Runs older than 90 days are folded into one row per day.</p>
   </footer>
 </div>
 
 <script>
-const REPO = "GLinnik21/plx-native";
+const REPO = "plxnative/plx-native";
 const RAW = "https://raw.githubusercontent.com/" + REPO + "/ci-metrics/";
 
 // `?data=<relative path>` (and `?summary=`, `?bench=`) point the page at local files for testing (see the

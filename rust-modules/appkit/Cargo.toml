@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "PlxNative appkit layer: application widgets shared by several screens (the player HUD, the track menus, the info panel, the Sources row model), composed from the ui library over application types."
-repository = "https://github.com/GLinnik21/plx-native"
+repository = "https://github.com/plxnative/plx-native"
 publish = false
 build = "build.rs"
 

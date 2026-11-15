@@ -26,7 +26,7 @@ version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Fuzz targets over the HUD package, bundle, SVG, address and registry-index parsers and the WebSocket codec. Not shipped."
-repository = "https://github.com/GLinnik21/plx-native"
+repository = "https://github.com/plxnative/plx-native"
 publish = false
 build = "build.rs"
 
