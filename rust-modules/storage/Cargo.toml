@@ -6,7 +6,7 @@ version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "PlxNative private storage helper: the LS2 service that holds the client's secrets and state."
-repository = "https://github.com/plxnative/plx-native"
+repository = "https://github.com/GLinnik21/plx-native"
 publish = false
 
 # The helper is its OWN package, and does not depend on `plxnative-modules`, on purpose. As a

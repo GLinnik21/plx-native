@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Bundled FFmpeg ABI, codec jobs and capture encoder for PlxNative."
-repository = "https://github.com/plxnative/plx-native"
+repository = "https://github.com/GLinnik21/plx-native"
 publish = false
 
 [package.metadata.plx]

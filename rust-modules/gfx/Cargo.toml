@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "PlxNative gfx layer: the GLES2 renderer, the EGL probe, text rasterization, image decoding, the vector-icon rasterizer FFI and the GPU instruments (GPU timer, Mali counters, the overdraw ledger)."
-repository = "https://github.com/plxnative/plx-native"
+repository = "https://github.com/GLinnik21/plx-native"
 publish = false
 build = "build.rs"
 
