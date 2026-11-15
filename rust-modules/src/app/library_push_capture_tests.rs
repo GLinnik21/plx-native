@@ -130,6 +130,47 @@ fn aimed(current: usize, kind: plx_data::browse::SecKind) -> i64 {
     directory.sections()[directory.current().expect("the store points at a library")].key
 }
 
+/// A real dispatcher Library tick, chrome step, discovery draw and Present acknowledgement must
+/// settle to keepalives; accepted per-tick browse requests are not new content.
+#[test]
+fn oracle_library_present_50s() {
+    use plx_machine::motion::report;
+    use plx_ui::frame::backdrop;
+    let mut w = World::new("oracle-library-present");
+    w.bridge.stores.browse.borrow_mut().seed_items_for_test(48);
+    super::show_page(&mut w.d, AppArg::Home);
+    w.frames(90);
+    w.present_bar();
+    let rect = w.d.last_stops().iter().find(|s| s.key.elem == plx_ui::widgets::TAB_KEY_MOVIES)
+        .expect("Movies stop").rect;
+    w.click(rect.cx(), rect.cy());
+    assert!(w.on(&AppArg::Library), "mount library");
+    let mut glass = plx_ui::frame::glass::GlassPlan::new();
+    let mut admitted = 0;
+    let mut late = 0;
+    for i in 0..3300u32 {
+        w.step(vec![]);
+        w.bridge.update_home_chrome(&mut w.d, &mut glass, 0.016);
+        let now = w.frame * 16;
+        report::collect_into(&mut w.d.present, now);
+        if w.d.present.take(now) {
+            admitted += 1;
+            if i >= 3000 { late += 1; }
+            let sources = glass.sources.clone();
+            sources.borrow_mut().begin(w.d.backdrop_layers(1.0));
+            {
+                let _guard = backdrop::discover(sources.clone());
+                w.d.draw_with_glass_below(&mut w.bridge, &mut glass, true, backdrop::Z::ALL);
+            }
+            sources.borrow_mut().resolve();
+            backdrop::commit(&sources);
+            w.d.present.acknowledge(now);
+        }
+    }
+    println!("admitted={admitted}/3300 late={late}/300");
+    assert!(late <= 4, "late gate should admit only keepalives");
+}
+
 /// A press aims the store at a library of the pressed kind when it points at the other kind, and
 /// leaves it alone when it already points at one of that kind (the reader's last pick stays).
 #[test]

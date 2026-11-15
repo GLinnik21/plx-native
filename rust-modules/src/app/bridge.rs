@@ -1935,11 +1935,15 @@ impl Bridge {
     /// step that left its job on the outbox would read as a read in flight with nothing running.
     /// The step is handed `browse_session()`, read after the store observed its pin write.
     pub(crate) fn browse_run(&mut self, cmd: plx_data::stores::browse::BrowseCmd) -> bool {
+        self.browse_run_outcome(cmd).accepted
+    }
+
+    fn browse_run_outcome(&mut self, cmd: plx_data::stores::browse::BrowseCmd) -> plx_data::stores::browse::CommandOutcome {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let session = self.browse_session();
-        let changed = self.stores.browse_run(cmd, &session.input(&self.client_keys));
+        let outcome = self.stores.browse_run_outcome(cmd, &session.input(&self.client_keys));
         self.start_store_jobs_of(StoreId::Browse);
-        changed
+        outcome
     }
 
     /// Is any shelf of the addressed section committed? The Library pages' publication gate reads it
@@ -3050,8 +3054,8 @@ impl Bridge {
                 return Handled::Yes;
             }
             AppMsg::Store(StoreCmd::Browse(command)) => {
-                let changed = self.browse_run(command.clone());
-                if changed { fx.invalidate(plx_machine::present::Provenance::Landing(to)); }
+                let outcome = self.browse_run_outcome(command.clone());
+                if outcome.changed { fx.invalidate(plx_machine::present::Provenance::Landing(to)); }
                 return Handled::Yes;
             }
             _ => {}
