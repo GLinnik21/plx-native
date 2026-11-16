@@ -357,6 +357,11 @@ python3 ci/check-machine-shape.py
 # origin, and a planted secret refused before any `gh` call. Real gh JSON as fixtures; temp dirs only, no network, no sleeping on the poll or race timers (one test lets a hung gh hit a 1 s timeout).
 python3 tools/test_pr_land.py
 python3 .claude/hooks/tv-lock-notify-test.py
+# The disk-low hook (.claude/hooks/disk-low-notify.py, PostToolUse + PostToolUseFailure on Bash): its thresholds equal tools/disk-budget.py's
+# constants, the level / throttle / reclaim-dedupe logic on a fake free-space reading and a recording launcher, the text (facts, one line of
+# systemMessage, under the 10,000 character cap), the settings.json registrations, and a real process with a stub standing in for
+# `build-gc.sh --auto` (detached, own session, output in the log). Never starts the real build-gc; temp dirs only; no sleeping on a timer.
+python3 .claude/hooks/disk-low-notify-test.py
 # The custom agents' files (AGENTS.md, "Harness-specific files"): every `.agents/agents/<name>.md` carries a matching frontmatter
 # `name`, an explicit `model:` (one documented exemption), a description, a RELATIVE `.claude/agents/<name>.md` symlink that resolves
 # to it and a `.codex/agents/<name>.toml` wrapper. CI's path filter ignores those files, so this is the only reader. Reads the real

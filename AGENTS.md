@@ -204,7 +204,11 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   cargo-running target joins `DISK_ENTRIES` in the Makefile (`ci/test_disk_preflight.py` fails
   until it does), and a `$(MAKE)` line inside an entry passes `PLX_DISK_BUDGET_DONE=1`. `make disk`
   stays the report to read before intervening yourself, or when the volume needs relief faster than
-  the automatic trigger provides it.
+  the automatic trigger provides it. In a Claude session `.claude/hooks/disk-low-notify.py` adds a note
+  after a Bash call when free space is under the comfort line or the reserve, or a command printed
+  "No space left on device", and says `tools/build-gc.sh --auto` was already started in the background:
+  when it appears, relief is `build-gc.sh` and `make disk`, and a volume still under the reserve goes to
+  the owner, never an `rm -rf` of build trees or a `git clean`.
 - Use the `which-tier` skill to choose between host checks, `ui-sim`, and real-device verification.
   Pixel output, LG text rasterization, video-plane composition, performance, and native playback
   generally need the TV before being called verified.
