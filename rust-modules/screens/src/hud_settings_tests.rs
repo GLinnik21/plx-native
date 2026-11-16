@@ -621,9 +621,38 @@ fn an_offer_opens_the_prompt_with_cancel_focused_and_each_answer_names_the_offer
     }
 }
 
-/// **An offer that lands while the viewer is answering their own drop-file question waits for that answer.** A fetch
-/// started from the address row can land on any tick, and it used to replace the open question (same title, focus back
-/// on Cancel): the viewer's answer then went to the fetched package and the file they had picked was never installed.
+/// **A drop file's row takes no OK while the store is busy**, as the removal rows and the address row already do. The
+/// store installs a drop file only when it is idle (`HudStore`: "`InstallDrop` | idle") and says nothing when it
+/// refuses. The row used to open its question all the same: a fetch in flight then landed its offer over that
+/// question, and whatever the viewer answered, the file they had picked was not installed.
+#[test]
+fn a_drop_file_waits_for_a_free_store() {
+    for busy in ["fetching", "package_busy"] {
+        let mut l = list();
+        match busy {
+            "fetching" => l.fetching = true,
+            _ => l.package_busy = true,
+        }
+        let (mut page, tx) = page_with(l);
+        let id = HudId::Drop(Sha::of(&[9]));
+        assert!(row_of(&page, &id).disabled, "{busy}: the row shows it cannot be used now");
+        let key = key_of(&page, &id);
+        let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
+        assert!(huds(&emitted).is_empty() && !page.prompt.is_open() && page.asking.is_none(), "{busy}: OK asks nothing");
+
+        tx.send(list()).unwrap();
+        drive(&mut page, tick(), key);
+        assert!(!row_of(&page, &id).disabled, "{busy}: free again");
+        drive(&mut page, ScreenEvent::Activate(key), key);
+        assert_eq!(page.asking, Some(Asking::Drop(Sha::of(&[9]))), "{busy}: and the row asks");
+    }
+}
+
+/// **An offer never takes over the viewer's own question.** The drop rows wait for a free store (above), so a question
+/// is not opened across a fetch. The page reads a published listing, though, which can be a tick behind the store, so
+/// an offer can still land with a drop question open. It used to replace that question (same title, focus back on
+/// Cancel) and the viewer's answer installed or declined the fetched package. The question stays the viewer's, and the
+/// offer is asked after it. Whether the store then takes the install is the store's own rule, and not graded here.
 #[test]
 fn an_offer_landing_over_an_open_drop_question_waits_for_the_answer() {
     let (mut page, tx) = page_with(list());
@@ -641,7 +670,7 @@ fn an_offer_landing_over_an_open_drop_question_waits_for_the_answer() {
     assert!(page.prompt.is_open() && page.state.confirming);
 
     let emitted = drive(&mut page, ScreenEvent::PressCommit(PressId(0)), ALERT + 1);
-    assert!(matches!(huds(&emitted).as_slice(), [HudCmd::InstallDrop(sha)] if *sha == Sha::of(&[9])), "yes installs the file that was asked about");
+    assert!(matches!(huds(&emitted).as_slice(), [HudCmd::InstallDrop(sha)] if *sha == Sha::of(&[9])), "yes names the file that was asked about");
     assert!(!page.prompt.is_open() && page.asking.is_none());
 
     // The offer was never asked, so it is asked now, as its own question, and its answer names it.

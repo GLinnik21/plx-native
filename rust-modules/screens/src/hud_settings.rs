@@ -399,7 +399,10 @@ fn hud_form(list: &HudList, draft: Option<&TextBuffer>, saving_end_time: bool) -
                 }));
             }
         }
-        folder = folder.item_keyed(id, RowKey(DROP_KEY + i as u32), RowKind::Button, action, row).disabled(file.status.is_err());
+        // The store installs a drop file only when it is idle, and refuses in silence: while a fetch, a held offer or
+        // any other package work runs, the row takes no OK, as the removal rows and the address row do not.
+        folder = folder.item_keyed(id, RowKey(DROP_KEY + i as u32), RowKind::Button, action, row)
+            .disabled(file.status.is_err() || list.fetching || list.package_busy);
     }
     let gallery = FormSection::new("").item_keyed(HudId::Browse, RowKey(0x4000), RowKind::Nav(SettingsPage::HudGallery), HudAction::Inert,
         Row::new(msg::settings_hud_browse()));
@@ -773,6 +776,7 @@ impl HudPage {
     /// replaced, and an offer's is (the store holds one offer, so the newer one is the only one an answer can name).
     /// It used to assign `asking` whatever was open: an offer landing on a later tick took over a drop-file question
     /// under the same title, and the viewer's answer installed or declined a package they had not been asked about.
+    /// A drop row is inert while the store is busy (`hud_form`), so that needs a listing a tick behind the store now.
     fn ask(&mut self, asking: Asking, question: &'static std::ffi::CStr, paragraphs: Vec<Cow<'static, str>>, fx: &mut Effects<'_, InnerHost>) -> bool {
         if self.holds_own_question() {
             return false;

@@ -13,7 +13,7 @@ and those ten are excluded.
    `*Stage`, `*Status`, `*Mode`, `*Step`, `*Progress` or `*Lifecycle`: 401 structs and 145 enums.
 2. Seven readers, one per area below, judged each lead by reading the type and its writers, and
    looked for what a field count cannot see (statics, atomics, thread-locals, timers).
-3. The three defects marked **fixed** were then reproduced by a test that failed before the fix.
+3. The three defects marked **fixed** were then reproduced by tests that failed before the fix.
 
 Everything else is **read, not run**. "Traced" in the tables means the reader followed the code
 path line by line; it does not mean the path was executed, and none of it was checked on a
@@ -41,7 +41,9 @@ instead of the state.** So the first move is always the same and is small:
   `rows.is_empty()` tests that meant "no list has landed".)
 - Give the transition **one writer** that reads what is already in force before it writes.
   (`HudPage::ask` is where every install question opens, so it is where "a question is already
-  open" is decided.)
+  open" is decided.) Then follow the transition's effect to whoever receives it: that fix was
+  half a fix until the row was also made inert while `HudStore` is busy, because the store
+  refuses the install the page had just confirmed.
 - A flag that exempts a failure, a retry or a reset names the state it exempts, not a neighbour
   of it. (Browse's `!state.relist` meant "a re-list holding rows" and also matched a first read
   holding none.)
@@ -53,7 +55,7 @@ television, then the `S` rows where one enum replaces the flags.
 
 | where | what goes wrong | status |
 |---|---|---|
-| `screens/src/hud_settings.rs` (`asking`, `confirming`, `offered`) | An address-fetched offer landing on a later tick replaced an open drop-file install question under the same title; the viewer's answer went to the offer and the file was never installed. | **fixed**: `ask` refuses to replace the viewer's own question and the offer waits for the answer |
+| `screens/src/hud_settings.rs` (`asking`, `confirming`, `offered`, and the drop rows) | A drop file's row opened its install question while a fetch was in flight; the fetch's offer then replaced the open question under the same title, the viewer's answer went to the offer, and the file was never installed (`HudStore` takes `InstallDrop` only when idle, and refuses in silence). | **fixed**: a drop row is inert while the store is busy, and `ask` never replaces the viewer's own question (an offer that lands behind one waits for the answer). Still open: a listing one tick behind the store can open the question over a busy store, and the store then drops the confirmed install with no notice |
 | `data/src/browse/mod.rs` (`SecState.fetch`, `relist`, `total`) | A library-change notice during the first page read set `relist`; if that read then failed, the failure arm's `!state.relist` skipped `Failed`, and the Library grid spun through every retry. | **fixed**: only a re-list that holds rows is exempt |
 | `data/src/stores/watchlist.rs` (`Status`, `rows`) | "Never read" was spelled `rows.is_empty()`, so an empty Watchlist returned to `Loading` at every mount and a failed background reread replaced it with `Failed` (which removes the Watchlist row from item menus). | **fixed**: `WatchlistState::unread` |
 | `data/src/browse/mod.rs` (page landing) | `retry_cd = 120` is armed before the generation check, so a failed page of a section the viewer has left delays the new section's first page by about 2 s. | open; a design call (`relist_regression_a_failed_later_page_still_retains_notifications` treats the backoff as the server's) |

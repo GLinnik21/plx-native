@@ -42,7 +42,7 @@ const RETRY_FRAMES: u32 = 120;
 #[derive(Clone, Debug)]
 pub enum WatchlistCmd {
     /// The page mounted (or the tab was entered): take the identity from the input if the epoch has none
-    /// and read the list. It is stepped through [`WatchlistStore::run_with_input`]. A populated list is never blanked by it.
+    /// and read the list. It is stepped through [`WatchlistStore::run_with_input`]. A list that has landed, populated or empty, is never blanked by it.
     Open,
     /// Read the list again behind the rows now held (resume, a write burst, a watched mark).
     Reread,
@@ -202,9 +202,11 @@ struct WatchlistState {
 
 impl WatchlistState {
     /// **No list has landed for this account**: nothing was asked, the first read is out, or it failed.
-    /// Not "the rows are empty": a list that landed and holds nothing is `Ready`, and it is held through
-    /// a mount and a failed reread exactly as a populated one is. Spelled as `rows.is_empty()`, an empty
-    /// Watchlist went back to `Loading` at every `Open` and to `Failed` on a failed background reread.
+    /// Not "the rows are empty": a list that landed and holds nothing is `Ready`, and a mount or a failed
+    /// page 0 of a reread leaves it `Ready`, as they leave a populated one. Spelled as `rows.is_empty()`,
+    /// an empty Watchlist went back to `Loading` at every `Open` and to `Failed` on a failed background
+    /// reread. (The tests of `rows.is_empty()` that remain ask "are rows held": what a rematch has to
+    /// match, whether a validator is worth sending, whether page 0 is shown as it lands or staged.)
     fn unread(&self) -> bool {
         self.rows.is_empty() && self.status != Status::Ready
     }
