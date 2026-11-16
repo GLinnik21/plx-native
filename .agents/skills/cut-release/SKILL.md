@@ -310,7 +310,7 @@ gh run view <id> --json jobs --jq '.jobs[] | "\(.name): \(.conclusion)"'
 be `github-actions[bot]`, never a person:
 
 ```sh
-gh api repos/GLinnik21/plx-native/releases/tags/vX.Y.Z --jq '.assets[] | "\(.name) \(.uploader.login)"'
+gh api repos/plxnative/plx-native/releases/tags/vX.Y.Z --jq '.assets[] | "\(.name) \(.uploader.login)"'
 ```
 
 ### 5. Verify what the public can actually download
@@ -333,7 +333,7 @@ Two things are worth reading rather than assuming:
 
 ```sh
 git -C . fetch origin main && git show origin/main:docs/release-audits/vX.Y.Z.md | head -40
-gh api repos/GLinnik21/plx-native/releases/tags/vX.Y.Z --jq '.assets[]|"\(.name) \(.uploader.login)"'
+gh api repos/plxnative/plx-native/releases/tags/vX.Y.Z --jq '.assets[]|"\(.name) \(.uploader.login)"'
 ```
 
 An audit whose generated block is still the template's placeholder means the release did not go

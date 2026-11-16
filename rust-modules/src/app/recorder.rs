@@ -213,6 +213,28 @@ pub(crate) const FP_PRIOR: u64 = 4239819007634745513;
 pub(crate) const FP_V6: u64 = 741022075462080307;
 
 pub(crate) fn state_fp() -> u64 {
+    plx_ui::rec::state_fp(&["ControlledHomeInitV11", "ControlledInstallLanguageV1{install_language:Preference};ControlledRunningLanguageV1{running_language:Preference};PlayerPresentation:unsupported_domain_neutral_no_ambient;NativePreview:controlled_port_unavailable", &state_fp_v10().to_string()])
+}
+
+pub(crate) fn state_fp_v10() -> u64 {
+    plx_ui::rec::state_fp(&["ControlledHomeInitV10", super::bootstrap::UI_PREFERENCES_SHAPE, &state_fp_v9().to_string()])
+}
+
+/// Frozen unpublished six-field identity, used only to refuse underspecified V9 captures.
+pub(crate) fn state_fp_v9() -> u64 {
+    plx_ui::rec::state_fp(&["ControlledHomeInitV9",
+        "ControlledUiPreferencesV1{deck_press:DeckPress,under_posters:UnderPosters,instant_dpad_seeking:InstantDpadSeeking,playback_quality:PlaybackQuality,subtitle_size:SubtitleSize,subtitle_position:SubtitlePosition}",
+        &state_fp_v8().to_string()])
+}
+
+/// Frozen pre-preference-capture census; retained as an identity input, not an admission exception.
+fn state_fp_v8() -> u64 {
+    plx_ui::rec::state_fp(&["ControlledHomeInitV8", "ScreenCommandsV1{fifo:before_single_navigation_commit}",
+        super::bootstrap::RUNTIME_POLICY_SHAPE, &state_fp_v7().to_string()])
+}
+
+/// Frozen V7 census: do not change historical profile identities.
+pub(crate) fn state_fp_v7() -> u64 {
     let mut shapes: Vec<&str> = APP_SHAPES.to_vec();
     let shape = shapes.iter_mut().find(|shape| **shape == super::bootstrap::SHAPE)
         .expect("controlled initial shape");
@@ -306,7 +328,7 @@ pub(crate) enum FrameHashProfile { OwnedV5, KeyOnlyV4 }
 /// Only owned key input can prove the retired app press stayed at its boot-time rest.
 /// Pointer/direct-token profiles are incompatible and are rejected before startup.
 fn recording_hash_profile(recording: &Recording) -> Result<FrameHashProfile, &'static str> {
-    if recording.header.state_fp == state_fp() { return Ok(FrameHashProfile::OwnedV5); }
+    if recording.header.state_fp == state_fp() || recording.header.state_fp == state_fp_v7() { return Ok(FrameHashProfile::OwnedV5); }
     if recording.header.state_fp != FP_PRIOR { return Err("incompatible controlled state shape"); }
     for input in recording.frames.iter().flat_map(|frame| &frame.inputs) {
         if !matches!(decode_input(input).map_err(|_| "unsupported legacy press input")?.kind,
@@ -525,6 +547,13 @@ pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootst
         // their own order, so establish every synchronous answer before validating that frame's
         // asynchronous completion batch.
         for effect in &frame.effects {
+            // Historical content commands ran after dispatch. FIFO can publish return memory
+            // and retarget PageDip in this frame, so those ledgers cannot be graded faithfully.
+            // Inspect bounded parsed envelopes, never fixture names or escaped source text.
+            if recording.header.state_fp != state_fp() && effect["e"] == "App"
+                && effect["payload"].get("content").is_some() {
+                return Err("incompatible historical content scheduler: requires post-dispatch admission");
+            }
             if effect["payload"]["content_resource"] == true {
                 detail.admission(&effect["payload"])?;
             }
@@ -942,6 +971,9 @@ impl Recplay {
     pub(crate) fn recording_with_sink(initial: &super::bootstrap::Initial, sink: Box<dyn plx_ui::rec::Sink>)
         -> Result<Self, &'static str> {
         initial.validate()?;
+        if initial.runtime_policy.is_none() { return Err("current recording requires explicit runtime policy"); }
+        if initial.ui_preferences.is_none() { return Err("current recording requires explicit UI preferences"); }
+        if initial.install_language.is_none() || initial.running_language.is_none() { return Err("current recording requires explicit install and running languages"); }
         let mut header = Header::new(state_fp(), initial);
         header.init_data = initial.to_v6_value()?;
         header.clock_start_ms = initial.clock_start;
@@ -2895,17 +2927,61 @@ mod fixture_preflight_tests {
     #[test]
     fn committed_recordings_keep_valid_page_requests_and_initial_hashes() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/replay");
-        for name in ["1-boot-home-chip-grid", "6-settings-family", "12-filmography-detail-return"] {
+        for (name, fp, frames) in [
+            ("1-boot-home-chip-grid", FP_PRIOR, 200),
+            ("6-settings-family", FP_PRIOR, 621),
+            ("12-filmography-detail-return", FP_PRIOR, 457),
+            ("12-filmography-detail-return-current", state_fp(), 2287),
+        ] {
             let dir = root.join(name);
             let manifest = std::fs::read_to_string(dir.join("manifest.json")).unwrap();
             let segment = std::fs::read(dir.join("rec-0000.jsonl")).unwrap();
-            let mut recording = Recording::parse(&manifest, &[segment.as_slice()], FP_PRIOR).unwrap();
-            let initial = super::super::bootstrap::Initial::decode(recording.header.init_data.clone(), recording.header.init_hash)
+            let mut recording = Recording::parse(&manifest, &[segment.as_slice()], fp).unwrap();
+            assert_eq!(recording.frames.len(), frames, "{name}");
+            validate_resolution_recording(&recording).expect("complete recorded Focus/Hit resolutions");
+            let initial = super::super::bootstrap::Initial::decode_profile(recording.header.init_data.clone(), recording.header.init_hash, fp)
                 .expect("recorded initial state must retain its canonical hash");
             // Host unit tests omit the simulator feature; this check covers the wire preflight.
             recording.header.features = features();
-            assert_eq!(validate_controlled(&recording, &initial), Ok(()), "{name}");
+            let expected = if name == "12-filmography-detail-return" {
+                Err("incompatible historical content scheduler: requires post-dispatch admission")
+            } else { Ok(()) };
+            assert_eq!(validate_controlled(&recording, &initial), expected, "{name}");
+            if name == "12-filmography-detail-return-current" {
+                assert_eq!(recording.header.state_fp, state_fp());
+                assert!(initial.content.is_some(), "current anchor must exercise typed Content");
+            }
         }
+    }
+
+    #[test]
+    fn historical_scheduler_boundary_uses_parsed_commands_not_names_or_text() {
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
+        let mut header = Header::new(state_fp(), &initial);
+        header.features = features();
+        header.triggers = initial.triggers.clone();
+        let mut recording = Recording { header, frames: vec![plx_ui::rec::Frame {
+            f: 0, tick: Some(Tick::default()), st: Some(0), ..Default::default()
+        }], metrics: Default::default(), stopped_at: None };
+        let command = json!({"f":0,"t":"eff","from":"inst:2","e":"App",
+            "payload":{"content":{"push":{"person":[0,"19","guid","name","thumb"]}}}});
+        recording.frames[0].effects.push(command.clone());
+        assert_eq!(validate_controlled(&recording, &initial), Ok(()), "current FIFO envelope");
+        for fp in [FP_PRIOR, state_fp_v7()] {
+            recording.header.state_fp = fp;
+            for content in [json!({"push":{"person":[0,"19","guid","name","thumb"]}}),
+                json!({"present":{"filmography":0}}), json!("back"), json!({"unknown":true})] {
+                recording.frames[0].effects[0]["payload"]["content"] = content;
+                assert_eq!(validate_controlled(&recording, &initial),
+                    Err("incompatible historical content scheduler: requires post-dispatch admission"));
+            }
+            recording.frames[0].effects[0] = json!({"f":0,"t":"eff","from":"Nav","e":"Log",
+                "payload":{"message":command.to_string()}});
+            assert_eq!(validate_controlled(&recording, &initial), Ok(()), "escaped text is not a command");
+            recording.frames[0].effects[0] = command.clone();
+        }
+        recording.header.state_fp = FP_V6;
+        assert_eq!(validate_controlled(&recording, &initial), Err("incompatible controlled state shape"));
     }
 }
 

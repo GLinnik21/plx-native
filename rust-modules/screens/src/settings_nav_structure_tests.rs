@@ -371,6 +371,15 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
     r::restore_instant_dpad_seeking(*ses::InstantDpadSeeking::LADDER.last().unwrap());
     r::restore_uri_engine(*ses::UriEngine::LADDER.last().unwrap());
     r::restore_dolby_vision_mode(*ses::DolbyVisionMode::LADDER.last().unwrap());
+    let captured = ses::ProfilePrefs {
+        playback_quality: Some(quality), direct_play_mode: Some(r::DirectPlayMode::Disabled),
+        subtitle_size: ses::SubtitleSize::LADDER.last().copied(), subtitle_position: ses::SubtitlePosition::LADDER.last().copied(),
+        subtitle_tone: ses::SubtitleTone::LADDER.last().copied(), hdr_overlay_brightness: ses::HdrOverlayBrightness::LADDER.last().copied(),
+        next_episode_mode: ses::NextEpisodeMode::LADDER.last().copied(), deck_press: ses::DeckPress::LADDER.last().copied(),
+        skip_interval: ses::SkipInterval::LADDER.last().copied(), instant_dpad_seeking: ses::InstantDpadSeeking::LADDER.last().copied(),
+        uri_engine: ses::UriEngine::LADDER.last().copied(), dolby_vision_mode: ses::DolbyVisionMode::LADDER.last().copied(),
+        ..Default::default()
+    };
     let lines = |kind: PickerKind| match kind {
         PickerKind::Quality => ladder_last(r::available_quality_ladder().len()),
         PickerKind::DirectPlay => 2,
@@ -392,7 +401,11 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
     for &(row, dest) in playback.iter().filter(|(_, d)| *d != SettingsPage::PlayerHud) {
         let SettingsPage::Picker(kind) = dest else { panic!("a Playback row pushes a picker: {dest:?}") };
         assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row(
-            &format!("playback {kind:?}"), &|| consent_opened(SettingsPage::Playback), row, dest, lines(kind));
+            &format!("playback {kind:?}"), &|| {
+                let (d, mut rig, id) = consent_opened(SettingsPage::Playback);
+                rig.preferences = Some(captured.clone());
+                (d, rig, id)
+            }, row, dest, lines(kind));
     }
 
     // Audio & Subtitles: the account's stored answers.
@@ -428,6 +441,7 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
             };
             assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row(&format!("audio {kind:?}"), &|| {
                 let (mut d, mut rig, id) = consent_opened(SettingsPage::AudioSubtitles);
+                rig.preferences = Some(captured.clone());
                 frame(&mut d, &mut rig, 32, vec![]);
                 let Some(registry::PreferenceCmd::Load { reply }) = rig.preference_commands.pop() else {
                     panic!("the page asks its host for the load");
@@ -568,7 +582,7 @@ fn the_under_posters_page_walks_title_both_details_reset_and_back_with_keys() {
 fn every_language_nav_item_pushes_exactly_its_dest() {
     let _g = plx_base::testlock::serial();
     let _sess = scratch_session("nav-structure-language");
-    let items = nav_items(&LanguagePage::new(EntryId(0)).form);
+    let items = nav_items(&LanguagePage::new(EntryId(0), &crate::registry::capture_fixture()).form);
     assert_eq!(items.iter().map(|(_, d)| *d).collect::<Vec<_>>(), [SettingsPage::Contribute]);
     for &(elem, dest) in &items {
         for method in [Method::Ok, Method::Right] {

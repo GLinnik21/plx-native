@@ -768,7 +768,9 @@ fn the_root_page_reads_the_stored_setting_into_its_row() {
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
     let stored = UnderPosters { title: true, details: parts(&[P::Genre]), show_details: DetailParts::NONE, sort_value: false };
     let _live = Live::set(stored);
-    let page = RootPage::new(EntryId(0), test_support::cx(None).views.directory, &crate::registry::capture_fixture());
+    let mut inputs = crate::registry::capture_fixture();
+    inputs.preferences = Some(plx_plex::plex::session::ProfilePrefs { under_posters: Some(stored), ..Default::default() });
+    let page = RootPage::new(EntryId(0), test_support::cx(None).views.directory, &inputs);
     assert_eq!(page.state.under_posters, stored);
 }
 

@@ -204,6 +204,9 @@ pub(crate) fn app(effect: &AppFx) -> Result<Value, &'static str> {
         AppFx::SessionEffect(effect) => json!({"session_effect":wire(effect)?}),
         AppFx::PlaybackTrace(plx_platform::playback_trace::Command::Status) => json!({"playback_trace":"status"}),
         AppFx::Preferences(_) => return Err("unsupported controlled preferences effect"),
+        // Yielding is not authorization: these heads must refuse before any MainThread,
+        // recorder, catalog write or native player resource is borrowed by the runner.
+        AppFx::Loop(_) | AppFx::Player(_) | AppFx::Catalog(_) => return Err("unsupported Home application effect"),
         AppFx::Store(id, command) => json!({"store":id.ord().0,"command":store(command)?}),
         AppFx::StoreWork(work) => json!({"work":work_value(work)?}),
         AppFx::Content(req) => json!({"content":content_request(req)?}),

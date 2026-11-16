@@ -738,6 +738,34 @@ pub(crate) fn back_cursor_target(pages: &plx_ui::dispatch::Dispatcher<super::bri
     Some((plx_machine::machine::MachineId::Instance(instance), plx_media::route::playback_trace_generation()))
 }
 
+/// Execute one admitted FIFO head using the application's actual MainThread resources.
+pub(crate) fn execute_player_command(request: plx_screens::registry::PlayerReq,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge, resources: &mut super::content::CommandResources<'_>, now: u32,
+) -> plx_machine::machine::AppCommandOutcome {
+    use plx_machine::machine::AppCommandOutcome;
+    if matches!(request, plx_screens::registry::PlayerReq::RepairSandbox)
+        && (matches!(resources.rec, super::recorder::Recplay::Replaying(_)) || bridge.is_controlled_replay()) {
+        resources.rec.refuse("replay cannot authorize sandbox repair");
+        return AppCommandOutcome::Refused;
+    }
+    let outcome = player_requests(resources.player, &mut resources.adapters.player,
+        resources.repause_at, vec![request], now, resources.refresh_hubs, pages, bridge);
+    if outcome.back_cursor.is_some() || resources.ptr.back_cursor_active() {
+        let target = if outcome.exiting { None } else { back_cursor_target(pages) };
+        resources.ptr.sync_back_cursor(target, outcome.back_cursor);
+    }
+    if outcome.slot_refresh {
+        if let Some(screen) = super::bridge::player_mut(pages) {
+            screen.slot = plx_appkit::player_hud::slot_with_preferences(&resources.player.session,
+                bridge.metadata_view(), bridge.marker_preferences());
+            screen.hud.nav.btn = screen.row_primary();
+        }
+        super::bridge::reseat_player_focus_on_primary(pages);
+    }
+    AppCommandOutcome::Completed
+}
+
 /// **Perform what a player overlay decided** (§14): the panel owns its own state and its own
 /// input, but not the playback — seeking, pausing, applying a quality rung and leaving for a
 /// detail page all need the player adapter, the route or the trail, none of which a screen may
@@ -1425,7 +1453,8 @@ pub(crate) fn perform_hud_command(
             }
         }
         HudCommand::Seek(by) => {
-            let step = by.step_ns(plx_appkit::player_hud::scrub_step_ns());
+            let interval = bridge.views().inputs.preference::<plx_plex::plex::session::SkipIntervalPref>();
+            let step = by.step_ns(plx_appkit::player_hud::scrub_step_ns(interval));
             let target = super::bridge::player_mut(pages)
                 .and_then(|screen| screen.jump_by(&player.session, step, true, now));
             if let Some(target) = target {

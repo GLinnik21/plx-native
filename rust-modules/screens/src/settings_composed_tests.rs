@@ -92,6 +92,7 @@ pub struct SurfaceRig {
     /// How many times BACK reached the root of the ROOT stack (the platform's Home).
     roots: u32,
     pub(super) preference_commands: Vec<registry::PreferenceCmd>,
+    pub(super) preferences: Option<plx_plex::plex::session::ProfilePrefs>,
     /// The television keyboard raises (`true`) and lowers (`false`) that reached the platform, in order.
     keyboard: Vec<bool>,
 }
@@ -104,7 +105,7 @@ impl SurfaceRig {
             stores: plx_data::stores::Stores::default(),
             directory: Default::default(),
             roots: 0,
-            preference_commands: Vec::new(),
+            preference_commands: Vec::new(), preferences: None,
             keyboard: Vec::new(),
         }
     }
@@ -116,9 +117,11 @@ impl Rig<InnerHost> for SurfaceRig {
     }
     fn split(&mut self) -> Split<'_, InnerHost> {
         self.stores.capture_seeded_browse_for_test(&mut self.directory, plx_plex::plex::current_server());
+        let mut inputs = crate::registry::capture_fixture();
+        if let Some(preferences) = &self.preferences { inputs.preferences = Some(preferences.clone()); }
         Split {
             mounter: &mut self.mounter,
-            views: crate::registry::InnerViews::new(self.directory.view(), crate::registry::publication_fixture()),
+            views: crate::registry::InnerViews::new(self.directory.view(), Box::leak(Box::new(inputs))),
             measure: &self.measure,
         }
     }
@@ -562,6 +565,7 @@ fn playback_picker_seats_the_saved_option_and_restores_its_parent_row() {
     plx_media::route::restore_direct_play_mode(plx_media::route::DirectPlayMode::Auto);
     for back in [Key::Back, Key::Left] {
         let (mut d, mut rig, id) = consent_opened(SettingsPage::Playback);
+        rig.preferences = Some(plx_plex::plex::session::ProfilePrefs { playback_quality: Some(plx_media::route::Quality::P480), direct_play_mode: Some(plx_media::route::DirectPlayMode::Auto), ..Default::default() });
         // A real DOWN/UP gives the engine an explicit parent cursor at Default quality.
         frame(&mut d, &mut rig, 32, vec![key(Key::Down, tick(32))]);
         frame(&mut d, &mut rig, 48, vec![key(Key::Up, tick(48))]);

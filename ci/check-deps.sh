@@ -180,7 +180,7 @@ ok()   { echo "  ok — $*"; }
 # RULES must name the `want` calls in order; every run ends by checking that, whatever it selected.
 RULES=(browse-owner viewstate-owner person-owner search-owner hubs-owner metadata-owner libm ticks wall
   fpflags present effect mutators mutators-visibility nav ui-owner-legacy ui-owner-files owned-damage
-  owned-wake cards layer sessionwrite uistorage legacypage sibling textmeasure dt ladder hittest frame
+  owned-wake cards layer sessionwrite screen-runtime-io uistorage legacypage sibling textmeasure dt ladder hittest frame
   sink route fnlen testmod threads blocking workers globals forks fxlanes tmppath paging allowlist-counts)
 deps_usage() {
   echo "check-deps: $*" >&2
@@ -945,6 +945,12 @@ if [ -n "$(grep_code '(crate|super)::app::' "$SRC_SCREENS")" ]; then
 else ok "layer"; fi
 fi # layer
 want sessionwrite && gate sessionwrite 'session::load\(' "$SRC_SCREENS" "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT"
+# Screen-local helpers/import aliases are scanned as production too; test ownership
+# comes from declarations, never filename suffixes. No IO-port-wide exemption.
+if want screen-runtime-io; then
+if python3 ci/ui_boundaries.py; then ok "screen-runtime-io"
+else fail "screen-runtime-io: use captured inputs or typed effects"; fi
+fi # screen-runtime-io
 # uistorage: the LIBRARY (`ui/`) never names the storage layer (§2.1: `ui/` may name only
 # `crate::{gfx,text,paths,task}`). A ui-owned sweep that needs the app's removal rule takes it as an
 # injected `fn` (`ui::rec::erase_owned_artifacts`). Zero, no allowlist. The wider table is not a
@@ -1203,6 +1209,8 @@ fi # testmod
 #     to the count yet — it exists so a FUTURE import cannot go unmatched the way the bare
 #     `thread::spawn(` spelling used to.
 if want threads; then
+# A flat all(test-or-test-support, feature...) conjunction remains wholly test-owned;
+# any(test, production-feature) does not and must still be scanned (harness controls).
 threads_bad=0
 while IFS= read -r f; do
   # a wholly-test file is test code exactly like an inline `#[cfg(test)] mod` block, which the
@@ -1217,7 +1225,7 @@ while IFS= read -r f; do
     if ! allowed threads "$f"; then echo "    $f:$line"; threads_bad=$((threads_bad+1)); fi
   done < <(awk '
     skip>0 { n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m; if (depth<=0) skip=0; prev=$0; next }
-    prev ~ /^[[:space:]]*#\[cfg\((test|any\(test, feature = "test-support"\))\)\][[:space:]]*$/ && /^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?mod[[:space:]]/ { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; prev=$0; next }
+    prev ~ /^[[:space:]]*#\[cfg\((test|any\(test, feature = "test-support"\)|all\((test|any\(test, feature = "test-support"\)), [^()]*\))\)\][[:space:]]*$/ && /^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?mod[[:space:]]/ { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; prev=$0; next }
     { print NR":"$0; prev=$0 }' "$f" | grep -E "$pat" | grep -vE '^[0-9]+:\s*//' || true)
 # ...over the files that spell `spawn(` at all — a superset of both matched spellings, and the `awk`
 # below only drops `#[cfg(test)] mod` blocks, so the count is unchanged.
@@ -1575,9 +1583,13 @@ fi # forks
 # `<path>::AppFx::<Variant>`, one line for EACH variant on an arm's head (`AppFx::A(r) | AppFx::B(r) => ..`
 # is two), and `<path>::AppFx::_` for an arm whose head names none (`other => ..`, `_ => ..`).
 if want fxlanes; then
+# Unreachable arms are allowed only after proving the explicit external classification
+# and the corresponding taken-head runner arm. A side queue plus unreachable still fails.
+if python3 ci/check-app-command-routing.py; then :
+else fail "fxlanes: external FIFO proof failed"; fi
 fxlanes_sites=$(
   grep -rlE --include='*.rs' 'fn app_effect' "$SRC" 2>/dev/null | sort \
-    | LG_MODE=arm LG_ARM_FN=app_effect LG_ARM_MATCH='(^|[^A-Za-z0-9_])match[[:space:]]+fx[[:space:]]*\{' LG_ARM_OK='Fx::Deliver\(' \
+    | LG_MODE=arm LG_ARM_FN=app_effect LG_ARM_MATCH='(^|[^A-Za-z0-9_])match[[:space:]]+fx[[:space:]]*\{' LG_ARM_OK='Fx::Deliver\(|unreachable!\(' \
       ledger_scan | sort
 )
 LG_LEDGERS="$(echo ci/allow/fxlanes/*.txt)" LG_AREA_CHECK=1 \

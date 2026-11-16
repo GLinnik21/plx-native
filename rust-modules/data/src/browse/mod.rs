@@ -2842,6 +2842,37 @@ impl BrowseState {
         }
 
     }
+    /// Keep admission separate from visible damage. Want/Genres only ask for work; Letters can
+    /// also select a different cached calendar rail when the host's date appears or disappears.
+    pub fn run_owned_outcome(
+        &mut self,
+        adapter: &Arc<BrowseAdapter>,
+        cmd: crate::stores::browse::BrowseCmd,
+        keys: &ClientKeys,
+        session: &plx_plex::plex::session::Session,
+        jobs: &mut Vec<crate::stores::StoreJob>,
+    ) -> crate::stores::browse::CommandOutcome {
+        use crate::stores::browse::{BrowseCmd, CommandOutcome, LibraryWork};
+        let request_only = matches!(&cmd, BrowseCmd::Addressed {
+            work: LibraryWork::Want { .. } | LibraryWork::Genres, ..
+        });
+        let letters = matches!(&cmd, BrowseCmd::Addressed { work: LibraryWork::Letters { .. }, .. });
+        let shown = |owner: &Self| owner.cur_state().zip(owner.section_kind(owner.cur()))
+            .and_then(|(state, kind)| state.shown_bands(kind)).cloned();
+        let before = if letters { shown(self) } else { None };
+        let accepted = self.run_owned(adapter, cmd, keys, session, jobs);
+        let changed = if letters {
+            match (before, shown(self)) {
+                (Some(before), Some(after)) => !Arc::ptr_eq(&before, &after),
+                (None, None) => false,
+                _ => true,
+            }
+        } else {
+            accepted && !request_only
+        };
+        CommandOutcome { accepted, changed }
+    }
+
     pub fn run_owned(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
@@ -4271,6 +4302,26 @@ pub fn seed_letter_counts_for_owner_test(
                 .collect(),
         );
     }
+}
+
+/// Seed a cached calendar rail, optionally hidden while the host has no date.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_calendar_bands_for_owner_test(state: &mut BrowseState, counted: bands::Day, today: Option<bands::Day>) {
+    plx_base::testlock::assert_held("an owned calendar rail");
+    let current = state.cur();
+    let section = state.state_mut(current).expect("a current section");
+    section.sorts = Arc::new(vec![SortEntry {
+        key: "addedAt".into(), desc_key: String::new(), title: "Date added".into(), default_desc: true,
+    }]);
+    section.sort_idx = 0;
+    section.sort_desc = true;
+    section.today = Some(counted);
+    let key = section.bands_key(bands::BandFamily::DateAdded);
+    let ladder = bands::plan(bands::BandFamily::DateAdded, counted, counted[0]);
+    let counts: Vec<u32> = (1..=ladder.len() as u32).collect();
+    let rail = bands::BandRail::new(&ladder, &counts, 400).expect("trusted calendar bands");
+    section.land_bands(key, Some(rail));
+    section.today = today;
 }
 
 /// The current section's A-Z counts are owed again (the registered fixture table lands them done).

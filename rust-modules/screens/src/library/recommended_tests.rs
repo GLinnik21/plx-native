@@ -290,7 +290,7 @@ fn a_landscape_deck_card_draws_the_continue_footer() {
     let tile = Tile { rect: Rect::new(0.0, 0.0, 420.0, 236.0), scale: 1.0, radius: 12.0, focused: true, pop: 1.0 };
     let m = plx_ui::fixture::FixtureMeasure;
     for (row, deck) in [(0, true), (1, false)] {
-        let src = HubSrc { elems: &[1, 2, 3, 4], shelf: hubs.shelves().get(row), paging: false, deck: None };
+        let src = HubSrc { policy: crate::registry::captions::policy(), elems: &[1, 2, 3, 4], shelf: hubs.shelves().get(row), paging: false, deck: None, deck_press: plx_plex::plex::session::DeckPress::Details };
         let words = |draw: &dyn Fn(plx_ui::Painter)| -> Vec<String> {
             plx_ui::draw_census::capture_runs(|| draw(plx_ui::Painter::recording())).into_iter().map(|run| run.text).collect()
         };
