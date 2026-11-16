@@ -80,8 +80,9 @@ fn assert_in_prime(rig: &mut Rig, kind: HlsPrimeKind, what: &str) {
 
 /// The state a refused or fenced first Play leaves (`SMP Play fenced; priming before retry`): the
 /// runner's startup Play is commanded, the clock is held by `hold`, the lanes hold nothing and the
-/// prime owes the sink's Play. A real reloaded start plays at once in this rig (the landing's resume
-/// fires `play_initial_now` on the host sink), so the hold is put back with the hooks the engine
+/// prime owes the sink's Play. A real reloaded start plays at once in this rig (the landing's
+/// `ResumeInitial` answers Fenced and `note_transport_result` fires `play_initial_now` on the host
+/// sink), so the hold is put back with the hooks the engine
 /// tests use for the same states, over the runner-started Engine. Returns the sink's Play count.
 fn held_prime(rig: &mut Rig, hold: Hold) -> u64 {
     let plays = running_stream(rig);
