@@ -2788,3 +2788,14 @@ mod repair_replay_tests {
         assert_eq!(live, vec![PlayerReq::RepairSandbox, PlayerReq::Exit]);
     }
 }
+
+/// Leave a deleted detail page and its surfaces. Parents that remain are re-read in place.
+pub(crate) fn media_deleted(app: &mut App, target: &plx_screens::registry::MediaDeleteRequest) {
+    let entries = &app.pages.nav.tabs.stack.entries;
+    let gone = entries.iter().position(|entry| matches!(&entry.arg,
+        AppArg::Content(ContentArg::Detail { sid, rk }) if *sid == target.sid && *rk == target.rk));
+    if let Some(index) = gone {
+        if index > 0 { let parent = entries[index - 1].id; bridge::nav_pop_to(&mut app.pages, parent); }
+        else { bridge::nav_root(&mut app.pages, AppArg::Home); }
+    }
+}

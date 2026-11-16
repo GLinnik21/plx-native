@@ -85,6 +85,7 @@ fn cx<'a>(measure: &'a dyn plx_machine::machine::Measure, elem: Option<u32>) -> 
 fn bare(sid: ServerId, rk: &str) -> DetailScreen {
     let mut screen = DetailScreen {
         caption_policy: crate::registry::captions::policy(),
+        delete_allowed: false,
         entry: EntryId(8),
         sid,
         rk: rk.into(),

@@ -107,10 +107,14 @@ pub struct Row {
     /// `Row::separator` beside a section boundary would draw two rules.)
     pub sep: bool,
     /// The row's action is **destructive** — it ends or removes something (Sign out, Remove from
-    /// Deck). Semantics only, never drawn: it exists so a menu never OPENS with its focus on one
+    /// Deck). It controls opening focus, independently of the visual [`Row::danger`] style.
+    /// It exists so a menu never OPENS with its focus on one
     /// ([`TableView::opening_row`]). A stray OK on a freshly opened menu must be harmless; the row
     /// stays one press away, it is simply never where focus starts.
     pub destructive: bool,
+    /// Permanent destructive action: danger ink at rest and a danger focus pill.
+    /// Reversible Remove rows keep their ordinary style and opening-focus protection.
+    pub danger: bool,
     /// How many CAPTION lines a [`Row::note`] wraps to in the table's text column (`1` until
     /// [`TableView::fit_notes`] has measured it). A cache of a pure function of (text, width,
     /// measure), so it lives in a `Cell` and draw may refresh it through `&self`.
@@ -136,6 +140,7 @@ impl Row {
             disabled: false,
             sep: false,
             destructive: false,
+            danger: false,
             note_lines: std::cell::Cell::new(1),
         }
     }
@@ -252,6 +257,12 @@ impl Row {
     /// Mark the row's action destructive — see [`Row::destructive`].
     pub fn destructive(mut self, v: bool) -> Self {
         self.destructive = v;
+        self
+    }
+    /// Use the destructive visual style and protect the menu's opening focus.
+    pub fn danger(mut self) -> Self {
+        self.danger = true;
+        self.destructive = true;
         self
     }
     /// `tall` is the TABLE's two-line measure — see [`TableView::tall_rows`]. A row cannot answer
@@ -1404,19 +1415,37 @@ impl TableView {
     /// between two disabled rows the pill is ghost throughout (their two coverages add to one).
     /// 0 for a table with no disabled row, which then pays no walk.
     fn ghost_cover(&self) -> f32 {
-        if !self.list_focused || !self.sections.iter().any(|s| s.rows.iter().any(|r| r.disabled)) {
+        self.row_cover(|row| row.disabled)
+    }
+
+    fn row_cover(&self, matches: impl Fn(&Row) -> bool) -> f32 {
+        if !self.list_focused || !self.sections.iter().any(|s| s.rows.iter().any(&matches)) {
             return 0.0;
         }
         let mut sum = 0.0f32;
         self.walk(|cy, gi, _| {
             if gi >= 0 {
                 let row = self.rows_at(gi);
-                if row.disabled {
+                if matches(row) {
                     sum += self.pill_cover(cy, row.height_in(self.tall_row_h()));
                 }
             }
         });
         sum.clamp(0.0, 1.0)
+    }
+
+    fn focus_fill(&self) -> [f32; 4] {
+        let danger = self.row_cover(|row| row.danger && !row.disabled);
+        let fill = Self::covered_color(crate::ACCENT, theme::DANGER, danger);
+        Self::covered_color(fill, theme::OVERLAY_FOCUS_PILL, self.ghost_cover())
+    }
+
+    fn covered_color(rest: [f32; 4], focused: [f32; 4], cover: f32) -> [f32; 4] {
+        match cover {
+            c if c <= 0.0 => rest,
+            c if c >= 1.0 => focused,
+            c => theme::cross(rest, focused, c),
+        }
     }
 
     /// How opaque ink whose top is at `ink_top` is drawn under the viewport's top edge `vis_top`:
@@ -1659,13 +1688,8 @@ impl TableView {
             // fades with its row's ink under the top edge (focus keeps a row of context above it,
             // so this only shows while the scroll is still catching up)
             let fade = Self::top_edge_alpha(py0 - PILL_INSET + ROW_INK_PAD, vis_top);
-            // solid under a usable row, the GHOST under an disabled one ([`Row::disabled`]), crossed
-            // by the same coverage rule the ink uses so a pill travelling between the two changes
-            // fill as it arrives; exactly `ACCENT` when no row opts in
-            let fill = match self.ghost_cover() {
-                g if g <= 0.0 => crate::ACCENT,
-                g => theme::cross(crate::ACCENT, theme::OVERLAY_FOCUS_PILL, g),
-            };
+            // The fill follows the same moving coverage as the row's ink. Disabled styling wins.
+            let fill = self.focus_fill();
             self.group_painter(p.alpha(fade), self.section_of_row(self.sel)).rrect(
                 pill,
                 PILL_RAD,
@@ -1827,14 +1851,12 @@ impl TableView {
             let focused = gi == self.sel && self.list_focused;
             let cover = self.pill_cover(cy, h);
             // `cross` at the ends is exact, so a row at rest on either side is the colour it always was
-            let on_pill = |rest: [f32; 4], over: [f32; 4]| match cover {
-                c if c <= 0.0 => rest,
-                c if c >= 1.0 => over,
-                c => theme::cross(rest, over, c),
-            };
+            let on_pill = |rest, over| Self::covered_color(rest, over, cover);
             // a disabled row keeps its soft ink under the pill (the ghost): secondary, not near-black
             let base = if row.disabled {
                 on_pill(theme::DISABLED.label, theme::TEXT_SECONDARY)
+            } else if row.danger {
+                on_pill(theme::CONTROL_DANGER_IDLE_INK, theme::TEXT_PRIMARY)
             } else {
                 on_pill(if row.dim { dimc } else { white }, ink)
             };
@@ -2878,6 +2900,70 @@ mod tests {
 
     fn ink_of(runs: &[crate::draw_census::Run], text: &str) -> [f32; 4] {
         runs.iter().find(|r| r.text == text).unwrap_or_else(|| panic!("{text:?} not drawn: {runs:?}")).ink
+    }
+
+    fn danger_rows(sel: i32, disabled: bool) -> TableView {
+        let mut table = TableView::new();
+        table.set_sections(vec![Section::new("")
+            .row(Row::new("Remove from Continue Watching").licon(crate::icons::Icon::Close).destructive(true))
+            .row(Row::new("Remove from Watchlist").licon(crate::icons::Icon::Close).destructive(true))
+            .row(Row::new("Delete").licon(crate::icons::Icon::Trash).danger().disabled(disabled))], sel, false);
+        table
+    }
+
+    #[test]
+    fn a_danger_row_has_danger_ink_and_focus_without_restyling_reversible_rows() {
+        let _serial = plx_base::testlock::serial();
+        let resting = danger_rows(0, false);
+        let (_, runs) = ghost_frame(&resting);
+        assert_eq!(ink_of(&runs, "Delete"), theme::CONTROL_DANGER_IDLE_INK);
+        assert_eq!(ink_of(&runs, "Remove from Continue Watching"), crate::ACCENT_INK);
+        assert_eq!(ink_of(&runs, "Remove from Watchlist"), theme::TEXT_PRIMARY);
+        assert_eq!(resting.focus_fill(), crate::ACCENT);
+
+        let focused = danger_rows(2, false);
+        let (_, runs) = ghost_frame(&focused);
+        assert_eq!(ink_of(&runs, "Delete"), theme::TEXT_PRIMARY);
+        assert_eq!(focused.focus_fill(), theme::DANGER);
+        for name in ["Remove from Continue Watching", "Remove from Watchlist"] {
+            assert_eq!(ink_of(&runs, name), theme::TEXT_PRIMARY);
+        }
+        let mut idle = focused;
+        idle.list_focused = false;
+        let (pill, runs) = ghost_frame(&idle);
+        assert!(pill.is_none(), "no idle row fill");
+        assert_eq!(ink_of(&runs, "Delete"), theme::CONTROL_DANGER_IDLE_INK);
+        assert!(idle.sections[0].rows[2].destructive, "danger also protects opening focus");
+    }
+
+    #[test]
+    fn a_disabled_danger_row_uses_the_ordinary_disabled_style() {
+        let _serial = plx_base::testlock::serial();
+        let table = danger_rows(2, true);
+        let (_, runs) = ghost_frame(&table);
+        assert_eq!(ink_of(&runs, "Delete"), theme::TEXT_SECONDARY);
+        assert_eq!(table.focus_fill(), theme::OVERLAY_FOCUS_PILL);
+        let mut idle = table;
+        idle.list_focused = false;
+        let (_, runs) = ghost_frame(&idle);
+        assert_eq!(ink_of(&runs, "Delete"), theme::DISABLED.label);
+    }
+
+    #[test]
+    fn danger_fill_arrives_with_the_focus_pill_rather_than_the_selection() {
+        let _serial = plx_base::testlock::serial();
+        let mut table = danger_rows(1, false);
+        table.move_sel(1);
+        table.update(1.0 / 60.0, 600.0);
+        assert_eq!(table.focus_fill(), crate::ACCENT, "the pill has not reached Delete yet");
+        let mut crossing = false;
+        for _ in 0..240 {
+            table.update(1.0 / 60.0, 600.0);
+            let fill = table.focus_fill();
+            crossing |= fill != crate::ACCENT && fill != theme::DANGER;
+        }
+        assert!(crossing);
+        assert_eq!(table.focus_fill(), theme::DANGER);
     }
 
     /// Rows `Live` and `Gone` (disabled, its reason as the value) with focus on row `sel`.

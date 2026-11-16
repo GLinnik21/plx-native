@@ -295,7 +295,7 @@ fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_fr
                         sid, rk, write, guid, ..
                     }))) => {
                     assert_eq!((*sid, rk.as_str(), *write, guid.as_str()),
-                        (self.sid, "movie", plx_data::viewstate::Write::Watched, "plex://movie"));
+                        (self.sid, "movie", plx_data::viewstate::Write::Watched, "plex://movie/5d776a3c96b655001fdc8ed0"));
                     self.app_effects += 1;
                 }
                 Fx::Deliver(MachineId::Store(ord), Delivery::Machine(AppMsg::Store(
@@ -304,7 +304,7 @@ fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_fr
                     })))) => {
                     assert_eq!(*ord, StoreId::ViewState.ord());
                     assert_eq!((*sid, rk.as_str(), *write, guid.as_str()),
-                        (self.sid, "movie", plx_data::viewstate::Write::Watched, "plex://movie"));
+                        (self.sid, "movie", plx_data::viewstate::Write::Watched, "plex://movie/5d776a3c96b655001fdc8ed0"));
                     self.store_deliveries += 1;
                 }
                 _ => {}
@@ -328,7 +328,7 @@ fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_fr
         rk: "movie".into(),
         kind: "movie".into(),
         watched: false,
-        guid: "plex://movie".into(),
+        guid: "plex://movie/5d776a3c96b655001fdc8ed0".into(),
         ..Default::default()
     }));
     dispatcher.frame_with(&mut rig, tick(1), Vec::new(), Vec::new(), &mut NoTap, false);
@@ -339,6 +339,7 @@ fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_fr
     dispatcher.frame_with(&mut rig, tick(3), script_key(Key::Right, tick(3)), Vec::new(),
         &mut NoTap, false);
     let watch = dispatcher.focus().expect("RIGHT twice reaches the watch control");
+    assert_eq!(watch.elem, 3, "the addressed input must reach Mark Watched from {play:?}");
     assert_ne!(watch.elem, play.elem);
 
     rig.stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held");

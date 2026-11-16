@@ -85,11 +85,12 @@ fn the_item_menu_trigger_is_answered_on_the_deck_row_while_the_page_rests_on_the
 fn a_home_card_is_not_answered_by_the_library_search_or_content_builders() {
     let _guard = plx_base::testlock::serial();
     let (mut d, mut rig) = home_rig();
+    for i in 1..20 { frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]); }
     let entry = d.nav.top_page().unwrap().id;
     let instance = d.nav.instance_of(entry).unwrap();
     d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
         Delivery::Screen(ScreenEvent::App(AppMsg::Home(HomeCmd::FocusGrid { row: 1, col: 1 })))));
-    for i in 1..80 { frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]); }
+    for i in 20..100 { frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]); }
     assert!(rig.home_grid_focused(&d));
     let focus = d.focus();
     // `focused_card` yields a PmsMovie with actions on this page; the route is what says no.
@@ -175,6 +176,10 @@ fn a_detail_related_card_opens_its_menu_at_the_drawn_rect_and_other_shelves_open
     let interned = 1u32 << 31;
     for elem in (0..4096u32 + 2048).chain(interned..interned + 256) {
         let Some(arg) = answers(&d, &rig, elem) else { continue };
+        if matches!(arg.kind, ItemMenuKind::Detail { .. }) {
+            assert_eq!(arg.rk, "movie");
+            continue;
+        }
         assert!(matches!(arg.kind, ItemMenuKind::Card { from_deck: false, .. }) && !arg.from_home);
         cards.push((arg.rk, elem));
     }
@@ -203,14 +208,16 @@ fn a_detail_related_card_opens_its_menu_at_the_drawn_rect_and_other_shelves_open
 }
 
 #[test]
-fn pdf_proposal_more_opens_the_on_deck_episode_even_outside_the_loaded_season() {
+fn detail_more_opens_the_pages_delete_menu_even_with_a_next_up_episode() {
     let _guard = plx_base::testlock::serial();
     plx_plex::plex::reset_servers_for_test();
     let sid = plx_plex::plex::register_for_test("hero-more", "127.0.0.1", 9, "synthetic", "fixture");
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
+    rig.screen_inputs.deletable = std::sync::Arc::new(vec![(sid,
+        plx_plex::plex::ClientKey { instance: 1, token: 2, grant: 3 })]);
     plx_data::metadata::set_current_for_test(rig.stores.metadata.state_mut(), Some(plx_data::metadata::Detail {
-        sid, rk: "show".into(), kind: "show".into(), is_show: true,
+        sid, rk: "show".into(), title: "Disposable show".into(), kind: "show".into(), is_show: true,
         on_deck: Some(plx_data::metadata::Episode { rk: "on-deck".into(), resume_ms: 60_000, dur_ms: 120_000, ..Default::default() }),
         ..Default::default()
     }));
@@ -220,10 +227,10 @@ fn pdf_proposal_more_opens_the_on_deck_episode_even_outside_the_loaded_season() 
     let entry = d.nav.top_page().unwrap().id;
     let arg = (0..4096u32).find_map(|elem| {
         let ret = ReturnState { focus: Some(FocusKey { entry, elem }), ..Default::default() };
-        rig.content_menu_arg(&d, entry, &ret).filter(|arg| arg.rk == "on-deck")
-    }).expect("More opens the on-deck episode's menu");
-    assert_eq!(arg.rk, "on-deck");
-    assert!(matches!(arg.kind, ItemMenuKind::Episode { mark: plx_ui::widgets::PosterMark::InProgress, .. }));
-    assert!(!arg.loaded_episode, "the on-deck item uses the addressed fetch path, independent of the season window");
+        rig.content_menu_arg(&d, entry, &ret).filter(|arg| matches!(arg.kind, ItemMenuKind::Detail { .. }))
+    }).expect("More opens the page's deletion menu");
+    assert_eq!(arg.rk, "show");
+    assert!(matches!(arg.kind, ItemMenuKind::Detail { kind: 1, .. }));
+    assert!(!arg.loaded_episode, "deletion addresses the show, independently of its next-up episode");
     plx_plex::plex::reset_servers_for_test();
 }

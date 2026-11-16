@@ -130,6 +130,13 @@ class CheckPlexRequests(unittest.TestCase):
         # Plumbing (get_json's body, send_bulk, get_raw) is not a site: the outer callers are.
         self.assertEqual(sites, {'hubs.rs::hub_items', 'hubs.rs::home', 'account.rs::users'})
 
+    def test_a_delete_call_must_be_classified(self):
+        tree = self.tree({f'{PLEX}/media_delete.rs':
+            'impl Client { fn delete_metadata(&self) { self.delete_status("/library/metadata/42", key); } }'})
+        sites, problems = tree.check()
+        self.assertIn('media_delete.rs::delete_metadata', sites)
+        self.assertProblem(problems, 'media_delete.rs::delete_metadata')
+
     def test_unlisted_site_fails_and_names_the_section_to_add(self):
         tree = self.tree({f'{PLEX}/hubs.rs': BASE[f'{PLEX}/hubs.rs'].replace(
             'pub fn home(&self)', 'pub fn fresh(&self) -> Option<Container> {\n'

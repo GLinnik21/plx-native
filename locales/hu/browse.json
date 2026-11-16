@@ -272,5 +272,17 @@
   "browse.clock.key_changed": "A szerver kulcsa megváltozott. Csatlakoztassa egyszer a TV-t az internethez, hogy az alkalmazás újra ellenőrizhesse.",
   "browse.detail.mark_episode_watched": "Epizód megjelölése megnézettként",
   "browse.detail.mark_episode_unwatched": "Epizód megjelölése nem megnézettként",
-  "browse.detail.minutes_left": "{minutes} perc van hátra"
+  "browse.detail.minutes_left": "{minutes} perc van hátra",
+  "browse.delete.action": "Törlés…",
+  "browse.delete.question": "Törlöd ezt az elemet?",
+  "browse.delete.leaf": "Törli az elemet és az összes fájlváltozatát a Plex szerverről. Ez a művelet nem vonható vissza.",
+  "browse.delete.season": "Törli az évad összes epizódját és fájlváltozatát a Plex szerverről. Ez a művelet nem vonható vissza.",
+  "browse.delete.show": "Törli a sorozat összes évadját, epizódját és fájlváltozatát a Plex szerverről. Ez a művelet nem vonható vissza.",
+  "browse.delete.working": "Törlés…",
+  "browse.delete.wait": "Várakozás a szerverre. Az ablak bezárása nem szakítja meg a törlést.",
+  "browse.delete.failed": "Az elem törlése nem sikerült",
+  "browse.delete.forbidden": "A szerver megtagadta a törlést. Jelentkezz be tulajdonosként, és ellenőrizd, hogy a médiatörlés engedélyezve van-e.",
+  "browse.delete.missing": "Az elem már nem létezik a szerveren. Frissítsd a könyvtárat.",
+  "browse.delete.uncertain": "A szerver nem erősítette meg a törlést. Újabb próbálkozás előtt frissítsd a könyvtárat.",
+  "browse.delete.changed": "A profilod vagy a kapcsolat megváltozott. Törlés előtt nyisd meg újra az elem menüjét."
 }

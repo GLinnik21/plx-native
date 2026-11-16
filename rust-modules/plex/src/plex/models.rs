@@ -25,6 +25,9 @@ pub struct SearchResult {
 /// list (`Directory`), an items/detail list (`Metadata`), or a hub list (`Hub`).
 #[derive(Deserialize, Default)]
 pub struct MediaContainer {
+    /// GET /: whether this server permits its owner to delete media. Missing stays unknown.
+    #[serde(rename = "allowMediaDeletion", default, deserialize_with = "de_opt_i64")]
+    pub allow_media_deletion: Option<i64>,
     /// The item's own SETTINGS, on `/library/metadata/{id}/tree` (`docs/plex-openapi.json`'s
     /// `show` example): `episodeSort`, `audioLanguage`, `subtitleLanguage`, … — see [`Setting`].
     #[serde(rename = "Setting", default)]

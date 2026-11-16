@@ -53,18 +53,19 @@ fixture list. Expected outcomes: **SAME=6, REFUSED_EXPECTED=2, unexpected=0**.
   mode (its frame count is pinned by `tests/test_replay_fixtures.py`'s census and
   `fixture_preflight_tests` in `app/recorder.rs`); Settings: 621 in each.
 - `12-filmography-detail-return-current`: the current V11 default Flow 12 producer's typed
-  Person → Filmography → item Detail → Back → Back/focus-memory flow, 2287 fully graded frames
+  Person → Filmography → item Detail → Back → Back/focus-memory flow, 640 fully graded frames
   in each mode. Both require raw exit 0, exactly one SAME, and all eight difference counters zero.
   Any current refusal, including a historical scheduler reason, fails the gate.
 - Immutable `12-filmography-detail-return`: historical content scheduling is incompatible;
   both modes require the exact early scheduler REFUSED (raw exit 1), before any graded frame.
   This is a typed compatibility outcome, not a supported replay, SAME, quarantine or skip.
 
-The current recording was independently privacy-checked, then added with the official
-`tools/plxnative-rec import` command, byte-for-byte; no old recording, fingerprint, hash or alphabet
-was rewritten. Manifest preference/language strings pass only the checker's closed exact-path enums;
-all remaining text and metric bytes retain the synthetic alphabet gate. Rust fixture preflight and
-canonical initial-hash tests include the new recording. No production name/path/hash whitelist exists.
+The current recordings use the synthetic Home and Flow 12 producers. After the Detail menu became
+Delete-only, `tools/plxnative-rec rerecord` replaced both incompatible current recordings and
+retained their anchor flags. The immutable historical recordings retain their original bytes.
+Manifest preference/language strings pass only the checker's closed exact-path enums.
+All remaining text and metric bytes retain the synthetic alphabet gate. Rust fixture preflight and
+canonical initial-hash tests include the current recording. No production name/path/hash whitelist exists.
 
 Private Xvfb/GLX llvmpipe replay verifies logical renderer-backed behavior, not accepted visuals,
 native/TV/ARM behavior, glyph/video composition, performance, or all-domain UI acceptance.

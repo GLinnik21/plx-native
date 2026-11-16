@@ -80,6 +80,8 @@ pub enum AppFx {
     Player(PlayerReq),
     /// The item context menu's committed row (phase 10) — see [`ItemMenuReq`].
     ItemMenu(ItemMenuReq),
+    /// Confirmed deletion; the resource runner answers this exact surface.
+    MediaDelete(MediaDeleteRequest),
     /// The player-HUD page's commands on the package store, executed by the Bridge (PR10).
     Huds(HudCmd),
 }
@@ -93,8 +95,18 @@ pub type AppCommand = plx_machine::machine::AppCommand<AppFx, ReturnState<u32, P
 /// The package-store view delivered through the HUD command channels.
 pub use crate::hud_settings::HudList;
 
-/// What the Player HUD settings page asks of the package store (`plx_data::hudpacks::HudStore`). The
-/// answers come back as the page's own data, the list the Bridge sends down the channel `Open` carries.
+/// A confirmed item on one server, bound to the owner profile and server credential at open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MediaDeleteRequest {
+    pub sid: plx_plex::plex::ServerId,
+    pub rk: String,
+    pub kind: i32,
+    pub show_rk: String,
+    pub profile: u32,
+    pub key: plx_plex::plex::ClientKey,
+}
+
+/// What the Player HUD settings page asks of the package store. Answers return on Open's channel.
 #[derive(Clone)]
 pub enum HudCmd {
     /// The page opened: read every candidate directory again, and publish the list (now and whenever it
@@ -498,6 +510,8 @@ pub struct CatalogRef {
 /// the tree-wide grep that enforces it).
 #[derive(Clone)]
 pub enum ItemMenuKind {
+    /// The detail page's deletion-only menu. The hero owns its watch-state controls.
+    Detail { kind: i32, title: String, show_rk: String },
     /// A card row — a home shelf, the Library grid, a Search result shelf, a person's filmography,
     /// the detail page's Related shelf. `from_deck` is the SHELF's answer, not the item's: the
     /// deck-removal row exists only on Continue Watching.
@@ -530,6 +544,7 @@ pub enum ItemMenuKind {
 impl PartialEq for ItemMenuKind {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::Detail { kind: a, title: ta, show_rk: sa }, Self::Detail { kind: b, title: tb, show_rk: sb }) => a == b && ta == tb && sa == sb,
             (Self::Card { row: a, from_deck: da }, Self::Card { row: b, from_deck: db }) =>
                 da == db && a.sid == b.sid && a.rk == b.rk && a.kind == b.kind,
             (Self::Episode { mark: a, .. }, Self::Episode { mark: b, .. }) => a == b,
@@ -556,6 +571,7 @@ impl plx_machine::machine::LogicalState for ItemMenuArg {
     fn write(&self, c: &mut plx_machine::machine::Canon) {
         c.u32(u32::from(self.sid.raw())).str(&self.rk);
         match &self.kind {
+            ItemMenuKind::Detail { kind, title, show_rk } => { c.u32(4).u32(*kind as u32).str(title).str(show_rk); }
             ItemMenuKind::Card { row, from_deck } => { c.u32(0).bool(*from_deck).u32(row.kind as u32); }
             ItemMenuKind::Episode { mark, .. } => { c.u32(1).u32(*mark as u32); }
             ItemMenuKind::Season { mark, show_rk, index } => { c.u32(2).u32(*mark as u32).str(show_rk).u64(*index as u64); }
@@ -1463,6 +1479,8 @@ pub(crate) fn run_person_fixture(store: &mut plx_data::stores::person::PersonSto
 
 /// The application's messages (spec §3.1).
 pub enum AppMsg {
+    /// None acknowledges admission; Some is the one terminal result.
+    MediaDelete(Option<plx_plex::plex::DeleteResult>),
     AutoSkipResolved { id: plx_appkit::skip_policy::OfferId, outcome: plx_appkit::skip_policy::OfferOutcome },
     PlaybackTrace(plx_platform::playback_trace::Status),
     Session(plx_session::auth::owner::SessionEvent),
@@ -2039,7 +2057,7 @@ pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryC
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      VersionsPanel{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      TracksPanel{page:i32},AboutPanel,PersonBio,CollectionAbout,AccountMenu,\
-     ItemMenu{sid:u32,rk:str,kind:{Card{from_deck:bool,type:u32},Episode{mark:u32},Season{mark:u32},Catalog{state:u32}},\
+     ItemMenu{sid:u32,rk:str,kind:{Card{from_deck:bool,type:u32},Episode{mark:u32},Season{mark:u32},Catalog{state:u32},Detail{kind:u32,title:str,show_rk:str}},\
      host:u32,focus:Option<{entry:u32,elem:u32}>,anchor:[u32;4],loaded_episode:bool,from_home:bool,catalog:Option<{guid:str}>},\
      WatchlistMenu{host:u32,options:{type:u32,sort:u32,descending:bool,show:u32},anchor:[u32;4]}}";
 
@@ -2804,7 +2822,10 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Previous pin: 0xf852_85cc_f116_356b. Re-record incompatible replay anchors.
 // The Library menu retains its parent scroll across a Genre drill-in and the selected library
 // through its closing morph. Previous pin: 0x7e36_4373_746a_c3dc.
-const SCREEN_SHAPES_PIN: u64 = 0x1427_1d82_bf6b_e04c;
+// Media deletion adds an item-menu argument, confirmation state and a captured target.
+// Previous pin: 0x1427_1d82_bf6b_e04c. Re-record incompatible replay anchors.
+// The Delete-only Detail menu drops its watch-state mark and declares its argument shape.
+const SCREEN_SHAPES_PIN: u64 = 7745331044204676032;
 
 #[cfg(test)]
 mod arg_tests {

@@ -46,6 +46,7 @@
 pub mod hold;
 /// The Watchlist rows of the card / episode / season menus and the Catalog menu's membership row.
 pub mod watchlist;
+mod media_delete;
 
 use std::borrow::Cow;
 use std::convert::Infallible;
@@ -84,6 +85,7 @@ pub enum Action {
     /// there is no bool here to invert, because a part-watched item offers BOTH rows and has no
     /// single "other end" to derive. See [`Action::watch_write`].
     MarkWatched(String),
+    Delete(String),
     /// `/:/unscrobble` — the − row. Twin of [`Action::MarkWatched`].
     MarkUnwatched(String),
     /// play this item — a leaf resumes where it left off when it has a resume point; a show or
@@ -153,6 +155,7 @@ impl Action {
         match self {
             Action::GoToItem(rk)
             | Action::GoToShow(rk, _)
+            | Action::Delete(rk)
             | Action::MarkWatched(rk)
             | Action::MarkUnwatched(rk)
             | Action::Play(rk)
@@ -171,6 +174,7 @@ impl Action {
     fn write(&self, c: &mut Canon) {
         // The tags are the recorded shape's (`SHAPE`); 0 was the retired `None` sentinel.
         let tag = match self {
+            Action::Delete(_) => 14,
             Action::GoToItem(_) => 1,
             Action::GoToShow(..) => 2,
             Action::MarkWatched(_) => 3,
@@ -222,7 +226,7 @@ const EDGE_X: f32 = plx_ui::consts::MARGIN_X;
 
 pub const SHAPE: &str =
     "ItemMenu{arg:ItemMenuArg,acts:[Option<Action{tag:u32,rk:str,season:u32,part:str,vcodec:str,acodec:str,title:str,hex:str(WatchlistAdd only),media:u64(PlayVersion only)}>],sel:i32,\
-     table:TableViewMotion}";
+     table:TableViewMotion,deletion:{phase:u32,title:str,open:bool,choice:u32,scroll:u32,result:Option<u32>,request:Option<sid:u32,rk:str,kind:u32,show_rk:str,profile:u32,instance:u32,token:u32,grant:u32>}}";
 
 /// Is `m` an item the menu has anything to offer? A leaf or a show/season — i.e. everything the
 /// home shelves carry. Kept as a predicate so the caller can decline to present an empty panel.
@@ -237,6 +241,7 @@ pub fn has_actions(m: &PmsMovie) -> bool {
 /// its action, so a row cannot exist without one and a press cannot perform its neighbour's.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ItemRow {
+    Delete,
     GoToItem,
     GoToShow,
     MarkWatched,
@@ -268,6 +273,7 @@ impl ItemRow {
 impl FormId for ItemRow {
     fn key(&self) -> RowKey {
         RowKey(match self {
+            ItemRow::Delete => 13,
             ItemRow::GoToItem => 1,
             ItemRow::GoToShow => 2,
             ItemRow::MarkWatched => 3,
@@ -662,6 +668,7 @@ pub struct ItemMenuScreen {
     /// The Watchlist subject captured when the menu opened; `None` omits the membership row
     /// (plex.tv unreachable, or the item has no catalog guid). See [`watchlist::Face`].
     face: Option<watchlist::Face>,
+    deletion: media_delete::DeleteUi,
 }
 
 /// Play Trailer only when the already-loaded Detail is this movie/show and already has a trailer.
@@ -690,6 +697,7 @@ impl ItemMenuScreen {
             repeat: RepeatGate::IDLE,
             built: false,
             face: None,
+            deletion: media_delete::DeleteUi::new(),
         }
     }
 
@@ -708,6 +716,7 @@ impl ItemMenuScreen {
         }
         self.built = true;
         let form = match &self.arg.kind {
+            ItemMenuKind::Detail { .. } => Form::new(),
             ItemMenuKind::Card { row, from_deck } => {
                 let trailer = cached_trailer(self.arg.sid, row, meta);
                 // A Watchlist tile with a reachable copy is a card of that copy, and Remove joins it.
@@ -726,6 +735,11 @@ impl ItemMenuScreen {
         };
         // a short list of one-line actions — BODY labels, not menu-size HEADLINE
         self.form.table.compact = true;
+        let form = if self.deletion.request.is_some() {
+            form.section(FormSection::new("").item(ItemRow::Delete, RowKind::Button,
+                Action::Delete(self.arg.rk.clone()),
+                Row::new(plx_platform::i18n::msg::browse_delete_action()).licon(Icon::Trash).danger()))
+        } else { form };
         self.form.set(form, None);
     }
 
@@ -762,6 +776,10 @@ impl ItemMenuScreen {
                 Activation::Action(act) => act,
                 Activation::Push(never) => match never {},
             });
+        if matches!(act, Some(Action::Delete(_))) {
+            self.deletion.open();
+            return;
+        }
         if let Some(Action::ChooseVersion(rk)) = &act {
             self.show_versions(rk);
             return;
@@ -831,8 +849,10 @@ impl ItemMenuScreen {
 impl<H: AppLike + crate::registry::MetadataLike + crate::registry::ScreenInputsLike> Machine<H> for ItemMenuScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        if self.deletion.step(self.entry, ev, cx, fx) { return Handled::Yes; }
         match ev {
             ScreenEvent::Mount => {
+                self.deletion.capture(&self.arg, H::metadata(cx), H::screen_inputs(cx));
                 self.build_rows(H::metadata(cx), H::screen_inputs(cx).preference::<plx_plex::plex::session::DeckPressPref>());
                 // The menu is the thing the Home hold hint teaches; once ANY card screen has
                 // opened one the lesson is learned and the hint retires (`ui::hold_hint::learned`).
@@ -891,6 +911,7 @@ impl<H: AppLike + crate::registry::MetadataLike + crate::registry::ScreenInputsL
 
 impl<H: AppLike> Focusable<H> for ItemMenuScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        if self.deletion.groups(cx, out) { return; }
         out.push(GroupSpec {
             id: GroupId(0),
             kind: GroupKind::Column,
@@ -903,9 +924,11 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
         });
     }
     fn group_of(&self, elem: &u32, _: &Cx<'_, H>) -> Option<GroupId> {
+        if self.deletion.visible() { return self.deletion.group_of(*elem); }
         self.form.index_of_key(RowKey(*elem)).map(|_| GroupId(0))
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _: &Cx<'_, H>) -> Step<u32> {
+        if self.deletion.visible() { return self.deletion.neighbour(key, dir); }
         let delta = match dir {
             Dir::Up => -1,
             Dir::Down => 1,
@@ -920,6 +943,7 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
         }
     }
     fn place(&self, elem: &u32, cx: &Cx<'_, H>, _: At) -> Option<Placed> {
+        if self.deletion.visible() { return self.deletion.place(*elem, cx); }
         <Self as Focusable<H>>::group_of(self, elem, cx)?;
         let index = self.form.index_of_key(RowKey(*elem))?;
         let rect = self.form.table.row_frame(self.frame(cx.measure), index as i32)?;
@@ -931,6 +955,7 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
         })
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
+        if self.deletion.visible() { return self.deletion.reconcile(self.entry, want); }
         if <Self as Focusable<H>>::group_of(self, &want.elem, cx).is_some() {
             want
         } else {
@@ -941,6 +966,7 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
         }
     }
     fn seat(&self, _: GroupId, _: Placed, _: &Cx<'_, H>) -> FocusKey<u32> {
+        if self.deletion.visible() { return self.deletion.cancel_key(self.entry); }
         FocusKey {
             entry: self.entry,
             elem: self.form.selected_key().map_or_else(|| self.opening(), |k| k.0),
@@ -982,6 +1008,7 @@ impl<H: AppLike + crate::registry::MetadataLike + crate::registry::ScreenInputsL
     }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
+        if self.deletion.visible() { self.deletion.draw(self.entry, f); return; }
         let p = f.painter.alpha(f.page_alpha);
         let r = self.frame(f.measure);
         plx_ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay, plx_ui::widgets::Ground::Menu);
@@ -1013,6 +1040,7 @@ impl<H: AppLike + crate::registry::MetadataLike + crate::registry::ScreenInputsL
 impl LogicalState for ItemMenuScreen {
     fn write(&self, c: &mut Canon) {
         self.arg.write(c);
+        self.deletion.write(c);
         let n = self.form.table.n_rows() as usize;
         c.seq(n);
         for i in 0..n {
@@ -1947,7 +1975,7 @@ mod tests {
     use plx_ui::screen::ScreenArg;
 
     #[derive(Clone)]
-    struct Arg;
+    pub(super) struct Arg;
     impl LogicalState for Arg {
         fn write(&self, _: &mut Canon) {}
         fn probe(&self, _: &mut String) {}
@@ -1966,7 +1994,7 @@ mod tests {
             true
         }
     }
-    struct HostFixture;
+    pub(super) struct HostFixture;
     impl Host for HostFixture {
         type Arg = Arg;
         type Fx = AppFx;
@@ -1997,7 +2025,7 @@ mod tests {
         fn screen_inputs<'a>(cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { cx.views }
     }
 
-    fn with_cx<R>(test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
+    pub(super) fn with_cx<R>(test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
         let measure = FixtureMeasure;
         let inputs = crate::registry::ScreenInputs::default();
         test(&Cx {

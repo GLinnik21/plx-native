@@ -1099,7 +1099,8 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             }
         }
         // The menu turns itself into the version list; this never arrives (`ItemMenuScreen::activate`).
-        Action::ChooseVersion(_) => {}
+        // Confirmation and its addressed effect belong to the item-menu surface.
+        Action::Delete(_) | Action::ChooseVersion(_) => {}
         // A picked version plays like Play: the filmstrip's leaf through the loaded season, a card
         // through the row the menu captured, resuming where it left off.
         Action::PlayVersion { rk, media } => {

@@ -272,5 +272,17 @@
   "browse.clock.key_changed": "De sleutel van je server is gewijzigd. Verbind de tv één keer met internet zodat de app hem opnieuw kan controleren.",
   "browse.detail.mark_episode_watched": "Aflevering markeren als bekeken",
   "browse.detail.mark_episode_unwatched": "Aflevering markeren als niet bekeken",
-  "browse.detail.minutes_left": "Nog {minutes} min"
+  "browse.detail.minutes_left": "Nog {minutes} min",
+  "browse.delete.action": "Verwijderen…",
+  "browse.delete.question": "Dit item verwijderen?",
+  "browse.delete.leaf": "Verwijdert het item en alle bestandsversies van je Plex-server. Dit kan niet ongedaan worden gemaakt.",
+  "browse.delete.season": "Verwijdert alle afleveringen en bestandsversies van dit seizoen van je Plex-server. Dit kan niet ongedaan worden gemaakt.",
+  "browse.delete.show": "Verwijdert alle seizoenen, afleveringen en bestandsversies van deze serie van je Plex-server. Dit kan niet ongedaan worden gemaakt.",
+  "browse.delete.working": "Verwijderen…",
+  "browse.delete.wait": "Wachten op de server. Dit venster sluiten annuleert het verwijderen niet.",
+  "browse.delete.failed": "Het item kon niet worden verwijderd",
+  "browse.delete.forbidden": "De server heeft verwijderen geweigerd. Meld je aan als eigenaar en controleer of het verwijderen van media is ingeschakeld.",
+  "browse.delete.missing": "Het item bestaat niet meer op de server. Vernieuw de bibliotheek.",
+  "browse.delete.uncertain": "De server heeft het verwijderen niet bevestigd. Vernieuw de bibliotheek voordat je het opnieuw probeert.",
+  "browse.delete.changed": "Je profiel of de verbinding is gewijzigd. Open het itemmenu opnieuw voordat je het item verwijdert."
 }

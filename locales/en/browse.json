@@ -2277,5 +2277,53 @@
       "minutes": "i64"
     },
     "description": "Remaining playback time on the hero facts line, under one hour. Keep the minute unit compact."
+  },
+  "browse.delete.action": {
+    "value": "Delete…",
+    "description": "Media deletion confirmation or result; deletion removes server files."
+  },
+  "browse.delete.question": {
+    "value": "Delete this item?",
+    "description": "Media deletion confirmation or result; deletion removes server files."
+  },
+  "browse.delete.leaf": {
+    "value": "This deletes the item and all its file versions from your Plex server. This cannot be undone.",
+    "description": "Media deletion confirmation or result; deletion removes server files."
+  },
+  "browse.delete.season": {
+    "value": "This deletes every episode and file version in this season from your Plex server. This cannot be undone.",
+    "description": "Media deletion confirmation or result; deletion removes server files."
+  },
+  "browse.delete.show": {
+    "value": "This deletes every season, episode and file version in this show from your Plex server. This cannot be undone.",
+    "description": "Media deletion confirmation or result; deletion removes server files."
+  },
+  "browse.delete.working": {
+    "value": "Deleting…",
+    "description": "Media deletion confirmation or result; deletion removes server files."
+  },
+  "browse.delete.wait": {
+    "value": "Waiting for the server. Closing this dialog does not cancel the deletion.",
+    "description": "Media deletion confirmation or result; deletion removes server files."
+  },
+  "browse.delete.failed": {
+    "value": "Could not delete this item",
+    "description": "Media deletion confirmation or result; deletion removes server files."
+  },
+  "browse.delete.forbidden": {
+    "value": "The server did not permit deletion. Check that you are signed in as its owner and media deletion is enabled.",
+    "description": "Media deletion confirmation or result; deletion removes server files."
+  },
+  "browse.delete.missing": {
+    "value": "The item no longer exists on this server. Refresh the library.",
+    "description": "Media deletion confirmation or result; deletion removes server files."
+  },
+  "browse.delete.uncertain": {
+    "value": "The server did not confirm deletion. Refresh the library before trying again.",
+    "description": "Media deletion confirmation or result; deletion removes server files."
+  },
+  "browse.delete.changed": {
+    "value": "Your profile or server connection changed. Open the item menu again before deleting.",
+    "description": "Media deletion confirmation or result; deletion removes server files."
   }
 }

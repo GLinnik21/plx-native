@@ -347,6 +347,15 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
             plx_machine::machine::Delivery::Screen(plx_ui::screen::ScreenEvent::App(
                 plx_screens::registry::AppMsg::PlaybackTrace(status)))));
     }
+    if let Some((to, target, result)) = app.bridge.media_delete_poll() {
+        app.pages.emit(to, plx_machine::machine::Fx::Deliver(to,
+            plx_machine::machine::Delivery::Screen(plx_ui::screen::ScreenEvent::App(
+                plx_screens::registry::AppMsg::MediaDelete(Some(result))))));
+        if result == plx_plex::plex::DeleteResult::Deleted {
+            super::content::media_deleted(app, &target);
+            app.reread.resume();
+        }
+    }
     if app.boot_initial.is_some() && app.prev == 0 {
         plx_base::eventlog::log(&format!("bootstrap: first-loop tree={:016x} now={}", app.pages.state_hash(), fr.now));
     }

@@ -76,14 +76,13 @@
 use crate::plex::{CredentialPolicy, Origin, Scheme, ResolvePin};
 pub use plx_net::net::StreamEnd;
 
-/// The verb. Three, because three is what the Plex control plane uses: reads, the body-less
-/// `PUT /library/parts/{id}` that selects a track server-side, and the POSTs whose params ride the
-/// query string (`/:/timeline`, `/playQueues`).
+/// The Plex control-plane verbs. Parameters ride the query string; media deletion has no body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     Get,
     Put,
     Post,
+    Delete,
 }
 
 impl Method {
@@ -93,6 +92,7 @@ impl Method {
             Method::Get => "GET",
             Method::Put => "PUT",
             Method::Post => "POST",
+            Method::Delete => "DELETE",
         }
     }
 }
@@ -1004,6 +1004,7 @@ mod tests {
         assert_eq!(Method::Get.as_str(), "GET");
         assert_eq!(Method::Put.as_str(), "PUT");
         assert_eq!(Method::Post.as_str(), "POST");
+        assert_eq!(Method::Delete.as_str(), "DELETE");
     }
 
     /// **A `Reply` is a response, not a success.** The fold every caller used to inherit from

@@ -284,5 +284,17 @@
   "browse.clock.key_changed": "A chave do seu servidor mudou. Ligue o televisor à Internet uma vez para que a app a possa verificar novamente.",
   "browse.detail.mark_episode_watched": "Marcar episódio como visto",
   "browse.detail.mark_episode_unwatched": "Marcar episódio como não visto",
-  "browse.detail.minutes_left": "Faltam {minutes} min"
+  "browse.detail.minutes_left": "Faltam {minutes} min",
+  "browse.delete.action": "Eliminar…",
+  "browse.delete.question": "Eliminar este item?",
+  "browse.delete.leaf": "Elimina o item e todas as versões dos ficheiros do servidor Plex. Esta ação não pode ser anulada.",
+  "browse.delete.season": "Elimina todos os episódios e versões dos ficheiros desta temporada do servidor Plex. Esta ação não pode ser anulada.",
+  "browse.delete.show": "Elimina todas as temporadas, episódios e versões dos ficheiros desta série do servidor Plex. Esta ação não pode ser anulada.",
+  "browse.delete.working": "A eliminar…",
+  "browse.delete.wait": "A aguardar pelo servidor. Fechar esta janela não cancela a eliminação.",
+  "browse.delete.failed": "Não foi possível eliminar o item",
+  "browse.delete.forbidden": "O servidor recusou a eliminação. Inicia sessão como proprietário e verifica se a eliminação de conteúdos está ativada.",
+  "browse.delete.missing": "O item já não existe no servidor. Atualiza a biblioteca.",
+  "browse.delete.uncertain": "O servidor não confirmou a eliminação. Atualiza a biblioteca antes de tentares novamente.",
+  "browse.delete.changed": "O teu perfil ou a ligação mudou. Reabre o menu do item antes de o eliminares."
 }
