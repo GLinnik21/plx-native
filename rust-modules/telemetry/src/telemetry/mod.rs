@@ -463,6 +463,8 @@ pub fn is_minted_id(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// Thread A snapshots revision 1, then thread B installs revision 2 and raises AGAIN while A
     /// still holds FLUSHING; A then clears AGAIN and spawns with the stale revision 1. At the
     /// worker's tail AGAIN reads false, yet the installed decision is newer than the one it ran
@@ -482,8 +484,6 @@ mod tests {
         again.store(true, std::sync::atomic::Ordering::Release);
         assert!(super::worker_tail_reruns(&again, 2, || 2), "tail: a request reruns");
     }
-
-    use super::*;
 
     #[test]
     fn a_held_destination_does_not_block_the_other_destination() {
