@@ -296,7 +296,7 @@ pub fn flush_soon() {
     let ok = plx_base::task::spawn_small("telemetry", move || {
         let retry = flush_now(&c, decision_revision);
         FLUSHING.store(false, Ordering::Release);
-        if rerun_after_flush(AGAIN.load(Ordering::Acquire), decision_revision, consent::revision()) {
+        if worker_tail_reruns(&AGAIN, decision_revision, consent::revision) {
             flush_soon();
         }
         if let Some(seconds) = retry {
@@ -325,6 +325,17 @@ pub fn flush_soon() {
 /// as data.
 fn rerun_after_flush(again: bool, ran_revision: u32, installed_revision: u32) -> bool {
     again || ran_revision != installed_revision
+}
+
+/// The worker tail's whole decision: read the request flag, THEN the installed revision, so a
+/// decision installed after the snapshot is seen. The worker calls this and nothing else, which is
+/// what lets a test pin the call site rather than only [`rerun_after_flush`].
+fn worker_tail_reruns(
+    again: &std::sync::atomic::AtomicBool,
+    ran_revision: u32,
+    installed: impl Fn() -> u32,
+) -> bool {
+    rerun_after_flush(again.load(std::sync::atomic::Ordering::Acquire), ran_revision, installed())
 }
 
 /// The flush itself, on the worker.
@@ -464,6 +475,12 @@ mod tests {
         );
         assert!(super::rerun_after_flush(true, 2, 2), "an explicit request still reruns");
         assert!(!super::rerun_after_flush(false, 2, 2), "nothing new: stop");
+        // The tail function the worker really calls, with a flag that is never raised.
+        let again = std::sync::atomic::AtomicBool::new(false);
+        assert!(super::worker_tail_reruns(&again, 1, || 2), "tail: a newer decision reruns");
+        assert!(!super::worker_tail_reruns(&again, 2, || 2), "tail: nothing new stops");
+        again.store(true, std::sync::atomic::Ordering::Release);
+        assert!(super::worker_tail_reruns(&again, 2, || 2), "tail: a request reruns");
     }
 
     use super::*;
