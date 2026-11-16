@@ -9882,6 +9882,60 @@ impl PersonOwnerGateFixture {
                                  "a `caps` parameter or an unimported `caps(` is not the capability answer\n" + out)
 
     @_grades("globals")
+    def test_globals_ledger_sees_the_bundled_curl_stack_readers_in_a_machine(self):
+        """RED: `net::bundled_curl()`, `net::bundled()`, `net::http3_switch()` and `net::alt_svc()` read what
+        boot decided once for the process (which libcurl `global_init` bound, the stored HTTP/3 switch). The net
+        crate's own transport code calls them, and that crate is not a machine; a machine that did would be
+        reading a registry, so the names are spellings from the change that added them (docs/sans-io-guide.md:
+        "When you add a registry reader, add its name to the rule in the same change"). Qualified,
+        bare-after-an-import (singly and through a glob) and the rename that would hide the calls are all caught.
+        `net::BUNDLED_STACK_BUILT` is a compile-time const and no read; neither is a method named `alt_svc`, a
+        parameter named `bundled`, or a `bundled(` in a file that imports nothing from `net`. A coverage
+        expansion: the repository itself seeds no line for them."""
+        crate = "screens"
+        r = self._plant_many({
+            "_check_deps_selftest_qualified.rs": (
+                "pub fn qualified() {\n"
+                "    let _ = plx_net::net::alt_svc();\n"
+                "    let _ = plx_net::net::http3_switch();\n"
+                "    let _ = plx_net::net::bundled();\n"
+                "    let _ = plx_net::net::bundled_curl();\n"
+                "    let _ = plx_net::net::BUNDLED_STACK_BUILT;\n}\n"),
+            "_check_deps_selftest_renamed.rs": (
+                "use plx_net::net as n;\n"
+                "use plx_net::net::alt_svc as quic;\n\n"
+                "pub fn renamed() {\n    let _ = (n::bundled(), quic());\n}\n"),
+            "_check_deps_selftest_bare.rs": (
+                "use plx_net::net::{self, alt_svc};\n\n"
+                "pub fn bare(bundled: bool) -> bool {\n    let _ = it.alt_svc();\n    alt_svc() && bundled\n}\n"),
+            "_check_deps_selftest_globbed.rs": (
+                "use plx_net::net::*;\n\n"
+                "pub fn globbed() {\n    let _ = (bundled(), http3_switch());\n}\n"),
+            "_check_deps_selftest_no_import.rs": (
+                "pub fn no_import(bundled: &[u8]) -> usize {\n    let alt_svc = bundled.len();\n"
+                "    helper::bundled(alt_svc)\n}\n"),
+        }, crate)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("globals:", out)
+        base = f"rust-modules/{crate}/src/_check_deps_selftest_"
+        for spelling in ("net::alt_svc", "net::http3_switch", "net::bundled", "net::bundled_curl"):
+            with self.subTest(qualified=spelling):
+                self.assertIn(f"{base}qualified.rs::qualified::{spelling}  (ledger: ", out)
+        self.assertEqual(out.count(f"{base}qualified.rs::qualified::"), 4,
+                         "`net::BUNDLED_STACK_BUILT` is a const, not a read\n" + out)
+        for line in (1, 2):
+            with self.subTest(rename_line=line):
+                self.assertIn(f"{base}renamed.rs:{line}\n", out + "\n")
+        for fn, spelling in (("bare", "alt_svc"), ("globbed", "bundled"), ("globbed", "http3_switch")):
+            with self.subTest(fn=fn, spelling=spelling):
+                self.assertIn(f"{base}{fn}.rs::{fn}::{spelling}  (ledger: ", out)
+        self.assertEqual(out.count(f"{base}bare.rs::bare::"), 1,
+                         "`it.alt_svc()` and a `bundled` parameter are not reads\n" + out)
+        self.assertNotIn(f"{base}no_import.rs", out,
+                         "a `bundled` parameter or an unimported `bundled(` is not the reader\n" + out)
+
+    @_grades("globals")
     def test_globals_ledger_sees_screen_input_revision_without_allowance(self):
         r = self._plant_many({
             "stores/_check_deps_screen_revision_direct.rs": "fn read() { plx_plex::plex::session::screen_input_revision(); }\n",

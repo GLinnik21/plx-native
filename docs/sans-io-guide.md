@@ -111,7 +111,9 @@ it. The ledgers freeze the sites that were found; they are not the definition.
   (both in `plex/src/plex/session.rs`), `tape::active()` (`data/src/stores/tape.rs`) and the subtitle
   registries' `sidecar::takes_colour()` / `sidecar::selected()` / `ass_source::takes_colour()` /
   `ass_source::selected()` (`media/src/player/`; the Subtitles menu reads their colour-pick fact as a
-  value of the session's readout, which the app delivers once a tick). A new use of
+  value of the session's readout, which the app delivers once a tick), and the bundled curl stack's
+  `net::bundled_curl()` / `net::bundled()` / `net::http3_switch()` / `net::alt_svc()` (`net/src/net.rs`:
+  which libcurl boot bound and the stored HTTP/3 switch; only the net crate's transport code calls them). A new use of
   any of these fails `make check` unless a ledger line names it, and is as wrong as a new `client_for`.
   (`transport::paused` is not a registry read any more: it takes the session and reads its
   `PlayerReadout`, a `ps`-addressed readout read, and the rule no longer matches it. `transport::viewer_paused`

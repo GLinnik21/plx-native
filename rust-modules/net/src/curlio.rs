@@ -709,9 +709,10 @@ static LOAD_ONCE: Once = Once::new();
 fn ensure_loaded() {
     LOAD_ONCE.call_once(|| {
         // Mirror `net.rs`'s choice, never re-decide it — see the table's doc above.
-        // `net::bundled_curl` is only meaningful after `net::global_init`, which the app's boot
-        // runs before any media-plane use (the Feed's `ff::boot` calls this module's `boot`
-        // after it; any other first use is later still).
+        // `net::bundled_curl` is only meaningful after `net::global_init`. The app's `construct`
+        // runs that during boot, before any screen exists to open a stream, and this table is
+        // first asked for at the first media open (or by `boot`, where a caller has one), so
+        // every first use is after it.
         let verdict = match crate::net::bundled_curl() {
             Some(handle) => curlmulti::load_from(handle, crate::net::BUNDLED_CURL_SONAME),
             None => curlmulti::load(None),
