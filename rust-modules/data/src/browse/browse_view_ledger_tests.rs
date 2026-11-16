@@ -240,6 +240,59 @@ fn relist_regression_a_change_during_initial_load_is_not_lost() {
         "the answer predates the server change, so a newer listing must remain owed");
 }
 
+/// A change notified during the FIRST read owes a re-list, and the failure arm used to skip
+/// `Failed` for every section with a re-list owed. That exemption is for a grid that is holding
+/// rows, which stay on screen while the replacement is retried. A first read holds none, so the
+/// section stayed `Loading` and the Library grid spun through every failed retry: the state
+/// `SecFetch::Failed` exists to end, reached again through a scanning server's own notification.
+#[test]
+fn relist_regression_a_failed_first_page_with_a_change_owed_is_failed_and_not_loading() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    browse.state.want(0, PAGE, None);
+    browse.maybe_spawn();
+    let gen = browse.state.query_gen();
+    assert!(browse.state.listings_changed(sid, true));
+    assert_eq!(browse.state.query_gen(), gen, "the first read is kept");
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen, sec: 0, start: 0,
+        items: Vec::new(), total: -1,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    let state = &browse.state.states()[0];
+    assert_eq!(state.fetch, SecFetch::Failed, "with no listing held, the failure is the screen's to show");
+    assert!(state.total < 0);
+    assert!(state.relist, "and the listing newer than the notification is still owed");
+}
+
+/// The other half of that rule, green before and after: a re-list that fails while the grid holds
+/// its rows changes nothing the viewer sees, and stays owed.
+#[test]
+fn relist_regression_a_failed_relist_keeps_the_held_grid_ready() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    {
+        let state = browse.state.state_mut(0).unwrap();
+        state.fetch = SecFetch::Ready;
+        state.total = 3;
+        state.items = SecItems::from_vec(vec![Some(row(sid, "6")), Some(row(sid, "7")), Some(row(sid, "8"))]);
+    }
+    browse.state.want(0, PAGE, None);
+    assert!(browse.state.listings_changed(sid, true));
+    browse.maybe_spawn();
+    browse.adapter.page.post(PageResult {
+        client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: 0,
+        items: Vec::new(), total: -1,
+        sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+    }, |_| true);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    let state = &browse.state.states()[0];
+    assert_eq!(state.fetch, SecFetch::Ready);
+    assert_eq!((state.total, state.items.get(1).unwrap().rk.as_str()), (3, "7"));
+    assert!(state.relist);
+}
+
 #[test]
 fn relist_regression_a_visible_window_across_pages_does_not_turn_to_skeletons() {
     let _g = plx_base::testlock::serial();

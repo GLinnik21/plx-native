@@ -70,7 +70,7 @@ An audit regenerated from published assets should reproduce the committed one fi
 Every item below is automated — `ci/check-package.py` before the build, `ci/gen-release-audit.py` at publish time, `ci/verify-published.sh` after it — and this is how you re-run them against a release that already exists, including one cut before any of it existed. This is the old pre-publish checklist; it did not go away, it stopped being something a person had to remember.
 
 ```sh
-V=0.5.0; PREV=0.4.1; REPO=GLinnik21/plx-native
+V=0.5.0; PREV=0.4.1; REPO=plxnative/plx-native
 D=$(mktemp -d) && cd "$D" && gh release download "v$V" --repo "$REPO"
 ```
 

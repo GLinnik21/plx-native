@@ -192,8 +192,9 @@ open. The plan's `{hex}` keying for all three is not implemented; the owner has 
 the difference. The Remove row's wording is `Remove Show...` for an episode (plan 1.8), not the
 brief's `Remove Show from Watchlist`.
 
-**plex.tv unreachable.** The page shows the full-screen read-out with Retry (a populated list is never
-blanked). Detail, Home hero and catalog controls draw the outline face when membership is unknown, the item-menu
+**plex.tv unreachable.** With no list landed, the page shows the full-screen read-out with Retry. A list that
+has landed, populated or empty, is never blanked: an empty Watchlist keeps its empty read-out and its item-menu
+rows. Detail, Home hero and catalog controls draw the outline face when membership is unknown, the item-menu
 row is omitted when there is no face to offer, and a press flips then reverts. Reproduce with
 `/tmp/plxnative-nowan` or the failing-closure tests.
 
