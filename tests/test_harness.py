@@ -449,10 +449,12 @@ class ReplayFixtures(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, name)
                 for fn in os.listdir(target):
                     if fn == "manifest.json" or fn.endswith(".jsonl"):
-                        # This local-only current header uses closed structural enums, not
+                        # A current-format header (the `-current` fixture and the re-recorded
+                        # 1-boot-home-chip-grid) uses closed structural enums, not
                         # globally admitted strings. The independent outbound guard remains
                         # stricter and denies its publication; do not widen it in a fixture task.
-                        expected = 2 if (name == '12-filmography-detail-return-current'
+                        expected = 2 if (name in ('12-filmography-detail-return-current',
+                                                  '1-boot-home-chip-grid')
                                          and fn == 'manifest.json') else 0
                         self.assertEqual(guard("tests/fixtures/replay/" + name + "/" + fn).returncode,
                                          expected, name + "/" + fn)

@@ -50,7 +50,7 @@ class ExpectedRefusalTests(unittest.TestCase):
         root = Path(__file__).resolve().parent / 'fixtures/replay'
         census = [(replay.expected_refusal(fixture), replay.expected_counts(fixture))
                   for fixture in replay.discover(root)]
-        self.assertCountEqual(census, [(None, (200, 200)), (None, (621, 621)),
+        self.assertCountEqual(census, [(None, (266, 266)), (None, (621, 621)),
                                       (None, (2287, 2287)),
                                       (replay.HISTORICAL_CONTENT_REFUSAL, (457, 457))])
 
