@@ -1,6 +1,6 @@
 {
   "schema": 3,
-  "state_fp": 13512213413816145485,
+  "state_fp": 1656542196094966729,
   "build": "0.11.0-dev",
   "features": [
     "devtools",
@@ -21,7 +21,7 @@
   ],
   "init": {
     "probe": "controlled=home version=1",
-    "hash": 17259595425234774815,
+    "hash": 17633337211828907794,
     "data": {
       "automated": true,
       "clock_start": 0,
@@ -79,8 +79,8 @@
                 "address": "127.0.0.1",
                 "machine_id": "",
                 "name": "",
-                "origin": "http://127.0.0.1:43871",
-                "port": 43871,
+                "origin": "http://127.0.0.1:32498",
+                "port": 32498,
                 "tier": "local",
                 "token": "s00000002"
               }

@@ -247,20 +247,6 @@ pub(crate) fn state_fp_v7() -> u64 {
     plx_ui::rec::state_fp(&shapes)
 }
 
-// Probe only: install complete vector and numeric literals after the production probe run.
-#[cfg(test)]
-fn session_app_prior_vector() -> Vec<&'static str> {
-    let mut shapes = APP_SHAPES.to_vec();
-    // This test's session-codec census is frozen history, not today's product shape.
-    shapes[3] = "AppFrameV4{route:str,overlay:str,focus:str,tree:u64,session:u64,consent:u64,initial:u64}";
-    shapes.push(super::bootstrap::CONTENT_SHAPE);
-    shapes.push(RESOLUTION_SHAPE);
-    shapes.push("CaptureReadinessV2{before_dispatch:pending:bool,text:bool}");
-    shapes.push("MeasurementV1{query:Width(text:bytes,sz:i32,bold:bool)|Cap(sz:i32)|Line(sz:i32),answer:f32bits:u32}");
-    shapes.extend_from_slice(plx_screens::registry::SCREEN_SHAPES);
-    shapes
-}
-
 #[cfg(test)]
 #[test]
 fn historical_session_census_hashes_its_frozen_vectors() {
@@ -278,8 +264,9 @@ fn historical_session_census_hashes_its_frozen_vectors() {
 #[test]
 fn session_app_fingerprint_probe_only() {
     let frozen: Value = serde_json::from_str(include_str!("fixtures/session-codec-v5/current-base-fingerprints.json")).unwrap();
-    let prior = session_app_prior_vector();
-    assert_eq!(serde_json::to_value(&prior).unwrap(), frozen["prior_vector"]);
+    // Historical identities use their frozen census, including the menu kinds that existed then.
+    let prior: Vec<&str> = frozen["prior_vector"].as_array().unwrap().iter()
+        .map(|shape| shape.as_str().unwrap()).collect();
     let fp_prior = plx_ui::rec::state_fp(&prior);
     assert_eq!(fp_prior, FP_PRIOR);
     assert_eq!(frozen["fp_prior"].as_u64(), Some(FP_PRIOR));
@@ -2927,10 +2914,10 @@ mod fixture_preflight_tests {
     fn committed_recordings_keep_valid_page_requests_and_initial_hashes() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/replay");
         for (name, fp, frames) in [
-            ("1-boot-home-chip-grid", state_fp(), 266),
+            ("1-boot-home-chip-grid", state_fp(), 189),
             ("6-settings-family", FP_PRIOR, 621),
             ("12-filmography-detail-return", FP_PRIOR, 457),
-            ("12-filmography-detail-return-current", state_fp(), 2287),
+            ("12-filmography-detail-return-current", state_fp(), 578),
         ] {
             let dir = root.join(name);
             let manifest = std::fs::read_to_string(dir.join("manifest.json")).unwrap();

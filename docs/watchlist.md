@@ -26,6 +26,10 @@ catalog id name the same film in two unrelated id spaces; the only join between 
 Layers: `data` names `plx_plex` and below, never `net` or `media`; screens never name a sibling
 screen or the app; the application owns the pulse and the routes (`docs/module-layers.md`).
 
+Holding OK on a title in the full Filmography table opens a single **Add to Watchlist** action.
+The menu captures the credit's Discover catalog ID, so it also works without a library copy.
+Adding an already listed title is idempotent. A credit without a valid catalog ID offers no menu.
+
 ## Wire facts (redacted: no ids, tokens or addresses)
 
 Measured with a restricted managed profile's own token; nothing was written to a household account
@@ -193,8 +197,9 @@ the difference. The Remove row's wording is `Remove Show...` for an episode (pla
 brief's `Remove Show from Watchlist`.
 
 **plex.tv unreachable.** The page shows the full-screen read-out with Retry (a populated list is never
-blanked). Detail, Home hero and catalog controls draw the outline face when membership is unknown, the item-menu
-row is omitted when there is no face to offer, and a press flips then reverts. Reproduce with
+blanked). Detail, Home hero and catalog controls draw the outline face when membership is unknown.
+Membership-aware menus omit the Watchlist row without a face. Filmography offers its idempotent
+Add action whenever the credit has a valid catalog ID. A refused press flips then reverts. Reproduce with
 `/tmp/plxnative-nowan` or the failing-closure tests.
 
 **The count (Q7, decided: option D; reshaped onto the Library's header row).** The page header is the

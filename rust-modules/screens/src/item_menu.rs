@@ -21,6 +21,8 @@
 //! [`ItemMenuKind::Season`]. The row SET differs only because a navigation row that leads to the
 //! page you are standing on is not an action; everything else — the panel, the placement, the
 //! choreography, the state rows — is shared.
+//! The full Filmography table uses [`ItemMenuKind::WatchlistAdd`]: one Add to Watchlist row,
+//! addressed by Discover catalog identity even when no server has a copy.
 //!
 //! **What remains excluded is excluded for a reason that does not dissolve.** A tile that is a
 //! PERSON or a TAG has no rating key and no watch state at all, so every row this module can build
@@ -592,6 +594,12 @@ fn build_catalog(
     Form::new().section(sec)
 }
 
+/// A catalog credit has no PMS actions; adding it is idempotent even when already listed.
+fn build_watchlist_add(hex: [u8; 12]) -> ItemForm {
+    let (id, action, row) = watchlist::add_row(hex, false);
+    Form::new().section(FormSection::new("").item(id, RowKind::Button, action, row))
+}
+
 /// The DETAIL page's season strip: [`build_episode`]'s row set with the one difference a season
 /// makes — **no "Play from Start"**.
 ///
@@ -708,6 +716,7 @@ impl ItemMenuScreen {
         }
         self.built = true;
         let form = match &self.arg.kind {
+            ItemMenuKind::WatchlistAdd { hex } => build_watchlist_add(*hex),
             ItemMenuKind::Card { row, from_deck } => {
                 let trailer = cached_trailer(self.arg.sid, row, meta);
                 // A Watchlist tile with a reachable copy is a card of that copy, and Remove joins it.
@@ -2041,6 +2050,26 @@ mod tests {
         s
     }
 
+    #[test]
+    fn a_credit_menu_only_adds_its_captured_catalog_identity() {
+        let mut arg = card_arg(&PmsMovie::default(), false);
+        arg.sid = plx_plex::plex::ServerId::UNSET;
+        arg.kind = ItemMenuKind::WatchlistAdd { hex: [0xab; 12] };
+        arg.from_home = false;
+        let mut screen = ItemMenuScreen::new(EntryId(7), arg.clone());
+        screen.build_rows(test_store().view(), DeckPress::Play);
+        assert_eq!(screen.form.table.n_rows(), 1);
+        let elem = first_action(&screen, |a| matches!(a, Action::WatchlistAdd { .. }));
+        let req = commit(&mut screen, elem);
+        assert_eq!(req.act, Action::WatchlistAdd { hex: [0xab; 12] });
+        assert!(req.item.is_none() && req.season.is_none() && !req.loaded_episode);
+
+        let mut other = arg.clone();
+        other.kind = ItemMenuKind::WatchlistAdd { hex: [0xcd; 12] };
+        assert!(arg != other, "two credits cannot reuse the same menu identity");
+        assert_ne!(arg.hash(), other.hash(), "the captured catalog identity is canonical");
+    }
+
     /// The focus key of the first row whose action satisfies `want`.
     fn first_action(s: &ItemMenuScreen, want: impl Fn(&Action) -> bool) -> u32 {
         (0..s.form.table.n_rows() as usize)
@@ -2296,6 +2325,7 @@ mod tests {
         // A row captures its text when it is BUILT, so the menus are rebuilt inside each language.
         let all_menus = || {
             let mut menus: Vec<(String, Built)> = Vec::new();
+            menus.push(("filmography watchlist".into(), built(build_watchlist_add([0xab; 12]))));
             for kind in 0..=3 {
                 for mark in marks {
                     for from_deck in [false, true] {

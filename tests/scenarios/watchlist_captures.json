@@ -5,6 +5,24 @@
  "key_wait_s": 2,
  "captures": [
   {
+   "file": "filmography-hold-menu.png",
+   "board": "Filmography",
+   "mock": "empty",
+   "mock_extra": {"guids": "all"},
+   "triggers": {"detail": "1001", "detailsec": "1", "detailok": "", "filmography": "", "focus": ""},
+   "keys": ["down", "down", "hold"],
+   "expect_log": "overlay=itemmenu"
+  },
+  {
+   "file": "filmography-watchlist-added.png",
+   "board": "Filmography",
+   "mock": "empty",
+   "mock_extra": {"guids": "all"},
+   "triggers": {"detail": "1001", "detailsec": "1", "detailok": "", "filmography": "", "focus": ""},
+   "keys": ["down", "down", "hold", "ok"],
+   "expect_write": "PUT /actions/addToWatchlist"
+  },
+  {
    "file": "home-bookmark-tab-focused.png",
    "board": "Main",
    "mock": "default",

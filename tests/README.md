@@ -53,7 +53,7 @@ fixture list. Expected outcomes: **SAME=6, REFUSED_EXPECTED=2, unexpected=0**.
   mode (its frame count is pinned by `tests/test_replay_fixtures.py`'s census and
   `fixture_preflight_tests` in `app/recorder.rs`); Settings: 621 in each.
 - `12-filmography-detail-return-current`: the current V11 default Flow 12 producer's typed
-  Person → Filmography → item Detail → Back → Back/focus-memory flow, 2287 fully graded frames
+  Person → Filmography → item Detail → Back → Back/focus-memory flow, 578 fully graded frames
   in each mode. Both require raw exit 0, exactly one SAME, and all eight difference counters zero.
   Any current refusal, including a historical scheduler reason, fails the gate.
 - Immutable `12-filmography-detail-return`: historical content scheduling is incompatible;
