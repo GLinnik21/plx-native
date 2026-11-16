@@ -27,6 +27,7 @@ fn the_applied_rate_is_the_ingested_samples_for_the_addressed_attempt() {
     assert_eq!(super::applied_rate(&ps), Some(RATE_NORMAL), "nothing sampled yet: 1x");
     assert!(ps.ingest_feed_facts(a, sample(1500, None)));
     assert_eq!(super::applied_rate(&ps), Some(1500), "the reader is the readout's sample, not the mailbox");
+    assert_eq!(super::effective_playback_rate(&ps), Some(1500));
 
     ps.begin_attempt_view(b, Backend::Feed);
     assert!(!ps.ingest_feed_facts(a, sample(750, None)), "a replaced attempt's sample is refused");
@@ -36,6 +37,7 @@ fn the_applied_rate_is_the_ingested_samples_for_the_addressed_attempt() {
 
     ps.begin_attempt_view(RouteStartAttempt::fixture_n(3), Backend::Uri);
     assert_eq!(super::applied_rate(&ps), None, "a URI attempt has no Feed speed evidence");
+    assert_eq!(super::effective_playback_rate(&ps), Some(RATE_NORMAL), "URI only admits normal speed");
 }
 
 /// What the pipeline said about a speed session's audio is the last sample's: `None` before any

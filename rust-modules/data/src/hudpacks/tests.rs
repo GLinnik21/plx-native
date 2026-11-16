@@ -272,7 +272,7 @@ fn tag_of(effect: &HudEffect) -> Tag {
         | HudEffect::WriteFile { tag, .. }
         | HudEffect::Fetch { tag, .. }
         | HudEffect::Validate { tag, .. } => *tag,
-        other => panic!("{other:?} carries no tag"),
+        other @ (HudEffect::Catalog(_) | HudEffect::FetchRegistry { .. } | HudEffect::Delete { .. } | HudEffect::Selection { .. } | HudEffect::Notice(_)) => panic!("{other:?} carries no tag"),
     }
 }
 
@@ -1499,7 +1499,7 @@ fn an_address_the_store_would_not_have_recorded_is_not_a_dev_source() {
 }
 
 fn registry_fixture(bytes: &[u8], revoked: bool) -> Vec<u8> {
-    let meta = match validator(bytes) { Verdict::Loadable(meta) => meta, _ => panic!("fixture") };
+    let meta = match validator(bytes) { Verdict::Loadable(meta) => meta, Verdict::Unloadable(..) | Verdict::Invalid => panic!("fixture") };
     let sha = Sha::of(bytes).hex();
     let art = "b".repeat(64);
     let base = catalog::ORIGIN;
@@ -1515,7 +1515,7 @@ fn registry_fixture(bytes: &[u8], revoked: bool) -> Vec<u8> {
 fn publish_catalog(store: &mut HudStore, bytes: Vec<u8>) -> Vec<HudEffect> {
     let mut fx=vec![];
     store.step(HudEvent::Catalog(catalog::Event::Open {candidates:vec![],now:10}),&mut fx);
-    let tag=fx.iter().find_map(|e| match e {HudEffect::Catalog(catalog::CatalogEffect::Get {tag,..})=>Some(*tag),_=>None}).unwrap();
+    let tag=fx.iter().find_map(|e| match e {HudEffect::Catalog(catalog::CatalogEffect::Get {tag,..})=>Some(*tag),HudEffect::Catalog(_) | HudEffect::FetchRegistry { .. } | HudEffect::ScanDir { .. } | HudEffect::ReadFile { .. } | HudEffect::WriteFile { .. } | HudEffect::Delete { .. } | HudEffect::Fetch { .. } | HudEffect::Validate { .. } | HudEffect::Selection { .. } | HudEffect::Notice(_) => None}).unwrap();
     fx.clear();
     let signed=catalog::testing::sign(&bytes);
     store.step(HudEvent::Catalog(catalog::Event::Reply {tag,result:Ok(catalog::Reply::http(200,None,&signed,&catalog::testing::keys()))}),&mut fx);
@@ -1550,7 +1550,7 @@ fn registry_fetch_binds_download_bytes_and_manifest_before_offering_and_never_se
         let mut rig=Rig::new();rig.refresh();publish_catalog(&mut rig.m,registry_fixture(&bytes,false));
         let mut fx=vec![];
         rig.m.step(HudEvent::FetchRegistry {sha,app:"0.10.0".into(),language:"en".into()},&mut fx);
-        let tag=match &fx[0] {HudEffect::FetchRegistry {tag,package,..}=> {assert_eq!(package.sha(),sha);*tag},_=>panic!("registry GET")};
+        let tag=match &fx[0] {HudEffect::FetchRegistry {tag,package,..}=> {assert_eq!(package.sha(),sha);*tag},HudEffect::Catalog(_) | HudEffect::ScanDir { .. } | HudEffect::ReadFile { .. } | HudEffect::WriteFile { .. } | HudEffect::Delete { .. } | HudEffect::Fetch { .. } | HudEffect::Validate { .. } | HudEffect::Selection { .. } | HudEffect::Notice(_) => panic!("registry GET")};
         let mut answer=vec![];
         rig.m.step(HudEvent::Fetched {tag,result:Ok(if changed {pack("com.example.other","1.0.0")} else {bytes.clone()})},&mut answer);
         if changed {

@@ -10,13 +10,16 @@
 //! for Automatic; both retire the segment in the metadata store) — the row stays at five
 //! controls and the viewer never has to wait an intro out to change tracks. The button only exists
 //! while the HUD is up, which is why `app.rs` RAISES the HUD once when a segment begins and parks
-//! focus here. Manual skips on OK; Automatic offers Watch and lets the viewer cancel its timer.
+//! focus here. Manual skips on OK. Automatic is a PAIR, like Up Next's: the filled button is the skip the
+//! five-second clock will perform (OK performs it now, and focus starts on it), and the unfilled Watch button
+//! one key to its left cancels the clock.
 #![allow(dead_code)]
 use plx_data::metadata::{self, MarkerKind};
 use plx_ui::theme;
 use plx_ui::widgets::{Button, ControlGround};
 use plx_ui::{Env, Painter, Rect, View};
 use std::ffi::CString;
+use std::os::raw::c_int;
 
 /// The skip performed by a Manual press or Automatic expiry. A Watch press cancels instead.
 /// The distinction is the `final` flag on a credits marker: an
@@ -45,17 +48,20 @@ pub struct Prompt {
 }
 
 impl Prompt {
-    /// The button's copy — presentation, derived from the kind at the point of drawing.
+    /// The FILLED button's copy — the action the prompt performs (a press now, or the clock at its
+    /// end): Skip intro / Skip credits, for the manual pill and the Automatic prompt alike.
     pub fn label(&self) -> &'static str {
-        if self.automatic {
-            return match self.kind {
-                MarkerKind::Intro => plx_platform::i18n::msg::widgets_watch_intro(),
-                MarkerKind::Credits => plx_platform::i18n::msg::widgets_next_credits(),
-            };
-        }
         match self.kind {
             MarkerKind::Intro => plx_platform::i18n::msg::widgets_skip_intro(),
             MarkerKind::Credits => plx_platform::i18n::msg::widgets_skip_credits(),
+        }
+    }
+    /// The Automatic prompt's unfilled button, which cancels the countdown: Watch intro / Watch credits.
+    /// Item 0 of the row, to the left of the filled action ([`crate::up_next::BTN_CREDITS`]).
+    pub fn watch_label(&self) -> &'static str {
+        match self.kind {
+            MarkerKind::Intro => plx_platform::i18n::msg::widgets_watch_intro(),
+            MarkerKind::Credits => plx_platform::i18n::msg::widgets_next_credits(),
         }
     }
 }
@@ -82,23 +88,64 @@ pub fn prompt_for(m: metadata::Marker) -> Prompt {
     }
 }
 
-/// **Draw the button** at a rect the caller already has: the compiled package's pill (`Standin::skip`,
-/// one per label width), placed at compile time, in the control row's place.
-pub fn draw_at(row: &crate::player_hud::motion::HudMotion, p: Painter, pr: Prompt, slot: Rect, focused: bool, progress: Option<f32>) {
+/// **Draw the prompt** at the rects the caller already has: the compiled package's pill(s) (`Standin::skip`,
+/// one per face, and `Standin::watch` for the Automatic ones), placed at compile time, in the control row's
+/// place. The manual prompt is the one pill. The Automatic prompt is the Up Next pair's arrangement: the
+/// unfilled Watch button (item 0) cancels, the FILLED Skip (item 1) carries the countdown sweep and is what
+/// the clock performs, so pressing it acts now; `btn` says which one holds the ring.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_at(row: &crate::player_hud::motion::HudMotion, p: Painter, pr: Prompt, slot: Rect, watch: Option<Rect>, focused: bool, btn: c_int, progress: Option<f32>, press: plx_machine::machine::PressRead<u32>) {
     let Ok(label) = CString::new(pr.label()) else {
         return;
     };
     // No leading icon: the label alone carries it, and a chevron on a control that does not
     // navigate anywhere was reading as "more" rather than "skip".
-    // Its slot's only item, so index 0 — the pop is the control ROW's (`HudMotion::scale`),
-    // shared with the transport discs this pill stands in for.
-    let pop = row.scale(0);
-    let button = Button::new(label.as_ptr(), theme::size::BODY, slot)
-        .scale(pop)
-        .focused(focused)
-        // It stands in the transport discs' own slot, over the video plane and on the HUD's ramp,
-        // so it wears their ground as well as their pop — see `ControlGround`.
-        .ground(ControlGround::Unkeyed);
+    let (pop, ring) = if pr.automatic { (row.scale(crate::up_next::BTN_NEXT, press), focused && btn == crate::up_next::BTN_NEXT) } else { (row.scale(0, press), focused) };
+    // It stands in the transport discs' own slot, over the video plane and on the HUD's ramp,
+    // so it wears their ground as well as their pop — see `ControlGround`.
+    let button = Button::new(label.as_ptr(), theme::size::BODY, slot).scale(pop).focused(ring).ground(ControlGround::Unkeyed);
     let button = if let Some(fraction) = progress { button.progress(fraction) } else { button };
     button.draw(&Env::inert(), p);
+    if let (true, Some(watch), Ok(cancel)) = (pr.automatic, watch, CString::new(pr.watch_label())) {
+        Button::new(cancel.as_ptr(), theme::size::BODY, watch)
+            .scale(row.scale(crate::up_next::BTN_CREDITS, press))
+            .focused(focused && btn == crate::up_next::BTN_CREDITS)
+            .ground(ControlGround::Unkeyed)
+            .draw(&Env::inert(), p);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn marker(kind: MarkerKind) -> metadata::Marker {
+        metadata::Marker { kind, start_ms: 1_000, end_ms: 60_000, final_seg: false }
+    }
+
+    /// The Automatic prompt draws BOTH buttons, the filled one reading the skip it performs; the manual
+    /// pill is the one. Either way the label of the filled button is the action, never "Watch".
+    #[test]
+    fn the_automatic_prompt_draws_watch_beside_the_filled_skip_and_the_manual_one_the_pill_alone() {
+        let _serial = plx_base::testlock::serial();
+        let _en = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let row = crate::player_hud::motion::HudMotion::new();
+        let (watch, skip) = (Rect::new(900.0, 800.0, 200.0, 64.0), Rect::new(1116.0, 800.0, 232.0, 64.0));
+        for (kind, filled, cancel) in [(MarkerKind::Intro, "Skip Intro", "Watch Intro"), (MarkerKind::Credits, "Skip Credits", "Watch Credits")] {
+            let drawn = |automatic: bool| {
+                let prompt = Prompt { automatic, ..prompt_for(marker(kind)) };
+                let mut runs = Vec::new();
+                plx_ui::record_walk(|| plx_ui::draw_census::capture(|| {
+                    runs = plx_ui::draw_census::capture_runs(|| {
+                        draw_at(&row, Painter::root(), prompt, skip, automatic.then_some(watch), true, crate::up_next::BTN_NEXT, automatic.then_some(0.4), Default::default());
+                    });
+                }));
+                runs
+            };
+            let texts = |automatic| drawn(automatic).into_iter().map(|r| r.text).collect::<Vec<_>>();
+            assert_eq!(texts(false), [filled], "{kind:?}: the manual prompt is the one pill");
+            assert_eq!(texts(true).len(), 2, "{kind:?}: the Automatic prompt is a pair");
+            assert!(texts(true).contains(&filled.to_owned()) && texts(true).contains(&cancel.to_owned()), "{:?}", texts(true));
+        }
+    }
 }

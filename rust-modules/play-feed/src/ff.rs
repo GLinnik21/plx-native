@@ -18,6 +18,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 pub use plx_media_codecs::ffi::*;
 
+fn audio_declaration_mismatch(declared: u8, actual: u8) -> bool {
+    // PCM describes decoded output; the container still carries the compressed input.
+    declared != 0 && declared != 5 && actual != 0 && declared != actual
+}
+
+#[test]
+fn pcm_output_does_not_mismatch_the_compressed_source() {
+    for codec in ["ac3", "eac3", "aac", "dts"] {
+        let actual = crate::audio_payload_codec(codec).unwrap().1;
+        assert!(!audio_declaration_mismatch(5, actual), "{codec} is decoded before PCM is fed");
+        assert!(!audio_declaration_mismatch(actual, actual));
+    }
+    assert!(audio_declaration_mismatch(2, 3));
+    assert!(!audio_declaration_mismatch(0, 3));
+}
+
 /// Captured by the media composition and moved into one demux worker. Authorization is checked
 /// afresh on every request by the injected range factory and plaintext redirect gate.
 pub struct DemuxTransport {
@@ -273,15 +289,16 @@ unsafe fn nth_audio_stream(fmt: *mut AVFormatContext, n: i32) -> Option<c_int> {
 
 pub use plx_media_codecs::SpeedDecoder;
 
-/// Copy the embedded ASS sources before FFmpeg can release them. The codec parameter and
+/// Copy the embedded ASS headers before FFmpeg can release them, and hand over the `fonts` that
+/// `detach_fonts` took out of the format when it was opened (issue #1328). The codec parameter and
 /// dictionary layouts are already compile-asserted against our bundled FFmpeg headers; the
 /// attachment media-type constant is asserted beside them. No firmware layout is inferred.
 unsafe fn begin_ass_sources(
     session: &mut dyn DemuxSession,
     media_key: &str,
-    fmt: *mut AVFormatContext,
     streams: *mut *mut AVStream,
     subs: &SubTracks,
+    fonts: Vec<plx_playback_contract::subtitle::EmbeddedFont>,
 ) -> Option<u64> {
     use plx_media_codecs::subtitle_extract::{collect_manifest, AssTrack};
     let tracks: Vec<AssTrack> = subs.entries().iter().zip(subs.plan()).map(|(info, kind)| AssTrack {
@@ -289,8 +306,7 @@ unsafe fn begin_ass_sources(
         authored: matches!(kind, plx_playback_contract::subtitle::DecodeKind::Ass { .. }),
     }).collect();
     let max_header_bytes = session.subtitle().max_header_bytes();
-    let manifest = collect_manifest(fmt, streams, &tracks, max_header_bytes,
-        |len| session.subtitle().admit_font(len));
+    let manifest = collect_manifest(streams, &tracks, max_header_bytes, fonts);
     session.subtitle().begin_sources(media_key, manifest)
 }
 
@@ -2285,6 +2301,7 @@ static SEI_STRIPPED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64
 static DV_EL_DROPPED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 static DV_RPU_REWRITTEN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 static DV_RPU_FAILED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static DV_AREA_CLEARED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 /// HEVC `UNSPEC62`: the NAL type Dolby Vision carries its RPU (the dynamic metadata) in.
 const HEVC_NAL_DV_RPU: u8 = 62;
@@ -2332,6 +2349,130 @@ pub fn rewrite_dv_rpu_p7_to_p81(nal: &[u8]) -> Option<Vec<u8>> {
     }
     rpu.convert_with_mode(dolby_vision::rpu::ConversionMode::To81).ok()?;
     rpu.write_hevc_unspec62_nalu().ok()
+}
+
+/// The widest picture an RPU's active area (Dolby Vision Level 5) may describe, as width : height.
+/// No released picture is wider than 2.76:1 (Ultra Panavision 70), so a 3:1 ceiling keeps every
+/// real one. Together with [`DV_AREA_NARROWEST`] it tells offsets that belong to this picture from
+/// offsets authored for another raster, which is the only way an area outside the range can arise.
+const DV_AREA_WIDEST: (u64, u64) = (3, 1);
+/// The narrowest: 1:2. No released picture is narrower than 9:16 portrait (0.5625).
+const DV_AREA_NARROWEST: (u64, u64) = (1, 2);
+/// The one raster whose letterbox bars are part of the picture: 16:9, the frame a mastered
+/// 1.85:1 or 2.39:1 film is laid in. A picture of any other shape was cropped, so it has no bars
+/// for an active area to describe.
+const DV_FULL_FRAME: (u64, u64) = (16, 9);
+
+/// PURE: can the Level 5 active-area offsets `l`, `r`, `t`, `b` describe a `w` x `h` picture?
+///
+/// The TV's Dolby Vision engine blanks everything outside the active area. An encode cropped from
+/// a letterboxed master keeps the master's offsets in its RPUs (#1367: `top=276 bottom=277`, a 4K
+/// master's bars, on a 1920x802 file, leaves 249 rows). Offsets cannot describe the picture when
+/// they leave nothing (`l + r >= w` or `t + b >= h`) or leave an area wider than
+/// [`DV_AREA_WIDEST`] or narrower than [`DV_AREA_NARROWEST`]: a genuine 1920x1080 letterbox
+/// (`t = 138`, `b = 139`) leaves 2.39:1 and fits, the reporter's `276` / `277` on 1920x802 leaves
+/// 7.7:1, and a 4:3 film cropped to 1440x1080 that still says `l = r = 480` leaves 0.44:1.
+pub fn dv_active_area_fits(w: u32, h: u32, l: u32, r: u32, t: u32, b: u32) -> bool {
+    let [w, h, l, r, t, b] = [w, h, l, r, t, b].map(u64::from);
+    if l + r >= w || t + b >= h {
+        return false;
+    }
+    let (aw, ah) = (w - l - r, h - t - b);
+    aw * DV_AREA_WIDEST.1 <= ah * DV_AREA_WIDEST.0 && aw * DV_AREA_NARROWEST.1 >= ah * DV_AREA_NARROWEST.0
+}
+
+/// PURE: are these offsets authored for another raster, so that the `w` x `h` picture they travel
+/// with is better fed without them? A wrong keep cuts real picture and a wrong clear only shows the
+/// black bars the encode itself carries (what `dovi_tool --crop` does), so the rule leans to clear.
+///
+/// 1. All-zero offsets are nothing to clear.
+/// 2. A raster that is not 16:9 was cropped and has no bars to describe: any offsets are foreign.
+///    A 1920x1038 crop of a 1.85:1 master (`t = b = 42`) leaves 2.01:1, a plausible area that would
+///    still blank 84 rows, which is why the area's shape alone cannot decide it.
+/// 3. On a 16:9 raster, offsets are foreign when they cannot describe it ([`dv_active_area_fits`]),
+///    or when `foreign_seen`: an earlier RPU of the stream was foreign. A variable-aspect 4K master
+///    downscaled to 1080p has 1.90:1 scenes whose offsets (`t = 69`, `b = 70`) look plausible on
+///    their own, but the stream has already shown it carries the master's.
+pub fn dv_active_area_is_foreign(w: u32, h: u32, l: u32, r: u32, t: u32, b: u32, foreign_seen: bool) -> bool {
+    if l == 0 && r == 0 && t == 0 && b == 0 {
+        return false;
+    }
+    if u64::from(w) * DV_FULL_FRAME.1 != u64::from(h) * DV_FULL_FRAME.0 {
+        return true;
+    }
+    foreign_seen || !dv_active_area_fits(w, h, l, r, t, b)
+}
+
+/// The Dolby Vision active-area check's per-stream state, owned by the demux loop beside the
+/// stream's other per-open values and handed to [`packet_to_annexb`].
+#[derive(Debug, Default)]
+pub struct DvActiveArea {
+    /// The picture's `(width, height)` as the demuxer reports it (the displayed raster, not the
+    /// coded one); `None` when it reports none, and then nothing is judged.
+    raster: Option<(u32, u32)>,
+    /// An RPU of this stream has been judged foreign ([`dv_active_area_is_foreign`], rule 3).
+    foreign_seen: bool,
+}
+
+impl DvActiveArea {
+    /// A stream whose demuxer reports `width` x `height`; a non-positive size is "not reported".
+    pub fn new(width: c_int, height: c_int) -> Self {
+        let raster = u32::try_from(width)
+            .ok()
+            .zip(u32::try_from(height).ok())
+            .filter(|&(w, h)| w > 0 && h > 0);
+        Self { raster, foreign_seen: false }
+    }
+}
+
+/// Zero the Level 5 offsets of a Dolby Vision RPU NAL (`UNSPEC62`, 2-byte header + payload) that
+/// [`dv_active_area_is_foreign`] judges foreign to the stream's picture, as `dovi_tool --crop`
+/// does, and write it again; every other field is kept. `Some` is the rewritten NAL; `None` means
+/// the NAL goes out as it is: the offsets are not foreign, are already zero, or there are none (no
+/// L5 block), the RPU does not parse (any profile), the raster is not known, or the rewrite failed.
+/// A foreign verdict is recorded in `area` whether or not the rewrite succeeds.
+pub fn clear_foreign_active_area(nal: &[u8], area: &mut DvActiveArea) -> Option<Vec<u8>> {
+    let (w, h) = area.raster?;
+    let mut rpu = dolby_vision::rpu::dovi_rpu::DoviRpu::parse_unspec62_nalu(nal).ok()?;
+    let (l, r, t, b) = rpu_active_area(&rpu)?;
+    if !dv_active_area_is_foreign(w, h, l.into(), r.into(), t.into(), b.into(), area.foreign_seen) {
+        return None;
+    }
+    area.foreign_seen = true;
+    rpu.crop().ok()?;
+    rpu.write_hevc_unspec62_nalu().ok()
+}
+
+/// The L5 offsets `(left, right, top, bottom)` an RPU NAL carries, for the log line.
+fn dv_rpu_active_area(nal: &[u8]) -> Option<(u16, u16, u16, u16)> {
+    let rpu = dolby_vision::rpu::dovi_rpu::DoviRpu::parse_unspec62_nalu(nal).ok()?;
+    rpu_active_area(&rpu)
+}
+
+fn rpu_active_area(rpu: &dolby_vision::rpu::dovi_rpu::DoviRpu) -> Option<(u16, u16, u16, u16)> {
+    match rpu.vdr_dm_data.as_ref()?.get_block(5)? {
+        dolby_vision::rpu::extension_metadata::blocks::ExtMetadataBlock::Level5(l5) => Some(l5.get_offsets()),
+        _ => None,
+    }
+}
+
+/// The RPU as fed: `nal` itself unless [`clear_foreign_active_area`] rewrote it for the stream's
+/// picture. Counts and logs each clear.
+fn fit_active_area<'a>(nal: &'a [u8], area: &mut DvActiveArea) -> std::borrow::Cow<'a, [u8]> {
+    match clear_foreign_active_area(nal, area) {
+        Some(cleared) => {
+            let n = DV_AREA_CLEARED.fetch_add(1, Ordering::Relaxed) + 1;
+            if n <= 3 || n % 5000 == 0 {
+                let (l, r, t, b) = dv_rpu_active_area(nal).unwrap_or_default();
+                let (w, h) = area.raster.unwrap_or_default();
+                plx_base::eventlog::log(&format!(
+                    "ff: DV RPU #{n} active area l={l} r={r} t={t} b={b} cannot describe {w}x{h}; cleared"
+                ));
+            }
+            std::borrow::Cow::Owned(cleared)
+        }
+        None => std::borrow::Cow::Borrowed(nal),
+    }
 }
 
 /// What to do with one HEVC NAL on its way to the decoder.
@@ -2564,12 +2705,18 @@ impl Keyframe {
 /// ([`dovi_converts_to_p81`]). Every enhancement-layer NAL ([`is_dv_enhancement_layer`]) is
 /// dropped and every RPU is rewritten by [`rewrite_dv_rpu_p7_to_p81`], so what leaves here is the
 /// single-layer stream the Load payload declares (`DolbyHdrInfo profileId 8`).
+///
+/// `dv_area`: the stream's active-area state ([`DvActiveArea`]). Every HEVC RPU, converted or not,
+/// is checked against the picture, and one whose active area is foreign to it is fed with the
+/// offsets zeroed ([`clear_foreign_active_area`]); any other RPU leaves as it arrived here (for a
+/// converted Profile 7, as the conversion wrote it).
 pub unsafe fn packet_to_annexb(
     data: *const u8,
     size: usize,
     nls: usize,
     is_hevc: bool,
     dv_p7: bool,
+    dv_area: &mut DvActiveArea,
     container_key: bool,
     param: &[u8],
     out: &mut Vec<u8>,
@@ -2652,7 +2799,7 @@ pub unsafe fn packet_to_annexb(
                             ));
                         }
                         out.extend_from_slice(&sc);
-                        out.extend_from_slice(&rpu);
+                        out.extend_from_slice(&fit_active_area(&rpu, dv_area));
                     }
                     None => {
                         let n = DV_RPU_FAILED.fetch_add(1, Ordering::Relaxed) + 1;
@@ -2669,7 +2816,12 @@ pub unsafe fn packet_to_annexb(
         }
         let mut nal = nal;
         let rewritten;
+        let fitted;
         if is_hevc {
+            if ((nal[0] >> 1) & 0x3f) == HEVC_NAL_DV_RPU {
+                fitted = fit_active_area(nal, dv_area);
+                nal = &fitted;
+            }
             match strip_hdr10plus_sei(nal) {
                 SeiStrip::Keep => {}
                 strip => {
@@ -4950,9 +5102,9 @@ pub fn hls_acquisition(
 /// why "twenty seconds remaining" needs no special case anywhere below.
 impl CandidateFencePort for HlsRoundPort<'_> {
     type Fence = plx_playback_contract::adaptive::FenceHandle;
-    type Error = plx_playback_contract::adaptive::PhysicalFailure;
 
-    fn arm(&mut self, automatic_token: u64) -> Result<Self::Fence, Self::Error> {
+    fn arm(&mut self, automatic_token: u64)
+        -> Result<Self::Fence, plx_playback_contract::adaptive::CandidateFenceError> {
         self.session.adaptive().arm_candidate(automatic_token)
     }
 
@@ -6177,6 +6329,13 @@ pub fn demux(
                     free_avio(avio);
                     break;
                 }
+                // The file's font attachments leave the format's stream table now, into the buffers
+                // the source store shares with every renderer (issue #1328): left in
+                // `codecpar->extradata` they would sit beside the demuxer's own copy (the Matroska
+                // element buffer, the only one left once `find_stream_info` rebuilds the codec
+                // context from the emptied parameters) for the whole playback. Nothing reads an attachment's extradata between here and the
+                // hand-over to `begin_ass_sources` below.
+                let font_attachments = plx_media_codecs::subtitle_extract::detach_fonts(fmt);
                 if avformat_find_stream_info(fmt, std::ptr::null_mut()) < 0 {
                     session.media().record("ff: find_stream_info failed");
                     if !crate::aq::aq_is_aborted(aq_p) {
@@ -6447,11 +6606,53 @@ pub fn demux(
                     free_avio(avio);
                     break;
                 };
-                if declared != 0 && declared != framing.load_video().diag_code() {
+                // BOTH halves of the same check in one pass. A stale PMS declaration (a file
+                // replaced under the server, never re-analyzed) can lie on BOTH axes at once:
+                // Casablanca 4K arrives declared H264/AC3 while the file carries HEVC/AAC. If the
+                // open refused axis-by-axis, the first axis hit would break before the second was
+                // ever probed, the one-shot retry would reload with the corrected video, get
+                // refused again on the audio the first pass never saw, and exhaust its budget
+                // without having played a frame. Probe both, refuse once, and hand the pump every
+                // axis the file really carries so ONE retry reload fixes them together.
+                //
+                // The audio half matters on its own too: a declared audio codec no track in the
+                // file carries makes `ai` land on the track that IS there and feed it into an
+                // elementary stream configured for the declared codec — the audio clock stalls
+                // and the video, which syncs to it, wedges at t=0 with no error at all.
+                let mismatch_v = declared != 0 && declared != framing.load_video().diag_code();
+                let declared_a = session.observer().declared_audio_code().unwrap_or(0);
+                let (actual_a, a_name) = if declared_a != 0 && ai >= 0 {
+                    let acp = stream_codecpar(*streams.add(ai as usize));
+                    let aname = std::ffi::CStr::from_ptr(avcodec_get_name((*acp).codec_id));
+                    (
+                        match aname.to_bytes() {
+                            b"ac3" => 1,
+                            b"eac3" => 2,
+                            b"aac" => 3,
+                            b"dts" => 4,
+                            _ => 0,
+                        },
+                        aname.to_string_lossy().into_owned(),
+                    )
+                } else {
+                    (0, String::new())
+                };
+                let mismatch_a = audio_declaration_mismatch(declared_a, actual_a);
+                if mismatch_v || mismatch_a {
+                    // The conditional probe's answer: what the file REALLY is, in the Load's own
+                    // code space, for every axis that lied. The pump's one-shot retry reloads with
+                    // this declaration; the happy path never reaches this line.
+                    session.media().publish(DemuxEffect::ProbeActual {
+                        video: mismatch_v.then(|| framing.load_video().diag_code()),
+                        audio: mismatch_a.then_some(actual_a),
+                    });
                     session.media().record(&format!(
-                        "ff: the Load declared {} but the file is {cname}; refusing the stream",
-                        crate::LoadVideo::from_diag_code(declared)
-                            .map_or("—", crate::LoadVideo::payload_name)
+                        "ff: the Load declared {dv} / audio {da} but the file is {av} / {aa}; refusing the stream",
+                        dv = crate::LoadVideo::from_diag_code(declared)
+                            .map_or("—", crate::LoadVideo::payload_name),
+                        da = if declared_a != 0 { acodec.as_str() } else { "—" },
+                        av = cname,
+                        aa = if a_name.is_empty() { "—" } else { a_name.as_str() }
                     ));
                     session.media().publish(DemuxEffect::FailFault(DemuxFault::LoadMismatch));
                     avformat_close_input(&mut fmt);
@@ -6517,11 +6718,15 @@ pub fn demux(
                     SubTracks::open(streams, infos, plan)
                 };
                 let ass_generation = if side_owner {
+                    // The side reader has its own copy of the fonts; this one has no reader.
+                    drop(font_attachments);
                     0
                 } else {
-                    begin_ass_sources(session.as_mut(), &url, fmt, streams, &sub_tracks).unwrap_or(0)
+                    begin_ass_sources(session.as_mut(), &url, streams, &sub_tracks, font_attachments).unwrap_or(0)
                 };
                 if !side_owner { session.subtitle().record_tracks(); }
+                // The playhead a held image packet is retired against (`SubTracks::on_packet`).
+                let observer = session.observer();
 
                 // Hand-roll length-prefix -> Annex-B + prepend VPS/SPS/PPS at every keyframe (the
                 // format Starfish decodes). FFmpeg's hevc_mp4toannexb does NOT reliably prepend the
@@ -6541,6 +6746,10 @@ pub fn demux(
                         "ff: Dolby Vision P7 -> P8.1 conversion armed (EL dropped, RPUs rewritten)",
                     );
                 }
+                // The picture the RPUs travel with: the raster the demuxer reports (the displayed
+                // one, not the coded one), and the check's per-stream latch, which
+                // `packet_to_annexb` reads and sets for each RPU.
+                let mut dv_area = DvActiveArea::new((*vcp).width, (*vcp).height);
                 let is_av1 = framing == VideoFraming::Av1;
                 let is_vp9 = framing == VideoFraming::Vp9;
                 let (param_blob, nal_len_size) = if is_av1 || is_vp9 {
@@ -6649,6 +6858,8 @@ pub fn demux(
                         let ts = av_rescale_q(seek_ns.saturating_add(origin_ns), NS_TB, stream_time_base(vst));
                         // Fence completed renders from the old position before new packets arrive.
                         session.subtitle().seek(ass_generation);
+                        // Image packets held for a later selection belong to the old position too.
+                        sub_tracks.discard_held();
                         session.media().record(&format!("ff: seek begin {}s", seek_ns / 1_000_000_000));
                         let seek_began = std::time::Instant::now();
                         let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
@@ -6680,6 +6891,9 @@ pub fn demux(
                         }
                         break;
                     }
+                    // A subtitle was turned on since the image packets held below were read: decode
+                    // them now, on whatever packet comes next, ahead of it so cues stay in file order.
+                    sub_tracks.release_if_selected(fmt, session.subtitle(), ass_generation);
                     let si = (*pkt).stream_index;
                     // The array is read LIVE, with its bound: a transport stream can grow new streams
                     // while it is read (`AVFMTCTX_NOHEADER`), which reallocates `streams`, so the
@@ -6741,6 +6955,7 @@ pub fn demux(
                                 nal_len_size,
                                 is_hevc,
                                 dv_p7,
+                                &mut dv_area,
                                 (*pkt).flags & AV_PKT_FLAG_KEY != 0,
                                 &param_blob,
                                 &mut aubuf,
@@ -6965,14 +7180,13 @@ pub fn demux(
                         }
                         session.media().publish(DemuxEffect::AudioTailNs(pts));
                     } else if let Some(sub_pos) = sub_tracks.position(si) {
-                        // Subtitle packet: `SubTracks::decode` yields a cue for EVERY text track
-                        // (not just the selected one) and decodes every image track while subtitles
-                        // are on; see ff_subs.rs. Subtitles carry no ES -> never fed to the pipeline.
-                        let decode_image = session.subtitle().selected_track() >= 0;
-                        let bitmap_budget = session.subtitle().bitmap_budget();
-                        if let Some(cue) = sub_tracks.decode(sub_pos, pkt, *streams.add(si as usize), decode_image, bitmap_budget) {
-                            session.subtitle().emit(ass_generation, cue);
-                        }
+                        // Subtitle packet: a cue for EVERY text track (not just the selected one), a
+                        // decode of every image track while subtitles are on, and while they are Off
+                        // an image packet is held instead of dropped, so a track chosen later has the
+                        // read-ahead window to show (the release above); see `SubTracks::on_packet`.
+                        // Subtitles carry no ES -> never fed to the pipeline.
+                        sub_tracks.on_packet(sub_pos, pkt, fmt, session.subtitle(), ass_generation,
+                            || observer.caption_retention());
                         av_packet_unref(pkt);
                     } else {
                         av_packet_unref(pkt);

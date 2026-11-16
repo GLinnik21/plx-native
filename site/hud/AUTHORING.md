@@ -6,7 +6,8 @@ the player's declarative layout; playback, app labels, focus, menus and captions
 Copy `examples/minimal/`, give manifest.json a unique reverse-DNS ID, name, author and SPDX license,
 and start its plugin version at `1.0.0`. Package format and `hud.format` are both `1.0`.
 Use `schema/manifest/1.0.json` for metadata and resource declarations and `schema/hud/1.0.json` for
-hud.json. Resource IDs refer to ordinary package-relative SVG files, never inline data or URLs.
+hud.json. To declare the optional playbar end-time lane, set `hud.format` to `"1.1"` and use
+`schema/hud/1.1.json`. Resource IDs refer to ordinary package-relative SVG files, never inline data or URLs.
 
 Build and validate using the same immutable artifact:
 
@@ -76,6 +77,6 @@ PlxNative build older than this feature reads that whole list as read-only: it d
 remove it, so remove the dev install on a newer build before you go back to an older one.
 
 Submit the source folder, attribution README and maintainer contact to
-https://github.com/GLinnik21/plxnative-huds . CI builds once and binds linting, all-language/native
+https://github.com/plxnative/plxnative-huds . CI builds once and binds linting, all-language/native
 previews and publication to the same archive hash. The initial format has no compatibility reader
 for standalone JSON, scripts, fonts, bitmap artwork or plugin-localized labels.

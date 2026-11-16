@@ -22,7 +22,14 @@ impl Host for HostFixture {
     type Init = FixtureArg;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for HostFixture {
+    fn screen_inputs<'a>(_cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        crate::registry::empty_fixture()
+    }
+}
+
 impl LibraryLike for HostFixture {
+    fn clock_facts<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { None }
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.hubs }
@@ -52,14 +59,14 @@ impl Fixture {
         let mut fixture = Self::new();
         let stores = plx_data::stores::Stores::default();
         stores.browse.borrow_mut().seed_two_source_table_for_test();
-        stores.capture_browse(&mut fixture.directory);
+        stores.capture_seeded_browse_for_test(&mut fixture.directory, plx_plex::plex::current_server());
         stores.browse_run_for_test(BrowseCmd::SetCur(0));
         {
             let mut browse = stores.browse.borrow_mut();
             browse.seed_items_for_test(120);
             browse.seed_shelves_for_test(0, titles, count);
         }
-        let publication = stores.capture_browse(&mut fixture.directory);
+        let publication = stores.capture_seeded_browse_for_test(&mut fixture.directory, plx_plex::plex::current_server());
         fixture.listing = publication.listing;
         fixture.hubs = publication.section_hubs;
         fixture.stores = Some(stores);
@@ -71,7 +78,7 @@ impl Fixture {
         let mut fixture = Self::new();
         let stores = plx_data::stores::Stores::default();
         stores.browse.borrow_mut().seed_two_source_table_for_test();
-        stores.capture_browse(&mut fixture.directory);
+        stores.capture_seeded_browse_for_test(&mut fixture.directory, plx_plex::plex::current_server());
         stores.browse_run_for_test(BrowseCmd::SetCur(0));
         {
             let mut browse = stores.browse.borrow_mut();
@@ -86,7 +93,7 @@ impl Fixture {
     }
     /// Capture what the store publishes now, as the dispatcher does between frames.
     pub(super) fn republish(&mut self) {
-        let publication = self.stores.as_ref().expect("a fixture with stores").capture_browse(&mut self.directory);
+        let publication = self.stores.as_ref().expect("a fixture with stores").capture_seeded_browse_for_test(&mut self.directory, plx_plex::plex::current_server());
         self.listing = publication.listing;
         self.hubs = publication.section_hubs;
     }
@@ -227,8 +234,9 @@ fn shelf_pitch_keeps_the_shared_air() {
             let want = ui_cards::ROW_PITCH_FIXED + ui_cards::under_band_for(band, expanded);
             assert!((shelf_pitch(&RowStyle::HOME, band, expanded) - want).abs() < 1e-3, "band {band} expanded {expanded}");
             for style in [&RowStyle::EPISODE, &RowStyle::STILL] {
+                // …under a shorter tile, and under the footer line a still carries below its art
                 let shorter = RowStyle::HOME.h - style.h;
-                assert!((shelf_pitch(style, band, expanded) - (want - shorter)).abs() < 1e-3, "landscape, band {band} expanded {expanded}");
+                assert!((shelf_pitch(style, band, expanded) - (want - shorter + style.under_tile)).abs() < 1e-3, "landscape, band {band} expanded {expanded}");
             }
         }
     }
@@ -282,7 +290,7 @@ fn a_landscape_deck_card_draws_the_continue_footer() {
     let tile = Tile { rect: Rect::new(0.0, 0.0, 420.0, 236.0), scale: 1.0, radius: 12.0, focused: true, pop: 1.0 };
     let m = plx_ui::fixture::FixtureMeasure;
     for (row, deck) in [(0, true), (1, false)] {
-        let src = HubSrc { elems: &[1, 2, 3, 4], shelf: hubs.shelves().get(row), paging: false, deck: None };
+        let src = HubSrc { policy: crate::registry::captions::policy(), elems: &[1, 2, 3, 4], shelf: hubs.shelves().get(row), paging: false, deck: None, deck_press: plx_plex::plex::session::DeckPress::Details };
         let words = |draw: &dyn Fn(plx_ui::Painter)| -> Vec<String> {
             plx_ui::draw_census::capture_runs(|| draw(plx_ui::Painter::recording())).into_iter().map(|run| run.text).collect()
         };

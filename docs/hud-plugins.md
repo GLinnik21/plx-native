@@ -52,7 +52,9 @@ HUD drawing and state
   (`:493-497`), `BTN_MORE = BTN_N - 1` (`:670`), `pub enum Action { Previous, Next, Subtitles, Audio,
   More }` (`:731`). `Controls::enabled` (`:758-761`): Previous and Next by their own flags, the other
   three always; `Controls::pair` (`:755-757`) makes Previous/Next come and go together;
-  `Controls::icon` swaps in `Icon::Restart` for Previous (`:772-776`).
+  `Controls::icon` once swapped in `Icon::Restart` for Previous from five seconds in; it no longer
+  does, and `Controls` has no `restart` field: Previous is the previous episode of the play queue and
+  nothing else, so it is enabled exactly when the playing row has a predecessor.
 - F7. Row identity is an INDEX: `Controls::action(i)` (`:767-771`), `ControlSlot::items()` 5/2/1
   (`:804-809`), `RowPop = CtlPop<{ BTN_N as usize }>` (`:512`), element ids `ELEM_SCRUB 0` `:1384`,
   `ELEM_ROW_BASE 10` `:1387`, `ELEM_TAB_BASE 20` `:1389`, `ELEM_FAILURE_BASE 30` `:1397`. Up Next
@@ -362,7 +364,7 @@ Other subsystems the plan touches
 - D9. **Menu placement is derived from the opener's compiled rect by ONE shared placer in
   `ui/src/popover.rs`, extended in place for every caller.** No player-local placer. A package cannot hint
   the side: in 1.0 the only anchor is `bottom` (D13), so a hint carries no information the room test does
-  not already have, and a derived placement keeps every menu legal by construction. 1.1's top anchor can
+  not already have, and a derived placement keeps every menu legal by construction. a future top anchor can
   add a hint if the room test then needs one. Section "Menus and other HUD popovers".
 - D10. **App-owned text never elides; server text may.** A text cell bound to an app label or an
   app-formatted value hugs its measured width (it takes no `w` and no `max_lines`), lint measures it in
@@ -393,7 +395,7 @@ Other subsystems the plan touches
   `RESUME_FILL`, because a hue the token set lacks must not borrow a role that has another job.
 - D13. **Placement is bottom-anchored in 1.0.** `layout.anchor` accepts only `"bottom"`. A top HUD needs a
   second caption keep-out that pushes top-positioned cues DOWN, a media-layer change to every F28 reader;
-  format 1.1 can add it. Top DECOR with bottom controls is legal.
+  a later HUD format can add it. Top DECOR with bottom controls is legal.
 - D14. **Storage is per install and never shared between flavours**, for the session file's reason (F39):
   a debug build's unreviewed sideload must never reach stable.
 - D15. **The HUD choice is a `Profile` setting** with an install-wide fallback key (F32). A missing or
@@ -461,7 +463,7 @@ logical resource ids. Icon and face roles validate their resources as the existi
 Identity and resource inventory have one owner in the manifest. Strict parsing rejects unknown and
 duplicate keys in both documents, using the shared duplicate-preserving JSON reader. The schema URLs
 are `https://plxnative.com/hud/schema/manifest/1.0.json` and
-`https://plxnative.com/hud/schema/hud/1.0.json`. Each optional `$schema` must agree with its document.
+`https://plxnative.com/hud/schema/hud/1.0.json` or `https://plxnative.com/hud/schema/hud/1.1.json`. Each optional `$schema` must agree with its document.
 
 The initial archive profile is STORE-only. Entries and central records are in ascending ASCII path order.
 ZIP flags, compression, disk numbers, comments, extras and internal attributes are zero. Version-needed
@@ -539,7 +541,7 @@ also legal on a `vstack` cell and on a control item), and exactly one of:
   row that keeps no chip take no room and no gap, as the Info card's own stack does, and the group never leaves
   its worst-case rect. A `vstack` that holds the title pair, a control or a nested cell stays static;
 - `playbar` {`w`, `fill`, `track`, `thickness`, `knob` (`tick` classic, `always`), `clocks` (`follow_head`
-  classic, `ends`), `clock_size`, `mark` (`after_elapsed`, `busy_only`: the paused glyph may go when a
+  classic, `ends`), `clock_size`, optional `end_time_width`, `mark` (`after_elapsed`, `busy_only`: the paused glyph may go when a
   `toggle_play` control is placed; the busy spinner never goes), `grab` {`above`, `below`} (px past the track's top and
   bottom edges, default 72 and 80: classic's grab band `(SB_X, SCR_H - 270, sb_w, 160)` around the track at
   `SB_Y = SCR_H - 198`, 8 tall, `player_hud.rs:474-475`, `:1405-1407`; registered as the lowest stop, #162)}: exactly one,
@@ -548,7 +550,15 @@ also legal on a `vstack` cell and on a control item), and exactly one of:
   `CLOCK_LINE` (1.25, a ratio so a measurer cannot move a band), or `thickness` if that is taller, so no band under
   the bar lands on the clocks. The compile also emits the two clocks as rects on the line (the widest string the app
   can print, `H:MM:SS`, in the weight each is drawn in; under `follow_head` the elapsed clock travels the track, so
-  its rect is the track's width), which I4 reads as decor and I10 judges as app text. The knob and mark overhang the
+  its rect is the track's width), which I4 reads as decor and I10 judges as app text.
+  In HUD format 1.1, set `end_time_width` to reserve a right-aligned lane in px (1–1920, capped at the track width) for the remaining
+  clock, a separator dot and the localized finish time. Classic declares 320 px. The same field enables the
+  feature in installed packages: it is the package's declaration of support (`Compiled::declares_end_time`), so the
+  *Estimated end time* switch on the Player HUD settings page is listed only while the HUD in use declares it
+  (a HUD format 1.0 package cannot, `E0107`, and a 1.1 package may omit it), and the app projects no estimate for a
+  HUD that does not. I4 includes the lane in its decor census and I10 checks the combined run in
+  both hour cycles. The renderer uses the plain remaining clock if the estimate is absent, the field is omitted
+  or the run would crowd the elapsed clock. The knob and mark overhang the
   track;
 - `segment` {`id`, `gap`, `items`}: one `HStack` of controls (below);
 - `strip` {`bind`: `chapters`, `w`, `card_w`, `card_h`, `gap`, `radius`, `focus`: `"ring"`, `label_align` (`centre`,
@@ -578,7 +588,9 @@ through `TransportButton`, `pill` through `TabPill` labelled by the command's ap
 through `widgets::Button`), `size` (px), `rest` (`film` today's, `bare` glyph only, `solid` the focused
 colours at rest; `custom` is refused because format 1.0 defines no keys for its inks), `focus` (`accent` today's, `ring`: rest face plus the white
 focus ring), `face` (optional: the command's classic glyph when absent). A pair that draws one face twice (`solid` with `accent`) is rejected. Faces: an asset
-or `builtin:<icon>`; `toggle_play` takes `{playing, paused}`; `previous` takes `{default, restart}`;
+or `builtin:<icon>`; `toggle_play` takes `{playing, paused}`; `previous` takes `{default, restart}` (the `restart` face is still required and
+parsed, because published packages carry it and format 1.0 is frozen, but the app never selects it any more:
+Previous is always the previous episode and wears `default`);
 `toggle_stats` takes `{on, off}`; a `seek` with `by: "setting"` takes `{by_interval: {...}, default}`. A
 glyph's visual size is its viewBox padding over the shared `DISC_ICON_RATIO` (`ui/src/widgets.rs:1394`).
 `TransportButton` gains the `bare` rest face and the `ring` focus face in place.
@@ -619,7 +631,7 @@ Each maps to an action the app already performs; the performer is shared with th
 |---|---|---|---|---|
 | `toggle_play` | - | the `Key::Play|Pause|PlayPause` arm, extracted to one function, PlayPause path incl. `take_target` (F13) | always | keys, OK on picture |
 | `seek` | `by`: a nonzero integer of seconds, whose sign is the direction (then `dir` is forbidden), or `"setting"`, which requires `dir`: `back` or `forward` | `commit_jump`'s `SeekBurst` and `CommitSeek`, extracted with the signed step in ns as a parameter (today `signed_step(forward)` = `scrub_step_ns() x +-1`, `seek_jump.rs:16-18`; a literal `by` passes `by x 10^9`) and a keep-HUD flag (today `self.hud.hide(false)`, `:43`): a control press keeps the HUD up and extends its linger, the hidden-HUD tap still hides it (F14) | duration known (`seek_jump.rs:39-40`) | Left/Right, FF/REW, hold |
-| `previous`, `next` | - | `queue_transport::step` (F15) | `Controls::for_item` (`player_hud.rs:749-752`): the pair is absent for a non-episode or with neither neighbour; Previous is enabled by `previous || restart` (a restart target counts), Next by `next` (F6) | none |
+| `previous`, `next` | - | `queue_transport::step` (F15) | `Controls::for_item` (`player_hud.rs:749-752`): the pair is absent for a non-episode or with neither neighbour; Previous is enabled by `previous` alone (the playing row has a predecessor in the play queue; there is no restart target any more), Next by `next` (F6) | none |
 | `open_tracks` | `tab`: `subtitles`, `audio` | `OverlayKind::Tracks { tab: 1 | 0 }` (F15) | always (F6) | none |
 | `open_more` | `page`: `root` (default), `quality`, `speed` | `OverlayKind::More { page }`; `quality` is what was `More { quality: true }` (F18); `speed` is the address PR3 added by turning that bool into `page: Option<MorePage>` (F16) | always | none |
 | `toggle_section` | `section`: `chapters`, `info` | opens or closes the section (D6) | chapters: the playing item has chapters (`chapters_panel::has_chapters`) | none |
@@ -693,7 +705,8 @@ every item that CAN be absent collapsed (a Previous/Next member, an item with `w
 for classic that is `disc_row()` over `disc_items(false)`, the three always-present discs, `ctrl_row_w` = 3 x 64 + 2 x 20 =
 232 (`player_hud.rs:672-683`, `:717-719`). A centred or multi-segment replace has no floor: the primary takes its own
 label's width (`classic::stand_in_w` with no floor). The Skip pill is `classic::stand_in_w` of ITS OWN label
-(`standin` in `hud_format/compile.rs`), under the same floor rule, at the same aligned edge. Logic stays app-owned: when it appears, the countdown's
+(`standin` in `hud_format/compile.rs`), under the same floor rule, at the same aligned edge; an Automatic face is the
+Up Next arrangement of two buttons (the filled Skip at that width, the Watch button its own label's beside it). Logic stays app-owned: when it appears, the countdown's
 timing and cancel rules (`up_next.rs:105-125`, production sites `src/app/run.rs:2001`, `:2026-2045`,
 `src/app/playback.rs:939`), what the buttons do.
 
@@ -735,9 +748,10 @@ Skip. Edges are app-owned: OK or a click on a `toggle_section` control; BACK (cl
 then hides the HUD; over a Skip or Up Next offer it first retires that segment in the metadata store's
 `skipped` set and returns the slot to Discs); for modal sections, a direction that leaves the section's groups
 (closes it); the slot changes involuntarily with the marker (`slot_for`, F19), and every stand-in slot returns
-to Discs when its marker ends or BACK dismisses it. A standalone automatic Watch button dismisses
-its single-button offer; Watch Credits in the Up Next pair cancels the countdown and leaves
-Next Episode available. Automatic credits retains that pair and its geometry, using five presented
+to Discs when its marker ends or BACK dismisses it. Every Automatic skip prompt (an intro, a mid-item credits marker, and a final marker with no
+queued successor, or with Next episode set to After credits or Off) is a Watch + Skip pair laid out as
+Up Next's two buttons are (`up_next::layout_at`; Watch is item 0 and cancels, the filled Skip is item 1,
+the initial focus and the countdown's target); pressing Watch there dismisses the offer. Watch Credits in the Up Next pair cancels the countdown and leaves Next Episode available. Automatic credits retains that pair and its geometry, using five presented
 seconds on the primary button instead of the legacy ten-second clock.
 
 - R1. `open_more` is placed, at or above `MIN_CONTROL_SIZE`, in the root state (compact, Discs) under EVERY valuation
@@ -782,10 +796,9 @@ seconds on the primary button instead of the legacy ten-second clock.
 3. `version` is the plugin's semver and orders updates of one id.
 4. Optional `app.min` and `app.max` constrain the app release.
 
-Both format axes start at 1.0. The initial SDK/report/catalog protocols are integer 1 and examples
-start at 1.0.0. This pre-release baseline replaces the draft inline package contract. Development
-installations may reset their HUD state and reinstall the new artifacts. The runtime supports the
-bundle contract alone.
+Package format remains at 1.0. The runtime supports HUD formats 1.0 and 1.1. HUD 1.1 adds
+`playbar.end_time_width` and Classic declares 1.1. The published HUD 1.0 schema stays frozen.
+The SDK/report/catalog protocols remain at integer 1, and plugin semver is independent.
 
 `--hud-info` and the SDK manifest advertise exact `supported_formats` pairs, distinct manifest/HUD
 schema ids and per-profile `limits`. Registry selection verifies these against the actual pinned binary
@@ -1192,7 +1205,7 @@ with computed values; PR17's compile reports the chapters plus info block's top 
 | 7-8 | "5:27" left, "-52:33" right | `playbar.clocks: ends`; `fmt::clock`, minus from `fmt_time` (F27) | `draw_clock` |
 | 9 | Speech bubble | `open_tracks {tab: subtitles}`, `rest: bare`; the menu reaches Audio (F15) | `TransportButton` |
 | 10 | Arrow "10" | `seek {by: -10}`, static face | `TransportButton`; the extracted jump |
-| 11 | Previous | `previous`, `{default, restart}` faces | `TransportButton` |
+| 11 | Previous | `previous`, `{default, restart}` faces (`restart` is accepted and never selected) | `TransportButton` |
 | 12 | Large white disc | `toggle_play`, size 64, `rest: solid`, `focus: ring`, `{playing, paused}` | `TransportButton`; the extracted toggle |
 | 13 | Next | `next` | `TransportButton` |
 | 14 | Arrow "30" | `seek {by: 30}`, static face | `TransportButton` |
@@ -1219,7 +1232,7 @@ spinner (`mark: busy_only`), a disabled Previous (app-owned), the failure read-o
 the track menu (from the bubble) and the More menu (from the gear, opening to the Start side when the
 expanded block leaves no vertical room). Not reproduced: the mock's sub-ladder type sizes (deliberate); its
 "56 min" and "00:00" spellings (the app's one format, F27); an animated equalizer (static in 1.0, motion is
-app-owned); a top placement (1.1, D13).
+app-owned); a top placement (a later minor, D13).
 
 ### Classic, element by element
 
@@ -1256,7 +1269,7 @@ whole file):
       ] } }
     ] },
     { "id": "bar", "when": "!sections", "chrome": "steady", "gap_before": 26, "cells": [
-      { "align": "start", "playbar": { "w": "fill", "fill": "TEXT_PRIMARY", "track": "RAIL_TRACK", "thickness": 8, "clock_size": "CAPTION" } }
+      { "align": "start", "playbar": { "w": "fill", "fill": "TEXT_PRIMARY", "track": "RAIL_TRACK", "thickness": 8, "clock_size": "CAPTION", "end_time_width": 320 } }
     ] },
     { "id": "tabs", "gap_before": 7, "cells": [
       { "align": "start", "segment": { "id": "tabs", "gap": "SM", "items": [
@@ -1287,7 +1300,7 @@ at 768 and the title at 802.
 | Row | five 64 discs at `CTRL_Y` 792, ending at `CTRL_RIGHT` = `SAFE`'s right (`:476-491`) | end-aligned segment, `x_inset: 0` |
 | Scrim | fixed `SCRIM_H` 470 in every state, before `if transport` (`:941`, `:1678-1686`, `:2074`) | `scrim {cover: fixed, height: 470}` |
 | Chrome fade | title, row and tabs on `pc = p.alpha(chrome_a)`; bar, clocks and preview on `p` (`:2075-2081`, `:2146-2160`) | bands `top` and `tabs` default `fades`; `bar` `steady` |
-| Playbar | `SB_Y` 882, 8 tall (`:474-475`); primary fill, tick knob, clocks follow the head, state glyph (F37) | `playbar` with the four keys the table requires (`fill` `TEXT_PRIMARY`, `track` `RAIL_TRACK`, `thickness` 8, `clock_size` `CAPTION`, `draw_playbar`) and the rest at its defaults, which are classic's |
+| Playbar | `SB_Y` 882, 8 tall (`:474-475`); primary fill, tick knob, clocks follow the head, state glyph (F37) | `playbar` with the four keys the table requires (`fill` `TEXT_PRIMARY`, `track` `RAIL_TRACK`, `thickness` 8, `clock_size` `CAPTION`, `draw_playbar`) and `end_time_width: 320`, with the rest at their defaults |
 | Grab band | `scrub_hit_rect` = `(SB_X, SCR_H - 270, sb_w, 160)` (`:1405-1407`) | `playbar.grab` defaults 72 / 80 |
 | Tabs | Info, then Chapters only with chapters (`tab_labels`, `:1430-1435`); `SM` apart from `SB_X` (`:1457-1459`); selected while open (`hud_tab_state`, `:1587-1590`); drawn in every state, outside `if transport` (`:2160`); `BTN_S` tall at `tab_y()` 949 (`:1440-1442`, `:2174-2176`) | band `tabs` with no `when`, `gap_before: 7` (`tab_y()` 949 less the bar cell's foot, 882 + 60: the cell holds the clocks' line); `toggle_section` pills of `size: 64`, Chapters `when: chapters.present`; the selected-face rule |
 | Up Next | the app-drawn column (`up_next.rs:194-200`, `:226-266`, `:290-330`), the primary floored at `ctrl_row_w` (`player_hud.rs:717-719`) | `up_next {replaces: [row], band: top, align: end, still, caption, countdown: fill_sweep}`; inside app-owned |
@@ -1893,11 +1906,11 @@ in `hudpacks/address.rs`, the store's Fetch / Fetched / InstallOffer / DeclineOf
 row and the offer prompt. Verified on the host (parser, store, runner and page tests; the bounded door against a local
 server). STILL OWED on the set: a real GitHub release fetch and the CA question.
 
-PR12. Registry repository (shipped): [plxnative-huds](https://github.com/GLinnik21/plxnative-huds) with CI
+PR12. Registry repository (shipped): [plxnative-huds](https://github.com/plxnative/plxnative-huds) with CI
 (lint, xvfb previews, diff), the publisher (index, original-byte packs, revoked list),
 [Pages](https://huds.plxnative.com/), and the authoring kit (`AGENTS.md`, `llms.txt`, `AUTHORING.md`,
 examples, schema mirror and schema/parser agreement test); this repo publishes the `plxnative-sim` artifact.
-[Seeded PR #1](https://github.com/GLinnik21/plxnative-huds/pull/1) passed 70 Reference and 32 Minimal native Linux
+[Seeded PR #1](https://github.com/plxnative/plxnative-huds/pull/1) passed 70 Reference and 32 Minimal native Linux
 states, all eleven languages, and the two-iteration authoring exercise. Public readback matched all 87 catalog files.
 Immutable per-release pins select the oldest compatible app. App-release dispatch and the weekly re-lint backstop
 record `unfit` and `app.max` and deduplicate author issues; incompatible executable protocol fixtures exercise failure
@@ -1905,7 +1918,7 @@ and recovery. A live app probe triggered the registry receiver and its green, la
 actual stable app release carrying the SDK remains a future observation; the current bootstrap is a source-bound
 development utility. The real TV/Linux corpus measures 12,276 widths and sets per-rung registry-only skew margins
 of 4–9 px, leaving TV admission unchanged. The registry's
-[acceptance record](https://github.com/GLinnik21/plxnative-huds/blob/main/IMPLEMENTATION.md) links the exact runs,
+[acceptance record](https://github.com/plxnative/plxnative-huds/blob/main/IMPLEMENTATION.md) links the exact runs,
 source pins and verification evidence.
 
 PR13. Gallery (shipped, behind a flavour gate until PR14): a Settings FormTable page with preview art through the image cache, the refresh policy, updates by
@@ -1981,7 +1994,7 @@ the curl path and got `fw-compat-reviewer`; PR14 took a pure-Rust crate and need
 - Replacing any app-owned surface (I1). Commands that write the Plex record, change a setting, start a network
   request of their own, exit the app or delete. Direct quality and speed buttons (reached through `open_more`).
 - Press-and-hold commands (FF/REW-style held controls) and a hold behaviour per control: hold stays app-owned.
-- Top-anchored interactive layouts (1.1). A designable Skip pill (a later minor).
+- Top-anchored interactive layouts (a later minor). A designable Skip pill (a later minor).
 - A relay or backend that stores uploads, a LAN listener on the TV, USB until verified. Ratings, comments or payments
   in the registry; telemetry of the HUD id.
 

@@ -1,8 +1,9 @@
-//! The notification store against a fake connector: when it connects, when it does not, what a
-//! reconnect owes, and that nothing here ever opens a real stream.
+//! Scripted addressed admission drives the actual pure cursor phases; no stream is opened.
 
 use super::*;
-use crate::stores::Stores;
+use plx_machine::job::Port;
+use std::sync::{Arc, Mutex};
+use crate::stores::notify_job::NotifyTerminal;
 use plx_plex::plex::notify::PlayState;
 use plx_plex::plex::{self, GrantEvidence};
 
@@ -28,15 +29,35 @@ impl Fake {
     }
 }
 
-impl Connector for Fake {
-    fn connect(&mut self, sid: ServerId, link: Link) -> bool {
-        let mut log = self.lock();
-        if log.refuse {
-            return false;
+impl Fake {
+    fn admit_jobs(&self, store: &mut NotifyStore) {
+        for job in store.take_jobs() {
+            let StoreJob::NotifyStream(job, port) = job else { panic!("not Notify") };
+            let mut log = self.lock();
+            if log.refuse { port.refused(job.addr); }
+            else {
+                log.links.push((job.req.sid, port.link.clone()));
+                port.admit(job.addr, true);
+            }
         }
-        log.links.push((sid, link));
-        true
     }
+}
+fn capture(gate: fn(&plex::Client) -> bool) -> ClientKeys {
+    let mut keys = ClientKeys::default();
+    keys.refill_roster_with_stream_policy(plex::current_server(), plex::server_roster_gen(),
+        plex::server_facts_gen(), plex::server_ids(), plex::client_for, plex::server_facts,
+        plex::server_probe_result, |c| c.has_token() && !c.data_io_disabled() && gate(c));
+    keys
+}
+fn drive(store: &mut NotifyStore, fake: &Fake, keys: &ClientKeys, armed: bool) -> NotifyOut {
+    let input = NotifyInput { keys, armed };
+    let mut pass = store.begin(&input);
+    while let Some(mut turn) = store.prepare_next(&mut pass, &input) {
+        fake.admit_jobs(store);
+        store.settle_admission(&mut pass, &mut turn);
+        store.finish_turn(&mut pass, turn, &input);
+    }
+    store.end(pass)
 }
 
 /// The registry is process-global: hold its lock for the test and empty it on the way out.
@@ -45,6 +66,7 @@ struct Rig {
     store: NotifyStore,
     fake: Fake,
     sid: ServerId,
+    gate: fn(&plex::Client) -> bool,
 }
 
 impl Drop for Rig {
@@ -62,8 +84,8 @@ fn rig_with(token: &str, evidence: Option<GrantEvidence>) -> Rig {
         plex::describe_server(sid, "Server A", "", evidence);
     }
     let fake = Fake::default();
-    let store = NotifyStore::with_connector_for_test(Box::new(fake.clone()));
-    Rig { _lock: lock, store, fake, sid }
+    let store = NotifyStore::default();
+    Rig { _lock: lock, store, fake, sid, gate: open_gate }
 }
 
 fn rig() -> Rig {
@@ -72,7 +94,8 @@ fn rig() -> Rig {
 
 impl Rig {
     fn pump(&mut self) -> NotifyOut {
-        self.store.pump(false)
+        let keys = capture(self.gate);
+        drive(&mut self.store, &self.fake, &keys, false)
     }
     /// Pump `n` frames, discarding the output.
     fn pump_n(&mut self, n: u64) {
@@ -297,10 +320,10 @@ fn open_gate(_: &plex::Client) -> bool {
 #[test]
 fn a_refused_origin_is_not_dialled_and_reconnects_when_the_grant_returns() {
     let mut r = rig();
-    r.store.set_gate_for_test(refuse_gate);
+    r.gate = refuse_gate;
     r.pump_n(70 * FRAMES_PER_S);
     assert_eq!(r.fake.connects(), 0, "a plaintext origin with no live grant is not dialled");
-    r.store.set_gate_for_test(open_gate);
+    r.gate = open_gate;
     r.pump_n(1);
     assert_eq!(r.fake.connects(), 1, "discovery re-minting the grant brings the feed back");
 }
@@ -311,10 +334,10 @@ fn a_gate_refusal_mid_stream_cancels_and_recovers() {
     r.pump_n(1);
     r.fake.link(0).push(Notification::Ping);
     r.pump_n(1);
-    r.store.set_gate_for_test(refuse_gate);
+    r.gate = refuse_gate;
     r.pump_n(1);
     assert!(r.fake.link(0).is_cancelled());
-    r.store.set_gate_for_test(open_gate);
+    r.gate = open_gate;
     r.pump_n(1);
     assert_eq!(r.fake.connects(), 2);
     r.fake.link(1).push(Notification::Ping);
@@ -413,20 +436,15 @@ fn a_5xx_is_retried_with_backoff() {
 
 #[test]
 fn off_when_gate_armed() {
-    let r = rig();
-    let mut stores = Stores::default();
-    stores.notify = NotifyStore::with_connector_for_test(Box::new(r.fake.clone()));
-    stores.landgate.arm_recording();
-    let _ = stores.notify_pump();
-    let _ = stores.notify_pump();
+    let mut r = rig();
+    let keys = capture(open_gate);
+    drive(&mut r.store, &r.fake, &keys, true);
+    drive(&mut r.store, &r.fake, &keys, true);
     assert_eq!(r.fake.connects(), 0, "a recording owns the run: no live stream");
-    stores.landgate.disarm();
-    let _ = stores.notify_pump();
+    r.pump();
     assert_eq!(r.fake.connects(), 1);
-    stores.landgate.arm_replay(vec![vec![(1, 1)]]);
-    let _ = stores.notify_pump();
+    drive(&mut r.store, &r.fake, &keys, true);
     assert!(r.fake.link(0).is_cancelled(), "arming mid-stream cancels the connection");
-    stores.landgate.disarm();
 }
 
 #[test]
@@ -457,9 +475,10 @@ fn enabled_const_connects_to_an_owned_server() {
     let sid = plex::register_for_test("machine-a", "127.0.0.1", 9, "tok", "cid-own");
     plex::describe_server(sid, "Server A", "", GrantEvidence::ours());
     let fake = Fake::default();
-    let mut store = NotifyStore::new(NOTIFY_ENABLED, Box::new(fake.clone()));
+    let mut store = NotifyStore::new(NOTIFY_ENABLED);
     for _ in 0..10 {
-        let _ = store.pump(false);
+        let keys = capture(open_gate);
+        let _ = drive(&mut store, &fake, &keys, false);
     }
     assert_eq!(fake.connects(), 1);
     plex::reset_servers_for_test();
@@ -502,7 +521,7 @@ fn drop_cancels() {
     r.pump_n(1);
     let link = r.fake.link(0);
     assert!(!link.is_cancelled());
-    let old = std::mem::replace(&mut r.store, NotifyStore::new(true, Box::new(Fake::default())));
+    let old = std::mem::replace(&mut r.store, NotifyStore::new(true));
     drop(old);
     assert!(link.is_cancelled(), "dropping the store cancels every worker");
 }
@@ -583,4 +602,238 @@ fn a_worker_ending_after_a_cancel_is_never_read() {
     r.store.resume();
     r.pump_n(1);
     assert_eq!(r.fake.connects(), 2, "the cancelled connection's end cannot park its successor");
+}
+
+#[test]
+fn initial_refusal_is_same_frame_and_exactly_one_backoff() {
+    let mut r = rig();
+    r.fake.lock().refuse = true;
+    r.pump();
+    let frame = r.store.frame;
+    let jitter = frame.wrapping_add(u64::from(r.sid.raw()) * 7919) % 30;
+    assert_eq!(r.store.conns[0].attempts, 1);
+    assert_eq!(r.store.conns[0].state, State::Backoff { until: frame + 120 + jitter });
+    assert!(r.store.conns[0].link.is_none());
+    assert!(!r.store.has_jobs());
+    r.fake.lock().refuse = false;
+    r.pump_n(119 + jitter);
+    assert_eq!(r.fake.connects(), 0);
+    r.pump();
+    assert_eq!(r.fake.connects(), 1);
+}
+
+#[test]
+fn terminal_and_admission_latches_survive_take_and_wrong_addresses() {
+    let mut r = rig();
+    r.pump();
+    let link = r.fake.link(0);
+    let port = NotifyStreamPort::new(link.clone());
+    let bad = Addr { req: RequestId(link.addr.req.0 + 1), ..link.addr };
+    port.post(bad, Notification::Ping);
+    port.done(bad, NotifyTerminal::End(NotifyEnd::Unsupported));
+    port.refused(bad);
+    assert!(link.lock().events.is_empty());
+    assert!(link.lock().end.is_none());
+    // Accepted receipt was already taken by settlement; it cannot be overwritten.
+    port.refused(link.addr);
+    assert!(link.take_admission().is_none());
+    port.post(link.addr, Notification::Ping);
+    port.done(link.addr, NotifyTerminal::End(NotifyEnd::Closed));
+    assert_eq!(link.lock().events.len(), 1);
+    assert!(link.lock().end.take().is_some());
+    port.done(link.addr, NotifyTerminal::NotStarted);
+    port.post(link.addr, Notification::Ping);
+    assert!(link.lock().end.is_none());
+    assert_eq!(link.lock().events.len(), 1);
+}
+
+#[test]
+fn accepted_held_release_failure_uses_observation_frame_and_preserves_attempts() {
+    let mut r = rig();
+    r.fake.lock().refuse = true;
+    r.pump();
+    r.store.resume(); // existing deliberate forgiveness; seed a nonzero escalation explicitly.
+    r.store.conns[0].attempts = 3;
+    r.fake.lock().refuse = false;
+    r.pump();
+    let link = r.fake.link(0);
+    assert_eq!(r.store.conns[0].attempts, 3);
+    r.pump_n(9);
+    let port = NotifyStreamPort::new(link.clone());
+    port.done(link.addr, NotifyTerminal::NotStarted);
+    r.pump();
+    let frame = r.store.frame;
+    let delay = 16 * FRAMES_PER_S;
+    let jitter = frame.wrapping_add(u64::from(r.sid.raw()) * 7919) % (delay / 4);
+    assert_eq!(r.store.conns[0].attempts, 4);
+    assert_eq!(r.store.conns[0].state, State::Backoff { until: frame + delay + jitter });
+    port.done(link.addr, NotifyTerminal::NotStarted);
+    r.pump();
+    assert_eq!(r.store.conns[0].attempts, 4);
+}
+
+#[test]
+fn armed_and_disabled_repair_connecting_and_live_without_losing_retry_or_gap_debt() {
+    for live in [false, true] {
+        for disable in [false, true] {
+            let mut r = rig();
+            r.pump();
+            let old = r.fake.link(0);
+            if live { old.push(Notification::Ping); r.pump(); }
+            r.store.conns[0].attempts = 2;
+            old.push(play("stale", PlayState::Playing));
+            if disable { r.store.enabled = false; }
+            let keys = capture(open_gate);
+            let out = drive(&mut r.store, &r.fake, &keys, !disable);
+            assert_eq!(out, NotifyOut::default());
+            assert!(old.is_cancelled());
+            assert!(r.store.conns[0].link.is_none());
+            assert_eq!(r.store.conns[0].state, State::Idle);
+            assert_eq!(r.store.conns[0].gap_owed, live);
+            assert_eq!(r.store.conns[0].attempts, 2);
+            r.store.enabled = true;
+            r.pump();
+            assert_eq!(r.fake.connects(), 2);
+            r.fake.link(1).push(Notification::Ping);
+            assert_eq!(r.pump().resynced.len(), usize::from(live));
+        }
+    }
+}
+
+#[test]
+fn cursor_drains_a_before_launching_b_and_never_scoops_a_twice() {
+    let mut r = rig();
+    r.pump();
+    let a = r.fake.link(0);
+    a.push(play("early", PlayState::Playing));
+    let b = plex::register_for_test("machine-b", "127.0.0.2", 9, "tok", "cid");
+    plex::describe_server(b, "B", "", GrantEvidence::ours());
+    let keys = capture(open_gate);
+    let input = NotifyInput { keys: &keys, armed: false };
+    let mut pass = r.store.begin(&input);
+    let mut turn = r.store.prepare_next(&mut pass, &input).unwrap();
+    assert!(!r.store.has_jobs());
+    r.store.settle_admission(&mut pass, &mut turn);
+    r.store.finish_turn(&mut pass, turn, &input);
+    assert_eq!(pass.out.plays[0].sid, r.sid);
+    let mut turn = r.store.prepare_next(&mut pass, &input).unwrap();
+    a.push(play("late", PlayState::Paused));
+    let StoreJob::NotifyStream(job, port) = r.store.take_jobs().pop().unwrap() else { panic!() };
+    port.admit(job.addr, true);
+    port.post(job.addr, play("b", PlayState::Paused));
+    port.done(job.addr, NotifyTerminal::End(NotifyEnd::Closed));
+    r.store.settle_admission(&mut pass, &mut turn);
+    r.store.finish_turn(&mut pass, turn, &input);
+    assert!(r.store.prepare_next(&mut pass, &input).is_none());
+    let out = r.store.end(pass);
+    assert_eq!(out.plays.iter().map(|p| p.sid).collect::<Vec<_>>(), [r.sid, b]);
+    assert_eq!(out.plays[0].sessions.len(), 1);
+    assert_eq!(r.pump().plays[0].sessions[0].rating_key.as_deref(), Some("late"));
+}
+
+#[test]
+fn cancelled_reset_port_cannot_mutate_replacement_and_request_ids_never_recycle() {
+    let mut r = rig();
+    r.pump();
+    let old = r.fake.link(0);
+    r.store.reset();
+    r.pump();
+    let new = r.fake.link(1);
+    assert_ne!(old.addr, new.addr);
+    let port = NotifyStreamPort::new(old.clone());
+    port.done(old.addr, NotifyTerminal::NotStarted);
+    port.post(old.addr, play("orphan", PlayState::Stopped));
+    port.refused(old.addr);
+    assert_eq!(r.pump(), NotifyOut::default());
+    assert_eq!(r.store.conns[0].attempts, 0);
+    assert_eq!(r.store.conns[0].state, State::Connecting);
+    assert!(old.lock().end.take().is_some());
+    port.done(old.addr, NotifyTerminal::NotStarted);
+    assert!(old.lock().end.is_none());
+}
+
+#[test]
+fn concurrent_terminal_cancel_and_post_remain_terminal_once() {
+    let mut r = rig(); r.pump();
+    let link = r.fake.link(0);
+    let a = link.clone(); let b = link.clone();
+    let one = std::thread::spawn(move || a.finish(NotifyEnd::Closed));
+    let two = std::thread::spawn(move || { b.push(Notification::Ping); b.cancel(); });
+    one.join().unwrap(); two.join().unwrap();
+    assert!(link.lock().end.take().is_some());
+    let before = link.lock().events.len();
+    link.finish(NotifyEnd::Transport); link.push(Notification::Ping);
+    assert!(link.lock().end.is_none());
+    assert_eq!(link.lock().events.len(), before);
+}
+
+#[test]
+fn stand_down_preserves_backoff_deadlines_and_both_parks() {
+    for state in [State::Backoff { until: 20 }, State::Parked(Park::Token), State::Parked(Park::Session)] {
+        let mut r = rig(); r.pump();
+        r.store.conns[0].state = state;
+        r.store.conns[0].attempts = 4;
+        r.store.conns[0].live_since = 3;
+        r.store.conns[0].resynced_unstable = true;
+        let keys = capture(open_gate);
+        drive(&mut r.store, &r.fake, &keys, true);
+        assert_eq!(r.store.conns[0].state, state);
+        assert_eq!(r.store.conns[0].attempts, 4);
+        assert_eq!(r.store.conns[0].live_since, 3);
+        assert!(r.store.conns[0].resynced_unstable);
+        r.pump();
+        assert_eq!(r.fake.connects(), 1);
+        if matches!(state, State::Backoff { .. }) {
+            r.pump_n(16);
+            assert_eq!(r.fake.connects(), 1);
+            r.pump(); // frame 20, not frame 21 or an extra settlement frame.
+            assert_eq!(r.fake.connects(), 2);
+            assert_eq!(r.store.conns[0].attempts, 4);
+        }
+    }
+}
+
+#[test]
+fn stable_deferred_gap_is_paid_once_before_terminal_in_same_batch() {
+    let mut r = rig(); r.pump();
+    let link = r.fake.link(0);
+    link.push(Notification::Ping); r.pump();
+    let live_since = r.store.conns[0].live_since;
+    r.store.conns[0].attempts = 5;
+    r.store.conns[0].gap_owed = true;
+    r.store.conns[0].resynced_unstable = true;
+    r.store.frame = live_since + STABLE_FRAMES - 1;
+    link.push(play("stable", PlayState::Playing));
+    link.finish(NotifyEnd::Closed);
+    let out = r.pump();
+    assert_eq!(out.resynced, [(r.sid, 1)]);
+    assert_eq!(out.plays.len(), 1);
+    assert_eq!(r.store.conns[0].attempts, 1, "stability resets before terminal backoff");
+    assert!(r.store.conns[0].gap_owed, "terminal after stability owes the next gap");
+}
+
+#[test]
+fn release_input_fence_discards_mail_and_classification_is_direct_notify_only() {
+    let mut r = rig();
+    let keys = capture(open_gate);
+    let input = NotifyInput { keys: &keys, armed: false };
+    let mut pass = r.store.begin(&input);
+    let mut turn = r.store.prepare_next(&mut pass, &input).unwrap();
+    let job = r.store.take_jobs().pop().unwrap();
+    assert_eq!(job.store(), StoreId::Notify);
+    assert_eq!(job.admission(), super::super::Admission::Direct);
+    let StoreJob::NotifyStream(job, port) = job else { panic!() };
+    assert_eq!(job.addr.to, MachineId::Store(StoreId::Notify.ord()));
+    assert_eq!(job.req.key, keys.key(r.sid).unwrap());
+    port.admit(job.addr, true);
+    port.post(job.addr, play("stale", PlayState::Playing));
+    r.store.settle_admission(&mut pass, &mut turn);
+    r.client().set_token("changed-during-runner");
+    let changed = capture(open_gate);
+    r.store.finish_turn(&mut pass, turn, &NotifyInput { keys: &changed, armed: false });
+    assert_eq!(r.store.end(pass), NotifyOut::default());
+    assert!(port.is_cancelled());
+    assert_eq!(r.store.conns[0].state, State::Idle);
+    r.pump();
+    assert_eq!(r.store.conns[0].attempts, 0);
 }

@@ -2,7 +2,7 @@
 // "focus never switches the library" rule. Included from `navigation_tests` for its `Fixture`.
 use super::*;
 use super::header::pack_names;
-use plx_machine::machine::{InputEvent, InputKind, Source};
+use plx_machine::machine::{InputEvent, InputKind, Measure, Source};
 
 fn key_press(key: Key) -> ScreenEvent<TestHost> {
     ScreenEvent::Input(InputEvent {
@@ -46,6 +46,7 @@ fn a_non_favorite_gets_one_selected_temporary_pill_after_the_favorites() {
     fixture.publish(0, 36);
     let mut page = fixture.screen();
     let engine = FocusEngine::new();
+    let more = page.header_rect(MORE, At::Drawn).unwrap();
     let favorite_rects: Vec<_> = page.libraries.iter().filter(|(elem, _)| *elem != MORE)
         .map(|(elem, index)| (*index, page.header_rect(*elem, At::Drawn).unwrap())).collect();
     for current in [2, 3] {
@@ -59,12 +60,27 @@ fn a_non_favorite_gets_one_selected_temporary_pill_after_the_favorites() {
         }
         let items = &page.header.row().unwrap().page.spec().left;
         assert_eq!(items.iter().filter(|item| item.selected_plate).count(), 1);
-        assert!(items[2].selected_plate);
+        assert!(items[3].selected_plate);
+        assert_eq!(page.header_rect(MORE, At::Drawn), Some(more), "the menu anchor stays with the shortcuts");
         assert_eq!(page.layout.row_y(0, 0.0), layout::LIBRARY_GRID_TOP, "no extra identity row");
     }
     fixture.publish(1, 36);
     page.sync(&fixture.cx(&engine));
     assert_eq!(page.libraries.iter().filter(|(elem, _)| *elem != MORE).count(), 2);
+    assert_eq!(page.header_rect(MORE, At::Drawn), Some(more));
+}
+
+#[test]
+fn the_library_pill_shows_the_owner_only_if_the_full_credit_fits() {
+    let measure = plx_base::fontcov::advances::ShippedMeasure;
+    let title = "LDN Films";
+    let owner = "by a friend";
+    let full = toolbar::joined_name(title, owner);
+    let width = |s| measure.width_str(s, plx_ui::theme::size::BODY, false);
+    assert_eq!(header::fit_name(title, owner, width(&full), &measure), full);
+    assert_eq!(header::fit_name(title, owner, width("LDN Films b…"), &measure), title);
+    let short = header::fit_name(title, owner, width("LDN Fi…"), &measure);
+    assert!(short.ends_with('…') && title.starts_with(short.trim_end_matches('…')));
 }
 
 #[test]
@@ -84,7 +100,7 @@ fn long_favorite_names_leave_room_for_options_in_every_language() {
         let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Movie);
         page.sync(&cx);
         let row = page.header.row().unwrap();
-        assert_eq!(page.libraries.last().map(|(elem, _)| *elem), Some(MORE), "{}", language.tag());
+        assert_eq!(page.libraries[2].0, MORE, "{}", language.tag());
         let names: Vec<_> = row.page.spec().left.iter().filter(|item| item.glyph.is_none()).collect();
         assert!(!names.is_empty(), "{}: a frequent library remains directly reachable", language.tag());
         assert!(names.iter().all(|item| item.label.ends_with('…')), "{}", language.tag());
@@ -1068,6 +1084,59 @@ fn a_library_switch_keeps_the_rows_pill_and_travels_the_plate_to_the_picked_name
             assert!(frame > 1 || left > 1.0, "the plate is on its way on the first frame, not cut onto the name ({at} vs {})", plate.cx());
         }
     }
+}
+
+#[test]
+fn the_selection_arrives_on_a_new_visit_and_does_not_sweep_its_slot_on_return() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::new(3, 36, 0);
+    fixture.sections[2].row.pinned = false;
+    fixture.publish(0, 36);
+    let mut page = fixture.screen();
+    page.initial = false;
+    let first = page.libraries[0].0;
+    let second = page.libraries[1].0;
+    let mut engine = FocusEngine::new();
+    engine.set(OWNER, page.key(MORE), Some(LIBRARY_GROUP), By::Restore);
+    for frame in 1..=90 {
+        header_rrects_after_a_frame(&fixture, &mut page, &mut engine, frame * 16);
+    }
+    let more = page.header.row().unwrap().plate(MORE).unwrap();
+
+    fixture.step(&mut page, &mut engine, ScreenEvent::App(AppMsg::LibrarySelect(SectionAddress {
+        epoch: fixture.epoch, sid: plx_plex::plex::ServerId::UNSET, section: 3,
+    })));
+    let visit = page.header.row().unwrap().selected_stop().unwrap();
+    let visit_plate = page.header.row().unwrap().plate(visit).unwrap();
+    assert_eq!(at(&engine), visit);
+    let plate = |rects: &[Rect]| rects.iter().find(|r| (r.h - plx_ui::page_header::HEIGHT).abs() < 0.01).copied();
+    let frame = header_rrects_after_a_frame(&fixture, &mut page, &mut engine, 91 * 16);
+    assert_eq!(plate(&frame), Some(visit_plate), "the selection starts inside the inserted slot");
+    let focus = frame.iter().find(|r| r.h > plx_ui::page_header::HEIGHT + 1.0).unwrap();
+    assert!(more.cx() < focus.cx() && focus.cx() < visit_plate.cx(), "focus glides from the fixed menu to the visit");
+
+    for n in 92..=95 {
+        header_rrects_after_a_frame(&fixture, &mut page, &mut engine, n * 16);
+    }
+    fixture.publish(2, 36);
+    fixture.step(&mut page, &mut engine, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 1));
+    for n in 96..=180 {
+        let frame = header_rrects_after_a_frame(&fixture, &mut page, &mut engine, n * 16);
+        assert_eq!(plate(&frame), Some(visit_plate), "the listing landing does not move the selection");
+    }
+    assert_eq!(at(&engine), visit);
+    fixture.direction(&mut page, &mut engine, Dir::Left);
+    assert_eq!(at(&engine), MORE);
+    fixture.direction(&mut page, &mut engine, Dir::Left);
+    assert_eq!(at(&engine), second);
+    fixture.direction(&mut page, &mut engine, Dir::Left);
+    assert_eq!(at(&engine), first);
+    fixture.step(&mut page, &mut engine, ScreenEvent::Activate(first));
+    let favorite_plate = page.header.row().unwrap().plate(first).unwrap();
+    assert!(page.header.row().unwrap().plate(visit).is_none());
+    assert_eq!(page.header.row().unwrap().plate(MORE), Some(more));
+    let frame = header_rrects_after_a_frame(&fixture, &mut page, &mut engine, 181 * 16);
+    assert_eq!(plate(&frame), Some(favorite_plate), "the removed slot leaves no traveling selection behind");
 }
 
 /// **While the Sort & Filter menu is up, the control's accent pill is not under its panel.** The

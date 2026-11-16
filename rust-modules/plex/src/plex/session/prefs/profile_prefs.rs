@@ -35,7 +35,7 @@
 use super::{
     Fallback, Parse, ProfileKeyed, ProfileRecords, Preferences, Row, Scope, Setting, SettingsWrite,
     IntroSkipPref, CreditsSkipPref, DolbyVisionModePref, InstantDpadSeekingPref, UriEnginePref, AudioEnhancementsPref, DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, QualityPref, SkipIntervalPref,
-    HudSelectionPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UnderPostersPref,
+    HudSelectionPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, HudEndTimePref, UnderPostersPref,
 };
 use crate::plex::session::{
     MarkerSkipMode, DolbyVisionMode, InstantDpadSeeking, UriEngine, DeckPress, DirectPlayMode, HdrOverlayBrightness, NextEpisodeMode, PlaybackQuality, Seat, Session, SkipInterval, SubtitlePosition,
@@ -84,6 +84,9 @@ pub struct ProfilePrefs {
     /// absent.
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub trailer_autoplay: Option<bool>,
+    /// The profile's own estimated playback end-time HUD switch; absent reads the default ON.
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
+    pub hud_end_time: Option<bool>,
     /// The chosen player HUD's package id ([`HudSelectionPref`]); `None` reads the legacy install-wide key.
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub hud_selection: Option<String>,
@@ -176,6 +179,7 @@ profile_setting!(
     UnderPostersPref = under_posters,
     AudioEnhancementsPref = audio_enhancements,
     TrailerAutoplayPref = trailer_autoplay,
+    HudEndTimePref = hud_end_time,
 );
 
 const _: () = assert!(matches!(<HudSelectionPref as Row>::FALLBACK, Fallback::LegacyInstallKey));

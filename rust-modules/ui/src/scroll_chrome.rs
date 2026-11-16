@@ -134,7 +134,7 @@ impl Handoff {
                 self.chrome = if want { 0.0 } else { 1.0 };
                 self.capsule = if want && capsule_worn { 1.0 } else { 0.0 };
                 if *self != before {
-                    plx_machine::idle::invalidate();
+                    plx_machine::motion::report::note_motion();
                 }
                 return;
             }
@@ -157,7 +157,7 @@ impl Handoff {
         // A ms ramp is invisible to the spring instrumentation (`xfade`'s reasoning): say so while
         // an alpha is on its way, the frame it arrives included, and never once it has finished.
         if *self != before || !self.at_rest(capsule_worn) {
-            plx_machine::idle::invalidate();
+            plx_machine::motion::report::note_motion();
         }
     }
 
@@ -396,9 +396,12 @@ mod tests {
     /// Did driving the handoff ask the frame gate for a repaint? Consumes the flag, so each call
     /// answers for the frames since the last one (`xfade`'s tests, same reason).
     fn asked_to_repaint() -> bool {
-        plx_machine::idle::frame_begin(DT);
-        plx_machine::idle::note_present(0);
-        plx_machine::idle::should_present(0)
+        let mut present = plx_machine::present::Present::new();
+        present.take(0);
+        present.acknowledge(0);
+        plx_machine::motion::report::collect_into(&mut present, 0);
+        plx_machine::motion::report::frame_begin(DT);
+        present.take(0)
     }
 
     /// Run `frames` frames of a page whose scroll is `pos` and heads for `target`.

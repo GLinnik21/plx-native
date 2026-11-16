@@ -6,7 +6,13 @@ preflight that every build entry runs.
     disk-budget.py reclaim   --to GIB [--emit] [--no-build] [--idle-min N] [--root DIR] [--tree DIR] [--need-gib N]
     disk-budget.py preflight [--root DIR] [--tree DIR] [--need-gib N] [--wait-secs N]
     disk-budget.py tmp-trees [--root DIR]
-    disk-budget.py probe     --tree DIR --class lane|fleet|tmp|leftover [...]
+    disk-budget.py probe     --tree DIR --class lane|fleet|tmp|leftover [--lane-idle-secs N] [...]
+    disk-budget.py park-candidates [--emit] [--idle-min N] [--root DIR]
+    disk-budget.py park      [--auto] [-n] [--idle-min N] [--lock-held --holder-pid PID] [--root DIR]
+
+`park` is the opt-in cold store's pass (tools/cold-store.py, docs/disk-budget.md "The cold store"): it moves the
+idle whole trees `park-candidates` lists to a second volume instead of deleting them. `build-gc.sh --auto` and
+`--park` run it; with no cold-store config `park --auto` exits 3 having printed nothing.
 
 WHY THIS EXISTS. Nothing used to check, or make room, when a build started, and the cleanup that exists runs
 on a clock (hourly, and at the end of a session). Between two ticks a fleet of lanes writes 3-8 GB each, and
@@ -28,6 +34,11 @@ and the wait ends the moment the build fits. The eviction itself is not short (`
 capped at 900 s), so a target below the comfort line can spend real time here before cargo starts. The inventory is cached for 10 minutes (`$PLX_BUILD_CACHE/disk-budget/`)
 and dropped after an eviction. Any failure of its own fails open; only free space below the reserve refuses.
 A recipe that re-enters make sets PLX_DISK_BUDGET_DONE=1 so the nested entries do not repeat it.
+One question comes before all of that, the marker and PLX_MIN_FREE_MB=0 included: when the tree being built is
+ABSENT and the cold store holds a parked copy of it (`cold_unpark_pending`: two stat calls, and one directory
+listing for a restore in flight when the entry is not there), the preflight
+unparks it first (`unpark_absent_tree`: build-gc's auto lock is held only to CLAIM the parked copy, the copy runs
+without it; one line, never failing the build). The whole preflight spends ONE `--wait-secs` deadline on build-gc's lock.
 
 THE PLANNER IS A PURE FUNCTION. `plan(inv, free, need, th, me, now, build_tree)` does no I/O: it is the one
 place where order and safety are decided, and `ci/test_disk_budget.py` feeds it synthetic inventories.
@@ -78,7 +89,7 @@ fixture, `cp -p`, a restore from an archive); a ctime cannot, so a backdated tre
 and is never "garbage that nobody wrote to for a day".
 
 Environment: PLX_GC_MIN_FREE_GIB (comfort, default 20), PLX_MIN_FREE_MB (reserve, default 3072),
-PLX_DISK_NEED_GIB (the build's estimate), PLX_DISK_BUDGET_DONE (preflight no-op), PLX_SEED_MAX_DAYS (7; the `--seed` mode), PLX_FLEET_DIR (default
+PLX_DISK_NEED_GIB (the build's estimate), PLX_DISK_BUDGET_DONE (preflight no-op, bar the unpark check), PLX_SEED_MAX_DAYS (7; the `--seed` mode), PLX_FLEET_DIR (default
 ~/plx-fleet), PLX_BUILD_CACHE (default ~/.cache/plxnative), PLX_GC_TMP_ROOTS (os.pathsep list of directories
 to look for `/tmp` trees in; default /tmp and $TMPDIR), and two TEST-ONLY overrides: PLX_GC_TEST_FREE_KIB
 (free space, the name build-gc.sh already uses) and PLX_GC_TEST_NOW (the clock, honoured only when
@@ -168,11 +179,69 @@ def upper_need(tree, option, env):
     return max(MIN_NEED_GIB, NEED_GIB.get(os.path.basename(tree.rstrip(os.sep)), DEFAULT_NEED_GIB))
 
 
+def argv_option(argv, name):
+    """The value of `--name VALUE` / `--name=VALUE` in `argv` (the last one wins, as argparse's does), else None."""
+    found = None
+    for index, arg in enumerate(argv):
+        key, eq, value = arg.partition("=")
+        if key == name:
+            found = value if eq else (argv[index + 1] if index + 1 < len(argv) else None)
+    return found
+
+
+def build_tree_of(tree, root):
+    """The tree a preflight is for: `--tree`, else the checkout's `rust-modules/target`."""
+    return tree or os.path.join(root or os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "rust-modules", "target")
+
+
+def cold_index_name(path):
+    """The SSD index file name of a parked tree: cold-store.py's `escape`, written out here so the fast path need
+    not load that module (ci/test_disk_preflight.py pins the two equal). zlib only for a name over 230 bytes."""
+    name = path.replace("%", "%25").replace("/", "%2F")
+    if len(name) > 230:
+        import zlib
+        name = name[-200:] + "~" + format(zlib.crc32(path.encode()), "08x")
+    return name
+
+
+COLD_CLAIM_INFIX = ".unparking."      # cold-store.py's CLAIM_INFIX (ci/test_disk_preflight.py pins the two equal)
+
+
+def cold_unpark_pending(tree, env):
+    """Is `tree` ABSENT while the cold store holds a parked copy of it? Two stat calls and nothing imported: the
+    tree, then its index entry under `$PLX_BUILD_CACHE/cold-store/index/`. An entry that is not there is one more
+    question, a listing of that directory for a CLAIM on it (`<entry>.unparking.<pid>`: another build is restoring
+    the tree): that is a True answer too, so the build says who has it instead of rebuilding cold unannounced.
+    Only a True answer makes the preflight load cold-store.py (`unpark_absent_tree`). `PLX_COLD_STORE=off` is a
+    False answer without a stat; anything unreadable is a False answer too, since the cold store never fails a build."""
+    if env.get("PLX_COLD_STORE") == "off":
+        return False
+    try:
+        tree = os.path.abspath(tree)
+        if os.path.lexists(tree):
+            return False
+        key = os.path.join(os.path.realpath(os.path.dirname(tree)), os.path.basename(tree))
+        cache = os.path.realpath(env.get("PLX_BUILD_CACHE") or os.path.expanduser("~/.cache/plxnative"))
+        index = os.path.join(cache, "cold-store", "index")
+        entry = cold_index_name(key) + ".json"
+        if os.path.exists(os.path.join(index, entry)):
+            return True
+        claim = entry + COLD_CLAIM_INFIX
+        return any(name.startswith(claim) for name in os.listdir(index))
+    except (OSError, ValueError):
+        return False
+
+
 def fast_preflight(argv, env):
     """0 when the build may start without reading anything but one number, else None (take the full path).
     `argv` is the arguments after `preflight`. The rule is the planner's own `ok` test with the build's
     UPPER estimate (the table value, not net of what the tree already holds), so it never says "go" where
-    the planner would say "reclaim"."""
+    the planner would say "reclaim". One question comes before every exit, `PLX_DISK_BUDGET_DONE` and
+    `PLX_MIN_FREE_MB=0` included (a `make check` child runs with the marker and still builds its own tree):
+    is the tree absent with a parked copy? Then the full path unparks it first."""
+    if cold_unpark_pending(build_tree_of(argv_option(argv, "--tree"), argv_option(argv, "--root")), env):
+        return None
     if done_marker(env):
         return 0
     reserve = int_env(env, "PLX_MIN_FREE_MB", DEFAULT_RESERVE_MIB) * MIB
@@ -188,8 +257,7 @@ def fast_preflight(argv, env):
         if value is None:
             return None
         opts[key] = value
-    root = opts.get("--root") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    tree = opts.get("--tree") or os.path.join(root, "rust-modules", "target")
+    tree = build_tree_of(opts.get("--tree"), opts.get("--root"))
     need = upper_need(tree, opts.get("--need-gib"), env)
     comfort = int_env(env, "PLX_GC_MIN_FREE_GIB", DEFAULT_COMFORT_GIB) * GIB
     try:
@@ -1046,7 +1114,18 @@ class Probes:
 
 
 def collect(root: str, env, probes: Probes, now: float, size_foreign: bool = False) -> Inventory:
-    """Walk the disk and build the inventory. Reads only: no cache, no lock file, no object is written."""
+    """Walk the disk and build the inventory. Reads only: no cache, no lock file, no object is written.
+
+    A tree on another volume than the checkout's (a lane worktree on a slow external disk) is listed with its
+    device and nothing else: it is neither sized, aged, probed for locks or git-tracked files, nor is its
+    lane asked about git, because `never()` throws it out whatever those would say, and a walk over a
+    spinning USB disk stalled the build-entry preflight for 20-35 minutes. The same goes for a LANE whose
+    checkout is on another volume while its tree (a fleet tree, kept outside the worktree) is on the build's:
+    the tree is sized like any local one, but `is_merged` / `is_clean` are not asked of the checkout, so the
+    lane reads neither merged nor clean. Its `make check` lock is still probed: that is a flock on a file in
+    the local lock directory, named by a hash of the checkout's path, and a check running in that checkout is
+    building into this very tree. `size_foreign` is unrelated: it sizes a /tmp tree that carries no
+    PlxNative marker (the report's "not ours" row), on the build's volume."""
     root = real(root)
     wts, main = worktrees(root)
     if not any(w.path == root for w in wts):
@@ -1055,7 +1134,7 @@ def collect(root: str, env, probes: Probes, now: float, size_foreign: bool = Fal
     names = {w.path: ("main" if w.path == main else os.path.basename(w.path)) for w in wts}
     cache = build_cache(env)
     fleet = fleet_dir(env)
-    volume_dev = os.stat(root).st_dev
+    volume_dev = device_of(root)
 
     def owning(path: str) -> Optional[str]:
         best = None
@@ -1102,17 +1181,26 @@ def collect(root: str, env, probes: Probes, now: float, size_foreign: bool = Fal
                 continue
             if leftover and now - st.st_mtime < LEFTOVER_SECS and not tombstone:
                 continue                      # an in-flight harvest or restore
+            dev = device_of(path)
+            if dev and dev != volume_dev:
+                trees.append(Tree(path=path, kind="leftover" if leftover else "seed", dev=dev, tombstone=tombstone))
+                continue
             private, alloc, _ = measure(path, ())
             stamp = os.path.join(path, ".last-used")
             built = os.lstat(stamp).st_mtime if os.path.exists(stamp) else st.st_mtime
             locked = probes.seed_locked(path) if is_seed else False
-            trees.append(Tree(path=path, kind="leftover" if leftover else "seed", dev=st.st_dev,
+            trees.append(Tree(path=path, kind="leftover" if leftover else "seed", dev=dev,
                               private_bytes=private, alloc_bytes=alloc, last_built=built,
                               tombstone=tombstone, live=live_for(path, None, None, snap, locked, False)))
             continue
+        dev = device_of(path)
+        if dev and dev != volume_dev:
+            trees.append(Tree(path=path, kind=kind, checkout=checkout, owner=owner, orphan=orphan,
+                              tombstone=".tombstone." in base, dev=dev))
+            continue
         plx = kind != "tmp" or has_plx_marker(path)
         if not plx and not size_foreign:
-            trees.append(Tree(path=path, kind="tmp", plx=False, dev=os.stat(path).st_dev,
+            trees.append(Tree(path=path, kind="tmp", plx=False, dev=dev,
                               last_built=newest_mtime(path)))
             continue
         # A /tmp tree's age is the later of mtime and ctime (docs/disk-budget.md): a test fixture whose
@@ -1125,14 +1213,21 @@ def collect(root: str, env, probes: Probes, now: float, size_foreign: bool = Fal
         if kind in ("lane", "fleet") and checkout and checkout != main and checkout != root:
             if checkout not in lane_facts:
                 wt = next(w for w in wts if w.path == checkout)
-                is_m = is_merged(checkout, wt.sha, ref)
-                lane_facts[checkout] = (is_m, is_m and is_clean(checkout), wt.locked)
+                cdev = device_of(checkout)
+                if cdev and cdev != volume_dev:
+                    # A fleet tree on the build's volume whose lane's checkout is on the slow disk: the squash
+                    # check and `git status` would walk that whole worktree. Neither merged nor clean is known,
+                    # so neither is claimed (the conservative reading: no rung that needs them takes the tree).
+                    lane_facts[checkout] = (False, False, wt.locked)
+                else:
+                    is_m = is_merged(checkout, wt.sha, ref)
+                    lane_facts[checkout] = (is_m, is_m and is_clean(checkout), wt.locked)
             merged, clean, locked = lane_facts[checkout]
         elif kind in ("lane", "fleet") and checkout:
             locked = next((w.locked for w in wts if w.path == checkout), False)
         trees.append(Tree(
             path=path, kind=kind, checkout=checkout, owner=owner, orphan=orphan, plx=plx,
-            tombstone=".tombstone." in base, tracked=tracked_under(path), dev=os.stat(path).st_dev,
+            tombstone=".tombstone." in base, tracked=tracked_under(path), dev=dev,
             private_bytes=private if plx else 0, alloc_bytes=alloc, incr_paths=incr if plx else (),
             incr_bytes=incr_private if plx else 0, last_built=built,
             live=live_for(path, checkout, kind == "fleet" and owner or None, snap,
@@ -1192,6 +1287,7 @@ def render(inv: Inventory, th: Thresholds, free: int, total: int, me: str, build
         gib(need), tilde(build_tree), gib(need + th.reserve)))
     lines.append("lanes judged  against %s" % (inv.base_ref.replace("refs/remotes/", "").replace("refs/heads/", "")
                                                or "(no main ref found: no lane reads as merged)"))
+    lines.extend(cold_store_lines(env))
     if pl.verdict == "ok":
         lines.append("verdict       ok: %s" % pl.reason)
     elif pl.verdict == "reclaim":
@@ -1212,7 +1308,10 @@ def render(inv: Inventory, th: Thresholds, free: int, total: int, me: str, build
     lines.append("  %-9s %-26s %-34s %8s %8s %6s  %s" % ("KIND", "OWNER", "TREE", "PRIVATE", "DU", "BUILT", "STATE"))
     order = {"main": 0, "lane": 1, "fleet": 2, "tmp": 3, "seed": 4, "leftover": 5}
     for t in sorted(inv.trees, key=lambda t: (order.get(t.kind, 9), t.owner, t.path)):
-        if not t.plx:
+        other = bool(inv.volume_dev and t.dev and t.dev != inv.volume_dev)
+        if other:
+            state = "other volume (not sized): never planned, never probed"
+        elif not t.plx:
             state = "not ours: no PlxNative marker, never touched"
         elif t.path in kept and not rungs_of.get(t.path):
             state = kept[t.path]
@@ -1226,8 +1325,9 @@ def render(inv: Inventory, th: Thresholds, free: int, total: int, me: str, build
         owner = (t.owner or "-")[:max(6, 26 - len(tag))] + tag
         shown = os.path.basename(t.path) if t.kind in ("lane", "main", "fleet") else tilde(t.path)
         lines.append("  %-9s %-26s %-34s %8s %8s %6s  %s" % (
-            t.kind, owner, tail_text(shown, 34), size_text(t.private_bytes) if t.plx else "-",
-            size_text(t.alloc_bytes) if t.alloc_bytes else "-", age_text(now - t.last_built), state))
+            t.kind, owner, tail_text(shown, 34), size_text(t.private_bytes) if t.plx and not other else "-",
+            size_text(t.alloc_bytes) if t.alloc_bytes else "-", "-" if other else age_text(now - t.last_built),
+            state))
     lines.append("")
 
     lines.append("reclaim ladder  (the order a reclaim WOULD take, LRU within a rung; * = chosen at the free "
@@ -1424,13 +1524,55 @@ def cmd_tmp_trees(args, env) -> int:
     return 0
 
 
+def changed_within(root: str, secs: float, now: float) -> Optional[Tuple[str, float]]:
+    """(the first entry under `root` modified within the last `secs` seconds, its age), or None. Never looks
+    inside a `.git`: build-gc.sh's `idle_lane` (`find -mmin`), which `--evict` asks of a lane before it deletes
+    a tree and which Python had no copy of until the cold store needed the same answer."""
+    cutoff = now - secs
+    try:
+        st = os.lstat(root)
+    except OSError:
+        return None
+    if st.st_mtime > cutoff:
+        return root, now - st.st_mtime
+    for dirpath, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d != ".git"]
+        for name in dirs + [f for f in files if f != ".git"]:
+            path = os.path.join(dirpath, name)
+            try:
+                mtime = os.lstat(path).st_mtime
+            except OSError:
+                continue
+            if mtime > cutoff:
+                return path, now - mtime
+    return None
+
+
+def lane_activity(tree: str, checkout: str, klass: str, secs: int, now: float) -> List[str]:
+    """Why the lane that owns `tree` is not idle for `secs`: something under its checkout (and for a fleet tree,
+    under its lane directory beside the tree) changed within that window. A checkout on another volume than the
+    tree is not walked (a slow disk) and counts as busy, the side that leaves one more tree where it is."""
+    if device_of(checkout) != device_of(tree):
+        return ["its lane's checkout is on another volume, which is not walked to tell whether the lane is idle"]
+    roots = [checkout] + ([os.path.dirname(tree)] if klass == "fleet" else [])
+    for root in roots:
+        hit = changed_within(root, secs, now)
+        if hit:
+            return ["its lane changed %s ago (%s); a lane must be idle %s" % (
+                age_text(hit[1]), tilde(hit[0]), age_text(secs))]
+    return []
+
+
 def probe_tree(tree: str, checkout: Optional[str], lane: Optional[str], klass: str, current: bool,
-               min_age: int, probes: Probes, checkouts: Sequence[str], now: float) -> List[str]:
+               min_age: int, probes: Probes, checkouts: Sequence[str], now: float,
+               lane_idle_secs: int = 0) -> List[str]:
     """Why `tree` must not be deleted right now (empty: nothing says so). The planner's own liveness
     signals, asked again at the moment of deletion: open handles under the tree, a held cargo lock, a held
     `make check` lock for its checkout, and (current=False) a builder whose cwd is in the checkout; for a
     /tmp tree also its age (the later of mtime and ctime) against `min_age`, which never drops below the
-    idle window. A tree git tracks a file in is refused for every class."""
+    idle window. A tree git tracks a file in is refused for every class. `lane_idle_secs` (the cold store's
+    park-ahead pass; `--evict` asks the same of the lane in shell) adds the lane-idle rule for a lane or fleet
+    tree: nothing under the lane's checkout changed in that long."""
     reasons: List[str] = []
     if tracked_under(tree):
         reasons.append("git tracks a file in it")
@@ -1438,6 +1580,8 @@ def probe_tree(tree: str, checkout: Optional[str], lane: Optional[str], klass: s
     reasons.extend(live_for(tree, checkout, lane, snap, probes.cargo_locked(tree),
                             probes.check_locked(checkout) if checkout else False,
                             checkouts).reasons(current=current))
+    if lane_idle_secs > 0 and klass in ("lane", "fleet") and checkout:
+        reasons.extend(lane_activity(tree, checkout, klass, lane_idle_secs, now))
     if klass == "tmp":
         floor = max(min_age, IDLE_SECS)
         age = now - newest_mtime(tree, ctime=True)
@@ -1460,7 +1604,8 @@ def cmd_probe(args, env) -> int:
     wts, _ = worktrees(root)
     checkouts = [w.path for w in wts] + ([root] if root not in [w.path for w in wts] else [])
     reasons = probe_tree(real(args.tree), real(args.checkout) if args.checkout else None, args.lane or None,
-                         args.klass, args.current, args.min_age_secs, Probes(env), checkouts, clock(env))
+                         args.klass, args.current, args.min_age_secs, Probes(env), checkouts, clock(env),
+                         args.lane_idle_secs)
     if reasons:
         print("; ".join(reasons))
         return 1
@@ -1596,9 +1741,11 @@ def lock_owner_alive(lock: str) -> bool:
     return False
 
 
-def take_lock(lock: str, env) -> str:
+def take_lock(lock: str, env, pid: int = 0) -> str:
     """"got", "held" (a live owner), or "unavailable" (the lock directory cannot be made at all). A lock
-    nobody owns and nobody touched for PLX_GC_LOCK_STALE_MIN (120) minutes is reclaimed, as build-gc does."""
+    nobody owns and nobody touched for PLX_GC_LOCK_STALE_MIN (120) minutes is reclaimed, as build-gc does.
+    `pid` is the process the lock names (default: this one): the park pass re-takes build-gc's lock for the
+    shell that owns the run."""
     stale_secs = int_env(env, "PLX_GC_LOCK_STALE_MIN", 120) * 60
     for attempt in (0, 1):
         try:
@@ -1619,7 +1766,7 @@ def take_lock(lock: str, env) -> str:
             continue
         except OSError:
             return "unavailable"
-        for name, value in (("pid", os.getpid()), ("pgid", os.getpgrp())):
+        for name, value in (("pid", pid or os.getpid()), ("pgid", os.getpgrp())):
             try:
                 with open(os.path.join(lock, name), "w") as fh:
                     fh.write("%d\n" % value)
@@ -1627,6 +1774,57 @@ def take_lock(lock: str, env) -> str:
                 pass
         return "got"
     return "held"
+
+
+# A preflight that has to wait on build-gc's lock says so by a flag file beside the lock, one per waiting
+# process (`<lock>.waiting.<pid>`), so the cold store's park pass (which holds the lock for minutes at a time)
+# stops after the tree it is on instead of making the build wait out its --wait-secs. A flag whose process is
+# gone, or that nobody has refreshed for WAITING_STALE_SECS, is not a waiter; the waiter refreshes it on every poll.
+WAITING_STALE_SECS = 120
+
+
+def waiting_flag(lock: str, pid: int = 0) -> str:
+    return "%s.waiting.%d" % (lock, pid or os.getpid())
+
+
+def announce_waiting(lock: str) -> None:
+    """Write (or refresh) this process's flag. Best effort: a preflight fails open."""
+    try:
+        with open(waiting_flag(lock), "w") as fh:
+            fh.write("%d\n" % os.getpid())
+    except OSError:
+        pass
+
+
+def withdraw_waiting(lock: str) -> None:
+    """Remove this process's own flag, never another waiter's."""
+    try:
+        os.unlink(waiting_flag(lock))
+    except OSError:
+        pass
+
+
+def preflight_waiting(lock: str) -> bool:
+    """Is a live preflight waiting for `lock` right now?"""
+    folder, base = os.path.split(lock)
+    prefix = base + ".waiting."
+    try:
+        names = os.listdir(folder or ".")
+    except OSError:
+        return False
+    for name in names:
+        if not name.startswith(prefix) or not name[len(prefix):].isdigit():
+            continue
+        try:
+            if time.time() - os.stat(os.path.join(folder, name)).st_mtime > WAITING_STALE_SECS:
+                continue
+            os.kill(int(name[len(prefix):]), 0)
+        except PermissionError:
+            return True
+        except OSError:
+            continue
+        return True
+    return False
 
 
 def run_evict(root: str, pl: Plan, env) -> Tuple[bool, str]:
@@ -1714,40 +1912,121 @@ def plan_and_evict(args, env, root: str, tree: str, th: Thresholds) -> int:
     return judge(tree, need, th, env, pl.reason, removed, note, pl.biggest_live)
 
 
-def wait_on_holder(args, env, root: str, tree: str, th: Thresholds, need_upper: int, lock: str) -> int:
-    """Another reclaim holds the lock: it is freeing space. Wait up to --wait-secs for it (or for the build to
-    fit), then judge on the free space read afterwards. Taking the lock over when the holder finishes is the
-    one case this plans for itself."""
-    deadline = time.monotonic() + args.wait_secs
-    while True:
-        if settle(need_upper, th.reserve, free_at(tree, env))[0] == "ok":
-            return 0
-        if time.monotonic() >= deadline:
-            return judge(tree, need_upper, th, env, "", note="another disk reclaim holds %s and did not free enough "
-                         "in %.0f s" % (tilde(lock), args.wait_secs))
-        time.sleep(min(LOCK_POLL_SECS, max(0.0, deadline - time.monotonic())))
-        got = take_lock(lock, env)
-        if got == "got":
-            return with_lock(args, env, root, tree, th, lock)
-        if got == "unavailable":
-            return judge(tree, need_upper, th, env, "", note="the lock %s cannot be taken" % tilde(lock))
+def wait_on_holder(args, env, root: str, tree: str, th: Thresholds, need_upper: int, lock: str, deadline: float) -> int:
+    """Another reclaim holds the lock: it is freeing space. Wait for it (or for the build to fit) until `deadline`
+    (`cmd_preflight`'s: --wait-secs from its start, less what an unpark already waited), then judge on the free
+    space read afterwards. Taking the lock over when the holder finishes is the one case this plans for itself.
+    While it waits it keeps a flag file beside the lock (`announce_waiting`), which the cold store's park pass
+    reads between trees."""
+    try:
+        while True:
+            if settle(need_upper, th.reserve, free_at(tree, env))[0] == "ok":
+                return 0
+            if time.monotonic() >= deadline:
+                return judge(tree, need_upper, th, env, "", note="another disk reclaim holds %s and did not free "
+                             "enough in %.0f s" % (tilde(lock), args.wait_secs))
+            announce_waiting(lock)
+            time.sleep(min(LOCK_POLL_SECS, max(0.0, deadline - time.monotonic())))
+            got = take_lock(lock, env)
+            if got == "got":
+                withdraw_waiting(lock)               # it holds the lock now: nobody is waiting on it for this
+                return with_lock(args, env, root, tree, th, lock)
+            if got == "unavailable":
+                return judge(tree, need_upper, th, env, "", note="the lock %s cannot be taken" % tilde(lock))
+    finally:
+        withdraw_waiting(lock)
 
 
-def with_lock(args, env, root: str, tree: str, th: Thresholds, lock: str) -> int:
-    """Hold build-gc's auto lock around the plan and the eviction; released on every way out."""
+def holding_lock(lock: str, work: Callable[[], object]):
+    """Run `work` holding build-gc's auto lock (taken already); released on every way out, a TERM or HUP included."""
     def on_signal(signum, frame):
         raise SystemExit(128 + signum)
     previous = {sig: signal.signal(sig, on_signal) for sig in (signal.SIGTERM, signal.SIGHUP)}
     try:
-        return plan_and_evict(args, env, root, tree, th)
+        return work()
     finally:
         shutil.rmtree(lock, ignore_errors=True)
         for sig, handler in previous.items():
             signal.signal(sig, handler)
 
 
+def with_lock(args, env, root: str, tree: str, th: Thresholds, lock: str) -> int:
+    """Hold build-gc's auto lock around the plan and the eviction; released on every way out."""
+    return holding_lock(lock, lambda: plan_and_evict(args, env, root, tree, th))
+
+
+def wait_for_lock(lock: str, env, deadline: float) -> str:
+    """Take build-gc's auto lock, polling until the monotonic `deadline` while it is held, with the waiting flag
+    `wait_on_holder` keeps (the cold store's park pass reads it between trees). One attempt is made even when the
+    deadline has passed. "got", "held" or "unavailable"."""
+    try:
+        while True:
+            got = take_lock(lock, env)
+            if got != "held" or time.monotonic() >= deadline:
+                return got
+            announce_waiting(lock)
+            time.sleep(min(LOCK_POLL_SECS, max(0.0, deadline - time.monotonic())))
+    finally:
+        withdraw_waiting(lock)
+
+
+def unpark_absent_tree(args, env, deadline: float) -> None:
+    """The cold store's one hook into a build: the tree this preflight is for is ABSENT and the SSD index holds a
+    parked copy of it (`cold_unpark_pending`), so bring that copy back before anything is decided. The cheap
+    no-gos come first and wait for nothing (no config, no `ditto`, the cold volume not mounted: one line). Then
+    build-gc's auto lock is waited for until `deadline` (the preflight's one budget) and held ONLY to claim the
+    copy (`ColdStore.claim`: its cost rule and the free-space rule below, which says the free space after the
+    copy, with what other live claims still copy, stays at or above the comfort line, then an atomic rename of the
+    index record); the copy runs without the lock, so another build's tree is not kept waiting behind it.
+    Only THIS entry's tree comes back (a lane's other `target*` dirs wait for an entry that names them), and a
+    direct `cargo` reaches no preflight at all. It prints one line and never fails a build: whatever goes wrong
+    here, a claim already taken is given back and the preflight goes on as it would have with no cold store."""
+    tree = build_tree_of(args.tree, args.root)
+    store = claimed = None
+    try:
+        if not cold_unpark_pending(tree, env):
+            return
+        cold = cold_tool()
+        if cold is None:
+            print("cold-store: cold-store.py cannot be loaded; %s stays parked" % tilde(tree), file=sys.stderr)
+            return
+        store = cold.ColdStore(env)                       # its own log line (stderr) reports a copy that happened
+        why = store.unusable()
+        if why:
+            print("cold-store: %s not restored: %s" % (tilde(tree), why), file=sys.stderr)
+            return
+        comfort = thresholds_from_env(env).comfort
+        lock = lock_dir(env)
+        got = wait_for_lock(lock, env, deadline)
+        if got != "got":
+            print("cold-store: %s not restored: build-gc's lock %s is %s" % (
+                tilde(tree), tilde(lock), "held by another reclaim" if got == "held" else "unavailable"), file=sys.stderr)
+            return
+        claimed = holding_lock(lock, lambda: store.claim(
+            tree, free_after_ok=lambda bytes_in: free_at(tree, env) - bytes_in >= comfort))
+        if claimed.status != cold.CLAIMED:
+            print("cold-store: %s not restored (%s): %s" % (tilde(tree), claimed.status, claimed.reason), file=sys.stderr)
+            claimed = None
+            return
+        outcome = store.unpark(tree, claimed=claimed.record)     # the long part: no lock
+        claimed = None                                    # restored, or given back by `unpark` itself
+        if outcome.status != cold.UNPARKED:
+            print("cold-store: %s not restored (%s): %s" % (tilde(tree), outcome.status, outcome.reason), file=sys.stderr)
+    except Exception as err:  # noqa: BLE001 - a cold store that breaks must not stop a build
+        if claimed is not None and store is not None:
+            try:
+                store.release(tree)
+            except Exception:  # noqa: BLE001 - the claim of a process that is gone is put back by the next claim
+                pass
+        print("cold-store: unpark skipped (%s: %s)" % (err.__class__.__name__, err), file=sys.stderr)
+
+
 def cmd_preflight(args, env) -> int:
-    """Exit 0: build. Exit 1: refused, nothing the ladder may evict makes the build fit. Exit 2: not run."""
+    """Exit 0: build. Exit 1: refused, nothing the ladder may evict makes the build fit. Exit 2: not run.
+    One `--wait-secs` deadline, taken here, bounds every wait on build-gc's lock below: the unpark's and the ordinary
+    decision's draw on the same budget."""
+    deadline = time.monotonic() + args.wait_secs
+    unpark_absent_tree(args, env, deadline)        # first: before the DONE marker's and the zero reserve's exits
     if done_marker(env):
         return 0
     th = thresholds_from_env(env)
@@ -1776,7 +2055,7 @@ def cmd_preflight(args, env) -> int:
             return with_lock(args, env, root, tree, th, lock)
         if got == "unavailable":
             return judge(tree, need_upper, th, env, "", note="the lock %s cannot be taken, so nothing is planned" % tilde(lock))
-        return wait_on_holder(args, env, root, tree, th, need_upper, lock)
+        return wait_on_holder(args, env, root, tree, th, need_upper, lock, deadline)
     except Exception as err:  # noqa: BLE001 - a planner that breaks must not stop a build that fits
         print("disk-preflight: the planner failed (%s: %s); falling back to the plain %s floor" % (
             err.__class__.__name__, err, gib(th.reserve)), file=sys.stderr)
@@ -1786,6 +2065,398 @@ def cmd_preflight(args, env) -> int:
                   "PLX_MIN_FREE_MB=0 to skip this check." % gib(free), file=sys.stderr)
             return 1
         return 0
+
+
+# --- the cold store: park idle trees ahead of the ladder (tools/cold-store.py; docs/disk-budget.md) ----------
+# `build-gc.sh --auto` runs `park --auto` between `--orphans` and `--worktrees`, and `--park` runs it by hand.
+# Everything that decides WHAT may move is the planner's: the candidates are the ladder's own `--no-build` view,
+# the rung 3 and rung 4 whole-tree actions (idle /tmp trees, idle lane and fleet trees), and each tree is asked
+# once more, right before it moves, with the probe `--evict` uses. How a tree moves, and what is checked on both
+# volumes, is cold-store.py's. Unconfigured, all of this is one config read.
+PARK_NOT_APPLICABLE = 3          # `park --auto` exit code: no cold store, or room enough: say nothing at all
+PARK_LOCK_RELEASED = 4           # `park --lock-held` exit code: the pass ended without build-gc's lock in its hand
+DEFAULT_PARK_IDLE_MIN = 120      # cold-store.py's park_idle_min default, for the read-only candidate listing
+CANDIDATES_HEADER = "# plx-park-candidates v1"
+CANDIDATE_RUNGS = (3, 4)         # idle /tmp trees, idle lane and fleet trees: the whole-tree actions that are not garbage
+_FAILED = "failed"               # cold-store.py's FAILED outcome: the volume itself is in trouble, stop the pass
+
+
+@dataclass(frozen=True)
+class Candidate:
+    path: str
+    kind: str                    # "lane" | "fleet" | "tmp": cold-store.py's kinds
+    checkout: str                # the owning checkout, "" for a /tmp tree
+    owner: str                   # the lane's name, "" for a /tmp tree
+    private_bytes: int           # what parking it frees: the whole tree, its incremental dirs included
+    last_built: float
+    rung: int
+
+
+def park_candidates(inv: Inventory, th: Thresholds, now: float) -> List[Candidate]:
+    """The trees a park-ahead pass may move, oldest built first. `ladder()` with no build in view (`--no-build`:
+    no current checkout, so the planner spares nothing it would not spare a timer), narrowed to the whole-tree
+    actions at rungs 3 and 4. Rung 0 is garbage (deleted, never worth a copy), rung 2 is an incremental dir (a
+    piece of a tree), and rungs 5 and 6 are the main checkout's. A lane whose HEAD is already on the base ref is
+    left out too: the cold store would prune its copy in the same run."""
+    actions, _ = ladder(inv, th, None, now, None)
+    by_path = {t.path: t for t in inv.trees}
+    out: List[Candidate] = []
+    seen = set()
+    for a in actions:
+        if a.rung not in CANDIDATE_RUNGS or a.scope != "tree" or a.tree in seen:
+            continue
+        t = by_path.get(a.tree)
+        if t is None or t.merged or t.private_bytes <= 0 or t.kind not in ("lane", "fleet", "tmp"):
+            continue
+        seen.add(a.tree)
+        out.append(Candidate(t.path, t.kind, t.checkout or "", t.owner if t.kind != "tmp" else "", t.private_bytes,
+                             t.last_built, a.rung))
+    out.sort(key=lambda c: (c.last_built, c.path))
+    return out
+
+
+def emit_candidates(cands: Sequence[Candidate]) -> str:
+    """The list as lines a caller can read: `park KIND PRIVATE_KIB OWNER|- CHECKOUT|- PATH`, tab separated."""
+    lines = [CANDIDATES_HEADER]
+    for c in cands:
+        fields = ("park", c.kind, str(c.private_bytes // 1024), c.owner or "-", c.checkout or "-", c.path)
+        if any("\t" in f or "\n" in f or "\r" in f for f in fields):
+            lines.append("# skipped: a path with a control character in its name (%r)" % c.path)
+            continue
+        lines.append("\t".join(fields))
+    return "\n".join(lines)
+
+
+def cold_tool():
+    """cold-store.py, or None when it cannot be loaded (a checkout that predates it, a broken edit): the park
+    commands then act as "no cold store" rather than failing a reclaim."""
+    try:
+        return load_tool("cold-store.py")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def cmd_park_candidates(args, env) -> int:
+    root = real(args.root)
+    cold = cold_tool()
+    store = cold.ColdStore(env, log=lambda m: None) if cold else None
+    configured = bool(store and store.configured())
+    idle_min = args.idle_min if args.idle_min is not None else (store.cfg.park_idle_min if configured
+                                                                else DEFAULT_PARK_IDLE_MIN)
+    now = clock(env)
+    inv = collect(root, env, Probes(env), now)
+    cands = park_candidates(inv, replace(thresholds_from_env(env), idle_secs=int(idle_min * 60)), now)
+    if args.emit:
+        print(emit_candidates(cands))
+        return 0
+    print("park candidates (idle >= %g min; cold store %s)" % (idle_min, "on" if configured else "off"))
+    for c in cands:
+        print("  rung %d  %-5s %8s  %-22s %s" % (c.rung, c.kind, size_text(c.private_bytes), c.owner[:22],
+                                                  tilde(c.path)))
+    if not cands:
+        print("  (none)")
+    return 0
+
+
+class HeldLock:
+    """build-gc's auto lock as the park pass holds it. It is released and re-taken between trees, so another
+    reclaim (or a preflight that is not yet flagged as waiting) can get in. `pid` names the process the lock
+    belongs to (the shell that owns the run), `held` says whether the pass has it in hand right now."""
+
+    def __init__(self, path: str, env, pid: int, held: bool = True):
+        self.path, self.env, self.pid, self.held = path, env, pid, held
+
+    def release(self) -> None:
+        if self.held:
+            shutil.rmtree(self.path, ignore_errors=True)
+            self.held = False
+
+    def cycle(self) -> bool:
+        """Release and take it again; False when someone else has it by then (the pass must stop)."""
+        self.release()
+        self.held = take_lock(self.path, self.env, self.pid) == "got"
+        return self.held
+
+
+@dataclass(frozen=True)
+class ParkCrash:
+    """What a park that RAISED reports in place of cold-store.py's Outcome: a FAILED, which ends the pass."""
+    reason: str
+    status: str = _FAILED
+    secs: float = 0.0
+    ok: bool = False
+
+
+@dataclass
+class ParkSummary:
+    outcomes: List[Tuple[Candidate, object]]
+    stopped: str = ""
+    lock_lost: bool = False
+    parked_bytes: int = 0
+
+
+def park_probe(cand: Candidate, probes: Probes, checkouts: Sequence[str], idle_secs: int, lane_secs: int,
+               now: Callable[[], float]) -> Callable[[str], Optional[str]]:
+    """The liveness callback `ColdStore.park` asks right before it renames a tree: `probe_tree`, the same
+    questions `--evict` asks before it deletes one, plus the lane-idle rule for a lane or fleet tree."""
+    def live(path: str) -> Optional[str]:
+        reasons = probe_tree(path, cand.checkout or None, cand.owner if cand.kind == "fleet" else None, cand.kind,
+                             False, idle_secs, probes, checkouts, now(), lane_secs)
+        return "; ".join(reasons) or None
+    return live
+
+
+def run_park_pass(store, cands: Sequence[Candidate], *, probes: Probes, checkouts: Sequence[str],
+                  now: Callable[[], float], idle_secs: int, max_bytes: int, stop_free: Optional[int],
+                  free_fn: Callable[[], int], head_of: Callable[[str], str], lock: Optional[HeldLock] = None,
+                  waiting: Optional[Callable[[], bool]] = None, say: Callable[[str], None] = print,
+                  dry_run: bool = False, floor_free: Optional[int] = None) -> ParkSummary:
+    """Park `cands` in order until `max_bytes` have gone, free space is back over `stop_free` (None: not asked,
+    a by-hand run), free space is under `floor_free` (the comfort line; None: not asked, a by-hand run) or
+    something says stop. Free space is read before each tree, so a pass that began over the comfort line ends
+    when builds have eaten the room: from there the ladder deletes (seconds), and a copy to the cold disk (minutes,
+    with the lock held) would only make a build wait for it. Between trees it releases and re-takes `lock`; it
+    stops after the tree it is on when `waiting()` says a preflight wants the lock, handing the lock back
+    (`lock_lost`). One refused tree (not idle any more, a probe that says live) is skipped and the pass goes on;
+    a failed copy, or any exception out of a park, ends it with the reason said: the volume itself is then the
+    trouble, and a traceback must not stand in for the pass's account of what it did."""
+    summary = ParkSummary([])
+    waiting = waiting or (lambda: False)
+    if not cands:
+        say("park: no tree is idle enough to park")
+        return summary
+    try:
+        why = store.available(device_of(cands[0].path), write_probe=not dry_run)
+    except Exception as exc:  # noqa: BLE001 - see the docstring: said, not raised
+        why = "the cold volume check raised %s: %s" % (type(exc).__name__, exc)
+    if why:
+        summary.stopped = "the cold volume cannot be used: %s" % why
+        say("park: %s" % summary.stopped)
+        return summary
+    touched = set()
+    for index, cand in enumerate(cands):
+        stop = ""
+        free = free_fn() if stop_free is not None or floor_free is not None else 0
+        if summary.parked_bytes >= max_bytes:
+            stop = "reached park_max_gib_per_run (%s)" % gib(max_bytes)
+        elif floor_free is not None and free < floor_free:
+            stop = "free space (%s) is under the comfort line (%s): the ladder deletes from here" % (
+                gib(free), gib(floor_free))
+        elif stop_free is not None and free >= stop_free:
+            stop = "free space is back over %s" % gib(stop_free)
+        elif not dry_run and waiting():
+            stop = "a preflight is waiting for the lock"
+            if lock is not None:
+                lock.release()
+                summary.lock_lost = True
+        if stop:
+            summary.stopped = stop
+            say("park: stopped: %s" % stop)
+            break
+        lane_dirs = {d for d in (cand.checkout, os.path.dirname(cand.path) if cand.kind == "fleet" else "") if d}
+        # Taking a lane's first tree changes its directory: the next tree of that lane must not read it as busy.
+        lane_secs = 0 if lane_dirs & touched else idle_secs
+        try:
+            out = store.park(cand.path, kind=cand.kind, checkout=cand.checkout, head=head_of(cand.checkout),
+                             live=None if dry_run else park_probe(cand, probes, checkouts, idle_secs, lane_secs, now),
+                             private_bytes=cand.private_bytes, dry_run=dry_run)
+        except Exception as exc:  # noqa: BLE001 - see the docstring: a FAILED that ends the pass, not a traceback
+            out = ParkCrash("the park raised %s: %s" % (type(exc).__name__, exc))
+        summary.outcomes.append((cand, out))
+        label = "rung %d %s tree, from %s" % (cand.rung, cand.kind, cand.owner or "-")
+        if out.ok:
+            summary.parked_bytes += cand.private_bytes
+            touched |= lane_dirs
+            if dry_run:
+                say("  would park %8s  %s  (%s)" % (size_text(cand.private_bytes), tilde(cand.path), label))
+            else:
+                say("  parked     %8s  %s  (%s; %.1f s)" % (size_text(cand.private_bytes), tilde(cand.path), label,
+                                                             out.secs))
+        else:
+            say("  kept       %s: %s" % (tilde(cand.path), out.reason))
+            if out.status == _FAILED:
+                summary.stopped = out.reason
+                say("park: stopped: %s" % out.reason)
+                break
+        if lock is not None and index + 1 < len(cands) and not waiting():
+            if not lock.cycle():
+                summary.lock_lost = True
+                summary.stopped = "build-gc's lock was taken by another process"
+                say("park: stopped: %s" % summary.stopped)
+                break
+    return summary
+
+
+def prune_facts(cold, store, root: str, env):
+    """What `ColdStore.prune` is told about the world: a parked tree's lane is GONE when its checkout is no
+    longer a worktree of this repository, MERGED when its HEAD is already on the base ref (the planner's own
+    `is_merged`), and an origin that exists again was last built when its newest cargo entry says. When git
+    cannot list the worktrees at all, nothing is claimed gone or merged."""
+    facts = cold.PruneFacts()
+    wts, main = worktrees(root)
+    ref = base_ref(root)
+    live = {w.path: w for w in wts}
+    volume = device_of(root)
+    for rec in store.records():
+        origin = rec["origin"]
+        if os.path.lexists(origin):
+            facts.built[origin] = newest_mtime(origin)
+        checkout = rec.get("checkout") or ""
+        if not checkout or not wts:
+            continue
+        wt = live.get(checkout)
+        if wt is None:
+            facts.gone.add(checkout)
+        elif checkout != main and checkout not in facts.merged and device_of(checkout) == volume \
+                and is_merged(checkout, wt.sha, ref):
+            facts.merged.add(checkout)
+    return facts
+
+
+def cold_config_refusal(env) -> str:
+    """A pretend emergency (PLX_GC_TEST_FREE_KIB / PLX_GC_TEST_NOW) with the cold store's config left to the
+    per-user default would park trees to the owner's real cold volume: name the config for the run."""
+    overrides = [n for n in ("PLX_GC_TEST_FREE_KIB", "PLX_GC_TEST_NOW") if env.get(n)]
+    explicit = env.get("PLX_COLD_STORE_CONFIG") or env.get("PLX_COLD_STORE") not in (None, "", "off")
+    if overrides and not explicit:
+        return ("refusing to park under %s while PLX_COLD_STORE_CONFIG is left to its default: a pretend emergency "
+                "over the owner's real cold store is how a test would park real trees. Point it at a disposable "
+                "file." % "+".join(overrides))
+    return ""
+
+
+def cmd_park(args, env) -> int:
+    """The park-ahead pass. Exit 0: it ran (or has nothing to say by hand; `--auto` under the comfort line says
+    why it did nothing: the ladder deletes there), `PARK_NOT_APPLICABLE` (`--auto`): no cold store or free space
+    over park_below_gib, silent, `PARK_LOCK_RELEASED`: it ended without the lock, 2: refused. With `--lock-held` the caller (build-gc.sh) holds the auto lock now and `--holder-pid` is the
+    process it names; otherwise the lock is taken here, per tree, and released at the end. `-n` takes none."""
+    cold = cold_tool()
+    store = cold.ColdStore(env, log=print) if cold else None
+    if store is None or not store.configured():
+        if args.auto:
+            return PARK_NOT_APPLICABLE
+        print("cold store: %s" % (store.off_reason if store else "cold-store.py is not available here"))
+        return 0
+    root = real(args.root)
+    refusal = refuse_pretend_emergency(env, root) or cold_config_refusal(env)
+    if refusal:
+        print("disk-budget: " + refusal, file=sys.stderr)
+        return 2
+    cfg = store.cfg
+    free, _ = free_bytes(root, env)
+    if args.auto and free >= cfg.park_below_gib * GIB:
+        return PARK_NOT_APPLICABLE
+    comfort = thresholds_from_env(env).comfort
+    if args.auto and free < comfort:
+        # Not silent like "room enough": a configured store that does nothing under pressure should say why.
+        print("park: skipped: %s free is under the %s comfort line, so the ladder deletes first: a park holds the "
+              "auto lock for a whole copy to the cold disk while a build waits for room (parking resumes once free "
+              "space is back over the line)" % (gib(free), gib(comfort)))
+        return 0
+    idle_secs = int((args.idle_min if args.idle_min is not None else cfg.park_idle_min) * 60)
+    lock, own = None, False
+    if not args.dry_run:
+        path, pid = lock_dir(env), args.holder_pid or os.getpid()
+        if not args.lock_held:
+            got = take_lock(path, env, pid)
+            if got != "got":
+                print("park: %s is held by another reclaim (or cannot be taken); nothing parked" % tilde(path))
+                return 0
+            own = True
+        lock = HeldLock(path, env, pid)
+    previous = {}
+    if own:
+        def on_signal(signum, frame):
+            raise SystemExit(128 + signum)
+        previous = {sig: signal.signal(sig, on_signal) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        return park_run(args, env, root, cold, store, free, idle_secs, lock)
+    finally:
+        if own and lock is not None:
+            lock.release()
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def park_run(args, env, root: str, cold, store, free: int, idle_secs: int, lock: Optional[HeldLock]) -> int:
+    """The pass and the sweeps around it, all under the auto lock. Each looks at the waiting flag before every
+    piece of work (`recover`'s settles and reaps, each tree, `prune`'s deletions) and ends there, handing the
+    lock back: a preflight waits 60 s for the lock and then judges on free space alone, with no eviction, so
+    the lock must not be held through a sweep of the slow disk. A `--auto` pass also keeps to the comfort line
+    (`run_park_pass`'s `floor_free`)."""
+    cfg = store.cfg
+    waiting = (lambda: False) if args.dry_run else (lambda: preflight_waiting(lock_dir(env)))
+    stop = None if args.dry_run else waiting
+
+    def hand_over() -> int:
+        print("park: stopped: a preflight is waiting for the lock")
+        if lock is not None:
+            lock.release()
+        return PARK_LOCK_RELEASED
+
+    if not args.dry_run:
+        try:
+            for what, detail in store.recover(stop=stop):
+                print("park: recovered %s: %s" % (what, detail))
+        except Exception as exc:  # noqa: BLE001 - the pass goes on; the next one recovers what this one could not
+            print("park: recover failed: %s" % exc)
+        if waiting():
+            return hand_over()
+    now = clock(env)
+    probes = Probes(env)
+    th = replace(thresholds_from_env(env), idle_secs=idle_secs)
+    inv = collect(root, env, probes, now)
+    cands = park_candidates(inv, th, now)
+    stop_free = int((cfg.park_below_gib + HYSTERESIS_GIB) * GIB) if args.auto else None
+    print("park: %s free%s; %d idle tree(s) are candidates (idle >= %g min, at most %s this run)" % (
+        gib(free), " (below park_below_gib=%g)" % cfg.park_below_gib if args.auto else "", len(cands),
+        idle_secs / 60, gib(cfg.park_max_gib_per_run * GIB)))
+    summary = run_park_pass(
+        store, cands, probes=probes, checkouts=[p for p, _ in inv.checkouts], now=lambda: clock(env),
+        idle_secs=idle_secs, max_bytes=int(cfg.park_max_gib_per_run * GIB), stop_free=stop_free,
+        free_fn=lambda: free_bytes(root, env)[0], head_of=cold.head_of, lock=lock, waiting=waiting, say=print,
+        dry_run=args.dry_run, floor_free=thresholds_from_env(env).comfort if args.auto else None)
+    if summary.outcomes:
+        print("park: %d tree(s) %s, %s" % (sum(1 for _, o in summary.outcomes if o.ok),
+                                           "would be parked" if args.dry_run else "parked",
+                                           size_text(summary.parked_bytes)))
+    if not summary.lock_lost:
+        try:
+            facts = prune_facts(cold, store, root, env)
+            for origin, why, size in store.prune(facts=facts, dry_run=args.dry_run, stop=stop):
+                print("  %s %8s  %s  (%s)" % ("would drop" if args.dry_run else "dropped   ", size_text(size),
+                                              tilde(origin), why))
+        except Exception as exc:  # noqa: BLE001 - said, not raised: the park above already happened
+            print("park: prune failed: %s" % exc)
+        if lock is not None and lock.held and waiting():
+            return hand_over()
+    return PARK_LOCK_RELEASED if lock is not None and not lock.held else 0
+
+
+def cold_store_lines(env) -> List[str]:
+    """The cold store's rows for `report`: on or off and why, what the SSD index says is parked, and any parking
+    residue. Reads the mount table and the SSD only: a report never wakes the cold volume."""
+    cold = cold_tool()
+    if cold is None:
+        return ["cold store    unavailable: tools/cold-store.py cannot be loaded here"]
+    store = cold.ColdStore(env, log=lambda m: None)
+    if not store.configured():
+        return ["cold store    off: %s (opt-in: docs/disk-budget.md, \"The cold store\")" % store.off_reason]
+    cfg = store.cfg
+    recs = store.records()
+    lines = ["cold store    on: root %s (%s); parks below %g GiB free, trees idle >= %g min, <= %g GiB a run" % (
+        tilde(cfg.root), "mounted" if store.root_reachable() else "NOT mounted", cfg.park_below_gib,
+        cfg.park_idle_min, cfg.park_max_gib_per_run),
+        "              %d tree%s, %s parked (the SSD index; `tools/cold-store.py list` names them)" % (
+            len(recs), "" if len(recs) == 1 else "s", gib(sum(r.get("apparent_bytes", 0) for r in recs)))]
+    for ident, size, alive in store.parking_residue():
+        lines.append("              parking residue: %s  %s (owner %s)" % (
+            size_text(size), ident, "alive" if alive else "dead: `tools/cold-store.py recover` settles it"))
+    for pid, claim, index in store.claims():
+        lines.append("              restoring: %s (pid %d, %s)" % (
+            (cold.read_json(claim) or {}).get("origin") or os.path.basename(index), pid,
+            "alive" if cold.pid_alive(pid) else "dead: `tools/cold-store.py recover` puts it back"))
+    return lines
 
 
 def main(argv: Sequence[str]) -> int:
@@ -1827,15 +2498,33 @@ def main(argv: Sequence[str]) -> int:
     pp.add_argument("--current", action="store_true",
                     help="the tree is in the checkout that is building: ignore its builder and `make check` lock")
     pp.add_argument("--min-age-secs", type=int, default=0, help="a /tmp tree must be unchanged this long")
+    pp.add_argument("--lane-idle-secs", type=int, default=0,
+                    help="a lane or fleet tree's checkout must be unchanged this long (0: not asked)")
 
     sp = sub.add_parser("settle", help="judge free space re-read after a plan ran")
     sp.add_argument("--plan", required=True, help="the plan file (or - for stdin)")
     sp.add_argument("--free-kib", type=int, required=True)
 
+    kp = with_root(sub.add_parser("park-candidates", help="the idle trees a cold-store park pass would take "
+                                                          "(read-only)"))
+    kp.add_argument("--emit", action="store_true", help="print the tab-separated list")
+    kp.add_argument("--idle-min", type=float, help="how long a tree must have been idle (default: park_idle_min)")
+
+    pk = with_root(sub.add_parser("park", help="move idle trees to the cold store, if one is configured"))
+    pk.add_argument("--auto", action="store_true",
+                    help="as build-gc.sh --auto runs it: only from the comfort line (PLX_GC_MIN_FREE_GIB) up to "
+                         "park_below_gib free, silent (exit 3) when there is no cold store or room enough")
+    pk.add_argument("-n", "--dry-run", action="store_true", help="name what would move; change nothing, take no lock")
+    pk.add_argument("--idle-min", type=float, help="how long a tree must have been idle (default: park_idle_min)")
+    pk.add_argument("--lock-held", action="store_true",
+                    help="the caller (build-gc.sh) holds the auto lock now; hand it back at the end (exit 4: not held)")
+    pk.add_argument("--holder-pid", type=int, default=0, help="the process the auto lock names (with --lock-held)")
+
     args = ap.parse_args(argv)
     env = dict(os.environ)
     return {"report": cmd_report, "reclaim": cmd_reclaim, "preflight": cmd_preflight, "tmp-trees": cmd_tmp_trees,
-            "probe": cmd_probe, "settle": cmd_settle}[args.action](args, env)
+            "probe": cmd_probe, "settle": cmd_settle, "park-candidates": cmd_park_candidates,
+            "park": cmd_park}[args.action](args, env)
 
 
 if __name__ == "__main__":

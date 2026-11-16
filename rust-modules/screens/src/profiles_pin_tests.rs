@@ -92,7 +92,8 @@ fn the_wrong_pin_flash_blinks_at_least_four_times() {
 #[test]
 fn a_flash_flip_invalidates_the_present_gate() {
     let mut present = Present::new();
-    present.take(0); // drain the fresh gate's own always-dirty first frame
+    assert!(present.take(0)); // admit the fresh gate's always-dirty first frame
+    present.acknowledge(0); // simulate its actual swap
     let mut pad = Pad {
         open: true,
         error_s: PIN_ERR_S,
@@ -110,6 +111,7 @@ fn a_flash_flip_invalidates_the_present_gate() {
         }
         let now = pin_flash(pad.error_s);
         let asked = present.take(0);
+        if asked { present.acknowledge(0); } // simulate only admitted swaps
         if now != was {
             assert!(
                 asked,

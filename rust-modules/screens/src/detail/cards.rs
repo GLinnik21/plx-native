@@ -39,6 +39,7 @@ impl Which {
 /// ([`super::DetailScreen::sync_keys`]): card `i` is the local element `Which`'s `elem(i)` names,
 /// shown under the interned engine key the projection maps it to.
 pub(super) struct Cards<'a> {
+    policy: plx_ui::caption_policy::CaptionPolicy,
     which: Which,
     d: &'a Detail,
     key_by_local: &'a HashMap<u32, u32>,
@@ -59,10 +60,11 @@ impl<'a> Cards<'a> {
     pub(super) fn new(
         which: Which,
         d: &'a Detail,
+        policy: plx_ui::caption_policy::CaptionPolicy,
         key_by_local: &'a HashMap<u32, u32>,
         local_by_key: &'a HashMap<u32, u32>,
     ) -> Self {
-        let mut cards = Self { which, d, key_by_local, local_by_key, len: 0, row_y: 0.0, entry: EntryId(0), press: PressRead::default() };
+        let mut cards = Self { policy, which, d, key_by_local, local_by_key, len: 0, row_y: 0.0, entry: EntryId(0), press: PressRead::default() };
         let n = match which {
             Which::Related => d.related.len(),
             Which::Collection => collection::len(d),
@@ -159,7 +161,7 @@ impl<H: Host<Elem = u32>> CardSource<H> for Cards<'_> {
         match self.which {
             // a poster: the one Under posters builder (a missing index is the nameless tile)
             Which::Related | Which::Collection => match self.movies().get(i) {
-                Some(m) => crate::registry::captions::label(&crate::registry::captions::policy(), &tile_facts::caption_facts(m), None),
+                Some(m) => crate::registry::captions::label(&self.policy, &tile_facts::caption_facts(m), None),
                 None => TileLabel::default(),
             },
             Which::Extras => extras::label(self.d, i),

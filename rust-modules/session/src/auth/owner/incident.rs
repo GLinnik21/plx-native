@@ -56,7 +56,7 @@
 //!   screen only renders the state; it never samples telemetry.
 //! * Sign-out and *Delete all local data* erase the offer and the seen keys with everything else.
 
-use super::{Command, SessionFx, SessionMachine};
+use super::{Command, SessionFx, SessionMachine, SessionEvent};
 use plx_telemetry::telemetry::consent::Permission;
 use plx_telemetry::telemetry::incident::{IncidentContext, IncidentKind, LinkClass};
 use plx_machine::machine::Canon;
@@ -179,10 +179,10 @@ pub enum IncidentDelivery {
 
 /// How many distinct keys a launch remembers. The closed kind × link space is small; the bound
 /// only stops a pathological loop from growing state without limit.
-const SEEN_CAP: usize = 32;
+pub(super) const SEEN_CAP: usize = 32;
 
 /// Has the question about this offer been settled — answered, sent, or decided by the consent?
-fn is_settled(offer: &IncidentOffer) -> bool {
+pub(super) fn is_settled(offer: &IncidentOffer) -> bool {
     !matches!(
         offer.state,
         IncidentState::Pending | IncidentState::Offered { .. } | IncidentState::OnRequest { .. }
@@ -284,164 +284,42 @@ impl SessionMachine {
     /// A producer's failure, with its closed evidence. See the module doc for the rules: the
     /// failure already held keeps its offer and its answer; anything else supersedes what is
     /// held — a key this launch has already resolved included, which is then resolved quietly.
-    pub fn raise_incident(&mut self, flow: IncidentFlow, context: IncidentContext) {
-        let key = IncidentKey { flow, kind: context.kind, link: context.link };
-        if let Some(held) = self.state.incident.as_mut().filter(|held| held.key == key) {
-            // The same failure again. Unresolved (a second stalled report in one wait): keep the
-            // offer, take the fresher report evidence. Resolved: keep the answer and report
-            // evidence it already has. Details always reads the current failure facts.
-            held.readout_context = Some(context);
-            if !is_settled(held) {
-                held.context = Some(context);
-            }
-            return;
-        }
-        self.state.next_incident = self.state.next_incident.wrapping_add(1).max(1);
-        self.state.incident = Some(IncidentOffer {
-            id: self.state.next_incident,
-            key,
-            context: Some(context),
-            readout_context: Some(context),
-            state: IncidentState::Pending,
-        });
-    }
+    pub fn raise_incident(&mut self, flow: IncidentFlow, context: IncidentContext) { self.transition(&SessionEvent::RaiseIncident { flow, context }, 0, &mut Vec::new()); }
 
     /// The offer's permission, derived by the presenting screen at `revision`.
-    pub fn resolve_incident(
-        &mut self,
-        id: u32,
-        permission: Permission,
-        revision: u32,
-        emit: &mut impl FnMut(SessionFx),
-    ) -> bool {
-        let seen = &self.state.incidents_seen;
-        let Some(held) = self.state.incident.as_mut().filter(|held| held.id == id) else { return false };
-        match held.state {
-            IncidentState::Pending => {}
-            IncidentState::Offered { revision: at } | IncidentState::OnRequest { revision: at }
-                if at != revision => {}
-            _ => return false,
-        }
-        let key = held.key;
-        // Offered behind Details only: a kind the alert never covers, a key this launch has
-        // already asked about (the raise that brought it back is Pending over a seen key), and
-        // an offer already resolved that way — a later decision may drop it, never escalate it.
-        let quiet = !key.kind.alert_eligible()
-            || matches!(held.state, IncidentState::OnRequest { .. })
-            || (held.state == IncidentState::Pending && seen.contains(&key));
-        match permission {
-            Permission::Declined => {
-                held.state = IncidentState::Dropped;
-                held.context = None;
-            }
-            Permission::Granted | Permission::NotDetermined if quiet => {
-                held.state = IncidentState::OnRequest { revision };
-            }
-            Permission::Granted if key.kind.standing_eligible() => {
-                let Some(context) = held.context else { return false };
-                held.state = IncidentState::AutoSending;
-                emit(SessionFx::Incident { id, lane: IncidentLane::Standing, report: IncidentReport::Retained(context) });
-            }
-            Permission::Granted | Permission::NotDetermined => {
-                held.state = IncidentState::Offered { revision };
-            }
-        }
-        self.remember_seen(key);
-        true
-    }
+    pub fn resolve_incident(&mut self, id: u32, permission: Permission, revision: u32, emit: &mut impl FnMut(SessionFx)) -> bool { let mut effects = Vec::new(); let handled = self.transition(&SessionEvent::Command(Command::ResolveIncident { id, permission, revision }), 0, &mut effects); effects.into_iter().for_each(emit); handled }
 
     /// The person's Send report — from the alert, or from Details afterwards.
-    pub fn report_incident(&mut self, id: u32, emit: &mut impl FnMut(SessionFx)) -> bool {
-        let Some(held) = self.state.incident.as_mut().filter(|held| held.id == id && held.sendable()) else {
-            return false;
-        };
-        let report = match held.context {
-            Some(context) => IncidentReport::Retained(context),
-            None => {
-                self.state.persistence_warning
-                    .filter(|_| held.key.kind == IncidentKind::SaveFailed)
-                    .and_then(|warning| warning.incident_context())
-                    .map(IncidentReport::Retained)
-                    .unwrap_or(IncidentReport::AtPress(held.key))
-            },
-        };
-        let key = held.key;
-        held.state = IncidentState::Sending;
-        emit(SessionFx::Incident { id, lane: IncidentLane::OneOff, report });
-        self.remember_seen(key);
-        true
-    }
+    pub fn report_incident(&mut self, id: u32, emit: &mut impl FnMut(SessionFx)) -> bool { let mut effects = Vec::new(); let handled = self.transition(&SessionEvent::Command(Command::ReportIncident { id }), 0, &mut effects); effects.into_iter().for_each(emit); handled }
 
     /// The person's Not now. Only an offer on screen can be answered.
-    pub fn decline_incident(&mut self, id: u32) -> bool {
-        let Some(held) = self.state.incident.as_mut().filter(|held| held.id == id) else { return false };
-        if !matches!(held.state, IncidentState::Offered { .. }) {
-            return false;
-        }
-        held.state = IncidentState::NotNow;
-        true
-    }
+    pub fn decline_incident(&mut self, id: u32) -> bool { self.transition(&SessionEvent::Command(Command::DeclineIncident { id }), 0, &mut Vec::new()) }
 
     /// The adapter's answer. Fenced by id: a reply for a superseded offer changes nothing. What
     /// became of a queued report is fenced by its receipt as well — a different receipt is a report
     /// this offer no longer shows.
-    pub fn incident_reported(&mut self, id: u32, delivery: &IncidentDelivery) -> bool {
-        let Some(held) = self.state.incident.as_mut().filter(|held| held.id == id) else { return false };
-        let shown = match &held.state {
-            IncidentState::Queued { receipt } | IncidentState::Saved { receipt } => Some(receipt.as_str()),
-            _ => None,
-        };
-        held.state = match (&held.state, delivery) {
-            (IncidentState::AutoSending, IncidentDelivery::Standing { receipt: Some(receipt) })
-            | (IncidentState::Sending, IncidentDelivery::OneOff { receipt: Some(receipt) }) => {
-                IncidentState::Queued { receipt: receipt.clone() }
-            }
-            (IncidentState::AutoSending, IncidentDelivery::Standing { receipt: None })
-            | (IncidentState::Sending, IncidentDelivery::OneOff { receipt: None }) => IncidentState::Failed,
-            // Tried and not through yet, still queued durably: said once, from Queued.
-            (IncidentState::Queued { .. }, IncidentDelivery::Held { receipt }) if shown == Some(receipt) => {
-                IncidentState::Saved { receipt: receipt.clone() }
-            }
-            (_, IncidentDelivery::Delivered { receipt }) if shown == Some(receipt) => {
-                IncidentState::Delivered { receipt: receipt.clone() }
-            }
-            // The report did not get through after all: Send report is accepted again.
-            (_, IncidentDelivery::Undelivered { receipt }) if shown == Some(receipt) => IncidentState::Failed,
-            _ => return false,
-        };
-        true
-    }
+    pub fn incident_reported(&mut self, id: u32, delivery: &IncidentDelivery) -> bool { self.transition(&SessionEvent::IncidentReported { id, delivery: delivery.clone() }, 0, &mut Vec::new()) }
 
     /// Sign-out and Delete all local data: every incident, and what this launch has seen.
-    pub fn forget_incidents(&mut self) {
-        self.state.incident = None;
-        self.state.incidents_seen.clear();
-        self.state.link_trouble = false;
-    }
+    pub fn forget_incidents(&mut self) { self.transition(&SessionEvent::ForgetIncidents, 0, &mut Vec::new()); }
 
-    fn remember_seen(&mut self, key: IncidentKey) {
-        if self.state.incidents_seen.contains(&key) {
-            return;
-        }
-        if self.state.incidents_seen.len() >= SEEN_CAP {
-            self.state.incidents_seen.remove(0);
-        }
-        self.state.incidents_seen.push(key);
-    }
+
 
     pub fn step_incident_command(
         &mut self,
         command: &Command,
         emit: &mut impl FnMut(SessionFx),
     ) -> bool {
-        match command {
-            Command::ResolveIncident { id, permission, revision } => {
-                self.resolve_incident(*id, *permission, *revision, emit)
-            }
-            Command::ReportIncident { id } => self.report_incident(*id, emit),
-            Command::DeclineIncident { id } => self.decline_incident(*id),
-            _ => false,
+        if !matches!(
+            command,
+            Command::ResolveIncident { .. } | Command::ReportIncident { .. } | Command::DeclineIncident { .. }
+        ) {
+            return false;
         }
+        let mut effects = Vec::new();
+        let handled = self.transition(&SessionEvent::Command(command.clone()), 0, &mut effects);
+        effects.into_iter().for_each(emit);
+        handled
     }
 }
 

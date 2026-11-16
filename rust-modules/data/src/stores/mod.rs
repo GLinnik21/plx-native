@@ -67,6 +67,7 @@ pub use content_arg::ContentArg;
 pub mod hubs;
 pub mod metadata;
 pub mod notify;
+pub mod notify_job;
 pub mod notify_map;
 pub mod person;
 pub mod collection;
@@ -80,6 +81,7 @@ pub mod tape;
 pub mod viewreconcile;
 pub mod viewstate;
 pub mod watchlist;
+pub mod watchlist_job;
 
 /// Production store aggregate. All seven stores are physical owners here — Browse, Person and
 /// ViewState landed first; Search, Hubs and Metadata completed the port.
@@ -168,10 +170,19 @@ impl Stores {
     pub fn browse_run(
         &self,
         cmd: browse::BrowseCmd,
-        keys: &plx_plex::plex::ClientKeys,
-        session: &plx_plex::plex::session::Session,
+        input: &browse::BrowseRosterInput<'_>,
     ) -> bool {
-        self.browse.borrow_mut().run_with_session(cmd, keys, session)
+        self.browse_run_outcome(cmd, input).accepted
+    }
+
+    /// Admission and visible damage are distinct; the application's dispatcher consumes `changed`.
+    pub fn browse_run_outcome(
+        &self,
+        cmd: browse::BrowseCmd,
+        input: &browse::BrowseRosterInput<'_>,
+    ) -> browse::CommandOutcome {
+        let _step = plx_base::step::StepScope::enter();
+        self.browse.borrow_mut().run_with_input_outcome(cmd, input)
     }
 
     /// [`Stores::browse_run`] on a registry that holds no client (no section-hubs or directory read leaves): the
@@ -179,9 +190,10 @@ impl Stores {
     /// the pin write was observed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn browse_run_for_test(&self, cmd: browse::BrowseCmd) -> bool {
-        self.browse.borrow().observe_pin_write();
-        let session = plx_plex::plex::session::peek();
-        self.browse_run(cmd, &plx_plex::plex::ClientKeys::default(), &session)
+        self.browse_run(cmd, &browse::BrowseRosterInput { tenure: 0,
+            keys: &Default::default(), session: &Default::default(),
+            visible_generation: 0, settled: false, profile_key: "",
+        })
     }
 
     /// Is any shelf of the addressed section committed? (The Library pages' publication gate asks.)
@@ -193,28 +205,28 @@ impl Stores {
     /// step asks for is left on Browse's outbox for the caller to start (`Bridge::browse_discover_pump`).
     pub fn browse_discover_pump(
         &self,
-        keys: &plx_plex::plex::ClientKeys,
-        session: &plx_plex::plex::session::Session,
+        input: &browse::BrowseRosterInput<'_>,
     ) -> StoreOutcome {
-        self.browse.borrow_mut().discover_pump_with_gate(&self.landgate, keys, session)
+        let _step = plx_base::step::StepScope::enter();
+        self.browse.borrow_mut().discover_pump_with_gate(&self.landgate, input)
     }
 
     /// [`Stores::browse_discover_pump`] on a registry that holds no client (no discovery read
     /// leaves): the pass of a test about something else.
     #[cfg(any(test, feature = "test-support"))]
     pub fn browse_discover_pump_for_test(&self) -> StoreOutcome {
-        self.browse.borrow().observe_pin_write();
-        let session = plx_plex::plex::session::peek();
-        self.browse_discover_pump(&plx_plex::plex::ClientKeys::default(), &session)
+        self.browse.borrow_mut().discover_pump()
     }
 
-    pub fn person_run(&mut self, cmd: person::PersonCmd) -> bool {
-        self.person.run(cmd)
+pub fn person_run(&mut self, cmd: person::PersonCmd, input: &crate::person::PersonInput<'_>) -> bool {
+        let _step = plx_base::step::StepScope::enter();
+        self.person.run_with_input(cmd, input)
     }
 
     /// Run one Collection command; `keys` is the registry's answer as of this call. A command
     /// emits no job.
     pub fn collection_run(&mut self, cmd: collection::CollectionCmd, keys: &plx_plex::plex::ClientKeys) -> bool {
+        let _step = plx_base::step::StepScope::enter();
         self.collection.run(cmd, keys)
     }
 
@@ -223,6 +235,7 @@ impl Stores {
     /// the job to a runner has stranded the page's fetch. The one production caller is
     /// `Bridge::collection_pump`, which drains in the same call.
     pub fn collection_pump(&mut self, keys: &plx_plex::plex::ClientKeys) -> bool {
+        let _step = plx_base::step::StepScope::enter();
         self.collection.pump(&self.landgate, keys)
     }
 
@@ -231,6 +244,7 @@ impl Stores {
     }
 
     pub fn subtitle_search_run(&mut self, cmd: subsearch::SubSearchCmd) -> bool {
+        let _step = plx_base::step::StepScope::enter();
         self.subtitle_search.run(cmd)
     }
 
@@ -239,6 +253,7 @@ impl Stores {
     /// handing the job to a runner has stranded the search. The one production caller is
     /// `Bridge::subsearch_pump`, which drains in the same call.
     pub fn subtitle_search_pump(&mut self, keys: &plx_plex::plex::ClientKeys) -> bool {
+        let _step = plx_base::step::StepScope::enter();
         self.subtitle_search.pump(&self.landgate, keys)
     }
 
@@ -250,8 +265,9 @@ impl Stores {
     /// requests it emitted: a caller that returns without [`Stores::take_jobs_of`] and handing the
     /// jobs to a runner has stranded the page's fetches. The one production caller is
     /// `Bridge::person_pump`, which drains in the same call.
-    pub fn person_pump(&mut self, keys: &plx_plex::plex::ClientKeys) -> bool {
-        self.person.pump(&self.landgate, keys)
+pub fn person_pump(&mut self, input: &crate::person::PersonInput<'_>) -> bool {
+        let _step = plx_base::step::StepScope::enter();
+        self.person.pump(&self.landgate, input)
     }
 
     pub fn person_view(&self) -> crate::person::PersonView<'_> {
@@ -263,8 +279,9 @@ impl Stores {
     /// handing each job to a runner has stranded the request. The one production caller is
     /// `Bridge::metadata_run`, which drains in the same call; the application's test rigs fail a
     /// frame that ends with a job still here (`Bridge::assert_no_store_jobs_left_for_test`).
-    pub fn metadata_run(&mut self, cmd: metadata::MetadataCmd) -> bool {
-        self.metadata.run(cmd)
+    pub fn metadata_run(&mut self, cmd: metadata::MetadataCmd, keys: &plx_plex::plex::ClientKeys) -> bool {
+        let _step = plx_base::step::StepScope::enter();
+        self.metadata.run_with_keys(cmd, keys)
     }
 
     /// Take every job any store has emitted since the last take, store by store in a fixed order.
@@ -284,6 +301,8 @@ impl Stores {
     #[must_use]
     pub fn take_jobs_of(&mut self, id: StoreId) -> Vec<StoreJob> {
         match id {
+            StoreId::Notify => self.notify.take_jobs(),
+            StoreId::Watchlist => self.watchlist.take_jobs(),
             StoreId::Metadata => self.metadata.take_jobs(),
             StoreId::Collection => self.collection.take_jobs(),
             StoreId::Person => self.person.take_jobs(),
@@ -307,6 +326,8 @@ impl Stores {
 
     fn has_jobs_of(&self, id: StoreId) -> bool {
         match id {
+            StoreId::Notify => self.notify.has_jobs(),
+            StoreId::Watchlist => self.watchlist.has_jobs(),
             StoreId::Metadata => self.metadata.has_jobs(),
             StoreId::Collection => self.collection.has_jobs(),
             StoreId::Person => self.person.has_jobs(),
@@ -322,8 +343,9 @@ impl Stores {
         }
     }
 
-    pub fn metadata_pump(&mut self) -> bool {
-        self.metadata.pump(&self.landgate)
+    pub fn metadata_pump(&mut self, keys: &plx_plex::plex::ClientKeys, controlled: bool, stand_in: Option<Vec<crate::metadata::AltCopy>>) -> bool {
+        let _step = plx_base::step::StepScope::enter();
+        self.metadata.pump(keys, controlled, stand_in, &self.landgate)
     }
 
     pub fn metadata_view(&self) -> crate::metadata::MetadataView<'_> {
@@ -334,8 +356,10 @@ impl Stores {
         &mut self,
         cmd: search::SearchCmd,
         directory: browse::DirectoryView<'_>,
+        input: &crate::search::SearchInput<'_>,
     ) -> bool {
-        self.search.run_with_directory(cmd, directory)
+        let _step = plx_base::step::StepScope::enter();
+        self.search.run_with_directory_and_input(cmd, directory, input)
     }
 
     /// Pump the Search store; `keys` is the registry's answer as of this call. It does NOT start the
@@ -346,23 +370,43 @@ impl Stores {
         &mut self,
         dt: f32,
         directory: browse::DirectoryView<'_>,
-        keys: &plx_plex::plex::ClientKeys,
+        input: &crate::search::SearchInput<'_>,
     ) -> bool {
-        self.search.pump_with_directory_and_gate(dt, directory, &self.landgate, keys)
+        let _step = plx_base::step::StepScope::enter();
+        self.search.pump_with_directory_and_input_and_gate(dt, directory, &self.landgate, input)
     }
 
     pub fn search_snapshot(
         &self,
         directory: browse::DirectoryView<'_>,
         household: &[i64],
+        input: &crate::search::SearchInput<'_>,
     ) -> search::SearchSnapshot {
-        self.search.snapshot_with_directory(directory, household)
+        self.search.snapshot_with_directory_and_input(directory, household, input)
     }
 
     /// Controlled discovery against this aggregate's Browse owner: the read it asks for is left on
     /// Browse's outbox, for the controlled Home arm to admit through the run's ledger.
-    pub fn browse_controlled_discover(&self, keys: &plx_plex::plex::ClientKeys) {
-        self.browse.borrow_mut().controlled_discover(keys);
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn search_run_for_test(&mut self, cmd: search::SearchCmd, directory: browse::DirectoryView<'_>) -> bool {
+        self.search_run(cmd, directory, &crate::search::fixture_input().input())
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn search_pump_for_test(&mut self, dt: f32, directory: browse::DirectoryView<'_>, keys: &plx_plex::plex::ClientKeys) -> bool {
+        let captured = crate::search::fixture_input();
+        let input = crate::search::SearchInput { keys, ..captured.input() };
+        self.search_pump(dt, directory, &input)
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn search_snapshot_for_test(&self, directory: browse::DirectoryView<'_>, household: &[i64]) -> search::SearchSnapshot {
+        self.search_snapshot(directory, household, &crate::search::fixture_input().input())
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn metadata_run_for_test(&mut self, cmd: metadata::MetadataCmd) -> bool {
+        self.metadata_run(cmd, &crate::pms::registry_keys_for_test())
+    }
+    pub fn browse_controlled_discover(&self, input: &browse::BrowseRosterInput<'_>) {
+        self.browse.borrow_mut().controlled_discover(input);
     }
 
     /// The outboxes [`Stores::viewstate_run`] and [`Stores::viewstate_pump`] can fill, in drain
@@ -385,6 +429,7 @@ impl Stores {
         clients: &plx_plex::plex::ClientKeys,
         profile: u32,
     ) -> StoreOutcome {
+        let _step = plx_base::step::StepScope::enter();
         if matches!(cmd, viewstate::ViewStateCmd::Reset) {
             self.reconcile.reset();
             self.notify.reset();
@@ -405,7 +450,7 @@ impl Stores {
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
-            &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| search.run_local(cmd),
             &mut |cmd| metadata.run(cmd),
         )
     }
@@ -419,6 +464,7 @@ impl Stores {
         clients: &plx_plex::plex::ClientKeys,
         profile: u32,
     ) -> EndpointRefreshSet {
+        let _step = plx_base::step::StepScope::enter();
         let browse = std::rc::Rc::clone(&self.browse);
         let hubs = &mut self.hubs;
         let person = &mut self.person;
@@ -434,7 +480,7 @@ impl Stores {
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
-            &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| search.run_local(cmd),
             &mut |cmd| metadata.run(cmd),
         )
     }
@@ -443,13 +489,31 @@ impl Stores {
     /// (`StoreId` order): a server-side change re-reads its sections' shelves with
     /// `HubsInvalidateServer` and reads the affected source back with `RefetchSourceQuiet`. The
     /// Bridge drains exactly these after the map (`Bridge::start_store_jobs_in`).
-    pub const NOTIFY_FILLS: &'static [StoreId] = &[StoreId::Browse, StoreId::Hubs];
+    pub const NOTIFY_FILLS: &'static [StoreId] = &[StoreId::Browse, StoreId::Hubs, StoreId::Watchlist];
 
     /// The notification feed's per-frame pass. It stands down while the landing gate is armed (a
     /// recording, a replay or a dump owns the run), and never reads the registry's tokens.
-    pub fn notify_pump(&mut self) -> notify::NotifyOut {
-        self.notify.pump(self.landgate.is_armed())
+    pub fn notify_begin(&mut self, input: &notify::NotifyInput<'_>) -> notify::NotifyPass {
+        let _step = plx_base::step::StepScope::enter();
+        assert_eq!(input.armed, self.landgate.is_armed());
+        self.notify.begin(input)
     }
+    pub fn notify_prepare_next(&mut self, pass: &mut notify::NotifyPass, input: &notify::NotifyInput<'_>) -> Option<notify::NotifyTurn> {
+        let _step = plx_base::step::StepScope::enter();
+        assert_eq!(input.armed, self.landgate.is_armed());
+        self.notify.prepare_next(pass, input)
+    }
+    pub fn notify_settle_admission(&mut self, pass: &mut notify::NotifyPass, turn: &mut notify::NotifyTurn) {
+        let _step = plx_base::step::StepScope::enter();
+        self.notify.settle_admission(pass, turn)
+    }
+    pub fn notify_finish_turn(&mut self, pass: &mut notify::NotifyPass, turn: notify::NotifyTurn, input: &notify::NotifyInput<'_>) {
+        let _step = plx_base::step::StepScope::enter();
+        assert_eq!(input.armed, self.landgate.is_armed());
+        self.notify.finish_turn(pass, turn, input)
+    }
+    pub fn notify_end(&mut self, pass: notify::NotifyPass) -> notify::NotifyOut {
+        let _step = plx_base::step::StepScope::enter(); self.notify.end(pass) }
 
     /// Hold (`true`) or release the view-state reconcile network work; see [`Stores::network_held`].
     /// Patches are not held: what the stores already show keeps changing while the player is up.
@@ -533,7 +597,7 @@ impl Stores {
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
-            &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| search.run_local(cmd),
             &mut |cmd| metadata.run(cmd),
         )
     }
@@ -554,6 +618,7 @@ impl Stores {
     /// the end-of-stream fan-outs it queues are made under ([`Stores::viewstate_run`]).
     pub fn reconcile_pump(&mut self, directory: browse::DirectoryView<'_>, clients: &plx_plex::plex::ClientKeys,
         profile: u32) -> StoreOutcome {
+        let _step = plx_base::step::StepScope::enter();
         let owed = self.viewstate.borrow_mut().take_reread();
         self.reconcile.enqueue(owed);
         let idle = !self.viewstate.borrow().is_busy() && !self.network_held;
@@ -571,7 +636,7 @@ impl Stores {
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
-            &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| search.run_local(cmd),
             &mut |cmd| metadata.run(cmd),
         )));
         // A first watch whose read-back found the stream's end: the other servers' copies are
@@ -591,10 +656,24 @@ impl Stores {
 
     /// Capture all three retained Browse publications from one owner borrow. Directory capture
     /// runs first because resolving profile pins may repoint the current section.
-    pub fn capture_browse(&self, directory: &mut browse::DirectorySnapshot)
+    pub fn capture_browse(&self, directory: &mut browse::DirectorySnapshot, input: &browse::BrowseRosterInput<'_>)
         -> browse::BrowsePublications {
         let mut browse = self.browse.borrow_mut();
-        browse.capture_directory(directory);
+        browse.capture_directory(directory, input);
+        browse::BrowsePublications {
+            listing: browse.listing_snapshot(),
+            directory: directory.clone(),
+            section_hubs: browse.hubs_snapshot(),
+        }
+    }
+
+    /// Publish a synthetic table already prepared by the seed/command test helpers.
+    /// Unlike live capture this is projection only: no registry adoption or session inference.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn capture_seeded_browse_for_test(&self, directory: &mut browse::DirectorySnapshot,
+        current: plx_plex::plex::ServerId) -> browse::BrowsePublications {
+        let mut browse = self.browse.borrow_mut();
+        browse.capture_seeded_directory_for_test(directory, current);
         browse::BrowsePublications {
             listing: browse.listing_snapshot(),
             directory: directory.clone(),
@@ -616,7 +695,7 @@ impl Stores {
             StoreId::Watchlist => self.watchlist.gen(),
             StoreId::Catalog => self.catalog.gen(),
             // A landing gate slot only: the stop mailbox is not a store and has no generation.
-            StoreId::ViewStop => 0,
+            StoreId::ViewStop | StoreId::Notify => 0,
         }
     }
 
@@ -682,6 +761,8 @@ pub enum StoreId {
     Watchlist,
     /// Appended for the same reason: the catalog page's discover record (`crate::catalog`).
     Catalog,
+    /// Never recorded; appended without moving existing ordinals.
+    Notify,
 }
 
 /// Route-scoped background work, distinct from a user command. Polling an idle store must not
@@ -713,6 +794,15 @@ impl StoreWork {
 /// lane a store is pumped on, a job carries the request itself and the port its answer goes to.
 #[derive(Debug, PartialEq)]
 pub enum StoreJob {
+    /// A profile-addressed preference edit, merged on the serial storage runner. Not taped.
+    BrowsePreferences(plx_machine::job::Job<crate::browse::preferences_job::BrowsePreferencesReq>,
+        crate::browse::preferences_job::BrowsePreferencesPort),
+    WatchlistList(plx_machine::job::Job<watchlist_job::ListReq>, watchlist_job::WatchlistStreamPort),
+    WatchlistRematch(plx_machine::job::Job<watchlist_job::RematchReq>, watchlist_job::WatchlistStreamPort),
+    WatchlistDelta(plx_machine::job::Job<watchlist_job::DeltaReq>, watchlist_job::WatchlistStreamPort),
+    WatchlistResolve(plx_machine::job::Job<watchlist_job::ResolveReq>, watchlist_job::ResolvePort),
+    WatchlistWrite(plx_machine::job::Job<watchlist_job::WriteReq>, watchlist_job::WritePort),
+    NotifyStream(plx_machine::job::Job<notify_job::NotifyStreamReq>, notify_job::NotifyStreamPort),
     /// One detail fetch (`MetadataCmd::RequestDetail`), addressed by its request generation.
     Detail(plx_machine::job::Job<crate::metadata::DetailReq>, crate::metadata::DetailPort),
     /// One collection page request (resolve, header or children), emitted by the Collection pump
@@ -789,6 +879,8 @@ pub enum StoreJob {
     /// runner resolves the loaded item's server to its client at the launch; a server with none
     /// answers the failure without a GET. Not on the tape.
     MetaRelated(plx_machine::job::Job<crate::metadata::MetaRelatedReq>, crate::metadata::MetaRelatedPort),
+    /// Ordered multi-server GUID read fenced by the whole captured key snapshot. Never taped.
+    MetaAltSources(plx_machine::job::Job<crate::metadata::MetaAltSourcesReq>, crate::metadata::MetaAltSourcesPort),
 }
 
 /// How the runner admits a job before it starts it: the policy a job kind belongs to, stated on
@@ -831,11 +923,14 @@ impl StoreJob {
             // `frame_ingest`, the Browse pump's own discovery step) starts it through
             // `StoreRunner::start` as `Direct`, byte for byte as its unrecorded spawn was.
             Self::BrowseDiscovery(..) => Admission::Home,
-            Self::Catalog(..)
+            Self::WatchlistList(..) | Self::WatchlistRematch(..) | Self::WatchlistDelta(..)
+            | Self::WatchlistResolve(..) | Self::WatchlistWrite(..) | Self::NotifyStream(..)
+            | Self::Catalog(..)
             | Self::SubtitleSearch(..)
             | Self::ViewReconcile(..)
             | Self::Search(..)
             | Self::SaveRecents(..)
+            | Self::BrowsePreferences(..)
             | Self::ViewWrite(..)
             | Self::MetaSeason(..)
             | Self::MetaEpisodes(..) => Admission::Direct,
@@ -843,20 +938,23 @@ impl StoreJob {
             // `bootstrap/effects.rs` has no arm for (it rejects them as "unsupported controlled
             // metadata command"), so no controlled run or replay emits one and the launch is the
             // whole decision (as for the season switch and the episode pages beside it).
-            Self::MetaRelated(..) => Admission::Direct,
+            Self::MetaRelated(..) | Self::MetaAltSources(..) => Admission::Direct,
         }
     }
 
     pub fn store(&self) -> StoreId {
         match self {
-            Self::Detail(..) | Self::MetaSeason(..) | Self::MetaEpisodes(..) | Self::MetaRelated(..) => StoreId::Metadata,
+            Self::Detail(..) | Self::MetaSeason(..) | Self::MetaEpisodes(..) | Self::MetaRelated(..) | Self::MetaAltSources(..) => StoreId::Metadata,
             Self::Collection(..) => StoreId::Collection,
             Self::Person(..) => StoreId::Person,
+            Self::NotifyStream(..) => StoreId::Notify,
+            Self::WatchlistList(..) | Self::WatchlistRematch(..) | Self::WatchlistDelta(..)
+            | Self::WatchlistResolve(..) | Self::WatchlistWrite(..) => StoreId::Watchlist,
             Self::Catalog(..) => StoreId::Catalog,
             Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
             Self::ViewReconcile(..) => StoreId::ViewReconcile,
             Self::Hubs(..) => StoreId::Hubs,
-            Self::BrowseHubs(..) | Self::BrowseDirectory(..) | Self::BrowsePage(..) | Self::BrowseDiscovery(..) => StoreId::Browse,
+            Self::BrowsePreferences(..) | Self::BrowseHubs(..) | Self::BrowseDirectory(..) | Self::BrowsePage(..) | Self::BrowseDiscovery(..) => StoreId::Browse,
             Self::Search(..) | Self::SaveRecents(..) => StoreId::Search,
             Self::ViewWrite(..) => StoreId::ViewState,
         }
@@ -864,7 +962,7 @@ impl StoreJob {
 }
 
 impl StoreId {
-    pub const ALL: [StoreId; 12] = [
+    pub const ALL: [StoreId; 13] = [
         StoreId::Browse,
         StoreId::Hubs,
         StoreId::Metadata,
@@ -877,6 +975,7 @@ impl StoreId {
         StoreId::ViewStop,
         StoreId::Watchlist,
         StoreId::Catalog,
+        StoreId::Notify,
     ];
 
     /// The library's ordinal for this store (spec §5.1: the library never names `StoreId`).
@@ -902,6 +1001,7 @@ impl StoreId {
             StoreId::ViewStop => "viewstop",
             StoreId::Watchlist => "watchlist",
             StoreId::Catalog => "catalog",
+            StoreId::Notify => "notify",
         }
     }
 }
@@ -1393,7 +1493,14 @@ mod tests {
         for id in StoreId::ALL {
             assert_eq!(StoreId::from_ord(id.ord()), Some(id));
         }
-        assert_eq!(StoreId::from_ord(StoreOrd(12)), None);
+        assert_eq!(StoreId::Notify.ord(), StoreOrd(12));
+        assert_eq!(StoreId::Notify.name(), "notify");
+        assert_eq!(StoreId::from_ord(StoreOrd(13)), None);
+        let original = ["browse", "hubs", "metadata", "search", "person", "viewstate",
+            "collection", "subsearch", "viewreconcile", "viewstop", "watchlist", "catalog"];
+        for (ord, name) in original.into_iter().enumerate() {
+            assert_eq!(StoreId::from_ord(StoreOrd(ord as u32)).unwrap().name(), name);
+        }
     }
 
     /// A fan-out call that can fill an outbox names it in a `*_FILLS` list the Bridge drains. A
@@ -1403,7 +1510,7 @@ mod tests {
     #[test]
     fn the_fan_out_fill_lists_name_the_stores_the_calls_can_fill() {
         assert_eq!(Stores::VIEWSTATE_FILLS, [StoreId::Browse, StoreId::Hubs, StoreId::ViewState]);
-        assert_eq!(Stores::NOTIFY_FILLS, [StoreId::Browse, StoreId::Hubs]);
+        assert_eq!(Stores::NOTIFY_FILLS, [StoreId::Browse, StoreId::Hubs, StoreId::Watchlist]);
         assert_eq!(Stores::RECONCILE_FILLS, [StoreId::ViewState, StoreId::ViewReconcile]);
         for list in [Stores::VIEWSTATE_FILLS, Stores::NOTIFY_FILLS, Stores::RECONCILE_FILLS] {
             for (i, id) in list.iter().enumerate() {

@@ -602,6 +602,7 @@ fn cold_start_plan_lands_as_client_over_remux_with_a_reader_target() {
         ctx: String::new(),
         preview: false,
         version: None,
+        show_rk: String::new(),
     });
     assert_eq!(subtitle_presenter(&ps), SubtitlePresenter::ClientOverRemux);
     assert!(!subtitles_burned(&ps));
@@ -1003,5 +1004,89 @@ fn burn_route_offered_but_no_enhancement_wanted_is_not_forced_into_a_re_encode()
     for d in transcode_decisions(&r.requests) {
         assert!(!d.contains("subtitles=burn"), "nothing burns: {d}");
     }
+    plx_plex::plex::reset_servers_for_test();
+}
+
+// ---------------------------------------------------------------------------------------------
+// The preview gate's REASON (Sentry PLX-NATIVE-23). The gate refuses everything but a plain direct
+// play; which condition refused is typed data on the verdict, graded here on real resolves against
+// the loopback PMS because the interesting cases are wire facts (what the server's decision said,
+// whether Auto's Remote probe came back).
+
+/// The reason a resolve's refusal carries, or `None` for a plan that was not refused as a preview.
+fn preview_refusal_of(r: &Resolve) -> Option<plx_telemetry::telemetry::classes::PreviewRefusal> {
+    match &r.plan.verdict {
+        Some(PlayVerdict::PreviewNeedsDirectPlay { reason }) => Some(*reason),
+        _ => None,
+    }
+}
+
+/// An item with no media part has nothing to play, whatever the server says about direct play.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_preview_with_no_part_is_refused_as_no_part() {
+    use plx_telemetry::telemetry::classes::PreviewRefusal;
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, "", "ac3", ac3_item, |env, _| {
+        env.set_preview(true);
+    });
+    assert!(r.plan.url.is_empty());
+    assert_eq!(preview_refusal_of(&r), Some(PreviewRefusal::NoPart), "{:?}", r.plan.verdict);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// The server's decision is a transcode: a direct play was never on offer.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_preview_the_server_would_transcode_is_refused_as_not_direct() {
+    use plx_telemetry::telemetry::classes::PreviewRefusal;
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_TRANSCODE, EnhMode::Honor("ac3"), 0, MKV, "ac3", ac3_item, |env, _| {
+        env.set_preview(true);
+    });
+    assert!(r.plan.url.is_empty());
+    assert_eq!(preview_refusal_of(&r), Some(PreviewRefusal::NotDirect), "{:?}", r.plan.verdict);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// **The hypothesis this tag exists to test.** The server would direct-play the item, but Auto
+/// quality's Remote bandwidth probe came back empty (the loopback PMS serves no media bytes), so
+/// Auto chose HLS: a direct play was on offer and the bandwidth decision refused it.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_direct_playable_preview_that_auto_sends_to_hls_is_refused_as_adaptive() {
+    use plx_telemetry::telemetry::classes::PreviewRefusal;
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3", ac3_item, |env, client| {
+        client.set_link(plx_plex::plex::probe::Location::Remote);
+        env.quality = Quality::Auto;
+        env.set_preview(true);
+    });
+    assert!(r.plan.url.is_empty());
+    assert_eq!(preview_refusal_of(&r), Some(PreviewRefusal::Adaptive), "{:?}", r.plan.verdict);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// **The order is part of the contract.** Auto's override sets `directplay` false whenever it picks
+/// HLS, so a preview the server would transcode ALSO ends on an adaptive plan under Auto. The first
+/// failing condition is the one that was true BEFORE Auto chose: no direct play was on offer, so
+/// `not_direct`, not `adaptive`. (Reading the refusal off the values the gate sees would report
+/// every Auto-quality refusal as `adaptive` and make the hypothesis above unfalsifiable.)
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_transcoded_preview_under_auto_is_not_direct_even_though_auto_also_chose_hls() {
+    use plx_telemetry::telemetry::classes::PreviewRefusal;
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_TRANSCODE, EnhMode::Honor("ac3"), 0, MKV, "ac3", ac3_item, |env, client| {
+        client.set_link(plx_plex::plex::probe::Location::Remote);
+        env.quality = Quality::Auto;
+        env.set_preview(true);
+    });
+    assert!(r.plan.url.is_empty());
+    assert_eq!(preview_refusal_of(&r), Some(PreviewRefusal::NotDirect), "{:?}", r.plan.verdict);
     plx_plex::plex::reset_servers_for_test();
 }

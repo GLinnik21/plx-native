@@ -76,7 +76,7 @@ WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 WS_NONCE = bytes([7] * 16)
 
 ADDRESSES = [
-    "gh:GLinnik21/plxnative-huds", "gh:owner/repo@v1.2.3", "GH:Owner-1/Repo_name.x@1.0.0+build",
+    "gh:plxnative/plxnative-huds", "gh:owner/repo@v1.2.3", "GH:Owner-1/Repo_name.x@1.0.0+build",
     "https://example.com/hud.plxhud", "https://example.com:8443/a/b.plxhud?x=1#frag",
     "https://[2001:db8::1]:443/hud", "https://user:pass@example.com/hud", "http://192.168.1.20:8000/hud.plxhud",
     "http://10.0.0.5/hud", "http://172.16.0.1/", "http://8.8.8.8/hud", "http://localhost/hud", "  gh:a/b  ",

@@ -1,12 +1,9 @@
 //! The physically owned Watchlist model and its worker adapter (plan §1.2, §1.4, §1.5, §1.11).
 //!
-//! Main-thread state plus an `Arc` mailbox, like the other owned stores. Three kinds of worker,
-//! each `spawn_small`: the LIST worker (pages, released set, matching after each page), the
-//! REMATCH worker (a full re-match after the roster moved) and the WRITE worker (one write at a
-//! time, in press order). Every landing is tagged `{profile generation, store epoch, request id}`
-//! and a landing for another profile or a rotated epoch is dropped. A profile switch rotates the
-//! epoch: the rows, the match table and the intent ledger are cleared and the old workers land
-//! into a retired mailbox.
+//! The store emits addressed List, Rematch and Delta streams plus Resolve and serial Write
+//! jobs. The app runner executes them through boot-selected ports; the step only consumes
+//! captured facts and addressed landings. Streams post in order, then owe one acknowledged
+//! terminal. A profile switch rotates the epoch, cancels queued jobs and retires old mailboxes.
 //!
 //! Membership is the default-order list from the service, with the intent ledger on top: a press
 //! flips the row at once, a write that fails reverts it (no toast), and an intent beats any list
@@ -23,8 +20,8 @@ use crate::watchlist::ledger::{Intent, IntentLedger, PendingWrite, WriteOutcome}
 use crate::watchlist::model::{tile_state, Asked, Kind, MatchTable, ServerMatch, TileState, WatchRow};
 use crate::watchlist::order::{sorted_filtered, FilterSpec, SortSpec};
 use crate::watchlist::{
-    run_delta, run_list, run_rematch, run_write, Failure, Landed, LiveIo, Tag, What, WatchlistAuth, WatchlistInput,
-    WatchlistIo,
+    Failure, Landed, Tag, What, WatchlistAuth, WatchlistInput,
+
 };
 use plx_machine::machine::{Cx, Effects, Handled, Host, Machine};
 use plx_plex::plex::session::CurrentProfile;
@@ -35,6 +32,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::StoreEv;
+#[cfg(any(test, feature = "test-support"))]
+use crate::watchlist::WatchlistIo;
 
 /// Frames a refused spawn waits before the next try. A refused spawn never blocks a frame.
 const RETRY_FRAMES: u32 = 120;
@@ -78,24 +77,60 @@ pub struct TileFacts {
     pub dur_ms: i64,
 }
 
+
+/// A single host-captured roster and date, shared by every decision in one pass.
+use crate::watchlist::model::Reach;
+use super::watchlist_job::{Snapshot, WatchlistStreamPort, ListReq, RematchReq, DeltaReq, AuthValue};
+use super::watchlist_job::stream::{StreamMailbox, StreamLanding, StreamEvent, StreamEnd};
+use plx_machine::machine::{Addr, MachineId, RequestId};
+#[derive(Clone, Copy, PartialEq)]
+enum ListRead { HoldingRows, AwaitingPage, Publishing }
+#[derive(Clone, Copy, PartialEq)]
+enum StreamKind { List(ListRead), Rematch, Delta }
+impl StreamKind {
+    fn is_list(self) -> bool { matches!(self, Self::List(_)) }
+}
+pub struct WatchlistFacts<'a> {
+    pub keys: &'a plx_plex::plex::ClientKeys,
+    pub today: Option<&'a str>,
+}
+
+impl crate::watchlist::model::Reach for WatchlistFacts<'_> {
+    fn reachable(&self, server: ServerId) -> bool {
+        matches!(self.keys.facts(server).and_then(|f| f.source),
+            Some((Some(plx_plex::plex::probe::Outcome::Reachable), _)))
+    }
+
+    fn roster(&self) -> Vec<ServerId> {
+        self.keys.slots().collect()
+    }
+
+    fn copy_rank(&self, server: ServerId) -> u8 {
+        if server != ServerId::UNSET && self.keys.current() == server {
+            0
+        } else if self.keys.facts(server).and_then(|f| f.described).is_some_and(|f| f.owned) {
+            1
+        } else {
+            2
+        }
+    }
+}
+
 /// A worker's mailbox. Landings queue in post order; the pump drains them all.
 #[derive(Default)]
 pub struct WatchlistAdapter {
     mail: Mutex<VecDeque<Landed>>,
-    list_busy: AtomicBool,
-    write_busy: AtomicBool,
+
     /// Card rows asked to be resolved by `(server, rk)` (`WatchlistStore::want_hex`), spawned by the
     /// next pump. Behind a lock because a menu asks from `&self`.
     wanted: Mutex<Vec<(ServerId, String)>>,
-    /// Resolved ids, landed by the resolve workers. The outer `None` is "the server did not
-    /// answer": that attempt is forgotten, not memoized, so the next menu asks again.
-    resolved: Mutex<Vec<(ServerId, String, Option<Option<[u8; 12]>>)>>,
 }
 
 impl WatchlistAdapter {
+    #[cfg(any(test, feature = "test-support"))]
     fn post(&self, landed: Landed) {
         self.mail.lock().unwrap_or_else(|e| e.into_inner()).push_back(landed);
-        plx_machine::idle::invalidate();
+
     }
 
     fn take_all(&self) -> Vec<Landed> {
@@ -103,25 +138,19 @@ impl WatchlistAdapter {
     }
 }
 
-/// Clears a busy flag when the worker ends, however it ends (a panic included).
-struct Release(Arc<WatchlistAdapter>, fn(&WatchlistAdapter) -> &AtomicBool);
-
-impl Drop for Release {
-    fn drop(&mut self) {
-        (self.1)(&self.0).store(false, Ordering::SeqCst);
-    }
-}
-
+#[cfg(any(test, feature = "test-support"))]
 type Spawn = fn(&str, Box<dyn FnOnce() + Send + 'static>) -> bool;
 
-fn spawn_worker(what: &str, f: Box<dyn FnOnce() + Send + 'static>) -> bool {
-    plx_base::task::spawn_small(what, f)
-}
+
 
 /// Main-thread state.
 struct WatchlistState {
     epoch: u32,
     req: u32,
+    list_claim: Option<u32>,
+    write_claim: Option<u32>,
+    write_port: Option<super::watchlist_job::WritePort>,
+
     auth: Option<WatchlistAuth>,
     status: Status,
     rows: Vec<WatchRow>,
@@ -135,7 +164,7 @@ struct WatchlistState {
     table: MatchTable,
     states: Vec<TileState>,
     facts: HashMap<(ServerId, i64), TileFacts>,
-    facts_seen: u32,
+
     ledger: IntentLedger,
     /// The ledger stamp of the read whose rows are `rows`.
     rows_stamp: u64,
@@ -148,7 +177,7 @@ struct WatchlistState {
     /// answered "no portable id" (or no answer), not asked again this epoch.
     resolved: HashMap<(ServerId, String), Option<[u8; 12]>>,
     /// Asked and not yet answered.
-    resolving: HashSet<(ServerId, String)>,
+    resolving: HashMap<(ServerId, String), (Tag, super::watchlist_job::ResolvePort)>,
     index: Vec<usize>,
     window: Range<usize>,
     list_wanted: bool,
@@ -176,6 +205,10 @@ impl WatchlistState {
         Self {
             epoch,
             req: 0,
+            list_claim: None,
+            write_claim: None,
+            write_port: None,
+
             auth: None,
             status: Status::Idle,
             rows: Vec::new(),
@@ -186,7 +219,7 @@ impl WatchlistState {
             table: MatchTable::default(),
             states: Vec::new(),
             facts: HashMap::new(),
-            facts_seen: 0,
+
             ledger: IntentLedger::new(),
             rows_stamp: 0,
             read_stamp: 0,
@@ -194,7 +227,7 @@ impl WatchlistState {
             filter,
             members: HashSet::new(),
             resolved: HashMap::new(),
-            resolving: HashSet::new(),
+            resolving: HashMap::new(),
             index: Vec::new(),
             window: 0..0,
             list_wanted: false,
@@ -212,16 +245,42 @@ impl WatchlistState {
 
 pub struct WatchlistStore {
     state: WatchlistState,
+    resolve_profile: Option<u32>,
+    resolve_mailbox: Arc<super::watchlist_job::ResolveMailbox>,
+    write_mailbox: Arc<super::watchlist_job::WriteMailbox>,
+    stream_mailbox: Arc<StreamMailbox<What>>,
+    stream: Option<(StreamKind, WatchlistStreamPort)>,
+    stream_keys: plx_plex::plex::ClientKeys,
+    retired_streams: Vec<(WatchlistStreamPort, Arc<StreamMailbox<What>>)>,
+    pending_delta: Option<(ServerId, Arc<Vec<(String, Kind)>>)>,
+    rematch_wanted: bool,
+    snapshot: Snapshot,
+    jobs: Vec<super::StoreJob>,
     adapter: Arc<WatchlistAdapter>,
-    io: Arc<dyn WatchlistIo>,
+    #[cfg(any(test, feature = "test-support"))]
+    io: Option<Arc<dyn WatchlistIo>>,
+    #[cfg(any(test, feature = "test-support"))]
     spawn: Spawn,
     notice_gen: AtomicU32,
     notice_dirty: AtomicBool,
 }
 
 impl Default for WatchlistStore {
-    fn default() -> Self {
-        Self::with_io(Arc::new(LiveIo))
+fn default() -> Self {
+        Self {
+            state: WatchlistState::new(0, default_sort(), FilterSpec::default()),
+            resolve_profile: None,
+            resolve_mailbox: Arc::new(Default::default()),
+            write_mailbox: Arc::new(Default::default()),
+            stream_mailbox: Arc::new(Default::default()), stream: None, pending_delta: None, rematch_wanted: false,
+            stream_keys: Default::default(), retired_streams: Vec::new(),
+            snapshot: Snapshot::default(), jobs: Vec::new(), adapter: Arc::new(Default::default()),
+            #[cfg(any(test, feature = "test-support"))]
+            io: None,
+            #[cfg(any(test, feature = "test-support"))]
+            spawn: |_, _| false,
+            notice_gen: AtomicU32::new(0), notice_dirty: AtomicBool::new(false),
+        }
     }
 }
 
@@ -235,16 +294,10 @@ fn on_your_servers(state: TileState) -> bool {
 }
 
 impl WatchlistStore {
-    /// A store over a given I/O seam (tests script it; production is [`LiveIo`]).
+    /// Fixture transport; the pure store still emits the production job values.
+#[cfg(any(test, feature = "test-support"))]
     pub fn with_io(io: Arc<dyn WatchlistIo>) -> Self {
-        Self {
-            state: WatchlistState::new(0, default_sort(), FilterSpec::default()),
-            adapter: Arc::new(WatchlistAdapter::default()),
-            io,
-            spawn: spawn_worker,
-            notice_gen: AtomicU32::new(0),
-            notice_dirty: AtomicBool::new(false),
-        }
+        Self { snapshot: Snapshot::scripted(&*io), io: Some(io), ..Self::default() }
     }
 
     fn bump(&self) {
@@ -305,7 +358,7 @@ impl WatchlistStore {
             .get(&row.guid)?
             .iter()
             .filter_map(|(sid, asked)| match asked {
-                Asked::Held(m, facts) if self.io.reachable(*sid) => Some((self.io.copy_rank(*sid), (m, facts))),
+                Asked::Held(m, facts) if self.snapshot.reachable(*sid) => Some((self.snapshot.copy_rank(*sid), (m, facts))),
                 _ => None,
             })
             .min_by_key(|(rank, _)| *rank)
@@ -445,10 +498,27 @@ impl WatchlistStore {
     /// A new epoch with nothing in it. The old workers land into a retired mailbox; their writes
     /// that were still queued are dropped with the old ledger (never sent to another profile).
     fn reset(&mut self) {
+        for (_, port) in self.state.resolving.values() { port.cancel_queued(); }
+        if let Some(port) = &self.state.write_port { port.cancel_queued(); }
+        if let Some((_, port)) = &self.stream {
+            port.cancel();
+            self.retired_streams.push((port.clone(), Arc::clone(&self.stream_mailbox)));
+        }
+        for terminal in self.stream_mailbox.take() { terminal.ack_terminal(); }
+        self.stream = None;
+        self.pending_delta = None;
+        self.rematch_wanted = false;
+        self.stream_mailbox = Arc::new(Default::default());
+        self.jobs.clear();
+        self.write_mailbox = Arc::new(Default::default());
+        self.resolve_mailbox = Arc::new(Default::default());
+        self.resolve_profile = None;
         let epoch = self.state.epoch.wrapping_add(1);
+        let req = self.state.req;
         let (sort, filter) = (self.state.sort, self.state.filter);
         self.adapter = Arc::new(WatchlistAdapter::default());
         self.state = WatchlistState::new(epoch, sort, filter);
+        self.state.req = req;
     }
 
     /// Recompute what is derived from rows, ledger and view: membership, then the sorted,
@@ -474,11 +544,11 @@ impl WatchlistStore {
     /// Derive every row's tile state again (commit, `facts_gen`, a reachability flip).
     fn rederive(&mut self) {
         let s = &mut self.state;
-        let io = &*self.io;
+        let io = &self.snapshot;
         // Released read failed and the row's date cannot say (none, or no clock): its release is
         // unknown, so a row every server answered absent stays Unknown (plan §1.3), not washed.
         let release_blind = s.released.is_none();
-        let today = io.today();
+        let today = io.today.as_deref();
         s.states = s
             .rows
             .iter()
@@ -489,13 +559,13 @@ impl WatchlistStore {
                 state => state,
             })
             .collect();
-        s.facts_seen = io.facts_gen();
+
         self.refresh();
     }
 
     /// Settle a row's `released` against the released set; when that read failed, against today.
     fn settle_released(&self, rows: &mut [WatchRow]) {
-        let today = self.io.today();
+        let today = self.snapshot.today.clone();
         for r in rows {
             r.released = match (&self.state.released, &today, &r.release) {
                 (Some(set), ..) => set.contains(&r.guid),
@@ -530,6 +600,18 @@ impl WatchlistStore {
         if landed.tag.profile_gen != auth.generation || landed.tag.epoch != self.state.epoch {
             return false;
         }
+        let claim = match &landed.what {
+            What::Written { .. } => self.state.write_claim,
+            _ => self.state.list_claim,
+        };
+        if claim != Some(landed.tag.req) {
+            return false;
+        }
+        match &landed.what {
+            What::ListDone => {},
+            What::Written { .. } => self.state.write_claim = None,
+            _ => {}
+        }
         match landed.what {
             What::Page { start, total, mut rows, answers, roster_gen, etag } => {
                 self.state.total = total;
@@ -545,9 +627,9 @@ impl WatchlistStore {
                 self.settle_released(&mut rows);
                 self.merge(answers, roster_gen);
                 if start == 0 {
-                    self.state.truncated = false;
                     if self.state.rows.is_empty() {
                         // First load: the page shows as soon as it lands.
+                        self.state.truncated = false;
                         self.state.rows = rows;
                         self.state.rows_stamp = self.state.read_stamp;
                         self.state.status = Status::Ready;
@@ -578,10 +660,10 @@ impl WatchlistStore {
                 let had_rows = self.state.incoming.take().is_some();
                 if start == 0 && self.state.rows.is_empty() {
                     self.state.status = Status::Failed(why);
-                } else {
-                    // A reread's later page failing keeps the old complete rows: only a list
-                    // that is itself being built from pages is cut short.
-                    self.state.truncated = start > 0 && !had_rows;
+                } else if start > 0 && !had_rows {
+                    // Only a first load changes the rows on a later-page failure. A failed
+                    // reread retains the completeness of the rows already on screen.
+                    self.state.truncated = true;
                 }
                 true
             }
@@ -604,6 +686,7 @@ impl WatchlistStore {
                 self.state.read_etag = None;
                 if let Some(mut rows) = self.state.incoming.take() {
                     self.settle_released(&mut rows);
+                    self.state.truncated = false;
                     self.state.rows = rows;
                     self.state.rows_stamp = self.state.read_stamp;
                     self.state.status = Status::Ready;
@@ -645,90 +728,221 @@ impl WatchlistStore {
     /// `facts_gen`, then start whatever work is owed. MAIN THREAD, once a frame.
     /// `profile` is the one the Bridge read for this frame (`Bridge::seated_profile`): a pass never
     /// captures an identity (a reset leaves none, and the next `Open` captures), so it needs no more.
-    pub fn pump_with_gate(&mut self, gate: &plx_machine::landgate::Gate, profile: &CurrentProfile) -> bool {
+    pub fn pump_with_gate(&mut self, gate: &plx_machine::landgate::Gate, profile: &CurrentProfile, keys: &plx_plex::plex::ClientKeys) -> bool {
+        self.pump_with_gate_and_keys(gate, profile, keys)
+    }
+
+pub fn pump_with_gate_and_keys(&mut self, gate: &plx_machine::landgate::Gate, profile: &CurrentProfile, keys: &plx_plex::plex::ClientKeys) -> bool {
+        self.pump_with_snapshot(gate, profile, Snapshot::new(keys, self.snapshot.today.clone()))
+    }
+
+    pub fn observe_snapshot(&mut self, input: Snapshot) {
+        let changed = self.snapshot != input;
+        self.snapshot = input;
+        if changed && self.state.auth.is_some() { self.rederive(); self.bump(); }
+    }
+    pub fn pump_with_snapshot(&mut self, gate: &plx_machine::landgate::Gate, profile: &CurrentProfile, input: Snapshot) -> bool {
         let mut changed = false;
-        if self.state.auth.as_ref().is_some_and(|a| !a.is_current(profile)) {
-            self.reset();
-            changed = true;
+        if self.resolve_profile.is_some_and(|g| g != profile.generation)
+            || self.state.auth.as_ref().is_some_and(|a| !a.is_current(profile)) {
+            self.reset(); changed = true;
         }
+        self.resolve_profile = Some(profile.generation);
+        self.retired_streams.retain(|(port, mail)| {
+            // A terminal phase guarantees its post is in the queue; sample it before draining.
+            let running = port.is_running();
+            for terminal in mail.take() { terminal.ack_terminal(); }
+            running
+        });
+        let facts_changed = self.snapshot != input;
+        self.snapshot = input;
         self.state.list_retry = self.state.list_retry.saturating_sub(1);
         self.state.write_retry = self.state.write_retry.saturating_sub(1);
-        let adapter = Arc::clone(&self.adapter);
-        // In the frame dump's landing gate this waits until no list or write worker is out, so a
-        // landing is a function of the frame that spawned the work. The flags are read BEFORE the
-        // drain: a worker posts, then clears its flag, so a flag read clear means its mail is in.
-        let was_idle = std::cell::Cell::new(true);
-        let landings = super::take_landings_owed(gate, super::StoreId::Watchlist, |_| !was_idle.get(), || {
-            was_idle.set(!adapter.list_busy.load(Ordering::SeqCst) && !adapter.write_busy.load(Ordering::SeqCst));
-            adapter.take_all()
-        });
-        for landed in landings {
-            plx_machine::idle::invalidate();
-            changed |= self.apply(landed);
-        }
-        if self.state.auth.is_some() && self.io.facts_gen() != self.state.facts_seen {
-            self.rederive();
-            changed = true;
-        }
-        changed |= self.pump_resolves(gate);
+        changed |= self.pump_streams(gate);
+        for landed in self.adapter.take_all() { changed |= self.apply(landed); }
+        if self.state.auth.is_some() && facts_changed { self.rederive(); changed = true; }
+        changed |= self.pump_writes(gate, profile.generation);
+        let snapshot = self.snapshot.clone();
+        changed |= self.pump_resolves(gate, profile.generation, &snapshot.keys);
         self.maybe_spawn();
-        if changed {
-            self.bump();
+        if changed { self.bump(); }
+        changed
+    }
+
+    fn pump_streams(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
+        let port = self.stream.as_ref().map(|(_, p)| p.clone());
+        let mailbox = Arc::clone(&self.stream_mailbox);
+        let batch = super::take_landings_owed(gate, super::StoreId::Watchlist,
+            |_: &[StreamLanding<What>]| port.as_ref().is_some_and(|p| p.is_running()), || mailbox.take());
+        let mut changed = false;
+        for landed in batch {
+            landed.ack_terminal();
+            let expected = Addr { to: MachineId::Store(super::StoreId::Watchlist.ord()), req: RequestId(landed.tag.req) };
+            if landed.addr != expected || self.state.list_claim != Some(landed.tag.req)
+                || landed.tag.epoch != self.state.epoch
+                || !self.state.auth.as_ref().is_some_and(|a| a.generation == landed.tag.profile_gen) { continue; }
+            match landed.event {
+                StreamEvent::Post(mut what) => {
+                    if matches!(&what, What::Page { .. }) {
+                        if let Some((StreamKind::List(progress), _)) = &mut self.stream {
+                            if *progress == ListRead::AwaitingPage { *progress = ListRead::Publishing; }
+                        }
+                    }
+                    let keys = &self.stream_keys;
+                    let now = &self.snapshot.keys;
+                    let retain = |answers: &mut Vec<crate::watchlist::Answer>| answers.retain(|(_, sid, _)| keys.key(*sid) == now.key(*sid));
+                    match &mut what {
+                        What::Page { answers, .. } | What::Delta { answers } => retain(answers),
+                        What::Rematch { answers, .. } => {
+                            if keys != now { continue; }
+                            retain(answers);
+                        }
+                        _ => {}
+                    }
+                    changed |= self.apply(Landed { tag: landed.tag, what });
+                }
+                StreamEvent::End(end) => {
+                    let kind = self.stream.as_ref().map(|(k, _)| *k);
+                    match end {
+                        StreamEnd::NotStarted => {
+                            self.state.list_retry = RETRY_FRAMES;
+                            if kind.is_some_and(StreamKind::is_list) { self.state.list_wanted = true; }
+                        }
+                        StreamEnd::Done if kind.is_some_and(StreamKind::is_list) => changed |= self.apply(Landed { tag: landed.tag, what: What::ListDone }),
+                        StreamEnd::Panicked | StreamEnd::Cancelled => {
+                            self.state.list_retry = RETRY_FRAMES;
+                            if let Some(StreamKind::List(progress)) = kind {
+                                let start = u32::from(progress == ListRead::Publishing);
+                                changed |= self.apply(Landed { tag: landed.tag, what: What::PageFailed { start, why: Failure::Other } });
+                                changed |= self.apply(Landed { tag: landed.tag, what: What::ListDone });
+                            }
+                        }
+                        _ => {}
+                    }
+                    let stale_keys = self.stream_keys != self.snapshot.keys;
+                    if kind == Some(StreamKind::Delta) && end == StreamEnd::Done && !stale_keys { self.pending_delta = None; }
+                    if stale_keys || end != StreamEnd::Done {
+                        self.state.list_retry = RETRY_FRAMES;
+                        if kind == Some(StreamKind::Rematch) || (stale_keys && kind.is_some_and(StreamKind::is_list)) { self.rematch_wanted = true; }
+                    }
+                    self.state.list_claim = None;
+                    self.stream = None;
+                }
+            }
         }
         changed
     }
 
-    fn maybe_spawn(&mut self) {
-        let Some(auth) = self.state.auth.clone() else { return };
-        // The write worker: one write at a time, in press order.
-        if !self.adapter.write_busy.load(Ordering::SeqCst) && self.state.write_retry == 0 {
-            if let Some(write) = self.state.ledger.next_write() {
-                self.spawn_write(&auth, write);
+    /// Settle launch refusals in the emitting drain without advancing retry clocks or emitting work.
+    pub fn land_stream_results(&mut self, gate: &plx_machine::landgate::Gate, profile: &CurrentProfile) -> bool {
+        if self.state.auth.as_ref().is_some_and(|a| !a.is_current(profile)) { self.reset(); self.bump(); return true; }
+        // Admission refusals settle before ordinary landing gates, in the emitting drain.
+        for landed in self.stream_mailbox.take_not_started() {
+            landed.ack_terminal();
+            let expected = Addr { to: MachineId::Store(super::StoreId::Watchlist.ord()), req: RequestId(landed.tag.req) };
+            if landed.addr != expected || self.state.list_claim != Some(landed.tag.req)
+                || landed.tag.epoch != self.state.epoch
+                || !self.state.auth.as_ref().is_some_and(|a| a.generation == landed.tag.profile_gen) { continue; }
+            match self.stream.as_ref().map(|(kind, _)| *kind) {
+                Some(StreamKind::List(_)) => self.state.list_wanted = true,
+                Some(StreamKind::Rematch) => self.rematch_wanted = true,
+                _ => {}
             }
+            self.state.list_retry = RETRY_FRAMES;
+            self.state.list_claim = None;
+            self.stream = None;
         }
-        if self.adapter.list_busy.load(Ordering::SeqCst) || self.state.list_retry > 0 {
-            return;
-        }
-        if self.state.list_wanted {
-            self.spawn_list(&auth);
-        } else if !self.state.rows.is_empty()
-            && self.io.roster_gen() != self.state.table.roster_gen
-        {
-            self.spawn_rematch(&auth);
-        }
+        if !self.stream_mailbox.has_mail() { return false; }
+        let changed = self.pump_streams(gate);
+        if changed { self.bump(); }
+        changed
+    }
+
+fn maybe_spawn(&mut self) {
+        if self.state.auth.is_none() { return; }
+        let write = if self.state.write_claim.is_none() && self.state.write_retry == 0 {
+            self.state.ledger.next_write()
+        } else { None };
+        let stream_owed = self.state.list_claim.is_none() && self.state.list_retry == 0
+            && (self.state.list_wanted || self.pending_delta.is_some()
+                || (!self.state.rows.is_empty() && (self.rematch_wanted || self.snapshot.roster_gen != self.state.table.roster_gen)));
+        if write.is_none() && !stream_owed { return; }
+        let auth = self.state.auth.clone().expect("a pending Watchlist job has captured auth");
+        if let Some(write) = write { self.spawn_write(&auth, write); }
+        if !stream_owed { return; }
+        if self.state.list_wanted { self.spawn_list(&auth); }
+        else if let Some((sid, asks)) = self.pending_delta.clone() { self.emit_delta(&auth, sid, asks); }
+        else if !self.state.rows.is_empty() && (self.rematch_wanted || self.snapshot.roster_gen != self.state.table.roster_gen) { self.spawn_rematch(&auth); }
     }
 
     fn spawn_write(&mut self, auth: &WatchlistAuth, write: PendingWrite) {
-        self.state.req += 1;
-        // Whatever this write does, the service's list is no longer the one the validator names
-        // (even a failed request may have reached it): the next read must be whole.
+        use plx_machine::machine::{Addr, MachineId, RequestId};
+        use super::watchlist_job::{WritePort, WriteReq};
+        self.state.req = self.state.req.checked_add(1).expect("watchlist request ids exhausted");
+        self.state.write_claim = Some(self.state.req);
         self.state.writes_seen = self.state.writes_seen.wrapping_add(1);
         self.state.list_etag = None;
         let tag = self.current_tag(auth);
-        let (adapter, io, auth) = (Arc::clone(&self.adapter), Arc::clone(&self.io), auth.clone());
-        adapter.write_busy.store(true, Ordering::SeqCst);
-        let guard = Release(Arc::clone(&adapter), |a| &a.write_busy);
-        let spawned = (self.spawn)("wlist-write", Box::new(move || {
-            let _guard = guard;
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_write(&*io, &auth, tag, write, &mut |l| adapter.post(l));
-            }));
-            if outcome.is_err() {
-                adapter.post(Landed { tag, what: What::Written { write, outcome: WriteOutcome::Failed } });
+        let addr = Addr { to: MachineId::Store(super::StoreId::Watchlist.ord()), req: RequestId(tag.req) };
+        let req = WriteReq { tag, auth: auth.clone(), write };
+        let port = WritePort::new(addr, &req, Arc::clone(&self.write_mailbox));
+        self.state.write_port = Some(port.clone());
+        self.jobs.push(super::StoreJob::WatchlistWrite(plx_machine::job::Job { addr, req }, port));
+    }
+
+    fn pump_writes(&mut self, gate: &plx_machine::landgate::Gate, profile_gen: u32) -> bool {
+        use plx_machine::machine::{Addr, MachineId, RequestId};
+        use super::watchlist_job::WriteEnd;
+        let claim = self.state.write_claim;
+        let expected = claim.map(|req| Addr { to: MachineId::Store(super::StoreId::Watchlist.ord()), req: RequestId(req) });
+        let epoch = self.state.epoch;
+        let answers = super::take_landings_owed(gate, super::StoreId::Watchlist, |got: &[super::watchlist_job::WriteLanding]| {
+            expected.is_some() && !got.iter().any(|landing| Some(landing.addr) == expected
+                && landing.tag.req == landing.addr.req.0 && landing.tag.epoch == epoch
+                && landing.tag.profile_gen == profile_gen)
+        }, || self.write_mailbox.take());
+        let mut changed = false;
+        for landing in answers {
+            if Some(landing.addr) != expected || self.state.write_claim != Some(landing.tag.req)
+                || landing.addr.req.0 != landing.tag.req || landing.tag.epoch != self.state.epoch
+                || landing.tag.profile_gen != profile_gen { continue; }
+            self.state.write_port = None;
+            match landing.end {
+                WriteEnd::NotStarted { write } => {
+                    self.state.write_claim = None;
+                    self.state.ledger.requeue(write);
+                    self.state.write_retry = RETRY_FRAMES;
+                }
+                WriteEnd::Written { write, outcome } => {
+                    changed |= self.apply(Landed { tag: landing.tag, what: What::Written { write, outcome } });
+                }
             }
-        }));
-        if !spawned {
-            // Nothing will run: hand the write back and try again in a while.
-            self.adapter.write_busy.store(false, Ordering::SeqCst);
+        }
+        changed
+    }
+
+    /// Consume an immediate runner refusal without advancing the frame retry timer.
+    pub fn land_write_results(&mut self, gate: &plx_machine::landgate::Gate, profile: &CurrentProfile) -> bool {
+        for landed in self.write_mailbox.take_not_started() {
+            let expected = Addr { to: MachineId::Store(super::StoreId::Watchlist.ord()), req: RequestId(landed.tag.req) };
+            if landed.addr != expected || self.state.write_claim != Some(landed.tag.req)
+                || landed.tag.epoch != self.state.epoch || landed.tag.profile_gen != profile.generation { continue; }
+            let super::watchlist_job::WriteEnd::NotStarted { write } = landed.end else { unreachable!() };
+            self.state.write_claim = None;
+            self.state.write_port = None;
             self.state.ledger.requeue(write);
             self.state.write_retry = RETRY_FRAMES;
         }
+        if !self.write_mailbox.has_mail() { return false; }
+        let changed = self.pump_writes(gate, profile.generation);
+        if changed { self.bump(); }
+        changed
     }
 
     /// The guids the table already holds an answer for from every reachable server, so a reread
     /// matches only the new ones (the worker ignores this when the roster has moved since).
     fn matched_guids(&self) -> HashSet<String> {
-        let asked: Vec<ServerId> = self.io.roster().into_iter().filter(|s| self.io.reachable(*s)).collect();
+        let asked: Vec<ServerId> = self.snapshot.roster().into_iter().filter(|s| self.snapshot.reachable(*s)).collect();
         self.state
             .table
             .by_guid
@@ -738,59 +952,47 @@ impl WatchlistStore {
             .collect()
     }
 
-    fn spawn_list(&mut self, auth: &WatchlistAuth) {
-        self.state.req += 1;
+fn spawn_list(&mut self, auth: &WatchlistAuth) {
+        self.state.req = self.state.req.checked_add(1).expect("watchlist request ids exhausted");
+        self.state.list_claim = Some(self.state.req);
         let tag = self.current_tag(auth);
         self.state.read_stamp = self.state.ledger.stamp();
-        let known = self.matched_guids();
-        let known_gen = self.state.table.roster_gen;
-        // The validator only stands for a complete list with no write in the air.
         let quiet = !self.state.ledger.busy();
         let etag = self.state.list_etag.clone().filter(|_| quiet && !self.state.rows.is_empty() && !self.state.truncated);
         self.state.read_etag = None;
         self.state.read_writes = quiet.then_some(self.state.writes_seen);
-        let (adapter, io, auth) = (Arc::clone(&self.adapter), Arc::clone(&self.io), auth.clone());
-        adapter.list_busy.store(true, Ordering::SeqCst);
-        let guard = Release(Arc::clone(&adapter), |a| &a.list_busy);
-        let spawned = (self.spawn)("wlist", Box::new(move || {
-            let _guard = guard;
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_list(&*io, &auth, tag, (&known, known_gen), etag.as_deref(), &mut |l| adapter.post(l));
-            }));
-            if outcome.is_err() {
-                adapter.post(Landed { tag, what: What::PageFailed { start: 0, why: Failure::Other } });
-                adapter.post(Landed { tag, what: What::ListDone });
-            }
-        }));
-        if spawned {
-            self.state.list_wanted = false;
-        } else {
-            self.adapter.list_busy.store(false, Ordering::SeqCst);
-            self.state.list_retry = RETRY_FRAMES;
-        }
+        let req = ListReq { tag, input: self.snapshot.clone(), auth: AuthValue(auth.clone()),
+            known: self.matched_guids(), known_gen: self.state.table.roster_gen, etag };
+        let progress = if self.state.rows.is_empty() { ListRead::AwaitingPage } else { ListRead::HoldingRows };
+        let (addr, port) = self.stream_port(tag, StreamKind::List(progress));
+        self.state.list_wanted = false;
+        self.jobs.push(super::StoreJob::WatchlistList(plx_machine::job::Job { addr, req }, port));
     }
 
-    fn spawn_rematch(&mut self, auth: &WatchlistAuth) {
-        self.state.req += 1;
+fn spawn_rematch(&mut self, auth: &WatchlistAuth) {
+        self.state.req = self.state.req.checked_add(1).expect("watchlist request ids exhausted");
+        self.state.list_claim = Some(self.state.req);
         let tag = self.current_tag(auth);
-        let keys: Vec<(String, Kind)> = self.state.rows.iter().map(|r| (r.guid.clone(), r.kind)).collect();
-        let (adapter, io) = (Arc::clone(&self.adapter), Arc::clone(&self.io));
-        adapter.list_busy.store(true, Ordering::SeqCst);
-        let guard = Release(Arc::clone(&adapter), |a| &a.list_busy);
-        let spawned = (self.spawn)("wlist", Box::new(move || {
-            let _guard = guard;
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_rematch(&*io, &keys, tag, &mut |l| adapter.post(l));
-            }));
-            if outcome.is_err() {
-                // Keep the table as it is: no landing, the roster check asks again.
-                plx_base::eventlog::log("watchlist: rematch worker panicked");
-            }
-        }));
-        if !spawned {
-            self.adapter.list_busy.store(false, Ordering::SeqCst);
-            self.state.list_retry = RETRY_FRAMES;
-        }
+        self.rematch_wanted = false;
+        let req = RematchReq { tag, input: self.snapshot.clone(), rows: self.state.rows.iter().map(|r| (r.guid.clone(), r.kind)).collect() };
+        let (addr, port) = self.stream_port(tag, StreamKind::Rematch);
+        self.jobs.push(super::StoreJob::WatchlistRematch(plx_machine::job::Job { addr, req }, port));
+    }
+
+    fn stream_port(&mut self, tag: Tag, kind: StreamKind) -> (Addr, WatchlistStreamPort) {
+        let addr = Addr { to: MachineId::Store(super::StoreId::Watchlist.ord()), req: RequestId(tag.req) };
+        let port = WatchlistStreamPort::new(addr, tag, Arc::clone(&self.stream_mailbox));
+        self.stream_keys = self.snapshot.keys.clone();
+        self.stream = Some((kind, port.clone()));
+        (addr, port)
+    }
+    fn emit_delta(&mut self, auth: &WatchlistAuth, sid: ServerId, rows: Arc<Vec<(String, Kind)>>) {
+        self.state.req = self.state.req.checked_add(1).expect("watchlist request ids exhausted");
+        self.state.list_claim = Some(self.state.req);
+        let tag = self.current_tag(auth);
+        let req = DeltaReq { tag, input: self.snapshot.clone(), sid, rows };
+        let (addr, port) = self.stream_port(tag, StreamKind::Delta);
+        self.jobs.push(super::StoreJob::WatchlistDelta(plx_machine::job::Job { addr, req }, port));
     }
 
     /// Has the list been read and shown? A library change is followed only once there are rows to
@@ -802,9 +1004,7 @@ impl WatchlistStore {
     /// Is a list read out on a worker right now? Its matching may have asked a server before a
     /// library change that has just arrived, so a change must be kept for it; a read not yet
     /// started will ask after the change and needs no note of it.
-    pub fn read_in_flight(&self) -> bool {
-        self.adapter.list_busy.load(Ordering::SeqCst)
-    }
+pub fn read_in_flight(&self) -> bool { self.state.list_claim.is_some() }
 
     /// The rows `sid` holds, by that server's ratingKey: what a library item deleted there is
     /// looked up in (built once for a whole frame's worth of deletes).
@@ -841,39 +1041,15 @@ impl WatchlistStore {
     /// tiles re-derive at that commit. `false` = not started (no list yet, a read or re-match
     /// already out, or the worker was refused): the caller keeps the ask and tries a later frame.
     /// Nothing to ask, or a server that is not reachable, is `true`: there is nothing to start.
-    pub fn rematch_on(&mut self, sid: ServerId, asks: Vec<(String, Kind)>) -> bool {
-        if !self.is_ready() {
-            return false;
-        }
-        if asks.is_empty() || !self.io.reachable(sid) {
-            return true;
-        }
+pub fn rematch_on(&mut self, sid: ServerId, asks: Vec<(String, Kind)>) -> bool {
+        if !self.is_ready() { return false; }
+        if asks.is_empty() || !self.snapshot.reachable(sid) { return true; }
+        if self.state.list_wanted || self.state.list_claim.is_some() || self.state.list_retry > 0 || self.pending_delta.is_some() { return false; }
         let Some(auth) = self.state.auth.clone() else { return false };
-        if self.state.list_wanted
-            || self.adapter.list_busy.load(Ordering::SeqCst)
-            || self.state.list_retry > 0
-        {
-            return false;
-        }
-        self.state.req += 1;
-        let tag = self.current_tag(&auth);
-        let (adapter, io) = (Arc::clone(&self.adapter), Arc::clone(&self.io));
-        adapter.list_busy.store(true, Ordering::SeqCst);
-        let guard = Release(Arc::clone(&adapter), |a| &a.list_busy);
-        let spawned = (self.spawn)("wlist", Box::new(move || {
-            let _guard = guard;
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_delta(&*io, sid, &asks, tag, &mut |l| adapter.post(l));
-            }));
-            if outcome.is_err() {
-                plx_base::eventlog::log("watchlist: library re-match worker panicked");
-            }
-        }));
-        if !spawned {
-            self.adapter.list_busy.store(false, Ordering::SeqCst);
-            self.state.list_retry = RETRY_FRAMES;
-        }
-        spawned
+        let asks = Arc::new(asks);
+        self.pending_delta = Some((sid, Arc::clone(&asks)));
+        self.emit_delta(&auth, sid, asks);
+        true
     }
 
     /// A card row carried no catalog id: ask for it to be read off the item's own server record
@@ -881,7 +1057,7 @@ impl WatchlistStore {
     /// The answer is [`WatchlistView::resolved_hex`]; a menu opened after it lands offers the row.
     pub fn want_hex(&self, sid: ServerId, rk: &str) {
         let key = (sid, rk.to_owned());
-        if self.state.resolved.contains_key(&key) || self.state.resolving.contains(&key) {
+        if self.state.resolved.contains_key(&key) || self.state.resolving.contains_key(&key) {
             return;
         }
         let mut wanted = self.adapter.wanted.lock().unwrap_or_else(|e| e.into_inner());
@@ -892,46 +1068,73 @@ impl WatchlistStore {
 
     /// Spawn a worker per asked-for record and land the answers. Needs no account: the read is
     /// the user's own server's.
-    fn pump_resolves(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
+
+    pub fn land_resolve_refusals(&mut self, profile: &CurrentProfile) {
+        for landed in self.resolve_mailbox.take_not_started() {
+            let expected = Addr { to: MachineId::Store(super::StoreId::Watchlist.ord()), req: RequestId(landed.tag.req) };
+            let key = (landed.sid, landed.rk);
+            if landed.addr == expected && landed.tag.epoch == self.state.epoch && landed.tag.profile_gen == profile.generation
+                && self.state.resolving.get(&key).is_some_and(|(tag, _)| *tag == landed.tag) {
+                self.state.resolving.remove(&key);
+            }
+        }
+    }
+    fn pump_resolves(&mut self, gate: &plx_machine::landgate::Gate, profile_gen: u32,
+        keys: &plx_plex::plex::ClientKeys) -> bool {
+        use plx_machine::machine::{Addr, MachineId, RequestId};
+        use super::watchlist_job::{ResolveEnd, ResolvePort, ResolveReq};
+        let claims = &self.state.resolving;
+        let answers = super::take_landings_owed(gate, super::StoreId::Watchlist, |got: &[super::watchlist_job::ResolveLanding]| {
+            got.iter().filter(|landing| claims.get(&(landing.sid, landing.rk.clone()))
+                .is_some_and(|(tag, _)| *tag == landing.tag && landing.addr.req.0 == tag.req)).count() < claims.len()
+        }, || self.resolve_mailbox.take());
         let mut changed = false;
-        // Every claim in `resolving` owes one answer (a refused spawn removes its claim at once),
-        // which the frame dump's landing gate waits for.
-        let (adapter, claimed) = (&self.adapter, self.state.resolving.len());
-        let answers = super::take_landings_owed(gate, super::StoreId::Watchlist, |got| got.len() < claimed, || {
-            adapter.resolved.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect()
-        });
-        for (sid, rk, hex) in answers {
-            self.state.resolving.remove(&(sid, rk.clone()));
-            if let Some(hex) = hex {
-                self.state.resolved.insert((sid, rk), hex);
+        for landing in answers {
+            let key = (landing.sid, landing.rk);
+            if !self.state.resolving.get(&key).is_some_and(|(tag, _)| *tag == landing.tag
+                && landing.addr.req.0 == tag.req && tag.epoch == self.state.epoch
+                && tag.profile_gen == profile_gen) { continue; }
+            self.state.resolving.remove(&key);
+            if let ResolveEnd::Answer(Some(hex)) = landing.end {
+                if landing.key != keys.key(key.0) { continue; }
+                self.state.resolved.insert(key, hex);
                 changed = true;
             }
         }
         let wanted: Vec<_> = self.adapter.wanted.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
         for (sid, rk) in wanted {
-            if self.state.resolved.contains_key(&(sid, rk.clone())) || !self.state.resolving.insert((sid, rk.clone())) {
-                continue;
-            }
-            let (adapter, io) = (Arc::clone(&self.adapter), Arc::clone(&self.io));
-            let key = rk.clone();
-            let spawned = (self.spawn)("wlist-resolve", Box::new(move || {
-                let hex = io.guid_of(sid, &key).map(|g| plx_plex::plex::resolve_catalog_hex(None, || Some(g)));
-                adapter.resolved.lock().unwrap_or_else(|e| e.into_inner()).push((sid, key, hex));
-                plx_machine::idle::invalidate();
-            }));
-            if !spawned {
-                // Nothing will run: forget it so the next menu asks again.
-                self.state.resolving.remove(&(sid, rk));
-            }
+            let key = (sid, rk.clone());
+            if self.state.resolved.contains_key(&key) || self.state.resolving.contains_key(&key) { continue; }
+            self.state.req = self.state.req.checked_add(1).expect("watchlist request ids exhausted");
+            let tag = Tag { profile_gen, epoch: self.state.epoch, req: self.state.req };
+            let addr = Addr { to: MachineId::Store(super::StoreId::Watchlist.ord()), req: RequestId(tag.req) };
+            let req = ResolveReq { tag, keys: keys.clone(), sid, rk };
+            let port = ResolvePort::new(addr, &req, Arc::clone(&self.resolve_mailbox));
+            self.state.resolving.insert(key, (tag, port.clone()));
+            self.jobs.push(super::StoreJob::WatchlistResolve(plx_machine::job::Job { addr, req }, port));
         }
         changed
     }
 
+    #[must_use]
+    pub fn take_jobs(&mut self) -> Vec<super::StoreJob> { std::mem::take(&mut self.jobs) }
+
+    pub fn has_jobs(&self) -> bool { !self.jobs.is_empty() }
+
     /// [`Self::pump_with_gate`] for a test about something else: the fixture gate, and the seat
     /// [`WatchlistInput::for_test`] hands out at generation 1 (the one a store's tests open under).
-    #[cfg(any(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support"))]
     pub fn pump(&mut self) -> bool {
-        self.pump_with_gate(plx_machine::landgate::fixture_gate(), &WatchlistInput::profile_for_test(1))
+        let gate = plx_machine::landgate::fixture_gate();
+        let profile = WatchlistInput::profile_for_test(1);
+        let input = self.io.as_ref().map_or_else(|| self.snapshot.clone(), |io| Snapshot::scripted(&**io));
+        let changed = self.pump_with_snapshot(gate, &profile, input);
+        let (streams, deferred): (Vec<_>, Vec<_>) = std::mem::take(&mut self.jobs).into_iter().partition(|j|
+            matches!(j, super::StoreJob::WatchlistList(..) | super::StoreJob::WatchlistRematch(..) | super::StoreJob::WatchlistDelta(..)));
+        self.jobs = streams;
+        self.dispatch_jobs_for_test();
+        self.jobs.extend(deferred);
+        self.land_stream_results(gate, &profile) || changed
     }
 
     /// [`Self::run_with_input`] for a test about something else: the same generation-1 seat.
@@ -945,6 +1148,48 @@ impl WatchlistStore {
     pub fn with_spawn_for_test(mut self, spawn: fn(&str, Box<dyn FnOnce() + Send + 'static>) -> bool) -> Self {
         self.spawn = spawn;
         self
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pump_scripted_with_gate(&mut self, gate: &plx_machine::landgate::Gate, profile: &CurrentProfile) -> bool {
+        let input = self.io.as_ref().map_or_else(|| self.snapshot.clone(), |io| Snapshot::scripted(&**io));
+        let changed = self.pump_with_snapshot(gate, profile, input);
+        self.drive_jobs_for_test(gate, profile) || changed
+    }
+#[cfg(any(test, feature = "test-support"))]
+    fn drive_jobs_for_test(&mut self, gate: &plx_machine::landgate::Gate, profile: &CurrentProfile) -> bool {
+        self.dispatch_jobs_for_test();
+        let stream = self.land_stream_results(gate, profile);
+        self.land_write_results(gate, profile) || stream
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn dispatch_jobs_for_test(&mut self) {
+        use plx_machine::job::Port;
+        use super::watchlist_job::{finish_list_job, finish_rematch_job, finish_delta_job, finish_write_job};
+        let Some(io) = self.io.clone() else { return };
+        for job in std::mem::take(&mut self.jobs) {
+            match job {
+                super::StoreJob::WatchlistList(job, port) => {
+                    let (addr, refusal, io) = (job.addr, port.clone(), io.clone());
+                    if !(self.spawn)("wlist", Box::new(move || finish_list_job(&port, addr, job.req, &*io))) { refusal.refused(addr); }
+                }
+                super::StoreJob::WatchlistRematch(job, port) => {
+                    let (addr, refusal, io) = (job.addr, port.clone(), io.clone());
+                    if !(self.spawn)("wlist", Box::new(move || finish_rematch_job(&port, addr, job.req, &*io))) { refusal.refused(addr); }
+                }
+                super::StoreJob::WatchlistDelta(job, port) => {
+                    let (addr, refusal, io) = (job.addr, port.clone(), io.clone());
+                    if !(self.spawn)("wlist", Box::new(move || finish_delta_job(&port, addr, job.req, &*io))) { refusal.refused(addr); }
+                }
+                super::StoreJob::WatchlistWrite(job, port) => {
+                    let (addr, refusal, io) = (job.addr, port.clone(), io.clone());
+                    if !(self.spawn)("wlist-write", Box::new(move || {
+                        if port.start() { finish_write_job(&port, addr, job.req, &*io); }
+                    })) { refusal.refused(addr); }
+                }
+                other => self.jobs.push(other),
+            }
+        }
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -1040,9 +1285,9 @@ impl WatchlistView<'_> {
     /// The server whose photo proxy fetches Discover art for titles no server holds (plan §0, §3):
     /// the reachable one `copy_rank` prefers, ties in roster order. `None` when no server is
     /// reachable; those titles then draw the skeleton (Q9).
-    pub fn art_server(&self) -> Option<ServerId> {
-        let io = &*self.store.io;
-        io.roster().into_iter().filter(|s| io.reachable(*s)).min_by_key(|s| io.copy_rank(*s))
+pub fn art_server(&self) -> Option<ServerId> {
+        let input = &self.store.snapshot;
+        input.roster().into_iter().filter(|s| input.reachable(*s)).min_by_key(|s| input.copy_rank(*s))
     }
 
     /// The service's list length, once it said, for the skeleton cells past the loaded tail.
@@ -1136,6 +1381,7 @@ pub(super) mod tests {
         held: Mutex<HashMap<(ServerId, String), String>>,
         writes: Mutex<Vec<(String, Intent)>>,
         fail_writes: AtomicBool,
+        panic_writes: AtomicBool,
         roster_gen: AtomicU32,
         facts_gen: AtomicU32,
         finds: AtomicUsize,
@@ -1156,8 +1402,7 @@ pub(super) mod tests {
         /// Entries per page the decoder "dropped": counted in `raw`, absent from `items`; also
         /// withholds `totalSize` while non-zero.
         dropped: AtomicU32,
-        /// Scripted `guid_of` answers, front first; empty = no answer.
-        guid_answers: Mutex<Vec<Option<String>>>,
+
         /// Does the service send an `ETag`? When it does, the validator names the list's content,
         /// so any change to `items` is a new one.
         etag_on: AtomicBool,
@@ -1184,6 +1429,7 @@ pub(super) mod tests {
                 held: Mutex::new(HashMap::new()),
                 writes: Mutex::new(Vec::new()),
                 fail_writes: AtomicBool::new(false),
+                panic_writes: AtomicBool::new(false),
                 roster_gen: AtomicU32::new(1),
                 facts_gen: AtomicU32::new(1),
                 finds: AtomicUsize::new(0),
@@ -1195,7 +1441,7 @@ pub(super) mod tests {
                 listings: Mutex::new(HashMap::new()),
                 starts: Mutex::new(Vec::new()),
                 dropped: AtomicU32::new(0),
-                guid_answers: Mutex::new(Vec::new()),
+
                 etag_on: AtomicBool::new(true),
                 asked: Mutex::new(Vec::new()),
             })
@@ -1244,6 +1490,7 @@ pub(super) mod tests {
             self.released.lock().unwrap().clone().ok_or(WatchlistError::Transport)
         }
         fn write(&self, _: &WatchlistAuth, hex: &str, intent: Intent) -> Result<(), WatchlistError> {
+            assert!(!self.panic_writes.load(Ordering::SeqCst), "scripted write panic");
             self.writes.lock().unwrap().push((hex.to_owned(), intent));
             if self.fail_writes.load(Ordering::SeqCst) { Err(WatchlistError::Transport) } else { Ok(()) }
         }
@@ -1269,10 +1516,7 @@ pub(super) mod tests {
         fn today(&self) -> Option<String> {
             Some("2026-10-15".into())
         }
-        fn guid_of(&self, _: ServerId, _: &str) -> Option<String> {
-            let mut q = self.guid_answers.lock().unwrap();
-            if q.is_empty() { None } else { q.remove(0) }
-        }
+
     }
 
     fn inline(_: &str, f: Box<dyn FnOnce() + Send + 'static>) -> bool {
@@ -1294,8 +1538,15 @@ pub(super) mod tests {
     }
 
     /// One frame pass handed the profile the app read.
-    fn pump_handed(s: &mut WatchlistStore, profile: &plx_plex::plex::session::CurrentProfile) -> bool {
-        s.pump_with_gate(plx_machine::landgate::fixture_gate(), profile)
+
+
+    fn pump_scripted(s: &mut WatchlistStore) -> bool {
+        let profile = crate::watchlist::WatchlistInput::profile_for_test(1);
+        pump_handed(s, &profile)
+    }
+
+fn pump_handed(s: &mut WatchlistStore, profile: &CurrentProfile) -> bool {
+        s.pump_scripted_with_gate(plx_machine::landgate::fixture_gate(), profile)
     }
 
     /// Open, then pump until nothing is left to land.
@@ -1318,12 +1569,12 @@ pub(super) mod tests {
     }
 
     /// A store whose first list read is out on a worker and has not landed (the claim is held).
-    pub(in crate::stores) fn reading_for_test(sid: ServerId, titles: u8) -> WatchlistStore {
+pub(in crate::stores) fn reading_for_test(sid: ServerId, titles: u8) -> WatchlistStore {
         let mock = Mock::new((1..=titles).map(|n| item(n, "T")).collect());
         *mock.roster.lock().unwrap() = vec![sid];
         *mock.up.lock().unwrap() = vec![sid];
-        let s = store(&mock);
-        s.adapter.list_busy.store(true, Ordering::SeqCst);
+        let mut s = store(&mock);
+        s.state.list_claim = Some(1);
         s
     }
 
@@ -1412,17 +1663,123 @@ pub(super) mod tests {
         let mut s = store(&mock);
         load(&mut s);
         assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"]);
-        // Ready and nothing owed: no real list can land after this and supersede the ghost, so
-        // an applied stale landing would show.
+        // Keep a genuine list claim pending; its own request id does not authorize a different profile.
+        s.run(WatchlistCmd::Reread);
+        s.maybe_spawn();
         let auth = s.state.auth.clone().unwrap();
-        let stale = Tag { profile_gen: auth.generation + 1, epoch: s.state.epoch, req: 99 };
-        s.adapter_for_test().post_for_test(Landed { tag: stale, what: ghost_page() });
-        s.pump();
+        let stale = Tag { profile_gen: auth.generation + 1, epoch: s.state.epoch, req: s.state.list_claim.unwrap() };
+        assert!(!s.apply(Landed { tag: stale, what: ghost_page() }), "profile is checked against the live claim");
+        pump_scripted(&mut s);
         assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"], "a stale generation never lands");
-        let fresh = Tag { profile_gen: auth.generation, epoch: s.state.epoch, req: 99 };
-        s.adapter_for_test().post_for_test(Landed { tag: fresh, what: ghost_page() });
-        s.pump();
-        assert!(titles(&s).contains(&"Ghost".to_string()), "the same landing with the live tag does");
+        // A matching profile alone is insufficient: the request must also own a live claim.
+    }
+
+    #[test]
+    fn an_unclaimed_request_in_the_current_epoch_cannot_land() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        let auth = s.state.auth.clone().unwrap();
+        let unclaimed = Tag { profile_gen: auth.generation, epoch: s.state.epoch, req: 99 };
+        s.adapter_for_test().post_for_test(Landed { tag: unclaimed, what: ghost_page() });
+        pump_scripted(&mut s);
+        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"], "an unclaimed request must not mutate rows");
+    }
+
+
+    #[test]
+    fn captured_key_only_roster_never_invents_reachability_or_preference() {
+        let sid = ServerId::from_raw(7);
+        let key = plx_plex::plex::ClientKey { instance: 1, token: 2, grant: 3 };
+        let keys = plx_plex::plex::ClientKeys::from_keys([(sid, key)]);
+        let facts = WatchlistFacts { keys: &keys, today: None };
+        assert_eq!(facts.roster(), [sid]);
+        assert!(!facts.reachable(sid));
+        assert_eq!(facts.copy_rank(sid), 2);
+        assert_eq!(facts.copy_rank(ServerId::UNSET), 2);
+    }
+
+
+    #[test]
+    fn captured_roster_keeps_order_reachability_and_copy_preference() {
+        use plx_plex::plex::{self, ClientKeys, ServerFacts};
+        use plx_plex::plex::probe::Outcome;
+        struct ResetRegistry;
+        impl Drop for ResetRegistry {
+            fn drop(&mut self) { plex::reset_servers_for_test(); }
+        }
+        let _lock = plx_base::testlock::serial();
+        plex::reset_servers_for_test();
+        let _reset = ResetRegistry;
+        let current = plex::register_for_test("watchlist-current", "127.0.0.1", 9, "test-token", "test-client");
+        let owned = plex::register_for_test("watchlist-owned", "127.0.0.1", 9, "test-token", "test-client");
+        let shared = ServerId::from_raw(22);
+        let a = plex::client_for(current).expect("registered current client");
+        let b = plex::client_for(owned).expect("registered owned client");
+        let description: &'static ServerFacts = Box::leak(Box::new(ServerFacts {
+            name: String::new(), handle: String::new(), owned: true, home: false, owner_id: 0,
+        }));
+        let mut keys = ClientKeys::default();
+        keys.refill_roster(current, 4, 5, [shared, owned, current],
+            |sid| if sid == current { Some(a) } else if sid == owned { Some(b) } else { None },
+            |sid| (sid == owned).then_some(description),
+            |sid| (sid == current).then_some(Outcome::Reachable));
+        let facts = WatchlistFacts { keys: &keys, today: Some("2026-10-15") };
+        assert_eq!(facts.roster(), [shared, owned, current]);
+        assert!(facts.reachable(current));
+        assert!(!facts.reachable(owned));
+        assert!(!facts.reachable(shared));
+        assert_eq!((facts.copy_rank(current), facts.copy_rank(owned), facts.copy_rank(shared)), (0, 1, 2));
+        assert_eq!((keys.roster_gen(), keys.facts_gen()), (4, 5));
+    }
+
+
+    #[test]
+    fn a_retired_request_cannot_land_into_a_new_list_claim() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        s.run(WatchlistCmd::Reread);
+        s.maybe_spawn();
+        let old = Tag { profile_gen: s.state.auth.as_ref().unwrap().generation, epoch: s.state.epoch, req: s.state.list_claim.unwrap() };
+        pump_scripted(&mut s);
+        s.run(WatchlistCmd::Reread);
+        s.maybe_spawn();
+        assert_ne!(s.state.list_claim, Some(old.req));
+        assert!(!s.apply(Landed { tag: old, what: ghost_page() }), "the retired claim cannot mutate its successor");
+        pump_scripted(&mut s);
+        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"]);
+    }
+
+
+    #[test]
+    fn paced_gate_cannot_release_a_claim_before_it_drains() {
+        thread_local! { static HELD: std::cell::RefCell<Vec<Box<dyn FnOnce() + Send>>> = Default::default(); }
+        fn hold(_: &str, f: Box<dyn FnOnce() + Send + 'static>) -> bool {
+            HELD.with(|h| h.borrow_mut().push(f));
+            true
+        }
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        s.spawn = hold;
+        s.run(WatchlistCmd::Reread);
+        s.maybe_spawn();
+        let claim = s.state.list_claim;
+        let gate = plx_machine::landgate::Gate::default();
+        gate.arm_dump_paced(1);
+        gate.dump_frame(0);
+        let profile = crate::watchlist::WatchlistInput::profile_for_test(1);
+        s.pump_scripted_with_gate(&gate, &profile);
+        assert_eq!(s.state.list_claim, claim, "a held gate has not consumed the answer");
+        let jobs: Vec<_> = HELD.with(|h| h.borrow_mut().drain(..).collect());
+        assert_eq!(jobs.len(), 1);
+        for job in jobs { job(); }
+        s.spawn = inline;
+        gate.dump_frame(1);
+        s.pump_scripted_with_gate(&gate, &profile);
+        assert!(s.state.list_claim.is_none());
+        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"]);
     }
 
     #[test]
@@ -1474,7 +1831,7 @@ pub(super) mod tests {
         let mut s = store(&mock);
         open_handed(&mut s, &crate::watchlist::WatchlistInput::signed_out_for_test(1));
         assert_eq!(s.view().status(), Status::NoAccount);
-        s.pump();
+        pump_scripted(&mut s);
         assert_eq!(mock.pages.load(Ordering::SeqCst), 0, "no identity, no read");
     }
 
@@ -1495,7 +1852,7 @@ pub(super) mod tests {
         let pages = mock.pages.load(Ordering::SeqCst);
         open_handed(&mut s, &crate::watchlist::WatchlistInput::new(Arc::new(signed_out), None, "test-client"));
         assert_eq!(s.view().status(), Status::NoAccount);
-        s.pump();
+        pump_scripted(&mut s);
         assert_eq!(mock.pages.load(Ordering::SeqCst), pages, "no account, no read");
     }
 
@@ -1509,15 +1866,13 @@ pub(super) mod tests {
         pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(2));
         load_as(&mut s, 2);
         assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"]);
-        let epoch = s.state.epoch;
-        let old = Tag { profile_gen: 1, epoch, req: 99 };
-        s.adapter_for_test().post_for_test(Landed { tag: old, what: ghost_page() });
+        mock.items.lock().unwrap().push(item(9, "Ghost"));
+        s.run(WatchlistCmd::Reread);
+        s.maybe_spawn();
+        let old = Tag { profile_gen: 1, epoch: s.state.epoch, req: s.state.list_claim.unwrap() };
+        assert!(!s.apply(Landed { tag: old, what: ghost_page() }), "the old generation cannot use the new claim");
         pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(2));
-        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"], "the old generation never lands");
-        let live = Tag { profile_gen: 2, epoch, req: 99 };
-        s.adapter_for_test().post_for_test(Landed { tag: live, what: ghost_page() });
-        pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(2));
-        assert!(titles(&s).contains(&"Ghost".to_string()), "the new generation's does");
+        assert!(titles(&s).contains(&"Ghost".to_string()), "the new generation’s actual claimed read lands");
     }
 
     /// The same seat is not a switch: a pass handed the profile the store opened under changes nothing,
@@ -1557,7 +1912,7 @@ pub(super) mod tests {
         old_mailbox.post_for_test(Landed { tag: old_tag, what: ghost_page() });
         // And one that somehow reaches the new mailbox still carries the old epoch.
         s.adapter_for_test().post_for_test(Landed { tag: old_tag, what: ghost_page() });
-        s.pump();
+        pump_scripted(&mut s);
         assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"], "only the new epoch's own list");
     }
 
@@ -1571,9 +1926,8 @@ pub(super) mod tests {
         s.maybe_spawn();
         s.run(WatchlistCmd::Press { hex: hex_of(2), intent: Intent::Remove });
         s.run(WatchlistCmd::Press { hex: hex_of(7), intent: Intent::Add });
-        let gate = plx_machine::landgate::fixture_gate();
         for _ in 0..3 {
-            s.pump_with_gate(gate, &crate::watchlist::WatchlistInput::profile_for_test(1));
+            pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(1));
         }
         assert_eq!(titles(&s), ["Alpha", "Charlie"], "the read, issued before the press, does not bring Bravo back");
         assert!(s.view().is_member(&hex_of(7)), "nor does it forget an add the list has not heard of");
@@ -1588,7 +1942,7 @@ pub(super) mod tests {
         s.run(WatchlistCmd::Press { hex: hex_of(2), intent: Intent::Remove });
         assert_eq!(titles(&s), ["Alpha", "Charlie"], "flipped at once");
         for _ in 0..3 {
-            s.pump();
+            pump_scripted(&mut s);
         }
         assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"], "reverted");
         assert!(s.view().is_member(&hex_of(2)));
@@ -1602,7 +1956,7 @@ pub(super) mod tests {
         load(&mut s);
         s.run(WatchlistCmd::Press { hex: hex_of(2), intent: Intent::Remove });
         for _ in 0..3 {
-            s.pump();
+            pump_scripted(&mut s);
         }
         assert_eq!(*mock.writes.lock().unwrap(), [(id(2), Intent::Remove)]);
         assert_eq!(titles(&s), ["Alpha", "Charlie"]);
@@ -1619,7 +1973,7 @@ pub(super) mod tests {
         s.run(WatchlistCmd::Press { hex: hex_of(2), intent: Intent::Add });
         s.run(WatchlistCmd::Press { hex: hex_of(2), intent: Intent::Remove });
         for _ in 0..4 {
-            s.pump();
+            pump_scripted(&mut s);
         }
         assert_eq!(*mock.writes.lock().unwrap(), [(id(2), Intent::Remove)], "one write, the newest");
     }
@@ -1632,33 +1986,84 @@ pub(super) mod tests {
         s.run(WatchlistCmd::Press { hex: hex_of(3), intent: Intent::Remove });
         s.run(WatchlistCmd::Press { hex: hex_of(1), intent: Intent::Remove });
         for _ in 0..6 {
-            s.pump();
+            pump_scripted(&mut s);
         }
         assert_eq!(*mock.writes.lock().unwrap(), [(id(3), Intent::Remove), (id(1), Intent::Remove)]);
     }
 
     #[test]
     fn a_silent_server_is_not_memoized_as_no_portable_id() {
+        use plx_machine::job::Port;
+        use super::super::watchlist_job::ResolveEnd;
         let mock = three();
         let sid = ServerId::from_raw(0);
         let mut s = store(&mock);
-        // First read: no answer at all.
+        let answer = |s: &mut WatchlistStore, end| {
+            pump_scripted(s);
+            let mut jobs = s.take_jobs();
+            assert_eq!(jobs.len(), 1);
+            let super::super::StoreJob::WatchlistResolve(job, port) = jobs.pop().unwrap() else { panic!("resolve job") };
+            assert!(port.start());
+            port.done(job.addr, end);
+            pump_scripted(s);
+        };
         s.want_hex(sid, "7");
-        s.pump();
-        s.pump();
-        assert_eq!(s.view().resolved_hex(sid, "7"), None, "no answer is not an answer");
-        // The next menu asks again and now gets a portable guid.
-        mock.guid_answers.lock().unwrap().push(Some("plex://movie/abababababababababababab".into()));
+        answer(&mut s, ResolveEnd::Answer(None));
+        assert_eq!(s.view().resolved_hex(sid, "7"), None);
         s.want_hex(sid, "7");
-        s.pump();
-        s.pump();
+        answer(&mut s, ResolveEnd::Answer(Some(Some([0xab; 12]))));
         assert_eq!(s.view().resolved_hex(sid, "7"), Some(Some([0xab; 12])));
-        // A server that answers with a non-portable guid IS memoized.
-        mock.guid_answers.lock().unwrap().push(Some("local://1".into()));
         s.want_hex(sid, "8");
-        s.pump();
-        s.pump();
+        answer(&mut s, ResolveEnd::Answer(Some(None)));
         assert_eq!(s.view().resolved_hex(sid, "8"), Some(None));
+    }
+
+    #[test]
+    fn resolve_accountless_reset_and_stale_request_cannot_settle_the_new_claim() {
+        use plx_machine::job::Port;
+        use super::super::{StoreJob, watchlist_job::ResolveEnd};
+        let mut s = store(&three());
+        let sid = ServerId::from_raw(0);
+        s.want_hex(sid, "7");
+        pump_scripted(&mut s);
+        let StoreJob::WatchlistResolve(old, old_port) = s.take_jobs().pop().unwrap() else { panic!("resolve job") };
+        assert_eq!(old.req.tag.profile_gen, 1);
+        s.run(WatchlistCmd::Reset);
+        assert!(!old_port.start(), "a queued retired claim cannot start");
+        s.want_hex(sid, "7");
+        pump_scripted(&mut s);
+        let StoreJob::WatchlistResolve(new, new_port) = s.take_jobs().pop().unwrap() else { panic!("resolve job") };
+        assert_ne!(old.addr.req, new.addr.req);
+        old_port.done(old.addr, ResolveEnd::Answer(Some(Some([1; 12]))));
+        pump_scripted(&mut s);
+        assert_eq!(s.view().resolved_hex(sid, "7"), None);
+        assert!(new_port.start());
+        new_port.done(new.addr, ResolveEnd::Answer(Some(Some([2; 12]))));
+        pump_scripted(&mut s);
+        assert_eq!(s.view().resolved_hex(sid, "7"), Some(Some([2; 12])));
+    }
+
+    #[test]
+    fn resolve_refusal_panic_and_profile_change_release_their_own_claim() {
+        use plx_machine::job::Port;
+        use super::super::{StoreJob, watchlist_job::ResolveEnd};
+        let mut s = store(&three());
+        let sid = ServerId::from_raw(0);
+        for end in [ResolveEnd::NotStarted, ResolveEnd::Panicked] {
+            s.want_hex(sid, "7");
+            pump_scripted(&mut s);
+            let StoreJob::WatchlistResolve(job, port) = s.take_jobs().pop().unwrap() else { panic!("resolve job") };
+            port.done(job.addr, end);
+            pump_scripted(&mut s);
+            assert_eq!(s.view().resolved_hex(sid, "7"), None);
+        }
+        s.want_hex(sid, "7");
+        pump_scripted(&mut s);
+        let StoreJob::WatchlistResolve(_, port) = s.take_jobs().pop().unwrap() else { panic!("resolve job") };
+        let profile = WatchlistInput::profile_for_test(2);
+        s.pump_with_gate(plx_machine::landgate::fixture_gate(), &profile, &plx_plex::plex::ClientKeys::default());
+        assert!(!port.start(), "profile change cancels a parked accountless job");
+        assert_eq!(s.view().resolved_hex(sid, "7"), None);
     }
 
     #[test]
@@ -1666,16 +2071,16 @@ pub(super) mod tests {
         let mock = three();
         let mut s = store(&mock).with_spawn_for_test(refuse);
         s.run_for_test(WatchlistCmd::Open);
-        s.pump();
+        pump_scripted(&mut s);
         assert_eq!(mock.pages.load(Ordering::SeqCst), 0);
-        assert!(!s.adapter.list_busy.load(Ordering::SeqCst), "the claim is released");
+        assert!(s.state.list_claim.is_none(), "the claim is released");
         s = s.with_spawn_for_test(inline);
         for _ in 0..(RETRY_FRAMES - 2) {
-            s.pump();
+            pump_scripted(&mut s);
         }
         assert_eq!(mock.pages.load(Ordering::SeqCst), 0, "not before N frames");
         for _ in 0..4 {
-            s.pump();
+            pump_scripted(&mut s);
         }
         assert_eq!(s.view().status(), Status::Ready, "then it goes");
     }
@@ -1694,10 +2099,107 @@ pub(super) mod tests {
         assert_eq!(s.view().status(), Status::Failed(Failure::Other), "unavailable, not an empty list");
         assert_eq!(s.view().len(), 0);
         for _ in 0..(10 * 60) {
-            s.pump();
+            pump_scripted(&mut s);
         }
         assert_eq!(mock.pages.load(Ordering::SeqCst), 1, "a refused read is not asked again");
         assert_eq!(s.view().status(), Status::Failed(Failure::Other));
+    }
+
+    #[test]
+    fn write_retired_started_request_cannot_clear_new_profile_claim() {
+        use plx_machine::job::Port;
+        use super::super::watchlist_job::WriteEnd;
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        s.run(WatchlistCmd::Press { hex: hex_of(1), intent: Intent::Remove });
+        s.maybe_spawn();
+        let super::super::StoreJob::WatchlistWrite(old, old_port) = s.take_jobs().pop().unwrap() else { panic!("write job") };
+        assert!(old_port.start());
+        s.run(WatchlistCmd::Reset);
+        load_as(&mut s, 2);
+        s.run(WatchlistCmd::Press { hex: hex_of(1), intent: Intent::Remove });
+        s.maybe_spawn();
+        let claim = s.state.write_claim;
+        assert_ne!(claim, Some(old.req.tag.req));
+        old_port.done(old.addr, WriteEnd::Written { write: old.req.write, outcome: WriteOutcome::Landed });
+        assert!(!s.pump_writes(plx_machine::landgate::fixture_gate(), 2));
+        assert_eq!(s.state.write_claim, claim);
+        assert!(mock.writes.lock().unwrap().is_empty());
+    }
+
+
+    #[test]
+    fn write_full_tag_and_address_fence_rejects_stale_landings() {
+        use plx_machine::{job::Port, machine::{Addr, MachineId, RequestId}};
+        use super::super::watchlist_job::{WriteEnd, WritePort, WriteReq};
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        s.run(WatchlistCmd::Press { hex: hex_of(1), intent: Intent::Remove });
+        s.maybe_spawn();
+        let super::super::StoreJob::WatchlistWrite(job, current) = s.take_jobs().pop().unwrap() else { panic!("write") };
+        let claim = s.state.write_claim;
+        let tag = job.req.tag;
+        let mut stale_epoch = tag; stale_epoch.epoch = stale_epoch.epoch.wrapping_add(1);
+        let mut stale_profile = tag; stale_profile.profile_gen = stale_profile.profile_gen.wrapping_add(1);
+        let mut stale_req = tag; stale_req.req = stale_req.req.wrapping_add(1);
+        for stale in [stale_epoch, stale_profile, stale_req] {
+            let addr = Addr { to: MachineId::Store(super::super::StoreId::Watchlist.ord()), req: RequestId(stale.req) };
+            let req = WriteReq { tag: stale, auth: job.req.auth.clone(), write: job.req.write };
+            let port = WritePort::new(addr, &req, Arc::clone(&s.write_mailbox));
+            port.done(addr, WriteEnd::Written { write: req.write, outcome: WriteOutcome::Failed });
+            assert!(!s.pump_writes(plx_machine::landgate::fixture_gate(), tag.profile_gen));
+            assert_eq!(s.state.write_claim, claim);
+            assert!(!s.view().is_member(&hex_of(1)), "stale failure cannot roll back the intent");
+        }
+        let wrong = Addr { to: job.addr.to, req: RequestId(job.addr.req.0 + 1) };
+        current.done(wrong, WriteEnd::Written { write: job.req.write, outcome: WriteOutcome::Failed });
+        assert!(current.start(), "wrong address must not retire the current port");
+        current.done(job.addr, WriteEnd::Written { write: job.req.write, outcome: WriteOutcome::Landed });
+        assert!(s.pump_writes(plx_machine::landgate::fixture_gate(), tag.profile_gen));
+        assert_eq!(s.state.write_claim, None);
+        assert!(!s.view().is_member(&hex_of(1)));
+    }
+
+    #[test]
+    fn write_not_started_requeues_exactly_at_head_until_120th_pump() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        s.spawn = refuse;
+        s.run(WatchlistCmd::Press { hex: hex_of(3), intent: Intent::Remove });
+        s.run(WatchlistCmd::Press { hex: hex_of(1), intent: Intent::Remove });
+        pump_scripted(&mut s);
+        assert_eq!(s.state.write_retry, RETRY_FRAMES);
+        let first = s.state.ledger.next_write().expect("refused write remains queued");
+        assert_eq!(first.hex, hex_of(3));
+        assert_eq!(first.intent, Intent::Remove);
+        assert_eq!(first.seq, 1);
+        s.state.ledger.requeue(first);
+        s.spawn = inline;
+        for _ in 0..(RETRY_FRAMES - 1) { pump_scripted(&mut s); }
+        assert!(mock.writes.lock().unwrap().is_empty(), "no write before the boundary");
+        pump_scripted(&mut s);
+        assert_eq!(*mock.writes.lock().unwrap(), [(id(3), Intent::Remove)]);
+        for _ in 0..3 { pump_scripted(&mut s); }
+        assert_eq!(*mock.writes.lock().unwrap(), [(id(3), Intent::Remove), (id(1), Intent::Remove)]);
+    }
+
+    #[test]
+    fn write_started_panic_is_failed_and_not_retried() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        mock.panic_writes.store(true, Ordering::SeqCst);
+        s.run(WatchlistCmd::Press { hex: hex_of(1), intent: Intent::Remove });
+        pump_scripted(&mut s);
+        assert_eq!(s.state.write_retry, 0);
+        assert!(!s.state.ledger.busy());
+        assert!(s.view().is_member(&hex_of(1)));
+        mock.panic_writes.store(false, Ordering::SeqCst);
+        for _ in 0..(RETRY_FRAMES + 1) { pump_scripted(&mut s); }
+        assert!(mock.writes.lock().unwrap().is_empty(), "started panic was not retried");
     }
 
     #[test]
@@ -1707,11 +2209,11 @@ pub(super) mod tests {
         load(&mut s);
         s = s.with_spawn_for_test(refuse);
         s.run(WatchlistCmd::Press { hex: hex_of(1), intent: Intent::Remove });
-        s.pump();
+        pump_scripted(&mut s);
         assert!(s.state.ledger.busy(), "still owed");
         s = s.with_spawn_for_test(inline);
         for _ in 0..(RETRY_FRAMES + 4) {
-            s.pump();
+            pump_scripted(&mut s);
         }
         assert_eq!(*mock.writes.lock().unwrap(), [(id(1), Intent::Remove)]);
     }
@@ -1731,7 +2233,7 @@ pub(super) mod tests {
         mock.roster_gen.fetch_add(1, Ordering::SeqCst);
         mock.facts_gen.fetch_add(1, Ordering::SeqCst);
         for _ in 0..4 {
-            s.pump();
+            pump_scripted(&mut s);
         }
         assert_eq!(s.state.table.roster_gen, mock.roster_gen.load(Ordering::SeqCst));
         assert_eq!(s.view().state(0), Some(TileState::Available));
@@ -1750,7 +2252,7 @@ pub(super) mod tests {
         assert_eq!((s.view().state(0), s.view().state(1)), (Some(TileState::Available), Some(TileState::Available)));
         mock.up.lock().unwrap().clear();
         mock.facts_gen.fetch_add(1, Ordering::SeqCst);
-        s.pump();
+        pump_scripted(&mut s);
         assert_eq!(
             (s.view().state(0), s.view().state(1)),
             (Some(TileState::ServerOffline), Some(TileState::ServerOffline)),
@@ -1759,7 +2261,7 @@ pub(super) mod tests {
         assert!(s.held_keys().is_empty() || s.state.window.is_empty());
         mock.up.lock().unwrap().push(a);
         mock.facts_gen.fetch_add(1, Ordering::SeqCst);
-        s.pump();
+        pump_scripted(&mut s);
         assert_eq!(s.view().state(0), Some(TileState::Available));
     }
 
@@ -1778,7 +2280,7 @@ pub(super) mod tests {
         assert_eq!(s.held_keys(), vec![(a, "5".to_string()), (a, "9".to_string())], "clamped to the list");
         mock.up.lock().unwrap().clear();
         mock.facts_gen.fetch_add(1, Ordering::SeqCst);
-        s.pump();
+        pump_scripted(&mut s);
         assert!(s.held_keys().is_empty(), "an unreachable server is not read back");
     }
 
@@ -1857,7 +2359,7 @@ pub(super) mod tests {
         assert_eq!(titles(&s), ["Charlie", "Bravo", "Alpha"]);
         s.run(WatchlistCmd::Filter(FilterSpec { kind: None, show: Show::OnYourServers }));
         assert_eq!(titles(&s), ["Charlie"]);
-        s.pump();
+        pump_scripted(&mut s);
         assert_eq!(mock.pages.load(Ordering::SeqCst), pages);
     }
 
@@ -1871,7 +2373,7 @@ pub(super) mod tests {
         s.maybe_spawn();
         assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"], "nothing blanked while it is out");
         for _ in 0..3 {
-            s.pump();
+            pump_scripted(&mut s);
         }
         assert_eq!(titles(&s), ["Bravo", "Charlie"]);
     }
@@ -1885,13 +2387,13 @@ pub(super) mod tests {
         assert!(first > 0);
         s.run(WatchlistCmd::Reread);
         for _ in 0..4 {
-            s.pump();
+            pump_scripted(&mut s);
         }
         assert_eq!(mock.finds.load(Ordering::SeqCst), first, "an unchanged list asks no server again");
         mock.items.lock().unwrap().push(item(4, "Delta"));
         s.run(WatchlistCmd::Reread);
         for _ in 0..4 {
-            s.pump();
+            pump_scripted(&mut s);
         }
         assert_eq!(mock.finds.load(Ordering::SeqCst), first + 1, "one new movie guid: one chunk, one server");
         assert_eq!(titles(&s).len(), 4);
@@ -1899,7 +2401,7 @@ pub(super) mod tests {
         mock.roster_gen.fetch_add(1, Ordering::SeqCst);
         s.run(WatchlistCmd::Reread);
         for _ in 0..4 {
-            s.pump();
+            pump_scripted(&mut s);
         }
         assert_eq!(mock.finds.load(Ordering::SeqCst), first + 2);
         assert_eq!(s.state.table.roster_gen, mock.roster_gen.load(Ordering::SeqCst));
@@ -1924,7 +2426,7 @@ pub(super) mod tests {
         let mut s = store(&mock);
         s.run_for_test(WatchlistCmd::Open);
         for _ in 0..40 {
-            s.pump();
+            pump_scripted(&mut s);
         }
         let starts = mock.starts.lock().unwrap().clone();
         assert_eq!(starts.len(), 21);
@@ -1946,11 +2448,11 @@ pub(super) mod tests {
         let mock = three();
         let mut s = store(&mock);
         load(&mut s);
-        // A later read that finds no answer keeps the list.
-        let landed = |what| Landed { tag: Tag { profile_gen: 1, epoch: s.state.epoch, req: 0 }, what };
-        let a = s.adapter_for_test();
-        a.post_for_test(landed(What::PageFailed { start: 0, why: Failure::Offline }));
-        s.pump();
+        // A real claimed reread fails before page zero and retains the complete list.
+        let _ = mock.etag_on.swap(false, Ordering::SeqCst);
+        mock.fail_pages_from.store(u32::MIN, Ordering::SeqCst);
+        s.run(WatchlistCmd::Reread);
+        for _ in 0..2 { pump_scripted(&mut s); }
         assert_eq!(s.view().status(), Status::Ready);
         assert_eq!(s.view().len(), 3);
     }
@@ -1988,12 +2490,15 @@ pub(super) mod tests {
         assert_eq!(s.view().copy(1).map(|m| m.rating_key), Some(10));
         // The owned server is second in the roster and wins over the first share.
         mock.ranks.lock().unwrap().insert(b, 1);
+        pump_scripted(&mut s);
         assert_eq!(s.view().copy(1).map(|m| m.rating_key), Some(20), "owned beats a share");
         // The current server is last in the roster and wins over both.
         mock.ranks.lock().unwrap().insert(c, 0);
+        pump_scripted(&mut s);
         assert_eq!(s.view().copy(1).map(|m| m.rating_key), Some(30), "current beats owned");
         // An unreachable preferred copy is never chosen.
         mock.up.lock().unwrap().retain(|x| *x != c);
+        pump_scripted(&mut s);
         assert_eq!(s.view().copy(1).map(|m| m.rating_key), Some(20));
     }
 
@@ -2014,8 +2519,10 @@ pub(super) mod tests {
         let genre = |s: &WatchlistStore| s.view().listing(1).and_then(|l| l.genre.clone());
         assert_eq!((s.view().copy(1).map(|m| m.rating_key), genre(&s)), (Some(10), Some("Drama".into())));
         mock.ranks.lock().unwrap().insert(b, 1);
+        pump_scripted(&mut s);
         assert_eq!((s.view().copy(1).map(|m| m.rating_key), genre(&s)), (Some(20), Some("Comedy".into())), "the owned copy's facts");
         mock.up.lock().unwrap().clear();
+        pump_scripted(&mut s);
         assert_eq!((s.view().copy(1), genre(&s)), (None, None), "no reachable copy, no facts");
         assert_eq!(s.view().listing(0), None, "a title no server holds has none");
     }
@@ -2039,7 +2546,7 @@ pub(super) mod tests {
         mock.fail_pages_from.store(100, Ordering::SeqCst);
         s.run(WatchlistCmd::Reread);
         for _ in 0..3 {
-            s.pump();
+            pump_scripted(&mut s);
         }
         assert_eq!(s.view().len(), 150, "the old rows stay");
         assert!(!s.view().truncated(), "a complete old list is not reported as cut short");
@@ -2056,6 +2563,29 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn failed_rereads_preserve_the_truncated_status_of_held_rows() {
+        for failed_from in [0, 100] {
+            let mock = Mock::new((1..=150).map(|n| item(n, &format!("T{n:03}"))).collect());
+            mock.fail_pages_from.store(100, Ordering::SeqCst);
+            let mut s = store(&mock);
+            load(&mut s);
+            assert_eq!(s.view().len(), 100);
+            assert!(s.view().truncated());
+
+            mock.fail_pages_from.store(failed_from, Ordering::SeqCst);
+            reread(&mut s);
+            assert_eq!(s.view().len(), 100, "old partial rows must stay on failure at {failed_from}");
+            assert!(s.view().truncated(), "held rows remain partial after failure at {failed_from}");
+            assert_eq!(s.state.list_etag, None);
+
+            mock.fail_pages_from.store(u32::MAX, Ordering::SeqCst);
+            reread(&mut s);
+            assert_eq!(s.view().len(), 150);
+            assert!(!s.view().truncated());
+        }
+    }
+
+    #[test]
     fn the_drawn_state_holds_until_the_pump_that_rederives_it() {
         let mock = three();
         mock.held.lock().unwrap().insert((ServerId::from_raw(0), guid(2)), "42".into());
@@ -2067,7 +2597,7 @@ pub(super) mod tests {
         mock.up.lock().unwrap().clear();
         mock.facts_gen.fetch_add(1, Ordering::SeqCst);
         assert_eq!(s.view().state(1), Some(TileState::Available), "the committed state, not the live one");
-        s.pump();
+        pump_scripted(&mut s);
         assert_eq!(s.view().state(1), Some(TileState::ServerOffline), "the pump re-derives it");
     }
 
@@ -2086,7 +2616,7 @@ pub(super) mod tests {
     fn reread(s: &mut WatchlistStore) {
         s.run(WatchlistCmd::Reread);
         for _ in 0..6 {
-            s.pump();
+            pump_scripted(s);
         }
     }
 
@@ -2161,7 +2691,7 @@ pub(super) mod tests {
         load(&mut s);
         s.run(WatchlistCmd::Press { hex: hex_of(2), intent: Intent::Remove });
         for _ in 0..3 {
-            s.pump();
+            pump_scripted(&mut s);
         }
         assert_eq!(s.state.list_etag, None);
         assert!(s.take_reread_owed());
@@ -2178,7 +2708,7 @@ pub(super) mod tests {
         load(&mut s);
         s.run(WatchlistCmd::Press { hex: hex_of(2), intent: Intent::Remove });
         for _ in 0..3 {
-            s.pump();
+            pump_scripted(&mut s);
         }
         assert_eq!(s.state.list_etag, None, "a request that may have reached the service changed what it holds");
     }
@@ -2198,9 +2728,9 @@ pub(super) mod tests {
         mock.items.lock().unwrap().remove(2);
         s.spawn = hold;
         s.run(WatchlistCmd::Reread);
-        s.pump();
+        pump_scripted(&mut s);
         s.run(WatchlistCmd::Press { hex: hex_of(1), intent: Intent::Remove });
-        s.pump();
+        pump_scripted(&mut s);
         s.spawn = inline;
         let jobs: Vec<_> = HELD.with(|h| h.borrow_mut().drain(..).collect());
         assert_eq!(jobs.len(), 2, "the list worker and the write worker");
@@ -2208,8 +2738,9 @@ pub(super) mod tests {
             job();
         }
         for _ in 0..4 {
-            s.pump();
+            pump_scripted(&mut s);
         }
+        assert_eq!(titles(&s), ["Bravo"], "the older list claim lands despite the newer write request");
         assert_eq!(s.state.list_etag, None, "page 0 was read around the write; its validator may describe the old list");
     }
 
@@ -2274,8 +2805,9 @@ pub(super) mod tests {
         mock.found.lock().unwrap().clear();
         mock.held.lock().unwrap().insert((sid0(), guid(1)), "11".into());
         assert!(s.rematch_on(sid0(), s.unmatched_on(sid0(), Kind::Movie)));
+        s.drive_jobs_for_test(plx_machine::landgate::fixture_gate(), &WatchlistInput::profile_for_test(1));
         assert_eq!(mock.found.lock().unwrap().len(), 1, "one chunk for three titles");
-        s.pump();
+        pump_scripted(&mut s);
         assert_eq!(movie_state_of(&s, 1), Some(TileState::Available), "the tile flips at the landing");
         assert_eq!(movie_state_of(&s, 2), Some(TileState::NotOnAnyServer));
         assert_eq!(s.state.table.roster_gen, mock.roster_gen.load(Ordering::SeqCst), "the roster mark is not touched");
@@ -2307,7 +2839,9 @@ pub(super) mod tests {
         let mut ready = store(&mock);
         load(&mut ready);
         let mut ready = ready.with_spawn_for_test(refuse);
-        assert!(!ready.rematch_on(sid0(), vec![(guid(1), Kind::Movie)]), "a refused worker is not started");
+        assert!(ready.rematch_on(sid0(), vec![(guid(1), Kind::Movie)]), "an addressed job is emitted before admission");
+        ready.drive_jobs_for_test(plx_machine::landgate::fixture_gate(), &WatchlistInput::profile_for_test(1));
+        assert!(ready.pending_delta.is_some(), "refused delta stays owned for retry");
         assert!(!ready.rematch_on(sid0(), vec![(guid(1), Kind::Movie)]), "and waits out its retry");
         assert!(s.rematch_on(sid0(), Vec::new()), "nothing to ask is nothing to start");
         assert!(s.rematch_on(ServerId::from_raw(9), vec![(guid(1), Kind::Movie)]), "an unreachable server is not asked");
@@ -2320,7 +2854,327 @@ pub(super) mod tests {
         load(&mut s);
         mock.found.lock().unwrap().clear();
         assert!(s.rematch_on(sid0(), s.unmatched_on(sid0(), Kind::Movie)));
+        s.drive_jobs_for_test(plx_machine::landgate::fixture_gate(), &WatchlistInput::profile_for_test(1));
         let sizes: Vec<usize> = mock.found.lock().unwrap().iter().map(Vec::len).collect();
         assert_eq!(sizes, [40, 40, 10]);
+    }
+
+    #[test]
+    fn stream_jobs_list_rematch_delta_are_values_until_the_runner_enters() {
+        use super::super::{StoreJob, watchlist_job::*};
+        let mock = three();
+        let mut s = store(&mock);
+        s.run_for_test(WatchlistCmd::Open);
+        let profile = WatchlistInput::profile_for_test(1);
+        let gate = plx_machine::landgate::fixture_gate();
+        s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+        assert_eq!(mock.pages.load(Ordering::SeqCst), 0, "the step does not do IO");
+        let StoreJob::WatchlistList(job, port) = s.take_jobs().pop().unwrap() else { panic!("list job") };
+        assert_eq!(job.addr.req.0, job.req.tag.req);
+        assert_eq!(job.req.tag.profile_gen, 1);
+        finish_list_job(&port, job.addr, job.req, &*mock);
+        assert!(port.is_owed());
+        s.land_stream_results(gate, &profile);
+        assert!(!port.is_owed());
+        assert_eq!(s.view().len(), 3);
+        let finds = mock.finds.load(Ordering::SeqCst);
+        mock.roster_gen.fetch_add(1, Ordering::SeqCst);
+        s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+        let StoreJob::WatchlistRematch(job, port) = s.take_jobs().pop().unwrap() else { panic!("rematch job") };
+        assert_eq!(mock.finds.load(Ordering::SeqCst), finds);
+        finish_rematch_job(&port, job.addr, job.req, &*mock);
+        s.land_stream_results(gate, &profile);
+        assert!(!port.is_owed());
+        let finds = mock.finds.load(Ordering::SeqCst);
+        assert!(s.rematch_on(sid0(), s.rows_of(Kind::Movie)));
+        let StoreJob::WatchlistDelta(job, port) = s.take_jobs().pop().unwrap() else { panic!("delta job") };
+        assert_eq!(mock.finds.load(Ordering::SeqCst), finds);
+        finish_delta_job(&port, job.addr, job.req, &*mock);
+        s.land_stream_results(gate, &profile);
+        assert!(!port.is_owed());
+        assert!(!s.read_in_flight());
+    }
+    #[test]
+    fn stream_jobs_refused_delta_retains_asks_and_retries_at_120_pumps() {
+        use super::super::StoreJob;
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        let profile = WatchlistInput::profile_for_test(1);
+        let gate = plx_machine::landgate::fixture_gate();
+        assert!(s.rematch_on(sid0(), vec![(guid(1), Kind::Movie)]));
+        let StoreJob::WatchlistDelta(job, port) = s.take_jobs().pop().unwrap() else { panic!("delta") };
+        port.refused(job.addr);
+        s.land_stream_results(gate, &profile);
+        assert!(!port.is_owed());
+        assert!(s.pending_delta.is_some());
+        for _ in 0..119 { s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock)); assert!(!s.has_jobs()); }
+        s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+        assert!(matches!(s.take_jobs().pop(), Some(StoreJob::WatchlistDelta(..))));
+    }
+
+    #[test]
+    fn stream_jobs_delta_rows_keep_original_allocation_through_refused_retries() {
+        use super::super::StoreJob;
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        let profile = WatchlistInput::profile_for_test(1);
+        let gate = plx_machine::landgate::fixture_gate();
+        let rows = vec![(guid(2), Kind::Movie), (guid(1), Kind::Movie)];
+        let original_rows = rows.as_ptr();
+        let original_guids: Vec<_> = rows.iter().map(|(guid, _)| guid.as_ptr()).collect();
+        let expected = rows.clone();
+        assert!(s.rematch_on(sid0(), rows));
+        let StoreJob::WatchlistDelta(mut job, mut port) = s.take_jobs().pop().unwrap() else { panic!("delta") };
+        assert_eq!(job.req.rows.as_ptr(), original_rows);
+        assert_eq!(job.req.rows.as_ref(), &expected);
+        let (sid, retained) = s.pending_delta.as_ref().unwrap();
+        assert_eq!(*sid, sid0());
+        assert!(Arc::ptr_eq(retained, &job.req.rows));
+        let retained = Arc::clone(retained);
+        let mut equal = job.req.clone();
+        equal.rows = Arc::new(expected.clone());
+        assert_eq!(job.req, equal, "request equality compares row content, not allocation identity");
+        assert!(!Arc::ptr_eq(&job.req.rows, &equal.rows));
+        for _ in 0..2 {
+            let tag = job.req.tag;
+            let input = job.req.input.clone();
+            port.refused(job.addr);
+            drop(job);
+            s.land_stream_results(gate, &profile);
+            assert!(!port.is_owed());
+            assert!(Arc::ptr_eq(&s.pending_delta.as_ref().unwrap().1, &retained));
+            for _ in 0..119 {
+                s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+                assert!(!s.has_jobs());
+            }
+            s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+            let StoreJob::WatchlistDelta(retry, retry_port) = s.take_jobs().pop().unwrap() else { panic!("delta retry") };
+            assert_eq!(retry.req.sid, sid0());
+            assert_eq!(retry.req.tag.profile_gen, tag.profile_gen);
+            assert_eq!(retry.req.tag.epoch, tag.epoch);
+            assert!(retry.req.tag.req > tag.req);
+            assert_eq!(retry.req.input, input);
+            assert!(Arc::ptr_eq(&retry.req.rows, &retained));
+            assert_eq!(retry.req.rows.as_ptr(), original_rows);
+            assert_eq!(retry.req.rows.as_ref(), &expected);
+            assert_eq!(retry.req.rows.iter().map(|(guid, _)| guid.as_ptr()).collect::<Vec<_>>(), original_guids);
+            job = retry;
+            port = retry_port;
+        }
+    }
+    #[test]
+    fn stream_jobs_captured_roster_is_used_even_when_transport_facts_move() {
+        use super::super::{StoreJob, watchlist_job::finish_list_job};
+        let mock = three();
+        let mut s = store(&mock);
+        s.run_for_test(WatchlistCmd::Open);
+        let profile = WatchlistInput::profile_for_test(1);
+        let gate = plx_machine::landgate::fixture_gate();
+        s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+        let StoreJob::WatchlistList(job, port) = s.take_jobs().pop().unwrap() else { panic!("list") };
+        mock.roster.lock().unwrap().clear();
+        mock.up.lock().unwrap().clear();
+        mock.roster_gen.store(99, Ordering::SeqCst);
+        finish_list_job(&port, job.addr, job.req, &*mock);
+        s.land_stream_results(gate, &profile);
+        assert_eq!(mock.finds.load(Ordering::SeqCst), 1, "captured reachable server is still asked");
+        assert_eq!(s.state.table.roster_gen, 1, "transport's current generation is not a step input");
+    }
+    #[test]
+    fn stream_jobs_reset_cancels_queued_work_and_acks_retired_terminal() {
+        use super::super::{StoreJob, watchlist_job::finish_list_job};
+        let mock = three();
+        let mut s = store(&mock);
+        s.run_for_test(WatchlistCmd::Open);
+        let profile = WatchlistInput::profile_for_test(1);
+        let gate = plx_machine::landgate::fixture_gate();
+        s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+        let StoreJob::WatchlistList(job, port) = s.take_jobs().pop().unwrap() else { panic!("list") };
+        s.run(WatchlistCmd::Reset);
+        finish_list_job(&port, job.addr, job.req, &*mock);
+        assert_eq!(mock.pages.load(Ordering::SeqCst), 0);
+        assert!(!port.is_owed());
+        assert!(s.view().is_empty());
+    }
+    #[test]
+    fn stream_jobs_started_reset_late_terminal_is_acked_without_publication() {
+        use super::super::StoreJob;
+        let mock = three();
+        let mut s = store(&mock);
+        s.run_for_test(WatchlistCmd::Open);
+        let profile = WatchlistInput::profile_for_test(1);
+        let gate = plx_machine::landgate::fixture_gate();
+        s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+        let StoreJob::WatchlistList(_, port) = s.take_jobs().pop().unwrap() else { panic!("list") };
+        let producer = port.start().unwrap();
+        s.run(WatchlistCmd::Reset);
+        producer.finish(StreamEnd::Cancelled);
+        s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+        assert!(!port.is_owed());
+        assert!(s.view().is_empty());
+        assert!(s.retired_streams.is_empty());
+    }
+    #[test]
+    fn stream_jobs_panicked_reread_preserves_held_completeness_before_and_after_page_zero() {
+        use super::super::StoreJob;
+        for truncated in [false, true] {
+            for page_seen in [false, true] {
+                let mock = Mock::new((1..=150).map(|n| item(n, &format!("T{n:03}"))).collect());
+                if truncated { mock.fail_pages_from.store(100, Ordering::SeqCst); }
+                let mut s = store(&mock);
+                load(&mut s);
+                let held = titles(&s);
+                assert_eq!(s.view().truncated(), truncated);
+                s.run(WatchlistCmd::Reread);
+                let profile = WatchlistInput::profile_for_test(1);
+                let gate = plx_machine::landgate::fixture_gate();
+                s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+                let StoreJob::WatchlistList(job, port) = s.take_jobs().pop().unwrap() else { panic!("list") };
+                let producer = port.start().unwrap();
+                if page_seen {
+                    producer.post(job.addr, What::Page { start: 0, total: Some(200), rows: Vec::new(),
+                        answers: Vec::new(), roster_gen: 1, etag: Some("partial".into()) });
+                }
+                producer.finish(StreamEnd::Panicked);
+                assert!(s.land_stream_results(gate, &profile));
+                assert_eq!(titles(&s), held);
+                assert_eq!(s.view().truncated(), truncated, "held completeness survives panic, page_seen={page_seen}");
+                assert!(!s.read_in_flight());
+                assert!(!port.is_owed());
+                assert!(!s.land_stream_results(gate, &profile));
+            }
+        }
+    }
+
+    #[test]
+    fn stream_jobs_first_load_panic_after_page_zero_keeps_partial_rows_truncated() {
+        use super::super::StoreJob;
+        let mock = three();
+        let mut s = store(&mock);
+        s.run_for_test(WatchlistCmd::Open);
+        let profile = WatchlistInput::profile_for_test(1);
+        let gate = plx_machine::landgate::fixture_gate();
+        s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+        let StoreJob::WatchlistList(job, port) = s.take_jobs().pop().unwrap() else { panic!("list") };
+        let producer = port.start().unwrap();
+        producer.post(job.addr, What::Page { start: 0, total: Some(3),
+            rows: vec![crate::watchlist::row_of(&item(1, "Alpha"), 0).unwrap()], answers: Vec::new(),
+            roster_gen: 1, etag: Some("partial".into()) });
+        producer.finish(StreamEnd::Panicked);
+        assert!(s.land_stream_results(gate, &profile));
+        assert_eq!(titles(&s), ["Alpha"]);
+        assert!(s.view().truncated());
+        assert_eq!(s.view().status(), Status::Ready);
+        assert!(!s.read_in_flight());
+        assert!(!port.is_owed());
+        assert!(!s.land_stream_results(gate, &profile));
+    }
+
+    #[test]
+    fn stream_jobs_panicked_reread_keeps_held_rows_and_has_one_terminal() {
+        use super::super::StoreJob;
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        s.run(WatchlistCmd::Reread);
+        let profile = WatchlistInput::profile_for_test(1);
+        let gate = plx_machine::landgate::fixture_gate();
+        s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+        let StoreJob::WatchlistList(job, port) = s.take_jobs().pop().unwrap() else { panic!("list") };
+        let producer = port.start().unwrap();
+        producer.post(job.addr, What::Page { start: 0, total: Some(5), rows: Vec::new(), answers: Vec::new(), roster_gen: 1, etag: Some("partial".into()) });
+        producer.finish(StreamEnd::Panicked);
+        s.land_stream_results(gate, &profile);
+        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"]);
+        assert!(!s.read_in_flight());
+        assert!(!port.is_owed());
+        assert!(s.state.list_etag.is_none() || s.state.list_etag == mock.tag());
+        assert!(!s.land_stream_results(gate, &profile));
+    }
+
+    #[test]
+    fn resolve_stale_full_client_key_is_not_cached() {
+        use plx_machine::job::Port;
+        use plx_plex::plex::{ClientKey, ClientKeys};
+        use super::super::{StoreJob, watchlist_job::ResolveEnd};
+        let old = ClientKey { instance: 1, token: 2, grant: 3 };
+        for moved in [ClientKey { instance: 9, ..old }, ClientKey { token: 9, ..old }, ClientKey { grant: 9, ..old }] {
+            let mut s = WatchlistStore::default();
+            let sid = sid0();
+            let profile = WatchlistInput::profile_for_test(1);
+            let gate = plx_machine::landgate::fixture_gate();
+            let keys = ClientKeys::from_keys([(sid, old)]);
+            s.want_hex(sid, "7");
+            s.pump_with_snapshot(gate, &profile, Snapshot::new(&keys, None));
+            let StoreJob::WatchlistResolve(job, port) = s.take_jobs().pop().unwrap() else { panic!("resolve") };
+            assert!(port.start());
+            port.done(job.addr, ResolveEnd::Answer(Some(Some(hex_of(7)))));
+            let keys = ClientKeys::from_keys([(sid, moved)]);
+            s.pump_with_snapshot(gate, &profile, Snapshot::new(&keys, None));
+            assert_eq!(s.view().resolved_hex(sid, "7"), None, "every full-key component fences a stale answer");
+            assert!(s.state.resolving.is_empty());
+            s.want_hex(sid, "7");
+            s.pump_with_snapshot(gate, &profile, Snapshot::new(&keys, None));
+            let StoreJob::WatchlistResolve(job, _) = s.take_jobs().pop().unwrap() else { panic!("replacement") };
+            assert_eq!(job.req.keys.key(sid), Some(moved));
+        }
+    }
+    #[test]
+    fn stream_jobs_retired_terminal_race_is_always_acknowledged() {
+        use super::super::StoreJob;
+        for _ in 0..200 {
+            let mock = three();
+            let mut s = store(&mock);
+            s.run_for_test(WatchlistCmd::Open);
+            let profile = WatchlistInput::profile_for_test(1);
+            let gate = plx_machine::landgate::fixture_gate();
+            s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+            let StoreJob::WatchlistList(_, port) = s.take_jobs().pop().unwrap() else { panic!("list") };
+            let producer = port.start().unwrap();
+            s.run(WatchlistCmd::Reset);
+            let worker = std::thread::spawn(move || producer.finish(StreamEnd::Cancelled));
+            s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+            worker.join().unwrap();
+            s.pump_with_snapshot(gate, &profile, Snapshot::scripted(&*mock));
+            assert!(!port.is_owed());
+        }
+    }
+
+    #[test]
+    fn stream_jobs_all_admission_refusals_settle_before_paced_landing_gates() {
+        use plx_machine::job::Port;
+        use super::super::StoreJob;
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        let profile = WatchlistInput::profile_for_test(1);
+        let gate = plx_machine::landgate::Gate::default();
+        gate.arm_dump_paced(120);
+        gate.dump_frame(0);
+        s.run(WatchlistCmd::Reread);
+        s.run(WatchlistCmd::Press { hex: hex_of(1), intent: Intent::Remove });
+        s.want_hex(sid0(), "7");
+        s.pump_with_snapshot(&gate, &profile, Snapshot::scripted(&*mock));
+        let mut streams = Vec::new();
+        for job in s.take_jobs() {
+            match job {
+                StoreJob::WatchlistList(job, port) => { port.refused(job.addr); streams.push(port); }
+                StoreJob::WatchlistWrite(job, port) => port.refused(job.addr),
+                StoreJob::WatchlistResolve(job, port) => port.refused(job.addr),
+                _ => panic!("unexpected job"),
+            }
+        }
+        s.land_stream_results(&gate, &profile);
+        s.land_write_results(&gate, &profile);
+        s.land_resolve_refusals(&profile);
+        assert!(s.state.list_claim.is_none());
+        assert!(s.state.write_claim.is_none());
+        assert!(s.state.resolving.is_empty());
+        assert!(streams.iter().all(|p| !p.is_owed()));
+        assert_eq!(s.state.list_retry, RETRY_FRAMES);
+        assert_eq!(s.state.write_retry, RETRY_FRAMES);
+        assert!(!s.has_jobs(), "a refusal drain never emits a replacement");
     }
 }

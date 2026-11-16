@@ -25,6 +25,7 @@
   "core.preview_domain_attempted_delivery": "diffusion tentée",
   "core.preview_domain_source_video": "codec vidéo source (rapports de refus uniquement)",
   "core.preview_domain_source_audio": "codec audio source (rapports de refus uniquement)",
+  "core.preview_domain_preview_refusal": "raison du refus d’une bande-annonce automatique (rapports de refus de bande-annonce uniquement)",
   "core.preview_domain_quality": "qualité",
   "core.preview_domain_observed_rate": "débit observé",
   "core.preview_domain_raster": "trame",

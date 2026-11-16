@@ -21,7 +21,14 @@ impl Host for TestHost {
     type Init = FixtureArg;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for TestHost {
+    fn screen_inputs<'a>(_cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        crate::registry::empty_fixture()
+    }
+}
+
 impl LibraryLike for TestHost {
+    fn clock_facts<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { None }
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> {
         cx.views.listing
     }
@@ -68,14 +75,14 @@ impl Fixture {
     fn rebuild(&mut self) {
         self.stores.browse_run_for_test(BrowseCmd::Reset);
         self.stores.browse.borrow_mut().seed_registered_table_for_test(self.sids);
-        self.stores.capture_browse(&mut self.directory);
+        self.stores.capture_seeded_browse_for_test(&mut self.directory, self.sids[0]);
         self.stores.browse_run_for_test(BrowseCmd::SetCur(0));
         self.stores.browse.borrow_mut().seed_items_for_test(12);
         self.capture();
         assert_eq!(self.directory.view().current(), Some(0));
     }
     fn capture(&mut self) {
-        let publication = self.stores.capture_browse(&mut self.directory);
+        let publication = self.stores.capture_seeded_browse_for_test(&mut self.directory, self.sids[0]);
         self.listing = publication.listing;
         self.hubs = publication.section_hubs;
     }
@@ -165,7 +172,7 @@ fn apply(
                 Some(stores.person.run(command))
             }
             Fx::App(AppFx::Store(_, StoreCmd::Search(command))) => {
-                Some(stores.search_run(command, directory))
+                Some(stores.search_run_for_test(command, directory))
             }
             Fx::App(AppFx::Store(_, StoreCmd::ViewState(command))) => {
                 Some(stores.viewstate_run(command, directory, &plx_data::pms::registry_keys_for_test(), 0).changed)
@@ -227,6 +234,27 @@ fn newest_section_replaces_old_grid_work_and_commits_only_the_last_section() {
         !fixture.listing.view().unwatched(),
         "discarded grid work cannot alter the arriving query"
     );
+}
+
+#[test]
+fn closing_sources_menu_does_not_replace_a_newer_library_choice() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    let mut page = fixture.screen();
+    fixture.step(
+        &mut page,
+        ScreenEvent::App(AppMsg::LibrarySelect(fixture.address(1))),
+    );
+    fixture.step(
+        &mut page,
+        ScreenEvent::App(AppMsg::LibraryMenuSelect {
+            origin: fixture.address(0),
+            target: fixture.address(2),
+        }),
+    );
+    assert_eq!(page.view_section(&fixture.cx()), Some(1));
+    assert_eq!(fixture.flush(&mut page), vec![true]);
+    assert_eq!(fixture.directory.view().current(), Some(1));
 }
 
 #[test]

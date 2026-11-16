@@ -43,6 +43,14 @@
     "value": "Skip the profile list when the app starts.",
     "description": "Settings, account, onboarding or privacy UI: settings.auto_sign_in.detail"
   },
+  "settings.hud_end_time.title": {
+    "value": "Estimated end time",
+    "description": "Settings, account, onboarding or privacy UI: settings.hud_end_time.title"
+  },
+  "settings.hud_end_time.detail": {
+    "value": "Show the expected local finish time for movies and episodes.",
+    "description": "Settings, account, onboarding or privacy UI: settings.hud_end_time.detail"
+  },
   "settings.trailers.title": {
     "value": "Play trailers automatically",
     "description": "Settings, account, onboarding or privacy UI: settings.trailers.title"
@@ -543,7 +551,7 @@
     "description": "Settings, account, onboarding or privacy UI: settings.legal.trademarks.body"
   },
   "settings.legal.contact.body": {
-    "value": "Privacy questions may be sent to support@plxnative.com.\n\nSecurity vulnerabilities may be reported privately through GitHub Security Advisories for GLinnik21/plx-native. Please do not include Plex tokens, server addresses or personal media information in a report.",
+    "value": "Privacy questions may be sent to support@plxnative.com.\n\nSecurity vulnerabilities may be reported privately through GitHub Security Advisories for plxnative/plx-native. Please do not include Plex tokens, server addresses or personal media information in a report.",
     "description": "Settings, account, onboarding or privacy UI: settings.legal.contact.body"
   },
   "settings.legal.opensource.body": {
@@ -551,14 +559,14 @@
     "description": "Settings, account, onboarding or privacy UI: settings.legal.opensource.body"
   },
   "settings.legal.source.body": {
-    "value": "Source for build {build}:\n\nhttps://github.com/GLinnik21/plx-native/tree/{build}\n\nLocal migration candidates may contain unpublished changes. Their matching source snapshot is provided with the candidate evidence. A published binary must be accompanied by its version-specific complete source bundle and build instructions; a moving branch is not the corresponding-source record. See LICENSING.md in the package.",
+    "value": "Source for build {build}:\n\nhttps://github.com/plxnative/plx-native/tree/{build}\n\nLocal migration candidates may contain unpublished changes. Their matching source snapshot is provided with the candidate evidence. A published binary must be accompanied by its version-specific complete source bundle and build instructions; a moving branch is not the corresponding-source record. See LICENSING.md in the package.",
     "description": "Settings, account, onboarding or privacy UI: settings.legal.source.body",
     "args": {
       "build": "str"
     }
   },
   "settings.about.body": {
-    "value": "Version {version}\nBuild {build}\n\nDeveloped by Gleb Linnik\n© 2026 Gleb Linnik\n\nOpen source under GPL-3.0-or-later\ngithub.com/GLinnik21/plx-native\n\nPlxNative is an independent, unofficial application. It is not produced by, endorsed by, or affiliated with Plex, Inc. or LG Electronics Inc.",
+    "value": "Version {version}\nBuild {build}\n\nDeveloped by Gleb Linnik\n© 2026 Gleb Linnik\n\nOpen source under GPL-3.0-or-later\ngithub.com/plxnative/plx-native\n\nPlxNative is an independent, unofficial application. It is not produced by, endorsed by, or affiliated with Plex, Inc. or LG Electronics Inc.",
     "description": "Settings, account, onboarding or privacy UI: settings.about.body",
     "args": {
       "build": "str",
@@ -699,6 +707,10 @@
     "value": "High",
     "description": "Subtitle position picker option: the caption sits near the top of the safe area."
   },
+  "settings.playback.subtitle_color": {
+    "value": "Subtitle color",
+    "description": "Settings, consent or sign-in UI: the color of the client-rendered subtitle caption's text (white, yellow or a gray)."
+  },
   "settings.playback.hdr_overlay": {
     "value": "HDR overlay brightness",
     "description": "Settings row title and picker title: how bright the player's controls and subtitles are drawn while the picture is HDR or Dolby Vision."
@@ -818,6 +830,10 @@
   "settings.playback.subtitle_position.copy": {
     "value": "How high subtitles sit on the picture. Picture and styled subtitles keep their own position. Also under Style in the player's Subtitles menu.",
     "description": "Explanation under the title of the Subtitle position picker. Picture subtitles (PGS, VobSub) and styled (ASS/SSA) subtitles carry their own geometry, so the setting does not reach them; the same control is the Position row under Style on the Subtitles tab of the player's track menu."
+  },
+  "settings.playback.subtitle_color.copy": {
+    "value": "The color of subtitle text. Styled subtitles keep their own colors, and white text in them follows the pick; picture subtitles never do. The grays dim every subtitle. Also under Color in the player's Subtitles menu.",
+    "description": "Explanation under the title of the Subtitle color picker. Styled (ASS/SSA) subtitles keep their own colors, but text they draw in plain white (the default ink) follows the chosen color; picture subtitles (PGS, VobSub) carry their own colors and a color choice such as yellow never reaches them; the gray choices dim every subtitle. The same control is the Color row on the Subtitles tab of the player's track menu."
   },
   "settings.playback.hdr_overlay.copy": {
     "value": "How bright the player's controls and subtitles are during HDR and Dolby Vision, when the TV draws them much brighter. Lower it if they dazzle. 100% leaves them as they are.",

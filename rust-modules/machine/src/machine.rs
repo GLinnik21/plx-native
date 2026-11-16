@@ -107,6 +107,31 @@ newtype!(
     PartId
 );
 
+/// One external app-command obligation, monotonically minted by its dispatcher.
+/// Tokens are local to that dispatcher, not portable between independent runtimes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppCommandId(pub u64);
+
+/// Terminal execution/admission result, distinct from a later asynchronous job result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppCommandOutcome {
+    Completed,
+    Failed,
+    Refused,
+    Cancelled,
+    RetiredSender,
+}
+
+/// Owned handoff at the head of a dispatcher's FIFO. No screen/store borrow crosses IO.
+/// `from` includes the mounted lifetime; effect-specific request identities remain in `F`.
+/// A retired sender yields an error instead of an executable effect.
+pub struct AppCommand<F, R> {
+    pub id: AppCommandId,
+    pub from: MachineId,
+    pub return_state: R,
+    pub effect: Result<F, AppCommandOutcome>,
+}
+
 /// Why an entry is left (§3.4).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Leave {
@@ -293,6 +318,10 @@ pub fn fit_line_by<M: Measure + ?Sized>(
 #[derive(Clone, Copy, Debug)]
 pub struct PressRead<K = ()> {
     pub scale: f32,
+    /// Identity of the input owner's arm, retained through spring-back (not a global counter).
+    pub identity: u32,
+    pub live: bool,
+    pub active: bool,
     pub is_long: bool,
     /// Milliseconds a HOLDABLE (card) press has been held down right now, still undecided: `None`
     /// for no press, a control face's press (no hold gesture), a released or cancelled one.
@@ -308,7 +337,7 @@ pub struct PressRead<K = ()> {
 
 impl<K> Default for PressRead<K> {
     fn default() -> Self {
-        Self { scale: 0.0, is_long: false, held_ms: None, owner: None }
+        Self { scale: 0.0, identity: 0, live: false, active: false, is_long: false, held_ms: None, owner: None }
     }
 }
 
@@ -391,6 +420,8 @@ pub struct Stamped<H: Host> {
     pub from: MachineId,
     pub fx: Fx<H>,
 }
+
+// Job-value and stamped-effect assertions share crate::assert_fx! from job.rs.
 
 /// A single machine emitting more than this in one `step` is a debug assertion (§3.3 step 6).
 pub const MAX_EMIT_PER_STEP: u32 = 32;
@@ -793,6 +824,8 @@ pub enum NavOp<A> {
     PopToArg(A),
     Replace(A),
     SelectTab(A),
+    /// Select a tab and put its child on top in the same commit. Back reveals the tab's page.
+    SelectTabWithChild { tab: A, child: A },
     Present(A),
     Dismiss(EntryId),
     Cancel,
@@ -871,10 +904,28 @@ impl Canon {
         }
     }
 
+    // `inline(always)` and plain index loops, not `for b in bytes` / `to_le_bytes()` iterators: this
+    // runs over the whole logical state several times a frame in a debug build (the dispatcher's
+    // `state_hash` assertions), where every iterator `next` is a call that is never inlined, and
+    // they were most of a dispatcher test frame. The bytes fed, and so the hash, are unchanged
+    // (`canon_is_fnv_1a_over_tagged_little_endian_bytes`).
+    #[inline(always)]
     fn byte(&mut self, b: u8) {
         self.h ^= b as u64;
         self.h = self.h.wrapping_mul(Self::PRIME);
         self.len += 1;
+    }
+
+    #[inline(always)]
+    fn bytes(&mut self, bytes: &[u8]) {
+        let mut h = self.h;
+        let mut i = 0;
+        while i < bytes.len() {
+            h = (h ^ bytes[i] as u64).wrapping_mul(Self::PRIME);
+            i += 1;
+        }
+        self.h = h;
+        self.len += bytes.len() as u64;
     }
 
     pub fn u8(&mut self, v: u8) -> &mut Self {
@@ -885,17 +936,13 @@ impl Canon {
 
     pub fn u32(&mut self, v: u32) -> &mut Self {
         self.tag(2);
-        for b in v.to_le_bytes() {
-            self.byte(b);
-        }
+        self.bytes(&v.to_le_bytes());
         self
     }
 
     pub fn u64(&mut self, v: u64) -> &mut Self {
         self.tag(3);
-        for b in v.to_le_bytes() {
-            self.byte(b);
-        }
+        self.bytes(&v.to_le_bytes());
         self
     }
 
@@ -908,18 +955,14 @@ impl Canon {
     /// Floats are their BITS: NaN, +0/-0 and Inf are all distinct and all stable.
     pub fn f32(&mut self, v: f32) -> &mut Self {
         self.tag(5);
-        for b in v.to_bits().to_le_bytes() {
-            self.byte(b);
-        }
+        self.bytes(&v.to_bits().to_le_bytes());
         self
     }
 
     pub fn str(&mut self, v: &str) -> &mut Self {
         self.tag(6);
         self.u32(v.len() as u32);
-        for b in v.bytes() {
-            self.byte(b);
-        }
+        self.bytes(v.as_bytes());
         self
     }
 
@@ -949,6 +992,7 @@ impl Canon {
         self
     }
 
+    #[inline(always)]
     fn tag(&mut self, t: u8) {
         self.byte(t);
     }
@@ -1021,6 +1065,46 @@ mod canon_tests {
         assert_ne!(z.finish(), nz.finish(), "+0 and -0 are different bits");
     }
 
+    /// The encoder is FNV-1a over a tag byte and little-endian bytes, `finish` folding the byte count
+    /// in. Recorded replay anchors hash through it, so its byte stream is pinned two ways: against a
+    /// one-byte-at-a-time reference written from that sentence, and against the value the encoder
+    /// produced before its loops were rewritten to run cheaply in a debug build.
+    #[test]
+    fn canon_is_fnv_1a_over_tagged_little_endian_bytes() {
+        let mut c = Canon::new();
+        c.u8(0xAB)
+            .u32(0xDEAD_BEEF)
+            .u64(0x0123_4567_89AB_CDEF)
+            .bool(true)
+            .f32(-1.5)
+            .str("héllo — ☃")
+            .discriminant(7)
+            .seq(3)
+            .option(Some(5u32), |c, v| {
+                c.u32(v);
+            })
+            .option::<u32>(None, |c, v| {
+                c.u32(v);
+            });
+        let mut stream = vec![1, 0xAB, 2];
+        stream.extend(0xDEAD_BEEFu32.to_le_bytes());
+        stream.push(3);
+        stream.extend(0x0123_4567_89AB_CDEFu64.to_le_bytes());
+        stream.extend([4, 1, 5]);
+        stream.extend((-1.5f32).to_bits().to_le_bytes());
+        stream.extend([6, 2]);
+        stream.extend(("héllo — ☃".len() as u32).to_le_bytes());
+        stream.extend("héllo — ☃".bytes());
+        stream.extend([7, 2, 7, 0, 0, 0, 8, 2, 3, 0, 0, 0, 10, 2, 5, 0, 0, 0, 9]);
+        let (mut h, mut len) = (0xcbf2_9ce4_8422_2325u64, 0u64);
+        for b in stream {
+            h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+            len += 1;
+        }
+        assert_eq!(c.finish(), h ^ len.rotate_left(32), "the byte stream is not the specified one");
+        assert_eq!(c.finish(), 7_471_706_773_540_265_486, "the value the encoder produced before its loops were rewritten");
+    }
+
     struct NoHost;
     #[derive(Clone)]
     struct NoArg;
@@ -1055,6 +1139,35 @@ mod canon_tests {
         type Views<'a> = ();
         type Init = NoInit;
         type Memory = ();
+    }
+
+    #[test]
+    fn assert_fx_checks_stamp_order_absence_and_extras_without_effect_traits() {
+        let mut buf: Vec<Stamped<NoHost>> = Vec::new();
+        let mut present = Present::new();
+        {
+            let _step = plx_base::step::StepScope::enter();
+            let mut fx = Effects::new(&mut buf, MachineId::Nav, &mut present);
+            fx.push(Fx::Timer { id: TimerId(7), after_ms: 40 });
+            fx.push(Fx::App(()));
+        }
+        crate::assert_fx!(&buf, stamped [(MachineId::Nav, Fx::Timer { id, after_ms: 40 } if *id == TimerId(7)),
+            (MachineId::Nav, Fx::App(()))]);
+        let empty: Vec<Stamped<NoHost>> = Vec::new();
+        crate::assert_fx!(&empty, stamped []);
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        assert!(catch_unwind(AssertUnwindSafe(|| crate::assert_fx!(&empty, stamped
+            [(MachineId::Nav, Fx::App(()))]))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| crate::assert_fx!(&buf, stamped []))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| crate::assert_fx!(&buf, stamped
+            [(MachineId::Nav, Fx::App(())), (MachineId::Nav, Fx::Timer { .. })]))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| crate::assert_fx!(&buf, stamped
+            [(MachineId::Nav, Fx::Timer { .. })]))).is_err());
+        buf[0].from = MachineId::Instance(InstanceId(17));
+        assert!(catch_unwind(AssertUnwindSafe(|| crate::assert_fx!(&buf, stamped
+            [(MachineId::Nav, Fx::Timer { .. }), (MachineId::Nav, Fx::App(()))]))).is_err());
+        crate::assert_fx!(&buf, stamped [(MachineId::Instance(InstanceId(17)), Fx::Timer { .. }),
+            (MachineId::Nav, Fx::App(()))]);
     }
 
     #[test]

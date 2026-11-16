@@ -77,7 +77,7 @@
 //! the results for `wallace`. Debounce is `ui/detail.rs`'s `season_settle` accumulator. Two rules
 //! that are easy to miss and both wedge the screen forever if missed: the in-flight flag must come
 //! back when the runner REFUSES the request ([`SearchPort`]'s `refused`, which the next pump reads
-//! to back the source off), and [`plx_machine::idle::invalidate`] must be called on every landing
+//! to back the source off), and every changed landing must reach the caller's owned presentation effect,
 //! including the failure branch.
 //!
 //! ## A fetch is a store job
@@ -785,17 +785,51 @@ impl Source {
 /// A profile switch can additionally deactivate only the middle slot, so even that post-sign-out
 /// window is not necessarily contiguous. One index per live server is the honest shape, whatever
 /// the slot numbers have reached.
-fn slots() -> Vec<usize> {
-    plx_plex::plex::server_ids().map(|id| id.raw() as usize).collect()
-}
+fn slots(state: &SearchState) -> Arc<Vec<usize>> { state.live.clone() }
 
 /// How many sources this store fans out over — the width of [`slots`].
-fn nsrc() -> usize {
-    slots().len()
+fn nsrc(state: &SearchState) -> usize {
+    state.clients.slots().count()
 }
 
 /// One Search owner's main-thread-only logical state (`docs/stores-as-machines.md`). Production
 /// gains one through `stores::search::SearchStore`; the worker-touched half is [`SearchAdapter`].
+/// All synchronous Search facts, captured by the host before commands as well as pumps.
+#[derive(Clone, Copy)]
+pub struct SearchInput<'a> {
+    pub keys: &'a ClientKeys,
+    pub recents: recents::Input<'a>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub struct FixtureInput {
+    pub keys: ClientKeys,
+    pub session: Arc<plx_plex::plex::session::Session>,
+    pub settled: bool,
+    pub profile_generation: u32,
+    pub session_generation: u64,
+    pub tenure: u64,
+    pub profile_key: String,
+}
+#[cfg(any(test, feature = "test-support"))]
+impl FixtureInput {
+    pub fn input(&self) -> SearchInput<'_> {
+        SearchInput { keys: &self.keys, recents: recents::Input {
+            session: &self.session, settled: self.settled, profile_generation: self.profile_generation,
+            session_generation: self.session_generation, tenure: self.tenure, profile_key: &self.profile_key } }
+    }
+}
+#[cfg(any(test, feature = "test-support"))]
+pub fn fixture_input() -> FixtureInput {
+    let settled = plx_plex::plex::session::peek_settled();
+    FixtureInput { keys: crate::pms::registry_keys_for_test(), settled: settled.is_some(),
+        session: settled.unwrap_or_else(plx_plex::plex::session::peek),
+        profile_generation: plx_plex::plex::session::current_gen(),
+        session_generation: plx_plex::plex::session::visible_generation(),
+        tenure: plx_plex::plex::session::tenure(),
+        profile_key: plx_plex::plex::session::current_profile_key() }
+}
+
 pub struct SearchState {
     /// The publish order of view-state edits, shared by `stores::Stores`.
     pub(crate) ledger: crate::viewledger::ViewLedger,
@@ -817,6 +851,11 @@ pub struct SearchState {
     /// changes and same-slot re-points alike; both supersede cached answers and workers aimed at
     /// the previous origin/profile.
     visible: u32,
+    clients: ClientKeys,
+    live: Arc<Vec<usize>>,
+    profile_generation: u32,
+    profile_key: Option<String>,
+    profile_tenure: u64,
 
     /// **The favourite table this result set was projected under**, taken once per query when
     /// the request is made (`plex/CLAUDE.md` rule 5) and read by [`rebuild`]'s merge. It ranks; it never
@@ -874,6 +913,11 @@ impl Default for SearchState {
             state: State::Idle,
             gen: 0,
             visible: 0,
+            clients: ClientKeys::default(),
+            live: Arc::new(Vec::new()),
+            profile_generation: 0,
+            profile_key: None,
+            profile_tenure: 0,
             favs: Vec::new(),
             fav_gen: 0,
             settle_us: 0,
@@ -892,6 +936,16 @@ impl SearchState {
     /// The query as typed, verbatim — trailing space and all, because the FIELD draws this.
     pub fn query(&self) -> &str {
         self.query.as_deref().unwrap_or("")
+    }
+
+    pub(crate) fn run_local(&mut self, adapter: &Arc<SearchAdapter>, cmd: crate::stores::search::SearchCmd) -> bool {
+        use crate::stores::search::SearchCmd;
+        match cmd {
+            SearchCmd::ApplyView { at, edit } => apply_view(self, &at, edit),
+            SearchCmd::Reset => { reset(self, adapter); true },
+            _ => { plx_base::eventlog::log("search: command without captured input refused");
+                debug_assert!(false, "Search command requires captured input"); false }
+        }
     }
 
     pub fn state(&self) -> State {
@@ -913,48 +967,49 @@ impl SearchState {
     /// handed the household).
     #[cfg(any(test, feature = "test-support"))]
     pub fn snapshot(&self) -> view::SearchSnapshot {
-        self.snapshot_with_scope(self.scope_cache.snapshot(&[]))
+        let captured = fixture_input();
+        let input = captured.input();
+        self.snapshot_with_scope(self.scope_cache.snapshot_with_input(&input, &[]), &input)
     }
 
     /// `household`: the signed-in profile's household member ids, read by the application's
     /// `Bridge` (`Session::household_ids`) and handed in, so the source scope this publishes
     /// reads no session global.
-    pub fn snapshot_with_directory(
-        &self,
-        directory: crate::stores::browse::DirectoryView<'_>,
-        household: &[i64],
-    ) -> view::SearchSnapshot {
-        self.snapshot_with_scope(self.scope_cache.snapshot_with_directory(directory, household))
+    pub fn snapshot_with_directory_and_input(&self, directory: crate::stores::browse::DirectoryView<'_>,
+        input: &SearchInput<'_>, household: &[i64]) -> view::SearchSnapshot {
+        self.snapshot_with_scope(self.scope_cache.snapshot_with_directory_and_input(directory, input, household), input)
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn snapshot_with_directory(&self, directory: crate::stores::browse::DirectoryView<'_>, household: &[i64]) -> view::SearchSnapshot {
+        self.snapshot_with_directory_and_input(directory, &fixture_input().input(), household)
     }
 
-    fn snapshot_with_scope(&self, scope: scope::SourceScopeSnapshot) -> view::SearchSnapshot {
+    fn snapshot_with_scope(&self, scope: scope::SourceScopeSnapshot, input: &SearchInput<'_>) -> view::SearchSnapshot {
         view::SearchSnapshot::from_parts(
             self.query.clone(),
             self.shelves.clone(),
             self.state,
             self.gen,
-            recents::snapshot(),
+            recents::snapshot_with_input(&input.recents),
             scope,
         )
     }
 
     /// Synchronous command path. `stores::search::SearchStore::run_with_directory` is the
     /// production caller and is what rotates `adapter` on `SearchCmd::Reset`.
-    pub fn run(
-        &mut self,
-        adapter: &Arc<SearchAdapter>,
-        cmd: crate::stores::search::SearchCmd,
-    ) -> bool {
-        run_with_optional_directory(self, adapter, cmd, None)
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn run(&mut self, adapter: &Arc<SearchAdapter>, cmd: crate::stores::search::SearchCmd) -> bool {
+        run_with_optional_directory(self, adapter, cmd, None, &fixture_input().input())
     }
 
-    pub fn run_with_directory(
-        &mut self,
-        adapter: &Arc<SearchAdapter>,
-        cmd: crate::stores::search::SearchCmd,
-        directory: crate::stores::browse::DirectoryView<'_>,
-    ) -> bool {
-        run_with_optional_directory(self, adapter, cmd, Some(directory))
+    pub fn run_with_directory_and_input(&mut self, adapter: &Arc<SearchAdapter>, cmd: crate::stores::search::SearchCmd,
+        directory: crate::stores::browse::DirectoryView<'_>, input: &SearchInput<'_>) -> bool {
+        run_with_optional_directory(self, adapter, cmd, Some(directory), input)
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn run_with_directory(&mut self, adapter: &Arc<SearchAdapter>, cmd: crate::stores::search::SearchCmd,
+        directory: crate::stores::browse::DirectoryView<'_>) -> bool {
+        self.run_with_directory_and_input(adapter, cmd, directory, &fixture_input().input())
     }
 
     /// Test-only compatibility pump for fixtures without a retained directory. The requests it
@@ -962,29 +1017,30 @@ impl SearchState {
     #[cfg(any(test, feature = "test-support"))]
     pub fn pump(&mut self, adapter: &Arc<SearchAdapter>, dt: f32) -> bool {
         pump_with_optional_directory(self, adapter, dt, None,
-            plx_machine::landgate::fixture_gate(), &crate::pms::registry_keys_for_test())
+            plx_machine::landgate::fixture_gate(), &fixture_input().input())
     }
 
     /// Advance the debounce, land whatever arrived under this frame's retained directory policy and
     /// emit the requests that are due. `keys` is the registry's answer as of this call. Returns
     /// whether anything changed, so the caller can re-clamp focus. It does NOT start the requests it
     /// emitted: the owner takes them from [`SearchState::jobs`] and owes them to a runner.
-    pub fn pump_with_directory_and_gate(
-        &mut self,
-        adapter: &Arc<SearchAdapter>,
-        dt: f32,
-        directory: crate::stores::browse::DirectoryView<'_>,
-        gate: &plx_machine::landgate::Gate,
-        keys: &ClientKeys,
-    ) -> bool {
-        pump_with_optional_directory(self, adapter, dt, Some(directory), gate, keys)
+    pub fn pump_with_directory_and_input_and_gate(&mut self, adapter: &Arc<SearchAdapter>, dt: f32,
+        directory: crate::stores::browse::DirectoryView<'_>, gate: &plx_machine::landgate::Gate, input: &SearchInput<'_>) -> bool {
+        pump_with_optional_directory(self, adapter, dt, Some(directory), gate, input)
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pump_with_directory_and_gate(&mut self, adapter: &Arc<SearchAdapter>, dt: f32,
+        directory: crate::stores::browse::DirectoryView<'_>, gate: &plx_machine::landgate::Gate, keys: &ClientKeys) -> bool {
+        let captured = fixture_input();
+        let input = SearchInput { keys, ..captured.input() };
+        self.pump_with_directory_and_input_and_gate(adapter, dt, directory, gate, &input)
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn pump_with_directory(&mut self, adapter: &Arc<SearchAdapter>, dt: f32,
         directory: crate::stores::browse::DirectoryView<'_>) -> bool {
-        self.pump_with_directory_and_gate(adapter, dt, directory,
-            plx_machine::landgate::fixture_gate(), &crate::pms::registry_keys_for_test())
+        self.pump_with_directory_and_input_and_gate(adapter, dt, directory,
+            plx_machine::landgate::fixture_gate(), &fixture_input().input())
     }
 
     /// Publish a bounded catalog through the real retained-view boundary, without network work.
@@ -1007,9 +1063,11 @@ impl SearchState {
         plx_base::testlock::assert_held("the search store (publish_shelves_for_test)");
         // A published catalog represents completed source answers, not merely painted rows over
         // still-pending requests. Keep it valid when a real owned-screen Tick pumps the store.
-        self.visible = plx_plex::plex::server_roster_gen();
+        self.clients = crate::pms::registry_keys_for_test();
+        self.visible = self.clients.roster_gen();
+        self.live = Arc::new(self.clients.slots().map(|sid| sid.raw() as usize).collect());
         snapshot(self);
-        for i in slots() {
+        for i in slots(self).iter().copied() {
             let items = std::array::from_fn(|k| {
                 shelves
                     .iter()
@@ -1087,7 +1145,7 @@ fn set_query_with_directory(
         state.settle_us = 0;
         state.armed = real_query;
     }
-    plx_machine::idle::invalidate();
+
 }
 
 /// Apply a view-state change to every result row it covers — the optimistic half of a view-state
@@ -1227,7 +1285,7 @@ fn favs_match_directory(
 #[cfg(any(test, feature = "test-support"))]
 fn pump(state: &mut SearchState, adapter: &Arc<SearchAdapter>, dt: f32) -> bool {
     pump_with_optional_directory(state, adapter, dt, None,
-        plx_machine::landgate::fixture_gate(), &crate::pms::registry_keys_for_test())
+        plx_machine::landgate::fixture_gate(), &fixture_input().input())
 }
 
 fn pump_with_optional_directory(
@@ -1236,19 +1294,11 @@ fn pump_with_optional_directory(
     dt: f32,
     directory: Option<crate::stores::browse::DirectoryView<'_>>,
     gate: &plx_machine::landgate::Gate,
-    keys: &ClientKeys,
+    input: &SearchInput<'_>,
 ) -> bool {
-    let live = slots();
-    let visible = plx_plex::plex::server_roster_gen();
-    let roster_changed = state.visible != visible;
-    state.visible = visible;
-    if roster_changed {
-        // This is an identity boundary, not merely a changed source count. Clear every answer and
-        // generation so a slot reactivated for another profile cannot surface rows fetched with
-        // the credential it held before it was hidden.
-        supersede(state, adapter);
-        state.shelves = None;
-    }
+    let roster_changed = observe_inputs(state, adapter, input);
+    let keys = input.keys;
+    let live = slots(state);
     // **The second Browse identity, and it moves without the first.** Discovery appending a library
     // and a favourites edit both bump `SECTIONS_GEN`; an independent owner can instead carry a
     // different exact table at the SAME local generation. This screen runs discovery immediately
@@ -1291,7 +1341,7 @@ fn pump_with_optional_directory(
                 plx_base::eventlog::log(&format!(
                     "search: q[{}ch] settled, asking {} source(s)",
                     q.chars().count(),
-                    nsrc()
+                    nsrc(state)
                 ));
             }
         }
@@ -1367,7 +1417,7 @@ fn pump_with_optional_directory(
     }
     // every landing repaints, the failure branch included: without this the screen sits on a
     // spinner that has already been answered until the next keypress happens to invalidate it
-    plx_machine::idle::invalidate();
+
     true
 }
 
@@ -1447,7 +1497,7 @@ fn live_sources<'a>(state: &'a SearchState, live: &[usize]) -> Vec<&'a Source> {
 /// Recompute the merged shelves from every source's last answer. The [`State`] is NOT set here —
 /// `pump` recomputes that every frame, landing or no landing (see the note there).
 fn rebuild(state: &mut SearchState) {
-    let live = slots();
+    let live = slots(state);
     let sources = live_sources(state, &live);
     let los: [usize; NKIND] = std::array::from_fn(|k| state.wins[k].lo);
     let epochs: [u32; NKIND] = std::array::from_fn(|k| state.wins[k].committed);
@@ -1629,7 +1679,7 @@ fn owed_read(state: &SearchState, i: usize) -> Option<(usize, std::ops::Range<us
     // any slide
     waited_on.or_else(|| {
         let k = (0..NKIND).find(|&k| source(state, i).skipped[k])?;
-        let (depths, _) = window_of(&live_sources(state, &slots()), k, state.wins[k].lo);
+        let (depths, _) = window_of(&live_sources(state, &slots(state)), k, state.wins[k].lo);
         Some((k, depths))
     })
 }
@@ -1784,7 +1834,7 @@ fn land_read(state: &mut SearchState, i: usize, t: TailMail) -> bool {
     let Some(range) = waited_on else {
         // a source the window was committed without, reading the window on screen
         if !source(state, i).skipped[k] { return false }
-        let (depths, _) = window_of(&live_sources(state, &slots()), k, state.wins[k].lo);
+        let (depths, _) = window_of(&live_sources(state, &slots(state)), k, state.wins[k].lo);
         if source(state, i).tails[k].needs(&depths) {
             if !progressed { source_mut(state, i).retry_cd = RETRY_FRAMES; }
             return false;
@@ -1842,9 +1892,9 @@ fn prune_pending(state: &mut SearchState, live: &[usize]) -> bool {
 /// Move kind `k`'s window to start at `lo`: every lane lets go of the depths outside it, and
 /// [`rebuild`] (the caller's) draws the new cards.
 fn commit_window(state: &mut SearchState, k: usize, lo: usize) {
-    let live = slots();
+    let live = slots(state);
     let (depths, _) = window_of(&live_sources(state, &live), k, lo);
-    for i in live {
+    for i in live.iter().copied() {
         let s = source_mut(state, i);
         s.tails[k].trim(depths.clone());
         // whoever still lacks a depth of the new window was left out of it: owed, and asked outside
@@ -1878,7 +1928,7 @@ fn page(state: &mut SearchState, kind: Kind, before: bool, seen: (usize, usize))
         if !before { return false }
         state.wins[k].pending = None;
     }
-    let live = slots();
+    let live = slots(state);
     let sources = live_sources(state, &live);
     let lo = state.wins[k].lo;
     let (depths, answered) = window_of(&sources, k, lo);
@@ -2040,9 +2090,30 @@ fn tag_hit(t: &plx_plex::plex::Tag, sid: ServerId, favs: &[(ServerId, i64, bool)
 
 /// Drop everything — the account changed, so both the query and the results belong to someone
 /// else. Called beside the Browse `BrowseCmd::Reset` command.
+fn observe_inputs(state: &mut SearchState, adapter: &Arc<SearchAdapter>, input: &SearchInput<'_>) -> bool {
+    let profile_changed = state.profile_key.as_ref().is_some_and(|key|
+        state.profile_generation != input.recents.profile_generation || key != input.recents.profile_key
+            || state.profile_tenure != input.recents.tenure);
+    if state.profile_key.as_deref() != Some(input.recents.profile_key) {
+        state.profile_key = Some(input.recents.profile_key.to_owned());
+    }
+    state.profile_generation = input.recents.profile_generation;
+    state.profile_tenure = input.recents.tenure;
+    let roster_changed = state.visible != input.keys.roster_gen()
+        || !state.clients.slots().eq(input.keys.slots()) || !state.clients.iter().eq(input.keys.iter());
+    if !state.clients.slots().eq(input.keys.slots()) {
+        state.live = Arc::new(input.keys.slots().map(|sid| sid.raw() as usize).collect());
+    }
+    state.visible = input.keys.roster_gen();
+    if state.clients != *input.keys { state.clients.clone_from(input.keys); }
+    if profile_changed { reset(state, adapter); }
+    else if roster_changed { supersede(state, adapter); state.shelves = None; }
+    roster_changed || profile_changed
+}
+
 fn reset(state: &mut SearchState, adapter: &Arc<SearchAdapter>) {
     supersede(state, adapter);
-    state.visible = plx_plex::plex::server_roster_gen();
+    state.visible = state.clients.roster_gen();
     state.query = None;
     state.shelves = None;
     state.state = State::Idle;
@@ -2070,8 +2141,10 @@ fn run_with_optional_directory(
     adapter: &Arc<SearchAdapter>,
     cmd: crate::stores::search::SearchCmd,
     directory: Option<crate::stores::browse::DirectoryView<'_>>,
+    input: &SearchInput<'_>,
 ) -> bool {
     use crate::stores::search::SearchCmd;
+    observe_inputs(state, adapter, input);
     match cmd {
         SearchCmd::SetQuery(q) => {
             match directory {
@@ -2081,7 +2154,7 @@ fn run_with_optional_directory(
             true
         }
         SearchCmd::SetQueryScoped { profile_generation, query } => {
-            if profile_generation != plx_plex::plex::session::current_gen() { return false; }
+            if profile_generation != input.recents.profile_generation { return false; }
             match directory {
                 Some(directory) => set_query_from_directory(state, adapter, &query, directory),
                 None => set_query(state, adapter, &query),
@@ -2089,12 +2162,12 @@ fn run_with_optional_directory(
             true
         }
         SearchCmd::RememberRecent { profile_generation, term } => {
-            let edit = crate::search::recents::remember(profile_generation, &term);
+            let edit = crate::search::recents::remember_with_input(&input.recents, profile_generation, &term);
             owe_recents_save(state, adapter, edit.save);
             edit.changed
         }
         SearchCmd::ClearRecents { profile_generation } => {
-            let edit = crate::search::recents::clear(profile_generation);
+            let edit = crate::search::recents::clear_with_input(&input.recents, profile_generation);
             owe_recents_save(state, adapter, edit.save);
             edit.changed
         }
@@ -2187,3 +2260,7 @@ mod dump_tests;
 #[cfg(test)]
 #[path = "search_job_tests.rs"]
 mod job_tests;
+
+#[cfg(test)]
+#[path = "search/captured_inputs_tests.rs"]
+mod captured_inputs_tests;

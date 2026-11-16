@@ -4,6 +4,7 @@
 //! implementation.
 
 use plx_plex::plex::{ClientKeys, ServerId};
+pub use crate::browse::BrowseRosterInput;
 use plx_machine::machine::{Cx, Effects, Handled, Machine};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -20,25 +21,24 @@ pub use crate::browse::{
 pub use crate::browse::section_hubs::{HubsId, HubsSnapshot, HubsView, Publication};
 #[allow(unused_imports)] // Shared owner vocabulary; some members are feature/test specific.
 pub use crate::browse::view::{
-    DirectorySnapshot, DirectoryView, ListingId, ListingSnapshot, ListingView, SectionView,
+    DirectorySnapshot, DirectoryView, ListingId, ListingSnapshot, ListingView, SectionView, SAMPLE_POSTERS,
 };
 
 /// Owner-aware first-run gate shared by boot and login. The retained directory is the granted
 /// Browse publication for this Bridge. The session is handed by the caller (boot and login each
 /// read it where they ask), never read here.
 pub mod onboard {
-    pub fn asks(directory: super::DirectoryView<'_>, session: &plx_plex::plex::session::Session) -> bool {
-        asks_for_sources(directory.sources().len(), session)
+    pub fn asks(directory: super::DirectoryView<'_>, session: &plx_plex::plex::session::Session, profile_key: &str) -> bool {
+        asks_for_sources(directory.sources().len(), session, profile_key)
     }
 
     /// The gate for a roster of `sources`, judged on `session` for the profile that is watching NOW
     /// (`plex::pins::asks`): everyone is asked once, so the profile matters only for its recorded
     /// answer. The profile is the published profile key the record is filed under
     /// (`current_profile_key`), which is not a session read.
-    pub fn asks_for_sources(sources: usize, session: &plx_plex::plex::session::Session) -> bool {
-        let profile = plx_plex::plex::session::current_profile_key();
-        plx_plex::plex::pins::asks(sources, session.pins_for(&profile))
-    }
+    pub fn asks_for_sources(sources: usize, session: &plx_plex::plex::session::Session, profile_key: &str) -> bool {
+        plx_plex::plex::pins::asks(sources, session.pins_for(profile_key))
+      }
 }
 
 /// One frame's retained Browse publication. The directory is captured first because resolving
@@ -49,6 +49,13 @@ pub struct BrowsePublications {
     pub listing: ListingSnapshot,
     pub directory: DirectorySnapshot,
     pub section_hubs: HubsSnapshot,
+}
+
+/// Command admission is not presentation damage: a wanted range or an admitted read can be quiet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommandOutcome {
+    pub accepted: bool,
+    pub changed: bool,
 }
 
 /// Every mutation of the browse store a screen may ask for.
@@ -154,12 +161,13 @@ impl BrowseStore {
     /// controlled Home arm admits the discovery through the run's ledger).
     #[must_use]
     pub fn take_jobs(&mut self) -> Vec<super::StoreJob> {
+        self.jobs.extend(self.state.take_preference_jobs());
         std::mem::take(&mut self.jobs)
     }
 
     /// Does the outbox hold a job nobody has taken yet?
     pub fn has_jobs(&self) -> bool {
-        !self.jobs.is_empty()
+        !self.jobs.is_empty() || self.state.has_preference_jobs()
     }
 
     /// Run one command for a caller that holds no session: the Stores fan-outs, which send only
@@ -167,25 +175,38 @@ impl BrowseStore {
     /// discovery command is refused here, because the session it must read was never handed:
     /// those reach [`BrowseStore::run_with_session`].
     pub fn run(&mut self, cmd: BrowseCmd, keys: &ClientKeys) -> bool {
-        if matches!(cmd, BrowseCmd::ApplyPins(_) | BrowseCmd::Discovery(_)) {
+        if matches!(cmd, BrowseCmd::ApplyPins(_) | BrowseCmd::Discovery(_) | BrowseCmd::RecheckShares | BrowseCmd::Addressed { .. }) {
             debug_assert!(false, "a pin or discovery command reached a step handed no session");
             plx_base::eventlog::log(
                 "browse: a pin or discovery command reached a step handed no session — dropped");
             return false;
         }
-        self.run_with_session(cmd, keys, &plx_plex::plex::session::Session::default())
+        let session = plx_plex::plex::session::Session::default();
+        self.run_with_input(cmd, &BrowseRosterInput { tenure: 0,
+            keys, session: &session, visible_generation: 0, settled: false, profile_key: "",
+        })
     }
 
     /// Run one command; `keys` is the registry's answer as of this call (the Bridge fills it
     /// immediately before, `refill_client_keys`), which the section-hubs or directory reads it may emit
     /// are decided from. `session` is the one the Bridge read after observing the pin write
     /// (`Bridge::browse_session`), which the pin commands and a landing discovery read.
-    pub fn run_with_session(
+    pub fn run_with_input(
         &mut self,
         cmd: BrowseCmd,
-        keys: &ClientKeys,
-        session: &plx_plex::plex::session::Session,
+        input: &BrowseRosterInput<'_>,
     ) -> bool {
+        self.run_with_input_outcome(cmd, input).accepted
+    }
+
+    /// The owner reports presentation damage independently of the command's synchronous answer.
+    pub fn run_with_input_outcome(
+        &mut self,
+        cmd: BrowseCmd,
+        input: &BrowseRosterInput<'_>,
+    ) -> CommandOutcome {
+        let keys = input.keys;
+        let session = input.session;
         use crate::viewstate::ViewEdit;
         let change_sensitive = matches!(&cmd, BrowseCmd::Discovery(_) | BrowseCmd::Addressed {
             work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. } | LibraryWork::HubHold { .. }
@@ -194,19 +215,23 @@ impl BrowseStore {
         let quiet = matches!(&cmd, BrowseCmd::Addressed {
             work: LibraryWork::Want { .. } | LibraryWork::Letters { .. } | LibraryWork::Genres | LibraryWork::HubPage { .. } | LibraryWork::HubPageCancel { .. }, ..
         });
+        let letters = matches!(&cmd, BrowseCmd::Addressed { work: LibraryWork::Letters { .. }, .. });
         let roster_changed = if matches!(&cmd, BrowseCmd::RecheckShares) {
-            self.sync_roster()
+            self.sync_roster(input)
         } else {
             false
         };
         if matches!(&cmd, BrowseCmd::Reset) {
             self.adapter = Arc::new(Default::default());
         }
-        let changed = self.state.run_owned(&self.adapter, cmd, keys, session, &mut self.jobs) || roster_changed;
-        if !quiet && (!change_sensitive || changed) {
+        self.state.observe_roster_context(input);
+        let mut outcome = self.state.run_owned_outcome(&self.adapter, cmd, keys, session, &mut self.jobs);
+        outcome.accepted |= roster_changed;
+        outcome.changed |= roster_changed;
+        if (!quiet && (!change_sensitive || outcome.changed)) || (letters && outcome.changed) {
             self.bump();
         }
-        changed
+        outcome
     }
 
     /// Run one command on a registry that holds no client (no section-hubs or directory read leaves): the
@@ -216,7 +241,12 @@ impl BrowseStore {
     pub fn run_for_test(&mut self, cmd: BrowseCmd) -> bool {
         self.observe_pin_write();
         let session = plx_plex::plex::session::peek();
-        self.run_with_session(cmd, &ClientKeys::default(), &session)
+        self.run_with_input(cmd, &BrowseRosterInput { tenure: plx_plex::plex::session::tenure(),
+            keys: &ClientKeys::default(), session: &session,
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &plx_plex::plex::session::current_profile_key(),
+        })
     }
 
     /// Poll the pending pin write's receipt (`BrowseState::observe_pin_write`). The Bridge calls it
@@ -228,13 +258,16 @@ impl BrowseStore {
     pub fn pump_with_gate(
         &mut self,
         gate: &plx_machine::landgate::Gate,
-        keys: &ClientKeys,
-        session: &plx_plex::plex::session::Session,
+        input: &BrowseRosterInput<'_>,
     ) -> super::StoreOutcome {
-        if !self.state.pump_needs_work(&self.adapter) {
-            return Default::default();
+        let keys = input.keys;
+        let session = input.session;
+        let roster_changed = self.sync_roster(input);
+        if !self.state.pump_needs_work(&self.adapter, input) {
+            if roster_changed { self.bump(); }
+            return super::StoreOutcome { changed: roster_changed, ..Default::default() };
         }
-        let roster_changed = self.sync_roster();
+
         let source_gen = self.state.source_list_gen();
         let mut outcome = self.state.pump_owned_with_gate(&self.adapter, gate, keys, session, &mut self.jobs);
         outcome.changed |= roster_changed || source_gen != self.state.source_list_gen();
@@ -249,7 +282,16 @@ impl BrowseStore {
     pub fn pump(&mut self) -> super::StoreOutcome {
         self.observe_pin_write();
         let session = plx_plex::plex::session::peek();
-        self.pump_with_gate(plx_machine::landgate::fixture_gate(), &ClientKeys::default(), &session)
+        let mut keys = ClientKeys::default();
+        keys.refill_roster(plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
+            plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
+            plx_plex::plex::client_for, plx_plex::plex::server_facts, plx_plex::plex::server_probe_result);
+        self.pump_with_gate(plx_machine::landgate::fixture_gate(), &BrowseRosterInput { tenure: plx_plex::plex::session::tenure(),
+            keys: &keys, session: &session,
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &plx_plex::plex::session::current_profile_key(),
+        })
     }
 
     /// One discovery pass: land the answer waiting, and ask for the next source's discovery if none
@@ -259,13 +301,14 @@ impl BrowseStore {
     pub fn discover_pump_with_gate(
         &mut self,
         gate: &plx_machine::landgate::Gate,
-        keys: &ClientKeys,
-        session: &plx_plex::plex::session::Session,
+        input: &BrowseRosterInput<'_>,
     ) -> super::StoreOutcome {
-        if !self.state.discovery_needs_pump(&self.adapter) {
+        let keys = input.keys;
+        let session = input.session;
+        if !self.state.discovery_needs_pump(&self.adapter, input) {
             return Default::default();
         }
-        let roster_changed = self.sync_roster();
+        let roster_changed = self.sync_roster(input);
         let source_gen = self.state.source_list_gen();
         let mut outcome = self.state.discover_pump_owned_with_gate(&self.adapter, gate, keys, session, &mut self.jobs);
         outcome.changed |= roster_changed || source_gen != self.state.source_list_gen();
@@ -276,7 +319,16 @@ impl BrowseStore {
     pub fn discover_pump(&mut self) -> super::StoreOutcome {
         self.observe_pin_write();
         let session = plx_plex::plex::session::peek();
-        self.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &ClientKeys::default(), &session)
+        let mut keys = ClientKeys::default();
+        keys.refill_roster(plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
+            plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
+            plx_plex::plex::client_for, plx_plex::plex::server_facts, plx_plex::plex::server_probe_result);
+        self.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &BrowseRosterInput { tenure: plx_plex::plex::session::tenure(),
+            keys: &keys, session: &session,
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &plx_plex::plex::session::current_profile_key(),
+        })
     }
 
     /// The items the addressed Library page holds (see [`BrowseState::held_keys`]).
@@ -299,8 +351,20 @@ impl BrowseStore {
         self.state.listing_snapshot()
     }
 
-    pub fn capture_directory(&mut self, snapshot: &mut DirectorySnapshot) {
-        snapshot.capture_from(&mut self.state);
+    pub fn capture_directory(&mut self, snapshot: &mut DirectorySnapshot, input: &BrowseRosterInput<'_>) {
+        if self.sync_roster(input) { self.bump(); }
+        snapshot.capture_from(&mut self.state, input.keys);
+    }
+
+    /// Project an already-seeded table without adopting the live roster. The caller supplies
+    /// registry current independently of section selection; seed/command helpers resolve pins.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn capture_seeded_directory_for_test(&mut self, snapshot: &mut DirectorySnapshot,
+        current: plx_plex::plex::ServerId) {
+        let mut keys = ClientKeys::default();
+        keys.refill_roster(current, 0, 0, self.state.sources().iter().map(|source| source.sid),
+            |_| None, |_| None, |_| None);
+        snapshot.capture_from(&mut self.state, &keys);
     }
 
     pub fn hubs_snapshot(&mut self) -> HubsSnapshot {
@@ -364,9 +428,9 @@ impl BrowseStore {
     /// Settles a refused discovery BEFORE the roster sync, so a source the sync re-arms in the same
     /// step (a re-pointed or retokened client: `retry_cd = 0`) is asked again at once, as it was
     /// when the launcher set the backoff in the launching call.
-    fn sync_roster(&mut self) -> bool {
+    fn sync_roster(&mut self, input: &BrowseRosterInput<'_>) -> bool {
         self.state.discovery_settle(&self.adapter);
-        let sync = self.state.sync_roster_owned();
+        let sync = self.state.sync_roster_owned(input);
         if sync.retire_adapter {
             self.adapter = Arc::new(Default::default());
         }
@@ -376,9 +440,9 @@ impl BrowseStore {
     /// The controlled Home run's discovery step: the read leaves as a
     /// [`super::StoreJob::BrowseDiscovery`] on the outbox, which the Bridge's controlled arm admits
     /// through the run's ledger in the same call (`Bridge::admit_home_jobs`).
-    pub fn controlled_discover(&mut self, keys: &ClientKeys) {
-        let changed = self.sync_roster();
-        self.state.controlled_discover_owned(&self.adapter, keys, &mut self.jobs);
+    pub fn controlled_discover(&mut self, input: &BrowseRosterInput<'_>) {
+        let changed = self.sync_roster(input);
+        self.state.controlled_discover_owned(&self.adapter, input.keys, &mut self.jobs);
         if changed {
             self.bump();
         }
@@ -486,6 +550,11 @@ impl BrowseStore {
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_letter_counts_for_test(&mut self, letters: &[(&str, i64)]) {
         crate::browse::seed_letter_counts_for_owner_test(&mut self.state, letters);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_calendar_bands_for_test(&mut self, counted: [i32; 3], today: Option<[i32; 3]>) {
+        crate::browse::seed_calendar_bands_for_owner_test(&mut self.state, counted, today);
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -613,8 +682,10 @@ impl BrowseStore {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn prepare_discovery_replay_for_test(&mut self, sid: ServerId, epoch: u32) {
-        self.state.prepare_discovery_replay_for_test(&self.adapter, sid, epoch);
+    pub fn prepare_discovery_replay_for_test(
+        &mut self, sid: ServerId, epoch: u32, input: &BrowseRosterInput<'_>,
+    ) {
+        self.state.prepare_discovery_replay_for_test(&self.adapter, sid, epoch, input);
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -656,8 +727,8 @@ impl BrowseStore {
         crate::browse::queue_genre_for_owner_test(&mut self.state, &self.adapter, client);
     }
 
-    #[cfg(test)]
-    fn queue_page_failure_for_test(&mut self, client: &'static plx_plex::plex::Client) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn queue_page_failure_for_test(&mut self, client: &'static plx_plex::plex::Client) {
         crate::browse::queue_page_failure_for_owner_test(&mut self.state, &self.adapter, client);
     }
 
@@ -748,7 +819,7 @@ pub enum LibraryWork {
 
 impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {
     type Ev = StoreEv<BrowseCmd>;
-    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+    fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {
         match ev {
             // The registry is read by the host, never in a step (`plx_plex::plex::ClientKeys`, and
             // the session `Bridge::browse_session` reads), and a machine step is handed no keys and
@@ -763,10 +834,10 @@ impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {
                 self.run(c.clone(), &ClientKeys::default());
             }
             StoreEv::Pump { .. } => {
-                let mut due = std::mem::take(&mut self.endpoint_carry);
-                due.merge(self.pump_with_gate(&plx_machine::landgate::Gate::default(), &ClientKeys::default(),
-                    &plx_plex::plex::session::Session::default()).endpoints);
-                self.endpoint_carry = due.emit(fx);
+                // This entry has no captured roster/session. Refuse BEFORE effects.
+                let _ = &self.endpoint_carry;
+                    debug_assert!(false, "Browse pump requires BrowseRosterInput");
+                plx_base::eventlog::log("browse: pump without BrowseRosterInput — dropped");
             }
         }
         Handled::Yes
@@ -778,6 +849,28 @@ mod contract_tests {
     use super::*;
 
     #[test]
+    fn seeded_capture_is_projection_only_and_never_emits_work() {
+        let _guard = plx_base::testlock::serial();
+        let stores = crate::stores::Stores::default();
+        stores.browse.borrow_mut().seed_two_source_table_for_test();
+        stores.browse.borrow_mut().seed_items_for_test(3);
+        let mut directory = DirectorySnapshot::default();
+        let current = plx_plex::plex::ServerId::UNSET;
+        let before = stores.browse.borrow().gen();
+        let pins = stores.browse.borrow().pinned_for_test(0);
+        assert!(stores.browse.borrow().jobs.is_empty());
+        for _ in 0..2 {
+            let publication = stores.capture_seeded_browse_for_test(&mut directory, current);
+            assert_eq!(publication.directory.view().section_count(), 4);
+            assert_eq!(publication.listing.view().total(), 3);
+            assert_eq!(stores.browse.borrow().gen(), before);
+            assert_eq!(stores.browse.borrow().pinned_for_test(0), pins);
+            assert!(stores.browse.borrow().jobs.is_empty(), "projection cannot enqueue work");
+            assert!(stores.take_notices().is_empty());
+        }
+    }
+
+    #[test]
     fn explicit_store_commands_answer_now_and_capture_one_consistent_publication() {
         let _guard = plx_base::testlock::serial();
         let stores = crate::stores::Stores::default();
@@ -787,7 +880,7 @@ mod contract_tests {
             browse.seed_items_for_test(3);
         }
         let mut directory = DirectorySnapshot::default();
-        let publication = stores.capture_browse(&mut directory);
+        let publication = stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
         let view = publication.directory.view();
         assert_eq!(view.section_count(), 4);
         assert_eq!(view.tab_count(), 2);
@@ -801,7 +894,7 @@ mod contract_tests {
 
         assert!(stores.browse_run_for_test(BrowseCmd::SetCur(2)),
             "the direct command returns the store's answer synchronously");
-        let publication = stores.capture_browse(&mut directory);
+        let publication = stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
         let view = publication.directory.view();
         let current = view.current().unwrap();
         let id = publication.listing.view().id().unwrap();
@@ -843,16 +936,33 @@ mod contract_tests {
         let _guard = plx_base::testlock::serial();
         plx_plex::plex::reset_servers_for_test();
         let stores = crate::stores::Stores::default();
+        stores.browse.borrow().observe_pin_write();
+        let mut keys = ClientKeys::default();
+        keys.refill_roster(
+            plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
+            plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
+            plx_plex::plex::client_for, plx_plex::plex::server_facts,
+            plx_plex::plex::server_probe_result,
+        );
+        let session = plx_plex::plex::session::peek();
+        let profile_key = plx_plex::plex::session::current_profile_key();
+        let input = BrowseRosterInput { tenure: 0,
+            keys: &keys, session: &session,
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(), profile_key: &profile_key,
+        };
+        let mut directory = DirectorySnapshot::default();
+        // Establish the captured session context before measuring an unchanged idle pass.
+        stores.browse.borrow_mut().capture_directory(&mut directory, &input);
         let _ = stores.take_notices();
         let before = stores.browse.borrow().gen();
-        let mut directory = DirectorySnapshot::default();
         {
             let mut browse = stores.browse.borrow_mut();
             let _ = browse.listing_snapshot();
-            browse.capture_directory(&mut directory);
+            browse.capture_directory(&mut directory, &input);
             let _ = browse.hubs_snapshot();
-            assert_eq!(browse.pump(), super::super::StoreOutcome::default());
-            assert_eq!(browse.discover_pump(), super::super::StoreOutcome::default());
+            assert_eq!(browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &input), super::super::StoreOutcome::default());
+            assert_eq!(browse.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &input), super::super::StoreOutcome::default());
         }
         assert_eq!(stores.browse.borrow().gen(), before);
         assert!(stores.take_notices().is_empty());
@@ -1080,7 +1190,21 @@ mod contract_tests {
     /// discovery job refused through its own port, as the system refusing the thread does. Returns
     /// how many jobs the step asked for.
     fn refused_discovery_step(stores: &crate::stores::Stores) -> usize {
-        stores.browse_controlled_discover(&crate::pms::registry_keys_for_test());
+        stores.browse.borrow().observe_pin_write();
+        let mut keys = ClientKeys::default();
+        keys.refill_roster(
+            plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
+            plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
+            plx_plex::plex::client_for, plx_plex::plex::server_facts,
+            plx_plex::plex::server_probe_result,
+        );
+        let input = BrowseRosterInput { tenure: 0,
+            keys: &keys, session: &plx_plex::plex::session::peek(),
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &plx_plex::plex::session::current_profile_key(),
+        };
+        stores.browse_controlled_discover(&input);
         let mut asked = 0;
         for job in stores.browse.borrow_mut().take_jobs() {
             if let crate::stores::StoreJob::BrowseDiscovery(job, port) = job {
@@ -1102,6 +1226,12 @@ mod contract_tests {
         let _ = stores.take_notices();
         let before_notice = stores.browse.borrow().gen();
         let before_sources = stores.browse.borrow().source_list_gen_for_test();
+        // Data publication cannot dirty or wake an independent presentation owner.
+        let mut present = plx_machine::present::Present::global();
+        assert!(present.take(0));
+        present.acknowledge(0);
+        assert!(!present.changed());
+        let damage = (present.damage_epoch(), present.page_damage_epoch());
         plx_plex::plex::register_for_test(
             "", "127.0.0.1", 9, "synthetic", "fixture");
         let launches = refused_discovery_step(&stores);
@@ -1111,7 +1241,8 @@ mod contract_tests {
         assert_eq!(stores.browse.borrow().gen(), before_notice + 1);
         assert_eq!(stores.take_notices(), [(StoreId::Browse, before_notice + 1)]);
         assert!(stores.take_notices().is_empty());
-        let _ = plx_machine::idle::take_local_damage();
+        assert_eq!((present.damage_epoch(), present.page_damage_epoch()), damage);
+        assert!(!present.changed(), "a data publication must not wake an unrelated owner");
 
         let settled_notice = stores.browse.borrow().gen();
         let settled_sources = stores.browse.borrow().source_list_gen_for_test();
@@ -1120,8 +1251,9 @@ mod contract_tests {
         assert_eq!(stores.browse.borrow().gen(), settled_notice);
         assert_eq!(stores.browse.borrow().source_list_gen_for_test(), settled_sources);
         assert!(stores.take_notices().is_empty());
-        assert_eq!(plx_machine::idle::take_local_damage(), 0,
-            "an empty-to-empty machine identity must not invalidate the settled frame");
+        assert_eq!((present.damage_epoch(), present.page_damage_epoch()), damage);
+        assert!(!present.changed(),
+            "an empty-to-empty machine identity must not dirty or wake an unrelated owner");
 
         plx_plex::plex::reset_servers_for_test();
     }
@@ -1211,6 +1343,52 @@ mod contract_tests {
         assert!(stores.take_notices().is_empty());
 
         plx_plex::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn browse_requests_separate_admission_from_visible_calendar_damage() {
+        let _guard = plx_base::testlock::serial();
+        let mut store = BrowseStore::default();
+        store.seed_two_source_table_for_test();
+        store.run_for_test(BrowseCmd::SetCur(0));
+        let id = store.listing_snapshot().view().id().unwrap();
+        let target = SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section };
+        let keys = ClientKeys::default();
+        let session = plx_plex::plex::session::Session::default();
+        let input = BrowseRosterInput { tenure: 0, keys: &keys, session: &session,
+            visible_generation: 0, settled: false, profile_key: "" };
+        let ask = |store: &mut BrowseStore, target, work| store.run_with_input_outcome(
+            BrowseCmd::Addressed { target, work }, &input);
+        let quiet = CommandOutcome { accepted: true, changed: false };
+        let changed = CommandOutcome { accepted: true, changed: true };
+        let before = store.gen();
+        for _ in 0..3 {
+            assert_eq!(ask(&mut store, target, LibraryWork::Want { lo: 0, hi: 24, focus: Some(3) }), quiet);
+            assert_eq!(ask(&mut store, target, LibraryWork::Letters { today: Some([2026, 10, 31]) }), quiet);
+        }
+        assert_eq!(ask(&mut store, target, LibraryWork::Want { lo: 24, hi: 48, focus: Some(30) }), quiet);
+        assert_eq!(store.gen(), before, "even changed request bounds are not pixels");
+        assert_eq!(ask(&mut store, SectionAddress { epoch: target.epoch.wrapping_add(1), ..target },
+            LibraryWork::Want { lo: 0, hi: 1, focus: None }), CommandOutcome { accepted: false, changed: false });
+
+        let day = [2026, 10, 31];
+        store.seed_calendar_bands_for_test(day, None);
+        assert!(!store.listing_snapshot().view().bands_available());
+        assert_eq!(ask(&mut store, target, LibraryWork::Letters { today: Some(day) }), changed);
+        assert!(store.listing_snapshot().view().bands_available());
+        assert_eq!(store.gen(), before + 1, "a cached rail becoming visible is published");
+        assert_eq!(ask(&mut store, target, LibraryWork::Letters { today: Some(day) }), quiet);
+        assert_eq!(ask(&mut store, target, LibraryWork::Letters { today: Some([2026, 11, 1]) }), quiet,
+            "midnight keeps yesterday's rail while asking for new counts");
+        assert_eq!(ask(&mut store, target, LibraryWork::Letters { today: None }), changed);
+        assert!(!store.listing_snapshot().view().bands_available());
+        assert_eq!(ask(&mut store, target, LibraryWork::Letters { today: None }), quiet);
+        assert_eq!(ask(&mut store, target, LibraryWork::Letters { today: Some(day) }), changed);
+        assert!(store.listing_snapshot().view().bands_available());
+        assert_eq!(store.gen(), before + 3);
+        assert!(store.run_with_input(BrowseCmd::Addressed { target,
+            work: LibraryWork::Want { lo: 0, hi: 24, focus: None } }, &input),
+            "legacy synchronous callers retain their acceptance answer");
     }
 
     #[test]

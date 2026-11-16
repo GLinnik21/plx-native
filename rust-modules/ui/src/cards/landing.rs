@@ -137,7 +137,7 @@ struct Slide {
 
 impl Slide {
     fn settled(&self) -> bool {
-        use plx_machine::idle::settled;
+        use plx_machine::motion::report::settled;
         settled(self.x.pos, 0.0, self.x.vel) && settled(self.y.pos, 0.0, self.y.vel)
     }
 }
@@ -162,7 +162,7 @@ struct Anim {
 
 impl Anim {
     fn retain_live(&mut self) {
-        use plx_machine::idle::settled;
+        use plx_machine::motion::report::settled;
         self.off.retain(|_, s| !s.settled());
         self.fade.retain(|_, s| !settled(s.pos, 1.0, s.vel));
         let fade = &self.fade;

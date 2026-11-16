@@ -1,8 +1,9 @@
 //! **The simulator's picture** (`plxnative-simvideo`, with the clock sink armed): the video access
 //! units the clock sink already accepts are ALSO piped to a system `ffmpeg` child process, decoded
 //! there, and the frame whose presentation time the sink's clock has reached is composited UNDER
-//! the finished UI frame — exactly the arithmetic the television's compositor applies to its
-//! hardware video plane and our transparent UI plane.
+//! the finished UI frame — the arithmetic the television's compositor applies to its hardware video
+//! plane and our UI plane: a STRAIGHT-alpha mix of the surface the straighten pass
+//! (`plx_gfx::gfx::straighten`) has already made straight.
 //!
 //! **Why it exists.** The documentation's player figure has to show a real picture under the real
 //! HUD, and the simulator otherwise shows the HUD over black (`play-feed/src/ffi_host.rs`: nothing decodes). It
@@ -138,7 +139,7 @@ fn reset(clear_picture: bool) {
     *SESSION.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if clear_picture {
         *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        plx_machine::idle::invalidate();
+
     }
 }
 
@@ -219,7 +220,7 @@ fn spawn() -> Option<Session> {
             if frames == 1 {
                 plx_base::eventlog::log("simvideo: first picture decoded");
             }
-            plx_machine::idle::invalidate();
+            plx_machine::present::wake_from_worker();
         }
     });
     if writer.is_err() || reader.is_err() {
@@ -232,17 +233,20 @@ fn spawn() -> Option<Session> {
 }
 
 /// The render thread's half: upload the current frame if it changed and composite it UNDER what
-/// the UI drew this frame. Called once per presented frame, before the capture and the swap.
-pub fn composite_under() {
+/// the UI drew this frame, through the television compositor's straight-alpha mix
+/// ([`plx_gfx::gfx::draw_under`]) on a surface the straighten pass has already made straight. Called
+/// once per bound-plane frame, before the capture and the swap. `true` when a picture was composited;
+/// `false` leaves the frame untouched for the caller to composite over black.
+pub fn composite_under() -> bool {
     thread_local! {
         /// `(texture, frame number it holds)`.
         static TEX: std::cell::Cell<(c_uint, Option<u64>)> = const { std::cell::Cell::new((0, None)) };
     }
     if !armed() {
-        return;
+        return false;
     }
     let latest = LATEST.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let Some((n, rgba)) = latest else { return };
+    let Some((n, rgba)) = latest else { return false };
     TEX.with(|t| {
         let (mut tex, held) = t.get();
         if held != Some(n) {
@@ -251,4 +255,5 @@ pub fn composite_under() {
         }
         plx_gfx::gfx::draw_under(tex, 0.0, 0.0, W as f32, H as f32);
     });
+    true
 }

@@ -1,6 +1,6 @@
 //! OUR composite of a deck card: the server's `background` with its `clearLogo` baked in, rendered
 //! ONCE into one bitmap and drawn as a plain image (the owner's rule: a logo is never a live widget
-//! over art). The poster worker runs [`bake`] on a disk miss for a `/plx/card/{logo_rk}{art}` key
+//! over art). The poster worker runs [`bake`] on a disk miss for a `/plx/card/…` key
 //! ([`plx_plex::plex::artwork::card_parts`]), through a seam ([`CardIo`]) so the orchestration is
 //! host-testable without a server or a disk, exactly as the fan's ([`super::fan::FanIo`]). The
 //! compositor itself is pure and lives in `ui` ([`plx_ui::card_art::compose`]).
@@ -17,8 +17,8 @@
 //! own transcode key). If that refetch fails the composite is composed from the stale bytes and
 //! delivered, but NOT persisted: the next demand bakes again rather than freezing a degraded card.
 //!
-//! **Persisted** as an opaque PNG under a baked identity that names the server, the logo's rating
-//! key and the WHOLE art path (so a new background is a new key). Deliberately no profile in the
+//! **Persisted** as an opaque PNG under a baked identity that names the server and both source
+//! paths, so a new logo or background is a new key. Deliberately no profile in the
 //! namespace: a background and a clearLogo do not depend on whose restrictions apply, unlike the
 //! members a collection lists. [`CARD_KIND`] is versioned: change it whenever the composite's
 //! output changes (the pin test grades the constants that move pixels).
@@ -112,8 +112,8 @@ pub(super) fn bake(io: &mut dyn CardIo, spec: &CardSpec) -> Bake {
 }
 
 /// The refresh lane's re-bake: refetch BOTH sources from the server and, only when both came back,
-/// compose and persist. The cached logo is never read, so a replaced logo (its path carries no
-/// stamp) reaches the card within one stale period. A server that cannot be reached writes
+/// compose and persist. The cached logo is never read, so legacy unversioned paths are
+/// revalidated as well. A server that cannot be reached writes
 /// nothing, and the old composite stands.
 pub(super) fn rebake(io: &mut dyn CardIo, spec: &CardSpec) {
     let Some(bg) = io.refetch(Part::Background) else { return };

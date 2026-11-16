@@ -147,7 +147,7 @@ fn a_section_switch_settles(items: usize, restore: Option<f32>) -> LibraryScreen
     stores.browse_run_for_test(BrowseCmd::SetCur(1));
     let publish = |fixture: &mut Fixture, grid: bool| {
         if grid { stores.browse.borrow_mut().seed_items_for_test(items); }
-        let publication = stores.capture_browse(&mut fixture.directory);
+        let publication = stores.capture_seeded_browse_for_test(&mut fixture.directory, plx_plex::plex::current_server());
         fixture.listing = publication.listing;
         if !grid { fixture.listing = fixture.listing.clone().with_fetch(SecFetch::Loading, -1).with_total(0); }
         if let Some(scroll) = restore {
@@ -423,8 +423,8 @@ fn a_single_kind_grid_is_banded_by_its_own_details_line() {
     let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut page = fixture.screen();
-    let band = |page: &LibraryScreen, setting: UnderPosters| {
-        crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(setting)));
+    let band = |page: &mut LibraryScreen, setting: UnderPosters| {
+        page.caption_policy = crate::registry::caption_policy_of(setting);
         page.grid_policy().as_ref().map(band_h)
     };
     let movies_off = UnderPosters { title: false, details: UnderPostersLadder::None.movie_parts(), show_details: UnderPostersLadder::YearLength.show_parts(), sort_value: false };
@@ -436,13 +436,13 @@ fn a_single_kind_grid_is_banded_by_its_own_details_line() {
         (SecKind::Movie, LibraryType::Collections, movies_off, shows_off, "Collections"),
     ] {
         (page.kind, page.listed) = (kind, listed);
-        assert_eq!(band(&page, off), Some(BAND_NONE), "{line}: its own line is Nothing and the other kind's line opens no band here");
-        assert_eq!(band(&page, UnderPosters { title: true, ..off }), Some(BAND_ONE_LINE), "{line}: Title On alone is one line, not two");
-        assert_eq!(band(&page, on), Some(BAND_ONE_LINE), "{line}: its own line set opens one line");
-        assert_eq!(band(&page, UnderPosters { title: true, ..on }), Some(BAND_TWO_LINES), "{line}: title and details are two");
+        assert_eq!(band(&mut page, off), Some(BAND_NONE), "{line}: its own line is Nothing and the other kind's line opens no band here");
+        assert_eq!(band(&mut page, UnderPosters { title: true, ..off }), Some(BAND_ONE_LINE), "{line}: Title On alone is one line, not two");
+        assert_eq!(band(&mut page, on), Some(BAND_ONE_LINE), "{line}: its own line set opens one line");
+        assert_eq!(band(&mut page, UnderPosters { title: true, ..on }), Some(BAND_TWO_LINES), "{line}: title and details are two");
     }
     (page.kind, page.listed) = (SecKind::Show, LibraryType::Episodes);
-    assert_eq!(band(&page, movies_off), None, "the Episodes listing keeps the legacy band");
+    assert_eq!(band(&mut page, movies_off), None, "the Episodes listing keeps the legacy band");
     crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
 }
 
@@ -570,12 +570,12 @@ fn relist_regression_the_removed_tail_card_has_its_ghost_pixels() {
     let (playing, ghosts) = page.pair.detail.relist_probe();
     assert!(playing);
     assert_eq!(ghosts, [Some("7".to_string())], "the removed last tile must fade with its own pixels");
-    plx_machine::idle::frame_begin(1.0 / 60.0);
-    let (_, moving) = plx_machine::idle::scoped_motion(|| frame(&mut page, &mut engine, &fixture, 4032));
+    plx_machine::motion::report::frame_begin(1.0 / 60.0);
+    let (_, moving) = plx_machine::motion::report::scoped_motion(|| frame(&mut page, &mut engine, &fixture, 4032));
     assert!(moving, "the landing buys frames while moving");
     settle(&mut page, &mut engine, &fixture, 4048);
-    plx_machine::idle::frame_begin(1.0 / 60.0);
-    let (_, moving) = plx_machine::idle::scoped_motion(|| frame(&mut page, &mut engine, &fixture, 8000));
+    plx_machine::motion::report::frame_begin(1.0 / 60.0);
+    let (_, moving) = plx_machine::motion::report::scoped_motion(|| frame(&mut page, &mut engine, &fixture, 8000));
     assert!(!moving, "a settled landing buys no frames");
     assert_eq!(page.pair.detail.relist_probe(), (false, Vec::new()));
 }
@@ -681,4 +681,24 @@ fn back_to_the_top_raises_the_new_card_over_frames() {
     }).collect();
     assert!(series[0] < full - 1.0e-3, "the new card is not lifted whole on the first frame: {series:?}");
     assert!(series.windows(2).all(|w| w[1] >= w[0] - 1.0e-3), "and only ever grows: {series:?}");
+}
+
+/// BACK from the first row to the header closes the row's caption band over frames, as UP does,
+/// though the move it makes is a restore.
+#[test]
+fn back_from_the_first_row_closes_its_band_over_frames() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    let first = page.key(page.pair.detail.elem_at(0).unwrap());
+    engine.set(OWNER, first, Some(page.pair.groups_config().detail), By::Restore);
+    deliver(&mut page, &mut engine, &fixture, ScreenEvent::FocusMoved { from: None, to: first, by: By::Restore });
+    settle(&mut page, &mut engine, &fixture, 0);
+    assert_eq!(page.layout.row_expansion(0), 1.0, "the focused first row is open");
+    press_back(&mut page, &mut engine, &fixture, None);
+    assert!(engine.current(OWNER).is_some_and(|key| page.pair.detail.index_of(key.elem).is_none()), "focus left the grid");
+    frame(&mut page, &mut engine, &fixture, 3000);
+    assert!(strictly_between(page.layout.row_expansion(0), 0.0, 1.0), "BACK closes the band over frames");
 }

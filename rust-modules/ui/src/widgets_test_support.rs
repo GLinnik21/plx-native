@@ -87,40 +87,6 @@ pub(super) fn contrast_over_art(ink: [f32; 4], art: f32, a: f32) -> f32 {
 /// is quoted from the device font; the shared leading remains the source for the inter-line step.
 pub(super) const HERO_CAP_H: f32 = 35.0 + theme::hero::TITLE_LEAD;
 
-/// The height of home's synopsis block at its cap — the SHARED hero blurb
-/// ([`crate::hero_synopsis`]), so this table follows the rung and the leading instead of
-/// quoting them. It was the literal `87.0` with `// three size::MICRO lines at the hero's 29px
-/// leading` beside it, which is exactly the comment that goes stale in silence: the block is
-/// `LABEL`/36 now, and 87 would have gone on grading the title 21px lower than it is drawn.
-pub(super) fn home_syn_h() -> f32 {
-    crate::hero_syn_h(crate::HERO_SYN_MAXLINES)
-}
-
-/// The TOP of home's title band, from the bottom-anchored stack the hero draws (`hero_content`):
-/// the reserved logo band + `space::MD` + a one-line BODY kicker + `space::SM` + the synopsis
-/// block, stacked UP from `HERO_TEXT_BOTTOM` through the screen's own `hero_stack` (the stack the
-/// draw reads), so the contract reads the arithmetic the draw uses. Only the KICKER's height is still quoted like
-/// [`HERO_CAP_H`], because it is one line of a rung and the host opens no SDL_ttf.
-pub(super) fn home_title_band_top() -> f32 {
-    const META_H: f32 = 34.0; // one line of `size::BODY`
-    crate::landing_hero::hero_stack(
-        crate::hero_logo::band_h(crate::hero_logo::LogoRung::Hero),
-        META_H,
-        Some(home_syn_h()),
-    )
-    .title
-    .y
-}
-
-/// …and the cap top of the TEXT it falls back to, which is what the legibility table grades.
-/// The fallback is BASELINED on the band's bottom edge (`hero_logo::place`'s optical rule), so
-/// the ink sits a cap band above that line, ~70px below the band's own top. A clearLogo occupies
-/// the band instead and reaches higher — that is art, graded by eye on a capture, not here.
-pub(super) fn home_title_cap_top() -> f32 {
-    home_title_band_top() + crate::hero_logo::band_h(crate::hero_logo::LogoRung::Hero)
-        - HERO_CAP_H
-}
-
 /// The same line on the detail page, where the band's anchor is `TITLE_BOTTOM` outright.
 pub(super) fn detail_title_cap_top() -> f32 {
     crate::detail_layout::TITLE_BOTTOM - HERO_CAP_H

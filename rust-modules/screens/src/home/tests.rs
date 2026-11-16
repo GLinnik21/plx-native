@@ -43,21 +43,32 @@ impl Host for TestHost {
     type Fx = AppFx;
     type Msg = super::super::registry::AppMsg;
     type Elem = u32;
-    type Views<'a> = HubsView<'a>;
+    type Views<'a> = (HubsView<'a>, Option<&'a plx_plex::plex::ClockFacts>, &'a crate::registry::ScreenInputs);
     type Init = super::super::family::NoInit;
     type Memory = PageMemory;
 }
 
+impl crate::registry::ScreenInputsLike for TestHost {
+    fn screen_inputs<'a>(cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { cx.views.2 }
+}
+
 impl HomeLike for TestHost {
+    fn clock_facts<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { cx.views.1 }
     fn hubs<'a>(cx: &Cx<'a, Self>) -> HubsView<'a> {
-        cx.views
+        cx.views.0
     }
 }
 
 fn cx<'a>(view: HubsView<'a>, focus: Option<FocusKey<u32>>) -> Cx<'a, TestHost> {
     static MEASURE: FixtureMeasure = FixtureMeasure;
+    let mut inputs = crate::registry::capture_fixture();
+    inputs.preferences = Some(plx_plex::plex::session::ProfilePrefs {
+        deck_press: Some(DECK_INPUT.with(|value| value.get())),
+        under_posters: Some(crate::registry::captions::fixture_setting()), ..Default::default()
+    });
+    let inputs = Box::leak(Box::new(inputs));
     Cx {
-        views: view,
+        views: (view, None, inputs),
         tick: Tick::default(),
         measure: &MEASURE,
         press: PressRead::default(),
@@ -91,6 +102,15 @@ fn step(
         Machine::<TestHost>::step(s, event, &context, &mut fx)
     };
     (handled, out, present.peek(0))
+}
+
+fn step_clock<'a>(s: &mut HomeScreen, view: HubsView<'a>, facts: &'a plx_plex::plex::ClockFacts) {
+    let mut context = cx(view, None);
+    context.views.1 = Some(facts);
+    let mut out = Vec::new();
+    let mut present = plx_machine::present::Present::new();
+    let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(InstanceId(9)), &mut present);
+    Machine::<TestHost>::step(s, &ScreenEvent::Tick(Tick::default()), &context, &mut fx);
 }
 
 /// Pop `key`'s card the way a deliberate move does: the move, then `frames` ticks with the card
@@ -347,13 +367,13 @@ fn a_failed_home_stands_on_the_page_readout_lines() {
 /// reason having moved the action row.
 #[test]
 fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
-    use plx_net::net::keypin::{self, Blocked};
+    use plx_net::net::keypin::Blocked;
+    use plx_plex::plex::{ClockFacts, ServerId};
     use plx_ui::icons::Icon;
     let _guard = plx_base::testlock::serial();
     plx_plex::plex::grant::reset_for_test();
-    let key = keypin::key_of("home-clock.invalid", 32400);
-    let _scoped = keypin::Scoped::watch_machine("home-clock-machine", &key);
-    let _current = current_server_for_test("home-clock-machine");
+    let sid = ServerId::from_raw(77);
+    let facts = |reason| ClockFacts::scripted(7, sid, None, [(sid, "home-clock-machine".into(), reason)]);
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Failed);
@@ -362,16 +382,16 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
     let mut s = screen(view);
     let measure = FixtureMeasure;
 
-    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    step_clock(&mut s, view, &facts(None));
     let plain = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     assert_eq!((plain.reason, plain.glyph, plain.action), (None, Some(Icon::ServerBadgeMinus), Some(c"Try again")));
     let plain_row = plain.action_frame_measured(&measure).unwrap();
     let plain_caption = plain.caption.to_owned();
 
-    keypin::strict_failure(&key, 60, Some(10));
+
     let before_tick = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     assert_eq!(before_tick.reason, None, "the held fact does not change between ticks");
-    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    step_clock(&mut s, view, &facts(Some(Blocked::NoKey)));
     let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     assert_eq!(overlay.reason, Some(plx_platform::i18n::msg::browse_clock_no_key_c()));
     assert_eq!((overlay.glyph, overlay.action), (Some(Icon::ClockBadgeAlert), Some(c"Try again")));
@@ -381,8 +401,7 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
     let hit = s.hero_button_rect(view, 0, &measure).unwrap();
     assert_eq!([hit.x, hit.y, hit.w, hit.h], [drawn.x, drawn.y, drawn.w, drawn.h], "the hit rect is the drawn pill");
 
-    keypin::key_changed(&key);
-    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    step_clock(&mut s, view, &facts(Some(Blocked::KeyChanged)));
     let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     assert_eq!(s.clock.blocked(), Some(Blocked::KeyChanged));
     assert_eq!(overlay.reason, Some(plx_platform::i18n::msg::browse_clock_key_changed_c()));
@@ -402,7 +421,7 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
         choice: plx_plex::plex::session::PlaintextChoice::Undecided,
     };
     plx_plex::plex::grant::offered(plx_plex::plex::grant::scope(), verdict.clone());
-    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    step_clock(&mut s, view, &facts(Some(Blocked::KeyChanged)));
     let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     let offer = plx_session::auth::plaintext_copy(Some(&verdict), plx_session::auth::ReadoutSurface::SignedIn);
     assert_eq!(overlay.reason.and_then(|r| r.to_str().ok()), Some(offer.as_ref()));
@@ -412,30 +431,22 @@ fn a_failed_home_names_a_wrong_clock_when_key_mode_cannot_help() {
 
 /// Make `machine` the current server (the one a failed Home speaks about) for a test, and put the
 /// registry back when it ends.
-fn current_server_for_test(machine: &str) -> impl Drop {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            plx_plex::plex::reset_servers_for_test();
-        }
-    }
-    plx_plex::plex::reset_servers_for_test();
-    let sid = plx_plex::plex::register_pinned_with_client_id(machine, &plx_plex::plex::Origin::http("192.168.1.53", 32400),
-        "", None, "client", Default::default());
-    assert!(plx_plex::plex::set_current(sid) || plx_plex::plex::current_server() == sid, "the test server is current");
-    Reset
-}
+// Source identities in these tests are supplied as clock facts.
 
 /// **A fact about ANOTHER server does not colour a failed Home** (scenario B): Home asks
 /// `net::keypin::blocked_for` about the current server only.
 #[test]
 fn a_failed_home_ignores_a_clock_fact_about_another_server() {
-    use plx_net::net::keypin;
+    use plx_net::net::keypin::Blocked;
+    use plx_plex::plex::{ClockFacts, ServerId};
     let _guard = plx_base::testlock::serial();
     plx_plex::plex::grant::reset_for_test();
-    let elsewhere = keypin::key_of("home-elsewhere.invalid", 32400);
-    let _scoped = keypin::Scoped::watch_machine("home-elsewhere-machine", &elsewhere);
-    let _current = current_server_for_test("home-here-machine");
+    let here = ServerId::from_raw(78);
+    let other = ServerId::from_raw(79);
+    let facts = ClockFacts::scripted(8, here, None, [
+        (here, "home-here-machine".into(), None),
+        (other, "home-elsewhere-machine".into(), Some(Blocked::KeyChanged)),
+    ]);
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
     plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Failed);
@@ -443,9 +454,7 @@ fn a_failed_home_ignores_a_clock_fact_about_another_server() {
     let view = snapshot.view();
     let mut s = screen(view);
 
-    keypin::strict_failure(&elsewhere, 60, Some(10));
-    keypin::key_changed(&elsewhere);
-    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    step_clock(&mut s, view, &facts);
     assert_eq!(s.clock.blocked(), None);
     let overlay = status_overlay(view, &s.plaintext, &s.clock).unwrap();
     assert_eq!((overlay.reason, overlay.glyph), (None, Some(plx_ui::icons::Icon::ServerBadgeMinus)));
@@ -588,6 +597,10 @@ fn drawn_hero_geometry_follows_slide_and_the_captured_press_scale() {
             for press in [0.93, 1.0, 1.025] {
                 let mut context = cx(snapshot.view(), Some(key));
                 context.press.scale = press;
+                context.press.live = press != 1.0;
+                context.press.active = press != 1.0;
+                context.press.identity = 1;
+                context.press.owner = Some(key);
                 let base = s.hero_button_rect(snapshot.view(), 0, context.measure).unwrap();
                 let drawn = Focusable::<TestHost>::place(&s, &key.elem, &context, At::Drawn).unwrap();
                 let target = Focusable::<TestHost>::place(&s, &key.elem, &context, At::SpringTarget).unwrap();
@@ -933,14 +946,15 @@ fn env_at(sp: f32) -> Env {
 /// **The ground is ONE flat colour only once the hero is culled** (`sp >= HERO_ART_CULL`); every
 /// earlier frame is the layered gradient. The tell is the corners the wash is handed
 /// (`draw_census::capture_grounds`): four equal codes are the flat colour, which the renderer
-/// clears; a lit wash's own four are the gradient. The ramp rects are the second tell, for the layered
-/// ramp that stays the only ramp drawer: on a host (no ink program: `gfx::wash_ink_ok`) the layered
-/// ground hands the ramp back and the two `rect`s `base_scrim_ramp` describes follow it, for as long
-/// as the hero is visible (`hero_a > 0.01`); the flat ground takes none, and has none to take. A
-/// hero SLIDE is the layered gradient up to the cull and flat from it, like any other frame.
+/// clears; a lit wash's own four are the gradient. The scrim cells are the second tell, for the
+/// layered scrim that stays the only scrim drawer on a host (no ink program: `gfx::wash_ink_ok`):
+/// the layered ground hands the scrim back and the cells of the scrim layer (`widgets::scrim_layer`,
+/// tag 26) follow it, for as long as the hero is visible (`hero_a > 0.01`); the flat ground takes
+/// none, and has none to take. The side and shelf fade share those cells.
 #[test]
 fn the_ground_goes_flat_only_once_the_hero_is_culled() {
     use plx_ui::draw_census;
+    use plx_ui::widgets::{cut_cells, SCRIM_CELL_H, SCRIM_CELL_W};
     let mut b = Backdrop::new();
     b.wash.jump([
         [0.30, 0.10, 0.10, 1.0],
@@ -950,46 +964,37 @@ fn the_ground_goes_flat_only_once_the_hero_is_culled() {
     ]);
     assert!(!b.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS), "the premise: a lit wash");
     // The premise: no host test links GL, so there is no ink program and the layered ground hands
-    // the ramp back for the caller to draw as rects. (With one, a layered frame would carry the
-    // ramp in the wash and the ramp rects would not be a tell.)
+    // the scrim back for the caller to draw as its layer. (With one, a layered frame would carry
+    // the scrim in the wash and the scrim cells would not be a tell.)
     assert!(!plx_gfx::gfx::wash_ink_ok(), "a host build has no wash ink program");
-    // `(is the ground one colour, how many ramp rects follow it)` for one frame at `sp`.
+    let cells = cut_cells(Rect::FULL, SCRIM_CELL_W, SCRIM_CELL_H).count();
     let frame = |sp: f32, slide: Option<(f32, f32)>| {
         let env = env_at(sp);
-        let [y0, knee, ..] = base_scrim_ramp(env.hero_a);
-        let ramp = [Rect::new(0.0, y0, SCR_W, knee - y0), Rect::new(0.0, knee, SCR_W, SCR_H - knee)];
+        let shade = (env.hero_a > 0.01).then(|| home_shade(shelf_fade(SHELF_TOP, env.hero_a), env.hero_a));
         let mut drawn = Vec::new();
         let grounds = draw_census::capture_grounds(|| {
-            drawn = draw_census::capture(|| b.draw(Painter::recording(), &env, slide));
+            drawn = draw_census::capture(|| b.draw(Painter::recording(), &env, slide, shade));
         });
         let [ground] = grounds[..] else { panic!("sp {sp}: {} grounds, want one", grounds.len()) };
         let flat = ground[1..].iter().all(|c| *c == ground[0]);
-        (flat, ramp.into_iter().filter(|r| drawn.contains(&(1, *r))).count())
+        (flat, drawn.iter().filter(|(tag, _)| *tag == 26).count())
     };
-    // Pending texture (nothing resident: `tex` is 0), the dive in flight, and its last frame: the
-    // layered gradient. The ramp is laid over it as rects while the hero is visible (`hero_a` is
-    // 0 from `sp = 0.55`, so the dive's last frames have none).
-    for (sp, ramp_rects) in [(0.0, 2), (0.4, 2), (HERO_ART_CULL - 0.001, 0)] {
-        assert_eq!(frame(sp, None), (false, ramp_rects), "sp {sp}: the layered ground");
-    }
-    // A hero slide before the cull is the layered gradient too, with no ramp in the ground, so the
-    // ramp is drawn as its two rects.
-    assert_eq!(frame(0.0, Some((-SCR_W, 0.0))), (false, 2), "a slide stays layered");
-    assert_eq!(frame(HERO_ART_CULL - 0.001, Some((-SCR_W, 0.0))), (false, 0), "…to its last frame");
-    // Culled: ONE colour, no ramp to draw (a slide or held layer notwithstanding: no art is drawn).
-    for sp in [HERO_ART_CULL, 1.0] {
-        assert_eq!(frame(sp, None), (true, 0), "sp {sp}: the flat ground, and no ramp");
-        assert_eq!(frame(sp, Some((-SCR_W, 0.0))), (true, 0), "sp {sp}: a culled slide is flat too");
+    for slide in [None, Some((-SCR_W, 0.0))] {
+        for (sp, expected) in [(0.0, (false, cells)), (0.4, (false, cells)),
+            (HERO_ART_CULL - 0.001, (false, 0)), (HERO_ART_CULL, (true, 0)), (1.0, (true, 0))] {
+            assert_eq!(frame(sp, slide), expected, "sp {sp}, slide {slide:?}");
+        }
     }
 }
 
-/// **Home has no atmospheric ramp once the hero is culled** - the premise the flat ground rests on
-/// (`AmbientWash::draw_flat_ground` draws none). `Backdrop::draw` builds its ramp only while
-/// `hero_a > 0.01`, and `HomeScreen::env` fades the hero out by `sp = 0.55`, long before
-/// `HERO_ART_CULL`; a later fade end would lay a ramp over the flat ground here, so it fails this
+/// **Home has no scrim once the hero is culled** - the premise the flat ground rests on
+/// (`AmbientWash::draw_flat_ground` draws none). `Backdrop::draw` takes the hero's shade only while
+/// `hero_a > 0.01` (and `draw_page` builds none past it), and `HomeScreen::env` fades the hero out by
+/// `sp = 0.55`, long before
+/// `HERO_ART_CULL`; a later fade end would lay a scrim over the flat ground here, so it fails this
 /// test first rather than layering one unannounced.
 #[test]
-fn home_has_no_ramp_at_the_cull() {
+fn home_has_no_scrim_at_the_cull() {
     for sp in [HERO_ART_CULL, 1.0] {
         assert_eq!(env_at(sp).hero_a, 0.0, "sp {sp}: the hero has faded out");
     }
@@ -1028,10 +1033,10 @@ fn the_ground_is_skipped_only_when_opaque_art_covers_it() {
 
 #[test]
 fn the_home_hero_logo_never_reaches_the_top_bar() {
-    const META_H: f32 = 28.0 * 1.32;
-    let synopsis = plx_ui::hero_syn_h(plx_ui::HERO_SYN_MAXLINES);
+    // the tallest ladder Home draws: the title over a synopsis at its full line count
+    let block = plx_ui::hero_syn_h(theme::hero::HOME_SYNOPSIS_LINES);
     let band = hero_logo::band_h(LogoRung::Hero);
-    let top = plx_ui::landing_hero::hero_stack(band, META_H, Some(synopsis)).title.y;
+    let top = home_rows(band, Some(block)).title.y;
     assert!(top - (theme::logo::HERO_H_MAX - band) > plx_ui::widgets::TOP_BAR_BOTTOM);
 }
 
@@ -1044,7 +1049,7 @@ fn the_hero_logo_key_is_the_shows_for_an_episode() {
         ..Default::default()
     };
     assert_eq!(
-        hero_logo_rk(&ep),
+        hero_logo_source(&ep),
         "7",
         "an episode's hero wears the show's logotype"
     );
@@ -1054,7 +1059,7 @@ fn the_hero_logo_key_is_the_shows_for_an_episode() {
         ..Default::default()
     };
     assert_eq!(
-        hero_logo_rk(&orphan),
+        hero_logo_source(&orphan),
         "42",
         "…falling back to its own when the server sent no parent"
     );
@@ -1065,7 +1070,7 @@ fn the_hero_logo_key_is_the_shows_for_an_episode() {
         ..Default::default()
     };
     assert_eq!(
-        hero_logo_rk(&movie),
+        hero_logo_source(&movie),
         "42",
         "a movie is never keyed to a stray parent"
     );
@@ -1138,8 +1143,10 @@ fn top_band_bottom() -> f32 {
 /// with the Continue Watching deck of stills on top, which has a pitch of its own. PRODUCTION's
 /// own geometry (`ShelfColumn`), never a copy of it.
 fn column(rows: usize, deck_first: bool) -> ShelfColumn<impl Fn(usize) -> bool> {
-    ShelfColumn { rows, is_deck: move |i| deck_first && i == 0 }
+    ShelfColumn { rows, policy: crate::registry::captions::policy(), is_deck: move |i| deck_first && i == 0 }
 }
+fn band_open_of(deck: bool) -> f32 { super::band_open_of(deck, crate::registry::captions::policy()) }
+fn band_h_of(deck: bool) -> f32 { super::band_h_of(deck, crate::registry::captions::policy()) }
 fn rest_scroll(row: usize, rows: usize) -> f32 {
     column(rows, false).rest(row)
 }
@@ -1197,8 +1204,8 @@ fn no_shelf_heading_settles_inside_the_shared_top_band() {
 
 /// The focused shelf's heading rests where the first shelf's does, at every focus the column's end
 /// does not hold lower, and the Under posters band is not in that rest. With the deck of stills on
-/// top, the shelf under it is the one exception (it rests with the stills still above it, at scroll
-/// 0, so the move between the two scrolls nothing).
+/// top, the shelf under it is the one exception (it rests with the stills still above it, at the
+/// least scroll that keeps its focused block inside the bottom overscan edge).
 #[test]
 fn the_focused_shelfs_heading_rests_at_one_y_whatever_the_band() {
     for deck_first in [false, true] {
@@ -1210,7 +1217,7 @@ fn the_focused_shelfs_heading_rests_at_one_y_whatever_the_band() {
             let scroll = col.rest(focus_row);
             let place = heading_place(&col, focus_row, focus_row, scroll) + col.style(focus_row).heading_rise;
             if deck_first && focus_row == 1 {
-                assert_eq!((scroll, place > line), (0.0, true), "the shelf under the stills rests below the line, the stills above it");
+                assert_eq!((scroll, place > line), (col.block_overrun(1), true), "the shelf under the stills rests below the line, the stills above it");
             } else if scroll < col.max_scroll() {
                 assert_eq!(place, line, "deck {deck_first}, focus {focus_row}");
             } else {
@@ -1220,17 +1227,14 @@ fn the_focused_shelfs_heading_rests_at_one_y_whatever_the_band() {
     }
 }
 
-/// **The stills row's heading stands where the owner's boards put it** (CW-12/13): the shared row
-/// style's rise ([`theme::STILL_HEADING_RISE`]) above the poster shelf's line, the distance to the
-/// cards under it the poster shelf's plus that rise, and, even so, a gap to the nav pill's bottom
-/// edge at every rest of every column height (the heading is whole under the chrome's rule, which
-/// `no_shelf_heading_settles_inside_the_shared_top_band` also sweeps).
+/// The stills heading rests above the poster shelf's line and lifts when a nearby card takes
+/// focus. Both positions clear the navigation chrome.
 #[test]
 fn the_stills_heading_stands_its_rise_above_the_poster_line_and_clear_of_the_nav_pill() {
     for rows in 1..=SWEEP_ROWS {
         let col = column(rows, true);
         let rest = col.rest(0);
-        let top = heading_top(&col, 0, 0, rest);
+        let top = heading_place(&col, 0, 0, rest);
         assert_eq!(top, GRID_TOP_Y - TITLE_DY - theme::STILL_HEADING_RISE - rest, "rows {rows}: the stills heading's rest");
         assert_eq!(plx_ui::scroll_chrome::clearance_under_shown_chrome(heading_place(&col, 0, 0, rest)), 1.0,
             "rows {rows}: the stills heading rests whole under the chrome, not faded");
@@ -1240,8 +1244,9 @@ fn the_stills_heading_stands_its_rise_above_the_poster_line_and_clear_of_the_nav
         let card_top = GRID_TOP_Y + col.top(0, Some(0), band_open_of(true)) - rest + CARD_DY;
         assert_eq!(GRID_TOP_Y + col.top(0, Some(0), band_open_of(true)) - rest, GRID_TOP_Y - rest, "the deck sits at the grid's top");
         assert_eq!(card_top - top, CARD_DY + TITLE_DY + theme::STILL_HEADING_RISE, "rows {rows}: heading to card tops");
-        // A focus on a card of the deck lifts the heading no higher than its rise (the two never stack).
-        assert_eq!(heading_top(&col, 0, 0, rest), heading_place(&col, 0, 0, rest));
+        let focused_top = heading_top(&col, 0, 0, rest);
+        assert!(focused_top < top);
+        assert_eq!(plx_ui::scroll_chrome::clearance_under_shown_chrome(focused_top), 1.0);
     }
 }
 
@@ -1268,21 +1273,20 @@ fn every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom() {
     }
 }
 
-/// **The worst case of the stills-on-top page**: the poster shelf under the Continue Watching deck
-/// rests at scroll 0 (its row at 194 + 318 + 18 = 530), the deck standing above it, so its two-line
-/// focused label block ends at 1023, 3 px short of the bottom overscan edge (1026). It must never
-/// cross it, whatever the shelf count, and the row must really be the one that rests at 0.
+/// The second shelf scrolls only far enough to keep the worst-case focused caption inside
+/// bottom overscan. The Continue Watching heading remains visible above it.
 #[test]
 fn the_poster_shelf_under_the_stills_ends_its_two_line_block_inside_the_bottom_overscan_edge() {
     let two_lines = ui_cards::TileLabel::height(true);
     for rows in 2..=SWEEP_ROWS {
         let col = column(rows, true);
-        assert_eq!(col.rest(1), 0.0, "rows {rows}: the shelf under the stills rests with the stills above it");
-        let row_y = GRID_TOP_Y + col.top(1, Some(1), band_open_of(false)) - col.rest(1);
+        let at_zero = GRID_TOP_Y + col.top(1, Some(1), band_open_of(false));
+        let overrun = at_zero + CARD_DY + CARD_H + two_lines - (SCR_H - MARGIN_Y);
+        assert!(overrun > 0.0);
+        assert_eq!(col.rest(1), overrun, "rows {rows}: the shelf scrolls just what its block overruns");
+        let row_y = at_zero - col.rest(1);
         let end = row_y + CARD_DY + CARD_H + two_lines;
-        assert_eq!(row_y, 530.0, "rows {rows}: the stills row (194) and its pitch put the shelf at 530");
-        assert_eq!(end, 1023.0, "rows {rows}: the focused block's end");
-        assert!(end <= SCR_H - MARGIN_Y, "rows {rows}: the block crosses the bottom overscan edge ({end} > {})", SCR_H - MARGIN_Y);
+        assert_eq!(end, SCR_H - MARGIN_Y, "rows {rows}: the focused block ends on the bottom overscan edge");
     }
 }
 
@@ -1470,6 +1474,155 @@ fn engine_links_hero_to_the_first_shelf_and_back() {
         panic!("hero DOWN must move")
     };
     assert_eq!(to.elem, s.rows[0].elems[0]);
+}
+
+/// The household's own server (slot 1) has five recent cards, a server shared with it (slot 2) older
+/// ones: `(rating key, last viewed)`, newest first.
+const OWN_DECK: [(&str, i64); 5] = [("o1", 5000), ("o2", 4990), ("o3", 4980), ("o4", 4970), ("o5", 4960)];
+const SHARED_DECK: [(&str, i64); 3] = [("s1", 1000), ("s2", 990), ("s3", 980)];
+
+/// The rating keys of the Continue Watching row's cards, left to right.
+fn deck_rks(s: &HomeScreen) -> Vec<&str> {
+    s.rows[0].cards.iter().map(|card| card.rk.as_str()).collect()
+}
+
+/// The servers answer in `order` (a slot and what it answers), each landing a publication the page
+/// projects (`sync_catalog`) before the next arrives. The page opens on the first, as it does when
+/// one server is slower than the other.
+fn cold_home_after<'a>(
+    state: &mut plx_data::pms::PmsState,
+    adapter: &std::sync::Arc<plx_data::pms::PmsAdapter>,
+    order: &[(u16, &[(&str, i64)])],
+) -> (HomeScreen, plx_data::pms::HubsSnapshot) {
+    let mut s = None;
+    let mut last = None;
+    for &(slot, cards) in order {
+        plx_data::pms::land_deck_lane_for_test(state, adapter, slot, cards);
+        let snapshot = plx_data::pms::hubs_snapshot(state);
+        match s.as_mut() {
+            None => s = Some(screen(snapshot.view())),
+            Some(s) => {
+                s.sync_catalog(&cx(snapshot.view(), None));
+                s.layout_grid();
+            }
+        }
+        last = Some(snapshot);
+    }
+    (s.expect("a server answered"), last.expect("a server answered"))
+}
+
+/// DOWN from the hero, through the engine and the page's own seat rule: the card it lands on.
+fn down_from_the_hero(s: &HomeScreen, view: HubsView<'_>) -> u32 {
+    let owner = InputOwner::Entry(s.entry);
+    let hero = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+    let context = cx(view, Some(hero));
+    let mut engine = FocusEngine::new();
+    engine.set(owner, hero, Some(HERO_GROUP), By::Restore);
+    let mut links = Vec::new();
+    <HomeScreen as Screen<TestHost>>::links(s, &mut links);
+    let Outcome::Moved { to, .. } = engine.move_dir(owner, s, &links, Dir::Down, &context) else {
+        panic!("hero DOWN must move")
+    };
+    to.elem
+}
+
+/// **A cold Home opens its Continue Watching row on its newest card, whichever server answered
+/// first (#1395).** The shared server's older cards landed first and the household's own newer ones
+/// then joined a deck nobody had moved: they were held BEHIND the window (the row's offset 5, its
+/// first card the shared server's, the skeleton of an unloaded card before it), so DOWN from the hero
+/// reached "card 6" and five LEFTs the newest. The deck is the merge of both listings from its head.
+fn a_cold_deck_opens_on_its_newest_card(order: &[(u16, &[(&str, i64)])]) {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let (mut s, snapshot) = cold_home_after(&mut state, &adapter, order);
+    let view = snapshot.view();
+    assert_eq!(deck_rks(&s), ["o1", "o2", "o3", "o4", "o5", "s1", "s2", "s3"], "both servers' cards, by last viewed");
+    assert_eq!(s.hub(view, 0).map(|hub| hub.offset), Some(0), "nothing is held before a deck nobody moved");
+    let hero = Some(FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM });
+    for frame in 0..30 {
+        step(&mut s, view, hero, &ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 }));
+    }
+    assert_eq!(s.grid.shelves[0].scroll(), 0.0, "the row opens at its leading edge");
+    assert_eq!(down_from_the_hero(&s, view), s.rows[0].elems[0], "DOWN lands on the first card");
+}
+
+#[test]
+fn a_cold_deck_opens_on_its_newest_card_when_the_shared_server_answers_first() {
+    a_cold_deck_opens_on_its_newest_card(&[(2, &SHARED_DECK), (1, &OWN_DECK)]);
+}
+
+#[test]
+fn a_cold_deck_opens_on_its_newest_card_when_the_own_server_answers_first() {
+    a_cold_deck_opens_on_its_newest_card(&[(1, &OWN_DECK), (2, &SHARED_DECK)]);
+}
+
+#[test]
+fn a_cold_deck_opens_on_its_newest_card_when_a_refresh_re_joins_after_a_failed_reload() {
+    // a refresh whose reload failed re-answers a server whose cards are already on the page: it
+    // joins the deck the other server holds through `place`, as a first answer does (a reload that
+    // succeeds does not pass through `place`)
+    a_cold_deck_opens_on_its_newest_card(&[(2, &SHARED_DECK), (1, &OWN_DECK[1..]), (1, &OWN_DECK)]);
+}
+
+#[test]
+fn a_cold_deck_opens_on_its_newest_card_when_a_server_with_nothing_answers_in_between() {
+    // the shared server answers, then a server whose Continue Watching is empty, then the own one:
+    // the empty one holds no card the deck could have moved past
+    a_cold_deck_opens_on_its_newest_card(&[(2, &SHARED_DECK), (3, &[]), (1, &OWN_DECK)]);
+}
+
+#[test]
+fn a_single_server_deck_opens_on_its_first_card() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let (mut s, snapshot) = cold_home_after(&mut state, &adapter, &[(1, &OWN_DECK)]);
+    let view = snapshot.view();
+    assert_eq!(deck_rks(&s), ["o1", "o2", "o3", "o4", "o5"]);
+    assert_eq!(s.hub(view, 0).map(|hub| hub.offset), Some(0));
+    let hero = Some(FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM });
+    for frame in 0..30 {
+        step(&mut s, view, hero, &ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 }));
+    }
+    assert_eq!(s.grid.shelves[0].scroll(), 0.0);
+    assert_eq!(down_from_the_hero(&s, view), s.rows[0].elems[0]);
+}
+
+/// What the head rule must not change: a reader who has moved onto a card keeps it when the other
+/// server's newer cards then land in front of it. The pop follows the card to its new place; the
+/// row does not yank focus onto the new leading card. Three cards and five fit the bound together,
+/// so nothing overflows here; a full window at its head lets go of its oldest shown cards instead
+/// (`deck`'s own test).
+#[test]
+fn a_server_that_joins_in_front_keeps_the_reader_on_the_same_card_when_nothing_overflows() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let (mut s, snapshot) = cold_home_after(&mut state, &adapter, &[(2, &SHARED_DECK)]);
+    let view = snapshot.view();
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[0] };
+    assert_eq!(deck_rks(&s), ["s1", "s2", "s3"]);
+    pop_card(&mut s, view, key, 60);
+    assert!(pop_of(&s, view, Some(key), 0, 0) > 1.05, "the premise: the reader is on the first card");
+    plx_data::pms::land_deck_lane_for_test(&mut state, &adapter, 1, &OWN_DECK);
+    let landed = plx_data::pms::hubs_snapshot(&state);
+    let view = landed.view();
+    s.sync_catalog(&cx(view, Some(key)));
+    assert_eq!(s.rows[0].elems.iter().position(|&e| e == key.elem), Some(5), "the reader's card moved behind the five");
+    for frame in 0..40 {
+        step(&mut s, view, Some(key), &ScreenEvent::Tick(Tick { ms: 5_000 + frame * 16, dt_us: 16_667 }));
+    }
+    for col in 0..8 {
+        let pop = pop_of(&s, view, Some(key), 0, col);
+        if col == 5 {
+            assert!(pop > 1.05, "the pop follows the card the reader is on, {pop}");
+        } else {
+            assert!((pop - 1.0).abs() < 0.001, "column {col} is lifted, {pop}");
+        }
+    }
 }
 
 #[test]
@@ -1917,16 +2070,20 @@ fn visible_tick_emits_both_store_work_requests_after_the_step() {
     assert_eq!(work, vec![StoreWork::Hubs, StoreWork::BrowseDiscovery]);
 }
 
-/// Sets the Continue Watching setting for one test and puts the prior value back. The caller
-/// holds `testlock::serial()`, which `restore_deck_press` asserts.
-struct DeckPressGuard(plx_media::route::DeckPress);
+// Explicit fixture policy and a separate ambient negative-control value, restored together.
+// The caller holds `testlock::serial()`, which `restore_deck_press` asserts.
+thread_local! {
+    static DECK_INPUT: std::cell::Cell<plx_media::route::DeckPress> = const { std::cell::Cell::new(plx_media::route::DeckPress::Details) };
+}
+struct DeckPressGuard(plx_media::route::DeckPress, plx_media::route::DeckPress);
 impl Drop for DeckPressGuard {
     fn drop(&mut self) {
         plx_media::route::restore_deck_press(self.0);
+                DECK_INPUT.with(|value| value.set(self.1));
     }
 }
 fn deck_press_is(mode: plx_media::route::DeckPress) -> DeckPressGuard {
-    let prior = DeckPressGuard(plx_media::route::deck_press());
+    let prior = DeckPressGuard(plx_media::route::deck_press(), DECK_INPUT.with(|value| value.replace(mode)));
     plx_media::route::restore_deck_press(mode);
     prior
 }
@@ -1994,6 +2151,163 @@ fn continue_watching_commit_follows_the_setting_while_an_ordinary_shelf_opens_de
     };
     let detail = commit(&mut s, 3);
     assert!(has_home(&detail, |r| matches!(r, HomeReq::Detail { rk, .. } if rk == "1")));
+}
+
+#[test]
+fn continue_watching_regression_hold_on_the_hero_page() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_continue_window_for_test(&mut state, &adapter, 12, false);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    assert!(s.holds_page(0));
+    assert_eq!(s.snap.pos, 0.0);
+    let card = first_card(&s);
+    let rk = s.item_at(view, 0, 0).unwrap().rk.clone();
+    let (_, out, _) = step(
+        &mut s,
+        view,
+        Some(card),
+        &ScreenEvent::PressHold(plx_machine::machine::PressId(1)),
+    );
+    assert!(has_home(&out, |r| matches!(r, HomeReq::ItemMenu { rk: key, .. } if *key == rk)));
+    assert!(!has_home(&out, |r| matches!(r, HomeReq::Play { .. } | HomeReq::Detail { .. })));
+}
+
+// Drive the production activation boundary with a particular host's retained publication.
+#[test]
+fn captured_caption_independent_hosts_keep_labels_bands_and_document_geometry_coherent() {
+    use plx_plex::plex::session::{ProfilePrefs, UnderPosters, UnderPostersLadder};
+    let _serial = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_ring_for_test(&mut state, &adapter, 4, 5, &|_| 0, (0, 3));
+    plx_data::pms::edit_test_item(&mut state, "0-0-0", &|item| { item.title = "Caption fixture".into(); item.year = 1995; });
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut a = screen(snapshot.view());
+    let mut b = screen(snapshot.view());
+    let off = UnderPosters { title: false, details: UnderPostersLadder::None.movie_parts(),
+        show_details: UnderPostersLadder::None.show_parts(), sort_value: false };
+    let on = UnderPosters { title: true, ..UnderPosters::DEFAULT };
+    let mut inputs = crate::registry::ScreenInputs::default();
+    let mut drive = |page: &mut HomeScreen, setting: UnderPosters| {
+        inputs.preferences = Some(ProfilePrefs { under_posters: Some(setting), ..Default::default() });
+        let mut context = cx(snapshot.view(), None);
+        context.views.2 = &inputs;
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        Machine::<TestHost>::step(page, &ScreenEvent::Tick(Tick::default()), &context,
+            &mut Effects::new(&mut out, plx_machine::machine::MachineId::Instance(InstanceId(9)), &mut present));
+        page.layout_grid();
+    };
+    for (left, right) in [(off, on), (on, off)] {
+        drive(&mut a, left);
+        drive(&mut b, right);
+        for (page, setting) in [(&a, left), (&b, right)] {
+            let row = page.rows.iter().position(|r| r.identity != HomeHubIdentity::ContinueWatching).unwrap();
+            let policy = crate::registry::caption_policy_of(setting);
+            let expected = plx_ui::caption_policy::band_h(&policy);
+            assert_eq!(page.grid.shelves[row].band_h(), expected, "independent owner band");
+            let source = HomeCards { home: page, view: snapshot.view(), row, hover: Hover::Focus, paging: false };
+            let label = <HomeCards<'_> as CardSource<TestHost>>::label(&source, 0);
+            assert_eq!(label.title.is_some(), setting.title, "label and band use the same capture");
+            let open = page.band_open_at(Some(row));
+            assert_eq!(open, ui_cards::band_open_for(expected));
+            assert_eq!(page.shelf_top(row + 1, Some(row), open) - page.shelf_top(row + 1, None, 0.0), open);
+        }
+    }
+}
+
+#[test]
+fn captured_caption_controlled_home_ignores_ambient_label_and_band_changes() {
+    use plx_plex::plex::session::{ProfilePrefs, UnderPosters, UnderPostersLadder};
+    let _serial = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_ring_for_test(&mut state, &adapter, 4, 5, &|_| 0, (0, 3));
+    plx_data::pms::edit_test_item(&mut state, "0-0-0", &|item| { item.title = "Caption fixture".into(); item.year = 1995; });
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut page = screen(snapshot.view());
+    let off = UnderPosters { title: false, details: UnderPostersLadder::None.movie_parts(),
+        show_details: UnderPostersLadder::None.show_parts(), sort_value: false };
+    let inputs = crate::registry::ScreenInputs { preferences: Some(ProfilePrefs { under_posters: Some(off), ..Default::default() }), ..Default::default() };
+    for ambient in [UnderPosters::DEFAULT, UnderPosters { title: true, ..UnderPosters::DEFAULT }] {
+        crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(ambient)));
+        let mut context = cx(snapshot.view(), None);
+        context.views.2 = &inputs;
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        Machine::<TestHost>::step(&mut page, &ScreenEvent::Tick(Tick::default()), &context,
+            &mut Effects::new(&mut out, plx_machine::machine::MachineId::Instance(InstanceId(9)), &mut present));
+        page.layout_grid();
+        let row = page.rows.iter().position(|r| r.identity != HomeHubIdentity::ContinueWatching).unwrap();
+        assert_eq!(page.grid.shelves[row].band_h(), 0.0, "controlled owner, not ambient policy");
+        let source = HomeCards { home: &page, view: snapshot.view(), row, hover: Hover::Focus, paging: false };
+        let label = <HomeCards<'_> as CardSource<TestHost>>::label(&source, 0);
+        assert!(label.title.is_none() && label.caption.is_none());
+    }
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
+}
+
+fn captured_preference_commit(inputs: &crate::registry::ScreenInputs) -> bool {
+    let mut hubs = plx_data::stores::hubs::HubsStore::default();
+    hubs.seed_for_test(2, plx_data::pms::HubState::Ready);
+    let snapshot = hubs.snapshot();
+    let mut page = screen(snapshot.view());
+    let card = first_card(&page);
+    let mut context = cx(snapshot.view(), Some(card));
+    context.views.2 = inputs;
+    let mut out = Vec::new();
+    let mut present = plx_machine::present::Present::new();
+    page.activate(card.elem, &context, &mut Effects::new(&mut out,
+        plx_machine::machine::MachineId::Instance(InstanceId(9)), &mut present));
+    has_home(&out, |request| matches!(request, HomeReq::Play { .. }))
+}
+
+#[test]
+fn captured_preference_independent_hosts_follow_their_own_profile_and_live_publication() {
+    use plx_plex::plex::session::{CurrentProfile, DeckPress, ProfilePrefs, ProfilePrefsRecord, Session, UserRef};
+    let _serial = plx_base::testlock::serial();
+    let _ambient = deck_press_is(DeckPress::Details);
+    let mut stored = Session::default();
+    stored.prefs.profile_prefs = vec![
+        ProfilePrefsRecord { user: "play".into(), account: "account".into(),
+            prefs: ProfilePrefs { deck_press: Some(DeckPress::Play), ..Default::default() } },
+        ProfilePrefsRecord { user: "details".into(), account: "account".into(),
+            prefs: ProfilePrefs { deck_press: Some(DeckPress::Details), ..Default::default() } },
+    ];
+    let host = |who: &str| crate::registry::ScreenInputs {
+        session: std::sync::Arc::new(stored.clone()),
+        profile: std::sync::Arc::new(CurrentProfile { user: Some(UserRef { uuid: who.into(), ..Default::default() }),
+            generation: 1, stamp: "account".into() }), ..Default::default()
+    };
+    let mut a = host("play");
+    let b = host("details");
+    assert!(captured_preference_commit(&a), "host A's profile chooses Play independently of ambient Details");
+    assert!(!captured_preference_commit(&b));
+    a.profile = b.profile.clone();
+    assert!(!captured_preference_commit(&a), "a new owner publication is observed live, not latched at mount");
+    assert!(!captured_preference_commit(&b));
+}
+
+#[test]
+fn captured_preference_controlled_home_never_falls_back_to_ambient_play() {
+    let _serial = plx_base::testlock::serial();
+    let _ambient = deck_press_is(plx_media::route::DeckPress::Play);
+    assert!(!captured_preference_commit(&crate::registry::ScreenInputs::default()),
+        "controlled inputs explicitly choose the product default, not ambient Play");
+}
+
+#[test]
+fn continue_watching_regression_heading_moves_and_stays_clear_on_second_row() {
+    let col = column(3, true);
+    assert!(heading_top(&col, 0, 0, col.rest(0)) < heading_place(&col, 0, 0, col.rest(0)),
+        "the heading should rise when a nearby card takes focus");
+    let top = heading_top(&col, 0, 1, col.rest(1));
+    assert_eq!(plx_ui::scroll_chrome::clearance_under_shown_chrome(top), 1.0,
+        "Continue Watching heading at {top} should remain readable on the second row");
 }
 
 #[test]
@@ -2350,6 +2664,44 @@ fn addressed_item_menu_uses_the_current_owned_grid_item() {
     ));
 }
 
+/// **The item menu opens on a Continue Watching card while the page rests on the hero, and on no
+/// shelf card there.** The row stands in view on the hero's page ([`HomeScreen::holds_page`]), so
+/// focus lands on it with `snap.pos` at 0; the boot trigger's pre-check used to ask "is the page
+/// off the hero?" (`strip_reachable`), which is false for that row's whole stay, and the
+/// documentation scene of the menu never opened it. The pre-check and the command answer by the
+/// one rule ([`HomeScreen::item_menu_reachable`]), so a card the first would refuse is not one the
+/// second opens either.
+#[test]
+fn the_item_menu_is_reachable_on_the_deck_row_at_the_hero_page_and_on_a_shelf_only_on_the_grid_page() {
+    let _guard = plx_base::testlock::serial();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+
+    let mut deck = plx_data::pms::PmsState::default();
+    plx_data::pms::seed_continue_window_for_test(&mut deck, &adapter, 12, false);
+    let snapshot = plx_data::pms::hubs_snapshot(&deck);
+    let mut s = screen(snapshot.view());
+    assert!(s.holds_page(0), "premise: the deck is the first row");
+    assert_eq!(s.snap.pos, 0.0, "premise: the page rests on the hero");
+    let card = first_card(&s);
+    assert!(s.item_menu_reachable(Some(card)), "a deck card is reachable with the page on the hero");
+    assert!(!s.item_menu_reachable(None), "no focus is no card");
+    let (_, out, _) = step(&mut s, snapshot.view(), Some(card), &ScreenEvent::App(AppMsg::Home(HomeCmd::ItemMenu)));
+    assert!(has_home(&out, |r| matches!(r, HomeReq::ItemMenu { .. })), "and the command the trigger queues is answered");
+
+    let mut shelf = plx_data::pms::PmsState::default();
+    plx_data::pms::seed_grid_for_test(&mut shelf, &adapter, 2, 3);
+    let snapshot = plx_data::pms::hubs_snapshot(&shelf);
+    let mut s = screen(snapshot.view());
+    assert!(!s.holds_page(0), "premise: a plain shelf is no deck");
+    let card = first_card(&s);
+    assert!(!s.item_menu_reachable(Some(card)), "a shelf card is off the screen while the page rests on the hero");
+    let (_, out, _) = step(&mut s, snapshot.view(), Some(card), &ScreenEvent::App(AppMsg::Home(HomeCmd::ItemMenu)));
+    assert!(!has_home(&out, |r| matches!(r, HomeReq::ItemMenu { .. })), "and its command is not answered");
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    assert!(s.item_menu_reachable(Some(card)), "the same card is reachable once the page is on the grid");
+}
+
 /// The item-menu opener asks the page for its focused card (`Screen::focused_card`) instead of
 /// downcasting to Home: a grid card names the item the seeded hubs put there (a Continue Watching
 /// press and its menu are account-affecting) and the rect the page places it at; the hero, which is
@@ -2467,9 +2819,8 @@ fn a_settled_hero_counting_down_lets_the_gate_close_and_still_flips() {
     let mut s = screen(view);
     let context = cx(view, None);
     let mut present = plx_machine::present::Present::new();
-    // `take` at tick_ms 0 throughout keeps the keepalive term out: this counts only what the
-    // screen itself asked for. The first take drains the fresh gate's first-frame `dirty`.
-    present.take(0);
+    // Simulated swaps at tick_ms 0 keep the keepalive term out of the screen's requests.
+    swap_requested_frame(&mut present);
     let mut asked_while_counting = 0u32;
     let mut flipped_at = None;
     // 10 s of 16 ms ticks: past HERO_AUTO_S, so the countdown expires exactly once.
@@ -2484,7 +2835,7 @@ fn a_settled_hero_counting_down_lets_the_gate_close_and_still_flips() {
             let tick = ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_000 });
             Machine::<TestHost>::step(&mut s, &tick, &context, &mut fx);
         }
-        let asked = present.take(0);
+        let asked = swap_requested_frame(&mut present);
         if s.outgoing.is_some() {
             flipped_at.get_or_insert(frame);
             assert!(asked, "the flip's slide is motion and must present");
@@ -2506,10 +2857,17 @@ fn a_settled_hero_counting_down_lets_the_gate_close_and_still_flips() {
 /// Step `s` through `ticks` 16 ms frames with `focus` held, on one shared gate (`take` at tick ms 0
 /// keeps the keepalive term out: this counts only what the screen itself asks for). Returns the frame
 /// the hero first began a slide on (if it did) and how many frames before that asked to present.
+/// Admit and acknowledge only frames the test actually simulates presenting.
+fn swap_requested_frame(present: &mut plx_machine::present::Present) -> bool {
+    let asked = present.take(0);
+    if asked { present.acknowledge(0); }
+    asked
+}
+
 fn run_hero_frames(s: &mut HomeScreen, view: HubsView<'_>, focus: Option<FocusKey<u32>>, ticks: u32) -> (Option<u32>, u32) {
     let context = cx(view, focus);
     let mut present = plx_machine::present::Present::new();
-    present.take(0);
+    swap_requested_frame(&mut present);
     let (mut flipped_at, mut asked_before) = (None, 0u32);
     for frame in 1..=ticks {
         let mut out = Vec::new();
@@ -2518,7 +2876,7 @@ fn run_hero_frames(s: &mut HomeScreen, view: HubsView<'_>, focus: Option<FocusKe
             let tick = ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_000 });
             Machine::<TestHost>::step(s, &tick, &context, &mut fx);
         }
-        let asked = present.take(0);
+        let asked = swap_requested_frame(&mut present);
         if s.outgoing.is_some() {
             flipped_at.get_or_insert(frame);
         } else if flipped_at.is_none() && asked {
@@ -3307,10 +3665,10 @@ fn decorative_wash_and_hero_pop_do_not_hold_page_quiescence() {
     let mut saw_decor = false;
     let mut layout_moving_frames = 0;
     for i in 1..40u32 {
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         step(&mut s, snapshot.view(), Some(key), &ScreenEvent::Tick(Tick { ms: i * 16, dt_us: 16_667 }));
-        saw_decor |= plx_machine::idle::page_moving();
-        layout_moving_frames += usize::from(plx_machine::idle::page_layout_moving());
+        saw_decor |= plx_machine::motion::report::page_moving();
+        layout_moving_frames += usize::from(plx_machine::motion::report::page_layout_moving());
     }
     assert!(saw_decor, "the hero pop / wash dissolve must still report visible page motion");
     assert_eq!(layout_moving_frames, 0, "decorative springs must not count as page layout motion");
@@ -3939,11 +4297,11 @@ fn the_hint_never_shows_while_the_page_is_still_gliding() {
 fn a_held_ok_fills_the_cap_from_the_press_clock_and_shows_the_hint_early() {
     with_hint_home(|mut s, view| {
         let card = Some(first_card(&s));
-        let half = plx_ui::press::LONG_MS / 2;
+        let half = plx_ui::dispatch::press::LONG_MS / 2;
         hint_ticks(&mut s, view, card, Some(half), 0, 30);
         assert!(s.hold_hint.visible(), "the hold shows it without waiting out the dwell");
         assert!((s.hold_hint.fill() - 0.5).abs() < 1e-6, "half of LONG_MS held is a half-filled cap");
-        let input = s.hint_input(&{ let mut c = cx(view, card); c.press.held_ms = Some(plx_ui::press::LONG_MS * 2); c }, false);
+        let input = s.hint_input(&{ let mut c = cx(view, card); c.press.held_ms = Some(plx_ui::dispatch::press::LONG_MS * 2); c }, false);
         assert_eq!(input.hold, Some(1.0), "the constructor clamps the fraction; no screen divides");
         // released early: the fill drains
         hint_ticks(&mut s, view, card, None, 0, hint_secs(0.4));
@@ -3976,7 +4334,7 @@ fn a_settled_hint_lets_the_gate_close() {
         // Home settled with the hint standing still: nothing in the tick may ask for a present.
         let context = cx(view, card);
         let mut present = plx_machine::present::Present::new();
-        present.take(0);
+        swap_requested_frame(&mut present);
         let mut out = Vec::new();
         let mut asked = 0;
         for i in 1..=60u32 {
@@ -3985,7 +4343,7 @@ fn a_settled_hint_lets_the_gate_close() {
                 let tick = ScreenEvent::Tick(Tick { ms: ms + i * HINT_TICK_MS, dt_us: HINT_TICK_MS * 1000 });
                 Machine::<TestHost>::step(&mut s, &tick, &context, &mut fx);
             }
-            asked += u32::from(present.take(0));
+            asked += u32::from(swap_requested_frame(&mut present));
         }
         assert_eq!(asked, 0, "a hint at rest must not hold the loop at full rate");
     });
@@ -4003,7 +4361,7 @@ fn the_hint_does_not_stand_up_by_itself_while_the_screenshot_clocks_are_held() {
         assert!(!s.hold_hint.visible(), "pinned clocks: no self-appearing hint in a documentation figure");
         let ms = hint_ticks(&mut s, view, card, Some(100), ms, 30);
         assert!(!s.hold_hint.visible(), "a short click stays hidden even with pinned clocks");
-        hint_ticks(&mut s, view, card, Some(plx_ui::press::LONG_MS / 2), ms, 30);
+        hint_ticks(&mut s, view, card, Some(plx_ui::dispatch::press::LONG_MS / 2), ms, 30);
         assert!(s.hold_hint.visible(), "a deliberate hold is input and still shows it");
         plx_machine::motion::hold_phase_clocks(None);
     });
@@ -4820,6 +5178,32 @@ fn a_single_press_still_re_keys_the_wash_to_the_card_it_lands_on() {
     assert_eq!(corner_codes(&rig.s), card_ground(1), "a press with no repeat re-keys to its card");
 }
 
+/// **A run of quick taps is one move to the wash, as a held key is.** (Owner, v0.10.0 rc1: "why does
+/// the background colour flicker a little bit when I switch?", filmed walking the Recently Added
+/// shelf.) Every press is a Down and an Up, so none of them is ever a `Repeat`: the held-key rule
+/// never fired, and the wash re-keyed to each card the focus crossed, swinging between neighbouring
+/// posters' unrelated colours (blue, purple, green) a few frames apart. It now keys to the card focus
+/// DWELLS on ([`WASH_DWELL_MS`]), whichever way the focus got there.
+#[test]
+fn quick_taps_do_not_chase_every_card_with_the_wash() {
+    let _guard = plx_base::testlock::serial();
+    let (_state, snap) = washed_snapshot();
+    let view = snap.view();
+    let mut rig = WashRig::new(view);
+    let rest = AmbientWash::keyed(card_blur(0), PageGround::CARD_W);
+    let target = |s: &HomeScreen| s.backdrop.grid_target.map(|c| c.map(f32::to_bits));
+    assert_eq!(target(&rig.s), rest.map(|c| c.map(f32::to_bits)), "the premise: the wash rests on card 0");
+    for _ in 0..6 {
+        rig.key_edge(view, Edge::Down);
+        rig.right(view);
+        rig.key_edge(view, Edge::Up);
+        rig.frames(view, 8); // a tap every ~130 ms
+        assert_eq!(target(&rig.s), rest.map(|c| c.map(f32::to_bits)), "the wash was re-keyed to a card the focus was only crossing");
+    }
+    rig.frames(view, 240);
+    assert_eq!(corner_codes(&rig.s), card_ground(6), "…and it keys to the card the focus rests on");
+}
+
 #[test]
 fn a_settled_wash_records_the_same_bits_frame_after_frame() {
     let _guard = plx_base::testlock::serial();
@@ -5582,6 +5966,12 @@ fn a_next_episode_that_jumps_to_column_zero_keeps_the_element_and_the_focus() {
 #[path = "hero_watchlist_tests.rs"]
 mod hero_watchlist;
 
+#[path = "hero_shade_tests.rs"]
+mod hero_shade;
+
+#[path = "hero_line_tests.rs"]
+mod hero_line;
+
 /// The billboard as it is on screen: how much of the page the hero art covers, from the
 /// selected art and any art held beneath it while the selection changes. `0` is the bare wash.
 fn billboard_cover(s: &HomeScreen) -> f32 {
@@ -5886,6 +6276,7 @@ fn a_caption_input_that_changes_under_a_kept_row_reaches_the_drawn_block() {
     // The setting changes: no publication reaches the page, so no sync runs and no row is projected.
     let cost = s.cost;
     setting(false, Details::Video);
+    s.caption_policy = crate::registry::captions::policy();
     s.layout_grid();
     assert_eq!(s.cost.elem_at_writes, cost.elem_at_writes, "a setting is not a publication");
     let video = block(&s, &state, row, col);
@@ -5991,8 +6382,10 @@ fn the_sideways_glide_moves_the_shelf_under_the_pointer_and_a_click_brings_it_ba
 
 // ---- The Continue Watching row of stills (the 2026-11 handoff, PR "Row") ------------------------
 
-/// **The Continue Watching row is a row of 420 x 236 stills** at the shared still radius, 28 apart,
-/// with no label block under them: the shelf below it follows by the row's own (shorter) pitch.
+/// **The Continue Watching row is a row of 420 x 236 stills** at the shared still radius, 40 apart
+/// (CW-13 v2: [`theme::STILL_GAP`], where the Detail strip keeps 28), with no label block under
+/// them: the footer is a line under each still ([`theme::STILL_FOOTER_DROP`]), and the shelf below it
+/// follows by the row's own pitch, which carries it.
 #[test]
 fn the_continue_watching_row_is_a_row_of_420_by_236_stills_under_no_label_block() {
     let _guard = plx_base::testlock::serial();
@@ -6008,9 +6401,11 @@ fn the_continue_watching_row_is_a_row_of_420_by_236_stills_under_no_label_block(
     assert_eq!(s.rows[0].identity, HomeHubIdentity::ContinueWatching);
     assert!(s.rows.len() > 1, "premise: a poster shelf follows");
     let style = s.row_style(0);
-    assert_eq!((style.w, style.h, style.gap, style.radius), (420.0, 236.0, 28.0, plx_ui::theme::STILL_RADIUS));
+    assert_eq!((style.w, style.h, style.gap, style.radius), (420.0, 236.0, 40.0, plx_ui::theme::STILL_RADIUS));
+    assert_eq!(plx_ui::theme::STILL_GAP, 40.0, "the board's gap");
+    assert_eq!(RowStyle::EPISODE.gap, 28.0, "the Detail strip keeps its 28");
     let (a, b) = (drawn_rect(&s, view, None, 0, 0), drawn_rect(&s, view, None, 0, 1));
-    assert_eq!((a.w, a.h, b.x - a.x), (420.0, 236.0, 448.0), "420 x 236 tiles on a pitch of 448");
+    assert_eq!((a.w, a.h, b.x - a.x), (420.0, 236.0, 460.0), "420 x 236 tiles on a pitch of 460");
     assert_eq!(s.grid.shelves[0].band_h(), 0.0, "no label block under the stills");
     let below = s.grid.base_y(1) - s.grid.base_y(0);
     assert_eq!(below, RowStyle::STILL.pitch_fixed() + ui_cards::LABEL_BAND_COLLAPSED,
@@ -6052,8 +6447,8 @@ fn only_the_continue_watching_deck_opts_in_to_the_deck_art_walk() {
 
 /// **A focused still only pops (1.09, in place); the tiles beside it stand exactly where they rest**,
 /// at every point of the pop (owner, 2026-11: focusing a still must not change the spacing between
-/// tiles). At 1.09 a 420 px tile grows about 19 px a side, inside the 28 px gap, so nothing needs to
-/// step aside. The check runs along the pop's whole spring, not only at its end.
+/// tiles). At 1.09 a 420 px tile grows about 19 px a side, inside the 40 px gap (`STILL_GAP`), so
+/// nothing needs to step aside. The check runs along the pop's whole spring, not only at its end.
 #[test]
 fn a_focused_still_pops_in_place_and_every_other_tile_stands_at_its_rest_x() {
     let _guard = plx_base::testlock::serial();
@@ -6154,7 +6549,12 @@ fn the_page_rests_at_the_hero_or_the_grid_and_moves_only_when_a_move_leaves_the_
     tick_n(&mut s, view, Some(poster), 0, 120);
     assert_eq!(s.snap_target, 1.0, "Down reaches the grid");
     assert!(s.snap.pos > 0.99);
-    assert_eq!(s.grid.scroll_target, 0.0, "the stills stay the top row, the next shelf under them");
+    // the stills stay the top row, the next shelf under them: it rests at the LEAST scroll that keeps
+    // its focused two-line label block inside the bottom overscan edge (the stills' footers make the
+    // row taller, so the block would otherwise cross it), not at the poster shelves' own line
+    let rest = s.column().block_overrun(1);
+    assert!(rest > 0.0 && rest < 60.0, "the premise: a small, real overrun ({rest})");
+    assert_eq!(s.grid.scroll_target, rest, "the stills stay the top row, the next shelf under them");
     // Up from the shelf: back on the stills, and the page stays where it was
     moved(&mut s, view, Some(poster), still, By::Dir);
     tick_n(&mut s, view, Some(still), 120, 120);
@@ -6230,7 +6630,7 @@ fn a_hero_backdrop_that_has_dissolved_in_is_drawn_at_one_exact_alpha_from_then_o
     // The alphas of the backdrop-sized quads one frame of the page's ground draws.
     let alphas = |s: &mut HomeScreen| {
         let env = s.env(0.0);
-        plx_ui::draw_census::capture_tex(|| s.backdrop.draw(Painter::recording(), &env, None))
+        plx_ui::draw_census::capture_tex(|| s.backdrop.draw(Painter::recording(), &env, None, None))
             .into_iter()
             .filter(|(_, r, a)| r.w >= SCR_W && *a > 0.01)
             .map(|(_, _, a)| a)

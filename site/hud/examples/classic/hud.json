@@ -20,7 +20,7 @@
         ] } }
       ] },
       { "id": "bar", "when": "!sections", "chrome": "steady", "gap_before": 26, "cells": [
-        { "align": "start", "playbar": { "w": "fill", "fill": "TEXT_PRIMARY", "track": "RAIL_TRACK", "thickness": 8, "clock_size": "CAPTION" } }
+        { "align": "start", "playbar": { "w": "fill", "fill": "TEXT_PRIMARY", "track": "RAIL_TRACK", "thickness": 8, "clock_size": "CAPTION", "end_time_width": 320 } }
       ] },
       { "id": "chapters", "when": "panel.chapters", "cells": [
         { "align": "start", "strip": { "bind": "chapters", "w": "fill", "card_w": 288, "card_h": 162, "gap": 24, "radius": 10,

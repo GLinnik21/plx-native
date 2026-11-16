@@ -6,7 +6,9 @@
 //! `appkit::hud_format::admit` (parse, invariants, the app's format range) and returns each result as the
 //! machine's own addressed event. The effects reach the worker in the order the store pushed them, so
 //! a `Delete` never overtakes the write it follows. Every answer wakes the frame loop
-//! (`idle::invalidate`), because an idle loop does not iterate on its own.
+//! through the documented worker scheduling door. UI damage is applied only when the
+//! owning HudPage ingests its changed HudList (`Effects::invalidate(Landing(Session))`);
+//! the worker never claims page/surface provenance.
 //!
 //! **The driver** ([`HudDriver`], owned by the Bridge) steps the store with the answers, executes the
 //! effects it returns (`Selection` persists the profile's pick, `Notice` is kept for the Settings page) and
@@ -363,12 +365,12 @@ impl Executor {
         match self {
             Executor::Worker => {
                 let (reply, answer) = std::sync::mpsc::channel();
-                if !plx_base::task::spawn_small("hud-fetch", move || {
+                let _ = plx_base::task::spawn_small("hud-fetch", move || {
                     let _ = reply.send(job());
-                    plx_machine::idle::invalidate();
-                }) {
-                    plx_machine::idle::invalidate();
-                }
+                    plx_machine::present::wake_from_worker();
+                });
+                // Refusal drops the sender. The next runner poll consumes Disconnected
+                // as its addressed failure; no worker wake or UI damage is fabricated.
                 Slot::Waiting(answer)
             }
             #[cfg(test)]
@@ -384,7 +386,7 @@ impl Executor {
                 let (reply, answer) = std::sync::mpsc::channel();
                 let _ = submit_retained(move || {
                     let _ = reply.send(job());
-                    plx_machine::idle::invalidate();
+                    plx_machine::present::wake_from_worker();
                 });
                 Slot::Waiting(answer)
             }

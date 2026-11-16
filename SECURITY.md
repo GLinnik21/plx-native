@@ -4,7 +4,7 @@
 
 Report privately, **not** as a public issue:
 
-- **GitHub Security Advisories** — <https://github.com/GLinnik21/plx-native/security/advisories/new>
+- **GitHub Security Advisories** — <https://github.com/plxnative/plx-native/security/advisories/new>
   (preferred: it is private, it threads, and it produces a CVE if one is warranted)
 - or e-mail **support@plxnative.com** with `PlxNative security` in the subject.
 

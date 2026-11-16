@@ -142,7 +142,7 @@ impl Rig {
     fn step(&mut self, inputs: Vec<InputEvent<u32>>) {
         self.frame += 1;
         if let Some(feed) = self.feed { feed(&mut self.d, &mut self.bridge); }
-        plx_machine::idle::frame_begin(0.016);
+        plx_machine::motion::report::frame_begin(0.016);
         super::frame(&mut self.d, &mut self.bridge, tick(self.frame), inputs);
         self.performed.extend(pump_navigation(&mut self.d, &mut self.bridge));
     }
@@ -220,8 +220,15 @@ impl Rig {
     }
 }
 
-/// The Movies library, reached by its strip pill from Home, settled.
+/// The Movies grid, reached by its strip pill from Home. Give each table cell its own profile
+/// so the saved pages in the shared scratch session do not carry across cells.
 fn movies_library() -> Rig {
+    use plx_plex::plex::session;
+    let scope = session::current_gen().wrapping_add(1);
+    session::publish_profile_for_test(Some(session::UserRef {
+        uuid: format!("u-page-regions-{scope}"),
+        ..Default::default()
+    }), scope);
     let mut r = Rig::new();
     super::show_page(&mut r.d, AppArg::Home);
     r.frames(40);

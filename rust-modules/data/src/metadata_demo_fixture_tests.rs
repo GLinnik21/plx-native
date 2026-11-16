@@ -82,3 +82,21 @@ fn a_headshot_is_served_only_for_a_person_the_catalog_gives_a_portrait() {
     assert_eq!(tears.role[3].role, "Thom", "Vanja Rukavina plays the young Thom");
     assert_eq!(tears.role[4].role, "Celia", "Denise Rebergen plays Celia");
 }
+
+#[test]
+fn the_demo_rows_carry_the_image_list_a_modern_pms_sends_with_a_stamped_logo() {
+    // A row with NO `Image[]` reads as an older server's: `clear_logo()` answers `None` and the app
+    // asks the legacy `/library/metadata/<rk>/clearLogo` of every title, which the demo library
+    // answers with a 404 for each title it has no logo for (the film's frame dump then fails
+    // closed on the Continue Watching card that asked). With the list, a title that has a logo
+    // names it at the stamped path the deck keys its composite by.
+    for rk in [102, 105] {
+        let it = fixture(rk);
+        let logo = it.clear_logo().unwrap_or_else(|| panic!("{rk}: no Image[] on the demo's row"));
+        assert_eq!(logo, format!("/library/metadata/{rk}/clearLogo/1790000000"), "{rk}");
+        assert!(
+            plx_plex::plex::artwork::card_path(logo, &it.art).is_some(),
+            "{rk}: the logo and the background make the deck card's composite key"
+        );
+    }
+}

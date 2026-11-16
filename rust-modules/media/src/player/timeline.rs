@@ -25,6 +25,13 @@ impl TimelineSnapshot {
             duration_ms: duration_ns / 1_000_000,
         })
     }
+
+    pub fn from_feed(readout: &super::readout::PlayerReadout, duration_ns: i64) -> Option<Self> {
+        if readout.unconfirmed_seek_target().is_some() {
+            return None;
+        }
+        Self::from_content_ns(readout.raw().playpos_ns, duration_ns, readout.paused())
+    }
 }
 
 struct MailboxState {
@@ -110,6 +117,35 @@ fn timeline_thread(lease: TimelineLease, stop: Arc<ReportStop>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_seek_reports_no_progress_until_the_replacement_reports_its_position() {
+        use super::super::readout::{PlayerReadout, ReadoutEvent};
+        use plx_playback_contract::feed::FeedRaw;
+
+        const TARGET: i64 = 2_118_000_000_000;
+        const DURATION: i64 = 7_836_454_000_000;
+        let mut readout = PlayerReadout::IDLE;
+        readout.step(ReadoutEvent::SeekRequested { target_ns: TARGET, display_ns: TARGET });
+        readout.step(ReadoutEvent::SeekTaken);
+        readout.step(ReadoutEvent::FactsIngested(FeedRaw {
+            playpos_ns: 9_467_000_000, frames: 3, ..FeedRaw::IDLE
+        }));
+        assert!(TimelineSnapshot::from_feed(&readout, DURATION).is_none());
+        assert_eq!(readout.unconfirmed_seek_target(), Some(TARGET));
+
+        readout.step(ReadoutEvent::SessionReset);
+        readout.step(ReadoutEvent::ReloadSeek { target_ns: TARGET });
+        readout.step(ReadoutEvent::FactsIngested(FeedRaw { playpos_ns: TARGET, ..FeedRaw::IDLE }));
+        assert!(TimelineSnapshot::from_feed(&readout, DURATION).is_none(), "the seeded target is not a report");
+        assert_eq!(readout.unconfirmed_seek_target(), Some(TARGET), "stopping here still saves the seek target");
+
+        readout.step(ReadoutEvent::FactsIngested(FeedRaw {
+            playpos_ns: TARGET - 5_000_000_000, frames: 1, ..FeedRaw::IDLE
+        }));
+        assert_eq!(readout.unconfirmed_seek_target(), None);
+        assert_eq!(TimelineSnapshot::from_feed(&readout, DURATION).unwrap().time_ms, 2_113_000);
+    }
 
     #[test]
     fn mailbox_keeps_the_latest_normalized_sample_and_stop_is_sticky() {

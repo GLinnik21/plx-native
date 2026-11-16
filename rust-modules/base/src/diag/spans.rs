@@ -14,7 +14,9 @@
 //! paid. It is not GPU time; `plxnative-hwcnt` is.
 //!
 //! Armed with the rest of the frame instrument (`plxnative-framedrop`); unarmed, [`span`] is one
-//! relaxed atomic load and a direct call.
+//! relaxed atomic load and a direct call, plus, for the four spans that name a loop leg
+//! (`scen`, `pump`, `land`, `dframe`), the leg's store and restore: those run armed or not, because
+//! the freeze probe reads the leg in a shipping build too.
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
@@ -36,11 +38,14 @@ pub fn armed() -> bool {
     ON.load(Relaxed)
 }
 
-/// Run `f`, and when armed add its wall time to this frame's `name`. Under `threadcheck` the
-/// loop's own spans (`scen`, `pump`, `land`, `dframe`) also label the watchdog for the call.
+/// Run `f`, and when armed add its wall time to this frame's `name`. The loop's own spans
+/// (`scen`, `pump`, `land`, `dframe`) also name the loop leg for the freeze probe for the call, in
+/// every build and armed or not; under `threadcheck` they also label the watchdog.
 #[inline]
 pub fn span<R>(name: &'static str, f: impl FnOnce() -> R) -> R {
-    // The main-loop spans also name the phase for the hang watchdog (label-only).
+    // The main-loop spans name their leg for the freeze probe (every build; restored on return or
+    // unwind) and the phase for the hang watchdog (`threadcheck`, label-only).
+    let _leg = crate::task::watchdog::span_leg(name);
     #[cfg(feature = "threadcheck")]
     let _label = crate::task::watchdog::span_scope(name);
     if !armed() {
@@ -108,5 +113,27 @@ mod tests {
         note("page", 1.0);
         assert_eq!(take(), "spans=pagex2:4.0,field:20.3");
         assert_eq!(take(), "", "taken: the next frame starts empty");
+    }
+
+    /// The bug this guards: only the heartbeat marks wrote the leg cell, so a freeze inside
+    /// `span("pump", ..)` (the Starfish/ACB pump) was reported as the enclosing `results`. This
+    /// reads the real process cell. The serial lock keeps it from restoring "none yet" under the
+    /// other test that publishes a leg there; heartbeat tests step the cell without the lock, but
+    /// only to the seven legs they mark, so one read can still be overwritten from outside: a span
+    /// that names its leg shows it on the first try in practice, and one that does not never
+    /// shows it on any.
+    #[test]
+    fn a_loop_span_names_its_leg_whether_or_not_the_frame_instrument_is_armed() {
+        use crate::task::watchdog::{current_leg, LoopPhase};
+        let _lock = crate::testlock::serial();
+        for (name, leg) in [
+            ("scen", LoopPhase::DevScenarios),
+            ("pump", LoopPhase::PlaybackPump),
+            ("land", LoopPhase::LandResults),
+            ("dframe", LoopPhase::DispatcherFrame),
+        ] {
+            let seen = (0..1_000).any(|_| span(name, current_leg) == Some(leg));
+            assert!(seen, "span({name:?}) never published {leg:?}");
+        }
     }
 }

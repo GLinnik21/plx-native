@@ -41,7 +41,7 @@ fn language_selection_waits_for_durable_receipt_and_keeps_running_locale() {
     let _guard = plx_base::testlock::serial();
     let _saved = SavedLanguage::new(Preference::System);
     let running = plx_platform::i18n::current().language().tag();
-    let mut page = LanguagePage::new(EntryId(0));
+    let mut page = LanguagePage::new(EntryId(0), &crate::registry::capture_fixture());
     let before = page.state.hash();
     let (requested, reply) = save_request(activate(&mut page, lang(Preference::Be)));
     assert_eq!(requested, Preference::Be);
@@ -62,7 +62,7 @@ fn language_selection_waits_for_durable_receipt_and_keeps_running_locale() {
 fn choosing_system_default_saves_the_preference_instead_of_resolved_language() {
     let _guard = plx_base::testlock::serial();
     let _saved = SavedLanguage::new(Preference::Be);
-    let mut page = LanguagePage::new(EntryId(0));
+    let mut page = LanguagePage::new(EntryId(0), &crate::registry::capture_fixture());
     let (requested, reply) = save_request(activate(&mut page, lang(Preference::System)));
     assert_eq!(requested, Preference::System);
     assert_eq!(page.state.selected, Preference::Be);
@@ -106,7 +106,7 @@ fn failed_or_disconnected_language_save_keeps_confirmed_selection_and_can_retry(
     let _guard = plx_base::testlock::serial();
     let _saved = SavedLanguage::new(Preference::En);
     for disconnected in [false, true] {
-        let mut page = LanguagePage::new(EntryId(0));
+        let mut page = LanguagePage::new(EntryId(0), &crate::registry::capture_fixture());
         let (_, reply) = save_request(activate(&mut page, lang(Preference::Es)));
         if !disconnected { reply.send(false).unwrap(); }
         drop(reply);
@@ -126,7 +126,7 @@ fn failed_or_disconnected_language_save_keeps_confirmed_selection_and_can_retry(
 fn contribution_is_focusable_and_right_opens_the_guide() {
     let _guard = plx_base::testlock::serial();
     let _session = scratch_session("language-contribution");
-    let mut page = LanguagePage::new(EntryId(0));
+    let mut page = LanguagePage::new(EntryId(0), &crate::registry::capture_fixture());
     let key = FocusKey { entry: EntryId(0), elem: contribute() };
     let cx = cx(Some(key));
     assert!(<LanguagePage as Focusable<InnerHost>>::place(&page, &key.elem, &cx, At::SpringTarget).is_some());
@@ -175,4 +175,21 @@ fn language_page_row_keys_are_distinct_and_pinned_languages_keep_theirs() {
     for (p, key) in [(Preference::En, 1), (Preference::Es, 2), (Preference::Be, 3), (Preference::Fr, 5)] {
         assert_eq!(LangId::Choice(p).key().0, key, "{p:?}: a shipped language's row identity moved");
     }
+}
+
+#[test]
+fn adjacent_language_restart_decision_uses_owned_running_and_next_launch_facts() {
+    let _serial = plx_base::testlock::serial();
+    let a = crate::registry::ScreenInputs { install_language: Preference::Be, running_language: Preference::En, ..Default::default() };
+    let b = crate::registry::ScreenInputs { running_language: Preference::Be, ..a.clone() };
+    let _step = plx_base::step::StepScope::enter();
+    let mut first = LanguagePage::new(EntryId(1), &a);
+    let second = LanguagePage::new(EntryId(2), &b);
+    assert!(first.pending());
+    assert!(!second.pending(), "another owner's boot preference must not leak in");
+    let (_, reply) = save_request(activate(&mut first, lang(Preference::En)));
+    assert!(first.pending(), "queue admission is not the confirmed next-launch choice");
+    reply.send(true).unwrap();
+    assert!(first.poll_save());
+    assert!(!first.pending(), "the confirmed pick now equals this owner's running boot");
 }

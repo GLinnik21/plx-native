@@ -674,6 +674,7 @@ fn error_context_with_source(ps: &crate::route::PlaybackSession,
         http_status: HttpClass::exact_status(http_status),
         pipeline_error: facts.pipeline_error.unwrap_or(0),
         refusal,
+        preview_refusal: crate::route::preview_refusal(ps),
     };
     if crate::route::preview_request(ps) {
         as_preview(context)
@@ -1320,6 +1321,7 @@ pub fn watched_class(position_ns: i64, duration_ns: i64) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plx_telemetry::telemetry::classes::PreviewRefusal;
     use plx_play_feed::shared::FEED_SHARED;
 
     #[test]
@@ -1559,7 +1561,7 @@ mod tests {
             crate::route::PlayVerdict::Server(String::new(), Default::default()),
             crate::route::PlayVerdict::DirectPlayDisabled,
             crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video),
-            crate::route::PlayVerdict::PreviewNeedsDirectPlay,
+            crate::route::PlayVerdict::PreviewNeedsDirectPlay { reason: PreviewRefusal::NotDirect },
         ] {
             let mut ps = crate::route::PlaybackSession::default();
             crate::route::refuse_for_test(&mut ps, verdict.clone());
@@ -1689,7 +1691,7 @@ mod tests {
         for verdict in [
             crate::route::PlayVerdict::DirectPlayDisabled,
             crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video),
-            crate::route::PlayVerdict::PreviewNeedsDirectPlay,
+            crate::route::PlayVerdict::PreviewNeedsDirectPlay { reason: PreviewRefusal::NotDirect },
         ] {
             let mut ps = crate::route::PlaybackSession::default();
             crate::route::refuse_for_test(&mut ps, verdict.clone());
@@ -1929,7 +1931,34 @@ mod tests {
             assert_eq!(v["tags"]["playback.kind"], "preview_not_direct");
             assert_eq!(v["tags"]["playback.attempt_origin"], "preview");
             assert_eq!(v["fingerprint"], serde_json::json!(["playback-error", "preview", "preview_not_direct"]));
+            // The rig's item has no Part, so the first failing condition is `no_part`.
+            assert_eq!(v["tags"]["playback.preview_refusal"], "no_part");
         });
+    }
+
+    /// **Sentry PLX-NATIVE-23.** The refused preview's reason rides its report as one tag, whatever
+    /// the reason, and no other verdict carries one. The grouping is the kind's, as before.
+    #[test]
+    fn a_refused_previews_reason_rides_the_report_and_no_other_verdict_carries_one() {
+        let _g = plx_base::testlock::serial();
+        for reason in PreviewRefusal::ALL {
+            let mut ps = crate::route::PlaybackSession::default();
+            crate::route::refuse_for_test(&mut ps, crate::route::PlayVerdict::PreviewNeedsDirectPlay { reason });
+            assert_eq!(error_context(&ps).preview_refusal, Some(reason));
+            let v = event_for(&ps);
+            assert_eq!(v["tags"]["playback.kind"], "preview_not_direct", "{reason:?}");
+            assert_eq!(v["tags"]["playback.preview_refusal"], reason.code(), "{reason:?}");
+        }
+        for verdict in [
+            crate::route::PlayVerdict::DirectPlayDisabled,
+            crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video),
+            crate::route::PlayVerdict::Server("Cannot convert this item.".into(), Default::default()),
+        ] {
+            let mut ps = crate::route::PlaybackSession::default();
+            crate::route::refuse_for_test(&mut ps, verdict.clone());
+            assert_eq!(error_context(&ps).preview_refusal, None, "{verdict:?}");
+            assert!(event_for(&ps)["tags"].get("playback.preview_refusal").is_none(), "{verdict:?}");
+        }
     }
 
     /// **Sentry PLX-NATIVE-15.** A detail-page preview never passes [`requested`], so its failure

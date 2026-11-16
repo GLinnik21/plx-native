@@ -193,7 +193,9 @@ class ParserTests(unittest.TestCase):
             self.assertEqual(script_stamp(freeze_stamps(json_records(other))), {})
             # A later rewrite of the file shows up in the NEXT build's stamp, not the earlier one.
             records = freeze_stamps(json_records(ours))
+            stamp = (build / "output").stat()
             (build / "output").write_text("cargo:rustc-env=X=2\n")
+            os.utime(build / "output", ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 2_000_000_000))
             self.assertEqual(script_stamp(records), first)
             self.assertNotEqual(script_stamp(freeze_stamps(json_records(ours))), first)
 

@@ -454,8 +454,60 @@ struct ViewerFeature { id: String }
 impl PreferenceRequest {
     /// Worker-side read under the same captured profile credential as account preferences.
     pub fn load_marker_access(&self) -> Result<MarkerAccess, PreferenceError> {
-        self.load_marker_access_with(|| self.matches_profile(&crate::plex::session::current_snapshot()),
-            |path| self.request("GET", path, "").map(|r| r.body))
+        self.load_marker_access_in_home(&crate::plex::session::peek(),
+            || self.matches_profile(&crate::plex::session::current_snapshot()),
+            |credential, path| {
+                let mut under = self.clone();
+                under.credential = credential.to_owned();
+                under.request("GET", path, "").map(|r| r.body)
+            })
+    }
+
+    /// **The seated Home member's grants, then the Home's Plex Pass** (owner decision, 2026-11-11). A
+    /// managed profile has no Plex Pass of its own (a Guest's token was measured without one), yet its
+    /// household's covers it. So when the member's own list leaves either grant out, the Home
+    /// ADMINISTRATOR's list is read as well, under the account token the session holds for that very
+    /// account, and only what it grants is added. The administrator's identity is proved by
+    /// `/api/v2/user` exactly as a viewer's is, and the roster must name exactly one administrator and
+    /// the seated member as a non-administrator of it ([`Self::home_admin_marker_request`]); a read of
+    /// it that fails leaves the member's own answer as it was. `read` is handed the credential to read
+    /// under and the path: GETs of the two read-only feature endpoints, never a write.
+    fn load_marker_access_in_home(&self, stored: &crate::plex::session::Session, current: impl Fn() -> bool,
+        mut read: impl FnMut(&str, &str) -> Result<Vec<u8>, PreferenceError>) -> Result<MarkerAccess, PreferenceError> {
+        let own = self.load_marker_access_with(&current, |path| read(&self.credential, path));
+        if matches!(own, Ok(MarkerAccess { intro: true, credits: true }) | Err(PreferenceError::Stale)) {
+            return own;
+        }
+        let Some(admin) = self.home_admin_marker_request(stored) else { return own };
+        match admin.load_marker_access_with(&current, |path| read(&admin.credential, path)) {
+            Ok(home) => {
+                let own = own.unwrap_or_default();
+                Ok(MarkerAccess { intro: own.intro || home.intro, credits: own.credits || home.credits })
+            }
+            Err(PreferenceError::Stale) => Err(PreferenceError::Stale),
+            Err(_) => own,
+        }
+    }
+
+    /// This request retargeted at the Home administrator, for a seated NON-administrator member only: the
+    /// account token the session stores for the account (stamp-checked, so it is the account this request
+    /// was captured under) and the administrator's roster identity, which `/api/v2/user` must then confirm.
+    /// The request keeps the seat's key, so it can only land for the profile it was made for. `None` for
+    /// an administrator or an unseated profile (they have no Home above them), for a roster that does not
+    /// list the seated member, and for one with no single administrator: nothing is borrowed on a guess.
+    fn home_admin_marker_request(&self, stored: &crate::plex::session::Session) -> Option<Self> {
+        let seated = stored.home_users.iter().find(|u| !self.user.uuid.is_empty() && u.uuid == self.user.uuid)?;
+        if seated.admin || stored.user.uuid != self.user.uuid || stored.active_profile_is_admin()
+            || stored.account_token.is_empty() || self.stamp != crate::plex::grant::account_key(&stored.account_token) {
+            return None;
+        }
+        let mut admins = stored.home_users.iter().filter(|u| u.admin);
+        let admin = admins.next()?;
+        if admins.next().is_some() || (admin.id == 0 && admin.uuid.is_empty()) { return None; }
+        let mut request = self.clone();
+        request.credential = stored.account_token.clone();
+        request.user = crate::plex::session::UserRef { id: admin.id, uuid: admin.uuid.clone(), ..Default::default() };
+        Some(request)
     }
     fn load_marker_access_with(&self, current: impl Fn() -> bool,
         mut read: impl FnMut(&str) -> Result<Vec<u8>, PreferenceError>) -> Result<MarkerAccess, PreferenceError> {
@@ -541,5 +593,126 @@ mod marker_access_tests {
             } else { br#"{"id":7}"#.to_vec() })), Err(PreferenceError::InvalidResponse));
         }
         assert_eq!(request.load_marker_access_with(|| false, |_| panic!("stale read")), Err(PreferenceError::Stale));
+    }
+
+    /// A Plex Home: the administrator (id 1) and one managed member (id 2), the account token the
+    /// session holds, and the request a seated managed member captures (its own token, its own seat).
+    fn home(seated: &str) -> (crate::plex::session::Session, PreferenceRequest) {
+        use crate::plex::session::{HomeUserRef, Session, UserRef};
+        let member = UserRef { id: 2, uuid: "managed".into(), ..Default::default() };
+        let (mut request, _) = PreferenceRequest::fixture_for_test(member, 1, Default::default());
+        request.credential = "managed-token".into();
+        let stored = Session { account_token: "owner-account-token".into(), user: UserRef {
+            id: if seated == "managed" { 2 } else { 1 }, uuid: seated.into(), ..Default::default() },
+            home_users: vec![
+                HomeUserRef { id: 1, uuid: "owner".into(), admin: true, ..Default::default() },
+                HomeUserRef { id: 2, uuid: "managed".into(), ..Default::default() }],
+            ..Default::default() };
+        request.stamp = crate::plex::grant::account_key(&stored.account_token);
+        (stored, request)
+    }
+
+    /// The plex.tv answers of a Home: each token answers as its own user and lists its own features.
+    fn plex_tv<'a>(managed_features: &'static str, owner_features: &'static str,
+        reads: &'a std::cell::RefCell<Vec<(String, String)>>) -> impl FnMut(&str, &str) -> Result<Vec<u8>, PreferenceError> + 'a {
+        move |credential, path| {
+            reads.borrow_mut().push((credential.to_owned(), path.to_owned()));
+            let managed = credential == "managed-token";
+            assert!(managed || credential == "owner-account-token", "only the two tokens of the Home are used");
+            Ok(match (path, managed) {
+                ("/api/v2/user", true) => br#"{"id":2,"uuid":"managed"}"#.to_vec(),
+                ("/api/v2/user", false) => br#"{"id":1,"uuid":"owner"}"#.to_vec(),
+                (_, true) => managed_features.as_bytes().to_vec(),
+                (_, false) => owner_features.as_bytes().to_vec(),
+            })
+        }
+    }
+
+    /// **A managed profile in a Plex Pass home gets the skip settings.** The managed member's own
+    /// feature list lists no `pass` (a managed user has no Plex Pass of its own), so its rows were
+    /// hidden although its Home's administrator has one. Owner decision, 2026-11-11.
+    #[test]
+    fn a_managed_member_is_granted_by_its_homes_administrator_pass() {
+        let _guard = plx_base::testlock::serial();
+        let (stored, request) = home("managed");
+        let reads = std::cell::RefCell::new(Vec::new());
+        let result = request.load_marker_access_in_home(&stored, || true,
+            plex_tv(r#"[{"id":"sync"}]"#, r#"[{"id":"sync"},{"id":"pass"}]"#, &reads));
+        assert_eq!(result, Ok(MarkerAccess { intro: true, credits: true }));
+        let reads = reads.borrow();
+        assert_eq!(reads.iter().map(|(c, p)| (c.as_str(), p.as_str())).collect::<Vec<_>>(), vec![
+            ("managed-token", "/api/v2/user"), ("managed-token", "/api/v2/features"),
+            ("owner-account-token", "/api/v2/user"), ("owner-account-token", "/api/v2/features")],
+            "the member is read under its own token first, then the administrator under the account's, reads only");
+    }
+
+    /// The Home's grant is only ever ADDED to the member's own, never needed when it is whole, and
+    /// never invented: no Pass at the top, nothing granted; a failed read leaves the member's answer.
+    #[test]
+    fn the_homes_grant_adds_to_the_members_own_and_never_replaces_or_invents() {
+        let _guard = plx_base::testlock::serial();
+        let (stored, request) = home("managed");
+        let reads = std::cell::RefCell::new(Vec::new());
+        assert_eq!(request.load_marker_access_in_home(&stored, || true,
+            plex_tv(r#"[{"id":"intro-markers"}]"#, r#"[{"id":"credits-markers"}]"#, &reads)),
+            Ok(MarkerAccess { intro: true, credits: true }), "one grant from each list");
+        assert_eq!(request.load_marker_access_in_home(&stored, || true, plex_tv(r#"[]"#, r#"[]"#, &reads)),
+            Ok(MarkerAccess::default()), "no Pass anywhere: nothing granted");
+        reads.borrow_mut().clear();
+        assert_eq!(request.load_marker_access_in_home(&stored, || true, plex_tv(r#"[{"id":"pass"}]"#, r#"[]"#, &reads)),
+            Ok(MarkerAccess { intro: true, credits: true }), "the member's own Pass still grants");
+        assert_eq!(reads.borrow().len(), 2, "a whole answer reads nothing of the administrator's");
+        // the administrator's list unreadable: the member's own answer stands
+        let mut broken = plex_tv(r#"[{"id":"intro-markers"}]"#, r#"[]"#, &reads);
+        let result = request.load_marker_access_in_home(&stored, || true, |credential, path|
+            if credential == "managed-token" { broken(credential, path) } else { Err(PreferenceError::TimedOut) });
+        assert_eq!(result, Ok(MarkerAccess { intro: true, credits: false }));
+        // an administrator that answers as someone else is refused, and the member's answer stands
+        let result = request.load_marker_access_in_home(&stored, || true, |credential, path| Ok(match (credential, path) {
+            ("managed-token", "/api/v2/user") => br#"{"id":2,"uuid":"managed"}"#.to_vec(),
+            (_, "/api/v2/user") => br#"{"id":9,"uuid":"stranger"}"#.to_vec(),
+            ("managed-token", _) => b"[]".to_vec(),
+            _ => br#"[{"id":"pass"}]"#.to_vec(),
+        }));
+        assert_eq!(result, Ok(MarkerAccess::default()), "a stranger's Pass is not the Home's");
+        // a member whose own read failed outright still takes the Home's grant
+        let result = request.load_marker_access_in_home(&stored, || true, |credential, path|
+            if credential == "managed-token" { Err(PreferenceError::Refused) } else {
+                plex_tv("[]", r#"[{"id":"pass"}]"#, &reads)(credential, path) });
+        assert_eq!(result, Ok(MarkerAccess { intro: true, credits: true }));
+        // a profile change mid-read retires the whole answer
+        assert_eq!(request.load_marker_access_in_home(&stored, || false, |_, _| panic!("stale read")),
+            Err(PreferenceError::Stale));
+    }
+
+    /// Nothing is borrowed on a guess: an administrator, a member the roster does not list, a roster
+    /// with two administrators or none, and another account's request never read the account's token.
+    #[test]
+    fn the_account_token_is_read_for_a_listed_member_of_a_one_administrator_home_only() {
+        let _guard = plx_base::testlock::serial();
+        let (stored, request) = home("managed");
+        assert!(request.home_admin_marker_request(&stored).is_some(), "premise");
+        let (admin_stored, mut admin_request) = home("owner");
+        admin_request.user = crate::plex::session::UserRef { id: 1, uuid: "owner".into(), ..Default::default() };
+        assert!(admin_request.home_admin_marker_request(&admin_stored).is_none(), "the administrator has no Home above it");
+        let mut unlisted = stored.clone();
+        unlisted.home_users.retain(|u| u.admin);
+        assert!(request.home_admin_marker_request(&unlisted).is_none());
+        let mut two = stored.clone();
+        two.home_users[1].admin = true;
+        assert!(request.home_admin_marker_request(&two).is_none());
+        let mut none = stored.clone();
+        none.home_users[0].admin = false;
+        assert!(request.home_admin_marker_request(&none).is_none());
+        let mut other = request.clone();
+        other.stamp.push('x');
+        assert!(other.home_admin_marker_request(&stored).is_none(), "another account's stamp");
+        let mut anonymous = request.clone();
+        anonymous.user = Default::default();
+        assert!(anonymous.home_admin_marker_request(&stored).is_none());
+        let retargeted = request.home_admin_marker_request(&stored).unwrap();
+        assert_eq!((retargeted.user.id, retargeted.user.uuid.as_str(), retargeted.credential.as_str()), (1, "owner", "owner-account-token"));
+        assert!(retargeted.matches_profile(&crate::plex::session::CurrentProfile {
+            user: Some(request.user.clone()), generation: 1, stamp: request.stamp.clone() }), "it lands for the seat it was made for");
     }
 }

@@ -12,14 +12,22 @@ use std::time::Instant;
 
 /// Monotonic milliseconds from the origin fixed at the first call (wrapping at `u32`).
 pub fn vclock_ms() -> u32 {
+    crate::step::assert_io_allowed("clock::vclock_ms");
     origin().elapsed().as_millis() as u32
 }
 
 /// [`vclock_ms`] in microseconds, on the same origin.
 pub fn vclock_us() -> u64 {
+    crate::step::assert_io_allowed("clock::vclock_us");
     origin().elapsed().as_micros() as u64
 }
 
+/// Wall time is an IO port too; machine inputs carry already-sampled time.
+#[inline]
+pub fn wall_now() -> std::time::SystemTime {
+    crate::step::assert_io_allowed("clock::wall_now");
+    std::time::SystemTime::now()
+}
 fn origin() -> &'static Instant {
     static T0: OnceLock<Instant> = OnceLock::new();
     T0.get_or_init(Instant::now)

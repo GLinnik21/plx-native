@@ -13,6 +13,7 @@ use plx_ui::Painter;
 /// [`SearchScreen::sync`], and a view that has since moved on shows as fewer cards, never as a
 /// card with no item.
 pub struct RowCards<'a> {
+    pub(super) policy: plx_ui::caption_policy::CaptionPolicy,
     pub(super) kind: Kind,
     pub(super) elems: &'a [u32],
     pub(super) items: &'a [Item],
@@ -54,7 +55,7 @@ impl<H: SearchLike> CardSource<H> for RowCards<'_> {
                 // result from a server that is not the household's own is credited after its details
                 let mut facts = tile_facts::caption_facts(row);
                 facts.source = Some(self.handle(item)).filter(|handle| !handle.is_empty()).map(str::to_owned);
-                crate::registry::captions::label(&crate::registry::captions::policy(), &facts, None)
+                crate::registry::captions::label(&self.policy, &facts, None)
             }
             // a still (an episode) is worded by the one landscape builder, like every other still; a
             // headshot is not a poster either and keeps its block, the server it came from last

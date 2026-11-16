@@ -50,7 +50,7 @@ arguments, and its time is the `dt` it is handed.
    matter more than couch-copy scale, and it must never migrate into chrome or prose. The hero
    SYNOPSIS is the case that proves
    the rule and it is no longer here: a blurb is the longest run of prose on its page, so it is
-   reading copy, and both heroes now draw it at `LABEL` 26 through `ui::hero_synopsis`. (The hero
+   reading copy, and Detail draws it at `LABEL` 26 through `ui::hero_synopsis`. Home has a separate line for episode, movie or show metadata, or a short premise. Remaining time lives in the Resume button. (The hero
    identity line uses `theme::hero::IDENTITY_SIZE`, regular `CAPTION` 24, matching the latest PDF.) Pass a rung to `Painter::text`/`Label`/`TextView`/`text::elide` instead of a bare
    `24`/`28`/… — a size is a role, not a magic number; pick the nearest rung, and if no rung fits a
    genuinely new role, **add a documented rung to `pub mod size` in `gfx/tokens.rs`** (`theme::size`
@@ -328,9 +328,13 @@ which the orphan rule forbids.
 references: `Session` (auth, profile, the one `ProfileScope`), `Consent`, `Input` (press, key-repeat
 edges, pointer visibility, the double-buffered hit map, and the `FocusEngine` that holds THE
 current focus — screens keep no copy), `Present` (the gate), `Navigation` (the container tree and
-every entry/instance), `Player`, `Stores`, `Adapters`. Ownerships that used to be double are now
-single: the press belongs to `Input`, the modal phase to `ModalStack`, the present gate to
-`Present`, `ProfileScope` to `Session`.
+every entry/instance), `Player`, `Stores`, `Adapters`. Press belongs to `Input`, the modal phase
+to `ModalStack`, and `ProfileScope` to `Session`. `Dispatcher::present` is the runtime
+frame gate; `App` does not own a second gate. `Input` supplies the explicit `PressRead`, and
+`NavStack` supplies `NavPresentation` through `DrawFrame`. Rendering scopes report only
+frame-captured motion through `plx_machine::motion::report`. Content damage and its page/surface
+attribution are typed effects on the owning `Present`, never an ambient generation or collector.
+Admission retains pending work until the loop acknowledges an actual swap.
 
 **Navigation is a model, not a route word (§6.2).** `containers/` is the fold:
 TabContainer → NavStack → ModalStack. A screen is an owned INSTANCE with logical state inside and
@@ -351,7 +355,7 @@ Keymanager and LS2 calls. Tests panic (catchably). In developer builds (`threadc
 `main-thread block: <label> at <file:line> (fatal; aborting)`, then aborts on the frame thread before the call runs.
 Release builds retain elapsed-time logging once per (label, call site):
 `main-thread block: <label> <ms>ms at <file:line> [under <exception label> at <file:line>]`. Use cached reads and, in the IO layer, the bounded `storage_worker` queue, then observe the landing
-on the frame thread and call `idle::invalidate()` only when visible content changed. Boot's synchronous loads run before the frame scope; a new blocking exception
+on the frame thread and apply typed damage through its owned `PresentHandle` only when visible content changed. Boot's synchronous loads run before the frame scope; a new blocking exception
 must be explicit and justified through `task::allow_blocking`, never added to a tick — and every production
 `allow_blocking(` site is a line in `ci/allow/blocking.txt`, which the `blocking` gate holds exact (a
 new site or a stale line fails; the list only shrinks). Move the work off the frame: in machine code (`ui/`,
@@ -413,13 +417,13 @@ implementations — `TtfMeasure` (device/sim), `TableMeasure` (replay, from the 
 table) and `FixtureMeasure` (host tests) — and travels on `Cx`/`DrawFrame`. The point of both is
 §5: real scenarios record and replay deterministically.
 
-**What has NOT landed** — the guide says so rather than letting `lib.rs` imply otherwise:
+**Ownership migration and remaining acceptance**:
 
-- §11 lists `nav.rs`, `trail.rs` and `press.rs` for deletion. Only `trail.rs` is gone; `nav.rs`
-  (164 lines) and `press.rs` (619) are still here and still used.
-- §11 says `present.rs` REPLACES `idle.rs`. Both exist (in `rust-modules/machine/src/`, since the
-  machine split) — `idle.rs` at 1127 lines against `present.rs`'s 242 — so the gate has two homes
-  and `idle.rs` is still the larger one.
+- The ownership migration removes `nav.rs`, `trail.rs`, root `press.rs` and `machine/src/idle.rs`.
+  The press machine lives in `ui/src/dispatch/press.rs`; consumers take explicit readouts.
+- `machine/src/present.rs` owns admission and actual-swap accounting; `motion/report.rs`
+  contains scoped frame motion only; the global damage adapter is removed. Runtime and device acceptance must be
+  reported separately from these source-level ownership guarantees.
 - §0's done-criterion 9 (`doc_claim_auditor` clean against §11's prose list) is not met.
 
 Modules with no product caller yet carry `#![allow(dead_code)]` with a one-line reason; that is
@@ -759,14 +763,15 @@ of stacked shelves hands each one the lift of the next shelf's heading (`Section
 Live and target geometry include these bands, so painting, paging, scrolling and restored
 viewports agree. Episode rows use landscape stills; the Continue Watching row's is `RowStyle::STILL`
 (the episode cell at `theme::STILL_RADIUS`; the focused still only pops, and every other tile stands at its
-rest x at any pop progress: the 1.09 pop grows a tile ~19 px a side inside the 28 px gap), with no caption band under it (`captions::NOTHING_UNDER_STILLS`, Home's and Recommended's landscape deck alike). A tile's focus pop
+rest x at any pop progress: the 1.09 pop grows a tile ~19 px a side inside the 40 px gap, `theme::STILL_GAP`, pitch 460; the Detail strip's `EPISODE` style keeps 28), with no caption band under it (`captions::NOTHING_UNDER_STILLS`, Home's and Recommended's landscape deck alike). A tile's focus pop
 reaches a mark that must ride it as `cards::Tile::pop` (0..1, the pop spring read as progress), never
 as a timer of the mark's own. The deck card's artwork (Plex's cover, then the baked composite, then the
 title in type) is `card_art::pick` over `tile_facts::for_deck`; the composite is a bitmap baked once by
 the poster worker (`card_art::compose`), never a live logo. The footer's one-line fit rule is
 `still_footer::footer_geometry`, the one place its widths are decided (a started episode: `S2 E4 · 38m left` and a bar; an unstarted one: `S2 E1 · New episode` and no bar, the tag kept while the whole text fits). The stills row's heading stands `RowStyle::heading_rise` (`theme::STILL_HEADING_RISE`) above a poster shelf's, joined with the focus lift by `card_row::heading_lift_of`, which `Shelf::heading_lift()` reports to Home and Recommended alike. `Art::Still` supplies the label ground;
 `widgets::still_overlay` draws its labels afterward (a `StillFooter::Shelf` still also its full-bleed resume bar; a
-`StillFooter::Continue` still its one footer line, bar included). Both the artwork and
+`StillFooter::Continue` still its one footer line, bar included: on the deck that line stands BELOW the art with no scrim,
+`still_footer::Place::Below`, 8 px under the tile; the Detail strip's stays in the art, `Place::InArt`). Both the artwork and
 its ground participate in backdrop discovery, including texture changes and UV cropping.
 
 - **No card draws an amber ▶.** Nobody read it as "playback starts", and what OK does is now said by the
@@ -780,7 +785,8 @@ its ground participate in backdrop discovery, including texture changes and UV c
 - An **amber resume BAR** means **how far in you already are**. It is a fact about the item, not a
   promise about the press, so it is drawn wherever there is progress to report, including on a
   shelf that navigates. Hiding it there would hide something true. On a Continue Watching still
-  and a strip card it is the footer's own 4 px bar on the right (100 px, shrinking to 64);
+  it is the footer's own 6 px bar (radius 3) on the right, under the art, and on a strip card a 4 px bar inside it (each
+  100 px, shrinking to 64);
   `resume_bar` (the full-bleed band) is for posters and `StillFooter::Shelf` stills.
 - A **`✓`** means **finished** — likewise a state, not a promise.
 
@@ -916,18 +922,14 @@ Note the asymmetry, because it tells you where to put a new test: `card_row.rs` 
 `CardRow`, so its tests are ordinary and parallel; an owned screen's tests hold no focus of their
 own (the `FocusEngine` does). Tests that seed the shared registry or the remaining global stores
 take `testlock::serial()`; tests using separate production BrowseStore owners isolate their state
-and landings. **`xfade.rs` is
-the cautionary case**: its tests were ordinary and parallel until `tick` started reporting to
-`plx_machine::idle`'s process-global flag, at which point driving a fader began mutating state *another
-module's* assertions read. They all take `testlock::serial()` now. Anything you make report to the
-frame gate inherits that obligation — and the lock is ENFORCED rather than merely documented since
-2026-09-10: it records the holding thread, and the shared stores (plus the app frame trunk, which
-pumps all of them) call `testlock::assert_held`, so an unguarded write panics in the test that made
-it rather than in whichever bystander it happened to land on.
+and landings. Present damage is owner-local, and motion reports are frame-local to the driving
+thread. Tests touching the documented worker wake or shared caches still take the serial lock.
+The lock records the holding thread; shared stores and the app frame trunk call
+`testlock::assert_held`, so an unguarded shared write fails at its source.
 
 **If you add anything that ANIMATES, it owes two tests**, because the failure modes are opposite and
 each is invisible to the other's gate. Host: it reports while running **and** goes quiet at rest —
-`machine/src/idle.rs`'s and `ui/xfade.rs`'s test modules are the pattern, including a settled-tree case that
+`machine/src/idle_regression_tests.rs` and `ui/xfade.rs`'s test modules are the pattern, including a settled-tree case that
 steps 439 springs and asserts *nothing* is requested. Device: an `fps_floor` scene proving it
 still animates under the gate, and (if its screen settles) an `fps_ceiling` proving it stops. An
 over-reporting animator costs the entire ~38-points-of-a-core saving while every `floor` in the

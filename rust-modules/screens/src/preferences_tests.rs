@@ -6,9 +6,83 @@ use plx_machine::machine::{FocusRead, InputOwner, PressRead, Stamped, Tick};
 use plx_machine::present::Present;
 use plx_ui::fixture::FixtureMeasure;
 
-pub fn context(focus: u32) -> Cx<'static, InnerHost> {
+#[test]
+fn census_f1_page_and_picker_use_independent_retained_values() {
+    use plx_plex::plex::session::ProfilePrefs;
+    let _serial = plx_base::testlock::serial();
+    let a = crate::registry::ScreenInputs { preferences: Some(ProfilePrefs {
+        deck_press: Some(DeckPress::Play), skip_interval: Some(SkipInterval::Seconds60),
+        direct_play_mode: Some(DirectPlayMode::Disabled), subtitle_size: Some(SubtitleSize::Large),
+        subtitle_position: Some(SubtitlePosition::High), subtitle_tone: Some(SubtitleTone::Yellow),
+        hdr_overlay_brightness: Some(HdrOverlayBrightness::Half), next_episode_mode: Some(NextEpisodeMode::Off),
+        uri_engine: Some(UriEngine::On), dolby_vision_mode: Some(DolbyVisionMode::Off),
+        instant_dpad_seeking: Some(InstantDpadSeeking::On), ..Default::default()
+    }), ..Default::default() };
+    let b = crate::registry::ScreenInputs { preferences: Some(ProfilePrefs {
+        deck_press: Some(DeckPress::Details), skip_interval: Some(SkipInterval::Seconds5),
+        direct_play_mode: Some(DirectPlayMode::Auto), ..Default::default()
+    }), ..Default::default() };
+    let page_a = PreferencesPage::new(EntryId(0), Kind::Playback, &a);
+    let page_b = PreferencesPage::new(EntryId(1), Kind::Playback, &b);
+    assert_eq!(page_a.deck_press, DeckPress::Play);
+    assert_eq!(page_a.look, (SubtitleSize::Large, SubtitlePosition::High, SubtitleTone::Yellow, HdrOverlayBrightness::Half));
+    assert_eq!(page_a.state.direct_play, DirectPlayMode::Disabled);
+    assert_eq!(page_a.next_episode, NextEpisodeMode::Off);
+    assert_eq!(page_a.uri_engine, UriEngine::On);
+    assert_eq!(page_a.dolby_vision, DolbyVisionMode::Off);
+    assert_eq!(page_a.instant_dpad_seeking, InstantDpadSeeking::On);
+    for (field, want) in [
+        (PickerKind::SubtitleSize, Value::SubtitleSize(SubtitleSize::Large)),
+        (PickerKind::SubtitlePosition, Value::SubtitlePosition(SubtitlePosition::High)),
+        (PickerKind::SubtitleColor, Value::SubtitleTone(SubtitleTone::Yellow)),
+        (PickerKind::HdrOverlay, Value::HdrOverlay(HdrOverlayBrightness::Half)),
+        (PickerKind::NextEpisode, Value::NextEpisode(NextEpisodeMode::Off)),
+        (PickerKind::UriEngine, Value::UriEngine(UriEngine::On)),
+        (PickerKind::DolbyVision, Value::DolbyVision(DolbyVisionMode::Off)),
+    ] { assert_eq!(resolve_value(field, page_a.state.quality, page_a.state.direct_play, None, &a), want); }
+    assert_eq!(page_b.deck_press, DeckPress::Details);
+    assert_eq!(page_a.skip_interval, SkipInterval::Seconds60);
+    assert_eq!(page_b.skip_interval, SkipInterval::Seconds5);
+    let picker_a = PickerPage::new(EntryId(2), PickerKind::DeckPress, &a);
+    let picker_b = PickerPage::new(EntryId(3), PickerKind::DeckPress, &b);
+    assert_ne!(Screen::<InnerHost>::state(&picker_a).hash(), Screen::<InnerHost>::state(&picker_b).hash());
+}
+
+#[test]
+fn census_f1_profile_fallback_and_live_publication_update_rows_without_storage() {
+    use plx_plex::plex::session::{self, CurrentProfile, UserRef};
+    let _serial = plx_base::testlock::serial();
+    let mut saved = session::Session::default();
+    assert!(session::put_own::<DeckPressPref>(&mut saved.prefs.profile_prefs, "a", "account", DeckPress::Play));
+    assert!(session::put_own::<SkipIntervalPref>(&mut saved.prefs.profile_prefs, "a", "account", SkipInterval::Seconds60));
+    assert!(session::put_own::<SkipIntervalPref>(&mut saved.prefs.profile_prefs, "b", "account", SkipInterval::Seconds5));
+    let saved = std::sync::Arc::new(saved);
+    let make = |uuid: &str| crate::registry::ScreenInputs { session: saved.clone(), profile: std::sync::Arc::new(CurrentProfile {
+        user: Some(UserRef { uuid: uuid.into(), ..Default::default() }), stamp: "account".into(), generation: 1,
+    }), ..Default::default() };
+    let a = make("a");
+    let b = make("b");
+    let mut page = PreferencesPage::new(EntryId(0), Kind::Playback, &a);
+    let other = PreferencesPage::new(EntryId(1), Kind::Playback, &b);
+    assert_eq!(page.skip_interval, SkipInterval::Seconds60);
+    assert_eq!(other.skip_interval, SkipInterval::Seconds5);
+    let mut changed = a.clone();
+    changed.preferences = Some(session::ProfilePrefs { skip_interval: Some(SkipInterval::Seconds15), deck_press: Some(DeckPress::Details), ..Default::default() });
+    let mut cx = context(0);
+    cx.views.inputs = &changed;
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    page.step(&tick(), &cx, &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
+    assert_eq!(page.skip_interval, SkipInterval::Seconds15);
+    assert_eq!(page.deck_press, DeckPress::Details);
+    assert!(std::sync::Arc::ptr_eq(&page.inputs.session, &saved));
+    assert_eq!(other.skip_interval, SkipInterval::Seconds5);
+    assert_eq!(session::stored_effective::<SkipIntervalPref>(&saved, &a.profile.seat()), SkipInterval::Seconds60);
+}
+
+pub fn context<'a>(focus: u32) -> Cx<'a, InnerHost> {
     static MEASURE: FixtureMeasure = FixtureMeasure;
-    Cx { views: plx_data::stores::browse::DirectoryView::empty_for_test().into(), tick: Tick::default(),
+    Cx { views: crate::registry::InnerViews::new(plx_data::stores::browse::DirectoryView::empty_for_test(), crate::registry::publication_fixture()), tick: Tick::default(),
         measure: &MEASURE, press: PressRead::default(),
         focus: FocusRead { current: Some(FocusKey { entry: EntryId(0), elem: focus }), ..Default::default() },
         owner: InputOwner::Entry(EntryId(0)) }
@@ -19,6 +93,18 @@ pub fn drive<M: Machine<InnerHost, Ev = ScreenEvent<InnerHost>>>(page: &mut M, e
     page.step(&ev, &context(focus), &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
     out
 }
+/// Explicit optimistic publication from this fixture host, never an ambient preference fallback.
+pub fn drive_preferences<M: Machine<InnerHost, Ev = ScreenEvent<InnerHost>>>(page: &mut M, ev: ScreenEvent<InnerHost>, focus: u32, preferences: plx_plex::plex::session::ProfilePrefs) -> Vec<Stamped<InnerHost>> {
+    let mut inputs = crate::registry::capture_fixture();
+    inputs.preferences = Some(preferences);
+    let mut cx = context(focus);
+    cx.views.inputs = &inputs;
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    page.step(&ev, &cx, &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
+    out
+}
+
 pub fn tick() -> ScreenEvent<InnerHost> { ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_000 }) }
 pub fn preference_commands(emitted: &[Stamped<InnerHost>]) -> usize {
     emitted.iter().filter(|e| matches!(&e.fx, Fx::App(AppFx::Preferences(_)))).count()
@@ -64,7 +150,7 @@ impl Drop for Account {
 }
 /// An Audio & Subtitles field list that has loaded `account`'s snapshot (and published it).
 pub fn loaded_audio_page(account: &Account) -> PreferencesPage {
-    let mut page = PreferencesPage::new(EntryId(0), Kind::AudioSubtitles);
+    let mut page = PreferencesPage::new(EntryId(0), Kind::AudioSubtitles, &crate::registry::capture_fixture());
     page.txn.request = Some(account.request.clone());
     page.txn.snapshot = Some(account.snapshot.clone());
     page.txn.publish();
@@ -75,7 +161,7 @@ pub fn loaded_audio_page(account: &Account) -> PreferencesPage {
 #[test]
 fn account_constructor_is_inert_and_first_enter_emits_one_load_effect() {
     let _serial = plx_base::testlock::serial();
-    let mut page = PreferencesPage::new(EntryId(0), Kind::AudioSubtitles);
+    let mut page = PreferencesPage::new(EntryId(0), Kind::AudioSubtitles, &crate::registry::capture_fixture());
     assert!(page.txn.pending.is_none());
     assert!(page.txn.request.is_none());
     assert!(page.state.io.status.is_empty());
@@ -106,11 +192,11 @@ fn every_field_row_pushes_its_picker_and_nothing_else() {
     let account = Account::new("pref-field-rows", 11, AudioPreferences::default());
     // The Playback rows open only for a seated profile (an unseated page lists them read-only).
     seat_named(&session, "pref-field-rows", "Maya");
-    let mut playback = PreferencesPage::new(EntryId(0), Kind::Playback);
+    let mut playback = PreferencesPage::new(EntryId(0), Kind::Playback, &crate::registry::capture_fixture());
     let mut audio = loaded_audio_page(&account);
     for (page, fields) in [
         (&mut playback, vec![PickerKind::Quality, PickerKind::DirectPlay, PickerKind::HdrOverlay, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision, PickerKind::UriEngine]),
-        (&mut audio, vec![PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles, PickerKind::SubtitleSize, PickerKind::SubtitlePosition]),
+        (&mut audio, vec![PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor]),
     ] {
         for field in fields {
             let key = RowId::Field(field).key().0;
@@ -131,7 +217,7 @@ fn the_field_list_shows_the_value_a_picker_committed_after_the_pop() {
     let mut parent = loaded_audio_page(&account);
     let mode_row = parent.form.index_of(&RowId::Field(PickerKind::SubtitleMode)).unwrap();
     assert_eq!(parent.state.values[mode_row], plx_platform::i18n::msg::settings_audio_manual());
-    let mut picker = PickerPage::new(EntryId(0), PickerKind::SubtitleMode);
+    let mut picker = PickerPage::new(EntryId(0), PickerKind::SubtitleMode, &crate::registry::capture_fixture());
     let emitted = drive(&mut picker, ScreenEvent::Activate(2), 2);
     let Some(Fx::App(AppFx::Preferences(PreferenceCmd::Save { reply, .. }))) = emitted.into_iter().map(|e| e.fx).find(|f| matches!(f, Fx::App(AppFx::Preferences(_)))) else {
         panic!("choosing Always must save");
@@ -151,10 +237,10 @@ fn the_field_list_rereads_a_local_value_a_picker_committed() {
     let _session = plx_plex::plex::session::TempSession::new("pref-parent-local");
     let previous = plx_media::route::quality();
     plx_media::route::restore_quality(Quality::Original);
-    let mut parent = PreferencesPage::new(EntryId(0), Kind::Playback);
+    let mut parent = PreferencesPage::new(EntryId(0), Kind::Playback, &crate::registry::capture_fixture());
     let before = parent.state.values[0].clone();
     plx_media::route::restore_quality(Quality::P480);
-    drive(&mut parent, tick(), 0);
+    drive_preferences(&mut parent, tick(), 0, plx_plex::plex::session::ProfilePrefs { playback_quality: Some(Quality::P480), ..Default::default() });
     assert_ne!(parent.state.values[0], before);
     assert_eq!(parent.state.values[0], Quality::P480.label());
     plx_media::route::restore_quality(previous);
@@ -177,11 +263,31 @@ fn the_field_list_rereads_a_subtitle_look_picked_elsewhere() {
 
     plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Large);
     plx_media::route::restore_subtitle_position(plx_media::route::SubtitlePosition::High);
-    drive(&mut parent, tick(), 0);
+    drive_preferences(&mut parent, tick(), 0, plx_plex::plex::session::ProfilePrefs { subtitle_size: Some(SubtitleSize::Large), subtitle_position: Some(SubtitlePosition::High), ..Default::default() });
     assert_eq!(parent.state.values[size_row], plx_platform::i18n::msg::settings_playback_subtitle_size_large());
     assert_eq!(parent.state.values[position_row], plx_platform::i18n::msg::settings_playback_subtitle_position_high());
     plx_media::route::restore_subtitle_size(size);
     plx_media::route::restore_subtitle_position(position);
+}
+
+/// **The Subtitle color row** sits in the Look group beside Size and Position, reads out the live
+/// pick (white by default) and notices a pick made in the player's Color section, which is the
+/// same preference.
+#[test]
+fn the_audio_page_has_a_subtitle_color_row_that_follows_the_live_pick() {
+    let _serial = plx_base::testlock::serial();
+    let _session = plx_plex::plex::session::TempSession::new("pref-parent-color");
+    let tone = plx_media::player::subtitle_tone();
+    plx_media::player::restore_subtitle_tone(plx_plex::plex::session::SubtitleTone::White);
+    let account = Account::new("pref-parent-color", 15, AudioPreferences::default());
+    let mut parent = loaded_audio_page(&account);
+    let row = parent.form.index_of(&RowId::Field(PickerKind::SubtitleColor)).expect("a Subtitle color row");
+    assert_eq!(row, parent.form.index_of(&RowId::Field(PickerKind::SubtitlePosition)).unwrap() + 1, "right under Position");
+    assert_eq!(parent.state.values[row], plx_platform::i18n::msg::widgets_tracks_tone_white());
+    plx_media::player::restore_subtitle_tone(plx_plex::plex::session::SubtitleTone::Yellow);
+    drive_preferences(&mut parent, tick(), 0, plx_plex::plex::session::ProfilePrefs { subtitle_tone: Some(SubtitleTone::Yellow), ..Default::default() });
+    assert_eq!(parent.state.values[row], plx_platform::i18n::msg::widgets_tracks_tone_yellow());
+    plx_media::player::restore_subtitle_tone(tone);
 }
 
 /// Every field belongs to exactly the page whose list shows it: the Audio & subtitles page lists
@@ -193,15 +299,15 @@ fn the_field_list_rereads_a_subtitle_look_picked_elsewhere() {
 fn every_field_reports_the_page_whose_list_shows_it() {
     let prefs = AudioPreferences::default();
     for kind in [Kind::Playback, Kind::AudioSubtitles] {
-        let inputs = FieldListInputs { kind, quality: Quality::Original, direct_play: DirectPlayMode::Auto,
+        let inputs = FieldListInputs { local: crate::registry::empty_fixture(), kind, quality: Quality::Original, direct_play: DirectPlayMode::Auto,
             prefs: Some(&prefs), busy: false, show_retry: false, marker_prefs: Default::default(), read_only: false };
         for field in fields_of(&inputs) {
             assert_eq!(field.kind(), Some(kind), "{field:?} is listed by {kind:?}");
         }
     }
-    let audio = FieldListInputs { kind: Kind::AudioSubtitles, quality: Quality::Original, direct_play: DirectPlayMode::Auto,
+    let audio = FieldListInputs { local: crate::registry::empty_fixture(), kind: Kind::AudioSubtitles, quality: Quality::Original, direct_play: DirectPlayMode::Auto,
         prefs: Some(&prefs), busy: false, show_retry: false, marker_prefs: Default::default(), read_only: false };
-    assert_eq!(fields_of(&audio), &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles, PickerKind::SubtitleSize, PickerKind::SubtitlePosition]);
+    assert_eq!(fields_of(&audio), &[PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor]);
 }
 
 /// The Continue Watching row: shipped default is Open details, the picker lists the two options
@@ -216,15 +322,15 @@ fn the_continue_watching_row_defaults_to_open_details_and_its_picker_saves_the_p
     assert_eq!(plx_media::route::deck_press(), DeckPress::Details);
 
     let prefs = AudioPreferences::default();
-    let readout = field_readout(PickerKind::DeckPress, Quality::Original, DirectPlayMode::Auto, Some(&prefs));
+    let readout = field_readout(PickerKind::DeckPress, Quality::Original, DirectPlayMode::Auto, Some(&prefs), crate::registry::empty_fixture());
     let options = field_options(PickerKind::DeckPress, Quality::Original, DirectPlayMode::Auto, Some(&prefs));
-    let current = resolve_value(PickerKind::DeckPress, Quality::Original, DirectPlayMode::Auto, Some(&prefs));
+    let current = resolve_value(PickerKind::DeckPress, Quality::Original, DirectPlayMode::Auto, Some(&prefs), crate::registry::empty_fixture());
     assert_eq!(readout, "Open details");
     assert_eq!(current, Value::DeckPress(DeckPress::Details));
     assert_eq!(options, [("Open details".to_string(), Value::DeckPress(DeckPress::Details)),
         ("Play".to_string(), Value::DeckPress(DeckPress::Play))]);
 
-    let mut picker = PickerPage::new(EntryId(0), PickerKind::DeckPress);
+    let mut picker = PickerPage::new(EntryId(0), PickerKind::DeckPress, &crate::registry::capture_fixture());
     let emitted = drive(&mut picker, ScreenEvent::Activate(1), 1);
     plx_media::route::restore_deck_press(prior);
     let saved = emitted.into_iter().find_map(|e| match e.fx {
@@ -247,9 +353,9 @@ fn the_playback_engine_row_defaults_to_standard_and_its_picker_saves_the_opt_in(
     plx_media::route::restore_uri_engine(UriEngine::Off);
 
     let prefs = AudioPreferences::default();
-    let readout = field_readout(PickerKind::UriEngine, Quality::Original, DirectPlayMode::Auto, Some(&prefs));
+    let readout = field_readout(PickerKind::UriEngine, Quality::Original, DirectPlayMode::Auto, Some(&prefs), crate::registry::empty_fixture());
     let options = field_options(PickerKind::UriEngine, Quality::Original, DirectPlayMode::Auto, Some(&prefs));
-    let current = resolve_value(PickerKind::UriEngine, Quality::Original, DirectPlayMode::Auto, Some(&prefs));
+    let current = resolve_value(PickerKind::UriEngine, Quality::Original, DirectPlayMode::Auto, Some(&prefs), crate::registry::empty_fixture());
     assert_eq!(readout, "Standard");
     assert_eq!(current, Value::UriEngine(UriEngine::Off));
     assert_eq!(options, [("Standard".to_string(), Value::UriEngine(UriEngine::Off)),
@@ -257,7 +363,7 @@ fn the_playback_engine_row_defaults_to_standard_and_its_picker_saves_the_opt_in(
     assert_eq!(PickerKind::UriEngine.title(), "Playback engine");
     assert_eq!(PickerKind::UriEngine.parent(), SettingsPage::Playback);
 
-    let mut picker = PickerPage::new(EntryId(0), PickerKind::UriEngine);
+    let mut picker = PickerPage::new(EntryId(0), PickerKind::UriEngine, &crate::registry::capture_fixture());
     let emitted = drive(&mut picker, ScreenEvent::Activate(1), 1);
     plx_media::route::restore_uri_engine(prior);
     let saved = emitted.into_iter().find_map(|e| match e.fx {
@@ -267,7 +373,8 @@ fn the_playback_engine_row_defaults_to_standard_and_its_picker_saves_the_opt_in(
     assert_eq!(saved, Some(UriEngine::On));
     // Opting in is visible on the row the picker returns to.
     plx_media::route::restore_uri_engine(UriEngine::On);
-    assert_eq!(field_readout(PickerKind::UriEngine, Quality::Original, DirectPlayMode::Auto, Some(&prefs)), "Experimental");
+    let inputs = crate::registry::ScreenInputs { preferences: Some(plx_plex::plex::session::ProfilePrefs { uri_engine: Some(UriEngine::On), ..Default::default() }), ..Default::default() };
+    assert_eq!(field_readout(PickerKind::UriEngine, Quality::Original, DirectPlayMode::Auto, Some(&prefs), &inputs), "Experimental");
     plx_media::route::restore_uri_engine(prior);
 }
 
@@ -299,7 +406,7 @@ fn right_at_edge() -> ScreenEvent<InnerHost> {
 fn playback_rows_are_read_only_while_no_profile_is_seated() {
     let _serial = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("pref-read-only-unseated");
-    let mut page = PreferencesPage::new(EntryId(0), Kind::Playback);
+    let mut page = PreferencesPage::new(EntryId(0), Kind::Playback, &crate::registry::capture_fixture());
     assert_eq!(page.copy, plx_platform::i18n::msg::settings_playback_unseated(), "the page says to choose a profile");
     for field in [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::HdrOverlay,
         PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking, PickerKind::DolbyVision, PickerKind::UriEngine] {
@@ -318,7 +425,7 @@ fn playback_rows_are_read_only_while_no_profile_is_seated() {
         assert!(!disabled_rows(&audio)[row], "{field:?}: the account fields are not read-only");
     }
     // …but the Look rows are this app's own per-profile picks, read-only like the Playback rows.
-    for field in [PickerKind::SubtitleSize, PickerKind::SubtitlePosition] {
+    for field in [PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor] {
         let key = RowId::Field(field).key().0;
         let row = audio.form.index_of(&RowId::Field(field)).expect("the Look row is still listed");
         assert!(disabled_rows(&audio)[row], "{field:?}: dimmed");
@@ -335,7 +442,7 @@ fn playback_rows_are_read_only_while_no_profile_is_seated() {
 fn the_player_hud_row_is_read_only_while_no_profile_is_seated() {
     let _serial = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("pref-hud-row-unseated");
-    let mut page = PreferencesPage::new(EntryId(0), Kind::Playback);
+    let mut page = PreferencesPage::new(EntryId(0), Kind::Playback, &crate::registry::capture_fixture());
     let key = RowId::PlayerHud.key().0;
     let row = page.form.index_of(&RowId::PlayerHud).expect("the Player HUD row is listed while unseated");
     assert!(disabled_rows(&page)[row], "disabled");
@@ -358,7 +465,7 @@ fn the_player_hud_row_is_read_only_while_no_profile_is_seated() {
 fn the_playback_page_names_the_seated_profile_and_follows_the_seat() {
     let _serial = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("pref-names-the-profile");
-    let mut page = PreferencesPage::new(EntryId(0), Kind::Playback);
+    let mut page = PreferencesPage::new(EntryId(0), Kind::Playback, &crate::registry::capture_fixture());
     assert_eq!(page.copy, plx_platform::i18n::msg::settings_playback_unseated());
 
     seat_named(&session, "maya", "Maya");
@@ -383,7 +490,7 @@ fn the_playback_page_names_the_seated_profile_and_follows_the_seat() {
 #[test]
 fn automatic_marker_settings_use_separate_grants_and_captured_scope() {
     let _guard = plx_base::testlock::serial();
-    let mut inputs = FieldListInputs { kind: Kind::Playback, quality: Quality::Original,
+    let mut inputs = FieldListInputs { local: crate::registry::empty_fixture(), kind: Kind::Playback, quality: Quality::Original,
         direct_play: DirectPlayMode::Auto, prefs: None, busy: false, show_retry: false,
         read_only: false, marker_prefs: Default::default() };
     assert!(!fields_of(&inputs).contains(&PickerKind::IntroSkip));
@@ -402,7 +509,7 @@ fn automatic_marker_settings_use_separate_grants_and_captured_scope() {
 // ---- Settings v2 stage 2: the groups, the rows each page lists and the sentences they state -------
 
 fn inputs_of(kind: Kind, prefs: Option<&AudioPreferences>) -> FieldListInputs<'_> {
-    FieldListInputs { kind, quality: Quality::Original, direct_play: DirectPlayMode::Auto, prefs, busy: false,
+    FieldListInputs { local: crate::registry::empty_fixture(), kind, quality: Quality::Original, direct_play: DirectPlayMode::Auto, prefs, busy: false,
         show_retry: false, marker_prefs: Default::default(), read_only: false }
 }
 
@@ -441,7 +548,7 @@ fn video_and_playback_lists_video_player_and_up_next() {
     assert_eq!(groups.iter().map(|(h, _)| h.as_str()).collect::<Vec<_>>(),
         [msg::settings_playback_group_video(), msg::settings_playback_group_player(), msg::settings_playback_group_up_next()]);
     assert_eq!(groups[2].1, vec![PickerKind::NextEpisode, PickerKind::DeckPress], "Up next");
-    assert!(!fields_of(&all).contains(&PickerKind::SubtitleSize) && !fields_of(&all).contains(&PickerKind::SubtitlePosition),
+    assert!(!fields_of(&all).contains(&PickerKind::SubtitleSize) && !fields_of(&all).contains(&PickerKind::SubtitlePosition) && !fields_of(&all).contains(&PickerKind::SubtitleColor),
         "subtitle size and position are on Audio & subtitles");
     assert_eq!(["Video", "Player", "Up next"], [msg::settings_playback_group_video(), msg::settings_playback_group_player(), msg::settings_playback_group_up_next()]);
 }
@@ -478,13 +585,13 @@ fn audio_and_subtitles_lists_audio_subtitles_and_look_once_the_page_has_settled(
     let by_header = |h: &str| groups.iter().find(|(x, _)| x == h).map(|(_, f)| f.clone()).unwrap();
     assert_eq!(by_header(msg::settings_audio_group_audio()), vec![PickerKind::AudioLanguage]);
     assert_eq!(by_header(msg::settings_audio_group_subtitles()), vec![PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles]);
-    assert_eq!(by_header(msg::settings_audio_group_look()), vec![PickerKind::SubtitleSize, PickerKind::SubtitlePosition]);
+    assert_eq!(by_header(msg::settings_audio_group_look()), vec![PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor]);
     // loading: nothing listed, so the first landing seats the page's top row
     assert!(fields_of(&FieldListInputs { busy: true, show_retry: true, ..inputs_of(Kind::AudioSubtitles, None) }).is_empty());
     assert!(fields_of(&inputs_of(Kind::AudioSubtitles, None)).is_empty());
     // a failed load: Retry and the Look rows (they never needed the account)
     assert_eq!(fields_of(&FieldListInputs { show_retry: true, ..inputs_of(Kind::AudioSubtitles, None) }),
-        vec![PickerKind::SubtitleSize, PickerKind::SubtitlePosition]);
+        vec![PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor]);
 }
 
 /// The Retry button stands after the account groups and ahead of Look, and only for the account page.
@@ -508,10 +615,10 @@ fn default_quality_reads_overridden_while_direct_play_is_forced() {
     use plx_platform::i18n::msg;
     let _serial = plx_base::testlock::serial();
     let _en = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
-    assert_eq!(field_readout(PickerKind::Quality, Quality::Original, DirectPlayMode::Forced, None), msg::settings_playback_overridden_value());
-    assert_eq!(field_readout(PickerKind::Quality, Quality::Original, DirectPlayMode::Forced, None), "Overridden");
-    assert_eq!(field_readout(PickerKind::Quality, Quality::Original, DirectPlayMode::Auto, None), Quality::Original.label());
-    assert_ne!(field_readout(PickerKind::Quality, Quality::Original, DirectPlayMode::Auto, None), "Overridden");
+    assert_eq!(field_readout(PickerKind::Quality, Quality::Original, DirectPlayMode::Forced, None, crate::registry::empty_fixture()), msg::settings_playback_overridden_value());
+    assert_eq!(field_readout(PickerKind::Quality, Quality::Original, DirectPlayMode::Forced, None, crate::registry::empty_fixture()), "Overridden");
+    assert_eq!(field_readout(PickerKind::Quality, Quality::Original, DirectPlayMode::Auto, None, crate::registry::empty_fixture()), Quality::Original.label());
+    assert_ne!(field_readout(PickerKind::Quality, Quality::Original, DirectPlayMode::Auto, None, crate::registry::empty_fixture()), "Overridden");
 }
 
 /// **The sentence each field-list row states**: a Playback row and a Look row their own explanation,
@@ -530,7 +637,7 @@ fn every_field_list_row_states_its_own_sentence() {
         PickerKind::HdrOverlay, PickerKind::IntroSkip, PickerKind::CreditsSkip, PickerKind::NextEpisode, PickerKind::DeckPress] {
         assert_eq!(sentence(Kind::Playback, Some(&RowId::Field(field)), false, false, &seated), field.copy(), "{field:?}");
     }
-    for field in [PickerKind::SubtitleSize, PickerKind::SubtitlePosition] {
+    for field in [PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::SubtitleColor] {
         assert_eq!(sentence(Kind::AudioSubtitles, Some(&RowId::Field(field)), false, false, &seated), field.copy(), "{field:?}: the Look rows state their own");
         assert_eq!(sentence(Kind::AudioSubtitles, Some(&RowId::Field(field)), false, false, &Whose::Nobody), msg::settings_playback_unseated(),
             "{field:?}: nobody seated says a profile has to be chosen");
@@ -548,4 +655,24 @@ fn every_field_list_row_states_its_own_sentence() {
     assert_eq!(quality, format!("{} {}", msg::settings_playback_overridden(), PickerKind::Quality.copy()));
     assert_eq!(sentence(Kind::Playback, Some(&RowId::Field(PickerKind::DirectPlay)), false, true, &seated), PickerKind::DirectPlay.copy(),
         "Force changes only the Default quality row's meaning");
+}
+
+#[test]
+fn retained_profile_identity_does_not_follow_an_ambient_seat_change() {
+    let _serial = plx_base::testlock::serial();
+    let session = plx_plex::plex::session::TempSession::new("retained-profile-name");
+    seat_named(&session, "maya", "Maya");
+    let inputs = crate::registry::capture_fixture();
+    let mut page = PreferencesPage::new(EntryId(0), Kind::Playback, &inputs);
+    seat_named(&session, "noah", "Noah");
+    let mut cx = context(0);
+    cx.views.inputs = &inputs;
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    page.step(&tick(), &cx, &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
+    assert_eq!(page.copy, plx_platform::i18n::msg::settings_playback_copy_profile("Maya"));
+    let current = crate::registry::capture_fixture();
+    cx.views.inputs = &current;
+    page.step(&tick(), &cx, &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
+    assert_eq!(page.copy, plx_platform::i18n::msg::settings_playback_copy_profile("Noah"));
 }

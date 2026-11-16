@@ -64,7 +64,7 @@ GATES = {
         r"ci/test_no_host_staticlib\.py",
         r"ci/test_build_not_always_dirty\.py",
     ],
-    "check-cargo-unit-hostsim": [r"cargo \+\$\(RUST_TOOLCHAIN\) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --features hostsim"],
+    "check-cargo-unit-hostsim": [r"cargo \+\$\(RUST_TOOLCHAIN\) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_play_feed --features hostsim"],
 }
 
 

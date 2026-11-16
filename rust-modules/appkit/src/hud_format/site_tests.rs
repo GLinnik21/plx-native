@@ -118,13 +118,15 @@ fn names_in(rel: &str, suffix: &str) -> Vec<String> {
 
 #[test]
 fn the_published_schema_is_the_one_the_table_emits() {
-    golden("schema/hud/1.0.json", &schema_emit::emit_text(schema::CURRENT));
+    for version @ (major, minor) in schema::versions() {
+        golden(&format!("schema/hud/{major}.{minor}.json"), &schema_emit::emit_text(version));
+    }
     golden("schema/manifest/1.0.json", &format!("{:#}\n", schema_emit::emit_manifest(bundle::CURRENT)));
 }
 
 #[test]
 fn the_golden_check_fails_on_a_one_character_change_and_passes_on_the_file() {
-    let emitted = schema_emit::emit_text(schema::CURRENT);
+    let emitted = schema_emit::emit_text((1, 0));
     assert_eq!(first_difference("x", &emitted, &emitted), None);
     let committed = if blessing() {
         emitted.clone()
@@ -207,7 +209,7 @@ fn every_example_parses_with_no_finding_and_the_schemas_accept_it() {
         let decoded = bundle::read(&fixtures::bytes(name), None);
         assert!(decoded.package.is_some() && decoded.findings.is_empty(), "{name}: {:?}", decoded.findings);
         for file in fixtures::files(name).into_iter().filter(|file| matches!(file.path.as_str(), "manifest.json" | "hud.json")) {
-            let schema = if file.path == "manifest.json" { schema_emit::emit_manifest(bundle::CURRENT) } else { schema_emit::emit_current() };
+            let schema = if file.path == "manifest.json" { schema_emit::emit_manifest(bundle::CURRENT) } else { schema_emit::emit(decoded.package.as_ref().unwrap().manifest().hud_format) };
             let value: Value = std::str::from_utf8(&file.bytes).unwrap().parse().unwrap();
             assert!(schema_check(&schema, &value).is_empty(), "{name}/{}", file.path);
         }

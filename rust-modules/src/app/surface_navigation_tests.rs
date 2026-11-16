@@ -544,6 +544,31 @@ fn the_settings_surface_owns_input_and_walks_its_own_stack() {
     assert_eq!(d.nav.tabs.stack.depth(), 1, "the app's page never moved");
 }
 
+/// **The Player HUD page offers the finish-time switch only while the HUD that draws declares the lane**
+/// (v0.10.0-rc1: it was offered over a package that cannot draw it). A switch is on the page for a seated profile
+/// over the built-in HUD (HUD format 1.1, `playbar.end_time_width`), goes when a package without the lane is taken
+/// into use, and returns with one that has it; the page is told when the HUD changes, not only when it opens.
+#[test]
+fn the_finish_time_switch_follows_whether_the_hud_in_use_declares_the_lane() {
+    let mut world = World::new("hud-end-time-capability");
+    world.step(vec![]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    world.bridge.huds_watch(tx);
+    world.bridge.huds_profile_seated = true;
+    let latest = |rx: &std::sync::mpsc::Receiver<plx_screens::hud_settings::HudList>| rx.try_iter().last().map(|list| list.end_time.is_some());
+    let classic = plx_appkit::player_hud::loaded::classic_for_test();
+    assert!(classic.declares_end_time(), "the built-in declares the lane");
+    world.bridge.seed_player_compiled(classic.clone());
+    assert_eq!(latest(&rx), Some(true), "offered over the built-in");
+    world.bridge.seed_player_compiled(plx_appkit::player_hud::loaded::reference_for_test());
+    assert_eq!(latest(&rx), Some(false), "withdrawn over a package with no lane, the page told at once");
+    world.bridge.seed_player_compiled(classic);
+    assert_eq!(latest(&rx), Some(true), "and back");
+    world.bridge.huds_profile_seated = false;
+    world.bridge.huds_publish();
+    assert_eq!(latest(&rx), Some(false), "no profile, no switch");
+}
+
 /// The gate that kept the registry out of the stable install sat on the Bridge's `HudCmd::Open` arm
 /// (`ENV_STEERABLE || flavour().is_some()`), a second copy of the field PR14 deleted from the page, so the
 /// gallery showed in stable and never fetched `index.signed`. This suite builds with no flavour in its app
@@ -593,7 +618,7 @@ fn hud_preview_world(name: &str) -> World {
     assert_eq!(overlay_word(&world.d), Some("hud-detail"));
     world.press(Key::Ok);
     assert_eq!(world.bridge.huds_pages.len(), 2);
-    for (page, _) in &world.bridge.huds_pages { page.send(list.clone()).unwrap(); }
+    for (page, ..) in &world.bridge.huds_pages { page.send(list.clone()).unwrap(); }
     // Let the shared route spring settle: during a push both pages register drawn stops.
     world.settle(60);
     assert_eq!(overlay_word(&world.d), Some("hud-preview"));
@@ -795,7 +820,7 @@ fn the_card_menu_is_a_surface_over_the_page_the_hold_happened_on() {
         );
         assert_eq!(d.nav.top_page().map(|e| e.id), Some(host), "{word}: …and nothing else");
         // …and it reported nothing: a dismissal is not a commit.
-        assert!(rig.take_item_menu_reqs().is_empty(), "{word}");
+        assert!(rig.take_observed_item_menu_commands().is_empty(), "{word}");
     }
 }
 
@@ -884,8 +909,9 @@ fn page_damage_frames_across_a_taken_holds_spring(lift_owns_the_card: bool) -> (
     let mut t = 0u32;
     let run = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, t: &mut u32| {
         *t += 1;
+        let before = d.present.page_damage_epoch();
         frame(d, rig, AppArg::Home, tick(*t), vec![]);
-        let damage = plx_machine::idle::take_page_damage();
+        let damage = d.present.page_damage_epoch() != before;
         damage
     };
     run(&mut d, &mut rig, &mut t);
@@ -999,7 +1025,7 @@ fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
     assert_eq!(d.focus().map(|k| (k.entry, k.elem)), Some((menu, plx_screens::item_menu::ItemRow::PlayFromStart.focus_key())));
     press(&mut d, &mut rig, Key::Ok);
 
-    let reqs = rig.take_item_menu_reqs();
+    let reqs = rig.take_observed_item_menu_commands();
     assert_eq!(reqs.len(), 1, "one commit, one request");
     assert!(matches!(&reqs[0].act, plx_screens::item_menu::Action::PlayFromStart(rk) if rk == "42"));
     assert!(reqs[0].from_home, "…and the trail reset the HOME root earns (`menu_leave`)");
@@ -1009,12 +1035,10 @@ fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
         Some("/library/parts/42/file.mkv"),
         "the WHOLE row rides on the request — a key alone cannot start playback"
     );
-    assert_eq!(
-        d.nav.modals.surfaces.iter().find(|s| s.entry.id == menu).map(|s| s.phase),
-        Some(Phase::Closing),
-        "every commit dismisses, exactly as the legacy `on_ok` closed first"
-    );
-    assert_eq!(d.nav.top_page().map(|e| e.id), Some(host), "the page never moved");
+    assert_eq!(d.nav.instance_of(menu), None,
+        "the same-frame Play commit retires its already-dismissed menu");
+    assert!(d.nav.entry(host).is_some(), "the launch retains its originating page");
+    assert!(matches!(d.top_arg(), Some(AppArg::Player)), "the product runner performs the captured Play");
 }
 
 /// **The Settings row hands one surface to another without ever un-freezing the host** (§16.5).
@@ -1085,7 +1109,7 @@ fn account_to_settings_never_unfreezes_the_host() {
     let mut renders = vec![d.host_policy().1];
 
     // …and the loop's drain performs the request on the next frame.
-    let reqs = rig.take_reqs();
+    let reqs = rig.take_observed_loop_commands();
     assert_eq!(
         reqs,
         vec![LoopReq::OpenSettings(plx_screens::family::SettingsPage::Root)],
@@ -1417,10 +1441,10 @@ fn back_at_the_first_consent_stage_is_the_root_press_and_leaves_the_question_up(
     frame(&mut d, &mut rig, AppArg::Profiles, tick(1), vec![]);
     assert!(consent_up(&d));
     assert_eq!(overlay_word(&d), Some("consent"));
-    let _ = rig.take_reqs(); // the mount's own effects are not what this grades
+    let _ = rig.take_observed_loop_commands(); // the mount's own effects are not what this grades
     frame(&mut d, &mut rig, AppArg::Profiles, tick(2), script_key(Key::Back, tick(2)));
     assert_eq!(
-        rig.take_reqs(),
+        rig.take_observed_loop_commands(),
         vec![LoopReq::BackAtRoot],
         "the screen asks the loop for the root press rather than swallowing the key"
     );

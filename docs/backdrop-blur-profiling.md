@@ -392,9 +392,10 @@ rougher, because the Kawase tap offsets scale with the source while the bilinear
 
 ## Part 5 — the other 88.6%: what the MAIN UI submits, and why removing 37% of it bought 0.8%
 
-> **The instruments this part describes ARE in the tree now** — `plx_gfx::overdraw`,
-> `/tmp/plxnative-overdraw`, `/tmp/plxnative-drawmask` and `/tmp/plxnative-heroground`. They were
-> hand-transplanted from `blur/e4-overdraw` rather than merged: that branch's history was rewritten
+> **The instruments this part describes are in the tree** — `plx_gfx::overdraw`,
+> `/tmp/plxnative-overdraw` and `/tmp/plxnative-drawmask` — except the third, `/tmp/plxnative-heroground`,
+> which was deleted with the one-pass ground it armed (2026-11; see the RETIRED note under "The
+> experiment" below). They were hand-transplanted from `blur/e4-overdraw` rather than merged: that branch's history was rewritten
 > with `filter-branch`, so it shares no ancestry with the baseline commits here, and a direct merge
 > conflicts in fifteen files while sitting ~24,000 lines behind — resolving it in the branch's
 > favour would delete the deliberately-kept nav-glass code among much else. Only the ledger, the
@@ -605,7 +606,15 @@ submits**. The card composites everyone assumes are the expensive part are 5%.
 
 ### The experiment: fold the hero's whole ground into one pass
 
-`/tmp/plxnative-heroground` (`ui::widgets::hero_ground` + `shaders/fs_hero.frag`) draws the
+> **RETIRED (2026-11).** Neither hero draws the wedge and ramp this experiment folded any more: both
+> use a continuous edge shade, which the heroes' one-pass ground
+> (`AmbientWash::draw_ground`) carries per vertex. The experiment's code is deleted
+> (`ui::widgets::hero_ground`, `Painter::hero_ground`, `gfx::draw_hero_ground`, `shaders/fs_hero.frag`
+> and the `/tmp/plxnative-heroground` trigger), and so is the wedge it folded (`hero_scrim_a`); the
+> four-quad A/B no longer exists. The account below is the 2026-10 measurement of the old pair of
+> fields, kept as the record of it, and its names are the names of what ran then.
+
+`/tmp/plxnative-heroground` (`ui::widgets::hero_ground` + `shaders/fs_hero.frag`) drew the
 photograph and BOTH scrim fields in **one** quad instead of the art plus four blended gradient
 quads over it. Both fields are closed forms of the authored pixel position — `home::base_scrim_a`
 and `hero_scrim_a` feathered over `[HERO_SCRIM_TOP, HERO_SCRIM_KNEE]` — and both are
@@ -684,7 +693,7 @@ remove ARITHMETIC, not fragments.
 4. **`plx_gfx::overdraw` is worth keeping** whichever way the fold goes. It is compiled out of a release
    build entirely, it runs in the simulator, and it is the only instrument here that can attribute a
    fragment to a draw class — the counters cannot, because they are GPU-global.
-5. The fold itself is **worth having in the tree behind its flag and not worth switching on**: 0.81%
+5. The fold itself (retired since, see the note on the experiment) was **worth having in the tree behind its flag and not worth switching on**: 0.81%
    does not pay for a GLSL copy of two design curves that `theme.rs` and two screens own, and every
    future retune of either curve would have to be made in both places. It becomes interesting the
    day the surface is not 1080p — at 4K the fragment and load/store work scale by four while the

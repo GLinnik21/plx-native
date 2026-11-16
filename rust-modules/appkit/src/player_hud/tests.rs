@@ -39,6 +39,14 @@ fn chapter_panel_retains_selection_without_borrowing_hud_focus() {
 }
 
 use super::*;
+
+// Explicit fixture IO adapter; product helpers receive the already captured caption.
+fn busy_surface(ps: &plx_media::route::PlaybackSession, st: S, seen: bool) -> Busy {
+    super::busy_surface(plx_media::player::error_caption(ps), st, seen)
+}
+fn busy_surface_with(ps: &plx_media::route::PlaybackSession, st: S, seen: bool, audio: bool) -> Busy {
+    super::busy_surface_with(plx_media::player::error_caption(ps), st, seen, audio)
+}
 use plx_ui::widgets::{StatusKind, StatusOverlay};
 use super::classic::*;
 use super::geometry::*;
@@ -85,33 +93,36 @@ fn long_hud_titles_fit_before_every_control_slot() {
         let compiled = super::loaded::load_classic("test", plx_platform::i18n::current(), measure).compiled;
         let slots = [
             ControlSlot::Discs(Controls::NONE),
-            ControlSlot::Discs(Controls { previous: true, next: true, restart: true }),
+            ControlSlot::Discs(Controls { previous: true, next: true }),
             slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown),
             slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
         ];
         for slot in slots {
             let right = compiled_title_right(&compiled, slot);
             let items = geometry(&compiled, 0, slot, true, false).items;
+            // What a title draws depends on the cell's right edge and the title, never on which
+            // control holds the focus or how far its pop has run (an unpaused title reads no clock):
+            // drawn once per slot and kicker, not again for every focused control and pop frame.
+            for kicker in [Kicker::Episode(long.as_ptr()), Kicker::Context(long.as_ptr())] {
+                let runs = plx_ui::draw_census::capture_runs(|| {
+                    draw_player_title(Painter::recording(), kicker, long.as_ptr(),
+                        right, measure, false, &clock);
+                });
+                assert_eq!(runs.len(), 2);
+                for run in runs {
+                    assert!(run.text.ends_with('…'), "{}: expected ellipsis: {run:?}", language.tag());
+                    assert_eq!(run.at.x, SB_X);
+                    assert!(measure.width_str(&run.text, run.size, run.bold) <= right - SB_X + 1.0,
+                        "{}: fitted title exceeds the control boundary: {run:?}", language.tag());
+                }
+            }
             let mut row = HudMotion::new();
             for focused in 0..slot.items() {
                 for _ in 0..30 {
                     row.pop.step(Some(focused as usize), 1.0 / 60.0);
                     for i in 0..slot.items() {
                         let Some(rect) = items[i as usize] else { continue };
-                        assert!(right + theme::space::MD <= rect.scaled(row.scale(i)).x + 0.001);
-                    }
-                    for kicker in [Kicker::Episode(long.as_ptr()), Kicker::Context(long.as_ptr())] {
-                        let runs = plx_ui::draw_census::capture_runs(|| {
-                            draw_player_title(Painter::recording(), kicker, long.as_ptr(),
-                                right, measure, false, &clock);
-                        });
-                        assert_eq!(runs.len(), 2);
-                        for run in runs {
-                            assert!(run.text.ends_with('…'), "{}: expected ellipsis: {run:?}", language.tag());
-                            assert_eq!(run.at.x, SB_X);
-                            assert!(measure.width_str(&run.text, run.size, run.bold) <= right - SB_X + 1.0,
-                                "{}: fitted title exceeds the control boundary: {run:?}", language.tag());
-                        }
+                        assert!(right + theme::space::MD <= rect.scaled(row.scale(i, Default::default())).x + 0.001);
                     }
                 }
             }
@@ -147,10 +158,10 @@ fn paused_title_reveals_once_and_resume_restores_ellipsis() {
     });
     let start = paint(true);
     assert!(start[1].text.ends_with('…'));
-    plx_machine::idle::frame_begin(2.0);
+    plx_machine::motion::report::frame_begin(2.0);
     let moving = paint(true);
     assert!(moving[1].at.x < SB_X);
-    plx_machine::idle::frame_begin(30.0);
+    plx_machine::motion::report::frame_begin(30.0);
     let ended = paint(true);
     assert_eq!(ended[1].at.x, SB_X - (FM.width(long, HUD_TITLE_SZ, true) - (right - SB_X)));
     assert_eq!(paint(true)[1].at.x, ended[1].at.x, "the title must stay at the end");
@@ -173,12 +184,12 @@ fn a_paused_right_to_left_title_reveals_its_end_to_the_left() {
             long.as_ptr(), right, &FM, paused, &clock);
     });
     let _ = paint(true);
-    plx_machine::idle::frame_begin(2.0);
+    plx_machine::motion::report::frame_begin(2.0);
     let moving = paint(true);
     let elapsed = 2000.0 - plx_ui::marquee::TITLE.hold_ms;
     let off = elapsed / 1000.0 * plx_ui::marquee::SPEED;
     assert_eq!(moving[1].at.x, SB_X + window - full + off, "first words flush right, moving right");
-    plx_machine::idle::frame_begin(60.0);
+    plx_machine::motion::report::frame_begin(60.0);
     assert_eq!(paint(true)[1].at.x, SB_X, "the last words rest on the window's left edge");
     assert_eq!(paint(true)[1].at.x, SB_X, "and stay");
 }
@@ -223,6 +234,7 @@ const FM: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
 /// the presenting side's (`app::run::prepare_window`), ahead of the clear.
 #[test]
 fn the_transport_clocks_are_rasterised_before_the_draw_and_one_second_ahead() {
+    let _locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
     let _g = plx_base::testlock::serial();
     plx_gfx::text::reset_prewarm_for_test();
     let sz = theme::size::CAPTION;
@@ -268,6 +280,27 @@ fn the_transport_clocks_are_rasterised_before_the_draw_and_one_second_ahead() {
     plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
     assert!(plx_gfx::text::prewarm_resident_for_test(b"-0:00", sz, 0));
     assert!(plx_gfx::text::prewarm_resident_for_test(b"2:05", sz, 1));
+
+    // The countdown keeps its next second warm. The separator and time are independent runs.
+    plx_gfx::text::reset_prewarm_for_test();
+    let with_end = HudModel {
+        playpos_ns: pos,
+        duration_ns: dur,
+        end_time: Some([22, 35]),
+        ..HudModel::default()
+    };
+    warm.queue(&with_end);
+    while plx_gfx::text::prewarm_pending() {
+        plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
+    }
+    let time = plx_platform::i18n::current().time_of_day([22, 35]).unwrap();
+    for text in [b"-0:36".as_slice(), b"-0:35".as_slice(), "\u{b7}".as_bytes(), time.as_bytes()] {
+        assert!(
+            plx_gfx::text::prewarm_resident_for_test(text, sz, 0),
+            "{} was not prewarmed",
+            String::from_utf8_lossy(text),
+        );
+    }
     plx_gfx::text::reset_prewarm_for_test();
 }
 
@@ -519,26 +552,84 @@ fn assert_rect(r: Rect, x: f32, y: f32, w: f32, h: f32) {
     );
 }
 
-/// **Every tone has an ink, the first is the white every earlier build drew, and each rung
-/// under it is strictly darker** — the ladder's whole promise is "down is dimmer", and the
-/// table is indexed by position, so a rung added to `SubtitleTone::LADDER` without an ink
-/// here would silently draw white. Opaque and achromatic throughout: a tone gives up light,
-/// never coverage (the outline depends on it) and never hue (it tints image subtitles).
+/// **Every tone has a tint, the first is the white every earlier build drew, and each GREY
+/// under it is strictly darker** — the greys' whole promise is "down is dimmer", and the table
+/// is indexed by position, so a rung added to `SubtitleTone::LADDER` without a tint here would
+/// silently draw white. Opaque and achromatic throughout: a tint gives up light, never coverage
+/// (the outline depends on it) and never hue, because it multiplies the pixels of a picture
+/// subtitle or an authored ASS script. A COLOUR rung (yellow) is therefore the identity tint:
+/// its colour is `text_rgb8`, applied where the text is made.
 #[test]
-fn the_subtitle_tones_are_a_strictly_darkening_opaque_grey_ladder_from_white() {
+fn the_subtitle_tints_are_a_strictly_darkening_opaque_grey_ladder_from_white() {
     use plx_plex::plex::session::SubtitleTone;
     assert_eq!(theme::SUBTITLE_INKS.len(), SubtitleTone::LADDER.len());
-    assert_eq!(subtitle_ink_for(SubtitleTone::White), [1.0, 1.0, 1.0, 1.0]);
+    assert_eq!(subtitle_tint_for(SubtitleTone::White), [1.0, 1.0, 1.0, 1.0]);
     let mut prev = f32::MAX;
     for tone in SubtitleTone::LADDER {
-        let ink = subtitle_ink_for(tone);
-        assert!(ink[0] == ink[1] && ink[1] == ink[2], "{tone:?} has a hue");
-        assert_eq!(ink[3], 1.0, "{tone:?} is not opaque");
-        assert!(ink[0] < prev, "{tone:?} is not darker than the rung above it");
-        prev = ink[0];
+        let tint = subtitle_tint_for(tone);
+        assert!(tint[0] == tint[1] && tint[1] == tint[2], "{tone:?} has a hue");
+        assert_eq!(tint[3], 1.0, "{tone:?} is not opaque");
+        if tone.text_rgb8().is_some() {
+            assert_eq!(tint, [1.0, 1.0, 1.0, 1.0], "{tone:?} is a colour: it must not tint authored pixels");
+            continue;
+        }
+        assert!(tint[0] < prev || prev == f32::MAX, "{tone:?} is not darker than the grey above it");
+        prev = tint[0];
     }
     // the darkest rung still has to be READ over the 0.85 black outline it is drawn on
     assert!(prev > 0.25, "the darkest tone has sunk into its own outline");
+}
+
+/// **The theme's caption colours are the plex palette**: `SubtitleTone::text_rgb8` (what media's
+/// synthesized header paints) and the ink `theme::SUBTITLE_INKS` draws the client's own caption text
+/// with are one colour, for every colour rung. A retuned code in either place fails here.
+#[test]
+fn the_theme_caption_inks_are_tied_to_the_plex_palette() {
+    use plx_plex::plex::session::SubtitleTone;
+    let mut colours = 0;
+    for tone in SubtitleTone::LADDER {
+        if let Some([r, g, b]) = tone.text_rgb8() {
+            assert_eq!(subtitle_ink_for(tone), plx_gfx::gfx::tokens::rgb8(r, g, b), "{tone:?}");
+            colours += 1;
+        }
+    }
+    assert_eq!(colours, 1, "a new colour rung gets its theme ink and this tie");
+}
+
+/// **The colour pick reaches the caption draw call.** The client's own drawn caption (the fault
+/// message, the sidecar failure notice) takes the palette colour for its glyph ink, white by
+/// default and the grey rung for a grey, and every line keeps the dark outline runs under it that
+/// keep it readable on a bright or HDR scene. The bitmap tint stays the identity for a colour, so
+/// the tint never recolours an authored ASS script or a picture subtitle (an authored script takes the colour in its header instead, `player::ass_ink`).
+#[test]
+fn the_drawn_caption_takes_the_viewers_colour_and_keeps_its_outline() {
+    use plx_plex::plex::session::SubtitleTone;
+    let ink_runs = |tone: SubtitleTone| {
+        let mut model = HudModel::default();
+        model.sub_tone = tone;
+        plx_ui::draw_census::capture_runs(|| {
+            plx_ui::record_walk(|| draw_subtitle_message("Hello", false, HudBand::CLASSIC, &model, &FM))
+        })
+    };
+    let rgb = |c: [u8; 3]| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0];
+    let yellow = SubtitleTone::Yellow.text_rgb8().expect("yellow is a colour rung");
+    for (tone, want) in [
+        (SubtitleTone::White, [1.0, 1.0, 1.0, 1.0]),
+        (SubtitleTone::Yellow, rgb(yellow)),
+        (SubtitleTone::Grey, theme::SUBTITLE_INKS[SubtitleTone::Grey.index() as usize]),
+    ] {
+        let runs = ink_runs(tone);
+        assert_eq!(runs.len(), 5, "{tone:?}: four outline runs and the glyph run");
+        assert_eq!(runs.last().unwrap().ink, want, "{tone:?}: the glyph ink");
+        for outline in &runs[..4] {
+            assert_eq!(outline.ink, theme::scrim_black(0.85), "{tone:?}: the outline stays");
+        }
+    }
+    let mut model = HudModel::default();
+    model.sub_tone = SubtitleTone::Yellow;
+    assert_eq!(subtitle_tint(&model), [1.0, 1.0, 1.0, 1.0], "a colour never tints a bitmap");
+    model.sub_tone = SubtitleTone::DarkGrey;
+    assert_eq!(subtitle_tint(&model), theme::SUBTITLE_INKS[SubtitleTone::DarkGrey.index() as usize], "a grey still dims it");
 }
 
 /// A 1080p-authored PGS rect must land EXACTLY where it always did — the scale is identity,
@@ -1049,11 +1140,10 @@ fn paused_shows_pause_and_outranks_a_live_resume_clock() {
     );
 }
 
-/// Direction comes from the POSITIONS, not from a keycode — which is what makes one expression
-/// cover the three ways the playhead travels. A live scrub is not busy (the pipeline is still
-/// playing the old position), so `scrubbing` has to be its own input.
+/// Direction comes from the POSITIONS of a LIVE scrub, not from a keycode. A live scrub is not busy
+/// (the pipeline is still playing the old position), so `scrubbing` has to be its own input.
 #[test]
-fn travel_direction_is_read_off_the_positions() {
+fn travel_direction_is_read_off_the_positions_of_a_live_scrub() {
     // LEFT/RIGHT scrub preview, while playing: not busy at all
     assert_eq!(
         transport_mark(false, Busy::None, true, 52 * S, 42 * S, None),
@@ -1063,14 +1153,14 @@ fn travel_direction_is_read_off_the_positions() {
         transport_mark(false, Busy::None, true, 32 * S, 42 * S, None),
         TransportMark::Rewind
     );
-    // a chapter/marker hop or a rapid-seek burst: scrub cleared, the seek in flight, the frozen
-    // playhead sitting at the target while the published position is still where we left
+    // the pipeline busy under a live scrub (a re-buffer while the viewer is still moving the target)
+    // does not take the direction away
     assert_eq!(
-        transport_mark(false, Busy::Transport, false, 600 * S, 42 * S, None),
+        transport_mark(false, Busy::Transport, true, 600 * S, 42 * S, None),
         TransportMark::FastForward
     );
     assert_eq!(
-        transport_mark(false, Busy::Transport, false, 5 * S, 42 * S, None),
+        transport_mark(false, Busy::Transport, true, 5 * S, 42 * S, None),
         TransportMark::Rewind
     );
 }
@@ -1084,20 +1174,28 @@ fn a_paused_scrub_still_reads_as_travel() {
         TransportMark::Rewind
     );
     assert_eq!(
-        transport_mark(true, Busy::Transport, false, 90 * S, 42 * S, None),
+        transport_mark(true, Busy::None, true, 90 * S, 42 * S, None),
         TransportMark::FastForward
     );
 }
 
-/// What the spinner was narrowed TO. `Busy::Transport` is two facts — the seek the user asked
-/// for, and a re-buffer nobody asked for — and the direction glyph can only speak for the
-/// first. So the spinner keeps every busy frame with no direction in it, and gives up the ones
-/// that have one.
+/// What the spinner is. `Busy::Transport` is two facts: the seek the user committed, and a re-buffer
+/// nobody asked for. Both read the one loading sign: a direction glyph belongs to a LIVE scrub only, so
+/// no busy frame, whichever way its target lies from the playhead, reads `<<` or `>>`.
 #[test]
-fn the_spinner_keeps_only_the_busy_frames_with_no_direction() {
+fn every_busy_transport_frame_reads_the_spinner_whichever_way_the_target_lies() {
     // a mid-play re-buffer: busy, but the playhead is not going anywhere
     assert_eq!(
         transport_mark(false, Busy::Transport, false, 42 * S, 42 * S, None),
+        TransportMark::Working
+    );
+    // a committed seek whose frozen target is AHEAD of the published playhead, and one BEHIND it
+    assert_eq!(
+        transport_mark(false, Busy::Transport, false, 600 * S, 42 * S, None),
+        TransportMark::Working
+    );
+    assert_eq!(
+        transport_mark(false, Busy::Transport, false, 5 * S, 42 * S, None),
         TransportMark::Working
     );
     // the prime→first-frame tail of a landed seek, once the published position has caught up
@@ -1143,15 +1241,95 @@ fn the_play_mark_expires_and_a_never_resumed_session_has_none() {
     );
 }
 
-/// A resume the user asked for while the playhead is also travelling: the travel is the newer
-/// fact and the slot is one glyph, so it wins. (This is the frame after a paused scrub commits
-/// — `commit_seek` drops `paused` to let the pipeline prime the new position.)
+/// A live scrub's travel outranks the resume mark (the slot is one glyph and the travel is the newer
+/// fact), and a COMMITTED seek's spinner outranks it too: the frame after a paused scrub commits
+/// (`commit_seek` drops `paused` to let the pipeline prime the new position) reads the loading sign, not
+/// a direction and not the play mark.
 #[test]
 fn travel_outranks_the_resume_mark() {
     assert_eq!(
-        transport_mark(false, Busy::Transport, false, 90 * S, 42 * S, Some(0)),
+        transport_mark(false, Busy::None, true, 90 * S, 42 * S, Some(0)),
         TransportMark::FastForward
     );
+    assert_eq!(
+        transport_mark(false, Busy::Transport, false, 90 * S, 42 * S, Some(0)),
+        TransportMark::Working
+    );
+}
+
+/// **A committed seek reads the loading sign until it lands, whichever way it goes** (v0.10.0-rc1 owner report:
+/// "when I click after back seeking in HUD, the >> icon shows up instead of play"; the owner's decision: the
+/// loading sign, not `<<`/`>>`, not play/pause). Once the seek is in flight the published playhead is not where
+/// the viewer left: a reload publishes no position at all until its first frame (`HudModel::playpos_ns` maps
+/// that to 0) and a keyframe landing sits before the target, so no direction read from it can be trusted. A
+/// LIVE scrub keeps its direction, and the first frame after the landing is the ordinary state mark.
+#[test]
+fn a_committed_seek_reads_the_loading_sign_until_it_lands() {
+    let min = 60 * S;
+    // one frame of the draw's sequence: the model goes in, the bar's mark comes out
+    let frame = |model: &HudModel, busy: Busy, since_play: Option<u32>| {
+        Playbar::live(model, busy, GROUP_SCRUB, since_play, 0).mark
+    };
+    let mut model = HudModel::default();
+    model.duration_ns = 60 * min;
+    // playing at 45:00
+    model.playpos_ns = 45 * min;
+    assert_eq!(frame(&model, Busy::None, None), TransportMark::None);
+    // a LIVE scrub back to 43:28: the target moves, nothing is committed, the direction reads
+    model.scrub_ns = 43 * min + 28 * S;
+    assert_eq!(frame(&model, Busy::None, None), TransportMark::Rewind);
+    // OK commits it: the scrub clears, the target freezes, the pipeline is waited on
+    model.scrub_ns = -1;
+    model.seek_display_ns = 43 * min + 28 * S;
+    model.loading = true;
+    // the reload has published no playhead yet: the model reads 0
+    model.playpos_ns = 0;
+    assert_eq!(frame(&model, Busy::Transport, Some(16)), TransportMark::Working, "the playhead is not known");
+    // a keyframe landing before the target
+    model.playpos_ns = 43 * min + 20 * S;
+    assert_eq!(frame(&model, Busy::Transport, Some(32)), TransportMark::Working, "the playhead is below the target");
+    // and one landing past it
+    model.playpos_ns = 43 * min + 40 * S;
+    assert_eq!(frame(&model, Busy::Transport, Some(40)), TransportMark::Working, "the playhead is above the target");
+    // landed: the FIRST frame after it is the ordinary state mark, never the spinner or a leftover direction
+    model.loading = false;
+    model.playpos_ns = 43 * min + 28 * S;
+    assert_eq!(frame(&model, Busy::None, Some(48)), TransportMark::Play, "just resumed: the play mark");
+    assert_eq!(frame(&model, Busy::None, Some(PLAY_MARK_MS)), TransportMark::None, "playing steadily: nothing");
+    model.paused = true;
+    assert_eq!(frame(&model, Busy::None, Some(48)), TransportMark::Pause, "paused: the pause mark, as before");
+    model.paused = false;
+    // a FORWARD committed seek reads the same sign
+    model.scrub_ns = -1;
+    model.seek_display_ns = 50 * min;
+    model.loading = true;
+    model.playpos_ns = 43 * min + 28 * S;
+    assert_eq!(frame(&model, Busy::Transport, None), TransportMark::Working);
+    model.loading = false;
+    model.playpos_ns = 50 * min;
+    assert_eq!(frame(&model, Busy::None, Some(48)), TransportMark::Play, "landed forward: the play mark, not `>>`");
+    // a re-buffer with no target of ours reads work as well
+    model.seek_display_ns = -1;
+    assert_eq!(frame(&model, Busy::Transport, None), TransportMark::Working);
+}
+
+/// A scrub that turns round is read as turning round while it is LIVE: back from the playhead, then past
+/// it forward, each by the positions, and the moment it is committed it is the loading sign.
+#[test]
+fn a_live_scrub_that_turns_round_follows_the_target_then_commits_to_the_spinner() {
+    let min = 60 * S;
+    let mut model = HudModel::default();
+    model.duration_ns = 60 * min;
+    model.playpos_ns = 45 * min;
+    let frame = |model: &HudModel, busy: Busy| Playbar::live(model, busy, GROUP_SCRUB, None, 0).mark;
+    model.scrub_ns = 43 * min;
+    assert_eq!(frame(&model, Busy::None), TransportMark::Rewind);
+    model.scrub_ns = 47 * min;
+    assert_eq!(frame(&model, Busy::None), TransportMark::FastForward, "back, then forward: forward");
+    model.scrub_ns = -1;
+    model.seek_display_ns = 47 * min;
+    model.loading = true;
+    assert_eq!(frame(&model, Busy::Transport), TransportMark::Working);
 }
 
 /// **A cue is never cut at a line count**: every wrapped line of every segment survives the
@@ -1328,7 +1506,7 @@ fn the_layouts_band_is_classics_in_every_slot() {
     let compiled = super::loaded::classic_for_test();
     let slots = [
         ControlSlot::Discs(Controls::NONE),
-        ControlSlot::Discs(Controls { previous: true, next: true, restart: true }),
+        ControlSlot::Discs(Controls { previous: true, next: true }),
         slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown),
         slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
     ];
@@ -1402,7 +1580,7 @@ mod playback_navigation_tests {
     #[test]
     fn episode_pair_uses_custom_gap_without_moving_existing_discs() {
         let compiled = super::super::loaded::classic_for_test();
-        let pair = Controls::for_item(true, false, true, false);
+        let pair = Controls::for_item(true, false, true);
         let rects = |c: Controls| geometry(&compiled, 0, ControlSlot::Discs(c), false, false).items;
         let (pair_rects, none_rects) = (rects(pair), rects(Controls::NONE));
         for i in BTN_SUBTITLES..=BTN_MORE {
@@ -1419,19 +1597,32 @@ mod playback_navigation_tests {
         assert_eq!(pair.primary(), BTN_NEXT);
         assert_eq!(pair.action(BTN_PREVIOUS), None);
         assert_eq!(pair.icon(BTN_PREVIOUS), Icon::Previous);
-        let restarting = Controls::for_item(true, false, true, true);
-        assert_eq!(restarting.icon(BTN_PREVIOUS), Icon::Restart);
-        assert_eq!(restarting.action(BTN_PREVIOUS), Some(Action::Previous));
+    }
+
+    /// **Previous is the previous episode and nothing else.** Whatever the playhead, the disc is
+    /// enabled exactly when the queue has an episode before the playing one, and it always wears
+    /// the Previous glyph: there is no restart state to wear a different one.
+    #[test]
+    fn previous_is_enabled_by_a_predecessor_alone_and_always_wears_the_previous_glyph() {
+        let middle = Controls::for_item(true, true, true);
+        assert_eq!(middle.action(BTN_PREVIOUS), Some(Action::Previous));
+        assert_eq!(middle.icon(BTN_PREVIOUS), Icon::Previous);
+        let last = Controls::for_item(true, true, false);
+        assert_eq!(last.action(BTN_PREVIOUS), Some(Action::Previous));
+        assert_eq!(last.icon(BTN_PREVIOUS), Icon::Previous);
+        let first = Controls::for_item(true, false, true);
+        assert_eq!(first.action(BTN_PREVIOUS), None, "the first episode of the queue has no Previous");
+        assert!(!first.enabled(BTN_PREVIOUS));
     }
 
     #[test]
     fn episode_pair_is_absent_for_movies_extras_and_single_items() {
-        for controls in [Controls::for_item(false, true, true, true),
-            Controls::for_item(true, false, false, true)] {
+        for controls in [Controls::for_item(false, true, true),
+            Controls::for_item(true, false, false)] {
             assert_eq!(controls, Controls::NONE);
             assert_eq!(controls.primary(), BTN_SUBTITLES);
         }
-        let last = Controls::for_item(true, true, false, false);
+        let last = Controls::for_item(true, true, false);
         assert_eq!(last.primary(), BTN_PREVIOUS);
         assert_eq!(last.action(BTN_NEXT), None);
     }
@@ -1439,8 +1630,8 @@ mod playback_navigation_tests {
 
 /// **Under `builtin:classic`, the row resolved through the compile is the row resolved through `Controls`.**
 /// The page now asks the package's control at an index what a press performs and whether it has a stop;
-/// for classic's five discs that must be exactly classic's table, for every valuation of the pair and of
-/// Previous's restart target, and the cursor parks where `Controls::primary` parks it.
+/// for classic's five discs that must be exactly classic's table, for every valuation of the pair, and the
+/// cursor parks where `Controls::primary` parks it.
 #[test]
 fn classic_resolved_through_the_compile_is_classics_table() {
     use super::command::HudCommand;
@@ -1452,16 +1643,14 @@ fn classic_resolved_through_the_compile_is_classics_table() {
     for episode in [false, true] {
         for previous in [false, true] {
             for next in [false, true] {
-                for restart in [false, true] {
-                    let controls = Controls::for_item(episode, previous, next, restart);
-                    let slot = ControlSlot::Discs(controls);
-                    for i in -1..=BTN_N + 2 {
-                        let want: Option<HudCommand> = controls.command(i);
-                        assert_eq!(row_command(compiled, 0, slot, &model, i), want, "{controls:?} item {i}");
-                        assert_eq!(row_enabled(compiled, 0, slot, &model, i), controls.enabled(i), "{controls:?} item {i}");
-                    }
-                    assert_eq!(row_primary(compiled, 0, slot, &model), controls.primary(), "{controls:?}");
+                let controls = Controls::for_item(episode, previous, next);
+                let slot = ControlSlot::Discs(controls);
+                for i in -1..=BTN_N + 2 {
+                    let want: Option<HudCommand> = controls.command(i);
+                    assert_eq!(row_command(compiled, 0, slot, &model, i), want, "{controls:?} item {i}");
+                    assert_eq!(row_enabled(compiled, 0, slot, &model, i), controls.enabled(i), "{controls:?} item {i}");
                 }
+                assert_eq!(row_primary(compiled, 0, slot, &model), controls.primary(), "{controls:?}");
             }
         }
     }
@@ -1474,7 +1663,7 @@ mod playbar_options {
     use crate::hud_format::compile::{ClockMode, KnobMode, MarkMode};
 
     fn bar(knob: Knob, mark: TransportMark) -> Playbar {
-        Playbar { pos_ns: 600_000_000_000, dur_ns: 1_200_000_000_000, knob, mark, now: 0, clock_grow: 0.0 }
+        Playbar { pos_ns: 600_000_000_000, dur_ns: 1_200_000_000_000, knob, mark, now: 0, end_time: None, clock_grow: 0.0 }
     }
     fn census(b: Playbar, look: PlaybarLook) -> Vec<(u64, Rect)> {
         plx_ui::draw_census::capture(|| draw_playbar_look(Painter::recording(), b, look, &FM))
@@ -1492,6 +1681,55 @@ mod playbar_options {
             let classic = plx_ui::draw_census::capture(|| draw_playbar(Painter::recording(), b, &FM));
             assert_eq!(classic, census(b, look), "{knob:?}");
         }
+    }
+
+    fn with_end_time_width(look: PlaybarLook, width: f32) -> PlaybarLook {
+        let clock_rects = crate::hud_format::clocks::rects(look.track, look.clock_size, look.clocks, Some(width), &FM);
+        PlaybarLook { end_time_lane: clock_rects.end_time, ..look }
+    }
+
+    #[test]
+    fn the_remaining_clock_can_include_a_local_end_time() {
+        let _locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        let mut b = bar(Knob::Tick, TransportMark::None);
+        let plain = runs(b, PlaybarLook::default());
+        assert!(plain.iter().any(|r| r.text == "-10:00"));
+        b.end_time = Some([22, 35]);
+        let look = with_end_time_width(PlaybarLook::default(), 320.0);
+        let with_end = runs(b, look);
+        let time = plx_platform::i18n::current().time_of_day([22, 35]).unwrap();
+        let combined = with_end.iter().filter(|r| r.align == 0).collect::<Vec<_>>();
+        assert_eq!(combined.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), ["-10:00", "\u{b7}", time.as_str()]);
+        assert_eq!(combined[1].ink, theme::TEXT_SEPARATOR);
+        assert!(combined[0].at.x >= look.end_time_lane.unwrap().rect.x);
+    }
+
+    #[test]
+    fn the_remaining_duration_survives_when_the_end_time_cannot_fit() {
+        let mut b = bar(Knob::Tick, TransportMark::None);
+        b.end_time = Some([22, 35]);
+        let default = PlaybarLook::default();
+        for look in [
+            default,
+            with_end_time_width(PlaybarLook { track: Rect::new(default.track.x, default.track.y, 360.0, default.track.h), ..default }, 320.0),
+            with_end_time_width(default, 80.0),
+        ] {
+            let drawn = runs(b, look);
+            assert!(drawn.iter().any(|r| r.text == "-10:00"), "{drawn:?}");
+            assert!(!drawn.iter().any(|r| r.text == "\u{b7}"), "{drawn:?}");
+        }
+    }
+
+    #[test]
+    fn remaining_end_time_hides_with_the_remaining_clock_when_the_labels_would_overlap() {
+        let mut b = bar(Knob::Tick, TransportMark::None);
+        b.pos_ns = b.dur_ns - 1_000_000_000;
+        b.end_time = Some([22, 35]);
+        let drawn = runs(b, with_end_time_width(PlaybarLook::default(), 320.0));
+        assert!(
+            !drawn.iter().any(|r| r.text == "\u{b7}"),
+            "the end-time suffix must not survive when the remaining label is suppressed: {drawn:?}",
+        );
     }
 
     #[test]

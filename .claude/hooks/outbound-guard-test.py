@@ -105,7 +105,7 @@ CASES = [
     (BLOCK, 'git -C /repo commit -m "wake %s first"' % FAKE_MAC),         # subcommand behind -C
     (BLOCK, 'git tag -a v0.3.0 -m "cut against %s"' % FAKE_TV),
     (BLOCK, 'gh pr create --title "player: fix seek" --body "reproduced on %s"' % FAKE_TV),
-    (BLOCK, 'gh -R GLinnik21/plx-native issue comment 22 --body "user id %s"' % FAKE_USERID),
+    (BLOCK, 'gh -R plxnative/plx-native issue comment 22 --body "user id %s"' % FAKE_USERID),
     (BLOCK, 'gh release create v0.3.0 --notes "verified against %s"' % FAKE_PMS),
     (BLOCK, "gh api repos/x/y/issues/1/comments -f body='the TV is %s'" % FAKE_TV),
     (BLOCK, 'gh pr comment 5 --body "token %s"' % FAKE_TOKEN),
@@ -162,7 +162,7 @@ CASES = [
     (ALLOW, 'curl -s "http://%s:32400/library/sections?X-Plex-Token=%s"' % (FAKE_PMS, FAKE_TOKEN)),
     (ALLOW, 'curl -s "https://plex.tv/api/v2/resources?X-Plex-Token=%s"' % FAKE_TOKEN),
     (ALLOW, 'gh release view v0.2.1 --json body --jq .body'),             # --json body is a READ
-    (ALLOW, 'gh api repos/GLinnik21/plx-native/releases/tags/v0.2.1 --jq ".assets[].name"'),
+    (ALLOW, 'gh api repos/plxnative/plx-native/releases/tags/v0.2.1 --jq ".assets[].name"'),
     (ALLOW, 'gh pr view 49 --json body,title'),
     (ALLOW, 'gh release download v0.2.1 -D /tmp/rel'),
     (ALLOW, 'git push origin main'),                                      # deliberately not a gate
@@ -257,8 +257,8 @@ MERGE_CASES = [
     (BLOCK, 'gh pr merge 5 --squash --match-head-commit %s' % GIT_SHA),
     (BLOCK, 'gh pr merge --auto --squash 5'),
     (BLOCK, 'gh pr merge 5 --admin'),
-    (BLOCK, 'gh -R GLinnik21/plx-native pr merge 5'),           # the verb sits behind a global flag
-    (BLOCK, 'gh --repo GLinnik21/plx-native pr merge 5 --squash'),
+    (BLOCK, 'gh -R plxnative/plx-native pr merge 5'),           # the verb sits behind a global flag
+    (BLOCK, 'gh --repo plxnative/plx-native pr merge 5 --squash'),
     (BLOCK, 'cd /repo && gh pr merge 5 --squash'),
     (BLOCK, 'make check; gh pr merge 5'),
     (BLOCK, 'gh pr checks 5 --watch && gh pr merge 5'),         # the chain this guard exists for

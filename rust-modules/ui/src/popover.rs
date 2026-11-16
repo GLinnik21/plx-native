@@ -45,9 +45,9 @@
 //!   With no latched field it falls back to the sheet's ground — that same field sampled at the
 //!   panel's own rect under the frost, which constrains nothing.
 //! - **HOST DAMAGE refreshes the snapshot; the popover's OWN activity does not.** That distinction
-//!   was the bio panel's private `OWN_DAMAGE` ledger and is now [`own_motion`] / [`host::live`] /
-//!   [`host::input_scope`] / [`host::page_pass`], shared — attributed at the source and counted
-//!   (`idle::take_page_damage`), with [`host_refresh`] as the decision.
+//!   is typed by the owning `Present`: Page damage refreshes; Surface damage does not.
+//!   [`own_motion`] / [`host::live`] / [`host::page_pass`] attribute only frame animation;
+//!   [`host_refresh`] combines the captured page damage and page motion.
 //! - **The opener's card is not in the snapshot at all.** A hold the app takes leaves the card
 //!   springing from its press dip up to its pop beneath the item menu. The card sections leave the
 //!   lifted element out of the page pass (`DrawFrame::lifted`) and the [`Opener`] lift draws the
@@ -142,7 +142,7 @@ pub fn surface_closing(cached: bool) {
     if cached {
         HOST_CLOSING.fetch_add(1, Relaxed);
     }
-    plx_machine::idle::invalidate();
+    // Navigation's closing effect owns damage; the exit spring owns motion.
 }
 
 /// The surface left for good: release its host user (and its closing mark, if it was fading).
@@ -185,34 +185,30 @@ static HOST_CLOSING: AtomicU32 = AtomicU32::new(0);
 /// Attribute the spring motion of a popover's own `update` to the POPOVER rather than to the page
 /// it stands on — one line at the top of that `update`, held for the body.
 ///
-/// This is [`plx_machine::idle::MotionScope`], so the panel's springs never read as the PAGE's
-/// (`idle::PAGE_MOVING`, which [`host_refresh`] asks for a fading panel), plus an
-/// [`plx_machine::idle::OwnScope`] so that every `idle::invalidate` the update raises (the appear
-/// spring's, a marquee's) is the panel's own damage rather than the page's. Said once here so
-/// every panel's `update` is one line rather than six, and so that a panel added tomorrow inherits
-/// it.
+/// This is [`plx_machine::motion::report::MotionScope`]: only frame-captured
+/// animation is scoped here. Discrete page/surface damage is typed on the owned Present.
 ///
 /// **The scope merges back** on drop, so a popover's motion still keeps the present gate awake —
 /// this changes who the motion is ATTRIBUTED to, never whether it counts as motion.
 #[must_use = "the scope is only open for this guard's lifetime"]
 pub struct OwnMotion(
-    #[allow(dead_code)] plx_machine::idle::MotionScope,
-    #[allow(dead_code)] plx_machine::idle::OwnScope,
+    #[allow(dead_code)] plx_machine::motion::report::MotionScope,
+
 );
 
 /// See [`OwnMotion`].
 pub fn own_motion() -> OwnMotion {
     OwnMotion(
-        plx_machine::idle::MotionScope::open(),
-        plx_machine::idle::OwnScope::open(),
+        plx_machine::motion::report::MotionScope::open(),
+
     )
 }
 
 /// **Does the host snapshot survive this frame?** Two questions about the PAGE, and only the page.
 ///
-/// `page_dirty` — did it CHANGE: `idle::take_page_damage`, every invalidation this frame that no
-/// popover claimed as its own, by count, so a landing beside a key press or during the panel's
-/// own motion is still seen. That is a reason to redraw whether the panels are open or fading.
+/// `page_dirty` — did it CHANGE: the owning `Present::page_damaged()` readout.
+/// A typed Page landing beside Surface input is still seen, until an actual-swap
+/// acknowledgement retires it. It refreshes whether panels are open or fading.
 ///
 /// `page_moving` — is it MOVING: `app.rs`'s `underlay_moving` (Home, the Library and Search step
 /// their springs inside a `scoped_motion`) OR'd with the gate's unscoped-motion bit. **That is a
@@ -232,7 +228,7 @@ pub fn own_motion() -> OwnMotion {
 /// `Press::tick` raises no page damage for it while a card section has taken it out of the page.
 ///
 /// The panel's own motion and damage never reach either term: they are attributed at the source
-/// (`own_motion`, `host::live`, `host::input_scope`, `host::page_pass`). Earlier shapes subtracted a merged per-frame
+/// (scoped frame motion and typed owned Page/Surface damage). Earlier shapes subtracted a merged per-frame
 /// "own" bit from `dirty || moving`, and each had a case where the page's change was consumed
 /// unseen (Codex review, three rounds, 2026-09-04).
 pub fn host_refresh(fading_only: bool, page_dirty: bool, page_moving: bool) -> bool {
@@ -720,7 +716,7 @@ impl Popover {
     /// read as the PAGE's — the distinction [`host_refresh`] rests on for a fading panel. Reports
     /// whether the spring moved.
     fn step_appear(&mut self, target: f32, dt: f32) -> bool {
-        let scope = plx_machine::idle::MotionScope::open();
+        let scope = plx_machine::motion::report::MotionScope::open();
         self.appear.step(target, K_APPEAR, dt);
         if self.style == OpenStyle::Morph {
             self.morph.step(target > 0.5, dt);
@@ -742,7 +738,7 @@ impl Popover {
         self.release();
         self.closing = true;
         self.enter_closing();
-        plx_machine::idle::invalidate();
+        // The dismiss effect selects the first frame; update reports the exit spring.
     }
     pub fn is_open(&self) -> bool {
         self.open
@@ -785,11 +781,12 @@ impl Popover {
 
     /// The panel painter without a full-screen scrim. Pair with [`scrim`](Self::scrim), for a
     /// caller that draws the dim as part of its host page — see that method for why one does.
-    pub fn content_painter(&self, rise: f32) -> Painter {
-        self.content_painter_on(Painter::root(), rise)
+    pub fn content_painter(&self, rise: f32, nav: crate::screen::NavPresentation) -> Painter {
+        self.content_painter_on(Painter::root().alpha(nav.page_alpha), rise)
     }
     /// [`content_painter`](Self::content_painter) on `base` rather than a fresh root: a surface's
     /// own frame painter, so a held surface's walk (the text recorder) reaches it like any other.
+    /// The caller supplies the route alpha on `base`; this method adds only the popover's appear.
     pub fn content_painter_on(&self, base: Painter, rise: f32) -> Painter {
         self.content_painter_from(base, rise, Side::Above)
     }
@@ -803,10 +800,10 @@ impl Popover {
             // openers are the host's lift, not part of the morph). Nothing slides; `rise` is the appear style's. The CONTAINER's
             // appear is not on this painter either: the surface begins and ends as the opener,
             // which is not faded in or out.
-            return base.alpha(crate::nav::page_alpha());
+            return base;
         }
         let a = self.appear();
-        let p = base.alpha(a * crate::nav::page_alpha());
+        let p = base.alpha(a);
         if rise == 0.0 {
             return p;
         }
@@ -844,15 +841,15 @@ impl Popover {
     /// place) or above (−, drops down) to its rest position. The scrim draws on its OWN root
     /// painter so the full-screen dim doesn't compound with the content fade.
     ///
-    /// Both roots ride [`nav::page_alpha`](crate::nav::page_alpha), because a popover is drawn
+    /// Both roots ride the supplied navigation page alpha, because a popover is drawn
     /// ON a page and a route change replaces the page: when the screen underneath dips to the app
     /// ground, a panel left sitting at full strength over it is the one thing on the panel that
     /// says the transition is not happening. It is one multiply into a cascade every primitive
     /// already goes through, and it is 1.0 whenever no route change is in flight — which is every
     /// frame of the in-player panels, since playback has no page transition.
-    pub fn painter(&self, scrim_a: f32, rise: f32) -> Painter {
-        self.scrim(scrim_a);
-        self.content_painter(rise)
+    pub fn painter(&self, scrim_a: f32, rise: f32, nav: crate::screen::NavPresentation) -> Painter {
+        self.scrim(scrim_a, nav);
+        self.content_painter(rise, nav)
     }
 
     /// Draw the modal scrim ALONE, for a caller that needs it earlier in the frame than the panel.
@@ -867,9 +864,9 @@ impl Popover {
     ///
     /// Pair with [`content_painter`](Self::content_painter), which is the same panel painter with
     /// the scrim left out — calling [`painter`](Self::painter) as well would dim twice.
-    pub fn scrim(&self, scrim_a: f32) {
+    pub fn scrim(&self, scrim_a: f32, nav: crate::screen::NavPresentation) {
         if scrim_a > 0.0 {
-            let dim = theme::scrim_black(scrim_a * self.appear() * crate::nav::page_alpha());
+            let dim = theme::scrim_black(scrim_a * self.appear() * nav.page_alpha);
             Painter::root().rect(Rect::FULL, 0.0, dim, dim, 0.0);
         }
     }
@@ -894,8 +891,8 @@ impl Popover {
     /// only once the scrim has ramped in. The alternative — scrim as four quads around the rect —
     /// has neither cost and cannot follow an element whose glow and caption run outside its own
     /// frame, which every card surface here has.
-    pub fn scrim_lifting(&self, scrim_a: f32, opener: &Opener) {
-        self.scrim(scrim_a);
+    pub fn scrim_lifting(&self, scrim_a: f32, opener: &Opener, nav: crate::screen::NavPresentation) {
+        self.scrim(scrim_a, nav);
         if scrim_a > 0.0 {
             (opener.redraw)();
         }
@@ -1339,8 +1336,8 @@ pub mod host {
         }
         let b = f32::from_bits(FADE_B.load(Relaxed));
         if cache(|c| c.draw_prev(1.0 - b)) {
-            let _own = plx_machine::idle::OwnScope::open();
-            plx_machine::idle::invalidate();
+            let _motion = plx_machine::motion::report::MotionScope::open();
+            plx_machine::motion::report::note_motion();
         }
     }
 
@@ -1348,16 +1345,7 @@ pub mod host {
     fn users() -> u32 {
         HOST_USERS.load(Relaxed)
     }
-    /// **Input while a panel holds the page frozen belongs to the panel.** Opened by `app.rs`
-    /// around every INPUT event (key, text, pointer, wheel — `app::is_input_event`) and every
-    /// remote token: the per-event `idle::invalidate` and whatever the handler raises are then the
-    /// panel's own damage rather than the page's, so a key-up under the account menu does not
-    /// re-render Home behind it. NOT around lifecycle or window events, which are the app's and
-    /// may change the page under the panel. `None` — no scope — once every holder is fading, when
-    /// input has gone back to the page and its damage is the page's.
-    pub fn input_scope() -> Option<plx_machine::idle::OwnScope> {
-        (users() > 0 && !fading_only()).then(plx_machine::idle::OwnScope::open)
-    }
+
 
     /// Is every one of them a dismissed panel still fading out? See [`super::host_refresh`].
     fn fading_only() -> bool {
@@ -1448,19 +1436,16 @@ pub mod host {
         crate::popover_glass::clear_dims();
     }
 
-    /// Open the frame: take the page's damage count and decide whether the snapshot survives them.
+    /// Open the frame from the owning Present's typed page damage and captured page motion.
     ///
-    /// **The host-damage test is route-agnostic on purpose.** It is `idle::take_page_damage` —
-    /// every invalidation this frame that was not raised inside a popover's own scope
-    /// (`own_motion`, [`live`], [`input_scope`]) — plus, once every holder is fading, the page's
-    /// motion (`app.rs`'s `underlay_moving`, which is threaded in as the one term this module
-    /// cannot derive). Derived here rather than per screen, it covers the detail and person pages
-    /// too, and it cannot go stale when a seventh screen learns to host a popover.
+    /// The host-damage test is route-agnostic: Surface effects never enter the page readout.
+    /// Once every holder is fading, page motion is also a refresh reason. The caller supplies
+    /// both facts; this cache neither consumes a global generation nor assigns provenance.
     ///
     /// **Ramping open is deliberately NOT a reason to re-capture**: the SCRIM over the page is still
     /// darkening, but the scrim is drawn live above this snapshot rather than into it. The page
     /// itself is not moving.
-    pub fn begin_frame(page_moving: bool) {
+    pub fn begin_frame(page_moving: bool, typed_page_damage: bool) {
         // The page redirect ([`TARGET`]) is opened and closed inside one frame (`page_pass` opens
         // it, `PagePass::drop` closes it through `capture_now`), so none can be open as a frame
         // opens. The destructor of a `PageTarget` rebinds the framebuffer, which is only safe on
@@ -1489,7 +1474,8 @@ pub mod host {
         // wash with a gradient dithers on every frame now — `gfx::draw_ambient`.)
         // Taken every drawn frame, holder or not, so the count never carries over into the first
         // frame of the next panel to open.
-        let page_dirty = plx_machine::idle::take_page_damage();
+        // Only the owning Present can classify page damage. No ambient generations.
+        let page_dirty = typed_page_damage;
         CAPTURE_OWED.store(false, Relaxed);
         GROUND_DRAWN.store(false, Relaxed);
         GROUND_DEFERRED.store(false, Relaxed);
@@ -1515,7 +1501,7 @@ pub mod host {
         // Modal snapshots contain chrome and possibly a dim. A page-only transition image
         // must never be mistaken for that prefix when a surface interrupts navigation.
         if TRANSITION_OWNS.swap(false, Relaxed) { invalidate(); }
-        let moving = plx_machine::idle::page_moving() || page_moving;
+        let moving = plx_machine::motion::report::page_moving() || page_moving;
         CAPTURE_POINTLESS.store(fading_only() && moving, Relaxed);
         // a reflowing page is drawn live: its damage is not a reason to retake the snapshot
         if reflow_draws() {
@@ -1530,16 +1516,9 @@ pub mod host {
     /// page closure; dropping it lifts the freeze and takes the capture nobody else took.
     pub struct PagePass {
         was_frozen: bool,
-        /// **Damage the page raises while being drawn into (or under) the snapshot is not new
-        /// damage.** A spinner on the host reports through `idle::invalidate` from its own `draw`
-        /// to keep itself animating; on a frame the page is drawn for real (the refresh frame,
-        /// with the freeze off) that report would otherwise count as page damage and buy another
-        /// refresh, and the next, for as long as the spinner is on screen — the account menu over
-        /// a Home still waiting on a hub re-rendered Home on every frame (26 fps, 2026-09-04). The
-        /// picture the spinner reported from IS the snapshot being taken, so the snapshot pauses
-        /// it, which is what the freeze has always done to a decoration nobody can reach.
+        /// Pause host decorations in the snapshot; their animation is not page layout motion.
         #[allow(dead_code)]
-        own: Option<plx_machine::idle::OwnScope>,
+        motion: Option<plx_machine::motion::report::MotionScope>,
     }
 
     /// Begin a host-page draw. Draws the cached quad and arms the freeze when there is a snapshot;
@@ -1548,11 +1527,11 @@ pub mod host {
         if users() == 0 {
             return PagePass {
                 was_frozen: plx_gfx::gfx::page_frozen(),
-                own: None,
+                motion: None,
             };
         }
         if reflow_draws() {
-            return PagePass { was_frozen: plx_gfx::gfx::page_frozen(), own: None };
+            return PagePass { was_frozen: plx_gfx::gfx::page_frozen(), motion: None };
         }
         let served = match held() {
             // The ground quad is one draw for the whole frame and belongs to the first `live`,
@@ -1576,7 +1555,7 @@ pub mod host {
         }
         PagePass {
             was_frozen: plx_gfx::gfx::set_page_frozen(served),
-            own: Some(plx_machine::idle::OwnScope::open()),
+            motion: Some(plx_machine::motion::report::MotionScope::open()),
         }
     }
 
@@ -1618,10 +1597,9 @@ pub mod host {
     #[must_use = "the freeze is lifted only for this guard's lifetime"]
     pub struct Live {
         was_frozen: bool,
-        /// Everything drawn under this guard is the panel's own: an `idle::invalidate` raised by
-        /// its marquee or spinner must not read as page damage to `begin_frame`.
+        /// Panel draw animations are not page motion. Damage is independently owned.
         #[allow(dead_code)]
-        own: plx_machine::idle::OwnScope,
+        motion: plx_machine::motion::report::MotionScope,
     }
 
     /// See [`Live`].
@@ -1629,7 +1607,7 @@ pub mod host {
         if crate::frame::backdrop::discovering() {
             return Live {
                 was_frozen: plx_gfx::gfx::page_frozen(),
-                own: plx_machine::idle::OwnScope::open(),
+                motion: plx_machine::motion::report::MotionScope::open(),
             };
         }
         if plx_gfx::gfx::blur_source_pass() {
@@ -1637,14 +1615,14 @@ pub mod host {
             if ground && held_ceiling().is_some_and(crate::frame::backdrop::claim_snapshot) { draw_held(); }
             return Live {
                 was_frozen: plx_gfx::gfx::set_page_frozen(ground && freezes_current_layer()),
-                own: plx_machine::idle::OwnScope::open(),
+                motion: plx_machine::motion::report::MotionScope::open(),
             };
         }
         if reflow_draws() {
             // the page is live under the surface; nothing of the snapshot is drawn or taken
             return Live {
                 was_frozen: plx_gfx::gfx::set_page_frozen(false),
-                own: plx_machine::idle::OwnScope::open(),
+                motion: plx_machine::motion::report::MotionScope::open(),
             };
         }
         if matches!(held(), Held::Ground(_)) {
@@ -1657,7 +1635,7 @@ pub mod host {
             }
             return Live {
                 was_frozen: plx_gfx::gfx::set_page_frozen(freezes_current_layer()),
-                own: plx_machine::idle::OwnScope::open(),
+                motion: plx_machine::motion::report::MotionScope::open(),
             };
         }
         if CAPTURE_OWED.swap(false, Relaxed) {
@@ -1669,7 +1647,7 @@ pub mod host {
         }
         Live {
             was_frozen: plx_gfx::gfx::set_page_frozen(false),
-            own: plx_machine::idle::OwnScope::open(),
+            motion: plx_machine::motion::report::MotionScope::open(),
         }
     }
 
@@ -1809,6 +1787,20 @@ mod anchor_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panel_alpha_uses_only_the_supplied_navigation_and_cascade() {
+        let mut pop = Popover::new();
+        pop.appear.jump(0.8);
+        let first = crate::screen::NavPresentation::from_transition(0.25, 1.0, None, false);
+        let second = crate::screen::NavPresentation::from_transition(0.75, 1.0, None, false);
+        assert!((pop.content_painter(0.0, first).opacity() - 0.2).abs() < 1e-6);
+        assert!((pop.content_painter(0.0, second).opacity() - 0.6).abs() < 1e-6);
+        assert!((pop.content_painter(0.0, first).opacity() - 0.2).abs() < 1e-6);
+        assert!((pop.content_painter_on(Painter::root().alpha(0.4), 0.0).opacity() - 0.32).abs() < 1e-6);
+        let morph = Popover::new().morphing();
+        assert_eq!(morph.content_painter(0.0, first).opacity(), 0.25);
+    }
 
     /// **A fresh open is not settled, and stepping the appear spring to rest is.** The host
     /// snapshot's GROUND stage keys on it (`ground_done`): a popover whose spring never reaches this

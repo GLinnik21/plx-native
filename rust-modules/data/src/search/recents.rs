@@ -28,8 +28,21 @@ impl RecentsSnapshot {
     }
 }
 
+/// A complete host observation; unsettled is an explicit transient session, not a missing input.
+#[derive(Clone, Copy)]
+pub struct Input<'a> {
+    pub session: &'a plx_plex::plex::session::Session,
+    pub settled: bool,
+    pub profile_generation: u32,
+    pub session_generation: u64,
+    pub tenure: u64,
+    pub profile_key: &'a str,
+}
+
 struct Store {
     session_generation: u64,
+    session_id: usize,
+    tenure: u64,
     generation: u32,
     who: String,
     account: Account,
@@ -37,41 +50,58 @@ struct Store {
 }
 static STORE: Mutex<Option<Store>> = Mutex::new(None);
 
-fn with_store<R>(f: impl FnOnce(&mut Store) -> R) -> R {
+fn with_store<R>(input: &Input<'_>, f: impl FnOnce(&mut Store) -> R) -> R {
     let mut guard = STORE.lock().unwrap_or_else(|e| e.into_inner());
-    let generation = plx_plex::plex::session::current_gen();
-    let session_generation = plx_plex::plex::session::visible_generation();
-    let settled = plx_plex::plex::session::peek_settled();
-    if settled.is_none() && guard.as_ref().is_some_and(|s| s.generation == generation) {
+    let generation = input.profile_generation;
+    let session_generation = input.session_generation;
+    let who = input.profile_key;
+    let session_id = std::ptr::from_ref(input.session) as usize;
+    if !input.settled && guard.as_ref().is_some_and(|s| s.generation == generation && s.tenure == input.tenure
+        && s.who == who && (input.session.client_id.is_empty() || s.account.matches(input.session))) {
         return f(guard.as_mut().unwrap());
     }
-    if guard.as_ref().map(|s| (s.generation, s.session_generation)) != Some((generation, session_generation)) {
-        let who = plx_plex::plex::session::current_profile_key();
-        // Copy before taking the session snapshot: a worker may drain this entry concurrently.
-        // Keep the pending-store lock separate from the session snapshot lock.
+    if !guard.as_ref().is_some_and(|s| s.generation == generation && s.tenure == input.tenure
+        && s.session_generation == session_generation && s.who == who
+        && s.account.matches(input.session) && s.session_id == session_id) {
         let pending = PENDING.lock().unwrap_or_else(|e| e.into_inner())
-            .iter().find(|p| p.who == who).cloned();
-        let session = settled.unwrap_or_default();
-        let account = Account::of(&session);
-        let terms = pending.filter(|p| p.account == account).map(|p| p.terms)
-            .unwrap_or_else(|| sanitize(session.recents_for(&who).to_vec()));
-        *guard = Some(Store { session_generation, generation, who, account, terms: Arc::new(terms) });
+            .iter().find(|p| p.who == who && p.account.matches(input.session)).cloned();
+        let terms = pending.map(|p| p.terms)
+            .unwrap_or_else(|| sanitize(input.session.recents_for(who).to_vec()));
+        *guard = Some(Store { session_generation, generation, session_id, tenure: input.tenure, who: who.to_owned(),
+            account: Account::of(input.session), terms: Arc::new(terms) });
     }
     f(guard.as_mut().expect("profile cache is populated"))
 }
 
 /// Capture before screen processing. Borrowed terms thereafter perform no file or global read.
-pub fn snapshot() -> RecentsSnapshot {
-    with_store(|s| RecentsSnapshot { generation: s.generation, terms: s.terms.clone() })
+pub fn snapshot_with_input(input: &Input<'_>) -> RecentsSnapshot {
+    with_store(input, |s| RecentsSnapshot { generation: s.generation, terms: s.terms.clone() })
 }
 
 /// Update data and capture the persistence payload under the same profile-cache lock.
 /// Unchanged edits keep the same Arc and neither owe a write nor invalidate the frame. `submit`
 /// is called once when a write is owed: the edit changed the history, or its queue was full and a
 /// drain must be retried.
-fn edit(profile_generation: u32, change: impl FnOnce(&[String]) -> Option<Vec<String>>, submit: impl FnOnce()) -> bool {
+#[cfg(any(test, feature = "test-support"))]
+pub fn snapshot() -> RecentsSnapshot { snapshot_with_input(&super::fixture_input().input().recents) }
+#[cfg(any(test, feature = "test-support"))]
+pub fn remember(generation: u32, term: &str) -> Edit {
+    remember_with_input(&super::fixture_input().input().recents, generation, term)
+}
+#[cfg(any(test, feature = "test-support"))]
+pub fn clear(generation: u32) -> Edit { clear_with_input(&super::fixture_input().input().recents, generation) }
+#[cfg(test)]
+fn remember_with(generation: u32, term: &str, submit: impl FnOnce()) -> bool {
+    remember_with_input_and_submit(&super::fixture_input().input().recents, generation, term, submit)
+}
+#[cfg(test)]
+fn clear_with(generation: u32, submit: impl FnOnce()) -> bool {
+    clear_with_input_and_submit(&super::fixture_input().input().recents, generation, submit)
+}
+
+fn edit(input: &Input<'_>, profile_generation: u32, change: impl FnOnce(&[String]) -> Option<Vec<String>>, submit: impl FnOnce()) -> bool {
     let mut retry_drain = false;
-    let changed = with_store(|s| {
+    let changed = with_store(input, |s| {
         if s.generation != profile_generation { return false; }
         let Some(terms) = change(&s.terms) else { return false };
         let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
@@ -88,7 +118,7 @@ fn edit(profile_generation: u32, change: impl FnOnce(&[String]) -> Option<Vec<St
         true
     });
     if changed || retry_drain { submit(); }
-    if changed { plx_machine::idle::invalidate(); }
+    if changed {  }
     changed
 }
 
@@ -102,16 +132,16 @@ pub struct Edit {
     pub save: bool,
 }
 
-pub fn remember(profile_generation: u32, term: &str) -> Edit {
+pub fn remember_with_input(input: &Input<'_>, profile_generation: u32, term: &str) -> Edit {
     let mut save = false;
-    let changed = remember_with(profile_generation, term, || save = true);
+    let changed = remember_with_input_and_submit(input, profile_generation, term, || save = true);
     Edit { changed, save }
 }
 
-fn remember_with(profile_generation: u32, term: &str, submit: impl FnOnce()) -> bool {
+fn remember_with_input_and_submit(input: &Input<'_>, profile_generation: u32, term: &str, submit: impl FnOnce()) -> bool {
     let term = term.trim();
     if !usable(term) { return false; }
-    edit(profile_generation, |old| {
+    edit(input, profile_generation, |old| {
         if old.first().is_some_and(|first| first == term) { return None; }
         let mut next = old.to_vec();
         promote(&mut next, term);
@@ -119,14 +149,14 @@ fn remember_with(profile_generation: u32, term: &str, submit: impl FnOnce()) -> 
     }, submit)
 }
 
-pub fn clear(profile_generation: u32) -> Edit {
+pub fn clear_with_input(input: &Input<'_>, profile_generation: u32) -> Edit {
     let mut save = false;
-    let changed = clear_with(profile_generation, || save = true);
+    let changed = clear_with_input_and_submit(input, profile_generation, || save = true);
     Edit { changed, save }
 }
 
-fn clear_with(profile_generation: u32, submit: impl FnOnce()) -> bool {
-    edit(profile_generation, |old| if old.is_empty() { None } else { Some(Vec::new()) }, submit)
+fn clear_with_input_and_submit(input: &Input<'_>, profile_generation: u32, submit: impl FnOnce()) -> bool {
+    edit(input, profile_generation, |old| if old.is_empty() { None } else { Some(Vec::new()) }, submit)
 }
 
 /// What the store will hold, whatever the file said. `de_soft_vec` guarantees each entry is a
@@ -198,6 +228,10 @@ struct Account { client_id: String, token: String }
 impl Account {
     fn of(s: &plx_plex::plex::session::Session) -> Self {
         Self { client_id: s.client_id.clone(), token: s.account_token.clone() }
+    }
+
+    fn matches(&self, session: &plx_plex::plex::session::Session) -> bool {
+        self.client_id == session.client_id && self.token == session.account_token
     }
 }
 #[derive(Clone)]
@@ -300,6 +334,94 @@ fn flush() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_recents_are_profile_and_account_scoped_even_when_all_generations_repeat() {
+        let _serial = plx_base::testlock::serial();
+        let _clear = ClearCaches;
+        let mut session = plx_plex::plex::session::Session { client_id: "captured-client".into(),
+            account_token: "captured-account".into(), ..Default::default() };
+        session.set_recents_for("alpha", vec!["alpha history".into()]);
+        session.set_recents_for("beta", vec!["beta history".into()]);
+        let alpha = Input { session: &session, settled: true, profile_generation: 7,
+            session_generation: 11, tenure: 99, profile_key: "alpha" };
+        let first = snapshot_with_input(&alpha);
+        assert_eq!(first.terms(), &["alpha history"]);
+        assert!(remember_with_input(&alpha, 7, "pending alpha").changed);
+        let beta = Input { profile_key: "beta", ..alpha };
+        assert_eq!(snapshot_with_input(&beta).terms(), &["beta history"], "same-generation profile replacement never exposes another profile's terms");
+        assert_eq!(first.terms(), &["alpha history"], "retained snapshots keep their original profile");
+        assert!(!remember_with_input(&beta, 6, "stale draft").changed);
+        let mut replacement = plx_plex::plex::session::Session { client_id: "captured-client".into(),
+            account_token: "replacement-account".into(), ..Default::default() };
+        replacement.set_recents_for("alpha", vec!["replacement history".into()]);
+        let replaced = Input { session: &replacement, ..alpha };
+        assert_eq!(snapshot_with_input(&replaced).terms(), &["replacement history"], "queued old-account writes do not overlay the replacement account at equal generations");
+        let transient_session = Default::default();
+        let transient = Input { session: &transient_session, settled: false, ..replaced };
+        assert_eq!(snapshot_with_input(&transient).terms(), &["replacement history"], "an explicit unsettled same-profile observation retains the readable publication");
+        let reset = Input { tenure: 100, ..transient };
+        assert!(snapshot_with_input(&reset).terms().is_empty(), "an unreadable replacement tenure must not retain the previous account's history");
+    }
+
+
+    mod allocation_probe {
+        use super::*;
+        use plx_plex::plex::session::Session;
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::cell::Cell;
+
+        struct CountAlloc;
+        thread_local! { static ALLOCATIONS: Cell<Option<usize>> = const { Cell::new(None) }; }
+        fn allocated() {
+            ALLOCATIONS.with(|n| { if let Some(count) = n.get() { n.set(Some(count + 1)); } });
+        }
+        unsafe impl GlobalAlloc for CountAlloc {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                allocated();
+                unsafe { System.alloc(layout) }
+            }
+            unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+                allocated();
+                unsafe { System.alloc_zeroed(layout) }
+            }
+            unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+                allocated();
+                unsafe { System.realloc(ptr, layout, size) }
+            }
+            unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+                unsafe { System.dealloc(ptr, layout) }
+            }
+        }
+        #[global_allocator]
+        static ALLOCATOR: CountAlloc = CountAlloc;
+
+        #[test]
+        fn stable_captured_recents_100_snapshots_allocate_nothing() {
+            let _serial = plx_base::testlock::serial();
+            let _clear = ClearCaches;
+            let mut session = Session { client_id: "populated-client".into(), account_token: "populated-token".into(), ..Default::default() };
+            session.set_recents_for("alpha", vec!["retained history".into()]);
+            let input = Input { session: &session, settled: true, profile_generation: 7,
+                session_generation: 11, tenure: 99, profile_key: "alpha" };
+            let retained = snapshot_with_input(&input);
+            for settled in [true, false] {
+                let input = Input { settled, ..input };
+                ALLOCATIONS.with(|n| n.set(Some(0)));
+                for _ in 0..100 { std::hint::black_box(snapshot_with_input(&input)); }
+                let allocations = ALLOCATIONS.with(|n| n.replace(None).unwrap());
+                println!("100 stable snapshots, settled={settled}: {allocations} allocations");
+                assert_eq!(allocations, 0, "stable snapshots must borrow credential/cache keys");
+            }
+            assert_eq!(retained.terms(), &["retained history"]);
+            session.account_token = "replacement-token".into();
+            session.set_recents_for("alpha", vec!["replacement history".into()]);
+            let replacement = snapshot_with_input(&Input { session: &session, settled: true, profile_generation: 7,
+                session_generation: 11, tenure: 99, profile_key: "alpha" });
+            assert_eq!(replacement.terms(), &["replacement history"]);
+            assert_eq!(retained.terms(), &["retained history"]);
+        }
+    }
 
     struct ClearCaches;
     impl Drop for ClearCaches {

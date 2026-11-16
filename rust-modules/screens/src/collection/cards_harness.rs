@@ -16,6 +16,9 @@ impl Host for CollectionHost {
     type Init = super::super::family::NoInit;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for CollectionHost {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+}
 impl CollectionLike for CollectionHost {
     fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> { cx.views }
 }
@@ -62,7 +65,7 @@ impl Harness {
     fn step(&mut self, ev: ScreenEvent<CollectionHost>) -> bool {
         let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
-        let (_, moving) = plx_machine::idle::scoped_motion(|| {
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
             let cx = Cx { views: self.store.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
                 press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
                 focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };

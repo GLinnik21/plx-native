@@ -44,7 +44,7 @@ accepted pause/resume to the plane once the bind has completed. Release is `UNLO
 plane owner's fence on that call's completion callback, pumped from the backend's `poll`
 (`docs/measurements/acb-release-fence-2026-11-04.md`); a quarantine until process exit is only the
 outcome of a failed fence, not the normal one. `plx_play_uri::backend::product_binding` selects it at
-composition (ACB display mode and the URI engine's own boot handle, initialized, player type 0: the boot creates it beside Feed's player type 10 handle, each once and never destroyed, and the plane owner binds one at a time across both); media's `uri_preflight` only receives the result as
+composition (an ACB display; the URI engine's own handle, player type 0, is created ON DEMAND when the first source is OFFERED (`UriDriver::ready_to_start`, asked by `offer_qualified_uri`, runs `PlaneOwner::ensure_handle`; the driver's gate `Op::Check` makes it if nothing did), while the boot creates only Feed's player type 10 handle, each created once and never destroyed, and the plane owner binds one at a time across both; a create or initialize that fails DECLINES the offer, `uri: original declined (the ACB handle for the URI engine could not be created)`, and Feed plays the title; the failure is recorded, so a later offer declines without a new attempt, and the Start's own gate stays the backstop); media's `uri_preflight` only receives the result as
 `ProductEvidence::unqualified_on(.., binding)`. `ProductEvidence::permits` and
 `ResolvePort::could_qualify_pms` accept `Binding::Acb` as an offerable display path beside an exported
 canvas, but only through `certified` capabilities: the production evidence certifies nothing and
@@ -348,6 +348,9 @@ something.
   is presented, so that state is `PlaybackState::Paused` (not busy, not `is_playing`, no
   `PlaybackStarted`). The preroll opens only while the prime is still owed (`Engine::prime_play`)
   and is owned at 0: `frames` is per-session, so the first presented frame is the landing.
+  This bounded preroll may prime before common startup receives a viewer Play command: the
+  viewer still wants Pause, so no such command is owed. It leaves `startup_play_commanded`
+  untouched; ordinary startup without a paused-seek preroll still waits for that command.
   **On the ACB route (webOS 4) the landing also needs the video plane BOUND**
   (`plx_play_feed::feed_pump::plane_shows_the_picture`): the plane connects only through `setMediaVideoData` +
   `acb_start` (`Stage::Streaming`), and a tick counted before that is a picture the panel never
@@ -708,8 +711,8 @@ something.
 - **Subtitles are client-rendered here — the TV's HW subtitle engine is URI-mode only** and
   unreachable in buffer-feed. Image (PGS/VobSub) subs are decoded and drawn by us; styled
   ASS/SSA and EMBEDDED TEXT tracks (SubRip, WebVTT, mov_text, SAMI, ...) use the bundled libass worker
-  (`ass.rs`, `ass_source.rs`): ASS with its original headers, events and attached fonts, a text track
-  with a header `text_ass::header` synthesizes from the viewer's size/position picks and cues
+  (`ass.rs`, `ass_source.rs`): ASS with its original events and attached fonts and its own header, except that a style whose primary is pure white is recoloured to the viewer's colour pick by `ass_ink` before libass sees the header (the file's own bytes stay the reopen identity), a text track
+  with a header `text_ass::header` synthesizes from the viewer's size/position/colour picks and cues
   `text_ass::convert` turns into events (`ass_source::push_text`, `Origin::Text`; the cue's raw key is
   its dedup identity, so a seek re-read changes nothing, and the track's events are a newest-wins view
   of those raw cues), over the bundled Inter and per-script Noto faces (`ass/fonts.rs`, `docs/ass-subtitles.md`).

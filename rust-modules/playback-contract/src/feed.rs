@@ -491,6 +491,13 @@ pub struct FeedRaw {
     /// The HTTP status of the last failed transport request, 0 = none; loaded like
     /// [`Self::cb_err_num`].
     pub http_status: i32,
+    /// The codec the file ACTUALLY carries, in the Load-declaration code space, recorded by the
+    /// demuxer when it refuses a Load whose bytes disagree with its declared codec (a stale PMS
+    /// track list, or a transcode the route described from the source's record); `0` = no
+    /// disagreement on that Load. Published before the `demux_failed` flag it explains; the
+    /// player's one-shot probe retry is its only consumer, and the session reset clears it.
+    pub probe_actual_video: u8,
+    pub probe_actual_audio: u8,
     /// What the Stats-for-nerds read-out shows of the feed's own mailboxes, from the same sample.
     pub diag: FeedDiag,
     /// The summed length (ms, wrapping) of the gaps between consecutive native presentation
@@ -681,6 +688,7 @@ impl FeedRaw {
         applied_rate_permille: crate::RATE_NORMAL, speed_audio_ok: None, vpres_count: 0,
         pts_shift: 0, pipeline_eos: false, seek_landed_epoch: 0, seek_target_ns: None,
         seek_requeue: SeekRequeue::NONE, cb_err_num: 0, http_status: 0,
+        probe_actual_video: 0, probe_actual_audio: 0,
         diag: FeedDiag::IDLE,
         vpres_gap_sum_ms: 0, vpres_gap_count: 0, disp_base: 0, load: LoadRaw::IDLE,
         abr: DemuxAbr::IDLE,

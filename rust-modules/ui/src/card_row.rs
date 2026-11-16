@@ -72,6 +72,12 @@ pub struct RowStyle {
     /// tile's live clearance ([`heading_lift_of`]), so the two never stack. Card tops and the row's
     /// pitch are untouched; only the label band's heading y moves.
     pub heading_rise: f32,
+    /// **A band the tile's own furniture hangs under it, in px beyond the standard air** (0 for every
+    /// row but [`RowStyle::STILL`]): the Continue Watching footer line stands below its art
+    /// ([`theme::STILL_FOOTER_DROP`] under the tile, [`crate::still_footer::FOOTER_LINE_H`] tall) and the
+    /// next shelf's heading stands [`theme::STILL_FOOTER_AIR`] under that line's foot. It is part of
+    /// [`RowStyle::pitch_fixed`], so the shelf column, the rest scroll and every settled top follow it.
+    pub under_tile: f32,
 }
 
 /// Where a label block starts under its tile: [`RowStyle::label_start`].
@@ -148,6 +154,7 @@ impl RowStyle {
         seat_grows: false,
         label_drop: None,
         heading_rise: 0.0,
+        under_tile: 0.0,
     };
     /// **A shelf of EPISODES: landscape stills.** Same motion as HOME — the spring magnification,
     /// the scroll, the glow ring and the heading lift are all one vocabulary — and a different
@@ -179,22 +186,26 @@ impl RowStyle {
         seat_grows: false,
         label_drop: None,
         heading_rise: 0.0,
+        under_tile: 0.0,
     };
     /// **The Continue Watching row's landscape tile** (the owner's 2026-11 handoff, "Continue
-    /// Watching and episode footer"): the episode strip's own cell (420x236, gap 28 -- [`RowStyle::EPISODE`])
-    /// at [`theme::STILL_RADIUS`], popped to HOME's 1.09 with no vertical travel. The neighbours stand
-    /// where they rest: the pop grows a 420 px tile ~19 px a side, inside the 28 px gap, so the gap
-    /// narrows to ~9 and no tile steps aside.
+    /// Watching and episode footer"): the episode strip's own cell (420x236, [`RowStyle::EPISODE`])
+    /// at [`theme::STILL_RADIUS`] and [`theme::STILL_GAP`] (40: pitch 460; the strip keeps its 28),
+    /// popped to HOME's 1.09 with no vertical travel. The neighbours stand where they rest: the pop
+    /// grows a 420 px tile ~19 px a side, inside the gap, so the gap narrows to ~21 and no tile steps
+    /// aside. Its footer line stands under the art ([`RowStyle::under_tile`]).
     pub const STILL: RowStyle = RowStyle {
         radius: theme::STILL_RADIUS,
+        gap: theme::STILL_GAP,
         heading_rise: theme::STILL_HEADING_RISE,
+        under_tile: crate::still_footer::FOOTER_UNDER_TILE,
         ..RowStyle::EPISODE
     };
     /// The fixed part of this row's pitch -- everything a shelf of these tiles is made of except
     /// the caption band: heading, air above the tile, the tile, air below. For [`RowStyle::HOME`]
     /// it is [`ROW_PITCH_FIXED`]; add [`under_band`] to it.
     pub const fn pitch_fixed(&self) -> f32 {
-        crate::consts::TITLE_DY + crate::consts::CARD_DY + self.h + crate::consts::UNDER_LABEL_AIR
+        crate::consts::TITLE_DY + crate::consts::CARD_DY + self.h + self.under_tile + crate::consts::UNDER_LABEL_AIR
     }
     /// Detail "Cast & Crew": circular headshots, the tight strip ring. Same motion as HOME (spring
     /// magnification + scroll), so cast animates like the poster shelves.
@@ -221,6 +232,7 @@ impl RowStyle {
         seat_grows: false,
         label_drop: None,
         heading_rise: 0.0,
+        under_tile: 0.0,
     };
     /// "Who's watching" profile pictures: big circular avatars with a clear pop. Centered by the
     /// caller (a short roster), so the scroll spring stays put unless the row overflows.
@@ -246,6 +258,7 @@ impl RowStyle {
         seat_grows: false,
         label_drop: None,
         heading_rise: 0.0,
+        under_tile: 0.0,
     };
     /// Corner radius for a tile of size `rect` at radius-scale `s`: half-width for a circle, else the
     /// style's fixed radius scaled with the focus pop. A style with a [`rim`](Self::rim) keeps its radius
@@ -334,7 +347,7 @@ impl CardRow {
             && at(&self.lift, 0.0)
             && at(&self.band, 0.0)
     }
-    /// Snap an unfocused row whose every spring is already [`settled`](plx_machine::idle::settled)
+    /// Snap an unfocused row whose every spring is already [`settled`](plx_machine::motion::report::settled)
     /// onto its rest target, so [`at_exact_rest`](Self::at_exact_rest) holds and a caller may stop
     /// stepping it. `step` never lands a released spring exactly: `band` decays into denormals and a
     /// cell's `scale` stalls one ulp above 1.0 ([`update`](Self::update) lands those cells itself,
@@ -346,7 +359,7 @@ impl CardRow {
         if self.focus != -1 {
             return false;
         }
-        let rest = |sp: &Spring, to: f32| plx_machine::idle::settled(sp.pos, to, sp.vel);
+        let rest = |sp: &Spring, to: f32| plx_machine::motion::report::settled(sp.pos, to, sp.vel);
         if !(self.scale.iter().all(|sp| rest(sp, 1.0))
             && rest(&self.overflow, 1.0)
             && rest(&self.lift, 0.0)
@@ -2860,7 +2873,7 @@ mod tests {
     fn a_right_anchored_caption_draws_inside_the_content_bounds_and_ends_at_the_cards_edge() {
         let _serial = plx_base::testlock::serial();
         TITLE_CLOCK.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let title = "Wallace & Gromit: Vengeance Most Fowl and the Curse of the Were-Rabbit";
         let caption = "A caption wider than the card";
         let (t, c, rect) = end_of_row_runs(title, caption);
@@ -2884,7 +2897,7 @@ mod tests {
     fn a_title_too_long_for_both_sides_glides_inside_the_clamped_window() {
         let _serial = plx_base::testlock::serial();
         TITLE_CLOCK.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let (t, c, rect) = end_of_row_runs(LONG_TITLE, "1979");
         assert_eq!(t.len(), 2, "a run and its follower: {t:?}");
         assert!((leftmost(&t) - MARGIN_X).abs() < 0.5, "the glide starts at the content margin: {t:?}");
@@ -3191,19 +3204,19 @@ mod tests {
     }
 
     /// The title's [`marquee::Clock`] restarts at zero the instant the focused text changes, and keeps
-    /// advancing by real elapsed time (read off [`plx_machine::idle::now_ms`]) while it stays the
+    /// advancing by real elapsed time (read off [`plx_machine::motion::report::now_ms`]) while it stays the
     /// same. `frame_begin` stands in for the real frame loop's own per-frame call, advancing the
     /// same clock `title_marquee` reads in production — nothing about `marquee_clock` itself is
     /// untestable now that it reads an absolute snapshot instead of summing a `dt` of its own.
     #[test]
     fn the_marquee_clock_restarts_when_the_focused_text_changes() {
         TITLE_CLOCK.with(|c| c.release());
-        plx_machine::idle::frame_begin(0.0);
+        plx_machine::motion::report::frame_begin(0.0);
         assert_eq!(TITLE_CLOCK.with(|c| c.read("Alpha")), 0.0, "first sight of a title starts at 0");
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let t1 = TITLE_CLOCK.with(|c| c.read("Alpha"));
         assert!(t1 > 0.0, "the clock must advance while the title holds focus");
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let t2 = TITLE_CLOCK.with(|c| c.read("Alpha"));
         assert!(t2 > t1, "and keep advancing frame over frame");
         assert_eq!(
@@ -3331,7 +3344,7 @@ mod tests {
         let sty = RowStyle::HOME;
 
         // opening: the very first step has to be seen by the gate
-        let (_, moved) = plx_machine::idle::scoped_motion(|| {
+        let (_, moved) = plx_machine::motion::report::scoped_motion(|| {
             row.update(6, Some(0), &sty, 1.0 / 60.0);
         });
         assert!(moved, "an opening band must wake the present gate");
@@ -3342,7 +3355,7 @@ mod tests {
             row.update(6, Some(0), &sty, 1.0 / 60.0);
         }
         assert!((row.under_band() - UNDER_LABEL_H).abs() < 0.5);
-        let (_, still) = plx_machine::idle::scoped_motion(|| {
+        let (_, still) = plx_machine::motion::report::scoped_motion(|| {
             row.update(6, Some(0), &sty, 1.0 / 60.0);
         });
         assert!(!still, "a settled open band must not keep the panel awake");
@@ -3352,7 +3365,7 @@ mod tests {
             row.update(6, None, &sty, 1.0 / 60.0);
         }
         assert!((row.under_band() - LABEL_BAND_COLLAPSED).abs() < 0.5);
-        let (_, still) = plx_machine::idle::scoped_motion(|| {
+        let (_, still) = plx_machine::motion::report::scoped_motion(|| {
             row.update(6, None, &sty, 1.0 / 60.0);
         });
         assert!(!still, "a settled collapsed band must not keep the panel awake");
@@ -3452,16 +3465,16 @@ mod tests {
     fn a_focused_caption_that_does_not_fit_marquees() {
         let _serial = plx_base::testlock::serial();
         TITLE_CLOCK.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
-        let _ = plx_machine::idle::take_local_damage();
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
+        let _ = plx_machine::motion::report::take_local_motion();
         let (title, rest) = label_runs("Alien", LONG_CAPTION);
         assert_eq!(title.len(), 1, "a fitting title stays one still run: {title:?}");
         assert_eq!(rest.len(), 2, "the caption is a run and its follower: {rest:?}");
-        assert_eq!(plx_machine::idle::take_local_damage(), 0, "resting is not damage");
-        plx_machine::idle::frame_begin((MARQUEE.hold_ms + 500.0) / 1000.0);
+        assert_eq!(plx_machine::motion::report::take_local_motion(), 0, "resting is not damage");
+        plx_machine::motion::report::frame_begin((MARQUEE.hold_ms + 500.0) / 1000.0);
         let (_, gliding) = label_runs("Alien", LONG_CAPTION);
         assert!(leftmost(&gliding) < leftmost(&rest), "the caption has moved left: {rest:?} -> {gliding:?}");
-        assert!(plx_machine::idle::take_local_damage() > 0, "a gliding frame reports");
+        assert!(plx_machine::motion::report::take_local_motion() > 0, "a gliding frame reports");
     }
 
     /// And nothing else moves: a caption that fits is one still run, centred like it always was,
@@ -3471,11 +3484,11 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         TITLE_CLOCK.with(|c| c.release());
         for _ in 0..3 {
-            plx_machine::idle::frame_begin(1.5);
-            let _ = plx_machine::idle::take_local_damage();
+            plx_machine::motion::report::frame_begin(1.5);
+            let _ = plx_machine::motion::report::take_local_motion();
             let (title, caption) = label_runs("Alien", "1979");
             assert_eq!((title.len(), caption.len()), (1, 1));
-            assert_eq!(plx_machine::idle::take_local_damage(), 0);
+            assert_eq!(plx_machine::motion::report::take_local_motion(), 0);
         }
     }
 
@@ -3492,13 +3505,13 @@ mod tests {
     fn a_title_and_its_caption_glide_in_lockstep() {
         let _serial = plx_base::testlock::serial();
         TITLE_CLOCK.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let (t0, c0) = label_runs(LONG_TITLE, LONG_CAPTION);
         let (title_x, cap_x) = (leftmost(&t0), leftmost(&c0));
         assert_eq!((t0.len(), c0.len()), (2, 2), "both overflow: {t0:?} {c0:?}");
         let mut elapsed = 0.0_f32;
         let mut at = |ms: f32| {
-            plx_machine::idle::frame_begin((ms - elapsed) / 1000.0);
+            plx_machine::motion::report::frame_begin((ms - elapsed) / 1000.0);
             elapsed = ms;
             label_runs(LONG_TITLE, LONG_CAPTION)
         };
@@ -3553,9 +3566,9 @@ mod tests {
     fn a_gliding_within_tile_line_dissolves_in_at_the_windows_leading_edge() {
         let _serial = plx_base::testlock::serial();
         TITLE_CLOCK.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let _ = within_tile_caption_runs("Alien", LONG_CAPTION);
-        plx_machine::idle::frame_begin((MARQUEE.hold_ms + 2000.0) / 1000.0);
+        plx_machine::motion::report::frame_begin((MARQUEE.hold_ms + 2000.0) / 1000.0);
         let runs = within_tile_caption_runs("Alien", LONG_CAPTION);
         assert_eq!(runs.len(), 2, "a run and its follower: {runs:?}");
         let (left, right) = window_of(&runs[0]);
@@ -3575,7 +3588,7 @@ mod tests {
     fn a_within_tile_line_at_rest_draws_crisp_at_the_windows_leading_edge() {
         let _serial = plx_base::testlock::serial();
         TITLE_CLOCK.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let runs = within_tile_caption_runs("Alien", LONG_CAPTION);
         assert_eq!(runs.len(), 2, "a run and its follower: {runs:?}");
         let (left, right) = window_of(&runs[0]);
@@ -3593,10 +3606,10 @@ mod tests {
     fn the_leading_band_grows_in_with_the_travel_instead_of_popping() {
         let _serial = plx_base::testlock::serial();
         TITLE_CLOCK.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let _ = within_tile_caption_runs("Alien", LONG_CAPTION);
         // a quarter second into the glide: 10 px travelled at 40 px/s
-        plx_machine::idle::frame_begin((MARQUEE.hold_ms + 250.0) / 1000.0);
+        plx_machine::motion::report::frame_begin((MARQUEE.hold_ms + 250.0) / 1000.0);
         let runs = within_tile_caption_runs("Alien", LONG_CAPTION);
         let (left, _) = window_of(&runs[0]);
         let travelled = left - runs[0].at.x;
@@ -3613,10 +3626,10 @@ mod tests {
     fn a_line_parked_at_the_end_of_its_travel_draws_crisp() {
         let _serial = plx_base::testlock::serial();
         TITLE_CLOCK.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let _ = within_tile_caption_runs(LONG_TITLE, LONG_CAPTION);
         let own = MARQUEE.period(measure_w(LONG_CAPTION, theme::size::CAPTION));
-        plx_machine::idle::frame_begin((own + 500.0) / 1000.0);
+        plx_machine::motion::report::frame_begin((own + 500.0) / 1000.0);
         let runs = within_tile_caption_runs(LONG_TITLE, LONG_CAPTION);
         let (left, _) = window_of(&runs[0]);
         let parked: Vec<_> = runs.iter().filter(|r| (r.at.x - left).abs() < 0.5).collect();
@@ -3679,7 +3692,7 @@ mod tests {
     #[test]
     fn a_credit_label_is_one_name_line_and_one_role_line_in_every_state() {
         let _serial = plx_base::testlock::serial();
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         CREDIT_CLOCK.with(|c| c.release());
         let reference = baselines(&credit_runs("Ana", "Director", false));
         assert_eq!(reference.len(), 2, "a name line and a role line: {reference:?}");
@@ -3687,7 +3700,7 @@ mod tests {
             for focused in [false, true] {
                 CREDIT_CLOCK.with(|c| c.release());
                 for ms in [0.0_f32, MARQUEE.hold_ms + 700.0, 4000.0] {
-                    plx_machine::idle::frame_begin(ms / 1000.0);
+                    plx_machine::motion::report::frame_begin(ms / 1000.0);
                     let runs = credit_runs(name, role, focused);
                     assert_eq!(baselines(&runs), reference,
                         "{name:?}/{role:?} focused={focused} at {ms} ms: {runs:?}");
@@ -3703,10 +3716,10 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         for (name, role) in CREDIT_CASES {
             for ms in [0.0_f32, 5000.0] {
-                plx_machine::idle::frame_begin(ms / 1000.0);
-                let _ = plx_machine::idle::take_local_damage();
+                plx_machine::motion::report::frame_begin(ms / 1000.0);
+                let _ = plx_machine::motion::report::take_local_motion();
                 assert_eq!(credit_runs(name, role, false).len(), 2, "{name:?}/{role:?}");
-                assert_eq!(plx_machine::idle::take_local_damage(), 0, "an unfocused label never animates");
+                assert_eq!(plx_machine::motion::report::take_local_motion(), 0, "an unfocused label never animates");
             }
         }
     }
@@ -3717,26 +3730,26 @@ mod tests {
     fn a_focused_credit_label_glides_only_the_lines_that_do_not_fit() {
         let _serial = plx_base::testlock::serial();
         CREDIT_CLOCK.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
-        let _ = plx_machine::idle::take_local_damage();
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
+        let _ = plx_machine::motion::report::take_local_motion();
         let (long_name, long_role) = CREDIT_CASES[3];
         let rest = credit_runs("Ana", long_role, true);
         assert_eq!(rest.len(), 3, "a still name, plus the role and its follower: {rest:?}");
-        assert_eq!(plx_machine::idle::take_local_damage(), 0, "resting is not damage");
-        plx_machine::idle::frame_begin((MARQUEE.hold_ms + 500.0) / 1000.0);
+        assert_eq!(plx_machine::motion::report::take_local_motion(), 0, "resting is not damage");
+        plx_machine::motion::report::frame_begin((MARQUEE.hold_ms + 500.0) / 1000.0);
         let moved = credit_runs("Ana", long_role, true);
         assert!(moved.iter().map(|r| r.0).fold(f32::MAX, f32::min)
             < rest.iter().map(|r| r.0).fold(f32::MAX, f32::min), "the role glides: {rest:?} -> {moved:?}");
-        assert!(plx_machine::idle::take_local_damage() > 0);
+        assert!(plx_machine::motion::report::take_local_motion() > 0);
         CREDIT_CLOCK.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.5);
-        let _ = plx_machine::idle::take_local_damage();
+        plx_machine::motion::report::frame_begin(1.5);
+        let _ = plx_machine::motion::report::take_local_motion();
         assert_eq!(credit_runs("Ana", "Director", true).len(), 2);
         assert_eq!(credit_runs(long_name, "Director", true).len(), 3, "the long name and its follower");
         CREDIT_CLOCK.with(|c| c.release());
-        let _ = plx_machine::idle::take_local_damage();
+        let _ = plx_machine::motion::report::take_local_motion();
         assert_eq!(credit_runs("Ana", "Director", true).len(), 2);
-        assert_eq!(plx_machine::idle::take_local_damage(), 0, "a fitting label never reports");
+        assert_eq!(plx_machine::motion::report::take_local_motion(), 0, "a fitting label never reports");
     }
 
     // ---- right-to-left lines glide mirrored ---------------------------------------------------
@@ -3777,11 +3790,11 @@ mod tests {
                 &crate::fixture::FixtureMeasure);
         });
         TITLE_CLOCK.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let rest = draw();
-        plx_machine::idle::frame_begin(MARQUEE.hold_ms / 1000.0);
+        plx_machine::motion::report::frame_begin(MARQUEE.hold_ms / 1000.0);
         let _ = draw();
-        plx_machine::idle::frame_begin(0.5);
+        plx_machine::motion::report::frame_begin(0.5);
         let moved = draw();
         assert_glides_mirrored(&rest, &moved, LONG_ARABIC_TITLE, theme::size::LABEL);
         assert_glides_mirrored(&rest, &moved, LONG_ARABIC_CAPTION, theme::size::CAPTION);
@@ -3798,11 +3811,11 @@ mod tests {
                 LONG_ARABIC_CAPTION, true, &crate::fixture::FixtureMeasure));
         });
         CREDIT_CLOCK.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let rest = draw();
-        plx_machine::idle::frame_begin(MARQUEE.hold_ms / 1000.0);
+        plx_machine::motion::report::frame_begin(MARQUEE.hold_ms / 1000.0);
         let _ = draw();
-        plx_machine::idle::frame_begin(0.5);
+        plx_machine::motion::report::frame_begin(0.5);
         let moved = draw();
         assert_glides_mirrored(&rest, &moved, LONG_ARABIC_TITLE, theme::size::LABEL);
         assert_glides_mirrored(&rest, &moved, LONG_ARABIC_CAPTION, theme::size::CAPTION);
@@ -3816,7 +3829,7 @@ mod tests {
     fn a_right_to_left_within_tile_line_at_rest_is_crisp_at_its_head_and_dissolves_at_its_left() {
         let _serial = plx_base::testlock::serial();
         TITLE_CLOCK.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let runs = within_tile_caption_runs("Alien", LONG_ARABIC_CAPTION);
         assert_eq!(runs.len(), 2, "a run and its follower: {runs:?}");
         let run = &runs[1];
@@ -3837,11 +3850,11 @@ mod tests {
     fn a_gliding_right_to_left_line_dissolves_out_at_the_right_edge_growing_with_the_travel() {
         let _serial = plx_base::testlock::serial();
         TITLE_CLOCK.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let _ = within_tile_caption_runs("Alien", LONG_ARABIC_CAPTION);
         let w = measure_w(LONG_ARABIC_CAPTION, theme::size::CAPTION);
         // a quarter second into the glide: 10 px travelled at 40 px/s
-        plx_machine::idle::frame_begin((MARQUEE.hold_ms + 250.0) / 1000.0);
+        plx_machine::motion::report::frame_begin((MARQUEE.hold_ms + 250.0) / 1000.0);
         let runs = within_tile_caption_runs("Alien", LONG_ARABIC_CAPTION);
         let run = &runs[1];
         let (_, right) = window_of(run);
@@ -3851,7 +3864,7 @@ mod tests {
         assert!(near(from, right - travelled) && near(to, right),
             "the band is as wide as the travel ({travelled} px to {right}): {from}..{to}");
         // two seconds on, past the full band
-        plx_machine::idle::frame_begin(1.75);
+        plx_machine::motion::report::frame_begin(1.75);
         let runs = within_tile_caption_runs("Alien", LONG_ARABIC_CAPTION);
         let run = &runs[1];
         let (_, right) = window_of(run);

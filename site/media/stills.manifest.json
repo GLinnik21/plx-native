@@ -1,11 +1,11 @@
 {
  "environment": {
-  "chrome": "Google Chrome 155.0.8059.39",
+  "chrome": "Google Chrome 156.0.8078.79",
   "cpu": {
    "logical": 4,
-   "model": "INTEL(R) XEON(R) PLATINUM 8573C"
+   "model": "AMD EPYC 9V74 80-Core Processor"
   },
-  "derive_ffmpeg": "ffmpeg version n9.0.2-35-g9a9b70bb8c-20261023 Copyright (c) 2000-2026 the FFmpeg developers",
+  "derive_ffmpeg": "ffmpeg version n9.0.2-57-gd838f9f9ae-20261112 Copyright (c) 2000-2026 the FFmpeg developers",
   "env": {
    "GALLIUM_DRIVER": "llvmpipe",
    "LC_ALL": "C",
@@ -20,8 +20,8 @@
    "renderer": "llvmpipe (LLVM 20.1.2, 256 bits)",
    "version": "4.5 (Compatibility Profile) Mesa 25.2.8-0ubuntu0.24.04.4"
   },
-  "glxinfo": "name of display: :99\ndisplay: :99  screen: 0\ndirect rendering: Yes\nExtended renderer info (GLX_MESA_query_renderer):\n    Vendor: Mesa (0xffffffff)\n    Device: llvmpipe (LLVM 20.1.2, 256 bits) (0xffffffff)\n    Version: 25.2.8\n    Accelerated: no\n    Video memory: 15988MB\n    Unified memory: yes\n    Preferred profile: core (0x1)\n    Max core profile version: 4.5\n    Max compat profile version: 4.5\n    Max GLES1 profile version: 1.1\n    Max GLES[23] profile version: 3.2\nMemory info (GL_ATI_meminfo):\n    VBO free memory - total: 1069136 MB, largest block: 1069136 MB\n    VBO free aux. memory - total: 14738 MB, largest block: 14738 MB\n    Texture free memory - total: 1069136 MB, largest block: 1069136 MB\n    Texture free aux. memory - total: 14738 MB, largest block: 14738 MB\n    Renderbuffer free memory - total: 1069136 MB, largest block: 1069136 MB\n    Renderbuffer free aux. memory - total: 14738 MB, largest block: 14738 MB\nMemory info (GL_NVX_gpu_memory_info):\n    Dedicated video memory: 1069136 MB\n    Total available memory: 1085125 MB\n    Currently available dedicated video memory: 1069136 MB\nOpenGL vendor string: Mesa\nOpenGL renderer string: llvmpipe (LLVM 20.1.2, 256 bits)\nOpenGL core profile version string: 4.5 (Core Profile) Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL core profile shading language version string: 4.50\nOpenGL core profile context flags: (none)\nOpenGL core profile profile mask: core profile\n\nOpenGL version string: 4.5 (Compatibility Profile) Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL shading language version string: 4.50\nOpenGL context flags: (none)\nOpenGL profile mask: compatibility profile\n\nOpenGL ES profile version string: OpenGL ES 3.2 Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL ES profile shading language version string: OpenGL ES GLSL ES 3.20",
-  "kernel": "Linux 6.17.0-1022-azure",
+  "glxinfo": "name of display: :99\ndisplay: :99  screen: 0\ndirect rendering: Yes\nExtended renderer info (GLX_MESA_query_renderer):\n    Vendor: Mesa (0xffffffff)\n    Device: llvmpipe (LLVM 20.1.2, 256 bits) (0xffffffff)\n    Version: 25.2.8\n    Accelerated: no\n    Video memory: 15983MB\n    Unified memory: yes\n    Preferred profile: core (0x1)\n    Max core profile version: 4.5\n    Max compat profile version: 4.5\n    Max GLES1 profile version: 1.1\n    Max GLES[23] profile version: 3.2\nMemory info (GL_ATI_meminfo):\n    VBO free memory - total: 0 MB, largest block: 0 MB\n    VBO free aux. memory - total: 14871 MB, largest block: 14871 MB\n    Texture free memory - total: 0 MB, largest block: 0 MB\n    Texture free aux. memory - total: 14871 MB, largest block: 14871 MB\n    Renderbuffer free memory - total: 0 MB, largest block: 0 MB\n    Renderbuffer free aux. memory - total: 14871 MB, largest block: 14871 MB\nMemory info (GL_NVX_gpu_memory_info):\n    Dedicated video memory: 0 MB\n    Total available memory: 15983 MB\n    Currently available dedicated video memory: 0 MB\nOpenGL vendor string: Mesa\nOpenGL renderer string: llvmpipe (LLVM 20.1.2, 256 bits)\nOpenGL core profile version string: 4.5 (Core Profile) Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL core profile shading language version string: 4.50\nOpenGL core profile context flags: (none)\nOpenGL core profile profile mask: core profile\n\nOpenGL version string: 4.5 (Compatibility Profile) Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL shading language version string: 4.50\nOpenGL context flags: (none)\nOpenGL profile mask: compatibility profile\n\nOpenGL ES profile version string: OpenGL ES 3.2 Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL ES profile shading language version string: OpenGL ES GLSL ES 3.20",
+  "kernel": "Linux 7.0.0-1017-azure",
   "os": "Ubuntu 24.04.5 LTS",
   "packages": {
    "ffmpeg": "7:6.1.1-3ubuntu5",
@@ -33,13 +33,13 @@
    "libllvm19": "1:19.1.1-1ubuntu1~24.04.2",
    "libllvm20": "1:20.1.2-0ubuntu1~24.04.3",
    "libsdl2-2.0-0": "2.30.0+dfsg-1ubuntu3.1",
-   "python3-pil": "10.2.0-1ubuntu1.3",
+   "python3-pil": "10.2.0-1ubuntu1.4",
    "xvfb": "2:21.1.12-1ubuntu1.9"
   },
   "pillow": "10.2.0",
   "runner_image": {
    "os": "ubuntu24",
-   "version": "20261023.334.3"
+   "version": "20261101.360.1"
   }
  },
  "files": {
@@ -48,12 +48,12 @@
    "sha256": "2164c3d13177867d6e880c103b11606a42d7086b25238360958c21f6c7578335"
   },
   "docs/screenshots/home.jpg": {
-   "bytes": 210929,
-   "sha256": "599fa230d0036f7b8ef90b1a30f72e43402477e96a1ad06c9914c0eacd724ddb"
+   "bytes": 164953,
+   "sha256": "f0c2500ec77dbf78b6ef0d50b32dc2137b1100a751ad0227c763d7e9b822e41d"
   },
   "docs/screenshots/library.jpg": {
-   "bytes": 299424,
-   "sha256": "61fb5c6b3537330c6ef4dc71737271212dcfdb2ba071cba2fbdcc9828b5fa8c5"
+   "bytes": 299887,
+   "sha256": "84e5b3a201a364a45b42e76c99c941c6070fbba95be29bb62d71bf8b4836c4a9"
   },
   "docs/screenshots/player.jpg": {
    "bytes": 70543,
@@ -64,36 +64,36 @@
    "sha256": "9e033cd919e0f319b4b60c087e8ec4007e34f474ef6a18418d061a2db0f5956d"
   },
   "docs/screenshots/ux-account-menu.jpg": {
-   "bytes": 230155,
-   "sha256": "77dc57d55c1510823c8a2cc8dec0e5a28d31a90a88f4c8b02aeccc878ff7a4f4"
+   "bytes": 177706,
+   "sha256": "fc7fb4fdf50e4516c1ed106aae490410ba8e6f3e5eb871cf3ecf03b135fceeaa"
   },
   "docs/screenshots/ux-detail.jpg": {
-   "bytes": 246047,
-   "sha256": "f14ccfd8a78f09705629d634739e8cb38013f8b65a720e2474f9936ad7629627"
+   "bytes": 224399,
+   "sha256": "6c0991ae86809360f1c824f718d63dd39359b18278030c6c8672471fe19cca10"
   },
   "docs/screenshots/ux-failure.jpg": {
-   "bytes": 66655,
-   "sha256": "8316586f1806186753d3586dbb1673ae285a3d692a0effbe2c0efb5f47820ba6"
+   "bytes": 66540,
+   "sha256": "532fe8b6b2ea89ceeb11f4f5ee53bedc2bc5436f3765e7548596c3e2a802b949"
   },
   "docs/screenshots/ux-home-hero.jpg": {
-   "bytes": 272875,
-   "sha256": "790fe3b78070d5c86d815b65a75958e25b77c4e5dbfab6a7e0c5a95b777560d3"
+   "bytes": 207763,
+   "sha256": "f8161e53f6f8961fdf0625ad4a6ae03d8f11132c3da7ef76494e7c8680dfc6fc"
   },
   "docs/screenshots/ux-home-shelves.jpg": {
-   "bytes": 453187,
-   "sha256": "28376fc086af7cb64926616048f14634b73ed2ed7f749425f314bd6face11914"
+   "bytes": 208804,
+   "sha256": "5b5b12f474a4a2d45b42c5e8340416ff2c166e793f6d4dd8136b0a9656b3126e"
   },
   "docs/screenshots/ux-item-menu.jpg": {
-   "bytes": 380442,
-   "sha256": "ddb63868c872c03cd8c3a1c73e21b51c1e51b0f449ee98b6c9dd67c62ecc3721"
+   "bytes": 182252,
+   "sha256": "d8e90ab4586091e1dc067881cdb9773fdf33d97bec03ba0a9e6eaecf247d6168"
   },
   "docs/screenshots/ux-library-grid.jpg": {
-   "bytes": 395125,
-   "sha256": "ce2b612098a6b62af83773feea2adba1744f2bec32414aaf0ead1e3a39237ccc"
+   "bytes": 396209,
+   "sha256": "5c0dc9be3552f79a67675d96ecdf9f5a9a4758e3fe28e20b19abd1d5018cd4b0"
   },
   "docs/screenshots/ux-library-sort.jpg": {
-   "bytes": 324540,
-   "sha256": "025a96cc80925d335b11a33641819d147f129027300f1812e5aefcb41706f645"
+   "bytes": 323060,
+   "sha256": "402b908bc48385861c9879c00a00051d36ca552f4c87f7bcced50ea29b80d85f"
   },
   "docs/screenshots/ux-search.jpg": {
    "bytes": 316636,
@@ -116,48 +116,48 @@
    "sha256": "81251d72bbfcea831b4c91a1a66fd445f48b7e81d385527a7a4873b2538ae570"
   },
   "site/media/closeup-glass-glow.png": {
-   "bytes": 3945,
-   "sha256": "973260723a2735541a08297eeaf3f98f9a2c548ed8bd3311d7c55e9936dcfa44"
+   "bytes": 3948,
+   "sha256": "10d5b2b27553b60eae982819f5a7d70c613595ad938121ff12716c1f3f88f6a0"
   },
   "site/media/closeup-glass-narrow-glow.png": {
-   "bytes": 2346,
-   "sha256": "f816eb992f861b381a3de4ab014ded7ab59e7effc12af884117d3ffa47d548f3"
+   "bytes": 2355,
+   "sha256": "6c58d6055e60d12a8d81d765968aa376531df5fb8a60de87630f4bbcf7d10179"
   },
   "site/media/closeup-glass-narrow.jpg": {
-   "bytes": 67883,
-   "sha256": "005875c8dc01753f2defa04a1f0d632e0a7ff64db9686a7904f4bd99fbe103fd"
+   "bytes": 67867,
+   "sha256": "1e691d947e9e21865f1bcaa9f4134bfd7523f43af0a5bfaaa1c0c1fc53a14769"
   },
   "site/media/closeup-glass-narrow.webp": {
-   "bytes": 23908,
-   "sha256": "c4d38131afec1c7c03f87c10907df5861abc3c55635c69443ac4c54b7e3b1f10"
+   "bytes": 24138,
+   "sha256": "a5810d267b15c3f6895ff8d6ed5119f509a5119809dcd55981f30bec1b876352"
   },
   "site/media/closeup-glass.jpg": {
-   "bytes": 106452,
-   "sha256": "e24096a7e308d035c78b5b7c1f5266fdefb51ff25a2bd8ada73dfad407ba1c2a"
+   "bytes": 106671,
+   "sha256": "0f0720e7ac0542d91ec3fd6c3c0a87736aadd37c8a36140dcb3b2e5392c9741b"
   },
   "site/media/closeup-glass.webp": {
-   "bytes": 43396,
-   "sha256": "9406cf926ef9525c6abca0ad8ab95a2362cb3bc68cdd1cb5585803041a79d4b1"
+   "bytes": 43412,
+   "sha256": "8a190928dab9475bd29b04d7ff983924f406d957ac6edd98afae393550476ba2"
   },
   "site/media/closeup-player-glow.png": {
-   "bytes": 3071,
-   "sha256": "2aa49c817161abb6f37ddcacab4c532d822b297f8df23c9e05b88ca272ea8092"
+   "bytes": 3066,
+   "sha256": "6cbb26ac22f25c2d27fc3d5acd41bda39b16adee779fa0b9006d8471259d0006"
   },
   "site/media/closeup-player-narrow.jpg": {
-   "bytes": 71981,
-   "sha256": "6aa24cec7b8c87bd6128e5760f4e3b3277b50e8b3f6e150c6e04947ffa6ada6f"
+   "bytes": 71971,
+   "sha256": "6ab96c92e7e16bcd630ba22b9270ca6f73b8299496102c7ccaba33d7056a652b"
   },
   "site/media/closeup-player-narrow.webp": {
-   "bytes": 37680,
-   "sha256": "da93a088942de57512f6978583872605b3a965002ab0e08fe67fc4fb7b992966"
+   "bytes": 37706,
+   "sha256": "5de3089c06391f28a3ca0b273d72272052b8026c8a5202dfada8150f69e6beae"
   },
   "site/media/closeup-player.jpg": {
-   "bytes": 116095,
-   "sha256": "5a1d54452c2e8e92adac52301d8ddb8769fab36fffeb6758b5dcc9affbd8c1f3"
+   "bytes": 116092,
+   "sha256": "d66c7605fd19a5f709b2ed7d2fecd590cba2d2542d93690cfaf241a6dbf9acee"
   },
   "site/media/closeup-player.webp": {
-   "bytes": 45560,
-   "sha256": "bb453a7773f8fffb383f9b3068aa3737bd2688fd3a5f9aa89b45d89ecc7eefd5"
+   "bytes": 45570,
+   "sha256": "8b4c5b9677a5fa1192a66a3fc6e71bfa87e2f38c78ce7395fc413ec56fa6e893"
   },
   "site/media/closeup-tiles-glow.png": {
    "bytes": 3901,
@@ -180,8 +180,8 @@
    "sha256": "d7cb07dc327e05c1934fc0b64682ded214859c8f8eb31f7857cb3a83c7ed886d"
   },
   "site/media/og-card.jpg": {
-   "bytes": 80549,
-   "sha256": "cb6defa2c1f0905d68c39badc6bba5eab2e914cbeb3919e3f9193476f6047955"
+   "bytes": 71041,
+   "sha256": "ae13602fdbe979f4e32c5547840c75ff0b77fcd107c06836d188d7d80782fb6f"
   }
  },
  "platform": "linux-ci",
@@ -196,23 +196,28 @@
      "ux-account-menu.jpg"
     ],
     "free_regions": 0,
-    "identical": false,
-    "ok": true,
-    "pixels": 231,
-    "total": 2073600,
-    "worst": 1
-   },
-   "detail": {
-    "bound": 1,
-    "captures": 2,
-    "files": [
-     "ux-detail.jpg"
-    ],
-    "free_regions": 0,
     "identical": true,
     "ok": true,
     "pixels": 0,
     "worst": 0
+   },
+   "detail": {
+    "bound": 1,
+    "captures": 3,
+    "discarded": {
+     "capture": 2,
+     "pixels": 18906,
+     "worst": 4
+    },
+    "files": [
+     "ux-detail.jpg"
+    ],
+    "free_regions": 0,
+    "identical": false,
+    "ok": true,
+    "pixels": 100,
+    "total": 2073600,
+    "worst": 1
    },
    "failure": {
     "bound": 1,
@@ -237,7 +242,7 @@
     "free_regions": 0,
     "identical": false,
     "ok": true,
-    "pixels": 12,
+    "pixels": 14731,
     "total": 2073600,
     "worst": 1
    },
@@ -248,10 +253,11 @@
      "ux-home-shelves.jpg"
     ],
     "free_regions": 0,
-    "identical": true,
+    "identical": false,
     "ok": true,
-    "pixels": 0,
-    "worst": 0
+    "pixels": 74,
+    "total": 2073600,
+    "worst": 1
    },
    "item-menu": {
     "bound": 1,
@@ -260,10 +266,11 @@
      "ux-item-menu.jpg"
     ],
     "free_regions": 0,
-    "identical": true,
+    "identical": false,
     "ok": true,
-    "pixels": 0,
-    "worst": 0
+    "pixels": 55,
+    "total": 2073600,
+    "worst": 1
    },
    "library": {
     "bound": 1,
@@ -284,10 +291,11 @@
      "ux-library-grid.jpg"
     ],
     "free_regions": 0,
-    "identical": true,
+    "identical": false,
     "ok": true,
-    "pixels": 0,
-    "worst": 0
+    "pixels": 137,
+    "total": 2073600,
+    "worst": 1
    },
    "library-sort": {
     "bound": 1,
@@ -296,10 +304,11 @@
      "ux-library-sort.jpg"
     ],
     "free_regions": 0,
-    "identical": true,
+    "identical": false,
     "ok": true,
-    "pixels": 0,
-    "worst": 0
+    "pixels": 1,
+    "total": 2073600,
+    "worst": 1
    },
    "player": {
     "bound": 1,
@@ -395,32 +404,35 @@
      "closeup-player.jpg"
     ],
     "free_regions": 0,
-    "identical": false,
+    "identical": true,
     "ok": true,
-    "pixels": 357,
-    "total": 18662400,
-    "worst": 2
+    "pixels": 0,
+    "worst": 0
    }
   }
  },
  "tree_hash": {
-  "assets": "2cfd47d642fb46f53a4487a779b0ee441e39e2d8",
-  "combined": "fbd298386d8fc9d60396bc2eb3cd8d8ac00d3a247c20355f47dd2d8a73c62b3b",
-  "locales": "14c107c57f1ee0775529ff3af839ada1fb1d34b7",
+  "assets": "c9f42d4cb7cc01a215fc78714efc73a13ed7f90b",
+  "combined": "4d03c76607ebc2f40a053c25c4f81aa1575a4c2b829b17121943d6e49762aaf3",
+  "locales": "73906932ea2d8594f21602647819c9657e375f1d",
+  "pkg/appfont-arabic-bold.ttf": "17ae896a2227c2c701995909b4e90f8991af848b",
+  "pkg/appfont-arabic.ttf": "57e50fb37b46fc8fafb2811596582f8447f11033",
   "pkg/appfont-bold.ttf": "fd85bda99fc074155621794b40b89d3430fc7806",
   "pkg/appfont-cjk.ttf": "f2c42d8215ce27a59e3dcf2bb6f02a7a75b05329",
   "pkg/appfont-emoji.ttf": "454eccccd9bc49f5698728d501adec4e3927149d",
+  "pkg/appfont-hebrew-bold.ttf": "a4b1e85d8f031b5553d170a74aa71720f4e9039c",
+  "pkg/appfont-hebrew.ttf": "6c71d56f76c8b2f8889fc16e85236146a88dc406",
   "pkg/appfont.ttf": "a55d3a2b1b9723316ae65d3d1d7ac599b861c419",
-  "rust-modules": "42b5913bc73f472a7cd252bce26b9e1ebb283d70",
+  "rust-modules": "1866ef1de42ab26baa5fd680798c48e8850fd7be",
   "site/og": "29fec79cb6c2f39ebe51a4a47c937eaba36e6320",
-  "src": "274afa8530b1edf5f27b5eba0ac8ac3b8023068c",
-  "tests/demo_library": "56b529ab47a49f2b9131e7b6aa9c6a193ffeb3fb",
-  "tests/mock_pms.py": "376c057c9bedcb382aed6873a7b399bf1facda9e",
+  "src": "6ff1608166f0d0dcfb0c66a8323dd7eaad3a279f",
+  "tests/demo_library": "99f63c4c0d0fe2234e7f56f842290891c66eefa2",
+  "tests/mock_pms.py": "b5e16d2ca2b3ee3afe551bdf3d8d4ae262db918c",
   "tests/screenshots": "d9bdb6a1935f9e7731c7b1ec5ed06ea8bb75e3f1",
   "tools/render-og-card.sh": "356996eb0abcbdda78d44deefb2eb6237f52027f",
   "tools/render-site-glows.py": "3c12193796b99064d259d5b92cde1b44a4ab1bcb",
   "tools/render-site-variants.py": "b077ad599b409fe3d687ba7476fd726e8f978da6",
-  "tools/screenshots.py": "a562332dce5c9db9f546c5013ef9b9288bee1644",
-  "tools/site_stills.py": "52cb18b4a263c78633496e7724cf661132ae8031"
+  "tools/screenshots.py": "fffc7609a798d20a81b6be7c0f0c908594e548e7",
+  "tools/site_stills.py": "ba8eecbcf3a4843bccc61f39d0e8b24efa613e4b"
  }
 }

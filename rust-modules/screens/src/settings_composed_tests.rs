@@ -92,6 +92,7 @@ pub struct SurfaceRig {
     /// How many times BACK reached the root of the ROOT stack (the platform's Home).
     roots: u32,
     pub(super) preference_commands: Vec<registry::PreferenceCmd>,
+    pub(super) preferences: Option<plx_plex::plex::session::ProfilePrefs>,
     /// The television keyboard raises (`true`) and lowers (`false`) that reached the platform, in order.
     keyboard: Vec<bool>,
 }
@@ -104,7 +105,7 @@ impl SurfaceRig {
             stores: plx_data::stores::Stores::default(),
             directory: Default::default(),
             roots: 0,
-            preference_commands: Vec::new(),
+            preference_commands: Vec::new(), preferences: None,
             keyboard: Vec::new(),
         }
     }
@@ -115,10 +116,12 @@ impl Rig<InnerHost> for SurfaceRig {
         self.keyboard.push(up);
     }
     fn split(&mut self) -> Split<'_, InnerHost> {
-        self.stores.capture_browse(&mut self.directory);
+        self.stores.capture_seeded_browse_for_test(&mut self.directory, plx_plex::plex::current_server());
+        let mut inputs = crate::registry::capture_fixture();
+        if let Some(preferences) = &self.preferences { inputs.preferences = Some(preferences.clone()); }
         Split {
             mounter: &mut self.mounter,
-            views: self.directory.view().into(),
+            views: crate::registry::InnerViews::new(self.directory.view(), Box::leak(Box::new(inputs))),
             measure: &self.measure,
         }
     }
@@ -146,7 +149,14 @@ impl Rig<InnerHost> for SurfaceRig {
         _parts: &CxParts<u32>,
         _out: &mut Effects<'_, InnerHost>,
     ) {
-        if let AppFx::Preferences(command) = effect { self.preference_commands.push(command); }
+        match effect {
+            AppFx::Preferences(command) => self.preference_commands.push(command),
+            AppFx::Session(plx_session::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. }) => {
+                let account = plx_plex::plex::grant::account_key(&plx_plex::plex::session::peek().account_token);
+                plx_plex::plex::grant::record(&account, &machine_id, choice).expect("fixture grant answer");
+            }
+            _ => {}
+        }
     }
     fn log(&mut self, _line: &str) {}
     fn prepare(&mut self, _b: &mut Budget, _present: &mut Present) {}
@@ -337,7 +347,7 @@ fn composed_owner_favourites_footer_survives_left_down_and_idle_frames() {
     // the real Onboard Tick can poll discovery without spawning network work.
     let mut rig = SurfaceRig::new();
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([a, b]);
-    rig.stores.capture_browse(&mut rig.directory);
+    rig.stores.capture_seeded_browse_for_test(&mut rig.directory, a);
     let pins = rig.directory.view().favorite_sections().to_vec();
     let (mut d, mut rig, id) = consent_opened_on(SettingsPage::Favourites, rig);
     seat(&mut d, id, 0);
@@ -356,7 +366,7 @@ fn composed_owner_favourites_footer_survives_left_down_and_idle_frames() {
         frame(&mut d, &mut rig, ms + 16, vec![]);
         assert_eq!(d.focus().unwrap().elem, registry::BAND);
     }
-    rig.stores.capture_browse(&mut rig.directory);
+    rig.stores.capture_seeded_browse_for_test(&mut rig.directory, a);
     assert_eq!(rig.directory.view().favorite_sections(), pins,
         "draft navigation cannot persist pins");
     assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(id)));
@@ -555,6 +565,7 @@ fn playback_picker_seats_the_saved_option_and_restores_its_parent_row() {
     plx_media::route::restore_direct_play_mode(plx_media::route::DirectPlayMode::Auto);
     for back in [Key::Back, Key::Left] {
         let (mut d, mut rig, id) = consent_opened(SettingsPage::Playback);
+        rig.preferences = Some(plx_plex::plex::session::ProfilePrefs { playback_quality: Some(plx_media::route::Quality::P480), direct_play_mode: Some(plx_media::route::DirectPlayMode::Auto), ..Default::default() });
         // A real DOWN/UP gives the engine an explicit parent cursor at Default quality.
         frame(&mut d, &mut rig, 32, vec![key(Key::Down, tick(32))]);
         frame(&mut d, &mut rig, 48, vec![key(Key::Up, tick(48))]);

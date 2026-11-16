@@ -25,7 +25,7 @@ no Dolby Vision declared) just as reliably as through real PMS-driven Play press
 the same content without incident.
 
 **This is not an LG firmware bug, and the fix already exists.** It is
-[issue #74](https://github.com/GLinnik21/plx-native/issues/74), fixed in commit `ac305265`
+[issue #74](https://github.com/plxnative/plx-native/issues/74), fixed in commit `ac305265`
 (`fix(player): never drive Starfish while Load is still in flight, and refuse to Load under a k5lp
 jail with no /dev/rtkmem`), released as **v0.6.1**. Root cause, from that commit's own account:
 `src/starfish.c` marked the native session ready *before* the synchronous `Load` call returned, so

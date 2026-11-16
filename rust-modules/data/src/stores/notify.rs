@@ -14,7 +14,7 @@
 //! session must not scrobble our other servers (`fan_out_origin_watched`). The output
 //! ([`NotifyOut`]) is read by `stores::notify_map`, which turns it into read-backs of held items.
 //!
-//! The store has no `StoreId` and no `StoreCmd`: nothing on a screen addresses it. It is pumped once
+//! The store has an unrecorded job `StoreId` but no `StoreCmd`: no screen addresses it. It is pumped once
 //! a frame by the application (`Bridge::notify_pump`) and told about the lifecycle
 //! (`notify_suspend`, `notify_resume`, `notify_network_changed`) and a profile reset
 //! (`notify_reset`). Every deadline is counted in pumped frames, never read from a clock.
@@ -29,8 +29,11 @@
 
 use plx_plex::plex::notify::{LibraryEntry, Notification, NotifyEnd, PlaySession};
 use plx_plex::plex::ServerId;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use plx_plex::plex::{ClientKey, ClientKeys};
+use plx_machine::machine::{Addr, MachineId, RequestId};
+use plx_machine::job::Job;
+use super::{StoreId, StoreJob};
+use super::notify_job::{Link, NotifyStreamPort, NotifyStreamReq};
 
 /// Ships `true`. `docs/pms-api.md` §9 lists what was checked on the mock TV and what is still owed. The owned-only rule is separate and
 /// unconditional; `notify_tests::enabled_const_connects_to_an_owned_server` and
@@ -47,87 +50,31 @@ const BACKOFF_MAX_S: u64 = 60;
 /// starts over, and a resync it owed but skipped while flapping is delivered.
 const STABLE_FRAMES: u64 = 25 * FRAMES_PER_S;
 
-/// `(instance_gen, token_gen)` of the client a connection was opened for.
-type Key = (u32, u32);
+type Key = ClientKey;
 
-#[derive(Default)]
-struct Inbox {
-    events: Vec<(Key, Notification)>,
-    end: Option<NotifyEnd>,
+/// Captured immutable input for a complete cursor pass.
+pub struct NotifyInput<'a> { pub keys: &'a ClientKeys, pub armed: bool }
+
+/// Owned transaction token: no borrow of Stores crosses runner IO.
+#[must_use]
+pub struct NotifyPass {
+    owner: std::sync::Arc<()>, frame: u64, cursor: usize, count: usize,
+    pending: bool, out: NotifyOut,
+}
+#[must_use]
+pub struct NotifyTurn {
+    owner: std::sync::Arc<()>, frame: u64, index: usize, sid: ServerId, key: Key,
+    addr: Option<Addr>, launch: bool, settled: bool,
 }
 
-/// The worker's side of one connection: the cancel flag it watches, and the mailbox it fills.
-/// Every connection gets a fresh one, so a worker that outlives its connection writes into an
-/// orphan nobody reads.
-#[derive(Clone)]
-pub struct Link {
-    key: Key,
-    cancel: Arc<AtomicBool>,
-    inbox: Arc<Mutex<Inbox>>,
+fn owned(keys: &ClientKeys, sid: ServerId) -> bool {
+    keys.key(sid).is_some() && keys.facts(sid)
+        .and_then(|f| f.described).is_some_and(|f| f.owned)
 }
-
-impl Link {
-    fn new(key: Key) -> Link {
-        Link { key, cancel: Arc::new(AtomicBool::new(false)), inbox: Arc::default() }
-    }
-    fn lock(&self) -> std::sync::MutexGuard<'_, Inbox> {
-        self.inbox.lock().unwrap_or_else(|e| e.into_inner())
-    }
-    pub fn cancel_flag(&self) -> &AtomicBool {
-        &self.cancel
-    }
-    pub fn is_cancelled(&self) -> bool {
-        self.cancel.load(Ordering::Acquire)
-    }
-    /// A notification arrived (pings included: the first frame of any kind is what marks the
-    /// connection live).
-    pub fn push(&self, n: Notification) {
-        self.lock().events.push((self.key, n));
-    }
-    /// The connection ended. Anything pushed before this is still delivered.
-    pub fn finish(&self, end: NotifyEnd) {
-        self.lock().end = Some(end);
-    }
-}
-
-/// Opens a connection for `sid` and returns at once. `false` = the connection could not be started
-/// (the OS refused the worker thread); the store backs off.
-pub trait Connector {
-    fn connect(&mut self, sid: ServerId, link: Link) -> bool;
-}
-
-/// The production connector: one small fire-and-forget worker per connection, resolving the
-/// server's client at the spawn site.
-#[cfg(not(any(test, feature = "test-support")))]
-struct Spawn;
-
-#[cfg(not(any(test, feature = "test-support")))]
-impl Connector for Spawn {
-    fn connect(&mut self, sid: ServerId, link: Link) -> bool {
-        let Some(client) = plx_plex::plex::client_for(sid) else { return false };
-        plx_base::task::spawn_off_frame("notify", move |off| {
-            let end = client.notifications(off, link.cancel_flag(), &mut |n| link.push(n));
-            link.finish(end);
-        })
-    }
-}
-
-/// Under test only an injected connector can run: a default-built store never opens a stream.
-#[cfg(any(test, feature = "test-support"))]
-struct Refuse;
-
-#[cfg(any(test, feature = "test-support"))]
-impl Connector for Refuse {
-    fn connect(&mut self, _sid: ServerId, _link: Link) -> bool {
-        false
-    }
-}
-
-fn default_connector() -> Box<dyn Connector> {
-    #[cfg(not(any(test, feature = "test-support")))]
-    return Box::new(Spawn);
-    #[cfg(any(test, feature = "test-support"))]
-    return Box::new(Refuse);
+fn stand_down(conn: &mut Conn) {
+    conn.drop_link();
+    if conn.state == State::Live { conn.gap_owed = true; }
+    if matches!(conn.state, State::Connecting | State::Live) { conn.state = State::Idle; }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -188,7 +135,7 @@ impl Conn {
     /// Cancel and forget the open connection, if any.
     fn drop_link(&mut self) {
         if let Some(link) = self.link.take() {
-            link.cancel.store(true, Ordering::Release);
+            link.cancel();
         }
     }
 
@@ -307,20 +254,22 @@ pub struct NotifyPlays {
 
 pub struct NotifyStore {
     enabled: bool,
-    connector: Box<dyn Connector>,
+    jobs: Vec<StoreJob>,
+    next_req: u32,
+    active: Option<u64>,
+    owner: std::sync::Arc<()>,
     conns: Vec<Conn>,
     resync: Vec<(ServerId, u32)>,
     /// `(roster_gen, facts_gen)` the connection table was last built against.
     seen: (u32, u32),
     frame: u64,
     suspended: bool,
-    /// May this client's token ride its origin now? Production: the grant authority's live answer.
-    gate: fn(&plx_plex::plex::Client) -> bool,
+
 }
 
 impl Default for NotifyStore {
     fn default() -> Self {
-        Self::new(NOTIFY_ENABLED, default_connector())
+        Self::new(NOTIFY_ENABLED)
     }
 }
 
@@ -331,21 +280,14 @@ impl Drop for NotifyStore {
 }
 
 impl NotifyStore {
-    fn new(enabled: bool, connector: Box<dyn Connector>) -> Self {
-        Self { enabled, connector, conns: Vec::new(), resync: Vec::new(), seen: (0, 0), frame: 0, suspended: false, gate: plx_plex::plex::Client::credential_transport_open }
+    fn new(enabled: bool) -> Self {
+        Self { enabled, jobs: Vec::new(), next_req: 0, active: None,
+            owner: std::sync::Arc::new(()), conns: Vec::new(), resync: Vec::new(),
+            seen: (0, 0), frame: 0, suspended: false }
     }
 
-    /// A store with `connector` and the enable rule overridden: the only way a test runs one.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn with_connector_for_test(connector: Box<dyn Connector>) -> Self {
-        Self::new(true, connector)
-    }
-
-    /// Test seam: replace the credential-transport gate.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn set_gate_for_test(&mut self, gate: fn(&plx_plex::plex::Client) -> bool) {
-        self.gate = gate;
-    }
+    pub fn take_jobs(&mut self) -> Vec<StoreJob> { std::mem::take(&mut self.jobs) }
+    pub fn has_jobs(&self) -> bool { !self.jobs.is_empty() }
 
     /// How many times `sid`'s feed came back after having been live.
     pub fn resync_epoch(&self, sid: ServerId) -> u32 {
@@ -361,111 +303,126 @@ impl NotifyStore {
     /// One frame: reconcile the connection table with the registry, connect what is due and
     /// allowed, collect what the workers delivered. `armed` is the landing gate: a recording, a
     /// replay or a dump owns the run and a live stream would break its determinism.
-    pub fn pump(&mut self, armed: bool) -> NotifyOut {
-        self.frame += 1;
-        let mut out = NotifyOut::default();
-        if !self.enabled {
-            self.close_all();
-            return out;
+    pub fn begin(&mut self, input: &NotifyInput<'_>) -> NotifyPass {
+        assert!(self.active.is_none(), "Notify pass in progress");
+        assert!(self.jobs.is_empty(), "undrained Notify jobs");
+        self.frame = self.frame.checked_add(1).expect("Notify frame exhausted");
+        self.sync_roster(input.keys);
+        let blocked = input.armed || !self.enabled || self.suspended;
+        if blocked { for conn in &mut self.conns { stand_down(conn); } }
+        self.active = Some(self.frame);
+        NotifyPass { owner: self.owner.clone(), frame: self.frame, cursor: 0,
+            count: if blocked { 0 } else { self.conns.len() }, pending: false,
+            out: NotifyOut::default() }
+    }
+
+    fn check_pass(&self, pass: &NotifyPass) {
+        assert!(std::sync::Arc::ptr_eq(&self.owner, &pass.owner));
+        assert_eq!(self.active, Some(pass.frame));
+    }
+
+    pub fn prepare_next(&mut self, pass: &mut NotifyPass, input: &NotifyInput<'_>) -> Option<NotifyTurn> {
+        self.check_pass(pass);
+        assert!(!pass.pending, "finish current Notify turn first");
+        if pass.cursor == pass.count { return None; }
+        let conn = &mut self.conns[pass.cursor];
+        let allowed = !input.armed && self.enabled && !self.suspended
+            && owned(input.keys, conn.sid) && input.keys.key(conn.sid) == Some(conn.key)
+            && input.keys.stream_allowed(conn.sid);
+        let mut launch = false;
+        if !allowed { stand_down(conn); }
+        else if conn.link.is_none() && conn.due(pass.frame) {
+            self.next_req = self.next_req.checked_add(1).expect("Notify request ids exhausted");
+            let addr = Addr { to: MachineId::Store(StoreId::Notify.ord()), req: RequestId(self.next_req) };
+            let link = Link::new(addr, conn.key, pass.frame);
+            self.jobs.push(StoreJob::NotifyStream(Job { addr,
+                req: NotifyStreamReq { sid: conn.sid, key: conn.key } }, NotifyStreamPort::new(link.clone())));
+            conn.link = Some(link);
+            launch = true;
         }
-        self.sync_roster();
-        let frame = self.frame;
-        let Self { conns, connector, resync, suspended, gate, .. } = self;
-        for conn in conns.iter_mut() {
-            // `sync_roster` kept only servers with a client, but a sign-out can land between.
-            let Some(client) = plx_plex::plex::client_for(conn.sid) else {
+        pass.pending = true;
+        Some(NotifyTurn { owner: self.owner.clone(), frame: pass.frame, index: pass.cursor, sid: conn.sid, key: conn.key,
+            addr: conn.link.as_ref().map(|l| l.addr), launch, settled: false })
+    }
+
+    fn check_turn(&self, pass: &NotifyPass, turn: &NotifyTurn) {
+        self.check_pass(pass);
+        assert!(pass.pending);
+        assert!(std::sync::Arc::ptr_eq(&self.owner, &turn.owner));
+        assert_eq!((turn.frame, turn.index), (pass.frame, pass.cursor));
+        let conn = &self.conns[turn.index];
+        assert_eq!((turn.sid, turn.key), (conn.sid, conn.key));
+        assert_eq!(turn.addr, conn.link.as_ref().map(|l| l.addr));
+    }
+
+    pub fn settle_admission(&mut self, pass: &mut NotifyPass, turn: &mut NotifyTurn) {
+        self.check_turn(pass, turn);
+        assert!(!turn.settled);
+        let conn = &mut self.conns[turn.index];
+        if turn.launch {
+            let receipt = conn.link.as_ref().unwrap().take_admission().expect("runner must report Notify admission synchronously");
+            assert_eq!(Some(receipt.addr), turn.addr);
+            assert_eq!(receipt.origin_frame, pass.frame);
+            if receipt.accepted { conn.state = State::Connecting; }
+            else {
                 conn.drop_link();
-                conn.state = State::Idle;
-                continue;
-            };
-            let key = (client.instance_gen(), client.token_gen());
+                conn.back_off(receipt.origin_frame);
+                turn.addr = None;
+            }
+        }
+        turn.settled = true;
+    }
+
+    pub fn finish_turn(&mut self, pass: &mut NotifyPass, turn: NotifyTurn, input: &NotifyInput<'_>) {
+        self.check_turn(pass, &turn);
+        assert!(turn.settled);
+        let conn = &mut self.conns[turn.index];
+        if input.armed || !self.enabled || self.suspended || !owned(input.keys, conn.sid)
+            || input.keys.key(conn.sid) != Some(turn.key) || !input.keys.stream_allowed(conn.sid) {
+            stand_down(conn);
+        } else { conn.drain(pass.frame, &mut self.resync, &mut pass.out); }
+        pass.pending = false;
+        pass.cursor += 1;
+    }
+
+    pub fn end(&mut self, pass: NotifyPass) -> NotifyOut {
+        self.check_pass(&pass);
+        assert!(!pass.pending && pass.cursor == pass.count);
+        assert!(self.jobs.is_empty(), "undrained Notify jobs");
+        self.active = None;
+        pass.out
+    }
+
+    /// Reconcile every captured fill, including eligibility changes without generation moves.
+    /// Retain connection order; append newly described owned slots in supplied slot order.
+    fn sync_roster(&mut self, keys: &ClientKeys) {
+        self.seen = (keys.roster_gen(), keys.facts_gen());
+        self.conns.retain_mut(|conn| {
+            let keep = owned(keys, conn.sid);
+            if !keep { conn.drop_link(); }
+            keep
+        });
+        for conn in &mut self.conns {
+            let key = keys.key(conn.sid).unwrap();
             if key != conn.key {
-                // A re-pointed client or a new token: the old connection and its mailbox are
-                // forgotten. A 401 park was about the old token; any other park stays.
                 conn.drop_link();
                 conn.key = key;
                 conn.attempts = 0;
-                if conn.state == State::Live {
-                    conn.gap_owed = true;
-                }
-                if conn.state != State::Parked(Park::Session) {
-                    conn.state = State::Idle;
-                }
-            }
-            let allowed = !*suspended
-                && !armed
-                && client.has_token()
-                && !client.data_io_disabled()
-                && gate(client);
-            if !allowed {
-                conn.drop_link();
-                if conn.state == State::Live {
-                    conn.gap_owed = true;
-                }
-                if matches!(conn.state, State::Connecting | State::Live) {
-                    conn.state = State::Idle;
-                }
-            } else if conn.link.is_none() && conn.due(frame) {
-                let link = Link::new(conn.key);
-                if connector.connect(conn.sid, link.clone()) {
-                    conn.link = Some(link);
-                    conn.state = State::Connecting;
-                    plx_base::eventlog::log(&format!("notify: connecting sid={}", conn.sid.raw()));
-                } else {
-                    plx_base::eventlog::log(&format!("notify: sid={} could not start a worker", conn.sid.raw()));
-                    conn.back_off(frame);
-                }
-            }
-            conn.drain(frame, resync, &mut out);
-        }
-        out
-    }
-
-    /// Rebuild the connection table when the registry's roster or facts moved: one connection per
-    /// server this account OWNS, none for a server nothing has described (fail closed).
-    fn sync_roster(&mut self) {
-        let marker = (plx_plex::plex::server_roster_gen(), plx_plex::plex::server_facts_gen());
-        if marker == self.seen {
-            return;
-        }
-        self.seen = marker;
-        let owned = |sid: ServerId| plx_plex::plex::server_facts(sid).is_some_and(|f| f.owned);
-        let (mut servers, mut described, mut owned_n) = (0, 0, 0);
-        for sid in plx_plex::plex::server_ids() {
-            servers += 1;
-            if let Some(facts) = plx_plex::plex::server_facts(sid) {
-                described += 1;
-                owned_n += usize::from(facts.owned);
+                if conn.state == State::Live { conn.gap_owed = true; }
+                if conn.state != State::Parked(Park::Session) { conn.state = State::Idle; }
             }
         }
-        plx_base::eventlog::log(&format!("notify: roster servers={servers} described={described} owned={owned_n}"));
-        self.conns.retain_mut(|c| {
-            let keep = owned(c.sid) && plx_plex::plex::client_for(c.sid).is_some();
-            if !keep {
-                c.drop_link();
-            }
-            keep
-        });
-        for sid in plx_plex::plex::server_ids() {
-            if self.conns.iter().any(|c| c.sid == sid) || !owned(sid) {
-                continue;
-            }
-            let Some(client) = plx_plex::plex::client_for(sid) else { continue };
-            self.conns.push(Conn {
-                sid,
-                key: (client.instance_gen(), client.token_gen()),
-                link: None,
-                state: State::Idle,
-                gap_owed: false,
-                resynced_unstable: false,
-                live_since: 0,
-                attempts: 0,
-            });
+        for sid in keys.slots() {
+            if !owned(keys, sid) || self.conns.iter().any(|c| c.sid == sid) { continue; }
+            self.conns.push(Conn { sid, key: keys.key(sid).unwrap(), link: None,
+                state: State::Idle, gap_owed: false, resynced_unstable: false,
+                live_since: 0, attempts: 0 });
         }
     }
 
     /// WILL background: every connection is cancelled now and none opens until [`Self::resume`].
     pub fn suspend(&mut self) {
+        assert!(self.active.is_none(), "Notify pass in progress");
         plx_base::eventlog::log(&format!("notify: suspend conns={}", self.conns.len()));
         self.suspended = true;
         for conn in &mut self.conns {
@@ -481,6 +438,7 @@ impl NotifyStore {
     /// DID foreground: connections may open again, and a pending backoff is forgiven. A parked
     /// server stays parked.
     pub fn resume(&mut self) {
+        assert!(self.active.is_none(), "Notify pass in progress");
         plx_base::eventlog::log(&format!("notify: resume conns={}", self.conns.len()));
         self.suspended = false;
         for conn in &mut self.conns {
@@ -494,6 +452,7 @@ impl NotifyStore {
     /// The network may have changed under every open connection: cancel them all and reconnect.
     /// Backoff is forgiven; a parked server stays parked (a refusal is not about the network).
     pub fn network_changed(&mut self) {
+        assert!(self.active.is_none(), "Notify pass in progress");
         plx_base::eventlog::log(&format!("notify: network changed conns={}", self.conns.len()));
         for conn in &mut self.conns {
             conn.drop_link();
@@ -508,6 +467,8 @@ impl NotifyStore {
     /// A profile reset: every connection is closed and forgotten, parks included, and the table
     /// is rebuilt from the registry on the next pump.
     pub fn reset(&mut self) {
+        assert!(self.active.is_none(), "Notify pass in progress");
+        self.jobs.clear();
         self.close_all();
         self.conns.clear();
         self.resync.clear();

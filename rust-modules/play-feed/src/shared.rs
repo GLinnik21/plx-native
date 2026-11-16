@@ -261,6 +261,8 @@ pub struct Shared {
     /// Feed driver's `Observation::Presented` waits for); unlike the `dg_*` mirrors, a decision
     /// branches on it.
     sink_displayed_live: AtomicBool,
+    // A positive callback sequence, so an in-place seek can exclude callbacks before Play.
+    pub(crate) sink_displayed_sequence: AtomicU32,
     /// **The raw pts of the first audio AU the demuxer pushed since its last open or seek**.
     /// Written by `ff::demux` BEFORE that push, so the feed thread that pops the AU
     /// sees it. The audio lane uses it to tell the real start of a late audio track (an MKV
@@ -599,6 +601,14 @@ pub struct Shared {
     /// "there is no sound": the pipeline was never asked for any.
     pub dg_load_v: AtomicU8,
     pub dg_load_a: AtomicU8,
+    /// The demuxer's conditional-probe answers, in `dg_load_v` / `dg_load_a`'s own code spaces
+    /// (0 = no disagreement): when the bytes it opened disagree with the Load's declared codec, it
+    /// refuses the stream AND records what the file really carries, so the pump's one-shot probe
+    /// retry can reload with the corrected declaration. Written ONLY on that failure path — a
+    /// healthy open never touches either field, so the happy path pays nothing — and cleared with
+    /// `demux_failed` in the session reset.
+    pub probe_actual_v: AtomicU8,
+    pub probe_actual_a: AtomicU8,
     /// Auto-quality facts written by the demux worker and read through `FeedRaw::abr`.
     /// Mode: 0 inactive, 1 progressive Original watchdog, 2 fixed-session HLS controller. The
     /// adaptive worker's own measurements and decisions are not mailboxes: it ships them to the
@@ -683,6 +693,8 @@ impl Shared {
             dg_fed_a_pts: AtomicI64::new(0),
             dg_load_v: AtomicU8::new(0),
             dg_load_a: AtomicU8::new(0),
+            probe_actual_v: AtomicU8::new(0),
+            probe_actual_a: AtomicU8::new(0),
             dg_abr_mode: AtomicU8::new(0),
             dg_abr_kbps: AtomicI64::new(0),
             dg_abr_declared_kbps: AtomicI64::new(-1),
@@ -695,6 +707,7 @@ impl Shared {
             frames: AtomicI32::new(0),
             seen_frame: AtomicBool::new(false),
             sink_displayed_live: AtomicBool::new(false),
+            sink_displayed_sequence: AtomicU32::new(0),
             first_audio_pts: AtomicI64::new(i64::MIN),
             load_completed: AtomicBool::new(false),
             media_id: Mutex::new(None),
@@ -900,6 +913,7 @@ impl Shared {
     pub fn note_displayed_frames(&self, num: i64) {
         if num > 0 {
             self.sink_displayed_live.store(true, Ordering::Relaxed);
+            self.sink_displayed_sequence.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -1035,6 +1049,8 @@ impl Shared {
         self.dg_fed_a_pts.store(0, Ordering::Relaxed);
         self.dg_load_v.store(0, Ordering::Relaxed);
         self.dg_load_a.store(0, Ordering::Relaxed);
+        self.probe_actual_v.store(0, Ordering::Relaxed);
+        self.probe_actual_a.store(0, Ordering::Relaxed);
         self.dg_abr_mode.store(0, Ordering::Relaxed);
         self.dg_abr_kbps.store(0, Ordering::Relaxed);
         self.dg_abr_declared_kbps.store(-1, Ordering::Relaxed);

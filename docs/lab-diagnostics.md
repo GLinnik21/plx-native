@@ -39,7 +39,7 @@ Five pieces of this feature already exist, and the design is mostly wiring them 
   bool or enum **by rule**: `app/diagnostics.rs`'s module doc is a written no-URL / no-credential /
   no-identity contract for exactly this data, because it is already photographed and posted into
   public issue threads. A snapshot built from `Diag` is redacted by construction.
-* **Device identity.** `tv::device::info()` (release, codename, api, name, from `/var/run/nyx/os_info.json`),
+* **Device identity.** `tv::device::info()` (release, codename, api, name, from `/var/run/nyx/os_info.json`; the release alone from `/usr/lib/os-release` when that file cannot be read),
   `devcaps::caps()` (the SoC's own codec table), `paths::app_id()`/`flavour()`,
   `env!("PLX_VERSION")` (the reported app version — `X.Y.Z` for a release build, and the next
   MINOR with the patch reset for every other one, `X.(Y+1).0-dev`; see `rust-modules/build.rs`).

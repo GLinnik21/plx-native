@@ -7,7 +7,7 @@
 //! mirror the maths `player_hud::caption_geometry_for`/`caption_layout` use, kept with hard-coded
 //! constants so a tie test in appkit can pin that the two cannot drift apart.
 
-use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
+use plx_plex::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
 
 /// The logical canvas a text-origin subtitle frame is rendered into (`PlayResX/Y` of the header).
 /// `plx_base::surface::LOGICAL_*` is the one definition of the canvas; they are whole numbers.
@@ -214,33 +214,56 @@ pub fn line_spacing(scale: f32) -> f64 {
     CAPTION_LINE_PITCH as f64 * scale as f64 - font_size(scale)
 }
 
-/// The two viewer picks the synthesized header is a function of.
+/// The viewer picks the synthesized header is a function of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TextStyle {
     pub size: SubtitleSize,
     pub position: SubtitlePosition,
+    /// The viewer's COLOUR pick, normalized by [`header_tone`]: white unless the pick is a colour
+    /// rung ([`SubtitleTone::text_rgb8`]), because the greys only dim and are applied as a tint at
+    /// draw time, so a change among them must not restyle a track.
+    pub tone: SubtitleTone,
 }
 
 impl Default for TextStyle {
     fn default() -> Self {
-        Self { size: SubtitleSize::Medium, position: SubtitlePosition::Low }
+        Self { size: SubtitleSize::Medium, position: SubtitlePosition::Low, tone: SubtitleTone::White }
     }
+}
+
+/// The part of a tone pick the synthesized header carries: the pick itself when it is a colour,
+/// white otherwise.
+pub fn header_tone(tone: SubtitleTone) -> SubtitleTone {
+    if tone.text_rgb8().is_some() { tone } else { SubtitleTone::White }
+}
+
+/// The header's `PrimaryColour`/`SecondaryColour` value for `tone` (ASS `&HAABBGGRR`, opaque): white
+/// for every tone that is not a colour, so today's header is byte for byte what it was.
+pub fn primary_colour(tone: SubtitleTone) -> String {
+    let [r, g, b] = tone.text_rgb8().unwrap_or([0xff, 0xff, 0xff]);
+    format!("&H00{b:02X}{g:02X}{r:02X}")
 }
 
 impl TextStyle {
     /// The picks as the preferences hold them now.
     pub fn current() -> Self {
-        Self { size: crate::route::subtitle_size(), position: crate::route::subtitle_position() }
+        Self {
+            size: crate::route::subtitle_size(),
+            position: crate::route::subtitle_position(),
+            tone: header_tone(crate::player::subtitle_tone()),
+        }
     }
 
     pub fn scale(&self) -> f32 {
         size_scale(self.size)
     }
 
-    /// A number that differs for every distinct pair of picks, so a stored copy is stale exactly
+    /// A number that differs for every distinct set of picks, so a stored copy is stale exactly
     /// when the header it was built for no longer matches.
     pub fn generation(&self) -> u32 {
-        self.size.index() as u32 * SubtitlePosition::LADDER.len() as u32 + self.position.index() as u32
+        (self.size.index() as u32 * SubtitlePosition::LADDER.len() as u32 + self.position.index() as u32)
+            * SubtitleTone::LADDER.len() as u32
+            + self.tone.index() as u32
     }
 }
 
@@ -490,15 +513,53 @@ mod tests {
         assert_eq!(today_layout(2, 1.5, SUB_BASE_Y).face, 54);
     }
 
+    /// The header carries a COLOUR pick and nothing else of the tone: the greys dim at draw time,
+    /// so switching among them must not restyle (and so re-synthesize) a track, while a colour must.
+    #[test]
+    fn the_header_tone_is_the_colour_pick_and_white_for_every_grey() {
+        assert_eq!(header_tone(SubtitleTone::Yellow), SubtitleTone::Yellow);
+        for tone in SubtitleTone::LADDER.into_iter().filter(|t| t.text_rgb8().is_none()) {
+            assert_eq!(header_tone(tone), SubtitleTone::White, "{tone:?}");
+        }
+        assert_eq!(primary_colour(SubtitleTone::White), "&H00FFFFFF");
+        assert_eq!(primary_colour(SubtitleTone::Charcoal), "&H00FFFFFF");
+        assert_eq!(primary_colour(SubtitleTone::Yellow), "&H001AE6FF");
+        let at = |tone| TextStyle { tone: header_tone(tone), ..TextStyle::default() }.generation();
+        assert_eq!(at(SubtitleTone::Silver), at(SubtitleTone::White));
+        assert_ne!(at(SubtitleTone::Yellow), at(SubtitleTone::White));
+    }
+
+    /// `current()` reads the live pick: the next lazy restyle of a text track sees the colour.
+    #[test]
+    fn current_reads_the_live_colour_pick() {
+        let _g = plx_base::testlock::serial();
+        let before = crate::player::subtitle_tone();
+        crate::player::restore_subtitle_tone(SubtitleTone::Yellow);
+        assert_eq!(TextStyle::current().tone, SubtitleTone::Yellow);
+        let yellow = generation();
+        crate::player::restore_subtitle_tone(SubtitleTone::Grey);
+        assert_eq!(TextStyle::current().tone, SubtitleTone::White, "a grey is not the header's business");
+        assert_ne!(generation(), yellow, "a stored header built for yellow is stale after the pick moves");
+        crate::player::restore_subtitle_tone(before);
+    }
+
     #[test]
     fn generation_tells_every_pair_apart() {
         let mut seen = std::collections::BTreeSet::new();
         for size in SubtitleSize::LADDER {
             for position in SubtitlePosition::LADDER {
-                assert!(seen.insert(TextStyle { size, position }.generation()), "{size:?} {position:?}");
+                assert!(seen.insert(TextStyle { size, position, ..TextStyle::default() }.generation()), "{size:?} {position:?}");
             }
         }
         assert_eq!(seen.len(), 15);
-        assert_eq!(TextStyle::default().generation(), TextStyle { size: SubtitleSize::Medium, position: SubtitlePosition::Low }.generation());
+        for tone in [SubtitleTone::White, SubtitleTone::Yellow] {
+            for size in SubtitleSize::LADDER {
+                for position in SubtitlePosition::LADDER {
+                    seen.insert(TextStyle { size, position, tone }.generation());
+                }
+            }
+        }
+        assert_eq!(seen.len(), 30, "the colour pick is part of the generation");
+        assert_eq!(TextStyle::default().generation(), TextStyle { size: SubtitleSize::Medium, position: SubtitlePosition::Low, ..TextStyle::default() }.generation());
     }
 }

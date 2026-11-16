@@ -96,8 +96,9 @@ pub(super) fn seed(state: &mut PmsState, mut srcs: Vec<Src>) {
     let build = merge(&srcs);
     state.srcs = srcs;
     // leave `sync_roster` idle — both halves, see `seed_for_test`
-    remember_roster(state, &BrowseScope::standalone());
-    state.seen_facts = facts_key();
+    let scope = BrowseScope::standalone();
+    remember_roster(state, &scope);
+    state.seen_facts = facts_key(&scope);
     commit(state, build);
 }
 

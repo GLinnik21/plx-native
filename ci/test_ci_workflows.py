@@ -194,6 +194,26 @@ class NightlyHomebrewRepository(unittest.TestCase):
         self.assertLess(publish.index("gh release create"),
                         publish.index("--pattern com.beb.plxnative.nightly.manifest.json"))
 
+    def test_a_nightly_is_released_in_the_nightly_repository_and_tagged_here(self):
+        # The release and its assets go to `ci/nightly.py release-repo` with the token scoped to it;
+        # the tag is pushed HERE first, at the built commit, because `plan` and the notes' compare
+        # link read it, and it is taken back if the release fails so a re-run is not refused.
+        publish = job_body("nightly.yml", "publish")
+        create = publish[publish.index("Create and verify the nightly prerelease"):]
+        self.assertIn("GH_TOKEN: ${{ secrets.NIGHTLY_RELEASE_TOKEN }}", create)
+        self.assertIn('release_repo=$(python3 ci/nightly.py release-repo)', create)
+        self.assertIn('gh release create "$TAG" --repo "$release_repo"', create)
+        self.assertLess(create.index('git push origin "refs/tags/$TAG"'), create.index("gh release create"))
+        self.assertLess(create.index("trap "), create.index("gh release create"))
+        self.assertIn('git ls-remote --tags origin "refs/tags/$TAG"', create)
+        for download in re.findall(r"gh release download .*", create):
+            self.assertIn('--repo "$release_repo"', download)
+        refuse = publish[publish.index("Refuse to overwrite an immutable nightly"):publish.index("Create and verify")]
+        self.assertIn('gh release view "$TAG" --repo "$release_repo"', refuse)
+        prune = job_body("nightly.yml", "prune")
+        self.assertIn("NIGHTLY_RELEASE_TOKEN: ${{ secrets.NIGHTLY_RELEASE_TOKEN }}", prune)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", prune)
+
     def test_check_package_grades_a_nightly_without_the_build_environment(self):
         # In CI, check-package.py runs as its OWN step, without the PLX_NIGHTLY_DATE the build step
         # had. It must take the date from the build stamp, or flavor.control_for dies at import and
@@ -549,7 +569,7 @@ class BuildBenchWorkflow(unittest.TestCase):
     def test_it_runs_only_for_this_repository_and_its_default_branch(self):
         for job in ("measure", "gate"):
             body = job_body(self.NAME, job)
-            self.assertIn("github.repository == 'GLinnik21/plx-native'", body, job)
+            self.assertIn("github.repository == 'plxnative/plx-native'", body, job)
             self.assertIn("github.ref_name == github.event.repository.default_branch", body, job)
 
     def test_the_workflow_grants_nothing_and_only_publish_may_write(self):

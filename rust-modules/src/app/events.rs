@@ -385,7 +385,7 @@ pub(crate) fn remote_synth_wheel(dy: i32) {
 }
 
 /// Is this SDL event type INPUT — a key, text, pointer or wheel event — as opposed to a lifecycle,
-/// window or quit event? The one classification `popover::host::input_scope` rests on: input under
+/// window or quit event? The one classification `Dispatcher::input_scope` rests on: input under
 /// an open modal is the modal's, a lifecycle event is the app's and may change the page beneath.
 pub(crate) fn is_input_event(et: u32) -> bool {
     matches!(
@@ -446,7 +446,7 @@ mod input_event_tests {
         }
     }
 
-    /// The boundary `popover::host::input_scope` rests on: every input kind is in, and the
+    /// The boundary `Dispatcher::input_scope` rests on: every input kind is in, and the
     /// lifecycle events (background/foreground, `0x103`–`0x106`), window events and quit are out.
     #[test]
     fn input_events_are_the_modals_and_lifecycle_events_are_the_apps() {
@@ -475,15 +475,10 @@ mod input_event_tests {
 /// `true` means the token was accepted and injected/requested, not that the screen necessarily
 /// changed — pressing DOWN at the bottom of a list is still a successfully delivered command.
 pub(crate) fn dispatch_remote_token(tok: &str, ps: &plx_media::route::PlaybackSession,
-    pa: &plx_media::player::adapter::PlayerAdapter) -> bool {
-    // As the SDL loop: a modal's input is its own. NOT for `pat:`, which is not input at all — it
-    // changes the PAGE's ground directly, and a frozen host must be retaken to show it.
-    let _own_input = if tok.starts_with("pat:") {
-        None
-    } else {
-        plx_ui::popover::host::input_scope()
-    };
-    plx_machine::idle::invalidate(); // injected input is input like any other
+    pa: &plx_media::player::adapter::PlayerAdapter, present: &mut plx_machine::present::Present,
+    scope: plx_machine::present::Scope) -> bool {
+    let scope = if tok.starts_with("pat:") { plx_machine::present::Scope::Page } else { scope };
+    present.note_in_scope(scope, plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
     if let Some((kind, x, y)) = remote_token_pointer(tok) {
         let name = match kind {
             RemotePointer::Click => "click",

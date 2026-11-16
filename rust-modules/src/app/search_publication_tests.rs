@@ -9,6 +9,8 @@ use super::test_support::{frame};
 fn search_publication_is_frozen_for_the_frame_then_notified_once_at_the_next_split() {
     let _guard = plx_base::testlock::serial();
     use plx_data::stores::search::SearchCmd;
+    // This contract measures query publications, not asynchronous source discovery.
+    plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     // Search is owned by `rig` now, so there is no process-wide state to reset — the store's
@@ -22,7 +24,7 @@ fn search_publication_is_frozen_for_the_frame_then_notified_once_at_the_next_spl
     d.emit(MachineId::Nav, Fx::App(AppFx::Store(StoreId::Search,
         StoreCmd::Search(SearchCmd::SetQuery("after".into())))));
     frame(&mut d, &mut rig, AppArg::Search, tick(1), vec![]);
-    assert_eq!(rig.stores.search_snapshot(rig.directory.view(), &Bridge::household_ids()).view().query(), "after",
+    assert_eq!({ let household = rig.views().inputs.session.household_ids(); rig.stores.search_snapshot_for_test(rig.directory.view(), &household) }.view().query(), "after",
         "real store delivery ran");
     assert_eq!(rig.search.view().query(), "before", "the frame split precedes the store drain");
     assert!(rig.search.same_publication(&retained));
@@ -46,6 +48,7 @@ fn search_publication_is_frozen_for_the_frame_then_notified_once_at_the_next_spl
     frame(&mut d, &mut rig, AppArg::Search, tick(8), vec![]);
     assert_eq!(rig.search.view().query(), "unqueued");
     assert_eq!(count(&d), baseline + 3, "a changed publication with no queued notice still reconciles");
+    plx_plex::plex::reset_servers_for_test();
 }
 
 /// **The Bridge hands Search's source scope the signed-in profile's real household, every frame.**

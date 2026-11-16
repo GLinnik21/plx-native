@@ -16,7 +16,7 @@ use super::*;
 use crate::player::ass::Content;
 use crate::player::ass_source;
 use crate::player::subtitle_cue::{SideTracks, SubCue};
-use plx_media_codecs::subtitle_extract::{collect_manifest, AssTrack};
+use plx_media_codecs::subtitle_extract::{collect_manifest, detach_fonts, AssTrack};
 use plx_playback_contract::subtitle::{CaptionRetention, DecodeKind};
 
 fn fixture_retention() -> CaptionRetention {
@@ -32,9 +32,7 @@ unsafe fn fixture_subs(fmt: *mut AVFormatContext, key: &str) -> (SubTracks, Side
         stream_index: info.stream_index,
         authored: matches!(kind, DecodeKind::Ass { .. }),
     }).collect();
-    let mut budget = crate::player::ass::FontBudget::default();
-    let manifest = collect_manifest(fmt, streams, &tracks, ass_source::MAX_HEADER_BYTES,
-        |len| budget.admit(len));
+    let manifest = collect_manifest(streams, &tracks, ass_source::MAX_HEADER_BYTES, detach_fonts(fmt));
     let generation = crate::player::subtitle_cue::begin_sources(key, presentation.kinds(), manifest);
     (SubTracks::open(streams, infos, plan), presentation, generation)
 }
@@ -140,3 +138,8 @@ fn a_packet_without_a_duration_is_clipped_by_the_cue_after_it() {
     assert_eq!(events[0].duration_ms, starts[1] - starts[0], "the first cue ends where the second begins");
     assert_eq!(events[1].duration_ms, 4000, "the last cue keeps the default");
 }
+
+/// The memory the demuxer half of the font attachments costs (issue #1328): a module of its own, in the
+/// `ff::subtitle_charset_tests` filter `make check-ffmpeg` already runs.
+#[path = "ff_font_memory_tests.rs"]
+mod font_memory;

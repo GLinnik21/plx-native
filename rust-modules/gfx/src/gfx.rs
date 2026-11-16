@@ -18,6 +18,11 @@ use crate::overdraw::{
 /// The live-backdrop walk: layer/damage algebra, the discovery pass and the retained glass sources.
 pub mod backdrop;
 mod geom;
+pub mod scrim;
+/// The straight-alpha compositor's half of the frame: the pass that un-premultiplies the surface over
+/// the bound video plane, and the ledger of what every draw wrote that decides whether a frame needs
+/// it and where.
+pub mod straighten;
 /// Draw-phase instrumentation (`phase`, the GPU timer / HWCNT / CPU profilers) and the LOAD DIAL's
 /// published state.
 pub mod profile;
@@ -97,9 +102,8 @@ pub(crate) use glsl;
 /// tile arrived with (bisected 2026-09-04; `docs/backdrop-blur-profiling.md`). The test
 /// `every_dithered_program_carries_the_one_shared_dither_and_no_hash_of_its_own` pins both lists.
 /// [`glsl_dithered`]'s twin: the SAME fragment source behind `shaders/dither_stub.glsl`, whose
-/// `plx_dither` is the identity — so one file links as two programs, and the plain one (the hero
-/// scrim's, `draw_grad4`) has no
-/// uniform, no sampler and no fetch. See [`ambient_program`] for why OFF is a program, not a zero.
+/// `plx_dither` is the identity — so one file links as two programs, and the plain one (the corner
+/// fade's, `draw_grad4`) has no uniform, no sampler and no fetch. See [`ambient_program`] for why OFF is a program, not a zero.
 macro_rules! glsl_undithered {
     ($file:literal) => {
         // SAFETY: as `glsl!` — GLSL sources contain no interior NUL.
@@ -149,7 +153,13 @@ const VS_IMG: &CStr = glsl!("shaders/vs_img.vert");
 /// The wash's vertex shader: the dithered twin, and the only one carrying the INK RAMP
 /// ([`draw_ambient_inked`]) — the plain twin behind `draw_grad4` has real corner alpha and no ramp.
 const VS_AMBIENT_DITHERED: &CStr =
-    glsl!("shaders/vs_ambient.vert", "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n");
+    glsl!("shaders/vs_ambient.vert", "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n#define PLX_SCRIM\n");
+/// The ground scrim drawn ALONE as a blended layer ([`draw_scrim_layer`]): `vs_ambient.vert`'s scrim
+/// field as the colour the plain, undithered fragment blends. For the frames the ground cannot carry
+/// the scrim in its own pass (a hero slide's two art layers; a resting hero whose opaque art hides the
+/// wash, so there is no ground pass).
+const VS_SCRIM_LAYER: &CStr =
+    glsl!("shaders/vs_ambient.vert", "#define PLX_SCRIM\n#define PLX_SCRIM_LAYER\n");
 const VS_IMG_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_img.vert");
 const VS_SRC_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_src.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
@@ -170,14 +180,13 @@ const FS_STILL: &CStr = glsl!("shaders/fs_img.frag", "#define PLX_STILL_GROUND\n
 /// [`IPROG`] with the plain look if it fails to link, same as [`STILL_IMAGE`]'s own fallback.
 const VS_FOCUS: &CStr = glsl!("shaders/vs_img.vert", "#define PLX_FOCUS\n");
 const FS_FOCUS: &CStr = glsl!("shaders/fs_img.frag", "#define PLX_FOCUS\n");
-const FS_HERO: &CStr = glsl!("shaders/fs_hero.frag");
 /// The wash with its photograph dissolved into it (`draw_art_wash`): dithered, because the wash it
 /// carries always dithers, over `vs_ambient.vert`'s field mesh so its colour is the wash's own
 /// per-vertex field.
 const FS_ART_WASH: &CStr = glsl_dithered!("shaders/fs_art_wash.frag");
 const VS_ART_WASH: &CStr = glsl!(
     "shaders/vs_ambient.vert",
-    "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n#define PLX_ART_WASH\n"
+    "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n#define PLX_SCRIM\n#define PLX_ART_WASH\n"
 );
 const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
 const FS_GLASS: &CStr = glsl_dithered!("shaders/fs_glass.frag");
@@ -188,6 +197,13 @@ const FS_RAMP: &CStr = glsl!("shaders/fs_ramp.frag");
 const FS_TEX: &CStr = glsl!("shaders/fs_tex.frag");
 const VS_ART_SCRIM: &CStr = glsl!("shaders/vs_art_scrim.vert");
 const FS_ART_SCRIM: &CStr = glsl!("shaders/fs_art_scrim.frag");
+/// The straighten pass (`gfx/straighten.rs`): one vertex shader that stretches the unit quad over a box
+/// of the viewport and one fragment source in three variants, picked by a `#define` prefix. The fetch variants read the frame in place; the
+/// copy variant samples a copy of it.
+const VS_STRAIGHTEN: &CStr = glsl!("shaders/vs_straighten.vert");
+const FS_STRAIGHTEN_ARM: &CStr = glsl!("shaders/fs_straighten.frag", "#define PLX_STRAIGHTEN_ARM\n");
+const FS_STRAIGHTEN_EXT: &CStr = glsl!("shaders/fs_straighten.frag", "#define PLX_STRAIGHTEN_EXT\n");
+const FS_STRAIGHTEN_COPY: &CStr = glsl!("shaders/fs_straighten.frag");
 const GL_VERTEX_SHADER: c_uint = 0x8B31;
 const GL_FRAGMENT_SHADER: c_uint = 0x8B30;
 const GL_COMPILE_STATUS: c_uint = 0x8B81;
@@ -205,8 +221,6 @@ const GL_DITHER: c_uint = 0x0BD0;
 const GL_ONE: c_uint = 0x0001;
 const GL_SRC_ALPHA: c_uint = 0x0302;
 const GL_ONE_MINUS_SRC_ALPHA: c_uint = 0x0303;
-#[cfg(feature = "hostsim")]
-const GL_ONE_MINUS_DST_ALPHA: c_uint = 0x0305;
 const GL_TEXTURE_2D: c_uint = 0x0DE1;
 const GL_TEXTURE0: c_uint = 0x84C0;
 const GL_TEXTURE1: c_uint = 0x84C1;
@@ -252,7 +266,10 @@ extern "C" {
         stride: c_int,
         pointer: *const c_void,
     );
-    fn glDrawArrays(mode: c_uint, first: c_int, count: c_int);
+    /// The raw import. Nothing but [`glDrawArrays`] below (and the straighten pass's own quads over the
+    /// boxes the frame drew into, which are not content) calls it: see that wrapper.
+    #[link_name = "glDrawArrays"]
+    fn glDrawArrays_raw(mode: c_uint, first: c_int, count: c_int);
     fn glBindTexture(target: c_uint, texture: c_uint);
     fn glActiveTexture(texture: c_uint);
     fn glEnable(cap: c_uint);
@@ -260,7 +277,9 @@ extern "C" {
     fn glScissor(x: c_int, y: c_int, w: c_int, h: c_int);
     fn glBlendFuncSeparate(src_rgb: c_uint, dst_rgb: c_uint, src_a: c_uint, dst_a: c_uint);
     fn glClearColor(r: f32, g: f32, b: f32, a: f32);
-    fn glClear(mask: c_uint);
+    /// The raw import: only [`glClear`] below calls it.
+    #[link_name = "glClear"]
+    fn glClear_raw(mask: c_uint);
     #[cfg(feature = "devtriggers")]
     fn glFinish();
     #[cfg(feature = "devtriggers")]
@@ -288,7 +307,9 @@ extern "C" {
     // UI self-capture (the "cap_*" section at the bottom of this file)
     fn glGenFramebuffers(n: c_int, ids: *mut c_uint);
     fn glDeleteFramebuffers(n: c_int, ids: *const c_uint);
-    fn glBindFramebuffer(target: c_uint, framebuffer: c_uint);
+    /// The raw import: only [`glBindFramebuffer`] below calls it.
+    #[link_name = "glBindFramebuffer"]
+    fn glBindFramebuffer_raw(target: c_uint, framebuffer: c_uint);
     fn glFramebufferTexture2D(
         target: c_uint,
         attachment: c_uint,
@@ -318,6 +339,49 @@ extern "C" {
     );
     fn glGetError() -> c_uint;
     fn glViewport(x: c_int, y: c_int, w: c_int, h: c_int);
+}
+
+/// **Every draw call this module issues, with the extent it writes.** `glDrawArrays` is shadowed by this
+/// wrapper so that every call site keeps its spelling, adds one argument and books itself in
+/// [`straighten::note_draw`]: the straighten pass draws over the boxes the frame drew into and
+/// nowhere else, so a draw that did not say where it lands would be a translucent pixel the pass
+/// skipped. The `extent` is [`set_rect`]'s answer for every quad placed by a rect uniform (the numbers
+/// the vertex shader places the quad with, not the logical rect it was asked for) and
+/// [`straighten::Extent::Target`], the whole target, for a draw with none. A test pins that the raw
+/// import is called nowhere else in this file.
+#[allow(non_snake_case)]
+#[inline(always)]
+unsafe fn glDrawArrays(mode: c_uint, first: c_int, count: c_int, extent: straighten::Extent) {
+    straighten::note_draw(extent);
+    glDrawArrays_raw(mode, first, count)
+}
+
+/// Set a program's rect uniform (`u_rect` / `u_trect`: the authored-pixel quad the vertex shader
+/// places the unit quad over) and return the extent that quad writes, for the draw that follows. The
+/// one function that does both, so the extent a draw books cannot differ from the rect the shader
+/// draws.
+#[inline(always)]
+pub(crate) unsafe fn set_rect(loc: c_int, x: f32, y: f32, w: f32, h: f32) -> straighten::Extent {
+    glUniform4f(loc, x, y, w, h);
+    straighten::Extent::quad(x, y, w, h)
+}
+
+/// `glClear`, shadowed so a clear of the surface to a colour the straighten pass does not leave alone
+/// is booked ([`straighten::note_clear`]); the colour is the one [`set_clear_color`] left.
+#[allow(non_snake_case)]
+#[inline(always)]
+unsafe fn glClear(mask: c_uint) {
+    straighten::note_clear(CLEAR_COLOR[3]);
+    glClear_raw(mask)
+}
+
+/// `glBindFramebuffer`, shadowed so the straighten pass's ledger knows whether gfx is drawing into
+/// the surface or into a target of its own ([`straighten::note_bind`]).
+#[allow(non_snake_case)]
+#[inline(always)]
+unsafe fn glBindFramebuffer(target: c_uint, framebuffer: c_uint) {
+    straighten::note_bind(framebuffer);
+    glBindFramebuffer_raw(target, framebuffer)
 }
 
 const GL_RGBA: c_uint = 0x1908;
@@ -664,8 +728,19 @@ static mut AL_DITHER: c_int = 0;
 /// The dithered wash program's ink-ramp uniforms (`u_ink`, `u_inka`) — see [`draw_ambient_inked`].
 static mut AL_INK: c_int = -1;
 static mut AL_INKA: c_int = -1;
-/// The ambient field's PLAIN program (`FS_AMBIENT_PLAIN`) — the hero scrim's (`draw_grad4`), never
-/// the wash's — and its uniforms; 0 when the link failed, in which case `APROG` serves the scrim
+/// ...and its scrim field (`u_sc`, `u_scn`: [`scrim::GroundShade`]).
+static mut AL_SCRIM: ScrimLoc = ScrimLoc::NONE;
+/// The scrim LAYER program ([`draw_scrim_layer`]) and its uniforms; 0 when the link failed.
+static mut SCRIM_PROG: c_uint = 0;
+static mut SCL_RECT: c_int = -1;
+static mut SCL_INK: c_int = -1;
+static mut SCL_SCRIM: ScrimLoc = ScrimLoc::NONE;
+/// What each of the three programs that carry a scrim field (`APROG`, the art wash, the layer) was
+/// last given, so a frame's dozen cells upload it once. A fresh program's uniforms are zero, which
+/// is [`scrim::GroundShade::NONE`], so that is what an unwritten slot holds; `init_*` resets them.
+static mut SCRIM_SENT: [scrim::GroundShade; 3] = [scrim::GroundShade::NONE; 3];
+/// The ambient field's PLAIN program (`FS_AMBIENT_PLAIN`) — the corner fade's (`draw_grad4`), never
+/// the wash's — and its uniforms; 0 when the link failed, in which case `APROG` serves the fade
 /// with `u_dither` at 0.
 static mut APROG_PLAIN: c_uint = 0;
 static mut PL_RECT: c_int = 0;
@@ -828,24 +903,6 @@ struct PlainUniforms {
 /// draws go here is [`plain_texture_program`]. [`IPROG`] remains the fallback — the same picture,
 /// drawn by the larger program — if this fails to link.
 static mut PLAIN_IMAGE: Option<(c_uint, PlainUniforms)> = None;
-// ---- hero-ground program: the backdrop art with both scrim fields folded into it (fs_hero.frag).
-// Its own program because it is the SAME quad the art already draws, only carrying two more
-// closed-form fields — nothing else in the app wants them, and the card composite must not pay for
-// them. Off unless `ui::widgets::hero_ground` is armed; `HPROG == 0` falls the caller back to the
-// four-quad path, which is the shipped picture.
-static mut HPROG: c_uint = 0;
-/// Has [`init_hero`] already run? The link is LAZY — see that function for why.
-static mut HERO_TRIED: bool = false;
-static mut HL_RECT: c_int = 0;
-static mut HL_SCREEN: c_int = 0;
-static mut HL_TINT: c_int = 0;
-static mut HL_UVRECT: c_int = 0;
-static mut HL_TEX: c_int = 0;
-static mut HL_ORG: c_int = 0;
-static mut HL_INK: c_int = 0;
-static mut HL_RAMP: c_int = 0;
-static mut HL_RAMPA: c_int = 0;
-static mut HL_WEDGE: c_int = 0;
 
 /// The wash-with-art program — see [`draw_art_wash`]. Linked at [`init_image`] beside the image
 /// programs, not lazily: it serves shipped frames (Home's dive, Detail's scroll), and a link on
@@ -863,7 +920,30 @@ struct ArtWashProgram {
     tint: c_int,
     ink: c_int,
     inka: c_int,
+    scrim: ScrimLoc,
     dither: c_int,
+}
+
+/// Where a program built from `vs_ambient.vert` with `PLX_SCRIM` keeps the ground shade: its blocks
+/// (`u_sc`, [`scrim::VEC4S`] vectors) and how many of them are live (`u_scn`), which is what lets
+/// the vertex shader stop at the last live block instead of running all six
+/// ([`scrim::GroundShade::live`]). `-1` where the program has neither.
+#[derive(Clone, Copy)]
+struct ScrimLoc {
+    sc: c_int,
+    scn: c_int,
+}
+
+impl ScrimLoc {
+    const NONE: ScrimLoc = ScrimLoc { sc: -1, scn: -1 };
+
+    /// The locations in `prog`, which need not be the program in use.
+    unsafe fn of(prog: c_uint) -> ScrimLoc {
+        ScrimLoc {
+            sc: glGetUniformLocation(prog, c"u_sc".as_ptr()),
+            scn: glGetUniformLocation(prog, c"u_scn".as_ptr()),
+        }
+    }
 }
 
 /// The `#version` + compatibility preamble prepended to every shader, chosen by the DRIVER's GLSL
@@ -1158,6 +1238,19 @@ pub fn init_gl() {
             AL_DITHER = dither_uniforms(APROG);
             AL_INK = glGetUniformLocation(APROG, c"u_ink".as_ptr());
             AL_INKA = glGetUniformLocation(APROG, c"u_inka".as_ptr());
+            AL_SCRIM = ScrimLoc::of(APROG);
+        }
+        SCRIM_SENT = [scrim::GroundShade::NONE; 3];
+        SCRIM_PROG = link_program(VS_SCRIM_LAYER.as_ptr(), FS_AMBIENT_PLAIN.as_ptr()).unwrap_or_else(|| {
+            log("scrim layer prog link failed — a layered hero draws no scrim over its art");
+            0
+        });
+        if SCRIM_PROG != 0 {
+            SCL_RECT = glGetUniformLocation(SCRIM_PROG, c"u_rect".as_ptr());
+            SCL_INK = glGetUniformLocation(SCRIM_PROG, c"u_ink".as_ptr());
+            SCL_SCRIM = ScrimLoc::of(SCRIM_PROG);
+            use_prog(SCRIM_PROG);
+            glUniform2f(glGetUniformLocation(SCRIM_PROG, c"u_screen".as_ptr()), SCR_W, SCR_H);
         }
         bind_dither_tile();
 
@@ -1298,12 +1391,19 @@ pub fn init_gl() {
         // 33 is ~2× in luminance down there. Found through the search screen's navigation-bar scrim
         // (reported as "on screenshot capture I see a pleasing fade, but on TV it is like a shadow"),
         // but it was never that screen's bug: EVERY partial-alpha draw in this app punched the same
-        // hole — the Library's scrim, both hero scrims, `art_scrim`, every popover scrim, every page
+        // hole — the Library's scrim, the hero scrims, `art_scrim`, every popover scrim, every page
         // and content fade, every glyph drawn at less than full alpha. Fades have always come out a
         // shade darker than authored on the panel and nothing but a photograph could show it.
         //
         // The player's transparent clear is unaffected in the right direction: over `dst.a = 0`,
         // accumulating alpha gives `src.a`, which is what a HUD drawn over the video plane means.
+        //
+        // **What that leaves in the framebuffer is PREMULTIPLIED colour** — `(rgb * a, a)` over the
+        // clear — and the television's compositor takes it as STRAIGHT (`panel = ui.rgb * ui.a +
+        // video * (1 - ui.a)`, measured on the dev set: the 43 -> 33 above is that multiply, 43 x 0.76).
+        // The two read the same pixel differently, so over the BOUND video plane the frame's last draw
+        // is the straighten pass (`straighten.rs`), which divides the colour by its alpha for the
+        // compositor to multiply back. Over an opaque ground `a` is 1 and the two agree.
         glBlendFuncSeparate(
             GL_SRC_ALPHA,
             GL_ONE_MINUS_SRC_ALPHA,
@@ -1314,6 +1414,8 @@ pub fn init_gl() {
         // penumbra) into a regular ordered-dither dot pattern visible along tile edges. The panel is
         // 888 and SURFACE_APP is snapped to exact 8-bit codes, so dithering buys nothing here — off.
         glDisable(GL_DITHER);
+        // Last: it reads GL's extension string and links against the context just built.
+        straighten::init();
     }
 }
 
@@ -1412,7 +1514,7 @@ fn rect_fill(radius: f32, focus: f32, one_colour: bool) -> RectFill {
 unsafe fn draw_flat(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
     if FPROG == 0 {
         use_prog(PROG);
-        glUniform4f(LOC_RECT, x, y, w, h);
+        let ext = set_rect(LOC_RECT, x, y, w, h);
         glUniform2f(LOC_SIZE, w, h);
         glUniform1f(LOC_PAD, 0.0);
         glUniform1f(LOC_RADIUS, 0.0);
@@ -1424,13 +1526,13 @@ unsafe fn draw_flat(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
         glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0);
         glUniform1f(LOC_RIMTOP, 0.0);
         pill_off();
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         return;
     }
     use_prog(FPROG); // u_screen is set once at init (uniforms are per-program state)
-    glUniform4f(FL_RECT, x, y, w, h);
+    let ext = set_rect(FL_RECT, x, y, w, h);
     glUniform4fv(FL_COL, 1, col);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
 }
 
 /// A top-to-bottom two-stop gradient over an axis-aligned quad through `shaders/fs_ramp.frag` — the
@@ -1440,7 +1542,7 @@ unsafe fn draw_flat(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
 unsafe fn draw_ramp(x: f32, y: f32, w: f32, h: f32, top: *const f32, bot: *const f32) {
     if RPROG == 0 {
         use_prog(PROG);
-        glUniform4f(LOC_RECT, x, y, w, h);
+        let ext = set_rect(LOC_RECT, x, y, w, h);
         glUniform2f(LOC_SIZE, w, h);
         glUniform1f(LOC_PAD, 0.0);
         glUniform1f(LOC_RADIUS, 0.0);
@@ -1452,14 +1554,14 @@ unsafe fn draw_ramp(x: f32, y: f32, w: f32, h: f32, top: *const f32, bot: *const
         glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0);
         glUniform1f(LOC_RIMTOP, 0.0);
         pill_off();
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         return;
     }
     use_prog(RPROG); // u_screen is set once at init (uniforms are per-program state)
-    glUniform4f(RP_RECT, x, y, w, h);
+    let ext = set_rect(RP_RECT, x, y, w, h);
     glUniform4fv(RP_TOP, 1, top);
     glUniform4fv(RP_BOT, 1, bot);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
 }
 
 /// Only the bottom band and its AA fringe are rasterized; the shader clips to the full card.
@@ -1508,11 +1610,11 @@ pub fn draw_art_scrim(
         use_prog(AS_PROG);
         let radius = radius.max(0.0).min(w * 0.5).min(h * 0.5);
         let inner = art_scrim_inner(w, h, radius);
-        glUniform4f(AS_RECT, qx, qy, qw, qh);
+        let ext = set_rect(AS_RECT, qx, qy, qw, qh);
         glUniform4f(AS_SIZE, w, h, w * 0.5 - radius, h * 0.5 - radius);
         glUniform4f(AS_BAND, band.min(h), radius, inner[0], inner[1]);
         glUniform4fv(AS_COL, 1, col.as_ptr());
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
     true
 }
@@ -1566,7 +1668,7 @@ pub fn draw_rect(
         } else {
             0.0
         };
-        glUniform4f(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
+        let ext = set_rect(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
         glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
         glUniform1f(LOC_PAD, pad + aa);
         glUniform1f(LOC_RADIUS, radius);
@@ -1582,7 +1684,7 @@ pub fn draw_rect(
         glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0); // no edge-sheen (default)
         glUniform1f(LOC_RIMTOP, 0.0);
         pill_off();
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
 }
 
@@ -1634,7 +1736,7 @@ pub fn draw_rect_shaped(
     unsafe {
         use_prog(PROG);
         let aa = AA_BLEED; // a sheened tile is always rounded → always SDF path
-        glUniform4f(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
+        let ext = set_rect(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
         glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
         glUniform1f(LOC_PAD, aa);
         glUniform1f(LOC_RADIUS, radius);
@@ -1647,7 +1749,7 @@ pub fn draw_rect_shaped(
         glUniform1f(LOC_RIMTOP, rimtop);
         glUniform1f(LOC_RGB_CAP, rgb_cap);
         pill_on(pill, glow);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
 }
 
@@ -1666,7 +1768,7 @@ pub fn draw_ambient(
     br: *const f32,
     bl: *const f32,
 ) {
-    draw_ambient_impl(x, y, w, h, dim, tl, tr, br, bl, None);
+    draw_ambient_impl(x, y, w, h, dim, tl, tr, br, bl, None, &scrim::GroundShade::NONE);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1681,6 +1783,7 @@ fn draw_ambient_impl(
     br: *const f32,
     bl: *const f32,
     ink: Option<([f32; 3], [f32; 2])>,
+    scrim: &scrim::GroundShade,
 ) {
     if culled(x, y, w, h) || gate(Class::Ambient, x, y, w, h) {
         return;
@@ -1712,7 +1815,7 @@ fn draw_ambient_impl(
         let amp = DITHER_LSB;
         let (prog, l_rect, l_tl, l_tr, l_br, l_bl) = ambient_program(amp);
         use_prog(prog); // u_screen is set once per program at init
-        glUniform4f(l_rect, x, y, w, h);
+        let ext = set_rect(l_rect, x, y, w, h);
         glUniform4f(l_tl, c3(tl, 0) * dim, c3(tl, 1) * dim, c3(tl, 2) * dim, 1.0);
         glUniform4f(l_tr, c3(tr, 0) * dim, c3(tr, 1) * dim, c3(tr, 2) * dim, 1.0);
         glUniform4f(l_br, c3(br, 0) * dim, c3(br, 1) * dim, c3(br, 2) * dim, 1.0);
@@ -1722,8 +1825,9 @@ fn draw_ambient_impl(
             let (ink, inka) = ink.unwrap_or(([0.0; 3], [0.0; 2]));
             glUniform3f(AL_INK, ink[0], ink[1], ink[2]);
             glUniform2f(AL_INKA, inka[0], inka[1]);
+            send_scrim(0, AL_SCRIM, scrim);
         }
-        draw_field_mesh();
+        draw_field_mesh(ext);
     }
 }
 
@@ -1821,6 +1925,24 @@ pub fn wash_ink_ok() -> bool {
     unsafe { APROG != 0 }
 }
 
+/// Give the program in use its scrim field if it does not hold it already (`slot`: 0 the wash, 1 the
+/// art wash, 2 the layer): one `glUniform4fv` of [`scrim::VEC4S`] vectors and the live-block count
+/// (`u_scn`), and none at all for the next cell of the same frame — nor, for a screen with no scrim,
+/// on any frame after the first. The cache compares the whole shade, which fixes the count with it,
+/// so the two uniforms are never out of step; a fresh program holds a count of 0, which is
+/// [`scrim::GroundShade::NONE`]'s.
+#[inline]
+unsafe fn send_scrim(slot: usize, loc: ScrimLoc, want: &scrim::GroundShade) {
+    let sent = &mut *std::ptr::addr_of_mut!(SCRIM_SENT[slot]);
+    if loc.sc < 0 || *sent == *want {
+        return;
+    }
+    let u = want.uniforms();
+    glUniform4fv(loc.sc, scrim::VEC4S as c_int, u.as_ptr().cast());
+    glUniform1f(loc.scn, want.shader_count());
+    *sent = *want;
+}
+
 /// [`draw_ambient`] with a vertical INK RAMP laid over the field in the same pass: `ink` (rgb) at an
 /// alpha running linearly from `inka[0]` at the rect's top edge to `inka[1]` at its bottom — the
 /// screen's atmospheric scrim, cut by the caller at its knees so each rect is one straight segment.
@@ -1833,6 +1955,10 @@ pub fn wash_ink_ok() -> bool {
 /// passes were most of what still carried the frame over budget once the art had joined the wash
 /// (`draw_art_wash`). Callers must check [`wash_ink_ok`] first — without the dithered program
 /// there is no ramp to carry, and this draws the wash alone.
+///
+/// `scrim` is the ground scrim ([`scrim::GroundShade`]) laid over the field in the same pass, with
+/// the same ink and the ramp folded in: [`scrim::GroundShade::NONE`] for none, which the shader
+/// evaluates to exactly zero.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_ambient_inked(
     x: f32,
@@ -1843,20 +1969,99 @@ pub fn draw_ambient_inked(
     corners: [*const f32; 4],
     ink: [f32; 3],
     inka: [f32; 2],
+    scrim: &scrim::GroundShade,
 ) {
     let [tl, tr, br, bl] = corners;
-    draw_ambient_impl(x, y, w, h, dim, tl, tr, br, bl, Some((ink, inka)));
+    draw_ambient_impl(x, y, w, h, dim, tl, tr, br, bl, Some((ink, inka)), scrim);
+}
+
+/// Can the scrim be drawn as a layer of its own ([`draw_scrim_layer`])?
+#[inline]
+pub fn scrim_layer_ok() -> bool {
+    // SAFETY: written once at init on the render thread, read on the render thread.
+    unsafe { SCRIM_PROG != 0 }
+}
+
+/// **The ground scrim alone, blended over whatever is under it**: `ink` (rgb) at the stacked alpha
+/// of `scrim` ([`scrim::GroundShade::at`]) over `(x, y, w, h)`, evaluated per vertex of the field
+/// mesh like the ground's own. It is the same field the ground carries in its one pass
+/// ([`draw_ambient_inked`], [`draw_art_wash`]), for the frames that pass cannot take it: a hero
+/// slide, which has two art layers and needs the scrim OVER both, and a resting hero whose opaque
+/// photograph covers the wash, so that no ground pass is drawn for the scrim to ride in
+/// (Home's `wash_hidden`). Not dithered (a translucent scrim over a photograph has nothing to
+/// band, as [`draw_grad4`]'s). It draws nothing when the program did not link
+/// ([`scrim_layer_ok`] says so; no caller needs to ask first).
+///
+/// **It draws only where the shade is.** The field mesh is 1536 vertices a call, each running one
+/// rounded-rect distance per live block (`u_scn`, [`scrim::GroundShade::live`]), and a hero's shade
+/// is a few soft blocks: most of the panel's cells hold nothing but zeros. A rect the shade cannot reach ([`scrim::GroundShade::reaches`]:
+/// exact where it says no, so every vertex would have been alpha 0) is dropped before any GL state
+/// is touched, and of one it reaches only the mesh rows from the first strip the shade reaches to
+/// the last are drawn ([`scrim::GroundShade::reached_rows`]; the rows left out are all zeros too).
+/// That changes no pixel; [`scrim::GroundShade::NONE`] draws nothing at all. On the set
+/// (Home `hero-pong` and `grid-pong`, release, HWCNT, 2026-11-10) the layer drawn over the whole
+/// panel was the whole rise of the vertex/tiler slot (JS1) over `main`: masking the `grad` class took
+/// it from 2.4-2.9M to 0.2-0.3M a frame. The caller still declares every cell (`Painter::scrim_layer`
+/// records before it gets here), so the recorded stream does not depend on this skip.
+pub fn draw_scrim_layer(x: f32, y: f32, w: f32, h: f32, ink: [f32; 3], scrim: &scrim::GroundShade) {
+    if culled(x, y, w, h) {
+        return;
+    }
+    let Some(rows) = scrim.reached_rows([x, y, w, h], FIELD_N) else {
+        return;
+    };
+    if gate(Class::Grad, x, y, w, h) {
+        return;
+    }
+    unsafe {
+        if SCRIM_PROG == 0 {
+            return;
+        }
+        use_prog(SCRIM_PROG);
+        let ext = set_rect(SCL_RECT, x, y, w, h);
+        glUniform3f(SCL_INK, ink[0], ink[1], ink[2]);
+        send_scrim(2, SCL_SCRIM, scrim);
+        draw_field_mesh_rows(rows, ext);
+    }
 }
 
 /// Issue the field mesh (see [`field_mesh`]) — every four-corner draw goes through this.
 #[inline]
-unsafe fn draw_field_mesh() {
-    glDrawArrays(GL_TRIANGLES, 4, FIELD_VERTS as c_int);
+unsafe fn draw_field_mesh(ext: straighten::Extent) {
+    draw_field_mesh_rows(0..FIELD_N, ext);
+}
+
+/// Issue rows `rows` of the field mesh (`0..FIELD_N`, top to bottom). [`field_mesh`] stores it row
+/// by row, `FIELD_N` squares of 6 vertices to a row, after the unit quad's 4 vertices, so a run of
+/// rows is one contiguous `glDrawArrays` and draws exactly the vertices the whole mesh holds there.
+/// `ext` is the rect the program places the WHOLE mesh over ([`set_rect`]'s answer); the draw books
+/// the part of it the rows reach ([`rows_extent`]).
+#[inline]
+unsafe fn draw_field_mesh_rows(rows: std::ops::Range<usize>, ext: straighten::Extent) {
+    const ROW_VERTS: usize = FIELD_N * 6;
+    glDrawArrays(
+        GL_TRIANGLES,
+        (4 + rows.start * ROW_VERTS) as c_int,
+        (rows.len() * ROW_VERTS) as c_int,
+        rows_extent(ext, &rows),
+    );
+}
+
+/// The part of the mesh's rect `ext` that rows `rows` cover: row `j` spans `j / FIELD_N .. (j + 1) /
+/// FIELD_N` of the rect's height ([`field_mesh`]). A whole-target extent has no rect to cut.
+fn rows_extent(ext: straighten::Extent, rows: &std::ops::Range<usize>) -> straighten::Extent {
+    match ext {
+        straighten::Extent::Quad([x, y, w, h]) => {
+            let n = FIELD_N as f32;
+            straighten::Extent::quad(x, y + h * rows.start as f32 / n, w, h * rows.len() as f32 / n)
+        }
+        whole => whole,
+    }
 }
 
 /// Which of the two ambient programs draws a field, with its uniform locations: the dithered one
 /// (`APROG`) for the wash's gradient, which always dithers, and the plain twin (`APROG_PLAIN`, the
-/// same source behind the no-op stub) for the hero scrim (`draw_grad4`) — each the other's fallback
+/// same source behind the no-op stub) for the corner fade (`draw_grad4`) — each the other's fallback
 /// when one failed to link, in which case the caller sets `u_dither` itself.
 ///
 /// The prelude has no off switch of its own — it is straight-line, because a uniform branch there
@@ -1874,7 +2079,7 @@ unsafe fn ambient_program(amp: f32) -> (c_uint, c_int, c_int, c_int, c_int, c_in
     }
 }
 
-/// The 4-corner bilinear gradient with REAL per-corner ALPHA (rgba each) — the hero corner scrim's
+/// The 4-corner bilinear gradient with REAL per-corner ALPHA (rgba each) — the corner fade's
 /// primitive, and the reason `fs_ambient.frag` mixes vec4 instead of vec3. [`draw_ambient`] is this
 /// with every corner forced opaque; the two share one program because they are one field.
 ///
@@ -1899,7 +2104,7 @@ pub fn draw_grad4(
         // plain twin when it linked.
         let (prog, l_rect, l_tl, l_tr, l_br, l_bl) = ambient_program(0.0);
         use_prog(prog); // u_screen is set once per program at init
-        glUniform4f(l_rect, x, y, w, h);
+        let ext = set_rect(l_rect, x, y, w, h);
         glUniform4fv(l_tl, 1, tl);
         glUniform4fv(l_tr, 1, tr);
         glUniform4fv(l_br, 1, br);
@@ -1907,7 +2112,7 @@ pub fn draw_grad4(
         if prog == APROG {
             glUniform1f(AL_DITHER, 0.0);
         }
-        draw_field_mesh();
+        draw_field_mesh(ext);
     }
 }
 
@@ -1927,7 +2132,7 @@ pub fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *
         } else {
             0.0
         };
-        glUniform4f(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
+        let ext = set_rect(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
         glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
         glUniform1f(LOC_PAD, aa);
         glUniform1f(LOC_RADIUS, rad_l);
@@ -1941,7 +2146,7 @@ pub fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *
         glUniform1f(LOC_RIMTOP, 0.0);
         glUniform1f(LOC_RGB_CAP, 1.0); // no rim, glow or ring to hold
         pill_off();
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
 }
 
@@ -1965,7 +2170,7 @@ pub fn draw_rrect_sheened(
     unsafe {
         use_prog(PROG);
         let aa = AA_BLEED;
-        glUniform4f(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
+        let ext = set_rect(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
         glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
         glUniform1f(LOC_PAD, aa);
         glUniform1f(LOC_RADIUS, rad_l);
@@ -1979,7 +2184,7 @@ pub fn draw_rrect_sheened(
         glUniform1f(LOC_RIMTOP, rimtop);
         glUniform1f(LOC_RGB_CAP, rgb_cap);
         pill_off();
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
 }
 
@@ -2041,9 +2246,9 @@ pub fn draw_shadow(
         let (bands, n) = shadow_bands([qx, qy, qw, qh], inner, target_map().2);
         let (cx, cy) = (qx + qw * 0.5, qy + qh * 0.5);
         for r in &bands[..n] {
-            glUniform4f(SL_RECT, r[0], r[1], r[2], r[3]);
+            let ext = set_rect(SL_RECT, r[0], r[1], r[2], r[3]);
             glUniform4f(SL_MAP, r[0] - cx, r[1] - cy, r[2], r[3]);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         }
     }
 }
@@ -2147,7 +2352,7 @@ pub fn spring(pos: *mut f32, vel: *mut f32, target: f32, k: f32, dt: f32) {
         *vel = (*vel - w * b * dt) * e;
         // Every animation in the app lands here or in `spring_zeta`, which is what lets
         // `plx_machine::idle` know EXACTLY whether the screen is still moving without any screen opting in.
-        plx_machine::idle::note_spring(*pos, target, *vel);
+        plx_machine::motion::report::note_spring(*pos, target, *vel);
     }
 }
 
@@ -2173,7 +2378,7 @@ pub fn spring_zeta(pos: *mut f32, vel: *mut f32, target: f32, k: f32, zeta: f32,
         let b = (v0 + z * w * x0) / wd;
         *pos = target + e * (a * c + b * s);
         *vel = e * ((b * wd - z * w * a) * c - (a * wd + z * w * b) * s);
-        plx_machine::idle::note_spring(*pos, target, *vel); // see the note in `spring`
+        plx_machine::motion::report::note_spring(*pos, target, *vel); // see the note in `spring`
     }
 }
 
@@ -2324,6 +2529,7 @@ pub fn init_image() {
                 tint: loc(c"u_tint"),
                 ink: loc(c"u_ink"),
                 inka: loc(c"u_inka"),
+                scrim: ScrimLoc::of(prog),
                 dither,
             }
         });
@@ -2332,116 +2538,6 @@ pub fn init_image() {
         }
 
         use_prog(PROG);
-    }
-}
-
-/// Link the hero-ground program. A failure is not fatal and is not a hole in the picture: the
-/// caller keeps the four-quad path, which is what every build has always drawn.
-///
-/// **LAZY, called from [`draw_hero_ground`]'s first draw rather than from [`init_image`].** This
-/// program serves ONE experiment behind one dev trigger, and `devtriggers` is compiled out of a
-/// release build — so linking it at boot would compile and link a shader that build can never
-/// reach, on every launch, for a path that does not exist in it. Deferring it also means an
-/// ordinary dev boot that never arms the trigger pays nothing either.
-fn init_hero() {
-    unsafe {
-        HERO_TRIED = true;
-        HPROG = match link_program(VS_IMG.as_ptr(), FS_HERO.as_ptr()) {
-            Some(p) => p,
-            None => {
-                log("hero-ground prog link failed — the four-quad hero path stays");
-                return;
-            }
-        };
-        HL_RECT = glGetUniformLocation(HPROG, c"u_trect".as_ptr());
-        HL_SCREEN = glGetUniformLocation(HPROG, c"u_tscreen".as_ptr());
-        HL_TINT = glGetUniformLocation(HPROG, c"u_tint".as_ptr());
-        HL_UVRECT = glGetUniformLocation(HPROG, c"u_uvrect".as_ptr());
-        HL_TEX = glGetUniformLocation(HPROG, c"u_tex".as_ptr());
-        HL_ORG = glGetUniformLocation(HPROG, c"u_org".as_ptr());
-        HL_INK = glGetUniformLocation(HPROG, c"u_ink".as_ptr());
-        HL_RAMP = glGetUniformLocation(HPROG, c"u_ramp".as_ptr());
-        HL_RAMPA = glGetUniformLocation(HPROG, c"u_rampa".as_ptr());
-        HL_WEDGE = glGetUniformLocation(HPROG, c"u_wedge".as_ptr());
-        use_prog(HPROG);
-        glUniform2f(HL_SCREEN, SCR_W, SCR_H);
-        glUniform1i(HL_TEX, 0);
-    }
-}
-
-/// Is the hero-ground program usable? `false` means its link failed and the caller must draw the
-/// art and the scrims the way it always has.
-#[inline]
-pub fn hero_ground_ok() -> bool {
-    // Not `HPROG != 0`: the link has not been attempted until the first draw, so before that the
-    // honest answer is "nothing has refused it yet". A refusal latches through `HERO_TRIED`.
-    unsafe { HPROG != 0 || !HERO_TRIED }
-}
-
-/// Draw the hero ground: the art quad `(x,y,w,h)` with the atmospheric ramp and the corner wedge
-/// evaluated per fragment. `ramp` is `(y0, knee, alpha_at_knee, alpha_at_foot)` and `wedge` is
-/// `(peak, width, feather_top, feather_knee)`, both in authored pixels with the alphas already
-/// carrying the painter's cascade. See `fs_hero.frag` for the composite this replaces.
-#[allow(clippy::too_many_arguments)]
-pub fn draw_hero_ground(
-    tex: c_uint,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    tint: *const f32,
-    ink: *const f32,
-    ramp: [f32; 4],
-    wedge: [f32; 4],
-) {
-    if tex == 0 || culled(x, y, w, h) {
-        return;
-    }
-    // THE LINK IS ATTEMPTED BEFORE THE LEDGER IS TOLD ANYTHING. The caller has already skipped
-    // both `backdrop_art` and the scrim block on the strength of `hero_ground_ok`, which answers
-    // optimistically until the first attempt — so a program that turns out not to link must be
-    // discovered here, not after this quad has been booked as drawn. Booking first left the
-    // ledger carrying an `image` quad that was never submitted, on the one frame where the
-    // picture also lost its hero entirely.
-    unsafe {
-        if !HERO_TRIED {
-            init_hero();
-        }
-        if HPROG == 0 {
-            return;
-        }
-    }
-    if gate(Class::Image, x, y, w, h) {
-        return;
-    }
-    // Reciprocals on the CPU: Midgard has no uniform pre-shader, so a divide written in the
-    // fragment shader is paid on every one of two million fragments (the same fold `draw_tex_impl`
-    // makes for the card composite's `shinv`).
-    let inv = |d: f32| if d.abs() > 0.001 { 1.0 / d } else { 0.0 };
-    unsafe {
-        use_prog(HPROG);
-        glUniform4fv(HL_TINT, 1, tint);
-        glUniform4fv(HL_INK, 1, ink);
-        glUniform4f(HL_UVRECT, 0.0, 0.0, 1.0, 1.0);
-        glUniform2f(HL_ORG, x + w * 0.5, y + h * 0.5);
-        glUniform4f(
-            HL_RAMP,
-            ramp[0],
-            inv(ramp[1] - ramp[0]),
-            ramp[1],
-            inv(SCR_H - ramp[1]),
-        );
-        glUniform2f(HL_RAMPA, ramp[2], ramp[3] - ramp[2]);
-        glUniform4f(
-            HL_WEDGE,
-            wedge[0],
-            inv(wedge[1]),
-            wedge[2],
-            inv(wedge[3] - wedge[2]),
-        );
-        glBindTexture(GL_TEXTURE_2D, tex);
-        glUniform4f(HL_RECT, x, y, w, h);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
 
@@ -2475,7 +2571,8 @@ pub fn art_wash_ok() -> bool {
 /// values at its own corners — the field is bilinear, so that is exact), already through the
 /// painter's cascade exactly as [`draw_ambient`] takes them; `tint` is the art's, likewise; and
 /// `ink`/`inka` the screen's ramp over both, exactly as [`draw_ambient_inked`] takes it (zero
-/// alphas for none).
+/// alphas for none), and `scrim` the ground scrim over both with the same ink
+/// ([`scrim::GroundShade::NONE`] for none).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_art_wash(
     (x, y, w, h): (f32, f32, f32, f32),
@@ -2486,6 +2583,7 @@ pub fn draw_art_wash(
     tint: *const f32,
     ink: [f32; 3],
     inka: [f32; 2],
+    scrim: &scrim::GroundShade,
 ) {
     // SAFETY: render thread; see `art_wash_ok`.
     let Some(g) = (unsafe { std::ptr::addr_of!(ART_WASH).read() }) else { return };
@@ -2495,7 +2593,7 @@ pub fn draw_art_wash(
     let inv = |d: f32| if d.abs() > 0.001 { 1.0 / d } else { 0.0 };
     unsafe {
         use_prog(g.prog);
-        glUniform4f(g.rect, x, y, w, h);
+        let ext = set_rect(g.rect, x, y, w, h);
         for (loc, c) in g.corners.iter().zip(corners) {
             glUniform4f(*loc, c[0], c[1], c[2], 1.0);
         }
@@ -2505,8 +2603,9 @@ pub fn draw_art_wash(
         glUniform4fv(g.tint, 1, tint);
         glUniform3f(g.ink, ink[0], ink[1], ink[2]);
         glUniform2f(g.inka, inka[0], inka[1]);
+        send_scrim(1, g.scrim, scrim);
         glBindTexture(GL_TEXTURE_2D, tex);
-        draw_field_mesh();
+        draw_field_mesh(ext);
     }
 }
 
@@ -2531,9 +2630,11 @@ pub fn snap(v: f32) -> f32 {
     v.round()
 }
 
-/// Upload a straight-alpha RGBA8 bitmap (`w`×`h`, tightly packed) into a GL texture. Reuses
-/// `prev` if non-zero (re-specs it), else allocates a new id. Returns the texture id. Used for
-/// image-subtitle (PGS/VobSub) overlays and the text glyph-cache textures. Main-thread only.
+/// Upload an RGBA8 bitmap (`w`×`h`, tightly packed) into a GL texture. Reuses `prev` if non-zero
+/// (re-specs it), else allocates a new id. Returns the texture id. The bytes are neither converted
+/// nor interpreted: image-subtitle (PGS/VobSub) overlays and the text glyph-cache textures are
+/// straight alpha and drawn with [`draw_tex`]; the libass regions are premultiplied and drawn with
+/// [`draw_tex_premultiplied`]. Main-thread only.
 pub fn upload_rgba(prev: c_uint, w: c_int, h: c_int, pixels: *const u8) -> c_uint {
     unsafe {
         let mut tex = prev;
@@ -3046,7 +3147,7 @@ fn draw_tex_core_in(
             },
         };
         let Some(boxes) = boxes else {
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, straighten::Extent::Quad(quad));
             return;
         };
         let plan = card_plan(&boxes, LIVE_SCISSOR, masked_part);
@@ -3071,7 +3172,7 @@ fn draw_tex_core_in(
             }
             let b = piece.scissor;
             glScissor(b[0], b[1], b[2] - b[0], b[3] - b[1]);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, straighten::Extent::Quad(quad));
         }
         // The clip the caller had (a scrolling list's, a source pass's box) is theirs: put it back,
         // through the two functions that keep `LIVE_SCISSOR` honest.
@@ -3348,6 +3449,34 @@ pub fn draw_tex_uv(
     );
 }
 
+/// The tint [`draw_tex_premultiplied`] gives the shader for a STRAIGHT-alpha `tint` `[r, g, b, a]`:
+/// `[r * a, g * a, b * a, a]`. The texel is `(rgb * A, A)`, so texel x tint is `(rgb * A * r * a, A * a)`:
+/// the colour a straight draw of the straight texel `(rgb, A)` blends in `r * a * A`, and the alpha it
+/// blends with, `A * a`. A fade (`a` below 1) and an ink (`r`, `g`, `b` below 1) therefore dim a
+/// premultiplied picture exactly as they dim a straight one; scaling the colour alone would leave the
+/// picture as opaque as before.
+pub fn premultiplied_tint(tint: [f32; 4]) -> [f32; 4] {
+    [tint[0] * tint[3], tint[1] * tint[3], tint[2] * tint[3], tint[3]]
+}
+
+/// **Draw a texture that holds PREMULTIPLIED RGBA** (`(rgb * a, a)` per texel, no channel above its
+/// alpha) as one square-cornered quad: `(x, y, w, h)` in logical px, `tint` the STRAIGHT ink and fade
+/// `[r, g, b, a]` every other primitive takes ([`premultiplied_tint`] turns it into the shader's).
+/// It blends `(ONE, ONE_MINUS_SRC_ALPHA)` and restores the ordinary blend, so the framebuffer comes out
+/// as a straight-alpha draw of the same picture would have left it (the unit test
+/// `a_premultiplied_draw_leaves_the_framebuffer_a_straight_draw_would` pins that to one code value)
+/// without the texture ever being converted to straight alpha, and bilinear filtering of it
+/// averages colour weighted by coverage, so a soft edge is not darkened by its transparent neighbours.
+///
+/// This is the draw for a producer that composes in premultiplied space (the libass facade's regions,
+/// `src/ass.c`); an image or glyph texture uploaded straight (PGS and VobSub bitmaps, the glyph cache)
+/// stays on [`draw_tex`]. A premultiplied texture drawn there is too dark at every soft edge.
+pub fn draw_tex_premultiplied(tex: c_uint, x: f32, y: f32, w: f32, h: f32, tint: [f32; 4]) {
+    let tint = premultiplied_tint(tint);
+    let _blend = PremultipliedBlend::enter();
+    draw_tex_uv(tex, UV_FULL, x, y, w, h, 0.0, tint.as_ptr());
+}
+
 /// Two equally sized images through the ordinary card compositor. One coverage/opacity
 /// calculation follows the image mix. A failed optional shader leaves the caller's static image.
 #[allow(clippy::too_many_arguments)]
@@ -3394,19 +3523,40 @@ pub fn draw_tex_carded_blend(tex: c_uint, next: c_uint, mix: f32, crop: [f32; 4]
     }
 }
 
-/// **Simulator only: composite `tex` UNDER everything drawn so far this frame** — the television
-/// compositor's arithmetic for its hardware video plane beneath our UI plane. The UI plane holds
-/// premultiplied colour over a transparent clear (see the blend note in the GL setup above), so
-/// the panel shows `ui.rgb + video.rgb * (1 - ui.a)`; drawing the picture with
-/// `(ONE_MINUS_DST_ALPHA, ONE)` computes exactly that, and leaves the surface opaque. Used by
-/// `app::adapters::hostsim::sim_video` for the screenshot pipeline's player figure; restores the app's blend.
+/// Run `draw` with the simulator's compositor blend ([`straighten::UNDER`]) set and the app's own put
+/// back after.
 #[cfg(feature = "hostsim")]
-pub fn draw_under(tex: c_uint, x: f32, y: f32, w: f32, h: f32) {
+fn under_blend(draw: impl FnOnce()) {
+    let [src_rgb, dst_rgb, src_a, dst_a] = straighten::UNDER.gl();
     unsafe {
-        glBlendFuncSeparate(GL_ONE_MINUS_DST_ALPHA, GL_ONE, GL_ONE_MINUS_DST_ALPHA, GL_ONE);
-        draw_tex(tex, x, y, w, h, 0.0, [1.0f32; 4].as_ptr());
+        glBlendFuncSeparate(src_rgb, dst_rgb, src_a, dst_a);
+        draw();
         glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     }
+}
+
+/// **Simulator only: composite `tex` UNDER everything drawn so far this frame** — the television
+/// compositor's arithmetic for its hardware video plane beneath our UI plane, which is STRAIGHT alpha:
+/// `panel = ui.rgb * ui.a + video * (1 - ui.a)`, measured on the dev set. The factors are
+/// [`straighten::UNDER`], `(ONE_MINUS_DST_ALPHA, DST_ALPHA)` for colour, and they leave the surface
+/// opaque. This is the compositor, not the intended picture: a premultiplied frame handed to it comes
+/// out darker by its own alpha, which is the television's fault and exactly what the straighten pass
+/// ([`straighten::straighten_surface`], run first) removes, so the simulator shows both. Used by
+/// `app::adapters::hostsim::sim_video` for the screenshot pipeline's player figure and, with no
+/// picture, by [`draw_under_black`]; restores the app's blend.
+#[cfg(feature = "hostsim")]
+pub fn draw_under(tex: c_uint, x: f32, y: f32, w: f32, h: f32) {
+    under_blend(|| draw_tex(tex, x, y, w, h, 0.0, [1.0f32; 4].as_ptr()));
+}
+
+/// **Simulator only: the same compositor over an empty plane** — black. A bound-plane frame is
+/// straightened (the pass has no simulator switch), so it has to go through the compositor model
+/// whether or not the simulator holds a decoded picture, or a screenshot would read the straight
+/// buffer itself.
+#[cfg(feature = "hostsim")]
+pub fn draw_under_black() {
+    let black = [0.0f32, 0.0, 0.0, 1.0];
+    under_blend(|| draw_rect(0.0, 0.0, SCR_W, SCR_H, 0.0, 0.0, black.as_ptr(), black.as_ptr(), 0.0, 1.0));
 }
 
 /// **A texture the renderer fills once and serves as one quad**, in one of two modes. They share the
@@ -3716,7 +3866,7 @@ impl FrameCache {
 
     /// Put the region on the frame as ONE textured quad with its top-left at `at`, `tint` being the
     /// PREMULTIPLIED group tint `[g, g, g, a]` (`g` = the colour gain times the alpha): the texture
-    /// holds `(rgb * a, a)`, so the blend is `(ONE, ONE_MINUS_SRC_ALPHA)` ([`StillBlend`]) and the
+    /// holds `(rgb * a, a)`, so the blend is `(ONE, ONE_MINUS_SRC_ALPHA)` ([`PremultipliedBlend`]) and the
     /// tint scales colour AND alpha. Unlike [`draw_alpha`](Self::draw_alpha) this is page CONTENT, not
     /// the page itself: it does not lift [`page_frozen`], so a frozen host refuses it as it refuses
     /// every other primitive.
@@ -3725,7 +3875,7 @@ impl FrameCache {
             return false;
         }
         let (w, h) = (self.region[2] as f32, self.region[3] as f32);
-        let _blend = StillBlend::enter();
+        let _blend = PremultipliedBlend::enter();
         draw_tex_core(
             Class::Image, self.tex, at[0], at[1], w, h, frame_cache_uv(), 0.0, tint.as_ptr(), 0.0,
             NO_RIM.as_ptr(), w * 0.5, h * 0.5, 0.0, NO_RIM.as_ptr(), 0.0, 0.0, None,
@@ -4149,17 +4299,19 @@ fn still_fusion_eligible(tex: c_uint, tint: [f32; 4], available: bool) -> bool {
     tex != 0 && tint == [1.0; 4] && available
 }
 
-/// The still program emits premultiplied RGB, and so does a region cache's quad
-/// ([`FrameCache::draw_region`]): its texture holds `(rgb * a, a)`. Restore the ordinary blend even
-/// during unwinding; no caller and no following text/overlay draw inherits this primitive's private state.
-struct StillBlend;
-impl StillBlend {
+/// The blend of a draw whose fragment colour is already PREMULTIPLIED: `(ONE, ONE_MINUS_SRC_ALPHA)`.
+/// The still program emits premultiplied RGB, a region cache's quad ([`FrameCache::draw_region`])
+/// samples a texture that holds `(rgb * a, a)`, and so does any texture [`draw_tex_premultiplied`] is
+/// handed. Restore the ordinary blend even during unwinding; no caller and no following text/overlay
+/// draw inherits this primitive's private state.
+struct PremultipliedBlend;
+impl PremultipliedBlend {
     fn enter() -> Self {
         unsafe { glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA); }
         Self
     }
 }
-impl Drop for StillBlend {
+impl Drop for PremultipliedBlend {
     fn drop(&mut self) {
         unsafe { glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA); }
     }
@@ -4192,7 +4344,7 @@ pub fn draw_tex_carded_still(
         glUniform4fv(loc_col, 1, scrim.as_ptr());
     }
     note_card(x, y, w, h, pad, dy);
-    let _blend = StillBlend::enter();
+    let _blend = PremultipliedBlend::enter();
     draw_tex_impl(tex, crop, x, y, w, h, radius, tint.as_ptr(), rimw, rimcol.as_ptr(), pad,
         shblur, shcol.as_ptr(), f, dy, Some((program, uniforms)));
     true
@@ -5624,7 +5776,7 @@ fn blur_snapshot_with_taps(reg: [f32; 4], taps: &[f32]) {
                 let tap = tap * plx_base::surface::render_scale() as f32;
                 glUniform2f(BL_TEXEL, tap / c.sw as f32, tap / c.sh as f32);
                 glBindTexture(GL_TEXTURE_2D, src);
-                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, straighten::Extent::Target);
             });
         }
 
@@ -5648,7 +5800,7 @@ fn blur_snapshot_with_taps(reg: [f32; 4], taps: &[f32]) {
             // The Settings kernel adds an even pair of extra passes, so both the ordinary and
             // modal chains finish in `a`. The assertion at entry keeps that property structural.
             glBindTexture(GL_TEXTURE_2D, c.a);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, straighten::Extent::Target);
         });
 
         glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
@@ -6700,7 +6852,7 @@ static mut CULL_RECT: Option<[f32; 4]> = None;
 // and its two accessors live in `plx_machine::idle`, the machine layer: `idle::invalidate` has to read it,
 // and this module may name that layer but not the reverse. Every primitive below consults it
 // through these two names exactly as it did when the flag was declared here.
-pub use plx_machine::idle::{page_frozen, set_page_frozen};
+pub use plx_machine::motion::report::{page_frozen, set_page_frozen};
 
 thread_local! {
     /// **This frame's picture is a hardware VIDEO PLANE** (restructure spec §9), armed for the
@@ -6740,20 +6892,36 @@ pub fn video_plane_frame() -> bool {
 /// cache is therefore a photograph of transparent black, served back over the video for as long as
 /// the cache lives.
 ///
+/// **The doors also stay shut past the straighten pass** (`straighten.rs`), which is the frame's
+/// last draw while the plane is bound: from then until the next `frame_begin` framebuffer 0 holds
+/// STRAIGHT colour for the television's compositor, not the premultiplied picture every consumer of
+/// a snapshot composites, so a read of it is just as wrong, in another way.
+///
 /// **A debug build PANICS**, because reaching one of these is a structural mistake — a screen that
 /// declared `RenderStrategy::VideoPlane` and then asked for a snapshot — and the picture it
 /// produces on a television is a black rectangle nobody can explain from a log. A release build
 /// logs ONCE and refuses; the once is deliberate, since a door reached at all is reached every
 /// frame and a per-frame line would bury the event log during playback.
 pub fn video_plane_refuses(what: &str) -> bool {
-    if !video_plane_frame() {
+    // **Past the straighten pass the doors are shut too** (`straighten.rs`): the frame's last draw
+    // turned framebuffer 0 into STRAIGHT colour for the compositor, so a read of it is not the
+    // premultiplied picture every consumer composites. The pass is the one deliberate read of the
+    // framebuffer on a video-plane frame, and it caches nothing: it copies into its own texture and
+    // draws straight back.
+    let straight = straighten::straightened();
+    if !video_plane_frame() && !straight {
         return false;
     }
     // Under `cargo test` these doors are driven ON PURPOSE — the point of
     // `a_video_plane_screen_replaces_its_host_and_takes_no_snapshot` is to watch each one refuse —
     // so the assertion is the SHIPPING debug build's, not the harness's.
     #[cfg(all(debug_assertions, not(any(test, feature = "test-support"))))]
-    panic!("{what} on a VIDEO PLANE frame: the plane is not in our framebuffer to sample");
+    {
+        if straight {
+            panic!("{what} after the straighten pass: framebuffer 0 holds straight colour for the compositor");
+        }
+        panic!("{what} on a VIDEO PLANE frame: the plane is not in our framebuffer to sample");
+    }
     #[allow(unreachable_code)]
     {
         if !VIDEO_PLANE_TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -6990,7 +7158,7 @@ pub fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) -> bool
                 note_px(Class::Blur, (tw as f64) * (th as f64));
                 glUniform2f(BL_TEXEL, off / c.sw as f32, off / c.sh as f32);
                 glBindTexture(GL_TEXTURE_2D, src);
-                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, straighten::Extent::Target);
             });
         }
 
@@ -7012,7 +7180,7 @@ pub fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) -> bool
                 BLUR_UP_TAP / c.mh as f32,
             );
             glBindTexture(GL_TEXTURE_2D, c.a);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, straighten::Extent::Target);
         });
 
         glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
@@ -7382,9 +7550,9 @@ pub fn draw_blur_backdrop(
         glUniform4f(GL_UVRECT, uv[0], uv[1], uv[2], uv[3]);
         glUniform1f(GL_RADIUS, radius);
         glUniform2f(GL_CH, w * 0.5, h * 0.5);
-        glUniform4f(GL_RECT, x, y, w, h);
+        let ext = set_rect(GL_RECT, x, y, w, h);
         profile::phase("glass.composite", || {
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         });
         true
     }
@@ -7502,9 +7670,9 @@ pub fn draw_glass_frozen(
         glUniform4f(GL_UVRECT, x / SCR_W, y / SCR_H, w / SCR_W, h / SCR_H);
         glUniform1f(GL_RADIUS, radius);
         glUniform2f(GL_CH, w * 0.5, h * 0.5);
-        glUniform4f(GL_RECT, x, y, w, h);
+        let ext = set_rect(GL_RECT, x, y, w, h);
         profile::phase("glass.frozen", || {
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         });
     }
     true
@@ -8182,11 +8350,11 @@ pub fn draw_field(x: f32, y: f32, w: f32, h: f32, tex: c_uint, tint: *const f32)
     }
     unsafe {
         use_prog(UPROG); // u_screen and the sampler unit are set once at init
-        glUniform4f(UL_RECT, x, y, w, h);
+        let ext = set_rect(UL_RECT, x, y, w, h);
         glUniform4fv(UL_TINT, 1, tint);
         glUniform1f(UL_DITHER, dither_for_field(w, h));
         glBindTexture(GL_TEXTURE_2D, tex);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
 }
 
@@ -8218,14 +8386,14 @@ pub fn draw_field_panel(
     }
     unsafe {
         use_prog(PPROG); // u_screen and the sampler unit are set once at init
-        glUniform4f(FP_RECT, x, y, w, h);
+        let ext = set_rect(FP_RECT, x, y, w, h);
         glUniform4fv(FP_TINT, 1, tint);
         glUniform4f(FP_UVRECT, uv[0], uv[1], uv[2], uv[3]);
         glUniform2f(FP_SIZE, w, h);
         glUniform1f(FP_RADIUS, radius.min(w.min(h) * 0.5));
         glUniform1f(FP_DITHER, dither_for_field(w, h));
         glBindTexture(GL_TEXTURE_2D, tex);
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
     true
 }
@@ -8583,6 +8751,23 @@ mod tests {
         assert!(worst * 255.0 <= 0.5, "worst deviation {:.3} codes", worst * 255.0);
     }
 
+    /// **The mesh is stored row by row**, `FIELD_N` squares of 6 vertices to a row, top to bottom —
+    /// which is what lets [`draw_field_mesh_rows`] (and the scrim layer, which draws only the rows its
+    /// shade reaches) address a run of rows as one contiguous `glDrawArrays` range.
+    #[test]
+    fn the_field_mesh_is_stored_row_by_row() {
+        let v = field_mesh();
+        let row_verts = FIELD_N * 6;
+        assert_eq!(v.len(), FIELD_N * row_verts * 2);
+        for (j, row) in v.chunks(row_verts * 2).enumerate() {
+            let (top, bottom) = (j as f32 / FIELD_N as f32, (j + 1) as f32 / FIELD_N as f32);
+            for p in row.chunks(2) {
+                assert!(p[1] >= top && p[1] <= bottom, "row {j}: a vertex at y {}", p[1]);
+            }
+            assert!(row.chunks(2).any(|p| p[1] == top) && row.chunks(2).any(|p| p[1] == bottom), "row {j} spans its strip");
+        }
+    }
+
     /// **The shared output dither, graded across every program that carries it.**
     ///
     /// Written as one case over a LIST rather than five cases, because the failure this guards is
@@ -8724,6 +8909,26 @@ mod tests {
         assert!(fs.contains(", 1.0);"), "one opaque fragment: nothing below it is read");
     }
 
+    /// **Every program that carries the ground shade stops at its live blocks.** The three vertex
+    /// programs built with `PLX_SCRIM` (the wash, the art wash, the layer) declare the block array at
+    /// the size the Rust side uploads ([`scrim::VEC4S`]), take the live count as `u_scn`, and loop over
+    /// at most [`scrim::MAX_BLOCKS`] blocks, leaving at the count. The programs without it carry none
+    /// of it (the plain twin behind `draw_grad4`).
+    #[test]
+    fn the_scrim_programs_stop_at_the_live_block_count() {
+        let blocks = scrim::MAX_BLOCKS;
+        for (name, src) in [("wash", VS_AMBIENT_DITHERED), ("art wash", VS_ART_WASH), ("layer", VS_SCRIM_LAYER)] {
+            let code = shader_code(src);
+            assert!(code.contains("#define PLX_SCRIM\n"), "{name}: built with the scrim");
+            assert!(code.contains(&format!("uniform vec4 u_sc[{}];", scrim::VEC4S)), "{name}: the array is the one uploaded");
+            assert!(code.contains("uniform float u_scn;"), "{name}: the live count");
+            assert!(code.contains(&format!("for (int i = 0; i < {blocks}; i++)")), "{name}: a constant bound, as GLSL ES 1.00 wants");
+            assert!(code.contains("if (float(i) >= u_scn) break;"), "{name}: leaves at the count");
+            assert!(code.contains("shade_block(2 * i, px)"), "{name}: two vectors a block");
+        }
+        assert!(!shader_code(VS_AMBIENT).contains("#define PLX_SCRIM"), "plain twin: no scrim");
+    }
+
     /// **The card composite's box test is an exact subset of its SDF early-out.** `fs_img.frag`
     /// returns `(tex, ta)` without evaluating the highp rounded-box SDF for any fragment strictly
     /// inside the packed `u_card` interior; that is only the same picture if every such point also has `d < -2`, the
@@ -8843,7 +9048,7 @@ mod tests {
             &rest[..rest.find("\n}\n").expect("the end of the function")]
         };
         let ramp_draw = body("unsafe fn draw_ramp(");
-        assert!(ramp_draw.contains("glUniform4f(RP_RECT, x, y, w, h);"), "exactly the rect's bounds");
+        assert!(ramp_draw.contains("set_rect(RP_RECT, x, y, w, h);"), "exactly the rect's bounds");
         assert!(ramp_draw.contains("if RPROG == 0 {") && ramp_draw.contains("use_prog(PROG);"), "the fallback");
         let rect_draw = body("pub fn draw_rect(");
         let (gated, routed) = (
@@ -9808,7 +10013,7 @@ mod tests {
 
     #[test]
     fn the_dither_policy_refuses_small_fields() {
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let broad = 700.0;
         assert_eq!(
             dither_for_field(40.0, broad),
@@ -10318,6 +10523,52 @@ mod tests {
             blur_is_bottom_up(),
             "the v span runs backwards iff stored bottom-up"
         );
+    }
+
+    /// **The premultiplied draw is the straight draw's picture, to one code value.** A CPU model of the
+    /// two GL blends (`SRC_ALPHA, ONE_MINUS_SRC_ALPHA` of a straight texel, `ONE, ONE_MINUS_SRC_ALPHA` of
+    /// a premultiplied one through [`premultiplied_tint`]) over every premultiplied pixel the libass
+    /// facade can publish (a channel `p` at alpha `a`, `p <= a`), against the straight texel the facade
+    /// USED to publish (its conversion, frozen here: `(p * 255 + a / 2) / a`). The two disagree by the
+    /// rounding of that conversion alone: under half a code value before the framebuffer's own rounding,
+    /// and so at most one code value after it. The premultiplied side is the exact one.
+    #[test]
+    fn a_premultiplied_draw_leaves_the_framebuffer_a_straight_draw_would() {
+        fn old_straight(p: u32, a: u32) -> f32 {
+            if a == 0 { 0.0 } else { ((p * 255 + a / 2) / a).min(255) as f32 / 255.0 }
+        }
+        let code = |v: f32| (v * 255.0 + 0.5).floor();
+        let tints = [[1.0; 4], [0.85, 0.85, 0.85, 1.0], [0.55, 0.55, 0.55, 1.0], [1.0, 1.0, 1.0, 0.5], [0.7, 0.4, 0.2, 0.3]];
+        let (mut worst, mut worst_code) = (0.0_f32, 0.0_f32);
+        for a in 0..=255u32 {
+            for p in 0..=a {
+                for tint in tints {
+                    let pre = premultiplied_tint(tint);
+                    for dst in [0.0, 40.0 / 255.0, 0.5, 1.0] {
+                        // straight: colour * tint, blended by texel alpha * tint alpha
+                        let alpha = a as f32 / 255.0 * tint[3];
+                        let old = old_straight(p, a) * tint[0] * alpha + dst * (1.0 - alpha);
+                        // premultiplied: texel * premultiplied tint, added; same alpha
+                        let new = p as f32 / 255.0 * pre[0] + dst * (1.0 - a as f32 / 255.0 * pre[3]);
+                        worst = worst.max((old - new).abs() * 255.0);
+                        worst_code = worst_code.max((code(old) - code(new)).abs());
+                    }
+                }
+            }
+        }
+        assert!(worst <= 0.5 + 1e-3, "the two draws differ by {worst} codes before rounding");
+        assert!(worst_code <= 1.0, "and by {worst_code} codes after it");
+    }
+
+    /// The tint of a premultiplied draw: colour scaled by the fade as well, alpha as it is (a fade that
+    /// scaled only the colour would leave the picture opaque over what it fades into).
+    #[test]
+    fn a_premultiplied_tint_scales_the_colour_by_its_alpha() {
+        assert_eq!(premultiplied_tint([1.0; 4]), [1.0; 4], "white and opaque is the texel as it is");
+        assert_eq!(premultiplied_tint([0.85, 0.85, 0.85, 1.0]), [0.85, 0.85, 0.85, 1.0], "an ink rung scales colour only");
+        assert_eq!(premultiplied_tint([1.0, 1.0, 1.0, 0.5]), [0.5, 0.5, 0.5, 0.5], "a fade scales both");
+        assert_eq!(premultiplied_tint([0.8, 0.5, 0.25, 0.5]), [0.4, 0.25, 0.125, 0.5]);
+        assert_eq!(premultiplied_tint([1.0, 0.5, 0.2, 0.0]), [0.0, 0.0, 0.0, 0.0], "a fully faded draw adds nothing");
     }
 
     /// **`glClearColor` has one caller: [`set_clear_color`].** A flat ground is a clear in a colour of
@@ -11183,7 +11434,7 @@ mod card_split_tests {
         let (booked, refused, drawn) = (
             draw[whole..].find("note_card_path(path").expect("booked"),
             draw[whole..].find("card_whole_refused(path, masked_part)").expect("refused through the real mask"),
-            draw.find("glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)").expect("drawn"),
+            draw.find("glDrawArrays(GL_TRIANGLE_STRIP, 0, 4,").expect("drawn"),
         );
         assert!(booked < refused && whole + refused < drawn, "booked {booked}, refused {refused}, drawn {drawn}");
         let split = draw.find("CardCut::Pieces(rect) =>").expect("the split arm");

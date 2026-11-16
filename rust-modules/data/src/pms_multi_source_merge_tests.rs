@@ -405,31 +405,31 @@ fn a_failing_source_leaves_a_populated_home_completely_intact() {
 #[test]
 fn a_source_landing_repaints_a_settled_home() {
     let _g = plx_base::testlock::serial();
-    let mut o = Owner::default();
-    reset(&mut o.state, &o.adapter);
-    plx_machine::idle::set_enabled(true);
-    seed(&mut o.state, vec![
-        src(0, "", HubState::Ready, Some(build_test(1))),
-        src(1, "friend", HubState::Loading, None),
-    ]);
-
-    for (what, build) in [
-        ("a share arriving", Some(build_test(2))),
-        ("a share failing", None),
-    ] {
-        plx_machine::idle::should_present(0); // takes-and-clears whatever was already pending
-        assert!(
-            !plx_machine::idle::should_present(0),
-            "the panel is settled with nothing happening"
-        );
+    for (what, build) in [("a share arriving", Some(build_test(2))), ("a share failing", None)] {
+        let mut o = Owner::default();
+        reset(&mut o.state, &o.adapter);
+        let own = if build.is_some() { src(0, "", HubState::Ready, Some(build_test(1))) }
+            else { src(0, "", HubState::Failed, None) };
+        seed(&mut o.state, vec![own, src(1, "friend", HubState::Loading, None)]);
+        let mut present = plx_machine::present::Present::new();
+        present.take(0);
+        present.acknowledge(0);
+        assert!(!present.peek(0));
+        let before = (o.state.catalog_gen, hub_state(&o.state));
         land(&o.state, &o.adapter, 1, build);
-        pump(&mut o.state, &o.adapter, 0.0);
-        assert!(
-            plx_machine::idle::should_present(0),
-            "{what} must invalidate the frame"
-        );
+        let mut changed = false;
+        for result in take_landings(&o.adapter) {
+            changed |= super::land(&mut o.state, &o.adapter, &result).changed;
+        }
+        assert_ne!((o.state.catalog_gen, hub_state(&o.state)), before, "{what} changes the actual publication");
+        assert!(changed, "{what} must return its visible change to the frame owner");
+        assert!(!present.peek(0), "a data mutation cannot paint through a global adapter");
+        if changed { present.note(plx_machine::present::PresentEvent::Damage(
+            plx_machine::present::Provenance::Landing(plx_machine::machine::MachineId::Store(
+                crate::stores::StoreId::Hubs.ord())))); }
+        assert!(present.take(0), "{what} must repaint its owning frame");
+        reset(&mut o.state, &o.adapter);
     }
-    reset(&mut o.state, &o.adapter);
 }
 
 /// The total-failure read-out is reserved for a total failure. Any source answering makes Home
@@ -906,7 +906,7 @@ fn an_unpinned_library_publishes_nothing() {
     ];
     let scope = BrowseScope {
         sections_gen: 0,
-        pins: vec![(sid(0), 1, true), (sid(1), 1, false)],
+        pins: &[(sid(0), 1, true), (sid(1), 1, false)],
         clients: Default::default(),
     };
     let (items, hubs, _) = merge_with_scope(&srcs, &scope);
@@ -1191,7 +1191,7 @@ fn an_unpinned_roster_first_copy_does_not_hide_the_pinned_one() {
         ready(h[0].0, "", vec![card(h[0].0, "own", "Estudios sociales", Some(4), 2, true, 100)]),
         ready(h[1].0, "friend", vec![card(h[1].0, "theirs", "Social Studies", Some(4), 1, true, 900)]),
     ]);
-    let scope = BrowseScope { sections_gen: 1, pins: vec![(h[0].0, 2, false), (h[1].0, 1, true)], clients: Default::default() };
+    let scope = BrowseScope { sections_gen: 1, pins: &[(h[0].0, 2, false), (h[1].0, 1, true)], clients: Default::default() };
     let (cat, hubs, _) = merge_with_scope(&o.state.srcs, &scope);
     let deck: Vec<_> = cat[hubs[0].start..hubs[0].start + hubs[0].len].iter().map(|m| m.rk.clone()).collect();
     assert_eq!(deck, ["theirs"], "the show does not vanish");

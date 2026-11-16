@@ -7,6 +7,129 @@ player machine: `player/lifecycle.rs` is the machine alone (private state, one w
 `player/foreground.rs` its drivers and `player/transport.rs` the transport-pause contract; its shape
 is gated by `ci/machines.ini` (see "Machine shape" below).
 
+## Project UI review (in progress; not acceptance)
+
+The project-wide review in `.empryo/reviews/project-ui-architecture-audit-2026-11-13.md` remains
+incomplete. Its original 4 workers / 19 globals / 61 forks / 11 fxlanes were tracked sites, not
+95 proven machine violations: scans include IO job bodies, runners and fixture seams. The current
+integration comparison retires the login/lookahead and card-motion forks plus eleven family
+app-command lanes (4/19/61/11 to 4/19/58/0); explicit captured policy and same-FIFO
+yield/execute/resume replace them. Remaining settings,
+render-policy and full call-path review are not closed. `build_stream(&OffFrame)` remains a valid
+off-frame IO body, not a pure reducer; storage/registry executors and GL/fixture seams must not be
+removed to reach zero ledgers. Source gates do not prove runtime ordering or full project coverage.
+
+Step-8 replacement evidence is `.empryo/reviews/step8-recovery-result-2026-11-14.md`.
+Pinned compiler feature checks pass in an isolated snapshot, but full default/hostsim gates fail
+on a media timing assertion; Python 3.12 also retains generated-proof/Session-shape and lock
+selftest failures. The unchanged ambient oracle still fails two groups. Source scan scope and
+IO-port registries remain intact; source inventory is not complete runtime acceptance. No ARM
+artifact, authorized CI publication, CURRENT Filmography roundtrip or device acceptance was obtained.
+The earlier Git-isolation incident report is retained as history, not attributed to this run.
+Historical checkpoints below are not rewritten as current gate results.
+
+## Combined verdict source checkpoint (historical; not acceptance)
+
+The integration tree retains full ancestry from base `f8f6dbb7`, Session `33f18e52`,
+Watchlist W2 `abd26d21`, enforcement `dd1664f7`, and Screens `10bd53db`. Actual
+ledger entries are **4 workers / 19 globals / 61 forks / 11 fxlanes** after Person and
+remaining data captured-input retirement; the pins
+match those entries. Watchlist workers/globals and Screens globals are zero.
+No remaining allowance was removed merely to reach a target count.
+
+Follow-up `0a98b17e` retains Watchlist captures as an immutable `Arc` handle
+shared by both host capture paths. The cache compares the full `ClientKeys`
+value and primitive UTC day before cloning keys, collecting reach or formatting
+a date. It also removes the per-pump key clone and defers auth copying until
+write/stream work is owed, preserving write-before-stream order. Two added
+Rust regression sources cover a populated stable capture
+(`watchlist_snapshot_cache_retains_populated_capture_and_buffers_on_stable_passes`)
+and same-generation key/fact/eligibility changes, day changes and old in-flight
+snapshot immutability. At this historical checkpoint they had not been compiled
+or run; the later exact-head milestone below supersedes that execution status. The scoped follow-up
+touches `stores/watchlist{,_ports,_stream_job}.rs`, app store adapter and Bridge.
+
+A terminal-edge follow-up records list read-start/progress in the addressed
+stream kind: held rows, awaiting a first page, or publishing a first load. A
+panic before page zero is not a later-page failure merely because old rows are
+held. Held complete/partial rows retain their own completeness, while a first
+load that published page zero remains truncated. Two additional Rust regression
+sources cover those cases before/after page zero; execution was pending at that
+historical checkpoint (see the later milestone below).
+The write-ledger stamps are not used as list-read identities.
+
+Session now binds the actual `SessionMachine.state` (`attempt::Attempt`) to
+`transition` and `from_init` with `state_reads = immutable`. The structural
+read-only proof, not a getter-name exception, validates shared reads. The
+registry contains ten machines, four with strict writer contracts. Exact wall
+ports include the 17-line Catalog fetch/calendar worker adapter and Watchlist
+calendar capture in the app store adapter; neither exemption contains a
+machine. `ports.ini` is a new gate relative to the base, not a grown old list.
+
+The only textual merge conflicts were in `app/bridge.rs`: Watchlist pump keeps
+W2 key/profile/snapshot capture before the machine-only `StepScope`, then drains
+Watchlist jobs after it; the end-of-file resolve-drain test and Screens input
+publication/cache test modules are both retained. Stores merged without a
+textual conflict, preserving all twenty scope sites and captured arguments.
+The reader-negative regression and both ledger pin reductions coexist in the
+Python harness. Source-gate follow-up fixes two lexical false positives: visible
+`#[cfg(test)]` modules are still test-only, and captured field labels are not
+registry function values. Added regressions retain production-thread rejection,
+RHS getter calls and bare callback-reference rejection; no allowance was added.
+All replay fixtures and V5/V6 JSON goldens are unchanged from the base.
+
+Source verification uses the committed tree: `ci/check-machine-shape.py`,
+`ci/check-ports.py`, `ci/check-ledger-ratchet.py`, the seven CI Python suites
+for shape/writers/read-only proof/scopes/ports/ratchet/test-module discovery,
+and the harness ledger and reader regressions. These are source checks only.
+Rust compilation, runtime/replay tests, Clippy and independent review remain
+acceptance prerequisites; no Rust stage/build was performed for this checkpoint.
+
+After the shared Rust lease, exercise owning-crate filters `step` (base),
+`assert_fx` (machine), `step_scope_tests` (ui),
+`lifecycle_obligation_tests` (media), `auth::owner` (session, including Attempt
+and codecs), `watchlist` (data and app, including `watchlist_snapshot_cache`), and `screen_input`
+(app), plus the full
+plex and screens suites. Run Clippy with `clippy::wildcard_enum_match_arm`
+enforced for ForegroundLifecycle, PictureGate, PlayerReadout and SessionMachine;
+filtered tests do not replace the parent full gates or independent review.
+
+## Verified integration milestone (before steady-state cost fixes)
+
+On exact commit `4a4f0b258e05df9f0d94fbadab0e51100fafac7f`, tree
+`e156bab180042b3e372a28b34089c86c674fe0b4`, the coordinator's run 350
+compiled and ran the full Data suite (**1621 passed**), including all **145
+Watchlist** tests and the capture/terminal-edge regressions above. The focused
+Session (**333**), Screens (**2142**), app Session (**149**) and app screen-input
+(**10**) tests also passed, as did the no-default-features and lint gates.
+These are results for that exact pre-fix commit, not acceptance of a later head.
+
+The same full `make check` reported three Python failures: the unclassified
+test-only `captured_store_fixture` module, the build-bench `app_rebuilt`
+fixture assertion, and the TV-lock self-test timing. The fixture classification
+is corrected in this follow-up without adding layer edges or allowances. The
+other two are separate tooling/environment investigations. No full-check pass
+or new-head acceptance is claimed here; publication still requires its actual
+gates, independent review and benchmark evidence.
+
+## Notify integration checkpoint (historical; not acceptance)
+
+Notify's typed Direct stream lane and app per-connection cursor are written; the
+frozen API and integration evidence are in `.empryo/reviews/verdict-notify-core.md`
+and `.empryo/reviews/verdict-notify-integration.md`. StoreId Notify is appended at
+12; old ordinals, Home/tape records and NOTIFY_FILLS `[Browse, Hubs]` are unchanged.
+Bridge captures fresh stream eligibility before the one-frame cursor, settles each
+initial admission before that connection's ordinary drain, then maps once and
+drains fan-out jobs. Accepted-held release failures use ordinary terminal timing.
+Production opens off-frame; test boot refuses unless explicitly scripted.
+
+The three Notify allow-area files have been retired. The coordinator reports actual
+ledger totals of 5 workers / 81 globals / 62 forks / 11 fxlanes, down from the
+S4 pre-Notify checkpoint of 6/89/65/11; the pins matched that checkpoint. The source-only stale-key
+check passed in orun-27; runtime tests, capture comparisons and full gates remain
+pending. Per-connection source ordering is preserved; asynchronous worker wall-time
+is not pinned, and disabled-state repair is explicitly intentional.
+
 ## The rule
 
 Logic never performs IO. A machine (a screen, a `data/` store, the session owner, the player's
@@ -18,7 +141,8 @@ Allowlists only shrink.
 
 The reason is testing. A machine that is a pure function of (state, event) has no seam to fake:
 a test and a replay feed it the same events the product does, so what the tests prove is what
-ships. Every site below is a place where that is not true yet. `docs/stores-as-machines.md` is how
+ships. Ledger sites below require classification by call path: a scanner also sees IO boundaries and
+fixture seams in scanned files. `docs/stores-as-machines.md` is how
 the `data/` stores became machines; this is the rule that finishes the job.
 
 ## What the four ledgers cover
@@ -30,7 +154,7 @@ and the lines are compared to the tree as an exact multiset.
 | Rule | A site is | Key |
 |---|---|---|
 | `workers` | a production call that starts a worker in a machine: `task::spawn(`, `spawn_small(`, `spawn_small_keeping(`, `spawn_small_or_inline(`, `spawn_off_frame(`, `spawn_off_frame_keeping(`, `storage_worker::submit(`, `submit_retained(`, the command worker's `.submit_ticket(` | `<path>::<enclosing fn>::<spelling>` |
-| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, the session cache's `session::peek_settled` and `session::current_gen`, the server registry's roster readers (`server_ids`, `server_roster_gen`, `server_facts_gen`, `server_probe_result`), the controlled-run switch `tape::active`, the player's pause readers (`transport::viewer_paused`, `preview::paused`: each takes the session but also reads process-global state, the claim hold's slot and the preview machine's phase; `transport::paused` reads only the session's readout and is no longer a spelling), the device's capability answer (`devcaps::caps`, and the zero-argument `is_dp_audio` / `is_dp_audio_track` that used to read it), and `player::TX` in the player's lifecycle (at zero) | `<path>::<enclosing fn>::<spelling>` |
+| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, the session cache's `session::peek_settled` and `session::current_gen`, the server registry's roster readers (`server_ids`, `server_roster_gen`, `server_facts_gen`, `server_probe_result`), the controlled-run switch `tape::active`, the subtitle registries' colour-pick readers (`sidecar::takes_colour`, `sidecar::selected`, `ass_source::takes_colour`, `ass_source::selected`: no site; the Subtitles menu reads the fact from the session's readout), the player's pause readers (`transport::viewer_paused`, `preview::paused`: each takes the session but also reads process-global state, the claim hold's slot and the preview machine's phase; `transport::paused` reads only the session's readout and is no longer a spelling), the device's capability answer (`devcaps::caps`, and the zero-argument `is_dp_audio` / `is_dp_audio_track` that used to read it), and `player::TX` in the player's lifecycle (at zero) | `<path>::<enclosing fn>::<spelling>` |
 | `forks` | a production test/production fork whose predicate reads `test` or `feature = "test-support"`: a `#[cfg(..)]` attribute that a production build can satisfy (`not(test)`, `not(any(test, feature = "test-support"))`, `all(target_os = .., not(test))`, ...), or an inline `cfg!(..)` of any value | `<path>::<item name>`, or `<path>::<enclosing fn>` for a statement or an inline `cfg!`, or `<path>::<struct>` for a field |
 | `fxlanes` | an `AppFx::<Variant>` arm of `Bridge::app_effect` that does not push `Fx::Deliver(`: one site for each variant on its head, and one for an arm that names no variant (`other => ..`, `_ => ..`) | `<path>::AppFx::<Variant>`, or `<path>::AppFx::_` |
 
@@ -56,12 +180,12 @@ widening recorded the 17 forks that were already there (three in `screens/`: `le
 **Decisions the table hides.**
 
 - A bare `spawn(` / `submit(` / `peek(` / `revision(` / `blocked_for(` / `offers(` / `current_gen(` /
-  `active(` is a site only in a file that imports it from `task`, `storage_worker`, `session`, `keypin`,
-  `grant` or `tape` (singly, as the last or any other item of a braced group, or through a glob;
+  `active(` / `selected(` / `takes_colour(` is a site only in a file that imports it from `task`,
+  `storage_worker`, `session`, `keypin`, `grant`, `tape`, `sidecar` or `ass_source` (singly, as the last or any other item of a braced group, or through a glob;
   `Builder::spawn`, a local fn, `it.peek()` and another module's `active()` are not workers or registry
   reads); `peek` and `current_gen(` are also sites inside `plex/src/plex/session.rs`, the module that
   defines them. `current_gen` and `active` are generic names, so their bare form counts only as a call; a
-  `use ... as` rename of `tape`, `tape::active` or any of the new names fails outright. A local launcher
+  `use ... as` rename of `tape`, `tape::active`, `sidecar`, `ass_source` or any of the new names fails outright. A local launcher
   (`launch_browse_discovery`) is no site of its own: the real call inside it is.
 - The roster, session-cache and tape readers (`server_ids`, `server_roster_gen`, `server_facts_gen`,
   `server_probe_result`, `session::peek_settled`, `session::current_gen`, `tape::active`) read process-wide
@@ -131,13 +255,65 @@ widening recorded the 17 forks that were already there (three in `screens/`: `le
 
 ## Machine shape
 
-`ci/machines.ini` lists the state machines whose shape is gated, one `[file::Struct]` section each
-(paths relative to `rust-modules/`), with the machine's `event` and `effect` types and a `step`
-line saying how it is exposed, driven and owned. `ci/check-machine-shape.py` (in `make check`)
-fails on a `pub`, `pub(crate)` or `pub(super)` field of a listed struct, so its state stays
-private and its one writer stays `step`, and on an entry whose file or struct is gone. It also
-prints one line per machine with the number of its `bool` and `Option<..>` fields: a report-only
-flag ratchet, read in review and never red. The first entry is `ForegroundLifecycle`.
+`ci/machines.ini` is the sole machine registry. Every entry binds a real event enum, a real
+mutable effect-vector channel (or exact `effect = none` for a pure view), and one private inherent
+`transition` reducer. The checker binds the complete argument list: exactly `&mut self`, one
+registered event enum (possibly borrowed), one concrete mutable effect vector (absent for
+`effect = none`), and only the explicitly declared closed `aux_facts` slot where required.
+No additional state/model, context bag, reference, generic or callback argument is admitted,
+regardless of its parameter name. Duplicate, missing and unknown bindings fail closed.
+Concrete effect-vector aliases are resolved; an owned-state alias is not an event or an
+auxiliary-fact certificate, and an opaque setter cannot become a writer through a renamed
+frame/root wrapper.
+
+The actual canonical headers require three auxiliary inputs, not just Session time:
+`tick_ms: u32` for Session, `now_ms: u64` for URI, and backend
+`capabilities: Option<Capabilities>`. Clock facts require unshadowed primitive identities
+(or canonical primitive paths), by value, with the exact declared name and width. The backend
+fact is pinned to the actual playback-contract declaration with exactly nine named boolean
+fields; neither an arbitrary immutable model nor a familiar type name is sufficient. The
+closed semantic slots cannot be extended by adding a type name to the registry. Reducer logic
+may legitimately change phase based on these facts; the checker does not prove monotonic
+clock history or semantic event admission. An event wrapping raw state and ignoring admission
+is not made sound by its signature. Rust type checking and behavior review remain required.
+
+Every owned struct field is private and write-guarded by default: pending work, counters, outboxes,
+caches and nested owners are not exemptions. `state_field` selects a variant view, never the write
+coverage boundary. Fresh constructors initialize all fields and cannot accept an existing machine.
+All subsequent physical writes belong inside `transition` itself, not a helper merely called by it.
+Public adapters may dispatch typed owner events; consuming drains must do the same. Whole-machine
+aliases/replacement, live mutable projections, nested mutating functions/closures and unknown
+machine-capturing calls/macros fail closed. Detached owned values may have their own pure helpers.
+
+Shared readers require closed structural proof for the data they expose. A user `Copy` bound is
+not an inertness certificate: generic identities need a private closed seal covering only proved
+inert actual types. Numeric/discriminant reads may use bounded structural proof without exposing
+opaque payloads. Foreign types remain opaque without reproducible source-backed dependency proof;
+a familiar dependency name is not a certificate.
+
+`ci/readonly_generated.py` and `ci/proofs/platform-generated-enums.json` separately certify
+the actual platform language include: pinned package/module/include, complete production
+build scripts, generator/templates, manifests/configuration and locked graph. The reviewed
+pipeline emits only unit enum variants in every configuration; strict catalogue/schema and
+ASCII variant validation permit new languages without a count/list pin. The same evidence
+pins the machine ID macro source and proves its concrete `u32` fields, not a `Copy` promise.
+Reviewed machine snapshots differ only in `NavOp::SelectTabWithChild`, i18n snapshots only in clock formatting/helpers; either
+source changing requires review. No generator or Cargo/cache code executes in native CI.
+The certificate assumes ordinary Cargo/Rust/std/serde execution and no out-of-band output,
+compiler or external configuration overrides. It certifies values only, never locale contexts,
+locks, callbacks or generated method authority. Unknown layouts/includes remain opaque.
+
+Every source also registers a matching `[module file]` enum policy and unconditionally denies (or
+forbids) `clippy::wildcard_enum_match_arm`. Local `allow`, `expect` and `warn` cannot weaken it.
+Production child modules and literal includes are traversed exhaustively. Conditional
+`cfg_attr(path)`, opaque/generated includes and unresolved production modules are rejected rather
+than guessed; proven test-only code is excluded. Numeric and open wire-string wildcard matches
+remain legal; the compiler/Clippy classify enum exhaustiveness, not a textual underscore ban.
+
+The native tests derive the cohort and every owned field from this registry, retain the original
+writer/alias/macro negatives, and add typed-event/effect, full-field and production-closure matrices.
+Fixture and mutation passes are not full-cohort Rust, Clippy, behavior or performance acceptance.
+Bool/Option field counts are report-only.
 
 ## Layout
 
@@ -201,8 +377,7 @@ re-point. It never mixes clients within one page: the opening season's episodes
 The Collection page's request is the second: its worker start and its three `client_for` reads are
 gone from `data/src/collection.rs`. The Person page's requests are the third: its two worker starts
 and its one `client_for` read are gone from `data/src/person.rs`, but unlike the two before it the
-Person step is not pure (the bullet headed "What the Person step still reads" lists what it still
-reads). Person has up to six requests out at once, so a pump emits several jobs, one per fetch slot,
+Person step now takes complete captured inputs (the bullet headed "Person's complete captured inputs"). Person has up to six requests out at once, so a pump emits several jobs, one per fetch slot,
 in ascending slot order. The catalog page's read is the fourth: its one worker start is gone from
 `data/src/stores/catalog.rs`. Unlike the other three it names no server and no client (it is a
 plex.tv read as the captured identity), so it takes no `ClientKeys` and no tape admission, and the
@@ -221,7 +396,7 @@ headed "The listing lanes"): their two worker starts and two registry reads are 
 `data/src/browse/mod.rs`. The Library's source discovery (the section list, the server's name and the
 item counts) is the twelfth (the bullet headed "The discovery lane"): its worker start and its one
 registry read are gone from `data/src/browse/mod.rs`, and its `data-browse` workers ledger file is
-deleted. The Home pins take the session from the Bridge (the bullet headed "The pins' session input"), and so do the Watchlist and catalog stores, for the seated profile and its plex.tv identity (the bullet headed "The Watchlist and catalog session input"), which deletes three `data-watchlist` globals lines; the rest of `browse/` (the roster and the gate reads) is still on its ledger. The Metadata store's
+deleted. The Home pins take the session from the Bridge (the bullet headed "The pins' session input"), and so do the Watchlist and catalog stores, for the seated profile and its plex.tv identity (the bullet headed "The Watchlist and catalog session input"), which deletes three `data-watchlist` globals lines. S4 replaces Browse's roster/gate/current reads with explicit `BrowseRosterInput` and the existing host-filled `ClientKeys`; the obsolete 14-entry Browse globals file was retired. The S4 checkpoint was **6 workers / 89 globals / 65 forks / 11 fxlanes** (recount before deletion: 6/103/65/11); post-Notify retirement the coordinator reports **5/81/62/11**. Runtime and integrated verification remain pending; legacy fixture/caller migration remains tracked in `.empryo/reviews/verdict-s4-integration.md`. Other stores' and Session's global sites remain unchanged. The Metadata store's
 season switch and episode-page window are the tenth (the bullet headed "The Metadata reads"): their
 two worker starts and the `client_for` reads of `fetch_episodes` and `fetch_episode_page` are gone
 from `data/src/metadata.rs`; the Related row's tail window read joins them in the same bullet, and its
@@ -326,9 +501,8 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   not drain: a `RequestDetail` stepped through it leaves its job on the outbox and nothing starts
   it. The same holds for the `pub` `Stores::metadata_run`. The owner drains in the same call, as
   `Bridge::metadata_run` does; no type enforces it, the counter below catches the lapse.
-  `CollectionStore`'s, `PersonStore`'s and `BrowseStore`'s `Machine::step` are unreached for these
-  reads and pass empty keys (a Browse step with no keys decides no section-hubs, directory or page read): a future
-  sender must pass the host's keys and drain. The same holds for the public
+  Person's inputless `Machine::step` refuses Open/pump explicitly, while Close, Reset and view edits
+  remain usable. Other store senders must likewise supply captured inputs and drain their jobs. The same holds for the public
   `CatalogStore::open` and `CatalogStore::pump`: `catalog_feed` and `catalog_reread` call
   `Bridge::catalog_open` and `Bridge::catalog_pump`, which drain in the same call. And for
   `HubsStore::run_with_directory`, `land_with_directory` and `tick_with_directory`: the
@@ -367,17 +541,18 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   Person jobs are out at once and `Addr.req` is only a per-job sequence there (`RequestId` stays
   unique per addressee): `done` and `refused` use the port's slot and generation, never the
   address, so a refusal gives back only its own generation's claim.
-- **What the Person step still reads.** Person starts no worker and reads no `client_for`, but its
-  step is NOT pure. It still reads `tape::active()` (which decides whether a job exists and carries
-  the controlled identity), `session::peek_settled()` (the settled plex.tv account the two global
-  reads are made as; a `globals` site of its own, in `ci/allow/globals/data-person.txt`), the session watch, the
-  refused-discover check (`discover::person_profile_refused` / `person_credits_refused`, which
-  lands the refusal in the step with no job, because routing it through the runner would release
-  and respawn it every ~2 s), `plx_base::devtrig::read("personcredits")` (dev-trigger builds only:
-  `seed_dev_credits` reads it on every pump while a person is open and no tape is armed),
-  `server_ids()` (the source roster) and `server_roster_gen()`. Its
-  two fetch bodies, `fetch_profile` and `fetch_credits`, stay in `data/person.rs`, so their `forks`
-  ledger lines stay. A source whose server holds no key backs off in the step and emits no job.
+- **Person's complete captured inputs.** The host captures before Open and every pump, borrowing
+  its ONE retained `ClientKeys` including every registered slot, not only slots holding a key.
+  `PersonInput` supplies settled session, visible generation, controlled mode, provider refusal
+  decisions and dev biography/credits seeds. The origin is appended once even when unregistered.
+  No step reads the roster/session/tape/dev provider; all 11 Person global ledger sites are gone.
+  Stable pumps compare borrowed instance/grant signatures and session strings without cloning
+  request data; token-only refresh preserves shelves. Local missing-client backoff, full-key job
+  admission, rotated adapters, generation-addressed claims and ascending gated landing order stay.
+  A captured fixed provider refusal settles in the emission turn without a job or retry; controlled
+  jobs still carry Controlled and answer the failure value through their unchanged typed ports.
+  Inputless Open/pump refuse explicitly; Close, Reset and view edits remain usable independently.
+  Worker-body fork allowances are unchanged. Python source acceptance is not Rust/replay acceptance.
 - **What the Catalog lane does, and does not, change.** Catalog is a plex.tv read: the job carries
   the captured `WatchlistAuth` and the title, and the read goes through the store's `CatalogIo`
   seam, which rides on the job's `CatalogPort` (so the request is a comparable value). The body is
@@ -414,10 +589,11 @@ worker start and the `client_for` read inside that worker are gone too. The hous
     can capture nothing: it clears the identity and records the title as owed a read (`take_reopen`).
     `Bridge::catalog_pump` takes it and calls `catalog_open`, which reads the input then and starts the job,
     all in the pump's own call. An `open` or a `reset` clears the owed title.
-  - **What stays.** The Watchlist's `copy_rank::current_server`, `find::client_for` and `guid_of::client_for`
-    (W-2), `server_ids` / `server_probe_result` / `server_roster_gen` / `server_facts_gen`, and the
-    `today()` clock read. The test entries (`WatchlistStore::pump`, `run_for_test`, `WatchlistInput::for_test`)
-    hand a generation-1 seat.
+  - **W1 leftovers (retired by W2).** At W1, the Watchlist still read `copy_rank::current_server`,
+    `find::client_for`, `guid_of::client_for`, `server_ids` / `server_probe_result` / `server_roster_gen` /
+    `server_facts_gen`, and `today()`. These are not current step exceptions: W2 moved client lookup to
+    worker transport and roster, ranking and UTC-date facts to host-captured snapshots. At W1, the test
+    entries (`WatchlistStore::pump`, `run_for_test`, `WatchlistInput::for_test`) handed a generation-1 seat.
 - **A refusal the step can observe.** The runner may decline to start a job: the thread ceiling, a
   registry that moved on between the step and the launch (the client the job names is no longer the
   one the slot holds), or a `Held` runner whose client is gone. It then calls the port's `refused`,
@@ -521,9 +697,10 @@ worker start and the `client_for` read inside that worker are gone too. The hous
     nothing, asks for a drain once more (as the queue-full retry that edit already had). The runner
     cannot be made to refuse a launch on a host (`spawn_small` has no failure knob), so its refused
     branch is pinned at the port (`a_refused_save_is_asked_again_at_the_next_edit_once`).
-  What the Search step still reads: `server_ids()` (the roster), `server_roster_gen()`,
-  `session::current_gen()` for a scoped query, and the recents cache's session reads, which stay in
-  `recents.rs` with the statics `STORE` and `PENDING`. A test drives it with `Owner::run_jobs`
+  Search now receives `SearchInput` before commands, pumps and publications: the same complete
+  `ClientKeys` as the other stores plus captured session/profile/tenure and recents facts. The
+  scope compares borrowed exact facts on stable frames; recents keeps `STORE` and `PENDING`
+  without reading the session registry. A test drives it with `Owner::run_jobs`
   (`search_test_support.rs`), a fixture that plays the runner against a served fake, in place of the
   inline fake-IO fork the old spawn carried.
 - **The section hubs lane.** A library's shelves (`data/src/browse/section_hubs.rs`) are the ninth
@@ -636,9 +813,10 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   registry: each is handed the `&Session` the app read. This is the second consumer of the pattern Search's
   household scope began (`Bridge::household_ids`, the Bridge reads, the store takes the value), and of the
   controlled run's `preferences`, which is the same value handed under the `""` key. No job kind and no
-  runner arm is added; every replay fixture is byte-identical. One path is not yet handed: the roster
-  reconcile (`sync_roster_owned` -> `reconcile_pins_from` -> `pin_record_for`) is given
-  `sync_roster_owned`'s own in-machine `peek()`, which stays on the ledger until B-E.
+  runner arm was added at this checkpoint; every replay fixture was byte-identical. The roster reconcile
+  (`sync_roster_owned` -> `reconcile_pins_from` -> `pin_record_for`) still used an in-machine `peek()`
+  then. S4 retired that ledger entry: `sync_roster_owned` now consumes `BrowseRosterInput`, and pin
+  reconciliation receives the captured `input.session` and `input.profile_key`.
   - **Observe, then read.** `Bridge::browse_session` is the one production reader: it calls
     `BrowseStore::observe_pin_write` FIRST, then `session::peek()`. The write's receipt is sent after the
     storage worker installed the written session, so a session read after seeing the receipt contains the
@@ -653,12 +831,14 @@ worker start and the `client_for` read inside that worker are gone too. The hous
     `Discovery` (a `debug_assert`, and a dropped command with a log line in a release build) rather than
     read the registry; both reach `run_with_session`. The `Machine` arms hand the step no keys and no
     session.
-  - **What stays.** `current_profile_key` (the profile is a published key, not a session read), the
-    `queue_update` / `queue_update_ticket` merge under IO, `peek_settled`, and B-E's reads
-    (`discovery_needs_pump`, `sync_roster_owned`). The first-run gate's session is read by its two
-    callers, boot and `follow_auth_landing`, where each asks. The test entry points (`*_for_test`, the
-    `#[cfg(test)]` `resolve_pins` / `apply_pins` / `record_pins` shims) read the registry as of now, after
-    observing the pin write, as the Bridge does.
+  - **Historical leftovers (machine reads retired by S4).** This checkpoint still listed
+    `current_profile_key`, `peek_settled`, and B-E's reads (`discovery_needs_pump`, `sync_roster_owned`).
+    S4 retired the Browse globals ledger: roster reconciliation and discovery now consume captured
+    roster, session, settled and profile facts through `BrowseRosterInput`. The `queue_update` /
+    `queue_update_ticket` session merge remains IO-boundary work. The first-run gate's session is read
+    by its callers, boot and `follow_auth_landing`. At this checkpoint, the test entry points
+    (`*_for_test`, the `#[cfg(test)]` `resolve_pins` / `apply_pins` / `record_pins` shims) read the registry
+    after observing the pin write, as the Bridge did.
 - **The Metadata reads.** The season tabs, the long-season page window and the Related row's tail
   window (`data/src/metadata.rs`) are the tenth store reads on the lane. `load_season` flips the tab and emits
   `StoreJob::MetaSeason(Job<MetaSeasonReq>, MetaSeasonPort)`, addressed by the season generation it
@@ -727,6 +907,57 @@ worker start and the `client_for` read inside that worker are gone too. The hous
       rig in the app, screens or hostsim suites waits on a Related landing through a real worker
       (`detail_related_landing_tests` lands the window with `land_related_for_test`), so there is
       no `LiveKind` for it.
+- **Metadata M4: alt sources and dev inputs.** Detail installation emits a Direct, untaped
+  `StoreJob::MetaAltSources(Job<MetaAltSourcesReq>, MetaAltSourcesPort)`. The request captures the
+  item's `(sid,rk)`, GUID, roster generation, ordered whole roster **including origin**, and whole
+  `ClientKeys` snapshot. `finish_alt_sources_job` constructs `KeyedClients` from that snapshot and
+  the runner's lookup; a missing/moved key skips only that server immediately before its GET.
+  Servers registered later never join the read; credential changes after a request is on the wire
+  remain outside this fence. Resolve panic answers one empty list, posted outside `catch_unwind`.
+  Done does not settle before the gated by-value take; refusal settles immediately and monotonically
+  without a mailbox, record or retry, so dump-mode owed cannot starve on a refused launch.
+  - **Publication locking.** Request generation increment/slot clear, roster invalidation, and port
+    publication all acquire `alt_slot` first, then inspect/change `alt_gen`. A stale writer cannot
+    overwrite a newer slot. Consumer generation filtering, landing rank, `(sid,rk)` addressing and
+    captured-roster fencing are retained. Facts changes restamp credit; they do not cancel work.
+  - **One call, three phases.** Bridge refills keys BEFORE begin; `pump_alt_sources_with_library`
+    retains the roster/facts reads and bookkeeping/prune, then consumes an eligible noncontrolled
+    rk-only stand-in chance and returns a private, non-Clone lifetime-bound pass plus owned request.
+    The pass exclusively borrows Metadata and shares the supplied keys through finish: clear,
+    reset, away-and-back, competing steps/publication, reuse, and refill cannot interleave in safe
+    callers. A private per-pass identity binds the owned host answer to its pass. The host handles
+    only a due request using the retained Browse library; finish installs a stand-in first, then
+    gated real data compared with the **PRE-registration roster**, folding one notice. Registration
+    is observed by invalidation on the NEXT pass, never between begin and finish.
+  - **Dev host, not logic IO.** Shared-trigger source latch, per-item stand-in reads and registry
+    registration live in `src/dev/scenarios/metadata.rs`. Source is captured at live Detail launch
+    and held execution, rather than first draw: this is an approved **timing change**, not a pure
+    move. `Detail::source()` uses retained `Option<String>` then real owner facts: `None` is unarmed,
+    `Some(empty)` forces no credit. The field is serde-default AND serialization-skipped, preserving
+    frozen terminal bytes and neutral decoded replay. Controlled capture suppresses before cache/IO;
+    `Bridge::controlled_home` constructs fresh Metadata (only Hubs are restored), so live Details
+    cannot leak retained overrides across that host boundary. Controlled installation is neutral too.
+    Stand-in reads remain once per due noncontrolled rk, even without library/list; source latch is
+    separately once per process. Token is read only on fallback registration. The host preserves
+    current-server identity and uses `register_origin` with origin/pin/connection facts.
+  - **Drains and held policy.** Bridge detail landing and aggregate Metadata pumps refill immediately
+    before pumping and drain Metadata immediately AFTER it, within the same call. Store/raw support
+    pumps take explicit keys/control inputs; Machine Pump without them refuses before taking data.
+    ApplyView-only fan-out lists do not change. Default held/park_page_reads keep alt live off-thread;
+    held_all parks it, and a new Detail does not retire parked alt. Reset rotates adapter identity.
+  - **Ledger and verification scope.** Removed one Metadata worker, eight globals and three forks;
+    five exact globals remain (request roster enumeration/gen, pump roster/facts gen, Detail tape
+    active). Every area header and entry was recounted: actual totals 7/111/68/11 become
+    **6/103/65/11**; the brief's earlier 121/113 globals sums were arithmetic errors, and the old
+    forks pin 71 was a loose ceiling. M4 does not claim all Metadata pure (owner facts and worker
+    timing remain). On prior tree `cfa3cba398266e37b2de759bd6896faa05932fda`, the unchanged Linux
+    replay driver passed 6/6 fixture-mode replays (3,412 graded frames, zero differences); this is
+    historical evidence, not the publication head. M4 landed as PR #1315 (merge
+    `5b4e8db7745167e3211b9842147dfc34423755d3`) after 19/19 checks on exact head `29a`.
+    Exact publication replays were 6 SAME, 2,442 graded frames, with all differences zero. Local
+    full `make check` remained FAILED: two isolated runner-environment issues and a benchmark
+    timestamp defect were independently reproduced on BASE `0aaf`. This does not establish S4
+    testing or ARM, TV or video behavior.
 - **The view-state write lane.** The household's watch-state writes (`data/src/viewstate.rs`: mark
   watched, mark unwatched, remove from Continue Watching, and the fan-out of a watched write, or of
   an end of stream, to the title's other copies) are the eleventh store on the lane. `kick` starts no

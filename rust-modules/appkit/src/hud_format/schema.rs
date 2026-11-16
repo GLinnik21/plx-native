@@ -121,10 +121,15 @@ use crate::player_hud::classic::{HUD_TITLE_SZ, SCRIM_H};
 pub type Since = (u8, u8);
 
 /// The format this build writes and the newest minor it reads of that major.
-pub const CURRENT: Since = (1, 0);
+pub const CURRENT: Since = plx_data::hudpacks::catalog::HUD_FORMAT;
 /// Every format major this build reads, with the highest minor of that major it understands. A package
 /// whose major is absent here is `E0403`; one whose minor is above its major's entry is `E0402`.
-pub const SUPPORTED: &[(u8, u8)] = &[(1, 0)];
+pub const SUPPORTED: &[(u8, u8)] = &[CURRENT];
+
+/// Every supported HUD document version, including prior minors.
+pub fn versions() -> impl Iterator<Item = Since> {
+    SUPPORTED.iter().flat_map(|&(major, minor)| (0..=minor).map(move |minor| (major, minor)))
+}
 /// The version every 1.0 entry arrived in.
 pub const V1_0: Since = (1, 0);
 
@@ -1343,6 +1348,7 @@ pub static CELL_PLAYBAR: Node = Node {
         )
         .default("\"follow_head\""),
         Field::req("clock_size", Ty::Enum(BODY_SIZES), "The clocks' type-scale rung."),
+        Field::opt("end_time_width", PX_W, "Width in px reserved at the right edge for the remaining clock, separator and estimated finish time. Omit to show only the remaining clock.").at((1, 1)),
         Field::opt(
             "mark",
             Ty::Enum(&["after_elapsed", "busy_only"]),
@@ -1942,8 +1948,7 @@ mod tests {
             .iter()
             .find(|(major, _)| *major == CURRENT.0)
             .map(|(_, minor)| *minor);
-        assert_eq!(max_minor, Some(0), "SUPPORTED is {{1: 0..=0}}");
-        assert_eq!(SUPPORTED, &[(1, 0)]);
+        assert_eq!(max_minor, Some(CURRENT.1));
         for (owner, f) in every_field() {
             assert!(
                 f.since <= CURRENT,
@@ -1955,8 +1960,8 @@ mod tests {
         assert!(CONDITIONS.iter().all(|c| c.since <= CURRENT));
         assert!(BINDINGS.iter().all(|b| b.since <= CURRENT));
         assert!(
-            every_field().iter().all(|(_, f)| f.since == V1_0),
-            "format 1.0 has only 1.0 entries"
+            every_field().iter().filter(|(_, f)| f.since > V1_0).all(|(_, f)| f.key == "end_time_width" && f.since == (1, 1)),
+            "the end-time lane is the only 1.1 addition"
         );
     }
 
@@ -2469,6 +2474,7 @@ mod tests {
                 "knob",
                 "clocks",
                 "clock_size",
+                "end_time_width",
                 "mark",
                 "grab"
             ]

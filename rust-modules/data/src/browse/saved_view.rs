@@ -28,7 +28,7 @@ pub(super) enum ViewField {
 }
 
 /// The section's live state, as far as the record cares.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ViewSnapshot {
     /// The listing shown.
     pub(super) listing: LibraryType,
@@ -104,6 +104,7 @@ pub(super) fn merge(
         listing: snap.listing.wire().to_string(),
         listing_sort,
         listing_desc,
+        page: stored.page,
         extensions: stored.extensions.clone(),
     }
 }

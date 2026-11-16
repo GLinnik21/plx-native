@@ -258,7 +258,7 @@ fn irap_class_h264_av1_vp9_keyframes_are_clean() {
     let mut out = Vec::new();
     let flagged = unsafe {
         let buf = avcc(&[&[0x21, 0x88, 0xAA, 0xBB]]);
-        packet_to_annexb(buf.as_ptr(), buf.len(), 4, false, false, true, &[], &mut out)
+        packet_to_annexb(buf.as_ptr(), buf.len(), 4, false, false, &mut DvActiveArea::default(), true, &[], &mut out)
     };
     assert_eq!((flagged, flagged.au_key()), (Keyframe::Clean, crate::aq::AU_KEY));
     // AV1 and VP9 answer a bool, which the demux loop wraps: a keyframe is always `Clean`.
@@ -531,8 +531,9 @@ fn an_unconvertible_rpu_is_dropped_on_an_armed_feed() {
     assert_eq!(out, vec![0, 0, 0, 1, 0x02, 0x01, 0xAA]);
 }
 
-/// Unarmed (every stream that is not a converted Profile 7) nothing changes: enhancement-layer
-/// NALs and RPUs pass through exactly as they always did.
+/// Unarmed (every stream that is not a converted Profile 7) the conversion changes nothing:
+/// enhancement-layer NALs and RPUs pass through it exactly as they always did. (The active-area
+/// check, which can rewrite an RPU, has no raster here, so it judges nothing.)
 #[test]
 fn an_unarmed_feed_is_untouched_by_the_conversion() {
     let el_wrapped = [0x7Eu8, 0x01, 0xBB];
@@ -547,6 +548,240 @@ fn an_unarmed_feed_is_untouched_by_the_conversion() {
             0x19, 0x08
         ]
     );
+}
+
+// -- Dolby Vision active area (L5) ------------------------------------------------------
+//
+// The RPUs are built here with the `dolby_vision` crate from the fixtures `tests/fixtures/dovi-p7-*`
+// (dovi_tool's own test RPUs): the fixture is parsed, its L5 block set or removed, and written back.
+
+use dolby_vision::rpu::dovi_rpu::DoviRpu;
+
+type Area = (u16, u16, u16, u16);
+
+fn parse_rpu(nal: &[u8]) -> DoviRpu {
+    DoviRpu::parse_unspec62_nalu(nal).expect("an RPU the crate wrote parses")
+}
+
+/// `fixture` (an RPU file) as an RPU NAL whose L5 block is `area` (`None`: no L5 block at all).
+fn rpu_with_l5(fixture: &[u8], area: Option<Area>) -> Vec<u8> {
+    let mut rpu = parse_rpu(&rpu_fixture_nal(fixture));
+    match area {
+        Some((l, r, t, b)) => rpu.set_active_area_offsets(l, r, t, b).unwrap(),
+        None => {
+            rpu.vdr_dm_data.as_mut().unwrap().remove_metadata_level(5);
+            rpu.modified = true;
+        }
+    }
+    let nal = rpu.write_hevc_unspec62_nalu().unwrap();
+    assert_eq!(dv_rpu_active_area(&nal), area, "the built RPU carries the L5 it was asked for");
+    nal
+}
+
+const P81: &[u8] = include_bytes!("../../../tests/fixtures/dovi-p7-mel-to-81-rpu.bin");
+const P7: &[u8] = include_bytes!("../../../tests/fixtures/dovi-p7-mel-rpu.bin");
+
+/// Everything an RPU says except the four offsets of its L5 block, as text (the crate's types
+/// are `Debug` but not `PartialEq`): the RPU with its L5 set to zero, through the crate.
+fn all_but_the_offsets(nal: &[u8]) -> String {
+    let mut rpu = parse_rpu(nal);
+    rpu.set_active_area_offsets(0, 0, 0, 0).unwrap();
+    format!("P{} {:?} {:?} {:?}", rpu.dovi_profile, rpu.header, rpu.rpu_data_mapping, rpu.vdr_dm_data)
+}
+
+/// One RPU judged on a fresh stream whose demuxer reports `w` x `h`.
+fn clear(nal: &[u8], w: i32, h: i32) -> Option<Vec<u8>> {
+    clear_foreign_active_area(nal, &mut DvActiveArea::new(w, h))
+}
+
+/// A packet holding a base-layer slice and `rpu`, as a demuxer hands it over.
+fn packet_with_rpu(rpu: &[u8]) -> Vec<u8> {
+    avcc(&[&[0x02u8, 0x01, 0xAA], rpu])
+}
+
+/// The RPU NAL a fed packet carries (the bytes after the slice's start code and its own NAL).
+fn fed_rpu(out: &[u8]) -> Vec<u8> {
+    let head = [0u8, 0, 0, 1, 0x02, 0x01, 0xAA, 0, 0, 0, 1];
+    assert_eq!(&out[..head.len()], &head, "the slice is fed first, then the RPU");
+    out[head.len()..].to_vec()
+}
+
+/// The reporter's file (#1367): a 1920x802 encode cropped from a 3840x2160 master whose RPUs still
+/// say `top=276 bottom=277`. The TV blanks everything outside that area, a strip 249 rows high.
+#[test]
+fn the_reporters_leftover_master_offsets_are_cleared_and_nothing_else_changes() {
+    let nal = rpu_with_l5(P81, Some((0, 0, 276, 277)));
+    let out = clear(&nal, 1920, 802).expect("offsets that leave 249 rows are cleared");
+    assert_eq!(&out[..2], &nal[..2], "still the same UNSPEC62 NAL header");
+    let after = parse_rpu(&out);
+    assert_eq!(dv_rpu_active_area(&out), Some((0, 0, 0, 0)));
+    assert_eq!(after.dovi_profile, 8);
+    assert_eq!(all_but_the_offsets(&nal), all_but_the_offsets(&out), "only the four offsets differ");
+    assert!(after.vdr_dm_data.as_ref().unwrap().get_block(1).is_some(), "the L1 block is still there");
+}
+
+/// A genuine 1920x1080 letterbox (2.39:1 left over) is the file's own and is fed as it came: the
+/// SAME bytes, not a re-serialisation.
+#[test]
+fn a_genuine_letterbox_is_fed_byte_for_byte() {
+    let nal = rpu_with_l5(P81, Some((0, 0, 138, 139)));
+    assert_eq!(clear(&nal, 1920, 1080), None);
+    let out = to_annexb_dv(&packet_with_rpu(&nal), false, &mut DvActiveArea::new(1920, 1080));
+    assert_eq!(fed_rpu(&out), nal);
+}
+
+#[test]
+fn an_rpu_with_no_l5_block_is_fed_unchanged() {
+    let nal = rpu_with_l5(P81, None);
+    assert_eq!(clear(&nal, 1920, 802), None);
+    let out = to_annexb_dv(&packet_with_rpu(&nal), false, &mut DvActiveArea::new(1920, 802));
+    assert_eq!(fed_rpu(&out), nal);
+}
+
+/// The same failure on the pillarbox side: a 4:3 film cropped to 1440x1080 that still says
+/// `left=480 right=480` leaves 480x1080, 0.44:1.
+#[test]
+fn leftover_pillarbox_offsets_are_cleared() {
+    let nal = rpu_with_l5(P81, Some((480, 480, 0, 0)));
+    let out = clear(&nal, 1440, 1080).expect("0.44:1 cannot be a picture");
+    assert_eq!(dv_rpu_active_area(&out), Some((0, 0, 0, 0)));
+}
+
+/// What leaves `packet_to_annexb` for a P8.1 stream: the clear is on the fed bytes, in the RPU's place.
+#[test]
+fn a_feed_clears_a_foreign_active_area_on_a_profile_8_stream() {
+    let nal = rpu_with_l5(P81, Some((0, 0, 276, 277)));
+    let out = to_annexb_dv(&packet_with_rpu(&nal), false, &mut DvActiveArea::new(1920, 802));
+    let fed = fed_rpu(&out);
+    assert_ne!(fed, nal);
+    assert_eq!(dv_rpu_active_area(&fed), Some((0, 0, 0, 0)));
+}
+
+/// The converted Profile 7 path checks the area too, on the RPU it has just made 8.1; with no
+/// raster reported the offsets are carried through the conversion as they were.
+#[test]
+fn a_converted_profile_7_rpu_is_cleared_too() {
+    let nal = rpu_with_l5(P7, Some((0, 0, 276, 277)));
+    assert_eq!(parse_rpu(&nal).dovi_profile, 7);
+    let fed = fed_rpu(&to_annexb_dv(&packet_with_rpu(&nal), true, &mut DvActiveArea::new(1920, 802)));
+    assert_eq!(parse_rpu(&fed).dovi_profile, 8, "converted");
+    assert_eq!(dv_rpu_active_area(&fed), Some((0, 0, 0, 0)), "and cleared");
+    let kept = fed_rpu(&to_annexb_dv(&packet_with_rpu(&nal), true, &mut DvActiveArea::default()));
+    assert_eq!(dv_rpu_active_area(&kept), Some((0, 0, 276, 277)), "no raster, no judgement");
+}
+
+/// A raster the demuxer did not report cannot be judged against, and an RPU that does not parse
+/// (or carries no area at all) is not ours to change.
+#[test]
+fn an_unknown_raster_or_an_unparsable_rpu_is_left_alone() {
+    let nal = rpu_with_l5(P81, Some((0, 0, 276, 277)));
+    assert_eq!(clear(&nal, 0, 802), None);
+    assert_eq!(clear(&nal, 1920, 0), None);
+    assert_eq!(clear(&[0x7C, 0x01, 0x19, 0x08], 1920, 802), None);
+    let out = to_annexb_dv(&packet_with_rpu(&nal), false, &mut DvActiveArea::default());
+    assert_eq!(fed_rpu(&out), nal);
+    let junk = [0x7Cu8, 0x01, 0x19, 0x08];
+    assert_eq!(fed_rpu(&to_annexb_dv(&packet_with_rpu(&junk), false, &mut DvActiveArea::new(1920, 802))), junk);
+}
+
+/// An RPU that already says "no offsets" has nothing to clear, even on a picture so wide that the
+/// bounds alone would call the whole raster foreign: it is not rewritten every frame.
+#[test]
+fn zero_offsets_are_never_rewritten() {
+    let nal = rpu_with_l5(P81, Some((0, 0, 0, 0)));
+    assert_eq!(clear(&nal, 2560, 700), None);
+}
+
+/// A cropped picture has no bars for an active area to describe, whatever the area's shape: a
+/// 1.85:1 master (`t = b = 42`) cropped to 1920x1038 still says 84 rows, and 2.01:1 looks like a
+/// picture. Nor does a 2.00:1 master (`t = b = 120`) cropped to 1920x960, 2.67:1.
+#[test]
+fn a_cropped_raster_has_its_plausible_looking_master_offsets_cleared() {
+    for (w, h, (l, r, t, b)) in [
+        (1920, 1038, (0, 0, 42, 42)),
+        (1920, 960, (0, 0, 120, 120)),
+        (3840, 1600, (0, 0, 100, 100)),
+        (4096, 2160, (0, 0, 138, 139)),
+    ] {
+        assert!(
+            dv_active_area_fits(w as u32, h as u32, l, r, t, b),
+            "{w}x{h} with {t}/{b}: the area alone would pass"
+        );
+        let nal = rpu_with_l5(P81, Some((l as u16, r as u16, t as u16, b as u16)));
+        let out = clear(&nal, w, h).unwrap_or_else(|| panic!("{w}x{h} with {t}/{b} is cleared"));
+        assert_eq!(dv_rpu_active_area(&out), Some((0, 0, 0, 0)));
+        assert_eq!(all_but_the_offsets(&nal), all_but_the_offsets(&out));
+    }
+}
+
+/// A 3840x2160 master's own bars are the picture's: kept as they came.
+#[test]
+fn a_genuine_4k_letterbox_is_fed_byte_for_byte() {
+    let nal = rpu_with_l5(P81, Some((0, 0, 276, 277)));
+    assert_eq!(clear(&nal, 3840, 2160), None);
+    let out = to_annexb_dv(&packet_with_rpu(&nal), false, &mut DvActiveArea::new(3840, 2160));
+    assert_eq!(fed_rpu(&out), nal);
+}
+
+/// A variable-aspect 4K master downscaled to 1080p: the first scene's `276 / 277` cannot describe
+/// 1920x1080, and once a stream has shown that it carries the master's offsets, its later RPUs
+/// (the 1.90:1 scenes' `69 / 70`, plausible alone) are cleared too. The latch is the stream's:
+/// the same RPU on a fresh stream is kept.
+#[test]
+fn once_a_stream_has_shown_foreign_offsets_its_later_plausible_ones_are_cleared_too() {
+    let first = rpu_with_l5(P81, Some((0, 0, 276, 277)));
+    let later = rpu_with_l5(P81, Some((0, 0, 69, 70)));
+    let mut area = DvActiveArea::new(1920, 1080);
+    assert!(clear_foreign_active_area(&first, &mut area).is_some());
+    let out = clear_foreign_active_area(&later, &mut area).expect("cleared on the latched stream");
+    assert_eq!(dv_rpu_active_area(&out), Some((0, 0, 0, 0)));
+    let zero = rpu_with_l5(P81, Some((0, 0, 0, 0)));
+    assert_eq!(clear_foreign_active_area(&zero, &mut area), None, "no offsets, nothing to clear");
+
+    assert_eq!(clear(&later, 1920, 1080), None, "alone, on a fresh stream, it is a letterbox");
+    let kept = to_annexb_dv(&packet_with_rpu(&later), false, &mut DvActiveArea::new(1920, 1080));
+    assert_eq!(fed_rpu(&kept), later);
+
+    // the same two RPUs through the feed, one packet each
+    let mut area = DvActiveArea::new(1920, 1080);
+    to_annexb_dv(&packet_with_rpu(&first), false, &mut area);
+    let fed = fed_rpu(&to_annexb_dv(&packet_with_rpu(&later), false, &mut area));
+    assert_eq!(dv_rpu_active_area(&fed), Some((0, 0, 0, 0)));
+}
+
+#[test]
+fn the_rule_for_foreign_offsets() {
+    // (w, h, l, r, t, b, foreign_seen)
+    assert!(!dv_active_area_is_foreign(1920, 802, 0, 0, 0, 0, true), "no offsets are nothing to clear");
+    assert!(dv_active_area_is_foreign(1920, 802, 0, 0, 1, 0, false), "not 16:9: any offsets");
+    assert!(dv_active_area_is_foreign(1920, 1038, 0, 0, 42, 42, false));
+    assert!(dv_active_area_is_foreign(4096, 2160, 0, 0, 138, 139, false), "DCI is not 16:9");
+    assert!(dv_active_area_is_foreign(1440, 1080, 480, 480, 0, 0, false));
+    assert!(!dv_active_area_is_foreign(1920, 1080, 0, 0, 138, 139, false), "16:9 and plausible");
+    assert!(!dv_active_area_is_foreign(3840, 2160, 0, 0, 276, 277, false));
+    assert!(dv_active_area_is_foreign(1920, 1080, 0, 0, 276, 277, false), "16:9 and 3.6:1");
+    assert!(dv_active_area_is_foreign(1920, 1080, 0, 0, 69, 70, true), "plausible, but latched");
+    assert!(dv_active_area_is_foreign(1280, 720, 0, 0, 92, 92, true));
+    assert!(!dv_active_area_is_foreign(1280, 720, 0, 0, 92, 92, false));
+}
+
+#[test]
+fn the_bounds_of_dv_active_area_fits() {
+    // (w, h, l, r, t, b)
+    assert!(dv_active_area_fits(1920, 1080, 0, 0, 0, 0), "the whole picture");
+    assert!(dv_active_area_fits(1920, 1080, 0, 0, 138, 139), "2.39:1 letterbox");
+    assert!(dv_active_area_fits(3840, 2160, 0, 0, 276, 277), "the master the reporter's file came from");
+    assert!(dv_active_area_fits(2760, 1000, 0, 0, 0, 0), "2.76:1, Ultra Panavision 70, is kept");
+    assert!(dv_active_area_fits(3000, 1000, 0, 0, 0, 0), "3.0:1 itself is kept");
+    assert!(!dv_active_area_fits(3100, 1000, 0, 0, 0, 0), "3.1:1 is not a picture");
+    assert!(!dv_active_area_fits(1920, 802, 0, 0, 276, 277), "7.7:1, the reporter's file");
+    assert!(dv_active_area_fits(1080, 1920, 0, 0, 0, 0), "9:16 portrait, 0.5625, is kept");
+    assert!(dv_active_area_fits(1000, 2000, 0, 0, 0, 0), "0.5:1 itself is kept");
+    assert!(!dv_active_area_fits(1440, 1080, 480, 480, 0, 0), "0.44:1 is not a picture");
+    assert!(!dv_active_area_fits(1920, 1080, 0, 0, 540, 540), "nothing left vertically");
+    assert!(!dv_active_area_fits(1920, 1080, 0, 0, 600, 600), "more than the picture vertically");
+    assert!(!dv_active_area_fits(1920, 1080, 960, 960, 0, 0), "nothing left horizontally");
+    assert!(!dv_active_area_fits(0, 0, 0, 0, 0, 0), "no picture at all");
 }
 
 // -- AV1: leb128 ----------------------------------------------------------------------

@@ -38,7 +38,9 @@ pub fn step_at(owner: &mut SessionMachine, event: SessionEvent, ms: u32) -> Vec<
     owner.step(&event, &cx, &mut Effects::new(&mut effects, MachineId::Session, &mut present));
     effects.into_iter().map(|effect| match effect.fx {
         Fx::App(effect) => effect,
-        _ => panic!("Session emitted a non-domain effect"),
+        Fx::Nav(_) | Fx::Mount(_) | Fx::Unmount(_) | Fx::Deliver(..) | Fx::Timer { .. }
+        | Fx::CancelTimer(_) | Fx::Press(_) | Fx::Remember { .. } | Fx::Log(_) =>
+            panic!("Session emitted a non-domain effect"),
     }).collect()
 }
 
@@ -89,13 +91,23 @@ pub fn picker_switch_seated() -> (SessionMachine, u32, u64, plx_plex::plex::sess
         sources: vec![primary.clone()], ..Default::default()
     };
     let mut init = SessionInit::captured(persisted);
-    init.phase = Phase::Switching;
+    init.phase = Phase::Profiles;
     init.users = vec![UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() }];
     let mut owner = SessionMachine::from_init(init);
-    let req = owner.allocate(SessionOp::ProfileSwitch, None).unwrap();
-    owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
-    let epoch = owner.state.epoch;
-    let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+    step(&mut owner, SessionEvent::Command(Command::SelectProfile { index: 0, pin: None }));
+    let req = owner.common.next_req;
+    let epoch = owner.common.epoch;
+    let addr = Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) };
+    assert!(owner.read_is_current(req, epoch, SessionReadRequest::ProfilePolicy));
+    step(&mut owner, SessionEvent::Read(SessionReadReply {
+        addr, epoch, value: SessionReadValue::ProfilePolicy { recently_unreachable: false },
+    }));
+    let key = SessionWorkKey { epoch, op: SessionOp::ProfileSwitch };
+    assert!(owner.work_is_current(req, key, AdmissionId(req)));
+    step(&mut owner, SessionEvent::Admission(AdmissionReply {
+        addr, key, correlation: AdmissionId(req), accepted: true,
+    }));
+    let expected = super::super::SessionIdentity::of(&owner.common.persisted);
     let ready = SessionEnvelope {
         addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
         key: SessionWorkKey { epoch, op: SessionOp::ProfileSwitch }, admission: AdmissionId(req),
@@ -116,7 +128,12 @@ pub fn picker_switch_seated() -> (SessionMachine, u32, u64, plx_plex::plex::sess
         SessionFx::Commit { req, epoch, arrival, plan } => Some((CommitReply {
             req: *req, epoch: *epoch, arrival: *arrival, admission: CommitAdmission::RegistryOnly,
         }, plan.clone())),
-        _ => None,
+        SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+        | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+        | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+        | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+        | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+        | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
     }).expect("the profile switch must commit");
     assert!(matches!(&plan.registry[0], RegistryPlan::Install { commit: RosterCommit::Switch, .. }),
         "seating a different profile is a switch");
@@ -124,7 +141,7 @@ pub fn picker_switch_seated() -> (SessionMachine, u32, u64, plx_plex::plex::sess
         assert!(super::super::execute_session_registry(p, "synthetic-client"));
     }
     step(&mut owner, SessionEvent::Commit(reply));
-    assert_eq!(owner.state.persisted.user.uuid, "u-kid");
+    assert_eq!(owner.common.persisted.user.uuid, "u-kid");
     (owner, req, epoch, primary)
 }
 
@@ -143,7 +160,13 @@ pub fn late_profile_roster(owner: &mut SessionMachine, req: u32, epoch: u64,
     };
     let effects = step(owner, SessionEvent::Result(roster));
     effects.iter().find_map(|effect| match effect {
-        SessionFx::Commit { plan, .. } => Some(plan.clone()), _ => None,
+        SessionFx::Commit { plan, .. } => Some(plan.clone()),
+        SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+        | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+        | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+        | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+        | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+        | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
     }).expect("the late profile roster must commit")
 }
 
@@ -155,7 +178,7 @@ pub fn late_profile_roster(owner: &mut SessionMachine, req: u32, epoch: u64,
 pub fn late_roster_of_the_seated_profile() -> (plx_plex::plex::ServerId, CommitPlan) {
     let (mut owner, req, epoch, primary) = picker_switch_seated();
     let sid = plx_plex::plex::id_of_machine("a").expect("the switch installed the seated server");
-    let seated = super::super::SessionIdentity::of(&owner.state.persisted);
+    let seated = super::super::SessionIdentity::of(&owner.common.persisted);
     let plan = late_profile_roster(&mut owner, req, epoch, &primary, seated);
     (sid, plan)
 }
@@ -171,7 +194,7 @@ pub fn admin_boot_refresh_of_the_seated_profile(grant: &str) -> (plx_plex::plex:
         title: "Owner".into(), admin: true, ..Default::default() }];
     let mut owner = roster_refresh_fixture("u-owner", users);
     // The stored-session boot: the persisted roster, registered before any discovery.
-    let stored = owner.state.persisted.sources.clone();
+    let stored = owner.common.persisted.sources.clone();
     assert!(super::super::execute_session_registry(&RegistryPlan::Install {
         sources: stored.clone(), primary: None, commit: RosterCommit::Merge,
     }, "synthetic-client"));
@@ -181,9 +204,9 @@ pub fn admin_boot_refresh_of_the_seated_profile(grant: &str) -> (plx_plex::plex:
     let mut reached = stored[0].clone();
     reached.token = grant.into();
     let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
-    owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
-    let epoch = owner.state.epoch;
-    let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+    owner.common.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+    let epoch = owner.common.epoch;
+    let expected = super::super::SessionIdentity::of(&owner.common.persisted);
     let resources = vec![plx_plex::plex::account::Resource { name: reached.name.clone(),
         client_identifier: reached.machine_id.clone(), provides: "server".into(), owned: true,
         access_token: reached.token.clone(), ..Default::default() }];
@@ -202,7 +225,13 @@ pub fn admin_boot_refresh_of_the_seated_profile(grant: &str) -> (plx_plex::plex:
     };
     let effects = step(&mut owner, SessionEvent::Result(envelope));
     let plan = effects.iter().find_map(|effect| match effect {
-        SessionFx::Commit { plan, .. } => Some(plan.clone()), _ => None,
+        SessionFx::Commit { plan, .. } => Some(plan.clone()),
+        SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+        | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+        | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+        | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+        | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+        | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
     }).expect("a rotated grant is persisted");
     (sid, plan)
 }
@@ -223,8 +252,8 @@ pub fn member_account_on_admin_seat() -> (SessionMachine, plx_plex::plex::Server
             ..Default::default() },
     ];
     let owner = roster_refresh_fixture("u-admin", users);
-    assert!(owner.state.persisted.active_profile_is_admin());
-    let stored = owner.state.persisted.sources.clone();
+    assert!(owner.common.persisted.active_profile_is_admin());
+    let stored = owner.common.persisted.sources.clone();
     assert!(stored[0].owned, "the admin's roster calls the admin's server owned");
     assert!(super::super::execute_session_registry(&RegistryPlan::Install {
         sources: stored.clone(), primary: None, commit: RosterCommit::Merge,
@@ -245,9 +274,9 @@ pub fn member_account_on_admin_seat() -> (SessionMachine, plx_plex::plex::Server
 pub fn refresh_under_another_accounts_token() -> (plx_plex::plex::ServerId, CommitPlan) {
     let (mut owner, sid, members_view) = member_account_on_admin_seat();
     let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
-    owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
-    let epoch = owner.state.epoch;
-    let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+    owner.common.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+    let epoch = owner.common.epoch;
+    let expected = super::super::SessionIdentity::of(&owner.common.persisted);
     let resources = vec![plx_plex::plex::account::Resource { name: members_view.name.clone(),
         client_identifier: members_view.machine_id.clone(), provides: "server".into(), owned: false,
         access_token: members_view.token.clone(), ..Default::default() }];
@@ -266,7 +295,13 @@ pub fn refresh_under_another_accounts_token() -> (plx_plex::plex::ServerId, Comm
     };
     let effects = step(&mut owner, SessionEvent::Result(envelope));
     let plan = effects.iter().find_map(|effect| match effect {
-        SessionFx::Commit { plan, .. } => Some(plan.clone()), _ => None,
+        SessionFx::Commit { plan, .. } => Some(plan.clone()),
+        SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+        | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+        | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+        | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+        | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+        | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
     }).expect("the changed roster commits");
     (sid, plan)
 }
@@ -280,9 +315,9 @@ pub fn refresh_under_another_accounts_token() -> (plx_plex::plex::ServerId, Comm
 pub fn activation_under_another_accounts_token() -> (plx_plex::plex::ServerId, CommitPlan) {
     let (mut owner, sid, members_view) = member_account_on_admin_seat();
     let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
-    owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
-    let epoch = owner.state.epoch;
-    let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+    owner.common.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+    let epoch = owner.common.epoch;
+    let expected = super::super::SessionIdentity::of(&owner.common.persisted);
     let activate = SessionEnvelope {
         addr: Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(req) },
         key: SessionWorkKey { epoch, op: SessionOp::ServerRoster },
@@ -301,7 +336,13 @@ pub fn activation_under_another_accounts_token() -> (plx_plex::plex::ServerId, C
     };
     let effects = step(&mut owner, SessionEvent::Result(activate));
     let plan = effects.iter().find_map(|effect| match effect {
-        SessionFx::Commit { plan, .. } => Some(plan.clone()), _ => None,
+        SessionFx::Commit { plan, .. } => Some(plan.clone()),
+        SessionFx::Pump | SessionFx::Acknowledge(_) | SessionFx::Retire { .. }
+        | SessionFx::Ready { .. } | SessionFx::Capture { .. } | SessionFx::Work { .. }
+        | SessionFx::Cancel { .. } | SessionFx::PublishProfile(_) | SessionFx::Erase { .. }
+        | SessionFx::Coordinator(_) | SessionFx::RestartReply { .. } | SessionFx::Incident { .. }
+        | SessionFx::SelectionReply { .. } | SessionFx::BackReply { .. }
+        | SessionFx::PlaintextAnswer { .. } | SessionFx::RefreshCache { .. } => None,
     }).expect("the activation reaches the commit boundary");
     (sid, plan)
 }

@@ -18,7 +18,14 @@ impl Host for HomeHost {
     type Init = super::super::family::NoInit;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for HomeHost {
+    fn screen_inputs<'a>(_cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        crate::registry::empty_fixture()
+    }
+}
+
 impl HomeLike for HomeHost {
+    fn clock_facts<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { None }
     fn hubs<'a>(cx: &Cx<'a, Self>) -> HubsView<'a> { cx.views }
 }
 
@@ -87,7 +94,7 @@ impl Harness {
     fn step(&mut self, ev: ScreenEvent<HomeHost>) -> bool {
         let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
-        let (_, moving) = plx_machine::idle::scoped_motion(|| {
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
             let cx = Cx::<HomeHost> { views: self.snap.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
                 press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
                 focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };

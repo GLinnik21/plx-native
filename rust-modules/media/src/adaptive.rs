@@ -5,7 +5,7 @@
 use crate::{abr, route};
 use plx_playback_contract::adaptive::PublicationGate;
 use plx_playback_contract::adaptive::{
-    AbrReadout, ActionReadout, AdaptiveDirection, AdaptiveEffects, AdaptivePhysicalPort, AdaptiveProgress, AdaptiveSession, Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticTransition, BufferFact, CandidateFencePort, CandidateMediaPort, CommitReadout, FailureEdit, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
+    AbrReadout, ActionReadout, AdaptiveDirection, AdaptiveEffects, AdaptivePhysicalPort, AdaptiveProgress, AdaptiveSession, Acquisition, ActiveAction, ActiveFeedPort, ActiveObservation, ActiveQuantum, AdaptiveRoundPort, AutomaticTransition, BufferFact, CandidateFenceError, CandidateFencePort, CandidateMediaPort, CommitReadout, FailureEdit, FeedAction, FeedFailure, FeedObservation, FeedPort, PauseFact, TrialClock,
     OriginalProgress, OriginalQuantum, OriginalSession, RoundId, SeedReadout, TrialObservation, TrialPhase, TrialProtocol, TrialProtocolError,
 };
 use plx_playback_contract::SourceKey;
@@ -1244,7 +1244,7 @@ impl<'a, P: FeedPort + ?Sized> TrialRunner<'a, P> {
         sample: abr::SegmentSample, variant: abr::ObservedHlsVariant,
         now_ms: impl FnOnce() -> u64,
         mut on_trace: impl FnMut(QueueTrace),
-    ) -> QueueAttempt<P::Fence, P::Error>
+    ) -> QueueAttempt<P::Fence>
     where P: CandidateMediaPort + CandidateFencePort,
     {
         on_trace(QueueTrace::Decided);
@@ -1252,7 +1252,17 @@ impl<'a, P: FeedPort + ?Sized> TrialRunner<'a, P> {
             Ok(fence) => fence,
             Err(error) => {
                 coordinator.abandon(&primed.encoder_session);
-                on_trace(QueueTrace::Finish("publication_overlap"));
+                if error == CandidateFenceError::Superseded {
+                    coordinator.reject(proposal, abr::RejectCause::Circumstance, now_ms());
+                    self.observe(TrialObservation::Ended)
+                        .expect("a cancelled private candidate has not entered the queue");
+                }
+                on_trace(QueueTrace::Finish(match error {
+                    CandidateFenceError::Superseded => "candidate_superseded",
+                    CandidateFenceError::Aborted => "aborted",
+                    CandidateFenceError::Overlap => "publication_overlap",
+                    CandidateFenceError::Exhausted => "publication_generation_exhausted",
+                }));
                 return QueueAttempt::FenceFailed(error);
             }
         };
@@ -2301,11 +2311,29 @@ pub(crate) enum QueueTrace {
     Finish(&'static str),
 }
 
-pub(crate) enum QueueAttempt<F, E> {
+pub(crate) enum QueueAttempt<F> {
     Published { previous: String, fence: F },
     Aborted,
     Failed(&'static str),
-    FenceFailed(E),
+    FenceFailed(CandidateFenceError),
+}
+
+impl<F> QueueAttempt<F> {
+    /// Only a refusal before queueing may keep the current demux round alive.
+    /// After queueing starts, failures still retire the physical worker.
+    pub(crate) fn into_publication(self) -> Result<(String, F), AdaptiveProgress> {
+        match self {
+            Self::Published { previous, fence } => Ok((previous, fence)),
+            Self::Aborted => Err(AdaptiveProgress::Aborted),
+            Self::Failed(message) => Err(AdaptiveProgress::Failed(message)),
+            Self::FenceFailed(CandidateFenceError::Superseded) => Err(AdaptiveProgress::Continue),
+            Self::FenceFailed(CandidateFenceError::Aborted) => Err(AdaptiveProgress::Aborted),
+            Self::FenceFailed(CandidateFenceError::Overlap) =>
+                Err(AdaptiveProgress::Failed("overlapping HLS candidate publication")),
+            Self::FenceFailed(CandidateFenceError::Exhausted) =>
+                Err(AdaptiveProgress::Failed("HLS candidate generation exhausted")),
+        }
+    }
 }
 
 pub(crate) enum FirstPhase {
@@ -3627,11 +3655,9 @@ impl AdaptiveSession for Session {
                 QueueTrace::Finish(outcome) => tx.finish(outcome),
             },
         );
-        let (previous, fence) = match queued {
-            QueueAttempt::Published { previous, fence } => (previous, fence),
-            QueueAttempt::Aborted => return AdaptiveProgress::Aborted,
-            QueueAttempt::Failed(message) => return AdaptiveProgress::Failed(message),
-            QueueAttempt::FenceFailed(error) => return AdaptiveProgress::PhysicalFailure(error),
+        let (previous, fence) = match queued.into_publication() {
+            Ok(published) => published,
+            Err(progress) => return progress,
         };
         drop(runner);
         if let Some(runway_ms) = coordinator.prime_runway_ms() {

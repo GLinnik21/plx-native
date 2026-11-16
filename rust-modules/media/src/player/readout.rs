@@ -25,6 +25,8 @@
 //! carries a speed change (read it, then step `RateReloadTaken`). `start_queued` is the release
 //! machine's answer, stepped by `PlayerAdapter::release_step` after every step of the machine.
 
+#![deny(clippy::wildcard_enum_match_arm)]
+
 use plx_playback_contract::adaptive::{AbrReadout, CarriedSeed, FailureEdit, SeedReadout};
 use plx_playback_contract::feed::{FeedRaw, PresentationTick, Stage};
 use plx_playback_contract::subtitle::Spec;
@@ -66,6 +68,8 @@ pub struct PlayerReadout {
     /// The playhead the HUD freezes at while a seek resolves: the newest request's display target,
     /// until the player gives up on it or the session resets.
     seek_display_ns: Option<i64>,
+    /// Target retained while a seek's replacement Load has yet to report its own position.
+    reload_seek_ns: Option<i64>,
     /// The viewer's transport is Paused: the last `CommitPaused` since the playback began. A reload
     /// keeps it (the new Engine arms its hold from it); a real stop clears it. The feed keeps its
     /// own copy to gate feeding, written by the matching commands only.
@@ -115,6 +119,13 @@ pub struct PlayerReadout {
     /// supersedes it. Three writers, one owner: the player's pump and route (events stepped here)
     /// and the adaptive worker (its edits ride the open's channel and are stepped on the drain).
     original_failure: Option<(u8, i32)>,
+    /// **Does the viewer's colour pick reach the selected ASS/SSA subtitle?** The fact the media side
+    /// read from the subtitle registries (`sidecar`, `ass_source`) and delivered once a tick
+    /// ([`ReadoutEvent::SubtitleInk`], by `player::deliver_subtitle_ink`), so the Subtitles menu reads
+    /// a field of the session and never the registries. `None` while the file's header is not known
+    /// (or no ASS/SSA track is selected). Not a feed fact and not reset by a session reset: the
+    /// registries it was read from outlive an engine, and the next tick delivers it afresh.
+    subtitle_takes_colour: Option<bool>,
 }
 
 /// A one-shot fact the feed counts and the player takes: the feed keeps a monotonic count of the
@@ -190,6 +201,8 @@ pub enum ReadoutEvent {
     /// feed's own request to redo a refused native `Seek` is not this event: it arrives in the
     /// ingested raw facts ([`ReadoutEvent::FactsIngested`]).
     SeekRequeued { target_ns: i64 },
+    /// A seek moved to a fresh native Load after the previous session reset.
+    ReloadSeek { target_ns: i64 },
     /// One session's facts are gone (its engine was torn down): back to Idle, nothing ended, no
     /// raw facts. The viewer's speed, the speed latch and the release queue outlive a session.
     SessionReset,
@@ -259,6 +272,9 @@ pub enum ReadoutEvent {
     /// [`ReadoutEvent::AbrSeed`] it survives [`ReadoutEvent::SessionReset`], so a reload keeps it;
     /// a REAL stop steps `Cleared` itself, at the end of the teardown.
     OriginalFailure(FailureEdit),
+    /// The media side's reading of whether the colour pick reaches the selected ASS/SSA subtitle
+    /// ([`PlayerReadout::subtitle_takes_colour`]); `None`: not known.
+    SubtitleInk(Option<bool>),
 }
 
 impl PlayerReadout {
@@ -276,6 +292,7 @@ impl PlayerReadout {
         pending_seek_ns: None,
         seek_requests: 0,
         seek_display_ns: None,
+        reload_seek_ns: None,
         paused: false,
         seek_preroll: false,
         resume_pend: false,
@@ -288,8 +305,11 @@ impl PlayerReadout {
         abr: AbrReadout::IDLE,
         abr_seed: None,
         original_failure: None,
+        subtitle_takes_colour: None,
     };
 
+    /// Does the colour pick reach the selected ASS/SSA subtitle (`None`: the header is not known yet)?
+    pub fn subtitle_takes_colour(&self) -> Option<bool> { self.subtitle_takes_colour }
     pub fn state(&self) -> PlaybackState { self.state }
     pub fn ended(&self) -> bool { self.ended }
     pub fn start_queued(&self) -> bool { self.start_queued }
@@ -335,6 +355,12 @@ impl PlayerReadout {
     }
     /// The target of the seek that waits for the pump, if one does (never negative).
     pub fn pending_seek(&self) -> Option<i64> { self.pending_seek_ns }
+    /// Until the active seek lands, only its requested target can be saved on stop.
+    pub fn unconfirmed_seek_target(&self) -> Option<i64> {
+        self.pending_seek_ns
+            .or_else(|| self.seek_display_ns.filter(|_| self.seeking()))
+            .or(self.reload_seek_ns)
+    }
     /// How many requests the pending target folded beyond the first: what the pump logs as
     /// `coalesced=` when it applies it. Read it before [`ReadoutEvent::SeekTaken`].
     pub fn seek_coalesced(&self) -> u32 { self.seek_requests.saturating_sub(1) }
@@ -363,9 +389,20 @@ impl PlayerReadout {
         edge_pending(self.raw.native_audio_refusals, self.taken_native_audio_refusals)
     }
 
-    /// The one writer. Applies `event`; there are no effects yet. The session addresses the
+    /// Apply `event` through the sole reducer; this pure view has no effects. The session addresses the
     /// events that carry an attempt's facts before it steps them.
     pub fn step(&mut self, event: ReadoutEvent) {
+        self.transition(event);
+    }
+}
+
+/// Whether the feed's count of an edge is ahead of what the player has taken. A count the feed
+/// zeroed (its session reset) is no edge, whatever was taken before.
+fn edge_pending(counted: u32, taken: u32) -> bool { counted != 0 && counted != taken }
+
+impl PlayerReadout {
+    /// The only writer of every readout field, including coalescing and consumed-edge counters.
+    fn transition(&mut self, event: ReadoutEvent) {
         match event {
             ReadoutEvent::StateDerived(state) => self.state = state,
             ReadoutEvent::StreamEnded => self.ended = true,
@@ -384,7 +421,11 @@ impl PlayerReadout {
                 self.pending_seek_ns = None;
                 self.seek_requests = 0;
             }
-            ReadoutEvent::SeekRequeued { target_ns } => self.wait_for_pump(target_ns),
+            ReadoutEvent::SeekRequeued { target_ns } => {
+                self.pending_seek_ns = (target_ns >= 0).then_some(target_ns);
+                self.seek_requests = 1;
+            },
+            ReadoutEvent::ReloadSeek { target_ns } => self.reload_seek_ns = Some(target_ns),
             ReadoutEvent::SessionReset => {
                 self.state = PlaybackState::Idle;
                 self.ended = false;
@@ -395,6 +436,7 @@ impl PlayerReadout {
                 self.pending_seek_ns = None;
                 self.seek_requests = 0;
                 self.seek_display_ns = None;
+                self.reload_seek_ns = None;
                 // The feed's own reset zeroed its counts at the same teardown.
                 self.taken_decoder_revocations = 0;
                 self.taken_native_audio_refusals = 0;
@@ -410,6 +452,7 @@ impl PlayerReadout {
             }
             ReadoutEvent::Abr(abr) => self.abr = abr,
             ReadoutEvent::AbrSeed(seed) => self.abr_seed = seed,
+            ReadoutEvent::SubtitleInk(known) => self.subtitle_takes_colour = known,
             ReadoutEvent::OriginalFailure(FailureEdit::Noted { kind, status }) => {
                 self.original_failure = Some((kind, status.max(0)));
             }
@@ -434,7 +477,13 @@ impl PlayerReadout {
                 // the feed's epoch makes the next request new again.
                 let asked = raw.seek_requeue;
                 if asked.epoch != 0 && asked.epoch != self.raw.seek_requeue.epoch {
-                    self.wait_for_pump(asked.target_ns);
+                    self.pending_seek_ns = (asked.target_ns >= 0).then_some(asked.target_ns);
+                    self.seek_requests = 1;
+                }
+                if raw.frames > 0 {
+                    // The callback gate counts only the replacement Load here. A seeded
+                    // target without a report from the new Load leaves frames at zero.
+                    self.reload_seek_ns = None;
                 }
                 self.raw = raw;
             }
@@ -494,18 +543,6 @@ impl PlayerReadout {
     }
 }
 
-/// Whether the feed's count of an edge is ahead of what the player has taken. A count the feed
-/// zeroed (its session reset) is no edge, whatever was taken before.
-fn edge_pending(counted: u32, taken: u32) -> bool { counted != 0 && counted != taken }
-
-impl PlayerReadout {
-    /// `target_ns` waits for the pump as one request.
-    fn wait_for_pump(&mut self, target_ns: i64) {
-        self.pending_seek_ns = (target_ns >= 0).then_some(target_ns);
-        self.seek_requests = 1;
-    }
-}
-
 impl Default for PlayerReadout {
     fn default() -> Self { Self::IDLE }
 }
@@ -517,6 +554,22 @@ mod tests {
     use crate::route::{PlaybackSession, RouteStartAttempt};
     use plx_playback_contract::feed::{FeedFacts, FeedLoad, SeekRequeue};
     use plx_playback_contract::feed_fake::FakeFeed;
+
+    #[test]
+    fn explicit_and_sampled_requeues_fold_only_the_requests_they_replace() {
+        let mut r = stepped(&[tap(1), tap(2), ReadoutEvent::SeekRequeued { target_ns: 3_000_000_000 }]);
+        assert_eq!((r.seek_epoch(), r.pending_seek(), r.seek_coalesced()), (2, Some(3_000_000_000), 0));
+        assert_eq!(r.seek_display_ns(), Some(2_000_000_000));
+        let raw = FeedRaw { seek_requeue: SeekRequeue { epoch: 7, target_ns: 4_000_000_000 }, ..FeedRaw::IDLE };
+        r.step(ReadoutEvent::FactsIngested(raw));
+        assert_eq!((r.seek_epoch(), r.pending_seek(), r.seek_coalesced()), (2, Some(4_000_000_000), 0));
+        r.step(tap(5));
+        r.step(ReadoutEvent::FactsIngested(raw));
+        assert_eq!((r.seek_epoch(), r.pending_seek(), r.seek_coalesced()), (3, Some(5_000_000_000), 1));
+        r.step(ReadoutEvent::SessionReset);
+        assert_eq!((r.seek_epoch(), r.pending_seek(), r.seek_coalesced()), (3, None, 0));
+        assert!(!r.seeking());
+    }
 
     fn stepped(events: &[ReadoutEvent]) -> PlayerReadout {
         let mut readout = PlayerReadout::IDLE;
@@ -1219,6 +1272,17 @@ mod tests {
         let stopped = stepped(&[ReadoutEvent::AbrSeed(Some((seed(19), 10_000))),
             ReadoutEvent::SessionReset, ReadoutEvent::AbrSeed(None)]);
         assert_eq!(stopped.abr_seed(10_000), None, "a real stop clears it");
+    }
+
+    /// The colour-pick fact the media side delivers is a field of the readout: the menu reads it there,
+    /// and a session reset (an engine torn down) leaves it, because it describes the subtitle registries.
+    #[test]
+    fn the_subtitle_ink_fact_is_a_readout_field_a_session_reset_leaves_alone() {
+        assert_eq!(PlayerReadout::IDLE.subtitle_takes_colour(), None);
+        let r = stepped(&[ReadoutEvent::SubtitleInk(Some(false))]);
+        assert_eq!(r.subtitle_takes_colour(), Some(false));
+        assert_eq!(stepped(&[ReadoutEvent::SubtitleInk(Some(false)), ReadoutEvent::SessionReset]).subtitle_takes_colour(), Some(false));
+        assert_eq!(stepped(&[ReadoutEvent::SubtitleInk(Some(true)), ReadoutEvent::SubtitleInk(None)]).subtitle_takes_colour(), None);
     }
 
     const HTTP_503: FailureEdit = FailureEdit::Noted { kind: crate::player::ABR_FAILURE_ORIGINAL_HTTP, status: 503 };

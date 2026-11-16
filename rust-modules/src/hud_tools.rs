@@ -36,14 +36,21 @@ pub(crate) fn font_hashes() -> Result<BTreeMap<String, String>, String> {
 #[cfg(any(test, feature = "hostsim"))]
 pub(crate) fn info() -> Value {
     use plx_appkit::hud_format::{bundle, schema_emit, svg_subset};
+    let hud_schemas = schema::versions().map(|version @ (major, minor)| {
+        (format!("{major}.{minor}"), schema_emit::schema_id(version))
+    }).collect::<BTreeMap<_, _>>();
+    let hud_limits = hud_schemas.keys().map(|version| (version.clone(), json!({
+        "json_bytes":plx_appkit::hud_format::parse::MAX_HUD_JSON_BYTES,"json_decode_bytes":bundle::JSON_DECODE_BYTES,
+        "svg_bytes":svg_subset::MAX_ASSET_BYTES,"svg_paths":svg_subset::MAX_PATHS_PER_ASSET
+    }))).collect::<BTreeMap<_, _>>();
+    let formats = hud_schemas.keys().map(|hud| json!({"package":"1.0","hud":hud})).collect::<Vec<_>>();
     json!({"protocol":1,"app_version":env!("PLX_VERSION"),"source_sha":env!("PLX_BUILD_SHA"),
-        "supported_formats":[{"package":format!("{}.{}",bundle::CURRENT.0,bundle::CURRENT.1),"hud":format!("{}.{}",schema::CURRENT.0,schema::CURRENT.1)}],
-        "schemas":{"manifest":{"1.0":schema_emit::manifest_schema_id(bundle::CURRENT)},"hud":{"1.0":schema_emit::schema_id(schema::CURRENT)}},
+        "supported_formats":formats,
+        "schemas":{"manifest":{"1.0":schema_emit::manifest_schema_id(bundle::CURRENT)},"hud":hud_schemas},
         "limits":{"package":{"1.0":{"artifact_bytes":bundle::MAX_ARTIFACT_BYTES,"member_bytes":bundle::MAX_MEMBER_BYTES,
             "manifest_bytes":bundle::MAX_MANIFEST_BYTES,"central_directory_bytes":bundle::MAX_DIRECTORY_BYTES,
             "entries":bundle::MAX_ENTRIES,"path_bytes":bundle::MAX_PATH_BYTES,"path_depth":bundle::MAX_PATH_DEPTH}},
-            "hud":{"1.0":{"json_bytes":plx_appkit::hud_format::parse::MAX_HUD_JSON_BYTES,"json_decode_bytes":bundle::JSON_DECODE_BYTES,
-                "svg_bytes":svg_subset::MAX_ASSET_BYTES,"svg_paths":svg_subset::MAX_PATHS_PER_ASSET}}},
+            "hud":hud_limits},
         "languages":LintLang::shipped().iter().map(|l| l.tag).collect::<Vec<_>>(),
         "rungs":schema::SIZE_RUNGS.iter().map(|(name,size)| (*name,*size)).collect::<BTreeMap<_,_>>()})
 }

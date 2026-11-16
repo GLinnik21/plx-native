@@ -309,7 +309,8 @@ pub fn signed_in_as(uuid: &str) -> Session {
     }
 }
 
-/// Extract one `fn NAME(` … `}` body, verbatim, from this file's OWN source. A tiny lexer —
+/// Extract one `fn NAME(` … `}` body, verbatim, from the supplied auth source or its live
+/// worker module. A tiny lexer —
 /// tracking only whether it is inside a `"…"` string literal or a `//` line comment — rather
 /// than a bare brace count, because several of these functions log a `format!("…{x}…")` whose
 /// placeholder braces are balanced on their own and would otherwise silently agree with a real
@@ -317,9 +318,10 @@ pub fn signed_in_as(uuid: &str) -> Session {
 /// it.
 pub fn extract_fn_body<'a>(src: &'a str, name: &str) -> &'a str {
     let needle = format!("fn {name}(");
+    let src = if src.contains(&needle) { src } else { include_str!("auth/ports.rs") };
     let start = src
         .find(&needle)
-        .unwrap_or_else(|| panic!("no `{needle}` in auth.rs — did it get renamed?"));
+        .unwrap_or_else(|| panic!("no `{needle}` in auth source modules — did it get renamed?"));
     let open = src[start..]
         .find('{')
         .map(|i| start + i)

@@ -29,18 +29,81 @@ pub struct AssTrack {
     pub authored: bool,
 }
 
-/// Read ASS headers and font attachments from the container, with admission BEFORE any payload
-/// copy. The caller supplies the presentation layer's exact font budget policy.
+/// Take the font attachments out of the format `fmt`, right after `avformat_open_input` returns:
+/// each font is copied once into the shared buffer the source store, and through it every libass
+/// renderer, will hold, and the stream's `codecpar->extradata` it was read from is freed. An
+/// attachment that is not a font is freed without a copy. Nothing else reads an attachment's
+/// extradata, so the format keeps no copy of its own that the app owns (issue #1328: 17 fonts, 83 MB,
+/// read three times over by libavformat and again by the store).
+///
+/// libavformat still holds the Matroska demuxer's own parsed element of every attachment until the
+/// context closes; no API reaches it without the demuxer's private structures, so it stays. The
+/// stream's internal codec context also holds a copy (`avformat_open_input` fills it from the codec
+/// parameters before this can run): on the main demuxer `avformat_find_stream_info` rebuilds that
+/// context from the now-empty parameters and the copy goes, while a reader that never calls it
+/// (the side reader) keeps it until close.
+///
+/// Every font attachment is taken, whole: which of them a renderer is handed is its choice, by the
+/// names a track uses, and no byte budget decides here what a file's own attachments may carry.
 ///
 /// # Safety
-/// `fmt` and `streams` must name a live FFmpeg format and its full stream table. Every track
-/// index must be a valid index into that table.
+/// `fmt` must name a format context `avformat_open_input` has opened and nobody else is using.
+pub unsafe fn detach_fonts(fmt: *mut AVFormatContext) -> Vec<EmbeddedFont> {
+    let mut fonts = Vec::new();
+    let streams = (*fmt).streams;
+    for i in 0..(*fmt).nb_streams {
+        let st = *streams.add(i as usize);
+        let cp = ffi::stream_codecpar(st);
+        if (*cp).codec_type != ffi::AVMEDIA_TYPE_ATTACHMENT { continue; }
+        let len = (*cp).extradata_size.max(0) as usize;
+        if len >= 4 && !(*cp).extradata.is_null() {
+            let data = std::slice::from_raw_parts((*cp).extradata, len);
+            if matches!(&data[..4], b"\x00\x01\x00\x00" | b"OTTO" | b"ttcf" | b"true") {
+                let dict = *((st as *const u8).add(ffi::OFF_STREAM_METADATA) as *const *const AVDictionary);
+                let entry = if dict.is_null() { std::ptr::null_mut() }
+                    else { ffi::av_dict_get(dict, c"filename".as_ptr(), std::ptr::null(), 0) };
+                let name = if !entry.is_null() && !(*entry).value.is_null() {
+                    std::ffi::CStr::from_ptr((*entry).value).to_string_lossy().into_owned()
+                } else { format!("attachment-{i}.ttf") };
+                fonts.push(EmbeddedFont { name, data: data.into() });
+            }
+        }
+        free_extradata(cp);
+    }
+    fonts
+}
+
+/// [`detach_fonts`] for a reader that has no use for the fonts: the attachments are freed, not
+/// copied.
+///
+/// # Safety
+/// As [`detach_fonts`].
+pub unsafe fn release_attachments(fmt: *mut AVFormatContext) {
+    let streams = (*fmt).streams;
+    for i in 0..(*fmt).nb_streams {
+        let cp = ffi::stream_codecpar(*streams.add(i as usize));
+        if (*cp).codec_type == ffi::AVMEDIA_TYPE_ATTACHMENT { free_extradata(cp); }
+    }
+}
+
+/// Free a stream's `codecpar->extradata` and say so in the size, as `avcodec_parameters_free` leaves
+/// them. `av_freep` nulls the pointer.
+unsafe fn free_extradata(cp: *mut ffi::AVCodecParameters) {
+    ffi::av_freep(std::ptr::addr_of_mut!((*cp).extradata) as *mut c_void);
+    (*cp).extradata_size = 0;
+}
+
+/// Read ASS headers from the container and bring along the `fonts` [`detach_fonts`] took out of it.
+/// A header is refused past `max_header_bytes` BEFORE its payload is copied.
+///
+/// # Safety
+/// `streams` must name a live FFmpeg format's full stream table. Every track index must be a valid
+/// index into that table.
 pub unsafe fn collect_manifest(
-    fmt: *mut AVFormatContext,
     streams: *mut *mut AVStream,
     tracks: &[AssTrack],
     max_header_bytes: usize,
-    mut admit_font: impl FnMut(usize) -> bool,
+    fonts: Vec<EmbeddedFont>,
 ) -> Manifest {
     let mut headers = Vec::with_capacity(tracks.len());
     for track in tracks {
@@ -58,25 +121,7 @@ pub unsafe fn collect_manifest(
             headers.push(Some(std::slice::from_raw_parts((*cp).extradata, len).to_vec()));
         }
     }
-    let mut fonts = Vec::new();
-    let mut font_bytes = 0usize;
-    for i in 0..(*fmt).nb_streams {
-        let st = *streams.add(i as usize);
-        let cp = ffi::stream_codecpar(st);
-        let len = (*cp).extradata_size.max(0) as usize;
-        if (*cp).codec_type != ffi::AVMEDIA_TYPE_ATTACHMENT || len < 4 || (*cp).extradata.is_null() { continue; }
-        let data = std::slice::from_raw_parts((*cp).extradata, len);
-        if !matches!(&data[..4], b"\x00\x01\x00\x00" | b"OTTO" | b"ttcf" | b"true") { continue; }
-        let dict = *((st as *const u8).add(ffi::OFF_STREAM_METADATA) as *const *const AVDictionary);
-        let entry = if dict.is_null() { std::ptr::null_mut() }
-            else { ffi::av_dict_get(dict, c"filename".as_ptr(), std::ptr::null(), 0) };
-        let name = if !entry.is_null() && !(*entry).value.is_null() {
-            std::ffi::CStr::from_ptr((*entry).value).to_string_lossy().into_owned()
-        } else { format!("attachment-{i}.ttf") };
-        if !admit_font(len) { continue; }
-        font_bytes += len;
-        fonts.push(EmbeddedFont { name, data: data.into() });
-    }
+    let font_bytes = fonts.iter().map(|font| font.data.len()).sum();
     Manifest { headers, fonts, font_bytes }
 }
 
@@ -312,6 +357,9 @@ pub struct Job {
     tracks: Vec<TrackInfo>,
     kinds: Vec<DecodeKind>,
     decoders: ImageDecoders,
+    /// The file's font attachments, taken out of the format at open ([`detach_fonts`]) and handed
+    /// over by [`Job::manifest`]. Empty for a job that inspects no subtitles.
+    fonts: Vec<EmbeddedFont>,
 }
 
 impl Job {
@@ -320,6 +368,7 @@ impl Job {
         let mut job = Self {
             fmt: std::ptr::null_mut(), pkt: std::ptr::null_mut(), input: Some(input),
             video_index: -1, tracks: Vec::new(), kinds: Vec::new(), decoders: ImageDecoders::empty(),
+            fonts: Vec::new(),
         };
         // SAFETY: the source and AVIO state outlive this format context; Drop reverses every
         // allocation and the format pointer is updated after open_input even on failure.
@@ -331,6 +380,7 @@ impl Job {
             let r = ffi::avformat_open_input(&mut fmt, std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut());
             job.fmt = fmt;
             if r < 0 || job.fmt.is_null() { return Err(JobOpenError::Failed); }
+            if inspect_subtitles { job.fonts = detach_fonts(job.fmt); } else { release_attachments(job.fmt); }
             job.pkt = ffi::av_packet_alloc();
             if job.pkt.is_null() { return Err(JobOpenError::Failed); }
             let streams = (*job.fmt).streams;
@@ -368,11 +418,13 @@ impl Job {
         self.kinds = kinds;
     }
 
-    pub fn manifest(&self, max_header_bytes: usize, admit_font: impl FnMut(usize) -> bool) -> Manifest {
+    /// The ASS headers and the fonts. The fonts are handed over, not copied: a second call has none.
+    pub fn manifest(&mut self, max_header_bytes: usize) -> Manifest {
         let tracks: Vec<_> = self.tracks.iter().zip(&self.kinds).map(|(track, kind)| AssTrack {
             stream_index: track.stream_index, authored: matches!(kind, DecodeKind::Ass { .. }),
         }).collect();
-        unsafe { collect_manifest(self.fmt, (*self.fmt).streams, &tracks, max_header_bytes, admit_font) }
+        let fonts = std::mem::take(&mut self.fonts);
+        unsafe { collect_manifest((*self.fmt).streams, &tracks, max_header_bytes, fonts) }
     }
 
     /// Seek the video clock to a nonnegative time. The caller distinguishes cancellation from
