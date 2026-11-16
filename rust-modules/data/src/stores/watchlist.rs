@@ -42,7 +42,7 @@ const RETRY_FRAMES: u32 = 120;
 #[derive(Clone, Debug)]
 pub enum WatchlistCmd {
     /// The page mounted (or the tab was entered): take the identity from the input if the epoch has none
-    /// and read the list. It is stepped through [`WatchlistStore::run_with_input`]. A populated list is never blanked by it.
+    /// and read the list. It is stepped through [`WatchlistStore::run_with_input`]. A list that has landed, populated or empty, is never blanked by it.
     Open,
     /// Read the list again behind the rows now held (resume, a write burst, a watched mark).
     Reread,
@@ -65,7 +65,7 @@ pub enum Status {
     NoAccount,
     Loading,
     Ready,
-    /// The first read failed (a populated list is never replaced by this).
+    /// The first read failed (a list that landed, populated or empty, is never replaced by this).
     Failed(Failure),
 }
 
@@ -201,6 +201,15 @@ struct WatchlistState {
 }
 
 impl WatchlistState {
+    /// **No list has landed for this account**: nothing was asked, the first read is out, or it failed.
+    /// Not "the rows are empty": a list that landed and holds nothing is `Ready`, and a mount or a failed
+    /// page 0 of a reread leaves it `Ready`, as they leave a populated one. Spelled as `rows.is_empty()`,
+    /// an empty Watchlist went back to `Loading` at every `Open` and to `Failed` on a failed background
+    /// reread. (The tests of `rows.is_empty()` that remain ask "are rows held": what a rematch has to
+    /// match, whether a validator is worth sending, whether page 0 is shown as it lands or staged.)
+    fn unread(&self) -> bool {
+        self.rows.is_empty() && self.status != Status::Ready
+    }
     fn new(epoch: u32, sort: SortSpec, filter: FilterSpec) -> Self {
         Self {
             epoch,
@@ -488,7 +497,7 @@ impl WatchlistStore {
         };
         let _ = auth;
         self.state.list_wanted = true;
-        if self.state.rows.is_empty() && self.state.status != Status::Loading {
+        if self.state.unread() && self.state.status != Status::Loading {
             self.state.status = Status::Loading;
             return true;
         }
@@ -658,7 +667,7 @@ impl WatchlistStore {
             What::PageFailed { start, why } => {
                 self.state.read_writes = None;
                 let had_rows = self.state.incoming.take().is_some();
-                if start == 0 && self.state.rows.is_empty() {
+                if start == 0 && self.state.unread() {
                     self.state.status = Status::Failed(why);
                 } else if start > 0 && !had_rows {
                     // Only a first load changes the rows on a later-page failure. A failed
@@ -2560,6 +2569,46 @@ pub(in crate::stores) fn reading_for_test(sid: ServerId, titles: u8) -> Watchlis
         load(&mut s);
         assert_eq!(s.view().len(), 100);
         assert!(s.view().truncated());
+    }
+
+    /// **A list that was read and holds nothing is a list.** "Never read" used to be spelled
+    /// `rows.is_empty()`, so an account whose Watchlist is empty went back to `Loading` at every
+    /// `Open` (each Watchlist and Catalog page mount) and the page showed its first-load state again.
+    #[test]
+    fn a_mount_does_not_unread_an_empty_list() {
+        let mock = Mock::new(vec![]);
+        let mut s = store(&mock);
+        load(&mut s);
+        assert_eq!((s.view().status(), s.view().len()), (Status::Ready, 0));
+        let pages = mock.pages.load(Ordering::SeqCst);
+
+        assert!(!open_handed(&mut s, &crate::watchlist::WatchlistInput::for_test(1)), "a second mount changes nothing the page reads");
+        assert_eq!(s.view().status(), Status::Ready);
+        for _ in 0..4 {
+            pump_scripted(&mut s);
+        }
+        assert!(mock.pages.load(Ordering::SeqCst) > pages, "the mount still rereads, as it does for a populated list");
+        assert_eq!(s.view().status(), Status::Ready);
+    }
+
+    /// The same misreading at the failure: a failed page 0 of a background reread replaced an empty
+    /// list that had landed with `Failed`, which the status's own doc says a landed list never is.
+    /// One way in: the first title is added, the write owes a reread, and that reread fails.
+    #[test]
+    fn a_failed_reread_keeps_an_empty_list_that_was_read() {
+        let mock = Mock::new(vec![]);
+        let mut s = store(&mock);
+        load(&mut s);
+        assert_eq!((s.view().status(), s.view().len()), (Status::Ready, 0));
+
+        mock.fail_pages_from.store(0, Ordering::SeqCst);
+        reread(&mut s);
+        assert_eq!(s.view().status(), Status::Ready, "a failed reread keeps the list that landed, empty or not");
+
+        mock.items.lock().unwrap().push(item(1, "Alpha"));
+        mock.fail_pages_from.store(u32::MAX, Ordering::SeqCst);
+        reread(&mut s);
+        assert_eq!(titles(&s), ["Alpha"], "and the next read that lands is shown");
     }
 
     #[test]

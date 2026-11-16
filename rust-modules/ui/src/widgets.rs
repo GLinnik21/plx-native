@@ -3946,6 +3946,17 @@ impl AmbientWash {
     pub fn drawn_corners(&self) -> [[f32; 3]; 4] {
         self.corners.map(|c| [code(c[0].pos), code(c[1].pos), code(c[2].pos)])
     }
+    /// **Everything [`draw`](Self::draw) and [`draw_ground`](Self::draw_ground) read of the wash**, as
+    /// the exact bits of its twelve positions in corner order, for a caller that has to NAME the
+    /// picture it paints ([`Painter::cached_ground`]).
+    ///
+    /// Not [`drawn_corners`](Self::drawn_corners): those are the corner codes, but `draw_ground` also
+    /// samples the wash's INTERIOR at the corners of each band it cuts (`sample`, then `code`), and
+    /// two washes with the same corner codes can code an interior point one apart. The positions
+    /// decide every pixel, so they are the name.
+    pub fn paint_bits(&self) -> [u32; 12] {
+        std::array::from_fn(|i| self.corners[i / 3][i % 3].pos.to_bits())
+    }
     /// Paint it over `r`. Opaque — this REPLACES what is under it (see the type docs), so it belongs
     /// at the bottom of a screen's draw, standing in for the flat clear.
     ///
@@ -4154,6 +4165,18 @@ impl WashScrim {
     /// The scrim's alpha at the authored point `(x, y)`.
     pub fn alpha(&self, x: f32, y: f32) -> f32 {
         self.field.at(x, y)
+    }
+
+    /// **The scrim by value, as a draw reads it**: the ink, the shader's mode/count and every
+    /// uniform it is uploaded, by bits ([`AmbientWash::paint_bits`] for the wash it rides). Two
+    /// scrims with the same bits draw the same field, cell for cell, so a screen that caches the
+    /// picture a scrim is drawn into (`Painter::cached_ground`) names the scrim by it.
+    pub fn paint_bits(&self) -> ([u32; 4], u32, [[u32; 4]; plx_gfx::gfx::scrim::VEC4S]) {
+        (
+            self.ink.map(f32::to_bits),
+            self.field.shader_count().to_bits(),
+            self.field.uniforms().map(|v| v.map(f32::to_bits)),
+        )
     }
 }
 

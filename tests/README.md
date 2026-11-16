@@ -49,7 +49,9 @@ default alone.**
 Targets and Resolve. `make check-replay` and Simulator CI use that same discovery, not a private
 fixture list. Expected outcomes: **SAME=6, REFUSED_EXPECTED=2, unexpected=0**.
 
-- Home: 200 fully graded frames in each mode; Settings: 621 in each.
+- Home: the re-recorded `1-boot-home-chip-grid`, a current AppFrameV5 anchor graded in full in each
+  mode (its frame count is pinned by `tests/test_replay_fixtures.py`'s census and
+  `fixture_preflight_tests` in `app/recorder.rs`); Settings: 621 in each.
 - `12-filmography-detail-return-current`: the current V11 default Flow 12 producer's typed
   Person → Filmography → item Detail → Back → Back/focus-memory flow, 642 fully graded frames
   in each mode. Both require raw exit 0, exactly one SAME, and all eight difference counters zero.

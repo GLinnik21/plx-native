@@ -301,7 +301,6 @@ fn session_app_fingerprint_probe_only() {
         Some(RecError::StateShape { theirs: prospective_fp_v6, ours: state_fp() }));
     assert_eq!(frozen["prospective_fp_v6"].as_u64(), Some(FP_V6));
     for manifest in [
-        include_str!("../../../tests/fixtures/replay/1-boot-home-chip-grid/manifest.json"),
         include_str!("../../../tests/fixtures/replay/6-settings-family/manifest.json"),
         include_str!("../../../tests/fixtures/replay/12-filmography-detail-return/manifest.json"),
     ] {
@@ -2926,7 +2925,7 @@ mod fixture_preflight_tests {
     fn committed_recordings_keep_valid_page_requests_and_initial_hashes() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/replay");
         for (name, fp, frames) in [
-            ("1-boot-home-chip-grid", FP_PRIOR, 200),
+            ("1-boot-home-chip-grid", state_fp(), 266),
             ("6-settings-family", FP_PRIOR, 621),
             ("12-filmography-detail-return", FP_PRIOR, 457),
             ("12-filmography-detail-return-current", state_fp(), 642),

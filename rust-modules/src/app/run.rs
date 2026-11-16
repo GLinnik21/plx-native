@@ -5552,6 +5552,30 @@ mod lifecycle_regression_tests {
         }
     }
 
+    /// The PLAY key's entry into D-pad mode is the arrow key's entry: `mot_accum` ("motion since
+    /// D-pad mode was entered") restarts at 0, so the first small pointer motion after PLAY is
+    /// still swallowed by `DPAD_MOTION_GATE` instead of riding on all the earlier travel.
+    #[test]
+    fn the_play_key_enters_dpad_mode_exactly_as_an_arrow_key_does() {
+        let _serial=plx_base::testlock::serial();
+        for arrow in [false,true] {
+            let mut app=app();
+            app.ptr.mot_accum=500.0;
+            app.ptr.edge.moved(10.0,10.0,false);
+            if arrow {
+                let ps=plx_media::route::PlaybackSession::IDLE;
+                let mut down_sym=0;
+                unsafe{ super::super::input::begin_fresh_press(&ps,Key::Down,plx_ui::consts::SDLK_DOWN,0,0,false,&mut down_sym,None,&mut app.ptr) };
+            } else {
+                unsafe{ key_play(&mut app.player.session,&mut app.adapters.player,app.last_input,
+                    &mut app.player.lifecycle,&mut app.repause_at,&mut app.ptr,&mut app.pages,&mut app.bridge) };
+            }
+            assert!(app.ptr.dpad_mode && app.ptr.cur_hidden,"arrow={arrow}");
+            assert_eq!(app.ptr.mot_accum,0.0,"arrow={arrow}: motion accumulated before D-pad entry must not carry over");
+            assert_eq!(app.ptr.edge.at(),None,"arrow={arrow}: the edge glide stops");
+        }
+    }
+
     #[test]
     fn controlled_sdl_pointer_gestures_match_ordinary_ingress() {
         let _serial=plx_base::testlock::serial();

@@ -343,3 +343,7 @@ in `.empryo/reviews/step8-integration-2026-11-13.md`; no recovery is implied by 
 7. A command that needs an input and lacks it is refused (assert plus log), not defaulted.
 8. `git diff ci/allow tests/test_harness.py` shows only deleted lines, lowered counts, or such a
    one-for-one rename.
+9. A lifecycle is one field with one writer. Before adding a `bool` or an `Option` beside a phase,
+   name the state it adds; before testing `rows.is_empty()` or `!flag` as a stand-in for a state,
+   test the state. `docs/implicit-machines-audit-2026-11-16.md` lists the lifecycles that are still
+   loose flags and the defects that shape produced: read the row of the type you are about to touch.

@@ -843,6 +843,66 @@ class RequiredChecksReportOnEveryPr(unittest.TestCase):
         self.assertIn("=success$", host)
 
 
+class ReleaseLines(unittest.TestCase):
+    """Every release is cut from a `release/vX.Y` line (cut-line.yml), never from `main`."""
+
+    def test_release_and_candidate_refuse_to_bump_without_a_release_line(self):
+        prepare = job_body("release.yml", "prepare")
+        self.assertIn("if ! [[ \"$line\" =~ ^release/v[0-9]+\\.[0-9]+$ ]]; then", prepare)
+        self.assertNotIn("inputs.line || 'main'", prepare)
+        self.assertIn('python3 ci/bump-version.py "$spec" --line "$line"', prepare)
+        rc = job_body("rc.yml", "prepare")
+        self.assertIn('python3 ci/bump-version.py "$SPEC" --line "$LINE"', rc)
+        # the first release of a line writes its RELEASE_LINE marker, so the bump commit carries it
+        for body in (prepare, rc):
+            self.assertIn("rust-modules/Cargo.lock RELEASE_LINE", body)
+
+    def test_a_tag_push_or_rebuild_resolves_its_own_line_and_falls_back_to_main(self):
+        guard = job_body("release.yml", "guard")
+        self.assertIn('line="release/v$major.$minor"', guard)
+        self.assertIn('git ls-remote --exit-code --heads', guard)
+        self.assertIn("line=main", guard)
+
+    def test_a_line_release_forwards_its_completed_audit_to_main(self):
+        publish = job_body("release.yml", "publish")
+        step = publish[publish.index("Forward the completed audit to main"):]
+        self.assertIn("needs.guard.outputs.line != 'main'", step)
+        self.assertIn('ci/bot-pr.sh main "release-docs/$TAG"', step)
+        self.assertIn("pull-requests: write", publish)
+
+    def test_cut_line_branches_from_main_and_moves_main_on_through_a_pull_request(self):
+        cut = job_body("cut-line.yml", "cut")
+        self.assertIn("if: github.ref == 'refs/heads/main'", cut)
+        self.assertIn("ssh-key: ${{ secrets.MAIN_PUSH_KEY }}", cut)
+        self.assertLess(cut.index('git push origin "HEAD:refs/heads/$LINE"'),
+                        cut.index('python3 ci/bump-version.py "$VERSION"'))
+        self.assertIn('gh label create "backport $LINE"', cut)
+        self.assertIn('ci/bot-pr.sh main "cut/${LINE#release/}"', cut)
+        # main's own bump never touches RELEASE_LINE: main is not a line
+        self.assertNotIn("--line", cut)
+
+    def test_backport_never_runs_pull_request_code(self):
+        body = code("backport.yml")
+        self.assertIn("pull_request_target:", body)
+        # the checkout is the base branch (the event's default), never the pull request's head
+        self.assertNotIn("head.sha", body)
+        self.assertNotIn("head.ref", body)
+        self.assertIn("github.event.pull_request.merged == true", body)
+        self.assertIn('git cherry-pick -x "$SHA"', body)
+        # untrusted text reaches the script through env only
+        run = body[body.index("run: |"):]
+        self.assertNotIn("${{", run)
+
+    def test_bot_pull_requests_start_ci_themselves(self):
+        script = (ROOT / "ci/bot-pr.sh").read_text(encoding="utf-8")
+        self.assertIn('gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"', script)
+        self.assertIn("workflow_dispatch:", code("ci.yml"))
+        for wf, job in (("cut-line.yml", "cut"), ("backport.yml", "backport")):
+            body = job_body(wf, job)
+            self.assertIn("actions: write", body)
+            self.assertIn("pull-requests: write", body)
+
+
 class SiteVideoRelease(unittest.TestCase):
     """The site's film refreshes after a STABLE release and never blocks one (docs/agent-reference.md, "The site
     demo video"). A hole in any of these stays green: a schedule would render hourly-long jobs for nothing, a
@@ -1047,15 +1107,21 @@ class SiteVideoRelease(unittest.TestCase):
         self.assertIn("continue-on-error: true", hook)
         self.assertIn("needs: [guard, publish]", hook)
         self.assertIn("needs.publish.result == 'success'", hook)
-        self.assertIn("needs.guard.outputs.line == 'main'", hook)
+        # Every release comes from a release line, so "from main" no longer names the newest release:
+        # only the highest vX.Y.Z tag replaces the film, never a patch of an older line.
+        self.assertNotIn("needs.guard.outputs.line == 'main'", hook)
+        self.assertIn('[ "$newest" = "$TAG" ]', hook)
+        self.assertIn("sort -V", hook)
         self.assertIn("release-ref", hook)
         # dispatched ON THE TAG: the run renders its own checkout, and its caches are the tag's, never main's
         self.assertIn('gh workflow run site-video.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG" -f publish=true', hook)
         self.assertNotIn("--ref main", hook)
         self.assertIn("actions: write", hook)
         self.assertNotIn("contents: write", hook)
-        # Only the two post-publication dispatch jobs may hold Actions write permission.
-        self.assertEqual(code("release.yml").count("actions: write"), 2)
+        # Only the two post-publication dispatch jobs, and `publish` (which starts CI on the pull
+        # request forwarding the completed audit to main), may hold Actions write permission.
+        self.assertEqual(code("release.yml").count("actions: write"), 3)
+        self.assertEqual(job_body("release.yml", "publish").count("actions: write"), 1)
         self.assertEqual(job_body("release.yml", "hud-simulator").count("actions: write"), 1)
         self.assertEqual(code("site-video.yml").count("actions: write"), 1)
         # candidates and nightlies never refresh the film

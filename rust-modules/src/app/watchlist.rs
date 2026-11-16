@@ -16,7 +16,7 @@
 //!   grid reflows under the open menu. The feed runs at the head of the frame, ahead of the page's
 //!   tick (`bridge::frame_ingest`), so a landing begins from the slots the old cards stood in.
 //! * **Open.** A page that mounts opens the store (`WatchlistCmd::Open`): the Bridge reads the
-//!   account's identity (`Bridge::watchlist_input`) and the store takes it, the list read starts, a populated list is never blanked.
+//!   account's identity (`Bridge::watchlist_input`) and the store takes it, the list read starts, a list that has landed is never blanked.
 //! * **Window.** The titles near the focus are the store's hold window: the matched copies whose
 //!   watch state the application owes a read-back (`Bridge::held_keys`). A window, not a cap: the
 //!   focus moves it over every row.
@@ -116,8 +116,8 @@ fn list_state(view: &plx_data::stores::watchlist::WatchlistView<'_>) -> ListStat
         // The whole list, the pages still to arrive included, so the count beside the title does
         // not climb as they land.
         Status::Ready => ListState::Ready { total: view.list_len() + view.unloaded() },
-        // The first read failed and no list had landed (a populated list is never replaced by
-        // this): the page-placed read-out with Try again.
+        // The first read failed and no list had landed (a list that has landed, populated or
+        // empty, is never replaced by this): the page-placed read-out with Try again.
         Status::Failed(_) => ListState::Failed,
         // A first read that has not landed.
         Status::Idle | Status::Loading => ListState::Loading,
