@@ -296,7 +296,7 @@ pub fn flush_soon() {
     let ok = plx_base::task::spawn_small("telemetry", move || {
         let retry = flush_now(&c, decision_revision);
         FLUSHING.store(false, Ordering::Release);
-        if AGAIN.load(Ordering::Acquire) {
+        if rerun_after_flush(AGAIN.load(Ordering::Acquire), decision_revision, consent::revision()) {
             flush_soon();
         }
         if let Some(seconds) = retry {
@@ -318,6 +318,13 @@ pub fn flush_soon() {
     if !ok {
         FLUSHING.store(false, Ordering::Release);
     }
+}
+
+/// Whether a finishing worker must look again: a flush was asked for while it ran (`again`), or
+/// the decision it ran with is no longer the installed one. Pure, so the interleaving is testable
+/// as data.
+fn rerun_after_flush(again: bool, ran_revision: u32, installed_revision: u32) -> bool {
+    again || ran_revision != installed_revision
 }
 
 /// The flush itself, on the worker.
@@ -445,6 +452,20 @@ pub fn is_minted_id(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Thread A snapshots revision 1, then thread B installs revision 2 and raises AGAIN while A
+    /// still holds FLUSHING; A then clears AGAIN and spawns with the stale revision 1. At the
+    /// worker's tail AGAIN reads false, yet the installed decision is newer than the one it ran
+    /// with, and `process_records` sent nothing for it: the tail must run another flush.
+    #[test]
+    fn a_decision_installed_after_the_snapshot_is_not_lost_at_the_worker_tail() {
+        assert!(
+            super::rerun_after_flush(false, 1, 2),
+            "AGAIN was cleared by the winner after the new decision raised it; the stale worker must still rerun"
+        );
+        assert!(super::rerun_after_flush(true, 2, 2), "an explicit request still reruns");
+        assert!(!super::rerun_after_flush(false, 2, 2), "nothing new: stop");
+    }
+
     use super::*;
 
     #[test]
