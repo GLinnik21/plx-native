@@ -51,7 +51,7 @@
   "settings.language.system": "Isto kao sustav",
   "settings.language.copy": "Odaberite jezik aplikacije za sve korisnike ovog televizora. Promjene se primjenjuju nakon ponovnog pokretanja PlxNativea.",
   "settings.language.pending": "Ponovno pokrenite PlxNative da biste primijenili ovu promjenu.",
-  "settings.language.restart_hint": "Držite {key} za zatvaranje pa ponovno pokrenite PlxNative.",
+  "settings.language.restart_hint": "Držite {key} za zatvaranje pa opet pokrenite PlxNative.",
   "settings.language.save_failed": "Spremanje jezika nije uspjelo. Pokušajte ponovno.",
   "settings.language.help": "Pomozite prevesti aplikaciju.",
   "settings.language.contribute": "Doprinesite na GitHubu",

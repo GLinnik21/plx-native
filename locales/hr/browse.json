@@ -165,8 +165,8 @@
   "browse.auth.plaintext_revoked_signin": "Veze s Plex poslužiteljem bez enkripcije su isključene. Odaberite Pokušaj ponovno da biste ponovno dobili upit.",
   "browse.auth.plaintext_declined_signed_in": "Odlučili ste se ne povezati s Plex poslužiteljem bez enkripcije. Dopustite to u Postavke → Veze bez enkripcije.",
   "browse.auth.plaintext_revoked_signed_in": "Veze s Plex poslužiteljem bez enkripcije su isključene. Uključite ih u Postavke → Veze bez enkripcije.",
-  "browse.auth.plaintext_shared_offer": "Poslužitelj korisnika {owner} je dostupan, ali sigurna veza nije moguća. Odaberite „Poveži” za nastavak bez enkripcije.",
-  "browse.auth.plaintext_shared_allowed": "Poslužitelj korisnika {owner} je dostupan, ali sigurna veza nije moguća. Odaberite „Pokušaj ponovno” za povezivanje bez enkripcije.",
+  "browse.auth.plaintext_shared_offer": "Poslužitelj od {owner} je dostupan, ali sigurna veza nije moguća. Odaberite „Poveži” za nastavak bez enkripcije.",
+  "browse.auth.plaintext_shared_allowed": "Poslužitelj od {owner} je dostupan, ali sigurna veza nije moguća. Odaberite „Pokušaj ponovno” za vezu bez enkripcije.",
   "browse.auth.plaintext_shared_declined_signin": "Odlučili ste se ne povezati s poslužiteljem korisnika {owner} bez enkripcije. Odaberite Pokušaj ponovno da biste ponovno dobili upit.",
   "browse.auth.plaintext_shared_revoked_signin": "Veze s poslužiteljem korisnika {owner} bez enkripcije su isključene. Odaberite Pokušaj ponovno da biste ponovno dobili upit.",
   "browse.auth.plaintext_shared_declined_signed_in": "Odlučili ste se ne povezati s poslužiteljem korisnika {owner} bez enkripcije. Dopustite to u Postavke → Veze bez enkripcije.",
@@ -281,8 +281,8 @@
     "other": "TV nije mogao pronaći plex.tv pa poslužitelji nisu provjereni. Pokušali smo {count} puta. Pokušajte ponovno nakon provjere internetske veze."
   },
   "browse.auth.plex_connect_retry": {
-    "one": "TV se nije uspio povezati s plex.tv pa poslužitelji nisu provjereni. Pokušali smo jednom. Pokušajte ponovno nakon provjere internetske veze.",
-    "few": "TV se nije uspio povezati s plex.tv pa poslužitelji nisu provjereni. Pokušali smo {count} puta. Pokušajte ponovno nakon provjere internetske veze.",
-    "other": "TV se nije uspio povezati s plex.tv pa poslužitelji nisu provjereni. Pokušali smo {count} puta. Pokušajte ponovno nakon provjere internetske veze.."
+    "one": "TV se nije povezao s plex.tv pa poslužitelji nisu provjereni. Pokušali smo jednom. Pokušajte opet nakon provjere internetske veze.",
+    "few": "TV se nije povezao s plex.tv pa poslužitelji nisu provjereni. Pokušali smo {count} puta. Pokušajte opet nakon provjere internetske veze.",
+    "other": "TV se nije povezao s plex.tv pa poslužitelji nisu provjereni. Pokušali smo {count} puta. Pokušajte opet nakon provjere internetske veze."
   }
 }
