@@ -86,7 +86,7 @@ pub(super) fn execute(command: PreferenceCmd) {
         PreferenceCmd::Http3 { on, reply } => {
             let _ = plx_base::storage_worker::submit_retained(move || {
                 let _ = reply.send(plx_plex::plex::session::set_http3_experimental(on));
-                plx_machine::idle::invalidate();
+                plx_machine::present::wake_from_worker();
             });
         }
         PreferenceCmd::Language { language, reply } => {
