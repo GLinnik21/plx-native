@@ -1,4 +1,4 @@
-{"updated":"2026-11-16T20:39:04Z",
+{"updated":"2026-11-16T22:25:31Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5251,7 +5251,8 @@
 {"id":43904632211,"at":"2026-11-16T16:10:59Z","sha":"112e55e84","title":"Dependencies: libunibreak -> 8.0.1","pr":1413,"conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":22,"Linux simulator build + launch":375}},
 {"id":43909301604,"at":"2026-11-16T16:36:08Z","sha":"0695176fd","title":"Home ground cache: name a layer only at full reveal; the renderer mixes its own state","pr":1302,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":456,"macOS tests against bundled FFmpeg and ASS":394,"Linux simulator build + launch":316,"Windows launcher syntax":25}},
 {"id":43838977771,"at":"2026-11-16T16:41:28Z","sha":"2a9a80b2e","title":"Update fixture accounting after the state shape change","pr":1407,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"macOS simulator build + launch":214,"macOS tests against bundled FFmpeg and ASS":125,"Windows launcher syntax":23,"Linux simulator build + launch":289},"wall":26842},
-{"id":43910771086,"at":"2026-11-16T16:44:12Z","sha":"8fc1b62e1","title":"Home: serve the parked hero backdrop from the retained region cache","pr":1302,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":412,"macOS tests against bundled FFmpeg and ASS":469,"Windows launcher syntax":19,"Linux simulator build + launch":352}}
+{"id":43910771086,"at":"2026-11-16T16:44:12Z","sha":"8fc1b62e1","title":"Home: serve the parked hero backdrop from the retained region cache","pr":1302,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":412,"macOS tests against bundled FFmpeg and ASS":469,"Windows launcher syntax":19,"Linux simulator build + launch":352}},
+{"id":43969063623,"at":"2026-11-16T22:20:12Z","sha":"fa825e776","title":"Merge remote-tracking branch 'origin/main' into claude/zen-meitner-8nv0h3","pr":1417,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":306,"Windows launcher syntax":27,"macOS simulator build + launch":244,"macOS tests against bundled FFmpeg and ASS":240}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
