@@ -1228,6 +1228,9 @@ fn cancel_page(state: &mut PmsState, sid: ServerId, id: &str, key: &str) {
         }
     }
     source.page = None;
+    // The page's deferral goes with it, as `pump_reloads` drops both: a flag left on a source
+    // with no page would be a whole-source read the tick launches, prompted.
+    source.deferred = false;
     source.fetching = false;
     source.seq = source.seq.wrapping_add(1);
     source.retry_n = 0;
@@ -2578,6 +2581,11 @@ impl Src {
             self.staged = None;
             self.quiet_owed = true;
         }
+        // A read is going out for this source, so the gate's refusal of it is answered. `kick_gated`
+        // clears it when it admits, but a page ask kicks ungated (`request_page`) over a quiet read
+        // the gate had deferred, and a flag left behind made the next tick launch a prompted
+        // whole-source read (state `Loading`) after the page landed.
+        self.deferred = false;
         self.adoptable = false;
         let request = HubRequest {
             gen: generation, seq: mint(), sid: self.sid, key,
