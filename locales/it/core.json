@@ -25,6 +25,7 @@
   "core.preview_domain_attempted_delivery": "modalità di trasmissione richiesta",
   "core.preview_domain_source_video": "codec video del file originale (solo se il server rifiuta)",
   "core.preview_domain_source_audio": "codec audio del file originale (solo se il server rifiuta)",
+  "core.preview_domain_preview_refusal": "motivo del rifiuto di un trailer automatico (solo se il trailer viene rifiutato)",
   "core.preview_domain_quality": "qualità",
   "core.preview_domain_observed_rate": "bitrate rilevato",
   "core.preview_domain_raster": "risoluzione dell'immagine",

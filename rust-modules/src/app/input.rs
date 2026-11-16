@@ -1116,6 +1116,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
                 title,
                 context: plx_data::metadata::TRAILER_CONTEXT.to_string(),
                 version: None,
+                show_rk: String::new(),
             };
             // A press-and-hold context menu can reach here within the same beat as opening it,
             // which only STARTED the open preview's abandonment (`ContentReq::ItemMenu`'s own
@@ -1176,14 +1177,10 @@ mod item_menu_player_return_tests;
 // fingerprint each press produces against a recorded table.
 
 /// A key-up: the reliable release (this remote sends exactly one per press). Retires this sym from
-/// the physically-down slot and springs a deferred grid-card press back.
+/// the physically-down slot. Gesture release belongs exclusively to the dispatcher.
 ///
-/// It cleared a second slot — `HeldKey::sym`, the client-side hold-repeat's own — until phase 10
-/// deleted that timer with its last consumer (the item menu). What is left is `down_sym`, which is
-/// a fact about the PHYSICAL key rather than about whoever read it, and the press machine's
-/// release, which is a fact about the LOOP's own deferred press. **Both are why this still runs
-/// unconditionally, above the tree-ownership question**: a key the ladders never saw go down would
-/// otherwise look held for as long as a surface was up.
+/// This runs unconditionally: physical-key bookkeeping is independent of input ownership.
+/// The forwarded event releases the dispatcher press exactly once.
 ///
 /// **The scrub half is gone** (restructure phase 12, PX-PLAYER). It ran on
 /// `PlayerScreen::scrub` — a field of a screen that has owned the whole gesture since it began
@@ -1191,45 +1188,17 @@ mod item_menu_player_return_tests;
 /// `Edge::Up` — so the two together issued TWO seeks for one tap. The commit, the debounce and
 /// the reveal-cancel are `screens::player::PlayerScreen::key_scrub_release`'s now, and
 /// the commit reaches `commit_seek` through `PlayerReq::CommitSeek` instead of through here.
-pub(crate) fn on_key_up(
-    sym: c_uint,
-    ok_armed: bool,
-    down_sym: &mut u32,
-    press: &mut plx_ui::press::Press,
-) {
+pub(crate) fn on_key_up(sym: c_uint, down_sym: &mut u32) {
     if sym == *down_sym {
         *down_sym = 0;
     }
-    if is_ok(sym) && ok_armed {
-        // OK released over a grid card: start the spring-back; the deferred
-        // activation commits from the per-frame loop once the bounce has shown.
-        press.release(clock::now());
-    }
 }
 
-/// A hardware AUTO-REPEAT (held key). **All that is left of it is the deferred press's liveness
-/// beat** — the dropped-key-up net in `ui::press`, which is the loop's own machine and belongs to
-/// no screen.
-///
-/// The client-side hold-repeat timer went in phase 10: every discrete focus list in the app — the
-/// home grid, detail, the Settings family, the player's four panels and, last of them, the item
-/// context menu — is an owned screen or a surface on the dispatcher, so a repeat reaching one is
-/// an `InputEvent` carrying `Edge::Repeat` handed over before this function is reached, and the
-/// cadence is applied THERE (`RepeatGate`, to the DIRECTIONS only).
-///
-/// The player's continuous scrub was the last thing this drove directly, and it went the same way
-/// in phase 12 (PX-PLAYER): `PlayerScreen::key_scrub_repeat` engages the ramp off its own
-/// `Edge::Repeat`, which is the same event one layer down, and the per-frame advance is that
-/// screen's `Tick`. Nothing about the gesture is read or written from here any more, which is what
-/// makes `PlayerScreen::scrub` a field with ONE owner.
-pub(crate) fn on_auto_repeat(sym: c_uint, ok_armed: bool, press: &mut plx_ui::press::Press) {
-    if ok_armed && is_ok(sym) {
-        press.note_alive(clock::now()); // OK held: keep the dropped-key-up net honest
-    }
-}
+// Auto-repeat liveness, press cancellation and gesture ticks belong to Dispatcher.input.
+
 
 /// What EVERY fresh press does before the ladder sees it: remember the sym as physically down,
-/// un-dismiss the HUD, abort an armed click that a non-OK key slid off, and — the LG pointer
+/// un-dismiss the HUD, and — the LG pointer
 /// convention, global to every screen including the onboarding ones the ladder dispatches first —
 /// let the first D-pad press dismiss the Magic-Remote cursor and put input in D-pad mode. Pointer
 /// motion brings it back.
@@ -1272,11 +1241,10 @@ pub(crate) unsafe fn begin_fresh_press(
     down_sym: &mut u32,
     hud: Option<&mut HudState>,
     ptr: &mut Pointer,
-    ok_armed: &mut bool,
-    press: &mut plx_ui::press::Press,
+
 ) {
     *down_sym = sym;
-    note_global_press(ps, sym, wcode, now, viewer_paused, hud, ok_armed, press);
+    note_global_press(ps, sym, wcode, now, viewer_paused, hud);
     if matches!(
         key,
         Key::Up | Key::Down | Key::Left { alt: false } | Key::Right { alt: false }
@@ -1292,7 +1260,7 @@ pub(crate) unsafe fn begin_fresh_press(
     }
 }
 
-/// **The two GLOBAL effects of a fresh press, and the guard that decides whether they happen** —
+/// **The global HUD wake of a fresh press, and the guard that decides whether it happens** —
 /// the half of [`begin_fresh_press`] that LG checklist item 40 is about, and its only caller.
 ///
 /// Split out for one blunt reason: `begin_fresh_press` calls `hide_cursor`, which acts on whatever
@@ -1306,8 +1274,7 @@ pub(crate) fn note_global_press(
     now: u32,
     viewer_paused: bool,
     hud: Option<&mut HudState>,
-    ok_armed: &mut bool,
-    press: &mut plx_ui::press::Press,
+
 ) {
     if !is_bound(sym, wcode) {
         return; // an unsupported key is not input the app acted on — see `begin_fresh_press`
@@ -1318,13 +1285,7 @@ pub(crate) fn note_global_press(
     if let Some(hud) = hud {
         hud.note_fresh_press(ps, now, viewer_paused);
     }
-    // a fresh non-OK key (navigation / BACK) while a click is armed aborts the press — spring the
-    // card back to rest WITHOUT activating (you "slid off" the control). A key the app does not
-    // bind is not sliding off anything: nothing moved, so nothing is abandoned.
-    if *ok_armed && !is_ok(sym) {
-        press.cancel();
-        *ok_armed = false;
-    }
+    // Release and cancellation are owned by the dispatcher's InputMachine.
 }
 
 /// **The unsupported-key invariant, graded.** `tools/keytable.py` grades the other half — that an
@@ -1340,28 +1301,24 @@ mod unsupported_key_tests {
     /// test's own `Press`.
     fn press(ps: &plx_media::route::PlaybackSession, sym: c_uint, wcode: c_uint) -> (bool, bool) {
         let mut hud = HudState::IDLE;
-        let mut ok_armed = true; // a click is in flight, as if OK were still down on a card
+
         hud.dismissed = true; // …and the transport was hidden by hand (UP from the control row)
-        let mut p = plx_ui::press::Press::new();
+        let mut p = plx_ui::dispatch::press::Press::new();
         p.begin(1_000);
         note_global_press(ps, sym, wcode, 1_000, false,
-            Some(&mut hud), &mut ok_armed, &mut p);
-        let out = (p.is_active() && ok_armed, hud.dismissed);
+            Some(&mut hud));
+        let out = (p.is_active(), hud.dismissed);
         p.cancel();
         out
     }
 
-    /// A key the app binds behaves exactly as it always has: it un-dismisses the HUD and aborts the
-    /// click it slid off. BACK is the case to use — it is not OK, so it takes the abort branch.
+    /// Bound keys wake the HUD; physical bookkeeping leaves all gesture cancellation to input.
     #[test]
-    fn a_bound_key_still_wakes_the_hud_and_aborts_the_click() {
+    fn a_bound_key_still_wakes_the_hud_without_owning_the_press() {
         let ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
         let (armed, dismissed) = press(&ps, SDLK_ESCAPE, 0);
-        assert!(
-            !armed,
-            "BACK slides off the control — the press is cancelled"
-        );
+        assert!(armed, "physical bookkeeping must leave press ownership to the dispatcher");
         assert!(!dismissed, "…and any key un-dismisses the transport");
     }
 
@@ -1392,7 +1349,7 @@ mod unsupported_key_tests {
         let ps = plx_media::route::PlaybackSession::IDLE;
         let _g = plx_base::testlock::serial();
         let (armed, dismissed) = press(&ps, b'5' as c_uint, 34);
-        assert!(!armed);
+        assert!(armed, "physical bookkeeping leaves cancellation to the input owner");
         assert!(!dismissed);
     }
 }

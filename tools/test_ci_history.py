@@ -29,7 +29,7 @@ def stamp(dt):
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def run(rid, hours=0, conclusion="success", event="push", title="Build: a thing (#1)", message=None, attempt=1, pr=None, took=None, branch="feature", owner="GLinnik21"):
+def run(rid, hours=0, conclusion="success", event="push", title="Build: a thing (#1)", message=None, attempt=1, pr=None, took=None, branch="feature", owner="plxnative"):
     return {"id": rid, "head_commit": {"message": message} if message else None, "conclusion": conclusion, "event": event, "display_title": title,
             "run_attempt": attempt, "head_sha": f"{rid:040x}", "created_at": stamp(T0 + timedelta(hours=hours)),
             "run_started_at": stamp(T0 + timedelta(hours=hours, minutes=1)),
@@ -358,11 +358,11 @@ class HistoryTest(unittest.TestCase):
         # the API lists a run's pull_requests only while the PR is open
         fake = Fake({"pr:ci.yml": [[run(5, 5, event="pull_request", branch="feat"), run(4, 4, event="pull_request", branch="feat"),
                                     run(3, 3, event="pull_request", branch="orphan"), run(2, 2, event="pull_request", pr=9, branch="open")]]})
-        fake.pulls["GLinnik21:feat"] = [{"number": 77, "created_at": "2026-08-30T00:00:00Z"}, {"number": 12, "created_at": "2026-07-01T00:00:00Z"}]
+        fake.pulls["plxnative:feat"] = [{"number": 77, "created_at": "2026-08-30T00:00:00Z"}, {"number": 12, "created_at": "2026-07-01T00:00:00Z"}]
         _, doc, _ = go(fake)
         self.assertEqual({r["id"]: r["pr"] for r in doc["ci"]}, {5: 77, 4: 77, 3: None, 2: 9})
         asked = [c for c in fake.calls if "/pulls?" in c]
-        self.assertEqual(sorted(c.split("head=")[1].split("&")[0] for c in asked), ["GLinnik21:feat", "GLinnik21:orphan"])
+        self.assertEqual(sorted(c.split("head=")[1].split("&")[0] for c in asked), ["plxnative:feat", "plxnative:orphan"])
 
     def test_a_fork_pull_requests_run_is_looked_up_under_the_forks_owner(self):
         fake = Fake({"pr:ci.yml": [[run(5, 5, event="pull_request", branch="patch-1", owner="someone")]]})
@@ -480,8 +480,8 @@ class FlakyTest(unittest.TestCase):
         fake, doc, _ = self.flaky_doc([run(1), run(2, 2, conclusion="failure")], {
             2: [(20, "test-results-host-unit-default-1", results_zip(JOB, failed=["plx_ui::a"], passed=["plx_ui::b"]))]})
         self.assertEqual(doc["flaky"], [])
-        self.assertEqual([c for c in fake.calls if "/artifacts" in c], ["repos/GLinnik21/plx-native/actions/runs/2/artifacts?per_page=100",
-                                                                          "repos/GLinnik21/plx-native/actions/artifacts/20/zip"])
+        self.assertEqual([c for c in fake.calls if "/artifacts" in c], ["repos/plxnative/plx-native/actions/runs/2/artifacts?per_page=100",
+                                                                          "repos/plxnative/plx-native/actions/artifacts/20/zip"])
 
     def test_a_test_missing_from_the_second_attempt_did_not_pass_there_and_jobs_are_never_merged(self):
         _, doc, _ = self.flaky_doc([run(1, attempt=2, conclusion="success")], {1: [

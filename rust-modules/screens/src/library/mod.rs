@@ -209,6 +209,8 @@ pub enum Listing {
 
 /// A retained page body, also remountable from its entry-owned LibraryMemory.
 pub struct LibraryScreen {
+    /// Derived from retained effective frame inputs, shared by live/target grid geometry.
+    caption_policy: plx_ui::caption_policy::CaptionPolicy,
     /// Which listing the page shows. Fixed at mount by the `AppArg` that mounted it, so it is not
     /// part of the canon: `LibraryCollections` / `LibraryRecommended` already say it.
     listing: Listing,
@@ -228,7 +230,7 @@ pub struct LibraryScreen {
     keys: KeyRegistry,
     pair: MasterDetail<RailPart, GridPart, Regions>,
     /// The visible favorite names, the current library when outside those shortcuts, and the
-    /// persistent `MORE` action last. A single library retains its name and the options action.
+    /// persistent `MORE` action after the favorites, followed by any temporary visit.
     libraries: Vec<(u32, usize)>,
     /// The directory sections the fold hid behind Library options (what the Sources list shows).
     folded: Vec<u32>,
@@ -353,6 +355,7 @@ impl LibraryScreen {
     pub fn new(entry: EntryId, instance: InstanceId, kind: SecKind) -> Self {
         let layout = Layout::new(false, 0);
         Self {
+            caption_policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT),
             listing: Listing::All,
             entry, instance, kind, wanted_kind: Some(kind), listed: Default::default(), values: false, keys: KeyRegistry::default(),
             pair: MasterDetail::new(
@@ -554,10 +557,11 @@ impl LibraryScreen {
         // a grid lists ONE kind of tile, so its band is sized by that kind's own line (a TV shows
         // grid by the show line; Movies, Seasons and Collections by the movie line, `details_for`)
         let shows = self.listed == LibraryType::Primary && self.kind == SecKind::Show;
-        (self.listed != LibraryType::Episodes).then(|| parts::caption_policy().only(shows))
+        (self.listed != LibraryType::Episodes).then(|| self.caption_policy.only(shows))
     }
 
     fn sync<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
+        self.caption_policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
         let listing = H::listing(cx);
         self.listed = listing.library_type();
         self.layout = self.layout.with_episodes(self.listed == plx_data::browse::LibraryType::Episodes);
@@ -628,7 +632,7 @@ impl LibraryScreen {
                 self.wanted_kind = None;
             }
         }
-        let values = shows_sort_values(self.kind, self.listed, crate::registry::captions::sort_value(),
+        let values = shows_sort_values(self.kind, self.listed, crate::registry::captions::sort_value_for(H::screen_inputs(cx)),
             listing.sorts().get(listing.sort_index()).map(|sort| sort.key.as_str()));
         // The rows' pitch changes with the value lines (60 <-> 40 px) under a grid that is already
         // laid out and held at a scroll of its own: not a first layout, a restore still to be
@@ -956,8 +960,8 @@ impl LibraryScreen {
         (region, -1, -1, 0.0, self.scroll.pos)
     }
 
-    /// Choose a library: ONLY the grid fades out and back in, under a header that does not move;
-    /// the plate lands on the new name at once and focus stays on the name that was pressed.
+    /// Choose a library: the grid fades out and back in while the header marks the new name.
+    /// A visit appends a temporary pill beside the fixed shortcuts and their menu.
     fn switch_library<H: LibraryLike>(&mut self, target: SectionTarget, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         self.save_cursor(cx, fx);
         self.pending.request_section(target);
@@ -1305,7 +1309,11 @@ impl LibraryScreen {
                 let first_row = self.grid_position(focus).and_then(|(_, col)|
                     self.pair.detail.elem_for(cx, &mut self.keys, col, self.layout.cols()));
                 match first_row {
-                    Some(elem) => self.reseat(FocusTarget::Elem(self.key(elem)), fx),
+                    Some(elem) => {
+                        // the first-row card rises from rest as on UP, never lifted in one frame
+                        self.pair.detail.arrive();
+                        self.reseat(FocusTarget::Elem(self.key(elem)), fx);
+                    }
                     None => self.reseat_first(fx),
                 }
             }
@@ -1396,11 +1404,21 @@ impl LibraryScreen {
                 self.pending.request_grid(GridTarget { epoch: target.epoch, sid: target.sid, section: target.section, query: self.query.unwrap_or(0) }, action);
                 self.grid_fade.reload();
             }
-            ScreenEvent::App(AppMsg::LibrarySelect(target)) => {
+            ScreenEvent::App(AppMsg::LibrarySelect(target) | AppMsg::LibraryMenuSelect { target, .. }) => {
+                if let ScreenEvent::App(AppMsg::LibraryMenuSelect { origin, .. }) = ev {
+                    // The modal hands input back before it unmounts. A newer shortcut
+                    // selection can already be pending or committed by the time we hear this.
+                    if self.requested_address(cx) != Some(*origin) {
+                        return Handled::No;
+                    }
+                }
                 let directory = H::directory(cx);
                 if directory.epoch() == Some(target.epoch) {
                     if let Some(index) = directory.sections().iter().position(|section| section.sid == Some(target.sid) && section.key == target.section) {
                         self.switch_library(SectionTarget { epoch: target.epoch, index, identity: LibrarySectionIdentity { sid: target.sid, key: target.section }, kind: directory.sections()[index].kind }, cx, fx);
+                        // The Sources panel has closed. Move focus as the row changes, before the
+                        // asynchronous listing lands and the grid reappears.
+                        self.seat_on(LIBRARY_GROUP, cx, fx);
                     }
                 }
             }
@@ -1419,7 +1437,12 @@ impl LibraryScreen {
                 if self.initial && !self.switched && from.is_none() && to.entry == self.entry {
                     if let Some(target) = self.with_regions(|regions| regions.unseat()) { self.reseat(target, fx); }
                 }
-                if matches!(by, By::Dir | By::Pointer) {
+                // That seat is reported as a directional move (`FocusTarget::FirstInGroupAnimated`, a
+                // tab's mint), but its origin is another page's focus or none: the reader's key moves
+                // focus WITHIN the page. Only the latter claims the arrival from the cells that land.
+                let engine_seat = by == &By::Dir && self.initial && !self.switched && to.entry == self.entry
+                    && from.is_none_or(|from| from.entry != self.entry);
+                if matches!(by, By::Dir | By::Pointer) && !engine_seat {
                     self.initial = false;
                     self.provisional = None;
                 }

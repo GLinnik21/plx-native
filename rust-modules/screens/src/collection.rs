@@ -173,12 +173,12 @@ pub fn member_label(item: &PmsMovie) -> String {
 /// already wears its address ([`member_label`], "S3 · E4" or "SEASON 3", a persistent mark that
 /// stays), so its caption does not say it twice: where the setting would fall back to the address it
 /// names the show instead (`CaptionFacts::address_on_art`).
-fn member_caption(item: &PmsMovie) -> TileLabel {
+fn member_caption(item: &PmsMovie, policy: &plx_ui::caption_policy::CaptionPolicy) -> TileLabel {
     let facts = plx_ui::caption_policy::CaptionFacts {
         address_on_art: item.kind == 3 || (item.kind == 2 && item.season_index > 0),
         ..tile_facts::caption_facts(item)
     };
-    crate::registry::captions::label(&crate::registry::captions::policy(), &facts, None)
+    crate::registry::captions::label(policy, &facts, None)
 }
 
 /// One run of consecutive slots with a key and a label projected: slot `first + n` is `elems[n]`.
@@ -229,6 +229,7 @@ impl Projection {
 /// Built from the screen's FIELDS, not `&CollectionScreen`, so a call can hold it while the grid
 /// itself is borrowed mutably.
 struct Members<'a> {
+    policy: plx_ui::caption_policy::CaptionPolicy,
     collection: &'a Collection,
     cards: &'a CardKeys,
     /// [`Page::proj`], projected by `project` for the cells the page paints or steps to.
@@ -282,7 +283,7 @@ impl<H: Host<Elem = u32>> CardSource<H> for Members<'_> {
     fn index_of(&self, e: &u32) -> Option<usize> { self.index(*e) }
     fn art(&self, i: usize) -> Art<'_> { Art::Poster(self.collection.item(i).map(tile_facts::of)) }
     fn label(&self, i: usize) -> TileLabel {
-        self.collection.item(i).map(member_caption).unwrap_or_default()
+        self.collection.item(i).map(|item| member_caption(item, &self.policy)).unwrap_or_default()
     }
     fn progress(&self, i: usize) -> Option<f32> { self.collection.item(i)?.resume_frac() }
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
@@ -298,6 +299,8 @@ impl<H: Host<Elem = u32>> CardSource<H> for Members<'_> {
 /// The page's content and the state its sections read. The `Stack` is the screen's other field so
 /// that `self.stack.on(&self.page, ..)` borrows the two apart; every section reads only this.
 struct Page {
+    /// Derived owner/frame policy; refreshed before every event, never read from ambient state.
+    policy: plx_ui::caption_policy::CaptionPolicy,
     entry: EntryId,
     /// The page's argument; `id.rk` adopts the store's resolution of a tag route.
     id: CollectionRef,
@@ -451,7 +454,7 @@ impl Page {
 
     /// The grid's content: `collection` read through this page's projection.
     fn members<'a>(&'a self, collection: &'a Collection) -> Members<'a> {
-        Members { collection, cards: &self.cards, proj: &self.proj }
+        Members { collection, cards: &self.cards, proj: &self.proj, policy: self.policy }
     }
 
     /// Where member element `elem` sits: its slot in the listing, else the last slot a pinned key
@@ -633,8 +636,8 @@ impl<H: ContentLike + CollectionLike> StackPage<H> for Page {
 
     /// The members are posters: the grid's focused band follows the Under posters setting, as the
     /// Library's does, and `Members::label` words the caption it holds.
-    fn caption_policy(&self, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
-        (k == Sec::Items).then(crate::registry::captions::policy)
+    fn caption_policy(&self, cx: &Cx<'_, H>, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
+        (k == Sec::Items).then(|| crate::registry::captions::policy_for(H::screen_inputs(cx)))
     }
 
     fn cards<'a>(&'a self, cx: &'a Cx<'_, H>, k: Sec) -> Option<Members<'a>> {
@@ -701,7 +704,7 @@ impl CollectionScreen {
 
     pub fn new(entry: EntryId, id: CollectionRef) -> Self {
         Self {
-            page: Page { entry, id, header_marked: false, cards: CardKeys::new(FIRST_CARD_ELEM),
+            page: Page { policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT), entry, id, header_marked: false, cards: CardKeys::new(FIRST_CARD_ELEM),
                 proj: Projection::default(), want: Default::default(), pin_index: Vec::new(), meta: ((0, true, None), CString::default()),
                 return_pending: false, focus_elem: None, restore_elem: None,
                 focus_index: None, restore_index: None, restore_counts: None, counts: (0, Vec::new(), 0),
@@ -954,6 +957,7 @@ impl CollectionScreen {
 impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        self.page.policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
         // The content index is current before the stack reads it for this event.
         match ev {
             ScreenEvent::Tick(_) => self.resync(cx),
@@ -1109,6 +1113,9 @@ mod tests {
     /// What this host's container reports as the title of the page beneath the screen: a catalog
     /// string, as every title it reports is (a frame's text is graded against the catalog).
     pub(super) fn parent() -> &'static str { plx_platform::i18n::msg::browse_chrome_home() }
+    impl crate::registry::ScreenInputsLike for CollectionHost {
+        fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+    }
     impl CollectionLike for CollectionHost {
         fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> { cx.views }
         fn back_to<'a>(_cx: &Cx<'a, Self>) -> Option<std::borrow::Cow<'a, str>> { Some(std::borrow::Cow::Borrowed(parent())) }
@@ -1124,6 +1131,9 @@ mod tests {
         type Views<'a> = plx_data::collection::CollectionView<'a>;
         type Init = super::super::family::NoInit;
         type Memory = PageMemory;
+    }
+    impl crate::registry::ScreenInputsLike for RootedHost {
+        fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
     }
     impl CollectionLike for RootedHost {
         fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> { cx.views }
@@ -1167,7 +1177,7 @@ mod tests {
             (true, Details::None, [Some("The Answer"), None]),
         ] {
             TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details: details.movie_parts(), show_details: details.show_parts(), sort_value: false })));
-            let caption = member_caption(&episode);
+            let caption = member_caption(&episode, &crate::registry::captions::policy());
             TEST_UNDER_POSTERS.with(|cell| cell.set(None));
             assert_eq!([text(&caption.title), text(&caption.caption)], want.map(|line| line.map(str::to_owned)), "title {title}, {details:?}");
         }

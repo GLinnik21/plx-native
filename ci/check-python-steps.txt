@@ -21,11 +21,63 @@
 # `ci/test_check_collisions.py` runs these steps side by side to check the first rule; a step that
 # breaks one of them shows up there rather than as a flake in somebody else's `make check`.
 #
-# ORDER is only the START order: the sixteen slowest steps (measured 2026-10-07) come first, so the
-# last one to start is a short one; the run lasts as long as the longest step plus the queue. A new
-# step goes at the END; move it up only after measuring (`make check-python-rest` prints each step's
-# wall and CPU time and the slowest three).
+# ORDER is only the START order: the nine slowest steps of the CI run measured 2026-11-14 (the first
+# block below) come first, then the thirteen others of the sixteen slowest measured 2026-10-07 (three of
+# those sixteen are among the nine), so the last one to start is a short one; the run lasts as long as
+# the longest step plus the queue. A new step goes at the END; move it up only after measuring
+# (`make check-python-rest` prints each step's wall and CPU time and the slowest three).
 
+# The nine slowest steps (CI, 2026-11-14: machine-shape 225 s, build-gc 98 s, arm-profile 71 s, check-elf 56 s,
+# transition-arguments 47 s, disk-budget 44 s, disk-preflight 44 s, tv-lock 43 s, collisions 40 s) start first:
+# test_check_machine_shape.py sat 110th and ended the job at 413 s (it starts ~190 s in, then runs 225 s).
+
+# The machine-shape gate (ci/machines.ini, docs/sans-io.md): a state machine listed there keeps its state private (a `pub`,
+# `pub(crate)` or `pub(super)` field of the listed struct fails, as does a stale entry), so its one writer stays `step` and a new
+# way to change it is a new event. It also REPORTS, and never fails on, each machine's `bool` and `Option<..>` field counts: a
+# report-only flag ratchet. Pure lexing, no cargo; the self-tests run on synthetic trees in a private temp dir.
+python3 ci/test_check_machine_shape.py
+# tools/build-gc.sh against disposable repositories, fleet dirs and caches: every OTHER reclaim mode refuses under a held FFmpeg lock, a
+# live checkout is spared, `--auto`'s order is the planner's (and its `--worktrees` stage spares a lane inside the idle window, and one holding an ignored file that is not build output),
+# `--worktrees` judges a lane against `origin/main` without refreshing its index, and `--evict PLAN` deletes exactly what the plan
+# names after re-probing it: it refuses paths that are not derived build trees, skips a tree that turned live, goes on under an
+# FFmpeg lock, and never takes a /tmp tree that only looks old. `--evict` runs only inside the fixture's own directories.
+python3 ci/test_build_gc.py
+# `ARM_PROFILE`: a plain local build compiles the ARM staticlib with the fast `tvdev` profile and
+# everything that ships or runs in CI keeps fat-LTO `release`; resolved through print-bench-config.
+python3 ci/test_arm_profile.py
+python3 ci/test_check_elf.py
+python3 ci/test_transition_arguments.py
+# tools/disk-budget.py, the disk budget's inventory and planner (docs/disk-budget.md): the ladder's order, stopping at the line,
+# refusing only when the whole ladder cannot free the build's estimate plus the reserve, and NEVER planning the current checkout
+# below rung 6 (nor, there, the tree being built), a live, tracked, pkg/, vendor/ or non-PlxNative tree; private-byte accounting under hard links; `origin/main` merged detection
+# (squash merges, a stale local main, nothing written to the repository); `report` changes nothing; the plan file `build-gc.sh --evict`
+# reads (format, order, the stale slot, rung-6 `current`), `settle`, the cargo seed never planned, a /tmp tree aged by ctime so a
+# backdated fixture is never a candidate, the probes (`probe`, `tmp-trees`), and that collecting an inventory never rewrites a
+# lane's index. Synthetic inventories plus private temp repositories, a stubbed lsof, no real /tmp scan.
+python3 ci/test_disk_budget.py
+# The disk budget at every build entry: `make disk-preflight` is `tools/disk-budget.py preflight` and an ORDER-ONLY prerequisite of
+# every Makefile target that runs cargo. Static: the Makefile is parsed and every target whose recipe runs cargo (directly or through a
+# script) must be in `make -s print-disk-entries`, with the prerequisite after the `|`, before the build starts, and the recursive
+# `$(MAKE)` lines carrying PLX_DISK_BUDGET_DONE. Dynamic, on a fixture repository with PLX_GC_TEST_FREE_KIB and stubbed lsof/pgrep:
+# at comfort nothing starts and the planner is not imported; below the reserve with nothing to evict it refuses with the reason; below
+# comfort it evicts idle trees and never the tree being built; the marker and PLX_MIN_FREE_MB=0 are no-ops; the auto lock is
+# taken, a live holder is waited on for a bounded time (one --wait-secs deadline for the whole preflight) and no plan is made while it runs (a finished or stale holder is taken over); the inventory cache; a pretend emergency is never planned over real
+# trees; the cold store's unpark of an absent parked tree: the cheap no-gos (config removed, volume unmounted) come before any lock wait, the
+# lock is held to claim the copy and not across it (two trees restore at once), a claimed or dead-claimed tree, and the free-space rule. `make -n` and `make -s print-*` only, no cargo.
+python3 ci/test_disk_preflight.py
+# The TV lock's own protocol suite, with NO television: the device half runs under a local sh in a temp dir, and the
+# HEADS-UP cases run the real `acquire`/`break` as children with their own lane, lease directory and lock path (one
+# line on a new lease, including your own expired one, none on a live renew or a refusal). It also runs the pre-flight's
+# verdict table (IDLE / IN USE / UNKNOWN) on fixture replies, cuts a hung probe off at PLX_TV_PREFLIGHT_SECS, and runs
+# `with` for real: it refuses to start on IN USE, PLX_TV_IN_USE_OK overrides, and its renewer's whole process tree dies
+# with it. That spawns and kills background processes, so it takes about 20 s, not milliseconds. Then the PostToolUse hook
+# that turns the HEADS-UP and IN USE lines into reminders: payload shapes, the failure and unrelated cases, malformed
+# stdin. Both host-only.
+tools/tv-lock.sh selftest
+# Nothing that runs at once may collide: two checkouts running the scratch-writing steps (test-compat.py,
+# the C unit tests) at once, and a mix of different steps run together as the runner runs this file,
+# each against one shared TMPDIR; and no test source binds a fixed port.
+python3 ci/test_check_collisions.py
 # The `check` lock wrapper's own suite: two shared runs at once and a third waiting (naming both
 # holders), a SIGKILLed holder freeing its slot, PLX_CHECK_SLOTS=1 serializing, exclusive mode for
 # the benchmarks (blocks and is blocked by shared runs, not starved by a stream of them, two
@@ -39,17 +91,6 @@ python3 ci/test_build_bench.py
 # one record per day (a same-day re-run replaces it), nothing written for a failed benchmark, a red `check` costing only
 # its own rows, a noisy day marked and kept, nothing identifying in the runner block. Synthetic documents, no cargo.
 python3 ci/test_build_history.py
-# tools/build-gc.sh against disposable repositories, fleet dirs and caches: every OTHER reclaim mode refuses under a held FFmpeg lock, a
-# live checkout is spared, `--auto`'s order is the planner's (and its `--worktrees` stage spares a lane inside the idle window, and one holding an ignored file that is not build output),
-# `--worktrees` judges a lane against `origin/main` without refreshing its index, and `--evict PLAN` deletes exactly what the plan
-# names after re-probing it: it refuses paths that are not derived build trees, skips a tree that turned live, goes on under an
-# FFmpeg lock, and never takes a /tmp tree that only looks old. `--evict` runs only inside the fixture's own directories.
-python3 ci/test_build_gc.py
-python3 ci/test_check_elf.py
-# Nothing that runs at once may collide: two checkouts running the scratch-writing steps (test-compat.py,
-# the C unit tests) at once, and a mix of different steps run together as the runner runs this file,
-# each against one shared TMPDIR; and no test source binds a fixed port.
-python3 ci/test_check_collisions.py
 # `tools/tv-config.sh`, the ONE resolver for the TV address and Wake-on-LAN MAC (this checkout's
 # .tv-host/.tv-mac, the main checkout's, then ~/.config/plxnative/), and every reader of it
 # (tv-ssh, wake-tv, the Makefile's TV, tests/run.py, stream-screen.py), against a throwaway repo
@@ -212,9 +253,6 @@ python3 tools/test_ci_test_results.py
 # a pass, every `test result:` line is printed), both against a fake cargo; nothing is compiled.
 python3 ci/test_test_crate.py
 python3 ci/test_cargo_test_parallel.py
-# `ARM_PROFILE`: a plain local build compiles the ARM staticlib with the fast `tvdev` profile and
-# everything that ships or runs in CI keeps fat-LTO `release`; resolved through print-bench-config.
-python3 ci/test_arm_profile.py
 # `HOST_THREADS`: rustc's parallel front end for the local host test builds only; off for CI, RELEASE,
 # SYMBOLS and every non-debug flavour, and named by no ARM, simulator, clippy or workflow line.
 python3 ci/test_host_threads.py
@@ -307,47 +345,17 @@ python3 ci/gen-third-party-notices.py --check
 # --skip-if-missing only so a runner without Rust is not red here: CI's host-lint job runs it strict.
 python3 ci/test_check_vfp.py
 python3 ci/check-vfp.py --skip-if-missing
-# tools/disk-budget.py, the disk budget's inventory and planner (docs/disk-budget.md): the ladder's order, stopping at the line,
-# refusing only when the whole ladder cannot free the build's estimate plus the reserve, and NEVER planning the current checkout
-# below rung 6 (nor, there, the tree being built), a live, tracked, pkg/, vendor/ or non-PlxNative tree; private-byte accounting under hard links; `origin/main` merged detection
-# (squash merges, a stale local main, nothing written to the repository); `report` changes nothing; the plan file `build-gc.sh --evict`
-# reads (format, order, the stale slot, rung-6 `current`), `settle`, the cargo seed never planned, a /tmp tree aged by ctime so a
-# backdated fixture is never a candidate, the probes (`probe`, `tmp-trees`), and that collecting an inventory never rewrites a
-# lane's index. Synthetic inventories plus private temp repositories, a stubbed lsof, no real /tmp scan.
-python3 ci/test_disk_budget.py
-# The disk budget at every build entry: `make disk-preflight` is `tools/disk-budget.py preflight` and an ORDER-ONLY prerequisite of
-# every Makefile target that runs cargo. Static: the Makefile is parsed and every target whose recipe runs cargo (directly or through a
-# script) must be in `make -s print-disk-entries`, with the prerequisite after the `|`, before the build starts, and the recursive
-# `$(MAKE)` lines carrying PLX_DISK_BUDGET_DONE. Dynamic, on a fixture repository with PLX_GC_TEST_FREE_KIB and stubbed lsof/pgrep:
-# at comfort nothing starts and the planner is not imported; below the reserve with nothing to evict it refuses with the reason; below
-# comfort it evicts idle trees and never the tree being built; the marker and PLX_MIN_FREE_MB=0 are no-ops; the auto lock is
-# taken, a live holder is waited on for a bounded time and no plan is made while it runs (a finished or stale holder is taken over); the inventory cache; a pretend emergency is never planned over real
-# trees. `make -n` and `make -s print-*` only, no cargo.
-python3 ci/test_disk_preflight.py
 # RUST_INPUTS (the Makefile's hand-kept list of directories whose edits rebuild the app library) must search every crate
 # the app reaches through `path` dependencies: a crate left out is one whose edits `make` never sees, so `make ipk` packages
 # the previous library and says nothing. Reads manifests only, no cargo; the self-test plants a missing crate in a temp tree.
 python3 ci/test_check_rust_inputs.py
 python3 ci/check-rust-inputs.py
-# The machine-shape gate (ci/machines.ini, docs/sans-io.md): a state machine listed there keeps its state private (a `pub`,
-# `pub(crate)` or `pub(super)` field of the listed struct fails, as does a stale entry), so its one writer stays `step` and a new
-# way to change it is a new event. It also REPORTS, and never fails on, each machine's `bool` and `Option<..>` field counts: a
-# report-only flag ratchet. Pure lexing, no cargo; the self-tests run on synthetic trees in a private temp dir.
-python3 ci/test_check_machine_shape.py
+python3 ci/test_check_machine_writer.py
 python3 ci/check-machine-shape.py
 # tools/pr-land.py (gate / wait / merge / restack) against a fake `gh` on PATH and an injected sleeper: a failed, pending, missing, draft, behind
 # or head-moved PR never reaches `gh pr merge` (#387), the polling and backoff, the head-oid race, the verify against a temporary
 # origin, and a planted secret refused before any `gh` call. Real gh JSON as fixtures; temp dirs only, no network, no sleeping on the poll or race timers (one test lets a hung gh hit a 1 s timeout).
 python3 tools/test_pr_land.py
-# The TV lock's own protocol suite, with NO television: the device half runs under a local sh in a temp dir, and the
-# HEADS-UP cases run the real `acquire`/`break` as children with their own lane, lease directory and lock path (one
-# line on a new lease, including your own expired one, none on a live renew or a refusal). It also runs the pre-flight's
-# verdict table (IDLE / IN USE / UNKNOWN) on fixture replies, cuts a hung probe off at PLX_TV_PREFLIGHT_SECS, and runs
-# `with` for real: it refuses to start on IN USE, PLX_TV_IN_USE_OK overrides, and its renewer's whole process tree dies
-# with it. That spawns and kills background processes, so it takes about 20 s, not milliseconds. Then the PostToolUse hook
-# that turns the HEADS-UP and IN USE lines into reminders: payload shapes, the failure and unrelated cases, malformed
-# stdin. Both host-only.
-tools/tv-lock.sh selftest
 python3 .claude/hooks/tv-lock-notify-test.py
 # The custom agents' files (AGENTS.md, "Harness-specific files"): every `.agents/agents/<name>.md` carries a matching frontmatter
 # `name`, an explicit `model:` (one documented exemption), a description, a RELATIVE `.claude/agents/<name>.md` symlink that resolves
@@ -390,3 +398,21 @@ python3 tests/test_hud_bundle.py
 python3 tests/test_hud_release.py
 python3 ci/test_sim_backend.py
 python3 tests/test_hud_dev.py
+
+python3 ci/test_check_ports.py
+python3 ci/test_step_scope.py
+python3 ci/test_machine_readonly.py
+python3 ci/test_readonly_dependencies.py
+python3 ci/test_readonly_generated.py
+
+# tools/cold-store.py, the opt-in cold store that parks idle build trees on a second volume: unconfigured it creates no file anywhere; each
+# reason `available()` can give (no config, no ditto, an unmounted /Volumes root, the same device as the build tree, under min_free_gib, a
+# failing probe write); park then unpark restores every path, size, nanosecond mtime, mode and hard-link group; unpark fills only an absent
+# tree (an existing one, or one a build made while it copied, wins) and only when the copy beats a rebuild; the claim an unpark takes on its
+# index record (hidden from a second unparker, from recover's adoption and from the park pass; given back on a failed copy; put back when its
+# process is dead; counted in what a later claim's free-space question sees); the three residue states of a
+# dead parker (complete cold copy, origin absent, origin present) plus a live owner and a nameless tree; the prune rules; a pretend
+# free-space/clock override refused unless every root is named. Temp dirs, a faked two-volume device check and a shutil stand-in for `ditto`
+# (one darwin-only test drives the real one); touches no real cache, config or volume.
+python3 ci/test_cold_store.py
+python3 ci/test_verdict_data_captured_inputs_source_oracle.py

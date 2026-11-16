@@ -69,4 +69,26 @@ pub trait UriDriver: DriverSet {
     fn plane_owned(&self) -> bool;
     /// Whether the active source has an exact native index for this selected source track.
     fn maps_track(&self, selection: TrackSelection) -> bool;
+    /// Whether this driver can take a Start now, asked on the main thread when a qualified source is
+    /// OFFERED, before the route commits to the URI engine: a driver that has something to set up
+    /// first (the ACB display's own handle, made once) does it here, so a setup that fails declines
+    /// the offer and the play stays with Feed instead of failing at its Start. The Start re-checks
+    /// whatever it needs. A driver with nothing to set up is always ready.
+    fn ready_to_start(&mut self, _ctx: &Self::Context) -> Result<(), UriNotReady> { Ok(()) }
+}
+
+/// Why a [`UriDriver`] cannot take a Start ([`UriDriver::ready_to_start`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UriNotReady {
+    /// The ACB display's handle for the URI engine could not be created or initialized.
+    AcbHandle,
+}
+
+impl UriNotReady {
+    /// The reason as `uri: original declined (<reason>)` says it.
+    pub fn log_name(self) -> &'static str {
+        match self {
+            Self::AcbHandle => "the ACB handle for the URI engine could not be created",
+        }
+    }
 }

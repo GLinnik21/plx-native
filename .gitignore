@@ -225,3 +225,6 @@ tools/node_modules/
 rust-modules/target*-uri/
 rust-modules/target*-feed/
 rust-modules/target*-none/
+
+# Empryo local workspace state, reviews and scratch artifacts.
+/.empryo/

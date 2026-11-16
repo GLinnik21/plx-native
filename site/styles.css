@@ -1585,17 +1585,24 @@ video::-webkit-media-controls-start-playback-button {
   .press-side {
     display: contents;
   }
-  .press-tabs {
+  /* .is-long carries the desktop's vertical scroll and fade; with two classes
+     it outranks a bare .press-tabs here, so it is named too, or the column's
+     fade clips every pill's top and bottom. */
+  .press-tabs,
+  .press-tabs.is-long {
     flex-direction: row;
     gap: 8px;
     max-height: none;
     overflow-x: auto;
+    overflow-y: hidden;
     margin: 0 calc(-1 * var(--gutter));
     padding: 0 var(--gutter);
     scroll-snap-type: x proximity;
-    /* The row runs past the screen's edge; a fade there says it scrolls. */
-    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 56px), transparent);
-    mask-image: linear-gradient(90deg, #000 calc(100% - 56px), transparent);
+    /* The row runs past the screen's edges; a fade there says it scrolls. Each
+       fade stays inside the gutter, so a pill scrolled fully into view, the
+       first or the last, is never dimmed. */
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 var(--gutter), #000 calc(100% - var(--gutter)), transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 var(--gutter), #000 calc(100% - var(--gutter)), transparent);
   }
   .press-tab {
     max-width: 72vw;
@@ -2393,8 +2400,9 @@ video::-webkit-media-controls-start-playback-button {
 }
 /* Mixed sizes, not a uniform grid: on wide screens six columns, the cards
    alternating two-thirds and one-third (fast + QR, libraries + codecs, player +
-   offline); between 760 and 999px two columns, the QR and libraries cards side
-   by side; on phones one column. */
+   HUD), and the offline card closing the grid across the full width; between
+   760 and 999px two columns, the QR and libraries cards side by side; on phones
+   one column. */
 .feature-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -2406,6 +2414,7 @@ video::-webkit-media-controls-start-playback-button {
   }
   .feature-card--fast,
   .feature-card--wide,
+  .feature-card--hud,
   .feature-card--half:last-child {
     grid-column: 1 / -1;
   }
@@ -2419,8 +2428,11 @@ video::-webkit-media-controls-start-playback-button {
     grid-column: span 4;
   }
   .feature-card--half,
-  .feature-card--half:last-child {
+  .feature-card--hud {
     grid-column: span 2;
+  }
+  .feature-card--half:last-child {
+    grid-column: 1 / -1;
   }
 }
 .feature-card {
@@ -3530,6 +3542,123 @@ video::-webkit-media-controls-start-playback-button {
   object-fit: cover;
   object-position: 50% 100%;
 }
+/* The HUD card: three player HUDs stacked, the chosen one in front. */
+.feature-stage--hud {
+  padding: 24px 16px;
+}
+.hud-stack {
+  position: relative;
+  width: min(100%, 250px);
+  height: 150px;
+}
+.hud-skin {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.hud-skin i {
+  display: block;
+  background: var(--color-white-a22);
+}
+.hud-skin--back {
+  left: 22px;
+  right: 22px;
+  top: 0;
+  height: 38px;
+  gap: 8px;
+  padding: 0 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  opacity: 0.55;
+}
+.hud-skin--mid {
+  left: 11px;
+  right: 11px;
+  top: 30px;
+  height: 44px;
+  gap: 10px;
+  padding: 0 14px;
+  background: rgba(255, 255, 255, 0.07);
+  opacity: 0.8;
+}
+.hud-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+}
+.hud-tick {
+  width: 22px;
+  height: 6px;
+  border-radius: 3px;
+}
+.hud-line {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+}
+.hud-skin--front {
+  left: 0;
+  right: 0;
+  top: 66px;
+  height: 84px;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 16px;
+  border-radius: 14px;
+  background: rgba(28, 28, 30, 0.92);
+  box-shadow: inset 0 0 0 1px var(--color-white-a22), 0 18px 40px rgba(0, 0, 0, 0.5);
+}
+.hud-transport {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-primary);
+}
+.hud-transport svg {
+  flex: none;
+}
+.hud-track {
+  position: relative;
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-white-a22);
+}
+.hud-track span {
+  position: absolute;
+  inset: 0 42% 0 0;
+  border-radius: 2px;
+  background: var(--text-primary);
+}
+.hud-transport b {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.hud-picks {
+  display: flex;
+  gap: 6px;
+}
+.hud-picks span {
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  box-shadow: inset 0 0 0 1px var(--color-white-a22);
+}
+.hud-picks .is-on {
+  font-weight: 700;
+  color: var(--accent-ink);
+  background: var(--accent-face-body);
+  box-shadow: none;
+}
 /* A one-third card beside a taller card lets its stage take the extra
    height, so the art stays centred instead of leaving a gap under the text. */
 .feature-card--half .feature-stage {
@@ -3626,7 +3755,8 @@ video::-webkit-media-controls-start-playback-button {
     margin-bottom: 10px;
   }
 }
-@media (min-width: 760px) and (max-width: 999px) {
+/* The offline card spans the full width from tablets up, its stage beside the text. */
+@media (min-width: 760px) {
   .feature-card--half:last-child {
     display: grid;
     grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);

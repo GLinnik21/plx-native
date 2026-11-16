@@ -1110,8 +1110,7 @@ impl FixtureRig {
 }
 
 impl Rig<FixtureHost> for FixtureRig {
-    fn page_alpha(&self) -> f32 { self.page_alpha }
-    fn navigation_presentation(&self) -> super::screen::NavPresentation {
+    fn navigation_presentation(&self, _nav: &super::containers::Navigation<FixtureHost>) -> super::screen::NavPresentation {
         self.navigation_reads.set(self.navigation_reads.get() + 1);
         super::screen::NavPresentation {
             page_alpha: self.page_alpha, chrome_alpha: self.chrome_alpha,
@@ -1313,6 +1312,23 @@ pub fn key_up(k: Key, at: Tick) -> InputEvent<u32> {
     event
 }
 
+/// Headless runner with explicit admission and a virtual swap after drawing.
+pub fn frame_and_swap(
+    d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, at: Tick,
+    inputs: Vec<InputEvent<u32>>, results: Vec<(Addr, FixtureMsg)>,
+    tap: &mut dyn super::dispatch::Tap<FixtureHost>,
+) -> super::dispatch::FrameReport {
+    let mut report = d.frame_with(rig, at, inputs, results, tap, false);
+    if report.presented {
+        d.present.take(at.ms);
+        d.prepare(rig);
+        let drawn = d.draw(rig, true);
+        report.drawn = drawn.drawn;
+        d.present.acknowledge(at.ms);
+    }
+    report
+}
+
 #[test]
 fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
     let _g = plx_base::testlock::serial();
@@ -1321,7 +1337,7 @@ fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
 
     // frame 1: boot — Root(Home) parked, committed, mounted, entered; presented (first frame)
     d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
-    let r1 = d.frame(&mut rig, tick(0), vec![], vec![], &mut NoTap);
+    let r1 = frame_and_swap(&mut d, &mut rig, tick(0), vec![], vec![], &mut NoTap);
     assert!(r1.presented);
     assert_eq!(r1.mounted.len(), 1, "Home mounted at NAV COMMIT");
     assert_eq!(rig.ls2_pumps, 1);
@@ -1337,7 +1353,7 @@ fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
         to: MachineId::Instance(home),
         req: RequestId(1),
     };
-    let r2 = d.frame(
+    let r2 = frame_and_swap(&mut d,
         &mut rig,
         tick(16),
         vec![],
@@ -1362,7 +1378,7 @@ fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
         FixtureMsg::Store(StoreOrd(0), 1),
     );
     d.track_inflight(home, RequestId(0));
-    let r3 = d.frame(&mut rig, tick(32), vec![key(Key::Ok, tick(32))], vec![notice], &mut NoTap);
+    let r3 = frame_and_swap(&mut d, &mut rig, tick(32), vec![key(Key::Ok, tick(32))], vec![notice], &mut NoTap);
     assert_eq!(r3.mounted.len(), 1, "the page mounted in the same frame as the key");
     assert!(r3.presented, "the key invalidated");
     assert_eq!(d.nav.tabs.stack.depth(), 2);
@@ -1385,14 +1401,14 @@ fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
         }),
     });
     d.budget.note_queued(rig.cache.has_pending());
-    let r4 = d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
+    let r4 = frame_and_swap(&mut d, &mut rig, tick(48), vec![], vec![], &mut NoTap);
     assert!(r4.presented, "queued prepare work forces a present");
     assert!(rig.cache.resolve(PosterKey(9)).is_some(), "uploaded in prepare");
     assert!(!rig.cache.has_pending());
     d.budget.note_queued(false);
 
     // frame 5: BACK pops the page: WillLeave → Unmount → Uncover → Enter(Restored) on Home
-    let r5 = d.frame(&mut rig, tick(64), vec![key(Key::Back, tick(64))], vec![], &mut NoTap);
+    let r5 = frame_and_swap(&mut d, &mut rig, tick(64), vec![key(Key::Back, tick(64))], vec![], &mut NoTap);
     assert_eq!(r5.unmounted.len(), 1);
     d.prune(&r5.unmounted);
     assert_eq!(d.nav.tabs.stack.depth(), 1);
@@ -1544,7 +1560,7 @@ impl Codec<FixtureHost> for FixtureCodec {
 /// The scenario every recorder test drives: boot, an HTTP landing, a store notice + OK, BACK.
 fn drive(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, tap: &mut dyn Tap<FixtureHost>) {
     d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
-    d.frame(rig, tick(0), vec![], vec![], tap);
+    frame_and_swap(d, rig, tick(0), vec![], vec![], tap);
     let home = d.nav.top_page().and_then(|e| e.inst.as_ref()).unwrap().id;
     d.track_inflight(home, RequestId(1));
     d.track_inflight(home, RequestId(0));
@@ -1552,22 +1568,22 @@ fn drive(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, tap: &mut dyn Ta
         to: MachineId::Instance(home),
         req: RequestId(req),
     };
-    d.frame(
+    frame_and_swap(d,
         rig,
         tick(16),
         vec![],
         vec![(addr(1), FixtureMsg::Http { status: 200, blob: vec![] })],
         tap,
     );
-    d.frame(
+    frame_and_swap(d,
         rig,
         tick(32),
         vec![key(Key::Ok, tick(32))],
         vec![(addr(0), FixtureMsg::Store(StoreOrd(0), 1))],
         tap,
     );
-    d.frame(rig, tick(48), vec![], vec![], tap);
-    let r = d.frame(rig, tick(64), vec![key(Key::Back, tick(64))], vec![], tap);
+    frame_and_swap(d, rig, tick(48), vec![], vec![], tap);
+    let r = frame_and_swap(d, rig, tick(64), vec![key(Key::Back, tick(64))], vec![], tap);
     d.prune(&r.unmounted);
 }
 
@@ -1820,7 +1836,7 @@ pub fn booted() -> (Dispatcher<FixtureHost>, FixtureRig, plx_machine::machine::I
     let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
     let mut rig = FixtureRig::new();
     d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
-    d.frame(&mut rig, tick(0), vec![], vec![], &mut NoTap);
+    frame_and_swap(&mut d, &mut rig, tick(0), vec![], vec![], &mut NoTap);
     let home = d.nav.top_page().and_then(|e| e.inst.as_ref()).unwrap().id;
     (d, rig, home)
 }

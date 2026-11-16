@@ -44,7 +44,7 @@ impl TextLift {
     pub fn step(&mut self, focused: bool, dt: f32) {
         let target = if focused { 1.0 } else { 0.0 };
         self.0.step(target, crate::consts::K_SCALE, dt);
-        if plx_machine::idle::settled(self.0.pos, target, self.0.vel) {
+        if plx_machine::motion::report::settled(self.0.pos, target, self.0.vel) {
             // `jump` reports to idle (it is a change no integrator saw), so the exact resting frame
             // is presented.
             self.0.jump(target);

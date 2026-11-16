@@ -472,7 +472,7 @@ impl FilmographyScreen {
     }
 
     /// The department strip — capsules and pills — inside the caller's clip.
-    fn draw_tabs(&self, p: plx_ui::Painter, measure: &dyn Measure) {
+    fn draw_tabs<K: Copy>(&self, p: plx_ui::Painter, measure: &dyn Measure, press: plx_machine::machine::PressRead<K>) {
         widgets::draw_strip(
             p,
             &self.tabs,
@@ -481,7 +481,7 @@ impl FilmographyScreen {
             PILL_H,
             self.tab_hscroll.pos,
             TabGround::Plated {
-                pop: self.pop.scale(0),
+                pop: self.pop.scale_with(0, press),
             },
         );
     }
@@ -685,7 +685,7 @@ impl FilmographyScreen {
             .painter
             .translate((1.0 - f.page_alpha) * SCR_W, 0.0)
             .alpha(f.page_alpha);
-        self.ground.draw_host(p);
+        if self.ground.draw_host(p) { f.request_frame(); }
         self.ground_ready = opaque_ground_ready(f.page_alpha);
         let layout = route_layout(f.measure);
         let total: usize = self.model.iter().map(|d| d.total).sum();
@@ -712,7 +712,7 @@ impl FilmographyScreen {
             // Capsules and pills through ONE scroll offset (issue 14): the capsules used to be
             // drawn here in content space through this un-scrolled painter while the pills were
             // laid out already scrolled, so a scrolled row showed the focus plate off its label.
-            self.draw_tabs(p, f.measure);
+            self.draw_tabs(p, f.measure, f.press);
             p.clip_clear();
 
             if self.tab_hscroll.pos > 0.5 {
@@ -1106,6 +1106,9 @@ mod tests {
         type Init = super::super::family::NoInit;
         type Memory = PageMemory;
     }
+    impl crate::registry::ScreenInputsLike for FilmographyHost {
+        fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+    }
     impl PersonLike for FilmographyHost {
         fn person<'a>(cx: &Cx<'a, Self>) -> plx_data::person::PersonView<'a> { cx.views }
     }
@@ -1165,7 +1168,7 @@ mod tests {
     #[test]
     fn a_fresh_filmography_reads_only_the_person_view_it_is_given() {
         let mut first = plx_data::stores::person::PersonStore::default();
-        first.run(plx_data::stores::person::PersonCmd::Open {
+        crate::registry::run_person_fixture(&mut first, plx_data::stores::person::PersonCmd::Open {
             sid: ServerId::UNSET, key: "person".into(), guid: "guid".into(),
             name: "First owner".into(), thumb: String::new(),
         });
@@ -1340,7 +1343,7 @@ mod tests {
                 }
                 scrolled = scrolled.max(s.tab_hscroll.pos);
                 let log = plx_ui::draw_census::capture(|| {
-                    s.draw_tabs(plx_ui::Painter::recording(), &measure);
+                    s.draw_tabs(plx_ui::Painter::recording(), &measure, plx_machine::machine::PressRead::<()>::default());
                 });
                 if frame < 39 {
                     continue;
@@ -1520,6 +1523,7 @@ mod tests {
                         assert!(!has_content(&out, |_| true));
                     }
                     PressEvent::Commit(_, _, _) => commits += 1,
+                    PressEvent::PageDamage => {}
                 }
             }
         }

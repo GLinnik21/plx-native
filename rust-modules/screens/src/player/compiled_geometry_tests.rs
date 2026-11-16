@@ -291,7 +291,7 @@ fn the_row_parks_on_the_primary_control_of_the_package() {
     let compiled = reference();
     let mut page = page_with(Arc::clone(&compiled));
     assert_eq!(page.row_primary(), ordinal(&compiled, "play"), "a movie: no pair, so Play");
-    page.slot = ControlSlot::Discs(plx_appkit::player_hud::Controls::for_item(true, true, true, false));
+    page.slot = ControlSlot::Discs(plx_appkit::player_hud::Controls::for_item(true, true, true));
     let episode = compiled.lookup(0, Slot::Discs, false, true, false).expect("the episode form");
     let next = episode.row_ids.iter().position(|r| r.as_deref() == Some("next")).unwrap() as i32;
     assert_eq!(page.row_primary(), next, "an episode with a Next: Next");

@@ -54,7 +54,7 @@ fn trace(frames: usize, land: Option<(usize, usize)>, command: Option<(usize, pl
     let mut ms = 0u32;
     let mut step = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, rows: Option<&mut Vec<Row>>| {
         ms += 16;
-        plx_machine::idle::frame_begin(0.016);
+        plx_machine::motion::report::frame_begin(0.016);
         super::frame(d, rig, Tick { ms, dt_us: 16_000 }, vec![]);
         let Some(paint) = dip.plan(d, ms) else { return };
         if let (Some(rows), Some(content)) = (rows, library_content(d)) {

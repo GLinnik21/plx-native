@@ -23,7 +23,7 @@
 //! Recorded keys and supplied keys use the same production controlled ingress, retaining the
 //! original event timestamp and source rather than synthesizing a new SDL timestamp.
 //!
-//! AppFrameV4 combines press/route/overlay/focus/tree with cached Session, physical Consent and typed initial-input
+//! AppFrameV5 combines route/overlay/focus/tree with cached Session, physical Consent and typed initial-input
 //! digests. Private initial/effect data may contain credentials; shareable probes contain no
 //! raw identity. Only explicit synthetic construction is eligible for fixture import.
 //!
@@ -147,10 +147,10 @@ fn initial_header(app: &AppInit, state: &plx_data::pms::PmsState, adapter: &plx_
 /// Pinned by `the_app_shape_census_is_pinned` below, which does NOT move when a screen lands —
 /// the registry's own pin does that, beside the entry that caused it.
 const APP_SHAPES: &[&str] = &[
-    plx_ui::press::Press::SHAPE,
+    plx_ui::dispatch::press::Press::SHAPE,
     plx_ui::input::STATE_SHAPE,
     "TextInputWire{kind:text,text:str,panel:bool,ms:u32,dt_us:u32,source:{Sdl,RemoteFifo,Script,Replay}}",
-    "AppFrameV4{route:str,overlay:str,focus:str,tree:u64,session:u64,consent:u64,initial:u64}",
+    "AppFrameV5{route:str,overlay:str,focus:str,tree:u64,session:u64,consent:u64,initial:u64}",
     super::bridge::ConsentMachine::SHAPE,
     plx_ui::containers::STATE_SHAPE,
     plx_ui::screen::RETURN_STATE_SHAPE,
@@ -172,7 +172,9 @@ const RESOLUTION_SHAPE: &str = "ProductResolutionV1{fo:Option<(entry:u32,elem:u3
 /// could not distinguish a Session change with otherwise identical visible/tree state. This
 /// invalidated old recordings. AppFrameV3 additionally bound the complete typed initial-input
 /// digest; AppFrameV4 adds the physical Consent owner's current decision. The controlled Home
-/// boot consumer restores both before work.
+/// boot consumer restores both before work. AppFrameV5 removes the shadow App press prefix:
+/// the dispatcher tree already includes the single real input press. A bounded key-only V4
+/// profile is graded with frozen idle-prefix bytes; legacy pointer/direct-input profiles are refused.
 ///
 /// **`tree:u64` joined it in phase 5b** and the bump was deliberate: the Settings family's state
 /// left the legacy globals the focus fingerprint reads and became instances on the container tree,
@@ -207,14 +209,108 @@ const RESOLUTION_SHAPE: &str = "ProductResolutionV1{fo:Option<(entry:u32,elem:u3
 /// well as the term around it: the init shape names that type rather than spelling its fields, so
 /// a census that only said `ControlledHomeInitV3` would be claiming the change was in the
 /// envelope when it is in the session.
+pub(crate) const FP_PRIOR: u64 = 4239819007634745513;
+pub(crate) const FP_V6: u64 = 741022075462080307;
+
 pub(crate) fn state_fp() -> u64 {
+    plx_ui::rec::state_fp(&["ControlledHomeInitV11", "ControlledInstallLanguageV1{install_language:Preference};ControlledRunningLanguageV1{running_language:Preference};PlayerPresentation:unsupported_domain_neutral_no_ambient;NativePreview:controlled_port_unavailable", &state_fp_v10().to_string()])
+}
+
+pub(crate) fn state_fp_v10() -> u64 {
+    plx_ui::rec::state_fp(&["ControlledHomeInitV10", super::bootstrap::UI_PREFERENCES_SHAPE, &state_fp_v9().to_string()])
+}
+
+/// Frozen unpublished six-field identity, used only to refuse underspecified V9 captures.
+pub(crate) fn state_fp_v9() -> u64 {
+    plx_ui::rec::state_fp(&["ControlledHomeInitV9",
+        "ControlledUiPreferencesV1{deck_press:DeckPress,under_posters:UnderPosters,instant_dpad_seeking:InstantDpadSeeking,playback_quality:PlaybackQuality,subtitle_size:SubtitleSize,subtitle_position:SubtitlePosition}",
+        &state_fp_v8().to_string()])
+}
+
+/// Frozen pre-preference-capture census; retained as an identity input, not an admission exception.
+fn state_fp_v8() -> u64 {
+    plx_ui::rec::state_fp(&["ControlledHomeInitV8", "ScreenCommandsV1{fifo:before_single_navigation_commit}",
+        super::bootstrap::RUNTIME_POLICY_SHAPE, &state_fp_v7().to_string()])
+}
+
+/// Frozen V7 census: do not change historical profile identities.
+pub(crate) fn state_fp_v7() -> u64 {
     let mut shapes: Vec<&str> = APP_SHAPES.to_vec();
+    let shape = shapes.iter_mut().find(|shape| **shape == super::bootstrap::SHAPE)
+        .expect("controlled initial shape");
+    *shape = super::bootstrap::SHAPE_V7;
     shapes.push(super::bootstrap::CONTENT_SHAPE);
     shapes.push(RESOLUTION_SHAPE);
     shapes.push("CaptureReadinessV2{before_dispatch:pending:bool,text:bool}");
     shapes.push("MeasurementV1{query:Width(text:bytes,sz:i32,bold:bool)|Cap(sz:i32)|Line(sz:i32),answer:f32bits:u32}");
     shapes.extend_from_slice(plx_screens::registry::SCREEN_SHAPES);
     plx_ui::rec::state_fp(&shapes)
+}
+
+// Probe only: install complete vector and numeric literals after the production probe run.
+#[cfg(test)]
+fn session_app_prior_vector() -> Vec<&'static str> {
+    let mut shapes = APP_SHAPES.to_vec();
+    // This test's session-codec census is frozen history, not today's product shape.
+    shapes[3] = "AppFrameV4{route:str,overlay:str,focus:str,tree:u64,session:u64,consent:u64,initial:u64}";
+    shapes.push(super::bootstrap::CONTENT_SHAPE);
+    shapes.push(RESOLUTION_SHAPE);
+    shapes.push("CaptureReadinessV2{before_dispatch:pending:bool,text:bool}");
+    shapes.push("MeasurementV1{query:Width(text:bytes,sz:i32,bold:bool)|Cap(sz:i32)|Line(sz:i32),answer:f32bits:u32}");
+    shapes.extend_from_slice(plx_screens::registry::SCREEN_SHAPES);
+    shapes
+}
+
+#[cfg(test)]
+#[test]
+fn historical_session_census_hashes_its_frozen_vectors() {
+    let frozen: Value = serde_json::from_str(include_str!("fixtures/session-codec-v5/fingerprints.json")).unwrap();
+    for (vector, fingerprint) in [("prior_vector", "fp_prior"), ("prospective_vector", "prospective_fp_v6")] {
+        let shapes: Vec<&str> = frozen[vector].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let fp = plx_ui::rec::state_fp(&shapes);
+        assert_eq!(Some(fp), frozen[fingerprint].as_u64());
+        assert_ne!(fp, FP_PRIOR);
+        assert_ne!(fp, FP_V6);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn session_app_fingerprint_probe_only() {
+    let frozen: Value = serde_json::from_str(include_str!("fixtures/session-codec-v5/current-base-fingerprints.json")).unwrap();
+    let prior = session_app_prior_vector();
+    assert_eq!(serde_json::to_value(&prior).unwrap(), frozen["prior_vector"]);
+    let fp_prior = plx_ui::rec::state_fp(&prior);
+    assert_eq!(fp_prior, FP_PRIOR);
+    assert_eq!(frozen["fp_prior"].as_u64(), Some(FP_PRIOR));
+    assert_eq!(plx_ui::rec::state_fp(&prior), fp_prior);
+    let mut prospective = prior.clone();
+    let indices: Vec<_> = prior.iter().enumerate().filter(|(_, shape)| **shape == super::bootstrap::SHAPE).map(|(i, _)| i).collect();
+    assert_eq!(indices.len(), 1);
+    let outer = super::bootstrap::SHAPE;
+    assert_eq!(outer.matches("ControlledHomeInitV6{").count(), 1);
+    assert_eq!(outer.matches("session:SessionInitV5").count(), 1);
+    let new_outer = outer.replacen("ControlledHomeInitV6{", "ControlledHomeInitV7{", 1)
+        .replacen("session:SessionInitV5", "session:SessionInitV6", 1);
+    prospective[indices[0]] = &new_outer;
+    assert_eq!(serde_json::to_value(&prospective).unwrap(), frozen["prospective_vector"]);
+    assert_eq!(prior.iter().zip(&prospective).filter(|(a, b)| a != b).count(), 1);
+    let prospective_fp_v6 = plx_ui::rec::state_fp(&prospective);
+    assert_eq!(prospective_fp_v6, FP_V6);
+    assert_ne!(state_fp(), prospective_fp_v6, "AppFrameV5 retires the legacy press contribution");
+    let manifest = format!(r#"{{"schema":{},"state_fp":{prospective_fp_v6}}}"#, plx_ui::rec::SCHEMA);
+    assert_eq!(Recording::parse(&manifest, &[], state_fp()).err(),
+        Some(RecError::StateShape { theirs: prospective_fp_v6, ours: state_fp() }));
+    assert_eq!(frozen["prospective_fp_v6"].as_u64(), Some(FP_V6));
+    for manifest in [
+        include_str!("../../../tests/fixtures/replay/1-boot-home-chip-grid/manifest.json"),
+        include_str!("../../../tests/fixtures/replay/6-settings-family/manifest.json"),
+        include_str!("../../../tests/fixtures/replay/12-filmography-detail-return/manifest.json"),
+    ] {
+        let header: Value = serde_json::from_str(manifest).unwrap();
+        assert_eq!(header["schema"].as_u64(), Some(3));
+        assert_eq!(header["state_fp"].as_u64(), Some(fp_prior));
+    }
 }
 
 /// The hash of the frame's currently covered logical state (spec §5.4).
@@ -226,20 +322,42 @@ pub(crate) fn state_fp() -> u64 {
 /// `session` and `consent` are their owners' cached, side-effect-free subhashes, obtained by
 /// the common run tail. Only those u64 values are serialized; this neither adds raw secrets nor
 /// claims all-domain state coverage.
-pub(crate) fn state_hash(
-    press: &plx_ui::press::Press,
-    route: &str,
-    overlay: &str,
-    focus: &str,
-    tree: u64,
-    session: u64,
-    consent: u64,
-    initial: u64,
-) -> u64 {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FrameHashProfile { OwnedV5, KeyOnlyV4 }
+
+/// Only owned key input can prove the retired app press stayed at its boot-time rest.
+/// Pointer/direct-token profiles are incompatible and are rejected before startup.
+fn recording_hash_profile(recording: &Recording) -> Result<FrameHashProfile, &'static str> {
+    if recording.header.state_fp == state_fp() || recording.header.state_fp == state_fp_v7() { return Ok(FrameHashProfile::OwnedV5); }
+    if recording.header.state_fp != FP_PRIOR { return Err("incompatible controlled state shape"); }
+    for input in recording.frames.iter().flat_map(|frame| &frame.inputs) {
+        if !matches!(decode_input(input).map_err(|_| "unsupported legacy press input")?.kind,
+            plx_machine::machine::InputKind::Key { .. }) {
+            return Err("unsupported legacy press input");
+        }
+    }
+    Ok(FrameHashProfile::KeyOnlyV4)
+}
+
+/// Frozen AppFrameV4 bytes, not a second press machine or mutable compatibility state.
+fn write_v4_idle_press(c: &mut Canon) {
+    c.f32(1.0).f32(0.0).discriminant(0)
+        .u32(0).u32(0).bool(false).u32(0).u32(0)
+        .bool(false).bool(false).bool(false).bool(false).bool(true);
+}
+
+pub(crate) fn state_hash_profile(profile: FrameHashProfile, route: &str, overlay: &str, focus: &str,
+    tree: u64, session: u64, consent: u64, initial: u64) -> u64 {
+    if profile == FrameHashProfile::OwnedV5 { return state_hash(route, overlay, focus, tree, session, consent, initial); }
     let mut c = Canon::new();
-    press.write(&mut c);
+    if profile == FrameHashProfile::KeyOnlyV4 { write_v4_idle_press(&mut c); }
     c.str(route).str(overlay).str(focus).u64(tree).u64(session).u64(consent).u64(initial);
     c.finish()
+}
+pub(crate) fn state_hash(route: &str, overlay: &str, focus: &str, tree: u64, session: u64, consent: u64, initial: u64) -> u64 {
+    let mut current = Canon::new();
+    current.str(route).str(overlay).str(focus).u64(tree).u64(session).u64(consent).u64(initial);
+    current.finish()
 }
 
 pub(crate) struct Rec {
@@ -397,6 +515,7 @@ struct ResultEnvelope {
 /// a live supplier as a fallback; content resources require the typed content initial domain.
 pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootstrap::Initial)
     -> Result<(), &'static str> {
+    recording_hash_profile(recording)?;
     if recording.stopped_at.is_some() || recording.frames.is_empty() || recording.header.clock_start_ms != initial.clock_start {
         return Err("invalid controlled clock");
     }
@@ -428,6 +547,13 @@ pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootst
         // their own order, so establish every synchronous answer before validating that frame's
         // asynchronous completion batch.
         for effect in &frame.effects {
+            // Historical content commands ran after dispatch. FIFO can publish return memory
+            // and retarget PageDip in this frame, so those ledgers cannot be graded faithfully.
+            // Inspect bounded parsed envelopes, never fixture names or escaped source text.
+            if recording.header.state_fp != state_fp() && effect["e"] == "App"
+                && effect["payload"].get("content").is_some() {
+                return Err("incompatible historical content scheduler: requires post-dispatch admission");
+            }
             if effect["payload"]["content_resource"] == true {
                 detail.admission(&effect["payload"])?;
             }
@@ -626,7 +752,7 @@ impl plx_ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
             Fx::CancelTimer(_) => "CancelTimer", Fx::Press(_) => "Press",
             Fx::Remember { .. } => "Remember", Fx::Log(_) => "Log", Fx::App(_) => "App",
         };
-        let payload = match super::bootstrap::effects::encode(&stamped.fx) {
+        let payload = match super::bootstrap::effects::encode_from(stamped.from, &stamped.fx) {
             Ok(payload) => payload,
             Err(reason) => { self.refuse(reason); return; }
         };
@@ -672,6 +798,13 @@ pub(crate) fn machine_name(id: plx_machine::machine::MachineId) -> String {
 }
 
 impl Recplay {
+    pub(crate) fn frame_hash_profile(&self) -> FrameHashProfile {
+        match self {
+            Self::Replaying(replay) if replay.rec.header.state_fp == FP_PRIOR => FrameHashProfile::KeyOnlyV4,
+            _ => FrameHashProfile::OwnedV5,
+        }
+    }
+
     fn resolve_observation(&mut self, identity:(bool,u8,Option<u32>), actual:Option<ResolutionWire>) -> Option<ResolutionWire> {
         match self {
             Self::Off => actual,
@@ -838,8 +971,11 @@ impl Recplay {
     pub(crate) fn recording_with_sink(initial: &super::bootstrap::Initial, sink: Box<dyn plx_ui::rec::Sink>)
         -> Result<Self, &'static str> {
         initial.validate()?;
+        if initial.runtime_policy.is_none() { return Err("current recording requires explicit runtime policy"); }
+        if initial.ui_preferences.is_none() { return Err("current recording requires explicit UI preferences"); }
+        if initial.install_language.is_none() || initial.running_language.is_none() { return Err("current recording requires explicit install and running languages"); }
         let mut header = Header::new(state_fp(), initial);
-        header.init_data = serde_json::to_value(initial).map_err(|_| "cannot encode initial state")?;
+        header.init_data = initial.to_v6_value()?;
         header.clock_start_ms = initial.clock_start;
         header.build = env!("PLX_VERSION").into();
         header.features = features();
@@ -1368,6 +1504,41 @@ mod tests {
     }
 
     #[test]
+    fn legacy_profile_loading_cannot_bypass_product_state_shape() {
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, Some("root".into())).unwrap();
+        let mut header = Header::new(FP_PRIOR, &initial);
+        header.clock_start_ms = initial.clock_start;
+        header.features = features(); header.triggers = initial.triggers.clone();
+        let mut recording = Recording { header, frames: vec![plx_ui::rec::Frame {
+            f: 0, tick: Some(Tick::default()), st: Some(0), ..Default::default()
+        }], metrics: Default::default(), stopped_at: None };
+        assert_eq!(recording_hash_profile(&recording), Ok(FrameHashProfile::KeyOnlyV4));
+        let key = super::super::bridge::script_edge(plx_machine::machine::Key::Down,
+            plx_machine::machine::Edge::Down, Tick::default());
+        recording.frames[0].inputs.push(super::super::bootstrap::effects::input(&key).unwrap());
+        assert_eq!(recording_hash_profile(&recording), Ok(FrameHashProfile::KeyOnlyV4));
+        let pointer = super::super::bridge::click_input(0.0, 0.0, Tick::default());
+        recording.frames[0].inputs[0] = super::super::bootstrap::effects::input(&pointer).unwrap();
+        assert_eq!(recording_hash_profile(&recording), Err("unsupported legacy press input"));
+        recording.frames[0].inputs.clear();
+        recording.header.state_fp = FP_V6;
+        assert_eq!(validate_controlled(&recording, &initial), Err("incompatible controlled state shape"));
+        recording.header.state_fp = state_fp();
+        assert_eq!(recording_hash_profile(&recording), Ok(FrameHashProfile::OwnedV5));
+        assert_eq!(validate_controlled(&recording, &initial), Ok(()));
+    }
+
+    #[test]
+    fn legacy_key_grading_uses_the_frozen_rest_prefix_not_a_second_input_owner() {
+        let mut old = Canon::new();
+        plx_ui::dispatch::press::Press::new().write(&mut old);
+        old.str("home").str("").str("focus").u64(17).u64(21).u64(34).u64(55);
+        let historical = old.finish();
+        assert_eq!(state_hash_profile(FrameHashProfile::KeyOnlyV4, "home", "", "focus", 17, 21, 34, 55), historical);
+        assert_ne!(state_hash("home", "", "focus", 17, 21, 34, 55), historical);
+    }
+
+    #[test]
     fn product_pre_resolution_wire_shape_is_refused_before_boot() {
         let mut before=APP_SHAPES.to_vec();
         before.push(super::super::bootstrap::CONTENT_SHAPE);
@@ -1383,6 +1554,68 @@ mod tests {
         Recplay::Replaying(Replay { resolution:ResolutionReplay {mode,..Default::default()}, rec,
             at:0,graded:0,diverged:0,present_diffs:0,result_diffs:0,land_diffs:0,result_at:0,
             effect_at:0,input_at:0,input_diffs:0,effect_diffs:0,started:false,failure:None })
+    }
+
+    #[test]
+    fn dispatcher_person_provenance_rejects_before_state_or_io_in_live_record_and_replay() {
+        use super::super::bridge::Bridge;
+        let _serial = plx_base::testlock::serial();
+        let _session = plx_plex::plex::session::TempSession::new("person-dispatch-provenance");
+        Bridge::assert_person_provenance_at_dispatch(&mut plx_ui::dispatch::NoTap);
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
+        let mut recording = Recplay::recording_with_sink(&initial,
+            Box::new(plx_ui::rec::MemSink::default())).unwrap();
+        Bridge::assert_person_provenance_at_dispatch(&mut recording);
+        assert_eq!(recording.failure(), Some("mismatched controlled Person sender or destination"));
+        let manifest = Header::new(state_fp(), &initial).to_json().to_string();
+        for mode in [ReplayMode::Targets, ReplayMode::Resolve] {
+            let recording = Recording::parse(&manifest, &[], state_fp()).unwrap();
+            let mut replay = replay_for_test(recording, mode);
+            Bridge::assert_person_provenance_at_dispatch(&mut replay);
+            assert_eq!(replay.failure(), Some("mismatched controlled Person sender or destination"));
+        }
+    }
+
+    #[test]
+    fn person_sender_provenance_is_checked_when_recording_and_in_both_replay_modes() {
+        use plx_machine::machine::{Delivery, Fx, InstanceId, MachineId, Stamped};
+        use plx_screens::registry::AppMsg;
+        use plx_ui::dispatch::Tap;
+        use super::super::bridge::AppHost;
+        let _serial = plx_base::testlock::serial();
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
+        let sender = MachineId::Instance(InstanceId(3));
+        let delivery = |from| Stamped { from, fx: Fx::Deliver(
+            MachineId::Store(plx_data::stores::StoreId::Person.ord()),
+            Delivery::Machine(AppMsg::PersonCommand { from: sender,
+                command: plx_data::stores::person::PersonCmd::Close })) };
+        let sink = plx_ui::rec::MemSink::default();
+        let segments = sink.segments.clone();
+        let manifest = Header::new(state_fp(), &initial).to_json().to_string();
+        let mut rec = Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
+        rec.tick(0, 0.0);
+        Tap::<AppHost>::effect(&mut rec, 0, &delivery(sender));
+        rec.end_frame(&|| 7);
+        assert!(!rec.finish(plx_machine::landgate::fixture_gate()));
+        let recording = Recording::parse(&manifest,
+            &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(), state_fp()).unwrap();
+        let mut refused = Recplay::recording_with_sink(&initial,
+            Box::new(plx_ui::rec::MemSink::default())).unwrap();
+        Tap::<AppHost>::effect(&mut refused, 0, &delivery(MachineId::Nav));
+        let Recplay::Recording(r) = &refused else { unreachable!() };
+        assert_eq!(r.failure, Some("mismatched controlled Person sender or destination"));
+        for mode in [ReplayMode::Targets, ReplayMode::Resolve] {
+            for valid in [true, false] {
+                let mut replay = replay_for_test(copy_recording(&recording), mode);
+                replay.tick(0, 0.0);
+                Tap::<AppHost>::effect(&mut replay, 0,
+                    &delivery(if valid { sender } else { MachineId::Nav }));
+                let Recplay::Replaying(r) = replay else { unreachable!() };
+                assert_eq!(r.failure, (!valid).then_some("mismatched controlled Person sender or destination"));
+                assert_eq!(r.effect_at, usize::from(valid));
+                assert_eq!(r.effect_diffs, 0);
+            }
+        }
     }
 
     #[test]
@@ -2384,7 +2617,8 @@ mod tests {
         // **A collection shelf's total moves it to this value.** A Home shelf and a hub row carry
         // the hub's `totalSize` (the linked heading's "· N"), in both the hubs record and the
         // hubs initial state.
-        assert_eq!(plx_ui::rec::state_fp(APP_SHAPES), 0x68eb_d05d_f046_ba72);
+        // AppFrameV5 drops the duplicate legacy press prefix; the tree hashes the real input.
+        assert_eq!(plx_ui::rec::state_fp(APP_SHAPES), 0xb7b3_fd3a_cc0b_e6b5);
     }
 
     /// The gate at the REAL hubs landing site, through the recording the driver loads: a result
@@ -2463,14 +2697,32 @@ mod tests {
     }
 
     #[test]
+    fn the_shadow_press_recording_shape_is_refused() {
+        let mut shapes = APP_SHAPES.to_vec();
+        shapes[3] = "AppFrameV4{route:str,overlay:str,focus:str,tree:u64,session:u64,consent:u64,initial:u64}";
+        let initial = shapes.iter_mut().find(|s| **s == super::super::bootstrap::SHAPE).unwrap();
+        *initial = super::super::bootstrap::SHAPE_V7;
+        shapes.push(super::super::bootstrap::CONTENT_SHAPE);
+        shapes.push(RESOLUTION_SHAPE);
+        shapes.push("CaptureReadinessV2{before_dispatch:pending:bool,text:bool}");
+        shapes.push("MeasurementV1{query:Width(text:bytes,sz:i32,bold:bool)|Cap(sz:i32)|Line(sz:i32),answer:f32bits:u32}");
+        shapes.extend_from_slice(plx_screens::registry::SCREEN_SHAPES);
+        let old = plx_ui::rec::state_fp(&shapes);
+        assert_ne!(old, state_fp());
+        let manifest = format!(r#"{{"schema":{},"state_fp":{old}}}"#, plx_ui::rec::SCHEMA);
+        assert_eq!(Recording::parse(&manifest, &[], state_fp()).err(),
+            Some(RecError::StateShape { theirs: old, ours: state_fp() }));
+    }
+
+    #[test]
     fn the_state_hash_moves_with_the_focus_line_and_the_press() {
-        let mut press = plx_ui::press::Press::new();
-        let a = state_hash(&press, "home", "", "focus route=home sel=0", 0, 0, 0, 0);
-        let b = state_hash(&press, "home", "", "focus route=home sel=1", 0, 0, 0, 0);
+        let mut d = plx_ui::dispatch::Dispatcher::<super::super::bridge::AppHost>::new();
+        let a = state_hash("home", "", "focus route=home sel=0", d.state_hash(), 0, 0, 0);
+        let b = state_hash("home", "", "focus route=home sel=1", d.state_hash(), 0, 0, 0);
         assert_ne!(a, b);
-        press.begin(10);
-        let c = state_hash(&press, "home", "", "focus route=home sel=0", 0, 0, 0, 0);
-        assert_ne!(a, c);
+        d.input.press.begin(10);
+        let c = state_hash("home", "", "focus route=home sel=0", d.state_hash(), 0, 0, 0);
+        assert_ne!(a, c, "the real dispatcher press is already in the tree digest");
     }
 
     /// …and with the TREE, which is the half phase 5b added. Every screen in the Settings family
@@ -2479,17 +2731,15 @@ mod tests {
     /// did not, and come back `verdict=SAME`.
     #[test]
     fn the_state_hash_moves_with_the_container_tree() {
-        let press = plx_ui::press::Press::new();
-        let a = state_hash(&press, "home", " overlay=settings", "focus route=home", 0x11, 0, 0, 0);
-        let b = state_hash(&press, "home", " overlay=settings", "focus route=home", 0x12, 0, 0, 0);
+        let a = state_hash("home", " overlay=settings", "focus route=home", 0x11, 0, 0, 0);
+        let b = state_hash("home", " overlay=settings", "focus route=home", 0x12, 0, 0, 0);
         assert_ne!(a, b, "the same page and focus over a different tree is a different state");
     }
 
     #[test]
     fn the_state_hash_moves_with_the_physical_consent_owner() {
-        let press = plx_ui::press::Press::new();
-        let denied = state_hash(&press, "home", "", "focus route=home", 0, 0, 0x11, 0);
-        let allowed = state_hash(&press, "home", "", "focus route=home", 0, 0, 0x12, 0);
+        let denied = state_hash("home", "", "focus route=home", 0, 0, 0x11, 0);
+        let allowed = state_hash("home", "", "focus route=home", 0, 0, 0x12, 0);
         assert_ne!(
             denied, allowed,
             "a consent decision changed without moving the canonical application state"
@@ -2520,9 +2770,8 @@ mod tests {
         let mut rec = Recplay::Recording(Rec { w: writer, f: 0, focus: None, events: false, spent_ns: 0, failure: None });
         rec.tick(0, 0.016);
         if let Recplay::Recording(r)=&mut rec { r.events=true; } // force a state grade; this unit exercises no input delivery
-        let press = plx_ui::press::Press::new();
         assert!(!super::super::run::recorder_end_frame(
-            &mut rec, bridge, &press, "home", "", "fixed synthetic focus", 17,
+            &mut rec, bridge, "home", "", "fixed synthetic focus", 17,
         ));
         let bytes = segments.borrow();
         let slices: Vec<_> = bytes.iter().map(Vec::as_slice).collect();
@@ -2567,12 +2816,12 @@ mod tests {
                 present_diffs: 0, result_diffs: 0, land_diffs: 0, result_at: 0, effect_at: 0,
                 input_at: 0, input_diffs: 0, effect_diffs: 0, started: false, failure: None,
             });
-            let press = plx_ui::press::Press::new();
+
             assert_eq!(plx_ui::dispatch::Tap::<Product>::focus_continuation(
                 &mut replay, 0, true, None), Some(None));
             plx_ui::dispatch::Tap::<Product>::focus(&mut replay, 0, None);
             assert!(super::super::run::recorder_end_frame(
-                &mut replay, &other, &press, "home", "", "fixed synthetic focus", 17,
+                &mut replay, &other, "home", "", "fixed synthetic focus", 17,
             ));
             let Recplay::Replaying(result) = replay else { unreachable!() };
             assert_eq!(result.graded, 1);
@@ -2597,6 +2846,7 @@ mod tests {
         // `child_count`; they are history, so they keep the record they were computed with.
         const PRE_CHILD_COUNT_RECORD_SHAPE: &str = "HubsResultV1{gen:u32,seq:u32,sid:u16,client:Option<u32>,token_gen:u32,build:Option<{cw:[{last_viewed_at:i64,m:PmsMovie}],shelves:[{title:str,hub_id:str,key:str,items:[PmsMovie]}]}>};PmsMovie{sid:u16,sec:i64,title:str,year:i32,rating:str,dur_ns:i64,part:str,thumb:str,still:str,art:str,summary:str,rk:str,vcodec:str,acodec:str,blur:[[f32bits;3];4],has_blur:bool,kind:i32,resume_ms:i64,show_rk:str,season_index:i32,show_title:str,ep_index:i32,unwatched:bool,watched:bool,aired:str}";
         let mut pre_settings = APP_SHAPES.to_vec();
+        pre_settings[3] = "AppFrameV4{route:str,overlay:str,focus:str,tree:u64,session:u64,consent:u64,initial:u64}";
         let record = pre_settings.iter().position(|shape| *shape == plx_data::pms::record::SHAPE).unwrap();
         pre_settings[record] = PRE_CHILD_COUNT_RECORD_SHAPE;
         // ...and under the hubs initial state before a hub row carried its total.
@@ -2677,17 +2927,61 @@ mod fixture_preflight_tests {
     #[test]
     fn committed_recordings_keep_valid_page_requests_and_initial_hashes() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/replay");
-        for name in ["1-boot-home-chip-grid", "6-settings-family", "12-filmography-detail-return"] {
+        for (name, fp, frames) in [
+            ("1-boot-home-chip-grid", FP_PRIOR, 200),
+            ("6-settings-family", FP_PRIOR, 621),
+            ("12-filmography-detail-return", FP_PRIOR, 457),
+            ("12-filmography-detail-return-current", state_fp(), 2287),
+        ] {
             let dir = root.join(name);
             let manifest = std::fs::read_to_string(dir.join("manifest.json")).unwrap();
             let segment = std::fs::read(dir.join("rec-0000.jsonl")).unwrap();
-            let mut recording = Recording::parse(&manifest, &[segment.as_slice()], state_fp()).unwrap();
-            let initial = super::super::bootstrap::Initial::decode(recording.header.init_data.clone(), recording.header.init_hash)
+            let mut recording = Recording::parse(&manifest, &[segment.as_slice()], fp).unwrap();
+            assert_eq!(recording.frames.len(), frames, "{name}");
+            validate_resolution_recording(&recording).expect("complete recorded Focus/Hit resolutions");
+            let initial = super::super::bootstrap::Initial::decode_profile(recording.header.init_data.clone(), recording.header.init_hash, fp)
                 .expect("recorded initial state must retain its canonical hash");
             // Host unit tests omit the simulator feature; this check covers the wire preflight.
             recording.header.features = features();
-            assert_eq!(validate_controlled(&recording, &initial), Ok(()), "{name}");
+            let expected = if name == "12-filmography-detail-return" {
+                Err("incompatible historical content scheduler: requires post-dispatch admission")
+            } else { Ok(()) };
+            assert_eq!(validate_controlled(&recording, &initial), expected, "{name}");
+            if name == "12-filmography-detail-return-current" {
+                assert_eq!(recording.header.state_fp, state_fp());
+                assert!(initial.content.is_some(), "current anchor must exercise typed Content");
+            }
         }
+    }
+
+    #[test]
+    fn historical_scheduler_boundary_uses_parsed_commands_not_names_or_text() {
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
+        let mut header = Header::new(state_fp(), &initial);
+        header.features = features();
+        header.triggers = initial.triggers.clone();
+        let mut recording = Recording { header, frames: vec![plx_ui::rec::Frame {
+            f: 0, tick: Some(Tick::default()), st: Some(0), ..Default::default()
+        }], metrics: Default::default(), stopped_at: None };
+        let command = json!({"f":0,"t":"eff","from":"inst:2","e":"App",
+            "payload":{"content":{"push":{"person":[0,"19","guid","name","thumb"]}}}});
+        recording.frames[0].effects.push(command.clone());
+        assert_eq!(validate_controlled(&recording, &initial), Ok(()), "current FIFO envelope");
+        for fp in [FP_PRIOR, state_fp_v7()] {
+            recording.header.state_fp = fp;
+            for content in [json!({"push":{"person":[0,"19","guid","name","thumb"]}}),
+                json!({"present":{"filmography":0}}), json!("back"), json!({"unknown":true})] {
+                recording.frames[0].effects[0]["payload"]["content"] = content;
+                assert_eq!(validate_controlled(&recording, &initial),
+                    Err("incompatible historical content scheduler: requires post-dispatch admission"));
+            }
+            recording.frames[0].effects[0] = json!({"f":0,"t":"eff","from":"Nav","e":"Log",
+                "payload":{"message":command.to_string()}});
+            assert_eq!(validate_controlled(&recording, &initial), Ok(()), "escaped text is not a command");
+            recording.frames[0].effects[0] = command.clone();
+        }
+        recording.header.state_fp = FP_V6;
+        assert_eq!(validate_controlled(&recording, &initial), Err("incompatible controlled state shape"));
     }
 }
 

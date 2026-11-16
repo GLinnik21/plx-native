@@ -1,4 +1,4 @@
-  1000 start: Log("uriprobe: t=0 armed variant=acb-control scheme=https kind=direct window=none app=com.test.app")
+  1000 start: Log("uriprobe: t=0 armed variant=acb-control scheme=https kind=direct window=none app=com.test.app fw=5.4.2 build=5.4.2-12")
   1000 start: Log("uriprobe: t=0 acb request=1 step=Check")
   1000 start: Acb { request: AcbRequest(1), op: Check { dass: false } }
   1000 check: Log("uriprobe: t=0 acb answer step=Check invoked=true (not plane proof)")
@@ -31,9 +31,9 @@
   1900 back: Log("uriprobe: t=900 call unload requested")
   1900 back: Call(UriCall { method: "unload" })
   1900 back: Close
-  1900 back: Log("uriprobe: t=900 summary load=ok playing=no t_load=0 t_playing=- currentTime_advanced=no videoInfo=seen audioInfo=none window=none setWindowId=n/a variant=acb-control scheme=https shape=named end=back")
+  1900 back: Log("uriprobe: t=900 summary load=ok playing=no t_load=0 t_playing=- currentTime_advanced=no videoInfo=seen audioInfo=none window=none setWindowId=n/a variant=acb-control scheme=https shape=named end=back audio_at_load=none clock_period_ms=-")
   1900 back: Log("uriprobe: t=900 tester: report picture yes/no and sound yes/no")
-  1000 start: Log("uriprobe: t=0 armed variant=acb-dass scheme=https kind=direct window=none app=com.test.app")
+  1000 start: Log("uriprobe: t=0 armed variant=acb-dass scheme=https kind=direct window=none app=com.test.app fw=5.4.2 build=5.4.2-12")
   1000 start: Log("uriprobe: t=0 acb request=1 step=Check")
   1000 start: Acb { request: AcbRequest(1), op: Check { dass: true } }
   1000 check: Log("uriprobe: t=0 acb answer step=Check invoked=true (not plane proof)")
@@ -68,32 +68,32 @@
   2400 back: Log("uriprobe: t=1400 call unload requested")
   2400 back: Call(UriCall { method: "unload" })
   2400 back: Close
-  2400 back: Log("uriprobe: t=1400 summary load=ok playing=yes t_load=0 t_playing=500 currentTime_advanced=no videoInfo=seen audioInfo=none window=none setWindowId=n/a variant=acb-dass scheme=https shape=named end=back")
+  2400 back: Log("uriprobe: t=1400 summary load=ok playing=yes t_load=0 t_playing=500 currentTime_advanced=no videoInfo=seen audioInfo=none window=none setWindowId=n/a variant=acb-dass scheme=https shape=named end=back audio_at_load=none clock_period_ms=-")
   2400 back: Log("uriprobe: t=1400 tester: report picture yes/no and sound yes/no")
   1000 refused: Log("uriprobe: t=0 acb answer step=MediaId invoked=false (not plane proof)")
   1000 refused: Log("uriprobe: t=0 call unload requested")
   1000 refused: Call(UriCall { method: "unload" })
   1000 refused: Close
-  1000 refused: Log("uriprobe: t=0 summary load=ok playing=no t_load=0 t_playing=- currentTime_advanced=no videoInfo=seen audioInfo=none window=none setWindowId=n/a variant=acb-dass scheme=https shape=named end=refused:acb")
+  1000 refused: Log("uriprobe: t=0 summary load=ok playing=no t_load=0 t_playing=- currentTime_advanced=no videoInfo=seen audioInfo=none window=none setWindowId=n/a variant=acb-dass scheme=https shape=named end=refused:acb audio_at_load=none clock_period_ms=-")
   1000 refused: Log("uriprobe: t=0 tester: report picture yes/no and sound yes/no")
   1000 late: Log("uriprobe: t=5000 call unload requested")
   1000 late: Call(UriCall { method: "unload" })
   1000 late: Close
-  1000 late: Log("uriprobe: t=5000 summary load=ok playing=no t_load=0 t_playing=- currentTime_advanced=no videoInfo=seen audioInfo=none window=none setWindowId=n/a variant=acb-dass scheme=https shape=named end=timeout:acb")
+  1000 late: Log("uriprobe: t=5000 summary load=ok playing=no t_load=0 t_playing=- currentTime_advanced=no videoInfo=seen audioInfo=none window=none setWindowId=n/a variant=acb-dass scheme=https shape=named end=timeout:acb audio_at_load=none clock_period_ms=-")
   1000 late: Log("uriprobe: t=5000 tester: report picture yes/no and sound yes/no")
   6000 step-timeout: Log("uriprobe: t=5000 call unload requested")
   6000 step-timeout: Call(UriCall { method: "unload" })
   6000 step-timeout: Close
-  6000 step-timeout: Log("uriprobe: t=5000 summary load=ok playing=no t_load=0 t_playing=- currentTime_advanced=no videoInfo=seen audioInfo=none window=none setWindowId=n/a variant=acb-dass scheme=https shape=named end=timeout:acb")
+  6000 step-timeout: Log("uriprobe: t=5000 summary load=ok playing=no t_load=0 t_playing=- currentTime_advanced=no videoInfo=seen audioInfo=none window=none setWindowId=n/a variant=acb-dass scheme=https shape=named end=timeout:acb audio_at_load=none clock_period_ms=-")
   6000 step-timeout: Log("uriprobe: t=5000 tester: report picture yes/no and sound yes/no")
  21000 video-timeout: Log("uriprobe: t=20000 call unload requested")
  21000 video-timeout: Call(UriCall { method: "unload" })
  21000 video-timeout: Close
- 21000 video-timeout: Log("uriprobe: t=20000 summary load=ok playing=no t_load=0 t_playing=- currentTime_advanced=no videoInfo=none audioInfo=none window=none setWindowId=n/a variant=acb-dass scheme=https shape=named end=timeout:acb-video")
+ 21000 video-timeout: Log("uriprobe: t=20000 summary load=ok playing=no t_load=0 t_playing=- currentTime_advanced=no videoInfo=none audioInfo=none window=none setWindowId=n/a variant=acb-dass scheme=https shape=named end=timeout:acb-video audio_at_load=none clock_period_ms=-")
  21000 video-timeout: Log("uriprobe: t=20000 tester: report picture yes/no and sound yes/no")
   1000 eos: Log("uriprobe: t=0 ev=endOfStream")
   1000 eos: Log("uriprobe: t=0 call unload requested")
   1000 eos: Call(UriCall { method: "unload" })
   1000 eos: Close
-  1000 eos: Log("uriprobe: t=0 summary load=ok playing=no t_load=0 t_playing=- currentTime_advanced=no videoInfo=none audioInfo=none window=none setWindowId=n/a variant=acb-dass scheme=https shape=named end=eos")
+  1000 eos: Log("uriprobe: t=0 summary load=ok playing=no t_load=0 t_playing=- currentTime_advanced=no videoInfo=none audioInfo=none window=none setWindowId=n/a variant=acb-dass scheme=https shape=named end=eos audio_at_load=none clock_period_ms=-")
   1000 eos: Log("uriprobe: t=0 tester: report picture yes/no and sound yes/no")

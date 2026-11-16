@@ -172,6 +172,8 @@ const EP_RETRY_MS: u32 = 1000;
 
 
 pub struct DetailScreen {
+    /// Derived frame input, shared by shelf captions and live/target section geometry.
+    caption_policy: plx_ui::caption_policy::CaptionPolicy,
     entry: EntryId,
     sid: ServerId,
     rk: String,
@@ -210,15 +212,14 @@ pub struct DetailScreen {
     preview_prose: f32,
     preview_synopsis: f32,
     preview_chrome: f32,
-    /// The hero scrim/wedge strength — chases `view.field` (1.0 idle, `PREVIEW_FIELD` once a
-    /// picture is up) and eases to 0.0 once full-trailer mode owns the screen, where the page has
-    /// no ink left up there to protect and the transport brings its own scrim at the bottom.
+    /// The hero shade's strength — chases `view.field` (1.0 idle, `PREVIEW_FIELD` once a picture is
+    /// up) and eases to 0.0 once full-trailer mode owns the screen, where the page has no ink left
+    /// up there to protect and the transport brings its own scrim at the bottom.
     preview_field: f32,
-    /// The bottom-anchored base scrim's own alpha multiplier — 1.0 normal (leaves
-    /// `detail_layout::base_scrim_a`'s own scroll-driven value untouched), eased to 0.0 in
-    /// full-trailer mode for the same reason as the wedge above.
-    /// A separate scalar from [`preview_field`](Self::preview_field): that one drives the corner
-    /// wedge, this one the bottom gradient — distinct layers per `draw_backdrop`.
+    /// The bottom-anchored scrim's alpha multiplier — 1.0 in Detail, including while its
+    /// ramp moves down for a background preview, and 0.0 in full-trailer mode.
+    /// Independent from [`preview_field`](Self::preview_field), which scales the left side of
+    /// the same shade field.
     preview_base_scrim: f32,
     /// 0 = full hero position/size, 1 = fully collapsed to the top-left compact spot while a
     /// trailer plays in the background. A geometric transform, so it is a critically-damped
@@ -526,11 +527,10 @@ impl DetailScreen {
 
     /// The membership the bookmark disc wears: On draws the filled face, Off and Unknown the outline
     /// (the PUT is idempotent, so an unknown membership offers Add). A change flips the disc.
-    pub fn set_watchlist(&mut self, membership: plx_data::catalog::Membership) {
-        // When the disc snaps and when it animates is its own rule (`watchlist_disc::Disc::set`).
-        if self.watchlist.set(membership) {
-            plx_machine::idle::invalidate();
-        }
+    pub fn set_watchlist(&mut self, membership: plx_data::catalog::Membership) -> bool {
+        // The runner applies this changed-input effect to its owned Present. When
+        // the disc snaps or animates is still the disc's own motion rule.
+        self.watchlist.set(membership)
     }
 
     /// The membership the disc currently wears.
@@ -545,6 +545,7 @@ impl DetailScreen {
             ground.jump(AmbientWash::keyed(m.blur, [AmbientWash::GROUND_W; 4]));
         }
         Self {
+            caption_policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT),
             entry,
             sid,
             rk,
@@ -925,7 +926,7 @@ impl DetailScreen {
                 d.cur_season,
                 Some(i),
                 self.tab_scroll.pos,
-                self.season_pop.scale(0),
+                self.season_pop.scale(0, f.press),
             ),
             Some(Located::Episode(i, row)) => episodes::draw_focused(
                 f.painter,
@@ -967,7 +968,7 @@ impl DetailScreen {
 
     /// Shelf `which`'s cards over the published item `d` and the page's key projections.
     fn cards<'a>(&'a self, which: cards::Which, d: &'a Detail) -> cards::Cards<'a> {
-        Self::cards_of(&self.key_by_local, &self.local_by_key, which, d)
+        Self::cards_of(&self.key_by_local, &self.local_by_key, which, d, self.caption_policy)
     }
 
     /// [`cards`](Self::cards) without borrowing the whole screen, for a call that also borrows a
@@ -977,8 +978,9 @@ impl DetailScreen {
         local_by_key: &'a std::collections::HashMap<u32, u32>,
         which: cards::Which,
         d: &'a Detail,
+        policy: plx_ui::caption_policy::CaptionPolicy,
     ) -> cards::Cards<'a> {
-        cards::Cards::new(which, d, key_by_local, local_by_key)
+        cards::Cards::new(which, d, policy, key_by_local, local_by_key)
     }
 
     fn detail<'a>(&self, meta: plx_data::metadata::MetadataView<'a>) -> Option<&'a Detail> {
@@ -1716,7 +1718,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
                 let base =
                     hero::hero_btn_rect_at(set, i, self.hero_chain(measure, meta).btn_y - vertical, widths);
                 (
-                    base.scaled(self.ctl_pop.scale(i)),
+                    base.scaled(self.ctl_pop.scale(i, cx.press)),
                     base.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE),
                     Some(i as u32),
                 )
@@ -1728,7 +1730,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
                     self.tab_scroll.pos,
                 )?;
                 (
-                    base.scaled(self.season_pop.scale(0)),
+                    base.scaled(self.season_pop.scale(0, cx.press)),
                     base.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE),
                     Some(i as u32),
                 )
@@ -2034,14 +2036,15 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
         // Related and the collection's members are POSTER shelves: they follow the Under posters
         // setting, so the band each reserves and the caption `cards::label` builds cannot disagree.
         // Extras (landscape stills) and Cast (headshots) are not posters and keep the legacy block.
-        let policy = Some(crate::registry::captions::policy());
+        self.caption_policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
+        let policy = Some(self.caption_policy);
         self.related.set_caption_policy(policy);
         self.collection.set_caption_policy(policy);
         // The cards component's one entry: every event reaches every shelf it owns (its pop,
         // scroll and let-go ride the Tick, its placement the FocusMoved). What a card DOES stays
         // in `activate` below.
         if let Some(d) = self.detail(meta) {
-            let related = Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Related, d);
+            let related = Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Related, d, self.caption_policy);
             let wanted = matches!(self.related.on(ev, cx, &related, fx), Some(ui_cards::CardEvent::Want(_)));
             if matches!(ev, ScreenEvent::Tick(_)) && !d.related_tail.hubs.is_empty() {
                 // The row is the head and a window of the tail. The shelf's leading edge is the
@@ -2064,9 +2067,9 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                     )));
                 }
             }
-            self.collection.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Collection, d), fx);
-            self.extras.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Extras, d), fx);
-            self.cast.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Cast, d), fx);
+            self.collection.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Collection, d, self.caption_policy), fx);
+            self.extras.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Extras, d, self.caption_policy), fx);
+            self.cast.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Cast, d, self.caption_policy), fx);
         }
         match ev {
             ScreenEvent::Mount => {
@@ -2229,7 +2232,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                         if let Some(act) = trailer::trailer_key(key, sym, wcode) {
                             let ps = H::session(cx);
                             self.trailer_act(act, edge, input.at.ms, plx_media::player::playpos_ns(ps), plx_media::player::duration_ns(ps),
-                                plx_media::route::is_preview(ps) && H::transport_paused(cx), fx);
+                                plx_media::route::is_preview(ps) && H::transport_paused(cx), H::screen_inputs(cx).preference::<plx_plex::plex::session::SkipIntervalPref>(), fx);
                             return Handled::Yes;
                         }
                     }
@@ -2578,7 +2581,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Screen<H> for 
                             _ => None,
                         },
                         self.tab_scroll.pos,
-                        self.season_pop.scale(0),
+                        self.season_pop.scale(0, f.press),
                     ),
                     2 => {
                         episodes::draw(
@@ -2774,27 +2777,27 @@ impl DetailScreen {
         self.return_waiting(plx_data::stores::metadata::MetadataStore::default().view())
     }
 
-    fn art_identity(&self, d: Option<&Detail>) -> (ServerId, String, String) {
+    fn art_identity<'a>(&'a self, d: Option<&'a Detail>) -> (ServerId, &'a str) {
         if let Some(d) = d {
             let path = if d.is_show {
                 hero::hero_episode(d)
-                    .map(|ep| ep.thumb.clone())
+                    .map(|ep| ep.thumb.as_str())
                     .filter(|path| !path.is_empty())
-                    .unwrap_or_else(|| d.art.clone())
+                    .unwrap_or(&d.art)
             } else if d.kind == "episode" {
                 if d.thumb.is_empty() {
-                    d.art.clone()
+                    &d.art
                 } else {
-                    d.thumb.clone()
+                    &d.thumb
                 }
             } else {
-                d.art.clone()
+                &d.art
             };
-            return (d.sid, d.rk.clone(), path);
+            return (d.sid, path);
         }
         self.selected()
-            .map(|m| (m.sid, m.rk.clone(), m.art.clone()))
-            .unwrap_or((self.sid, self.rk.clone(), String::new()))
+            .map(|m| (m.sid, m.art.as_str()))
+            .unwrap_or((self.sid, ""))
     }
 
     fn draw_backdrop(
@@ -2808,16 +2811,16 @@ impl DetailScreen {
         let sf = (self.scroll.pos / (self.content_top(measure, meta) - plx_ui::detail_layout::TOP_MARGIN))
             .clamp(0.0, 1.0);
         let art_alpha = (1.0 - sf) * self.preview_art;
-        let (sid, _, path) = self.art_identity(d);
+        let (sid, path) = self.art_identity(d);
         let (texture, width, height) = if art_alpha > 0.01 {
-            plx_ui::widgets::resolve_tex_wh_on(sid.raw(), &path, 1920, 1080, 0)
+            plx_ui::widgets::resolve_tex_wh_on(sid.raw(), path, 1920, 1080, 0)
         } else {
             (0, 0.0, 0.0)
         };
         // The backdrop is DRAWN only when its alpha is visible (`art_alpha`), and a path with no
         // texture behind it is art that has not arrived: the bare wash is the placeholder.
         if backdrop_pending(art_alpha, texture, &path) {
-            plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::DetailBackdrop, &path);
+            plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::DetailBackdrop, path);
         }
         let ground_flat = self
             .ground
@@ -2829,41 +2832,17 @@ impl DetailScreen {
             tint: theme::with_a(theme::dim(theme::TINT_WHITE, 1.0 - sf * 0.55), art_alpha),
         };
         let visible = hero_alpha(self.scroll.pos, HERO_FADE);
-        // Both heroes use the proposal's three-stop atmosphere, including the preview fade.
-        let ramp = (visible > 0.01).then(|| {
-            let [y0, knee, mid, foot] = plx_ui::landing_hero::base_scrim_ramp(visible);
-            plx_ui::widgets::WashRamp {
-                ink: theme::scrim(1.0),
-                stops: [(y0, 0.0), (knee, mid * self.preview_base_scrim),
-                    (plx_ui::consts::SCR_H, foot * self.preview_base_scrim)],
-            }
-        });
-        // The still dissolves over its ground while the page scrolls, so where the ground is drawn
-        // the ground, the still and the ramp are one pass (`AmbientWash::draw_ground`).
-        let ramp_in_ground = if keyed_ground_over_plane(preview.picture, texture, art_alpha, ground_flat) {
-            self.ground.draw_ground(p, Rect::FULL, Some(art), ramp)
+        let shade = (visible > 0.01).then(|| self.hero_shade(visible));
+        let shade_in_ground = if keyed_ground_over_plane(preview.picture, texture, art_alpha, ground_flat) {
+            self.ground.draw_ground(p, Rect::FULL, Some(art), None, shade)
         } else {
             if texture != 0 {
                 p.tex_uv(art.tex, art.uv, art.rect, 0.0, art.tint);
             }
             false
         };
-        if let Some(ramp) = ramp.filter(|_| !ramp_in_ground) {
-            for pair in ramp.stops.windows(2) {
-                let [(top, a), (bottom, b)] = pair else { unreachable!() };
-                p.rect(
-                    Rect::new(0.0, *top, plx_ui::consts::SCR_W, bottom - top),
-                    0.0, theme::scrim(*a), theme::scrim(*b), 0.0,
-                );
-            }
-        }
-
-        if visible > 0.01 {
-            plx_ui::widgets::hero_scrim(
-                p,
-                visible * self.preview_field,
-                d.is_some_and(hero::has_people),
-            );
+        if let Some(shade) = shade.filter(|_| !shade_in_ground) {
+            plx_ui::widgets::scrim_layer(p, shade);
         }
         if self.scroll.pos > 0.0 && preview.picture {
             let a = (self.scroll.pos / plx_media::player::preview::COVER_SCROLL).clamp(0.0, 1.0);
@@ -2875,17 +2854,20 @@ impl DetailScreen {
     fn draw_hero<H: ContentLike + crate::registry::MetadataLike>(&self, p: Painter, cx: &Cx<'_, H>, d: Option<&Detail>, nav_page_alpha: f32) {
         let meta = H::metadata(cx);
         let measure = cx.measure;
-        use plx_ui::detail_layout::{HERO_TEXT_W, TITLE_BOTTOM};
+        use plx_ui::detail_layout::HERO_TEXT_W;
 
-        let (_, rk, _) = self.art_identity(d);
-        let title = d
-            .map(|d| d.title.as_str())
-            .or_else(|| self.selected().map(|m| m.title.as_str()))
-            .unwrap_or_else(|| {
-                // No item has landed: the hero's title IS the "Loading" message (counted at the draw).
-                plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::DetailTitle, &self.rk);
-                plx_platform::i18n::msg::browse_library_loading()
-            });
+        let (sid, logo) = if let Some(d) = d {
+            (d.sid, d.logo.as_deref().unwrap_or(&d.rk))
+        } else {
+            self.selected()
+                .map(|m| (m.sid, m.logo.as_deref().unwrap_or(&m.rk)))
+                .unwrap_or((self.sid, self.rk.as_str()))
+        };
+        let title = self.hero_title(d).unwrap_or_else(|| {
+            // No item has landed: the hero's title IS the "Loading" message (counted at the draw).
+            plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::DetailTitle, &self.rk);
+            plx_platform::i18n::msg::browse_library_loading()
+        });
         let chrome = p.alpha(self.preview_chrome);
         // NOT `self.preview_chrome * self.preview_synopsis`: synopsis_target already tracks
         // chrome_target exactly (both states — background autoplay, full-trailer — target the
@@ -2893,35 +2875,9 @@ impl DetailScreen {
         // along the SQUARE of the intended curve instead of the same rate as the logo/title.
         let synopsis_alpha = p.alpha(self.preview_synopsis);
 
-        // Interpolate continuously between the hero position/size and the top-left compact spot a
-        // trailer's background autoplay shrinks the logo into — `preview_logo.pos` is the spring's
-        // live 0..1 progress (see `preview_tick`). `LogoRung::lerp` keeps `HeroLogo::fit`'s
-        // constant-area solve continuous across the whole travel instead of snapping partway
-        // through it (`ui/hero_logo.rs`'s own module doc: sizing is area-based, not a height clamp).
-        let hero_band = plx_ui::hero_logo::band_h(LogoRung::Hero);
+        let spot = self.logo_spot(measure, meta);
         let compact_band = plx_ui::hero_logo::band_h(LogoRung::Compact);
-        let t = self.preview_logo.pos;
-        let lerp = |a: f32, b: f32| a + (b - a) * t;
-        let band = Rect::new(
-            lerp(plx_ui::consts::MARGIN_X, plx_ui::detail_layout::PREVIEW_LOGO_X),
-            lerp(TITLE_BOTTOM - hero_band, plx_ui::detail_layout::PREVIEW_LOGO_Y),
-            lerp(HERO_TEXT_W, plx_ui::detail_layout::PREVIEW_LOGO_MAX_W),
-            lerp(hero_band, compact_band),
-        );
-        // The pinned corner spot (`t` near 1) sits well inside the below-hero flow's own reach:
-        // `content_top(measure)` — the first section's top — is under a screen height away, so the
-        // caller's `hero_alpha`/`HERO_FADE` window (400px) was still fading the mark, semi-visible,
-        // while a section (Extras, depending on order) had already scrolled up underneath it. Ties
-        // the logo's OWN extra fade to the same "how far into the below-hero flow" fraction
-        // `draw_backdrop`'s `sf` already computes, so it is fully gone by the time the flow starts
-        // and back once scrolled to the top — and only while shrunk (`t`), so a normal hero (no
-        // preview) is untouched.
-        let hero_extent = (self.content_top(measure, meta) - plx_ui::detail_layout::TOP_MARGIN).max(1.0);
-        let logo_alpha = p.alpha(
-            self.preview_chrome * preview_logo_scroll_alpha(self.scroll.pos, hero_extent, t),
-        );
-        HeroLogo::new(self.sid.raw(), &rk, title, LogoRung::lerp(LogoRung::Hero, LogoRung::Compact, t))
-            .draw(logo_alpha, band, cx.measure);
+        HeroLogo::new(sid.raw(), logo, title, spot.rung).draw(p.alpha(spot.alpha), spot.band, cx.measure);
 
         let (lead, synopsis) = hero_blurb(d, self.selected());
         let synopsis_view = plx_ui::hero_synopsis(&synopsis, &lead).with_measure(measure);
@@ -2934,7 +2890,7 @@ impl DetailScreen {
         // nothing there vanish and come back under a playing preview.
         let prose = p.alpha(self.preview_chrome * self.preview_prose);
         if let Some(d) = d {
-            self.draw_identity_line(prose, d, chain.meta_y, cx.measure);
+            self.identity_row(prose, d, chain.meta_y, cx.measure);
             self.draw_ratings(prose, d, chain.ratings_y, cx.measure);
         }
         if !synopsis.is_empty() {
@@ -2967,7 +2923,52 @@ impl DetailScreen {
         );
     }
 
-    fn draw_identity_line(&self, p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) {
+    /// The title the hero shows (a logo's fallback text): the item's own, else the selection's;
+    /// `None` while no item has landed (the caller names that "Loading").
+    fn hero_title<'a>(&'a self, d: Option<&'a Detail>) -> Option<&'a str> {
+        d.map(|d| d.title.as_str()).or_else(|| self.selected().map(|m| m.title.as_str()))
+    }
+
+    /// **Where the hero's logo stands this frame**, in page coordinates: interpolated continuously
+    /// between the hero position/size and the top-left compact spot a trailer's background autoplay
+    /// shrinks the logo into — `preview_logo.pos` is the spring's live 0..1 progress (see
+    /// `preview_tick`). `LogoRung::lerp` keeps `HeroLogo::fit`'s constant-area solve continuous
+    /// across the whole travel instead of snapping partway through it (`ui/hero_logo.rs`'s own
+    /// module doc: sizing is area-based, not a height clamp). The shade follows the same spring.
+    ///
+    /// The pinned corner spot (`t` near 1) sits well inside the below-hero flow's own reach:
+    /// `content_top(measure)` — the first section's top — is under a screen height away, so the
+    /// caller's `hero_alpha`/`HERO_FADE` window (400px) was still fading the mark, semi-visible,
+    /// while a section (Extras, depending on order) had already scrolled up underneath it. Ties
+    /// the logo's OWN extra fade to the same "how far into the below-hero flow" fraction
+    /// `draw_backdrop`'s `sf` already computes, so it is fully gone by the time the flow starts
+    /// and back once scrolled to the top — and only while shrunk (`t`), so a normal hero (no
+    /// preview) is untouched.
+    fn logo_spot(&self, measure: &dyn plx_machine::machine::Measure, meta: plx_data::metadata::MetadataView<'_>) -> LogoSpot {
+        use plx_ui::detail_layout::{HERO_TEXT_W, TITLE_BOTTOM};
+        let hero_band = plx_ui::hero_logo::band_h(LogoRung::Hero);
+        let compact_band = plx_ui::hero_logo::band_h(LogoRung::Compact);
+        let t = self.preview_logo.pos;
+        let lerp = |a: f32, b: f32| a + (b - a) * t;
+        let band = Rect::new(
+            lerp(plx_ui::consts::MARGIN_X, plx_ui::detail_layout::PREVIEW_LOGO_X),
+            lerp(TITLE_BOTTOM - hero_band, plx_ui::detail_layout::PREVIEW_LOGO_Y),
+            lerp(HERO_TEXT_W, plx_ui::detail_layout::PREVIEW_LOGO_MAX_W),
+            lerp(hero_band, compact_band),
+        );
+        let hero_extent = (self.content_top(measure, meta) - plx_ui::detail_layout::TOP_MARGIN).max(1.0);
+        LogoSpot {
+            band,
+            rung: LogoRung::lerp(LogoRung::Hero, LogoRung::Compact, t),
+            alpha: self.preview_chrome * preview_logo_scroll_alpha(self.scroll.pos, hero_extent, t),
+        }
+    }
+
+    fn hero_shade(&self, visible: f32) -> plx_ui::widgets::WashScrim {
+        plx_ui::landing_hero::detail_shade(visible, self.preview_field, self.preview_base_scrim, self.preview_logo.pos)
+    }
+
+    fn identity_row(&self, p: Painter, d: &Detail, y: f32, measure: &dyn plx_machine::machine::Measure) {
         let ordinal = (d.kind == "episode" && d.season > 0 && d.index > 0)
             .then(|| plx_ui::fmt::episode_ordinal(d.season, d.index))
             .unwrap_or_default();
@@ -2993,9 +2994,8 @@ impl DetailScreen {
             (d.subs.iter().any(|s| s.sdh), plx_platform::i18n::msg::widgets_badge_sdh()),
             (d.audio.iter().any(|s| s.ad), plx_platform::i18n::msg::widgets_badge_ad()),
         ].into_iter().filter_map(|(present, label)| present.then_some(label)).collect();
-        plx_ui::widgets::hero_identity(p, Rect::new(plx_ui::consts::MARGIN_X, y,
-            plx_ui::detail_layout::HERO_TEXT_W, plx_ui::widgets::BADGE_H),
-            &parts, resolution.as_deref(), &chips, measure);
+        let r = Rect::new(plx_ui::consts::MARGIN_X, y, plx_ui::detail_layout::HERO_TEXT_W, plx_ui::widgets::BADGE_H);
+        plx_ui::widgets::hero_identity(p, r, &parts, resolution.as_deref(), &chips, measure);
     }
 
     fn draw_ratings(
@@ -3053,13 +3053,8 @@ impl DetailScreen {
         // fades every button through `chrome`'s `preview_chrome` alpha (`draw_hero`), and cutting
         // four of the five pills here a frame early defeats that fade before it can be seen.
         let (controls, n) = hero::hero_ctls(set);
-        let last = hero::hero_btn_rect_at(set, n.saturating_sub(1), y, widths);
-        let row = [
-            plx_ui::consts::MARGIN_X,
-            y - self.scroll.pos,
-            last.x + last.w - plx_ui::consts::MARGIN_X,
-            hero::CD,
-        ];
+        let row = hero::hero_row_rect(set, y, widths);
+        let row = [row.x, row.y - self.scroll.pos, row.w, row.h];
         let picture = plx_media::player::preview::view().picture;
         // A text-recording pass (the transition's prewarm, or a headless sweep) drew no pixels
         // under this row, so a read-back there would sample some other page's ground.
@@ -3074,14 +3069,14 @@ impl DetailScreen {
                 .unwrap_or_default()
         };
         let ground = if picture {
-            ControlGround::Unkeyed
+            ControlGround::VideoPreview
         } else {
             ControlGround::Keyed
         };
         for (i, ctl) in controls[..n].iter().copied().enumerate() {
             let rect = hero::hero_btn_rect_at(set, i, y, widths);
             let fill = self.ctl_pop.focus(i);
-            let scale = self.ctl_pop.scale(i);
+            let scale = self.ctl_pop.scale(i, cx.press);
             match ctl {
                 hero::HeroCtl::Play => Button::new(
                     hero::hero_pill_label(set.restart).as_ptr(),
@@ -3160,7 +3155,7 @@ impl DetailScreen {
             return;
         }
         let band = plx_ui::hero_logo::band_h(LogoRung::Compact);
-        HeroLogo::new(d.sid.raw(), &d.rk, &d.title, LogoRung::Compact)
+        HeroLogo::new(d.sid.raw(), d.logo.as_deref().unwrap_or(&d.rk), &d.title, LogoRung::Compact)
             .align(HAlign::Center)
             .draw(
                 p.alpha(alpha),
@@ -3262,6 +3257,14 @@ fn preview_completed_naturally(had_picture: bool, has_picture: bool, promoted: b
 /// item-resolution logic.
 fn preview_already_played(played_for: Option<&str>, current_cache_rk: &str) -> bool {
     played_for == Some(current_cache_rk)
+}
+
+/// Where the hero's logo stands this frame ([`DetailScreen::logo_spot`]): its band in page
+/// coordinates, the rung it is sized at, and the alpha it is drawn with.
+struct LogoSpot {
+    band: Rect,
+    rung: LogoRung,
+    alpha: f32,
 }
 
 /// The preview-shrunk logo's own extra scroll fade, multiplied onto `chrome` in `draw_hero`.
@@ -3551,7 +3554,7 @@ impl DetailScreen {
             else if sec == SectionId::Cast.raw() { Some(cards::Which::Cast) }
             else { None };
         if let Some(which) = which {
-            let len = Self::cards_of(&self.key_by_local, &self.local_by_key, which, d).count();
+            let len = Self::cards_of(&self.key_by_local, &self.local_by_key, which, d, self.caption_policy).count();
             let shelf = match which {
                 cards::Which::Related => &mut self.related,
                 cards::Which::Collection => &mut self.collection,
@@ -3945,8 +3948,10 @@ impl DetailScreen {
         if moving || meta.season_loading() {
             fx.note(PresentEvent::Motion);
         }
-        self.preview_tick(t.ms, dt, focused, plx_media::player::duration_ns(H::session(cx)),
-            plx_media::route::is_preview(H::session(cx)) && H::transport_paused(cx), fx, meta);
+        if H::native_preview_available(cx) {
+            self.preview_tick(t.ms, dt, focused, plx_media::player::duration_ns(H::session(cx)),
+                plx_media::route::is_preview(H::session(cx)) && H::transport_paused(cx), fx, meta);
+        }
         let hint = self.hint_input(cx, focused);
         self.hold_hint.step(hint, t.ms, dt, &mut |ev| fx.note(ev));
     }
@@ -4088,8 +4093,8 @@ impl DetailScreen {
         // Synopsis stays through background autoplay and only fades once full-trailer mode takes
         // the whole page off the screen.
         let synopsis_target = if full_trailer { 0.0 } else { 1.0 };
-        // The scrim/wedge strength: `view.field` normally (1.0 idle, `PREVIEW_FIELD` once a
-        // picture is up, protecting the logo+synopsis), and NOTHING in full-trailer mode — the
+        // The hero shade's strength: `view.field` normally (1.0 idle, `PREVIEW_FIELD` once a
+        // picture is up, protecting the compact logo), and NOTHING in full-trailer mode — the
         // page keeps no ink up there to protect, and the trailer's own transport brings the only
         // scrim the state needs (`player_hud::classic::draw_scrim`, at the bottom, under the playbar).
         let field_target = if full_trailer { 0.0 } else { view.field };
@@ -4246,13 +4251,14 @@ impl DetailScreen {
         live_ns: Option<i64>,
         duration_ns: Option<i64>,
         preview_paused: bool,
+        interval: plx_plex::plex::session::SkipInterval,
         fx: &mut Effects<'_, H>,
     ) {
         use trailer::TrailerKey;
         if let TrailerKey::Scrub(fwd) = act {
             let commit = match edge {
                 Edge::Down => duration_ns.zip(live_ns).and_then(|(duration_ns, live_ns)| {
-                    self.trailer_ctl.scrub_fresh(fwd, now, duration_ns, live_ns)
+                    self.trailer_ctl.scrub_fresh(fwd, now, duration_ns, live_ns, interval)
                 }),
                 Edge::Repeat => {
                     self.trailer_ctl.scrub_repeat(now);
@@ -4283,7 +4289,11 @@ impl DetailScreen {
             TrailerKey::Toggle => self.content(fx, ContentReq::PreviewTransport(None)),
             TrailerKey::Play => self.content(fx, ContentReq::PreviewTransport(Some(true))),
             TrailerKey::Pause => self.content(fx, ContentReq::PreviewTransport(Some(false))),
-            TrailerKey::Reveal => {}
+            TrailerKey::ToggleHud => {
+                self.trailer_ctl.toggle_controls(preview_paused);
+                fx.invalidate(Provenance::Input);
+                return;
+            }
             TrailerKey::Scrub(_) => unreachable!("handled above, on every edge"),
         }
         // Any key the mode kept puts the controls back on screen for a fresh linger — the player
@@ -4488,6 +4498,7 @@ impl DetailScreen {
                     title: title.to_string(),
                     context: plx_data::metadata::TRAILER_CONTEXT.into(),
                     version: None,
+                    show_rk: String::new(),
                 };
                 self.content(fx, ContentReq::Play { play, resume_ns: 0 });
             }
@@ -4602,6 +4613,9 @@ impl DetailScreen {
                     title: d.title.clone(),
                     context: String::new(),
                     version,
+                    // An episode page plays its own episode: its show keys the queue. A movie
+                    // page has none.
+                    show_rk: d.episodes_show_rk().to_owned(),
                 },
                 |m| PlayIntent::Movie { item: m.clone(), version },
             );
@@ -4653,6 +4667,7 @@ impl DetailScreen {
         let now_playing = plx_data::metadata::NowPlaying {
             is_episode: true,
             is_real_episode: true,
+            is_movie: false,
             title: d.title.clone(),
             ep_title: ep.title.clone(),
             season: ep.season,
@@ -4681,6 +4696,7 @@ impl DetailScreen {
             title,
             context,
             version,
+            show_rk: d.episodes_show_rk().to_owned(),
         };
         self.content(fx, ContentReq::Play { play, resume_ns });
         true

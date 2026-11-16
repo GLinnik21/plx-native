@@ -68,9 +68,7 @@ pub fn pill_w(measure: &dyn Measure, label: &CStr, sz: i32, icon: bool, trailing
 }
 
 /// **The one verb for the Play control: "Resume" when the title has a resume point, else "Play".**
-/// The Home hero's pill, the Detail hero's pill and the card menu's first row all say it through
-/// this function (and [`play_text`]), so one resume point can never be called "Continue" on one
-/// page and "Resume" on the next.
+/// Shared by the Detail hero and card menu, and by Home when it has no resume duration to show.
 pub fn play_label(resumes: bool) -> &'static CStr {
     if resumes {
         plx_platform::i18n::msg::browse_detail_resume_c()
@@ -79,7 +77,7 @@ pub fn play_label(resumes: bool) -> &'static CStr {
     }
 }
 
-/// Play/Resume geometry for both heroes. Labels grow naturally beyond the design minimum.
+/// Geometry for the text-only Play/Resume pills. Labels grow naturally beyond the design minimum.
 pub fn play_width(measure: &dyn Measure, label: &CStr) -> f32 {
     pill_w(measure, label, theme::size::BODY, true, None).max(PW)
 }
@@ -140,6 +138,17 @@ pub fn row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
     Rect::new(x + leading_air, y, w, CD)
 }
 
+/// **Home's action row as ONE stack**: `items` from the left margin, each exactly [`CGAP`] after the
+/// one before it, between VISIBLE marks, none carrying focus air. Detail's row ([`row_rect`]) keeps
+/// the Play capsule's pop in its width, which opens a wider first gap; Home's board spaces Play, the
+/// Watchlist disc and Info alike, and the pill's own pop closes on that gap instead. A control is its
+/// box (a pill, a disc), so the one gap is the gap the eye reads between every pair, whatever follows
+/// what. (The billboard's pager is not in this run: it follows the last control with its own spacing,
+/// `screens::home::hero_pager`.)
+pub fn flat_row(items: &[Item]) -> HStack<'_> {
+    HStack::new(items, CGAP, Align::Leading(plx_ui::consts::MARGIN_X))
+}
+
 /// Reserved right edge, including a capsule's focus expansion, for the unfurl budget.
 pub fn row_right(widths: &[f32]) -> f32 {
     row_rect(widths, widths.len(), 0.0).x - if widths.is_empty() { 0.0 } else { CGAP }
@@ -195,10 +204,6 @@ pub fn time_facts(year: i64, aired: &str, episode: bool, dur_ms: i64, resume_ms:
         } else { plx_ui::fmt::duration(dur_ms) }
     });
     (date, length)
-}
-
-pub fn listing_facts(item: &plx_data::pms::PmsMovie) -> (String, Option<String>) {
-    time_facts(i64::from(item.year), &item.aired, item.kind == 3, item.dur_ns / 1_000_000, item.resume_ms)
 }
 
 /// An on-deck episode supplies its own date and runtime; an unstarted show keeps its extent.

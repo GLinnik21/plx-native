@@ -29,16 +29,23 @@
 //! * **Re-read.** A burst of landed writes owes one re-read (`take_reread_owed`), issued two
 //!   seconds later so the burst is over.
 //!
-//! What the application does with the page's requests is `content::watchlist_requests`.
+//! Page commands execute at their dispatcher FIFO position through `content::execute_watchlist_command`.
 use std::collections::HashMap;
 
 use plx_data::stores::watchlist::{Status, WatchlistCmd};
 use plx_data::watchlist::ledger::Intent;
 use plx_screens::registry::{AppArg, WatchlistMenuArg};
 use plx_screens::watchlist::options::WatchlistOptionsState;
-use plx_screens::watchlist::page::{ListState, MatchedFacts, WatchTile, WatchlistIn, WatchlistOut, WatchlistScreen};
+use plx_screens::watchlist::page::{ListState, MatchedFacts, WatchTile, WatchlistIn, WatchlistScreen};
 
 use super::*;
+
+/// Publication admission belongs to the observing dispatcher's page, not to a store worker.
+fn note_feed_landing(d: &mut Dispatcher<AppHost>, store: StoreId) {
+    d.present.note_in_scope(plx_machine::present::Scope::Page,
+        plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Landing(
+            MachineId::Store(store.ord()))));
+}
 
 /// How long after a burst of landed writes the list is read again.
 const REREAD_DELAY_MS: u32 = 2_000;
@@ -243,7 +250,7 @@ impl Bridge {
             }
         }
         if changed {
-            plx_machine::idle::invalidate();
+            note_feed_landing(d, StoreId::Watchlist);
         }
     }
 
@@ -269,14 +276,14 @@ impl Bridge {
     /// A bookmark press (or the hold menu's Remove) on the catalog id `hex`.
     pub(crate) fn watchlist_press(&mut self, hex: [u8; 12], intent: Intent) {
         self.stores.watchlist.run(WatchlistCmd::Press { hex, intent });
-        plx_machine::idle::invalidate();
+        // The feed owns the resulting visual delta, after any menu veil is lifted.
     }
 
     /// Read the list again (and with it the matches): Try again on the unreachable read-out, and
     /// a resume or a long cover of a live Watchlist page (`reread.rs`).
     pub(crate) fn watchlist_reread(&mut self) {
         self.stores.watchlist.run(WatchlistCmd::Reread);
-        plx_machine::idle::invalidate();
+        // A reread with unchanged publication has no visual authority.
     }
 
     /// Try again on the unreachable read-out.
@@ -309,7 +316,7 @@ impl Bridge {
         let (sort, filter) = options.specs();
         self.stores.watchlist.run(WatchlistCmd::Sort(sort));
         self.stores.watchlist.run(WatchlistCmd::Filter(filter));
-        plx_machine::idle::invalidate();
+        // Options land through watchlist_feed; a veiled host keeps its existing publication.
     }
 
     /// The menu argument for the Sort & Filter surface over the page `host`: the store's current
@@ -399,16 +406,6 @@ impl Bridge {
         }
     }
 
-    /// A page's request as the bridge would have collected it from the dispatcher (tests that drive
-    /// `content::watchlist_requests` without the page's key path).
-    #[cfg(all(test, feature = "hostsim"))]
-    pub(crate) fn push_watchlist_req_for_test(&mut self, from: MachineId, req: WatchlistOut) {
-        self.watchlist_reqs.push((from, req, ReturnState::default()));
-    }
-
-    pub(crate) fn take_watchlist_reqs(&mut self) -> Vec<(MachineId, WatchlistOut, ReturnState<u32, PageMemory>)> {
-        std::mem::take(&mut self.watchlist_reqs)
-    }
 
     /// Is this catalog id on the watchlist, intents in flight counted? (The Detail and catalog
     /// bookmark faces read it.)
@@ -422,7 +419,6 @@ impl Bridge {
     pub(crate) fn watchlist_open_if_idle(&mut self) {
         if self.stores.watchlist.view().status() == Status::Idle {
             self.stores.watchlist.run_with_input(WatchlistCmd::Open, &Self::watchlist_input());
-            plx_machine::idle::invalidate();
         }
     }
 
@@ -476,9 +472,9 @@ impl Bridge {
     /// bookmark disc of every Detail page on the stack.
     pub(crate) fn catalog_feed(&mut self, d: &mut Dispatcher<AppHost>) {
         use plx_screens::registry::ContentArg;
-        if self.catalog_pump() {
-            plx_machine::idle::invalidate();
-        }
+        self.catalog_pump();
+        // Pumping is route-unconditional; publication to a veiled host is not.
+        if plx_ui::containers::modal::page_veiled() { return; }
         let mut catalog: Option<(EntryId, [u8; 12])> = None;
         let mut details: Vec<EntryId> = Vec::new();
         let mut homes: Vec<EntryId> = Vec::new();
@@ -496,7 +492,8 @@ impl Bridge {
                 .and_then(|i| i.screen.as_any_mut())
                 .and_then(|a| a.downcast_mut::<plx_screens::detail::DetailScreen>()) else { continue };
             let Some(hex) = screen.watchlist_hex() else { continue };
-            screen.set_watchlist(membership_in(&self.stores.watchlist.view(), &hex));
+            let changed = screen.set_watchlist(membership_in(&self.stores.watchlist.view(), &hex));
+            if changed { note_feed_landing(d, StoreId::Watchlist); }
             self.watchlist_open_if_idle();
         }
         // The Home hero's bookmark disc, for the title the hero shows now.
@@ -533,11 +530,12 @@ impl Bridge {
         {
             *status = tile.into();
         }
-        screen.input(plx_screens::catalog::CatalogViewModel {
+        let mut changed = screen.input(plx_screens::catalog::CatalogViewModel {
             load,
             membership: self.stores.catalog.membership(&self.stores.watchlist).into(),
         });
-        screen.set_art_server(self.stores.watchlist.view().art_server());
+        changed |= screen.set_art_server(self.stores.watchlist.view().art_server());
+        if changed { note_feed_landing(d, StoreId::Catalog); }
     }
 
     /// The catalog page's re-read (`reread.rs`): the list again, which re-matches the title, and

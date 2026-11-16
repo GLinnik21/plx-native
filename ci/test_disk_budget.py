@@ -13,7 +13,10 @@ hard links, the PlxNative marker, `/tmp` discovery, `origin/main` merged detecti
 local `main` that is behind, and that detecting one writes nothing into the repository), and that
 `report` leaves the disk exactly as it found it.
 """
+import argparse
+import contextlib
 import importlib.util
+import io
 import os
 import shutil
 import subprocess
@@ -21,6 +24,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -868,6 +872,123 @@ class Inventory(Repo):
         self.assertTrue(db.live_for("/t/y", None, None, snap, True, False).cargo_lock)
 
 
+class OtherVolume(Repo):
+    """A tree on another volume than the build (a lane worktree on a slow USB disk): the inventory lists it,
+    and nothing more. Sizing it, asking git about its lane or probing its locks reads a disk the build never
+    writes to, which stalled the preflight for 20-35 minutes on a spinning one, and `never()` throws the
+    tree out afterwards anyway. A second real device is impractical in CI, so the one device lookup
+    (`device_of`) is stubbed, and every reader the inventory must NOT reach for such a tree raises."""
+
+    OTHER = 4242
+
+    def foreign(self, *prefixes, check=()):
+        """Stub the device lookup so everything under `prefixes` is another volume, and make every reader
+        of such a tree raise: a sizing walk, an mtime walk, a git probe, a cargo-lock probe. The `make check`
+        lock probe is the one reader that is allowed: it flocks a file in the local lock directory named by a
+        hash of the checkout's path and reads nothing on the checkout's own disk, so a probe of a foreign
+        checkout is recorded in `foreign_lock_probes` rather than refused. `check` are the checkouts whose
+        lock reads as held."""
+        real_device_of = db.device_of
+        self.other = prefixes
+        self.foreign_lock_probes = []
+
+        def is_other(path):
+            return any(db.under(path, p) for p in prefixes)
+
+        def device_of(path):
+            return self.OTHER if is_other(path) else real_device_of(path)
+
+        stubs = {"device_of": device_of}
+        for name in ("measure", "newest_mtime", "tracked_under", "is_merged", "is_clean"):
+            def guard(path, *args, _orig=getattr(db, name), _name=name, **kw):
+                if is_other(path):
+                    raise AssertionError("%s read a tree on another volume: %s" % (_name, path))
+                return _orig(path, *args, **kw)
+            stubs[name] = guard
+        for name, stub in stubs.items():
+            patcher = mock.patch.object(db, name, stub)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        class Probes(QuietProbes):
+            def cargo_locked(probes, path):
+                if is_other(path):
+                    raise AssertionError("a lock probe reached a tree on another volume: %s" % path)
+                return super().cargo_locked(path)
+
+            def check_locked(probes, checkout):
+                if is_other(checkout):
+                    self.foreign_lock_probes.append(checkout)
+                return super().check_locked(checkout)
+
+        return Probes(check=check)
+
+    def test_a_lane_on_another_volume_is_listed_but_never_sized_probed_or_planned(self):
+        das = self.lane("das-lane")
+        das_target = os.path.join(das, "rust-modules", "target")
+        das_fleet = os.path.join(self.fleet, "das-lane", "target")
+        local = self.lane("local-lane")
+        local_target = os.path.join(local, "rust-modules", "target")
+        main_target = os.path.join(self.main, "rust-modules", "target")
+        for path in (das_target, das_fleet, local_target, main_target):
+            cargo_tree(path, incr=1, hours=40)
+        probes = self.foreign(das, os.path.join(self.fleet, "das-lane"))
+
+        i = self.collect(probes)
+        by = self.by_path(i)
+
+        for path, kind in ((das_target, "lane"), (das_fleet, "fleet")):
+            t = by[path]
+            self.assertEqual((t.dev, t.kind, t.owner), (self.OTHER, kind, "das-lane"), path)
+            self.assertEqual((t.private_bytes, t.alloc_bytes, t.incr_bytes, t.merged, t.clean), (0, 0, 0, False, False), path)
+        self.assertEqual(by[das_target].checkout, das)
+        self.assertGreater(by[local_target].private_bytes, 0, "a tree on the build's own volume is still sized")
+
+        build = main_target
+        pl = db.plan(i, 1 * GIB, 30 * GIB, TH, self.main, NOW_REAL, build)
+        self.assertTrue(pl.actions, "the local trees are still planned")
+        touched = {a.tree for a in pl.actions} | {p for a in pl.actions for p in a.paths}
+        self.assertFalse([p for p in touched if p in (das_target, das_fleet)], "the planner took a tree on another volume")
+        _, kept = db.ladder(i, TH, self.main, NOW_REAL, build)
+        for path in (das_target, das_fleet):
+            self.assertEqual(kept[path], "never: on another volume than the build", path)
+        self.assertEqual(self.foreign_lock_probes, [], "a lock probe reached a tree on another volume")
+
+    def test_a_lane_checkout_on_another_volume_is_never_read_though_its_fleet_tree_is_local(self):
+        """A fleet tree is its lane's CARGO_TARGET_DIR kept OUTSIDE the worktree, on the build's own volume,
+        while the lane's checkout may sit on the slow disk: the tree is listed and sized like any local one,
+        but the lane's git facts (a `git status` over the whole worktree, the squash check) are never asked,
+        so such a lane reads neither merged nor clean. The `make check` lock is still asked: it reads a
+        local lock file, and a check running in that checkout is building into this very tree."""
+        das = self.lane("das-lane")
+        fleet_target = os.path.join(self.fleet, "das-lane", "target")
+        main_target = os.path.join(self.main, "rust-modules", "target")
+        cargo_tree(fleet_target, incr=1, hours=40)
+        cargo_tree(main_target, hours=40)
+        probes = self.foreign(das, check=(das,))
+
+        t = self.by_path(self.collect(probes))[fleet_target]
+
+        self.assertEqual((t.kind, t.owner, t.checkout), ("fleet", "das-lane", das))
+        self.assertNotEqual(t.dev, self.OTHER, "the tree itself is on the build's volume")
+        self.assertGreater(t.private_bytes, 0, "a tree on the build's own volume is still sized")
+        self.assertEqual((t.merged, t.clean), (False, False))
+        self.assertTrue(t.live.check_lock, "a `make check` running in the checkout must still protect the tree")
+        self.assertEqual(self.foreign_lock_probes, [das])
+
+    def test_the_report_says_such_a_tree_is_on_another_volume_and_not_sized(self):
+        das = self.lane("das-lane")
+        das_target = os.path.join(das, "rust-modules", "target")
+        cargo_tree(das_target, hours=40)
+        cargo_tree(os.path.join(self.main, "rust-modules", "target"), hours=40)
+        i = self.collect(self.foreign(das))
+        env = dict(self.env, PLX_GC_LOG=os.path.join(self.tmp, "gc.log"))
+        text = db.render(i, TH, 5 * GIB, 100 * GIB, self.main, os.path.join(self.main, "rust-modules", "target"),
+                         int(3.4 * GIB), NOW_REAL, env)
+        row = next(line for line in text.splitlines() if "target" in line and "das-lane" in line)
+        self.assertIn("other volume (not sized)", row)
+
+
 class Report(Repo):
     def run_report(self, free_kib, extra=(), lsof_body="#!/bin/sh\nprintf 'p1\\ncsh\\nfcwd\\nn/\\n'\nexit 1\n", **env):
         bin_dir = tempfile.TemporaryDirectory(prefix="disk-budget-bin-")
@@ -1205,6 +1326,579 @@ class IndexIsNeverRefreshed(Repo):
         before = state()
         self.collect()
         self.assertEqual(before, state(), "collect() refreshed a lane's index")
+
+
+# ---------------------------------------------------------------------------------------------------
+# The cold store's park-ahead pass: which idle trees are candidates (a pure function of the inventory),
+# the probe that is asked again right before a tree moves, the pass that parks them up to a budget, and the
+# waiting-preflight flag that stops it between trees. docs/disk-budget.md, "The cold store".
+# ---------------------------------------------------------------------------------------------------
+COLD_SCRIPT = os.path.join(ROOT, "tools", "cold-store.py")
+cold_spec = importlib.util.spec_from_file_location("cold_store_for_disk_budget", COLD_SCRIPT)
+cold = importlib.util.module_from_spec(cold_spec)
+cold_spec.loader.exec_module(cold)
+PARK_TH = db.Thresholds(idle_secs=2 * HOUR)
+
+
+def copy_stub(src, dst):
+    shutil.copytree(src, dst, symlinks=True)
+
+
+def candidate_paths(i, th=PARK_TH, now=NOW):
+    return [c.path for c in db.park_candidates(i, th, now)]
+
+
+class ParkCandidates(unittest.TestCase):
+    def setUp(self):
+        self.i = inv(
+            tree("/w/a/rust-modules/target", gib=4, age=3),                          # idle lane, 3 h
+            tree("/w/b/rust-modules/target", gib=4, age=9),                          # idle lane, 9 h (oldest lane)
+            tree("/w/y/rust-modules/target", gib=4, age=1),                          # young lane, 1 h: under the 2 h idle
+            tree("/w/c/rust-modules/target", gib=3, incr=1, age=6),                  # lane with an incremental dir
+            tree("/tmp/young", kind="tmp", gib=2, age=4),                            # /tmp tree, idle 4 h (rung 3)
+            tree("/tmp/old", kind="tmp", gib=2, age=50),                             # /tmp garbage: deleted, not parked
+            tree("/fleet/gone/target", kind="fleet", gib=1.5, age=30, orphan=True),  # orphan: garbage
+            tree("/w/m/rust-modules/target", gib=2, age=12, checkout="/w/m", owner="m", merged=True, clean=True),
+            tree("/w/md/rust-modules/target", gib=2, age=13, checkout="/w/md", owner="md", merged=True),
+            tree("/w/live/rust-modules/target", gib=3, age=8, live=live(open_files=("rustc",))),
+            tree("/main/rust-modules/target", kind="main", gib=5, age=20, checkout="/main", owner="main"),
+            tree("/cache/cargo-seed/abc", kind="seed", gib=0.5, age=90, checkout=None),
+            tree("/mnt/slow/rust-modules/target", gib=9, age=40, dev=99),            # another volume
+            tree("/w/t/rust-modules/target", gib=2, age=7, tracked=True),
+            tree("/w/z/rust-modules/target", gib=0, age=7),
+            volume_dev=1)
+
+    def test_only_idle_whole_lane_trees_and_idle_tmp_trees_are_candidates_oldest_first(self):
+        got = candidate_paths(self.i)
+        self.assertEqual(got, ["/w/b/rust-modules/target", "/w/c/rust-modules/target", "/tmp/young",
+                               "/w/a/rust-modules/target"])
+        by = {c.path: c for c in db.park_candidates(self.i, PARK_TH, NOW)}
+        self.assertEqual(by["/w/b/rust-modules/target"].kind, "lane")
+        self.assertEqual(by["/w/b/rust-modules/target"].checkout, "/w/b")
+        self.assertEqual(by["/tmp/young"].kind, "tmp")
+        self.assertEqual(by["/tmp/young"].checkout, "")
+        self.assertEqual(by["/w/c/rust-modules/target"].private_bytes, 3 * GIB,
+                         "a parked tree frees its WHOLE private size, the incremental dir included")
+
+    def test_never_garbage_main_seed_live_young_merged_foreign_tracked_or_empty_trees(self):
+        got = set(candidate_paths(self.i))
+        for kept in ("/tmp/old", "/fleet/gone/target", "/w/m/rust-modules/target", "/w/md/rust-modules/target",
+                     "/w/live/rust-modules/target", "/main/rust-modules/target", "/cache/cargo-seed/abc",
+                     "/mnt/slow/rust-modules/target", "/w/t/rust-modules/target", "/w/z/rust-modules/target",
+                     "/w/y/rust-modules/target"):
+            self.assertNotIn(kept, got)
+
+    def test_the_idle_window_is_the_one_the_caller_passes(self):
+        short = candidate_paths(self.i, th=db.Thresholds(idle_secs=30 * 60))
+        self.assertIn("/w/y/rust-modules/target", short)
+        self.assertNotIn("/w/y/rust-modules/target", candidate_paths(self.i, th=db.Thresholds(idle_secs=2 * HOUR)))
+
+    def test_the_candidate_list_is_the_ladders_own_no_build_view(self):
+        actions, _ = db.ladder(self.i, PARK_TH, None, NOW)
+        whole = {a.tree for a in actions if a.rung in (3, 4) and a.scope == "tree"}
+        self.assertLessEqual(set(candidate_paths(self.i)), whole)
+
+    def test_emit_is_one_tab_separated_line_per_candidate(self):
+        text = db.emit_candidates(db.park_candidates(self.i, PARK_TH, NOW))
+        lines = text.split("\n")
+        self.assertEqual(lines[0], "# plx-park-candidates v1")
+        rows = [l.split("\t") for l in lines[1:]]
+        self.assertEqual([r[0] for r in rows], ["park"] * 4)
+        self.assertEqual(rows[0], ["park", "lane", str(4 * GIB // 1024), "b", "/w/b", "/w/b/rust-modules/target"])
+        self.assertEqual(rows[2][3:5], ["-", "-"], "a /tmp tree has no owner and no checkout")
+
+
+class LaneIdle(Repo):
+    def aged_lane(self, name):
+        lane = self.lane(name)
+        target = os.path.join(lane, "rust-modules", "target")
+        cargo_tree(target, hours=5)
+        for dirpath, dirs, files in os.walk(lane):
+            dirs[:] = [d for d in dirs if d != ".git"]
+            for n in files + dirs:
+                os.utime(os.path.join(dirpath, n), (NOW_REAL - 9 * HOUR,) * 2, follow_symlinks=False)
+        os.utime(lane, (NOW_REAL - 9 * HOUR,) * 2)
+        return lane, target
+
+    def ask(self, lane, target, secs):
+        return db.probe_tree(target, lane, None, "lane", False, 0, QuietProbes(), [lane, self.main], NOW_REAL,
+                             lane_idle_secs=secs)
+
+    def test_a_lane_whose_source_changed_recently_is_not_idle(self):
+        lane, target = self.aged_lane("busy")
+        self.assertEqual(self.ask(lane, target, 2 * HOUR), [])
+        self.assertEqual(self.ask(lane, target, 0), [], "lane_idle_secs=0 asks no lane question at all")
+        write(os.path.join(lane, "src", "edited.rs"), 8)                     # a source edit, just now
+        why = self.ask(lane, target, 2 * HOUR)
+        self.assertTrue(any("changed" in r and "lane" in r for r in why), why)
+        self.assertEqual(self.ask(lane, target, 0), [])
+
+    def test_a_change_inside_dot_git_does_not_count(self):
+        plain = os.path.join(self.tmp, "plain")                    # a checkout with a real `.git` directory
+        target = os.path.join(plain, "rust-modules", "target")
+        cargo_tree(target, hours=5)
+        write(os.path.join(plain, "src", "a.rs"), 8)
+        for dirpath, dirs, files in os.walk(plain):
+            for n in files + dirs:
+                os.utime(os.path.join(dirpath, n), (NOW_REAL - 9 * HOUR,) * 2, follow_symlinks=False)
+        os.utime(plain, (NOW_REAL - 9 * HOUR,) * 2)
+        write(os.path.join(plain, ".git", "objects", "ab", "new"), 8)        # git's own housekeeping, just now
+        os.utime(plain, (NOW_REAL - 9 * HOUR,) * 2)                          # (creating `.git` touched its parent)
+        self.assertEqual(self.ask(plain, target, 2 * HOUR), [])
+        write(os.path.join(plain, "src", "b.rs"), 8)
+        self.assertNotEqual(self.ask(plain, target, 2 * HOUR), [])
+
+    def test_a_lane_checkout_on_another_volume_is_not_walked_and_counts_as_busy(self):
+        lane, target = self.aged_lane("slow")
+        real_dev = db.device_of
+        with mock.patch.object(db, "device_of", lambda p: 7 if p == lane else real_dev(p)):
+            why = self.ask(lane, target, 2 * HOUR)
+        self.assertTrue(any("another volume" in r for r in why), why)
+
+
+class CountingLock:
+    """The auto lock as the pass sees it: cycles are counted, and a test says when the re-take fails."""
+
+    def __init__(self, retake=True):
+        self.cycles, self.released, self.retake = 0, False, retake
+
+    def cycle(self):
+        self.cycles += 1
+        return self.retake
+
+    def release(self):
+        self.released = True
+
+
+class ParkPass(Repo):
+    """db.run_park_pass against a real inventory, a real cold store (the two volumes faked) and stub probes."""
+
+    def setUp(self):
+        super().setUp()
+        self.cold_root = os.path.join(self.tmp, "das", "cold")
+        os.makedirs(self.cold_root)
+        cfg = os.path.join(self.tmp, "cold-store.cfg")
+        with open(cfg, "w") as fh:
+            fh.write("root=%s\nmin_free_gib=0\npark_idle_min=120\n" % self.cold_root)
+        self.env.update(PLX_COLD_STORE_CONFIG=cfg, PLX_TV_CONFIG_DIR=os.path.join(self.tmp, "none"))
+        das = os.path.join(self.tmp, "das")
+        real_dev = cold.device_of
+        for name, fake in (("device_of", lambda p: 2 if cold.norm(p).startswith(das) else real_dev(p)),
+                           ("which_ditto", lambda: "/usr/bin/ditto"), ("copy_tree", copy_stub),
+                           ("flush_cold_volume", lambda path: None)):
+            patcher = mock.patch.object(cold, name, fake)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.store = cold.ColdStore(self.env, log=lambda m: None)
+        self.lines = []
+        self.lanes = [self.idle_lane("p%d" % n, hours=9 - n) for n in range(3)]
+
+    def idle_lane(self, name, hours, trees=("target",)):
+        lane = self.lane(name, {name + ".txt": "x"})
+        for tree_name in trees:
+            cargo_tree(os.path.join(lane, "rust-modules", tree_name), size=256 * 1024, hours=hours)
+        for dirpath, dirs, files in os.walk(lane):
+            dirs[:] = [d for d in dirs if d != ".git"]
+            for n in files + dirs:
+                os.utime(os.path.join(dirpath, n), (NOW_REAL - hours * HOUR,) * 2, follow_symlinks=False)
+        os.utime(lane, (NOW_REAL - hours * HOUR,) * 2)
+        return lane
+
+    def candidates(self, probes=None):
+        return db.park_candidates(self.collect(probes), PARK_TH, NOW_REAL)
+
+    def run_pass(self, probes=None, max_bytes=1 << 40, lock=None, waiting=None, dry_run=False, free=1 * GIB,
+                 stop_free=50 * GIB, cands=None, floor_free=None, store=None):
+        """`free` is a byte count, or a callable that answers each look at the free space (one per tree)."""
+        i = self.collect(probes)
+        cands = cands if cands is not None else db.park_candidates(i, PARK_TH, NOW_REAL)
+        return db.run_park_pass(store or self.store, cands, probes=probes or QuietProbes(),
+                                checkouts=[w for w, _ in i.checkouts], now=lambda: NOW_REAL, idle_secs=2 * HOUR,
+                                max_bytes=max_bytes, stop_free=stop_free, floor_free=floor_free,
+                                free_fn=free if callable(free) else (lambda: free),
+                                head_of=lambda c: "head", lock=lock, waiting=waiting or (lambda: False),
+                                say=self.lines.append, dry_run=dry_run)
+
+    def target(self, lane):
+        return os.path.join(lane, "rust-modules", "target")
+
+    def test_idle_trees_park_oldest_first_and_leave_the_lane_without_them(self):
+        done = self.run_pass()
+        self.assertEqual([o.status for _, o in done.outcomes], [cold.PARKED] * 3, self.lines)
+        self.assertEqual([c.owner for c, _ in done.outcomes], ["p0", "p1", "p2"])
+        for lane in self.lanes:
+            self.assertFalse(os.path.exists(self.target(lane)))
+        self.assertEqual(len(self.store.records()), 3)
+        self.assertEqual(done.stopped, "")
+        self.assertGreater(done.parked_bytes, 0)
+        self.assertEqual(len([l for l in self.lines if l.startswith("  parked")]), 3, self.lines)
+
+    def test_a_tree_that_turned_live_since_the_inventory_stays_and_the_others_go(self):
+        cands = self.candidates()
+        probes = QuietProbes(cargo={db.real(self.target(self.lanes[1]))})
+        done = self.run_pass(probes=probes, cands=cands)
+        self.assertEqual({c.owner: o.status for c, o in done.outcomes},
+                         {"p0": cold.PARKED, "p1": cold.REFUSED, "p2": cold.PARKED})
+        self.assertTrue(os.path.isdir(self.target(self.lanes[1])))
+        self.assertTrue(any("kept" in l and "p1" in l for l in self.lines), self.lines)
+
+    def test_a_lane_edited_since_the_inventory_is_not_parked(self):
+        cands = self.candidates()
+        write(os.path.join(self.lanes[0], "src", "new.rs"), 8)
+        done = self.run_pass(cands=cands)
+        self.assertEqual({c.owner: o.status for c, o in done.outcomes}["p0"], cold.REFUSED)
+        self.assertTrue(os.path.isdir(self.target(self.lanes[0])))
+
+    def test_a_second_tree_of_a_lane_this_pass_took_from_is_not_refused_for_the_pass_own_rename(self):
+        # Moving a lane's first tree out changes its `rust-modules/` mtime: the lane must not then read as busy
+        # to the next tree of the same lane (build-gc's `--evict` skips a lane it has already taken from too).
+        two = self.idle_lane("two", hours=5, trees=("target", "target-fast"))
+        done = self.run_pass()
+        self.assertEqual([o.status for _, o in done.outcomes], [cold.PARKED] * 5, self.lines)
+        for name in ("target", "target-fast"):
+            self.assertFalse(os.path.exists(os.path.join(two, "rust-modules", name)))
+
+    def test_the_budget_stops_the_pass_after_the_tree_that_reaches_it(self):
+        one = self.candidates()[0].private_bytes
+        done = self.run_pass(max_bytes=one)
+        self.assertEqual(len(done.outcomes), 1)
+        self.assertIn("park_max_gib_per_run", done.stopped)
+        self.assertTrue(os.path.isdir(self.target(self.lanes[1])))
+
+    def test_the_pass_stops_when_free_space_is_back_over_the_line(self):
+        done = self.run_pass(free=60 * GIB, stop_free=50 * GIB)
+        self.assertEqual(done.outcomes, [])
+        self.assertIn("free space", done.stopped)
+
+    def test_nothing_is_parked_while_free_space_is_under_the_comfort_line(self):
+        # Parking holds the lock for a whole copy of a slow disk; a build waiting for room must get the ladder's
+        # deletions, which take seconds, so below the comfort line the pass does not start a tree.
+        done = self.run_pass(free=10 * GIB, floor_free=20 * GIB)
+        self.assertEqual(done.outcomes, [])
+        self.assertIn("comfort line", done.stopped)
+        self.assertTrue(all(os.path.isdir(self.target(l)) for l in self.lanes))
+        self.assertEqual(self.store.records(), [])
+
+    def test_exactly_the_comfort_line_still_parks(self):
+        done = self.run_pass(free=20 * GIB, floor_free=20 * GIB)
+        self.assertEqual([o.status for _, o in done.outcomes], [cold.PARKED] * 3, self.lines)
+
+    def test_free_space_falling_under_the_comfort_line_between_trees_ends_the_pass(self):
+        levels = iter([30 * GIB, 19 * GIB])               # a look before each tree; builds ate the room meanwhile
+        done = self.run_pass(free=lambda: next(levels), floor_free=20 * GIB)
+        self.assertEqual(len(done.outcomes), 1, "the tree in hand finishes, the next one is not started")
+        self.assertIn("comfort line", done.stopped)
+        self.assertIn("park: stopped", " ".join(self.lines))
+        self.assertTrue(os.path.isdir(self.target(self.lanes[1])))
+
+    def test_a_by_hand_pass_has_no_comfort_line_to_keep(self):
+        done = self.run_pass(free=1 * GIB, floor_free=None, stop_free=None)
+        self.assertEqual([o.status for _, o in done.outcomes], [cold.PARKED] * 3, self.lines)
+
+    def test_an_exception_out_of_a_park_is_a_logged_failure_that_ends_the_pass(self):
+        with mock.patch.object(self.store, "park", side_effect=ValueError("surprise")):
+            done = self.run_pass()
+        self.assertEqual([o.status for _, o in done.outcomes], [db._FAILED])
+        self.assertIn("surprise", done.stopped)
+        self.assertTrue(any(l.startswith("park: stopped:") and "surprise" in l for l in self.lines), self.lines)
+        self.assertTrue(all(os.path.isdir(self.target(l)) for l in self.lanes))
+
+    def test_an_exception_out_of_the_volume_check_ends_the_pass_without_a_traceback(self):
+        with mock.patch.object(self.store, "available", side_effect=OSError("device not configured")):
+            done = self.run_pass()
+        self.assertEqual(done.outcomes, [])
+        self.assertIn("device not configured", done.stopped)
+
+    def test_the_lock_is_released_and_re_taken_between_trees_not_after_the_last(self):
+        lock = CountingLock()
+        done = self.run_pass(lock=lock)
+        self.assertEqual(lock.cycles, 2, "three trees: a cycle between each pair")
+        self.assertFalse(lock.released)
+        self.assertFalse(done.lock_lost)
+
+    def test_a_waiting_preflight_stops_the_pass_after_the_current_tree_and_hands_the_lock_over(self):
+        calls = []
+
+        def waiting():
+            calls.append(1)
+            return len(calls) > 1                  # nobody before the first tree, a waiter from then on
+
+        lock = CountingLock()
+        done = self.run_pass(lock=lock, waiting=waiting)
+        self.assertEqual(len(done.outcomes), 1, "the current tree finishes, the next is not started")
+        self.assertTrue(lock.released and done.lock_lost)
+        self.assertEqual(lock.cycles, 0)
+        self.assertIn("waiting", done.stopped)
+        self.assertTrue(os.path.isdir(self.target(self.lanes[1])))
+
+    def test_a_preflight_already_waiting_means_no_tree_is_started(self):
+        lock = CountingLock()
+        done = self.run_pass(lock=lock, waiting=lambda: True)
+        self.assertEqual(done.outcomes, [])
+        self.assertTrue(lock.released and done.lock_lost)
+        self.assertTrue(all(os.path.isdir(self.target(l)) for l in self.lanes))
+
+    def test_a_lock_that_cannot_be_re_taken_ends_the_pass(self):
+        lock = CountingLock(retake=False)
+        done = self.run_pass(lock=lock)
+        self.assertEqual(len(done.outcomes), 1)
+        self.assertTrue(done.lock_lost)
+        self.assertIn("lock", done.stopped)
+
+    def test_a_dry_run_names_what_would_move_and_moves_nothing(self):
+        def shape():
+            return sorted((p, os.path.getsize(p) if os.path.isfile(p) else -1)
+                          for d, ds, fs in os.walk(self.tmp) if ".git" not in d.split(os.sep)
+                          for p in [os.path.join(d, n) for n in ds + fs])
+        before = shape()
+        done = self.run_pass(dry_run=True)
+        self.assertEqual([o.status for _, o in done.outcomes], [cold.DRY_RUN] * 3)
+        self.assertEqual(before, shape(), "a dry run created or removed something (the cold root, a probe file, a "
+                                          "parking directory)")
+        self.assertEqual(len([l for l in self.lines if l.startswith("  would park")]), 3, self.lines)
+
+    def test_a_failed_copy_stops_the_pass_and_the_tree_is_back(self):
+        def boom(src, dst):
+            raise OSError("cold disk went away")
+        with mock.patch.object(cold, "copy_tree", boom):
+            done = self.run_pass()
+        self.assertEqual([o.status for _, o in done.outcomes], [cold.FAILED])
+        self.assertIn("stopped", " ".join(self.lines))
+        self.assertTrue(all(os.path.isdir(self.target(l)) for l in self.lanes))
+
+    def test_a_volume_that_is_not_usable_is_said_once_and_nothing_is_tried(self):
+        with mock.patch.object(cold, "which_ditto", lambda: None):
+            done = self.run_pass()
+        self.assertEqual(done.outcomes, [])
+        self.assertIn("ditto", done.stopped)
+        self.assertTrue(all(os.path.isdir(self.target(l)) for l in self.lanes))
+
+    # --- park_run: the sweeps around the pass look at the waiting flag too -------------------------------------
+    def lock_and_env(self):
+        env = dict(self.env, PLX_GC_LOCK_DIR=os.path.join(self.tmp, "gc.lock"))
+        path = db.lock_dir(env)
+        self.assertEqual(db.take_lock(path, env, os.getpid()), "got")
+        return env, db.HeldLock(path, env, os.getpid())
+
+    def call_park_run(self, env, lock, auto=True):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = db.park_run(argparse.Namespace(dry_run=False, auto=auto), env, self.main, cold, self.store, 1 * GIB,
+                             2 * HOUR, lock)
+        return rc, out.getvalue()
+
+    def test_a_preflight_already_waiting_stops_recover_before_it_deletes_anything_and_gets_the_lock(self):
+        env, lock = self.lock_and_env()
+        debris = os.path.join(self.cold_root, "trees", "x.consumed")
+        os.makedirs(debris)
+        db.announce_waiting(lock.path)
+        self.addCleanup(db.withdraw_waiting, lock.path)
+        rc, out = self.call_park_run(env, lock)
+        self.assertEqual(rc, db.PARK_LOCK_RELEASED, out)
+        self.assertFalse(lock.held or os.path.exists(lock.path), "the lock must be free for the waiter")
+        self.assertTrue(os.path.isdir(debris), "recover reaped cold-side debris with a preflight waiting")
+        self.assertEqual(self.store.records(), [])
+        self.assertTrue(all(os.path.isdir(self.target(l)) for l in self.lanes), "a tree was parked")
+        self.assertIn("waiting", out)
+
+    def test_a_preflight_that_starts_waiting_during_the_pass_gets_the_lock_before_the_prune(self):
+        self.run_pass()                                         # three parked trees, each record naming its lane
+        env, lock = self.lock_and_env()
+        asked = {}
+
+        def fake_pass(store, cands, **kw):
+            asked.update(kw)
+            db.announce_waiting(lock.path)
+            return db.ParkSummary([])
+        self.addCleanup(db.withdraw_waiting, lock.path)
+        with mock.patch.object(db, "run_park_pass", fake_pass), \
+                mock.patch.object(db, "prune_facts", lambda *a: cold.PruneFacts(gone={self.lanes[0]})):
+            rc, out = self.call_park_run(env, lock)
+        self.assertEqual(rc, db.PARK_LOCK_RELEASED, out)
+        self.assertFalse(lock.held or os.path.exists(lock.path), "the lock must be free for the waiter")
+        self.assertEqual(len(self.store.records()), 3, "the prune dropped a copy with a preflight waiting: " + out)
+        self.assertEqual(asked["floor_free"], db.DEFAULT_COMFORT_GIB * GIB, "--auto keeps the comfort line")
+
+    def test_without_a_waiter_the_prune_runs_and_the_lock_stays_with_the_caller(self):
+        self.run_pass()
+        env, lock = self.lock_and_env()
+        asked = {}
+
+        def fake_pass(store, cands, **kw):
+            asked.update(kw)
+            return db.ParkSummary([])
+        with mock.patch.object(db, "run_park_pass", fake_pass), \
+                mock.patch.object(db, "prune_facts", lambda *a: cold.PruneFacts(gone={self.lanes[0]})):
+            rc, out = self.call_park_run(env, lock, auto=False)
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(lock.held)
+        self.assertEqual(len(self.store.records()), 2, out)
+        self.assertIsNone(asked["floor_free"], "a by-hand pass has no comfort line to keep")
+        lock.release()
+
+    def test_a_recover_that_raises_is_said_and_the_pass_goes_on(self):
+        env, lock = self.lock_and_env()
+        with mock.patch.object(self.store, "recover", side_effect=OSError("device not configured")), \
+                mock.patch.object(db, "run_park_pass", lambda *a, **k: db.ParkSummary([])):
+            rc, out = self.call_park_run(env, lock)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("recover failed: device not configured", out)
+        lock.release()
+
+    def test_prune_facts_name_a_merged_lane_and_a_gone_checkout_from_the_records(self):
+        self.run_pass()
+        merged_lane = self.lane("landed")
+        cargo_tree(os.path.join(merged_lane, "rust-modules", "target"), size=64 * 1024, hours=9)
+        gone = os.path.join(self.tmp, "vanished")
+        for name, checkout in (("landed", merged_lane), ("vanished", gone)):
+            self.store.records()                                   # keep the index readable
+            cold.write_json(self.store.index_path(os.path.join(checkout, "rust-modules", "target")),
+                            {"origin": os.path.join(checkout, "rust-modules", "target"), "checkout": checkout,
+                             "parked_at": NOW_REAL, "apparent_bytes": 1, "id": name})
+        facts = db.prune_facts(cold, self.store, self.main, self.env)
+        self.assertIn(merged_lane, facts.merged)
+        self.assertNotIn(self.lanes[0], facts.merged, "an unmerged lane is not merged")
+        self.assertIn(gone, facts.gone)
+        self.assertNotIn(self.lanes[0], facts.gone)
+
+
+class WaitingFlag(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="disk-budget-flag-")
+        self.addCleanup(tmp.cleanup)
+        self.lock = os.path.join(tmp.name, "gc.lock")
+
+    def test_an_announced_waiter_is_seen_and_a_withdrawn_one_is_not(self):
+        self.assertFalse(db.preflight_waiting(self.lock))
+        db.announce_waiting(self.lock)
+        self.assertTrue(db.preflight_waiting(self.lock))
+        db.withdraw_waiting(self.lock)
+        self.assertFalse(db.preflight_waiting(self.lock))
+
+    def test_a_flag_of_a_dead_waiter_or_an_old_one_is_not_a_waiter(self):
+        dead = subprocess.Popen(["true"])
+        dead.wait()
+        flag = "%s.waiting.%d" % (self.lock, dead.pid)
+        with open(flag, "w") as fh:
+            fh.write("%d\n" % dead.pid)
+        self.assertFalse(db.preflight_waiting(self.lock), "its owner is gone")
+        os.unlink(flag)
+        db.announce_waiting(self.lock)
+        old = NOW_REAL - 3600
+        os.utime("%s.waiting.%d" % (self.lock, os.getpid()), (old, old))
+        self.assertFalse(db.preflight_waiting(self.lock), "a flag nobody refreshed for an hour")
+
+    def test_two_waiters_do_not_clear_each_others_flag(self):
+        other = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(other.terminate)
+        self.addCleanup(other.wait)
+        with open("%s.waiting.%d" % (self.lock, other.pid), "w") as fh:
+            fh.write("%d\n" % other.pid)
+        db.withdraw_waiting(self.lock)                         # this process had none, and must not take theirs
+        self.assertTrue(db.preflight_waiting(self.lock))
+
+
+class ParkCommand(Repo):
+    """The subcommands as processes: unconfigured they say so and touch nothing; `--auto` is silent."""
+
+    def run_tool(self, *args, **env):
+        e = clean_env()
+        e.update(self.env)
+        e.update(PYTHONDONTWRITEBYTECODE="1", HOME=self.tmp, PLX_COLD_STORE_CONFIG=os.path.join(self.tmp, "none.cfg"),
+                 PLX_TV_CONFIG_DIR=os.path.join(self.tmp, "none"), PLX_GC_LOG=os.path.join(self.tmp, "gc.log"))
+        e.update(env)
+        return subprocess.run([sys.executable, SCRIPT, *args], capture_output=True, text=True, env=e)
+
+    def test_park_says_the_cold_store_is_off_and_creates_nothing(self):
+        before = snapshot_files(self.tmp)
+        out = self.run_tool("park", "--root", self.main)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("not configured", out.stdout)
+        self.assertEqual(changed(before, snapshot_files(self.tmp)), [])
+
+    def test_park_auto_unconfigured_is_silent_and_exits_3(self):
+        out = self.run_tool("park", "--auto", "--root", self.main, PLX_GC_TEST_FREE_KIB="1")
+        self.assertEqual((out.returncode, out.stdout, out.stderr), (db.PARK_NOT_APPLICABLE, "", ""))
+
+    def test_park_auto_configured_but_with_room_is_silent_and_exits_3(self):
+        cfg = os.path.join(self.tmp, "on.cfg")
+        with open(cfg, "w") as fh:
+            fh.write("root=%s\npark_below_gib=40\n" % os.path.join(self.tmp, "das", "cold"))
+        out = self.run_tool("park", "--auto", "--root", self.main, PLX_COLD_STORE_CONFIG=cfg,
+                            PLX_GC_TEST_FREE_KIB=str(100 * 1024 * 1024))
+        self.assertEqual((out.returncode, out.stdout), (db.PARK_NOT_APPLICABLE, ""), out.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "das")), "looked at the cold volume with room to spare")
+
+    def test_park_auto_below_the_comfort_line_parks_nothing_and_says_why(self):
+        # The ladder deletes in seconds; a park holds the lock for a copy to a slow disk while a build waits for room.
+        cfg = os.path.join(self.tmp, "on.cfg")
+        with open(cfg, "w") as fh:
+            fh.write("root=%s\npark_below_gib=40\n" % os.path.join(self.tmp, "das", "cold"))
+        out = self.run_tool("park", "--auto", "--root", self.main, PLX_COLD_STORE_CONFIG=cfg,
+                            PLX_GC_TEST_FREE_KIB=str(10 * 1024 * 1024), PLX_GC_MIN_FREE_GIB="20")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("park: skipped", out.stdout)
+        self.assertIn("comfort line", out.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "das")), "looked at the cold volume under pressure")
+        self.assertFalse(os.path.exists(os.path.join(self.env["PLX_BUILD_CACHE"], "cold-store")))
+
+    def test_a_pretend_emergency_over_the_default_cold_store_config_is_refused(self):
+        config_home = os.path.join(self.tmp, "xdg")
+        os.makedirs(os.path.join(config_home, "plxnative"))
+        with open(os.path.join(config_home, "plxnative", "cold-store"), "w") as fh:
+            fh.write("root=%s\n" % os.path.join(self.tmp, "das", "cold"))
+        env = {**clean_env(), **self.env, "PLX_GC_TEST_FREE_KIB": "1", "HOME": self.tmp,
+               "PYTHONDONTWRITEBYTECODE": "1", "XDG_CONFIG_HOME": config_home}
+        out = subprocess.run([sys.executable, SCRIPT, "park", "--auto", "--root", self.main], capture_output=True,
+                             text=True, env=env)
+        self.assertEqual(out.returncode, 2, out.stdout + out.stderr)
+        self.assertIn("PLX_COLD_STORE_CONFIG", out.stderr)
+
+    def test_park_candidates_emit_lists_what_a_pass_would_take(self):
+        path = os.path.join(self.tmpr, "ours")
+        cargo_tree(path, hours=30)
+        out = self.run_tool("park-candidates", "--emit", "--root", self.main, "--idle-min", "60",
+                            PLX_GC_TEST_NOW=str(NOW_REAL + 3 * HOUR))
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.split("\n")[0], "# plx-park-candidates v1")
+        rows = [l.split("\t") for l in out.stdout.split("\n") if l.startswith("park\t")]
+        self.assertEqual([r[5] for r in rows], [db.real(path)], out.stdout)
+        self.assertEqual(rows[0][1], "tmp")
+
+    def test_the_report_names_the_cold_store_state_and_changes_nothing(self):
+        before = snapshot_files(self.tmp)
+        off = self.run_tool("report", "--root", self.main)
+        self.assertEqual(off.returncode, 0, off.stderr)
+        self.assertRegex(off.stdout, r"cold store\s+off: not configured")
+        self.assertEqual(changed(before, snapshot_files(self.tmp)), [])
+        cfg = os.path.join(self.tmp, "on.cfg")
+        with open(cfg, "w") as fh:
+            fh.write("root=%s\n" % os.path.join(self.tmp, "das", "cold"))
+        cache = self.env["PLX_BUILD_CACHE"]
+        index = os.path.join(cache, "cold-store", "index")
+        residue = os.path.join(cache, "cold-store", "parking", "%2Ftmp%2Fresidue")
+        os.makedirs(index)
+        os.makedirs(residue)
+        with open(os.path.join(residue, "f"), "w") as fh:
+            fh.write("x" * 5000)
+        with open(os.path.join(index, "%2Ftmp%2Fa.json"), "w") as fh:
+            fh.write('{"origin": "/tmp/a", "apparent_bytes": 3221225472, "parked_at": 1}')
+        before = snapshot_files(self.tmp)
+        on = self.run_tool("report", "--root", self.main, PLX_COLD_STORE_CONFIG=cfg)
+        self.assertEqual(on.returncode, 0, on.stderr)
+        self.assertRegex(on.stdout, r"cold store\s+on: root \S+/das/cold")
+        self.assertIn("1 tree, 3.0 GiB parked", on.stdout)
+        self.assertIn("parking residue", on.stdout)
+        self.assertNotIn("restoring", on.stdout)
+        self.assertEqual(changed(before, snapshot_files(self.tmp)), [], "the report touched the cold store")
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        with open(os.path.join(index, "%%2Ftmp%%2Fb.json.unparking.%d" % gone.pid), "w") as fh:     # a restore that died
+            fh.write('{"origin": "/tmp/b", "apparent_bytes": 1, "parked_at": 1}')
+        claimed = self.run_tool("report", "--root", self.main, PLX_COLD_STORE_CONFIG=cfg)
+        self.assertIn("1 tree, 3.0 GiB parked", claimed.stdout, "a claimed record is no longer parked")
+        self.assertRegex(claimed.stdout, r"restoring: /tmp/b \(pid %d, dead: " % gone.pid)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "das")), "the report touched the cold volume")
 
 
 if __name__ == "__main__":

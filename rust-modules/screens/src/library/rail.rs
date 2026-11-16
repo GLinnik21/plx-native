@@ -410,7 +410,7 @@ mod tests {
     fn rail_scroll_and_presence_animate_then_settle_outside_the_grid_region() {
         let _guard = plx_base::testlock::serial();
         let mut rail = model();
-        let (_, moving) = plx_machine::idle::scoped_motion(|| rail.step_motion(Some(39), true, 0.016));
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| rail.step_motion(Some(39), true, 0.016));
         assert!(moving, "entering the region reports its scroll and fade motion");
         assert!(rail.scroll.pos > 0.0 && rail.scroll.pos < rail.scroll_target);
         assert!(rail.alpha.pos > 0.0 && rail.alpha.pos < 1.0);
@@ -419,7 +419,7 @@ mod tests {
         assert!((rail.alpha.pos - 1.0).abs() < 0.001 && rail.alpha.vel.abs() < 0.001);
         for _ in 0..400 { rail.step_motion(None, false, 0.016); }
         assert!(rail.alpha.pos.abs() < 0.001 && rail.alpha.vel.abs() < 0.001);
-        let (_, moving) = plx_machine::idle::scoped_motion(|| rail.step_motion(None, false, 0.016));
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| rail.step_motion(None, false, 0.016));
         assert!(!moving, "a resting hidden rail requests no further animated presents");
     }
 
@@ -463,7 +463,14 @@ mod tests {
         type Init = plx_ui::fixture::FixtureArg;
         type Memory = PageMemory;
     }
-    impl LibraryLike for RailHost {
+    impl crate::registry::ScreenInputsLike for RailHost {
+    fn screen_inputs<'a>(_cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        crate::registry::empty_fixture()
+    }
+}
+
+impl LibraryLike for RailHost {
+    fn clock_facts<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { None }
         fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
         fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
         fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.hubs }
@@ -625,7 +632,7 @@ mod tests {
         let _guard = plx_base::testlock::serial();
         let mut rail = model();
         for _ in 0..400 { rail.step_motion(Some(0), RailHint::default().wants_rail(false), 0.016); }
-        let (_, moving) = plx_machine::idle::scoped_motion(|| rail.step_motion(Some(0), false, 0.016));
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| rail.step_motion(Some(0), false, 0.016));
         assert!(!moving);
         assert!(rail.alpha.pos.abs() < 0.001);
     }

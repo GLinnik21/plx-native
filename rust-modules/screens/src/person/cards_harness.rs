@@ -17,6 +17,9 @@ impl Host for PersonHost {
     type Init = super::super::family::NoInit;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for PersonHost {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+}
 impl PersonLike for PersonHost {
     fn person<'a>(cx: &Cx<'a, Self>) -> plx_data::person::PersonView<'a> { cx.views }
 }
@@ -45,7 +48,7 @@ pub(crate) fn mount(n: usize) -> Box<dyn CardHarness> { Box::new(Harness::new((0
 impl Harness {
     fn new(movies: Vec<String>) -> Self {
         let mut store = plx_data::stores::person::PersonStore::default();
-        store.run(PersonCmd::Open { sid: ServerId::UNSET, key: "161".into(),
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open { sid: ServerId::UNSET, key: "161".into(),
             guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(), thumb: String::new() });
         let mut h = Self { store, screen: new_screen(), movies, focus: None, press: 1.0, ms: 0 };
         h.install();
@@ -76,7 +79,7 @@ impl Harness {
     fn step(&mut self, ev: ScreenEvent<PersonHost>) -> bool {
         let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
-        let (_, moving) = plx_machine::idle::scoped_motion(|| {
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
             let cx = Cx { views: self.store.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
                 press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
                 focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };

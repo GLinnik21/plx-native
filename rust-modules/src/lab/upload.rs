@@ -21,7 +21,7 @@
 //! would answer that by sending four near-identical documents over a link that was already the
 //! reason nothing appeared to happen.
 use plx_platform::labcfg::config;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
 use std::sync::Mutex;
 
 /// What the toast is saying. A `u8` because it is written from a worker and read from the render
@@ -31,12 +31,21 @@ pub(crate) const PHASE_SENDING: u8 = 1;
 pub(crate) const PHASE_OK: u8 = 2;
 pub(crate) const PHASE_FAIL: u8 = 3;
 
-static PHASE: AtomicU8 = AtomicU8::new(PHASE_IDLE);
+/// Actual IO result, atomically captured with its text and expiry under one lock.
+#[derive(Default, Debug, PartialEq, Eq)]
+pub(crate) struct ToastView {
+    pub(crate) phase: u8,
+    pub(crate) detail: String,
+}
+struct ToastState {
+    view: ToastView,
+    until_ms: u32,
+}
+static TOAST: Mutex<ToastState> = Mutex::new(ToastState {
+    view: ToastView { phase: PHASE_IDLE, detail: String::new() }, until_ms: 0,
+});
 static INFLIGHT: AtomicBool = AtomicBool::new(false);
 static SEQ: AtomicU32 = AtomicU32::new(0);
-/// ring-clock ms at which the toast stops being drawn; 0 = not showing
-static UNTIL_MS: AtomicU32 = AtomicU32::new(0);
-static DETAIL: Mutex<String> = Mutex::new(String::new());
 /// The route name the app last reported, for the envelope. `&'static str` from `app.rs`'s own
 /// route table, so this stores a name that already exists rather than allocating one per frame.
 static ROUTE: Mutex<&'static str> = Mutex::new("home");
@@ -52,46 +61,25 @@ pub(crate) fn note_route(r: &'static str) {
     *g = r;
 }
 
-pub(crate) fn phase() -> u8 {
-    PHASE.load(Relaxed)
-}
-
-/// The toast's second line: a byte count on success, a reason on failure.
-pub(crate) fn detail() -> String {
-    DETAIL.lock().unwrap_or_else(|e| e.into_inner()).clone()
-}
-
-/// Is the toast still within its window? Drives both the draw and the expiry.
-pub(crate) fn showing() -> bool {
-    match phase() {
-        PHASE_IDLE => false,
-        PHASE_SENDING => true,
-        _ => plx_base::eventlog::ring::t_ms() < UNTIL_MS.load(Relaxed),
+/// Capture one coherent visible view and retire expired results on the ring clock.
+/// No presentation authority crosses this IO boundary.
+pub(crate) fn capture() -> ToastView {
+    let mut state = TOAST.lock().unwrap_or_else(|e| e.into_inner());
+    if matches!(state.view.phase, PHASE_OK | PHASE_FAIL)
+        && plx_base::eventlog::ring::t_ms() >= state.until_ms {
+        state.view = ToastView::default();
+        state.until_ms = 0;
     }
+    ToastView { phase: state.view.phase, detail: state.view.detail.clone() }
 }
 
-/// Retire a finished toast. Called once per frame; the invalidate is what gets the frame that
-/// paints its absence — nothing else on screen moved.
-pub(crate) fn update(_now: u32) {
-    if matches!(phase(), PHASE_OK | PHASE_FAIL) && !showing() {
-        set_phase(PHASE_IDLE, String::new());
-    }
-}
-
-fn set_phase(p: u8, detail: String) {
-    PHASE.store(p, Relaxed);
-    *DETAIL.lock().unwrap_or_else(|e| e.into_inner()) = detail;
-    UNTIL_MS.store(
-        match p {
-            PHASE_OK | PHASE_FAIL => plx_base::eventlog::ring::t_ms().saturating_add(TOAST_MS),
-            _ => 0,
-        },
-        Relaxed,
-    );
-    // A toast is a clock-driven overlay, not a spring — `plx_machine::idle::note_spring` cannot see it, and
-    // an uninvalidated one appears only on the next keypress (the failure mode `Xfade` and
-    // `Spinner` both shipped with; see `docs/agent-reference.md`'s note on the present gate).
-    plx_machine::idle::invalidate();
+fn set_phase(phase: u8, detail: String) {
+    let mut state = TOAST.lock().unwrap_or_else(|e| e.into_inner());
+    state.until_ms = match phase {
+        PHASE_OK | PHASE_FAIL => plx_base::eventlog::ring::t_ms().saturating_add(TOAST_MS),
+        _ => 0,
+    };
+    state.view = ToastView { phase, detail };
 }
 
 /// **Main thread.** Sample everything, then hand it to a worker.
@@ -195,13 +183,24 @@ mod tests {
     #[test]
     fn a_finished_toast_expires_back_to_idle() {
         let _g = plx_base::testlock::serial();
+        let mut observer = crate::lab::ToastObserver::default();
         set_phase(PHASE_OK, "12 KB sent".into());
-        assert!(showing());
-        UNTIL_MS.store(0, Relaxed); // as if TOAST_MS had elapsed
-        assert!(!showing());
-        update(0);
-        assert_eq!(phase(), PHASE_IDLE);
-        assert_eq!(detail(), "");
+        assert!(crate::lab::update(&mut observer, 0), "success appearance is observed");
+        assert!(!crate::lab::update(&mut observer, 0), "held answers do not repaint");
+        let view = capture();
+        assert_eq!(view.phase, PHASE_OK);
+        assert_eq!(view.detail, "12 KB sent");
+        TOAST.lock().unwrap().until_ms = 0; // as if TOAST_MS had elapsed
+        assert!(crate::lab::update(&mut observer, 0), "expiry paints the absence");
+        assert!(!crate::lab::update(&mut observer, 0));
+        let view = capture();
+        assert_eq!(view.phase, PHASE_IDLE);
+        assert_eq!(view.detail, "");
+        set_phase(PHASE_FAIL, "receiver said 403".into());
+        assert!(crate::lab::update(&mut observer, 0), "failure appearance is observed");
+        assert_eq!(observer.view.phase, PHASE_FAIL);
+        assert_eq!(observer.view.detail, "receiver said 403");
+        set_phase(PHASE_IDLE, String::new());
     }
 
     /// While sending, the toast is up regardless of the clock — an upload over a slow link must
@@ -210,10 +209,8 @@ mod tests {
     fn the_sending_toast_does_not_expire() {
         let _g = plx_base::testlock::serial();
         set_phase(PHASE_SENDING, String::new());
-        UNTIL_MS.store(0, Relaxed);
-        assert!(showing());
-        update(0);
-        assert_eq!(phase(), PHASE_SENDING);
+        TOAST.lock().unwrap().until_ms = 0;
+        assert_eq!(capture().phase, PHASE_SENDING);
         set_phase(PHASE_IDLE, String::new());
     }
 }

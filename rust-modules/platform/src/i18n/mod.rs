@@ -36,6 +36,7 @@ pub struct LocaleContext {
     language: Language,
     format_locale: String,
     clock: Clock,
+    time: icu_datetime::NoCalendarFormatter<icu_datetime::fieldsets::T>,
     plural: PluralRules,
     decimal: DecimalFormatter,
     date: icu_datetime::FixedCalendarDateTimeFormatter<
@@ -80,6 +81,28 @@ impl LocaleContext {
             })
             .unwrap_or_else(|| language.regional().into());
         let locale = format_locale.parse::<Locale>().expect("validated locale");
+        let clock = match clock {
+            Some("12") => Clock::H12,
+            Some("24") => Clock::H24,
+            _ => Clock::Locale,
+        };
+        use icu_datetime::preferences::HourCycle;
+        let hour_cycle = match clock {
+            Clock::H12 => Some(HourCycle::H12),
+            Clock::H24 => Some(HourCycle::H23),
+            Clock::Locale => None,
+        };
+        let mut time_prefs = icu_datetime::DateTimeFormatterPreferences::from(locale.clone());
+        if hour_cycle.is_some() {
+            time_prefs.hour_cycle = hour_cycle;
+        }
+        let time = icu_datetime::NoCalendarFormatter::try_new(time_prefs, icu_datetime::fieldsets::T::hm())
+            .unwrap_or_else(|_| {
+                let mut fallback = icu_datetime::DateTimeFormatterPreferences::default();
+                fallback.hour_cycle = time_prefs.hour_cycle;
+                icu_datetime::NoCalendarFormatter::try_new(fallback, icu_datetime::fieldsets::T::hm())
+                    .expect("compiled English time data")
+            });
         let decimal = DecimalFormatter::try_new(locale.clone().into(), Default::default())
             .unwrap_or_else(|_| {
                 DecimalFormatter::try_new(Default::default(), Default::default())
@@ -126,11 +149,8 @@ impl LocaleContext {
             preference,
             language,
             format_locale,
-            clock: match clock {
-                Some("12") => Clock::H12,
-                Some("24") => Clock::H24,
-                _ => Clock::Locale,
-            },
+            clock,
+            time,
             plural,
             decimal,
             date,
@@ -160,6 +180,11 @@ impl LocaleContext {
         d.multiply_pow10(-scale);
         d.pad_end(-scale);
         self.decimal.format(&d).to_string()
+    }
+    /// Format an already-local civil hour and minute using the TV clock and format locale.
+    pub fn time_of_day(&self, [hour, minute]: [i32; 2]) -> Option<String> {
+        let time = icu_datetime::input::Time::try_new(hour.try_into().ok()?, minute.try_into().ok()?, 0, 0).ok()?;
+        Some(self.time.format(&time).to_string())
     }
     pub fn date(&self, year: i32, month: u8, day: u8) -> Option<String> {
         let d = icu_calendar::Date::try_new_gregorian(year, month, day).ok()?;
@@ -632,6 +657,10 @@ pub fn initialize(preference: Preference, controlled: bool) {
     let simulated_format = std::env::var("PLXNATIVE_FORMAT_LOCALE").ok();
     #[cfg(feature = "hostsim")]
     let fmt = simulated_format.as_deref().or(fmt);
+    #[cfg(feature = "hostsim")]
+    let simulated_clock = std::env::var("PLXNATIVE_CLOCK").ok();
+    #[cfg(feature = "hostsim")]
+    let clock = simulated_clock.as_deref().filter(|v| matches!(*v, "12" | "24" | "locale")).or(clock);
     #[allow(unused_mut)]
     let mut cx = LocaleContext::resolve(preference, ui, fmt, clock, env.as_deref());
     #[cfg(feature = "hostsim")]
@@ -729,12 +758,34 @@ pub fn local_calendar_today() -> Option<[i32; 3]> {
     local_calendar_date(i64::try_from(seconds).ok()?)
 }
 
+/// The current Unix wall-clock timestamp for the application's playback clock. Only
+/// app::clock::unix_ms should call this; machines and screens receive time as frame data.
+pub fn unix_timestamp_ms() -> Option<i64> {
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    i64::try_from(elapsed.as_millis()).ok().filter(|ms| *ms > 0)
+}
+
 /// A Unix timestamp as a calendar date in the operating system's timezone. Called while building
 /// cached presentation labels, never by data parsers or once per card per frame. Checked time_t conversion
 /// matters on the 32-bit television: an unrepresentable date remains unknown.
 pub fn local_calendar_date(seconds: i64) -> Option<[i32; 3]> {
     if seconds <= 0 { return None; }
     civil_date_of(libc::time_t::try_from(seconds).ok()?)
+}
+
+/// The local wall-clock hour and minute for a Unix timestamp, using the operating system's
+/// timezone rules (including daylight-saving transitions). A value outside this television's
+/// `time_t` range, or a timestamp the C library cannot convert, remains unknown.
+pub fn local_clock_time(seconds: i64) -> Option<[i32; 2]> {
+    if seconds <= 0 { return None; }
+    let stamp = libc::time_t::try_from(seconds).ok()?;
+    let mut out = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: both pointers are valid for localtime_r; the result is read only on success.
+    if unsafe { libc::localtime_r(&stamp, out.as_mut_ptr()) }.is_null() { return None; }
+    let local = unsafe { out.assume_init() };
+    Some([local.tm_hour, local.tm_min])
 }
 
 /// The civil date `stamp` falls on in the operating system's timezone, for any `time_t` (a stamp

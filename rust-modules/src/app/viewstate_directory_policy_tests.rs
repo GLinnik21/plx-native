@@ -615,7 +615,7 @@ fn metadata_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
         guid: "plex://movie/old".into(), ..Default::default()
     }));
     assert!(bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(plx_data::metadata::NowPlaying {
-        is_episode: false, is_real_episode: false, title: "Old Playing".into(), ep_title: String::new(),
+        is_episode: false, is_real_episode: false, is_movie: true, title: "Old Playing".into(), ep_title: String::new(),
         season: 0, index: 0, summary: String::new(), year: 0, dur_ms: 0, rating: String::new(),
         thumb: String::new(), detail_rk: "old-rk".into(),
     }))));
@@ -656,7 +656,7 @@ fn metadata_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
     // a witness state proves the completion is real and deliverable, not silently dropped for some
     // unrelated reason.
     let mut witness = plx_data::metadata::MetadataState::default();
-    assert!(plx_data::metadata::land_detail_for_test(&mut witness, &old_adapter, sid, "late-rk", gen,
+    assert!(plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, &mut witness, &old_adapter, sid, "late-rk", gen,
         Some(plx_data::metadata::Detail { sid, rk: "late-rk".into(), title: "Late Title".into(), ..Default::default() })),
         "the pre-reset worker really completes onto the adapter it captured");
 

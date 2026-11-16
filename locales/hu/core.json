@@ -25,6 +25,7 @@
   "core.preview_domain_attempted_delivery": "megkísérelt továbbítási mód",
   "core.preview_domain_source_video": "a forrás videokodekje (csak az elutasított lejátszási tervekről szóló jelentésekben)",
   "core.preview_domain_source_audio": "a forrás hangkodekje (csak az elutasított lejátszási tervekről szóló jelentésekben)",
+  "core.preview_domain_preview_refusal": "az automatikus előzetes elutasításának oka (csak az elutasított előzetesekről szóló jelentésekben)",
   "core.preview_domain_quality": "minőség",
   "core.preview_domain_observed_rate": "mért bitráta",
   "core.preview_domain_raster": "képméret",

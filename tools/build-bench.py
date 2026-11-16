@@ -603,12 +603,16 @@ class Bench:
         elif sid == "tests":
             self.ensure_warm(False)
             secs, proc = self.cargo.run_unit_suite()
-            result = parse_test_result(proc.stdout + proc.stderr)
+            output = proc.stdout + proc.stderr
+            result = parse_test_result(output)
             if result is None:
                 raise BenchError(f"unit suite: no `test result:` line (cargo exited "
                                  f"{proc.returncode}): {proc.stderr.strip()[-400:]}")
-            output = proc.stdout + proc.stderr
-            names = failed_tests(output) if result["failed"] or result["status"] != "ok" else []
+            tests_failed = result["failed"] or result["status"] != "ok"
+            if proc.returncode and not tests_failed:
+                raise BenchError(f"unit suite: test runner exited {proc.returncode} despite passing test summaries:\n"
+                                 f"{output.strip()[-600:]}")
+            names = failed_tests(output) if tests_failed else []
             if names:
                 log(f"unit suite: {len(names)} test(s) FAILED: " + ", ".join(names[:FAILURE_NAMES_SHOWN]))
             sample.update(seconds=secs, failed_tests=names[:FAILURE_NAMES_SHOWN], **result)

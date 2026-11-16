@@ -13,12 +13,13 @@ use super::test_support::*;
 use super::*;
 use plx_data::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
 use plx_data::stores::StoreJob;
-use plx_data::stores::notify::{Connector, Link, NotifyStore};
+use plx_data::stores::notify_job::NotifyStreamReq;
+use crate::app::adapters::stores::NotifyTransport;
 use plx_data::stores::notify_map::Shown;
 use plx_ui::dispatch::Rig as _;
 use plx_plex::plex::notify::{LibraryEntry, LibraryKind, LibraryState, Notification};
 use plx_plex::plex::{GrantEvidence, ServerId};
-use std::sync::{Arc, Mutex};
+
 
 /// Joins a frame's effects and parts, as the dispatcher hands them to `Bridge::deliver`.
 fn deliver_browse_work(rig: &mut Bridge) {
@@ -88,6 +89,7 @@ fn kind(job: &StoreJob) -> &'static str {
         StoreJob::BrowseHubs(..) => "BrowseHubs",
         StoreJob::BrowseDirectory(..) => "BrowseDirectory",
         StoreJob::BrowsePage(..) => "BrowsePage",
+        StoreJob::Hubs(..) => "Hubs",
         _ => "other",
     }
 }
@@ -140,16 +142,6 @@ fn the_viewstate_pump_starts_the_read_its_burst_end_invalidation_asked_for() {
     rig.assert_one_read_started();
 }
 
-/// A connector that keeps the link it was given, for the test to push a notification down.
-#[derive(Clone, Default)]
-struct Wire(Arc<Mutex<Vec<Link>>>);
-
-impl Connector for Wire {
-    fn connect(&mut self, _sid: ServerId, link: Link) -> bool {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).push(link);
-        true
-    }
-}
 
 /// A library change on an owned server invalidates its sections' shelves
 /// (`BrowseCmd::HubsInvalidateServer`) through the notification map: `NOTIFY_FILLS` names Browse,
@@ -159,16 +151,34 @@ fn the_notify_pump_starts_the_read_a_library_change_asked_for() {
     let _guard = plx_base::testlock::serial();
     let mut rig = armed_rig();
     plx_plex::plex::describe_server(rig.own, "Server A", "", GrantEvidence::ours());
-    let wire = Wire::default();
-    rig.bridge.stores.notify = NotifyStore::with_connector_for_test(Box::new(wire.clone()));
+    // Browse's armed shelves do not establish a Home source for quiet invalidation.
+    assert!(rig.bridge.stores.hubs.source_ids().is_empty());
+    rig.bridge.stores.hubs.seed_for_directory_test(
+        rig.own, 1, plx_data::pms::HubState::Ready, rig.bridge.directory.view());
+    assert_eq!(rig.bridge.stores.hubs.source_ids(), vec![rig.own]);
+    assert_eq!(rig.bridge.stores.hubs.snapshot().view().state, plx_data::pms::HubState::Ready);
+    if let crate::app::adapters::stores::StoreRunner::Held { live, .. } = &mut rig.bridge.store_runner {
+        // Keep Notify's finite script immediate, park BOTH map fan-out kinds.
+        *live = &[crate::app::adapters::stores::LiveKind::NotifyStream];
+    }
+    rig.bridge.store_runner.set_notify_transport(NotifyTransport::Script {
+        eligible: |req: &NotifyStreamReq| plx_plex::plex::client_for(req.sid)
+            .filter(|c| plx_plex::plex::ClientKey::of(c) == req.key),
+        run: |port, addr, _, _| {
+            port.post(addr, Notification::Library(vec![LibraryEntry {
+                item_id: "a".into(), kind: LibraryKind::Movie, state: LibraryState::Created, section: None }]));
+            true
+        },
+    });
+    // Scripted eligible input is explicit, not an ambient credential-policy override.
+    rig.bridge.client_keys.refill_roster_with_stream_policy(rig.own, 1, 1, [rig.own],
+        plx_plex::plex::client_for, plx_plex::plex::server_facts, |_| None, |_| true);
+    let (_, endpoints) = rig.bridge.notify_pump_captured(&[], Shown::ALL);
+    assert!(endpoints.is_empty());
 
-    let _ = rig.bridge.notify_pump(&[], Shown::ALL);
-    let link = wire.0.lock().unwrap_or_else(|e| e.into_inner()).first().cloned().expect("the feed connected");
-    link.push(Notification::Library(vec![LibraryEntry {
-        item_id: "a".into(), kind: LibraryKind::Movie, state: LibraryState::Created, section: None }]));
-    let _ = rig.bridge.notify_pump(&[], Shown::ALL);
-
-    rig.assert_one_read_started();
+    assert!(rig.bridge.stores.browse.borrow().hubs_read_out_for_test());
+    rig.assert_started(&["BrowseHubs", "Hubs"]);
+    assert_eq!(rig.bridge.late_store_jobs, 0);
 }
 
 /// The membership re-query a page pushed over the Library page owes is pumped by

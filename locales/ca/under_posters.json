@@ -1,6 +1,6 @@
 {
   "under_posters.title": "Sota els pòsters",
-  "under_posters.detail": "Trieu què apareix sota els pòsters, tant per a pel·lícules com per a sèries.",
+  "under_posters.detail": "Tria què apareix sota els pòsters, tant per a pel·lícules com per a sèries.",
   "under_posters.copy": "La majoria dels pòsters ja mostren el títol. Tria què hi apareix a sota, tant per a pel·lícules com per a sèries. La previsualització utilitza la biblioteca que has obert per última vegada.",
   "under_posters.title_row": "Títol",
   "under_posters.title_detail": "Mostra cada títol sota el seu pòster.",
@@ -21,8 +21,8 @@
   },
   "under_posters.movie_details_row": "Detalls de pel·lícules",
   "under_posters.show_details_row": "Detalls de sèries",
-  "under_posters.movie_details_detail": "Trieu què apareix sota els pòsters de pel·lícules.",
-  "under_posters.show_details_detail": "Trieu què apareix sota els pòsters de sèries.",
+  "under_posters.movie_details_detail": "Tria què apareix sota els pòsters de pel·lícules.",
+  "under_posters.show_details_detail": "Tria què apareix sota els pòsters de sèries.",
   "under_posters.part_year": "Any",
   "under_posters.part_length": "Durada",
   "under_posters.part_seasons": "Temporades",

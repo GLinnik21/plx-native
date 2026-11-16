@@ -76,8 +76,7 @@ fn library_on(pms: &Pms, machine: &str, title: &str, kind: SecKind) -> TestBrows
     // As a finished discovery leaves it: the roster sync must see this client as the one the
     // table was built against, or it re-runs discovery and that request eats a scripted answer.
     let client = plx_plex::plex::client_for(pms.sid).unwrap();
-    source.client_addr = client as *const _ as usize;
-    source.token_gen = client.token_gen();
+    source.client_key = Some(plx_plex::plex::ClientKey::of(client));
     let mut browse = TestBrowse::default();
     browse.seed_sources(vec![source]);
     browse.append_sections(0, vec![(1, title.into(), kind)]);
@@ -129,6 +128,7 @@ fn a_chosen_sort_survives_a_restart() {
             select: false, choice: false,
             query: Some(crate::stores::browse::QueryEdit::Sort { key: "viewCount".into(), desc: true }),
         }, &ClientKeys::default(), &mut Vec::new()));
+    browse.run_preference_jobs();
     pump_until_landed(&mut browse);
     let first_run: Vec<String> = (0..2).map(|_| pms.requests.recv().unwrap()).collect();
     assert!(first_run[1].contains("sort=viewCount%3Adesc"), "{}", first_run[1]);
@@ -243,6 +243,7 @@ fn choosing_the_default_order_forgets_the_entry() {
                 select: false, choice: false,
                 query: Some(crate::stores::browse::QueryEdit::Sort { key: key.into(), desc }),
             }, &ClientKeys::default(), &mut Vec::new()));
+        browse.run_preference_jobs();
         plx_base::storage_worker::drain_for_test();
     };
     let held = |browse: &TestBrowse| {
@@ -399,6 +400,7 @@ fn switch_unwatched_on(browse: &mut TestBrowse, pms: &Pms) {
             select: false, choice: false,
             query: Some(crate::stores::browse::QueryEdit::Unwatched(true)),
         }, &ClientKeys::default(), &mut Vec::new()));
+        browse.run_preference_jobs();
 }
 
 /// A saved sort whose restore FAILED transiently (the menu came back, the sorted re-ask did not)
@@ -569,6 +571,7 @@ fn unwatched_and_genre_survive_a_restart() {
             crate::stores::browse::LibraryWork::Commit {
                 select: false, choice: false, query: Some(edit),
             }, &ClientKeys::default(), &mut Vec::new()));
+        browse.run_preference_jobs();
     }
     plx_base::storage_worker::drain_for_test();
     drop(browse);

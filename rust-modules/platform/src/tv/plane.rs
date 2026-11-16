@@ -2,9 +2,11 @@
 //! its ACB handles, and a release that waits for the firmware's completion callback.
 //!
 //! **Why.** A handle is created and initialized once per process (`AcbAPI_create` +
-//! `AcbAPI_initialize`; a repeat initialize returns 0). The boot makes up to two, one per backend
+//! `AcbAPI_initialize`; a repeat initialize returns 0). There are up to two, one per backend
 //! ([`PlaneHandle`]: Feed's, player type 10, and the URI engine's, player type 0), each created once
-//! and never destroyed. Two cores in one process are independent (each has its own anonymous bus
+//! and never destroyed. The boot creates Feed's; the URI engine's is created on demand, when the first
+//! source the route would send to it is offered (an Experimental viewer's play; the Start's gate makes it if nothing did), so a viewer
+//! on Standard never has a second core (#1394). Two cores in one process are independent (each has its own anonymous bus
 //! client, callback, appId, sink and type; `/Volumes/DAS/lgfw/reports/acb-two-cores/report.md`), so
 //! this owner keeps the invariant that matters on top of them: ONE binding at a time, across both.
 //! `setMediaId` may be called again on the same
@@ -28,14 +30,18 @@
 //!
 //! **Two handles.** The machine knows only roles ([`PlaneHandle`]); the owner maps a role to the id
 //! the sink's `plane_create` returned and, when it grants a bind, makes that handle the one the sink's
-//! verbs address ([`DisplaySink::plane_select`]). A bind of one handle while the other holds the
+//! verbs address ([`DisplaySink::plane_select`]). A handle's creation is an effect of the machine
+//! ([`Event::HandleWanted`] answers [`Fx::Create`] until that handle's boot is recorded, whatever it
+//! found), which [`PlaneOwner::ensure_handle`] runs through the sink on the main thread and answers
+//! with the handle's own boot event; a failed create is recorded too and is not retried. A bind of one handle while the other holds the
 //! plane is refused, and while the other's release is in flight it waits for that release's UNLOADED,
 //! exactly as a second bind of one handle always did. Both handles' sinks are pinned to MAIN by the
 //! bind's first verb before their first bind (`setSinkType` in `acb_media_id`): the firmware
 //! recomputes the sink of every un-pinned object of an app on a foreground change, so an un-pinned
 //! handle could have its sink rewritten by the other's foreground transition. The released handle
 //! stays registered (UNLOADED) while the other is bound, as the owner has always left a handle
-//! between titles.
+//! between titles. The sink makes the newest handle current, so a handle created after the owner has
+//! selected one puts that one back (and a boot, which has selected none, leaves the newest current).
 //!
 //! **Shape.** [`Plane`] is the pure machine (no clock, no global, no IO: time arrives as `now_ms`
 //! in events, work leaves as [`Fx`]). [`PlaneOwner`] is its runner: the single holder of the
@@ -46,7 +52,8 @@
 //! (`webos::video_sink`), which is the only place that has a library thread to receive from.
 use super::sink::{DisplaySink, PlaneFinish, PlaneUnload};
 use plx_base::task::MainThread;
-use std::os::raw::c_long;
+use std::ffi::CStr;
+use std::os::raw::{c_int, c_long};
 use std::collections::VecDeque;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Mutex, MutexGuard};
@@ -70,7 +77,7 @@ pub const DEFAULT_PLAYER_TYPE: i32 = 10;
 /// on (`play-uri`'s `acb_bind::gate`), the sequence the device measurements ran.
 pub const URI_PLAYER_TYPE: i32 = 0;
 
-/// Which of the boot's ACB handles a binding runs over.
+/// Which of the process's ACB handles a binding runs over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlaneHandle {
     /// Buffer-feed's handle: [`DEFAULT_PLAYER_TYPE`] unless `/tmp/plxnative-ptype` says otherwise.
@@ -97,7 +104,7 @@ impl std::fmt::Display for PlaneHandle {
     }
 }
 
-/// What the boot learned about one ACB handle. Owned by the [`PlaneOwner`] from the `Boot` event on
+/// What was learned when one ACB handle was created. Owned by the [`PlaneOwner`] from the `Boot` event on
 /// (the Feed handle's is what [`PlaneOwner::facts`] answers); it replaces the old `ACB_OK`/`PTYPE`
 /// statics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,6 +217,9 @@ pub enum Event {
     Boot { facts: PlaneFacts },
     /// The URI handle's boot.
     BootUri { facts: PlaneFacts },
+    /// A backend is about to bind `handle` and needs it to exist. Answered with [`Fx::Create`] only
+    /// while that handle's boot has not been recorded; the result of the create is that boot event.
+    HandleWanted { handle: PlaneHandle },
     BindRequested { handle: PlaneHandle, media_id: String, policy: BindPolicy },
     /// `setState(UNLOADED)` was called: its answer, the task id it wrote (trusted only for `rv == 1`)
     /// and when.
@@ -230,6 +240,9 @@ pub enum Event {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Fx {
+    /// Create and initialize `handle` through the sink, then report what came of it as its boot
+    /// event ([`Event::Boot`], [`Event::BootUri`]). Asked once per handle: a failed create is a boot too.
+    Create { handle: PlaneHandle },
     /// Run the bind verbs now; the plane is this media id's.
     Bind { media_id: String },
     /// The previous release is still in flight: ask again later.
@@ -316,6 +329,13 @@ impl Plane {
             PlaneHandle::Uri => self.uri,
         }
     }
+    /// Whether `handle`'s boot has been recorded, whatever it found.
+    pub fn booted_of(&self, handle: PlaneHandle) -> bool {
+        match handle {
+            PlaneHandle::Feed => self.booted,
+            PlaneHandle::Uri => self.uri_booted,
+        }
+    }
     /// The handle the latest granted binding ran over (its unload is the one in flight or done).
     pub fn bound_handle(&self) -> Option<PlaneHandle> {
         self.bound_by
@@ -323,6 +343,14 @@ impl Plane {
     /// Whether either handle exists: the plane is unavailable only when neither does.
     pub fn any_handle(&self) -> bool {
         self.facts.handle || self.uri.handle
+    }
+
+    /// A boot that finds a handle makes an unavailable plane available. Only that: a boot after the
+    /// first (the URI handle's, on demand) must never touch a binding, a release or a quarantine.
+    fn promote(&mut self) {
+        if self.state == State::Unavailable && self.any_handle() {
+            self.state = State::Idle;
+        }
     }
 
     fn settle(&mut self, ev: i32, task: i64, fx: &mut Vec<Fx>) {
@@ -340,14 +368,16 @@ impl Plane {
             Event::Boot { facts } if !self.booted => {
                 self.booted = true;
                 self.facts = facts;
-                self.state = if self.any_handle() { State::Idle } else { State::Unavailable };
+                self.promote();
             }
             Event::BootUri { facts } if !self.uri_booted => {
                 self.uri_booted = true;
                 self.uri = facts;
-                self.state = if self.any_handle() { State::Idle } else { State::Unavailable };
+                self.promote();
             }
             Event::Boot { .. } | Event::BootUri { .. } => {}
+            Event::HandleWanted { handle } if !self.booted_of(handle) => fx.push(Fx::Create { handle }),
+            Event::HandleWanted { .. } => {}
             Event::BindRequested { handle, .. } if !self.facts_of(handle).handle => {
                 fx.push(Fx::Refuse(Refusal::NoPlane));
             }
@@ -497,9 +527,9 @@ pub enum BindVerdict {
     Refused(Refusal),
 }
 
-/// What the runner holds of one boot handle beyond the machine's facts: the id the sink's
+/// What the runner holds of one ACB handle beyond the machine's facts: the id the sink's
 /// `plane_create` returned (0 = none, nothing to select) and the library's confirmation of
-/// `AcbAPI_initialize`, read once at the boot while that handle was the sink's current one.
+/// `AcbAPI_initialize`, read once at its create while that handle was the sink's current one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HandleSeat {
     pub id: c_long,
@@ -552,6 +582,40 @@ impl Inner {
             self.selected = Some(handle);
         }
     }
+    /// Record `handle`'s boot: the machine's event and, the first time, the seat the sink knows it by.
+    fn boot(&mut self, handle: PlaneHandle, facts: PlaneFacts, seat: HandleSeat) {
+        let first = !self.plane.booted_of(handle);
+        self.run(match handle {
+            PlaneHandle::Feed => Event::Boot { facts },
+            PlaneHandle::Uri => Event::BootUri { facts },
+        });
+        if first {
+            self.seats[handle.slot()] = seat;
+        }
+    }
+    /// Run [`Fx::Create`] for `handle`: create and initialize it through the sink, then record what
+    /// came of it as the handle's boot. One log line says all of it (Feed's boot adds `acb create=`).
+    fn create(&mut self, sink: &dyn DisplaySink, mt: &MainThread, handle: PlaneHandle, app_id: Option<&CStr>,
+        player_type: c_int) {
+        let held = self.selected;
+        // SAFETY: main thread (the witness); `app_id` is a NUL-terminated string that outlives the
+        // call, or null, which the seam refuses; the owner is the only caller of the create verb.
+        let id = unsafe { sink.plane_create(mt, app_id.map_or(std::ptr::null(), CStr::as_ptr), player_type) };
+        // SAFETY: as above. The library's confirmation is of the handle just created, still the
+        // sink's current one.
+        let initialized = id != 0 && unsafe { sink.plane_initialized(mt) };
+        if handle == PlaneHandle::Feed {
+            plx_base::eventlog::log(&format!("acb create={id}"));
+        }
+        plx_base::eventlog::log(&format!("acb handle={handle} ptype={player_type} create={id} initialized={initialized}"));
+        self.boot(handle, PlaneFacts { handle: id != 0, player_type }, HandleSeat { id, initialized });
+        // The sink made the new handle current. What the owner believed it had selected is no longer
+        // so: forget it, and put back the handle that held the plane so its verbs address it still.
+        self.selected = None;
+        if let Some(held) = held {
+            self.select(sink, mt, held);
+        }
+    }
     fn now_ms(&mut self) -> u64 {
         let epoch = *self.epoch.get_or_insert_with(Instant::now);
         u64::try_from(epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
@@ -572,7 +636,7 @@ impl Inner {
                     self.defer_logged = true;
                     plx_base::eventlog::log("plane: a bind waits for the previous release's completion");
                 }
-                Fx::Defer | Fx::Bind { .. } | Fx::Refuse(_) => {}
+                Fx::Defer | Fx::Bind { .. } | Fx::Refuse(_) | Fx::Create { .. } => {}
             }
         }
         if fx.iter().any(|effect| !matches!(effect, Fx::Defer | Fx::Lost { .. } | Fx::Foreign { .. })) {
@@ -612,23 +676,36 @@ impl PlaneOwner {
 
     /// Record what the boot learned of the Feed handle. Taken once; a later call is ignored.
     pub fn boot(&self, facts: PlaneFacts) {
-        self.boot_handle(PlaneHandle::Feed, facts, HandleSeat::NONE);
+        self.lock().boot(PlaneHandle::Feed, facts, HandleSeat::NONE);
     }
-    /// Record what the boot learned of `handle`, and the `seat` the sink knows it by. Taken once per
-    /// handle; a later call is ignored.
+    /// Record what a boot learned of `handle`, and the `seat` the sink knows it by, without a sink
+    /// (a fixture's way to seat a handle). Taken once per handle; a later call is ignored. Production
+    /// never calls it: Feed's handle is seated by [`ensure_handle`](Self::ensure_handle) (or
+    /// [`boot`](Self::boot) when the build has no Feed) and the URI engine's only by `ensure_handle`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn boot_handle(&self, handle: PlaneHandle, facts: PlaneFacts, seat: HandleSeat) {
+        self.lock().boot(handle, facts, seat);
+    }
+    /// Make `handle` exist, once: the first call creates and initializes it through `sink` (the
+    /// boot's Feed, or the URI engine's when its first source is offered) and records the boot; every later
+    /// call, and a handle whose create failed, answers what the first found without touching the
+    /// sink. Main thread only (the witness): the create verb and the library's confirmation of the
+    /// initialize are the sink's current handle's.
+    pub fn ensure_handle(&self, sink: &dyn DisplaySink, mt: &MainThread, handle: PlaneHandle,
+        app_id: Option<&CStr>, player_type: c_int) -> PlaneFacts {
         let mut inner = self.lock();
-        let first = !match handle {
-            PlaneHandle::Feed => inner.plane.booted,
-            PlaneHandle::Uri => inner.plane.uri_booted,
-        };
-        inner.run(match handle {
-            PlaneHandle::Feed => Event::Boot { facts },
-            PlaneHandle::Uri => Event::BootUri { facts },
-        });
-        if first {
-            inner.seats[handle.slot()] = seat;
+        for effect in inner.run(Event::HandleWanted { handle }) {
+            if let Fx::Create { handle } = effect {
+                inner.create(sink, mt, handle, app_id, player_type);
+            }
         }
+        inner.plane.facts_of(handle)
+    }
+    /// Whether `handle`'s boot is recorded: it was created (or its create failed), so no later
+    /// [`ensure_handle`](Self::ensure_handle) will make it again.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn attempted(&self, handle: PlaneHandle) -> bool {
+        self.lock().plane.booted_of(handle)
     }
     /// The Feed handle's facts.
     pub fn facts(&self) -> PlaneFacts {
@@ -637,13 +714,14 @@ impl PlaneOwner {
     pub fn facts_of(&self, handle: PlaneHandle) -> PlaneFacts {
         self.lock().plane.facts_of(handle)
     }
-    /// The library confirmed `AcbAPI_initialize` for `handle` at the boot (a created handle alone is
+    /// The library confirmed `AcbAPI_initialize` for `handle` at its create (a created handle alone is
     /// not that); false for a handle that was never booted.
     pub fn initialized(&self, handle: PlaneHandle) -> bool {
         self.lock().seats[handle.slot()].initialized
     }
-    /// Whether this boot created either ACB handle (Feed's or the URI engine's): the device has an
-    /// ACB plane at all, which a build with only the URI engine has with Feed's handle absent.
+    /// Whether either ACB handle has been created (Feed's at the boot, the URI engine's at the first
+    /// Experimental offer or, while a release is in flight, at the Start's gate): on a build with
+    /// only the URI engine this is false until then.
     pub fn any_handle(&self) -> bool {
         self.lock().plane.any_handle()
     }
@@ -1289,6 +1367,134 @@ mod tests {
         assert_eq!(owner.unload(&sink, &mt), Phase::Releasing);
         assert_eq!(sink.calls(), [format!("plane_select {FEED_ID}"), format!("plane_select {FEED_ID}"),
             "plane_unload".to_owned()], "a handle the owner never saw selected is selected again before the unload");
+    }
+
+    // ---- the URI engine's handle is created on demand ----
+
+    #[test]
+    fn a_handle_nobody_has_made_is_asked_for_once_and_its_boot_ends_the_asking() {
+        let mut m = booted();
+        assert_eq!(step(&mut m, Event::HandleWanted { handle: PlaneHandle::Uri }),
+            [Fx::Create { handle: PlaneHandle::Uri }]);
+        // Until the result is recorded the machine keeps asking; the runner answers within the same call.
+        assert_eq!(step(&mut m, Event::HandleWanted { handle: PlaneHandle::Uri }),
+            [Fx::Create { handle: PlaneHandle::Uri }]);
+        step(&mut m, Event::BootUri { facts: PlaneFacts { handle: true, player_type: URI_PLAYER_TYPE } });
+        assert!(step(&mut m, Event::HandleWanted { handle: PlaneHandle::Uri }).is_empty());
+        assert!(step(&mut m, Event::HandleWanted { handle: PlaneHandle::Feed }).is_empty(), "Feed's boot is recorded");
+        assert_eq!(bind_of(&mut m, PlaneHandle::Uri, BindPolicy::Strict), [Fx::Bind { media_id: "m".into() }]);
+    }
+
+    #[test]
+    fn a_create_that_failed_is_recorded_and_never_asked_for_again() {
+        let mut m = booted();
+        step(&mut m, Event::HandleWanted { handle: PlaneHandle::Uri });
+        step(&mut m, Event::BootUri { facts: PlaneFacts { handle: false, player_type: URI_PLAYER_TYPE } });
+        assert!(step(&mut m, Event::HandleWanted { handle: PlaneHandle::Uri }).is_empty());
+        assert_eq!(bind_of(&mut m, PlaneHandle::Uri, BindPolicy::Strict), [Fx::Refuse(Refusal::NoPlane)]);
+        assert_eq!(m.state(), &State::Idle, "Feed's plane is untouched");
+    }
+
+    /// The bug a late boot would add: the URI handle's boot used to set the state to Idle outright,
+    /// which erases a binding, a release in flight or a quarantine that exists once the boot is no
+    /// longer the first thing that happens.
+    #[test]
+    fn a_late_uri_boot_leaves_the_plane_state_as_it_found_it() {
+        let uri = PlaneFacts { handle: true, player_type: URI_PLAYER_TYPE };
+        let mut bound = booted();
+        bind(&mut bound, BindPolicy::Strict);
+        let mut released = releasing(5);
+        step(&mut released, Event::Completion { from: None, task: 5, ev: 1 });
+        let mut quarantined = releasing(5);
+        step(&mut quarantined, Event::Tick { now_ms: 100 + RELEASE_FENCE_MS });
+        for (name, mut m) in [("bound", bound), ("releasing", releasing(5)), ("released", released),
+            ("quarantined", quarantined)] {
+            let before = m.state().clone();
+            step(&mut m, Event::BootUri { facts: uri });
+            assert_eq!(m.state(), &before, "{name}");
+        }
+        // The consequence: a URI bind over an unproven release is still refused, and one over a
+        // release in flight still waits.
+        let mut m = releasing(5);
+        step(&mut m, Event::BootUri { facts: uri });
+        assert_eq!(bind_of(&mut m, PlaneHandle::Uri, BindPolicy::Strict), [Fx::Defer]);
+        step(&mut m, Event::Tick { now_ms: 100 + RELEASE_FENCE_MS });
+        assert_eq!(bind_of(&mut m, PlaneHandle::Uri, BindPolicy::Strict),
+            [Fx::Refuse(Refusal::Quarantined(Why::Deadline))]);
+    }
+
+    #[test]
+    fn the_owner_creates_the_uri_handle_once_through_the_sink_and_records_it() {
+        use super::super::sink::ScriptedPlaneSink;
+        let sink = ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 });
+        sink.create_ids.lock().unwrap().extend([FEED_ID, URI_ID]);
+        let owner = PlaneOwner::new();
+        let mt = mt();
+        let app = c"app.test";
+        assert!(!owner.attempted(PlaneHandle::Uri));
+        let feed = owner.ensure_handle(&sink, &mt, PlaneHandle::Feed, Some(app), DEFAULT_PLAYER_TYPE);
+        assert_eq!(feed, PlaneFacts { handle: true, player_type: DEFAULT_PLAYER_TYPE });
+        assert!(!owner.attempted(PlaneHandle::Uri), "Feed's boot made no URI handle");
+        let uri = owner.ensure_handle(&sink, &mt, PlaneHandle::Uri, Some(app), URI_PLAYER_TYPE);
+        assert_eq!(uri, PlaneFacts { handle: true, player_type: URI_PLAYER_TYPE });
+        assert!(owner.initialized(PlaneHandle::Uri) && owner.attempted(PlaneHandle::Uri));
+        // A second ask, with any player type, creates nothing and answers what the first found.
+        assert_eq!(owner.ensure_handle(&sink, &mt, PlaneHandle::Uri, Some(app), 99), uri);
+        assert_eq!(owner.ensure_handle(&sink, &mt, PlaneHandle::Feed, Some(app), 99), feed);
+        assert_eq!(sink.created_player_types(), [DEFAULT_PLAYER_TYPE, URI_PLAYER_TYPE]);
+        // The id the sink answered is the seat: the URI bind selects it.
+        assert_eq!(owner.bind(&sink, &mt, PlaneHandle::Uri, BindPolicy::Strict, "m1"), BindVerdict::Granted);
+        assert_eq!(sink.calls().last().unwrap(), &format!("plane_select {URI_ID}"));
+    }
+
+    #[test]
+    fn a_create_that_fails_is_final_and_a_create_the_library_did_not_confirm_is_not_initialized() {
+        use super::super::sink::ScriptedPlaneSink;
+        let mt = mt();
+        let sink = ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 });
+        let owner = PlaneOwner::new();
+        let facts = owner.ensure_handle(&sink, &mt, PlaneHandle::Uri, Some(c"app.test"), URI_PLAYER_TYPE);
+        assert_eq!(facts, PlaneFacts { handle: false, player_type: URI_PLAYER_TYPE });
+        assert!(!owner.initialized(PlaneHandle::Uri));
+        owner.ensure_handle(&sink, &mt, PlaneHandle::Uri, Some(c"app.test"), URI_PLAYER_TYPE);
+        assert_eq!(sink.created_player_types(), [URI_PLAYER_TYPE], "a failed create is not retried");
+        assert_eq!(owner.bind(&sink, &mt, PlaneHandle::Uri, BindPolicy::Strict, "m1"),
+            BindVerdict::Refused(Refusal::NoPlane));
+        assert_eq!(owner.phase(), Phase::Unavailable, "no handle at all is no plane");
+        // Created, but the library never confirmed the initialize.
+        let sink = ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 });
+        sink.create_ids.lock().unwrap().push(URI_ID);
+        sink.initialized.store(false, std::sync::atomic::Ordering::Relaxed);
+        let owner = PlaneOwner::new();
+        let facts = owner.ensure_handle(&sink, &mt, PlaneHandle::Uri, Some(c"app.test"), URI_PLAYER_TYPE);
+        assert_eq!(facts, PlaneFacts { handle: true, player_type: URI_PLAYER_TYPE });
+        assert!(!owner.initialized(PlaneHandle::Uri));
+    }
+
+    /// The sink makes the newest handle current. A handle created while the owner has Feed's selected
+    /// (Feed played before the first URI play) must not leave the next Feed bind addressing the URI
+    /// handle: the owner puts Feed's back, and its next grant needs no second select.
+    #[test]
+    fn creating_the_uri_handle_after_feed_was_selected_leaves_feeds_handle_the_one_addressed() {
+        use super::super::sink::ScriptedPlaneSink;
+        let sink = ScriptedPlaneSink::new(PlaneUnload { rv: 1, task: 5 });
+        sink.create_ids.lock().unwrap().extend([FEED_ID, URI_ID]);
+        let owner = PlaneOwner::new();
+        let mt = mt();
+        let app = Some(c"app.test");
+        owner.ensure_handle(&sink, &mt, PlaneHandle::Feed, app, DEFAULT_PLAYER_TYPE);
+        assert_eq!(owner.bind(&sink, &mt, PlaneHandle::Feed, BindPolicy::Rebind, "m1"), BindVerdict::Granted);
+        owner.ensure_handle(&sink, &mt, PlaneHandle::Uri, app, URI_PLAYER_TYPE);
+        assert_eq!(owner.bind(&sink, &mt, PlaneHandle::Feed, BindPolicy::Rebind, "m2"), BindVerdict::Granted);
+        assert_eq!(sink.calls(), ["plane_create 10".to_owned(), format!("plane_select {FEED_ID}"),
+            "plane_create 0".to_owned(), format!("plane_select {FEED_ID}")],
+            "Feed's handle was selected, the URI create made the sink address the new handle, and Feed's was put back");
+        // The URI engine's own grant, once Feed has released, selects its handle.
+        assert_eq!(owner.unload(&sink, &mt), Phase::Releasing);
+        sink.mailbox.push_from(FEED_ID.into(), 5, 1);
+        assert_eq!(owner.pump(&sink, &mt), Phase::Released);
+        assert_eq!(owner.bind(&sink, &mt, PlaneHandle::Uri, BindPolicy::Strict, "m3"), BindVerdict::Granted);
+        assert_eq!(sink.calls().last().unwrap(), &format!("plane_select {URI_ID}"));
     }
 
     // ---- completions are matched on (handle, task): each core numbers its own tasks ----

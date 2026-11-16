@@ -46,6 +46,8 @@ pub mod origin;
 /// What a caller may add to a request's headers, for both transports (module doc).
 pub mod headers;
 
+pub mod connect_only;
+
 type CURL = c_void;
 pub type curl_slist = c_void;
 
@@ -131,8 +133,11 @@ const CURLOPT_SSL_VERIFYHOST: c_int = 81;
 const CURLOPT_NOSIGNAL: c_int = 99;
 /// `CURLOPT_FRESH_CONNECT` (LONG + 74) and `CURLOPT_FORBID_REUSE` (LONG + 75): never take a cached
 /// connection for this handle, and never leave this handle's connection in the cache. Read off
-/// `curl/curl.h`; both have existed since libcurl 7.7. Set only by [`keypin::apply`].
-const CURLOPT_FRESH_CONNECT: c_int = 74;
+/// `curl/curl.h`; both have existed since libcurl 7.7. Set by [`keypin::apply`] on every key-mode
+/// handle; `CURLOPT_FRESH_CONNECT` alone also by `curlio` for a request to an origin whose cached
+/// HTTP/2 connection still carries a cancelled stream (`curlio::ConnLedger`). A libcurl that refuses
+/// it there reuses the connection, so that refusal is logged and never fatal.
+pub(crate) const CURLOPT_FRESH_CONNECT: c_int = 74;
 const CURLOPT_FORBID_REUSE: c_int = 75;
 /// `CURLOPT_SSL_SESSIONID_CACHE` (LONG + 150): `0` stops libcurl from looking up a cached TLS
 /// session for this handle AND from storing the one it negotiates, so the handshake is a full one.
@@ -1537,9 +1542,11 @@ mod loopback_pms {
                         }
                         let reply = answer(&request);
                         log.lock().unwrap_or_else(|e| e.into_inner()).push(request);
-                        if tls.write_all(&reply).is_err() || tls.flush().is_err() || !keep_alive {
-                            return;
-                        }
+                        if tls.write_all(&reply).is_err() { return; }
+                        // OpenSSL must see an orderly TLS close to keep the TLS 1.3 session
+                        // resumable after this response, not just a bare TCP EOF.
+                        if !keep_alive { tls.conn.send_close_notify(); }
+                        if tls.flush().is_err() || !keep_alive { return; }
                     }
                 });
             }
@@ -2243,13 +2250,8 @@ fn request_tls_sink(
         unsafe {
             macro_rules! require_setopt {
                 ($call:expr, $name:literal) => {{
-                    let rc = $call;
-                    if rc != 0 {
-                        plx_base::eventlog::log(&format!(
-                            "net: libcurl refused security option {} (rc={rc}); request cancelled",
-                            $name
-                        ));
-                        return Err(RequestError::Transport.into());
+                    if let Err(error) = require_option($call, $name) {
+                        return Err(error.into());
                     }
                 }};
             }
@@ -2361,10 +2363,8 @@ fn request_tls_sink(
                 // Refusing here is a deliberate over-reaction — if we could not select the roots we
                 // meant to, the honest report is that the send did not happen.
                 TlsCfg::CaBundle(p) => {
-                    let rc = curl_easy_setopt_ptr(easy.0, CURLOPT_CAINFO, p.as_ptr() as *const c_void);
-                    if rc != 0 {
-                        plx_base::eventlog::log(&format!("net: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"));
-                        return Err(RequestError::Transport.into());
+                    if let Err(error) = require_trust_store(curl_easy_setopt_ptr(easy.0, CURLOPT_CAINFO, p.as_ptr() as *const c_void)) {
+                        return Err(error.into());
                     }
                 }
                 TlsCfg::Pinned(p) => {
@@ -2946,8 +2946,26 @@ pub fn https_get_public_bounded(url: &str, max_body: usize) -> Result<Resp, Requ
     request_result_evidence(url, &[], "GET", None, API, true, Some(max_body), None, false)
 }
 
-/// The `nowan` gate shared by the three resolver doors ([`request_tls_result`],
-/// [`crate::range_io`] and [`crate::stream`]): `true` when `/tmp/plxnative-nowan` is armed and
+fn require_option(rc: c_int, option: &str) -> Result<(), RequestError> {
+    if rc == 0 {
+        return Ok(());
+    }
+    plx_base::eventlog::log(&format!("net: libcurl refused security option {option} (rc={rc}); request cancelled"));
+    Err(RequestError::Transport)
+}
+
+fn require_trust_store(rc: c_int) -> Result<(), RequestError> {
+    if rc == 0 {
+        return Ok(());
+    }
+    plx_base::eventlog::log(&format!(
+        "net: this libcurl refuses CURLOPT_CAINFO (rc={rc}) — refusing to send against an unknown trust store"
+    ));
+    Err(RequestError::Transport)
+}
+
+/// The `nowan` gate shared by the four resolver doors ([`request_tls_result`],
+/// [`crate::range_io`], [`crate::stream`] and [`connect_only`]): `true` when `/tmp/plxnative-nowan` is armed and
 /// `host` is a NAME rather than a literal, i.e. when a dead resolver would have refused it. The
 /// `slow` variant first spends `connect_s`, the budget a worker would have lost waiting on that
 /// resolver. `false` without the trigger, and at compile time without `devtriggers`.
@@ -5083,6 +5101,20 @@ mod tls_mode_tests {
 
 #[cfg(test)]
 mod blocking_guard_tests {
+    #[test]
+    fn a_logic_step_cannot_dial_even_under_allow_blocking() {
+        let allowed = plx_base::task::allow_blocking(const { &plx_base::task::BlockingLabel::new("fixture") });
+        let step = plx_base::step::StepScope::enter();
+        let refused = std::panic::catch_unwind(|| {
+            super::request_evidence("https://plex.tv.invalid/ping", &[], "GET", None, super::API, false, None, None)
+        });
+        assert!(refused.is_err());
+        drop(step);
+        // A malformed URL returns before curl or DNS, proving the guard unwound and did not leak.
+        assert!(super::request_result("bad\0url", &[], "GET", None, super::API, false, None, None).is_err());
+        drop(allowed);
+    }
+
     use super::*;
 
     /// plex.tv calls (`AccountClient`) never pass `http::request_with`, so its `assert_may_block`

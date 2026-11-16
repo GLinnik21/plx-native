@@ -249,7 +249,6 @@ impl UnderlayField {
                 }
                 gfx::FieldRead::Pending => {
                     self.pending = Some(t);
-                    plx_machine::idle::wake();
                     return FrameLatch::Pending;
                 }
                 gfx::FieldRead::Lost => {}
@@ -259,7 +258,6 @@ impl UnderlayField {
             Some(t) => {
                 self.pending = Some(t);
                 // A frame for the read to land in, whether or not anything else moves.
-                plx_machine::idle::wake();
                 FrameLatch::Pending
             }
             None => FrameLatch::Refused,

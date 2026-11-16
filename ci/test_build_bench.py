@@ -33,6 +33,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import check_steps
 
@@ -62,10 +63,11 @@ if os.environ.get("FAKE_FAIL_ON_EDIT") and "build-bench edit" in "".join(read(p)
     sys.stderr.write("error: fake cargo failed on the edited tree\n")
     sys.exit(101)
 if "--no-run" in args:
-    # cargo judges a path package by mtime: stale when a source file is NEWER than what the last build
-    # wrote (the state file's own mtime stands for the dependency info), fresh otherwise
+    # Model active benchmark edits by their controlled marker too: coarse clocks can give an edit
+    # the same mtime as the last build. Restored bytes + original mtime still read fresh.
     state = os.environ["FAKE_STATE"] + "." + (os.environ.get("CARGO_TARGET_DIR") or "target").replace("/", "_")
     fresh = (os.path.exists(state) and all(os.stat(p).st_mtime_ns <= os.stat(state).st_mtime_ns for p in EDITED if os.path.exists(p))
+             and not any("// build-bench edit " in read(p) for p in EDITED)
              and not os.environ.get("FAKE_ALWAYS_DIRTY"))
     open(state, "w").write("built")
     if os.environ.get("FAKE_COUNT_BUILDS"):
@@ -364,6 +366,42 @@ class EditRestoreTests(unittest.TestCase):
             self.assertTrue(all(s["app_rebuilt"] for s in by_id["ui"]["samples"]))
             self.assertFalse(any(s["app_rebuilt"] for s in by_id["noop"]["samples"]))
 
+    def test_equal_mtimes_do_not_hide_active_edits(self):
+        with Sandbox() as sb:
+            old = 1_700_000_000_000_000_000
+            for rel in SRC_FILES:
+                os.utime(sb.repo / rel, ns=(old, old))
+            counts = sb.repo.parent / "builds.txt"
+            env = dict(os.environ, FAKE_LOG=str(sb.log), FAKE_STATE=str(sb.state),
+                       FAKE_COUNT_BUILDS=str(counts))
+            for key in ("CARGO_TARGET_DIR", "FAKE_ALWAYS_DIRTY", "FAKE_FAIL_ON_EDIT"):
+                env.pop(key, None)
+
+            def build():
+                proc = subprocess.run([sys.executable, str(sb.home / ".cargo/bin/cargo"), "+1.0.0",
+                                       *bb.HOST_TEST_BUILD_ARGS], cwd=sb.repo / "rust-modules",
+                                      capture_output=True, text=True, env=env)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                return [json.loads(line)["fresh"] for line in proc.stdout.splitlines()
+                        if line.startswith("{") and "path+file:" in line]
+
+            self.assertTrue(all(not fresh for fresh in build()))
+            self.assertTrue(all(build()))
+            guard = bb.EditGuard(sb.repo)
+            state = Path(str(sb.state) + ".target")
+            for _ in range(2):
+                for rel in (LEAF, UI_LEAF):
+                    with self.subTest(round=_, rel=rel):
+                        with guard.edited(rel):
+                            stamp = state.stat().st_mtime_ns
+                            os.utime(sb.repo / rel, ns=(stamp, stamp))
+                            self.assertEqual((sb.repo / rel).stat().st_mtime_ns, state.stat().st_mtime_ns)
+                            self.assertTrue(all(not fresh for fresh in build()), "active edit reported fresh")
+                        self.assertEqual((sb.repo / rel).stat().st_mtime_ns, old)
+                        self.assertTrue(all(build()), "restored tree reported dirty")
+            self.assertEqual(counts.read_text().split(), ["rebuilt", "fresh"] + ["rebuilt", "fresh"] * 4)
+            sb.assert_sources_untouched(self)
+
 
 class RedTests(unittest.TestCase):
     """A red unit test is a failed scenario with names, not a timing, and not the end of the run."""
@@ -384,6 +422,24 @@ class RedTests(unittest.TestCase):
             self.assertEqual(by_id["leaf"]["status"], "ok")
             self.assertEqual(len(by_id["leaf"]["samples"]), 2)   # the second round still ran
             sb.assert_sources_untouched(self)
+
+    def test_a_runner_failure_with_passing_tests_is_not_timed(self):
+        result = subprocess.CompletedProcess(
+            [], 101,
+            "test result: ok. 1 passed; 0 failed; 0 ignored\n"
+            "cargo-test-parallel: this binary left 1 entry in its TMPDIR\n"
+            "cargo-test-parallel: FAILED plx_base (exit 1)\n",
+            "",
+        )
+        with patch.object(bb, "Cargo") as cargo, patch.object(bb, "sample_machine", return_value={}):
+            cargo.return_value.run_unit_suite.return_value = (0.1, result)
+            bench = bb.Bench(ROOT, {}, ["tests"], runs=1, cold=False, cores=1)
+            bench.execute()
+
+        self.assertEqual(bench.results["tests"]["status"], "failed")
+        self.assertEqual(bench.results["tests"]["samples"], [])
+        self.assertIn("test runner exited 101", bench.failure)
+        self.assertIn("1 entry in its TMPDIR", bench.failure)
 
     def test_a_green_suite_is_not_red(self):
         with Sandbox() as sb:

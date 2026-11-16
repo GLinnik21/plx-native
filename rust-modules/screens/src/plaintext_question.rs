@@ -361,9 +361,9 @@ impl PlaintextAlert {
         if !self.alert.visible() {
             return;
         }
-        self.alert.draw_scrim();
+        self.alert.draw_scrim(f);
         let (cancel, affirm) = PlaintextQuestion::verbs();
-        self.alert.draw(cancel, affirm, f.measure);
+        self.alert.draw(cancel, affirm, f.measure, f.route_navigation(), f.press);
         let frames = self.alert.frames(f.measure);
         self.frames.set(Some(frames));
         if self.alert.is_open() && self.alert.settled() {
@@ -400,7 +400,7 @@ pub enum AlertStep {
 /// server the read-out is about changed.
 #[derive(Clone, Debug, Default)]
 pub struct OfferWatch {
-    seen: Option<(u64, Option<String>)>,
+
     held: Option<(PlaintextVerdict, CString)>,
 }
 
@@ -417,22 +417,12 @@ pub enum Near {
 impl OfferWatch {
     /// Re-read the offer for `machine` (`near` says whether another will do); `true` when what
     /// the read-out shows changed.
-    pub fn refresh(&mut self, machine: Option<&str>, near: Near) -> bool {
-        let key = (plx_plex::plex::grant::revision(), machine.map(str::to_owned));
-        if self.seen.as_ref() == Some(&key) {
-            return false;
-        }
-        self.seen = Some(key);
-        let offers = plx_plex::plex::grant::offers();
-        let at = offers.iter().position(|v| Some(v.machine_id.as_str()) == machine)
-            .or_else(|| (near == Near::First && !offers.is_empty()).then_some(0));
-        let next = at.and_then(|i| offers.into_iter().nth(i)).map(|v| {
-            let line = reason(&v);
-            (v, line)
-        });
-        let changed = next.as_ref().map(|(v, _)| v) != self.held.as_ref().map(|(v, _)| v);
-        self.held = next;
-        changed
+    pub fn refresh(&mut self, offers: &[PlaintextVerdict], machine: Option<&str>, near: Near) -> bool {
+        let next = offers.iter().find(|v| Some(v.machine_id.as_str()) == machine)
+            .or_else(|| (near == Near::First).then(|| offers.first()).flatten());
+        if next == self.held.as_ref().map(|(v, _)| v) { return false; }
+        self.held = next.map(|v| (v.clone(), reason(v)));
+        true
     }
 
     /// The offer the read-out speaks about.
@@ -498,5 +488,24 @@ mod tests {
             }
         }
         assert!(out.is_empty(), "answers wider than their pill:\n  {}", out.join("\n  "));
+    }
+}
+
+#[cfg(test)]
+mod retained_input_tests {
+    use super::*;
+    #[test]
+    fn retained_offers_expire_without_a_roster_change() {
+        let offer = PlaintextVerdict { machine_id: "server".into(), name: "Server".into(),
+            shared_by: String::new(), eligibility: plx_plex::plex::probe::PlaintextEligibility::Eligible,
+            choice: PlaintextChoice::Undecided };
+        let mut watch = OfferWatch::default();
+        assert!(watch.refresh(std::slice::from_ref(&offer), Some("server"), Near::Only));
+        assert!(!watch.refresh(std::slice::from_ref(&offer), Some("server"), Near::Only));
+        assert!(asks(watch.verdict()));
+        assert!(watch.refresh(&[], Some("server"), Near::Only));
+        assert!(watch.verdict().is_none());
+        assert!(watch.reason().is_none());
+        assert!(!watch.refresh(&[], Some("server"), Near::Only));
     }
 }

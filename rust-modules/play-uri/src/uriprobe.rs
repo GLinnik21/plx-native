@@ -1,3 +1,4 @@
+#![deny(clippy::wildcard_enum_match_arm)]
 //! The URI-mode probe machine (issue #1064, the first test): what to say to `com.webos.media`, in
 //! what order, and what each answer means, as a tested `State + Event -> Effects` machine in the
 //! shape of `plx_media::player::lifecycle::ForegroundLifecycle` (not linked: that crate is above this one).
@@ -26,7 +27,7 @@
 //! retry is the product driver's ladder (`register_ladder`, the one decision both call): it waits in
 //! `AwaitingClose`, then arms the new register deadline after `Closed`.
 //!
-//! The ACB arms require an existing boot-created playerType0 handle and a known SDR720p24
+//! The ACB arms require an ACB display (the gate creates the playerType0 handle on demand) and a known SDR720p24
 //! fixture unless a validated native sourceInfo envelope arrives. They start service Play at
 //! loadCompleted independently of the staged 200/200/200/300ms bind. Bus release triggers one
 //! main-thread UNLOADED, then plane ownership stays quarantined until process exit: each arm
@@ -54,6 +55,9 @@ const DRIVE_STEP_MS: u64 = 2_500;
 const DRIVE_SEEK_MS: i64 = 20_000;
 /// How close to the requested position a following `currentTime` counts as landing on it.
 const DRIVE_SEEK_TOLERANCE_MS: i64 = 5_000;
+/// The longest firmware release or build the `armed` line prints, in characters (a longer one is
+/// not a version and prints as `-`).
+const FIRMWARE_WORD_CHARS: usize = 32;
 /// The longest an error text is kept after [`scrub_text`], in characters.
 
 // ---------------------------------------------------------------------------------------------
@@ -183,11 +187,31 @@ impl Scheme {
     }
 }
 
+/// A firmware release or build as the `armed` line prints it: the platform's own text when it is
+/// plain version text (ASCII letters, digits and `.` `-` `_` `+`, at most [`FIRMWARE_WORD_CHARS`]),
+/// `-` when it is empty or anything else. Nothing else the platform's file held reaches a log a
+/// tester posts.
+fn firmware_word(text: &str) -> &str {
+    let plain = !text.is_empty()
+        && text.len() <= FIRMWARE_WORD_CHARS
+        && text.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+'));
+    if plain { text } else { "-" }
+}
+
 /// What kind of play the route chose (logged, nothing of the URL).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Direct,
     Hls,
+}
+
+/// The firmware the probe runs on, as the platform reported it at boot (`tv::device::Info`): the
+/// release (`5.4.2`) and the exact build (`5.4.2-47`), each empty when unknown. The IO side reads
+/// them and hands them in; the machine reads no global and only prints them on the `armed` line.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Firmware {
+    pub release: String,
+    pub build: String,
 }
 
 /// Everything the machine is armed with. A value, not state: the driver builds it once.
@@ -201,6 +225,8 @@ pub struct Config {
     pub window_id: Option<String>,
     /// The app id the `load` payload names (not a secret).
     pub app_id: String,
+    /// The set's firmware, for the `armed` line (a tester's log says which release it is).
+    pub firmware: Firmware,
     /// Run the transport script after `playing` ([`Variant::Drive`]).
     pub transport: bool,
     /// The native adaptive-streaming rates the `load` payload carries (usually none).
@@ -326,7 +352,7 @@ enum Phase {
 
 impl Phase {
     /// The name a failure in this phase is reported under.
-    fn name(self) -> &'static str {
+    fn name(&self) -> &'static str {
         match self {
             Phase::Idle | Phase::Registering { .. } | Phase::AwaitingClose => "register",
             Phase::Acb => "acb",
@@ -387,20 +413,9 @@ struct PauseSamples {
 }
 
 impl PauseSamples {
-    fn begin(&mut self, now_ms: u64) {
-        *self = Self { started_ms: Some(now_ms), ..Self::default() };
-    }
 
-    fn observe(&mut self, now_ms: u64, position: i64) {
-        if self.ended_ms.is_some() || !self.started_ms.is_some_and(|at| now_ms > at) { return; }
-        self.first.get_or_insert((now_ms, position));
-        self.last = Some((now_ms, position));
-        self.range = Some(match self.range {
-            Some((low, high)) => (low.min(position), high.max(position)),
-            None => (position, position),
-        });
-        self.reports = self.reports.saturating_add(1);
-    }
+
+
 
     fn end_fresh(&self) -> bool {
         self.last.zip(self.ended_ms).is_some_and(|((at, _), end)| at == end)
@@ -424,6 +439,31 @@ impl PauseSamples {
     }
 }
 
+/// How often the service reports `currentTime`: the gap between each report and the one before it,
+/// counted by value, so the median is exact in space bounded by the distinct gaps and not by the
+/// length of the session. Time is the driver's frame clock: a gap is a whole number of frames.
+#[derive(Debug, Default)]
+struct ReportClock {
+    last_ms: Option<u64>,
+    gaps: std::collections::BTreeMap<u64, u64>,
+}
+
+impl ReportClock {
+
+
+    /// The median gap; for an even count the smaller of the two middle gaps, so the answer is a
+    /// gap that happened. `None` before the second report.
+    fn median_ms(&self) -> Option<u64> {
+        let total: u64 = self.gaps.values().sum();
+        let rank = total.checked_sub(1)? / 2;
+        let mut below = 0;
+        self.gaps.iter().find_map(|(gap, count)| {
+            below += count;
+            (below > rank).then_some(*gap)
+        })
+    }
+}
+
 /// What the summary reports: milliseconds since the start at which each thing was first seen.
 #[derive(Debug)]
 struct Facts {
@@ -443,13 +483,25 @@ struct Facts {
     audio: CallResult,
     subs: CallResult,
     paused_ev: bool,
+    /// A `seekDone` arrived after the script's Seek call was sent (one from before it is not that
+    /// call's).
     seek_done_ev: bool,
     seek_seen: Option<i64>,
     eos_ev: bool,
     pause_pos: Option<i64>,
     resume_pos: Option<i64>,
+    /// The Resume call has been sent, and the first position the service reported after it.
+    resume_sent: bool,
+    resume_first: Option<i64>,
     pause_samples: PauseSamples,
     seek_target: Option<i64>,
+    /// The first `audioInfo` that named a track: when (ms since the start) and which.
+    audio_track: Option<(u64, i64)>,
+    /// The script's text `selectTrack` has been sent, and a text `trackSelected` came after it.
+    text_select_sent: bool,
+    text_ev: bool,
+    /// The gaps between `currentTime` reports.
+    clock: ReportClock,
     /// The diagnostic machine's fallback when no addressed dispatch context was supplied.
     track_pending: Option<&'static str>,
 }
@@ -477,18 +529,24 @@ impl Default for Facts {
             eos_ev: false,
             pause_pos: None,
             resume_pos: None,
+            resume_sent: false,
+            resume_first: None,
             pause_samples: PauseSamples::default(),
             seek_target: None,
+            audio_track: None,
+            text_select_sent: false,
+            text_ev: false,
+            clock: ReportClock::default(),
             track_pending: None,
         }
     }
 }
 
-/// The probe. State is private; the one writer is [`step`](UriProbe::step).
+/// The probe. State is private; events enter through [`step`](UriProbe::step).
 pub struct UriProbe {
     config: Config,
     phase: Phase,
-    /// The identity this session registers as; the ladder moves it (see `next_shape_or_stop`).
+    /// The identity this session registers as; refusal events advance it along the ladder.
     shape: Shape,
     /// The identities refused so far: the input of `register_ladder::decide`.
     refused: Vec<Outcome>,
@@ -509,7 +567,7 @@ pub struct UriProbe {
 
 impl std::fmt::Debug for UriProbe {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "UriProbe {{ phase: {:?}, shape: {:?} }}", self.phase, self.shape)
+        write!(f, "UriProbe {{ phase: {:?}, shape: {:?} }}", &self.phase, self.shape)
     }
 }
 
@@ -539,507 +597,575 @@ impl UriProbe {
         }
     }
 
+    /// The only writer of probe state. Continuations borrow only this input, never the model.
+    fn transition(&mut self, ev: UriEvent, now_ms: u64, fx: &mut Vec<UriEffect>) {
+        if self.phase == Phase::Done { return; }
+        enum Work<'a> {
+            Start,
+            Tick,
+            Reply { method: Method, ok: bool, message: &'a Message },
+            Service { method: Method, ok: bool, message: &'a Message },
+            ServiceAfterVideo { method: Method, ok: bool, message: &'a Message },
+            Events { message: &'a Message, index: usize },
+            Seen { seen: &'a Seen, message: &'a Message },
+            CurrentTime { seen: &'a Seen, message: &'a Message },
+            Loaded { message: &'a Message },
+            Acb { event: AcbEvent, now_ms: u64 },
+            Drive { step: usize },
+            NextShape { end: End },
+            Stop { end: End },
+            Finished,
+        }
+        let mut work = match &ev {
+            UriEvent::Start => Work::Start,
+            UriEvent::Back => Work::Stop { end: End::Back },
+            UriEvent::Closed if matches!(self.phase, Phase::AwaitingClose) => {
+                self.phase = Phase::Registering { deadline: now_ms.saturating_add(REGISTER_TIMEOUT_MS) };
+                fx.push(UriEffect::Open(self.shape));
+                Work::Finished
+            }
+            UriEvent::Closed | UriEvent::AcbReleaseTail { .. } => Work::Finished,
+            UriEvent::AcbAnswered { request, invoked, completed_ms } => Work::Acb {
+                event: AcbEvent::Answered { request: *request, invoked: *invoked, completed_ms: *completed_ms },
+                now_ms: *completed_ms,
+            },
+            UriEvent::Dispatched { method, kind, request } => {
+                self.requests.insert((*method, *kind), *request);
+                Work::Finished
+            }
+            UriEvent::Tick => Work::Tick,
+            UriEvent::Reply { method, ok, message } => Work::Reply { method: *method, ok: *ok, message },
+        };
+        // Video handling finishes before the service reply resumes; each seen item finishes before
+        // the next one. These continuations never nest, so no heap queue or model copy is needed.
+        let mut continuation = None;
+        'reduce: loop {
+            match work {
+                Work::Finished => {
+                    if let Some(next) = continuation.take() { work = next; continue 'reduce; }
+                    break;
+                }
+                Work::Service { method, ok, message } => {
+                    if self.requests.get(&(method, message.reply_track)).is_some_and(|request| message.reply_request != Some(*request)) { work = Work::Finished; continue 'reduce; }
+                    if message.identity_conflict || (self.media_id.is_some() && message.media_id.is_some() && self.media_id != message.media_id) { work = Work::Finished; continue 'reduce; }
+                    if let Some(video) = message.video_info {
+                        debug_assert!(continuation.is_none());
+                        continuation = Some(Work::ServiceAfterVideo { method, ok, message });
+                        work = Work::Acb { event: AcbEvent::Video(video), now_ms }; continue 'reduce;
+                    }
+                    work = Work::ServiceAfterVideo { method, ok, message }; continue 'reduce;
+                }
+                Work::Events { message, index } => {
+                    if self.phase == Phase::Done { work = Work::Finished; continue 'reduce; }
+                    let Some(seen) = message.seen.get(index) else {
+                        if message.seen.is_empty() {
+                            if let Some(name) = &message.unknown { fx.push(self.line(now_ms, &unparsed_text(name))); }
+                        }
+                        work = Work::Finished; continue 'reduce;
+                    };
+                    let normalized = message.normalized.contains(&seen.ev);
+                    if normalized || seen.ev == Ev::CurrentTime {
+                        debug_assert!(continuation.is_none());
+                        continuation = Some(Work::Events { message, index: index + 1 });
+                        work = if normalized {
+                            Work::Seen { seen, message }
+                        } else { Work::CurrentTime { seen, message } }; continue 'reduce;
+                    }
+                    fx.push(self.line(now_ms, &event_text(message, seen, false)));
+                    work = Work::Events { message, index: index + 1 }; continue 'reduce;
+                }
+                Work::Start => {
+                    if self.phase != Phase::Idle {
+                        work = Work::Finished; continue 'reduce;
+                    }
+                    self.started_ms = now_ms;
+                    let c = &self.config;
+                    let window = if c.window_id.is_some() { "exported" } else { "none" };
+                    let kind = match c.kind {
+                        Kind::Direct => "direct",
+                        Kind::Hls => "hls",
+                    };
+                    let armed = format!(
+                        "armed variant={} scheme={} kind={kind} window={window} app={} fw={} build={}{}",
+                        c.variant.label(),
+                        c.scheme.label(),
+                        c.app_id,
+                        firmware_word(&c.firmware.release),
+                        firmware_word(&c.firmware.build),
+                        c.bps.label(),
+                    );
+                    fx.push(self.line(now_ms, &armed));
+                    if self.config.variant.acb() { work = Work::Acb { event: AcbEvent::Start, now_ms }; continue 'reduce; }
+                    else {
+                        self.phase = Phase::Registering { deadline: now_ms + REGISTER_TIMEOUT_MS };
+                        fx.push(UriEffect::Open(self.shape));
+                    }
+                }
+                Work::Tick => {
+                    match self.phase {
+                        Phase::Acb => { work = Work::Acb { event: AcbEvent::Tick, now_ms }; continue 'reduce; },
+                        Phase::Registering { deadline } if now_ms >= deadline => { work = Work::Stop { end: End::Timeout("register") }; continue 'reduce; },
+                        Phase::Loading { deadline } if now_ms >= deadline => { work = Work::Stop { end: End::Timeout("load") }; continue 'reduce; },
+                        Phase::SettingWindow { deadline } if now_ms >= deadline => {
+                            self.facts.window_call = WindowCall::Silent;
+                            fx.push(self.line(now_ms, "call setWindowId no reply, playing anyway"));
+                            if let Some(media_id) = self.media_id.clone() {
+                                self.phase = Phase::Starting { deadline: now_ms + PLAY_TIMEOUT_MS };
+                                fx.push(UriEffect::Call(UriCall::Play { media_id }));
+                            }
+                        }
+                        Phase::Starting { deadline } if now_ms >= deadline => { work = Work::Stop { end: End::Timeout("play") }; continue 'reduce; },
+                        Phase::Playing { frozen_at } if self.facts.time_moved.is_some() && now_ms >= frozen_at => {
+                            { work = Work::Stop { end: End::Timeout("currentTime") }; continue 'reduce; }
+                        }
+                        Phase::Driving { step, deadline } if now_ms >= deadline => { work = Work::Drive { step }; continue 'reduce; },
+                        Phase::Idle | Phase::Registering { .. } | Phase::AwaitingClose | Phase::Loading { .. } | Phase::SettingWindow { .. } | Phase::Starting { .. } | Phase::Playing { .. } | Phase::Driving { .. } | Phase::Done => {}
+                    }
+                }
+                Work::Drive { step } => {
+                    let Some(media_id) = self.media_id.clone() else {
+                        work = Work::Stop { end: End::Script }; continue 'reduce;
+                    };
+                    let position = |p: Option<i64>| p.map_or_else(|| "-".to_owned(), |v| v.to_string());
+                    match step {
+                        0 => {
+                            self.facts.pause_samples = PauseSamples { started_ms: Some(now_ms), ended_ms: None, first: None, last: None, range: None, reports: 0 };
+                            self.facts.pause_pos = self.last_time;
+                            fx.push(self.line(now_ms, &format!("drive pause pos={}", position(self.facts.pause_pos))));
+                            fx.push(UriEffect::Call(UriCall::Pause { media_id }));
+                        }
+                        1 => {
+                            self.facts.pause_samples.ended_ms = Some(now_ms);
+                            self.facts.resume_pos = self.last_time;
+                            self.facts.resume_sent = true;
+                            self.facts.resume = CallResult::Unconfirmed;
+                            fx.push(self.line(now_ms, &format!("drive resume pos={}", position(self.facts.resume_pos))));
+                            fx.push(UriEffect::Call(UriCall::Play { media_id }));
+                        }
+                        2 => {
+                            let target = self.last_time.unwrap_or(0).max(0).saturating_add(DRIVE_SEEK_MS);
+                            self.facts.seek_target = Some(target);
+                            fx.push(self.line(now_ms, &format!("drive seek target={target}")));
+                            fx.push(UriEffect::Call(UriCall::Seek { media_id, position: target }));
+                        }
+                        3 => {
+                            self.facts.text_select_sent = true;
+                            self.facts.track_pending = Some("text");
+                            fx.push(self.line(now_ms, "drive selectTrack type=text index=0"));
+                            fx.push(UriEffect::Call(UriCall::SelectTrack { media_id, kind: "text", index: 0 }));
+                        }
+                        4 => {
+                            self.facts.track_pending = Some("audio");
+                            fx.push(self.line(now_ms, "drive selectTrack type=audio index=1"));
+                            fx.push(UriEffect::Call(UriCall::SelectTrack { media_id, kind: "audio", index: 1 }));
+                        }
+                        5 => {
+                            fx.push(self.line(now_ms, "drive subtitles enable"));
+                            fx.push(UriEffect::Call(UriCall::SetSubtitleEnable { media_id, enable: true }));
+                        }
+                        _ => {
+                            work = Work::Stop { end: End::Script }; continue 'reduce;
+                        }
+                    }
+                    self.phase = Phase::Driving { step: step + 1, deadline: now_ms + DRIVE_STEP_MS };
+                }
+                Work::Reply { method, ok, message } => {
+                    if method == Method::Dropped {
+                        let count = message.dropped.unwrap_or(0);
+                        fx.push(self.line(now_ms, &format!("transport dropped {count} replies")));
+                        work = Work::Stop { end: End::Refused("overflow") }; continue 'reduce;
+                    }
+                    match self.phase {
+                        Phase::Registering { .. } if method == Method::Register => {
+                            let shape = register_ladder::label(self.shape);
+                            if ok {
+                                fx.push(self.line(now_ms, &format!("register shape={shape} ok")));
+                                self.phase = Phase::Loading { deadline: now_ms + LOAD_TIMEOUT_MS };
+                                let window_id = if self.config.variant.acb() { Some(super::acb_bind::DUMMY_WINDOW_ID.to_owned()) }
+                                else if self.config.variant.binds_at_load() { self.config.window_id.clone() } else { None };
+                                fx.push(UriEffect::Call(UriCall::Load { window_id, bps: self.config.bps }));
+                            } else {
+                                fx.push(self.line(now_ms, &format!("register shape={shape} refused({})", message.why())));
+                                work = Work::NextShape { end: End::Refused("register") }; continue 'reduce;
+                            }
+                        }
+                        Phase::Loading { .. } | Phase::SettingWindow { .. } | Phase::Starting { .. } | Phase::Playing { .. } | Phase::Driving { .. } | Phase::Acb => {
+                            { work = Work::Service { method, ok, message }; continue 'reduce; }
+                        }
+                        Phase::Idle | Phase::Registering { .. } | Phase::AwaitingClose | Phase::Done => {}
+                    }
+                }
+                Work::NextShape { end } => {
+                    self.refused.push(Outcome::Refused);
+                    match register_ladder::decide(&self.refused) {
+                        Step::Register(shape) => {
+                            self.shape = shape;
+                            self.media_id = None;
+                            self.subscribed = false;
+                            fx.push(UriEffect::Close);
+                            self.phase = Phase::AwaitingClose;
+                        }
+                        Step::Settled(_) | Step::Failed(_) => { work = Work::Stop { end: end }; continue 'reduce; },
+                    }
+                }
+                Work::ServiceAfterVideo { method, ok, message } => {
+
+                    let denied = !ok || message.return_value == Some(false);
+                    let text = message.why();
+                    if let Some(kind) = message.confirmed_track {
+                        match kind { "text" => self.facts.text = CallResult::Ok, "audio" => self.facts.audio = CallResult::Ok, _ => {} }
+                    }
+                    match method {
+                        Method::Load if denied && self.media_id.is_none() && matches!(self.phase, Phase::Loading { .. }) => {
+                            fx.push(self.line(now_ms, &format!("call load err({text})")));
+                            work = Work::NextShape { end: End::Refused("load") }; continue 'reduce;
+                        }
+                        Method::Subscribe | Method::Load if denied => {
+                            fx.push(self.line(now_ms, &format!("call {} err({text})", if method == Method::Load { "load" } else { "subscribe" })));
+                        }
+                        Method::Play if denied => {
+                            fx.push(self.line(now_ms, &format!("call play err({text})")));
+                            if matches!(self.phase, Phase::Driving { .. }) {
+                                // A refused resume is a finding, not the end of the session: the script still
+                                // has the seek and the track calls to ask about.
+                                self.facts.resume = CallResult::Refused;
+                                work = Work::Finished; continue 'reduce;
+                            }
+                            work = Work::Stop { end: End::Refused("play") }; continue 'reduce;
+                        }
+                        Method::NotifyForeground => {
+                            fx.push(self.line(now_ms, &format!("call notifyForeground {}", Self::said(ok, denied, &text))));
+                            if denied { work = Work::Stop { end: End::Refused("notifyForeground") }; continue 'reduce; }
+                            work = Work::Finished; continue 'reduce;
+                        }
+                        Method::Pause => {
+                            self.facts.pause = Self::outcome(ok, denied);
+                            fx.push(self.line(now_ms, &format!("call pause {}", Self::said(ok, denied, &text))));
+                            work = Work::Finished; continue 'reduce;
+                        }
+                        Method::Seek => {
+                            self.facts.seek = Self::outcome(ok, denied);
+                            fx.push(self.line(now_ms, &format!("call seek {}", Self::said(ok, denied, &text))));
+                            work = Work::Finished; continue 'reduce;
+                        }
+                        Method::SelectTrack => {
+                            let kind = if let Some(kind) = message.reply_track { kind } else { self.facts.track_pending.take().unwrap_or("track") };
+                            let outcome = Self::outcome(ok, denied);
+                            match kind {
+                                "text" => if self.facts.text != CallResult::Ok || outcome == CallResult::Refused { self.facts.text = outcome },
+                                "audio" => if self.facts.audio != CallResult::Ok || outcome == CallResult::Refused { self.facts.audio = outcome },
+                                _ => {},
+                            }
+                            fx.push(self.line(now_ms, &format!("call selectTrack {kind} {}", Self::said(ok, denied, &text))));
+                            work = Work::Finished; continue 'reduce;
+                        }
+                        Method::SetSubtitleEnable => {
+                            // No event confirms this call: its own reply is the whole answer.
+                            self.facts.subs = if denied { CallResult::Refused } else if message.return_value == Some(true) { CallResult::Ok } else { CallResult::Unconfirmed };
+                            fx.push(self.line(now_ms, &format!("call setSubtitleEnable {}", Self::said(ok, denied, &text))));
+                            work = Work::Finished; continue 'reduce;
+                        }
+                        Method::SetWindowId => {
+                            if !denied && message.return_value != Some(true) { work = Work::Finished; continue 'reduce; }
+                            if denied {
+                                self.facts.window_call = WindowCall::Refused;
+                                fx.push(self.line(now_ms, &format!("call setWindowId err({text})")));
+                            } else {
+                                self.facts.window_call = WindowCall::Answered;
+                                fx.push(self.line(now_ms, "call setWindowId ok"));
+                            }
+                            if matches!(self.phase, Phase::SettingWindow { .. }) {
+                                if let Some(media_id) = self.media_id.clone() {
+                                    self.phase = Phase::Starting { deadline: now_ms + PLAY_TIMEOUT_MS };
+                                    fx.push(UriEffect::Call(UriCall::Play { media_id }));
+                                }
+                            }
+                            work = Work::Finished; continue 'reduce;
+                        }
+                        Method::Load | Method::Subscribe | Method::Play if !denied && message.return_value == Some(true) && !message.has_events() => {
+                            if method == Method::Play && matches!(self.phase, Phase::Driving { .. }) {
+                                self.facts.resume = CallResult::Unconfirmed;
+                            }
+                            fx.push(self.line(now_ms, &format!("call {} ok", match method {
+                                    Method::Load => "load",
+                                    Method::Subscribe => "subscribe",
+                                    Method::Register | Method::Play | Method::NotifyForeground | Method::Pause
+                                    | Method::Seek | Method::SelectTrack | Method::SetSubtitleEnable
+                                    | Method::SetWindowId | Method::Unload | Method::Dropped | Method::Other => "play",
+                                })));
+                        }
+                        Method::Register | Method::Load | Method::Subscribe | Method::Play
+                        | Method::Unload | Method::Dropped | Method::Other => {}
+                    }
+                    if self.media_id.is_none() && !denied {
+                        self.media_id = message.media_id.clone();
+                    }
+                    if let (Some(media_id), false) = (self.media_id.clone(), self.subscribed) {
+                        self.subscribed = true;
+                        if self.config.variant.acb() && !self.foreground_sent {
+                            self.foreground_sent = true;
+                            fx.push(UriEffect::Call(UriCall::NotifyForeground {media_id: media_id.clone()}));
+                        }
+                        fx.push(UriEffect::Call(UriCall::Subscribe { media_id }));
+                    }
+                    work = Work::Events { message, index: 0 }; continue 'reduce;
+                }
+                Work::Seen { seen, message } => {
+                    if seen.ev != Ev::CurrentTime {
+                        fx.push(self.line(now_ms, &event_text(message, seen, false)));
+                    }
+                    match seen.ev {
+                        Ev::Error => { work = Work::Stop { end: End::Error(message.error_code) }; continue 'reduce; },
+                        Ev::LoadCompleted => {
+                            if matches!(self.phase, Phase::Loading { .. }) {
+                                work = Work::Loaded { message }; continue 'reduce;
+                            }
+                        }
+                        Ev::Playing => {
+                            if self.facts.playing_ms.is_none() {
+                                self.facts.playing_ms = Some(now_ms.saturating_sub(self.started_ms));
+                            }
+                            if matches!(self.phase, Phase::Starting { .. }) {
+                                self.phase = if self.config.transport {
+                                    Phase::Driving { step: 0, deadline: now_ms + DRIVE_FIRST_MS }
+                                } else {
+                                    Phase::Playing { frozen_at: now_ms + FROZEN_TIME_MS }
+                                };
+                            }
+                        }
+                        Ev::Paused => {
+                            let samples = &self.facts.pause_samples;
+                            self.facts.paused_ev |= samples.started_ms.is_some() && samples.ended_ms.is_none();
+                            if self.facts.pause == CallResult::Unconfirmed {
+                                self.facts.pause = CallResult::Ok;
+                            }
+                        }
+                        Ev::SeekDone => {
+                            // The subscription's request ID is not the seek command's identity, so only the
+                            // order says whose it is: one from before the script's Seek call is not its.
+                            self.facts.seek_done_ev |= self.facts.seek_target.is_some();
+                        }
+                        Ev::TrackSelected => {
+                            if self.facts.text_select_sent && message.selected_track.is_some_and(|(kind, _)| kind == "text") {
+                                self.facts.text_ev = true;
+                            }
+                            // A generic subscription event cannot name a text or audio command.
+                            match message.confirmed_track {
+                                Some("text") if self.facts.text == CallResult::Unconfirmed => self.facts.text = CallResult::Ok,
+                                Some("audio") if self.facts.audio == CallResult::Unconfirmed => self.facts.audio = CallResult::Ok,
+                                _ => {},
+                            }
+                        }
+                        Ev::EndOfStream => {
+                            self.facts.eos_ev = true;
+                            if matches!(self.phase, Phase::Starting { .. } | Phase::Playing { .. } | Phase::Driving { .. } | Phase::Acb) {
+                                work = Work::Stop { end: End::Eos }; continue 'reduce;
+                            }
+                        }
+                        Ev::CurrentTime => { work = Work::CurrentTime { seen, message }; continue 'reduce; },
+                        Ev::VideoInfo => {
+                            self.facts.video_seen.get_or_insert(now_ms.saturating_sub(self.started_ms));
+                            if let (Some((width, height)), true) = (message.dims, self.config.window_id.is_some()) {
+                                if self.placed != Some((width, height)) {
+                                    self.placed = Some((width, height));
+                                    fx.push(UriEffect::PlaceWindow { width, height });
+                                }
+                            }
+                        }
+                        Ev::AudioInfo => {
+                            let at = now_ms.saturating_sub(self.started_ms);
+                            self.facts.audio_seen.get_or_insert(at);
+                            if let Some(track) = message.audio_track {
+                                self.facts.audio_track.get_or_insert((at, track));
+                            }
+                        }
+                        Ev::BufferRange | Ev::BufferingStart | Ev::BufferingEnd | Ev::SourceInfo | Ev::StreamingInfo | Ev::CustomizedStreamingInfo | Ev::UnloadCompleted => {}
+                    }
+                }
+                Work::Loaded { message } => {
+                    if self.media_id.is_none() {
+                        self.media_id = message.media_id.clone();
+                    }
+                    if self.media_id.is_none() {
+                        fx.push(self.line(now_ms, "loadCompleted carried no mediaId"));
+                        work = Work::Stop { end: End::Refused("mediaId") }; continue 'reduce;
+                    }
+                    self.facts.loaded_ms = Some(now_ms.saturating_sub(self.started_ms));
+                    if self.settled.is_none() {
+                        self.settled = Some(Settle::Started);
+                        fx.push(UriEffect::Settle(Settle::Started));
+                    }
+                    if self.config.variant.acb() {
+                        // Start service transport independently: some firmware emits videoInfo only after Play.
+                        if let Some(media_id) = self.media_id.clone() {
+                            self.phase = Phase::Starting { deadline: now_ms + PLAY_TIMEOUT_MS };
+                            fx.push(UriEffect::Call(UriCall::Play { media_id }));
+                        }
+                        let media_id = self.media_id.clone().expect("loaded identity");
+                        work = Work::Acb { event: AcbEvent::Loaded { media_id }, now_ms }; continue 'reduce;
+                    }
+                    match (self.config.variant, self.config.window_id.clone(), self.media_id.clone()) {
+                        (Variant::Late, Some(window_id), Some(media_id)) => {
+                            self.facts.window_call = WindowCall::Pending;
+                            self.phase = Phase::SettingWindow { deadline: now_ms + LATE_ID_TIMEOUT_MS };
+                            fx.push(UriEffect::Call(UriCall::SetWindowId { media_id, window_id }));
+                        }
+                        _ => if let Some(media_id) = self.media_id.clone() {
+                            self.phase = Phase::Starting { deadline: now_ms + PLAY_TIMEOUT_MS };
+                            fx.push(UriEffect::Call(UriCall::Play { media_id }));
+                        },
+                    }
+                }
+                Work::Acb { event, now_ms } => {
+                    let mut out = Vec::new();
+                    self.acb.step(event, now_ms, &mut out);
+                    for effect in out {
+                        match effect {
+                            AcbFx::Run {request, step, op, ..} => {
+                                self.phase = Phase::Acb;
+                                fx.push(self.line(now_ms, &format!("acb request={} step={step:?}", request.number())));
+                                fx.push(UriEffect::Acb {request, op});
+                            }
+                            AcbFx::WaitingVideo => {
+                                self.phase = Phase::Acb;
+                                fx.push(self.line(now_ms, "acb waiting for real videoInfo dimensions/rate"));
+                            }
+                            AcbFx::Answered {step, invoked} => {
+                                fx.push(self.line(now_ms, &format!("acb answer step={step:?} invoked={invoked} (not plane proof)")));
+                            }
+                            AcbFx::GatePassed => {
+                                self.phase = Phase::Registering {deadline: now_ms.saturating_add(REGISTER_TIMEOUT_MS)};
+                                fx.push(UriEffect::Open(self.shape));
+                            }
+                            AcbFx::Bound => {
+                                self.phase = if self.facts.playing_ms.is_some() { Phase::Playing {frozen_at: now_ms.saturating_add(FROZEN_TIME_MS)} }
+                                else { Phase::Starting {deadline: now_ms.saturating_add(PLAY_TIMEOUT_MS)} };
+                            }
+                            AcbFx::Failed(failure) => {
+                                let end = match failure {
+                                    AcbFailure::Refused => End::Refused("acb"),
+                                    AcbFailure::Timeout => End::Timeout("acb"),
+                                    AcbFailure::VideoTimeout => End::Timeout("acb-video"),
+                                };
+                                if self.phase != Phase::Done {
+                                    self.facts.failed_in = Some(self.phase.name());
+                                    self.facts.ended = Some(end);
+                                    if self.settled.is_none() {
+                                        self.settled = Some(Settle::StartFailed);
+                                        fx.push(UriEffect::Settle(Settle::StartFailed));
+                                    }
+                                    if let Some(media_id) = self.media_id.take() {
+                                        fx.push(self.line(now_ms, "call unload requested"));
+                                        fx.push(UriEffect::Call(UriCall::Unload { media_id }));
+                                    }
+                                    fx.push(UriEffect::Close);
+                                    self.phase = Phase::Done;
+                                    fx.push(self.line(now_ms, &self.summary()));
+                                    fx.push(self.line(now_ms, "tester: report picture yes/no and sound yes/no"));}
+                            }
+                        }
+                    }
+                }
+                Work::CurrentTime { seen, message } => {
+                    let Some(value) = message.current_time else {
+                        // Reported, but in neither known shape: say so once, with no payload. It is no report
+                        // of a position, so it moves nothing and arms no timeout.
+                        if self.time_unparsed_ms.is_none() {
+                            self.time_unparsed_ms = Some(now_ms);
+                            fx.push(self.line(now_ms, &event_text(message, seen, false)));
+                        }
+                        work = Work::Finished; continue 'reduce;
+                    };
+                    // Every valid report is fresh evidence, including an unchanged position.
+                    if self.facts.pause_samples.ended_ms.is_none() && self.facts.pause_samples.started_ms.is_some_and(|at| now_ms > at) {
+                        self.facts.pause_samples.first.get_or_insert((now_ms, value));
+                        self.facts.pause_samples.last = Some((now_ms, value));
+                        self.facts.pause_samples.range = Some(match self.facts.pause_samples.range {
+                                Some((low, high)) => (low.min(value), high.max(value)),
+                                None => (value, value),
+                            });
+                        self.facts.pause_samples.reports = self.facts.pause_samples.reports.saturating_add(1);
+                    }
+                    if let Some(last) = self.facts.clock.last_ms {
+                        *self.facts.clock.gaps.entry(now_ms.saturating_sub(last)).or_insert(0) += 1;
+                    }
+                    self.facts.clock.last_ms = Some(now_ms);
+                    if self.facts.resume_sent && self.facts.seek_target.is_none() && self.facts.resume_first.is_none() {
+                        self.facts.resume_first = Some(value);
+                    }
+                    let moved = self.last_time.is_some_and(|last| last != value);
+                    self.last_time = Some(value);
+                    if self.facts.seek_target.is_some() && self.facts.seek_seen.is_none() {
+                        self.facts.seek_seen = Some(value);
+                    }
+                    if moved {
+                        if matches!(self.phase, Phase::Playing { .. }) || (!self.config.transport && matches!(self.phase, Phase::Starting { .. })) {
+                            // Drive waits for the explicit playing event before scheduling its one script.
+                            self.phase = Phase::Playing { frozen_at: now_ms + FROZEN_TIME_MS };
+                        }
+                        let first = self.facts.time_moved.is_none();
+                        self.facts.time_moved.get_or_insert(now_ms.saturating_sub(self.started_ms));
+                        let due = self.time_logged_ms.is_none_or(|at| now_ms.saturating_sub(at) >= CLOCK_LOG_EVERY_MS);
+                        if first || due {
+                            self.time_logged_ms = Some(now_ms);
+                            fx.push(self.line(now_ms, &event_text(message, seen, false)));
+                        }
+                    } else if self.facts.time_moved.is_none() && self.time_logged_ms.is_none() {
+                        self.time_logged_ms = Some(now_ms);
+                        fx.push(self.line(now_ms, &event_text(message, seen, true)));
+                    }
+                }
+                Work::Stop { end } => {
+                    if self.phase == Phase::Done {
+                        work = Work::Finished; continue 'reduce;
+                    }
+                    self.facts.failed_in = Some(self.phase.name());
+                    self.facts.ended = Some(end);
+                    if self.settled.is_none() {
+                        self.settled = Some(Settle::StartFailed);
+                        fx.push(UriEffect::Settle(Settle::StartFailed));
+                    }
+                    if let Some(media_id) = self.media_id.take() {
+                        fx.push(self.line(now_ms, "call unload requested"));
+                        fx.push(UriEffect::Call(UriCall::Unload { media_id }));
+                    }
+                    fx.push(UriEffect::Close);
+                    self.phase = Phase::Done;
+                    fx.push(self.line(now_ms, &self.summary()));
+                    fx.push(self.line(now_ms, "tester: report picture yes/no and sound yes/no"));
+                }
+            }
+            work = Work::Finished;
+        }
+    }
+
     /// The session is over (everything it will say has been said).
     pub fn is_done(&self) -> bool {
         self.phase == Phase::Done
     }
 
-    /// From `playing` until the end: the service has said the video plays. A claim about the
-    /// service, not an observation of the plane.
+    /// From `playing` until the end: the service has said the video plays, not plane proof.
     pub fn plane_open(&self) -> bool {
         matches!(self.phase, Phase::Playing { .. } | Phase::Driving { .. })
     }
 
-    /// Apply one event at `now_ms`, pushing what the driver must execute onto `fx`, in order. Once
-    /// the session is `Done` nothing moves and nothing is pushed.
+    /// Apply one event, preserving effect order. Done is inert.
     pub fn step(&mut self, ev: UriEvent, now_ms: u64, fx: &mut Vec<UriEffect>) {
-        if self.phase == Phase::Done {
-            return;
-        }
-        match ev {
-            UriEvent::Start => self.start(now_ms, fx),
-            UriEvent::Back => self.stop(now_ms, End::Back, fx),
-            UriEvent::Closed if self.phase == Phase::AwaitingClose => {
-                self.phase = Phase::Registering { deadline: now_ms.saturating_add(REGISTER_TIMEOUT_MS) };
-                fx.push(UriEffect::Open(self.shape));
-            }
-            UriEvent::Closed => {},
-            UriEvent::AcbReleaseTail {..} => {},
-            UriEvent::AcbAnswered {request, invoked, completed_ms} => self.acb_event(AcbEvent::Answered {request, invoked, completed_ms}, completed_ms, fx),
-            UriEvent::Dispatched { method, kind, request } => { self.requests.insert((method, kind), request); },
-            UriEvent::Tick => self.tick(now_ms, fx),
-            UriEvent::Reply { method, ok, message } => self.reply(method, ok, &message, now_ms, fx),
-        }
+        self.transition(ev, now_ms, fx);
     }
 
     fn line(&self, now_ms: u64, body: &str) -> UriEffect {
         UriEffect::Log(format!("uriprobe: t={} {body}", now_ms.saturating_sub(self.started_ms)))
     }
 
-    fn start(&mut self, now_ms: u64, fx: &mut Vec<UriEffect>) {
-        if self.phase != Phase::Idle {
-            return;
-        }
-        self.started_ms = now_ms;
-        let c = &self.config;
-        let window = if c.window_id.is_some() { "exported" } else { "none" };
-        let kind = match c.kind {
-            Kind::Direct => "direct",
-            Kind::Hls => "hls",
-        };
-        let armed = format!("armed variant={} scheme={} kind={kind} window={window} app={}{}", c.variant.label(), c.scheme.label(), c.app_id, c.bps.label());
-        fx.push(self.line(now_ms, &armed));
-        if self.config.variant.acb() { self.acb_event(AcbEvent::Start, now_ms, fx); }
-        else {
-            self.phase = Phase::Registering { deadline: now_ms + REGISTER_TIMEOUT_MS };
-            fx.push(UriEffect::Open(self.shape));
-        }
-    }
-
-    /// An accepted call starts provisional. An explicit paused observation can confirm pause;
-    /// track confirmation requires identified correlation. Generic seekDone and trackSelected
-    /// notifications remain observations, not proof of a particular command.
+    /// Accepted calls remain provisional until their attributed evidence arrives.
     fn outcome(ok: bool, denied: bool) -> CallResult {
         if ok && !denied { CallResult::Unconfirmed } else { CallResult::Refused }
     }
 
-    /// The tail of a call's log line: `ok`, or `err(<why>)`.
+    /// The tail of a call log line.
     fn said(ok: bool, denied: bool, text: &str) -> String {
         if ok && !denied { "ok".to_owned() } else { format!("err({text})") }
-    }
-
-    fn tick(&mut self, now_ms: u64, fx: &mut Vec<UriEffect>) {
-        match self.phase {
-            Phase::Acb => self.acb_event(AcbEvent::Tick, now_ms, fx),
-            Phase::Registering { deadline } if now_ms >= deadline => self.stop(now_ms, End::Timeout("register"), fx),
-            Phase::Loading { deadline } if now_ms >= deadline => self.stop(now_ms, End::Timeout("load"), fx),
-            Phase::SettingWindow { deadline } if now_ms >= deadline => {
-                self.facts.window_call = WindowCall::Silent;
-                fx.push(self.line(now_ms, "call setWindowId no reply, playing anyway"));
-                self.play(now_ms, fx);
-            }
-            Phase::Starting { deadline } if now_ms >= deadline => self.stop(now_ms, End::Timeout("play"), fx),
-            Phase::Playing { frozen_at } if self.facts.time_moved.is_some() && now_ms >= frozen_at => {
-                self.stop(now_ms, End::Timeout("currentTime"), fx)
-            }
-            Phase::Driving { step, deadline } if now_ms >= deadline => self.drive_step(step, now_ms, fx),
-            _ => {}
-        }
-    }
-
-    /// One step of the transport script. Each step sends its call, logs what it asked for (with the
-    /// position it can see), and schedules the next; the last one ends the session, so a tester
-    /// without a picture still learns whether the pipeline accepted the calls.
-    fn drive_step(&mut self, step: usize, now_ms: u64, fx: &mut Vec<UriEffect>) {
-        let Some(media_id) = self.media_id.clone() else {
-            self.stop(now_ms, End::Script, fx);
-            return;
-        };
-        let position = |p: Option<i64>| p.map_or_else(|| "-".to_owned(), |v| v.to_string());
-        match step {
-            0 => {
-                self.facts.pause_samples.begin(now_ms);
-                self.facts.pause_pos = self.last_time;
-                fx.push(self.line(now_ms, &format!("drive pause pos={}", position(self.facts.pause_pos))));
-                fx.push(UriEffect::Call(UriCall::Pause { media_id }));
-            }
-            1 => {
-                self.facts.pause_samples.ended_ms = Some(now_ms);
-                self.facts.resume_pos = self.last_time;
-                self.facts.resume = CallResult::Unconfirmed;
-                fx.push(self.line(now_ms, &format!("drive resume pos={}", position(self.facts.resume_pos))));
-                fx.push(UriEffect::Call(UriCall::Play { media_id }));
-            }
-            2 => {
-                let target = self.last_time.unwrap_or(0).max(0).saturating_add(DRIVE_SEEK_MS);
-                self.facts.seek_target = Some(target);
-                fx.push(self.line(now_ms, &format!("drive seek target={target}")));
-                fx.push(UriEffect::Call(UriCall::Seek { media_id, position: target }));
-            }
-            3 => {
-                self.facts.track_pending = Some("text");
-                fx.push(self.line(now_ms, "drive selectTrack type=text index=0"));
-                fx.push(UriEffect::Call(UriCall::SelectTrack { media_id, kind: "text", index: 0 }));
-            }
-            4 => {
-                self.facts.track_pending = Some("audio");
-                fx.push(self.line(now_ms, "drive selectTrack type=audio index=1"));
-                fx.push(UriEffect::Call(UriCall::SelectTrack { media_id, kind: "audio", index: 1 }));
-            }
-            5 => {
-                fx.push(self.line(now_ms, "drive subtitles enable"));
-                fx.push(UriEffect::Call(UriCall::SetSubtitleEnable { media_id, enable: true }));
-            }
-            _ => {
-                self.stop(now_ms, End::Script, fx);
-                return;
-            }
-        }
-        self.phase = Phase::Driving { step: step + 1, deadline: now_ms + DRIVE_STEP_MS };
-    }
-
-    fn reply(&mut self, method: Method, ok: bool, message: &Message, now_ms: u64, fx: &mut Vec<UriEffect>) {
-        if method == Method::Dropped {
-            let count = message.dropped.unwrap_or(0);
-            fx.push(self.line(now_ms, &format!("transport dropped {count} replies")));
-            self.stop(now_ms, End::Refused("overflow"), fx);
-            return;
-        }
-        match self.phase {
-            Phase::Registering { .. } if method == Method::Register => {
-                let shape = register_ladder::label(self.shape);
-                if ok {
-                    fx.push(self.line(now_ms, &format!("register shape={shape} ok")));
-                    self.phase = Phase::Loading { deadline: now_ms + LOAD_TIMEOUT_MS };
-                    let window_id = if self.config.variant.acb() { Some(super::acb_bind::DUMMY_WINDOW_ID.to_owned()) }
-                        else if self.config.variant.binds_at_load() { self.config.window_id.clone() } else { None };
-                    fx.push(UriEffect::Call(UriCall::Load { window_id, bps: self.config.bps }));
-                } else {
-                    fx.push(self.line(now_ms, &format!("register shape={shape} refused({})", message.why())));
-                    self.next_shape_or_stop(now_ms, End::Refused("register"), fx);
-                }
-            }
-            Phase::Loading { .. } | Phase::SettingWindow { .. } | Phase::Starting { .. } | Phase::Playing { .. } | Phase::Driving { .. } | Phase::Acb => {
-                self.service_message(method, ok, message, now_ms, fx)
-            }
-            _ => {}
-        }
-    }
-
-    /// A refused registration or a denied load: the named client gives way to the anonymous one,
-    /// once; a refusal of the anonymous one ends the session.
-    fn next_shape_or_stop(&mut self, now_ms: u64, end: End, fx: &mut Vec<UriEffect>) {
-        self.refused.push(Outcome::Refused);
-        match register_ladder::decide(&self.refused) {
-            Step::Register(shape) => {
-                self.shape = shape;
-                self.media_id = None;
-                self.subscribed = false;
-                fx.push(UriEffect::Close);
-                self.phase = Phase::AwaitingClose;
-            }
-            Step::Settled(_) | Step::Failed(_) => self.stop(now_ms, end, fx),
-        }
-    }
-
-    fn service_message(&mut self, method: Method, ok: bool, message: &Message, now_ms: u64, fx: &mut Vec<UriEffect>) {
-        if self.requests.get(&(method, message.reply_track)).is_some_and(|request| message.reply_request != Some(*request)) { return; }
-        if message.identity_conflict || (self.media_id.is_some() && message.media_id.is_some() && self.media_id != message.media_id) { return; }
-        if let Some(video) = message.video_info {
-            self.acb_event(AcbEvent::Video(video), now_ms, fx);
-        }
-        let denied = !ok || message.return_value == Some(false);
-        let text = message.why();
-        if let Some(kind) = message.confirmed_track {
-            match kind { "text" => self.facts.text = CallResult::Ok, "audio" => self.facts.audio = CallResult::Ok, _ => {} }
-        }
-        match method {
-            Method::Load if denied && self.media_id.is_none() && matches!(self.phase, Phase::Loading { .. }) => {
-                fx.push(self.line(now_ms, &format!("call load err({text})")));
-                self.next_shape_or_stop(now_ms, End::Refused("load"), fx);
-                return;
-            }
-            Method::Subscribe | Method::Load if denied => {
-                fx.push(self.line(now_ms, &format!("call {} err({text})", if method == Method::Load { "load" } else { "subscribe" })));
-            }
-            Method::Play if denied => {
-                fx.push(self.line(now_ms, &format!("call play err({text})")));
-                if matches!(self.phase, Phase::Driving { .. }) {
-                    // A refused resume is a finding, not the end of the session: the script still
-                    // has the seek and the track calls to ask about.
-                    self.facts.resume = CallResult::Refused;
-                    return;
-                }
-                self.stop(now_ms, End::Refused("play"), fx);
-                return;
-            }
-            Method::NotifyForeground => {
-                fx.push(self.line(now_ms, &format!("call notifyForeground {}", Self::said(ok, denied, &text))));
-                if denied { self.stop(now_ms, End::Refused("notifyForeground"), fx); }
-                return;
-            }
-            Method::Pause => {
-                self.facts.pause = Self::outcome(ok, denied);
-                fx.push(self.line(now_ms, &format!("call pause {}", Self::said(ok, denied, &text))));
-                return;
-            }
-            Method::Seek => {
-                self.facts.seek = Self::outcome(ok, denied);
-                fx.push(self.line(now_ms, &format!("call seek {}", Self::said(ok, denied, &text))));
-                return;
-            }
-            Method::SelectTrack => {
-                let kind = message.reply_track.or_else(|| self.facts.track_pending.take()).unwrap_or("track");
-                let outcome = Self::outcome(ok, denied);
-                match kind {
-                    "text" => if self.facts.text != CallResult::Ok || outcome == CallResult::Refused { self.facts.text = outcome },
-                    "audio" => if self.facts.audio != CallResult::Ok || outcome == CallResult::Refused { self.facts.audio = outcome },
-                    _ => {},
-                }
-                fx.push(self.line(now_ms, &format!("call selectTrack {kind} {}", Self::said(ok, denied, &text))));
-                return;
-            }
-            Method::SetSubtitleEnable => {
-                // No event confirms this call: its own reply is the whole answer.
-                self.facts.subs = if denied { CallResult::Refused } else if message.return_value == Some(true) { CallResult::Ok } else { CallResult::Unconfirmed };
-                fx.push(self.line(now_ms, &format!("call setSubtitleEnable {}", Self::said(ok, denied, &text))));
-                return;
-            }
-            Method::SetWindowId => {
-                if !denied && message.return_value != Some(true) { return; }
-                if denied {
-                    self.facts.window_call = WindowCall::Refused;
-                    fx.push(self.line(now_ms, &format!("call setWindowId err({text})")));
-                } else {
-                    self.facts.window_call = WindowCall::Answered;
-                    fx.push(self.line(now_ms, "call setWindowId ok"));
-                }
-                if matches!(self.phase, Phase::SettingWindow { .. }) {
-                    self.play(now_ms, fx);
-                }
-                return;
-            }
-            Method::Load | Method::Subscribe | Method::Play if !denied && message.return_value == Some(true) && !message.has_events() => {
-                if method == Method::Play && matches!(self.phase, Phase::Driving { .. }) {
-                    self.facts.resume = CallResult::Unconfirmed;
-                }
-                fx.push(self.line(now_ms, &format!("call {} ok", match method {
-                    Method::Load => "load",
-                    Method::Subscribe => "subscribe",
-                    _ => "play",
-                })));
-            }
-            _ => {}
-        }
-        if self.media_id.is_none() && !denied {
-            self.media_id = message.media_id.clone();
-        }
-        if let (Some(media_id), false) = (self.media_id.clone(), self.subscribed) {
-            self.subscribed = true;
-            if self.config.variant.acb() && !self.foreground_sent {
-                self.foreground_sent = true;
-                fx.push(UriEffect::Call(UriCall::NotifyForeground {media_id: media_id.clone()}));
-            }
-            fx.push(UriEffect::Call(UriCall::Subscribe { media_id }));
-        }
-        self.events(message, now_ms, fx);
-    }
-
-    fn events(&mut self, message: &Message, now_ms: u64, fx: &mut Vec<UriEffect>) {
-        for seen in &message.seen {
-            if self.phase == Phase::Done {
-                return;
-            }
-            if message.normalized.contains(&seen.ev) { self.event(seen, message, now_ms, fx); }
-            else if seen.ev == Ev::CurrentTime { self.current_time(seen, message, now_ms, fx); }
-            else { fx.push(self.line(now_ms, &event_text(message, seen, false))); }
-        }
-        if message.seen.is_empty() {
-            if let Some(name) = &message.unknown {
-                fx.push(self.line(now_ms, &unparsed_text(name)));
-            }
-        }
-    }
-
-    fn event(&mut self, seen: &Seen, message: &Message, now_ms: u64, fx: &mut Vec<UriEffect>) {
-        if seen.ev != Ev::CurrentTime {
-            fx.push(self.line(now_ms, &event_text(message, seen, false)));
-        }
-        match seen.ev {
-            Ev::Error => self.stop(now_ms, End::Error(message.error_code), fx),
-            Ev::LoadCompleted => {
-                if matches!(self.phase, Phase::Loading { .. }) {
-                    self.loaded(message, now_ms, fx);
-                }
-            }
-            Ev::Playing => {
-                if self.facts.playing_ms.is_none() {
-                    self.facts.playing_ms = Some(now_ms.saturating_sub(self.started_ms));
-                }
-                if matches!(self.phase, Phase::Starting { .. }) {
-                    self.phase = if self.config.transport {
-                        Phase::Driving { step: 0, deadline: now_ms + DRIVE_FIRST_MS }
-                    } else {
-                        Phase::Playing { frozen_at: now_ms + FROZEN_TIME_MS }
-                    };
-                }
-            }
-            Ev::Paused => {
-                self.facts.paused_ev = true;
-                if self.facts.pause == CallResult::Unconfirmed {
-                    self.facts.pause = CallResult::Ok;
-                }
-            }
-            Ev::SeekDone => {
-                self.facts.seek_done_ev = true;
-                // The subscription's request ID is not the seek command's identity.
-            }
-            Ev::TrackSelected => {
-                // A generic subscription event cannot name a text or audio command.
-                match message.confirmed_track {
-                    Some("text") if self.facts.text == CallResult::Unconfirmed => self.facts.text = CallResult::Ok,
-                    Some("audio") if self.facts.audio == CallResult::Unconfirmed => self.facts.audio = CallResult::Ok,
-                    _ => {},
-                }
-            }
-            Ev::EndOfStream => {
-                self.facts.eos_ev = true;
-                if matches!(self.phase, Phase::Starting { .. } | Phase::Playing { .. } | Phase::Driving { .. } | Phase::Acb) {
-                    self.stop(now_ms, End::Eos, fx);
-                }
-            }
-            Ev::CurrentTime => self.current_time(seen, message, now_ms, fx),
-            Ev::VideoInfo => {
-                self.facts.video_seen.get_or_insert(now_ms.saturating_sub(self.started_ms));
-                if let (Some((width, height)), true) = (message.dims, self.config.window_id.is_some()) {
-                    if self.placed != Some((width, height)) {
-                        self.placed = Some((width, height));
-                        fx.push(UriEffect::PlaceWindow { width, height });
-                    }
-                }
-            }
-            Ev::AudioInfo => {
-                self.facts.audio_seen.get_or_insert(now_ms.saturating_sub(self.started_ms));
-            }
-            _ => {}
-        }
-    }
-
-    /// `loadCompleted`: the attempt is settled as started, then `setWindowId` (late variant with a
-    /// window) or `play`.
-    fn loaded(&mut self, message: &Message, now_ms: u64, fx: &mut Vec<UriEffect>) {
-        if self.media_id.is_none() {
-            self.media_id = message.media_id.clone();
-        }
-        if self.media_id.is_none() {
-            fx.push(self.line(now_ms, "loadCompleted carried no mediaId"));
-            self.stop(now_ms, End::Refused("mediaId"), fx);
-            return;
-        }
-        self.facts.loaded_ms = Some(now_ms.saturating_sub(self.started_ms));
-        self.settle(Settle::Started, fx);
-        if self.config.variant.acb() {
-            // Start service transport independently: some firmware emits videoInfo only after Play.
-            self.play(now_ms, fx);
-            let media_id = self.media_id.clone().expect("loaded identity");
-            self.acb_event(AcbEvent::Loaded {media_id}, now_ms, fx);
-            return;
-        }
-        match (self.config.variant, self.config.window_id.clone(), self.media_id.clone()) {
-            (Variant::Late, Some(window_id), Some(media_id)) => {
-                self.facts.window_call = WindowCall::Pending;
-                self.phase = Phase::SettingWindow { deadline: now_ms + LATE_ID_TIMEOUT_MS };
-                fx.push(UriEffect::Call(UriCall::SetWindowId { media_id, window_id }));
-            }
-            _ => self.play(now_ms, fx),
-        }
-    }
-
-    /// Step the shared ACB sequence and turn what it reports into this machine's phases, log lines
-    /// and effects. `now_ms` is the event's own time (the call's completion for an answer).
-    fn acb_event(&mut self, event: AcbEvent, now_ms: u64, fx: &mut Vec<UriEffect>) {
-        let mut out = Vec::new();
-        self.acb.step(event, now_ms, &mut out);
-        for effect in out {
-            match effect {
-                AcbFx::Run {request, step, op, ..} => {
-                    self.phase = Phase::Acb;
-                    fx.push(self.line(now_ms, &format!("acb request={} step={step:?}", request.number())));
-                    fx.push(UriEffect::Acb {request, op});
-                }
-                AcbFx::WaitingVideo => {
-                    self.phase = Phase::Acb;
-                    fx.push(self.line(now_ms, "acb waiting for real videoInfo dimensions/rate"));
-                }
-                AcbFx::Answered {step, invoked} => {
-                    fx.push(self.line(now_ms, &format!("acb answer step={step:?} invoked={invoked} (not plane proof)")));
-                }
-                AcbFx::GatePassed => {
-                    self.phase = Phase::Registering {deadline: now_ms.saturating_add(REGISTER_TIMEOUT_MS)};
-                    fx.push(UriEffect::Open(self.shape));
-                }
-                AcbFx::Bound => {
-                    self.phase = if self.facts.playing_ms.is_some() { Phase::Playing {frozen_at: now_ms.saturating_add(FROZEN_TIME_MS)} }
-                        else { Phase::Starting {deadline: now_ms.saturating_add(PLAY_TIMEOUT_MS)} };
-                }
-                AcbFx::Failed(failure) => {
-                    let end = match failure {
-                        AcbFailure::Refused => End::Refused("acb"),
-                        AcbFailure::Timeout => End::Timeout("acb"),
-                        AcbFailure::VideoTimeout => End::Timeout("acb-video"),
-                    };
-                    self.stop(now_ms, end, fx);
-                }
-            }
-        }
-    }
-
-    fn play(&mut self, now_ms: u64, fx: &mut Vec<UriEffect>) {
-        if let Some(media_id) = self.media_id.clone() {
-            self.phase = Phase::Starting { deadline: now_ms + PLAY_TIMEOUT_MS };
-            fx.push(UriEffect::Call(UriCall::Play { media_id }));
-        }
-    }
-
-    fn current_time(&mut self, seen: &Seen, message: &Message, now_ms: u64, fx: &mut Vec<UriEffect>) {
-        let Some(value) = message.current_time else {
-            // Reported, but in neither known shape: say so once, with no payload. It is no report
-            // of a position, so it moves nothing and arms no timeout.
-            if self.time_unparsed_ms.is_none() {
-                self.time_unparsed_ms = Some(now_ms);
-                fx.push(self.line(now_ms, &event_text(message, seen, false)));
-            }
-            return;
-        };
-        // Every valid report is fresh evidence, including an unchanged position.
-        self.facts.pause_samples.observe(now_ms, value);
-        let moved = self.last_time.is_some_and(|last| last != value);
-        self.last_time = Some(value);
-        if self.facts.seek_target.is_some() && self.facts.seek_seen.is_none() {
-            self.facts.seek_seen = Some(value);
-        }
-        if moved {
-            if matches!(self.phase, Phase::Playing { .. }) || (!self.config.transport && matches!(self.phase, Phase::Starting { .. })) {
-                // Drive waits for the explicit playing event before scheduling its one script.
-                self.phase = Phase::Playing { frozen_at: now_ms + FROZEN_TIME_MS };
-            }
-            let first = self.facts.time_moved.is_none();
-            self.facts.time_moved.get_or_insert(now_ms.saturating_sub(self.started_ms));
-            let due = self.time_logged_ms.is_none_or(|at| now_ms.saturating_sub(at) >= CLOCK_LOG_EVERY_MS);
-            if first || due {
-                self.time_logged_ms = Some(now_ms);
-                fx.push(self.line(now_ms, &event_text(message, seen, false)));
-            }
-        } else if self.facts.time_moved.is_none() && self.time_logged_ms.is_none() {
-            self.time_logged_ms = Some(now_ms);
-            fx.push(self.line(now_ms, &event_text(message, seen, true)));
-        }
-    }
-
-    fn settle(&mut self, how: Settle, fx: &mut Vec<UriEffect>) {
-        if self.settled.is_none() {
-            self.settled = Some(how);
-            fx.push(UriEffect::Settle(how));
-        }
-    }
-
-    /// The one way out. Settles the attempt if it is still open, unloads once a `mediaId` is known,
-    /// always closes, writes the summary, and ends the session.
-    fn stop(&mut self, now_ms: u64, end: End, fx: &mut Vec<UriEffect>) {
-        if self.phase == Phase::Done {
-            return;
-        }
-        self.facts.failed_in = Some(self.phase.name());
-        self.facts.ended = Some(end);
-        self.settle(Settle::StartFailed, fx);
-        if let Some(media_id) = self.media_id.take() {
-            fx.push(self.line(now_ms, "call unload requested"));
-            fx.push(UriEffect::Call(UriCall::Unload { media_id }));
-        }
-        fx.push(UriEffect::Close);
-        self.phase = Phase::Done;
-        fx.push(self.line(now_ms, &self.summary()));
-        fx.push(self.line(now_ms, "tester: report picture yes/no and sound yes/no"));
     }
 
     /// The terminal line: what the service said, not what the screen showed.
@@ -1064,9 +1190,15 @@ impl UriProbe {
             Some(End::Timeout(phase)) => format!("timeout:{phase}"),
             Some(End::Refused(phase)) => format!("refused:{phase}"),
         };
+        // `audioInfo` named a track by `loadCompleted` (the same message counts): the service had
+        // already selected one at load.
+        let audio_at_load = match (self.facts.audio_track, self.facts.loaded_ms) {
+            (Some((at, track)), Some(loaded)) if at <= loaded => track.to_string(),
+            _ => "none".to_owned(),
+        };
         let summary = format!(
             "summary load={load} playing={} t_load={} t_playing={} currentTime_advanced={} videoInfo={} audioInfo={} window={} \
-             setWindowId={window_call} variant={} scheme={} shape={} end={end}",
+             setWindowId={window_call} variant={} scheme={} shape={} end={end} audio_at_load={audio_at_load} clock_period_ms={}",
             if self.facts.playing_ms.is_some() { "yes" } else { "no" },
             ms(self.facts.loaded_ms),
             ms(self.facts.playing_ms),
@@ -1077,6 +1209,7 @@ impl UriProbe {
             self.config.variant.label(),
             self.config.scheme.label(),
             register_ladder::label(self.shape),
+            ms(self.facts.clock.median_ms()),
         );
         if !self.config.transport {
             return summary;
@@ -1091,14 +1224,20 @@ impl UriProbe {
             (Some(a), Some(b)) => (b - a).to_string(),
             _ => "-".to_owned(),
         };
-        // Pause labels grade reported positions only. Cached dispatch positions and an ACK or
-        // paused notification alone never supply fresh end-of-dwell sampling evidence.
-        let paused = if self.facts.pause == CallResult::Refused {
-            "refused"
-        } else if self.facts.pause_samples.started_ms.is_some() {
-            self.facts.pause_samples.grade()
+        // Some firmware stops sending positions while paused. A pause event during the dwell
+        // and a resume near the original position corroborate the freeze when no samples arrive.
+        let samples = &self.facts.pause_samples;
+        let event_freeze = self.facts.paused_ev && samples.reports == 0
+            && self.facts.pause_pos.zip(self.facts.resume_first)
+                .is_some_and(|(before, after)| before.abs_diff(after) <= 1000);
+        let (paused, pause_basis) = if self.facts.pause == CallResult::Refused {
+            ("refused", "reported_positions")
+        } else if event_freeze {
+            ("froze", "paused_event_and_resume")
+        } else if samples.started_ms.is_some() {
+            (samples.grade(), "reported_positions")
         } else {
-            call(self.facts.pause)
+            (call(self.facts.pause), "reported_positions")
         };
         let seek_landed = if self.facts.seek == CallResult::Refused {
             "refused"
@@ -1111,7 +1250,7 @@ impl UriProbe {
         };
         format!(
             "{summary} pause={paused} pause_delta={} resume={} seek={seek_landed} seek_delta={} text={} audio={} subs={} eos={} \
-             pause_basis=reported_positions pause_samples={} pause_span_ms={} pause_end_fresh={} paused_event={}",
+             pause_basis={pause_basis} pause_samples={} pause_span_ms={} pause_end_fresh={} paused_event={} seekdone={} resume_from={} text_ev={}",
             self.facts.pause_samples.delta(),
             call(self.facts.resume),
             delta(self.facts.seek_target, self.facts.seek_seen),
@@ -1123,6 +1262,9 @@ impl UriProbe {
             self.facts.pause_samples.span_ms().map_or_else(|| "-".to_owned(), |span| span.to_string()),
             if self.facts.pause_samples.end_fresh() { "yes" } else { "no" },
             if self.facts.paused_ev { "yes" } else { "no" },
+            if self.facts.seek_done_ev { "yes" } else { "no" },
+            self.facts.resume_first.map_or_else(|| "-".to_owned(), |position| position.to_string()),
+            if self.facts.text_ev { "yes" } else { "no" },
         )
     }
 }
@@ -1147,6 +1289,7 @@ mod tests {
             kind: Kind::Direct,
             window_id: window.map(str::to_owned),
             app_id: "com.test.app".to_owned(),
+            firmware: Firmware { release: "5.4.2".to_owned(), build: "5.4.2-12".to_owned() },
             transport: variant.drives(),
             bps: AbrBps::default(),
         }
@@ -1236,7 +1379,7 @@ mod tests {
     fn at_load_happy_path_in_order() {
         let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
         let fx = rig.start();
-        assert_eq!(logs(&fx), ["uriprobe: t=0 armed variant=at-load scheme=https kind=direct window=exported app=com.test.app"]);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 armed variant=at-load scheme=https kind=direct window=exported app=com.test.app fw=5.4.2 build=5.4.2-12"]);
         assert_eq!(fx[1], UriEffect::Open(Shape::Named));
 
         let fx = rig.after(40, UriEvent::Reply { method: Method::Register, ok: true, message: Message::default() });
@@ -1279,7 +1422,7 @@ mod tests {
         assert_eq!(
             summary_of(&fx),
             "uriprobe: t=1400 summary load=ok playing=yes t_load=400 t_playing=500 currentTime_advanced=no videoInfo=seen audioInfo=none \
-             window=exported setWindowId=n/a variant=at-load scheme=https shape=named end=back"
+             window=exported setWindowId=n/a variant=at-load scheme=https shape=named end=back audio_at_load=none clock_period_ms=-"
         );
         assert!(logs(&fx).last().unwrap().ends_with("tester: report picture yes/no and sound yes/no"));
         assert!(rig.probe.is_done() && !rig.probe.plane_open());
@@ -1347,7 +1490,7 @@ mod tests {
         let mut probe = UriProbe::new(Config { scheme: Scheme::Http, kind: Kind::Hls, ..config(Variant::AtLoad, None) });
         let mut fx = Vec::new();
         probe.step(UriEvent::Start, 0, &mut fx);
-        assert_eq!(logs(&fx), ["uriprobe: t=0 armed variant=at-load scheme=http kind=hls window=none app=com.test.app"]);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 armed variant=at-load scheme=http kind=hls window=none app=com.test.app fw=5.4.2 build=5.4.2-12"]);
     }
 
     #[test]
@@ -1984,7 +2127,7 @@ mod tests {
         let bps = AbrBps { start: Some(320_000), maximum: Some(720_000), minimum: None };
         let mut rig = Rig { probe: UriProbe::new(Config { bps, ..config(Variant::AtLoad, Some(WINDOW)) }), now: 1_000 };
         let fx = rig.start();
-        assert_eq!(logs(&fx), ["uriprobe: t=0 armed variant=at-load scheme=https kind=direct window=exported app=com.test.app bpsstart=320000 bpsmax=720000"]);
+        assert_eq!(logs(&fx), ["uriprobe: t=0 armed variant=at-load scheme=https kind=direct window=exported app=com.test.app fw=5.4.2 build=5.4.2-12 bpsstart=320000 bpsmax=720000"]);
         let fx = rig.msg("register", "");
         assert!(fx.contains(&call(UriCall::Load { window_id: Some(WINDOW.to_owned()), bps })), "{fx:?}");
     }
@@ -2050,9 +2193,8 @@ mod tests {
         let summary = summary_of(&fx);
         assert!(summary.contains("variant=drive"), "{summary}");
         assert!(summary.contains("end=script"), "{summary}");
-        // The paused event is independent evidence; this script supplied no clock reports
-        // during the dwell, so the reported-position grade remains unconfirmed.
-        assert!(summary.contains("pause=unconfirmed pause_delta=- resume=sent"), "{summary}");
+        assert!(summary.contains("pause=froze pause_delta=- resume=sent"), "{summary}");
+        assert!(summary.contains("pause_basis=paused_event_and_resume"), "{summary}");
         assert!(summary.contains("seek=hit seek_delta=50"), "{summary}");
         assert!(summary.contains("text=sent audio=sent subs=ok eos=no"), "{summary}");
         assert_eq!(unloads(&fx), 1);
@@ -2145,7 +2287,7 @@ mod tests {
     }
 
     fn acb_request(fx: &[UriEffect]) -> AcbRequest {
-        fx.iter().find_map(|fx| match fx {UriEffect::Acb {request,..} => Some(*request), _ => None}).expect("ACB effect")
+        fx.iter().find_map(|fx| match fx {UriEffect::Acb {request,..} => Some(*request), UriEffect::Open(_) | UriEffect::Call(_) | UriEffect::Close | UriEffect::Settle(_) | UriEffect::PlaceWindow { .. } | UriEffect::Log(_) => None}).expect("ACB effect")
     }
     fn acb_loaded(variant: Variant, early_video: bool) -> (Rig, Vec<UriEffect>) {
         let mut rig=Rig::new(variant,None);
@@ -2155,7 +2297,7 @@ mod tests {
         let fx=rig.msg("register","");
         assert!(fx.contains(&load(Some("window_id_dummy"))));
         let fx=rig.msg("load",r#"{"returnValue":true,"mediaId":"_m1"}"#);
-        let calls:Vec<_>=fx.iter().filter_map(|fx| match fx {UriEffect::Call(call)=>Some(call.method()),_=>None}).collect();
+        let calls:Vec<_>=fx.iter().filter_map(|fx| match fx {UriEffect::Call(call)=>Some(call.method()),UriEffect::Open(_) | UriEffect::Acb { .. } | UriEffect::Close | UriEffect::Settle(_) | UriEffect::PlaceWindow { .. } | UriEffect::Log(_) => None}).collect();
         assert_eq!(calls,["notifyForeground","subscribe"]);
         if early_video { rig.msg("subscribe",r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"frameRate":24}}"#); }
         let fx=rig.msg("subscribe",r#"{"mediaId":"_m1","loadCompleted":true}"#);
@@ -2169,7 +2311,7 @@ mod tests {
             let mut trace=Vec::new();
             for step in 0..5 {
                 let request=acb_request(&fx);
-                let op=fx.iter().find_map(|fx| match fx {UriEffect::Acb{op,..}=>Some(op.clone()),_=>None}).unwrap();
+                let op=fx.iter().find_map(|fx| match fx {UriEffect::Acb{op,..}=>Some(op.clone()),UriEffect::Open(_) | UriEffect::Call(_) | UriEffect::Close | UriEffect::Settle(_) | UriEffect::PlaceWindow { .. } | UriEffect::Log(_) => None}).unwrap();
                 trace.push((rig.now,op));
                 fx=rig.feed(UriEvent::AcbAnswered{request,invoked:true,completed_ms:rig.now});
                 if step<4 {
@@ -2329,10 +2471,12 @@ mod tests {
         assert_eq!(acb_transcript(), include_str!("uriprobe_acb_transcript.txt"));
     }
 
-    fn drive_pause_rig() -> Rig {
+    fn drive_pause_rig() -> Rig { drive_pause_rig_at(1000) }
+    /// A drive session whose Pause has been sent and answered, the position at the call `position`.
+    fn drive_pause_rig_at(position: i64) -> Rig {
         let mut rig=Rig::new(Variant::Drive,Some(WINDOW));
         rig.playing();
-        rig.msg("subscribe",r#"{"mediaId":"_m1","currentTime":1000}"#);
+        rig.msg("subscribe",&format!(r#"{{"mediaId":"_m1","currentTime":{position}}}"#));
         let fx=rig.tick(DRIVE_FIRST_MS);
         assert!(fx.iter().any(|fx|matches!(fx,UriEffect::Call(UriCall::Pause{..}))));
         rig.msg("pause",r#"{"returnValue":true}"#);
@@ -2355,6 +2499,44 @@ mod tests {
         let fx=rig.feed(UriEvent::Back);
         assert!(summary_of(&fx).contains("pause=unconfirmed"),"cached position graded as freeze: {}",summary_of(&fx));
     }
+    #[test]
+    fn uri_drive_pause_event_and_resume_position_confirm_freeze_without_samples() {
+        for (resumed, expected) in [(2641, "froze"), (4939, "unconfirmed"), (333, "unconfirmed")] {
+            let mut rig = drive_pause_rig_at(2439);
+            rig.msg("subscribe", r#"{"mediaId":"_m1","paused":true}"#);
+            rig.tick(DRIVE_STEP_MS);
+            drive_report_after(&mut rig, 200, resumed);
+            let summary = summary_after_back(&mut rig);
+            assert!(summary.contains(&format!("pause={expected} ")), "{summary}");
+        }
+    }
+
+    /// The webOS 25 C2 drive run (LG C2, firmware 10.x, #1064), replayed: its probe printed
+    /// `pause=unconfirmed` on the grader of the day. The run's recorded numbers are a pause sent at
+    /// position 2410, a `paused` event inside the dwell, no position report while paused, and 2729
+    /// as the first position after `resume` (134 ms after it was sent). This grader's verdict on
+    /// them is `pause=froze` on `pause_basis=paused_event_and_resume`; the major 10 row of
+    /// `docs/uri-mode.md` stands on this test (rule (c), amendment (1)). The bound is 1000 ms from
+    /// the paused position: 3410 and 1410 are the last resumes that confirm it, 3411 and 1409 the
+    /// first that do not.
+    #[test]
+    fn uri_drive_webos_25_c2_run_replays_to_pause_froze_from_the_paused_event_and_resume() {
+        for (resumed, expected) in [(2729, "froze"), (3410, "froze"), (1410, "froze"), (3411, "unconfirmed"), (1409, "unconfirmed")] {
+            let mut rig = drive_pause_rig_at(2410);
+            rig.msg("subscribe", r#"{"mediaId":"_m1","paused":true}"#);
+            rig.tick(DRIVE_STEP_MS);
+            drive_report_after(&mut rig, 134, resumed);
+            let summary = summary_after_back(&mut rig);
+            assert!(summary.contains(&format!("pause={expected} ")), "resume at {resumed}: {summary}");
+            if resumed == 2729 {
+                // The run itself: no samples, so the event and the resume position are the whole basis.
+                for token in ["pause_basis=paused_event_and_resume ", "pause_samples=0 ", "paused_event=yes ", "resume_from=2729 "] {
+                    assert!(summary.contains(token), "{token}: {summary}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn uri_drive_review_early_reports_then_silence_do_not_confirm_pause() {
         let mut rig=drive_pause_rig();
@@ -2431,6 +2613,301 @@ mod tests {
         assert!(!fx.iter().any(|fx|matches!(fx,UriEffect::Call(UriCall::Pause{..}))));
         let fx=rig.tick(PLAY_TIMEOUT_MS);
         assert!(rig.probe.is_done()); assert!(summary_of(&fx).contains("end=timeout:play"));
+    }
+
+    // ------------------------------------------------------------------ the fields a tester's run reads (D2)
+
+    /// A drive session from Pause (the position `position` at the call) to the end of the Resume
+    /// step: the dwell's reports are `position` too, then the resume call is sent.
+    fn drive_resumed_rig(position: i64) -> Rig {
+        let mut rig = drive_pause_rig_at(position);
+        drive_report_after(&mut rig, 250, position);
+        drive_report_after(&mut rig, 2_000, position);
+        let fx = rig.tick(250);
+        assert!(has_log(&fx, &format!("drive resume pos={position}")), "{fx:?}");
+        assert!(fx.contains(&call(UriCall::Play { media_id: media("_m1") })));
+        rig
+    }
+    /// The same session one step on: the seek 20 s past `position + 200` is sent and answered, and
+    /// the first position after it is `landed`.
+    fn drive_seeked_rig(position: i64, landed: i64) -> Rig {
+        let mut rig = drive_resumed_rig(position);
+        drive_report_after(&mut rig, 100, position + 200);
+        let fx = rig.tick(DRIVE_STEP_MS);
+        assert!(has_log(&fx, &format!("drive seek target={}", position + 200 + DRIVE_SEEK_MS)), "{fx:?}");
+        rig.msg("seek", r#"{"returnValue":true}"#);
+        drive_report_after(&mut rig, 100, landed);
+        rig
+    }
+    fn summary_after_back(rig: &mut Rig) -> String {
+        let fx = rig.feed(UriEvent::Back);
+        summary_of(&fx).to_owned()
+    }
+
+    #[test]
+    fn the_armed_line_names_the_firmware_the_driver_read() {
+        let mut rig = Rig::new(Variant::Drive, Some(WINDOW));
+        let fx = rig.start();
+        assert!(logs(&fx)[0].ends_with("app=com.test.app fw=5.4.2 build=5.4.2-12"), "{:?}", logs(&fx));
+    }
+
+    #[test]
+    fn an_unknown_or_unusual_firmware_prints_a_dash_and_never_the_text() {
+        let long = "1".repeat(FIRMWARE_WORD_CHARS + 1);
+        for (release, build, want) in [
+            ("", "", "fw=- build=-"),
+            ("6.5.3", "", "fw=6.5.3 build=-"),
+            ("11.1.0", "11.1.0-3701", "fw=11.1.0 build=11.1.0-3701"),
+            ("5.4.2 token=abc", "http://192.168.1.5/x?X-Plex-Token=SECRET", "fw=- build=-"),
+            ("5.4.2\n", "5.4.2/47", "fw=- build=-"),
+            (long.as_str(), "ok_1+2", "fw=- build=ok_1+2"),
+        ] {
+            let mut c = config(Variant::AtLoad, Some(WINDOW));
+            c.firmware = Firmware { release: release.to_owned(), build: build.to_owned() };
+            let mut rig = Rig { probe: UriProbe::new(c), now: 1_000 };
+            let fx = rig.start();
+            assert!(logs(&fx)[0].ends_with(&format!("app=com.test.app {want}")), "{release:?} {build:?}: {:?}", logs(&fx));
+        }
+    }
+
+    #[test]
+    fn a_resume_that_restarts_the_clock_reads_where_it_restarted() {
+        let mut rig = drive_resumed_rig(5_000);
+        assert_eq!(rig.probe.facts.pause_pos, Some(5_000));
+        // The dwell's reports (5000, before the resume call) are not the first position after it.
+        drive_report_after(&mut rig, 120, 333);
+        drive_report_after(&mut rig, 250, 583);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" resume=sent "), "{summary}");
+        assert!(summary.contains(" resume_from=333 "), "{summary}");
+    }
+
+    #[test]
+    fn a_resume_that_carries_on_reads_a_position_at_or_after_the_paused_one() {
+        let mut rig = drive_resumed_rig(5_000);
+        drive_report_after(&mut rig, 120, 5_120);
+        drive_report_after(&mut rig, 250, 5_370);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" resume_from=5120 "), "{summary}");
+    }
+
+    #[test]
+    fn no_position_after_the_resume_reads_a_dash() {
+        let mut rig = drive_resumed_rig(5_000);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" resume_from=- "), "{summary}");
+        // A session that never got as far as the resume has none either.
+        let mut rig = drive_pause_rig();
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" resume_from=- "), "{summary}");
+    }
+
+    #[test]
+    fn a_seek_that_lands_without_a_seekdone_reads_seekdone_no() {
+        let mut rig = drive_seeked_rig(5_000, 25_300);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" seek=hit "), "{summary}");
+        assert!(summary.contains(" seekdone=no "), "{summary}");
+    }
+
+    #[test]
+    fn a_seekdone_after_the_seek_reads_seekdone_yes() {
+        let mut rig = drive_seeked_rig(5_000, 25_300);
+        rig.msg("subscribe", r#"{"mediaId":"_m1","seekDone":true}"#);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" seek=hit "), "{summary}");
+        assert!(summary.contains(" seekdone=yes "), "{summary}");
+    }
+
+    #[test]
+    fn a_seekdone_from_before_the_seek_call_is_not_the_seeks() {
+        let mut rig = drive_resumed_rig(5_000);
+        rig.msg("subscribe", r#"{"mediaId":"_m1","seekDone":true}"#);
+        drive_report_after(&mut rig, 100, 5_200);
+        rig.tick(DRIVE_STEP_MS);
+        rig.msg("seek", r#"{"returnValue":true}"#);
+        drive_report_after(&mut rig, 100, 25_300);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" seek=hit "), "{summary}");
+        assert!(summary.contains(" seekdone=no "), "{summary}");
+    }
+
+    #[test]
+    fn an_audioinfo_naming_a_track_before_loadcompleted_reads_that_track() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.loading();
+        rig.msg("subscribe", r#"{"mediaId":"_m1","audioInfo":{"codec":"AAC","channels":2,"track":1}}"#);
+        rig.msg("subscribe", r#"{"mediaId":"_m1","loadCompleted":true}"#);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" audioInfo=seen "), "{summary}");
+        assert!(summary.contains(" audio_at_load=1 "), "{summary}");
+    }
+
+    #[test]
+    fn an_audioinfo_in_the_loadcompleted_message_counts_as_at_load() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.loading();
+        rig.msg("subscribe", r#"{"mediaId":"_m1","audioInfo":{"track":0},"loadCompleted":true}"#);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" audio_at_load=0 "), "{summary}");
+    }
+
+    #[test]
+    fn an_audioinfo_after_loadcompleted_or_naming_no_track_reads_none() {
+        let mut late = Rig::new(Variant::AtLoad, Some(WINDOW));
+        late.loaded();
+        late.after(200, UriEvent::Tick);
+        late.msg("subscribe", r#"{"mediaId":"_m1","audioInfo":{"track":0}}"#);
+        let summary = summary_after_back(&mut late);
+        assert!(summary.contains(" audioInfo=seen ") && summary.contains(" audio_at_load=none "), "{summary}");
+
+        let mut untracked = Rig::new(Variant::AtLoad, Some(WINDOW));
+        untracked.loading();
+        untracked.msg("subscribe", r#"{"mediaId":"_m1","audioInfo":{"codec":"AAC","channels":2}}"#);
+        untracked.msg("subscribe", r#"{"mediaId":"_m1","loadCompleted":true}"#);
+        let summary = summary_after_back(&mut untracked);
+        assert!(summary.contains(" audioInfo=seen ") && summary.contains(" audio_at_load=none "), "{summary}");
+
+        let mut silent = Rig::new(Variant::AtLoad, Some(WINDOW));
+        silent.loaded();
+        let summary = summary_after_back(&mut silent);
+        assert!(summary.contains(" audioInfo=none ") && summary.contains(" audio_at_load=none "), "{summary}");
+    }
+
+    /// The drive session at the text call: pause, resume, seek (answered, landed) behind it, the
+    /// `selectTrack text` sent and answered.
+    fn drive_text_selected_rig() -> Rig {
+        let mut rig = drive_seeked_rig(5_000, 25_300);
+        let fx = rig.tick(DRIVE_STEP_MS);
+        assert!(has_log(&fx, "drive selectTrack type=text index=0"), "{fx:?}");
+        rig.msg("selectTrack", r#"{"returnValue":true}"#);
+        rig
+    }
+
+    #[test]
+    fn a_typed_text_trackselected_after_the_text_call_reads_text_ev_yes() {
+        let mut rig = drive_text_selected_rig();
+        rig.msg("subscribe", r#"{"mediaId":"_m1","trackSelected":{"type":"text","index":0}}"#);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" text_ev=yes"), "{summary}");
+    }
+
+    #[test]
+    fn only_a_typed_text_trackselected_after_the_text_call_counts() {
+        // Before the call: the firmware chose a subtitle at load.
+        let mut early = Rig::new(Variant::Drive, Some(WINDOW));
+        early.playing();
+        early.msg("subscribe", r#"{"mediaId":"_m1","trackSelected":{"type":"text","index":0}}"#);
+        let mut all = early.tick(DRIVE_FIRST_MS);
+        for _ in 0..3 { all.extend(early.tick(DRIVE_STEP_MS)); }
+        assert!(has_log(&all, "drive selectTrack type=text index=0"), "{all:?}");
+        assert!(summary_after_back(&mut early).contains(" text_ev=no"));
+
+        // An audio selection, an untyped event and a selection of another kind are not a text one.
+        let mut rig = drive_text_selected_rig();
+        rig.msg("subscribe", r#"{"mediaId":"_m1","trackSelected":{"type":"audio","index":1}}"#);
+        rig.msg("subscribe", r#"{"mediaId":"_m1","trackSelected":true}"#);
+        rig.msg("subscribe", r#"{"mediaId":"_m1","trackSelected":{"type":"video","index":0}}"#);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" text_ev=no"), "{summary}");
+        assert!(summary.contains(" text=sent "), "the call's own answer is graded separately: {summary}");
+    }
+
+    fn clock_rig(gaps_ms: &[u64]) -> Rig {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.playing();
+        for (n, gap) in std::iter::once(&0).chain(gaps_ms).enumerate() {
+            rig.now += gap;
+            rig.msg("subscribe", &format!(r#"{{"mediaId":"_m1","currentTime":{}}}"#, 1_000 + 7 * n));
+        }
+        rig
+    }
+
+    #[test]
+    fn the_clock_period_is_the_median_gap_between_position_reports() {
+        let mut rig = clock_rig(&[250, 250, 300, 1_000, 200]);
+        let summary = summary_after_back(&mut rig);
+        assert!(summary.contains(" clock_period_ms=250"), "{summary}");
+        // Not the mean (400), not the first gap, not the last one.
+        let mut rig = clock_rig(&[1_000, 1_000, 1_000, 40, 40]);
+        assert!(summary_after_back(&mut rig).contains(" clock_period_ms=1000"));
+    }
+
+    #[test]
+    fn an_even_number_of_gaps_reads_the_lower_middle_one() {
+        let mut rig = clock_rig(&[500, 250]);
+        assert!(summary_after_back(&mut rig).contains(" clock_period_ms=250"));
+        let mut rig = clock_rig(&[250, 500, 500, 250]);
+        assert!(summary_after_back(&mut rig).contains(" clock_period_ms=250"));
+    }
+
+    #[test]
+    fn fewer_than_two_position_reports_read_a_dash() {
+        let mut none = Rig::new(Variant::AtLoad, Some(WINDOW));
+        none.playing();
+        assert!(summary_after_back(&mut none).contains(" clock_period_ms=-"));
+        let mut one = clock_rig(&[]);
+        assert!(summary_after_back(&mut one).contains(" clock_period_ms=-"));
+    }
+
+    #[test]
+    fn a_drive_summary_carries_every_field_the_gate_reads_in_one_line() {
+        let mut rig = drive_text_selected_rig();
+        rig.msg("subscribe", r#"{"mediaId":"_m1","seekDone":true}"#);
+        let summary = summary_after_back(&mut rig);
+        for key in ["pause=", "resume=", "resume_from=", "seek=", "seekdone=", "audio=", "audio_at_load=", "text_ev=", "paused_event=", "clock_period_ms=", "end="] {
+            assert_eq!(summary.matches(&format!(" {key}")).count(), 1, "{key} must appear exactly once in {summary}");
+        }
+        assert!(!summary.contains('\n'));
+    }
+
+    #[test]
+    fn grouped_events_finish_each_continuation_and_stop_before_the_remaining_items() {
+        let mut rig = Rig::new(Variant::AtLoad, Some(WINDOW));
+        rig.loading();
+        let events = [Ev::LoadCompleted, Ev::Playing, Ev::CurrentTime, Ev::Error, Ev::VideoInfo];
+        let message = Message {
+            media_id: Some(media("_m1")),
+            seen: events.iter().map(|ev| Seen { ev: *ev, detail: String::new() }).collect(),
+            normalized: events.to_vec(),
+            current_time: Some(100),
+            error_code: Some(9),
+            dims: Some((1280, 720)),
+            ..Message::default()
+        };
+        let fx = rig.feed(UriEvent::Reply { method: Method::Subscribe, ok: true, message });
+        let position = |predicate: fn(&UriEffect) -> bool| fx.iter().position(predicate).expect("ordered effect");
+        let settled = position(|effect| matches!(effect, UriEffect::Settle(Settle::Started)));
+        let play = position(|effect| matches!(effect, UriEffect::Call(UriCall::Play { .. })));
+        let unload = position(|effect| matches!(effect, UriEffect::Call(UriCall::Unload { .. })));
+        let close = position(|effect| matches!(effect, UriEffect::Close));
+        let summary = position(|effect| matches!(effect, UriEffect::Log(line) if line.contains("summary ")));
+        assert!(settled < play && play < unload && unload < close && close < summary);
+        assert_eq!(settles(&fx, Settle::Started), 1);
+        assert_eq!(settles(&fx, Settle::StartFailed), 0);
+        assert!(rig.probe.is_done());
+        assert!(!rig.probe.plane_open());
+        assert_eq!(rig.probe.facts.playing_ms, Some(0));
+        assert_eq!(rig.probe.last_time, Some(100));
+        assert_eq!(rig.probe.facts.video_seen, None, "events after Error are inert");
+        assert!(!fx.iter().any(|effect| matches!(effect, UriEffect::PlaceWindow { .. })));
+        for event in [UriEvent::Start, UriEvent::Tick, UriEvent::Back, UriEvent::Closed] {
+            assert!(rig.feed(event).is_empty(), "Done emits no repeated close or summary");
+        }
+    }
+
+    #[test]
+    fn video_continuation_precedes_foreground_reply_and_preserves_its_early_return() {
+        let (mut rig, _) = acb_loaded(Variant::AcbControl, false);
+        let message = parse_event(r#"{"returnValue":true,"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"frameRate":24},"errorCode":9}"#);
+        let fx = rig.feed(UriEvent::Reply { method: Method::NotifyForeground, ok: true, message });
+        let acb = fx.iter().position(|effect| matches!(effect, UriEffect::Acb { .. })).expect("video starts binding");
+        let answer = fx.iter().position(|effect| matches!(effect, UriEffect::Log(line) if line.contains("call notifyForeground ok"))).expect("foreground reply");
+        assert!(acb < answer, "the video substep completes before reply handling resumes");
+        assert!(!rig.probe.is_done(), "NotifyForeground does not consume service events");
+        assert_eq!(rig.probe.facts.video_seen, None);
+        assert_eq!(closes(&fx), 0);
+        assert!(!logs(&fx).iter().any(|line| line.contains("ev=")));
     }
 
 }

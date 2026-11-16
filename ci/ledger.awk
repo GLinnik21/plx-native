@@ -10,7 +10,7 @@
 # (an alias the call-site grep cannot count). Everything is configured through the environment,
 # because awk's -v would process the backslashes of a regex:
 #
-#   LG_MODE      call (default) | fork | arm
+#   LG_MODE      call (default) | fork | arm | static (production static declarations as path<TAB>name)
 #   -- call: every occurrence of LG_SITE on a code line is a site --
 #   LG_SITE      ERE of one call site, `(^|[^A-Za-z0-9_])name\(` style (awk has no \b)
 #   LG_DEF       ERE of a definition header (`fn name(`): blanked before matching, so it is neither a
@@ -220,9 +220,16 @@ function contname(code,    s) {
 function enclosing() { return (top > 0) ? stack[top] : ((pending != "") ? pending : ((ctop > 0) ? cstack[ctop] : "?")) }
 function pop_to(d) { while (top > 0 && sdepth[top] > d) top--; while (ctop > 0 && csdepth[ctop] > d) ctop-- }
 
-function emit_calls(code, hit,    rest, m) {
+function emit_calls(code, hit,    rest, m, label) {
   rest = code
   while (match(rest, SITE)) {
+    # A field declaration/label names data, not a function value. Keep scanning its RHS,
+    # and do not suppress a namespace separator (`::`) or a bare callback reference.
+    label = substr(rest, RSTART + RLENGTH - 1) ~ /^[[:space:]]*:([^:]|$)/
+    if (label) {
+      rest = substr(rest, RLENGTH > 1 ? RSTART + RLENGTH - 1 : RSTART + 1)
+      continue
+    }
     if (KEYSPELL != "") {
       m = substr(rest, RSTART, RLENGTH)
       gsub(/^[^A-Za-z0-9_]+/, "", m); gsub(/[^A-Za-z0-9_]+$/, "", m)
@@ -374,6 +381,12 @@ function scan_file(    i, code, scan, uline, name, k, hit, rest, p, txt, v, n, o
         # a call on the same line as the `fn` it sits in, before that fn pushes its body
         if (pending != "" && code ~ /fn[[:space:]]/ && code ~ /\{/) hit = pending
         emit_calls(scan, hit)
+      }
+    } else if (MODE == "static") {
+      if (match(code, /^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?static[[:space:]]+(mut[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*/)) {
+        name = substr(code, RSTART, RLENGTH)
+        sub(/.*static[[:space:]]+(mut[[:space:]]+)?/, "", name)
+        print file "\t" name
       }
     } else if (MODE == "fork") {
       p = index(code, "cfg!(")

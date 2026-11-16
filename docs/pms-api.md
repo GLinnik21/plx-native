@@ -1002,7 +1002,8 @@ GET /library/metadata/{rk}?includeMarkers=1&includeChapters=1
 ### Up Next — the `continuous=1` PlayQueue already carries it (verified live 2026-07-29)
 
 There is no "what plays next" endpoint to call: the `POST /playQueues?continuous=1` the app makes
-for **every** playback (§7) returns the show's remaining episodes after the selected one, each a
+for a playback of an item with no show (§7; an episode whose show is not known, a movie) returns
+the show's remaining episodes after the selected one, each a
 **full** `Metadata` row — `thumb`, `parentIndex`/`index`, `duration`, `viewOffset`, `summary`, and
 `Media[0].videoCodec`/`audioCodec` + `Part[0].key`. That is everything both the Up Next card and a
 subsequent direct-play need, so the feature costs zero extra round-trips.
@@ -1013,6 +1014,37 @@ subsequent direct-play need, so the feature costs zero extra round-trips.
 - The queue does **not** span past the available episodes: the last episode a server holds for a
   show returns `playQueueTotalCount: 1`, i.e. no successor. A movie behaves the same way.
 - The POST needs an `X-Plex-Client-Identifier`; without it PMS answers with an empty body.
+
+### A show-keyed PlayQueue — the episodes BEFORE the playing one (spec- and client-derived, NOT yet observed live)
+
+The episode-only request above answers the selected episode and the ones after it with
+`playQueueSelectedItemOffset: 0`; there is **no row before the selected one**, so a queue created
+that way can never serve Previous (the HUD's Previous is `index > 0` of the queue's rows, and an
+episode played fresh from a Continue Watching tile or a detail page started at index 0). The
+`GET /playQueues/{id}` window parameters (`includeBefore`, `center`) only window a queue that
+already holds the rows, so they cannot add predecessors the queue lacks.
+
+For an episode whose show is known the app therefore asks for the queue of the SHOW with the
+episode as its first item to play:
+
+```
+POST /playQueues?type=video&uri=server://{machine}/com.plexapp.plugins.library/library/metadata/{showRk}
+                 &key=/library/metadata/{episodeRk}&shuffle=0&repeat=0      (no `continuous`)
+```
+
+`docs/plex-openapi.json` documents `key` as "the key of the first item to play" and the show URI as
+a valid `uri` (`onDeck` applies to show/season queues); python-plexapi's `PlayQueue.create(show,
+startItem=episode)` sends exactly `uri` + `key`. The answer is expected to hold the show's episodes
+in order with the keyed one selected (`playQueueSelectedItemID`/`Offset` on it). **That response
+shape has not been observed on a live server** (no PMS was probed for this change), so the app
+trusts it only when the selected row IS the requested episode on this server; a server that
+ignores `key` (and answers the first episode, or the show itself), refuses it, or does not answer
+costs one extra round trip (and an unused show queue left on the server): the app then asks the
+episode-only request above, as it always did. When the offset says
+rows precede the selected one but the answer's window opens on it, the existing window read
+(`GET /playQueues/{id}?center=…`, `queue_window.rs`) is spent once to fetch them. To verify live
+(owner's TV or a mock-free read-only probe): play an episode from the middle of a season and read
+the `playQueueSelectedItemOffset` and the first row of the log's queue line.
 
 ### Show chain (verified against a show, ratingKey 1857)
 
@@ -1162,8 +1194,9 @@ backgroundSquare  /library/metadata/<rk>/squareArt/<ts>
 snapshot          /library/metadata/<episode rk>/thumb/<ts>      (episodes only)
 ```
 
-So a clearLogo in a hub row IS stamped (a replaced logo is a new path), unlike the bare
-`/library/metadata/{rk}/clearLogo` the app requests today. **An episode's `Image[]` names its SHOW's
+The app uses the stamped clearLogo path for both hero logos and baked cards, so a replacement
+uses a new cache key as soon as updated metadata lands. When the server omits the image list,
+the app can still look up a logo via `/library/metadata/{rk}/clearLogo`. **An episode's `Image[]` names its SHOW's
 rating key** for `coverPoster`, `background`, `clearLogo` and `backgroundSquare` (the row's own
 `ratingKey` 732, the show's 605, in the probe), and only `snapshot` is the episode's own: the
 episode's `thumb` still. A movie row has no `snapshot`. Every row of the probe (4 movies and 1
@@ -1826,15 +1859,42 @@ Do not infer either grant from PMS `myPlexSubscription`, generic account subscri
 or membership in some server owner's Home; `pass` in the viewer-credential `/api/v2/features`
 list above is the one subscription signal accepted.
 
+**A managed Home profile also takes its Home administrator's grants (owner decision, 2026-11-11).**
+A managed profile's own `/api/v2/features` list was expected to lack `pass` (the one managed
+profile measured, a Guest, had no Plex Pass: `docs/watchlist-plan.md`, INPUT 2), which hid both
+settings on a managed profile of a Pass household. **The real managed account's feature list and
+its `/api/v2/user` answer were never observed**; the rule below is the owner's policy, not a
+measurement, and the `marker-grants:` event-log line (`seat=member`, grants or the error's name)
+is how a report will say what plex.tv actually answered.
+`PreferenceRequest::load_marker_access_in_home` reads the seated member as above; when either
+grant is missing (or the member's own read failed other than as stale), and
+`PreferenceRequest::home_admin_marker_request` accepts the seat, it reads the **administrator's**
+`/api/v2/user` and `/api/v2/features` with the stored account token (`Session::account_token`) and
+ORs the administrator's grants in. The seat is accepted only when the stored session's seated
+profile is a roster-listed NON-administrator, the roster names exactly one administrator with an
+identity, and the captured request's account stamp matches the stored account token; the
+administrator's `/api/v2/user` must match that roster identity (a stranger's answer is refused
+and the member's own answer stands). The administrator's grants only add to the member's own,
+never replace them, and a failed read leaves the member's answer as it was. The account token is
+used for these two GETs only: never for a write or a preference save, and
+`session::plex_tv_credential`'s rule for everything else (a managed profile never borrows the
+owner's or the PMS token) is untouched. The request keeps the seat's key, so a landing is fenced to
+the profile it was made for.
+
 `PreferenceRequest::load_marker_access` first verifies `/api/v2/user` with the captured viewer
 credential, requiring at least one known ID/UUID to match and neither to conflict, then reads
 `/api/v2/features` with the same credential. Profile replacement before or after either read
-refuses its result. The runner coalesces requests per seated identity, uses the account cache's
-five-minute success lifetime and 45-second failure cooldown, and publishes fresh, independent
-intro/credits grants as frame inputs. It never logs a response body or credentials.
+refuses its result. The runner coalesces requests per seated identity and uses the account cache's
+five-minute success lifetime and 45-second failure cooldown, but only to SCHEDULE the next read: what
+`AccessState::view` publishes as the independent intro/credits frame inputs is the last SETTLED
+answer for the seat. A stale answer, a re-read in flight and a failed re-read all keep those settled
+grants, so a Settings row or an automatic offer never drops out and returns while the viewer sits on
+it; only a landed successful answer replaces them, and another seat clears them. A seat with no
+answer yet has no grants. It never logs a response body or credentials.
 
 An implicit owner (no Home profile selected) keeps its original blank profile key. Marker access
 uses the unique admin roster identity only when the captured credential is the same account token,
 the account stamp matches, and the stored session confirms that implicit owner. The `/api/v2/user`
 response must match that roster identity before the features read. Missing or ambiguous owner proof
-leaves marker access unavailable; selected profiles never borrow an owner identity.
+leaves marker access unavailable; selected profiles never borrow an owner identity for their OWN
+read (the Home administrator's feature list is a separate, additional read, above).

@@ -10,6 +10,18 @@ pub(super) struct TestBrowse {
     /// The jobs the steps this rig ran have left on the outbox, as `BrowseStore::jobs` holds them.
     pub(super) jobs: Vec<crate::stores::StoreJob>,
 }
+
+pub(super) fn run_preference_jobs(jobs: Vec<crate::stores::StoreJob>) {
+    for job in jobs {
+        let crate::stores::StoreJob::BrowsePreferences(job, port) = job else { panic!("not a preference write") };
+        let refusal = port.clone();
+        let addr = job.addr;
+        if plx_base::storage_worker::submit(move ||
+            preferences_job::finish_browse_preferences_job(&port, addr, job.req)).is_err() {
+            plx_machine::job::Port::refused(&refusal, addr);
+        }
+    }
+}
 impl Default for TestBrowse {
     fn default() -> Self {
         Self {
@@ -23,7 +35,17 @@ impl Default for TestBrowse {
 impl TestBrowse {
     /// The registry's answer as of NOW, as the Bridge fills it immediately before each step.
     pub(super) fn refill(&mut self) {
-        self.keys = crate::pms::registry_keys_for_test();
+        self.state.preference_writes.prepare(&plx_plex::plex::session::peek(), plx_plex::plex::session::tenure());
+        self.keys.refill_roster(
+            plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
+            plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
+            plx_plex::plex::client_for, plx_plex::plex::server_facts,
+            plx_plex::plex::server_probe_result,
+        );
+    }
+
+    pub(super) fn run_preference_jobs(&mut self) {
+        run_preference_jobs(self.state.take_preference_jobs());
     }
 
     /// `hubs_kick` on the registry as of now: the section's read leaves on `jobs`.
@@ -43,6 +65,7 @@ impl TestBrowse {
     /// `finish_browse_directory_job`) if the registry still holds the client its step decided on,
     /// and refused otherwise. Any other job stays on the outbox. Returns how many ran.
     pub(super) fn run_listing_jobs(&mut self) -> usize {
+        self.run_preference_jobs();
         let mut ran = 0;
         for job in std::mem::take(&mut self.jobs) {
             let held = |sid: ServerId, key: plx_plex::plex::ClientKey| plx_plex::plex::client_for(sid)
@@ -107,11 +130,19 @@ impl TestBrowse {
     pub(super) fn pump(&mut self) -> crate::stores::StoreOutcome {
         self.observe_pin_write();
         let session = plx_plex::plex::session::peek();
-        let roster = self.state.sync_roster_owned();
+        self.refill();
+        let profile_key = plx_plex::plex::session::current_profile_key();
+        let input = BrowseRosterInput { tenure: plx_plex::plex::session::tenure(),
+            keys: &self.keys, session: &session,
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &profile_key,
+        };
+        let roster = self.state.sync_roster_owned(&input);
         if roster.retire_adapter {
             self.adapter = Arc::new(BrowseAdapter::default());
         }
-        self.refill();
+
         let mut outcome = self.state.pump_owned_with_gate(&self.adapter, plx_machine::landgate::fixture_gate(),
             &self.keys, &session, &mut self.jobs);
         outcome.changed |= roster.changed;
@@ -161,7 +192,17 @@ impl TestBrowse {
     }
 
     pub(super) fn sync_roster(&mut self) {
-        if self.state.sync_roster_owned().retire_adapter {
+        self.observe_pin_write();
+        self.refill();
+        let session = plx_plex::plex::session::peek();
+        let profile_key = plx_plex::plex::session::current_profile_key();
+        let input = BrowseRosterInput { tenure: plx_plex::plex::session::tenure(),
+            keys: &self.keys, session: &session,
+            visible_generation: plx_plex::plex::session::visible_generation(),
+            settled: plx_plex::plex::session::peek_settled().is_some(),
+            profile_key: &profile_key,
+        };
+        if self.state.sync_roster_owned(&input).retire_adapter {
             self.adapter = Arc::new(BrowseAdapter::default());
         }
     }
@@ -245,12 +286,16 @@ impl TestBrowse {
 
     /// The first-run gate on `session`.
     pub(super) fn first_run_asks_with(&self, session: &plx_plex::plex::session::Session) -> bool {
-        crate::stores::browse::onboard::asks_for_sources(self.state.sources.len(), session)
+        crate::stores::browse::onboard::asks_for_sources(self.state.sources.len(), session,
+            &plx_plex::plex::session::current_profile_key())
     }
 
     /// The editor's commit, stepped with `session`.
     pub(super) fn apply_pins_with(&mut self, answers: &[(usize, bool)], session: &plx_plex::plex::session::Session) {
+        self.state.profile_key = plx_plex::plex::session::current_profile_key();
+        self.state.preference_writes.prepare(session, plx_plex::plex::session::tenure());
         self.state.apply_pins_from(answers, session);
+        self.run_preference_jobs();
     }
 
     /// A live discovery landing's section append, stepped with `session`.
@@ -266,7 +311,8 @@ impl TestBrowse {
 
     pub(super) fn first_run_asks(&self) -> bool {
         crate::stores::browse::onboard::asks_for_sources(
-            self.state.sources.len(), &plx_plex::plex::session::peek())
+            self.state.sources.len(), &plx_plex::plex::session::peek(),
+            &plx_plex::plex::session::current_profile_key())
     }
 }
 pub(super) struct RegisteredCleanup;
@@ -488,8 +534,7 @@ pub(super) fn seed_one_source(
     // is registered here. It makes `cur_source_idx`'s empty-table fallback resolve to this row.
     browse.seed_sources(vec![BrowseSource {
         sid: plx_plex::plex::current_server(),
-        client_addr: 0,
-        token_gen: 0,
+        client_key: None,
         machine_id: "mach-0".into(),
         owned: true,
         home: false,

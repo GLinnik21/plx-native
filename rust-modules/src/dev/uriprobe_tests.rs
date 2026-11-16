@@ -23,7 +23,7 @@ impl UriSession {
     #[allow(clippy::too_many_arguments)]
     fn open_with_ports(ps: &PlaybackSession, mt: &MainThread, transport: &'static dyn UriMedia,
         sink: &'static dyn plx_platform::tv::sink::DisplaySink, plane: &'static plx_platform::tv::plane::PlaneOwner,
-        attempt: RouteStartAttempt, variant: Variant, bps: AbrBps, url: &str) -> UriSession {
+        attempt: RouteStartAttempt, variant: Variant, bps: AbrBps, firmware: Firmware, url: &str) -> UriSession {
         let input = ProbeOpen {
             attempt, url, transport, display: sink, plane,
             log: plx_base::eventlog::log,
@@ -31,7 +31,7 @@ impl UriSession {
             segmented_hls: plx_media::route::is_segmented_hls(ps),
             release_allowance_ms: u64::try_from(plx_media::player::release::RELEASE_DEADLINE.as_millis()).unwrap_or(u64::MAX),
         };
-        UriSession::open(input, variant, bps, mt)
+        UriSession::open(input, variant, bps, firmware, mt)
     }
     fn poll(&self) -> Result<plx_platform::tv::uri::UriPoll, String> { self.0.poll() }
     fn is_done(&self) -> bool { self.0.is_done() }
@@ -200,6 +200,13 @@ impl Rig {
     fn build_on(variant: Variant, refuse_open: Option<&str>,
         sink: &'static dyn plx_platform::tv::sink::DisplaySink,
         plane: &'static plx_platform::tv::plane::PlaneOwner) -> Rig {
+        Rig::build_on_firmware(variant, refuse_open, sink, plane, Firmware::default())
+    }
+
+    /// [`build_on`](Rig::build_on) on a set that reported this firmware.
+    fn build_on_firmware(variant: Variant, refuse_open: Option<&str>,
+        sink: &'static dyn plx_platform::tv::sink::DisplaySink,
+        plane: &'static plx_platform::tv::plane::PlaneOwner, firmware: Firmware) -> Rig {
         let mut ps = PlaybackSession::IDLE;
         plx_media::route::reset_player_control_for_test(&ps);
         let pa = crate::app::adapters::backends::test_adapter();
@@ -209,7 +216,7 @@ impl Rig {
         ps.begin_attempt_view(attempt, Backend::Uri);
         let transport = Scripted::leak();
         *transport.refuse_open.lock().unwrap() = refuse_open.map(str::to_owned);
-        let session = UriSession::open_with_ports(&ps, pa.mt(), transport, sink, plane, attempt, variant, AbrBps::default(), URL);
+        let session = UriSession::open_with_ports(&ps, pa.mt(), transport, sink, plane, attempt, variant, AbrBps::default(), firmware, URL);
         Rig { ps, pa, transport, attempt, session: Some(session), installed: None, now: 0 }
     }
 
@@ -318,6 +325,22 @@ fn uriprobe_driver_runs_a_whole_session_in_order_and_settles_the_attempt_started
     assert!(log.contains("uriprobe: t=") && line_with(&log, " armed ").contains("window=none"), "{log}");
     assert!(!log.contains("no longer waits"), "the attempt was settled exactly once:\n{log}");
     assert!(log.contains("tester: report picture yes/no and sound yes/no"));
+}
+
+#[test]
+fn uriprobe_driver_names_the_firmware_the_set_reported_on_the_armed_line() {
+    let _serial = plx_base::testlock::serial();
+    let log = logged(|| {
+        let firmware = Firmware { release: "11.1.0".to_owned(), build: "11.1.0-3701".to_owned() };
+        let _rig = Rig::build_on_firmware(Variant::Drive, None, display(), plx_platform::tv::plane::installed(), firmware);
+    });
+    let armed = line_with(&log, " armed ");
+    assert!(armed.contains("variant=drive") && armed.ends_with("fw=11.1.0 build=11.1.0-3701"), "{armed}");
+    // A firmware the set did not report (empty strings) prints dashes.
+    let log = logged(|| {
+        let _rig = Rig::new(Variant::Drive);
+    });
+    assert!(line_with(&log, " armed ").ends_with("fw=- build=-"), "{log}");
 }
 
 #[test]

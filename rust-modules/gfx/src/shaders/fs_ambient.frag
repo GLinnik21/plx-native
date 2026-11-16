@@ -1,6 +1,6 @@
 // 4-corner bilinear gradient. TWO roles share this program because they are one field: the opaque
 // full-screen ambient wash (`gfx::draw_ambient`, which forces every corner's alpha to 1.0) and the
-// alpha-carrying corner gradient that sits OVER artwork (`gfx::draw_grad4` — the hero text scrim).
+// alpha-carrying corner gradient that sits OVER artwork (`gfx::draw_grad4` — a fade over a picture, today the filmography page's tab fade).
 // Alpha is interpolated with the colour, so the four corners must share an rgb: straight
 // (non-premultiplied) rgba only interpolates exactly when they do. One ink at four alphas, never
 // four hues at four alphas.

@@ -130,7 +130,7 @@ fn the_schema_names_its_draft_and_its_published_address() {
         "https://json-schema.org/draft/2020-12/schema"
     );
     assert_eq!(root["$schema"], SCHEMA_DRAFT);
-    assert_eq!(root["$id"], "https://plxnative.com/hud/schema/hud/1.0.json");
+    assert_eq!(root["$id"], "https://plxnative.com/hud/schema/hud/1.1.json");
     assert_eq!(
         schema_id((1, 0)),
         "https://plxnative.com/hud/schema/hud/1.0.json"
@@ -143,11 +143,13 @@ fn the_schema_names_its_draft_and_its_published_address() {
 }
 
 #[test]
-fn the_package_the_table_calls_current_is_1_0_and_emission_is_deterministic() {
-    assert_eq!(schema::CURRENT, (1, 0));
-    assert_eq!(emit_current(), emit((1, 0)));
-    assert_eq!(emit_text((1, 0)), emit_text((1, 0)));
-    let text = emit_text((1, 0));
+fn the_hud_format_is_1_1_and_emission_is_deterministic() {
+    assert_eq!(schema::CURRENT, (1, 1));
+    assert_eq!(emit_current(), emit((1, 1)));
+    let text = emit_text((1, 1));
+    assert_eq!(text, emit_text((1, 1)));
+    assert!(emit((1, 0))["$defs"]["playbar"]["properties"].get("end_time_width").is_none());
+    assert_eq!(emit_current()["$defs"]["playbar"]["properties"]["end_time_width"]["type"], "integer");
     assert!(text.ends_with("}\n") && !text.ends_with("\n\n"));
     assert_eq!(
         json(&text),
@@ -194,7 +196,7 @@ fn the_defs_are_the_nodes_of_the_table_and_the_shared_vocabularies() {
     let root = emit_current();
     let defs = keys(&root["$defs"]);
     for node in schema::all_nodes() {
-        let manifest = emit_manifest(schema::CURRENT);
+        let manifest = emit_manifest(super::super::bundle::CURRENT);
         let defs = if matches!(node.name, "hud_entry" | "app") { keys(&manifest["$defs"]) } else { defs.clone() };
         if !matches!(node.name, "hud" | "manifest") {
             assert!(
@@ -428,7 +430,7 @@ fn every_key_of_every_plain_node_is_in_the_schema_with_its_type_range_default_an
         if matches!(node.kind, NodeKind::CommandDispatched) {
             continue;
         }
-        let root = if matches!(node.name, "manifest" | "hud_entry" | "app") { emit_manifest(schema::CURRENT) } else { root.clone() };
+        let root = if matches!(node.name, "manifest" | "hud_entry" | "app") { emit_manifest(super::super::bundle::CURRENT) } else { root.clone() };
         let def = node_def(&root, node);
         let at = format!("node `{}`", node.name);
         assert_eq!(def["type"], "object", "{at}");
@@ -970,7 +972,7 @@ fn the_schema_accepts_every_valid_package_of_the_corpus() {
     assert!(texts.len() > 25, "{}", texts.len());
     for (label, text) in &texts {
         assert!(is_json_object(text), "{label}");
-        let root = if text.contains("\"hud\":") { emit_manifest(schema::CURRENT) } else { root.clone() };
+        let root = if text.contains("\"hud\":") { emit_manifest(super::super::bundle::CURRENT) } else { root.clone() };
         let found = check(&root, &json(text));
         assert!(
             found.is_empty(),
@@ -1060,7 +1062,7 @@ fn every_invalid_row_the_schema_rejects_is_rejected_where_the_parser_agrees() {
         };
         checked += 1;
         let parser = super::super::tests::document_findings(&row.bytes);
-        let root = if text.contains("\"hud\":") { emit_manifest(schema::CURRENT) } else { root.clone() };
+        let root = if text.contains("\"hud\":") { emit_manifest(super::super::bundle::CURRENT) } else { root.clone() };
         let failures = check(&root, &instance);
         // The version gate answers alone, before any key is judged, so the parser says nothing else about a
         // package of another format; the schema, which has no gate, still reads the rest.

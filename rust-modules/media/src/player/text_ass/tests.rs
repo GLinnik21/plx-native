@@ -1,5 +1,5 @@
 use super::*;
-use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
+use plx_plex::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
 
 const ZW: char = '\u{200B}';
 
@@ -169,6 +169,25 @@ fn subrip_markup() {
         ("1 < 2", "1"),
         ("x<3 y", "x"),
         ("&amp;", "&amp;"),
+    ]);
+}
+
+/// **An explicit white `<font>` is the track's default ink, not an override.** Downloaded SubRip
+/// files very often wrap every cue in `<font color="#ffffff">`; written as `{\c&HFFFFFF&}` it
+/// beats the synthesized style's primary colour, so a viewer's Yellow pick drew those files white
+/// (Settings > Subtitle color did nothing on an SRT track). White is dropped; every other colour,
+/// and a white inside another colour, stays an override.
+#[test]
+fn subrip_explicit_white_is_the_default_ink() {
+    assert_rows(TextDialect::Srt, &[
+        ("<font color=\"#ffffff\">x</font>", "x"),
+        ("<font color=\"#FFFFFF\">x", "x"),
+        ("<font color=white>x", "x"),
+        ("<font color='#fff'>x", "x"),
+        ("<FONT COLOR=\"FFFFFF\" size=3>x</FONT> y", "x y"),
+        ("<i><font color=\"#ffffff\">x</font></i>", "{\\i1}x"),
+        ("<font color=\"#fffffe\">x", "{\\c&HFEFFFF&}x"),
+        ("<font color=red>a <font color=white>b</font> c", "{\\c&H0000FF&}a {\\c&HFFFFFF&}b{\\c} c"),
     ]);
 }
 
@@ -458,7 +477,7 @@ fn header_matches_the_plan() {
 
 #[test]
 fn every_style_name_a_cue_can_name_exists_in_the_header() {
-    for style in [TextStyle::default(), TextStyle { size: SubtitleSize::ExtraLarge, position: SubtitlePosition::High }] {
+    for style in [TextStyle::default(), TextStyle { size: SubtitleSize::ExtraLarge, position: SubtitlePosition::High, ..TextStyle::default() }] {
         let h = header(&style);
         for align in 1..=9 {
             let name = style_name(align);
@@ -478,7 +497,7 @@ fn every_style_name_a_cue_can_name_exists_in_the_header() {
 
 #[test]
 fn header_follows_the_viewers_size_and_position() {
-    let h = header(&TextStyle { size: SubtitleSize::ExtraLarge, position: SubtitlePosition::High });
+    let h = header(&TextStyle { size: SubtitleSize::ExtraLarge, position: SubtitlePosition::High, ..TextStyle::default() });
     let default = style_lines(&h)[0].trim_start_matches("Style: ").split(',').map(str::to_string).collect::<Vec<_>>();
     assert_eq!(default[2], "77.23", "36 * 1.5 * 1.4302");
     assert_eq!((default[19].as_str(), default[20].as_str(), default[21].as_str()), ("390", "390", "417"));
@@ -486,9 +505,30 @@ fn header_follows_the_viewers_size_and_position() {
     assert!(an8.contains(",8,390,390,100,-1"), "the top margin is independent of Position: {an8}");
     let an1 = h.lines().find(|l| l.starts_with("Style: An1,")).unwrap();
     assert!(an1.contains(",1,390,390,417,-1"), "{an1}");
-    let small = header(&TextStyle { size: SubtitleSize::Small, position: SubtitlePosition::Middle });
+    let small = header(&TextStyle { size: SubtitleSize::Small, position: SubtitlePosition::Middle, ..TextStyle::default() });
     assert!(style_lines(&small)[0].contains(",40.16,"), "{}", style_lines(&small)[0]);
     assert!(style_lines(&small)[0].contains(",2,664,664,257,-1"));
+}
+
+/// The viewer's COLOUR pick is the header's primary colour (ASS `&HAABBGGRR`, so yellow
+/// `#ffe61a` is `1AE6FF`), on every alignment's style; the outline and shadow colours that keep a
+/// caption readable over a bright scene are untouched, and white (the default, and every grey,
+/// which only dims at draw time) is byte for byte the header every build before the colour drew.
+#[test]
+fn header_primary_colour_follows_the_colour_pick_and_keeps_the_outline() {
+    let white = header(&TextStyle::default());
+    for tone in [SubtitleTone::Silver, SubtitleTone::Charcoal] {
+        assert_eq!(header(&TextStyle { tone: text_style::header_tone(tone), ..TextStyle::default() }), white, "{tone:?} is a draw-time tint, not a header colour");
+    }
+    let yellow = header(&TextStyle { tone: SubtitleTone::Yellow, ..TextStyle::default() });
+    assert_eq!(style_lines(&yellow).len(), 9);
+    for line in style_lines(&yellow) {
+        assert!(line.contains(",&H001AE6FF,&H001AE6FF,&H26000000,&HFF000000,"), "{line}");
+    }
+    for line in style_lines(&white) {
+        assert!(line.contains(",&H00FFFFFF,&H00FFFFFF,&H26000000,&HFF000000,"), "{line}");
+    }
+    assert_eq!(yellow.replace("&H001AE6FF", "&H00FFFFFF"), white, "the colour is the only difference");
 }
 
 #[test]
@@ -709,7 +749,7 @@ fn assemble_is_header_then_events_and_follows_the_picks() {
     let medium = script.assemble(&TextStyle::default());
     assert!(medium.starts_with(&header(&TextStyle::default())));
     assert!(medium.ends_with("Hi\n"));
-    let large = script.assemble(&TextStyle { size: SubtitleSize::Large, position: SubtitlePosition::High });
+    let large = script.assemble(&TextStyle { size: SubtitleSize::Large, position: SubtitlePosition::High, ..TextStyle::default() });
     assert_ne!(medium, large);
     assert!(large.ends_with(&script.events), "restyling re-uses the converted events");
 }

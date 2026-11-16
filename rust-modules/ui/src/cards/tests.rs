@@ -346,7 +346,7 @@ impl<S: Section> Rig<S> {
         let mut present = Present::new();
         let mut out = Vec::new();
         let mut reported = None;
-        let (_, moving) = plx_machine::idle::scoped_motion(|| {
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
             let cx = cx9_pressed(&self.view, self.ms, self.press, self.focus, self.pressed.or(self.focus));
             let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
             reported = self.sect.on(&ev, &cx, &self.src, &mut fx);
@@ -2628,7 +2628,7 @@ mod stack {
             let mut present = Present::new();
             let mut out = Vec::new();
             let mut got = None;
-            let (_, moving) = plx_machine::idle::scoped_motion(|| {
+            let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
                 let cx = cx9(&self.view, self.ms, 1.0, self.focus);
                 let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
                 got = self.stack.on(&self.page, &ev, &cx, &mut fx);
@@ -3951,7 +3951,7 @@ fn abandoned_press_trace<S: Section + 'static>() -> Vec<AbandonRow> {
     r.land_focus(100, By::Dir);
     r.run(120);
     let rest = r.drawn_rect(101, 1.0).unwrap().w;
-    let mut press = crate::press::Press::new();
+    let mut press = crate::dispatch::press::Press::new();
     let row = |r: &Rig<S>, ms: u32, what, dip, motion| {
         let width = |elem| r.drawn_rect(elem, dip).unwrap().w / rest;
         AbandonRow { ms, what, dip, pressed: width(100), neighbour: width(101), motion }
@@ -3968,7 +3968,7 @@ fn abandoned_press_trace<S: Section + 'static>() -> Vec<AbandonRow> {
             what = "RIGHT";
         }
         r.ms += MS;
-        let (_, motion) = plx_machine::idle::scoped_motion(|| press.tick(r.ms, MS as f32 / 1000.0));
+        let (_, motion) = plx_machine::motion::report::scoped_motion(|| press.tick(r.ms, MS as f32 / 1000.0));
         r.feed(ScreenEvent::Tick(Tick { ms: r.ms, dt_us: 16_667 }));
         let dip = if press.is_active() { press.scale() } else { 1.0 };
         rows.push(row(&r, r.ms - t0, what, dip, motion));
@@ -5641,9 +5641,8 @@ fn default_shelf_composition_keeps_the_label_before_the_source_overlay() {
 }
 
 /// The Continue Watching stills row's heading stands higher over its cards than a poster shelf's:
-/// the owner's boards (CW-12/13) put the heading's centre ~60 px above the card tops against the
-/// poster shelf's ~42, so [`theme::STILL_HEADING_RISE`] is a fact of the shared row style, not of
-/// the screen that mounts it. The pitch, and with it every card top, is the strip's own.
+/// [`theme::STILL_HEADING_RISE`] belongs to the shared row style. The strip's pitch determines
+/// the card tops.
 #[test]
 fn the_stills_heading_stands_a_fixed_rise_higher_over_its_cards_than_a_posters() {
     use crate::consts::{CARD_DY, TITLE_DY};
@@ -5655,7 +5654,34 @@ fn the_stills_heading_stands_a_fixed_rise_higher_over_its_cards_than_a_posters()
         crate::theme::STILL_HEADING_RISE,
         "the stills row's heading stands one named rise higher, at rest, before any tile has focus"
     );
-    assert_eq!(RowStyle::STILL.pitch_fixed(), RowStyle::EPISODE.pitch_fixed(), "the rise moves the heading, never the cards under it");
+    assert_eq!(
+        RowStyle::STILL.pitch_fixed(),
+        RowStyle::EPISODE.pitch_fixed() + crate::still_footer::FOOTER_UNDER_TILE,
+        "the rise moves the heading, never the cards under it: the row's pitch is the strip's plus the footer line that stands under the tile"
+    );
+}
+
+/// **The Continue Watching row's geometry on the owner's CW-13 v2 board**: the tiles stand 40 px
+/// apart (a 460 px pitch for a 420 px tile) where the detail episode strip keeps its 28. The footer
+/// line stands below the art and the next heading leaves the shared footer gap.
+#[test]
+fn the_stills_row_is_spaced_40_apart_and_its_footer_stands_below_the_art() {
+    use crate::consts::{CARD_DY, PEEK_Y, TITLE_DY};
+    assert_eq!(RowStyle::STILL.gap, 40.0);
+    assert_eq!(RowStyle::EPISODE.gap, 28.0, "the detail episode strip keeps its own gap");
+    assert_eq!(RowStyle::STILL.w + RowStyle::STILL.gap, 460.0);
+    assert_eq!(RowStyle::STILL.w, RowStyle::EPISODE.w, "the same tile, only the air between them differs");
+    assert_eq!(RowStyle::EPISODE.under_tile, 0.0);
+    assert_eq!(RowStyle::HOME.under_tile, 0.0, "a poster shelf spends nothing under its tiles");
+    assert_eq!(RowStyle::STILL.under_tile, crate::still_footer::FOOTER_UNDER_TILE);
+    // the tile top on the board's Home at rest is 768; the footer's foot is the line's top + 24
+    assert_eq!(PEEK_Y + CARD_DY, 768.0);
+    let foot = PEEK_Y + CARD_DY + RowStyle::STILL.h;
+    let footer_foot = foot + crate::theme::STILL_FOOTER_DROP + crate::still_footer::FOOTER_LINE_H;
+    // the heading of the NEXT shelf: one pitch under this row's own, `TITLE_DY` over its tiles
+    let pitch = RowStyle::STILL.pitch_fixed() + crate::card_row::LABEL_BAND_COLLAPSED;
+    let next_heading_y = (PEEK_Y + pitch) - TITLE_DY;
+    assert_eq!(next_heading_y - footer_foot, crate::theme::STILL_FOOTER_AIR, "the next heading clears the footer by the shared gap");
 }
 
 /// The rise and the focus lift do not stack: a focused tile's glow spills up to `heading_lift_max`,
@@ -5664,17 +5690,18 @@ fn the_stills_heading_stands_a_fixed_rise_higher_over_its_cards_than_a_posters()
 fn the_stills_heading_never_stands_lower_than_its_rise_whatever_the_focus_lift() {
     use crate::card_row::{heading_lift_max, heading_lift_of};
     let sty = RowStyle::STILL;
-    assert!(heading_lift_max(&sty) < crate::theme::STILL_HEADING_RISE, "the glow lift is already inside the rise");
-    for live in [0.0, 1.0, heading_lift_max(&sty)] {
-        assert_eq!(heading_lift_of(&sty, live), crate::theme::STILL_HEADING_RISE, "live lift {live}");
-    }
+    let rise = crate::theme::STILL_HEADING_RISE;
+    let focused = heading_lift_max(&sty);
+    assert!(focused > rise);
+    assert_eq!(heading_lift_of(&sty, 0.0), rise);
+    assert_eq!(heading_lift_of(&sty, focused), focused);
     assert_eq!(heading_lift_of(&RowStyle::HOME, 4.0), 4.0, "a poster shelf has no rise: its live lift stands");
 }
 
 /// **Focusing a tile never changes the spacing between tiles** (owner, 2026-11, the Continue Watching
 /// stills): with focus on card `i`, every OTHER card stands at its rest rect at every point of the pop,
 /// for the stills style as for a poster shelf; only the focused card grows, and at 1.09 a 420 px tile's
-/// ~19 px a side stays inside the 28 px gap, so it never overlaps a neighbour.
+/// ~19 px a side stays inside the gap (40 px on the stills row, 28 on the strip), so it never overlaps a neighbour.
 #[test]
 fn focusing_a_tile_moves_no_other_tile_at_any_pop_progress() {
     for style in [RowStyle::STILL, RowStyle::HOME, RowStyle::EPISODE] {

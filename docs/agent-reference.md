@@ -222,8 +222,11 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   CI runs the three cargo targets plus those two as five parallel jobs
   (`host-lint`, `host-unit-default`, `host-unit-hostsim`, `host-python`, `host-python-harness`) behind an aggregator named
   `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens`
-  **twice: once on the default feature set and once with `--features hostsim`**, which is not a
-  duplicate run. The host feed seam (`play-feed/src/ffi_host.rs`) exists ONLY in the hostsim
+  **on the default feature set, and again with `--features hostsim` for the crates that declare it
+  (`HOSTSIM_SUITE`: all of `UNIT_SUITE` except `plx_net`, `plx_ui`, `plx_appkit`, `plx_screens`,
+  `plx_media_codecs`, `plx_play_uri` and `plx_playback_contract`, which have no `hostsim` cfg and run the
+  same test names in both passes; `ci/test_test_crate.py` fails if one gains the feature or a cfg)**,
+  which is not a duplicate run. The host feed seam (`play-feed/src/ffi_host.rs`) exists ONLY in the hostsim
   configuration, so every test that drives an access unit through `sf_feed` is compiled out of the
   default pass and cannot fail it — which is how the prime-livelock regression
   (`player::engine::prime_livelock_tests`) sat outside the gate entirely while 1398 default-feature
@@ -647,6 +650,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   workflow above for the full sequence). A macOS render is a preview; only the Linux workflow's
   artifact is adoptable. The film is `tests/video/feel.json`: positions and durations, never titles
   (the demo catalog's order, `tests/demo_library/catalog.json`, decides what is under each position).
+  The demo mock's rows carry the `Image[]` a modern PMS sends (`CatalogLibrary._image_list`: a stamped
+  `clearLogo` only where the catalog has a logo, an episode's or a season's naming its show's). A row with no list
+  reads as an older server's and gets the legacy `/clearLogo` lookup, a 404 for each `logo_none_approved` title
+  (Metropolis, in the Continue Watching deck), and the frame dump ends the run on a failed art request.
   It is the Home hero held under a second, `right` to the hero's Info button, `right` again (the
   carousel turns forward to the second page), `left` to Continue and `left` again (back to the first
   page), `down` onto the Continue Watching row, `right` twice to its third card and `ok` for that
@@ -746,7 +753,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `tools/build-gc.sh` now installs `.claude/worktrees/.cargo/config.toml` with
   `incremental = false`, which every cargo reads and which stops above the main checkout. Since
   2026-09-18 the same file also sets `[profile.dev] debug = "line-tables-only"` and `debug = false`
-  for third-party packages in lanes (main keeps full DWARF). A lane's target dirs are also no longer
+  for third-party packages in lanes (main keeps full DWARF for `dev`: the simulator, clippy and
+  `cargo check`). A host `cargo test` build is the `test` profile, whose line tables
+  `rust-modules/Cargo.toml` sets for every checkout, main included; a debugger on a host test needs
+  `CARGO_PROFILE_TEST_DEBUG=2`. A lane's target dirs are also no longer
   all built from scratch: in a linked worktree the Makefile seeds an ABSENT target dir with an APFS
   clone of the third-party output (registry crates, once also the build-std sysroot, about 40% of a lane's
   target bytes then) from `~/.cache/plxnative/cargo-seed/`, via `tools/cargo-seed.py`; the app crate is
@@ -1153,18 +1163,20 @@ once, in `ff::demux`: `http` reads through `stream.rs`'s raw socket, `https` thr
 **`net::range_io`** (through media's credential facade) — libcurl's *multi* interface behind a `read`/`seek`/`size`/`status`/`abort` pull
 source, so `ff.rs` never learns curl-multi mechanics. It exists because LG's reviewers have no PMS
 on their LAN and stream from the public internet, which `stream.rs` cannot reach: it speaks
-cleartext. So **libcurl is used by two modules for two jobs** — `net.rs` for plex.tv plus HTTPS PMS
-control calls, `net::range_io` for the media bytes — and each binds its own `dynlib!` table,
+cleartext. So **libcurl is used by three modules for three jobs** — `net.rs` for plex.tv plus HTTPS PMS
+control calls, `net::range_io` for the media bytes, `net::connect_only` for the WebSocket's socket —
+and each binds its own `dynlib!` table,
 which the linking section explains is load-bearing rather than tidy.
 
 **Subtitles (summary — `docs/ass-subtitles.md` is the deep-dive; `rust-modules/media/src/player/CLAUDE.md`
 has the producers).** The client draws subtitles itself; the TV's subtitle engine is unreachable in
-buffer-feed. Every TEXT subtitle renders through the one bundled libass worker (`player::ass`),
+buffer-feed. Every TEXT subtitle renders through the one bundled libass renderer (`player::ass`: a
+primary worker, plus up to two helpers while a moving cue is pipelined, each with its own libass instance),
 whether it is authored ASS/SSA, an embedded SubRip/WebVTT/mov_text/SAMI track or a sidecar `.srt`/`.vtt`:
-a text track gets a header `text_ass::header` synthesizes from the viewer's size and position picks, and
+a text track gets a header `text_ass::header` synthesizes from the viewer's size, position and colour picks, and
 its cues become ASS events (`text_ass::convert`, `ass_source::push_text`). Such a source has
 `Origin::Text`: it renders into the full logical screen, the screen lifts its bottom-anchored regions
-clear of the transport, and a change of the size or position pick restyles it. An authored ASS source is
+clear of the transport, and a change of the size, position or colour pick restyles it (a change among white and the grays does not: a gray is a draw-time tint). An authored ASS source is
 never moved. The old caption path is gone (`CaptionPlan`, `draw_subtitles`, the `SHARED.sub_cues`
 store, `active_subtitle*`): do not look for a second text renderer. Image subtitles
 (PGS/VobSub) keep their bitmap path. The one text the sidecar still draws itself is its failure notice
@@ -1225,7 +1237,14 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   eighth heartbeat, to exercise the freeze probe (`dev::freeze_on_purpose`; the trigger file is
   removed when it fires). A real freeze is a 5 s stall of the loop in the foreground: the watchdog
   (`plx_base::task::watchdog`) sends `SIGUSR2` to the main thread, `freeze_handler` in
-  `src/crashtrace.c` writes a `*** FREEZE` record, and the next launch reports it
+  `src/crashtrace.c` writes a `*** FREEZE` record, the observer thread appends
+  `freeze-at: seq=<n> leg=<word>` to the crash log (the loop leg the main thread was in, one of
+  `LoopPhase::word`'s eleven words; `LoopPhases::enter` stores seven of them and `span_leg`, called
+  by `diag::spans::span`, the other four for the span's duration (`scen`, `pump`, `land`,
+  `dframe`; restored on return or unwind), in every build, `threadcheck` or not and the frame
+  instrument armed or not, so a release report says where the loop stood, a freeze inside the
+  playback pump included; the importer joins the two lines by probe
+  number whichever came first), and the next launch reports it
   (`telemetry::crashreport`). The app is never stopped. A default (`threadcheck`) build aborts the
   stalled main thread at 2 s, before the 5 s probe, unless `/tmp/plxnative-guard` contains `log`:
   write `log` there before launching, or no freeze report is produced.
@@ -1336,7 +1355,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   pages; `metadata` reads go through `MetadataView`, which borrows from the owner (`&'a`), not
   a compatibility global or mailbox.
 - `rust-modules/base/src/dynlib.rs` — the runtime library binder (`dlopen`, by SONAME candidate list or
-  by absolute path). **Six** callers in a lab build and five in every other, each for its own
+  by absolute path). Its callers (`git grep -l 'dynlib! {' -- rust-modules` lists them), each for its own
   reason: `net.rs` binds **curl** by candidate list because its SONAME moves between releases;
   `media-codecs/src/ffi.rs` binds the **bundled FFmpeg** by absolute path because ours ships beside the binary, on
   no library search path — not because any
@@ -1348,10 +1367,12 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   must still be able to SIGN IN. That table is frozen to the oldest supported set:
   `curl_multi_poll`/`curl_multi_wakeup` resolve on the dev Mac, are absent on the dev television,
   and first appear at webOS 7.4.0 — so binding them would have emptied this table on four of the
-  nine gated releases. The sixth is `plx_base::diag::zlib` (`rust-modules/base/src/diag/zlib.rs`), which binds **one** symbol — `compress2` — in
+  nine gated releases. `net::connect_only` binds `curl_easy_send`/`curl_easy_recv`/`curl_easy_getinfo` in a
+  THIRD libcurl table, from the same candidate list, so a libcurl without them loses only the WebSocket.
+  Another is `plx_base::diag::zlib` (`rust-modules/base/src/diag/zlib.rs`), which binds **one** symbol — `compress2` — in
   a table of its own so that a television without libz degrades to an uncompressed upload rather
   than emptying anybody else's table; it exists only in a `lab-diagnostics` build, which is not the
-  default set, so an ordinary binary really does have five. (**ACB** is the same idea but not this
+  default set. (**ACB** is the same idea but not this
   module: `src/video_plane.c` is C and does its own `dlopen`.) Replaced `stub/`, which is deleted.
   `tools/fwcompat.py` grades the result;
   `docs/webos5-port.md` is the full account.
@@ -1614,6 +1635,20 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   Background notifications revoke the borrowed Wayland handles and block presentation, including
   idle keepalives and queued uploads. DID foreground reacquires the handles and invalidates the
   UI before rendering resumes. A failed or non-Wayland query leaves both handles null.
+- **The compositor multiplies our surface by its alpha, so the frame over the bound video plane is
+  straightened** (`rust-modules/gfx/src/gfx/straighten.rs`, the module doc has the measurement, the
+  buffer-age argument and the cost). The framebuffer holds PREMULTIPLIED colour over the player's
+  transparent clear; the platform composites it as `ui.rgb * ui.a + video * (1 - ui.a)`. So the
+  frame's last draw on a frame that drew anything while `Player::video_plane_bound` is `rgb / a`
+  (alpha unchanged, blending off) over the boxes of the surface the frame drew into and nowhere else
+  (every draw call in gfx declares its extent, `Extent`; a draw with none is the whole surface; at
+  most 16 disjoint boxes, because a pixel two quads cover would be divided twice), in place through `GL_ARM_shader_framebuffer_fetch` /
+  `GL_EXT_shader_framebuffer_fetch` and through a copy of the frame when the driver has neither (the
+  simulator): `present_and_swap` calls it after the dev capture's read and before the swap. A bound
+  frame must therefore stay a COMPLETE redraw from a clear: nothing may blend premultiplied colour
+  over pixels a buffer kept. The simulator stands in for the compositor (`draw_under`, straight
+  alpha, over the decoded picture or black) on those frames. The boot log's `straighten:` line says
+  which program the device took.
 - **Deploy uses a tmp+mv dance** (`plxnative.new` → `mv`) so scp succeeds while the old binary is
   still executing (avoids `ETXTBSY`). The TV drops to standby after a few idle minutes, so a deploy
   can die mid-scp — when scripting around `make deploy`, md5-compare local vs on-TV binary after
@@ -1908,9 +1943,10 @@ There **is** a host unit suite, and it is not the real gate — both halves matt
 them is how this section used to be wrong in three files at once.
 
 **Tier 1 — `make check` (host).** `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens` (a bare `cargo test --lib` runs the application crate only and skips every layer crate: `plx_base`, `plx_machine`, `plx_platform`, `plx_gfx`, `plx_net`, `plx_ui`, `plx_plex`, `plx_telemetry`, `plx_data`, `plx_session`, `plx_media`, `plx_appkit`, `plx_screens`) runs the whole
-host suite on the dev Mac, no TV involved — and `make check` runs it a SECOND time under
-`--features hostsim`, because the host feed seam only exists there and the tests that need it are
-compiled out of the first pass (see the build section). **Treat every test COUNT in this section as
+host suite on the dev Mac, no TV involved — and `make check` runs the crates that declare `hostsim`
+(`HOSTSIM_SUITE`, a subset of that list) a SECOND time under `--features hostsim`, because the host
+feed seam only exists there and the tests that need it are compiled out of the first pass (the build
+section's paragraph on the two passes says which crates are left out and why). **Treat every test COUNT in this section as
 already wrong, including the one in this sentence.** 386 measured 2026-08-13; 284 on 2026-08-02; a
 documented 59 before that, which was five times stale before anyone noticed — and the first version
 of this paragraph was stale within one *commit*, because two agents were adding tests to the same
@@ -2300,9 +2336,11 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
 - **The once/sec `loop=` heartbeat carries `pos=<s>` while frames are presenting** — the same
   `FEED_SHARED.playpos_ns` the 10s `/:/timeline` reporter posts, sampled at 1 Hz. The harness grades
   playback progress from it (`progress_secs`), because observing a 15s climb through 10s samples
-  costs ~30s of playback. It is gated on `player::is_playing()`, not `is_started()`: a direct-play
-  resume does not seed `playpos_ns` (only the transcode branch does), so the pre-roll would log a
-  0 and a 0→600 step reads as 600s of "climb" in one second — a false PASS.
+  costs ~30s of playback. It is gated on `player::is_playing()`, not `is_started()`: both resume
+  paths seed the playhead with their target before the first frame (`arm_open` for direct play,
+  `Rebase` for a transcode), so the pre-roll reads the target, and only a presented frame vouches
+  that playback got there; ungated, a resume or seek that never lands would read as playback that
+  climbed — a false PASS.
   **Beside it since 2026-08-27 is `play=<pm>`: media time advanced per WALL millisecond, in per
   mille — 1000 is the film running at speed and 670 is it crawling — and it is the ONLY field on
   that line that can see a slow film.** `fps=` counts our GL swaps and sits at 60 through a stream
@@ -2350,7 +2388,9 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   prove.
 - **Screen capture:** `tools/capture-screen.sh [out.png] [DISPLAY|VIDEO|GRAPHIC]` grabs the panel
   output. `DISPLAY` = video plane + UI composited (use this); `VIDEO`-only failing with "no
-  signal state" is itself a diagnostic that nothing is decoded on the video plane.
+  signal state" is itself a diagnostic that nothing is decoded on the video plane. `GRAPHIC` of a
+  frame over the bound video plane holds STRAIGHT colour (the straighten pass divided it by its alpha,
+  so a translucent pixel reads brighter than what the app drew); only `DISPLAY` is the picture.
 - **Perf gates:** `./tests/run.py --fps` runs the UI-tier FPS regression scenes (gates per scene in
   `tests/manifest.json`; `--fps-player` adds the player tier), asserting the app's once/sec
   heartbeat. **Six assertions in three families. Three RATE gates — and picking the wrong one is how a frozen

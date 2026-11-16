@@ -32,6 +32,10 @@ impl ScreenArg for TestArg {
 
 pub(super) struct TestHost;
 
+impl crate::registry::ScreenInputsLike for TestHost {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::empty_fixture() }
+}
+
 impl crate::registry::PlayerLike for TestHost {
     fn session<'a>(_cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession {
         plx_media::route::idle_session_for_test()
@@ -110,6 +114,32 @@ pub(super) fn drawn_stops(screen: &mut DetailScreen, context: &Cx<'_, TestHost>)
     f.into_stops()
 }
 
+#[test]
+#[cfg(feature = "devtriggers")]
+fn adjacent_cold_controlled_detail_never_initializes_native_preview_latch() {
+    const CHILD: &str = "PLX_COLD_CONTROLLED_PREVIEW_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--nocapture"])
+            .env_clear().envs(std::env::vars_os().filter(|(key, _)| !key.to_string_lossy().starts_with("GIT_")))
+            .env(CHILD, "1").output().unwrap();
+        assert!(output.status.success(), "cold child failed: {}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    let guard = install(detail(ServerId::UNSET, "cold-controlled"));
+    plx_base::devtrig::with_private_triggers(|| {
+        std::fs::write(plx_base::devtrig::path("nopreview"), "").unwrap();
+        let mut screen = bare(&guard, ServerId::UNSET, "cold-controlled");
+        let scope = plx_base::step::StepScope::enter();
+        assert!(std::panic::catch_unwind(plx_media::player::preview::enabled).is_err(), "fresh process must start with an uninitialized latch");
+        step(&mut screen, &ScreenEvent::Tick(plx_machine::machine::Tick { ms: 16, dt_us: 16_667 }), None);
+        assert!(std::panic::catch_unwind(plx_media::player::preview::enabled).is_err(), "controlled Detail must not prime the native latch");
+        drop(scope);
+    });
+    clear();
+}
+
 fn bare(_guard: &plx_base::testlock::Serial, sid: ServerId, rk: &str) -> DetailScreen {
     bare_held(sid, rk)
 }
@@ -118,6 +148,7 @@ fn bare(_guard: &plx_base::testlock::Serial, sid: ServerId, rk: &str) -> DetailS
 /// card-conformance matrix runs every harness inside `run_all`'s guard, `cards_harness`).
 pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
     let mut screen = DetailScreen {
+        caption_policy: crate::registry::captions::policy(),
         entry: EntryId(7),
         sid,
         rk: rk.into(),
@@ -227,11 +258,11 @@ fn clear() {
     // The *Also available* store outlives a page, so a test that seeded it hands the next one an
     // empty one — the addressed store cannot MIS-answer, but it can answer for an item a later
     // test happens to reuse the pair of.
-    test_store().run(plx_data::stores::metadata::MetadataCmd::AltInstall {
+    test_store().run_with_keys(plx_data::stores::metadata::MetadataCmd::AltInstall {
         sid: plx_plex::plex::ServerId::UNSET,
         rk: String::new(),
         copies: Vec::new(),
-    });
+    }, &plx_data::pms::registry_keys_for_test());
 }
 
 fn step(
@@ -371,9 +402,9 @@ fn a_reconcile_owes_the_re_read_but_moves_neither_focus_nor_scroll() {
         let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
         {
             let (state, adapter) = test_store().split_for_test();
-            plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", generation, Some(detail(sid, "show")));
+            plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, state, adapter, sid, "show", generation, Some(detail(sid, "show")));
         }
-        test_store().pump_detail();
+        test_store().pump_detail(&plx_plex::plex::ClientKeys::default(), false);
         let _ = step(&mut screen, &ScreenEvent::Tick(plx_machine::machine::Tick { ms: 16, dt_us: 16_667 }), Some(focus));
         assert_eq!(episode_key(&screen, 1, episodes::Row::Still), Some(focus), "the episode keeps its key ({phase:?})");
         assert_eq!(held(&screen), focus, "the landing leaves the focus where it was ({phase:?})");
@@ -403,9 +434,9 @@ fn a_reconcile_landing_holds_the_focus_on_an_episode_past_the_first_page() {
     let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
     {
         let (state, adapter) = test_store().split_for_test();
-        plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", generation, Some(long_season(total, &[0])));
+        plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, state, adapter, sid, "show", generation, Some(long_season(total, &[0])));
     }
-    test_store().pump_detail();
+    test_store().pump_detail(&plx_plex::plex::ClientKeys::default(), false);
     screen.sync_keys(test_store().view());
     assert_eq!(episode_key(&screen, 70, episodes::Row::Still), Some(focus), "episode 70 keeps the key it had");
     assert_eq!(held(&screen), focus, "the landing left the focus on episode 70, not on the hero");
@@ -425,7 +456,7 @@ fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
                     let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
                     if !loading {
                         let (__s, __a) = test_store().split_for_test();
-                        plx_data::metadata::land_detail_for_test(__s, __a, sid, "show", generation, None);
+                        plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, __s, __a, sid, "show", generation, None);
                     }
                     loading.then_some(generation)
                 });
@@ -459,13 +490,13 @@ fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
                 // otherwise this matrix exhausts the production reservation budget itself.
                 if let Some(generation) = pending {
                     let (__s, __a) = test_store().split_for_test();
-                    plx_data::metadata::land_detail_for_test(__s, __a, sid, "show", generation, None);
+                    plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, __s, __a, sid, "show", generation, None);
                 }
                 if requests > 0 {
                     let (__s, __a) = test_store().split_for_test();
-                    plx_data::metadata::land_detail_for_test(__s, __a, sid, "show", generation + requests, None);
+                    plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, __s, __a, sid, "show", generation + requests, None);
                 }
-                test_store().pump_detail();
+                test_store().pump_detail(&plx_plex::plex::ClientKeys::default(), false);
             }
         }
     }
@@ -497,7 +528,7 @@ fn enter_restored_promotion_survives_a_stale_terminal_before_admission_t2() {
     let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "show");
     {
         let (__s, __a) = test_store().split_for_test();
-        plx_data::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "show", generation, None);
+        plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, __s, __a, ServerId::UNSET, "show", generation, None);
     }
     assert_eq!(test_store().view().detail_request_status(ServerId::UNSET, "show"), Some(false));
 
@@ -580,7 +611,7 @@ fn cancelled_focus_restoration_still_terminates_reconciliation_on_success_or_fai
         assert!(screen.restore_intent.is_none());
         assert_eq!(screen.refresh, DetailRefreshPhase::Requested);
         let (__s, __a) = test_store().split_for_test();
-        assert_eq!(plx_data::metadata::land_detail_for_test(__s, __a, sid, "show", generation,
+        assert_eq!(plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, __s, __a, sid, "show", generation,
             success.then(|| detail(sid, "show"))), success);
         step(&mut screen, &ScreenEvent::StoreChanged(StoreId::Metadata.ord(), generation), None);
         assert_eq!(screen.refresh, DetailRefreshPhase::None);
@@ -1105,7 +1136,7 @@ fn a_return_whose_re_read_fails_puts_the_page_back_at_the_top() {
     let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
     {
         let (state, adapter) = test_store().split_for_test();
-        assert!(!plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", generation, None));
+        assert!(!plx_data::metadata::land_detail_for_test(&plx_plex::plex::ClientKeys::default(), false, state, adapter, sid, "show", generation, None));
     }
     assert!(screen.detail(test_store().view()).is_none());
     pump_restore(&mut screen);
@@ -1339,7 +1370,7 @@ fn hero_focus_follows_its_control_when_the_set_grows_under_it() {
 }
 
 #[test]
-fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
+fn hero_focus_stays_in_place_when_also_available_lands() {
     let before = hero::HeroSet { more: false,
         watchlist: true,
         go_show: false,
@@ -1360,13 +1391,13 @@ fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
     let after_index = hero::watch_index(after).unwrap();
     assert_eq!(
         after_index,
-        before_index + 1,
-        "Alt was inserted before the tail"
+        before_index,
+        "the trailing Alt pill leaves the watched control in place"
     );
     assert_eq!(
         hero::ctl_at(before, before_index).unwrap().elem(),
         hero::ctl_at(after, after_index).unwrap().elem(),
-        "the engine key follows the watch control rather than its shifted position"
+        "the engine keeps the same watched control key"
     );
 }
 
@@ -1570,7 +1601,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                     // The *Also available* control's gate is the STORE, addressed by the page's own
                     // pair — seeded here the way a landed cross-source resolve seeds it, never by
                     // opening the panel.
-                    test_store().run(plx_data::stores::metadata::MetadataCmd::AltInstall {
+                    test_store().run_with_keys(plx_data::stores::metadata::MetadataCmd::AltInstall {
                         sid,
                         rk: "hero-hit".into(),
                         copies: if alt {
@@ -1581,7 +1612,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                         } else {
                             Vec::new()
                         },
-                    });
+                    }, &plx_data::pms::registry_keys_for_test());
                     let mut screen = bare(&_guard, sid, "hero-hit");
                     let set = screen.hero_set(test_store().view());
                     assert_eq!(
@@ -1895,7 +1926,7 @@ fn an_episode_page_leads_with_the_episodes_own_still() {
         ..Default::default()
     });
     let screen = bare(&_guard, sid, "episode");
-    assert_eq!(screen.art_identity(screen.detail(test_store().view())).2, "episode-still");
+    assert_eq!(screen.art_identity(screen.detail(test_store().view())).1, "episode-still");
     clear();
 }
 
@@ -1912,7 +1943,7 @@ fn a_shows_hero_still_outranks_every_other_art() {
     });
     let _guard = install(d);
     let screen = bare(&_guard, sid, "show");
-    assert_eq!(screen.art_identity(screen.detail(test_store().view())).2, "next-still");
+    assert_eq!(screen.art_identity(screen.detail(test_store().view())).1, "next-still");
     clear();
 }
 
@@ -2136,11 +2167,11 @@ fn back_and_down_both_collapse_full_trailer_mode_and_are_a_no_op_otherwise() {
 }
 
 /// **The input arm's own claim: full-trailer mode answers a key it owns on EVERY edge, before any
-/// other arm, but a `Reveal`-mapped key only ACTS on the DOWN edge.** UP is the probe:
-/// `trailer::trailer_key` maps it to `Reveal`, which has no effect this test can mistake for
+/// other arm, but a `ToggleHud`-mapped key only ACTS on the DOWN edge.** UP is the probe:
+/// `trailer::trailer_key` maps it to `ToggleHud`, which has no effect this test can mistake for
 /// ordinary UP navigation, so a `revealed()` flip after the DOWN edge (and none after the UP edge)
 /// can only have come from this arm running — and running before whatever ordinary UP handling
-/// exists further down. (LEFT/RIGHT now map to `Scrub`, which — unlike `Reveal` — DOES act on
+/// exists further down. (LEFT/RIGHT now map to `Scrub`, which — unlike `ToggleHud` — DOES act on
 /// every edge; that contract is graded separately, by the scrub-specific tests below.)
 #[test]
 fn full_trailer_mode_swallows_every_edge_of_an_owned_key_but_acts_only_on_the_down_edge() {
@@ -2168,7 +2199,7 @@ fn full_trailer_mode_swallows_every_edge_of_an_owned_key_but_acts_only_on_the_do
     assert_eq!(handled, Handled::Yes, "the down edge must be swallowed too");
     assert!(
         screen.trailer_ctl.revealed(),
-        "the down edge must act (Reveal) — proof this ran before ordinary UP handling"
+        "the down edge must act (ToggleHud) — proof this ran before ordinary UP handling"
     );
 
     plx_media::player::preview::reset_for_test();
@@ -2213,7 +2244,7 @@ fn trailer_act_edge_with_pause(
         plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
         &mut present,
     );
-    screen.trailer_act::<TestHost>(act, edge, now, Some(0), Some(DurationFixture::DUR), preview_paused, &mut sink);
+    screen.trailer_act::<TestHost>(act, edge, now, Some(0), Some(DurationFixture::DUR), preview_paused, plx_plex::plex::session::SkipInterval::Seconds10, &mut sink);
     drop(sink);
     effects
 }
@@ -2326,17 +2357,55 @@ fn a_held_left_right_scrub_commits_a_preview_seek_on_key_up() {
     clear();
 }
 
-/// A direction key the mode keeps only REVEALS: it asks for no transport at all, which is the
-/// whole of the "no seek on a preview session" rule at this layer.
+/// Revealing the controls requests no playback operation.
 #[test]
 fn a_revealing_key_asks_for_no_transport() {
     let sid = ServerId::UNSET;
     let _guard = install(detail(sid, "show"));
     let mut screen = bare(&_guard, sid, "show");
     screen.preview_promoted = true;
-    let effects = trailer_act(&mut screen, trailer::TrailerKey::Reveal);
+    let effects = trailer_act(&mut screen, trailer::TrailerKey::ToggleHud);
     assert!(transport_reqs(&effects).is_empty());
     assert!(screen.trailer_ctl.revealed());
+    clear();
+}
+
+#[test]
+fn up_toggles_the_full_trailer_hud_without_changing_playback() {
+    let sid = ServerId::UNSET;
+    let _guard = install(detail(sid, "show"));
+    let mut screen = bare(&_guard, sid, "show");
+    screen.preview_promoted = true;
+    let mut now = 0;
+    for paused in [false, true] {
+        screen.trailer_ctl.reveal();
+        for _ in 0..60 {
+            now += 16;
+            screen.trailer_ctl.update(now, 0.016, true, paused, false);
+        }
+        assert!(screen.trailer_ctl.alpha > 0.9);
+        let effects = trailer_act_edge_with_pause(
+            &mut screen, trailer::TrailerKey::ToggleHud, Edge::Down, now, paused,
+        );
+        assert!(transport_reqs(&effects).is_empty());
+        assert!(!screen.trailer_ctl.revealed(), "Up hides a visible HUD, also while paused");
+        let mut motion = false;
+        for _ in 0..100 {
+            now += 16;
+            motion = screen.trailer_ctl.update(now, 0.016, true, paused, false);
+        }
+        assert!(screen.trailer_ctl.alpha < 0.01, "the hidden HUD stays hidden while paused");
+        assert!(!motion, "hidden controls do not keep requesting frames");
+        trailer_act_edge_with_pause(
+            &mut screen, trailer::TrailerKey::ToggleHud, Edge::Up, now, paused,
+        );
+        assert!(!screen.trailer_ctl.revealed(), "release does not reveal it again");
+        trailer_act_edge_with_pause(
+            &mut screen, trailer::TrailerKey::ToggleHud, Edge::Down, now, paused,
+        );
+        assert!(screen.trailer_ctl.revealed(), "the next Up reveals it");
+        assert!(screen.preview_promoted);
+    }
     clear();
 }
 
@@ -2727,6 +2796,7 @@ fn a_movie_trailer_disc_plays_the_extra_from_the_start() {
         plx_data::metadata::NowPlaying {
             is_episode: true,
             is_real_episode: true,
+            is_movie: false,
             title: "Show".into(),
             ep_title: "Pilot".into(),
             season: 1,
@@ -2857,6 +2927,7 @@ fn a_trailer_disc_requires_both_rk_and_part() {
         plx_data::metadata::NowPlaying {
             is_episode: true,
             is_real_episode: true,
+            is_movie: false,
             title: "Show".into(),
             ep_title: "Pilot".into(),
             season: 1,
@@ -3533,7 +3604,7 @@ const LEGACY_TEST_MAP: &[(&str, &str)] = &[
         "screens/detail/mod.rs",
     ),
     (
-        "hero_focus_survives_a_control_appearing_in_the_middle_of_the_row",
+        "hero_focus_stays_in_place_when_also_available_lands",
         "screens/detail/mod.rs",
     ),
     (
@@ -5247,7 +5318,7 @@ fn the_identity_line_paints_sm_after_the_run_and_xs_between_chips() {
     let screen = bare_held(ServerId::UNSET, "rk");
     let d = identity_detail(false);
     let m = &plx_base::fontcov::advances::ShippedMeasure;
-    let runs = plx_ui::draw_census::capture_runs(|| screen.draw_identity_line(plx_ui::Painter::recording(), &d, 300.0, m));
+    let runs = plx_ui::draw_census::capture_runs(|| screen.identity_row(plx_ui::Painter::recording(), &d, 300.0, m));
     let kind = plx_platform::i18n::msg::browse_kind_movie();
     let kind_run = runs.iter().find(|r| r.text == kind).expect("the kind label is painted");
     // The recording painter has no loaded font. Geometry comes from the same injected measure
@@ -5270,7 +5341,7 @@ fn an_empty_identity_run_leaves_no_gap_before_the_first_chip() {
     let screen = bare_held(ServerId::UNSET, "rk");
     let d = identity_detail(true);
     let m = &plx_base::fontcov::advances::ShippedMeasure;
-    let runs = plx_ui::draw_census::capture_runs(|| screen.draw_identity_line(plx_ui::Painter::recording(), &d, 300.0, m));
+    let runs = plx_ui::draw_census::capture_runs(|| screen.identity_row(plx_ui::Painter::recording(), &d, 300.0, m));
     let res = keyline_left(painted_x(&runs, "1080p").expect("resolution chip"), "1080p", m);
     assert!((res.0 - plx_ui::consts::MARGIN_X).abs() < 0.5, "no run, no gap: chip at {}", res.0);
 }
@@ -5295,7 +5366,7 @@ fn the_held_episode_still_is_left_out_of_the_page_pass_and_drawn_once_by_the_lif
     }
     const DIP: f32 = 0.918;
     let mut context = cx(&measure, Some(key.elem));
-    context.press = PressRead { scale: DIP, is_long: true, held_ms: Some(400), owner: Some(key) };
+    context.press = PressRead { scale: DIP, is_long: true, held_ms: Some(400), owner: Some(key), ..Default::default() };
 
     let mut census = |lifted: Option<FocusKey<u32>>, lift: bool| {
         plx_ui::popover::set_lift_owns(false);
@@ -5362,7 +5433,7 @@ fn the_hold_hint_over_an_episode_still_waits_while_the_season_loads() {
     let measure = plx_ui::fixture::FixtureMeasure;
     let elem = episode_key(&screen, 0, episodes::Row::Still).unwrap();
     let mut context = cx(&measure, Some(elem));
-    context.press = PressRead { scale: 1.0, is_long: false, held_ms: Some(200), owner: None };
+    context.press = PressRead { scale: 1.0, is_long: false, held_ms: Some(200), owner: None, ..Default::default() };
     let located = Some(Located::Episode(0, episodes::Row::Still));
     let hinted = |screen: &DetailScreen| screen.hint_input(&context, located).focus.is_some();
 
@@ -5666,3 +5737,6 @@ fn only_an_episode_page_gets_a_go_to_show_disc() {
         clear();
     }
 }
+
+#[path = "hero_shade_tests.rs"]
+mod hero_shade;

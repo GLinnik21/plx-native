@@ -297,6 +297,15 @@ pub fn needs_type_title(m: &TileFacts<'_>, probe: &dyn ArtProbe) -> bool {
     pick(m, probe).is_some_and(|a| a.rung == CardRung::Type)
 }
 
+/// **Does this card's art stand clean, with no bottom scrim?** A deck card's footer line stands BELOW
+/// the tile, so the art has no footer text to keep legible and stays clean, unless its title is live
+/// type standing on it ([`needs_type_title`]): type over a bare photograph needs the scrim under it,
+/// where a cover's or a composite's baked-in title does not. A card that did not opt in keeps its
+/// scrim whatever its footer.
+pub fn art_is_clean(m: &TileFacts<'_>, probe: &dyn ArtProbe) -> bool {
+    m.deck.is_some() && !needs_type_title(m, probe)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,6 +562,21 @@ mod tests {
         assert!(needs_type_title(&m, &Table(&["/c", "/k"])));
         let plain = TileFacts { deck: None, ..m };
         assert!(!needs_type_title(&plain, &Table(&["/c", "/k"])), "a surface that did not opt in draws no deck title");
+    }
+
+    /// **The art stands clean only where no live title stands on it**: a cover and a composite carry
+    /// their title in the picture (no scrim), the Type rung sets it in type (the scrim stays under it),
+    /// and a card that did not opt in keeps its scrim.
+    #[test]
+    fn the_art_keeps_its_scrim_under_a_title_in_type() {
+        let m = facts(TileKind::Movie, "/c", "/k");
+        assert!(art_is_clean(&m, &Table(&[])), "a cover names itself");
+        assert!(art_is_clean(&m, &Table(&["/c"])), "so does a composite");
+        assert!(!art_is_clean(&m, &Table(&["/c", "/k"])), "the Type rung draws live type on the art");
+        let bare = TileFacts { deck: Some(DeckArt::default()), ..m };
+        assert!(!art_is_clean(&bare, &Table(&[])), "no keys at all is the Type rung too");
+        let plain = TileFacts { deck: None, ..m };
+        assert!(!art_is_clean(&plain, &Table(&[])), "a card that did not opt in keeps its scrim");
     }
 
     /// `deck == None` is `still_key`'s old chain, exactly: still, then thumb, then art.

@@ -28,7 +28,9 @@
 //!   PLXNATIVE_SHOT_EXIT=1          end the run after an automatic capture — the headless one-shot
 //!                                  mode (an orderly stop through the app's own shutdown, never an
 //!                                  `exit()` from inside the frame: see [`maybe_capture`])
-//!   PLXNATIVE_SHOT_ALPHA=1         write RGBA (premultiplied, as the framebuffer holds it)
+//!   PLXNATIVE_SHOT_ALPHA=1         write RGBA (premultiplied, as the framebuffer holds it; a frame
+//!                                  over the bound video plane is the exception: the simulator has
+//!                                  composited it over the picture, or black, so its alpha is 1)
 //!
 //! The `shot` token on the remote FIFO captures on demand instead, which is what an interactive
 //! agent session uses: drive the UI, then ask for the frame. Those are NUMBERED (`shot-1.png`,
@@ -113,17 +115,22 @@ fn settled_due(settle: u32, after: u32, age: u32, quiet: u32, busy: bool) -> boo
     !busy && age >= after && quiet >= settle
 }
 
+fn confirm_settled(requested: bool, ready: bool, fired: &AtomicBool) -> bool {
+    if requested && !ready { fired.store(false, Ordering::Relaxed); }
+    requested && ready
+}
+
 /// Once per loop iteration, BEFORE the present decision (`app::run`): arm the settled capture when
 /// the screen has been at rest long enough. A settled screen does not present, so this invalidates
 /// to make the next frame present — and that frame, drawn from unchanged state, is the capture.
-pub(crate) fn tick(now: u32, busy: bool) {
+pub(crate) fn tick(now: u32, busy: bool, last_change_ms: u32) -> bool {
     let cfg = cfg();
-    let Some(settle) = cfg.settle else { return };
+    let Some(settle) = cfg.settle else { return false };
     if SETTLE_FIRED.load(Ordering::Relaxed) {
-        return;
+        return false;
     }
     let first = *FIRST_TICK.get_or_init(|| now);
-    let quiet = now.wrapping_sub(plx_machine::idle::last_change_ms());
+    let quiet = now.wrapping_sub(last_change_ms);
     if settled_due(settle, cfg.after, now.wrapping_sub(first), quiet, busy) {
         SETTLE_FIRED.store(true, Ordering::Relaxed);
         SETTLED.store(true, Ordering::Relaxed);
@@ -131,8 +138,9 @@ pub(crate) fn tick(now: u32, busy: bool) {
             "shot: settled ({quiet} ms at rest, {} ms after the first frame)",
             now.wrapping_sub(first)
         ));
-        plx_machine::idle::invalidate();
+        return true;
     }
+    false
 }
 
 /// Ask for a capture of the next frame. The remote-FIFO entry point (`app.rs`'s token dispatch).
@@ -147,7 +155,6 @@ pub(crate) fn request() {
     // moving. So a `shot` token sent to a UI that has come to rest — which is exactly when an
     // agent wants one, after driving and waiting — would set this flag and then wait forever for a
     // frame that never comes. Observed as a token that logged nothing at all.
-    plx_machine::idle::invalidate();
 }
 
 /// `dir/stem-N.ext`, N counting up per on-demand shot within this process.
@@ -209,10 +216,18 @@ pub(crate) fn read_flipped(vx: c_int, vy: c_int, vw: c_int, vh: c_int, ch: usize
     // opaque RGB image is the FAITHFUL screenshot, and the one that compares to a device capture,
     // where the TV's compositor has likewise already flattened the two planes.
     //
+    // **A frame over the BOUND video plane is the one exception, and it arrives already flattened.**
+    // The straighten pass (`gfx/straighten.rs`) has turned its buffer into STRAIGHT colour for the
+    // television's compositor, which multiplies it by alpha; the simulator stands in for that
+    // compositor (`run.rs`'s `composite_plane_under`, the decoded picture or black) before this
+    // read, so the RGB here is the panel and the alpha is 1. Reading the straight buffer itself
+    // would give a picture brighter than any panel shows.
+    //
     // `PLXNATIVE_SHOT_ALPHA=1` keeps it anyway, for compositing a shot over a picture of your own:
-    // the channels are then exactly what the framebuffer holds, i.e. PREMULTIPLIED, so the
-    // composite is `out = shot.rgb + picture * (1 - shot.a)` — not the straight-alpha "over" a
-    // viewer applies to a PNG, which is why this file will look wrong opened on its own.
+    // the channels are then exactly what the framebuffer holds, i.e. PREMULTIPLIED (for every frame
+    // but the bound-plane one above), so the composite is `out = shot.rgb + picture * (1 - shot.a)`
+    // — not the straight-alpha "over" a viewer applies to a PNG, which is why this file will look
+    // wrong opened on its own.
     let src_stride = w * 4;
     let dst_stride = w * ch;
     let mut rgb = vec![0u8; dst_stride * h];
@@ -241,12 +256,16 @@ pub(crate) fn read_flipped(vx: c_int, vy: c_int, vw: c_int, vh: c_int, ch: usize
 /// loading the CA bundle — SIGSEGV inside libcrypto, captured by `tools/sim-smoke.py --core-dir`.
 /// Ending the run here lets the app's own shutdown run, and the simulator's `main` then leaves
 /// without `atexit` teardown (`src/bin/sim.rs`).
+
 #[must_use = "a headless one-shot capture asks the caller to end the run"]
-pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool {
+pub(crate) fn maybe_capture(now: u32, busy: bool, last_change_ms: u32, vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool {
     let n = FRAMES.fetch_add(1, Ordering::Relaxed);
     let on_demand = ON_DEMAND.swap(false, Ordering::Relaxed);
-    let settled = SETTLED.swap(false, Ordering::Relaxed);
+    let requested = SETTLED.swap(false, Ordering::Relaxed);
     let cfg = cfg();
+    let ready = cfg.settle.is_some_and(|settle| settled_due(settle, cfg.after,
+        now.wrapping_sub(*FIRST_TICK.get_or_init(|| now)), now.wrapping_sub(last_change_ms), busy));
+    let settled = confirm_settled(requested, ready, &SETTLE_FIRED);
     if !on_demand && !settled && cfg.frame != Some(n) {
         return false;
     }
@@ -294,6 +313,47 @@ mod tests {
         assert!(!settled_due(800, 3_000, 2_999, 5_000, false), "not before AFTER");
         assert!(!settled_due(800, 0, 9_000, 799, false), "not before the quiet has elapsed");
         assert!(!settled_due(800, 0, 9_000, 5_000, true), "not while work is queued");
+    }
+
+    #[test]
+    fn fresh_input_motion_and_content_restart_the_settle_window() {
+        use plx_machine::present::{Present, PresentEvent, Provenance};
+        use plx_machine::motion::report::FrameReport;
+        for (event, motion) in [
+            (Some(PresentEvent::Damage(Provenance::Input)), false),
+            (None, true),
+            (Some(PresentEvent::Damage(Provenance::Landing(plx_machine::machine::MachineId::Cache))), false),
+        ] {
+            let mut present = Present::new();
+            present.take(0);
+            present.acknowledge(0);
+            assert!(settled_due(500, 0, 1500, 1500 - present.last_change_ms(), false));
+            if let Some(event) = event { present.note(event); }
+            present.collect(1500, FrameReport { moving: motion, page_moving: motion, ..Default::default() });
+            assert!(!settled_due(500, 0, 1500, 1500 - present.last_change_ms(), false),
+                "current-frame activity must restart quiet time before the one-shot latch is set");
+        }
+    }
+
+    #[test]
+    fn a_draw_change_rearms_the_settled_capture_instead_of_exiting() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let fired = AtomicBool::new(true);
+        assert!(!super::confirm_settled(true, false, &fired));
+        assert!(!fired.load(Ordering::Relaxed), "the next quiet interval must be allowed to schedule again");
+        fired.store(true, Ordering::Relaxed);
+        assert!(super::confirm_settled(true, true, &fired));
+        assert!(fired.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn the_loop_collects_current_frame_changes_before_testing_the_settled_shot() {
+        let source = include_str!("app/run.rs").replace("\r\n", "\n");
+        let window = source.split("fn prepare_window(").nth(1).expect("prepare window exists");
+        let collect = window.find("plx_machine::motion::report::collect_into(").expect("current frame capture");
+        let shot = window.find("crate::shot::tick(").expect("settled screenshot decision");
+        let admission = window.find("app.pages.present.take(").expect("present admission");
+        assert!(collect < shot && shot < admission, "capture must use fresh change state and schedule before admission");
     }
 
     #[test]

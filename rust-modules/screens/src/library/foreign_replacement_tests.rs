@@ -21,7 +21,14 @@ impl Host for TestHost {
     type Init = FixtureArg;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for TestHost {
+    fn screen_inputs<'a>(_cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        crate::registry::empty_fixture()
+    }
+}
+
 impl LibraryLike for TestHost {
+    fn clock_facts<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { None }
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> {
         cx.views.listing
     }
@@ -49,13 +56,13 @@ impl Publication {
     ) -> Self {
         stores.browse.borrow_mut().seed_registered_table_for_test(sids);
         let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
-        stores.capture_browse(&mut directory); // Resolve profile pins before choosing the intended section.
+        stores.capture_seeded_browse_for_test(&mut directory, sids[0]); // Seeding already resolved profile pins.
         stores.browse_run_for_test(BrowseCmd::ApplyPins(vec![(0, true), (2, true)]));
         stores.browse_run_for_test(BrowseCmd::SetCur(current));
         stores.browse.borrow_mut().seed_items_for_test(120);
         // The incoming section's shelves have settled (none): a section reveal waits on them.
         stores.browse.borrow_mut().seed_shelves_for_test(current, &[], 4);
-        let publication = stores.capture_browse(&mut directory);
+        let publication = stores.capture_seeded_browse_for_test(&mut directory, sids[0]);
         let listing = publication.listing;
         let hubs = publication.section_hubs;
         let id = listing.view().id().unwrap();

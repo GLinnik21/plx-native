@@ -1082,8 +1082,9 @@ for the tab-bar glass, at a much larger region.
 blur that can be added for image during its rendering in one pass."* That is a different cost class
 entirely — not a backdrop surface at all, so no framebuffer grab, no blur chain, no region union
 and no cadence. The tile's own fragment shader already composites artwork + rim + shadow in one
-pass (`fs_img.frag`), and `fs_hero.frag` is the precedent for folding a scrim field into that same
-pass. A band whose sampling blurs on a vertical ramp would be charged as ORDINARY FILL over the
+pass (`fs_img.frag`), and `fs_hero.frag` (since deleted, see `backdrop-blur-profiling.md` Part 5) was
+the precedent for folding a scrim field into that same pass. A band whose sampling blurs on a vertical
+ramp would be charged as ORDINARY FILL over the
 band's own pixels — §1's ~4 ns/px, times however many taps it needs — which is the term this
 document says you can plan with.
 

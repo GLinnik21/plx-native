@@ -192,17 +192,16 @@ pub fn popover_place<S: PopoverPanel, E: IndexElem>(
     let natural = s.panel_rect(measure);
     let clip = s.shown_rect(measure);
     let dx = s.motion().live_dx();
-    let placed = |rest: Rect, index: Option<u32>| Placed {
-        rect: Rect::new(rest.x + dx, rest.y, rest.w, rest.h),
-        rest_rect: rest,
-        clip,
-        index,
-    };
     if key.index() == Some(TITLE_KEY) {
-        return Some(placed(s.form().table.title_rect(natural)?, None));
+        return Some(panel_stop(s.form().table.title_rect(natural)?, clip, dx, None));
     }
     let i = s.form().index_of_key(RowKey(key.index()?))? as u32;
-    Some(placed(s.form().table.row_frame(natural, i as i32)?, Some(i)))
+    Some(panel_stop(s.form().table.row_frame(natural, i as i32)?, clip, dx, Some(i)))
+}
+
+/// Place a stop on a sliding page with its resting geometry intact for focus travel.
+pub fn panel_stop(rest_rect: Rect, clip: Rect, dx: f32, index: Option<u32>) -> Placed {
+    Placed { rect: Rect { x: rest_rect.x + dx, ..rest_rect }, rest_rect, clip, index }
 }
 
 /// The key focus seats on when the group is entered: the cursor's row, else the opening row.

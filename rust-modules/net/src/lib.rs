@@ -1,5 +1,6 @@
 //! plx_net: the application core's HTTP and byte-stream transports, and `ws`, the sans-IO RFC 6455
-//! codec the WebSocket transport will run over.
+//! codec and the WebSocket transport that runs it over libcurl's `CONNECT_ONLY` socket
+//! (`net::connect_only`).
 //!
 //! `net` is the blocking HTTPS client over the television's own libcurl (bound at run time by a
 //! SONAME candidate list through `plx_base::dynlib!`, so nothing is linked here), `curlio`

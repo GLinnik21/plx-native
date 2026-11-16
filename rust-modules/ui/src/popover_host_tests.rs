@@ -4,6 +4,52 @@
 use super::mock::{FrameCache, PIXELS};
 use super::*;
 
+// Legacy host-only cases have no typed runtime damage; production passes it explicitly.
+fn begin_frame(page_moving: bool) { super::begin_frame(page_moving, false); }
+
+#[test]
+fn typed_page_damage_refreshes_frozen_host_but_surface_damage_does_not() {
+    use plx_machine::present::{Present, PresentEvent, Provenance, ResourceKind, Scope};
+    use plx_machine::motion::report;
+    let _serial = plx_base::testlock::serial();
+    report::reset_for_test();
+    let _reset = Reset::new(false);
+    let mut present = Present::new();
+    let draw = |present: &mut Present, ms, during_draw| {
+        report::collect_into(present, ms);
+        present.take(ms);
+        super::begin_frame(false, present.page_damaged());
+        {
+            let _page = page_pass();
+            ink("page");
+        }
+        if during_draw {
+            present.note(PresentEvent::Damage(Provenance::Resource(ResourceKind::Texture)));
+        }
+        present.acknowledge(ms);
+    };
+    draw(&mut present, 0, false);
+    let captured = page_epoch();
+    present.set_scope(Scope::Surface);
+    present.note(PresentEvent::Damage(Provenance::Input));
+    draw(&mut present, 16, false);
+    assert_eq!(page_epoch(), captured, "typed surface damage keeps the frozen page");
+    {
+        plx_machine::machine::PresentHandle::of(&mut present)
+            .note(PresentEvent::Damage(Provenance::Input));
+    }
+    draw(&mut present, 32, false);
+    assert_eq!(page_epoch(), captured, "owned surface damage is not reclassified as page damage");
+    present.set_scope(Scope::Page);
+    present.note(PresentEvent::Damage(Provenance::Resource(ResourceKind::Texture)));
+    draw(&mut present, 48, false);
+    assert_eq!(page_epoch(), captured.wrapping_add(1), "typed page landing refreshes the frozen host");
+    draw(&mut present, 64, true);
+    assert!(present.page_damaged(), "swap cannot erase typed page damage raised during draw");
+    draw(&mut present, 80, false);
+    assert_eq!(page_epoch(), captured.wrapping_add(2));
+}
+
 struct Reset {
     users: u32,
     frozen: bool,
@@ -72,7 +118,8 @@ fn captured_ground_cannot_overwrite_an_embedded_alerts_foreground() {
     assert_eq!(embedded_alert_frame(false, true), expected, "opening frame");
     assert_eq!(embedded_alert_frame(true, true), expected, "first settled frame");
     assert_eq!(embedded_alert_frame(true, true), expected, "cached input frame");
-    plx_machine::idle::invalidate();
+    // Capture attribution is now supplied by the owning Present.
+    super::begin_frame(false, true);
     assert_eq!(embedded_alert_frame(true, true), expected, "host damage recapture");
 }
 
@@ -111,8 +158,8 @@ fn reconciling_card_content_invalidates_its_cached_ground_only_when_changed() {
 // term to be reached through.
 #[test]
 fn a_field_keeps_its_dither_through_every_motion() {
-    use plx_machine::idle::{frame_begin, note_spring, page_moving, present_moving, MotionScope};
-    use crate::popover::host::begin_frame;
+    use plx_machine::motion::report::{frame_begin, note_spring, page_moving, present_moving, MotionScope};
+
     let _g = plx_base::testlock::serial();
     frame_begin(1.0 / 60.0);
     begin_frame(false);
@@ -140,6 +187,19 @@ fn a_field_keeps_its_dither_through_every_motion() {
     assert!(page_moving());
     begin_frame(true);
     assert_eq!(plx_gfx::gfx::dither_for_field(700.0, 700.0), plx_gfx::gfx::DITHER_LSB, "page motion is not a field's business");
+}
+
+#[test]
+fn decorative_page_motion_does_not_count_as_layout_motion() {
+    use plx_machine::motion::report::{decorative, frame_begin, note_motion, page_layout_moving, page_moving, present_moving};
+    let _serial = plx_base::testlock::serial();
+    frame_begin(1.0 / 60.0);
+    decorative(note_motion);
+    assert!(present_moving(), "decorative pixels still need a present");
+    assert!(page_moving(), "decorative pixels belong to the page");
+    assert!(!page_layout_moving(), "decoration must not hold page quiescence");
+    note_motion();
+    assert!(page_layout_moving(), "ordinary page motion must still hold quiescence");
 }
 
 /// A caller's own panel radius, deliberately not the board's 22: the morph must END on it.
@@ -370,9 +430,12 @@ fn a_menu_glass_reads_one_host_capture_through_open_stay_and_close() {
             let want = |sharp| expected(crate::Painter::root(), panel, RAD, tex, sharp, crate::popover_glass::FACE);
             assert!(sharp != 0 && glass[0] == want(sharp)[0], "the rim reads the host snapshot");
             assert!(glass[0] != want(0)[0]);
-            // The close key, as `app.rs` delivers it: inside the panel's input scope, so its
-            // invalidate is the panel's damage, not the page's.
-            let _input = input_scope();
+            // The app captures input attribution and addresses only its owned surface.
+            assert!(!fading_only(), "premise: the close key is delivered to the open panel");
+            let mut present = plx_machine::present::Present::new();
+            present.note_in_scope(plx_machine::present::Scope::Surface,
+                plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
+            assert!(!present.page_damaged());
             pop.dismiss();
             closing = true;
         }
@@ -495,10 +558,12 @@ fn morph_rows_are_clipped_to_the_surface_and_wait_for_the_glass() {
 /// One frame of a surface over a page, as `embedded_alert_frame` draws it, with the page's ink
 /// named so a test sees WHICH page was drawn. The page raises damage (it is moving).
 fn reflow_frame(page: &'static str, moving: bool) -> Vec<&'static str> {
+    let mut present = plx_machine::present::Present::new();
     if moving {
-        plx_machine::idle::invalidate();
+        plx_machine::machine::PresentHandle::of(&mut present).note(
+            plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
     }
-    begin_frame(false);
+    super::begin_frame(moving, present.page_damaged());
     PIXELS.with(|p| p.borrow_mut().clear());
     {
         let _page = page_pass();

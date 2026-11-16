@@ -155,21 +155,31 @@ class Mode:
     def __init__(self, path, initial):
         self.path = path
         self.raw = initial
-        self._mtime = 0
+        self._stamp = None
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _signature(st):
+        return st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino
 
     def read(self) -> str:
-        try:
-            st = os.stat(self.path)
-            if st.st_mtime != self._mtime:
-                self._mtime = st.st_mtime
-                with open(self.path) as f:
-                    new = f.read().strip()
-                if new and new != self.raw:
-                    say(f"[netcond] mode -> {new}")
-                    self.raw = new
-        except FileNotFoundError:
-            pass
-        return self.raw
+        # Both relay directions share this cache. Publish its key only with valid contents;
+        # a reader must never observe a new timestamp paired with the previous mode.
+        with self._lock:
+            try:
+                st = os.stat(self.path)
+                if self._signature(st) != self._stamp:
+                    with open(self.path) as f:
+                        opened = os.fstat(f.fileno())
+                        new = f.read().strip()
+                    if new:
+                        if new != self.raw:
+                            say(f"[netcond] mode -> {new}")
+                            self.raw = new
+                        self._stamp = self._signature(opened)
+            except FileNotFoundError:
+                pass
+            return self.raw
 
     @staticmethod
     def split(raw):

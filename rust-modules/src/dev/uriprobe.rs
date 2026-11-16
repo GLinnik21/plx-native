@@ -16,7 +16,7 @@ use plx_base::task::MainThread;
 use plx_media::player::adapter::PlayerAdapter;
 use plx_media::player::uriprobe_drive::{ProbeLaunch, ProbeOpen, ProbeSettle, UriProbe, UriProbeSession};
 use plx_media::route::RouteStartAttempt;
-use plx_play_uri::uriprobe::{AbrBps, Kind, Settle, Trigger, Variant};
+use plx_play_uri::uriprobe::{AbrBps, Firmware, Kind, Settle, Trigger, Variant};
 use plx_play_uri::uriprobe_drive::{DriverConfig, UriSession as CoreSession};
 
 /// Install the probe on the player adapter, once, at boot (`compose_backends`).
@@ -56,20 +56,28 @@ struct Launch {
 
 impl ProbeLaunch for Launch {
     fn open(self: Box<Self>, input: ProbeOpen<'_>, mt: &MainThread) -> Box<dyn UriProbeSession> {
-        Box::new(UriSession::open(input, self.variant, self.bps, mt))
+        Box::new(UriSession::open(input, self.variant, self.bps, running_firmware(), mt))
     }
+}
+
+/// The firmware this set reported at boot: the one global the probe reads, read here at the IO
+/// boundary so the machine under it stays pure. All-empty (printed as `-`) when the boot probe
+/// could not read it.
+fn running_firmware() -> Firmware {
+    let info = plx_platform::tv::device::info();
+    Firmware { release: info.release.clone(), build: info.build.clone() }
 }
 
 /// One URI session held by the player adapter. The URL stays inside the independent driver.
 pub(crate) struct UriSession(CoreSession<RouteStartAttempt>);
 
 impl UriSession {
-    fn open(input: ProbeOpen<'_>, variant: Variant, bps: AbrBps, mt: &MainThread) -> UriSession {
+    fn open(input: ProbeOpen<'_>, variant: Variant, bps: AbrBps, firmware: Firmware, mt: &MainThread) -> UriSession {
         let ProbeOpen { attempt, url, transport, display, plane, log, app_id, segmented_hls, release_allowance_ms } = input;
         let kind = if segmented_hls { Kind::Hls } else { Kind::Direct };
         let config = DriverConfig {
             attempt, variant, bps, kind, url: url.to_owned(),
-            app_id, transport,
+            app_id, firmware, transport,
             sink: display,
             log, plane,
             release_allowance_ms,

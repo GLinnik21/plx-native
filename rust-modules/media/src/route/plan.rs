@@ -2,7 +2,11 @@
 //! the plain data types they need. Nothing here reads a `static mut`, touches [`super::decision`]'s
 //! `SESSION`/`PLAYER_CONTROL`/`PLAY_SLOT`/`ENCODER_CLEANUP`/`SCROBBLE_JOIN`/`TIMELINE_STOP_FENCE`/
 //! `QUALITY`, or calls `task::spawn*` — that is what makes [`build_stream`] safe to run on the
-//! resolve worker. Everything else in the former `route.rs` (session state, the synchronized
+//! resolve worker. (One bounded wait is the exception that is not named here: a handoff's queue
+//! re-read, [`build_stream`]'s `queue.refreshed` on its `beside` leg, waits up to 1.5 s through
+//! `queue_navigation` for the outgoing episode's `stopped` report, the shared stop fence, before
+//! it reads the rows; it never runs on the main thread.) Everything else in the former
+//! `route.rs` (session state, the synchronized
 //! `PlayerControl`, PMS/native I/O, the encoder/scrobble/timeline machinery) lives in
 //! [`super::decision`]. `ci/check-deps.sh`'s `wall` gate holds this file, and its child
 //! module `plan_memory.rs` (the track memory's pure helpers), to zero
@@ -477,7 +481,7 @@ pub(super) fn transcode_spec_carrying_burn<'a>(
 }
 
 
-pub use plx_plex::plex::session::{PlaybackQuality as Quality, DeckPress, DirectPlayMode, HdrOverlayBrightness, NextEpisodeMode, SkipInterval, SubtitleSize, SubtitlePosition};
+pub use plx_plex::plex::session::{PlaybackQuality as Quality, DeckPress, DirectPlayMode, HdrOverlayBrightness, NextEpisodeMode, SkipInterval, SubtitleSize, SubtitlePosition, SubtitleTone};
 
 
 /// The ladder IN ORDER, best first. The ONE place row order lives, so the picker's index mapping
@@ -1206,8 +1210,10 @@ pub enum PlayVerdict {
     /// Force Direct Play is on, and this is why the original cannot play.
     Forced(ForcedFailure),
     /// A hero/trailer preview resolved to a route that is not a direct play. A muted preview takes
-    /// only the original, so the plan is refused here, with no URL.
-    PreviewNeedsDirectPlay,
+    /// only the original, so the plan is refused here, with no URL. `reason` is the first failing
+    /// condition in [`crate::player::preview::refusal`]'s fixed order; it is typed data for the
+    /// failure report (`playback.preview_refusal`) and changes nothing about how the refusal reads.
+    PreviewNeedsDirectPlay { reason: plx_telemetry::telemetry::classes::PreviewRefusal },
     /// This build has no Feed executor and no source-specific URI qualification was granted.
     NoQualifiedBackend,
 }
@@ -1240,7 +1246,7 @@ impl PlayVerdict {
         match self {
             Self::Server(sentence, _) => Borrowed(sentence),
             Self::DirectPlayDisabled => Borrowed(msg::widgets_verdict_direct_play_disabled()),
-            Self::PreviewNeedsDirectPlay => Borrowed(msg::widgets_reason_open()),
+            Self::PreviewNeedsDirectPlay { .. } => Borrowed(msg::widgets_reason_open()),
             Self::NoQualifiedBackend => Borrowed(msg::widgets_reason_open()),
             Self::Forced(why) => match why {
                 ForcedFailure::NoOriginal => Borrowed(msg::widgets_verdict_forced_no_original()),
@@ -1452,6 +1458,11 @@ pub struct ResolveEnv {
     pub src_kbps: i64,
     /// Trailer sessions omit `continuous=1` so EOS cannot Up-Next into a sibling extra.
     pub omit_queue_continuous: bool,
+    /// The show the played EPISODE belongs to, empty for anything else (and for a caller that did not
+    /// know it). The queue is built from the show with the episode as its start, so the episodes
+    /// BEFORE it are in the queue and Previous has somewhere to go
+    /// ([`plx_plex::plex::Client::create_play_queue`]).
+    pub queue_show_rk: String,
     /// An explicit queue-item handoff reuses the existing queue instead of POSTing a new tail.
     pub queue_continuation: Option<super::queue_navigation::QueueContinuation>,
     /// Hero preview. Skip the PlayQueue entirely, and refuse anything that is not a direct play.
@@ -1609,6 +1620,12 @@ pub struct Plan {
     /// Why a PMS output was not URI-qualified, without interpreting an integration gap as a
     /// firmware refusal. Local diagnostics only; no report schema or consent field changes.
     pub pms_decline: Option<super::uri_preflight::PmsDecline>,
+    /// Why the original file was not URI-qualified: the first guard or check that said no, from the
+    /// plan's own guards through the port and the qualifier. `None` when the original was qualified
+    /// (then [`uri_original`](Self::uri_original) is set) or no qualification was tried before the
+    /// plan ended for another reason. Local diagnostics only: the event log says it once per resolve
+    /// for a viewer who opted in (`uri_decline_line`); nothing routes on it.
+    pub uri_decline: Option<super::uri_preflight::UriDecline>,
     /// A source was qualified without constructing a Feed URL or PMS encoder.
     pub uri_source_ready: bool,
     pub tsession: String,
@@ -1813,7 +1830,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             Some(plx_base::task::beside(s, "route-queue", move || {
                 env.queue_continuation.as_ref().filter(|queue| queue.matches(env.sid, rk))
                     .map(|queue| queue.refreshed(client).resolve()).unwrap_or_else(|| resolve_playqueue(
-                        client, rk, &session, &env.machine_id, !env.omit_queue_continuous,
+                        client, rk, &env.queue_show_rk, &session, &env.machine_id, !env.omit_queue_continuous,
                     ))
             }))
         } else {
@@ -1876,8 +1893,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             plan.src_fps = plan.playing.as_ref().map_or(0.0, |p| p.video_fps);
             plan.playing_fresh = env.cached_item.is_none() && plan.playing.is_some();
             let src_kbps = match (env.version, played.as_ref()) {
-                (None, Some(_)) => plan.playing.as_ref().map_or(0, |p| p.bitrate),
-                _ => env.src_kbps,
+                (None, None) => env.src_kbps,
+                _ => plan.playing.as_ref().map_or(0, |p| p.bitrate),
             };
             let reselected = env.with_selection_for_part(plan.part_id);
             let env = reselected.as_ref().unwrap_or(env);
@@ -2028,10 +2045,16 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 subtitle_sid: source_sub_stream.map_or(0, |sub| sub.id),
                 audio_contract: env.audio_enhancements };
             plan.source_selection = Some(source_selection);
-            if let Some(port) = env.uri_preflight_port.as_ref().filter(|_| env.uri_offers.original && {
-                (env.audio_sid <= 0 || source_audio.is_some())
-                    && (env.subtitle_override.unwrap_or(0) <= 0 || source_sub_stream.is_some())
-            }) {
+            // The guards that skip qualification, and the reason each leaves on the plan.
+            plan.uri_decline = match env.uri_preflight_port.as_ref() {
+                None => Some(super::uri_preflight::UriDecline::NoPort),
+                Some(_) if !env.uri_offers.original => Some(super::uri_preflight::UriDecline::NotOffered),
+                Some(_) if !((env.audio_sid <= 0 || source_audio.is_some())
+                    && (env.subtitle_override.unwrap_or(0) <= 0 || source_sub_stream.is_some())) =>
+                    Some(super::uri_preflight::UriDecline::TrackPickUnresolved),
+                Some(_) => None,
+            };
+            if let Some(port) = env.uri_preflight_port.as_ref().filter(|_| plan.uri_decline.is_none()) {
                 let source_kbps = plan.playing.as_ref().map_or(src_kbps, |p|
                     if p.bitrate > 0 { p.bitrate } else { src_kbps });
                 let (width, height) = plan.playing.as_ref().map_or((0, 0), |p| (p.width, p.height));
@@ -2077,6 +2100,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     audio_codec: source_audio.as_ref().map_or_else(|| acodec.to_owned(), |(_, codec, _)| codec.clone()),
                     audio_ordinal: source_audio.as_ref().filter(|(position, _, sid)| *position >= 0 && *sid > 0)
                         .map(|(position, _, _)| i64::from(plx_data::metadata::audio_ordinal(tracks, *position as usize))),
+                    has_multiple_audio_tracks: tracks.len() > 1,
+                    binding: plx_playback_contract::uri::Binding::Unbound,
                     subtitle_source: source_sub_stream.map(|sub| super::uri_preflight::SourceSubtitle {
                         codec: sub.codec.to_lowercase(), embedded: !sub.external }),
                     subtitle_choice,
@@ -2094,7 +2119,12 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     requires_client_subtitle,
                     preview: env.preview,
                 };
-                if let super::uri_preflight::Verdict::Known(known) = port.qualify(off, request) {
+                let verdict = port.qualify(off, request);
+                if let super::uri_preflight::Verdict::Unknown(why)
+                    | super::uri_preflight::Verdict::Refused(why) = &verdict {
+                    plan.uri_decline = Some(*why);
+                }
+                if let super::uri_preflight::Verdict::Known(known) = verdict {
                     // These describe the *source* for a possible later viewer-requested Feed
                     // conversion, from the verdicts computed above for the request. The certificate
                     // is the qualifier's: nothing here re-judges it.
@@ -2701,6 +2731,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             }
             let auto_original = decision.as_ref().is_some_and(|d| d.original);
             let adaptive = auto_uses_hls(playback_quality, auto_original);
+            // Whether a direct play was on offer BEFORE the override just below sets `directplay` false
+            // for HLS. The preview gate's reason needs it: after the override `directplay` is false for
+            // every Auto-quality HLS pick, so the gate's own inputs cannot tell a preview Auto sent to
+            // HLS from one the server would have transcoded anyway.
+            let direct_play_offered = directplay;
             if adaptive {
                 allowed = flavors_allowed(
                     link,
@@ -2858,11 +2893,13 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 plan.memory_note = true;
             }
             log_memory(memory_unshown.is_some());
-            if env.preview && !crate::player::preview::accepts_direct_play(directplay, !part.is_empty(), adaptive) {
-                crate::player::log("preview: refused — not a direct play");
-                plan.url.clear();
-                plan.verdict = Some(PlayVerdict::PreviewNeedsDirectPlay);
-                return plan;
+            if env.preview {
+                if let Some(reason) = crate::player::preview::refusal(directplay, direct_play_offered, !part.is_empty(), adaptive) {
+                    crate::player::log(&format!("preview: refused — not a direct play ({})", reason.code()));
+                    plan.url.clear();
+                    plan.verdict = Some(PlayVerdict::PreviewNeedsDirectPlay { reason });
+                    return plan;
+                }
             }
             if (directplay || rk.is_empty()) && !part.is_empty()
                 && (rk.is_empty() || !pms_uri_possible || env.feed_original_eligible) {
@@ -3181,11 +3218,25 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             .map(|item| resolve_candidate(new_plan(), Some(item), None, true))
             .filter(|plan| plan.uri_original.is_some());
         let mut plan = first_original.unwrap_or_else(|| resolve_candidate(new_plan(), playing, played, false));
+        if let Some(line) = uri_decline_line(env.uri_engine, &plan) {
+            crate::player::log(&line);
+        }
         if let Some(queue) = queue {
             land_queue(&mut plan, queue.finish());
         }
         plan
     })
+}
+
+/// The event-log line that says why a viewer's Experimental engine did not take this play's original,
+/// `uri: original declined (<reason>)`: only for a viewer who opted in (Standard says nothing, there
+/// being nothing to explain), and only when the plan carries no URI original. The reason is the
+/// plan's own ([`Plan::uri_decline`]); the line names no title, host, URL or token.
+pub(super) fn uri_decline_line(engine: plx_plex::plex::session::UriEngine, plan: &Plan) -> Option<String> {
+    if engine != plx_plex::plex::session::UriEngine::On || plan.uri_original.is_some() {
+        return None;
+    }
+    plan.uri_decline.map(|why| format!("uri: original declined ({})", why.log_name()))
 }
 
 /// The play queue's answer joins the plan. Destructured whole, so a field `QueueInfo` gains cannot
@@ -3207,6 +3258,21 @@ fn land_queue(plan: &mut Plan, q: QueueInfo) {
 /// the retranscode landing all ask it.
 pub(super) fn video_copy_fps(contract: &plx_plex::plex::EncodeContract, src_fps: f64) -> f64 {
     if contract.remux && !contract.no_video_copy { src_fps } else { 0.0 }
+}
+
+/// The Load audio declaration as the pipeline names it.
+///
+/// The demuxer feeds DTS core bytes for every spelling of the DTS family (the extension is
+/// stripped before the ES leaves), so the declaration maps all of PMS's spellings — `dca`
+/// (DTS core), `dca-ma` / `dca_ma` (DTS-HD MA), `dts_ma`, `dtshd` — to the one name the
+/// start guard's payload table knows: `dts`. Declaring a PMS spelling as-is (a no-pick play
+/// of a DTS title carries `src_acodec` = `dca`) would fail that table and refuse the whole
+/// play at Load. Case is normalised to the table's lowercase on the way through.
+pub(super) fn audio_declaration(codec: &str) -> String {
+    match codec.to_ascii_lowercase().as_str() {
+        "dts" | "dca" | "dca-ma" | "dca_ma" | "dts_ma" | "dtshd" => "dts".to_string(),
+        other => other.to_string(),
+    }
 }
 
 /// The direct-play plan: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
@@ -3233,7 +3299,30 @@ fn fill_direct_plan(
     // straight-from-Home path too, which never ran load_detail)
     let fps = plan.playing.as_ref().map(|p| p.video_fps).unwrap_or(0.0);
     plan.vcodec = vcodec.to_string();
-    plan.acodec = achosen.clone();
+    // Direct play feeds the FILE's own elementary stream, so the Load audio declaration must
+    // name the codec of the BYTES actually fed. Two different bytes, two different names:
+    //
+    // * **No pick** (`aidx < 0`): the file's DEFAULT audio is fed, and its ground-truth codec is
+    //   `src_acodec` — NOT the PMS track's `achosen`. They agree for an untouched original, but
+    //   diverge when the file is a remux/transcode of a different codec than PMS reports: a
+    //   FileFlows AAC 5.1 cut of an E-AC3 7.1 source, where PMS still lists the track as `eac3`.
+    //   Declaring `eac3` ("AC3 PLUS" / audio/x-eac3) while the pipeline feeds AAC frames
+    //   misconfigures the audio ES, and with audioSync the video sink slaves to the dead audio
+    //   clock and stalls — the "one title kills playback" defect.
+    //
+    // * **A track picked** (`aidx >= 0`): the demuxer is told to feed THAT stream (the container
+    //   ordinal below), so the file's default is a different, unfed track — naming its codec
+    //   (the `truehd` default of a lossless cut whose AC3/EAC3 sibling was picked) declares a
+    //   codec the pipeline cannot configure and the start guard refuses the whole play. The
+    //   pick's own PMS codec is what is fed. A stale pick codec (the same eac3-over-AAC shape,
+    //   one that the user chose by hand) is caught by the demuxer's guard plus the one-shot
+    //   probe reload, exactly as a no-pick declaration is.
+    let declared = if aidx >= 0 {
+        achosen
+    } else {
+        plan.src_acodec.clone()
+    };
+    plan.acodec = audio_declaration(&declared);
     plan.fps = fps;
     // Set here for the direct play, which feeds the FILE's own elementary stream; a server remux
     // that copies the video sets the same pair after its `/decision` (`copied_video_dv`).
@@ -3259,17 +3348,26 @@ fn fill_direct_plan(
     // play as the conservative rule, since a wrong declaration is worse than a missing one.
     // Nothing is lost visibly: an undeclared Atmos plays as ordinary E-AC3, which is what it does
     // today.
+    // The immersive node raises the pipeline's Atmos mode for the E-AC3 it is about to decode,
+    // so it is valid only when the FED bytes are E-AC3. The PMS track's `has_atmos` flag is stale
+    // metadata once the file is a non-Atmos remux/transcode (the FileFlows AAC case): an AAC feed
+    // must never carry the `immersive:ATMOS` node, or it wedges the audio ES the same way the codec
+    // mismatch does. Gate on the file's codec (`src_acodec`) being E-AC3, AND the picked track's
+    // Atmos flag — both must agree.
     plan.immersive = plan
-        .playing
-        .as_ref()
-        .and_then(|p| {
-            if aidx >= 0 {
-                p.audio.get(aidx as usize)
-            } else {
-                p.audio.iter().find(|a| a.selected)
-            }
-        })
-        .is_some_and(|a| a.has_atmos());
+        .src_acodec
+        .eq_ignore_ascii_case("eac3")
+        && plan
+            .playing
+            .as_ref()
+            .and_then(|p| {
+                if aidx >= 0 {
+                    p.audio.get(aidx as usize)
+                } else {
+                    p.audio.iter().find(|a| a.selected)
+                }
+            })
+            .is_some_and(|a| a.has_atmos());
     if plan.immersive {
         crate::player::log("audio: dolby atmos — declaring contents.immersive=ATMOS");
     }

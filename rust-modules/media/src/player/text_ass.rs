@@ -7,8 +7,8 @@
 //!   the cue's numpad alignment. It ports the semantics of the `sub_text` the bespoke caption draw
 //!   used (kept in `tests.rs` as the oracle) and then escapes the result for libass, which reads `\N`, `\n`, `\h`, `\{` and `\}` as
 //!   escapes, so a literal backslash must never be allowed to form one by accident.
-//! - [`header`]: the synthesized `[Script Info]`/`[V4+ Styles]` for the viewer's size and position
-//!   ([`TextStyle`](super::text_style::TextStyle)), one style per numpad alignment so the position
+//! - [`header`]: the synthesized `[Script Info]`/`[V4+ Styles]` for the viewer's size, position and
+//!   colour picks ([`TextStyle`](super::text_style::TextStyle); a gray is a draw-time tint, not part of it), one style per numpad alignment so the position
 //!   of a cue is a property of its Style field.
 //! - [`script_from_srt`] / [`script_from_vtt`]: a whole sidecar file to ASS event lines, with the
 //!   newest-wins clip applied ([`clip_newest_wins`]) and times written as `H:MM:SS.cc`.
@@ -206,6 +206,9 @@ struct Parser {
     /// Italic until the end of this line: an MPL2 line that began with `/`, or MicroDVD `{y:i}`
     /// (uppercase `{Y:i}` covers the cue).
     line_italic: bool,
+    /// A `<font color>` that is not white is in force (until the next `</font>`, which resets the
+    /// colour to the style's): a white inside it is a real choice and stays an override.
+    colour_open: bool,
 }
 
 impl Parser {
@@ -216,6 +219,7 @@ impl Parser {
             in_rt: false,
             line_start: true,
             line_italic: false,
+            colour_open: false,
         };
         let chars: Vec<char> = text.chars().collect();
         let mut i = 0;
@@ -347,9 +351,20 @@ impl Parser {
                 "s" if self.dialect == TextDialect::Srt => self.style_tag(&name, closing),
                 "font" if self.dialect == TextDialect::Srt => {
                     if closing {
-                        self.push(Piece::Tag("\\c".into()));
+                        if std::mem::take(&mut self.colour_open) {
+                            self.push(Piece::Tag("\\c".into()));
+                        }
                     } else if let Some(bgr) = font_color(body) {
-                        self.push(Piece::Tag(format!("\\c&H{bgr}&")));
+                        // Explicit white is the file's default ink spelled out (many downloaded
+                        // files wrap every cue in it): as an override it would beat the viewer's
+                        // colour pick (the style's primary colour), so it is not one, unless
+                        // another colour is open around it.
+                        if bgr != WHITE_BGR {
+                            self.colour_open = true;
+                        }
+                        if self.colour_open {
+                            self.push(Piece::Tag(format!("\\c&H{bgr}&")));
+                        }
                     }
                 }
                 "rt" if self.dialect == TextDialect::WebVtt => self.in_rt = !closing,
@@ -415,6 +430,9 @@ fn entity(chars: &[char]) -> (Piece, usize) {
     }
     (Piece::Ch('&'), 1)
 }
+
+/// `<font color>` white, as the `BBGGRR` [`font_color`] returns.
+const WHITE_BGR: &str = "FFFFFF";
 
 /// The `BBGGRR` of a `<font color=…>` attribute, if it names a colour.
 fn font_color(body: &str) -> Option<String> {
@@ -580,9 +598,10 @@ pub fn header(style: &TextStyle) -> String {
     );
     for (align, margin_v) in style_margins(style) {
         h.push_str(&format!(
-            "Style: {name},{STYLE_FONT},{fs},&H00FFFFFF,&H00FFFFFF,&H26000000,&HFF000000,\
+            "Style: {name},{STYLE_FONT},{fs},{primary},{primary},&H26000000,&HFF000000,\
              0,0,0,0,100,100,0,0,1,2,0,{align},{margin},{margin},{margin_v},-1\n",
             name = style_name(align),
+            primary = text_style::primary_colour(style.tone),
         ));
     }
     h.push_str("\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");

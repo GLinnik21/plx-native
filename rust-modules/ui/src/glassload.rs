@@ -67,7 +67,7 @@
 //!
 //! ## The transition prototype (`/tmp/plxnative-navblur`)
 //!
-//! The route change is a DIP today (see [`crate::nav`]): the outgoing page fades to
+//! The route change is a DIP (see [`crate::containers::transition::PageDip`]): the outgoing page fades to
 //! `theme::SURFACE_APP`, the route flips at the floor, the incoming page fades up. The design
 //! question is whether that grey trough can be a BLUR of the outgoing page with the tab bar's
 //! glass sitting on top of it. Armed, this module holds the page at full alpha and cross-fades a
@@ -416,9 +416,7 @@ impl Dial {
         self.navblur_cadence = cad;
         self.navblur_pin = pin;
         self.publish();
-        // Pinned, the slab is not a transition at all, so the page must keep its own fade. Only the
-        // riding form replaces the dip.
-        crate::nav::set_blur_dissolve(!pin);
+        // The app reads blur_dissolve() at boot and passes presentation explicitly.
         plx_base::eventlog::log(&format!(
             "NAVBLUR armed mode={mode} cadence={cad} pinned={pin}"
         ));
@@ -439,6 +437,11 @@ impl Dial {
     #[inline]
     fn navblur_on(&self) -> bool {
         self.navblur > 0
+    }
+
+    /// App-owned prototype policy: pinned slabs do not replace the page dip.
+    pub fn blur_dissolve(&self) -> bool {
+        self.navblur_on() && !self.navblur_pin
     }
 
     /// Is anything in this module armed? Nothing below runs — and no heartbeat field appears —
@@ -469,13 +472,13 @@ pub fn armed() -> bool {
 /// cached snapshot), and the dial's experimental cadence may invalidate its scratch source.
 /// This synthetic benchmark is independent of the live surface registry.
 impl Dial {
-    pub fn prepare(&mut self, now_ms: u32) {
+    pub fn prepare(&mut self, now_ms: u32, present: &mut plx_machine::present::Present) {
         if !self.armed() {
             return;
         }
         // A dial run is a perf measurement: it must keep presenting whatever the idle gate thinks.
         // `wake` rather than `invalidate` — nothing here claims the PAGE's pixels changed.
-        plx_machine::idle::wake();
+        present.note(plx_machine::present::PresentEvent::Wake);
         let Some((hold_ms, len)) = self.sweep.as_ref().map(|s| (s.hold_ms, s.steps.len())) else {
             return;
         };
@@ -636,14 +639,14 @@ fn nav_capsule() -> Rect {
 
 impl Dial {
     /// Draw the blurred route transition, if one is in flight. Returns whether it drew.
-    pub fn draw_nav_blur(&mut self) -> bool {
+    pub fn draw_nav_blur(&mut self, nav: crate::screen::NavPresentation) -> bool {
         if !self.navblur_on() || plx_gfx::gfx::blur_source_pass() {
             return false;
         }
         let amount = if self.navblur_pin {
             1.0
         } else {
-            crate::nav::blur_amount()
+            nav.blur_amount
         };
         if amount <= 0.002 {
             return false;

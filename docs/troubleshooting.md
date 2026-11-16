@@ -7,7 +7,7 @@ This page is about what to do when something doesn't work.
 
 PlxNative needs **webOS 4.0 or newer** (webOS 3.4.3 has also been tested and works, and 3.9.3
 plays direct play from a source build at or after
-[`60f99c7`](https://github.com/GLinnik21/plx-native/commit/60f99c7)). Older
+[`60f99c7`](https://github.com/plxnative/plx-native/commit/60f99c7)). Older
 firmware may not be able to start it at all, so the tile just does nothing when you select it. See [Will it work on my
 television?](../README.md#will-it-work-on-my-television) for the full picture, including sets
 that start but hit a specific known problem.
@@ -24,7 +24,7 @@ expiry.
 
 This used to happen and is fixed: PlxNative now keeps your sign-in in its own private storage, and
 uses the TV's key manager service where the platform provides one. If you still see it on the
-current release, [open an issue](https://github.com/GLinnik21/plx-native/issues/new/choose)
+current release, [open an issue](https://github.com/plxnative/plx-native/issues/new/choose)
 with your TV model and webOS platform release. If the sign-in screen shows a failure, also use
 **Details → Send report** and quote the **Report ID** it then shows in your issue, as described in
 [Can't sign in, or no servers are found](#cant-sign-in-or-no-servers-are-found). A report on its
@@ -58,8 +58,8 @@ network addresses.
 
 A report carries no name or account, so I can only find yours by its Report ID. Please quote the
 **Report ID** when you ask for help, either in [Discussions >
-Q&A](https://github.com/GLinnik21/plx-native/discussions/categories/q-a) or in a [GitHub
-issue](https://github.com/GLinnik21/plx-native/issues/new/choose), together with your TV model and
+Q&A](https://github.com/plxnative/plx-native/discussions/categories/q-a) or in a [GitHub
+issue](https://github.com/plxnative/plx-native/issues/new/choose), together with your TV model and
 webOS platform release.
 
 ## Playback reports `jail_missing_rtkmem`
@@ -134,7 +134,7 @@ cleared when the TV restarts, because `/tmp` is.
    **com.beb.plxnative.nightly**.
 4. Click a log file to select it, then click the **Download** button in the toolbar and choose
    where to save it on your computer.
-5. Attach the downloaded files to your [GitHub issue](https://github.com/GLinnik21/plx-native/issues/new/choose).
+5. Attach the downloaded files to your [GitHub issue](https://github.com/plxnative/plx-native/issues/new/choose).
    If a file is large, compress it first.
 
 If a file is missing, the app has not run since the TV last restarted, or you are looking in the
@@ -205,10 +205,22 @@ decodes AV1 or VP9 and you want to try it:
    linked from [plxnative.com/nightly/latest.json](https://plxnative.com/nightly/latest.json).
 2. Play the AV1 or VP9 item.
 3. If it still doesn't play, [collect the event log](#collecting-logs) before you reopen the app
-   and attach it to a [GitHub issue](https://github.com/GLinnik21/plx-native/issues/new/choose).
+   and attach it to a [GitHub issue](https://github.com/plxnative/plx-native/issues/new/choose).
    The log's `devcaps:` line says `av1=true` (or `vp9=true`) when the TV reports that decoder, and
    `av1=false` (`vp9=false`) when it doesn't, which tells us right away whether the TV or the app is
    at fault.
+
+## Audio is slow, deep or drifting out of sync on a soundbar
+
+With a soundbar or receiver on HDMI (e)ARC, usually on Dolby Atmos or E-AC3 titles, the sound comes
+out slow and low-pitched, drifts out of sync with the picture, and sometimes starts with a loud
+crack. It may hit some starts of a title and not others, and the TV's own speakers play the same
+title fine.
+
+In the TV's **Settings > Sound > Advanced Settings > Digital Sound Out**, choose **Auto** or **Pass
+Through** instead of **PCM**, then start the title again. With PCM the TV decodes the Atmos track
+itself and sends PCM over (e)ARC; that path is LG's, and the app cannot change it. The report this
+comes from is [issue #1351](https://github.com/plxnative/plx-native/issues/1351).
 
 ## Other playback failures
 
@@ -221,7 +233,7 @@ logs](#collecting-logs) before you reopen the app. Include:
 - whether the item was Direct Play or a chosen quality;
 - what happened after you pressed Play.
 
-Report it in [GitHub Issues](https://github.com/GLinnik21/plx-native/issues/new/choose).
+Report it in [GitHub Issues](https://github.com/plxnative/plx-native/issues/new/choose).
 
 If you're sharing an old event log, know that log redaction has improved across releases — a log
 written by a much older PlxNative version can still show an address that a current release would

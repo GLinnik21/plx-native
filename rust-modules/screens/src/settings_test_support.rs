@@ -35,7 +35,7 @@ pub fn cx_with<'a>(
     directory: plx_data::stores::browse::DirectoryView<'a>,
 ) -> Cx<'a, InnerHost> {
     Cx {
-        views: directory.into(),
+        views: crate::registry::InnerViews::new(directory, crate::registry::publication_fixture()),
         tick: Tick::default(),
         measure: &MEASURE,
         press: PressRead::default(),
@@ -44,7 +44,7 @@ pub fn cx_with<'a>(
     }
 }
 
-pub fn cx(focus: Option<FocusKey<u32>>) -> Cx<'static, InnerHost> {
+pub fn cx<'a>(focus: Option<FocusKey<u32>>) -> Cx<'a, InnerHost> {
     cx_with(focus, plx_data::stores::browse::DirectoryView::empty_for_test())
 }
 
@@ -59,8 +59,28 @@ pub fn step(
     let mut present = Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
     let c = cx(focus);
+    let _step = plx_base::step::StepScope::enter();
     let _ = <RouteSurface as Machine<InnerHost>>::step(s, &ev, &c, &mut fx);
     out
+}
+
+/// Execute the storage effects of this fixture host, after leaving the screen step.
+pub fn execute_storage_effects(out: &[Stamped<InnerHost>]) {
+    for effect in out {
+        match &effect.fx {
+            Fx::App(AppFx::Preferences(crate::registry::PreferenceCmd::AutoSignIn { on, reply })) => {
+                let (on, reply) = (*on, reply.clone());
+                plx_plex::plex::session::queue_update_settled(move |current|
+                    (current.auto_sign_in() != on).then(|| current.with_auto_sign_in(on)),
+                    move |saved| { let _ = reply.send(saved); });
+            }
+            Fx::App(AppFx::Session(plx_session::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. })) => {
+                let account = plx_plex::plex::grant::account_key(&plx_plex::plex::session::peek().account_token);
+                plx_plex::plex::grant::record(&account, machine_id, *choice).expect("fixture grant answer");
+            }
+            _ => {}
+        }
+    }
 }
 
 pub fn name(s: &RouteSurface) -> &'static str {
@@ -69,6 +89,7 @@ pub fn name(s: &RouteSurface) -> &'static str {
 
 pub struct DrawProbe {
     pub(super) id: u32,
+    pub(super) wake: bool,
     pub(super) seen: std::rc::Rc<std::cell::RefCell<Vec<(u32, plx_ui::screen::NavPresentation)>>>,
 }
 
@@ -96,6 +117,7 @@ impl Screen<InnerHost> for DrawProbe {
     fn crumb(&self, _: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> { None }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
+        if self.wake { f.request_frame(); }
         self.seen.borrow_mut().push((self.id, plx_ui::screen::NavPresentation {
             page_alpha: f.page_alpha,
             chrome_alpha: f.chrome_alpha,
@@ -131,6 +153,7 @@ pub fn seated_scratch_session(tag: &str) -> plx_plex::plex::session::TempSession
 }
 
 pub fn multi_user_session(tag: &str) -> plx_plex::plex::session::TempSession {
+    plx_plex::plex::grant::reset_for_test();
     let t = plx_plex::plex::session::TempSession::new(tag);
     plx_plex::plex::session::save(&plx_plex::plex::session::Session {
         client_id: "cid-test".into(),

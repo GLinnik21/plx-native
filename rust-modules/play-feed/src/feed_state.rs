@@ -87,6 +87,18 @@ impl Drop for AuBox {
     }
 }
 
+/// A Segment seek remains unresolved after Play until the sink and clock both follow its AUs.
+pub struct SegmentLanding {
+    pub(crate) epoch: u32,
+    pub(crate) play: Option<SegmentPlay>,
+}
+
+pub(crate) struct SegmentPlay {
+    pub position_tick: u32,
+    pub displayed: u32,
+    pub waiting_since: Option<u32>,
+}
+
 /// MAIN-THREAD-CONFINED. No worker thread ever names an Engine field.
 pub struct Engine {
     /// Physical callback mailbox for this feed executor; common owns its lifetime and reset.
@@ -115,6 +127,7 @@ pub struct Engine {
     pub rebase_drops: i32,
     pub seek_armed_at: u32, // SDL-ticks when the current in-place seek was armed (stuck watchdog)
     pub seek_retries: i32,  // cheap reopen-retries attempted before escalating to a full reload
+    pub segment_landing: Option<SegmentLanding>,
     pub flushed: bool,      // Kodi m_flushed: set on an in-place seek flush; the first
     // post-flush keyframe triggers setTimeToDecode + sendSegmentEvent (the fresh GStreamer
     // segment a bare flush() omits), then clears this.
@@ -127,6 +140,10 @@ pub struct Engine {
     /// first since the open or seek (`FEED_SHARED.first_audio_pts`) — once Starfish accepted it.
     /// `None` until then; reset with `max_fed_audio_pts`. See `audio_lead_in`.
     pub audio_start_fp: Option<i64>,
+    /// Audio AUs the stale-ahead guard dropped since this open or seek (`audio_stale_ahead`);
+    /// reset with `max_fed_audio_pts`. Counts what the `a#` feed counter cannot (it counts
+    /// accepted AUs), and paces the event-log line that reports the drops.
+    pub audio_stale_dropped: u32,
     /// Added to the sink pts of every audio AU of THIS Load (`audio_sink_pts`): the active sound
     /// output's lead on a `liblxa` or 2018 stack, the one lead of the `lgaudiosink` stack
     /// (`pcm_output_lead`), or the dev override, when the Load declared `"audio":"PCM"`, 0 for a

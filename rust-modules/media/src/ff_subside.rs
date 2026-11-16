@@ -237,8 +237,7 @@ fn open_side(cfg: &ReadCfg, stop: &Arc<SideStop>) -> Result<(Job, Option<SideTra
     let tracks = SideTracks::new(job.tracks());
     let count = tracks.len();
     job.configure(tracks.decode_plan());
-    let mut budget = crate::player::ass::FontBudget::default();
-    let manifest = job.manifest(crate::player::ass_source::MAX_HEADER_BYTES, |len| budget.admit(len));
+    let manifest = job.manifest(crate::player::ass_source::MAX_HEADER_BYTES);
     let generation = begin_sources(cfg.url, tracks.kinds(), manifest);
     plx_base::eventlog::log(&format!("subside: open tracks={count} ordinal={} kbps={}", cfg.ordinal, cfg.kbps));
     if cfg.ordinal >= count { return Err(RunEnd::Unusable); }

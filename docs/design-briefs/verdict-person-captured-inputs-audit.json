@@ -1,0 +1,644 @@
+{
+  "schema": 1,
+  "status": "Historical checkpoint, superseded by verdict-person-final-boundary-audit.json; previous unchanged PersonPort/refused claims do not describe the final authority boundary.",
+  "as_of": "2026-11-11T19:23:03.315Z",
+  "root": "C:/Users/gleb_/Developer/plx-native",
+  "checkout_heads": {
+    "root": "379b239ab489929c0bda9c5d13ab1c7b28e03afe",
+    "integration": "da0c4f4f09e22b9a37ab59e61c111c6d15dd4e7c",
+    "sans_io": "d06ed4f5ca0bd43e68df4c030d80cb6b76d28ce6"
+  },
+  "prior_sync_audit": "docs/design-briefs/verdict-runtime-correction-sync-32e-audit.json",
+  "root_cause": "Person sources used ambient registered slots while admission used captured keys. Open/pump/roster synchronization also consulted ambient session-watch/session, tape/control, provider and dev seeds, allowing one captured pass to be redirected. Stable pumps copied roster/page/session strings.",
+  "contract": "PersonInput borrows the ONE complete ClientKeys roster, settled Arc<Session>, visible generation, controlled/provider decisions and dev seeds. Host capture precedes Open and each pump. All registered slots survive missing keys; origin appended once. Stable logical pumps compare borrowed instance/grant and identity strings. Only admitted jobs copy request data. Fixed refusal settles same turn. Inputless Open/pump refuse explicitly; Close/Reset/view edits remain independent.",
+  "scope": [
+    "rust-modules/data/src/person.rs",
+    "rust-modules/data/src/person/captured_inputs_tests.rs",
+    "rust-modules/data/src/stores/person.rs",
+    "rust-modules/data/src/stores/mod.rs",
+    "rust-modules/data/src/stores/held_keys_tests.rs",
+    "rust-modules/data/src/search_account_scope_tests.rs",
+    "rust-modules/src/app/bridge.rs",
+    "rust-modules/src/app/adapters/stores.rs",
+    "rust-modules/screens/src/person.rs",
+    "rust-modules/screens/src/person/cards_harness.rs",
+    "rust-modules/screens/src/filmography.rs",
+    "ci/allow/globals/data-person.txt",
+    "tests/test_harness.py",
+    "docs/sans-io.md",
+    "docs/sans-io-guide.md",
+    "docs/design-briefs/verdict-person-captured-inputs-source-oracle.py",
+    "docs/design-briefs/verdict-person-captured-inputs-audit.json"
+  ],
+  "shared_regions": {
+    "rust-modules/data/src/stores/mod.rs": [
+      "Stores::person_run",
+      "Stores::person_pump"
+    ],
+    "rust-modules/src/app/bridge.rs": [
+      "PersonCapture and impl",
+      "Bridge.person_capture field/default",
+      "Bridge::person_run",
+      "Bridge::person_pump"
+    ],
+    "rust-modules/src/app/adapters/stores.rs": [
+      "tests::person_requests",
+      "tests::a_person_job_whose_client_is_still_held_is_admitted_and_answered_once"
+    ],
+    "rust-modules/data/src/search_account_scope_tests.rs": [
+      "Person caller suffix only; ROOT edit supplied by other data lane"
+    ],
+    "rust-modules/screens/src/person.rs": [
+      "test-host run_person_fixture helper and existing Person Open fixture calls only"
+    ],
+    "tests/test_harness.py": [
+      "PINNED_LEDGER_TOTALS.globals only"
+    ]
+  },
+  "counts": {
+    "before": {
+      "person_globals": 11,
+      "workers": 4,
+      "globals": 54,
+      "forks": 62,
+      "fxlanes": 11
+    },
+    "person_only_checkpoint": {
+      "person_globals": 0,
+      "workers": 4,
+      "globals": 43,
+      "forks": 62,
+      "fxlanes": 11
+    },
+    "current_combined_globals": 19,
+    "other_lane_delta": "Remaining data lane independently retires 24 sites (43 -> 19); it owns combined repinning/mirroring."
+  },
+  "verification": {
+    "reproducer_before_fix": {
+      "code": 1,
+      "summary": [
+        "FAIL: test_inputless_machine_pump_is_refused (__main__.PersonCapturedInputs)\r",
+        "FAIL: test_machine_has_no_ambient_inputs (__main__.PersonCapturedInputs) (spelling='server_ids(')\r",
+        "FAIL: test_machine_has_no_ambient_inputs (__main__.PersonCapturedInputs) (spelling='server_roster_gen(')\r",
+        "FAIL: test_machine_has_no_ambient_inputs (__main__.PersonCapturedInputs) (spelling='session::peek')\r",
+        "FAIL: test_machine_has_no_ambient_inputs (__main__.PersonCapturedInputs) (spelling='session_watch')\r",
+        "FAIL: test_machine_has_no_ambient_inputs (__main__.PersonCapturedInputs) (spelling='tape::active(')\r",
+        "FAIL: test_machine_has_no_ambient_inputs (__main__.PersonCapturedInputs) (spelling='tape::credits(')\r",
+        "FAIL: test_machine_has_no_ambient_inputs (__main__.PersonCapturedInputs) (spelling='devtrig::read(')\r",
+        "FAIL: test_machine_has_no_ambient_inputs (__main__.PersonCapturedInputs) (spelling='discover::person_profile_refused(')\r",
+        "FAIL: test_machine_has_no_ambient_inputs (__main__.PersonCapturedInputs) (spelling='discover::person_credits_refused(')\r",
+        "FAIL: test_roster_uses_registered_slots_not_only_active_keys (__main__.PersonCapturedInputs)\r",
+        "Ran 3 tests in 0.004s\r",
+        "FAILED (failures=11)\r"
+      ]
+    },
+    "final_person_source_cases": [
+      {
+        "base": "",
+        "exit": 0,
+        "summary": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.006s\r\n\r\nOK"
+      },
+      {
+        "base": ".worktrees/sans_io-6a4bcd6a42/",
+        "exit": 0,
+        "summary": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.006s\r\n\r\nOK"
+      },
+      {
+        "base": ".worktrees/verdict-integration/",
+        "exit": 0,
+        "summary": "......\r\n----------------------------------------------------------------------\r\nRan 6 tests in 0.006s\r\n\r\nOK"
+      }
+    ],
+    "full_7_case_oracle": "PASS: all 7 native source cases in ROOT and both mirrors, including actual ledger/pin equality after combined 19-global repin.",
+    "regressions": {
+      "file": "rust-modules/data/src/person/captured_inputs_tests.rs",
+      "count": 10,
+      "added_before_fix": 8,
+      "added_followup": 2,
+      "cases": [
+        "captured roster and settled identity beat conflicting ambient values",
+        "origin missing/unregistered and duplicate appears once",
+        "same capture stable generation/revision/source and identity string pointers",
+        "roster-only/no-client slots retained; token refresh preserves loaded page",
+        "suspended session defers jobs and supplied recovery emits",
+        "controlled mode ignores session edges and uses supplied credit seed",
+        "fixed provider refusal settled in same turn with no job/retry",
+        "profile edge stale answer cannot clear new claim",
+        "retained borrowed publication immune to another owner pump",
+        "new grant rebuilds while live retoken keeps loaded shelves"
+      ]
+    },
+    "unchanged_existing_assertions": true,
+    "unchanged_typed_contracts": [
+      {
+        "symbol": "PersonReq",
+        "unchanged": true
+      },
+      {
+        "symbol": "PersonPort",
+        "unchanged": true
+      },
+      {
+        "symbol": "emit",
+        "unchanged": true
+      },
+      {
+        "symbol": "finish_person_job",
+        "unchanged": true
+      },
+      {
+        "symbol": "person_addr",
+        "unchanged": true
+      },
+      {
+        "symbol": "land",
+        "unchanged": true
+      },
+      {
+        "symbol": "refused",
+        "unchanged": true
+      },
+      {
+        "symbol": "apply_landing",
+        "unchanged": true
+      }
+    ],
+    "syntax": [
+      {
+        "path": "rust-modules/data/src/person.rs",
+        "backend": "tree-sitter",
+        "findings": []
+      },
+      {
+        "path": "rust-modules/data/src/person/captured_inputs_tests.rs",
+        "backend": "tree-sitter",
+        "findings": []
+      },
+      {
+        "path": "rust-modules/data/src/stores/person.rs",
+        "backend": "tree-sitter",
+        "findings": []
+      },
+      {
+        "path": "rust-modules/data/src/stores/mod.rs",
+        "backend": "tree-sitter",
+        "findings": []
+      },
+      {
+        "path": "rust-modules/data/src/stores/held_keys_tests.rs",
+        "backend": "tree-sitter",
+        "findings": []
+      },
+      {
+        "path": "rust-modules/data/src/search_account_scope_tests.rs",
+        "backend": "tree-sitter",
+        "findings": []
+      },
+      {
+        "path": "rust-modules/src/app/bridge.rs",
+        "backend": "tree-sitter",
+        "findings": []
+      },
+      {
+        "path": "rust-modules/src/app/adapters/stores.rs",
+        "backend": "tree-sitter",
+        "findings": []
+      },
+      {
+        "path": "rust-modules/screens/src/person.rs",
+        "backend": "tree-sitter",
+        "findings": [
+          {
+            "line": 1034,
+            "column": 14,
+            "endLine": 1034,
+            "endColumn": 16,
+            "snippet": "\"\"",
+            "missing": false
+          }
+        ]
+      },
+      {
+        "path": "rust-modules/screens/src/person/cards_harness.rs",
+        "backend": "tree-sitter",
+        "findings": []
+      },
+      {
+        "path": "rust-modules/screens/src/filmography.rs",
+        "backend": "tree-sitter",
+        "findings": []
+      }
+    ],
+    "syntax_note": "Only existing c\"\" literal tree-sitter finding in unchanged Screens draw_shelf_heading; no task syntax findings.",
+    "diff_check": "PASS ROOT, sans_io, verdict-integration task scope",
+    "staged_or_committed": false,
+    "final_full_oracles": [
+      {
+        "base": "",
+        "exit": 0,
+        "summary": [
+          "Ran 7 tests in 0.167s\r",
+          "OK\r"
+        ]
+      },
+      {
+        "base": ".worktrees/sans_io-6a4bcd6a42/",
+        "exit": 0,
+        "summary": [
+          "Ran 7 tests in 0.171s\r",
+          "OK\r"
+        ]
+      },
+      {
+        "base": ".worktrees/verdict-integration/",
+        "exit": 0,
+        "summary": [
+          "Ran 7 tests in 0.172s\r",
+          "OK\r"
+        ]
+      }
+    ],
+    "rust_runtime": "Not run by this lane: parent reserved WSL Cargo target lease."
+  },
+  "mirrors": [
+    {
+      "base": ".worktrees/sans_io-6a4bcd6a42/",
+      "checks": [
+        {
+          "path": "rust-modules/data/src/person.rs",
+          "scope": "file",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/data/src/person/captured_inputs_tests.rs",
+          "scope": "file",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/data/src/stores/person.rs",
+          "scope": "file",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/data/src/stores/held_keys_tests.rs",
+          "scope": "file",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/screens/src/person/cards_harness.rs",
+          "scope": "file",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/screens/src/filmography.rs",
+          "scope": "file",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/src/app/adapters/stores.rs",
+          "scope": "file",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/data/src/stores/mod.rs",
+          "scope": "person_run",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/data/src/stores/mod.rs",
+          "scope": "person_pump",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/src/app/bridge.rs",
+          "scope": "PersonCapture",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/src/app/bridge.rs",
+          "scope": "person_run",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/src/app/bridge.rs",
+          "scope": "person_pump",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/screens/src/person.rs",
+          "scope": "run_person_fixture",
+          "equal": true
+        }
+      ]
+    },
+    {
+      "base": ".worktrees/verdict-integration/",
+      "checks": [
+        {
+          "path": "rust-modules/data/src/person.rs",
+          "scope": "file",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/data/src/person/captured_inputs_tests.rs",
+          "scope": "file",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/data/src/stores/person.rs",
+          "scope": "file",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/data/src/stores/held_keys_tests.rs",
+          "scope": "file",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/screens/src/person/cards_harness.rs",
+          "scope": "file",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/screens/src/filmography.rs",
+          "scope": "file",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/src/app/adapters/stores.rs",
+          "scope": "file",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/data/src/stores/mod.rs",
+          "scope": "person_run",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/data/src/stores/mod.rs",
+          "scope": "person_pump",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/src/app/bridge.rs",
+          "scope": "PersonCapture",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/src/app/bridge.rs",
+          "scope": "person_run",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/src/app/bridge.rs",
+          "scope": "person_pump",
+          "equal": true
+        },
+        {
+          "path": "rust-modules/screens/src/person.rs",
+          "scope": "run_person_fixture",
+          "equal": true
+        }
+      ]
+    }
+  ],
+  "mirroring_policy": "Exclusive files copied only after exact baseline equality guard. Shared source files updated by named symbols/field hunks; Root census/UI compatibility, prior sync audits, .gitignore/tmp/.empryo and other lane work retained. StoreSessionCapture is the other data lane shared helper: provisional versions mirrored for Person, final tenure/household refresh belongs to its owner.",
+  "runtime_test_ready": {
+    "data_package": "plx_data",
+    "data_filters": [
+      "person::",
+      "stores::held_keys_tests::person_holds_its_shelves_for_that_person_only",
+      "forty_one_servers_are_asked_by_search_and_by_a_person_page"
+    ],
+    "screens_package": "plx_screens",
+    "screens_filters": [
+      "person::",
+      "filmography::"
+    ],
+    "app_filters": [
+      "app::person_admission_tests::",
+      "app::person_lifecycle_tests::",
+      "app::store_admission_tests::",
+      "app::viewstate_directory_policy_tests::"
+    ],
+    "not_run": [
+      "Rust/Cargo/Clippy",
+      "stage/build/replay/full gates"
+    ],
+    "reason": "Parent explicitly retained WSL Cargo target lease; Cargo availability is not a blocker."
+  },
+  "source_refs": [
+    {
+      "path": "rust-modules/data/src/person.rs",
+      "line": 337
+    },
+    {
+      "path": "rust-modules/data/src/person.rs",
+      "line": 777
+    },
+    {
+      "path": "rust-modules/data/src/person.rs",
+      "line": 1230
+    },
+    {
+      "path": "rust-modules/src/app/bridge.rs",
+      "line": 1791
+    }
+  ],
+  "observed_blob_oids": [
+    {
+      "path": "rust-modules/data/src/person.rs",
+      "git_blob": "f674b6ec25382779facbfb714098cadec4a9517a"
+    },
+    {
+      "path": "rust-modules/data/src/person/captured_inputs_tests.rs",
+      "git_blob": "02da4e3c5e0494872383a2fc57c60b1e8e98a389"
+    },
+    {
+      "path": "rust-modules/data/src/stores/person.rs",
+      "git_blob": "cca472b159513911426be8653de3f6b687b1d70c"
+    },
+    {
+      "path": "rust-modules/data/src/stores/mod.rs",
+      "git_blob": "3f4d5a865e2be9345146c900539478b349d47f6b"
+    },
+    {
+      "path": "rust-modules/data/src/stores/held_keys_tests.rs",
+      "git_blob": "0f85adffd4143a02654a223b866a7bb3149f176a"
+    },
+    {
+      "path": "rust-modules/data/src/search_account_scope_tests.rs",
+      "git_blob": "87fb0b80239f0dfef7ab214b856f242fc4d796ef"
+    },
+    {
+      "path": "rust-modules/src/app/bridge.rs",
+      "git_blob": "8633bb1ec8d9d79e21205fd213270cc5f11038a9"
+    },
+    {
+      "path": "rust-modules/src/app/adapters/stores.rs",
+      "git_blob": "a5fc9b1883e12902e7a28f596a01228665551203"
+    },
+    {
+      "path": "rust-modules/screens/src/person.rs",
+      "git_blob": "f3367a90836f534be2e225b223ecfcf23514f798"
+    },
+    {
+      "path": "rust-modules/screens/src/person/cards_harness.rs",
+      "git_blob": "53638eb3d14f49ff235f8483835dd7288119e878"
+    },
+    {
+      "path": "rust-modules/screens/src/filmography.rs",
+      "git_blob": "8f36d02d6c124374007497d53f4b314a62b2e249"
+    },
+    {
+      "path": "ci/allow/globals/data-person.txt",
+      "git_blob": "c797378c1256f4f936b59ff1214f6b94ef682e30"
+    },
+    {
+      "path": "tests/test_harness.py",
+      "git_blob": "2f8373fe6c3af7df62d040f3f6f975bb433e36a8"
+    },
+    {
+      "path": "docs/sans-io.md",
+      "git_blob": "6bec9d787c192d11a9e54cc8981d5b490d73d495"
+    },
+    {
+      "path": "docs/sans-io-guide.md",
+      "git_blob": "595d3a8a1a6b783d6ecf293e4cc9eef15329992f"
+    },
+    {
+      "path": "docs/design-briefs/verdict-person-captured-inputs-source-oracle.py",
+      "git_blob": "777d26a82bdec930b83793ae287403bc95cc7f44"
+    },
+    {
+      "path": ".worktrees/sans_io-6a4bcd6a42/rust-modules/data/src/person.rs",
+      "git_blob": "f674b6ec25382779facbfb714098cadec4a9517a"
+    },
+    {
+      "path": ".worktrees/sans_io-6a4bcd6a42/rust-modules/data/src/person/captured_inputs_tests.rs",
+      "git_blob": "02da4e3c5e0494872383a2fc57c60b1e8e98a389"
+    },
+    {
+      "path": ".worktrees/sans_io-6a4bcd6a42/rust-modules/data/src/stores/person.rs",
+      "git_blob": "cca472b159513911426be8653de3f6b687b1d70c"
+    },
+    {
+      "path": ".worktrees/sans_io-6a4bcd6a42/rust-modules/data/src/stores/mod.rs",
+      "git_blob": "20e5426ac88cab6a5e5297a78e93631f18562a42"
+    },
+    {
+      "path": ".worktrees/sans_io-6a4bcd6a42/rust-modules/data/src/stores/held_keys_tests.rs",
+      "git_blob": "0f85adffd4143a02654a223b866a7bb3149f176a"
+    },
+    {
+      "path": ".worktrees/sans_io-6a4bcd6a42/rust-modules/data/src/search_account_scope_tests.rs",
+      "git_blob": "87fb0b80239f0dfef7ab214b856f242fc4d796ef"
+    },
+    {
+      "path": ".worktrees/sans_io-6a4bcd6a42/rust-modules/src/app/bridge.rs",
+      "git_blob": "7a4f56b07789a3b2c757b31740e3d4af3841f313"
+    },
+    {
+      "path": ".worktrees/sans_io-6a4bcd6a42/rust-modules/src/app/adapters/stores.rs",
+      "git_blob": "a5fc9b1883e12902e7a28f596a01228665551203"
+    },
+    {
+      "path": ".worktrees/sans_io-6a4bcd6a42/rust-modules/screens/src/person.rs",
+      "git_blob": "074e78eb88bd46903695b031f4a93bcf4192fada"
+    },
+    {
+      "path": ".worktrees/sans_io-6a4bcd6a42/rust-modules/screens/src/person/cards_harness.rs",
+      "git_blob": "53638eb3d14f49ff235f8483835dd7288119e878"
+    },
+    {
+      "path": ".worktrees/sans_io-6a4bcd6a42/rust-modules/screens/src/filmography.rs",
+      "git_blob": "8f36d02d6c124374007497d53f4b314a62b2e249"
+    },
+    {
+      "path": ".worktrees/sans_io-6a4bcd6a42/ci/allow/globals/data-person.txt",
+      "git_blob": "c797378c1256f4f936b59ff1214f6b94ef682e30"
+    },
+    {
+      "path": ".worktrees/sans_io-6a4bcd6a42/tests/test_harness.py",
+      "git_blob": "2f8373fe6c3af7df62d040f3f6f975bb433e36a8"
+    },
+    {
+      "path": ".worktrees/sans_io-6a4bcd6a42/docs/sans-io.md",
+      "git_blob": "3de256453599fd1206c3a85a3dfeaba319652fe1"
+    },
+    {
+      "path": ".worktrees/sans_io-6a4bcd6a42/docs/sans-io-guide.md",
+      "git_blob": "e204ca23036c0bb2f99e072aaa757d3087bbbbf7"
+    },
+    {
+      "path": ".worktrees/sans_io-6a4bcd6a42/docs/design-briefs/verdict-person-captured-inputs-source-oracle.py",
+      "git_blob": "777d26a82bdec930b83793ae287403bc95cc7f44"
+    },
+    {
+      "path": ".worktrees/verdict-integration/rust-modules/data/src/person.rs",
+      "git_blob": "f674b6ec25382779facbfb714098cadec4a9517a"
+    },
+    {
+      "path": ".worktrees/verdict-integration/rust-modules/data/src/person/captured_inputs_tests.rs",
+      "git_blob": "02da4e3c5e0494872383a2fc57c60b1e8e98a389"
+    },
+    {
+      "path": ".worktrees/verdict-integration/rust-modules/data/src/stores/person.rs",
+      "git_blob": "cca472b159513911426be8653de3f6b687b1d70c"
+    },
+    {
+      "path": ".worktrees/verdict-integration/rust-modules/data/src/stores/mod.rs",
+      "git_blob": "20e5426ac88cab6a5e5297a78e93631f18562a42"
+    },
+    {
+      "path": ".worktrees/verdict-integration/rust-modules/data/src/stores/held_keys_tests.rs",
+      "git_blob": "0f85adffd4143a02654a223b866a7bb3149f176a"
+    },
+    {
+      "path": ".worktrees/verdict-integration/rust-modules/data/src/search_account_scope_tests.rs",
+      "git_blob": "87fb0b80239f0dfef7ab214b856f242fc4d796ef"
+    },
+    {
+      "path": ".worktrees/verdict-integration/rust-modules/src/app/bridge.rs",
+      "git_blob": "ca39bd84e89a1176343e2028a38ae0b82441bec7"
+    },
+    {
+      "path": ".worktrees/verdict-integration/rust-modules/src/app/adapters/stores.rs",
+      "git_blob": "a5fc9b1883e12902e7a28f596a01228665551203"
+    },
+    {
+      "path": ".worktrees/verdict-integration/rust-modules/screens/src/person.rs",
+      "git_blob": "074e78eb88bd46903695b031f4a93bcf4192fada"
+    },
+    {
+      "path": ".worktrees/verdict-integration/rust-modules/screens/src/person/cards_harness.rs",
+      "git_blob": "53638eb3d14f49ff235f8483835dd7288119e878"
+    },
+    {
+      "path": ".worktrees/verdict-integration/rust-modules/screens/src/filmography.rs",
+      "git_blob": "8f36d02d6c124374007497d53f4b314a62b2e249"
+    },
+    {
+      "path": ".worktrees/verdict-integration/ci/allow/globals/data-person.txt",
+      "git_blob": "c797378c1256f4f936b59ff1214f6b94ef682e30"
+    },
+    {
+      "path": ".worktrees/verdict-integration/tests/test_harness.py",
+      "git_blob": "2f8373fe6c3af7df62d040f3f6f975bb433e36a8"
+    },
+    {
+      "path": ".worktrees/verdict-integration/docs/sans-io.md",
+      "git_blob": "8668b374e7c13a4f32cc6f7e7e00ca600bb6bea1"
+    },
+    {
+      "path": ".worktrees/verdict-integration/docs/sans-io-guide.md",
+      "git_blob": "e204ca23036c0bb2f99e072aaa757d3087bbbbf7"
+    },
+    {
+      "path": ".worktrees/verdict-integration/docs/design-briefs/verdict-person-captured-inputs-source-oracle.py",
+      "git_blob": "777d26a82bdec930b83793ae287403bc95cc7f44"
+    }
+  ],
+  "final_verification_at": "2026-11-11T19:25:56.489Z",
+  "observed_blob_oids_at": "2026-11-11T19:26:55.058Z"
+}

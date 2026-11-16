@@ -287,6 +287,15 @@ pub struct Preferences {
     pub setting: Vec<Setting>,
 }
 
+/// An entry in a library item's artwork list.
+#[derive(Deserialize)]
+pub struct MetadataImage {
+    #[serde(rename = "type", default, deserialize_with = "de_str")]
+    kind: String,
+    #[serde(default, deserialize_with = "de_str")]
+    url: String,
+}
+
 /// The movie/show/season/episode item. Missing fields default (Plex omits optionals).
 #[derive(Deserialize, Default)]
 pub struct Metadata {
@@ -417,6 +426,8 @@ pub struct Metadata {
     pub parent_thumb: String,
     #[serde(default)]
     pub art: String,
+    #[serde(rename = "Image", default)]
+    pub images: Option<Vec<MetadataImage>>,
     #[serde(rename = "grandparentThumb", default)]
     pub grandparent_thumb: String,
     #[serde(rename = "Media", default)]
@@ -526,6 +537,23 @@ pub struct ListingFacts {
 }
 
 impl Metadata {
+    /// The versioned clearLogo URL for this title, or its show for a season or episode.
+    /// An image list without a usable logo answers `Some("")`. A response without an image list
+    /// answers `None` so callers can still try the legacy clearLogo endpoint.
+    pub fn clear_logo(&self) -> Option<&str> {
+        let images = self.images.as_ref()?;
+        let title_rk = match self.kind.as_str() {
+            "episode" => &self.grandparent_rating_key,
+            "season" => &self.parent_rating_key,
+            _ => &self.rating_key,
+        };
+        Some(images.iter().find_map(|image| {
+            (image.kind == "clearLogo"
+                && super::artwork::stamped_logo_rk(&image.url) == Some(title_rk.as_str()))
+                .then_some(image.url.as_str())
+        }).unwrap_or_default())
+    }
+
     /// The caption facts of this item ([`ListingFacts`]).
     pub fn listing_facts(&self) -> ListingFacts {
         let some = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_owned());

@@ -84,7 +84,7 @@ concurrency:
 jobs:
   measure:
     name: Time the build on a macOS runner (${{ matrix.leg }})
-    if: github.repository == 'GLinnik21/plx-native' && github.ref_name == github.event.repository.default_branch
+    if: github.repository == 'plxnative/plx-native' && github.ref_name == github.event.repository.default_branch
     runs-on: macos-latest
     strategy:
       # A leg that fails must not cancel the other: its rows are still worth having.
@@ -175,7 +175,7 @@ jobs:
   gate:
     name: Time the whole host gate on a macOS runner
     # Not for a narrowed manual run (`only`), which asked for something else.
-    if: github.repository == 'GLinnik21/plx-native' && github.ref_name == github.event.repository.default_branch && !inputs.only
+    if: github.repository == 'plxnative/plx-native' && github.ref_name == github.event.repository.default_branch && !inputs.only
     runs-on: macos-latest
     permissions:
       contents: read

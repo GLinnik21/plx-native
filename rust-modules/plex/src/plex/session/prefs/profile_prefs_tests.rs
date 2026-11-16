@@ -6,7 +6,7 @@ use super::super::{
     DolbyVisionMode, InstantDpadSeeking, UriEngine, current_seat, AudioEnhancementsPref, CurrentProfile, DeckPress, DeckPressPref, UnderPosters, DetailPart, DetailParts, DirectPlayMode, DirectPlayModePref,
     HdrOverlayBrightness, HdrOverlayBrightnessPref, NextEpisodeMode, NextEpisodeModePref, PlaybackQuality, QualityPref, Seat, Session, SkipInterval, SkipIntervalPref,
     SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TempSession,
-    TrailerAutoplayPref, UserRef,
+    TrailerAutoplayPref, HudEndTimePref, UserRef,
 };
 use super::profile_prefs::*;
 use super::{Fallback, Parse, Preferences, Scope, Setting, DESCRIPTORS};
@@ -65,6 +65,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         under_posters: Some(UnderPosters { title: true, details: DetailParts::of(&[DetailPart::VideoQuality]), show_details: DetailParts::SHOW_DEFAULT, sort_value: false }),
         audio_enhancements: Some(AudioEnhancements { boost_dialog: true, normalize_loudness: true }),
         trailer_autoplay: Some(false),
+        hud_end_time: Some(false),
         hud_selection: Some("com.example.hud".into()),
     };
     let fields: BTreeSet<String> = serde_json::to_value(&full).unwrap().as_object().unwrap().keys().cloned().collect();
@@ -73,8 +74,10 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         .filter(|d| d.fallback == Fallback::LegacyInstallKey)
         .map(|d| d.key.to_string())
         .collect();
-    assert_eq!(rows.len(), 18, "every per-profile setting has a legacy fallback");
+    assert_eq!(rows.len(), 19, "every per-profile setting has a legacy fallback");
     assert_eq!(fields, rows, "ProfilePrefs and the rows with a legacy fallback drifted");
+    assert!(effective::<HudEndTimePref>(&Preferences::default(), None), "a profile with no pick defaults the end-time label on");
+    assert!(!effective::<HudEndTimePref>(&Preferences::default(), Some(&full)), "a profile's explicit OFF overrides the default");
     assert!(DESCRIPTORS.iter().filter(|d| d.fallback == Fallback::LegacyInstallKey).all(|d| d.scope == Scope::Profile));
 }
 
@@ -169,13 +172,22 @@ fn own_value_then_legacy_then_default() {
     let seat = Seat::Seated { user: "kid".into(), stamp: STAMP.into() };
     assert_eq!(stored_effective::<SubtitleSizePref>(&fresh, &seat), SubtitleSize::Medium, "a fresh install reads the default");
     assert_eq!(stored_effective::<QualityPref>(&fresh, &seat), PlaybackQuality::Original, "an absent quality is Original");
+    assert!(stored_effective::<HudEndTimePref>(&fresh, &seat), "a fresh profile shows the end-time estimate by default");
 
     let mut tv = Session::default();
     SubtitleSizePref::put(&mut tv.prefs, SubtitleSize::Large);
+    tv.prefs.hud_end_time = Some(false);
     assert_eq!(stored_effective::<SubtitleSizePref>(&tv, &seat), SubtitleSize::Large, "a profile with no record reads the TV's value");
+    assert!(!stored_effective::<HudEndTimePref>(&tv, &seat), "a profile with no own pick reads the legacy OFF value");
 
-    tv.prefs.profile_prefs = prefs_with(json!([record("kid", STAMP, json!({ "subtitle_size": "small" }))])).profile_prefs;
+    tv.prefs.profile_prefs = prefs_with(json!([
+        record("kid", STAMP, json!({ "subtitle_size": "small", "hud_end_time": true })),
+        record("sibling", STAMP, json!({ "hud_end_time": false })),
+    ])).profile_prefs;
     assert_eq!(stored_effective::<SubtitleSizePref>(&tv, &seat), SubtitleSize::Small, "its own value wins");
+    assert!(stored_effective::<HudEndTimePref>(&tv, &seat), "kid's own ON overrides the legacy OFF");
+    let sibling = Seat::Seated { user: "sibling".into(), stamp: STAMP.into() };
+    assert!(!stored_effective::<HudEndTimePref>(&tv, &sibling), "sibling's independent OFF is not shared");
     assert_eq!(stored_effective::<SubtitlePositionPref>(&tv, &seat), SubtitlePosition::Low, "an unpicked setting still falls back");
     let other = Seat::Seated { user: "sibling".into(), stamp: STAMP.into() };
     assert_eq!(stored_effective::<SubtitleSizePref>(&tv, &other), SubtitleSize::Large, "another profile's pick is not seen");

@@ -250,7 +250,7 @@ pub struct AccountMenuScreen {
     form: FormTable<Action, Action, Infallible>,
     /// Rebuild on visible session landings as well as the initial mount. Focus keys name
     /// actions, not row positions, so a landing cannot turn an armed Settings press into Sign out.
-    session_watch: plx_plex::plex::session::VisibleSessionWatch,
+    session_watch: Option<(u64, bool, u32)>,
     /// The Session's published switch verdict the rows were built on
     /// ([`plx_session::auth::owner::SessionSnapshot::switch_refused`]) — a change rebuilds them.
     switch_refused: bool,
@@ -276,15 +276,14 @@ impl AccountMenuScreen {
     }
 
     /// Capture a settled session without blocking storage.
-    fn build(&mut self, switch_refused: bool) {
+    fn build(&mut self, inputs: &crate::registry::ScreenInputs, switch_refused: bool) {
         if self.built {
             return;
         }
-        let Some(sess) = plx_plex::plex::session::peek_settled() else { return };
+        let Some(sess) = inputs.settled_session() else { return };
         self.built = true;
         let keep = self.form.selected_id().copied();
-        let cur = plx_plex::plex::session::current();
-        let acc = sess.account(cur.as_ref());
+        let acc = sess.account(inputs.profile.user.as_ref());
         self.switch_refused = switch_refused;
         let (header, form) = account_form(&AccountInputs::of(&acc, switch_refused));
         self.header = header;
@@ -343,22 +342,24 @@ impl<H: AuthLike> Machine<H> for AccountMenuScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         let switch_refused = H::auth(cx).0.switch_refused;
+        let inputs = H::screen_inputs(cx);
         match ev {
             ScreenEvent::Mount => {
                 // the origin is the chip's LIVE drawn rect, handed in before every draw (`opener_rect`)
                 self.popover.open_from(None);
-                self.build(switch_refused)
+                self.build(inputs, switch_refused)
             }
             // However the surface was dismissed (BACK, a pick, the host's own press), the panel
             // runs the morph back into the chip.
             ScreenEvent::Closing => self.popover.dismiss(),
             ScreenEvent::Tick(tick) => {
                 self.popover.update(tick.dt());
-                if self.session_watch.changed() || switch_refused != self.switch_refused {
+                if self.session_watch != Some(inputs.session_key()) || switch_refused != self.switch_refused {
+                    self.session_watch = Some(inputs.session_key());
                     self.built = false;
                 }
                 if !self.built {
-                    self.build(switch_refused);
+                    self.build(inputs, switch_refused);
                     if self.built { fx.invalidate(plx_machine::present::Provenance::Landing(plx_machine::machine::MachineId::Session)); }
                 }
                 self.form.table.sel = cx
@@ -488,7 +489,7 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
         let r = self.frame(measure);
         // The glass and the rows ride the MORPH (`Popover::panel` / `morph_rows`), not the
         // container's appear: the panel begins and ends as the chip it grows from.
-        let m = self.popover.content_painter_on(f.painter, 0.0);
+        let m = self.popover.content_painter_on(f.painter.alpha(f.nav_page_alpha), 0.0);
         self.popover.panel(m, r, PANEL_RAD, f.underlay, plx_ui::widgets::Ground::Menu);
         plx_ui::profile::phase("glass.foreground", || {
             self.popover.morph_rows(m, r, PANEL_RAD, |m| self.form.table.draw(m, r, measure));
@@ -576,13 +577,17 @@ mod tests {
         type Fx = AppFx;
         type Msg = crate::registry::AppMsg;
         type Elem = u32;
-        type Views<'a> = plx_session::auth::SessionRead<'a>;
+        type Views<'a> = (plx_session::auth::SessionRead<'a>, &'a crate::registry::ScreenInputs);
         type Init = super::super::family::NoInit;
         type Memory = ();
     }
-    impl AuthLike for MenuHost {
+    impl crate::registry::ScreenInputsLike for MenuHost {
+    fn screen_inputs<'a>(cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { cx.views.1 }
+}
+
+impl AuthLike for MenuHost {
         fn auth<'a>(cx: &Cx<'a, Self>) -> plx_session::auth::SessionRead<'a> {
-            cx.views
+            cx.views.0
         }
     }
 
@@ -607,7 +612,7 @@ mod tests {
     fn cx_of(read: &plx_session::auth::owner::SessionSnapshot) -> Cx<'_, MenuHost> {
         use plx_machine::machine::{InputOwner, Tick};
         Cx::<MenuHost> {
-            views: read.read(),
+            views: (read.read(), crate::registry::publication_fixture()),
             tick: Tick::default(), measure: &plx_ui::fixture::FixtureMeasure,
             press: Default::default(), focus: Default::default(),
             owner: InputOwner::Entry(EntryId(0)),
@@ -770,7 +775,7 @@ mod tests {
             ..Default::default() }];
         plx_plex::plex::session::install_transient_for_test(true);
         let mut menu = AccountMenuScreen::new(EntryId(0));
-        menu.build(false);
+        menu.build(&crate::registry::capture_fixture(), false);
         assert!(!menu_rows(&menu).contains(&Action::SignOut));
         plx_plex::plex::session::save(&saved);
         tick(&mut menu, &published(false));
@@ -784,13 +789,13 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let _session = plx_plex::plex::session::TempSession::new("account-action-identity");
         let mut menu = AccountMenuScreen::new(EntryId(0));
-        menu.build(false);
+        menu.build(&crate::registry::capture_fixture(), false);
         let settings_key = Action::Settings.focus_key();
         assert_eq!(menu.form.index_of_key(RowKey(settings_key)), Some(1));
         plx_plex::plex::session::save(&local(Session { client_id: "synthetic-client".into(),
             account_token: "synthetic-token".into(), ..Default::default() }));
         menu.built = false;
-        menu.build(false);
+        menu.build(&crate::registry::capture_fixture(), false);
         // Sign out arrives LAST behind a rule, so Settings holds its seat — and still its key
         assert_eq!(menu.form.index_of_key(RowKey(settings_key)), Some(1));
         assert!(menu.form.index_of_key(RowKey(Action::SignOut.focus_key())) > Some(1));
@@ -1135,5 +1140,22 @@ mod tests {
             }
         }
         plx_ui::table::assert_no_fit_failures(&out);
+    }
+}
+
+#[cfg(test)]
+mod retained_input_tests {
+    use super::*;
+    #[test]
+    fn a_cold_account_menu_waits_for_the_retained_settled_session() {
+        let mut inputs = crate::registry::ScreenInputs::default();
+        let mut menu = AccountMenuScreen::new(EntryId(0));
+        menu.build(&inputs, false);
+        assert!(!menu.built);
+        inputs.settled = true;
+        menu.build(&inputs, false);
+        assert!(menu.built);
+        assert!(menu.form.index_of(&Action::SignIn).is_some());
+        assert!(menu.form.index_of(&Action::SignOut).is_none());
     }
 }

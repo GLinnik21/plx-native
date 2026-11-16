@@ -226,7 +226,7 @@ impl<M: FnMut() -> [u8; 4]> Connection<M> {
     }
 }
 
-fn close_code_allowed(code: u16) -> bool {
+pub(super) fn close_code_allowed(code: u16) -> bool {
     matches!(code, 1000..=1003 | 1007..=1014 | 3000..=4999)
 }
 

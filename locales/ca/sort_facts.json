@@ -10,6 +10,6 @@
   "sort_facts.z_to_a": "Z–A",
   "sort_facts.oldest_first": "Els més antics primer",
   "sort_facts.newest_first": "Més recents primer",
-  "sort_facts.lowest_first": "De menor a major",
-  "sort_facts.highest_first": "Els més alts primer"
+  "sort_facts.lowest_first": "De menys a més",
+  "sort_facts.highest_first": "De més a menys"
 }

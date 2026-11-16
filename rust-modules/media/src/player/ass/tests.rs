@@ -1,4 +1,5 @@
 use super::*;
+use super::mailbox::Kind;
 
 fn event(id: u32, start_ms: i64, duration_ms: i64) -> Event {
     Event {
@@ -19,6 +20,79 @@ fn source(events: Vec<Event>) -> Source {
             fonts: Arc::from([]),
         },
     }
+}
+
+// The memory a helper costs (issue #1328): each renderer copies the fonts, so the pool decides once
+// per selection, from the memory available and the fonts the primary holds, how many may run.
+
+#[test]
+fn a_heavy_selection_gets_no_helper_and_the_verdict_is_taken_once() {
+    let runtime = Runtime::new();
+    runtime.font_bytes.store(40 << 20, Ordering::Relaxed);
+    runtime.begin_selection(7);
+    assert!(runtime.helper_barred(1) && runtime.helper_barred(2), "a selection starts with the primary alone");
+    let epoch = runtime.epoch.load(Ordering::Acquire);
+    let reads = std::cell::Cell::new(0);
+    let memory = || {
+        reads.set(reads.get() + 1);
+        Some(200u64 << 20)
+    };
+    assert_eq!(runtime.renderers_decided(epoch), None, "the render scale waits for the pool's verdict");
+    assert_eq!(runtime.renderers_for(epoch, memory), 1, "a quarter of 200 MiB holds no helper of 64 MiB beside the primary");
+    assert!(runtime.helper_barred(1) && runtime.helper_barred(2));
+    assert_eq!(runtime.renderers_for(epoch, memory), 1);
+    assert_eq!(reads.get(), 1, "the memory is read once for a selection, not on every tick");
+    assert_eq!(runtime.renderers_decided(epoch), Some(1));
+    runtime.begin_selection(8);
+    let next = runtime.epoch.load(Ordering::Acquire);
+    assert_eq!(runtime.renderers_decided(next), None, "the next selection is decided afresh");
+}
+
+#[test]
+fn a_light_selection_lets_the_helpers_the_cores_allow_run_until_the_next_selection() {
+    let runtime = Runtime::new();
+    runtime.font_bytes.store(2 << 20, Ordering::Relaxed);
+    runtime.begin_selection(7);
+    let epoch = runtime.epoch.load(Ordering::Acquire);
+    let slots = renderer_slots();
+    assert_eq!(runtime.renderers_for(epoch, || Some(800u64 << 20)), slots);
+    for slot in 1..MAX_ASS_RENDERERS {
+        assert_eq!(runtime.helper_barred(slot), slot >= slots, "slot {slot} of {slots} renderers");
+    }
+    runtime.begin_selection(8);
+    assert!(runtime.helper_barred(1), "the next selection is decided afresh");
+    let epoch = runtime.epoch.load(Ordering::Acquire);
+    assert_eq!(runtime.renderers_for(epoch, || None), slots, "an unknown memory does not stop a helper");
+}
+
+/// A boundary inside a moving stretch is not its end (`Published::ends_at`): the engine says so from the
+/// timing of the events alone, with no native call. Karaoke syllables overlap, so the frame at the end
+/// of one still has another moving after it; the last one's end leaves a still picture.
+#[test]
+fn a_frame_says_whether_the_picture_after_its_window_moves_too() {
+    let karaoke = |start_ms, duration_ms| Event {
+        start_ms,
+        duration_ms,
+        payload: b"0,0,Default,,0,0,0,,{\\k20}la".to_vec().into(),
+    };
+    let still = event(9, 0, 10_000);
+    let source = source(vec![karaoke(1000, 1000), karaoke(1500, 1000), karaoke(2000, 1000), still]);
+    let engine = Engine::default();
+    let at = |now_ms| {
+        let validity = engine.validity(&source, now_ms);
+        (validity, engine.moves_on(&source, &validity))
+    };
+    let (validity, moves_on) = at(1200);
+    assert!(validity.animated && validity.until_ms == 1500);
+    assert!(moves_on, "the second syllable is moving when the first one's window ends");
+    let (validity, moves_on) = at(2200);
+    assert!(validity.animated && validity.until_ms == 2500);
+    assert!(moves_on, "the third is still moving at 2500");
+    let (validity, moves_on) = at(2700);
+    assert!(validity.animated && validity.until_ms == 3000);
+    assert!(!moves_on, "the stretch ends there: what follows is the still event");
+    let (validity, moves_on) = at(5000);
+    assert!(!validity.animated && !moves_on, "a still picture does not move on");
 }
 
 #[test]
@@ -91,7 +165,7 @@ fn off_retires_a_racing_publication_and_pending_source_outside_the_mailbox_lock(
     runtime.source_id.store(source.id, Ordering::Release);
     {
         let mut mailbox = runtime.mailbox.lock().unwrap();
-        mailbox.request(key, 100, &source);
+        mailbox.request(key, 100, &source, Pace::PAUSED);
         // The worker owns the lock and has already accepted this epoch. Cancel
         // must return while the lock is held; the old publication then races in.
         clear_runtime(&runtime);
@@ -147,7 +221,7 @@ fn cancellation_before_worker_parks_is_remembered_and_releases_resources() {
         let observed_idle = observed_idle.clone();
         let may_park = may_park.clone();
         plx_base::task::spawn("ASS cancellation test", move || {
-            runtime.worker.set(std::thread::current()).unwrap();
+            runtime.threads[0].set(std::thread::current()).unwrap();
             let mut engine = Engine {
                 source: Some(source),
                 frame: Some(frame),
@@ -230,6 +304,8 @@ fn job(source: &Arc<Source>, now_ms: i64, width: i32, height: i32, storage_width
         seq: 1,
         source: source.clone(),
         queued: None,
+        reference: None,
+        scale: RenderScale::Full,
     }
 }
 
@@ -254,6 +330,17 @@ fn pixel(frame: &Frame, x: i32, y: i32) -> [u8; 4] {
     r.rgba[start..start + 4].try_into().unwrap()
 }
 
+/// The colour a published PREMULTIPLIED pixel stands for, as straight RGBA: for a test that asks what
+/// colour a pixel is and not which bytes the facade published (those are asserted as they are).
+fn straight(px: [u8; 4]) -> [u8; 4] {
+    let a = u32::from(px[3]);
+    if a == 0 || a == 255 {
+        return px;
+    }
+    let un = |c: u8| ((u32::from(c) * 255 + a / 2) / a).min(255) as u8;
+    [un(px[0]), un(px[1]), un(px[2]), px[3]]
+}
+
 /// An actual pixel contract against the same pinned library shipped to the TV.
 /// Run after `make libass-host` with `--include-ignored`.
 #[test]
@@ -267,7 +354,9 @@ fn native_pixels_preserve_position_layers_alpha_motion_karaoke_and_readorder() {
     let first = render(&mut engine, &source, 100);
     assert_eq!(pixel(&first, 25, 25), [255, 0, 0, 255]);
     assert_eq!(pixel(&first, 45, 35), [128, 0, 127, 255]);
-    assert_eq!(pixel(&first, 75, 35), [0, 0, 255, 127]);
+    // Published premultiplied: blue at 127/255 coverage is 127 of 255, not the straight 255.
+    assert_eq!(pixel(&first, 75, 35), [0, 0, 127, 127]);
+    assert_eq!(straight(pixel(&first, 75, 35)), [0, 0, 255, 127]);
     let coded = engine.render(&job(&source, 100, 320, 180, 720, 480)).frame;
     assert_eq!(coded.error, None);
     assert_eq!(pixel(&coded, 25, 25), [255, 0, 0, 255]);
@@ -345,6 +434,7 @@ fn native_pixels_preserve_position_layers_alpha_motion_karaoke_and_readorder() {
         f.rects
             .iter()
             .flat_map(|r| r.rgba.chunks_exact(4))
+            .map(|p| straight([p[0], p[1], p[2], p[3]]))
             .filter(|p| p[1] > 200 && p[0] < 20 && p[3] > 100)
             .count()
     };
@@ -552,7 +642,7 @@ fn a_track_is_never_refused_for_the_count_or_size_of_its_fonts() {
         data: Arc::from(vec![1u8; len]),
     };
     let mut fonts: Vec<Font> = (0..200).map(|i| font(i, 2048)).collect();
-    fonts.push(font(200, MAX_FONT_BYTES + 1));
+    fonts.push(font(200, 40 * 1024 * 1024));
     let mut s = source(vec![event(1, 0, 1000)]);
     let Content::Embedded { fonts: slot, .. } = &mut s.content else { panic!() };
     *slot = fonts.into();
@@ -609,7 +699,7 @@ fn native_key() -> Key {
 /// The frame at `now_ms`; `None` is libass's "identical to the last frame".
 fn native_frame(native: &mut Native, now_ms: i64) -> Option<Vec<Rect>> {
     native
-        .render(native_key(), now_ms, &[])
+        .render(native_key(), RenderScale::Full, now_ms, &[])
         .expect("render of a valid track")
 }
 
@@ -664,12 +754,24 @@ fn faces_script(lines: &str) -> String {
     HEADER.replace("Style: Default,Inter,24", "Style: Default,PlxFaces,100") + lines
 }
 
+/// `PlxAssStats` in `include/ass.h` is eight `uint32_t` and a `uint64_t`: 40 bytes with the 64-bit
+/// field at offset 32, on a 32-bit ARM target as on a 64-bit host, so the mirror needs no padding.
+#[test]
+fn native_stats_mirror_the_c_struct_layout() {
+    assert_eq!(std::mem::size_of::<NativeStats>(), 40);
+    assert_eq!(std::mem::align_of::<NativeStats>(), 8);
+    assert_eq!(std::mem::offset_of!(NativeStats, last_libass_us), 12);
+    assert_eq!(std::mem::offset_of!(NativeStats, last_libass_cpu_us), 20);
+    assert_eq!(std::mem::offset_of!(NativeStats, last_images), 28);
+    assert_eq!(std::mem::offset_of!(NativeStats, last_image_pixels), 32);
+}
+
 #[test]
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
-fn native_the_facade_is_abi_four() {
+fn native_the_facade_is_abi_five() {
     assert!(native_ass::load(Some(asset_dir())).ok());
-    assert_eq!(unsafe { plx_ass_abi_version() }, 4);
-    assert_eq!(NATIVE_ABI, 4);
+    assert_eq!(unsafe { plx_ass_abi_version() }, 5);
+    assert_eq!(NATIVE_ABI, 5);
 }
 
 /// The bundled libass was built without libunibreak until the ABI 3 bump, so a CJK line with no
@@ -722,9 +824,9 @@ fn native_line_spacing_changes_the_line_pitch_by_exactly_its_value() {
 fn native_cache_limits_are_validated() {
     let native = native_with(&[], &script_text("Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,x\n"));
     unsafe {
-        assert_eq!(plx_ass_set_cache_limits(native.0, 400, 12), 0);
-        assert_eq!(plx_ass_set_cache_limits(native.0, 0, 12), -1);
-        assert_eq!(plx_ass_set_cache_limits(native.0, 400, 0), -1);
+        assert_eq!(plx_ass_set_cache_limits(native.ptr, 400, 12), 0);
+        assert_eq!(plx_ass_set_cache_limits(native.ptr, 0, 12), -1);
+        assert_eq!(plx_ass_set_cache_limits(native.ptr, 400, 0), -1);
         assert_eq!(plx_ass_set_cache_limits(std::ptr::null_mut(), 400, 12), -1);
     }
 }
@@ -750,7 +852,29 @@ fn native_replace_track_keeps_the_fonts_and_the_next_frame_is_never_unchanged() 
     );
     let first = native_frame(&mut native, 100).expect("first frame");
     assert_eq!(ink(&first).bands.len(), 1);
+    // The facade timed that render (`assperf:` splits libass from the composite by these), on the
+    // wall clock and on the thread's CPU clock, and counted the images libass produced for it.
+    let drawn = native.stats();
+    assert!(
+        drawn.last_libass_us > 0
+            && drawn.last_libass_cpu_us > 0
+            && drawn.last_images > 0
+            && drawn.last_image_pixels > 0,
+        "{:?}",
+        (drawn.last_libass_us, drawn.last_libass_cpu_us, drawn.last_images, drawn.last_image_pixels)
+    );
     assert!(native_frame(&mut native, 100).is_none(), "the same instant is unchanged");
+    let unchanged = native.stats();
+    assert_eq!(
+        (unchanged.last_composite_us, unchanged.last_composite_cpu_us),
+        (0, 0),
+        "an unchanged call composites nothing"
+    );
+    assert_eq!(
+        (unchanged.last_images, unchanged.last_image_pixels),
+        (drawn.last_images, drawn.last_image_pixels),
+        "and the image counts stay those of the frame on screen"
+    );
 
     // The same text replaced in place: the frame is new, never "unchanged".
     native.replace_track(one.as_bytes(), 1).expect("replace");
@@ -904,6 +1028,356 @@ fn native_fourteen_faces_of_one_family_all_render() {
     }
     // Back to the first: the faces stay for the renderer's lifetime.
     assert_eq!(ink(&native_frame(&mut native, 500).unwrap()).bands.len(), 1);
+}
+
+// ---- issue #1328: the fonts a track names reach libass, whatever the file attaches ----
+
+use super::synth_fonts::rename;
+
+const MIB: usize = 1024 * 1024;
+
+/// A one-glyph test face (`face-NN.ttf`: the glyph U+E000+NN, a square `(400 + 20 NN)` thousandths
+/// of an em) renamed to its own family `family`, so only a track that names it draws the square.
+fn named_face(face: usize, family: &str, pad_to: Option<usize>) -> Font {
+    let data = std::fs::read(format!("{FACE_DIR}/face-{face:02}.ttf")).expect("committed fixture face");
+    Font { name: format!("{family}.ttf"), data: rename(&data, family, "Regular", pad_to).into() }
+}
+
+/// Inter renamed to a family no track names, padded to `bytes`: what a release attaches for a
+/// sign nobody uses in this episode.
+fn filler(index: usize, bytes: usize) -> Font {
+    let inter = std::fs::read(asset_dir().join("appfont.ttf")).expect("a shipped face");
+    Font {
+        name: format!("filler-{index}.ttf"),
+        data: rename(&inter, &format!("Plx Filler {index}"), "Regular", Some(bytes)).into(),
+    }
+}
+
+/// A script whose one style, `Default`, names `family` at 100 px, top-left on a 320x180 canvas.
+fn named_script(family: &str, lines: &str) -> String {
+    HEADER.replace("Style: Default,Inter,24", &format!("Style: Default,{family},100")) + lines
+}
+
+fn glyph_line(second: i64, tag: &str, glyph: u32) -> String {
+    format!(
+        "Dialogue: 0,0:00:{second:02}.00,0:00:{:02}.00,Default,,0,0,0,,{{\\an7\\pos(10,10){tag}}}{}\n",
+        second + 1,
+        char::from_u32(glyph).unwrap()
+    )
+}
+
+/// The report's file in miniature: seven fillers whose 42 MiB is past the old 32 MiB cap come FIRST
+/// in the container, and the two 8 MiB faces the track names come after them. Before the fix libass
+/// never saw the named ones and their glyphs fell back; now libass is handed exactly the two the
+/// track names (one by its style, one by a `\fn`), the fillers cost it nothing, and the faces it
+/// was handed draw as they do with no filler attached at all.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_the_faces_a_track_names_render_though_fillers_past_the_old_cap_come_first() {
+    let mut fonts: Vec<Font> = (0..7).map(|i| filler(i, 6 * MIB)).collect();
+    let attached: usize = fonts.iter().map(|f| f.data.len()).sum();
+    assert!(attached > 40 * MIB, "the fillers alone are past the old 32 MiB cap: {attached}");
+    let named = fonts.len();
+    // The named faces are big too (the report's are 6-13 MB), so the old cap, which still let a small
+    // late font in, would have dropped both.
+    fonts.push(named_face(3, "Plx Named A", Some(8 * MIB)));
+    fonts.push(named_face(5, "Plx Named B", Some(8 * MIB)));
+    let text = named_script(
+        "Plx Named A",
+        &(glyph_line(0, "", 0xE003) + &glyph_line(2, r"\fnPlx Named B", 0xE005)),
+    );
+
+    let mut native = native_with(&fonts, &text);
+    let stats = native.stats();
+    assert_eq!(stats.library_fonts, bundled_faces() + 2, "libass holds the two named faces and no filler");
+    assert_eq!(stats.font_scans, 1);
+    assert_eq!(native.given, 2);
+    let first = native_frame(&mut native, 500).expect("a new cue");
+    let second = native_frame(&mut native, 2500).expect("a new cue");
+
+    let side = |face: i32| (400 + 20 * face) * 100 / 1000;
+    for (rects, face) in [(&first, 3), (&second, 5)] {
+        let drawn = ink(rects);
+        assert_eq!(drawn.bands.len(), 1, "face {face} drew its glyph");
+        let (top, bottom) = drawn.bands[0];
+        assert!(
+            (bottom - top + 1 - side(face)).abs() <= 2 && (drawn.right - drawn.left - side(face)).abs() <= 2,
+            "the square of face {face} ({} px), got {}x{}",
+            side(face),
+            drawn.right - drawn.left,
+            bottom - top + 1
+        );
+    }
+
+    // The same pixels as a renderer that was handed only the two faces, and not as one with neither.
+    let mut alone = native_with(&fonts[named..], &text);
+    assert_eq!(native_frame(&mut alone, 500).unwrap(), first);
+    assert_eq!(native_frame(&mut alone, 2500).unwrap(), second);
+    let mut neither = native_with(&fonts[..named], &text);
+    assert_eq!(neither.stats().library_fonts, bundled_faces());
+    assert_ne!(native_frame(&mut neither, 500).unwrap(), first, "the fallback is not the named face");
+    assert_ne!(native_frame(&mut neither, 2500).unwrap(), second);
+}
+
+/// An authored track names a font in an event only: the face is added when the event is, after the
+/// renderer has loaded its track and drawn a frame, and it draws the same pixels as the same face
+/// loaded up front.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_font_a_later_event_names_is_added_after_load_and_draws_as_if_loaded_up_front() {
+    let late = named_face(3, "Plx Late", None);
+    let bystander = filler(0, 2 * MIB);
+    let fonts: Arc<[Font]> = vec![bystander, late.clone()].into();
+    let header = HEADER.replace("Style: Default,Inter,24", "Style: Default,Inter,100");
+    let packet = |read_order: u32, tag: &str, glyph: char| {
+        format!("{read_order},0,Default,,0,0,0,,{{\\an7\\pos(10,10){tag}}}{glyph}").into_bytes()
+    };
+    let events = |count: usize| -> Arc<[Event]> {
+        let all = [
+            (0, 1000, packet(0, "", 'A')),
+            (2000, 1000, packet(1, r"\fnPlx Late", '\u{E003}')),
+        ];
+        all[..count]
+            .iter()
+            .map(|(start_ms, duration_ms, payload)| Event {
+                start_ms: *start_ms,
+                duration_ms: *duration_ms,
+                payload: payload.clone().into(),
+            })
+            .collect::<Vec<_>>()
+            .into()
+    };
+    let embedded = |count: usize| Source {
+        id: 1,
+        revision: count as u64,
+        origin: Origin::Authored,
+        content: Content::Embedded {
+            header: header.clone().into_bytes().into(),
+            events: events(count),
+            fonts: fonts.clone(),
+        },
+    };
+
+    let mut native = Native::open(&embedded(1)).expect("native fixture requires the built host library in pkg");
+    let opened = native.stats();
+    assert_eq!(opened.library_fonts, bundled_faces(), "the header names Inter: no attached face yet");
+    let before = native_frame(&mut native, 500).expect("the first cue draws");
+    assert_eq!(native.stats().font_scans, 1);
+
+    // The demuxer reads the next packet: its `\fn` adds the face, after the first frame was drawn.
+    native.append(&embedded(2), 1).unwrap();
+    let late_frame = native_frame(&mut native, 2500).expect("the second cue draws");
+    let stats = native.stats();
+    assert_eq!(stats.library_fonts, bundled_faces() + 1, "one face, the one named");
+    assert_eq!(stats.font_scans, 1, "libass did not scan the other faces again");
+    assert_eq!(ink(&late_frame).bands.len(), 1);
+    assert!(native_frame(&mut native, 500).is_some(), "and the first cue still draws");
+    assert_eq!(native.given, 1);
+
+    // The reference: the whole track at once, so the face is held before the first load.
+    let mut eager = Native::open(&embedded(2)).unwrap();
+    assert_eq!(eager.stats().library_fonts, bundled_faces() + 1, "an eager open scans the face with the others");
+    assert_eq!(native_frame(&mut eager, 500).unwrap(), before);
+    assert_eq!(native_frame(&mut eager, 2500).unwrap(), late_frame);
+
+    // Without the attachment the same event falls back and draws something else.
+    let mut missing_source = embedded(2);
+    let Content::Embedded { fonts: slot, .. } = &mut missing_source.content else { unreachable!() };
+    *slot = Arc::from(Vec::<Font>::new());
+    let mut missing = Native::open(&missing_source).unwrap();
+    assert_ne!(native_frame(&mut missing, 2500).unwrap(), late_frame);
+}
+
+/// No byte count stands between a named face and libass: a 70 MiB face (past the old 64 MiB limit
+/// the facade enforced) is accepted and drawn, and a second 40 MiB face after it is too (80 MiB in
+/// all).
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_face_past_the_old_facade_limit_is_accepted_and_draws() {
+    let big = named_face(3, "Plx Huge", Some(70 * MIB));
+    assert!(big.data.len() > 64 * MIB);
+    let text = named_script("Plx Huge", &glyph_line(0, "", 0xE003));
+    let mut native = native_with(std::slice::from_ref(&big), &text);
+    assert_eq!(native.stats().library_fonts, bundled_faces() + 1);
+    assert_eq!(native.given, 1);
+    let drawn = ink(&native_frame(&mut native, 500).expect("a new cue"));
+    assert_eq!(drawn.bands.len(), 1, "the 70 MiB face draws its glyph");
+    let more = named_face(5, "Plx Huge Too", Some(40 * MIB));
+    native.font(&more.name, &more.data).expect("past the old cumulative limit too");
+    assert_eq!(native.stats().library_fonts, bundled_faces() + 2);
+}
+
+// ---- issue #1328: a renderer holds no copy of the attached font bytes ----
+
+use plx_base::testheap;
+
+/// Inter renamed to the family `Plx Heap {index}` and padded to `bytes`: a face a track names, as big
+/// as the display faces of the report (6-13 MB each).
+fn heap_face(index: usize, bytes: usize) -> Font {
+    let inter = std::fs::read(asset_dir().join("appfont.ttf")).expect("a shipped face");
+    Font {
+        name: format!("heap-{index}.ttf"),
+        data: rename(&inter, &format!("Plx Heap {index}"), "Regular", Some(bytes)).into(),
+    }
+}
+
+/// What a renderer costs in heap beyond the fonts it is handed, measured on the C heap of a fresh
+/// process (`testheap`: libass and FreeType call `malloc` themselves, so a Rust allocator count
+/// would miss exactly the copies this is about). The fonts are the store's, shared by `Arc`; the
+/// renderer opens six faces of 8 MiB, draws a cue in each, and the heap it added over its fonts
+/// is read back, and again once it is dropped.
+fn heap_renderer_cost() {
+    const FACES: usize = 6;
+    let fonts: Vec<Font> = (0..FACES).map(|i| heap_face(i, 8 * MIB)).collect();
+    let font_bytes: usize = fonts.iter().map(|f| f.data.len()).sum();
+    let lines: String = (0..FACES as i64)
+        .map(|i| glyph_line(i, &format!(r"\fnPlx Heap {i}"), u32::from(b'H')))
+        .collect();
+    let text = named_script("Plx Heap 0", &lines);
+    let base = testheap::live_bytes().expect("a host whose malloc can be asked");
+    let ((native, shown), peak) = testheap::peak_during(|| {
+        let mut native = native_with(&fonts, &text);
+        let mut shown = 0;
+        for second in 0..FACES as i64 {
+            shown += usize::from(native_frame(&mut native, second * 1000 + 500).is_some());
+        }
+        (native, shown)
+    });
+    assert_eq!(shown, FACES, "every cue draws");
+    assert_eq!(native.given, FACES, "the track names every face");
+    let held = testheap::live_bytes().unwrap();
+    drop(native);
+    let released = testheap::live_bytes().unwrap();
+    testheap::report("font_bytes", font_bytes as u64);
+    testheap::report("held", held.saturating_sub(base) as u64);
+    testheap::report("peak", peak.saturating_sub(base) as u64);
+    testheap::report("after_drop", released.saturating_sub(base) as u64);
+    drop(fonts);
+}
+
+/// Every renderer used to copy the attached fonts it was handed (`ass_add_font` mallocs and copies),
+/// so each one cost the fonts again: a primary and two helpers on the report's file held the 53 MB
+/// the track names three times over, beside the store's own copy. libass reads them in place now:
+/// the renderer's own heap is its face state and caches, a fraction of the font bytes and not their
+/// multiple.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_renderer_holds_no_copy_of_the_fonts_it_is_handed() {
+    const TEST: &str = "player::ass::tests::native_a_renderer_holds_no_copy_of_the_fonts_it_is_handed";
+    if testheap::is_child() {
+        return heap_renderer_cost();
+    }
+    let cost = testheap::in_fresh_process(TEST);
+    let fonts = cost["font_bytes"];
+    assert!(fonts >= 48 * MIB as u64, "the fixture is big enough to tell a copy from noise: {fonts}");
+    let mib = |bytes: u64| bytes as f64 / MIB as f64;
+    eprintln!(
+        "renderer over {:.0} MiB of faces: held {:.1} MiB, peaked at {:.1} MiB, {:.1} MiB left after drop",
+        mib(fonts),
+        mib(cost["held"]),
+        mib(cost["peak"]),
+        mib(cost["after_drop"])
+    );
+    assert!(
+        cost["held"] < fonts / 4,
+        "a renderer of {:.1} MiB of faces held {:.1} MiB: it copies them",
+        mib(fonts),
+        mib(cost["held"])
+    );
+    assert!(
+        cost["peak"] < fonts / 3,
+        "a renderer of {:.1} MiB of faces peaked at {:.1} MiB: it copies them",
+        mib(fonts),
+        mib(cost["peak"])
+    );
+    assert!(cost["after_drop"] < 4 * MIB as u64, "a dropped renderer gives its heap back: {:.1} MiB left", mib(cost["after_drop"]));
+}
+
+/// A font a renderer references is the store's buffer, not the library's: three renderers over the
+/// same `Arc` each hold it beside a font libass extracted from the script's own `[Fonts]` (which
+/// libass owns and frees), draw both, and are dropped in an order that is not their creation's. What
+/// libass frees at destroy is only what it allocated: the shared bytes are intact and the store's
+/// handle is the only one left (a freed or doubly freed buffer would have crashed the test, or
+/// drawn a different glyph).
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_borrowed_font_beside_an_extracted_one_survives_the_renderers_that_reference_it() {
+    let borrowed = named_face(5, "Plx Borrowed", None);
+    let original = borrowed.data.to_vec();
+    let extracted = std::fs::read(format!("{FACE_DIR}/face-03.ttf")).unwrap();
+    let (styles, events) = named_script("Plx Borrowed", "").split_once("[Events]").map(|(a, b)| (a.to_owned(), b.to_owned())).unwrap();
+    let text = format!(
+        "{styles}{}[Events]{events}{}{}",
+        ass_font_section("slide.ttf", &extracted),
+        glyph_line(0, "", 0xE005),
+        glyph_line(1, r"\fnPlxFaces", 0xE003),
+    );
+    let fonts = [borrowed.clone()];
+    let mut renderers: Vec<Native> = (0..3).map(|_| native_with(&fonts, &text)).collect();
+    for native in &renderers {
+        assert_eq!(native.given, 1, "the track names the attached face");
+        assert_eq!(
+            native.stats().library_fonts,
+            bundled_faces() + 2,
+            "the bundled faces, the one from [Fonts] and the one referenced"
+        );
+    }
+    assert_eq!(Arc::strong_count(&borrowed.data), 1 + 1 + 3, "the test's, the array's and one per renderer");
+    for native in &mut renderers {
+        assert_eq!(ink(&native_frame(native, 500).expect("a new cue")).bands.len(), 1, "the referenced face draws");
+        assert_eq!(ink(&native_frame(native, 1500).expect("a new cue")).bands.len(), 1, "and so does the extracted one");
+    }
+    drop(renderers.remove(1));
+    for native in &mut renderers {
+        assert_eq!(
+            ink(&native_frame(native, 500).expect("a new cue")).bands.len(),
+            1,
+            "a renderer still draws the shared face after another is gone"
+        );
+    }
+    renderers.clear();
+    assert_eq!(&borrowed.data[..], &original[..], "the shared bytes are untouched");
+    drop(fonts);
+    assert_eq!(Arc::strong_count(&borrowed.data), 1, "no renderer holds the buffer after it is destroyed");
+}
+
+/// A long sidecar script is fed to libass a window at a time, and the first window holds only its
+/// first lines: a face that a line far past it asks for must be held before the window slides there.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_windowed_script_holds_the_face_a_line_outside_its_first_window_names() {
+    let t = |ms: i64| format!("{}:{:02}:{:02}.{:02}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000 / 10);
+    let mut lines = String::new();
+    for i in 0..10_000i64 {
+        let tag = if i == 9_999 { r"\fnPlx Far" } else { "" };
+        let glyph = if i == 9_999 { '\u{E003}' } else { 'x' };
+        lines.push_str(&format!(
+            "Dialogue: 0,{},{},Default,,0,0,0,,{{\\an7\\pos(10,10){tag}}}{glyph}\n",
+            t(i * 1000),
+            t(i * 1000 + 900)
+        ));
+    }
+    let fonts: Arc<[Font]> = vec![named_face(3, "Plx Far", None)].into();
+    let source = Arc::new(Source {
+        id: next_source_id(),
+        revision: 1,
+        origin: Origin::Authored,
+        content: Content::Script {
+            bytes: HEADER.replace("Style: Default,Inter,24", "Style: Default,Inter,100").into_bytes().into_iter().chain(lines.into_bytes()).collect::<Vec<u8>>().into(),
+            fonts,
+        },
+    });
+    let mut engine = Engine::default();
+    let first = render(&mut engine, &source, 100);
+    assert!(!first.rects.is_empty());
+    let opened = engine.native.as_ref().unwrap().stats();
+    assert_eq!(opened.library_fonts, bundled_faces() + 1, "held from the first open, before any window names it");
+    let far = render(&mut engine, &source, 9_999_100);
+    assert_eq!(ink(&far.rects).bands.len(), 1);
+    let (top, bottom) = ink(&far.rects).bands[0];
+    assert!((bottom - top + 1 - 46).abs() <= 2, "the far line draws face 3's square, not Inter's x");
+    let slid = engine.native.as_ref().unwrap().stats();
+    assert_eq!((slid.font_scans, slid.library_fonts), (1, opened.library_fonts));
 }
 
 // ---- Source.origin, the restyle branch and the alignment classes (plan §2.4, §2.5, §4.6 case 3) ----
@@ -1208,7 +1682,7 @@ fn track(header: &str, events: &[(i64, i64, &str)]) -> Arc<Source> {
 }
 
 fn style(size: SubtitleSize, position: SubtitlePosition) -> TextStyle {
-    TextStyle { size, position }
+    TextStyle { size, position, ..TextStyle::default() }
 }
 
 /// Render a Text-origin source into the full logical screen, as the screen asks for it.
@@ -1240,7 +1714,10 @@ fn restyle_applies_to_text_origin_tracks_of_equal_fonts_and_a_different_header_o
         origin: Origin::Authored,
         content: Content::Embedded { header: Arc::from(header), events: Arc::from([]), fonts: Arc::from([]) },
     };
-    assert!(!restyles(&authored(b"a"), &authored(b"b")), "an authored header change is a new renderer");
+    assert!(restyles(&authored(b"a"), &authored(b"b")), "an authored header rebuilt for the colour pick, one timeline, is a restyle");
+    let mut other_track = authored(b"b");
+    other_track.id = 2;
+    assert!(!restyles(&authored(b"a"), &other_track), "another authored track's header is a new renderer");
     assert!(!restyles(&medium, &authored(b"b")) && !restyles(&authored(b"b"), &medium), "origins must both be Text");
 
     let font = |data: &'static [u8]| -> Arc<[Font]> { Arc::from([Font { name: "f.ttf".into(), data: Arc::from(data) }]) };
@@ -1443,7 +1920,7 @@ fn native_the_worker_publishes_aligns_beside_a_text_frame_and_none_for_authored(
     let until = |source: &Arc<Source>, now: i64, expect: Option<AlignSet>| {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
-            let frame = request(source.clone(), now, 1920, 1080, 1920, 1080);
+            let frame = request(source.clone(), now, 1920, 1080, 1920, 1080, Pace::PAUSED);
             let got = frame.as_ref().and_then(|f| published_aligns(f.serial));
             if frame.is_some() && got == expect {
                 return;
@@ -1635,17 +2112,245 @@ fn a_changed_offset_on_a_paused_playhead_publishes_the_frame_of_the_new_clock() 
     // The worker drains its mailbox: the frame is `error_frame` (any frame), the validity the cue's.
     let drain = |mailbox: &mut Mailbox| {
         while let Some(job) = mailbox.take() {
-            let rendered = Rendered { frame: error_frame(job.key, Fault::RenderFailed), validity: validity_of(job.now_ms), aligns: None };
+            let rendered = Rendered { frame: error_frame(job.key, Fault::RenderFailed), validity: validity_of(job.now_ms), aligns: None, cost_us: None, moves_on: false };
             mailbox.finish(&job, Some(rendered));
         }
     };
     // Paused at 23.0 s, the offset 0, then +2.5 s, then -2.5 s, then back, each one a frame step.
     for clock in [23_000, 20_500, 25_500, 20_500, 25_500, 23_000] {
-        mailbox.request(key, clock, &source);
+        mailbox.request(key, clock, &source, Pace::PAUSED);
         drain(&mut mailbox);
-        mailbox.request(key, clock, &source);
+        mailbox.request(key, clock, &source, Pace::PAUSED);
         let shown = mailbox.view(&key).expect("a frame");
         let published = mailbox.published.as_ref().map(|p| p.validity).expect("published");
         assert!(published.contains(clock), "clock {clock}: the frame on screen covers {published:?} ({:?})", shown.serial);
     }
+}
+
+// Several renderers (issue #1328): each worker owns its own libass instance, so what one engine
+// would have drawn alone is what any of them draws, and the screen's texture cache is not defeated
+// by the frames of one cue coming from different engines.
+
+const SIGN: &str = r"{\an7\pos(20,20)\c&H0000FF&\p1}m 0 0 l 40 0 40 40 0 40";
+/// Moves and changes colour: a square that only moved is the same bitmap in another place, which
+/// the renderer rightly shares between frames, so the test's moving region must change its pixels.
+const MOVER: &str = r"{\an7\move(100,20,260,20,0,4000)\c&HFF0000&\t(0,4000,\c&H00FF00&)\p1}m 0 0 l 30 0 30 30 0 30";
+
+/// A static sign and a square that moves and changes colour for four seconds.
+fn sign_and_mover() -> Arc<Source> {
+    script(&format!(
+        "Dialogue: 0,0:00:00.00,0:00:04.00,Default,,0,0,0,,{SIGN}\nDialogue: 1,0:00:00.00,0:00:04.00,Default,,0,0,0,,{MOVER}\n"
+    ))
+}
+
+/// A frame as one canvas of the bytes it publishes (its regions are disjoint).
+fn canvas(frame: &Frame) -> Vec<u8> {
+    let mut out = vec![0u8; (frame.width * frame.height * 4) as usize];
+    for r in &frame.rects {
+        for row in 0..r.height {
+            let to = ((r.y + row) * frame.width + r.x) as usize * 4;
+            let from = (row * r.width) as usize * 4;
+            out[to..to + r.width as usize * 4].copy_from_slice(&r.rgba[from..from + r.width as usize * 4]);
+        }
+    }
+    out
+}
+
+fn same_pixels(a: &Rect, b: &Rect) -> bool {
+    a.width == b.width && a.height == b.height && a.rgba == b.rgba
+}
+
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn two_engines_on_two_threads_render_what_one_engine_renders_in_sequence() {
+    let source = sign_and_mover();
+    let times: Vec<i64> = (1..=24).map(|i| i * 150).collect();
+    let mut alone = Engine::default();
+    let expected: Vec<Vec<u8>> = times.iter().map(|&t| canvas(&render(&mut alone, &source, t))).collect();
+    assert!(expected.windows(2).all(|w| w[0] != w[1]), "the square moves at every playhead");
+    assert!(expected[0].iter().any(|&b| b != 0), "something is drawn");
+    // two workers, each with an engine of its own, taking the playheads alternately
+    let drawn: Vec<(usize, Vec<u8>)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..2)
+            .map(|worker| {
+                let (source, times) = (&source, &times);
+                scope.spawn(move || {
+                    let mut engine = Engine::default();
+                    times
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| i % 2 == worker)
+                        .map(|(i, &t)| (i, canvas(&render(&mut engine, source, t))))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        workers.into_iter().flat_map(|worker| worker.join().unwrap()).collect()
+    });
+    assert_eq!(drawn.len(), times.len());
+    for (i, pixels) in drawn {
+        assert!(pixels == expected[i], "the playhead {} ms is drawn the same by either engine", times[i]);
+    }
+}
+
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn a_reference_frame_makes_another_engine_share_the_regions_it_draws_identically() {
+    let source = sign_and_mover();
+    let mut first_engine = Engine::default();
+    let first = render(&mut first_engine, &source, 500);
+    assert_eq!(first.rects.len(), 2, "a sign and a square are two regions");
+    let allocations: Vec<_> = first.rects.iter().map(|r| r.rgba.clone()).collect();
+    let shares_one = |frame: &Frame| {
+        frame.rects.iter().filter(|r| allocations.iter().any(|a| Arc::ptr_eq(a, &r.rgba))).count()
+    };
+
+    // Another engine on its own draws the sign the same, in an allocation of its own: the screen
+    // would upload it again for every frame the engines take turns on.
+    let alone = render(&mut Engine::default(), &source, 1000);
+    assert!(alone.rects.iter().any(|r| first.rects.iter().any(|f| same_pixels(r, f))), "the sign is the same");
+    assert_eq!(shares_one(&alone), 0);
+
+    // With the frame before it as its reference, the sign is that frame's allocation and the
+    // square, which moved, is a new one; the picture is the same bytes.
+    let mut referred = job(&source, 1000, 320, 180, 320, 180);
+    referred.reference = Some(first.clone());
+    let shared = Engine::default().render(&referred).frame;
+    assert_eq!(shared.error, None);
+    assert_eq!(shares_one(&shared), 1, "the static sign shares, the square that changed does not");
+    assert_eq!(canvas(&shared), canvas(&alone), "sharing changes no pixel");
+
+    // A picture that is the reference's own is that very frame: the screen already knows its serial.
+    let mut same = job(&source, 500, 320, 180, 320, 180);
+    same.reference = Some(first.clone());
+    let again = Engine::default().render(&same).frame;
+    assert!(Arc::ptr_eq(&again, &first));
+
+    // ... also when the engine itself found nothing changed since its own last frame: a still sign
+    // drawn before by this engine with no reference is handed back as the reference's.
+    let still = script(&format!("Dialogue: 0,0:00:00.00,0:00:04.00,Default,,0,0,0,,{SIGN}\n"));
+    let reference = render(&mut Engine::default(), &still, 300);
+    let mut engine = Engine::default();
+    let own = render(&mut engine, &still, 400);
+    assert!(!Arc::ptr_eq(&own, &reference), "each engine draws its own copy");
+    let mut later = job(&still, 900, 320, 180, 320, 180);
+    later.reference = Some(reference.clone());
+    let handed = engine.render(&later).frame;
+    assert!(Arc::ptr_eq(&handed, &reference), "unchanged, and the same pixels as the reference");
+}
+
+// The render scale (issue #1328): a moving stretch is drawn at a fraction of the output size, with
+// the storage size unchanged so the script lays out identically, and the regions come back in the
+// smaller canvas.
+
+fn region(x: i32, y: i32, width: i32, height: i32) -> Rect {
+    Rect { x, y, width, height, rgba: Arc::from(vec![0u8; (width * height * 4) as usize]) }
+}
+
+fn frame_at(scale: RenderScale, width: i32, height: i32, rects: Vec<Rect>) -> Frame {
+    Frame { source_id: 1, serial: 1, width, height, rects, scale, error: None }
+}
+
+#[test]
+fn a_regions_edges_map_back_to_the_output_canvas_whatever_the_scale() {
+    // the same region of the output, at each rung: the frame's own coordinates differ, the output's do not
+    let output = (480.0, 270.0, 1160.0, 640.0);
+    let full = frame_at(RenderScale::Full, 1920, 1080, vec![]);
+    assert_eq!(full.output_edges(&region(480, 270, 680, 370)), output, "full size maps to itself exactly");
+    let half = frame_at(RenderScale::Half, 1920, 1080, vec![]);
+    assert_eq!(half.render_size(), (960, 540));
+    assert_eq!(half.output_edges(&region(240, 135, 340, 185)), output);
+    let two_thirds = frame_at(RenderScale::TwoThirds, 1920, 1080, vec![]);
+    assert_eq!(two_thirds.render_size(), (1280, 720));
+    assert_eq!(two_thirds.output_edges(&region(320, 180, 453, 247)), (480.0, 270.0, 1159.5, 640.5));
+}
+
+#[test]
+fn regions_that_abut_in_the_frame_abut_on_the_output() {
+    // a letterboxed viewport, where the rounded render height does not divide the output's
+    let frame = frame_at(RenderScale::TwoThirds, 1920, 800, vec![]);
+    assert_eq!(frame.render_size(), (1280, 533));
+    for edge in [1, 100, 266, 400, 532] {
+        let above = frame.output_edges(&region(0, edge - 17, 10, 17));
+        let below = frame.output_edges(&region(0, edge, 10, 20));
+        assert_eq!(above.3, below.1, "the bottom of one is the top of the next at {edge}");
+    }
+    let last = frame.output_edges(&region(0, 500, 1280, 33));
+    assert!((last.2 - 1920.0).abs() < 1e-3 && (last.3 - 800.0).abs() < 1e-3, "the far edge of the frame is the far edge of the output");
+}
+
+/// A cue drawn at half size is the same picture as at full size: every region sits where the full-size
+/// one does, within the transparent border the facade leaves round a region, and it costs a quarter of
+/// the pixels. The storage size is the one the full frame has, so libass lays the script out the same.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn a_frame_drawn_at_half_size_lays_out_where_the_full_size_one_does() {
+    let red = r"{\an7\pos(20,20)\c&H0000FF&\p1}m 0 0 l 40 0 40 40 0 40";
+    let blue = r"{\an7\pos(120,90)\c&HFF0000&\p1}m 0 0 l 60 0 60 30 0 30";
+    let source = script(&format!(
+        "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{red}\nDialogue: 1,0:00:00.00,0:00:02.00,Default,,0,0,0,,{blue}\n"
+    ));
+    let at = |scale: RenderScale, now_ms: i64| {
+        let mut job = job(&source, now_ms, 640, 360, 640, 360);
+        job.scale = scale;
+        let frame = Engine::default().render(&job).frame;
+        assert_eq!(frame.error, None, "native fixture requires the built host library in pkg");
+        frame
+    };
+    let (full, half) = (at(RenderScale::Full, 100), at(RenderScale::Half, 100));
+    assert_eq!((full.scale, half.scale), (RenderScale::Full, RenderScale::Half));
+    assert_eq!((full.width, full.height, half.width, half.height), (640, 360, 640, 360), "both answer for the output");
+    assert_eq!(half.render_size(), (320, 180));
+    assert_eq!(full.rects.len(), 2, "two squares");
+    assert_eq!(half.rects.len(), full.rects.len());
+    let bytes = |f: &Frame| f.rects.iter().map(|r| r.rgba.len()).sum::<usize>();
+    assert!(bytes(&half) * 3 <= bytes(&full), "a quarter of the pixels: {} against {}", bytes(&half), bytes(&full));
+    let edges = |f: &Frame| {
+        let mut all: Vec<_> = f.rects.iter().map(|r| f.output_edges(r)).collect();
+        all.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        all
+    };
+    for (a, b) in edges(&full).into_iter().zip(edges(&half)) {
+        let close = |x: f32, y: f32| (x - y).abs() <= 3.0;
+        assert!(
+            close(a.0, b.0) && close(a.1, b.1) && close(a.2, b.2) && close(a.3, b.3),
+            "full {a:?} against half {b:?} on the output canvas"
+        );
+    }
+    // the solid square's centre is the same colour at both sizes
+    assert_eq!(pixel(&half, 20, 20), [255, 0, 0, 255]);
+    assert_eq!(pixel(&full, 40, 40), [255, 0, 0, 255]);
+}
+
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn a_render_at_a_new_size_is_cold_and_no_sample_and_each_frame_is_labelled_with_its_own_size() {
+    let sign = r"{\an7\pos(20,20)\c&H0000FF&\p1}m 0 0 l 40 0 40 40 0 40";
+    let source = script(&format!("Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{sign}\n"));
+    let mut engine = Engine::default();
+    let mut at = |scale: RenderScale, now_ms: i64| {
+        let mut job = job(&source, now_ms, 640, 360, 640, 360);
+        job.scale = scale;
+        let frame = engine.render(&job).frame;
+        assert_eq!(frame.error, None, "native fixture requires the built host library in pkg");
+        (frame, engine.resynced)
+    };
+    let (first, opened) = at(RenderScale::Full, 100);
+    assert!(opened, "the first render opens the renderer");
+    let (_, again) = at(RenderScale::Full, 200);
+    assert!(!again, "the same size again is a steady frame");
+    let (half, resized) = at(RenderScale::Half, 300);
+    assert!(resized, "a new size drops libass's caches: that frame is cold, no sample of a steady one");
+    assert_eq!(half.scale, RenderScale::Half);
+    let (_, steady) = at(RenderScale::Half, 400);
+    assert!(!steady);
+    let (back, resized) = at(RenderScale::Full, 500);
+    assert!(resized);
+    assert_eq!(back.scale, RenderScale::Full, "a frame is never handed back for another size's regions");
+    assert_eq!(back.rects, first.rects, "and it is the picture the full size drew before");
+    // a picture with no region is labelled with the size it was drawn at as well
+    let (empty_full, _) = at(RenderScale::Full, 5_000);
+    let (empty_half, _) = at(RenderScale::Half, 5_100);
+    assert!(empty_full.rects.is_empty() && empty_half.rects.is_empty());
+    assert_eq!((empty_full.scale, empty_half.scale), (RenderScale::Full, RenderScale::Half));
 }

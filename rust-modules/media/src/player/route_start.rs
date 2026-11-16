@@ -451,7 +451,15 @@ fn start_bufferfeed_prepared(
     // the original Load path. A refusal here remains a Prepared transaction until the caller
     // aborts it; a later supersession drops both guards without launching a worker.
     let session_rate = if stream { feed_start_rate(ps)? } else { super::RATE_NORMAL };
+    // The viewer's goal: a reconfigure or a claim landing records it, else the transport's own
+    // state. The readout commit and the plan's Play decision follow this, so a claim landing of a
+    // playing viewer starts the fresh stream unpaused (the plan issues Play, which is the
+    // `ResumeInitial` that opens the feed gate and lets the Initial prime fire).
     let start_paused = feed_start_paused(ps);
+    // The physical hold: the feed gate's state before this start (captured before the commit
+    // below mutates it). A claim landing paused the transport for its flight, so even a playing
+    // viewer's fresh stream is held here for its Initial prime, though its goal is to play.
+    let physical_hold = ps.readout().paused();
     // Publish the session's offered rate and the pause goal to the native Load. A refused start
     // puts both back (the wrappers around this fn): a failed candidate cannot change the outgoing
     // attempt's offer or its Feed mailbox.
@@ -463,7 +471,7 @@ fn start_bufferfeed_prepared(
     // A native refusal is mapped here, by the common owner: the executor logs why, and the route
     // only learns that the start failed.
     let native_epoch = pa.open_prepare(plx_playback_contract::feed::OpenRequest {
-        start_paused,
+        start_paused: physical_hold,
         seek_preroll: ps.readout().seek_preroll(),
         stream: open.map(super::feed_open::FeedOpenRequest::into_stream),
         sample,
@@ -784,7 +792,11 @@ pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter
         "reload_at: fresh Load at {}s",
         target_ns / 1_000_000_000
     ));
+    let reload_is_seek = ps.readout().unconfirmed_seek_target().is_some();
     teardown(ps, pa, true, plx_playback_contract::StopReason::Replace); // reload mode: preserve the session (no url-clear / stop-scrobble)
+    if reload_is_seek {
+        ps.step_readout(super::readout::ReadoutEvent::ReloadSeek { target_ns });
+    }
     super::arm_open(pa, target_ns);
     reload_start_outcome(ps, pa, ticket)
 }
@@ -1399,9 +1411,10 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
             crate::route::begin_engine_teardown(true);
         }
         if !for_reload {
-            // A real stop under the failure read-out whose Engine was released
-            // ([`release_failed_engine`]) ends the playback the Engine would have ended: the
-            // position it stopped at is the one the server keeps.
+            // A seek reload can still be queued, and a failed Engine may already be released.
+            // The session owns the final position in both cases, even without a live Engine.
+            let feed_seek = uri_attempt.is_none()
+                .then(|| ps.readout().unconfirmed_seek_target()).flatten();
             let mut final_report = None;
             if uri_attempt.is_some() && pa.finalize_uri_once() {
                 let facts = ps.attempt_view().facts();
@@ -1411,15 +1424,13 @@ pub(super) fn begin_teardown(ps: &mut crate::route::PlaybackSession, pa: &mut Pl
                 let rk = crate::route::cur_rk(ps);
                 final_report = (!rk.is_empty() && dur > 0)
                     .then(|| (rk, pos / 1_000_000, dur / 1_000_000));
-            } else if ps.backends().feed && crate::route::engine_failure(ps).is_some() {
-                {
-                // The session's last sample of the attempt, as the URI branch and `final_report` read it.
+            } else if ps.backends().feed
+                && (feed_seek.is_some() || crate::route::engine_failure(ps).is_some()) {
                 let dur = super::duration_ns(ps).unwrap_or(0);
-                let pos = crate::route::unpresented_resume_ns(ps);
+                let pos = final_position_ns(ps, feed_seek);
                 crate::player::report::ended(ps, pos, dur);
                 let rk = crate::route::cur_rk(ps);
                 final_report = (!rk.is_empty() && dur > 0).then(|| (rk, pos / 1_000_000, dur / 1_000_000));
-                }
             }
             crate::route::scrobble_stop(ps, final_report, uri_report_th.take());
             crate::route::begin_engine_teardown(false);
@@ -1474,7 +1485,8 @@ pub(super) fn final_report(ps: &mut crate::route::PlaybackSession, for_reload: b
     // The duration is the session's last sample of the live attempt (the pump's, taken at the
     // frame's start and end), which is the container's duration for the whole of a playback.
     let dur = super::duration_ns(ps).unwrap_or(0);
-    let pos_ns = final_position_ns(ps, Some(ps.readout().raw().playpos_ns));
+    let readout = ps.readout();
+    let pos_ns = final_position_ns(ps, readout.unconfirmed_seek_target().or(Some(readout.raw().playpos_ns)));
     if !for_reload {
         crate::player::report::ended(ps, pos_ns, dur);
     }

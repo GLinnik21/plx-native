@@ -11,7 +11,7 @@ use plx_ui::fixture::FixtureMeasure;
 fn context(focus: u32) -> Cx<'static, InnerHost> {
     static MEASURE: FixtureMeasure = FixtureMeasure;
     Cx {
-        views: plx_data::stores::browse::DirectoryView::empty_for_test().into(),
+        views: crate::registry::InnerViews::new(plx_data::stores::browse::DirectoryView::empty_for_test(), crate::registry::publication_fixture()),
         tick: Tick::default(),
         measure: &MEASURE,
         press: PressRead::default(),
@@ -116,6 +116,31 @@ fn page_with(list: HudList) -> (HudPage, mpsc::Sender<HudList>) {
     tx.send(list).unwrap();
     drive(&mut page, tick(), 0);
     (page, tx)
+}
+
+#[test]
+fn finish_time_switch_waits_for_a_profile_write_and_the_published_value() {
+    let (mut page, tx) = page_with(HudList { end_time: Some(true), ..list() });
+    assert_eq!(row_of(&page, &HudId::EndTime).toggle, Some(true));
+    let effects = drive(&mut page, ScreenEvent::Activate(END_TIME_KEY), END_TIME_KEY);
+    let [effect] = effects.as_slice() else { panic!("one preference write") };
+    let Fx::App(AppFx::Preferences(super::super::registry::PreferenceCmd::Choose(
+        plx_media::route::Choice::HudEndTime(false), reply,
+    ))) = &effect.fx else { panic!("the switch writes the profile preference") };
+    assert!(drive(&mut page, ScreenEvent::Activate(END_TIME_KEY), END_TIME_KEY).is_empty());
+    reply.send(false).unwrap();
+    drive(&mut page, tick(), END_TIME_KEY);
+    assert_eq!(row_of(&page, &HudId::EndTime).toggle, Some(true), "refused write");
+    let effects = drive(&mut page, ScreenEvent::Activate(END_TIME_KEY), END_TIME_KEY);
+    let Fx::App(AppFx::Preferences(super::super::registry::PreferenceCmd::Choose(_, reply))) = &effects[0].fx
+        else { panic!("the switch can retry a refused write") };
+    reply.send(true).unwrap();
+    tx.send(HudList { end_time: Some(false), ..list() }).unwrap();
+    drive(&mut page, tick(), END_TIME_KEY);
+    assert_eq!(row_of(&page, &HudId::EndTime).toggle, Some(false));
+    tx.send(list()).unwrap();
+    drive(&mut page, tick(), END_TIME_KEY);
+    assert!(page.form.index_of(&HudId::EndTime).is_none(), "signed out");
 }
 
 fn key_of(page: &HudPage, id: &HudId) -> u32 {
@@ -360,6 +385,7 @@ fn every_row_fits_its_column_in_every_language() {
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         let mut every = list();
+        every.end_time = Some(true);
         let mut volatile = pack("com.example.b", "Beta", 2, false);
         volatile.until_restart = true;
         let mut unfit = pack("com.example.c", "Gamma", 3, false);
@@ -379,7 +405,7 @@ fn every_row_fits_its_column_in_every_language() {
         let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
         form.table.compact = false;
         form.table.board_metrics(true); // as `hud_settings.rs` draws it
-        form.set(hud_form(&every, None).0, None);
+        form.set(hud_form(&every, None, false).0, None);
         for e in form.table.app_fit_failures(RouteLayout::settings_page().sectioned_table().w, language.tag()) {
             out.push(e);
         }
@@ -392,7 +418,7 @@ fn every_row_fits_its_column_in_every_language() {
             form.table.compact = false;
             form.table.board_metrics(true);
             let draft = draft.map(|text| TextBuffer::new(text.to_owned(), text.len()));
-            form.set(hud_form(&busy, draft.as_ref()).0, None);
+            form.set(hud_form(&busy, draft.as_ref(), false).0, None);
             out.extend(form.table.app_fit_failures(RouteLayout::settings_page().sectioned_table().w, language.tag()));
         }
     }
@@ -866,6 +892,31 @@ fn gallery_forms_and_preview_controls_fit_every_shipped_language() {
     plx_ui::table::assert_no_fit_failures(&failures);
 }
 
+/// **The Player HUD root previews the HUD its focus is on**, as the gallery does: an installed package that
+/// the registry lists draws the registry's art for it in the left column (and cycles its frames), and the
+/// built-in, which the registry has no art for, draws none. It used to preview only on the gallery and a
+/// package's own pages, so the root's picture slot stayed empty on every row.
+#[test]
+fn the_player_hud_root_previews_the_focused_installed_hud_and_none_for_the_built_in() {
+    let mut page = gallery_page(SettingsPage::PlayerHud);
+    let listed = page.list.catalog.index.as_ref().unwrap().entries[0].clone();
+    page.list.entries.push(Entry { sha: Some(listed.sha()), ..pack("com.example.listed", "Listed", 1, false) });
+    page.list.entries.push(pack("com.example.unlisted", "Unlisted", 2, false));
+    page.rebuild(None);
+    let focus = |page: &mut HudPage, id: &HudId| {
+        let key = key_of(page, id);
+        drive(page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: EntryId(0), elem: key }, by: plx_machine::machine::By::Dir }, key);
+    };
+    focus(&mut page, &HudId::Pack("com.example.listed".into()));
+    let art = page.picture().and_then(|picture| picture.art).expect("the listed package's registry art is the root's picture");
+    assert!(matches!(art, plx_ui::widgets::Art::Thumb { .. }), "the public image source, as in the gallery");
+    assert!(!page.preview_frames().is_empty(), "the root cycles the same frames the gallery does");
+    for id in [HudId::Pack(BUILTIN_CLASSIC.into()), HudId::Pack("com.example.unlisted".into())] {
+        focus(&mut page, &id);
+        assert!(page.picture().is_none(), "{id:?}: the registry has no art for it");
+    }
+}
+
 #[test]
 fn gallery_preview_never_uses_a_plex_server_slot() {
     let page=gallery_page(SettingsPage::HudGallery);
@@ -1268,6 +1319,7 @@ fn every_sentence_beside_the_table_fits_five_lines_in_every_language() {
         let tag = language.tag();
         let mut every = list();
         every.language = SHIPPED.iter().map(|l| plx_platform::i18n::Preference::SHIPPED.into_iter().find(|p| p.tag() == l.tag()).map_or("", |p| p.native_name())).max_by_key(|n| n.chars().count()).unwrap_or("").to_owned();
+        every.end_time = Some(true);
         every.unfit = vec![Sha::of(&[3])];
         let mut unfit = pack("com.example.c", "Gamma", 3, false);
         unfit.until_restart = true;
@@ -1278,7 +1330,7 @@ fn every_sentence_beside_the_table_fits_five_lines_in_every_language() {
             every.entries.push(gone);
         }
         every.drops = every_refusal().iter().enumerate().map(|(i, r)| drop_file(&format!("f{i}.plxhud"), 20 + i as u8, Err(*r))).collect();
-        let mut sentences: Vec<(String, String)> = hud_form(&every, None).1.into_iter().map(|(id, says)| (format!("{id:?}"), says)).collect();
+        let mut sentences: Vec<(String, String)> = hud_form(&every, None, false).1.into_iter().map(|(id, says)| (format!("{id:?}"), says)).collect();
         // the package and gallery pages: each state of Install, the offline and the empty gallery
         let gallery = gallery_list();
         let sha = gallery.catalog.index.as_ref().unwrap().entries[0].sha();

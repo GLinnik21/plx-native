@@ -131,6 +131,7 @@ fn view(k: usize) -> LibraryView {
         listing: "collections".into(),
         listing_sort: "l".repeat(96),
         listing_desc: true,
+        page: Default::default(),
         extensions: Default::default(),
     }
 }

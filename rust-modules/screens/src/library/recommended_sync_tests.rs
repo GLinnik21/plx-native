@@ -145,14 +145,14 @@ fn only_a_landscape_continue_watching_deck_holds_artwork_keys_and_a_new_backgrou
         assert!(Basis::of(&other, 7).deck.is_empty(), "continue={is_continue} landscape={landscape}");
     }
     // the card reads its keys by position, and only through the basis its item was published for
-    let src = HubSrc { elems: &[1, 2], shelf: Some(&held), paging: false, deck: Some(&basis) };
+    let src = HubSrc { policy: crate::registry::captions::policy(), elems: &[1, 2], shelf: Some(&held), paging: false, deck: Some(&basis), deck_press: plx_plex::plex::session::DeckPress::Details };
     let facts = src.facts(1).expect("a card");
     assert_eq!(facts.deck.map(|d| d.cover), Some(basis.deck[1].cover.as_str()), "opted in");
     let stale = Shelf { items: vec![episode("9002", "/library/metadata/77/art/5"), episode("9001", "/library/metadata/77/art/5")], ..held.clone() };
-    let src = HubSrc { elems: &[1, 2], shelf: Some(&stale), paging: false, deck: Some(&basis) };
+    let src = HubSrc { policy: crate::registry::captions::policy(), elems: &[1, 2], shelf: Some(&stale), paging: false, deck: Some(&basis), deck_press: plx_plex::plex::session::DeckPress::Details };
     assert!(src.facts(0).expect("a card").deck.is_none(), "another title at that place: the old chain, never another title's cover");
     let poster = Shelf { is_continue: false, ..held.clone() };
-    let src = HubSrc { elems: &[1, 2], shelf: Some(&poster), paging: false, deck: Some(&Basis::of(&poster, 7)) };
+    let src = HubSrc { policy: crate::registry::captions::policy(), elems: &[1, 2], shelf: Some(&poster), paging: false, deck: Some(&Basis::of(&poster, 7)), deck_press: plx_plex::plex::session::DeckPress::Details };
     assert!(src.facts(0).expect("a card").deck.is_none(), "a shelf that is not the deck never opts in");
 }
 
@@ -333,6 +333,47 @@ fn the_key_table_stays_bounded_over_many_rotating_refreshes() {
     assert!(sweeps >= 2, "premise: 120 rotations of {} keys reach the sweep more than once ({sweeps})", rows * per_row);
     assert!(peak < 120 * rows * per_row, "the table did not grow with the session: peak {peak}");
     assert_eq!(snapshot(&page), snapshot(&fixture.screen()), "and the page is the one a full build makes");
+}
+
+#[test]
+fn rotating_linked_shelves_bound_control_keys_and_keep_focus_seats() {
+    let _guard = plx_base::testlock::serial();
+    let collections = |start| {
+        [0, start + 1, start + 2].map(|id| (
+            format!("custom.collection.1.{id}"),
+            format!("/library/collections/{id}/children"),
+            format!("Collection {id}"),
+        ))
+    };
+    let mut fixture = Fixture::named_shelves(&collections(1), 4);
+    let mut page = fixture.screen();
+    let stable = page.shelves[0].heading.expect("linked heading");
+    let (focused_group, focused_elem) = page.shelves[1].heading.expect("linked heading");
+    let focus = Some(FocusKey { entry: page.entry, elem: focused_elem });
+    let bound = key_cap(3 * (3 + 3)) + KEY_PRUNE_BATCH;
+    let mut swept = false;
+    for step in 1..=120 {
+        let previous: Vec<_> = page.shelves.iter().flat_map(Row::control_keys).collect();
+        let before = page.keys.count(KeyRegion::Control);
+        reseed(&mut fixture, &collections(2 * step + 1), 4);
+        fixture.republish();
+        page.sync(&fixture.cx(focus));
+        let after = page.keys.count(KeyRegion::Control);
+        assert!(after <= bound, "rotation {step}: {after} controls exceed {bound}");
+        swept |= after < before;
+        assert_eq!(page.shelves[0].heading, Some(stable));
+        assert_eq!(page.keys.last_place(focused_elem), Some((focused_group, 0)));
+        assert!(page.keys.key(focused_group.0).is_some());
+        assert!(previous.into_iter().all(|elem| page.keys.key(elem).is_some()));
+    }
+    assert!(swept, "the fixture must cross the sweep threshold");
+
+    let memory = page.page_memory();
+    let mut restored = fixture.screen();
+    restored.restore(&memory);
+    restored.sync(&fixture.cx(focus));
+    assert_eq!(restored.shelves[0].heading, Some(stable));
+    assert_eq!(snapshot(&restored), snapshot(&page));
 }
 
 /// **`KeyRegistry::count` is the table's count**: the per-region numbers the sweep's bound is read

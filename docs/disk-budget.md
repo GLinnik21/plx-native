@@ -10,6 +10,8 @@ page is the design record of that tooling and the reference for the pieces that 
   the live machine about every path again. `build-gc.sh --auto` is the planner followed by it.
 - `tools/disk-budget.py preflight`: what `make disk-preflight` runs at every build entry. With room
   it is one `statvfs`; without, it is the planner followed by `--evict`, then a re-measure.
+- `tools/cold-store.py` and `disk-budget.py park`: the opt-in cold store, which parks idle trees on a second
+  volume ahead of the ladder (`build-gc.sh --auto` and `--park` run it); "The cold store" below.
 
 The planner never deletes and the executor never decides: a plan is a proposal, and the executor
 treats every line of it as untrusted.
@@ -46,8 +48,9 @@ report (`python3 tools/disk-budget.py report`, which can also be run on its own;
 its estimate). It prints, in order:
 
 1. **The budget**: free space, the comfort line, the reserve, the next build's estimate, the ref lanes
-   are judged against, and the **verdict** (`ok`, `would reclaim`, or `WOULD REFUSE` with the
-   reason and the biggest trees that are live).
+   are judged against, the **cold store** (`off: not configured`, or on, with how many trees and bytes the
+   SSD index says are parked and any parking residue: see "The cold store"), and the **verdict** (`ok`,
+   `would reclaim`, or `WOULD REFUSE` with the reason and the biggest trees that are live).
 2. **Trees**: every derived tree found, with `PRIVATE` (what deleting it frees), `DU` (what `du`
    says), when cargo last wrote in it, and its state (the rungs it can be taken at, or why it is kept).
 3. **The ladder**: every eviction a reclaim could take, in the order it would take them. A `*` marks
@@ -55,6 +58,12 @@ its estimate). It prints, in order:
    The ladder always prints; set `PLX_GC_TEST_FREE_KIB` (the KiB override `build-gc.sh` already has)
    to see which of its rungs a reclaim would take, and the verdict, on a machine that has room:
    `PLX_GC_TEST_FREE_KIB=$((8*1024*1024)) python3 tools/disk-budget.py report`.
+
+On macOS the table before the budget also carries one line, `hourly agent`, saying whether the
+launchd agent `com.plxnative.build-gc` (the hourly `--auto`) is loaded (`launchctl list` exit status).
+If it is not, nothing reclaims disk between builds and nothing else says so: `make disk-watch` loads
+it. The line is absent elsewhere. A tree on another volume appears in the trees list with `-` for its
+sizes and age and the state `other volume (not sized)`: see below.
 
 `PRIVATE` is the number to trust. On APFS a clone shares its blocks, so `du` counts them in full in
 every tree that holds them and deleting one of a pair frees nothing. `PRIVATE` is the file's own
@@ -125,7 +134,21 @@ almost nothing, and the next lane's first build is cold.
   not derived from cargo) and the live entries of the shared FFmpeg cache (`<cache>/ffmpeg/<key>`).
   The one thing in that cache the planner takes, at rung 0, is a `.tombstone.` entry left by an
   interrupted delete, which nothing will ever read.
-- A tree on another volume.
+- A tree on another volume than the checkout's (a lane worktree on an external disk). Such a tree is
+  listed, with its device, and that is all: it is neither sized, aged, probed for locks or tracked
+  files, nor is its lane asked about git (`is_merged`, `is_clean`). Everything those would say is moot,
+  since the tree is never planned, and on a slow disk the walk alone stalled the build-entry preflight
+  for 20-35 minutes. The one device lookup is `device_of`, which `collect` calls first for every
+  candidate. `build-gc.sh --auto` likewise skips a lane whose worktree is on another volume than the
+  checkout (before its `git status`, squash check or idle-window `find`): removing it frees nothing on
+  the volume that is short, so `--auto` never removes a merged lane there. `--worktrees` typed by hand
+  still judges and removes it, since that is the human's call. A lane's fleet tree (its
+  `CARGO_TARGET_DIR`, kept outside the worktree) is on the build's own volume even when the lane's
+  checkout is not: it is sized like any local tree, but the checkout is not read either: the lane reads
+  neither merged nor clean, `--evict` counts it as active instead of walking the checkout with the
+  idle-window `find` (so the tree is spared), and `make disk` prints `-` for the checkout's sizes. The
+  `make check` lock is still probed, since it is a flock on a local file and a check running in that
+  checkout builds into this very tree.
 - **A cargo tree that is not PlxNative's.** `CACHEDIR.TAG` alone proves nothing (any cargo writes
   it); a tree is ours only if its `deps/`, `.fingerprint/`, `build/` or `incremental/` hold a
   `plx_*`, `libplx_*` or `plxnative*` entry. Other trees are reported as "not ours" and never planned.
@@ -258,7 +281,11 @@ it.
 **`build-gc.sh --auto`** is the planner followed by `--evict`. Always `--orphans` first, unconditionally.
 Below `PLX_GC_MIN_FREE_GIB` free (default 20): `--worktrees` restricted to lanes idle for at least
 `PLX_GC_IDLE_MIN` minutes (default 60, judged over the worktree and its fleet build tree) and holding no
-ignored file that is not build output (see above: such a lane is kept and the log says which paths kept it), then, if still below, `reclaim --to $PLX_GC_MIN_FREE_GIB --no-build --idle-min
+ignored file that is not build output (see above: such a lane is kept and the log says which paths kept it), then, if still below, an
+FFmpeg-only age-out: `build-gc.sh --ffmpeg-cache` with `PLX_CACHE_MAX_DAYS` set to `PLX_GC_AUTO_CACHE_DAYS` (default 7),
+which removes the shared FFmpeg build trees (`<cache>/ffmpeg/<key>`) whose `.last-used` marker is older than that,
+each under its own key lock and behind the same refusal for a held FFmpeg cache lock as `--cache` (by hand
+`--cache` keeps 30 days and also prunes the cargo seed; this stage never does), then, if still below, `reclaim --to $PLX_GC_MIN_FREE_GIB --no-build --idle-min
 $PLX_GC_IDLE_MIN --emit` into a temporary file and `--evict` on it. It replaces five fixed stages
 (`--incremental`, `--worktrees`, `--lanes`, `--stale`, `--seed`) with the planner's order, which
 differs: the main checkout's incremental cache is the last resort (rung 6) instead of
@@ -266,7 +293,10 @@ the first stage; a lane's vendor build trees are not touched (they are not deriv
 `--lanes` and `--all` take them); the cargo seed is never evicted; PlxNative trees left under `/tmp`
 are now in scope; and the stop line is the threshold plus 4 GiB. A planner that fails or is missing
 deletes nothing and the log says so. The free-space gate, the single-instance lock and `-n` (which
-takes no lock) are unchanged.
+takes no lock) are unchanged. With the opt-in cold store configured there is one more stage, between
+`--orphans` and `--worktrees`, with its own gate (free space from the comfort line up to `park_below_gib`,
+default 40 GiB) that moves idle trees to the cold volume instead of deleting them; it prints and logs nothing
+without a config file (see "The cold store").
 
 **Test seams.** `PLX_GC_TEST_FREE_KIB` (free space) and `PLX_GC_TEST_NOW` (the clock; honoured only
 when `PLX_GC_TMP_ROOTS` is set) let a test pretend the disk is full or that time has passed.
@@ -283,21 +313,50 @@ that starts cargo. `make -s print-disk-entries` lists them. It is order-only bec
 prerequisite would make every file target in the list out of date on every run; it still runs on a
 `make` that has nothing to do, which is why the fast path matters. The decision, in order:
 
-1. `PLX_DISK_BUDGET_DONE` set (and not `0`): exit 0. A recipe that re-enters make for a hooked target
+1. **The cold store's unpark check, before any exit below.** Two stat calls and the
+   `PLX_COLD_STORE=off` test: the tree this entry builds (`--tree`), then, only when it is ABSENT, its index
+   entry under `$PLX_BUILD_CACHE/cold-store/index/` (and, when there is none, one listing of that directory for
+   a claim on it, see below). A tree that exists, or an absent one with no entry and no claim, falls
+   through to step 2 unchanged and loads nothing. An absent tree WITH an entry takes the full command, which
+   loads `cold-store.py` and then, in this order: (a) the checks that wait for nothing (`ColdStore.unusable`: no
+   config, no `ditto`, the cold volume not mounted) end it with one line, before any lock is touched; (b) it
+   takes build-gc's auto lock, waiting until the preflight's ONE deadline (`--wait-secs` from its start; what
+   this wait spends is not available to step 4's, so a build never waits twice the budget; the waiting flag is
+   under "What it will not do"); (c) UNDER that lock it only CLAIMS the parked copy (`ColdStore.claim`: its cost
+   rule, and: free space after the copy, plus what other live claims are still to copy, stays at or above the
+   comfort line, then an atomic rename of the index record to `index/<id>.json.unparking.<pid>`) and
+   releases the lock; (d) WITHOUT the lock it copies (`ColdStore.unpark(claimed=...)`), so another build's
+   claim or reclaim does not wait behind a multi-minute copy. It prints one line (`cold-store: unpark ...` when it
+   copied, else why not) and goes on to step 2. A claimed entry is invisible to a second unparker, which says
+   `being restored by pid N` and rebuilds cold; to `recover`'s adoption; and to the park pass (`park` refuses an
+   origin with a live claim). A copy that fails, or finds the tree made meanwhile, gives the entry back; a claimer
+   that died leaves a claim with a dead pid, which the next claim of that tree and `recover` put back as the
+   entry. It sits before the exits because `check`, `install` and `build-bench` run their children with
+   `PLX_DISK_BUDGET_DONE=1` and each child has its own tree. Whatever goes wrong inside it (the volume is
+   away, the module will not load, an exception) costs one line and the build goes on cold. Only the entry's
+   own `DISK_TREE` comes back: a lane's other `target*` dirs wait for an entry that names them, and a direct
+   `cargo` reaches no preflight and rebuilds cold (prune then drops the stale parked copy, since the origin
+   exists and is newer).
+2. `PLX_DISK_BUDGET_DONE` set (and not `0`): exit 0. A recipe that re-enters make for a hooked target
    (`check` into `check-unlocked`, `install` into `deploy`, `build-bench`'s children) sets it on that
    line, so the child does not measure again. `PLX_MIN_FREE_MB=0` is exit 0 too.
-2. **Fast path: one `statvfs`, exit 0** when free space is at least the comfort line and at least the
+3. **Fast path: one `statvfs`, exit 0** when free space is at least the comfort line and at least the
    target's UPPER estimate plus the reserve. This block sits before the module's heavy imports and
    needs only `os` and `sys`; a test pins that no subprocess, `tempfile`, `ctypes`, `argparse` or
    `dataclasses` is loaded on it. Measured 2026-10-19 over 20 runs of `python3 tools/disk-budget.py
    preflight`: median 21.3 ms against 14.2 ms for an empty interpreter (the earlier version, with
-   every import first, took about 45 ms).
-3. Below that, the full command. A tree on another volume than the checkout is judged on free space
+   every import first, took about 45 ms). Step 1's check (an `lstat` of the tree, and one `stat` of the
+   index entry when the tree is absent) added about 0.5 ms: measured 2026-11-11, 20 interleaved runs each,
+   median 23.2 ms without it and 23.7 ms with it (tree present or absent, no entry; 11.4 ms for an empty
+   interpreter on that day's machine). The later listing of the index directory for a claim (only when the tree is
+   absent and has no entry) was timed alone, not re-run in that interleaved test: `timeit` over 5000 calls of
+   `cold_unpark_pending` on an absent tree and an index directory of five entries, 34 microseconds a call.
+4. Below that, the full command. A tree on another volume than the checkout is judged on free space
    alone (nothing in the inventory is on its disk). Otherwise it takes `build-gc.sh`'s auto lock,
    plans `reclaim --to <comfort>` for the tree being built, sparing the CURRENT checkout (bar rung 6), runs
    `build-gc.sh --evict` on the plan, drops the inventory cache, re-reads free space and applies
    `settle`: exit 0 if the build plus the reserve now fits, exit 1 with the reason if not.
-4. A plan that is a `refuse` and not `uncertain` evicts nothing (an eviction that cannot save the build
+5. A plan that is a `refuse` and not `uncertain` evicts nothing (an eviction that cannot save the build
    is lost build time for nothing). One that is `uncertain` (the `--stale` sweep is in it) runs, because
    `settle` judges what it actually freed.
 
@@ -308,11 +367,14 @@ prerequisite would make every file target in the list out of date on every run; 
   be refused. `--evict` spares its own checkout by construction; the test runs it against a fixture
   fleet and asserts that the lane's tree, its incremental dirs and `target-sim` are all still there.
 - *Wait on a lock for long.* If build-gc's auto lock (`${TMPDIR:-/tmp}/plx-build-gc-auto.lock`) is
-  held it polls up to `--wait-secs` (default 60) and returns 0 the moment free space shows the build
+  held it polls up to `--wait-secs` (default 60, one deadline for the whole preflight, the cold store's
+  unpark wait included) and returns 0 the moment free space shows the build
   fits (it makes no plan while another reclaim runs, which is the one making the room). Each poll
   tries the lock again: a holder that has finished, or a dead holder's lock older than
   `PLX_GC_LOCK_STALE_MIN` (120), as `--auto` reclaims it, is taken over and the plan runs. At the
-  deadline it judges on free space alone.
+  deadline it judges on free space alone. While it waits it keeps a flag file beside the lock
+  (`<lock>.waiting.<pid>`, refreshed on each poll, removed when it stops waiting), which the cold store's park
+  pass reads between trees to hand the lock over (see "The cold store").
 - *Fail a build for its own faults.* An exception in the preflight falls back to the bare floor: the
   build goes on unless free space is already below the reserve. A `build-gc.sh` that is missing,
   cannot be run or exceeds its 900 s timeout is judged like one that ran: `settle` on the free space
@@ -341,6 +403,119 @@ metadata beside `make lint`'s, so the planner subtracts what the tree already ho
 needs the 0.5 GiB minimum. Both came from PR #845, which landed after this branch was cut; the static
 test that finds every target whose recipe runs cargo is generic, and it failed on both until they
 were added to `DISK_ENTRIES`.
+
+## The cold store
+
+An idle lane's `target` is hours of compiling that the ladder's rung 4 deletes when the disk runs short. With a
+second, large volume (an external disk) the same tree can be PARKED there instead and, until something brings it
+back, the lane simply has no tree, exactly as after a rung 4 deletion. `tools/cold-store.py` does the moving;
+`disk-budget.py park` decides what moves; `build-gc.sh --auto` and `--park` run it. It is **opt-in and off
+unless configured**: without the file below every entry point returns before it creates a file or directory
+anywhere, `--auto` prints and logs exactly what it did before, and the preflight adds one stat of the tree it is
+about to build (an index entry is only ever written by a park, so an unconfigured install never has one).
+
+**Turning it on.** A per-user file `cold-store` in the directory `tools/tv-config.sh` resolves
+(`PLX_TV_CONFIG_DIR`, else `${XDG_CONFIG_HOME:-~/.config}/plxnative`), `key=value` lines, `#` comments, nothing
+secret in it and never committed:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `root` | (required) | An absolute directory on the cold volume, e.g. `/Volumes/DAS/plxnative-cold` |
+| `park_below_gib` | 40 | `--auto` parks when the build volume has less than this free but still at least the comfort line (20 GiB): trees move before the ladder must delete them, and never once it must |
+| `park_idle_min` | 120 | A tree, and its lane, must have been idle this long |
+| `park_max_gib_per_run` | 20 | The most one pass parks (private bytes; the pass stops after the tree that reaches it) |
+| `max_days` | 14 | A parked copy older than this is pruned |
+| `min_free_gib` | 200 | The cold volume must keep this much free: below it nothing parks and prune drops the oldest copies |
+| `rate_floor_mibs` | 40 | The fastest copy rate the unpark cost rule assumes |
+| `rebuild_secs_<dir>` | per tree directory name | Seconds a cold rebuild of that directory takes (`target`, `target-fast`, ...), the cost rule's other side |
+
+`PLX_COLD_STORE=off` disables it for one command, `PLX_COLD_STORE=<path>` names the root for one command,
+`PLX_COLD_STORE_CONFIG=<file>` names the config file (the test seam). **To turn it off:** delete the file (or
+set `PLX_COLD_STORE=off`). Trees already parked stay on the cold volume until `cold-store.py unpark PATH` brings
+one back or `cold-store.py prune` ages them out; `cold-store.py status` and `list` say what is there.
+
+**What parks, and when.** `build-gc.sh --auto` runs one more stage between `--orphans` and `--worktrees`: when a
+cold store is configured and free space is under `park_below_gib` and at least the comfort line
+(`PLX_GC_MIN_FREE_GIB`, 20), it takes the planner's own candidate list
+(`ladder()` with `--no-build`, `disk-budget.py park-candidates --emit` prints it), keeps the rung 3 and rung 4
+WHOLE-TREE actions (idle `/tmp` trees and idle lane and fleet trees, never the garbage of rung 0, never an
+incremental dir) and parks them oldest built first, up to `park_max_gib_per_run`, stopping early once free space
+is back over `park_below_gib` + 4 GiB. **Under the comfort line it does not park at all**: it prints one line
+saying so, and the worktrees stage, the FFmpeg age-out and the planner pass run exactly as they do without a cold store. A park holds
+the auto lock for the whole copy to a slow disk (minutes), a build that waits for the lock gives up after 60 s and
+judges on free space with no eviction, and the ladder frees the same room in seconds by deleting. Free space is
+read again before each tree, so a pass that began over the line ends when builds have eaten the room. A lane whose
+HEAD is already on the base ref is not parked (the prune below would drop its copy in the same run). The existing
+early exit ("free space already above threshold") now sits below this stage, and still skips the worktrees, the FFmpeg
+age-out and the planner pass as before. `build-gc.sh --park` is the same pass by hand, without the free-space gate and without the
+comfort line (the owner asked for it); `-n` names what would move and changes nothing on either volume.
+
+**What never parks.** Anything the planner never plans (`never()` above): the main checkout's trees, the cargo
+seed, a tree with a tracked file, a tree git does not recognise as ours, a live tree. Anything on another
+volume than the build, and a cold root on the build's own volume (parking would free nothing; the store checks
+the device). A young tree, or one whose lane changed anything under its checkout (a source edit counts, `.git`
+does not) within `park_idle_min`. A tree whose liveness probe says live when the pass asks again, right before
+the rename: the probe is `disk-budget.py probe`'s own `probe_tree` (open handles, a held cargo lock, a `make
+check` lock, a builder in the checkout), the same one `--evict` asks. One refused tree is skipped and the pass
+goes on; a failed copy ends it.
+
+**How one tree moves.** (1) Rename it out of the checkout to `$PLX_BUILD_CACHE/cold-store/parking/<id>/` (same
+volume, atomic; a build that starts in the lane now sees an absent tree, as after a deletion). (2) `ditto` it to
+`<root>/trees/<id>.partial` and verify the file count and apparent bytes; set an older copy of the same origin
+(recorded or not) aside; write the record beside it and rename the partial to `<root>/trees/<id>/`. (3) Flush the
+cold volume: `sync`, then `F_FULLFSYNC` through the record file (`fsync` where the volume has no `F_FULLFSYNC`),
+once for the whole tree and never per file (fsync took 5-9 s under load on the owner's disk): a copy that is only in
+the USB drive's write cache is not a copy to delete the SSD side for. (4) Write the SSD index record. (5) Delete the
+parking copy. An `OSError` from any step in (2) to (4), a rename, a record write or the flush, puts the tree back in
+its checkout and reports FAILED, which ends the pass: a copy not yet renamed into place is removed, one that was is
+renamed to `<id>.dead.<pid>.<ns>` and its record dropped, so `recover` reaps it instead of adopting a copy of a tree
+that is back where it was. A crash leaves `parking/<id>` and a pid
+file: the next pass runs `recover` first (a complete cold copy: delete the SSD copy; else the origin absent:
+rename back; else delete the SSD copy), and `make disk` lists any parking residue with its size.
+
+**The lock.** A pass holds build-gc's auto lock for minutes, so it does not hold it straight through. Between
+trees it releases the lock and re-takes it (naming the shell that owns the run), and a `disk-preflight` that
+has to wait on the lock writes a flag file beside it, `<lock>.waiting.<pid>`, refreshed on every poll. The pass
+(`recover` first, each tree, then the prune and the reap) looks at the flag before every piece of work and stops
+there, giving the lock back. One tree's copy, or the deletion of one copy, cannot be interrupted, so a waiter can
+still be held for that long: that is why the `--auto` pass only runs over the comfort line (above), where no build
+needs the ladder, and why nothing here may count on a preflight waiting longer than its 60 s. The `--auto` run that
+handed the lock over ends there (the preflight plans its own eviction); a flag whose process is gone, or that
+nobody refreshed for two minutes, is not a waiter.
+
+**Prune.** After the pass (and `recover`) it drops parked copies whose origin exists again and was built since;
+whose lane is gone or already merged; older than `max_days`; and, while the cold volume is under
+`min_free_gib`, the oldest. Merged and gone come from git for the lanes the records name.
+
+**The cost rule** (when a parked tree is worth bringing back; `cold-store.py unpark PATH`): only into an ABSENT
+tree, and only when `apparent_bytes / min(rate_floor, the park's measured rate)` is under the directory's
+`rebuild_secs`, and the caller says free space after the copy stays at or above its line. The preflight calls it
+(step 1 of "The preflight"): a build entry whose own tree is absent and indexed gets that tree back before cargo
+starts (the decision and the claim of the parked copy under build-gc's auto lock, the copy without it), and only that tree, so a lane with `target`, `target-fast`, `target-hostsim` and
+`target-sim` parked gets each back when an entry naming it runs (the others wait, and expire after `max_days`). A
+declined or failed unpark leaves the parked copy where it is and the build rebuilds, or restores from the seed,
+exactly as after any eviction. A direct `cargo` reaches no preflight and rebuilds cold; prune then drops the stale
+parked copy, since the origin exists and is newer. `PLX_COLD_STORE=off` skips the check altogether.
+
+**Where the files are.** SSD: `$PLX_BUILD_CACHE/cold-store/index/<escaped origin>.json` (one record per parked
+tree: origin, kind, owning checkout and its HEAD, parked-at, file count, apparent bytes, private bytes freed, the
+measured copy rate), `index/<escaped origin>.json.unparking.<pid>` (the same record while process `<pid>` restores
+that tree: `make disk` and `cold-store.py status` list it as `restoring`) and `parking/<id>/` (+ `.json`, `.pid`) while
+a tree is in flight. Cold volume:
+`<root>/trees/<id>/` and `<id>.json`, plus `.partial`, `.dead.<pid>.<ns>` and `.consumed.<pid>.<ns>` debris that
+prune reaps (matched as a whole name suffix, so a lane directory with the word in its name is never taken for it; the
+set-aside names are unique, so one an earlier set-aside left behind cannot make the next fail). An unpark prints one
+line before it copies (`cold-store: unpark <size> from <root> (est <s> s at <rate> MiB/s): <path>`) and one after.
+`make disk` shows on or off with the reason, the parked count and bytes, and any residue, reading the mount
+table and the SSD only: it never wakes the cold volume. `--auto` touches the cold volume only when it is
+configured AND free space is under `park_below_gib` and at least the comfort line.
+
+**Test seams.** `ci/test_cold_store.py` replaces the one copy primitive and the device check; the park pass is
+tested in `ci/test_disk_budget.py` (candidates, probes, budget, lock, waiting flag) and end to end in
+`ci/test_build_gc.py`, where the copy of `cold-store.py` next to the script under test is given a second
+"volume" and a plain tree copy. `park` refuses (exit 2) a pretend emergency (`PLX_GC_TEST_FREE_KIB`,
+`PLX_GC_TEST_NOW`) while the cold store's config is left to the per-user default, for the same reason `reclaim`
+does.
 
 ## Not done, and not determined
 

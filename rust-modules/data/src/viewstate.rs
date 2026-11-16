@@ -580,7 +580,7 @@ pub fn finish_view_write_job(
         // watched/unwatched pair could then settle differently per server, which is the one thing
         // this whole feature exists to stop.
         let also = if req.w.propagates() {
-            fan_out(origin, clients, req.sid, &req.rk, &req.guid, req.w)
+            fan_out(origin, clients, &req.keys, req.sid, &req.rk, &req.guid, req.w)
         } else {
             Vec::new()
         };
@@ -770,7 +770,7 @@ pub fn publish_view(
         person(crate::stores::person::PersonCmd::ApplyView { at: at.clone(), edit });
         collection(crate::stores::collection::CollectionCmd::ApplyView { at, edit });
     }
-    plx_machine::idle::invalidate(); // the tick/veil/bar just changed with no spring behind it
+     // the tick/veil/bar just changed with no spring behind it
     endpoints
 }
 
@@ -788,7 +788,7 @@ impl ViewStateState {
         keys: &ClientKeys, profile: u32) -> bool {
         // One server has no other copy to reach: the request would only cost a second hub refetch.
         let Some(key) = keys.key(sid) else { return false };
-        if plx_plex::plex::server_ids().nth(1).is_none()
+        if keys.slots().nth(1).is_none()
             || self.queue.iter().chain(self.sent.iter()).any(|r| plx_plex::plex::same_item((r.sid, &r.rk), (sid, rk)))
         {
             return false;
@@ -1038,7 +1038,7 @@ pub fn pump_with_gate(
         // the same staleness, one screen over: a library's own shelves carry watch state and its
         // own Continue Watching row, so the burst that made Home's hubs stale made these stale too
         browse(crate::stores::browse::BrowseCmd::HubsInvalidateAll);
-        plx_machine::idle::invalidate();
+
     }
     endpoints
 }
@@ -1189,12 +1189,13 @@ type Answer = (ServerId, Option<Vec<String>>);
 fn fan_out(
     c: &plx_plex::plex::Client,
     clients: KeyedClients<'_>,
+    keys: &ClientKeys,
     sid: ServerId,
     rk: &str,
     guid: &str,
     w: Write,
 ) -> Vec<(ServerId, String)> {
-    let sources: Vec<ServerId> = plx_plex::plex::server_ids().collect();
+    let sources: Vec<ServerId> = keys.slots().collect();
     if sources.len() < 2 {
         // A one-server install pays NOTHING for this feature: no guid lookup, no query, no line in
         // the log. Checked before the lookup below for exactly that reason.
@@ -1440,7 +1441,7 @@ mod tests {
     /// `(rk, watched, unwatched, resume_ms)` of every Search row, in shelf order.
     fn search_marks(stores: &crate::stores::Stores) -> Vec<(String, bool, bool, i64)> {
         let directory = crate::stores::browse::DirectorySnapshot::default();
-        let snap = stores.search_snapshot(directory.view(), &[]);
+        let snap = stores.search_snapshot_for_test(directory.view(), &[]);
         snap.view().shelves().iter().flat_map(|s| &s.items).filter_map(|it| match it {
             crate::search::Item::Media(m) => Some((m.rk.clone(), m.watched, m.unwatched, m.resume_ms)),
             _ => None,
@@ -1493,7 +1494,7 @@ mod tests {
         let (mut stores, sid) = search_with_show_and_episodes();
         let directory = crate::stores::browse::DirectorySnapshot::default();
         let run = |stores: &mut crate::stores::Stores, rk: &str, edit| {
-            stores.search_run(crate::stores::search::SearchCmd::ApplyView { at: ViewAt::leaf(sid, rk), edit }, directory.view())
+            stores.search_run_for_test(crate::stores::search::SearchCmd::ApplyView { at: ViewAt::leaf(sid, rk), edit }, directory.view())
         };
         let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: None };
         assert!(run(&mut stores, "other", facts), "the server says watched: the row changes");
@@ -1518,7 +1519,7 @@ mod tests {
         let (mut stores, sid) = search_with_show_and_episodes();
         let directory = crate::stores::browse::DirectorySnapshot::default();
         for rk in ["e11", "e12", "e21"] {
-            stores.search_run(crate::stores::search::SearchCmd::ApplyView {
+            stores.search_run_for_test(crate::stores::search::SearchCmd::ApplyView {
                 at: ViewAt::leaf(sid, rk), edit: ViewEdit::Watched(true) }, directory.view());
         }
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
@@ -2577,3 +2578,7 @@ mod sort_caption_reconcile_tests {
         assert_eq!(WatchSortFacts::of(&row), Some(sort), "a legacy cached row can receive the new facts");
     }
 }
+
+#[cfg(test)]
+#[path = "viewstate_captured_inputs_tests.rs"]
+mod captured_inputs_tests;

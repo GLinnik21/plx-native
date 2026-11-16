@@ -26,9 +26,9 @@ fn clear_store() {
 // ── keys ────────────────────────────────────────────────────────────────────────────────────────
 
 /// A cover or a composite names a recipe, not a server path: the slot key IS the synthetic key,
-/// whatever box the consumer draws it in, with no token and well inside a slot.
+/// whatever box the consumer draws it in, with no token.
 #[test]
-fn the_baked_keys_are_used_as_they_stand_carry_no_token_and_fit_a_slot() {
+fn the_baked_keys_are_used_as_they_stand_and_carry_no_token() {
     let (_g, sid, tok) = one_server();
     for (key, parse_ok) in [(cover_key(), cover_parts(&cover_key()).is_some()), (card_key(), card_parts(&card_key()).is_some())] {
         assert!(parse_ok);
@@ -36,21 +36,43 @@ fn the_baked_keys_are_used_as_they_stand_carry_no_token_and_fit_a_slot() {
         assert_eq!(built, key, "the key is the slot key");
         assert_eq!(key_for(sid, &key, 840, 472, 0), key, "every box shares one bake");
         assert!(!built.contains("X-Plex-Token") && !built.contains(tok) && !built.contains('?'), "{built}");
-        assert!(built.len() <= KEY_MAX && is_fetchable(&built));
+        assert!(is_fetchable(&built));
     }
     assert!(baked_prefix(&cover_key()) && baked_prefix(&card_key()));
     assert!(is_baked_key(&cover_key()) && is_baked_key(&card_key()));
 }
 
-/// A card key longer than a slot is refused rather than truncated, like any other (a truncated key
-/// never equals its probe again).
 #[test]
-fn a_baked_key_longer_than_a_slot_is_refused() {
+fn a_new_logo_stamp_changes_both_the_transcode_and_composite_cache_keys() {
     let (_g, sid, _) = one_server();
-    let long = format!("/library/metadata/605/art/{}", "9".repeat(KEY_MAX));
-    let key = card_path("605", &long).expect("the builder does not bound it; the store does");
-    assert!(key.len() > KEY_MAX);
-    assert_eq!(key_for(sid, &key, 420, 236, 0), "");
+    let client = plx_plex::plex::client_for(sid).unwrap();
+    let identity = |logo| {
+        let request = logo_key(sid, logo).unwrap();
+        let transcode = plx_platform::imgcache::classify(&disk_namespace(client), &request).unwrap();
+        let composite = card_path(logo, ART).unwrap();
+        assert_eq!(built_key(sid, &composite, 420, 236, false).as_deref(), Some(composite.as_str()));
+        let (logo, art) = card_parts(&composite).unwrap();
+        let io = WorkerCardIo::new(client, logo, art, 0, client.token_gen());
+        (request, transcode, io.disk.unwrap())
+    };
+    let old = identity("/library/metadata/605/clearLogo/1778546279");
+    let new = identity("/library/metadata/605/clearLogo/1778546280");
+    assert!(new.0.contains("%2FclearLogo%2F1778546280&"));
+    assert!(new.0.contains("&format=png&"));
+    assert_ne!(old.0, new.0);
+    assert_ne!(old.1, new.1);
+    assert_ne!(old.2, new.2);
+    assert!(logo_key(sid, "").is_none(), "a removed logo must not reuse a legacy hit");
+}
+
+/// A long card key is used whole, like any other key (#1408): no length bound, no truncation.
+#[test]
+fn a_long_baked_key_is_used_whole() {
+    let (_g, sid, _) = one_server();
+    let long = format!("/library/metadata/605/art/{}", "9".repeat(400));
+    let key = card_path("605", &long).expect("the builder does not bound it");
+    assert!(key.len() > 255);
+    assert_eq!(key_for(sid, &key, 420, 236, 0), key);
 }
 
 /// Near-misses are not baked keys: they go the ordinary transcode route, as any path would.
@@ -253,7 +275,7 @@ fn a_cover_or_card_bake_is_not_persisted_across_a_retoken_or_a_profile_switch() 
     let card = |c: &'static plx_plex::plex::Client| WorkerCardIo {
         client: c,
         srv: sid,
-        rk: "605",
+        logo: "605",
         art: ART,
         cache_gen: plx_platform::imgcache::generation(),
         token_gen: c.token_gen(),

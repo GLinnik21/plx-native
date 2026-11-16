@@ -19,7 +19,7 @@
 //!
 //! | member (reads) | mapped as | decision |
 //! |---|---|---|
-//! | `playpos_ns` (10) | `position_ns = reported_frame.then_some(pos.max(0))` | **raw**: every resume seeds it before any frame, and the open-recovery resume offset (`pump.rs` `drive_open_recovery`) reads it before one; through `position_ns` a refused resume would reconvert at 0 |
+//! | `playpos_ns` (10) | `position_ns = (reported_frame \|\| pos > 0).then_some(pos.max(0))`: a reset zeroes it, so before the first frame a non-zero value is a seeded target (`arm_open`, `rebase`) or a seek's | **raw**: the open-recovery resume offset (`pump.rs` `drive_open_recovery`) reads the store before any frame, whether or not this session's open published a seed |
 //! | `frames` (6) | `reported_frame.then_some(frames)` | **raw**: `== 0` and `> 0` tests where "no callback yet" differs from "0 frames" whenever frames > 0 arrive without a frame callback (not proven impossible) |
 //! | `load_failed`, `load_timed_out`, `demux_failed`, `demux_io_failed` (10) | one collapsed `runtime_failure` (`play-feed/src/readout.rs`) | **raw**: [`FailureFlags`]; readers test single flags and `live_runtime_failure` re-derives the collapse in media. The player's own notes of one are [`FeedCommand::NoteFailure`]: the flag is written inside the feed and returns through the next sample |
 //! | `duration_ns` (5) | `(d > 0).then_some(d)` | **mapped**, `unwrap_or(0)`: every reader tests `> 0` (`timeline.rs` `from_content_ns`, `pump.rs` `stream_ended` and the `> 0` seek gate, `route_start.rs` `final_report`) or passes it to `report::ended`; the store is 0 or positive (`reset` stores 0), so `<= 0` never carries a meaning `None` loses |
@@ -491,6 +491,13 @@ pub struct FeedRaw {
     /// The HTTP status of the last failed transport request, 0 = none; loaded like
     /// [`Self::cb_err_num`].
     pub http_status: i32,
+    /// The codec the file ACTUALLY carries, in the Load-declaration code space, recorded by the
+    /// demuxer when it refuses a Load whose bytes disagree with its declared codec (a stale PMS
+    /// track list, or a transcode the route described from the source's record); `0` = no
+    /// disagreement on that Load. Published before the `demux_failed` flag it explains; the
+    /// player's one-shot probe retry is its only consumer, and the session reset clears it.
+    pub probe_actual_video: u8,
+    pub probe_actual_audio: u8,
     /// What the Stats-for-nerds read-out shows of the feed's own mailboxes, from the same sample.
     pub diag: FeedDiag,
     /// The summed length (ms, wrapping) of the gaps between consecutive native presentation
@@ -681,6 +688,7 @@ impl FeedRaw {
         applied_rate_permille: crate::RATE_NORMAL, speed_audio_ok: None, vpres_count: 0,
         pts_shift: 0, pipeline_eos: false, seek_landed_epoch: 0, seek_target_ns: None,
         seek_requeue: SeekRequeue::NONE, cb_err_num: 0, http_status: 0,
+        probe_actual_video: 0, probe_actual_audio: 0,
         diag: FeedDiag::IDLE,
         vpres_gap_sum_ms: 0, vpres_gap_count: 0, disp_base: 0, load: LoadRaw::IDLE,
         abr: DemuxAbr::IDLE,

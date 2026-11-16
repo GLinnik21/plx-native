@@ -66,6 +66,11 @@ struct PlaybackRequest {
     /// The version the viewer picked (Play Version), `None` for the default. Kept on the request,
     /// so a retry or quality change of this playback resolves the same version.
     version: Option<plx_plex::plex::MediaId>,
+    /// The show an EPISODE belongs to (`grandparentRatingKey`), empty for a movie, a clip, or an
+    /// item whose caller did not know it. The play queue is built from it
+    /// ([`ResolveEnv::queue_show_rk`]), so a retry or a quality change of this playback builds the
+    /// same queue.
+    show_rk: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -273,7 +278,8 @@ pub struct PlaybackSession {
     /// that decision is made from the same numbers `build_stream` used rather than from a guess.
     cur_src: (i64, i64, i64),
     /// Whole Part transport bitrate, including audio. Auto's progressive watchdog compares the
-    /// live socket against this rather than `cur_src.0` (video only), because the wire has to carry
+    /// live socket against this rather than `cur_src.0` (the video stream's rate for a default version measured
+    /// from the detail, a fetched version's whole-file rate otherwise), because the wire has to carry
     /// both lanes. `0` means PMS did not provide one and disables the watchdog fail-safely.
     cur_transport_kbps: i64,
     /// **Can this television decode the SOURCE video stream as it stands** — `video_direct_plays`
@@ -523,6 +529,10 @@ pub struct PlaybackSession {
     /// `false` on every transcode and remux; see where it is set for why that is deliberate rather
     /// than an omission.
     stream_immersive: bool,
+    /// The demuxer's probe (a declared codec the file's own bytes disproved) has authorised at
+    /// most ONE reload with the corrected declaration: [`take_codec_probe_retry`] consumes it. A
+    /// second mismatch on the same playback is a different failure and gets the ordinary read-out.
+    codec_probe_retried: bool,
     /// HUD strings as fixed NUL-terminated C buffers, so title_cptr()/ctxline_cptr() hand
     /// draw_text (extern "C", *const c_char) a pointer that stays valid for the whole frame.
     ///
@@ -640,7 +650,8 @@ mod uri_failure_recovery_tests {
         session.install_backends(plx_playback_contract::BackendSet::BOTH);
         session.request = Some(PlaybackRequest { sid: ServerId::UNSET, rk: "42".into(),
             part: "/library/parts/7".into(), vcodec: "h264".into(), acodec: "aac".into(),
-            title: "Film".into(), ctx: String::new(), preview: false, version: None });
+            title: "Film".into(), ctx: String::new(), preview: false, version: None,
+            show_rk: String::new() });
         let mut policy = BackendPolicy::for_request(false);
         policy.qualify(BackendKind::Uri, OfferId::URI_ORIGINAL, Qualification::Qualified);
         assert!(policy.admitted(BackendKind::Uri, OfferId::URI_ORIGINAL));
@@ -950,7 +961,7 @@ mod backend_offer_session_tests {
         session.request = Some(PlaybackRequest {
             sid: session.cur_sid, rk: "42".into(), part: "/library/parts/7".into(),
             vcodec: "h264".into(), acodec: "ac3".into(), title: "Film".into(),
-            ctx: String::new(), preview: false, version: None,
+            ctx: String::new(), preview: false, version: None, show_rk: String::new(),
         });
         assert_eq!(menu_enhancement_availability(&session),
             EnhancementAvailability::Offered(EnhancementRoute::Remux),
@@ -965,7 +976,7 @@ mod backend_offer_session_tests {
         session.request = Some(PlaybackRequest {
             sid: ServerId::UNSET, rk: "42".into(), part: "/library/parts/7".into(),
             vcodec: "h264".into(), acodec: "ac3".into(), title: "Film".into(),
-            ctx: String::new(), preview: false, version: None,
+            ctx: String::new(), preview: false, version: None, show_rk: String::new(),
         });
         let mut meta = plx_data::stores::metadata::MetadataStore::default();
         let change = ViewerReconfigure::Speed(1500);
@@ -1737,6 +1748,7 @@ impl PlaybackSession {
         src_dovi: plx_data::metadata::Dovi::NONE,
         src_dv_decision: plx_data::metadata::DvDecision::NONE,
         stream_immersive: false,
+        codec_probe_retried: false,
         title: [0; 128],
         ctxline: [0; 96],
         up_next: None,
@@ -1845,6 +1857,7 @@ impl PlaybackSession {
             src_dovi,
             src_dv_decision,
             stream_immersive,
+            codec_probe_retried,
             title,
             ctxline,
             up_next,
@@ -1933,6 +1946,7 @@ impl PlaybackSession {
             src_dovi: *src_dovi,
             src_dv_decision: *src_dv_decision,
             stream_immersive: *stream_immersive,
+            codec_probe_retried: *codec_probe_retried,
             title: *title,
             ctxline: *ctxline,
             up_next: up_next.clone(),
@@ -6382,6 +6396,14 @@ fn recover_original_direct(
         s.stream_vcodec = candidate.vcodec.clone();
         // A server-default candidate carries no track facts; the file's own default codec
         // (`src_acodec`, the resolve's source argument) is what that direct play decodes.
+        //
+        // When a track IS picked, the demuxer feeds THAT track's bytes (the ordinal just set
+        // below via `set_audio_track`), so the declaration follows the picked track's codec —
+        // which is why releasing an E-AC3 JOC source to a picked AC3 track declares `ac3`, not
+        // the file's `eac3`. The FileFlows kill is the NO-pick case: PMS's track metadata still
+        // lists the default as `eac3` while the file on disk is the AAC remux, so the default
+        // play fed AAC frames under an `eac3` declaration. `fill_direct_plan` (plan.rs) carries
+        // the file's ground truth for that path; here the picked track's codec is the bytes.
         s.stream_acodec = candidate
             .audio
             .as_ref()
@@ -6389,7 +6411,20 @@ fn recover_original_direct(
         s.stream_fps = candidate.fps;
         s.stream_dovi = candidate.dovi;
         s.stream_dv_decision = candidate.dv_decision;
-        s.stream_immersive = candidate.audio.as_ref().is_some_and(|a| a.immersive);
+        // The immersive node raises the pipeline's Atmos mode for the E-AC3 being fed, so it is
+        // valid only when the FED bytes are E-AC3. When a track is picked, that's the picked
+        // track's codec (the `ac3` release above must NOT carry the node even though the FILE is
+        // an E-AC3 JOC source); with no track picked it's the file's default. A non-E-AC3 feed
+        // never carries the `immersive:ATMOS` node, which would wedge the audio ES the same way.
+        s.stream_immersive = candidate
+            .audio
+            .as_ref()
+            .is_some_and(|a| a.immersive)
+            && candidate
+                .audio
+                .as_ref()
+                .map_or_else(|| s.src_acodec.clone(), |a| a.codec.clone())
+                .eq_ignore_ascii_case("eac3");
     } };
     crate::player::route_fx::set_audio_track(
         ps,
@@ -6831,7 +6866,15 @@ pub fn play_refused(ps: &PlaybackSession) -> bool {
 /// Did the resolve refuse this as a PREVIEW that was not a direct play
 /// ([`PlayVerdict::PreviewNeedsDirectPlay`])? Our own refusal, not the server's.
 pub(crate) fn play_refused_as_preview(ps: &PlaybackSession) -> bool {
-    matches!(ps.play_verdict, Some(PlayVerdict::PreviewNeedsDirectPlay))
+    preview_refusal(ps).is_some()
+}
+/// Which condition refused this PREVIEW ([`PlayVerdict::PreviewNeedsDirectPlay`]'s `reason`), or
+/// `None` for any other session. The failure report's `playback.preview_refusal` tag reads it.
+pub(crate) fn preview_refusal(ps: &PlaybackSession) -> Option<plx_telemetry::telemetry::classes::PreviewRefusal> {
+    match ps.play_verdict {
+        Some(PlayVerdict::PreviewNeedsDirectPlay { reason }) => Some(reason),
+        _ => None,
+    }
 }
 /// The app/worker failed to produce a playable plan, as distinct from a PMS `/decision` refusal.
 /// There is no Engine whose pump could publish Error, so `player::state()` derives it beside the
@@ -7697,6 +7740,24 @@ mod pcm_format_tests {
 pub fn set_stream_acodec(ps: &mut PlaybackSession, codec: &str) {
     { let s = &mut *ps; s.stream_acodec = codec.to_owned() }
 }
+/// Override the video codec used to build the Load payload — set by the demuxer's probe retry to
+/// the codec the file's own bytes carry, before the one-shot corrective reload.
+pub fn set_stream_vcodec(ps: &mut PlaybackSession, codec: &str) {
+    { let s = &mut *ps; s.stream_vcodec = codec.to_owned() }
+}
+/// The demuxer's probe (a declared codec the file's own bytes disproved) authorises EXACTLY one
+/// reload with the corrected declaration. Consume it here: a second mismatch on the same playback
+/// is a different failure and gets the ordinary failure read-out, never a loop.
+pub fn take_codec_probe_retry(ps: &mut PlaybackSession) -> bool {
+    { let s = &mut *ps;
+        if s.codec_probe_retried {
+            false
+        } else {
+            s.codec_probe_retried = true;
+            true
+        }
+    }
+}
 /// Record the streamed item's video+audio codec pair in one write (the Load-payload source of
 /// truth) for route-policy tests that install a synthetic live HLS response.
 #[cfg(any(test, feature = "test-support"))]
@@ -8498,6 +8559,16 @@ impl TimelineStopFence {
         }
     }
 
+    /// [`Self::wait`] for at most `bound`; whether every stop up to `required` had completed by then.
+    fn wait_for(&self, required: u64, bound: std::time::Duration) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let (state, _) = self
+            .changed
+            .wait_timeout_while(state, bound, |s| s.completed < required)
+            .unwrap_or_else(|e| e.into_inner());
+        state.completed >= required
+    }
+
     fn complete(&self, generation: u64) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if generation > state.completed {
@@ -8562,6 +8633,15 @@ pub fn scrobble_settled() -> bool {
 /// (`App::refresh_hubs`). Non-blocking.
 pub fn timeline_stop_landed() -> bool {
     TIMELINE_STOP_FENCE.landed()
+}
+
+/// Wait, for at most `bound`, until every `state=stopped` report announced up to generation
+/// `required` (a value of [`timeline_stops_announced`]) has been attempted or abandoned, and say
+/// whether it had. For a read that must see what that stop reported (the queue window's per-episode
+/// resume points, [`queue_navigation::QueueContinuation::refreshed`]); a bound, because it runs on
+/// the start's critical path and a slow server must not hold the start hostage.
+pub(super) fn wait_for_timeline_stop(required: u64, bound: std::time::Duration) -> bool {
+    TIMELINE_STOP_FENCE.wait_for(required, bound)
 }
 
 /// How many `state=stopped` reports have ever been announced. A caller that remembers the value it
@@ -9784,6 +9864,7 @@ pub fn with_queue<R>(ps: &PlaybackSession, f: impl FnOnce(&[plx_plex::plex::Queu
 pub(super) fn resolve_playqueue(
     c: &plx_plex::plex::Client,
     rk: &str,
+    show_rk: &str,
     session: &str,
     cached: &str,
     continuous: bool,
@@ -9807,7 +9888,7 @@ pub(super) fn resolve_playqueue(
         crate::player::log("playqueue: no machineIdentifier (skip)");
         return QueueInfo::default();
     }
-    match c.create_play_queue(effective, rk, session, continuous) {
+    match c.create_play_queue(effective, rk, show_rk, session, continuous) {
         Some(q) => {
             let up_next = q.next.as_ref().and_then(up_next_of);
             crate::player::log(&format!(
@@ -9900,6 +9981,7 @@ impl ResolveEnv {
             resume_ns: ps.requested_resume_ns,
             src_kbps: resolve_src_kbps(meta.current(), sid, rk),
             omit_queue_continuous: false,
+            queue_show_rk: String::new(),
             queue_continuation: None,
             preview: false,
             audio_enhancements: crate::player::audio_enhancements(),
@@ -10173,6 +10255,7 @@ pub fn request_play(
     title: &str,
     ctx: &str,
     version: Option<plx_plex::plex::MediaId>,
+    show_rk: &str,
 ) -> bool {
     request_play_inner(
         ps,
@@ -10188,6 +10271,7 @@ pub fn request_play(
             ctx: ctx.to_owned(),
             preview: false,
             version,
+            show_rk: show_rk.to_owned(),
         },
         None,
         None,
@@ -10215,6 +10299,7 @@ pub fn request_play_queue_item(
     request_play_with_queue(ps, meta, caps, PlaybackRequest {
         sid: row.sid, rk: row.rk.clone(), part: row.part.clone(), vcodec: row.vcodec.clone(),
         acodec: row.acodec.clone(), title: title.clone(), ctx: ctx.into(), preview: false, version: None,
+        show_rk: row.show_rk.clone(),
     }, None, None, false, crate::player::report::AttemptOrigin::Fresh, queue, false, None)
 }
 
@@ -10245,6 +10330,7 @@ pub fn request_preview(
             ctx: plx_data::metadata::TRAILER_CONTEXT.to_owned(),
             preview: true,
             version: None,
+            show_rk: String::new(),
         },
         None,
         None,
@@ -10269,6 +10355,7 @@ fn request_env(
 ) -> ResolveEnv {
     let mut env = ResolveEnv::snapshot(ps, meta, request.sid, &request.rk);
     env.omit_queue_continuous = plx_data::metadata::context_omits_queue_continuous(&request.ctx);
+    env.queue_show_rk = request.show_rk.clone();
     env.set_preview(request.preview);
     env.fresh_play = retry.is_none() && !request.preview;
     env.version = request.version;
@@ -10928,7 +11015,14 @@ pub fn request_play_movie(
         &m.title,
         ctx,
         version,
+        episode_show_rk(m),
     )
+}
+
+/// The show a played row belongs to, for the queue built from it: only an EPISODE has one
+/// (`PmsMovie::show_rk` also names a season's parent show, and a movie has none).
+fn episode_show_rk(m: &PmsMovie) -> &str {
+    if m.kind == plx_data::pms::KIND_EPISODE { &m.show_rk } else { "" }
 }
 
 /// The server an item's ids belong to: its own when it has one, else the browsed surface.
@@ -11386,6 +11480,8 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             src_dovi: plan.src_dovi,
             src_dv_decision: plan.src_dv_decision,
             stream_immersive: plan.immersive,
+            // A landing is a fresh playback: the one-shot probe-retry budget starts unspent.
+            codec_probe_retried: false,
             title,
             ctxline,
             up_next: plan.up_next.map(std::sync::Arc::new),
@@ -11453,13 +11549,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
     // (`reset_track_selection`); hold it to the range of the subtitle that actually landed, so an
     // advance never outlives its sidecar.
     crate::player::reclamp_subtitle_offset();
-    // A landing is a DISCRETE change to what is on screen, so it owes the present gate a poke —
-    // `plx_machine::idle::invalidate`'s call-site list is that module's correctness argument. The caller
-    // (`app.rs`'s pump) invalidates only when `pump_play` returns TRUE, and a REFUSING plan returns
-    // false by construction (empty url) while flipping the player from Resolving to Error. That it
-    // still repainted was an accident of the player route bypassing the gate entirely; here it is
-    // the rule instead.
-    plx_machine::idle::invalidate();
+    // pump_play returns Some(ResolvedStart) for accepted AND refusing plans. The main-thread
+    // runner owns the landing damage, even when this start contract is None (the Error page).
+
     start
 }
 
@@ -13945,6 +14037,7 @@ pub(crate) fn resolve_refused_preview_for_test(ps: &mut PlaybackSession) {
         ctx: plx_data::metadata::TRAILER_CONTEXT.into(),
         preview: true,
         version: None,
+        show_rk: String::new(),
     });
     test_support::apply_plan(ps, plan, "trailer");
     crate::route::resolve_as_preview_for_test(ps);
@@ -14030,6 +14123,10 @@ mod memory_tests;
 #[cfg(test)]
 #[path = "decision_queue_beside_tests.rs"]
 mod queue_beside_tests;
+
+#[cfg(test)]
+#[path = "decision_queue_predecessor_tests.rs"]
+mod queue_predecessor_tests;
 
 #[cfg(test)]
 #[path = "decision_track_memory_tests.rs"]

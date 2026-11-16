@@ -222,7 +222,7 @@ impl Ctx {
         Ctx {
             palette: Vec::new(),
             assets: Vec::new(),
-            format: schema::CURRENT,
+            format: schema::V1_0,
             in_strip_card: false,
         }
     }
@@ -2495,7 +2495,7 @@ mod tests {
         let missing = edit(MINIMAL, &[(r#""format": "1.0","#, ""), other_mistake]);
         refuses(&missing, &codes::E0401, "/hud/format");
 
-        for newer_minor in ["1.1", "1.7", "1.255", "1.99999999999999999999999"] {
+        for newer_minor in ["1.2", "1.7", "1.255", "1.99999999999999999999999"] {
             let text = with_format(&format!(r#""format": "{newer_minor}""#));
             let finding = refuses(&text, &codes::E0402, "/hud/format");
             assert_eq!(finding.message, REASON_NEWER, "{newer_minor}");
@@ -2794,7 +2794,7 @@ mod tests {
         refuses(&none, &codes::E0106, "/layout/block/0/cells/0");
     }
 
-    /// A node and a field that arrived in format 1.1, built by hand: the table has no such entry yet.
+    /// A node and a field that arrived in format 1.1, built by hand to exercise a required key.
     static PROBE: schema::Node = schema::Node {
         name: "probe",
         kind: NodeKind::Plain,

@@ -211,6 +211,11 @@ pub struct Preferences {
     /// has no mute, so this is also the only sound control.
     #[serde(default = "super::default_true", deserialize_with = "super::de_soft_bool_on")]
     pub trailer_autoplay: bool,
+    /// **Show the estimated local finish time beside the remaining clock.** The top-level value
+    /// is the frozen install fallback; profiles keep their own value in `profile_prefs`. `None`
+    /// means this build has never supplied a fallback, so the feature defaults ON.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "de_soft_opt")]
+    pub hud_end_time: Option<bool>,
     /// **Retired: nothing reads or writes it any more.** It was the last hero `UltraBlurColors`
     /// envelope Home rendered, which seeded the first-run routes' frozen ground; those routes now
     /// paint the authored default ambient (`theme::ROUTE_GROUND_FALLBACK`), because a hero-keyed
@@ -545,9 +550,10 @@ setting!(SubtitlePositionPref: SubtitlePosition = subtitle_position, "subtitle_p
     account false, live true, settings Some(SettingsWrite::Optimistic), parse Soft);
 setting!(HdrOverlayBrightnessPref: HdrOverlayBrightness = hdr_overlay_brightness, "hdr_overlay_brightness",
     Profile fallback LegacyInstallKey, account false, live true, settings Some(SettingsWrite::Optimistic), parse Soft);
-// Tone and enhancements have no Settings row: the player panel is their only writer.
+// The tone is the player panel's Color section AND Settings > Audio & subtitles' Subtitle colour row.
 setting!(SubtitleTonePref: SubtitleTone = subtitle_tone, "subtitle_tone", Profile fallback LegacyInstallKey,
-    account false, live true, settings None, parse Soft);
+    account false, live true, settings Some(SettingsWrite::Optimistic), parse Soft);
+// Enhancements have no Settings row: the player panel is their only writer.
 setting!(AudioEnhancementsPref: crate::plex::AudioEnhancements = audio_enhancements,
     "audio_enhancements", Profile fallback LegacyInstallKey, account false, live true, settings None, parse Soft);
 
@@ -569,6 +575,26 @@ impl Row for HudSelectionPref {
 // section saves it through the `choose` door (Confirm), and `player::preview::enabled` reads its cell every frame.
 setting!(TrailerAutoplayPref: bool = trailer_autoplay, "trailer_autoplay", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse BoolOn);
+
+/// Estimated playback end time in the player HUD. `None` on disk means the default, ON.
+pub struct HudEndTimePref;
+impl Row for HudEndTimePref {
+    const KEY: &'static str = "hud_end_time";
+    const SCOPE: Scope = Scope::Profile;
+    const ACCOUNT_BOUND: bool = false;
+    const LIVE: bool = true;
+    const SETTINGS: Option<SettingsWrite> = Some(SettingsWrite::Confirm);
+    const PARSE: Parse = Parse::OptionalSoft;
+    const FALLBACK: Fallback = Fallback::LegacyInstallKey;
+}
+impl Setting for HudEndTimePref {
+    type Stored = Option<bool>;
+    type Value = bool;
+    fn stored(p: &Preferences) -> &Option<bool> { &p.hud_end_time }
+    fn stored_mut(p: &mut Preferences) -> &mut Option<bool> { &mut p.hud_end_time }
+    fn get(p: &Preferences) -> bool { p.hud_end_time.unwrap_or(true) }
+    fn to_stored(v: bool) -> Option<bool> { Some(v) }
+}
 
 // ---- A5: the remaining preference keys (a separate block, below the ten) -----------------------
 //
@@ -674,6 +700,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     // A5: the remaining keys.
     Descriptor::of::<AutoSignInPref>(),
     Descriptor::of::<TrailerAutoplayPref>(),
+    Descriptor::of::<HudEndTimePref>(),
     Descriptor::of::<LastHeroBlurPref>(),
     Descriptor::of::<UiResolutionPref>(),
     Descriptor::of::<HoldHintTaughtPref>(),

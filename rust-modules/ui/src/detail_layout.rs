@@ -42,8 +42,8 @@ pub struct HeroChain {
     pub btn_y: f32,
 }
 
-/// Shared hero ladder, with Detail anchored at the title's foot. Home uses the same row bands
-/// and gaps while anchoring its actions. Ratings are optional; their absence leaves no gap.
+/// Detail's hero ladder, anchored at the title's foot (Home has its own, `landing_hero::home_rows`).
+/// Ratings are optional; their absence leaves no gap.
 pub fn hero_chain(
     syn_h: f32,
     has_ratings: bool,
@@ -53,7 +53,7 @@ pub fn hero_chain(
     let rows = super::landing_hero::hero_rows(
         theme::logo::HERO_BAND_H, widgets::BADGE_H,
         has_ratings.then_some(widgets::RATING_MARK_D), Some(syn_h.max(34.0)),
-        super::landing_hero::HeroAnchor::TitleBottom(TITLE_BOTTOM),
+        TITLE_BOTTOM,
     );
     HeroChain {
         meta_y: rows.meta.y,

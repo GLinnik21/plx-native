@@ -107,7 +107,7 @@ fn the_sentence_follows_the_focused_row_and_falls_back_to_the_pages() {
 #[test]
 fn the_root_opens_on_its_first_rows_sentence_with_nothing_fading() {
     let _serial = plx_base::testlock::serial();
-    let root = RootPage::new(EntryId(0), cx(None).views.directory);
+    let root = RootPage::new(EntryId(0), cx(None).views.directory, &crate::registry::capture_fixture());
     let first = root.form.selected_id().cloned();
     assert!(first.is_some(), "the root seats a row on mount");
     assert_eq!(root.follow.text(), sentence_for(first.as_ref()).as_ref());
@@ -117,7 +117,7 @@ fn the_root_opens_on_its_first_rows_sentence_with_nothing_fading() {
 #[test]
 fn moving_focus_moves_the_followed_sentence() {
     let _serial = plx_base::testlock::serial();
-    let mut root = RootPage::new(EntryId(0), cx(None).views.directory);
+    let mut root = RootPage::new(EntryId(0), cx(None).views.directory, &crate::registry::capture_fixture());
     select_root(&mut root, RootId::Language);
     assert_eq!(root.follow.text(), msg::settings_language_detail());
     assert!(root.follow.arrival() < 1.0, "a new sentence fades in");
@@ -212,4 +212,55 @@ fn diagnostics_keeps_the_consequence_sub_line_and_delete_last() {
     assert_eq!(table.table.sections.len(), 2, "Delete stands in a section of its own");
     assert_eq!(table.table.sections[1].rows.len(), 1);
     assert_eq!(table.id_at(2).map(|id| id.key().0), Some(3), "Delete is the last row");
+}
+
+fn cached_poster(title: &str) -> plx_data::pms::PmsMovie {
+    plx_data::pms::PmsMovie { title: title.into(), thumb: format!("/library/metadata/{title}/thumb"), ..Default::default() }
+}
+
+/// **The Favorite libraries fan has art on entry.** Settings is entered from Home, which lists
+/// shelves, not a library: the current library's listing is empty, yet the store holds posters
+/// (the very ones the Under posters picture draws). The fan used to read the listing alone, so it
+/// stayed empty until focus went down to Under posters, whose ask loaded the shelves, and back up.
+#[test]
+fn the_favorite_libraries_fan_reads_the_cache_the_picture_reads_not_the_current_listing_alone() {
+    let _guard = plx_base::testlock::serial();
+    let shelves = plx_data::stores::browse::DirectorySnapshot::fixture(0, 0, Vec::new())
+        .with_shelf_sample(vec![cached_poster("Alpha"), cached_poster("Bravo")]);
+    let titles: Vec<&str> = shelves.view().sample(PICTURE_POSTERS).map(|m| m.title.as_str()).collect();
+    assert_eq!(titles, vec!["Alpha", "Bravo"], "a poster held only in a shelf is in the fan");
+    let listing = plx_data::stores::browse::DirectorySnapshot::fixture(0, 0, Vec::new())
+        .with_sample(vec![cached_poster("One"), cached_poster("Two"), cached_poster("Three"), cached_poster("Four"), cached_poster("Five")]);
+    assert_eq!(listing.view().sample(PICTURE_POSTERS).count(), PICTURE_POSTERS, "a full fan is capped");
+}
+
+/// A root entered with nothing cached asks for the posters while Favorite libraries has focus, so
+/// the fan fills on its own, and stops asking once it has one.
+#[test]
+fn the_root_asks_for_posters_while_favorite_libraries_has_focus_and_the_fan_is_empty() {
+    use plx_data::browse::SecKind;
+    use plx_data::stores::browse::{DirectorySnapshot, SectionView, SrcRow};
+    use plx_machine::present::Present;
+    let _g = plx_base::testlock::serial();
+    let _sess = multi_user_session("root-fan-ask");
+    let sid = plx_plex::plex::ServerId::from_raw(0);
+    let section = |key, kind| SectionView { sid: Some(sid), key, kind, row: SrcRow { pinned: true, ..Default::default() } };
+    let empty = DirectorySnapshot::fixture(7, 0, vec![section(1, SecKind::Movie), section(2, SecKind::Show)]);
+    let mut root = RootPage::new(EntryId(0), empty.view(), &crate::registry::capture_fixture());
+    assert_eq!(root.form.selected_id(), Some(&RootId::Favourites), "premise: the root opens on Favorite libraries");
+    let focus = Some(FocusKey { entry: EntryId(0), elem: root.state.sel.0 });
+    let tick = |root: &mut RootPage, snapshot: &DirectorySnapshot| {
+        let mut out = Vec::new();
+        let mut present = Present::new();
+        let c = cx_with(focus, snapshot.view());
+        root.step(&ScreenEvent::Tick(Tick::default()), &c, &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
+        out
+    };
+    let asked = |effects: Vec<Stamped<InnerHost>>| effects.iter().filter(|e| matches!(&e.fx, Fx::App(AppFx::Store(
+        plx_data::stores::StoreId::Browse, plx_data::stores::StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Addressed {
+            work: plx_data::stores::browse::LibraryWork::Hubs { .. }, .. }))))).count();
+    assert_eq!(asked(tick(&mut root, &empty)), 2, "both kinds' shelves are asked for while the fan is empty");
+    let filled = DirectorySnapshot::fixture(7, 0, vec![section(1, SecKind::Movie), section(2, SecKind::Show)])
+        .with_shelf_sample(vec![cached_poster("Alpha")]);
+    assert_eq!(asked(tick(&mut root, &filled)), 0, "a fan with a poster asks for nothing");
 }

@@ -187,7 +187,10 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   re-checks every path of a plan against the live machine immediately before it renames it away
   (a live or idle-window-young tree is skipped, a path that is not a derived build tree is
   refused). It never evicts the cargo seed, and unlike the other modes it does not stop for a
-  held FFmpeg cache lock. Preview a plan with `python3 tools/disk-budget.py reclaim --to GIB
+  held FFmpeg cache lock. An OPT-IN cold store (a per-user `cold-store` file naming a second volume;
+  `docs/disk-budget.md`, "The cold store") makes `--auto`, and `build-gc.sh --park` by hand, MOVE idle
+  trees there ahead of the ladder instead of deleting them; without that file nothing changes.
+  Preview a plan with `python3 tools/disk-budget.py reclaim --to GIB
   --emit > plan; tools/build-gc.sh --evict plan -n`; never run `--evict` for real from a test
   or an experiment outside a fixture. The budget is also checked at every build entry: each
   cargo-running `make` target (`make -s print-disk-entries` lists them) takes `disk-preflight` as an

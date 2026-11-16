@@ -27,7 +27,14 @@ impl Host for LibHost {
     type Init = FixtureArg;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for LibHost {
+    fn screen_inputs<'a>(_cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        crate::registry::empty_fixture()
+    }
+}
+
 impl LibraryLike for LibHost {
+    fn clock_facts<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { None }
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.hubs }
@@ -78,14 +85,14 @@ impl Harness {
                 // over a (here unused) 120-item grid.
                 let stores = plx_data::stores::Stores::default();
                 stores.browse.borrow_mut().seed_two_source_table_for_test();
-                stores.capture_browse(&mut directory);
+                stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
                 stores.browse_run_for_test(BrowseCmd::SetCur(0));
                 {
                     let mut browse = stores.browse.borrow_mut();
                     browse.seed_items_for_test(120);
                     browse.seed_shelves_for_test(0, &["movie.recentlyadded.1", "movie.recentlyreleased.1", "movie.toprated.1"], n);
                 }
-                let publication = stores.capture_browse(&mut directory);
+                let publication = stores.capture_seeded_browse_for_test(&mut directory, plx_plex::plex::current_server());
                 (publication.listing, publication.section_hubs, Some(stores))
             }
         };
@@ -126,7 +133,7 @@ impl Harness {
     fn step(&mut self, ev: ScreenEvent<LibHost>) -> bool {
         let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
-        let (_, moving) = plx_machine::idle::scoped_motion(|| {
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
             let cx: Cx<'_, LibHost> = Cx {
                 views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
                 tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
@@ -151,7 +158,7 @@ impl Harness {
             Set::Shelf => {
                 let stores = self._stores.as_ref().ok_or("the shelf set has no store")?;
                 stores.browse.borrow_mut().seed_first_shelf_items_for_test(0, &self.rks);
-                self.hubs = stores.capture_browse(&mut self.directory).section_hubs;
+                self.hubs = stores.capture_seeded_browse_for_test(&mut self.directory, plx_plex::plex::current_server()).section_hubs;
             }
         }
         self.step(ScreenEvent::StoreChanged(plx_data::stores::StoreId::Browse.ord(), 1));

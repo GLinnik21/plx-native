@@ -21,14 +21,40 @@ fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
     TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
 }
 
-/// D3 test helper: `metadata::alt_install`/`alt_restamp_owners` are private now, reached only
-/// through `MetadataStore::run` — these wrap that so the call sites below read exactly as they
-/// did before the visibility change.
+/// TEST ONLY: capture the registry facts at each fixture command, as the host does before a step.
 fn alt_install(sid: ServerId, rk: &str, copies: Vec<AltCopy>) -> bool {
-    test_store().run(MetadataCmd::AltInstall { sid, rk: rk.to_string(), copies })
+    test_store().run_with_keys(MetadataCmd::AltInstall { sid, rk: rk.to_string(), copies },
+        &plx_data::pms::registry_keys_for_test())
 }
 fn alt_restamp_owners() -> bool {
-    test_store().run(MetadataCmd::AltRestampOwners)
+    test_store().run_with_keys(MetadataCmd::AltRestampOwners, &plx_data::pms::registry_keys_for_test())
+}
+
+#[test]
+fn alt_fixture_uses_captured_server_facts() {
+    struct Cleanup;
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            test_store().run(MetadataCmd::Clear);
+            plx_plex::plex::reset_servers_for_test();
+        }
+    }
+    let _guard = plx_base::testlock::serial();
+    let _cleanup = Cleanup;
+    plx_plex::plex::reset_servers_for_test();
+    let server = plx_plex::plex::register_for_test("alt-capture", "127.0.0.1", 1, "t", "cid");
+    plx_plex::plex::describe_server(server, "Server", "captured", plx_plex::plex::GrantEvidence::outside());
+    let keys = plx_data::pms::registry_keys_for_test();
+    plx_plex::plex::describe_server(server, "Server", "current", plx_plex::plex::GrantEvidence::outside());
+    assert!(test_store().run_with_keys(MetadataCmd::AltInstall {
+        sid: server, rk: "4".into(), copies: vec![copy(server.raw(), "Movies", "stale", "4", "1080")],
+    }, &keys));
+    assert_eq!(test_store().view().alt_copies(server, "4")[0].owner.as_deref(), Some("captured"));
+    assert!(alt_restamp_owners());
+    assert_eq!(test_store().view().alt_copies(server, "4")[0].owner.as_deref(), Some("current"));
+    plx_plex::plex::describe_server(server, "Server", "latest", plx_plex::plex::GrantEvidence::outside());
+    assert!(alt_install(server, "4", vec![copy(server.raw(), "Movies", "stale", "4", "1080")]));
+    assert_eq!(test_store().view().alt_copies(server, "4")[0].owner.as_deref(), Some("latest"));
 }
 
 fn sid(n: u16) -> ServerId {

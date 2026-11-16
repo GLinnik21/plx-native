@@ -36,7 +36,6 @@ pub struct PlayerDemuxSubtitle {
     subtitle_tracks: Option<super::subtitle_cue::SideTracks>,
     subtitle_indices: Vec<i32>,
     bitmap_generation: Option<u64>,
-    font_budget: super::ass::FontBudget,
 }
 
 impl PlayerDemuxSubtitle {
@@ -45,7 +44,6 @@ impl PlayerDemuxSubtitle {
             observer,
             subtitle_tracks: None, subtitle_indices: Vec::new(),
             bitmap_generation: None,
-            font_budget: super::ass::FontBudget::default(),
         }
     }
 }
@@ -59,13 +57,10 @@ impl DemuxSubtitle for PlayerDemuxSubtitle {
         let mut generation = None;
         self.observer.with_active(&mut || generation = Some(SHARED.bitmap_generation.load(Ordering::Acquire)));
         self.bitmap_generation = generation;
-        self.font_budget = super::ass::FontBudget::default();
         plan
     }
 
     fn max_header_bytes(&self) -> usize { super::ass_source::MAX_HEADER_BYTES }
-
-    fn admit_font(&mut self, bytes: usize) -> bool { self.font_budget.admit(bytes) }
 
     fn begin_sources(&mut self, media_key: &str, manifest: Manifest) -> Option<u64> {
         let tracks = self.subtitle_tracks.as_ref()?;

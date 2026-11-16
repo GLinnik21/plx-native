@@ -177,6 +177,15 @@ fn with_no_language_only_the_language_free_stages_run() {
 }
 
 #[test]
+fn the_text_lint_checks_the_declared_end_time_lane() {
+    let lang = [LintLang::for_tag("en").unwrap()];
+    let narrow = CLASSIC_HUD.replace(r#""end_time_width": 320"#, r#""end_time_width": 40"#);
+    let found = lint(&narrow, &ShippedMeasure, &lang);
+    assert!(found.iter().any(|f| f.code == "HUD-E0601"
+        && f.ctx.text.as_ref().is_some_and(|text| text.string.contains('\u{b7}'))), "{found:?}");
+}
+
+#[test]
 fn the_default_options_carry_the_ci_text_skew() {
     assert_eq!(LintOptions::default().text_skew, lint_text::CI_TEXT_SKEW);
     assert_eq!(lint_text::CI_TEXT_SKEW, 0.0, "the local/TV default has no registry headroom");

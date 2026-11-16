@@ -61,6 +61,12 @@ pub(crate) mod uriprobe;
 #[cfg(all(feature = "devtriggers", feature = "play-uri"))]
 pub(crate) mod uri_product;
 
+/// The exported-window override (`plxnative-uriexported`): the production URI backend bound to the
+/// exported window on a webOS 5+ set the evidence table has not admitted. The application's
+/// composition reads it once, at `install_uri_product`.
+#[cfg(all(feature = "devtriggers", feature = "play-uri"))]
+pub(crate) mod uri_exported;
+
 /// The demo video's frame dump (simulator only): see the module doc.
 #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
 pub(crate) mod framedump;
@@ -103,8 +109,8 @@ const DIAG: [&str; 49] = [
     // `fx=` on Home's fingerprint (the focused card's drawn x) and, on every page that draws a
     // card section, the `cd*` fields (`plx_ui::card_probe`): a pure observer of `focus`.
     "plxnative-focusx",
-    // The two OVERDRAW surfaces, the resting-card split's off switch and the hero-ground fold
-    // ([`plx_gfx::overdraw`], `docs/backdrop-blur-profiling.md` Part 5). All four are measurement knobs whose whole
+    // The two OVERDRAW surfaces and the resting-card split's off switch
+    // ([`plx_gfx::overdraw`], `docs/backdrop-blur-profiling.md` Part 5). All three are measurement knobs whose whole
     // method is an A/B against an unmasked control leg — and a non-DIAG trigger suppresses the
     // who's-watching picker, so the control leg and the masked leg would boot to DIFFERENT
     // SCREENS and the difference between them would be the screen, not the class being priced.
@@ -118,7 +124,6 @@ const DIAG: [&str; 49] = [
     // control-leg argument as the card split above: both legs must boot to the SAME screen.
     "plxnative-nopreviewcache",
     "plxnative-previewsnap",
-    "plxnative-heroground",
     // The FRAME BUDGET's A/B control leg (`ui/frame/budget.rs`, spec §8.1): admission as it was
     // before phase 11 — quota only, no time ceiling, no solo rule. DIAG for exactly the argument
     // the three above make: its whole method is an A/B against an unmasked control leg, and a
@@ -205,6 +210,12 @@ const DIAG: [&str; 49] = [
     // a non-DIAG trigger would suppress the who's-watching picker. It is listed here so that
     // `ci/check-package.py` greps the shipped bytes for the name.
     "plxnative-uridev",
+    // The exported-window override (`dev::uri_exported`): presence arms it, read once at boot. It
+    // changes which display path one play's backend is composed with and nothing about the boot, so
+    // the tester signs in and picks a profile as always; a non-DIAG trigger would suppress the
+    // who's-watching picker, and a stale file would keep suppressing it. Listed so that
+    // `ci/check-package.py` greps the shipped bytes for the name.
+    "plxnative-uriexported",
 ];
 
 /// **Turn on the TELEVISION'S OWN GStreamer logging** — `/tmp/plxnative-gstlog`.
@@ -1349,6 +1360,16 @@ mod tests {
     #[test]
     fn uridev_trigger_is_diagnostic() {
         assert!(super::DIAG.contains(&"plxnative-uridev"));
+    }
+
+    // ---- plxnative-uriexported (the exported-window override) ----
+
+    /// The override changes the display path one play's backend is composed with, never which screen
+    /// the app boots to: a tester arms it before launch, then signs in and picks a profile as always.
+    /// Out of DIAG, the file would suppress the who's-watching picker on every boot it stays in `/tmp`.
+    #[test]
+    fn uriexported_trigger_is_diagnostic() {
+        assert!(super::DIAG.contains(&"plxnative-uriexported"));
     }
 
     // ---- plxnative-playurl (the pipeline test tier's one trigger) ----
