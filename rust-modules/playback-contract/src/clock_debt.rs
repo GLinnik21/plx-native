@@ -83,7 +83,10 @@ impl ClockDebt {
             ClockDebt::Fired { .. } => self,
             ClockDebt::Watching { wall_ms, pos_ns, s_us, debt_since_reset_us } => {
                 let dt_ms = s.wall_ms.wrapping_sub(wall_ms) as i32;
-                if dt_ms <= 0 || dt_ms as u32 > DEBT_MAX_GAP_MS {
+                if dt_ms == 0 {
+                    return self; // the same callback seen twice: nothing elapsed
+                }
+                if dt_ms < 0 || dt_ms as u32 > DEBT_MAX_GAP_MS {
                     return start;
                 }
                 let dt_ms = i64::from(dt_ms);
@@ -209,13 +212,14 @@ mod tests {
     }
 
     #[test]
-    fn a_gap_over_a_second_or_a_repeated_instant_restarts_the_watch() {
+    fn a_gap_over_a_second_or_a_clock_going_backwards_restarts_the_watch() {
         let w = run(ClockDebt::Ineligible, 500, 2);
         let ClockDebt::Watching { wall_ms, .. } = w else { panic!("{w:?}") };
         let gap = w.step(&P, at(wall_ms + DEBT_MAX_GAP_MS + 1, S10 + 5_000_000_000));
         assert!(matches!(gap, ClockDebt::Watching { s_us: 0, debt_since_reset_us: 0, .. }));
-        let same = w.step(&P, at(wall_ms, S10 + 5_000_000_000));
-        assert!(matches!(same, ClockDebt::Watching { s_us: 0, debt_since_reset_us: 0, .. }));
+        let backwards = w.step(&P, at(wall_ms - 1, S10 + 5_000_000_000));
+        assert!(matches!(backwards, ClockDebt::Watching { s_us: 0, debt_since_reset_us: 0, .. }));
+        assert_eq!(w.step(&P, at(wall_ms, S10 + 5_000_000_000)), w, "the same instant twice is a no-op");
         // exactly one second is still a step
         let edge = w.step(&P, at(wall_ms + DEBT_MAX_GAP_MS, S10 + 400_000_000));
         assert!(edge.s_us() > 0, "{edge:?}");

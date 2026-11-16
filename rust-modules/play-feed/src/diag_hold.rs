@@ -8,8 +8,12 @@
 //! T3/T5 settle) and has no file, no [`DiagHold`], and no statics here.
 //!
 //! The file is the developer trigger `diag-hold` (`/tmp/plxnative-diag-hold` on the television, in
-//! the install's runtime root: `$(make -s print-rundir)/plxnative-diag-hold`), read through
-//! `plx_base::devtrig::read`, so it exists only in a `devtriggers` build. Tokens are `key=value`,
+//! the install's runtime root, `$(make -s print-rundir)/plxnative-diag-hold`, which is
+//! `/tmp/com.beb.plxnative.debug/plxnative-diag-hold` for the debug flavour), read through
+//! `plx_base::devtrig::read`, so it exists only in a `devtriggers` build. Arm it with
+//! `tools/tv-session.sh up ... --arm "diag-hold=k=0.05 h=0.4 headroom_mib=24"`: `up` wipes every
+//! trigger, then writes this one before the launch. The Load logs `diag-hold: knobs (trigger)` if the
+//! file was read and `(defaults)` if it was not seen. Tokens are `key=value`,
 //! separated by whitespace or commas; `#` starts a comment to the end of the line:
 //!
 //! | key | meaning | default |
@@ -17,7 +21,7 @@
 //! | `k` | CUSUM drift, seconds forgiven per second (0.05 = 5%) | `0.05` |
 //! | `h` | CUSUM threshold, seconds of `S` | `0.4` |
 //! | `gate_kib` | video-queue KiB above which the stream is not starved (S resets) | `1024` |
-//! | `headroom_mib` | extra MiB the video queue may hold while a hold stands (T7), `0` = off | `0` |
+//! | `headroom_mib` | extra MiB the video queue may hold while a hold stands (T7), `0` = off; given back on the first tick the hold is no longer a progressive hold (a resume, a seek, a stop) | `0` |
 //! | `auto_hold` | `0`: no progressive hold under Auto (`HoldRoute::ProgressiveSupervised` maps to none, D4's T2b-failed fallback); `1`: hold | `1` |
 //!
 //! Example (T3 default with the T7 grant): `k=0.05 h=0.4 gate_kib=1024 headroom_mib=24`.
@@ -27,7 +31,6 @@
 
 use plx_playback_contract::clock_debt::{ClockDebt, DebtParams};
 use std::os::raw::c_long;
-use std::sync::atomic::{AtomicI64, AtomicU64};
 
 /// The prototype's knobs, parsed from the `diag-hold` trigger.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,11 +122,13 @@ pub struct DebtWatch {
     pub hold_arm: &'static str,
     /// Holds begun on this Engine.
     pub holds: u32,
+    /// The hold's headroom grant (T7) stands on the video queue and has not been given back.
+    pub headroom_granted: bool,
 }
 
 impl DebtWatch {
     pub fn new(cfg: DiagHold) -> DebtWatch {
-        DebtWatch { cfg, debt: ClockDebt::Ineligible, seen_pos_ticks: 0, hold_s_us: 0, hold_debt_us: 0, hold_arm: "", holds: 0 }
+        DebtWatch { cfg, debt: ClockDebt::Ineligible, seen_pos_ticks: 0, hold_s_us: 0, hold_debt_us: 0, hold_arm: "", holds: 0, headroom_granted: false }
     }
 
     /// The knobs from the trigger (at Load).
@@ -142,19 +147,6 @@ impl Default for DebtWatch {
         DebtWatch::new(DiagHold::DEFAULT)
     }
 }
-
-// Demux-thread facts published for the main thread's `W0D` line (observation only). The demux
-// read loop stores them once per pass; the main thread's diagnostic reads them.
-/// `AvioState::body_bytes` of the stream being read: bytes received in the body.
-pub static DIAG_BODY_BYTES: AtomicU64 = AtomicU64::new(0);
-/// `AvioState::body_active_us`: microseconds spent inside reads and receipts.
-pub static DIAG_BODY_ACTIVE_US: AtomicU64 = AtomicU64::new(0);
-/// The Original supervisor's `buffered_ms` (`min(video tail, audio tail) - playpos`), `-1` if unknowable.
-pub static DIAG_BUFFERED_MS: AtomicI64 = AtomicI64::new(-1);
-/// The demuxer's video tail (pts of the last demuxed video packet), ns, `-1` before the first.
-pub static DIAG_VTAIL_NS: AtomicI64 = AtomicI64::new(-1);
-/// The demuxer's audio tail, ns, `-1` before the first.
-pub static DIAG_ATAIL_NS: AtomicI64 = AtomicI64::new(-1);
 
 #[cfg(test)]
 mod tests {

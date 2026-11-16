@@ -5180,6 +5180,11 @@ impl AutoOriginalWatch {
     }
 }
 
+/// W0-DIAG (scratch branch only, never merged): the applied quality for the diag's Load line.
+pub fn w0_applied_quality_label() -> String {
+    format!("{:?}", applied_quality())
+}
+
 pub fn auto_original_watch(ps: &PlaybackSession) -> Option<AutoOriginalWatch> {
     if forced_direct_play(ps) { return None; }
     let s = &*ps;

@@ -932,8 +932,9 @@ pub fn progressive_reserve_ns(position_ns: i64, video: LaneTail, audio: Option<L
 /// Which clause let a progressive stall hold release the clock, as the resume line names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProgressiveRelease {
-    /// The video queue is at its byte cap: the stream is back to the state it played with when
-    /// healthy (a capped queue), and nothing more can be buffered ahead of Play.
+    /// A queue is at its byte cap: the stream is back to the state it played with when healthy (a
+    /// capped queue), and the demuxer is parked, so nothing more can be buffered ahead of Play. One
+    /// reader feeds both lanes: whichever lane fills first parks it.
     Full,
     /// The demuxer finished: nothing more will arrive.
     Eof,
@@ -952,19 +953,21 @@ impl ProgressiveRelease {
 /// runway constant). The reserve a stream played with when it was healthy IS its capped queue, so
 /// releasing at the cap restores the healthy state:
 ///
-/// * `Full`: the video queue is at its byte cap (`video_queue_full`, the queue's own
+/// * `Full`: the video OR the audio queue is at its byte cap (`queue_full`, the queue's own
 ///   producer-park predicate `queued_bytes > max_bytes`, so granted headroom counts): the demuxer
 ///   is parked on it, so nothing more can be buffered ahead of Play, and holding on would deadlock
-///   with the sink also full;
+///   with the sink also full. Audio counts because one sequential reader feeds both lanes and its
+///   queue is the smaller (1 MiB): a lossless track fills it before the video queue's cap, and the
+///   video queue then never reaches its own;
 /// * `Eof`: the demuxer finished (`producer_done`): nothing more will ever arrive, and the last
 ///   seconds of a film do not hold 700 ms of fresh media past the playhead.
 ///
 /// Both play what there is, so neither waits for `decoder_ready`. The end of the stream is named
 /// first when both hold.
-pub fn progressive_hold_releases(video_queue_full: bool, producer_done: bool) -> Option<ProgressiveRelease> {
+pub fn progressive_hold_releases(queue_full: bool, producer_done: bool) -> Option<ProgressiveRelease> {
     if producer_done {
         Some(ProgressiveRelease::Eof)
-    } else if video_queue_full {
+    } else if queue_full {
         Some(ProgressiveRelease::Full)
     } else {
         None
@@ -1419,8 +1422,8 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
                 queued_ns: aq::aq_span_ns(queue_ptr(&mut eng.aq_audio)),
             });
             let runway_ns = progressive_reserve_ns(eng.seek_base_pts, video, audio).unwrap_or(0);
-            progressive_hold_releases(aq::aq_would_park(vq), aq::aq_producer_done(vq))
-                .map(|release| (release, runway_ns))
+            let parked = aq::aq_would_park(vq) || aq::aq_would_park(queue_ptr(&mut eng.aq_audio));
+            progressive_hold_releases(parked, aq::aq_producer_done(vq)).map(|release| (release, runway_ns))
         }
         _ => None,
     };
@@ -1466,20 +1469,18 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
                     (prime_kind, progressive_release)
                 {
                     plx_base::eventlog::log(&format!(
-                        "feed: progressive rebuffer resume n={} reason={} held={}ms reserve={}ms qv={}B hold_arm={} hold_S={}ms hold_debt_since_reset={}ms",
+                        "feed: progressive rebuffer resume n={} reason={} held={}ms reserve={}ms qv={}B qa={}B hold_arm={} hold_S={}ms hold_debt_since_reset={}ms",
                         eng.debt_watch.holds,
                         release.name(),
                         crate::shared::vclock_ms().wrapping_sub(since_ms),
                         runway_ns / 1_000_000,
                         aq::aq_bytes(vq),
+                        aq::aq_bytes(queue_ptr(&mut eng.aq_audio)),
                         eng.debt_watch.hold_arm,
                         eng.debt_watch.hold_s_us / 1_000,
                         eng.debt_watch.hold_debt_us / 1_000,
                     ));
-                    // The hold's headroom grant (T7) goes back as the consumer drains the queue.
-                    if eng.debt_watch.cfg.headroom_bytes > 0 {
-                        aq::aq_release_headroom(vq);
-                    }
+
                 } else if prime_kind == HlsPrimeKind::Rebuffer {
                     plx_base::eventlog::log(&format!(
                         "primed: v={}ms a={}ms recovery_n={} debt={}ms runway={}ms -> Play",

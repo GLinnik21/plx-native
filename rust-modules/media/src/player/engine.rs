@@ -1529,6 +1529,32 @@ mod prime_livelock_tests {
         );
     }
 
+    /// One reader feeds both lanes, so the demuxer parks on whichever queue fills first, and the audio
+    /// queue is the smaller (1 MiB): a lossless track fills it long before the video queue reaches its
+    /// cap. A hold that waited on the video queue alone would then wait for media the parked demuxer
+    /// cannot read (permanent Buffering), so a full AUDIO queue releases it too.
+    #[test]
+    fn progressive_rebuffer_a_full_audio_queue_releases_a_hold_too() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = StallRig::arm();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        let mut eng = engine_in_a_stall_hold(&mt);
+        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
+        let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
+        assert!(!plx_play_feed::aq::aq_would_park(qv) && !plx_play_feed::aq::aq_would_park(qa));
+        let big = vec![0u8; plx_play_feed::aq::aq_cap(qa) as usize + 1];
+        let base = eng.max_fed_audio_pts + A_STEP_NS;
+        plx_play_feed::aq::aq_push(qa, big.as_ptr(), big.len() as c_int, base, 1, 2);
+        assert!(plx_play_feed::aq::aq_would_park(qa), "PRECONDITION FAILED, not the defect: the audio queue did not fill");
+        assert!(!plx_play_feed::aq::aq_would_park(qv), "PRECONDITION FAILED, not the defect: the video queue is full too");
+        let text = plx_base::eventlog::with_private_log(|| {
+            try_prime(&mt, &mut eng);
+            std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+        });
+        assert!(!eng.prime_play, "the full audio queue did not release the hold");
+        assert!(text.contains("progressive rebuffer resume n=0 reason=full"), "no full resume line: {text}");
+    }
+
     /// The HLS hold's certificate is untouched: a Rebuffer hold with no credited segment still
     /// does not resume on queued media alone.
     #[test]

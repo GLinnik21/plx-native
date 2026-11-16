@@ -961,7 +961,7 @@ fn w0_diag_sample(eng: &mut Engine, route: HoldRoute) {
     log(&format!(
         "W0D base=hold t={now} wall={wall} pos={} vfed={} afed={} vspan={} aspan={} qv={} qa={} vpark={} apark={} \
          sil={} vat={vat} disp={disp} drop={drop_} vpres={} frames={} paused={} prime={} stage={:?} seek={} \
-         body_bytes={} body_active_us={} buffered_ms={} dvtail={} datail={} debt={} S_us={} debt_us={} hold={} holds={} route={route:?}",
+         debt={} S_us={} debt_us={} hold={} holds={} route={route:?}",
         FEED_SHARED.pres_fed.load(Relaxed),
         eng.max_fed_video_pts,
         eng.max_fed_audio_pts,
@@ -978,11 +978,6 @@ fn w0_diag_sample(eng: &mut Engine, route: HoldRoute) {
         eng.prime_play as u8,
         eng.stage,
         (FEED_TX.seek_to_ns.load(Relaxed) >= 0) as u8,
-        crate::diag_hold::DIAG_BODY_BYTES.load(Relaxed),
-        crate::diag_hold::DIAG_BODY_ACTIVE_US.load(Relaxed),
-        crate::diag_hold::DIAG_BUFFERED_MS.load(Relaxed),
-        crate::diag_hold::DIAG_VTAIL_NS.load(Relaxed),
-        crate::diag_hold::DIAG_ATAIL_NS.load(Relaxed),
         match eng.debt_watch.debt {
             plx_playback_contract::clock_debt::ClockDebt::Ineligible => "inelig",
             plx_playback_contract::clock_debt::ClockDebt::Watching { .. } => "watch",
@@ -1147,6 +1142,7 @@ pub fn rebuffer_request_is_current(
 /// Both take the same Pause, show the same Buffering state, and are released by the same
 /// `try_prime`, each against its own certificate of fresh media.
 fn maybe_begin_rebuffer(route: HoldRoute, mt: &MainThread, eng: &mut Engine, hooks: &NativeHooks) {
+    settle_hold_headroom(eng);
     let Some(rule) = rebuffer_rule(route, matches!(eng.source, Source::Stream), eng.debt_watch.cfg.auto_hold) else {
         restart_native_clock_watch();
         return;
@@ -1243,6 +1239,24 @@ fn maybe_begin_rebuffer(route: HoldRoute, mt: &MainThread, eng: &mut Engine, hoo
     ));
 }
 
+
+/// Give the hold's headroom grant (T7, scratch) back the first tick the clock is no longer held by a
+/// progressive hold: a resume, a seek that replaced the hold's prime, a stop. The cap follows the
+/// consumer down (`aq_release_headroom`), never below what the queue holds.
+fn settle_hold_headroom(eng: &mut Engine) {
+    if !eng.debt_watch.headroom_granted {
+        return;
+    }
+    let holding = matches!(
+        FEED_SHARED.hls_prime_kind(),
+        Some(crate::shared::HlsPrimeKind::ProgressiveRebuffer { .. })
+    );
+    if !holding {
+        let vq = eng.aq_video.as_mut().map_or(std::ptr::null_mut(), |q| &mut **q as *mut crate::aq::AuQueue);
+        crate::aq::aq_release_headroom(vq);
+        eng.debt_watch.headroom_granted = false;
+    }
+}
 
 /// The progressive half of [`maybe_begin_rebuffer`]: sample the stream, decide purely
 /// ([`should_begin_progressive_rebuffer`]), and issue the hold's Pause.
@@ -1350,6 +1364,7 @@ fn maybe_begin_progressive_rebuffer(mt: &MainThread, eng: &mut Engine, hooks: &N
     let headroom = w.cfg.headroom_bytes;
     if headroom > 0 {
         crate::aq::aq_set_headroom(vq, headroom);
+        w.headroom_granted = true;
     }
     log(&format!(
         "feed: progressive rebuffer hold n={} arm={arm} S={}ms debt_since_reset={}ms pos={position_ns} vtail={} atail={} qv={}B qa={}B reserve={}ms silent={}ms headroom={}B k={}pm h={}ms gate={}B",
