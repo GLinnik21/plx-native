@@ -690,18 +690,3 @@ with a measurement table miss. The anchors were re-recorded with
 `tests/focusfp.sh --rec --only 1,6,12`, keeping the same inputs and manifests. The closed alphabet
 adds the three exact strings from the seed-1 mock. Targets and Resolve both match all frames at
 960x540.
-
-Home's snap dive now lands exactly on its target (`Spring::land`, called by `HomeScreen::update` after
-the dive's `step`, so the parked hero's backdrop can be named for the retained region cache): the dive
-used to park one ulp off with a velocity of ~1e-44, which the canon hashes bit for bit. The shape did
-not move. `1-boot-home-chip-grid` diverged from frame 198 to its end (64 of 262 frames, where the dive
-to the second shelf lands) with every other counter zero (`present_diffs`, `input_diffs`,
-`result_diffs`, `land_diffs`, `effect_diffs`, `focus_diffs`, `hit_diffs`), in Targets and Resolve, while
-`6-settings-family` and `12-filmography-detail-return` stayed SAME. The divergence was attributed by
-replaying the committed anchors against a build with only that `Spring::land` call removed (all three
-SAME, every counter zero). The anchor was recorded afresh on the unchanged shape (`tests/focusfp.sh
---rec --only 1`, 350 ms keys, 1 s boot settle, 1.5 s final settle), passed `plxnative-rec check`, and
-only `1-boot-home-chip-grid/rec-0000.jsonl` was replaced (the manifest differs from the recorder's
-header by the `anchor` flag alone and stands). `make check-replay` replays all three with
-`verdict=SAME` in Targets and Resolve and every difference counter at zero (three consecutive runs and
-at the CI window, 960x540).
