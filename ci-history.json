@@ -1,4 +1,4 @@
-{"updated":"2026-11-16T16:19:05Z",
+{"updated":"2026-11-16T16:26:11Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5238,7 +5238,8 @@
 {"id":43845743147,"at":"2026-11-16T10:06:01Z","sha":"49a9c4bce","title":"URI: read hdrType against the firmware's own table","pr":1398,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":26,"macOS simulator build + launch":309,"Linux simulator build + launch":333,"macOS tests against bundled FFmpeg and ASS":133}},
 {"id":43845814846,"at":"2026-11-16T10:06:28Z","sha":"77abce1f5","title":"Poster caption: a Dolby Vision title says so, as its detail page does","pr":1412,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":300,"Windows launcher syntax":19,"macOS simulator build + launch":219,"macOS tests against bundled FFmpeg and ASS":127}},
 {"id":43900941651,"at":"2026-11-16T15:51:19Z","sha":"4499f5937","title":"Replay tests: follow the re-recorded 1-boot-home-chip-grid","pr":1302,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":354,"macOS tests against bundled FFmpeg and ASS":262,"Windows launcher syntax":18,"macOS simulator build + launch":281}},
-{"id":43879183007,"at":"2026-11-16T16:02:27Z","sha":"6e5e0ba2d","title":"Dependencies: libunibreak -> 8.0.1","pr":1413,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"Windows launcher syntax":18,"Linux simulator build + launch":376,"macOS simulator build + launch":527,"macOS tests against bundled FFmpeg and ASS":403},"wall":9108}
+{"id":43879183007,"at":"2026-11-16T16:02:27Z","sha":"6e5e0ba2d","title":"Dependencies: libunibreak -> 8.0.1","pr":1413,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"Windows launcher syntax":18,"Linux simulator build + launch":376,"macOS simulator build + launch":527,"macOS tests against bundled FFmpeg and ASS":403},"wall":9108},
+{"id":43904632211,"at":"2026-11-16T16:10:59Z","sha":"112e55e84","title":"Dependencies: libunibreak -> 8.0.1","pr":1413,"conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":22,"Linux simulator build + launch":375}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
