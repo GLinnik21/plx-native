@@ -3,7 +3,8 @@
 
 WHY A HOOK. An agent that only hears "disk low" improvises: `rm -rf` on a build tree another lane is
 using, `git clean`, a reset. The tooling already owns the cleanup (`tools/build-gc.sh --auto`, which
-checks each tree for a live build before it removes anything), but nothing told a LIVE agent. `make`'s
+skips a tree with a live builder, an open file or a touch inside the idle window; `tools/build-gc.sh --evict`
+and docs/disk-budget.md say so), but nothing told a LIVE agent. `make`'s
 disk preflight (`tools/disk-budget.py preflight`) evicts silently before a build, and
 `.claude/hooks/build-gc-auto.sh` starts the reclaim only when a session ENDS. This hook runs after every
 Bash call; below the comfort line it detaches `tools/build-gc.sh --auto` (from the MAIN checkout, the way
@@ -15,7 +16,8 @@ statements ("This repo uses `bun test`"): text framed as an out-of-band system c
 prompt-injection defenses, and Claude then shows it to the user instead of using it. Each string is also
 capped at 10,000 characters (this one stays under 2,000). The same docs say injected text is saved in the
 transcript and REPLAYED on `--resume` / `--continue`, never re-run, so the note carries its own clock time
-and says it is a snapshot. A top-level `systemMessage` (one line) is shown to the person as well.
+and says it is a snapshot. A top-level `systemMessage` (one line) is the docs' universal field for text shown
+to the person; its delivery for these two events was not observed in a live session.
 
 LEVELS. Thresholds are `tools/disk-budget.py`'s own: comfort `PLX_GC_MIN_FREE_GIB` (default 20 GiB) and
 reserve `PLX_MIN_FREE_MB` (default 3072 MiB), same defaults, same digits-only parsing (the test pins the
@@ -291,13 +293,15 @@ def compose(level, free, comfort, reserve, root, now, gc, log, subagent, enospc)
     def hhmm(t):
         return time.strftime("%H:%M", time.localtime(t))
 
+    stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(now))     # replayed days later: the date matters
+
     volume = "the volume holding %s" % root
     free_text = gib_text(free) + " free" if free is not None else "free space unknown"
     reading = ("Free space is %s on %s" % (gib_text(free), volume) if free is not None
                else "The free space of %s could not be read" % volume)
     status, when = gc
     lines = ["Disk check at %s (a snapshot taken then; the text is replayed, not re-run, when a session resumes)."
-             % hhmm(now)]
+             % stamp]
     if level == "low":
         lines.append("%s, below the %s comfort line (PLX_GC_MIN_FREE_GIB); builds also need a %s reserve "
                      "(PLX_MIN_FREE_MB) on top of their own size." % (reading, gib_text(comfort), gib_text(reserve)))
@@ -327,8 +331,8 @@ def compose(level, free, comfort, reserve, root, now, gc, log, subagent, enospc)
         summary = "disk-low-notify: %s, below the %d GiB comfort line; %s." % (free_text, comfort // GIB, started)
     else:
         lines.append("In this repo the reclaim is `tools/build-gc.sh --auto` (it also runs in the foreground) and "
-                     "`make disk` shows where the space is. The reclaim checks each tree for a live build before it "
-                     "removes it; `rm -rf` of build trees and `git clean` or reset do not. If the volume is still "
+                     "`make disk` shows where the space is. The reclaim skips a tree with a live builder, an open file or "
+                     "recent writes; `rm -rf` of build trees and `git clean` or reset do not check. If the volume is still "
                      "below the reserve after the reclaim, the next step is the owner's.")
         why = "a command reported a full filesystem" if enospc else "below the %s reserve" % gib_text(reserve)
         summary = "disk-low-notify: critical, %s, %s; %s." % (free_text, why, started)

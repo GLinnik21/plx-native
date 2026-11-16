@@ -167,8 +167,8 @@ def main():
         check(ctx and "tools/build-gc.sh --auto was started in the background" in ctx
               and rig.env["PLX_GC_LOG"] in ctx and "make disk" in ctx and "owner" in ctx,
               "low: says the reclaim was started, where it logs, `make disk`, and the owner", repr(ctx))
-        check(ctx and re.search(r"Disk check at \d\d:\d\d", ctx) and "snapshot" in ctx and "replayed" in ctx,
-              "low: stamped with a clock time and marked as a snapshot", repr(ctx))
+        check(ctx and re.search(r"Disk check at \d{4}-\d\d-\d\d \d\d:\d\d", ctx) and "snapshot" in ctx and "replayed" in ctx,
+              "low: stamped with the date and clock time and marked as a snapshot", repr(ctx))
         check(ctx and "critical" not in ctx.lower(), "low: not worded as critical")
         check(rig.launches == [(["sh", os.path.join(rig.root, "tools", "build-gc.sh"), "--auto"], rig.root,
                                 rig.env["PLX_GC_LOG"])],
