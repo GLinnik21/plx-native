@@ -60,9 +60,10 @@ fixture list. Expected outcomes: **SAME=6, REFUSED_EXPECTED=2, unexpected=0**.
   both modes require the exact early scheduler REFUSED (raw exit 1), before any graded frame.
   This is a typed compatibility outcome, not a supported replay, SAME, quarantine or skip.
 
-The current recording was independently privacy-checked, then added with the official
-`tools/plxnative-rec import` command, byte-for-byte; no old recording, fingerprint, hash or alphabet
-was rewritten. Manifest preference/language strings pass only the checker's closed exact-path enums;
+The Home and current Filmography anchors were privacy-checked and re-recorded through
+`tools/plxnative-rec rerecord` after the Filmography menu changed the argument shape.
+The historical Settings and Filmography recordings and the synthetic alphabet remain unchanged.
+Manifest preference/language strings pass only the checker's closed exact-path enums;
 all remaining text and metric bytes retain the synthetic alphabet gate. Rust fixture preflight and
 canonical initial-hash tests include the new recording. No production name/path/hash whitelist exists.
 
