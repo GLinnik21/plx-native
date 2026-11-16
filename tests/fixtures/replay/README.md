@@ -32,8 +32,10 @@ and contrasting-ambient replay with outbound IO denied, malformed-input refusals
 supported-effect discriminator. Its private recording must pass `tools/plxnative-rec check`
 before `import`/`rerecord`; a live-mock focus smoke alone is not replay acceptance.
 
-These historical key-only fixtures retain their original `AppFrameV4` ledger and expected
-hashes. Controlled preflight proves all inputs are owned keys; the grader then writes the
+`6-settings-family` and `12-filmography-detail-return` are the historical key-only fixtures: they
+retain their original `AppFrameV4` ledger and expected
+hashes. (`1-boot-home-chip-grid` was one until its re-recording as a current `AppFrameV5` recording,
+see the last entry below.) Controlled preflight proves all inputs are owned keys; the grader then writes the
 frozen idle bytes of the retired app press before the unchanged V4 frame fields. No
 legacy press is constructed/stepped in production and no frame grades are skipped. Legacy
 pointer/direct-token profiles cannot prove idle shadow state and are refused. New
@@ -690,3 +692,20 @@ with a measurement table miss. The anchors were re-recorded with
 `tests/focusfp.sh --rec --only 1,6,12`, keeping the same inputs and manifests. The closed alphabet
 adds the three exact strings from the seed-1 mock. Targets and Resolve both match all frames at
 960x540.
+
+Home's snap dive now lands exactly on its target (`Spring::land`, called by `HomeScreen::update` after
+the dive's `step`, so the parked hero's backdrop cache keeps its name after a Hero to grid to Hero trip,
+PR #1302): the dive used to park one ulp off with a velocity of ~1e-44, which the canon hashes bit for
+bit. `1-boot-home-chip-grid` was observed diverging from frame 154 (46 of 200 frames) in Targets and
+Resolve with every other counter zero (`present_diffs`, `input_diffs`, `result_diffs`, `land_diffs`,
+`effect_diffs`, `focus_diffs`, `hit_diffs`), while `6-settings-family` stayed SAME and
+`12-filmography-detail-return` stayed REFUSED_EXPECTED. The divergence was attributed by replaying the
+committed anchors against a build with only that `Spring::land` call removed (every anchor SAME, every
+counter zero). The fixture was a historical key-only `AppFrameV4` recording (shape `4239819007634745513`)
+that the current recorder cannot emit, so it could not be recorded afresh on its own shape: it was
+re-recorded as a current `AppFrameV5`/codec-6 recording (`tests/focusfp.sh --rec --only 1`,
+`MOCK_PORT=32552 FOCUS_STEP=0.35 FOCUS_SETTLE=1.5 FOCUS_BOOT_SETTLE=1`, shape `13512213413816145485`,
+266 frames, `plxnative-rec check` synthetic) and replaced with `tools/plxnative-rec rerecord`, which keeps the
+`anchor` flag. That retires this one fixture's `AppFrameV4` ledger; `6-settings-family` remains the key-only
+fixture that replays SAME. `make check-replay` replays every fixture as SAME or REFUSED_EXPECTED in Targets and
+Resolve with every difference counter at zero (three consecutive runs, one of them at the CI window, 960x540).
