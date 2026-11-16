@@ -380,7 +380,7 @@ report is sent only when you press Send report; quote the Report ID it showed to
 ## Contact and non-affiliation
 
 Privacy questions may be sent to `support@plxnative.com`. Security vulnerabilities may be reported
-privately through GitHub Security Advisories for `GLinnik21/plx-native`.
+privately through GitHub Security Advisories for `plxnative/plx-native`.
 
 PlxNative is an independent, unofficial application. It is not produced by, endorsed by, or
 affiliated with Plex, Inc. or LG Electronics Inc.

@@ -12,13 +12,13 @@ title: PlxNative
 # Both icon URLs are raw links to THIS repository's default branch, so they resolve only once the
 # repo is public — and `repogen.lintpkg` rejects a submission whose iconUri does not return 200.
 # 160 for the listing card, 320 for the detail page; tools/mkicons.py cuts both from the master.
-iconUri: https://raw.githubusercontent.com/GLinnik21/plx-native/main/pkg/icon160.png
-detailIconUri: https://raw.githubusercontent.com/GLinnik21/plx-native/main/pkg/icon320.png
+iconUri: https://raw.githubusercontent.com/plxnative/plx-native/main/pkg/icon160.png
+detailIconUri: https://raw.githubusercontent.com/plxnative/plx-native/main/pkg/icon320.png
 
 # `releases/latest/download/...` always resolves to the newest release, which is how the channel
 # picks up an update without this file changing. The release workflow sets neither `draft` nor
 # `prerelease` precisely because either would exclude the release from `latest` and break this URL.
-manifestUrl: https://github.com/GLinnik21/plx-native/releases/latest/download/com.beb.plxnative.manifest.json
+manifestUrl: https://github.com/plxnative/plx-native/releases/latest/download/com.beb.plxnative.manifest.json
 
 category: multimedia
 pool: main
@@ -55,7 +55,7 @@ requirements:
   # AND IT IS SETTLED, 2026-08-11, in the affirmative. The exported-window path that replaces ACB
   # on 5+ has now run on real hardware: mariotaku played six of eight items on an LG 65UP7560AUD
   # (6.5.2) — H.264 1080p and 4K, HEVC, AAC, AC3, an episode, an item watched to the end
-  # (github.com/GLinnik21/plx-native/issues/22). His two failures were a server-side defect fixed
+  # (github.com/plxnative/plx-native/issues/22). His two failures were a server-side defect fixed
   # in v0.3.0 and were firmware-independent. That is ONE firmware, so 5.x, 10 and 11 are still
   # start-verified only and the description says so — but "playback does not start on 5+" is no
   # longer a true sentence and must not be restated. A floor with no ceiling is also how every
@@ -122,4 +122,4 @@ description: |
 
   Not affiliated with, endorsed by, or sponsored by Plex GmbH or LG Electronics.
 
-  Source, screenshots and issues: https://github.com/GLinnik21/plx-native
+  Source, screenshots and issues: https://github.com/plxnative/plx-native
