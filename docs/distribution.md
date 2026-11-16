@@ -1495,7 +1495,11 @@ compares versions by **plain string equality** — its `versionHigher()` helper 
 keyed to the stable id, so nightlies are served from `https://plxnative.com/nightly/repo.json`
 (users add it under Homebrew Channel > Settings > Add repository). `ci/nightly.py repo-json`
 builds it from the newest nightly release: the index, that nightly's manifest with an absolute
-`ipkUrl`, and a description page; `pages.yml` stages it after every published nightly. Because the
+`ipkUrl`, and a description page; `pages.yml` stages it after every published nightly. Nightly
+releases are published to their own repository, `plxnative/plx-native-nightly`
+(`ci/nightly.py`'s `RELEASE_REPO`, written with the `NIGHTLY_RELEASE_TOKEN` secret), so watching
+this repository's releases announces real releases only; their `nightly/v*` tags stay here, at the
+commit built, for `plan` and the notes' compare link. Because the
 Channel compares version strings, each nightly's PACKAGE version carries its cut date as the patch
 (`X.Y.YYYYMMDD`, `ci/version_rule.py::nightly_package_triplet`) — the reported version
 (`X.Y.Z-nightly-YYYYMMDD`) is the human one. `repo-json` refuses a manifest whose id, sha256 or

@@ -150,9 +150,10 @@ the release you already trust.
 appears there as an update. The [nightly builds guide](docs/nightly-builds.md) has the steps, how
 the versions work and what to do if something goes wrong.
 
-**Without it:** each build is a
-[prerelease](https://github.com/plxnative/plx-native/releases?q=nightly), and the newest is always
-linked from [plxnative.com/nightly/latest.json](https://plxnative.com/nightly/latest.json). Install
+**Without it:** each build is a release of
+[plxnative/plx-native-nightly](https://github.com/plxnative/plx-native-nightly/releases), and the
+newest is always linked from
+[plxnative.com/nightly/latest.json](https://plxnative.com/nightly/latest.json). Install
 it with Dev Manager; a package installed that way does not update itself.
 
 **It is not tested on a television.** It passes the same automated build and packaging checks a
