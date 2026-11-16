@@ -528,6 +528,56 @@ fn a_page_ask_supersedes_a_deferred_quiet_read() {
 }
 
 #[test]
+fn a_page_ask_that_took_a_deferred_quiet_read_leaves_nothing_deferred_behind() {
+    let _g = plx_base::testlock::serial();
+    let mut r = rig_of(vec![Box::new(|slot| {
+        let mut sh = shelf(slot, "Movies", "home.movies", &["a1", "a2"]);
+        sh.key = "/hubs/sections/1/movies".into();
+        sh.more = true;
+        built(slot, &[], vec![sh])
+    })]);
+    {
+        let s = &mut r.o.state.srcs[0];
+        s.quiet = true;
+        s.deferred = true; // the gate had no room for the quiet ask
+    }
+    let sid = r.sid(0);
+    let seen = r.o.state.catalog_gen;
+    let (_, mut asked) = r.run(Some(HubsCmd::Page { sid, id: "home.movies".into(),
+        key: "/hubs/sections/1/movies".into(), before: false, seen }), 0.0);
+    assert_eq!(asked.len(), 1, "the page ask kicks at once, ungated");
+    assert!(!r.o.state.srcs[0].deferred, "the read that went out answered the gate's refusal");
+    let landing = asked.remove(0).complete_for_test(Some(built(r.slots[0], &[], vec![{
+        let mut sh = shelf(r.slots[0], "Movies", "home.movies", &["a3"]);
+        sh.key = "/hubs/sections/1/movies".into();
+        sh
+    }])));
+    let _ = r.apply(&landing);
+    let (_, again) = r.run(None, 0.0);
+    assert!(again.iter().all(|q| q.page_descriptor().is_some() || r.o.state.srcs[0].quiet),
+        "no prompted whole-source read follows the page");
+    assert_ne!(r.o.state.srcs[0].state, HubState::Loading, "the source is not sent back to Loading");
+}
+
+#[test]
+fn cancelling_a_page_clears_the_deferral_with_it() {
+    let _g = plx_base::testlock::serial();
+    let mut r = rig(1);
+    {
+        let s = &mut r.o.state.srcs[0];
+        s.page = Some(PageQuery { id: "home.theirs".into(), key: String::new(), start: 3, before: false,
+            hidden: Vec::new(), reload: false });
+        s.deferred = true; // the gate had no room for the page read
+    }
+    let sid = r.sid(0);
+    let _ = r.run(Some(HubsCmd::CancelPage { sid, id: "home.theirs".into(), key: String::new() }), 0.0);
+    assert!(!r.o.state.srcs[0].deferred, "a cancelled page leaves no deferral for a whole-source read");
+    let (_, asked) = r.run(None, 0.0);
+    assert!(asked.is_empty(), "no prompted whole-source read follows the cancel");
+    assert_eq!(r.o.state.srcs[0].state, HubState::Ready);
+}
+
+#[test]
 fn a_page_landing_that_dropped_the_staging_asks_the_quiet_read_again() {
     let _g = plx_base::testlock::serial();
     let mut r = rig(1);
