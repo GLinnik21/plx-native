@@ -128,8 +128,15 @@ class SentryReleases(unittest.TestCase):
         self.assertLess(build.index("ELF + packaging assertions"),
                         build.index("Create the Sentry release and attach its commits"))
         step = self.step()
-        self.assertIn("if: inputs.upload-debug-files && inputs.flavor != 'debug'", step)
+        self.assertIn("if: inputs.sentry-release && inputs.upload-debug-files && inputs.flavor != 'debug'", step)
         self.assertIn("continue-on-error: true", step)
+        self.assertRegex(build, r"sentry-release:\n(?:        .*\n)*?        type: boolean\n        default: false\n")
+
+    def test_only_a_run_that_publishes_creates_the_release(self):
+        self.assertEqual(re.findall(r"sentry-release: (\$\{\{.*)", code("release.yml")),
+                         ["${{ !inputs.rebuild_tag }}"])
+        self.assertIn("sentry-release: ${{ needs.prepare.outputs.dry != 'true' }}", code("rc.yml"))
+        self.assertIn("sentry-release: ${{ needs.plan.outputs.dry != 'true' }}", code("nightly.yml"))
 
     def test_the_name_is_the_reported_version_and_the_binary_must_carry_it(self):
         step = self.step()
@@ -140,7 +147,10 @@ class SentryReleases(unittest.TestCase):
 
     def test_the_commits_come_from_this_repository_at_the_built_commit(self):
         step = self.step()
-        self.assertIn('releases set-commits "$release" --commit "$GITHUB_REPOSITORY@$(git rev-parse HEAD)"', step)
+        self.assertIn('releases set-commits "$release" --commit "$GITHUB_REPOSITORY@$range"', step)
+        # The range starts at the last final release below this version, never at a candidate.
+        self.assertIn("rc.last_release(", step)
+        self.assertIn('range="$base_sha..$head"', step)
         # The outputs are written once the release exists, so the deploy still runs if only the
         # commit lookup failed.
         self.assertLess(step.index('releases new "$release"'), step.index('echo "release=$release"'))

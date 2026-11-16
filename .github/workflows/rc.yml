@@ -163,6 +163,9 @@ jobs:
       fwcompat: true
       # A pull request's dry run publishes nothing (see nightly.yml for the same choice).
       upload-debug-files: ${{ github.event_name != 'pull_request' }}
+      # Any dry run, dispatched ones too: a candidate it named would become the base of the next
+      # real one's commit range.
+      sentry-release: ${{ needs.prepare.outputs.dry != 'true' }}
       caches: false
     secrets:
       SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}

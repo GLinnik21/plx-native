@@ -215,6 +215,9 @@ jobs:
       # exists to prove the whole pipeline, upload included). The event name, not `plan`'s `dry`
       # output, is the discriminator: `dry` is also true for that dispatch.
       upload-debug-files: ${{ github.event_name != 'pull_request' }}
+      # Any dry run, dispatched ones too: it builds today's name, and would replace the commits of
+      # the nightly already published under it.
+      sentry-release: ${{ needs.plan.outputs.dry != 'true' }}
       # Release deliberately builds uncached for reproducibility; nightly runs once a day rather
       # than on every push, so the cache's turnaround benefit is smaller and not worth the same
       # trade here either.

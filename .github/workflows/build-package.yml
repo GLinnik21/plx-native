@@ -102,6 +102,15 @@ on:
           pairing assertion and `sentry-cli debug-files check` still run either way.
         type: boolean
         default: true
+      sentry-release:
+        description: >
+          Create this build's Sentry release and attach its commits (the step "Create the Sentry
+          release and attach its commits"). Only a run that will PUBLISH the package passes true: a
+          dry run builds the same name as the real one (a nightly's is its date), so its commits
+          would replace a shipped release's, and a re-publish of an old tag would rewrite that
+          release's history. False skips it and leaves `sentry-release` empty.
+        type: boolean
+        default: false
     secrets:
       SENTRY_AUTH_TOKEN:
         required: true
@@ -448,9 +457,9 @@ jobs:
         # name no event carries would gather commits for nothing.
         #
         # Not fatal: an outage at Sentry or GitHub costs the commit list, never the release. The
-        # debug-file upload above stays fatal, because without it no crash symbolicates. Skipped
-        # where that upload is (a pull request's dry run) and for debug builds, which ship nowhere.
-        if: inputs.upload-debug-files && inputs.flavor != 'debug'
+        # debug-file upload above stays fatal, because without it no crash symbolicates. Runs only
+        # when the caller will publish (`sentry-release`), and never for a debug build.
+        if: inputs.sentry-release && inputs.upload-debug-files && inputs.flavor != 'debug'
         continue-on-error: true
         timeout-minutes: 5
         env:
@@ -477,9 +486,28 @@ jobs:
             echo "project=$SENTRY_PROJECT"
             echo "environment=$TELEMETRY"
           } >> "$GITHUB_OUTPUT"
-          # `--ignore-missing`: when the previous release's commit is gone from the history (a
-          # squashed or force-pushed branch), take the default range instead of failing.
-          "$cli" releases set-commits "$release" --commit "$GITHUB_REPOSITORY@$(git rev-parse HEAD)" --ignore-missing
+          # An explicit range, from the last FINAL release below this version to the built commit.
+          # Sentry's own default starts at the previous release it knows, and that is wrong here
+          # twice over: a candidate (`X.Y.Z-rc.N`, finalized in the same project) would leave the
+          # final `X.Y.Z` built after it with one commit, and a patch of an older line would be
+          # measured from a newer line's release. `ci/rc.py`'s `last_release` is the rule the
+          # candidate's notes already use. A nightly gets everything since the last stable.
+          head=$(git rev-parse HEAD)
+          base=$(git ls-remote --tags --refs origin 'v*' | sed 's|.*refs/tags/||' \
+            | python3 -c 'import sys; sys.path.insert(0, "ci"); import rc; print(rc.last_release(sys.stdin.read().split(), below=sys.argv[1]) or "")' \
+              "$(echo "${release#plxnative@}" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')")
+          range="$head"
+          if [ -n "$base" ]; then
+            # The commit an annotated tag points at is listed as `<tag>^{}`; a lightweight tag has
+            # no such line and is the commit itself.
+            base_sha=$(git ls-remote origin "refs/tags/$base^{}" | cut -f1)
+            base_sha=${base_sha:-$(git ls-remote origin "refs/tags/$base" | cut -f1)}
+            range="$base_sha..$head"
+          fi
+          echo "Commits of $release: $base..$head"
+          # `--ignore-missing`: when the base commit is unknown to GitHub (a rewritten history),
+          # take Sentry's default range instead of failing.
+          "$cli" releases set-commits "$release" --commit "$GITHUB_REPOSITORY@$range" --ignore-missing
           echo "Sentry: $release created in $SENTRY_PROJECT with its commits." >> "$GITHUB_STEP_SUMMARY"
 
       - name: webosbrew tooling
