@@ -533,6 +533,19 @@ jobs:
             | tee /tmp/published.txt
           sed -i 's/\x1b\[[0-9;]*m//g' /tmp/published.txt
 
+      - name: Mark the Sentry release as shipped
+        # Finalizes the release build-package.yml created and records its deploy; never fails
+        # the publish, which has already happened (.github/actions/sentry-deploy says why).
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: ./.github/actions/sentry-deploy
+        with:
+          release: ${{ needs.build.outputs.sentry-release }}
+          org: ${{ needs.build.outputs.sentry-org }}
+          project: ${{ needs.build.outputs.sentry-project }}
+          environment: ${{ needs.build.outputs.sentry-environment }}
+          auth-token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
       # The completed audit goes to the LINE the release was cut from — main for an ordinary
       # trunk release, or the same `release/vX.Y` branch `prepare` bumped and tagged for a
       # maintenance-line patch (`needs.guard.outputs.line`, threaded through from `prepare` when

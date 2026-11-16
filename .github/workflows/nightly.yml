@@ -359,6 +359,20 @@ jobs:
           gh release download "$TAG" --repo "$release_repo" --pattern com.beb.plxnative.nightly.manifest.json --dir verify
           test "$(python3 -c "import json;print(json.load(open('verify/com.beb.plxnative.nightly.manifest.json'))['ipkHash']['sha256'])")" = "$(cut -d' ' -f1 dist/nightly.sha256)"
 
+      - name: Mark the Sentry release as shipped
+        if: ${{ needs.plan.outputs.dry != 'true' }}
+        # Finalizes the release build-package.yml created and records its deploy; never fails
+        # the publish, which has already happened (.github/actions/sentry-deploy says why).
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: ./.github/actions/sentry-deploy
+        with:
+          release: ${{ needs.build.outputs.sentry-release }}
+          org: ${{ needs.build.outputs.sentry-org }}
+          project: ${{ needs.build.outputs.sentry-project }}
+          environment: ${{ needs.build.outputs.sentry-environment }}
+          auth-token: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
   pages:
     name: refresh site latest-nightly pointer
     needs: [plan, publish]
