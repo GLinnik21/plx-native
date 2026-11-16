@@ -4112,11 +4112,31 @@ fn finish_encoder_cleanup_check(
     }
 }
 
-fn run_encoder_cleanup_check(check: EncoderCleanupCheck) {
+/// The claim `take_unchecked` made on one cleanup record. If the observation unwinds (or the
+/// worker is torn down) before it publishes, dropping this releases the claim without a verdict,
+/// so `checking` cannot stay set for the process and defer every later ABR trial on that server.
+struct EncoderCleanupClaim {
+    check: Option<EncoderCleanupCheck>,
+}
+
+impl Drop for EncoderCleanupClaim {
+    fn drop(&mut self) {
+        if let Some(check) = self.check.take() {
+            // No observation: keep `stop_needed` / `physical_absent` as they were.
+            ENCODER_CLEANUP
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .finish(check, None, None, None);
+        }
+    }
+}
+
+/// `(present, stop_accepted, resource_reconciled)` of one completed cleanup observation.
+type EncoderCleanupObservation = (Option<bool>, Option<bool>, Option<bool>);
+
+fn observe_encoder_cleanup(check: &EncoderCleanupCheck) -> EncoderCleanupObservation {
     let Some(client) = plx_plex::plex::client_for(check.sid) else {
-        let stop_accepted = check.stop_needed.then_some(false);
-        finish_encoder_cleanup_check(check, None, stop_accepted, None);
-        return;
+        return (None, check.stop_needed.then_some(false), None);
     };
     let stop_accepted = (check.stop_needed && !check.physical_absent)
         .then(|| client.transcode_stop(&check.session));
@@ -4131,6 +4151,20 @@ fn run_encoder_cleanup_check(check: EncoderCleanupCheck) {
     } else {
         None
     };
+    (present, stop_accepted, resource_reconciled)
+}
+
+fn run_encoder_cleanup_check(check: EncoderCleanupCheck) {
+    run_encoder_cleanup_check_with(check, observe_encoder_cleanup);
+}
+
+fn run_encoder_cleanup_check_with(
+    check: EncoderCleanupCheck,
+    observe: impl FnOnce(&EncoderCleanupCheck) -> EncoderCleanupObservation,
+) {
+    let mut claim = EncoderCleanupClaim { check: Some(check.clone()) };
+    let (present, stop_accepted, resource_reconciled) = observe(&check);
+    claim.check = None;
     finish_encoder_cleanup_check(check, present, stop_accepted, resource_reconciled);
 }
 
