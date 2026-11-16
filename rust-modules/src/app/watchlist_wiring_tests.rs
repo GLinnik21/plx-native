@@ -576,7 +576,7 @@ fn a_catalog_hold_carries_no_pms_identity_even_with_a_cached_copy() {
 #[test]
 fn ok_on_a_strip_pill_asks_to_leave_the_page() {
     use plx_machine::machine::Key;
-    use plx_screens::watchlist::page::WatchlistOut;
+
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
     let (mut d, mut rig) = mounted(&script);
@@ -598,10 +598,11 @@ fn ok_on_a_strip_pill_asks_to_leave_the_page() {
         press(&mut d, &mut rig, Key::Right);
         assert_ne!(d.focus(), before, "the Home pill is on the strip");
     }
-    rig.take_watchlist_reqs();
+    rig.completed_screen_commands.clear();
     press(&mut d, &mut rig, Key::Ok);
-    let asked: Vec<WatchlistOut> = rig.take_watchlist_reqs().into_iter().map(|(_, out, _)| out).collect();
-    assert_eq!(asked, vec![WatchlistOut::Tab(HomeTab::Home)], "OK on the Home pill asks for Home");
+    assert_eq!(rig.completed_screen_commands, ["watchlist:Tab(Home)"],
+        "OK on the Home pill executes Home exactly once");
+    assert!(d.top_arg() == Some(&AppArg::Home), "the product runner performs the navigation");
 }
 
 #[test]

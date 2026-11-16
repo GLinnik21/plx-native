@@ -846,6 +846,36 @@ fn a_request_freezes_inactive_group_cursors_before_focus_moves_during_the_fade()
 }
 
 #[test]
+fn an_addressed_covered_entry_seat_is_retained_without_stealing_the_modal_focus() {
+    use crate::screen::{Enter, FocusTarget, ScreenEvent};
+    use plx_machine::machine::{Delivery, Fx};
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    let instance = d.nav.instance_of(home).unwrap();
+    let modal = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    let modal_focus = d.focus();
+    let requested = FocusKey { entry: home, elem: 1 };
+    let page = MachineId::Instance(instance);
+    d.emit(page, Fx::Deliver(page, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
+        focus: FocusTarget::Elem(requested),
+    }))));
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(modal)));
+    assert_eq!(d.focus(), modal_focus, "a covered page must not steal the active ring");
+    assert_eq!(d.nav.entry(home).unwrap().ret.focus, Some(requested),
+        "an explicit addressed seat must survive until the returning owner uncovers");
+    d.emit(page, Fx::Deliver(page, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
+        focus: FocusTarget::Elem(FocusKey { entry: modal, elem: 0 }),
+    }))));
+    d.frame(&mut rig, tick(40), vec![], vec![], &mut NoTap);
+    assert_eq!(d.nav.entry(home).unwrap().ret.focus, Some(requested), "a key for another entry cannot replace the seat");
+    d.request(MachineId::Nav, NavOp::Dismiss(modal));
+    d.frame(&mut rig, tick(48), vec![], vec![], &mut NoTap);
+    assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(home)));
+    assert_eq!(d.focus(), Some(requested), "normal restore validates and applies the retained target");
+}
+
+#[test]
 fn filmography_detail_back_restores_the_same_modal_instance_and_cursor() {
     use plx_machine::machine::GroupId;
     let (mut d, mut rig, _) = booted();

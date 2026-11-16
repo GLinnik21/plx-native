@@ -1149,8 +1149,13 @@ pub fn failure_actions(kind: FailureKind, cx: FailureContext) -> Vec<FailureActi
 
 /// The live [`FailureContext`] (main thread).
 pub fn failure_context(ps: &crate::route::PlaybackSession) -> FailureContext {
+    failure_context_captured(ps, failtest_forced())
+}
+
+/// App-boundary resolver using the diagnostic policy already sampled for this frame.
+pub fn failure_context_captured(ps: &crate::route::PlaybackSession, diagnostic_forced: bool) -> FailureContext {
     FailureContext {
-        forced: crate::route::forced_direct_play(ps) || failtest_forced(),
+        forced: crate::route::forced_direct_play(ps) || diagnostic_forced,
         can_retry: crate::route::can_retry_current_play(ps),
         repair_idle: ps.repair_status == plx_platform::tv::sandbox::State::Idle,
     }
@@ -1423,7 +1428,12 @@ fn preview_not_direct_shape() -> ErrorShape {
 /// The live [`ErrorShape`] for `PlaybackState::Error` (main thread — `route::is_transcoding` and
 /// `route::play_verdict` read main-thread state).
 pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
-    if let Some(arm) = failtest_arm(ps) {
+    error_captured(ps, plx_base::devtrig::read("failtest").as_deref())
+}
+
+/// App-boundary resolver: no second diagnostic read can disagree with this frame's force bit.
+pub fn error_captured(ps: &crate::route::PlaybackSession, diagnostic: Option<&str>) -> ErrorShape {
+    if let Some(arm) = failtest_arm(ps, diagnostic) {
         return arm;
     }
     // Ahead of every other cause: on an affected, unfixed set every Load this boot has been (and
@@ -1569,8 +1579,8 @@ const FAILTEST_VERDICT: &str =
 /// the capsule reachable and it applies to EVERY server, so the pairing `docs/agent-reference.md`
 /// documents is unaffected — but note the arm still has to be looked at from the player route,
 /// i.e. after a play, which is when `route::cur_sid` names a server at all.
-fn failtest_arm(ps: &crate::route::PlaybackSession) -> Option<ErrorShape> {
-    let arm = plx_base::devtrig::read("failtest")?;
+fn failtest_arm(ps: &crate::route::PlaybackSession, diagnostic: Option<&str>) -> Option<ErrorShape> {
+    let arm = diagnostic?;
     let sub = playing_subscription(&ps);
     Some(match arm.trim() {
         "audio" => error_shape(true, true, sub, None, RuntimeFailure::Unknown),

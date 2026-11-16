@@ -944,6 +944,9 @@ mod tests {
         TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
     }
 
+    impl crate::registry::ScreenInputsLike for TestHost {
+        fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+    }
     impl crate::registry::CollectionLike for TestHost {
         fn collection<'a>(_cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> {
             plx_data::collection::CollectionView::default()

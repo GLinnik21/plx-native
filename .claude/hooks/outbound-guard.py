@@ -13,7 +13,7 @@ friend's, not the maintainer's, and they were not a party to any of it.
 
 That is the shape this guards: not malice and not carelessness, but an agent being helpful with a
 value it can read. A memory file is not in the loop at the moment a PR body is composed; a
-PreToolUse hook is. github.com/GLinnik21/plx-native is PUBLIC.
+PreToolUse hook is. github.com/plxnative/plx-native is PUBLIC.
 
 WHAT IT COSTS. Classification is pure string work over the command line, and nothing is opened —
 not the gitignored files, not even the repo root — unless a segment is first graded outbound, so
@@ -1292,7 +1292,7 @@ def main():
     lines.append("  (the value itself is not printed — putting it in this transcript is the same "
                  "leak by a shorter route)")
     sys.stderr.write("\n".join(lines) + "\n\n" + (
-        "github.com/GLinnik21/plx-native is PUBLIC. On 2026-08-14 four PR bodies (#28-31) carried a\n"
+        "github.com/plxnative/plx-native is PUBLIC. On 2026-08-14 four PR bodies (#28-31) carried a\n"
         "third party's Plex server address, port, machineIdentifier and handle. All four were\n"
         "redacted, but GitHub keeps PR-body edit history, so those values are permanently public —\n"
         "and they were the FRIEND's, not this project's to publish.\n"

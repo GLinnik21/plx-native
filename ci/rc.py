@@ -209,7 +209,7 @@ def _selftest() -> int:
 
     body = render_notes(label="0.8.0-rc.2", sha="abc1234def" + "0" * 30, base_tag="v0.7.0",
                         prev_tag="rc/v0.8.0-rc.1", ipk="plxnative-v0.8.0-rc.2.ipk",
-                        sha256="deadbeef" * 8, repo="GLinnik21/plx-native",
+                        sha256="deadbeef" * 8, repo="plxnative/plx-native",
                         changes=["- Home: something (#471)"])
     check("replaces the regular PlxNative" in body, "notes say it replaces the stable install")
     check("will not offer the final 0.8.0" in body, "notes warn the final is not offered over it")

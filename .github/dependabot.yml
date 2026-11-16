@@ -1,5 +1,23 @@
-# Dependabot version updates. Every PR it opens is squash-merged like any other (AGENTS.md), so the
-# commit-message prefix below only has to read like the repo's own "Area: change" subjects.
+# Dependabot. Every PR it opens is squash-merged like any other (AGENTS.md), so the commit-message prefix
+# below only has to read like the repo's own "Area: change" subjects.
+#
+# THE POLICY: security fixes at once, everything else rarely and late.
+#
+# - Security updates (a GitHub advisory, RustSec included, against a version in a lockfile) are NOT
+#   configured here and none of the rules below delay or suppress them: they come as soon as the advisory is
+#   published, outside the schedule, past `cooldown` (version updates only) and past
+#   `open-pull-requests-limit` (they have their own fixed limit). They need "Dependabot alerts" and
+#   "Dependabot security updates" switched on in the repository's Settings > Advanced Security.
+# - Version updates (a newer release with no advisory) are routine upkeep, not a fix. Each one is new
+#   upstream code in the binary the television runs, and on a cargo PR every crate it ADDS needs a human
+#   licence decision and can break the build budgets (ci/build-budgets.json), so they come MONTHLY, grouped,
+#   and only after a `cooldown`: a release must have been public for a while before it is proposed, so a
+#   hijacked or broken publish has time to be yanked before it reaches a PR (supply-chain hygiene).
+# - A crate pinned with an exact `=` is held: its version updates are ignored. Hold rules here use
+#   `update-types` with all three levels and NEVER a bare `dependency-name`: per GitHub's docs ("Controlling
+#   which dependencies are updated by Dependabot"), `update-types` only affects version updates and
+#   "security updates will always be created regardless", while a bare name rule (and an `@dependabot
+#   ignore` comment on a PR) also suppresses security updates. Do not hold a crate by commenting on its PR.
 #
 # What this does NOT cover: the non-Rust dependencies pinned in ci/dependencies.json (FFmpeg, libass
 # and its inputs, Sentry Native, nanosvg, jsmpeg, the webOS NDK; ci/deps.py fetches and verifies them).
@@ -34,29 +52,56 @@ updates:
   - package-ecosystem: cargo
     directory: /rust-modules
     schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
+      interval: monthly
+    # Version updates only. A minor can add crates and API, so it waits longer than a patch; a major waits
+    # longest and comes as a PR of its own.
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+      semver-minor-days: 14
+      semver-patch-days: 7
+    open-pull-requests-limit: 3
     commit-message:
       prefix: Deps
     groups:
-      # Minor and patch bumps travel together; a major gets a PR of its own.
+      # Minor and patch bumps travel together, once a month; a major gets a PR of its own.
       rust-minor-patch:
+        applies-to: version-updates
         update-types: [minor, patch]
     ignore:
-      # Exact `=` pins, deliberately held. They were added together with the verbatim upstream licence
-      # texts the notices carry for them (licenses/ICU4X.txt, licenses/qrcodegen.txt; THIRD-PARTY-NOTICES.md
-      # 2.4, #265), and icu_datetime's compiled data is a large part of .rodata (Makefile size notes). A
-      # bump is a deliberate change: re-read the notices, check the size budget, edit Cargo.toml by hand.
-      # (icu_provider is `2.1`, not pinned, and its data crates ride along as lockfile updates.)
+      # Exact `=` pins, deliberately held. Version updates only (see the header: never a bare name rule, it
+      # would block security updates too). A bump is a deliberate change: edit Cargo.toml by hand, re-read
+      # the notices, check the size and package budgets.
+      #
+      # ICU4X and qrcodegen were added together with the verbatim upstream licence texts the notices carry
+      # for them (licenses/ICU4X.txt, licenses/qrcodegen.txt; THIRD-PARTY-NOTICES.md 2.4, #265), and
+      # icu_datetime's compiled data is a large part of .rodata (Makefile size notes). (icu_provider is
+      # `2.1`, not pinned, and its data crates ride along as lockfile updates.)
       - dependency-name: icu_locale
+        update-types: [version-update:semver-major, version-update:semver-minor, version-update:semver-patch]
       - dependency-name: icu_plurals
+        update-types: [version-update:semver-major, version-update:semver-minor, version-update:semver-patch]
       - dependency-name: icu_decimal
+        update-types: [version-update:semver-major, version-update:semver-minor, version-update:semver-patch]
       - dependency-name: icu_datetime
+        update-types: [version-update:semver-major, version-update:semver-minor, version-update:semver-patch]
       - dependency-name: icu_calendar
+        update-types: [version-update:semver-major, version-update:semver-minor, version-update:semver-patch]
       - dependency-name: qrcodegen
+        update-types: [version-update:semver-major, version-update:semver-minor, version-update:semver-patch]
+      # zip reads and writes .plxhud bundles STORE-only with every optional feature off, behind the
+      # stricter format profile of docs/hud-plugins.md (no encryption, compression or ZIP64), so its
+      # releases rarely touch code this binary calls; 9.2.2 -> 9.5.1 (#1402) added four crates for none.
+      - dependency-name: zip
+        update-types: [version-update:semver-major, version-update:semver-minor, version-update:semver-patch]
+      # ed25519-compact verifies one signature a day with `opt_size` chosen for the binary size
+      # (rust-modules/data/Cargo.toml); a release has to be read before it replaces the verifier.
+      - dependency-name: ed25519-compact
+        update-types: [version-update:semver-major, version-update:semver-minor, version-update:semver-patch]
 
   # rust-modules/rust-toolchain.toml: the pinned stable release (GitHub, 2025-08-19, "Dependabot now supports
-  # Rust toolchain updates"; it reads a pinned `channel = "1.x.y"`).
+  # Rust toolchain updates"; it reads a pinned `channel = "1.x.y"`). Weekly: a Rust point release is
+  # usually a fix the toolchain itself needed, and there is only ever one PR.
   - package-ecosystem: rust-toolchain
     directory: /rust-modules
     schedule:
@@ -67,6 +112,8 @@ updates:
 
   # Workflows, plus each local composite action (a composite action's own `uses:` is only found
   # when its directory is listed). Listed one by one: only the workflows directory is scanned for `/`.
+  # Actions are pinned by commit SHA; a release still runs in CI with a token, so it waits a week too
+  # (github-actions takes only `default-days`).
   - package-ecosystem: github-actions
     directories:
       - /
@@ -75,34 +122,43 @@ updates:
       - /.github/actions/rust-toolchain
       - /.github/actions/webos-ndk
     schedule:
-      interval: weekly
+      interval: monthly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     commit-message:
       prefix: CI
     groups:
       actions:
+        applies-to: version-updates
         patterns: ["*"]
 
-  # tools/requirements-docs.txt, installed by pages.yml.
+  # tools/requirements-docs.txt, installed by pages.yml. Builds the docs site; nothing here ships.
   - package-ecosystem: pip
     directory: /tools
     schedule:
-      interval: weekly
+      interval: monthly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 3
     commit-message:
       prefix: Tools
     groups:
       python-tools:
+        applies-to: version-updates
         patterns: ["*"]
 
-  # tools/package.json: the Sentry CLI that the Makefile and workflows run.
+  # tools/package.json: the Sentry CLI that the Makefile and workflows run (it uploads symbols with a token).
   - package-ecosystem: npm
     directory: /tools
     schedule:
-      interval: weekly
+      interval: monthly
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 3
     commit-message:
       prefix: Tools
     groups:
       node-tools:
+        applies-to: version-updates
         patterns: ["*"]

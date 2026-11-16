@@ -2,7 +2,8 @@
 //! receipt, a failure keeps the page with its status and a Retry, Force is asked before it is
 //! persisted, and a stale request leaves rather than writing.
 use super::*;
-use super::super::tests::{drive, popped, preference_commands, tick, Account, context};
+use super::super::tests::{drive, drive_preferences, popped, preference_commands, tick, Account, context};
+use plx_plex::plex::session::ProfilePrefs;
 use plx_machine::machine::{Source, Stamped, Tick};
 
 fn save_reply(emitted: Vec<Stamped<InnerHost>>) -> mpsc::Sender<AccountPreferenceReply> {
@@ -26,7 +27,8 @@ fn a_picker_opens_on_the_checked_option_with_position_keys() {
     let _session = plx_plex::plex::session::TempSession::new("picker-opens-checked");
     let previous = plx_media::route::quality();
     plx_media::route::restore_quality(Quality::P480);
-    let page = PickerPage::new(EntryId(0), PickerKind::Quality, &crate::registry::capture_fixture());
+    let inputs = crate::registry::ScreenInputs { preferences: Some(ProfilePrefs { playback_quality: Some(Quality::P480), ..Default::default() }), ..crate::registry::capture_fixture() };
+    let page = PickerPage::new(EntryId(0), PickerKind::Quality, &inputs);
     let ladder = plx_media::route::available_quality_ladder();
     let at = ladder.iter().position(|q| *q == Quality::P480).unwrap();
     assert_eq!(page.state.selected, at as u32, "the cursor starts on the checked option");
@@ -41,9 +43,11 @@ fn choosing_the_checked_value_pops_without_a_write() {
     let _session = plx_plex::plex::session::TempSession::new("picker-checked-noop");
     let previous = plx_media::route::quality();
     plx_media::route::restore_quality(Quality::P480);
-    let mut page = PickerPage::new(EntryId(0), PickerKind::Quality, &crate::registry::capture_fixture());
+    let preferences = ProfilePrefs { playback_quality: Some(Quality::P480), ..Default::default() };
+    let inputs = crate::registry::ScreenInputs { preferences: Some(preferences.clone()), ..crate::registry::capture_fixture() };
+    let mut page = PickerPage::new(EntryId(0), PickerKind::Quality, &inputs);
     let key = page.state.selected;
-    let emitted = drive(&mut page, ScreenEvent::Activate(key), key);
+    let emitted = drive_preferences(&mut page, ScreenEvent::Activate(key), key, preferences);
     assert!(popped(&emitted));
     assert_eq!(preference_commands(&emitted), 0);
     assert!(page.txn.pending.is_none());
@@ -241,7 +245,7 @@ fn the_color_picker_checks_the_live_tone_and_chooses_yellow() {
     });
     assert_eq!(chosen, Some(SubtitleTone::Yellow));
     plx_media::player::restore_subtitle_tone(SubtitleTone::Yellow);
-    drive(&mut page, tick(), yellow);
+    drive_preferences(&mut page, tick(), yellow, ProfilePrefs { subtitle_tone: Some(SubtitleTone::Yellow), ..Default::default() });
     assert_eq!(page.state.checked, yellow, "the checkmark follows the published pick");
     plx_media::player::restore_subtitle_tone(tone);
 }
@@ -257,7 +261,7 @@ fn the_size_picker_moves_its_checkmark_when_the_live_value_is_published() {
     let mut page = PickerPage::new(EntryId(0), PickerKind::SubtitleSize, &crate::registry::capture_fixture());
     let before = page.state.checked;
     plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Large);
-    drive(&mut page, tick(), before);
+    drive_preferences(&mut page, tick(), before, ProfilePrefs { subtitle_size: Some(SubtitleSize::Large), ..Default::default() });
     assert_ne!(page.state.checked, before, "the checked option follows the published value");
     plx_media::route::restore_subtitle_size(size);
     plx_media::route::restore_subtitle_position(position);
@@ -274,8 +278,10 @@ fn ok_on_the_checked_size_after_a_failed_write_retries_the_write() {
     let mut page = PickerPage::new(EntryId(0), PickerKind::SubtitleSize, &crate::registry::capture_fixture());
     let other = if page.state.checked == 0 { 1 } else { 0 };
     let emitted = drive(&mut page, ScreenEvent::Activate(other), other);
+    let mut picked = None;
     let reply = emitted.into_iter().find_map(|e| match e.fx {
         Fx::App(AppFx::Preferences(PreferenceCmd::Choose(plx_media::route::Choice::SubtitleSize(size), reply))) => {
+            picked = Some(size);
             // what select_subtitle_size does on the main thread before the write lands
             plx_media::route::restore_subtitle_size(size);
             Some(reply)
@@ -283,9 +289,10 @@ fn ok_on_the_checked_size_after_a_failed_write_retries_the_write() {
         _ => None,
     }).expect("a size command");
     reply.send(false).unwrap();
-    assert!(!popped(&drive(&mut page, tick(), other)), "a failed write keeps the page");
+    let preferences = ProfilePrefs { subtitle_size: picked, ..Default::default() };
+    assert!(!popped(&drive_preferences(&mut page, tick(), other, preferences.clone())), "a failed write keeps the page");
     assert_eq!(page.state.checked, other, "the live pick is the checked row");
-    let emitted = drive(&mut page, ScreenEvent::Activate(other), other);
+    let emitted = drive_preferences(&mut page, ScreenEvent::Activate(other), other, preferences);
     assert!(!popped(&emitted), "OK on the unsaved checked row does not pop");
     assert_eq!(preference_commands(&emitted), 1, "it writes again");
     plx_media::route::restore_subtitle_size(size);

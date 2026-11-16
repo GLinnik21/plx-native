@@ -423,8 +423,8 @@ fn a_single_kind_grid_is_banded_by_its_own_details_line() {
     let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut page = fixture.screen();
-    let band = |page: &LibraryScreen, setting: UnderPosters| {
-        crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(setting)));
+    let band = |page: &mut LibraryScreen, setting: UnderPosters| {
+        page.caption_policy = crate::registry::caption_policy_of(setting);
         page.grid_policy().as_ref().map(band_h)
     };
     let movies_off = UnderPosters { title: false, details: UnderPostersLadder::None.movie_parts(), show_details: UnderPostersLadder::YearLength.show_parts(), sort_value: false };
@@ -436,13 +436,13 @@ fn a_single_kind_grid_is_banded_by_its_own_details_line() {
         (SecKind::Movie, LibraryType::Collections, movies_off, shows_off, "Collections"),
     ] {
         (page.kind, page.listed) = (kind, listed);
-        assert_eq!(band(&page, off), Some(BAND_NONE), "{line}: its own line is Nothing and the other kind's line opens no band here");
-        assert_eq!(band(&page, UnderPosters { title: true, ..off }), Some(BAND_ONE_LINE), "{line}: Title On alone is one line, not two");
-        assert_eq!(band(&page, on), Some(BAND_ONE_LINE), "{line}: its own line set opens one line");
-        assert_eq!(band(&page, UnderPosters { title: true, ..on }), Some(BAND_TWO_LINES), "{line}: title and details are two");
+        assert_eq!(band(&mut page, off), Some(BAND_NONE), "{line}: its own line is Nothing and the other kind's line opens no band here");
+        assert_eq!(band(&mut page, UnderPosters { title: true, ..off }), Some(BAND_ONE_LINE), "{line}: Title On alone is one line, not two");
+        assert_eq!(band(&mut page, on), Some(BAND_ONE_LINE), "{line}: its own line set opens one line");
+        assert_eq!(band(&mut page, UnderPosters { title: true, ..on }), Some(BAND_TWO_LINES), "{line}: title and details are two");
     }
     (page.kind, page.listed) = (SecKind::Show, LibraryType::Episodes);
-    assert_eq!(band(&page, movies_off), None, "the Episodes listing keeps the legacy band");
+    assert_eq!(band(&mut page, movies_off), None, "the Episodes listing keeps the legacy band");
     crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
 }
 

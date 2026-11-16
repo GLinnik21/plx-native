@@ -200,7 +200,7 @@ PMS propagation measurement is still outstanding.
 
 ## Intro and credits skipping
 
-Requested in [discussion #826](https://github.com/GLinnik21/plx-native/discussions/826).
+Requested in [discussion #826](https://github.com/plxnative/plx-native/discussions/826).
 
 Playback settings offers **Skip intros** and **Skip credits** separately for a viewer whose
 Plex account feature list grants the corresponding capability. These are per-profile choices:

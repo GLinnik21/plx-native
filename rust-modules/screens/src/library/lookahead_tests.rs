@@ -6,6 +6,7 @@ use plx_machine::machine::PosterKey;
 use plx_ui::tex::{Source, Warm};
 use std::cell::RefCell;
 use std::collections::HashSet;
+use crate::registry::RuntimePolicy;
 
 type Req = (u16, String, i32, i32);
 
@@ -80,8 +81,8 @@ fn frames(page: &mut LibraryScreen, fixture: &Fixture, n: usize, ahead: usize) {
 fn with_no_trigger_lookahead_is_three_rows_and_prepare_reaches_the_source() {
     let _guard = plx_base::testlock::serial();
     reset(usize::MAX);
-    assert_eq!(lookahead::rows_for(None), 3, "no plxnative-lookahead trigger: the default depth");
-    assert_eq!(lookahead::rows(), lookahead::rows_for(None), "unit tests never read the host's trigger file");
+    assert_eq!(RuntimePolicy::lookahead_rows_for(None), 3, "no plxnative-lookahead trigger: the default depth");
+    assert_eq!(RuntimePolicy::default().lookahead_rows, RuntimePolicy::lookahead_rows_for(None));
     let fixture = Fixture::art_listing(false);
     let mut page = fixture.screen();
     let scroll = page.layout.row_reveal(20);
@@ -93,6 +94,28 @@ fn with_no_trigger_lookahead_is_three_rows_and_prepare_reaches_the_source() {
     let cols = page.layout.cols();
     let rows = claimed_rows(cols, "/poster/");
     assert_eq!(rows.len(), 4 * cols, "three rows ahead plus one behind, with no trigger at all");
+}
+
+#[test]
+fn prepare_uses_each_hosts_explicit_policy() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::art_listing(false);
+    for depth in [0, 2, 4] {
+        reset(usize::MAX);
+        let mut page = fixture.screen();
+        let scroll = page.layout.row_reveal(20);
+        page.pair.detail.set_geometry(page.layout, scroll, page.layout, scroll);
+        let mut inputs = crate::registry::ScreenInputs::default();
+        inputs.runtime_policy.lookahead_rows = depth;
+        let mut cx = fixture.cx(None);
+        cx.views.inputs = &inputs;
+        let mut budget = plx_ui::frame::Budget::new();
+        for _ in 0..100 {
+            <parts::GridPart as plx_ui::screen::Part<HostFixture>>::prepare(&mut page.pair.detail, &mut budget, &cx);
+        }
+        let rows = if depth == 0 { 0 } else { depth + 1 };
+        assert_eq!(claimed_rows(page.layout.cols(), "/poster/").len(), rows * page.layout.cols());
+    }
 }
 
 #[test]
@@ -224,10 +247,24 @@ fn the_lookahead_asks_for_the_key_the_card_draw_resolves() {
 /// The default depth is a property of the rule, not of whatever trigger file the host holds.
 #[test]
 fn the_depth_is_three_rows_unless_a_trigger_that_parses_says_otherwise() {
-    assert_eq!(lookahead::rows_for(None), 3);
-    assert_eq!(lookahead::rows_for(Some("junk")), 3, "an unparsable trigger keeps the default");
-    assert_eq!(lookahead::rows_for(Some("0")), 0, "0 turns the lookahead off");
-    assert_eq!(lookahead::rows_for(Some("2")), 2);
+    assert_eq!(RuntimePolicy::lookahead_rows_for(None), 3);
+    assert_eq!(RuntimePolicy::lookahead_rows_for(Some("junk")), 3, "an unparsable trigger keeps the default");
+    assert_eq!(RuntimePolicy::lookahead_rows_for(Some("0")), 0, "0 turns the lookahead off");
+    assert_eq!(RuntimePolicy::lookahead_rows_for(Some("2")), 2);
+    assert_eq!(RuntimePolicy::lookahead_rows_for(Some("99")), 4);
+    assert_eq!(RuntimePolicy::lookahead_rows_for(Some(" 0\n")), 0);
+    for bad in ["", "off", "-1", "1.5", "two"] { assert_eq!(RuntimePolicy::lookahead_rows_for(Some(bad)), 3); }
+}
+
+#[test]
+fn independent_screen_publications_keep_distinct_runtime_policy() {
+    let first = crate::registry::ScreenInputs::default();
+    let mut second = first.clone();
+    second.runtime_policy.lookahead_rows = 0;
+    second.runtime_policy.harness_driven = true;
+    assert!(!first.same_facts(&second));
+    assert_eq!(first.runtime_policy.lookahead_rows, 3);
+    assert!(!first.runtime_policy.harness_driven);
 }
 
 /// The source protects the `plx_ui::tex::ON_SCREEN_ART_MAX` most recently used slots from a
@@ -255,8 +292,8 @@ fn no_scroll_position_shows_more_cards_than_the_source_protects() {
 
 #[test]
 fn trigger_text_is_a_capped_row_count() {
-    assert_eq!(lookahead::parse_rows("2"), Some(2));
-    assert_eq!(lookahead::parse_rows(" 0\n"), Some(0));
-    assert_eq!(lookahead::parse_rows("99"), Some(4));
-    for bad in ["", "off", "-1", "1.5", "two"] { assert_eq!(lookahead::parse_rows(bad), None, "{bad:?}"); }
+    assert_eq!(RuntimePolicy::lookahead_rows_for(Some("2")), 2);
+    assert_eq!(RuntimePolicy::lookahead_rows_for(Some(" 0\n")), 0);
+    assert_eq!(RuntimePolicy::lookahead_rows_for(Some("99")), 4);
+    for bad in ["", "off", "-1", "1.5", "two"] { assert_eq!(RuntimePolicy::lookahead_rows_for(Some(bad)), 3, "{bad:?}"); }
 }
