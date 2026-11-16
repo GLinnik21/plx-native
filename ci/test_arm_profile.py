@@ -123,6 +123,10 @@ HOST_ONLY_GOALS = (
     # runs to learn the pin, and it deleted a release build as readily as a compile did
     "print-subs-font-files", "print-rust-toolchain", "print-rust-codegen", "print-cargo-env",
     "print-playback-config",
+    # the curl stack's two queries. `print-curlstack-prune` was added without its QUERY_GOALS entry, and
+    # ci/test_deploy_manifest.py asks for it with CURLSTACK=1 from `make check`: in a checkout holding a
+    # default build that reset the stamp to a `+curlstack` configuration and deleted the built binary.
+    "print-curlstack-staged", "print-curlstack-prune",
 )
 # Goals that stay OUT of SIDE_EFFECT_FREE, each with the reason. A goal that builds, reads or ships the ARM
 # artifacts (or writes under pkg/) must reset the stamp: that is how a stale binary is never deployed.

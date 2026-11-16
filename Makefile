@@ -183,7 +183,7 @@ APPPORT      = $(if $(filter stable,$(FLAVOR)),8910,$(if $(filter nightly,$(FLAV
 .DEFAULT_GOAL := all
 
 QUERY_GOALS = print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv print-playback-config \
-              print-simbin print-app-files print-deploy-files print-sentry-handler print-ffmpeg-staged print-curlstack-staged \
+              print-simbin print-app-files print-deploy-files print-sentry-handler print-ffmpeg-staged print-curlstack-staged print-curlstack-prune \
               print-sentry-project print-bench-config print-disk-entries \
               print-subs-font-files print-rust-toolchain print-rust-codegen print-cargo-env
 print-flavor:   ; @echo '$(FLAVOR)'
