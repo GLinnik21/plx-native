@@ -34,6 +34,12 @@ EOL-only churn, private reports, job logs, build output and device recordings ar
 Historical fixture/manifest bytes remain unchanged. Concurrent main changes are integrated
 by an ordinary merge, never by replacing main with the reviewed old tree.
 
+Integration retains main's newly captured Home fixture byte-for-byte as historical V12 evidence.
+Its recorder preflight initially failed with StateShape (recorded13512213413816145485 versus
+current16894190109976774341). The expectation now pins that historical fingerprint, just like
+the other historical captures; the assertion that current V13 refuses it remains enabled.
+No tape, codec acceptance rule or golden value was rewritten to make current replay pass.
+
 Post-integration local gates and exact-head public CI are still pending at this checkpoint.
 The PR remains draft until the independently coordinated exact-head native verification
 and all applicable CI checks pass. No native result or landing is claimed by this receipt.
