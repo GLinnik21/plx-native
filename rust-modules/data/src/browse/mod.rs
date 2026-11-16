@@ -3225,7 +3225,12 @@ impl BrowseState {
                             self.retry_cd = 120;
                             if result.gen == self.query_gen() {
                                 if let Some(state) = self.state_mut(result.sec) {
-                                    if !state.relist && state.fetch != SecFetch::Failed {
+                                    // A re-list that fails leaves the rows it was replacing on screen,
+                                    // so its failure is not the section's. A FIRST read holds none: with
+                                    // a re-list owed (`listings_changed` during the read) the failure is
+                                    // still the screen's to show, or the grid spins through every retry.
+                                    let relisting_held_rows = state.relist && state.total >= 0;
+                                    if !relisting_held_rows && state.fetch != SecFetch::Failed {
                                         state.fetch = SecFetch::Failed;
                                         changed = true;
                                     }

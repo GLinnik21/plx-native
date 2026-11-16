@@ -1228,6 +1228,10 @@ fn cancel_page(state: &mut PmsState, sid: ServerId, id: &str, key: &str) {
         }
     }
     source.page = None;
+    // The page's deferral goes with it, as `pump_reloads` drops both: a flag left on a source
+    // with no page would be a whole-source read the tick launches, prompted.
+    // A deferred quiet read (no page of its own) is still owed, so only the page's share goes.
+    source.deferred = source.quiet;
     source.fetching = false;
     source.seq = source.seq.wrapping_add(1);
     source.retry_n = 0;
@@ -1671,7 +1675,7 @@ fn pump_reloads(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope,
         if let Some(page) = source.page.as_ref().filter(|page| page.reload && !source.fetching) {
             if !want.iter().any(|(id, key)| *id == page.id && *key == page.key) {
                 source.page = None;
-                source.deferred = false;
+                source.deferred = source.quiet;
             }
         }
         if source.page.is_some() || source.fetching || source.state != HubState::Ready { continue; }
@@ -2505,8 +2509,10 @@ struct Src {
     adoptable: bool,
     retry_s: f32,
     retry_n: u32,
-    /// A fetch was wanted and the fan-out gate had no room for it. Stays set until the fetch starts,
-    /// so the tick asks again; nothing is dropped.
+    /// A fetch was wanted and the fan-out gate had no room for it, so the tick asks again. Stays set
+    /// until a read for this source goes out (`begin_request`) or what it was deferred for is
+    /// withdrawn: a cancelled or ring-dropped page takes its deferral with it, and only a quiet read
+    /// the gate refused keeps it (`deferred = quiet`).
     deferred: bool,
     /// Rows `(hub id, key)` whose reload failed for good while held; asked again only after the
     /// screen's hold moves. A screen's `HoldBand` sends a band once per about three rows of
@@ -2578,6 +2584,11 @@ impl Src {
             self.staged = None;
             self.quiet_owed = true;
         }
+        // A read is going out for this source, so the gate's refusal of it is answered. `kick_gated`
+        // clears it when it admits, but a page ask kicks ungated (`request_page`) over a quiet read
+        // the gate had deferred, and a flag left behind made the next tick launch a prompted
+        // whole-source read (state `Loading`) after the page landed.
+        self.deferred = false;
         self.adoptable = false;
         let request = HubRequest {
             gen: generation, seq: mint(), sid: self.sid, key,
