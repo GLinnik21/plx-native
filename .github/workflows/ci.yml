@@ -750,19 +750,23 @@ jobs:
       - id: curlstack-pins
         name: Identify the bundled stack's pins
         # The five `curlstack` entries of ci/dependencies.json only, so an FFmpeg or libass bump in
-        # the same file does not throw the stack's cache away.
+        # the same file does not throw the stack's cache away. The runner's cmake and patchelf
+        # versions join them (installed by the step above): ci/build-curlstack.sh keys its tree on
+        # both, so a runner image that moved either would restore a tree the script then misses in,
+        # rebuild cold, and never save, because actions/cache skips the save on an exact key hit.
         run: |
           set -euo pipefail
-          pins=$(python3 -c 'import json; print(json.dumps([d for d in json.load(open("ci/dependencies.json")) if d.get("group") == "curlstack"], sort_keys=True))' | sha256sum | cut -c1-16)
-          echo "id=$pins" >> "$GITHUB_OUTPUT"
+          pins=$(python3 -c 'import json; print(json.dumps([d for d in json.load(open("ci/dependencies.json")) if d.get("group") == "curlstack"], sort_keys=True))')
+          tools="$(cmake --version | sed -n 1p)|$(patchelf --version)"
+          echo "id=$(printf '%s|%s' "$pins" "$tools" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
 
       - name: Cache the bundled curlstack build
         # The SCRIPT's own keyed output cache (ci/build-curlstack.sh's header), for the reason the
         # FFmpeg step above gives: a restored `vendor/*-prefix` would be older than the checkout's
         # script and make would rebuild anyway, while the script re-derives its key on every run and
         # re-installs from a matching tree, so a stale restore can only miss, never hand back wrong
-        # libraries. The key moves with what the script keys on: itself, the pins, the two scripts
-        # it hashes, and the NDK pin.
+        # libraries. The key moves with what the script keys on: itself, the pins, the host tools'
+        # versions (both in the step above's id), the two scripts it hashes, and the NDK pin.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/plxnative/curlstack

@@ -878,6 +878,16 @@ class CurlstackCrossBuild(unittest.TestCase):
         key = re.search(r"key: (curlstack-.*)", body).group(1)
         self.assertIn("steps.curlstack-pins.outputs.id", key)
         self.assertIn("'ci/build-curlstack.sh'", key)
+        # The script keys its tree on the host cmake and patchelf versions too; a workflow key without
+        # them restores a tree the script misses in after a runner image update, and an exact key hit
+        # never saves the rebuilt one.
+        for tool in ('"$CMAKE" --version', '"$PATCHELF" --version'):
+            self.assertIn(tool, sh)
+        pins = re.search(r"(?s)- id: curlstack-pins\n(.*?)\n\n", body).group(1)
+        self.assertIn("cmake --version", pins)
+        self.assertIn("patchelf --version", pins)
+        self.assertLess(body.index("packages: patchelf cmake pkg-config"), body.index("- id: curlstack-pins"),
+                        "the tools are installed before their versions are read")
 
     def test_the_shared_download_cache_skips_the_stack(self):
         action = (ROOT / ".github/actions/deps-cache/action.yml").read_text()
