@@ -1,4 +1,4 @@
-{"updated":"2026-11-16T22:41:27Z",
+{"updated":"2026-11-16T23:00:10Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5255,7 +5255,8 @@
 {"id":43838977771,"at":"2026-11-16T16:41:28Z","sha":"2a9a80b2e","title":"Update fixture accounting after the state shape change","pr":1407,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"macOS simulator build + launch":214,"macOS tests against bundled FFmpeg and ASS":125,"Windows launcher syntax":23,"Linux simulator build + launch":289},"wall":26842},
 {"id":43910771086,"at":"2026-11-16T16:44:12Z","sha":"8fc1b62e1","title":"Home: serve the parked hero backdrop from the retained region cache","pr":1302,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":412,"macOS tests against bundled FFmpeg and ASS":469,"Windows launcher syntax":19,"Linux simulator build + launch":352}},
 {"id":43969063623,"at":"2026-11-16T22:20:12Z","sha":"fa825e776","title":"Merge remote-tracking branch 'origin/main' into claude/zen-meitner-8nv0h3","pr":1417,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":306,"Windows launcher syntax":27,"macOS simulator build + launch":244,"macOS tests against bundled FFmpeg and ASS":240}},
-{"id":43971342577,"at":"2026-11-16T22:34:24Z","sha":"9ae9ac224","title":"Audit the implicit state machines; fix eleven traced defects","pr":1417,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":362,"macOS tests against bundled FFmpeg and ASS":260,"Windows launcher syntax":21,"macOS simulator build + launch":240}}
+{"id":43971342577,"at":"2026-11-16T22:34:24Z","sha":"9ae9ac224","title":"Audit the implicit state machines; fix eleven traced defects","pr":1417,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":362,"macOS tests against bundled FFmpeg and ASS":260,"Windows launcher syntax":21,"macOS simulator build + launch":240}},
+{"id":43974524142,"at":"2026-11-16T22:54:55Z","sha":"aa0407f7a","title":"Detail: the facts row and the badge describe the version Play starts","pr":1379,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":279,"Windows launcher syntax":24,"Linux simulator build + launch":298,"macOS tests against bundled FFmpeg and ASS":173}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
