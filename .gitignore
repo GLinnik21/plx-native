@@ -134,6 +134,28 @@ vendor/libass-build
 vendor/libass-build-host
 vendor/libass-prefix
 vendor/libass-prefix-host
+# The opt-in curl stack (`make CURLSTACK=1`, ci/build-curlstack.sh): each library's unpacked source,
+# object tree and install prefix, OpenSSL's staging tree, the link shim curl's configure is pointed at
+# and the Makefile's built stamp. All DERIVED from the sha256-pinned tarballs in `vendor/downloads`.
+# Slashless like the FFmpeg entries above, so a symlink to another checkout's tree is ignored too.
+vendor/openssl-src
+vendor/openssl-build
+vendor/openssl-stage
+vendor/openssl-prefix
+vendor/nghttp2-src
+vendor/nghttp2-build
+vendor/nghttp2-prefix
+vendor/nghttp3-src
+vendor/nghttp3-build
+vendor/nghttp3-prefix
+vendor/ngtcp2-src
+vendor/ngtcp2-build
+vendor/ngtcp2-prefix
+vendor/curl-src
+vendor/curl-build
+vendor/curl-prefix
+vendor/curl-link-shim
+vendor/curlstack-built
 # A NESTED vendor/, which is not a thing anyone writes on purpose — it is what
 # `cp -R <repo>/vendor <worktree>/vendor` produces when the destination already exists,
 # and seeding parallel worktrees that way put 30,247 build-artefact files (280 MB, plus
