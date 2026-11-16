@@ -578,6 +578,26 @@ fn cancelling_a_page_clears_the_deferral_with_it() {
 }
 
 #[test]
+fn cancelling_a_reload_page_keeps_a_deferred_quiet_read() {
+    let _g = plx_base::testlock::serial();
+    let mut r = rig(1);
+    {
+        let s = &mut r.o.state.srcs[0];
+        s.quiet = true;
+        s.deferred = true; // the gate refused the quiet read
+        s.page = Some(PageQuery { id: "home.theirs".into(), key: String::new(), start: 3, before: false,
+            hidden: Vec::new(), reload: true }); // pump_reloads then set a reload page on it
+    }
+    let sid = r.sid(0);
+    let _ = r.run(Some(HubsCmd::CancelPage { sid, id: "home.theirs".into(), key: String::new() }), 0.0);
+    assert!(r.o.state.srcs[0].deferred, "the quiet read the gate deferred is still owed");
+    let (_, asked) = r.run(None, 0.0);
+    assert_eq!(asked.len(), 1, "the deferred quiet read is launched");
+    assert!(asked[0].page_descriptor().is_none(), "as a whole-source read");
+    assert_ne!(r.o.state.srcs[0].state, HubState::Loading, "and it stays quiet");
+}
+
+#[test]
 fn a_page_landing_that_dropped_the_staging_asks_the_quiet_read_again() {
     let _g = plx_base::testlock::serial();
     let mut r = rig(1);

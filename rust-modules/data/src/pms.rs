@@ -1230,7 +1230,8 @@ fn cancel_page(state: &mut PmsState, sid: ServerId, id: &str, key: &str) {
     source.page = None;
     // The page's deferral goes with it, as `pump_reloads` drops both: a flag left on a source
     // with no page would be a whole-source read the tick launches, prompted.
-    source.deferred = false;
+    // A deferred quiet read (no page of its own) is still owed, so only the page's share goes.
+    source.deferred = source.quiet;
     source.fetching = false;
     source.seq = source.seq.wrapping_add(1);
     source.retry_n = 0;
@@ -1674,7 +1675,7 @@ fn pump_reloads(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope,
         if let Some(page) = source.page.as_ref().filter(|page| page.reload && !source.fetching) {
             if !want.iter().any(|(id, key)| *id == page.id && *key == page.key) {
                 source.page = None;
-                source.deferred = false;
+                source.deferred = source.quiet;
             }
         }
         if source.page.is_some() || source.fetching || source.state != HubState::Ready { continue; }
