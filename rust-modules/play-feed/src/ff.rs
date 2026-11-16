@@ -5058,6 +5058,34 @@ pub fn hls_buffer_fact(
     Some(hls_buffer_fact_at(observer.hls_buffer_clocks()?, output))
 }
 
+/// W0-DIAG (scratch branch only, never merged): observation-only. One `W0Q` line at most every 100 ms of
+/// the monotonic clock from the progressive demux read loop. `t` is `vclock_ms` and `wall` the unix ms of the
+/// TV's own clock (the same two clocks the `W0D` lines carry); `bytes`/`active_us` are the read loop's CUMULATIVE
+/// `body_bytes`/`body_active_us` (the very values the Original watch's quantum carries), so a window's capacity
+/// is a difference of two lines; `buf` is `progressive_buffered_ms` (the quantum's `buffered_ms`, -1 for None);
+/// `vtail`/`atail` are the demuxed lane tails in ms (-1 when absent), `pos` the playback position in ms;
+/// `watch` is whether an Original watch is observing this stream (Auto).
+fn w0_quantum_line(clock: &dyn DemuxClock, bytes: u64, active_us: u64, audio_expected: bool, watched: bool) {
+    use std::sync::atomic::AtomicU32;
+    static LAST_MS: AtomicU32 = AtomicU32::new(0);
+    let now = crate::shared::vclock_ms();
+    if now.wrapping_sub(LAST_MS.load(Ordering::Relaxed)) < 100 {
+        return;
+    }
+    LAST_MS.store(now, Ordering::Relaxed);
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    plx_base::eventlog::log(&format!(
+        "W0Q t={now} wall={wall} bytes={bytes} active_us={active_us} buf={} vtail={} atail={} pos={} watch={}",
+        progressive_buffered_ms(clock, audio_expected).unwrap_or(-1),
+        clock.video_tail_ns() / 1_000_000,
+        clock.audio_tail_ns() / 1_000_000,
+        clock.playpos_ns().max(0) / 1_000_000,
+        watched as u8,
+    ));
+}
+
 /// Progressive Original uses absolute movie PTS, unlike offset-zero HLS, so no display-base
 /// translation belongs here. Both lanes must have produced post-open/post-seek timestamps before
 /// an A/V stream can claim a buffer duration; otherwise the absent lane is exactly the starvation
@@ -7191,6 +7219,13 @@ pub fn demux(
                     } else {
                         av_packet_unref(pkt);
                     }
+                    w0_quantum_line(
+                        session.clock(),
+                        state.body_bytes,
+                        state.body_active_us,
+                        ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed),
+                        original_watch.is_some(),
+                    );
                     if !session.clock().seeking() {
                         if let Some(watch) = original_watch.as_mut() {
                             let pause_state = session.clock_mut().pause_event(PauseLane::Original);

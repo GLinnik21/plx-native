@@ -120,6 +120,7 @@ impl FeedOpenRequest {
             video_bytes, audio_bytes, video_lead_ms, audio_lead_ms,
         );
         let (readouts_tx, readouts) = crate::adaptive::readout_channel();
+        plx_base::eventlog::log(&format!("W0Q load applied_quality={}", route::w0_applied_quality_label()));
         Self {
             readouts: Some(readouts),
             origin: source.origin.clone(),
