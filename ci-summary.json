@@ -99,7 +99,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-16T08:26:23Z",
+ "generated": "2026-11-16T09:51:13Z",
  "metrics": [
   {
    "change30_pct": 49.2,
@@ -123,19 +123,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -2.1,
-   "change7_pct": -2.7,
+   "change30_pct": -2.0,
+   "change7_pct": -2.4,
    "d30": 480.0,
-   "delta30": -10.0,
-   "delta7": -13,
+   "delta30": -9.5,
+   "delta7": -11.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 143,
-   "n_prev": 147,
-   "now": 470,
-   "prev7": 483,
+   "n_now": 140,
+   "n_prev": 151,
+   "now": 470.5,
+   "prev7": 482,
    "shown": true,
    "state": "flat",
    "state30": "flat",
@@ -165,10 +165,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 44.0,
+   "change30_pct": 48.1,
    "change7_pct": 22.7,
-   "d30": 22.9,
-   "delta30": 10.1,
+   "d30": 22.3,
+   "delta30": 10.7,
    "delta7": 6.1,
    "group": "local",
    "id": "bench.app",
@@ -186,10 +186,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 43.7,
+   "change30_pct": 47.5,
    "change7_pct": 11.3,
-   "d30": 44.0,
-   "delta30": 19.2,
+   "d30": 42.9,
+   "delta30": 20.4,
    "delta7": 6.4,
    "group": "local",
    "id": "bench.screens",
@@ -207,10 +207,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 101.4,
+   "change30_pct": 110.7,
    "change7_pct": -1.0,
-   "d30": 46.0,
-   "delta30": 46.7,
+   "d30": 44.0,
+   "delta30": 48.7,
    "delta7": -0.9,
    "group": "local",
    "id": "bench.ui",
@@ -228,10 +228,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 83.9,
+   "change30_pct": 99.9,
    "change7_pct": 0.3,
-   "d30": 114.7,
-   "delta30": 96.2,
+   "d30": 105.5,
+   "delta30": 105.4,
    "delta7": 0.7,
    "group": "local",
    "id": "bench.leaf",
@@ -249,10 +249,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -25.8,
+   "change30_pct": -22.7,
    "change7_pct": -32.2,
-   "d30": 172.5,
-   "delta30": -44.5,
+   "d30": 165.7,
+   "delta30": -37.7,
    "delta7": -60.8,
    "group": "local",
    "id": "bench.tests",
@@ -264,16 +264,16 @@
    "prev7": 188.8,
    "shown": true,
    "state": "better",
-   "state30": "better",
+   "state30": "flat",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
    "unit": "s"
   },
   {
-   "change30_pct": -21.3,
+   "change30_pct": -16.9,
    "change7_pct": -21.3,
-   "d30": 1418.8,
-   "delta30": -302.2,
+   "d30": 1343.6,
+   "delta30": -227.0,
    "delta7": -302.2,
    "group": "local",
    "id": "bench.check",
@@ -513,10 +513,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -21.2,
+   "change30_pct": -16.8,
    "change7_pct": -21.2,
-   "d30": 1417.0,
-   "delta30": -301.0,
+   "d30": 1342.0,
+   "delta30": -226.0,
    "delta7": -301.0,
    "group": "local",
    "id": "bench.check.cargo",
@@ -535,10 +535,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -2.8,
+   "change30_pct": -1.0,
    "change7_pct": -2.8,
-   "d30": 1001.0,
-   "delta30": -28.0,
+   "d30": 982.5,
+   "delta30": -9.5,
    "delta7": -28.0,
    "group": "local",
    "id": "bench.check.python",
@@ -683,7 +683,7 @@
    "unit": "s"
   },
   {
-   "change30_pct": 6.6,
+   "change30_pct": 7.3,
    "change7_pct": 6.6,
    "d30": 0.8,
    "delta30": 0.1,
