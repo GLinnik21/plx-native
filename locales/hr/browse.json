@@ -131,7 +131,7 @@
   "browse.auth.plex_unreachable": "Nije moguće povezati se s Plexom. Provjerite internetsku vezu. Za prijavu je potrebna internetska veza.",
   "browse.auth.switch_failed": "Nije moguće promijeniti profil — provjerite vezu.",
   "browse.auth.offline_profile": "Nema internetske veze. Odaberite ovaj profil jednom dok ste povezani na internet kako bi radio i izvan mreže.",
-  "browse.auth.insecure": "Plex poslužitelj je pronađen, ali nije se moguće sigurno povezati s njim (HTTPS). Provjerite dopušta li poslužitelj sigurne veze pa pokušajte ponovno.",
+  "browse.auth.insecure": "Pronađen je Plex poslužitelj, ali HTTPS veza nije uspjela. Provjerite podržava li sigurne veze.",
   "browse.auth.no_access": "Profil {profile} nema pristup poslužitelju",
   "browse.auth.no_source_access": "Profil {profile} nema pristup ovom poslužitelju",
   "browse.auth.tls_untrusted": "Ovaj televizor ne vjeruje sigurnosnom certifikatu vašeg poslužitelja. Ažurirajte PlxNative i pokušajte ponovno.",
@@ -165,14 +165,14 @@
   "browse.auth.plaintext_revoked_signin": "Veze s Plex poslužiteljem bez enkripcije su isključene. Odaberite Pokušaj ponovno da biste ponovno dobili upit.",
   "browse.auth.plaintext_declined_signed_in": "Odlučili ste se ne povezati s Plex poslužiteljem bez enkripcije. Dopustite to u Postavke → Veze bez enkripcije.",
   "browse.auth.plaintext_revoked_signed_in": "Veze s Plex poslužiteljem bez enkripcije su isključene. Uključite ih u Postavke → Veze bez enkripcije.",
-  "browse.auth.plaintext_shared_offer": "Poslužitelj korisnika {owner} nalazi se na ovoj mreži, ali nije mu moguće sigurno pristupiti. Odaberite Poveži za povezivanje bez enkripcije.",
-  "browse.auth.plaintext_shared_allowed": "Poslužitelj korisnika {owner} nalazi se na ovoj mreži, ali nije mu moguće sigurno pristupiti. Odaberite Pokušaj ponovno za povezivanje bez enkripcije.",
+  "browse.auth.plaintext_shared_offer": "Poslužitelj korisnika {owner} je dostupan, ali sigurna veza nije moguća. Odaberite „Poveži” za nastavak bez enkripcije.",
+  "browse.auth.plaintext_shared_allowed": "Poslužitelj korisnika {owner} je dostupan, ali sigurna veza nije moguća. Odaberite „Pokušaj ponovno” za povezivanje bez enkripcije.",
   "browse.auth.plaintext_shared_declined_signin": "Odlučili ste se ne povezati s poslužiteljem korisnika {owner} bez enkripcije. Odaberite Pokušaj ponovno da biste ponovno dobili upit.",
   "browse.auth.plaintext_shared_revoked_signin": "Veze s poslužiteljem korisnika {owner} bez enkripcije su isključene. Odaberite Pokušaj ponovno da biste ponovno dobili upit.",
   "browse.auth.plaintext_shared_declined_signed_in": "Odlučili ste se ne povezati s poslužiteljem korisnika {owner} bez enkripcije. Dopustite to u Postavke → Veze bez enkripcije.",
   "browse.auth.plaintext_shared_revoked_signed_in": "Veze s poslužiteljem korisnika {owner} bez enkripcije su isključene. Uključite ih u Postavke → Veze bez enkripcije.",
   "browse.auth.plaintext_remote": "Vaš Plex poslužitelj odgovorio je samo bez enkripcije, izvan ove mreže. Provjerite udaljeni pristup u njegovim postavkama.",
-  "browse.auth.plaintext_shared_remote": "Poslužitelj korisnika {owner} odgovorio je samo bez enkripcije, izvan ove mreže. Potrebno je provjeriti njegov udaljeni pristup.",
+  "browse.auth.plaintext_shared_remote": "Poslužitelj korisnika {owner} izvan ove mreže dostupan je samo bez enkripcije. Provjerite udaljeni pristup.",
   "browse.auth.plaintext_shared_insecure": "Poslužitelj korisnika {owner} odgovorio je samo bez enkripcije. Njegov vlasnik može provjeriti dopušta li sigurne veze.",
   "browse.preferences.stale": "Vaš profil ili postavke su promijenjeni. Ponovno učitajte postavke i pokušajte ponovno.",
   "browse.preferences.refused": "Plex nije odobrio zahtjev ovog računa. Ponovno se prijavite i pokušajte opet.",
@@ -276,13 +276,13 @@
     "other": "{count} dijeljenih izvora"
   },
   "browse.auth.plex_dns_retry": {
-    "one": "Ovaj televizor nije mogao pronaći plex.tv pa vaši poslužitelji nisu provjereni. Pokušali smo jednom. Provjerite internetsku vezu televizora pa pokušajte ponovno.",
-    "few": "Ovaj televizor nije mogao pronaći plex.tv pa vaši poslužitelji nisu provjereni. Pokušali smo {count} puta. Provjerite internetsku vezu televizora pa pokušajte ponovno.",
-    "other": "Ovaj televizor nije mogao pronaći plex.tv pa vaši poslužitelji nisu provjereni. Pokušali smo {count} puta. Provjerite internetsku vezu televizora pa pokušajte ponovno."
+    "one": "TV nije mogao pronaći plex.tv pa poslužitelji nisu provjereni. Pokušali smo jednom. Pokušajte ponovno nakon provjere internetske veze.",
+    "few": "TV nije mogao pronaći plex.tv pa poslužitelji nisu provjereni. Pokušali smo {count} puta. Pokušajte ponovno nakon provjere internetske veze.",
+    "other": "TV nije mogao pronaći plex.tv pa poslužitelji nisu provjereni. Pokušali smo {count} puta. Pokušajte ponovno nakon provjere internetske veze."
   },
   "browse.auth.plex_connect_retry": {
-    "one": "Ovaj televizor nije se mogao povezati s plex.tv pa vaši poslužitelji nisu provjereni. Pokušali smo jednom. Provjerite internetsku vezu televizora pa pokušajte ponovno.",
-    "few": "Ovaj televizor nije se mogao povezati s plex.tv pa vaši poslužitelji nisu provjereni. Pokušali smo {count} puta. Provjerite internetsku vezu televizora pa pokušajte ponovno.",
-    "other": "Ovaj televizor nije se mogao povezati s plex.tv pa vaši poslužitelji nisu provjereni. Pokušali smo {count} puta. Provjerite internetsku vezu televizora pa pokušajte ponovno."
+    "one": "TV se nije uspio povezati s plex.tv pa poslužitelji nisu provjereni. Pokušali smo jednom. Pokušajte ponovno nakon provjere internetske veze.",
+    "few": "TV se nije uspio povezati s plex.tv pa poslužitelji nisu provjereni. Pokušali smo {count} puta. Pokušajte ponovno nakon provjere internetske veze.",
+    "other": "TV se nije uspio povezati s plex.tv pa poslužitelji nisu provjereni. Pokušali smo {count} puta. Pokušajte ponovno nakon provjere internetske veze.."
   }
 }

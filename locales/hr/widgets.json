@@ -27,7 +27,7 @@
   "widgets.action.play_trailer": "Pokreni najavu",
   "widgets.source.remote": "Udaljeno",
   "widgets.source.relay": "Posredovano",
-  "widgets.source.needs_library": "Aplikaciji je potrebna jedna biblioteka",
+  "widgets.source.needs_library": "Aplikaciji treba biblioteka",
   "widgets.source.new_shares": "Provjeri dijeljene biblioteke",
   "widgets.source.shared_with_you": "Podijeljeno s vama",
   "widgets.source.unauthorized": "Nema ovlasti",
