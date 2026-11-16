@@ -496,7 +496,10 @@ def main():
                 ("JSON null", "null", absurd),
                 ("a JSON list", json.dumps([FULL]), absurd),
                 ("invalid UTF-8", b"\xff\xfe" + FULL.encode() + b"\xff", absurd),
-                ("deeply nested response", '{"tool_response": ' + "[" * 5000 + '"' + FULL + '"' + "]" * 5000 + "}", absurd),
+                # a parser that copes with the depth must not turn it into a note; one that does not must not trace back
+                ("deeply nested response", '{"tool_response": ' + "[" * 5000 + '"' + FULL + '"' + "]" * 5000 + "}", silent),
+                ("deeply nested error", '{"hook_event_name": "PostToolUseFailure", "error": ' + "[" * 5000 + '"' + FULL
+                 + '"' + "]" * 5000 + "}", absurd),
             ]:
                 state = os.path.join(proc_dir, "state-%d" % counter[0])
                 counter[0] += 1
