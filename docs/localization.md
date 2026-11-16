@@ -2,7 +2,7 @@
 
 PlxNative's interface is available in English, Spanish, French, Italian, European Portuguese, German, Hungarian, Russian, Polish, Dutch and Belarusian
 (official Cyrillic orthography). Help improve a translation or contribute another language through a pull request
-at https://github.com/GLinnik21/plx-native.
+at https://github.com/plxnative/plx-native.
 
 ## Translate a message
 

@@ -1906,11 +1906,11 @@ in `hudpacks/address.rs`, the store's Fetch / Fetched / InstallOffer / DeclineOf
 row and the offer prompt. Verified on the host (parser, store, runner and page tests; the bounded door against a local
 server). STILL OWED on the set: a real GitHub release fetch and the CA question.
 
-PR12. Registry repository (shipped): [plxnative-huds](https://github.com/GLinnik21/plxnative-huds) with CI
+PR12. Registry repository (shipped): [plxnative-huds](https://github.com/plxnative/plxnative-huds) with CI
 (lint, xvfb previews, diff), the publisher (index, original-byte packs, revoked list),
 [Pages](https://huds.plxnative.com/), and the authoring kit (`AGENTS.md`, `llms.txt`, `AUTHORING.md`,
 examples, schema mirror and schema/parser agreement test); this repo publishes the `plxnative-sim` artifact.
-[Seeded PR #1](https://github.com/GLinnik21/plxnative-huds/pull/1) passed 70 Reference and 32 Minimal native Linux
+[Seeded PR #1](https://github.com/plxnative/plxnative-huds/pull/1) passed 70 Reference and 32 Minimal native Linux
 states, all eleven languages, and the two-iteration authoring exercise. Public readback matched all 87 catalog files.
 Immutable per-release pins select the oldest compatible app. App-release dispatch and the weekly re-lint backstop
 record `unfit` and `app.max` and deduplicate author issues; incompatible executable protocol fixtures exercise failure
@@ -1918,7 +1918,7 @@ and recovery. A live app probe triggered the registry receiver and its green, la
 actual stable app release carrying the SDK remains a future observation; the current bootstrap is a source-bound
 development utility. The real TV/Linux corpus measures 12,276 widths and sets per-rung registry-only skew margins
 of 4–9 px, leaving TV admission unchanged. The registry's
-[acceptance record](https://github.com/GLinnik21/plxnative-huds/blob/main/IMPLEMENTATION.md) links the exact runs,
+[acceptance record](https://github.com/plxnative/plxnative-huds/blob/main/IMPLEMENTATION.md) links the exact runs,
 source pins and verification evidence.
 
 PR13. Gallery (shipped, behind a flavour gate until PR14): a Settings FormTable page with preview art through the image cache, the refresh policy, updates by
