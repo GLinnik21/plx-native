@@ -1090,8 +1090,8 @@ type Hit = Option<PosterKey>;
 /// outside that scope remain eligible.
 /// A refusal claims no source slot; a follow-up present samples placement again.
 fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
-    // The array's own precondition, checked before a slot can be claimed for a key that could
-    // never match its probe again. `Warm::Known` (not `Full`) so a prefetch loop walks on to the
+    // An empty key names no request (an unknown server, or no art), so it claims no slot.
+    // `Warm::Known` (not `Full`) so a prefetch loop walks on to the
     // next candidate instead of retiring this frame's one warm here.
     if !is_fetchable(key_s) {
         return (None, Warm::Known);
