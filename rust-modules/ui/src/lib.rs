@@ -912,11 +912,18 @@ impl Painter {
     /// does not ask the region cache at all (unlike a call with no key, which does), so the texture
     /// goes back for it and the first plain frame after fills it again.
     ///
+    /// **`key` names what the CALLER holds; the renderer adds what only it knows.** `textures` are the
+    /// texture ids the picture samples: the key the region texture is served by is `key` with each one's
+    /// revision (a texture re-specified under the same name is another picture) and the program switches
+    /// the ground's paths read folded in ([`plx_gfx::gfx::region_ground_key`]), so a screen reads no
+    /// renderer state to name its picture and cannot forget one.
+    ///
     /// Everything else is `cached_region`'s: `key` names the picture and must change with everything
     /// `paint` draws (`None`: it is not settled, draw it live), `paint` draws no glass and no blur, a
     /// frame whose page never asks gives the texture back, and the host and the glass's discovery and
     /// source passes draw it live, so the chrome glass over it sees the primitives it always saw.
-    pub fn cached_ground(self, key: Option<u64>, r: Rect, paint: impl FnOnce(Painter)) {
+    pub fn cached_ground(self, key: Option<u64>, textures: &[u32], r: Rect, paint: impl FnOnce(Painter)) {
+        let key = key.map(|k| plx_gfx::gfx::region_ground_key(k, textures));
         self.cached_in(plx_gfx::gfx::region_paint, key, r, true, paint)
     }
 

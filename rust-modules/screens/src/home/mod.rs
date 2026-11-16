@@ -558,34 +558,44 @@ impl Backdrop {
             self.paint(p, env, slide, scrim);
             return;
         }
-        p.cached_ground(self.ground_key(env, slide, scrim, rests), Rect::FULL, |q| {
-            self.paint(q, env, slide, scrim)
-        });
+        p.cached_ground(
+            self.ground_key(env, slide, scrim, rests),
+            &[self.tex.0, self.outgoing_tex.0],
+            Rect::FULL,
+            |q| self.paint(q, env, slide, scrim),
+        );
     }
 
-    /// **The name of the picture [`Self::paint`] draws**: every input of it, by value, and `None`
-    /// while the picture is not settled.
+    /// **The name of the picture [`Self::paint`] draws**: every input of it that this screen owns, by
+    /// value, and `None` while the picture is not settled.
     ///
     /// The inputs are the wash (the exact bits of its twelve springs, [`AmbientWash::paint_bits`]),
-    /// both art layers (the texture each resolved to, its revision (a texture re-specified under
-    /// the same name is another picture), its decoded size, which sets the cover crop, and its
-    /// reveal alpha), the dive (`env.sp`, from which the art's offset and fade and the hero's own
-    /// alpha follow), the shared side and shelf shade (`scrim`, by value: its ink and every
-    /// uniform the shader is given, [`plx_ui::widgets::WashScrim::paint_bits`]; the shelf ramp rides
-    /// the first shelf's live top, so it names where the shelf stands as well as how far the hero
-    /// has faded) and the two renderer switches the ground's paths read (the art-in-wash program
-    /// and the ink ramp in the wash). There is no slide: a slide has no name.
+    /// both art layers (the texture each resolved to, its decoded size, which sets the cover crop; a
+    /// layer's reveal alpha is not an input, because a named layer is at exactly 1.0, below), the
+    /// dive (`env.sp`, from which the art's offset and fade and the hero's own alpha follow) and the
+    /// shared side and shelf shade over it (`scrim`, by value: its ink and every uniform the shader
+    /// is given, [`plx_ui::widgets::WashScrim::paint_bits`]; the shelf ramp rides the first shelf's
+    /// live top, so it names where the shelf stands as well as how far the hero has faded). There is
+    /// no slide: a slide has no name.
+    ///
+    /// **The renderer's own state is not read here.** A texture re-specified under the same name is
+    /// another picture, and the ground's paths depend on which programs linked; both live in the
+    /// renderer, which folds them into this name when the picture is looked up
+    /// (`Painter::cached_ground` is handed the texture ids, `gfx::region_ground_key`). A screen's
+    /// name holds only what the screen holds.
     ///
     /// **A picture that is moving has no name, rather than a new one every frame.** A key that
     /// changed on every frame of the hero's reveal, a flip or the dive would fill the texture on
     /// every one of them: the same shading as the live draw, plus a full-screen write and a quad
     /// over it, which is dearer than not caching. So the picture is named only once every spring
     /// that eases it has landed on its target (`AmbientWash::at_rest`, which the wash lands on
-    /// exactly, and a reveal spring's own velocity of exactly 0, which `update` lands it on) and the
-    /// page says the dive is over (`HomeScreen::dive_rests`: the dive is landed on its target too);
-    /// any frame short of that is drawn live and fills nothing. A layer with no texture draws
-    /// nothing, so its reveal spring (which `update` only steps and lands while it has one) says
-    /// nothing.
+    /// exactly) and the page says the dive is over (`HomeScreen::dive_rests`: the dive is landed on
+    /// its target too); any frame short of that is drawn live and fills nothing. A layer with a
+    /// texture has landed when its reveal spring stands at exactly 1.0 with no velocity: `update`
+    /// steps every resident layer toward 1.0 and lands it there, and a velocity of 0 alone is not
+    /// enough, because `bind` leaves a spring at velocity 0 where it `jump`s (a replacement, at the
+    /// draw) and where art that was not resident arrives (parked at 0.0), a frame before `update`
+    /// steps it. A layer with no texture draws nothing, so its reveal spring says nothing.
     fn ground_key(
         &self,
         env: &Env,
@@ -594,23 +604,22 @@ impl Backdrop {
         rests: bool,
     ) -> Option<u64> {
         use std::hash::{Hash, Hasher};
+        let landed = |tex: (u32, f32, f32), art: &Spring| tex.0 == 0 || (art.pos == 1.0 && art.vel == 0.0);
         if slide.is_some()
             || !rests
             || !self.wash.at_rest()
-            || (self.tex.0 != 0 && self.art.vel != 0.0)
-            || (self.outgoing_tex.0 != 0 && self.outgoing_art.vel != 0.0)
+            || !landed(self.tex, &self.art)
+            || !landed(self.outgoing_tex, &self.outgoing_art)
         {
             return None;
         }
         let mut h = std::collections::hash_map::DefaultHasher::new();
         self.wash.paint_bits().hash(&mut h);
-        for ((id, w, h_px), art) in [(self.tex, &self.art), (self.outgoing_tex, &self.outgoing_art)] {
-            (id, plx_gfx::gfx::tex_ledger::revision(id), w.to_bits(), h_px.to_bits(), art.pos.to_bits())
-                .hash(&mut h);
+        for (id, w, h_px) in [self.tex, self.outgoing_tex] {
+            (id, w.to_bits(), h_px.to_bits()).hash(&mut h);
         }
         (env.sp.to_bits(), env.hero_a.to_bits()).hash(&mut h);
         scrim.map(|s| s.paint_bits()).hash(&mut h);
-        (plx_gfx::gfx::art_wash_ok(), plx_gfx::gfx::wash_ink_ok()).hash(&mut h);
         Some(h.finish())
     }
 

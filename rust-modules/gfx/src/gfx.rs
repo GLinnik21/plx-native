@@ -4118,6 +4118,30 @@ fn region_mix(key: u64, extent: [c_int; 4]) -> u64 {
     extent.iter().fold(key, |h, v| (h ^ (*v as u32 as u64)).wrapping_mul(0x0000_0100_0000_01b3))
 }
 
+/// **A cached GROUND's name, with the renderer's own state folded in.** A caller names a picture by
+/// what IT holds (`Painter::cached_ground` hands over the name and the texture ids the picture
+/// samples); what only the renderer knows is added here, where it is held:
+/// each texture's revision ([`tex_ledger::revision`]: a texture re-specified under the same name is
+/// another picture) and the two program switches the ground's paths read ([`art_wash_ok`] and
+/// [`wash_ink_ok`]: which of the one-pass or layered draws the picture is made of). A screen reads
+/// none of them, so its name holds only the screen's own state.
+pub fn region_ground_key(key: u64, textures: &[c_uint]) -> u64 {
+    ground_key_of(key, textures, art_wash_ok(), wash_ink_ok())
+}
+
+/// [`region_ground_key`] over the switches it was handed (the pure part: a host build has neither
+/// program, so the one rule that reads them is pinned with them as arguments).
+fn ground_key_of(key: u64, textures: &[c_uint], art_wash: bool, wash_ink: bool) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut h);
+    for tex in textures {
+        (*tex, tex_ledger::revision(*tex)).hash(&mut h);
+    }
+    (art_wash, wash_ink).hash(&mut h);
+    h.finish()
+}
+
 /// **Paint a rect of the page once, then serve it as one textured quad.** `key` names the picture:
 /// it must change with everything `paint` draws (`None`: the picture is not settled, draw it live).
 /// `rect` is where the picture stands on the PAGE (`x, y, w, h` logical px), `shift` the painter's
@@ -4195,8 +4219,10 @@ pub fn region_paint(
 /// A frame ended: if no page asked for the region during it, the texture goes back to the driver
 /// (1.4 MiB for the Under posters preview, 8.0 MiB for Home's backdrop, that nothing is showing), and
 /// the next ask fills again. Called once per presented frame,
-/// beside the other frame-end hooks. A push, a pop and a transition between the two pages ask on every
-/// frame (one page or the other always draws), so it never frees mid-transition.
+/// beside the other frame-end hooks. A push, a pop and a transition between the two Under posters pages
+/// ask on every frame (one page or the other always draws), so the preview never frees mid-transition.
+/// Home's backdrop asks only through a plain painter (`Painter::is_plain`), so a Home dip or slide frame
+/// does not ask and the texture goes back until the first plain frame fills it again.
 pub fn region_frame_end() {
     REGION.with(|cell| {
         let Ok(mut set) = cell.try_borrow_mut() else { return };
@@ -8408,6 +8434,33 @@ pub fn draw_field_panel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A cached ground is named by what its caller holds AND by what only the renderer knows**
+    /// ([`region_ground_key`]): each texture's revision (one re-specified under the same name is
+    /// another picture) and the two program switches the ground's paths read. Every one of them
+    /// changes the name, and nothing else does.
+    #[test]
+    fn a_ground_key_folds_in_the_renderers_own_state() {
+        let tex = 9_101;
+        tex_ledger::specified(tex, 16, 9);
+        let base = ground_key_of(7, &[tex], true, true);
+        assert_eq!(ground_key_of(7, &[tex], true, true), base, "the same inputs, the same name");
+        assert_eq!(region_ground_key(7, &[tex]), ground_key_of(7, &[tex], art_wash_ok(), wash_ink_ok()));
+        let mut seen = vec![base];
+        let mut differs = |what: &str, key: u64| {
+            assert!(!seen.contains(&key), "{what}: the name did not change");
+            seen.push(key);
+        };
+        differs("the caller's own name", ground_key_of(8, &[tex], true, true));
+        differs("another texture", ground_key_of(7, &[tex + 1], true, true));
+        differs("no texture", ground_key_of(7, &[], true, true));
+        differs("the art-in-wash program missing", ground_key_of(7, &[tex], false, true));
+        differs("the wash's ink program missing", ground_key_of(7, &[tex], true, false));
+        tex_ledger::specified(tex, 16, 9);
+        differs("the same texture name re-specified with other pixels", ground_key_of(7, &[tex], true, true));
+        tex_ledger::deleted(tex);
+        differs("the texture freed", ground_key_of(7, &[tex], true, true));
+    }
 
     /// **[`enc_u8`] is `(enc(v).clamp(0, 1) * 255 + 0.5) as u8` to the bit, without a `powf`.**
     /// Every threshold is checked from both sides (the last float below it and the threshold

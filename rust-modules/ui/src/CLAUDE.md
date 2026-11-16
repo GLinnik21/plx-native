@@ -736,11 +736,16 @@ tried first. None of it is reconstructable from the code without repeating the m
   parked at the hero paints its backdrop (wash, photograph and the shared side and shelf shade) once into the region texture
   (`Painter::cached_ground`, over `gfx::region_paint`) and serves it from there until an input changes:
   a Continue Watching focus move redraws the shelf over a ground that did not, and the live ground
-  was 2.6M of a 9.5M-cycle frame. The name (`Backdrop::ground_key`) is every input by value (the shade
-  included, `WashScrim::paint_bits`: the shelf ramp rides the first shelf's live top), and the
-  picture has NO name while any spring easing it is unlanded (`AmbientWash::at_rest`, the reveal
-  springs' exact-zero velocity, the dive, which `update` lands on its target: a bare `step` parks it
-  one ulp off and never reaches 0), because a name that moved every frame would fill the
+  was 2.6M of a 9.5M-cycle frame. The name (`Backdrop::ground_key`) is every input the SCREEN owns by
+  value (the shade included, `WashScrim::paint_bits`: the shelf ramp rides the first shelf's live
+  top); the renderer's own state is folded in below the screen, never read by it: `cached_ground` is
+  handed the texture ids the picture samples and `gfx::region_ground_key` mixes in each one's
+  revision (a texture re-specified under the same name is another picture) and the two program
+  switches the ground's paths read. The picture has NO name while any spring easing it is unlanded
+  (`AmbientWash::at_rest`; a resident art layer's reveal spring at exactly 1.0 with no velocity, not
+  merely no velocity, because `bind` leaves one at 0 where it `jump`s or where art arrives; the
+  dive, which `update` lands on its target: a bare `step` parks it one ulp off and never reaches 0),
+  because a name that moved every frame would fill the
   texture every frame, which is the live shading plus a full-screen write. The glass is untouched by
   construction: its discovery walk and every source pass are `backdrop::discovering()` /
   `blur_source_pass()` frames, where `region_paint` declines, so the ground still declares and draws

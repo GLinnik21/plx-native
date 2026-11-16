@@ -6679,14 +6679,16 @@ fn settled_backdrop() -> Backdrop {
     b
 }
 
-/// **The picture the backdrop paints has one name while nothing it draws changes, and every input it
-/// draws from is part of the name.** A name that missed an input would serve the old picture after the
-/// input moved: the wash's colours, the photograph (which texture, which pixels in it, how it is
-/// cropped), how much of it shows and how far the page has dived.
+/// **The picture the backdrop paints has one name while nothing it draws changes, and every input the
+/// screen owns is part of the name.** A name that missed an input would serve the old picture after the
+/// input moved: the wash's colours, the photograph (which texture, how it is cropped) and how far the
+/// page has dived. How much of the photograph shows is not an input: a named layer is fully revealed
+/// (`a_resident_layer_short_of_full_reveal_has_no_name_even_with_no_velocity`). What only the renderer
+/// knows (a texture re-specified under the same name, the program switches) is mixed in by
+/// `gfx::region_ground_key`, not read here (its own tests).
 #[test]
 fn a_settled_backdrop_is_named_by_everything_it_draws() {
     let _guard = plx_base::testlock::serial();
-    plx_gfx::gfx::tex_ledger::specified(7, 16, 9);
     let env = env_at(0.0);
     let name = |b: &Backdrop, env: &Env| b.ground_key(env, None, None, true);
     let b = settled_backdrop();
@@ -6704,7 +6706,7 @@ fn a_settled_backdrop_is_named_by_everything_it_draws() {
     let mut c = settled_backdrop();
     c.wash.jump([[0.30, 0.10, 0.10, 1.0], [0.10, 0.30, 0.10, 1.0], [0.10, 0.10, 0.30, 1.0], [0.25, 0.25, 0.06, 1.0]]);
     differs("a wash corner", name(&c, &env));
-    // the photograph: the texture, its size (the cover crop), its reveal, and its pixels
+    // the photograph: the texture and its size (the cover crop)
     let mut c = settled_backdrop();
     c.tex.0 = 8;
     differs("another texture", name(&c, &env));
@@ -6712,20 +6714,13 @@ fn a_settled_backdrop_is_named_by_everything_it_draws() {
     c.tex.2 = 721.0;
     differs("a differently sized picture", name(&c, &env));
     let mut c = settled_backdrop();
-    c.art = Spring::at(0.5);
-    differs("how much of it shows", name(&c, &env));
-    let mut c = settled_backdrop();
     c.tex.1 = 1281.0;
     differs("a differently sized picture (width)", name(&c, &env));
-    plx_gfx::gfx::tex_ledger::specified(7, 16, 9);
-    differs("the same texture name re-specified with other pixels", name(&settled_backdrop(), &env));
     // the layer beneath a replaced hero
     let mut c = settled_backdrop();
     c.outgoing_tex = (9, 1280.0, 720.0);
     c.outgoing_art = Spring::at(1.0);
     differs("a held layer", name(&c, &env));
-    c.outgoing_art = Spring::at(0.5);
-    differs("how much of the held layer shows", name(&c, &env));
     // the dive and the hero's own fade
     differs("the dive", name(&settled_backdrop(), &env_at(0.1)));
     differs("the hero's fade alone", name(&settled_backdrop(), &Env { hero_a: 0.5, ..env }));
@@ -6782,6 +6777,93 @@ fn a_moving_backdrop_has_no_name_and_a_landed_one_has_it_again() {
     assert_eq!(c.ground_key(&env, None, None, true), Some(after), "which stays that picture");
 }
 
+/// **A layer that has a texture is named only once it has landed on full reveal, not merely once its
+/// spring is still.** `bind` leaves the reveal spring at velocity 0 whenever it `jump`s (a replacement,
+/// at the draw) and when art that was not resident arrives (the spring parked at 0.0): in both a
+/// resident layer stands at `pos < 1.0` with no velocity, one frame before `update` steps it. Named
+/// then, the picture would be filled into the texture for that one frame and filled again for the
+/// next, which is a full-screen fill wasted. `update` steps every resident layer toward 1.0 and lands
+/// it there, so a resident layer is at rest at exactly 1.0 and nowhere else.
+#[test]
+fn a_resident_layer_short_of_full_reveal_has_no_name_even_with_no_velocity() {
+    let _guard = plx_base::testlock::serial();
+    let env = env_at(0.0);
+    let held = |layer: u8, pos: f32| {
+        let mut b = settled_backdrop();
+        match layer {
+            0 => b.art = Spring::at(pos),
+            _ => {
+                b.outgoing_tex = (9, 1280.0, 720.0);
+                b.outgoing_art = Spring::at(pos);
+            }
+        }
+        b
+    };
+    for pos in [0.0, 0.5, 0.999] {
+        assert_eq!(held(0, pos).ground_key(&env, None, None, true), None, "art parked at {pos}");
+        assert_eq!(held(1, pos).ground_key(&env, None, None, true), None, "the held layer parked at {pos}");
+    }
+    assert!(held(0, 1.0).ground_key(&env, None, None, true).is_some(), "art landed on 1.0 is named");
+    assert!(held(1, 1.0).ground_key(&env, None, None, true).is_some(), "the held layer landed on 1.0 is named");
+    // A layer with no texture draws nothing, whatever its spring stands at.
+    let mut c = settled_backdrop();
+    c.outgoing_art = Spring::at(0.3);
+    assert!(c.ground_key(&env, None, None, true).is_some(), "no texture: the spring says nothing");
+
+    // What `update` does with a layer that has just arrived: it is unnamed for every frame of the
+    // dissolve and named once it has landed.
+    let mut c = held(0, 0.0);
+    let dt = 1.0 / 60.0;
+    let mut unnamed = 0;
+    for _ in 0..600 {
+        c.art.step(1.0, AmbientWash::K, dt);
+        c.art.land(1.0, dt);
+        if c.ground_key(&env, None, None, true).is_some() {
+            break;
+        }
+        unnamed += 1;
+    }
+    assert!(unnamed > 5, "a dissolve takes frames, and none of them is named: {unnamed}");
+    assert_eq!((c.art.pos, c.art.vel), (1.0, 0.0), "named only once landed");
+    assert!(c.ground_key(&env, None, None, true).is_some(), "and named from then on");
+}
+
+/// The same gap through the page: art that becomes resident between a frame's `Tick` and its draw is
+/// bound by `draw_page` with the reveal spring parked at 0, and that draw must not be named.
+#[test]
+fn art_that_arrives_at_the_draw_is_not_named_until_it_has_dissolved_in() {
+    let _guard = plx_base::testlock::serial();
+    plx_ui::tex::install(&HeroArtSpy);
+    plx_ui::tex::reset_for_test(64 << 20);
+    HERO_ART.with(|a| *a.borrow_mut() = HeroArtState::default());
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_continue_window_for_test(&mut state, &adapter, 12, false);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    let focus = Some(FocusKey { entry: s.entry, elem: s.rows[0].elems[0] });
+    let mut ms = 0u32;
+    for _ in 0..5 {
+        ms += 17;
+        let _ = step(&mut s, view, focus, &ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+    }
+    assert_eq!(s.backdrop.tex.0, 0, "the premise: the hero's art is not resident yet");
+    for h in 0..view.hero_count() {
+        deliver_hero_art(&view.hero(h).unwrap().item.art);
+    }
+    // what `draw_page` does at the top of the frame
+    s.backdrop.bind(s.selected_hero(view), s.outgoing_hero(view), s.carousel.as_ref(), s.snap.pos);
+    assert_ne!(s.backdrop.tex.0, 0, "the premise: the art resolved to a texture at the draw");
+    assert_eq!(s.backdrop.art.vel, 0.0, "the premise: bind left the reveal spring with no velocity");
+    let env = s.env(0.0);
+    assert_eq!(
+        s.backdrop.ground_key(&env, s.slide_offsets(), s.backdrop_shade(&env), s.dive_rests()),
+        None,
+        "art that has just arrived is still to dissolve in: that frame is drawn live"
+    );
+}
+
 /// **What the backdrop asks of the renderer, end to end** (the draw through `Painter::cached_ground` to
 /// the renderer's door, `gfx::region_asks`; the host has no GL, so the ask is all there is to see): a
 /// settled backdrop asks for its region BY NAME, once per draw; one that is moving asks without a name,
@@ -6791,7 +6873,6 @@ fn a_moving_backdrop_has_no_name_and_a_landed_one_has_it_again() {
 #[test]
 fn the_backdrop_asks_for_its_region_by_name_only_when_it_has_settled() {
     let _guard = plx_base::testlock::serial();
-    plx_gfx::gfx::tex_ledger::specified(7, 16, 9);
     let asks_of = |b: &Backdrop,
                    env: &Env,
                    p: Painter,
