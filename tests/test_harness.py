@@ -449,8 +449,13 @@ class ReplayFixtures(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, name)
                 for fn in os.listdir(target):
                     if fn == "manifest.json" or fn.endswith(".jsonl"):
-                        self.assertEqual(guard("tests/fixtures/replay/" + name + "/" + fn).returncode, 0,
-                                         name + "/" + fn)
+                        # This local-only current header uses closed structural enums, not
+                        # globally admitted strings. The independent outbound guard remains
+                        # stricter and denies its publication; do not widen it in a fixture task.
+                        expected = 2 if (name == '12-filmography-detail-return-current'
+                                         and fn == 'manifest.json') else 0
+                        self.assertEqual(guard("tests/fixtures/replay/" + name + "/" + fn).returncode,
+                                         expected, name + "/" + fn)
 
     def test_metric_text_bytes_are_checked_at_both_public_fixture_boundaries(self):
         """MetricKey::Width is byte-valued on disk, but public fixtures are UTF-8 synthetic text.
@@ -556,6 +561,8 @@ class ReplayFixtures(unittest.TestCase):
                 ReplayFixtures._strings(v, out)
 
     def test_no_committed_fixture_string_leaves_the_synthetic_alphabet(self):
+        import runpy
+        checker = runpy.run_path(os.path.join(REPO_ROOT, 'tools', 'plxnative-rec'))
         lits, pats = self._alphabet()
         checked = 0
         for name in sorted(os.listdir(self.FIXTURES)):
@@ -573,7 +580,9 @@ class ReplayFixtures(unittest.TestCase):
                         else [json.loads(l) for l in text.splitlines() if l.strip()])
                 for doc in docs:
                     vals = []
-                    self._strings(doc, vals)
+                    valid, paths = checker['structural_enum_paths'](doc) if fn == 'manifest.json' else (True, set())
+                    self.assertTrue(valid, '%s/%s: malformed structural enum context' % (name, fn))
+                    checker['strings'](doc, vals, structural=paths)
                     for v in vals:
                         checked += 1
                         # the value is deliberately not in the message: a leak by a shorter route
@@ -584,22 +593,12 @@ class ReplayFixtures(unittest.TestCase):
     QUARANTINED_FIXTURES = {}
 
     def test_every_committed_fixture_carries_the_trees_recording_schema(self):
-        """`ui/rec.rs`'s SCHEMA moved 1 -> 2 in restructure phase 11 and this suite did not
-        notice: a stale fixture's manifest only refuses to LOAD at replay time
-        (`Recording::parse`), which is too late to catch here on `make check`. Read SCHEMA out of
-        the tree the way `ci/flavor.py` reads other Rust constants agreed with a second language —
-        a plain regex over the source, no cargo invocation — and check every committed fixture's
-        manifest agrees with it, so a fixture left behind by a schema bump fails loudly beside the
-        alphabet check above instead of only at `tests/focusfp.sh --replay` time.
+        """Pin the immutable historical and current fixture profiles, never a majority vote.
 
-        `schema` alone is not the only way a fixture goes stale: two anchors can share `schema`
-        while their `state_fp` (the recorded state SHAPE — route/overlay/focus/tree/session/
-        consent/initial) has moved apart, which is exactly what `tools/plxnative-rec rerecord`
-        reports as a load-time REFUSED and what the README documents happened to fixture 12. So
-        this also checks every non-quarantined fixture's `state_fp` agrees with the majority
-        value among committed anchors, and reports (without reddening `make check`) any
-        quarantined fixture whose `state_fp` has drifted onto the current value — at that point
-        the quarantine itself is stale and should be lifted."""
+        These are fixture-test expectations, not production admission or refusal policy.
+        Rust preflight and the default renderer gate independently validate compatibility;
+        in particular CURRENT can never inherit historical Content's expected refusal.
+        """
         rec_rs_path = os.path.join(REPO_ROOT, "rust-modules", "ui", "src", "rec.rs")
         with open(rec_rs_path, encoding="utf-8") as f:
             rec_rs = f.read()
@@ -623,26 +622,13 @@ class ReplayFixtures(unittest.TestCase):
                               "(tools/plxnative-rec rerecord it)"
                               % (name, manifest.get("schema"), schema))
             fps[name] = manifest.get("state_fp")
-        self.assertGreater(checked, 0)
-
-        live_fps = {n: fp for n, fp in fps.items() if n not in self.QUARANTINED_FIXTURES}
-        if live_fps:
-            from collections import Counter
-            current_fp, _ = Counter(live_fps.values()).most_common(1)[0]
-            for name, fp in live_fps.items():
-                self.assertEqual(fp, current_fp,
-                                  "%s/manifest.json: state_fp %r does not match the other "
-                                  "committed anchors' %r (tools/plxnative-rec rerecord it, or "
-                                  "quarantine it in QUARANTINED_FIXTURES with a reason)"
-                                  % (name, fp, current_fp))
-            for name, reason in self.QUARANTINED_FIXTURES.items():
-                if name not in fps:
-                    continue
-                if fps[name] == current_fp:
-                    print("NOTE: quarantined fixture %s now shares state_fp with the live "
-                          "anchors (%r) — lift its QUARANTINED_FIXTURES entry" % (name, current_fp))
-                else:
-                    print("QUARANTINED: %s/manifest.json — %s" % (name, reason))
+        self.assertEqual(checked, 4)
+        self.assertEqual(fps, {
+            '1-boot-home-chip-grid': 4239819007634745513,
+            '6-settings-family': 4239819007634745513,
+            '12-filmography-detail-return': 4239819007634745513,
+            '12-filmography-detail-return-current': 13512213413816145485,
+        })
 
     def _tool(self, *args):
         tool = os.path.join(os.path.dirname(self.FIXTURES), "..", "..", "tools", "plxnative-rec")
@@ -715,6 +701,111 @@ class ReplayFixtures(unittest.TestCase):
             f.write(json.dumps({"t": "in", "f": 0, "kind": "key", "sym": 1, "wcode": 0, "down": True, "repeat": False}) + "\n")
             f.write(json.dumps({"t": "st", "f": 0, "hash": st}) + "\n")
         return d
+
+    def test_current_manifest_structural_enum_admission(self):
+        import copy
+        import runpy
+        tool = runpy.run_path(os.path.join(REPO_ROOT, 'tools', 'plxnative-rec'))
+        prefs = dict(playback_quality='original', direct_play_mode='auto', subtitle_tone='white',
+                     subtitle_size='medium', subtitle_position='low', hdr_overlay_brightness='three_quarters',
+                     next_episode_mode='countdown', skip_interval='10s', instant_dpad_seeking='off',
+                     uri_engine='off', dolby_vision_mode='auto', deck_press='details',
+                     under_posters=dict(title=False, details='year_length', show_details='year_length',
+                                        detail_parts=['year', 'length'], show_detail_parts=['year', 'seasons']))
+        data = dict(version=1, install_language='system', running_language='system', ui_preferences=prefs)
+        with tempfile.TemporaryDirectory() as root:
+            recording = self._synthetic_recording(root)
+            path = os.path.join(recording, 'manifest.json')
+            with open(path, encoding='utf-8') as f:
+                header = json.load(f)
+            header['init'] = dict(probe='controlled=home version=1', hash=1, data=data)
+            def check(value, expected):
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(value, f)
+                result = self._tool('check', recording)
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                self.assertNotIn('PrivateCredentialSentinel', result.stdout + result.stderr)
+            check(header, 0)
+            for key, variants in tool['UI_ENUMS'].items():
+                for variant in variants:
+                    changed = copy.deepcopy(header)
+                    changed['init']['data']['ui_preferences'][key] = variant
+                    check(changed, 0)
+            for key in ('install_language', 'running_language'):
+                for language in tool['LANGUAGE_ENUM']:
+                    changed = copy.deepcopy(header)
+                    changed['init']['data'][key] = language
+                    check(changed, 0)
+            import itertools
+            for key, variants in tool['POSTER_PARTS'].items():
+                for size in range(5):
+                    for parts in itertools.combinations(variants, size):
+                        changed = copy.deepcopy(header)
+                        changed['init']['data']['ui_preferences']['under_posters'][key] = list(parts)
+                        check(changed, 0)
+            for key in ('details', 'show_details'):
+                for variant in tool['POSTER_LADDER']:
+                    changed = copy.deepcopy(header)
+                    changed['init']['data']['ui_preferences']['under_posters'][key] = variant
+                    check(changed, 0)
+            changed = copy.deepcopy(header)
+            changed['init']['data']['ui_preferences']['under_posters'].update(title=True, sort_value_off=True)
+            check(changed, 0)
+            for key in prefs:
+                for invalid in ('PrivateCredentialSentinel', 'unknown', 'ORIGINAL', None, True, 42, [], {}):
+                    changed = copy.deepcopy(header)
+                    changed['init']['data']['ui_preferences'][key] = invalid
+                    check(changed, 1)
+            for key in ('install_language', 'running_language'):
+                for invalid in ('English', 'en-US', 'System', 'xx', None, 1, [], {}):
+                    changed = copy.deepcopy(header)
+                    changed['init']['data'][key] = invalid
+                    check(changed, 1)
+            for mutate in (
+                lambda h: h['init']['data']['ui_preferences'].pop('deck_press'),
+                lambda h: h['init']['data']['ui_preferences'].update(unknown=1),
+                lambda h: h['init']['data']['ui_preferences']['under_posters'].update(unknown=1),
+                lambda h: h['init']['data']['ui_preferences']['under_posters'].update(detail_parts=['year', 'PrivateCredentialSentinel']),
+                lambda h: h['init']['data']['ui_preferences']['under_posters'].update(detail_parts=['year', 'year']),
+                lambda h: h['init']['data']['ui_preferences']['under_posters'].update(title=1),
+                lambda h: h['init']['data'].pop('running_language'),
+                lambda h: h['init'].update(probe='seed=0'),
+                lambda h: h.update(fake={'install_language': 'system'}),
+                lambda h: h['init']['data'].update(fake={'ui_preferences': prefs}),
+                lambda h: h['init']['data'].update(credential='PrivateCredentialSentinel'),
+                lambda h: h['init']['data'].update(path='/home/PrivateCredentialSentinel'),
+            ):
+                changed = copy.deepcopy(header)
+                mutate(changed)
+                check(changed, 1)
+
+    def test_structural_enum_domains_match_canonical_sources(self):
+        import pathlib
+        import runpy
+        root = pathlib.Path(REPO_ROOT)
+        tool = runpy.run_path(str(root / 'tools/plxnative-rec'))
+        session = (root / 'rust-modules/plex/src/plex/session.rs').read_text()
+        options = (root / 'rust-modules/plex/src/plex/session/playback_options.rs').read_text()
+        # Read only the reviewed fieldless enum declarations: no soft-parse aliases or labels.
+        types = dict(playback_quality='PlaybackQuality', subtitle_tone='SubtitleTone', subtitle_size='SubtitleSize',
+                     subtitle_position='SubtitlePosition', hdr_overlay_brightness='HdrOverlayBrightness',
+                     next_episode_mode='NextEpisodeMode', skip_interval='SkipInterval', deck_press='DeckPress',
+                     instant_dpad_seeking='InstantDpadSeeking', uri_engine='UriEngine', dolby_vision_mode='DolbyVisionMode')
+        for key, name in types.items():
+            source = options if key in ('instant_dpad_seeking', 'uri_engine', 'dolby_vision_mode') else session
+            body = re.search(r'pub enum ' + name + r' \{(.*?)\n\}', source, re.S).group(1)
+            self.assertEqual(tuple(re.findall(r'#\[serde\(rename = "([^"]+)"\)\]', body)), tool['UI_ENUMS'][key])
+        direct = re.search(r'pub enum DirectPlayMode \{(.*?)\n\}', session, re.S).group(1)
+        self.assertEqual(tuple(v.lower() for v in re.findall(r'^    (\w+),', direct, re.M)), tool['UI_ENUMS']['direct_play_mode'])
+        ladder = re.search(r'pub enum UnderPostersLadder \{(.*?)\n\}', session, re.S).group(1)
+        self.assertEqual(tuple(re.findall(r'#\[serde\(rename = "([^"]+)"\)\]', ladder)), tool['POSTER_LADDER'])
+        registry = json.loads((root / 'locales/languages.json').read_text())
+        self.assertEqual(('system',) + tuple(row['tag'] for row in registry), tool['LANGUAGE_ENUM'])
+        parts = (root / 'rust-modules/base/src/detail_parts.rs').read_text()
+        names = dict(re.findall(r'DetailPart::(\w+) => "([^"]+)"', parts))
+        for key, const in [('detail_parts', 'MOVIE'), ('show_detail_parts', 'SHOW')]:
+            declaration = re.search(r'pub const ' + const + r':.*?=\s*\[(.*?)\];', parts, re.S).group(1)
+            self.assertEqual(tuple(names[v] for v in re.findall(r'DetailPart::(\w+)', declaration)), tool['POSTER_PARTS'][key])
 
     def test_a_rebaseline_without_a_divergence_record_is_refused(self):
         """Spec §5.5 / §15.1: `--rebaseline` is allowed only with a divergence record the replay
@@ -9340,13 +9431,15 @@ impl PersonOwnerGateFixture {
     def test_threads_gate_ignores_visible_test_modules_without_exempting_production(self):
         files = {}
         for i, visibility in enumerate(("pub", "pub(crate)", "pub(super)")):
-            files[f"_check_deps_visible_test_{i}.rs"] = (
-                f"#[cfg(test)]\n{visibility} mod fixture {{\n"
-                "    fn work() { std::thread::spawn(|| {}); }\n}\n")
+            for j, predicate in enumerate(('test', 'all(test, feature = "devtriggers")',
+                                           'all(any(test, feature = "test-support"), feature = "hostsim")')):
+                files[f"_check_deps_visible_test_{i}_{j}.rs"] = (
+                    f"#[cfg({predicate})]\n{visibility} mod fixture {{\n"
+                    "    fn work() { std::thread::spawn(|| {}); }\n}\n")
         r = self._plant_many(files, "data")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         r = self._plant("_check_deps_visible_production.rs",
-                        "pub(super) mod fixture { fn work() { std::thread::spawn(|| {}); } }\n")
+                        '#[cfg(any(test, feature = "devtriggers"))]\npub(super) mod fixture { fn work() { std::thread::spawn(|| {}); } }\n')
         self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("threads:", r.stdout + r.stderr)
         self.assertIn("_check_deps_visible_production.rs", r.stdout + r.stderr)
@@ -9567,8 +9660,8 @@ impl PersonOwnerGateFixture {
         FIFO and costs nothing; an arm that parks its request on a side queue must be a ledger line,
         so a NEW variant with a side queue fails `fxlanes` while a new Deliver arm does not."""
         r = self._mutate(
-            "app/bridge.rs", "AppFx::Loop(req) => self.reqs.push(req),",
-            "AppFx::Loop(req) => self.reqs.push(req),\n"
+            "app/bridge.rs", 'AppFx::Loop(_) => unreachable!("Loop commands yield to the FIFO runner"),',
+            'AppFx::Loop(_) => unreachable!("Loop commands yield to the FIFO runner"),\n'
             "            AppFx::Sneaky(req) => self.sneaky_reqs.push(req),\n"
             "            AppFx::Orderly(cmd) => out.push(Fx::Deliver(MachineId::Consent,\n"
             "                Delivery::Machine(AppMsg::Consent(cmd)))),")
@@ -9943,9 +10036,9 @@ impl PersonOwnerGateFixture {
         site of its own, keyed `AppFx::_`: both used to ride on the first variant's line, or on nothing.
         An or-pattern arm that pushes `Fx::Deliver(` is on the ordered lane and costs nothing."""
         r = self._mutate(
-            "app/bridge.rs", "AppFx::Loop(req) => self.reqs.push(req),",
-            "AppFx::Loop(req) | AppFx::PlantedOr(req) => self.reqs.push(req),\n"
-            "            AppFx::PlantedFirst(req)\n"
+            "app/bridge.rs", 'AppFx::Loop(_) => unreachable!("Loop commands yield to the FIFO runner"),',
+            'AppFx::Loop(_) => unreachable!("Loop commands yield to the FIFO runner"),\n'
+            "            AppFx::PlantedOr(req) | AppFx::PlantedFirst(req)\n"
             "                | AppFx::PlantedWrapped(req) => self.planted_reqs.push(req),\n"
             "            AppFx::PlantedOk(cmd) | AppFx::PlantedOk2(cmd) => out.push(Fx::Deliver(MachineId::Consent,\n"
             "                Delivery::Machine(AppMsg::Consent(cmd)))),\n"
@@ -9957,7 +10050,7 @@ impl PersonOwnerGateFixture {
             with self.subTest(variant=variant):
                 self.assertIn(f"{key}{variant}  (ledger: ci/allow/fxlanes/app.txt)", out)
         self.assertNotIn("PlantedOk", out)
-        self.assertNotIn(f"{key}Loop", out, "the variant the ledger already holds is not new")
+        self.assertNotIn(f"{key}Loop", out, "the existing externally yielded variant is not a new lane")
 
     @_grades("globals")
     def test_globals_ledger_sees_every_spelling_of_the_player_transport_in_lifecycle(self):
@@ -10747,9 +10840,16 @@ static mut MUTABLE: u8 = 0;
         # Dolby Vision setting (#1156): -1 on forks (`build_stream` takes the DV probe from `ResolveEnv`, captured
         # at the request, so its test/production read of `devcaps::dv::capability` is gone).
         # Actual pre-M4 entries were 68 (the previous pin 71 was a loose ceiling).
-        "forks": 61,  # production test/production forks in every machine crate: data/, plex/, media/, session/, screens/, ui/, appkit/, machine/ (`ci/allow/forks/`)
-        "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
+        "forks": 58,  # production test/production forks in every machine crate: data/, plex/, media/, session/, screens/, ui/, appkit/, machine/ (`ci/allow/forks/`)
+        "fxlanes": 0,  # all app families yield to the same FIFO runner (`ci/allow/fxlanes/`)
     }
+
+    def test_ui_boundary_positive_and_negative_controls(self):
+        for script in ('ci/test_ui_boundaries.py', 'ci/test_app_command_routing.py'):
+            with self.subTest(script=script):
+                result = subprocess.run([sys.executable, script], cwd=self.ROOT,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_ledger_totals_match_the_pinned_table(self):
         allow = os.path.join(self.ROOT, "ci", "allow")

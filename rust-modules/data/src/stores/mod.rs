@@ -172,8 +172,17 @@ impl Stores {
         cmd: browse::BrowseCmd,
         input: &browse::BrowseRosterInput<'_>,
     ) -> bool {
+        self.browse_run_outcome(cmd, input).accepted
+    }
+
+    /// Admission and visible damage are distinct; the application's dispatcher consumes `changed`.
+    pub fn browse_run_outcome(
+        &self,
+        cmd: browse::BrowseCmd,
+        input: &browse::BrowseRosterInput<'_>,
+    ) -> browse::CommandOutcome {
         let _step = plx_base::step::StepScope::enter();
-        self.browse.borrow_mut().run_with_input(cmd, input)
+        self.browse.borrow_mut().run_with_input_outcome(cmd, input)
     }
 
     /// [`Stores::browse_run`] on a registry that holds no client (no section-hubs or directory read leaves): the

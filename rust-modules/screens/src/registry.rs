@@ -1,6 +1,6 @@
 //! **The application bundle's SCREEN-SIDE half** (restructure spec §3.1, phase 5b): the effects a
-//! screen may ask for (`AppFx`), the messages a machine receives (`AppMsg`), and the requests an
-//! owned screen makes of the legacy LOOP (`LoopReq`) while the two coexist (§14).
+//! screen may ask for (`AppFx`), the messages a machine receives (`AppMsg`), and the app-runner
+//! commands (`LoopReq`) that require platform or application-owned resources.
 //!
 //! **…and, since restructure phase 10, the concrete `ScreenArg` ([`AppArg`]) and the one `mount`
 //! match ([`AppMounter`])** — which §2.1 always put here and which lived in `app/bridge.rs` until
@@ -20,15 +20,15 @@
 //! screens a second time for the surface's own inner stack (`screens::settings::InnerHost`), which
 //! is how one `OnboardScreen` mounts twice (§6.2).
 //!
-//! `LoopReq` is a DEBT with a phase number on each variant: a request the loop performs because
-//! the machine that should own it (Session, Player, Navigation over the app's real stack) is not
-//! on the dispatcher yet. The bridge drains them after every dispatcher frame.
+//! Loop, Player and the other external app commands retain their dispatcher FIFO head while
+//! the runner borrows application resources. Results rejoin that drain; no family queue is drained
+//! after the frame. Async Session and persistence completions retain their addressed owner fences.
 
 pub use crate::family::SettingsPage;
 pub use crate::family::InnerViews;
-pub use crate::inputs::{GrantInputs, ScreenInputs};
+pub use crate::inputs::{GrantInputs, RuntimePolicy, ScreenInputs};
 #[cfg(test)]
-pub(crate) use crate::inputs::{capture_fixture, empty_fixture, publication_fixture};
+pub(crate) use crate::inputs::{capture_fixture, caption_fixture, empty_fixture, publication_fixture};
 /// The stored Under posters setting as the ui caption policy: the shared door a screen outside
 /// Settings (the Library's Collections page) reads it through, so none names `crate::settings`.
 pub use crate::settings::caption_policy_of;
@@ -62,9 +62,9 @@ pub enum AppFx {
     StoreWork(StoreWork),
     /// The consent MACHINE's command (§2.2): it owns the two decisions and publishes them.
     Consent(ConsentCmd),
-    /// A request of the legacy loop (§14) — see [`LoopReq`].
+    /// An ordered app-resource command — see [`LoopReq`].
     Loop(LoopReq),
-    /// Content-page requests, executed by the navigation bridge during coexistence (phase 7).
+    /// Content-page commands, executed at the yielded dispatcher FIFO head.
     Content(ContentReq),
     /// Home-page semantic requests. The bridge owns navigation/player/menu execution.
     Home(HomeReq),
@@ -75,15 +75,20 @@ pub enum AppFx {
     /// page asks of the app that has no existing effect spelling.
     Watchlist(crate::watchlist::page::WatchlistOut),
     Catalog(crate::catalog::CatalogOut),
-    /// Player-route requests — what an overlay panel on the player's own `ModalStack` asks of the
-    /// loop, because the thing being asked for needs the `MainThread` token, the route or the
-    /// trail (§14). Executed by `app/playback.rs`'s drain.
+    /// Player-route commands requiring the MainThread capability, route or navigation stack.
+    /// The app runner executes each at its FIFO head, outside the screen's machine step.
     Player(PlayerReq),
     /// The item context menu's committed row (phase 10) — see [`ItemMenuReq`].
     ItemMenu(ItemMenuReq),
     /// The player-HUD page's commands on the package store, executed by the Bridge (PR10).
     Huds(HudCmd),
 }
+
+/// Owned external-runner envelope: the original sender (including mounted lifetime), frozen
+/// navigation bookmark, FIFO sequence, and unmodified command/request identity. The dispatcher
+/// retains the head until a terminal receipt; this type is NOT another request queue.
+/// Family handler migration uses this contract without changing the screen's `Fx::App` spelling.
+pub type AppCommand = plx_machine::machine::AppCommand<AppFx, ReturnState<u32, PageMemory>>;
 
 /// The package-store view delivered through the HUD command channels.
 pub use crate::hud_settings::HudList;
@@ -1308,15 +1313,15 @@ pub enum PlayIntent {
     },
 }
 
-pub trait ContentLike: AppLike<Memory = PageMemory> {}
-impl<H: AppLike<Memory = PageMemory>> ContentLike for H {}
+pub trait ContentLike: AppLike<Memory = PageMemory> + ScreenInputsLike {}
+impl<H: AppLike<Memory = PageMemory> + ScreenInputsLike> ContentLike for H {}
 
 /// A host publishing the Person model borrowed from its concrete store owner for this frame.
-pub trait PersonLike: AppLike + Sized {
+pub trait PersonLike: AppLike + ScreenInputsLike + Sized {
     fn person<'a>(cx: &Cx<'a, Self>) -> plx_data::person::PersonView<'a>;
 }
 
-pub trait CollectionLike: AppLike + Sized {
+pub trait CollectionLike: AppLike + ScreenInputsLike + Sized {
     fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a>;
 
     /// **The title of the page BACK returns to**, as the user sees it on that page: the entry
@@ -1352,13 +1357,13 @@ pub trait HomeLike: AppLike<Memory = PageMemory> + ScreenInputsLike + Sized {
 /// read the Player machine's decisions through it; a change is asked for as an effect
 /// (`AppFx::Player`, `ContentReq::Play`), because the publication is a copy and there is no `&mut`
 /// on this path by construction.
-pub trait PlayerLike: AppLike<Memory = PageMemory> + Sized {
+pub trait PlayerLike: AppLike<Memory = PageMemory> + ScreenInputsLike + Sized {
     fn session<'a>(cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession;
     /// Viewer pause intent sampled by the host at this frame's Tick boundary.
     fn transport_paused(cx: &Cx<'_, Self>) -> bool;
 }
 
-pub trait SearchLike: AppLike<Memory = PageMemory> + Sized {
+pub trait SearchLike: AppLike<Memory = PageMemory> + ScreenInputsLike + Sized {
     fn search<'a>(cx: &Cx<'a, Self>) -> plx_data::search::view::SearchView<'a>;
 }
 
@@ -1423,6 +1428,9 @@ impl<H: LibraryLike> DirectoryLike for H {
 /// A host must explicitly supply the retained inputs; no ambient or neutral fallback.
 pub trait ScreenInputsLike: AppLike + Sized {
     fn screen_inputs<'a>(cx: &Cx<'a, Self>) -> &'a crate::inputs::ScreenInputs;
+    /// Native preview is an app resource capability, unavailable to controlled/fixture hosts.
+    /// It is not harness policy or a profile preference; controlled recordings have no native port.
+    fn native_preview_available(_cx: &Cx<'_, Self>) -> bool { false }
 }
 
 pub trait AuthLike: AppLike + ScreenInputsLike + Sized {
@@ -1513,8 +1521,8 @@ pub enum ConsentCmd {
     Record { errors: bool, usage: bool },
 }
 
-/// What an owned screen asks the LEGACY LOOP to do, because the owner of that decision is not on
-/// the dispatcher yet. Each names the phase that retires it.
+/// Commands requiring app-owned resources. The runner executes these at their dispatcher FIFO
+/// head; the historical phase annotations below describe their original migration boundaries.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LoopReq {
     /// BACK at a root the platform owns (Home, the FIRST consent question): hand the screen to
@@ -2282,9 +2290,9 @@ where
             AppArg::WatchlistMenu(arg) => Box::new(crate::watchlist::menu::WatchlistMenuScreen::new(entry, *arg)),
             AppArg::PlayerOverlay(arg) => {
                 let offer_search = H::subtitle_search(cx).is_some();
-                Box::new(crate::player::overlay::PlayerOverlayScreen::new_folded(
+                Box::new(crate::player::overlay::PlayerOverlayScreen::new_captured(
                     H::session(cx), H::metadata(cx), entry, arg.kind, offer_search,
-                    self.player_menu_anchor.take(), std::mem::take(&mut self.player_more_folds)))
+                    self.player_menu_anchor.take(), std::mem::take(&mut self.player_more_folds), H::screen_inputs(cx)))
             }
             AppArg::AltSources(arg) => Box::new(
                 crate::alt_sources::AltSourcesScreen::new(entry, arg.clone(), H::metadata(cx)),

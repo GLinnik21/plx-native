@@ -25,6 +25,10 @@ impl Budget {
     pub fn new(bytes: usize) -> Self {
         Self(std::cell::Cell::new(bytes))
     }
+    pub(super) fn remaining(&self) -> usize { self.0.get() }
+    /// Return only a reservation whose entire decoded tree has been dropped. Retained
+    /// payloads and source/frame storage must keep their own reservations.
+    pub(super) fn release(&self, bytes: usize) { self.0.set(self.0.get() + bytes); }
     pub(super) fn charge(&self, bytes: usize) -> Result<(), &'static str> {
         let left = self
             .0

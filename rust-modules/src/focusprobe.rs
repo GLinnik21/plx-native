@@ -45,15 +45,9 @@
 //! accessor reads for the CURRENT screen only — the `match` on [`Screen`] never reaches another
 //! screen's getters — plus one `String` build of 40–160 bytes.
 //!
-//! Measured on the dev Mac at `opt-level = 2` (2026-08-15, 50k builds per screen, host accessors
-//! over empty stores): **39–223 ns** per frame on every screen except the player, where the line
-//! costs **~7.3 µs**. That one number is worth knowing before adding a field: **~6.4 µs of it is a
-//! single filesystem `stat`**, inside [`plx_appkit::player_hud::transport_hidden`] →
-//! `player_hud::busy` → `devtrig::flag("failtest")`. The rest of the player's seventeen fields together
-//! cost ~0.9 µs. It is paid deliberately: `transport_hidden` is the exact predicate
-//! `PlayerScreen::handle_key` tests before any transport arm, and the alternative is a second
-//! derivation of a rule that module keeps in one place. The player route is also the one route the idle gate excludes, so it draws
-//! at full rate and 7 µs is ~0.04% of a 16.7 ms frame.
+//! The player reads the same captured busy value as input, hashing and rendering. Its LIVE
+//! diagnostic filesystem sampling belongs to the app's frame publication, never this probe.
+//! Historical timings included that removed filesystem read and do not describe this path.
 //!
 //! # Arming it
 //!
@@ -149,6 +143,7 @@ pub(crate) enum Screen {
     /// its own exhaustive match on the private `Overlay` enum.
     Player {
         overlay: &'static str,
+        busy: plx_appkit::player_hud::Busy,
     },
 }
 
@@ -276,8 +271,8 @@ fn push_fields(ps: &plx_media::route::PlaybackSession, s: &mut String, screen: S
         // Search's do: since restructure phase 9 each is the state of a MOUNTED INSTANCE
         // (`screens::player::overlay`), and this module cannot reach into the container — the
         // caller (`app::bridge::content_probe`) builds them from the surface that is up.
-        Screen::Player { overlay } => {
-            push_player(ps, s, overlay, hud, ctrl, meta);
+        Screen::Player { overlay, busy } => {
+            push_player(ps, s, overlay, hud, ctrl, meta, busy);
             s.push_str(content);
         }
     }
@@ -285,7 +280,7 @@ fn push_fields(ps: &plx_media::route::PlaybackSession, s: &mut String, screen: S
 
 
 /// The player: the HUD cursor, what the control row currently holds, and each panel's own state.
-fn push_player(ps: &plx_media::route::PlaybackSession, s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot, meta: plx_data::metadata::MetadataView<'_>) {
+fn push_player(_ps: &plx_media::route::PlaybackSession, s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot, meta: plx_data::metadata::MetadataView<'_>, busy: plx_appkit::player_hud::Busy) {
     // `upnext` is the PLAYER INSTANCE's countdown since phase 9, so it arrives on `content` with
     // the panels' fields rather than being read off a module global here.
     let slot = match ctrl {
@@ -293,7 +288,8 @@ fn push_player(ps: &plx_media::route::PlaybackSession, s: &mut String, overlay: 
         ControlSlot::Skip(_) => "skip",
         ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => "upnext",
     };
-    // `hidden` is `player_hud::transport_hidden()`, read here for the reason
+    // `hidden` projects the captured busy value by the same pure rule as transport_hidden,
+    // for the reason
     // `PlayerScreen::handle_key` reads it: it is that page's FIRST test, so while it is true every
     // transport arm beneath it is unreachable and only the read-out's two DRAWN escapes — OK to
     // the quality ladder, BACK out — plus EXIT do anything. A characterization run that could not
@@ -309,7 +305,7 @@ fn push_player(ps: &plx_media::route::PlaybackSession, s: &mut String, overlay: 
         hud.tab,
         slot,
         ctrl.items(),
-        b(plx_appkit::player_hud::transport_hidden(ps))
+        b(plx_appkit::player_hud::readout_owns_frame(busy))
     );
     // The episode pair's state is emitted whatever occupies the row (all zero under a stand-in),
     // so an occupant change is a value change and never a schema change.
@@ -445,8 +441,8 @@ mod tests {
             ("catalog", Screen::Catalog),
             ("search", Screen::Search),
             ("watchlist", Screen::Watchlist),
-            ("player", Screen::Player { overlay: "none" }),
-            ("player", Screen::Player { overlay: "info" }),
+            ("player", Screen::Player { overlay: "none", busy: plx_appkit::player_hud::Busy::None }),
+            ("player", Screen::Player { overlay: "info", busy: plx_appkit::player_hud::Busy::None }),
         ]
     }
 
@@ -522,12 +518,12 @@ mod tests {
         };
         let discs = keys(
             "player",
-            Screen::Player { overlay: "none" },
+            Screen::Player { overlay: "none", busy: plx_appkit::player_hud::Busy::None },
             ControlSlot::Discs(plx_appkit::player_hud::Controls::NONE),
         );
         let up = keys(
             "player",
-            Screen::Player { overlay: "none" },
+            Screen::Player { overlay: "none", busy: plx_appkit::player_hud::Busy::None },
             ControlSlot::UpNext(credits),
         );
         assert_eq!(
@@ -537,7 +533,7 @@ mod tests {
         // …and a HUD cursor move is a value change, never a key change
         let moved = fingerprint(&ps, 
             "player",
-            Screen::Player { overlay: "none" },
+            Screen::Player { overlay: "none", busy: plx_appkit::player_hud::Busy::None },
             Hud {
                 focus: 2,
                 btn: 1,
@@ -563,7 +559,7 @@ mod tests {
         let at = |f, btn, tab| {
             fingerprint(&ps, 
                 "player",
-                Screen::Player { overlay: "none" },
+                Screen::Player { overlay: "none", busy: plx_appkit::player_hud::Busy::None },
                 Hud {
                     focus: f,
                     btn,
@@ -592,7 +588,7 @@ mod tests {
             at(0, 0, 0),
             fingerprint(&ps, 
                 "player",
-                Screen::Player { overlay: "info" },
+                Screen::Player { overlay: "info", busy: plx_appkit::player_hud::Busy::None },
                 Hud {
                     focus: 0,
                     btn: 0,
