@@ -41,10 +41,9 @@
 //! The explicit `ServerId::UNSET` namespace is credential-free public content, not a Plex slot. Its HTTPS PNG filename
 //! names its SHA-256, checked on every disk hit and network response; it uses the same workers and cache without PMS IO.
 //!
-//! The server is a FIELD on the slot, not a prefix on the key, deliberately: keys already run
-//! ~140 bytes (an ordinary relative thumb) to ~177 (an absolute headshot — see [`built_key`])
-//! into a fixed [`PT_KEYLEN`]-byte array (see [`Pslot::key`]), and a `u16` compare is also the
-//! cheaper half of the per-frame identity scan, so it goes first.
+//! The server is a FIELD on the slot, not a prefix on the key, deliberately: a `u16` compare is
+//! the cheaper half of the per-frame identity scan, so it goes first, and the key stays exactly
+//! the request path the worker sends.
 mod baked;
 mod card;
 mod cover;
@@ -102,32 +101,16 @@ fn note_backlog(slots: &[Pslot; PT_CAP]) -> usize {
     bytes
 }
 
-/// Bytes a slot's key array holds, NUL included — see [`Pslot::key`] for the cliff at the end of
-/// it, and [`KEY_MAX`] for the gate that keeps requests off it.
-const PT_KEYLEN: usize = 256;
-/// The longest built path that survives the round trip into a slot intact. Derived from
-/// [`PT_KEYLEN`] rather than written as a literal, so the gate cannot drift from the array it
-/// gates.
-const KEY_MAX: usize = PT_KEYLEN - 1;
-
-/// Can this key ever resolve to a picture? The store's ONE precondition, and it lives here for the
-/// same reason [`victim`] and [`idle_of`] were split out: it was duplicated across the entry
-/// points, none of those copies could be tested (reaching them drags in `gfx::delete_tex`, which
-/// no host test binary links), and the array it protects belongs to [`lookup`], not to whoever
-/// built the string.
+/// Can this key ever resolve to a picture? The store's ONE precondition, kept beside [`lookup`]
+/// so it is host-testable on its own. An empty key means no request could be built: an unknown
+/// server, or an item the server gave no art for (see [`poster_key`]). No slot is claimed, and the
+/// tile draws its skeleton.
 ///
-/// **Empty** means no request could be built — an unknown server, or an item the server gave no
-/// art for (see [`poster_key`]).
-///
-/// **Longer than [`KEY_MAX`]** means [`set_key`] would TRUNCATE it, after which the stored key can
-/// never equal the probe that built it: every frame misses, claims a fresh slot and evicts a real
-/// poster — the whole store thrashing over one tile. `poster_key` refuses to hand such a path out,
-/// but it is not the only thing that can reach `lookup` (the three entry points take a raw
-/// `*const c_char`), so the check that matters is the one at the array.
-///
-/// Either way the answer is the same: no slot is claimed, and the tile draws its skeleton.
+/// Length is no part of it. A slot keeps its key whole ([`Pslot::key`]), so a request path of any
+/// length is stored intact and found again by the probe that built it (#1408: a Live TV channel
+/// logo built into a 326-byte path never loaded while the slot was a fixed 256-byte array).
 fn is_fetchable(key: &str) -> bool {
-    !key.is_empty() && key.len() <= KEY_MAX
+    !key.is_empty()
 }
 const P_EMPTY: c_int = 0;
 const P_WANT: c_int = 1;
@@ -169,16 +152,14 @@ enum Touch {
 // `Warm` — what a prefetch did — is the library's `ui::tex::Warm` now (re-exported through
 // the `use` above): the prefetch loops in `ui/` read it without naming this module.
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Pslot {
-    // Full /photo/:/transcode request path = store key. NB set_key TRUNCATES to KEY_MAX bytes +
-    // NUL: a key at/over PT_KEYLEN would never match its probe again (the text.rs glyph cache had
-    // this exact bug at 96 — fixed with klen there), so every frame would miss, claim a fresh slot
-    // and evict a real poster — the whole store thrashing over one tile. `poster_key` now REFUSES
-    // to hand out a path this cannot hold (see [`KEY_MAX`]), which turns that into one skeleton
-    // tile; if the shape ever routinely needs more room, key this the klen way instead of raising
-    // the number.
-    key: [u8; PT_KEYLEN],
+    /// The full built request path (or synthetic baked key) = store key, held WHOLE. A
+    /// fixed-size array here once capped reachable art at 255 bytes (#1408): a longer key would
+    /// have been truncated and never matched its probe again, so it was refused instead, and an
+    /// external logo URL wrapped in a resizer link stayed a skeleton. A `String` has no such
+    /// ceiling; [`set_key`] reuses its capacity, so a warm store claims without allocating.
+    key: String,
     /// Which server this art was asked of — the OTHER half of the slot's identity, and what the
     /// worker dials. Two servers can hand out the same `/photo/:/transcode?url=/library/metadata/
     /// 42/thumb/…` path (their rating keys are both server-local integers from 1), so a key alone
@@ -237,7 +218,7 @@ struct Pslot {
 }
 impl Pslot {
     const ZERO: Pslot = Pslot {
-        key: [0; PT_KEYLEN],
+        key: String::new(),
         srv: ServerId::UNSET,
         pw: 0,
         ph: 0,
@@ -518,10 +499,13 @@ fn store() -> MutexGuard<'static, Store> {
 }
 
 fn key_bytes(s: &Pslot) -> &[u8] {
-    plx_base::cbuf::as_bytes(&s.key)
+    s.key.as_bytes()
 }
+/// Store `key` whole. The slot's `String` keeps its capacity across recycles, so a store that has
+/// warmed up claims a slot without allocating unless a key is longer than any before it in that slot.
 fn set_key(s: &mut Pslot, key: &str) {
-    plx_base::cbuf::set_bytes(&mut s.key, key);
+    s.key.clear();
+    s.key.push_str(key);
 }
 
 // (server, path, w, h, png) → built transcode path, memoised. resolve_tex_wh_on re-derives the key for
@@ -634,15 +618,9 @@ pub(crate) fn resident_art_survives_for_test(sid: ServerId, change: impl FnOnce(
 }
 
 /// The built request path for `(srv, path, w, h, png)` — the store key — memoised. `None` for an
-/// unknown server, an empty path, or a path the slot array cannot hold ([`KEY_MAX`]: a path that
-/// cannot survive the round trip is worse than no path, since the stored key would never equal
-/// the probe that built it and every frame would claim a fresh slot and evict a real poster).
-/// The calling thread's own memo ([`KEY_MEMO`]); the key comes back as a reference count, so the
-/// memo is not borrowed once this returns.
-///
-/// Headroom today, worth stating so a future shape can be judged against it: a headshot key
-/// measures ~177 bytes of the 255 (54 fixed + 89 encoded URL + 34 of token), an ordinary relative
-/// thumb ~140.
+/// unknown server or an empty path. The calling thread's own memo ([`KEY_MEMO`]); the key comes
+/// back as a reference count, so the memo is not borrowed once this returns. There is no length
+/// bound: a slot holds its key whole ([`Pslot::key`]).
 fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option<Rc<str>> {
     if path.is_empty() {
         return None;
@@ -676,10 +654,6 @@ fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option
             transcode_request(c, path, w, h, png)
         })
     });
-    if s.len() > KEY_MAX {
-        warn_key_refused(s.len());
-        return None;
-    }
     Some(s)
 }
 
@@ -710,22 +684,6 @@ fn content_png(url: &str) -> Option<plx_data::hudpacks::Sha> {
 fn transcode_request(c: &plx_plex::plex::Client, path: &str, w: c_int, h: c_int, png: bool) -> String {
     let n = plx_base::surface::render_scale() as i64;
     c.image_transcode_path(path, w as i64 * n, h as i64 * n, png)
-}
-
-/// A refused key logs ONCE per process, with both ceilings and the length that missed them.
-///
-/// The latch is the whole design. This is a per-tile, per-frame path and the memo means a refusal
-/// REPEATS every frame, so an unlatched log would bury `/tmp/plxnative-events.log` — but silence
-/// is the failure `paths.rs` was fixed for (a font fell through to DroidSans while `init_text`
-/// still logged `ok=1`), and a silent refusal here is a tile that is a skeleton forever with
-/// nothing in the one file an issue report is asked for. Once is enough to name the cause.
-fn warn_key_refused(len: usize) {
-    static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if !LOGGED.swap(true, Ordering::Relaxed) {
-        plx_base::eventlog::log(&format!(
-            "posters: REFUSED art key of {len} bytes (slot holds {KEY_MAX}) - tile stays a skeleton"
-        ));
-    }
 }
 
 /// Process-wide counts of the two halves of issue #107's fix: a `P_READY` slot the render cache
@@ -776,10 +734,10 @@ fn interval_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bo
 /// followed by a working re-arm. Those are two different failures a screenshot cannot tell apart,
 /// and this line is what lets a future field report on #107 tell them apart after the fact.
 ///
-/// Throttled for the reason [`warn_key_refused`] gives for its own latch: `unresident` and the
+/// Throttled because `unresident` and the
 /// re-arm branch are both per-tile, per-frame paths, and a fast scroll evicts dozens of keys a
-/// second, so a line per transition would bury `/tmp/plxnative-events.log`. Unlike that latch this
-/// does not go silent after one line — a long session should keep producing fresh readings — so it
+/// second, so a line per transition would bury `/tmp/plxnative-events.log`. It does not go silent
+/// after one line — a long session should keep producing fresh readings — so it
 /// is a minimum-interval throttle (about one second, monotonic so a skewed wall clock never lies
 /// about it) rather than a one-shot. The first call in a process is let through unthrottled, so a
 /// short session still leaves evidence.
@@ -1792,7 +1750,7 @@ fn first_failure(srv: ServerId, cause: ArtFail) -> bool {
 /// naming them is the silence `paths.rs` was fixed for, where a font fell through to DroidSans
 /// while `init_text` still logged `ok=1`.
 ///
-/// **Why it is latched**, exactly as [`warn_key_refused`] is: this is a per-SLOT path and a grid
+/// **Why it is latched**: this is a per-SLOT path and a grid
 /// claims dozens of them at once, so one line per failure would be dozens per screen, and a log
 /// that scrolls itself away is as useless as a silent one.
 ///
@@ -2387,7 +2345,7 @@ mod tests {
         slots[0].ph = 1024;
         assert!(decode_admitted(&slots, 0));
         assert!(!decode_admitted(&slots, 4 * 1024 * 1024));
-        slots[1] = slots[0];
+        slots[1] = slots[0].clone();
         assert!(!decode_admitted(&slots, 0));
         slots[0].state = P_READY;
         assert!(decode_admitted(&slots, 0));
@@ -2397,7 +2355,7 @@ mod tests {
     /// A synthetic headshot URL of the SHAPE the server really returns for a `/hubs/search`
     /// `actor` row: absolute, on Plex's metadata CDN, with a 32-hex digest. A made-up digest
     /// rather than a captured one, so nothing here is a record of who is in anyone's library —
-    /// the LENGTH is what the encoding and the [`KEY_MAX`] headroom are graded on, and it matches.
+    /// the LENGTH is what the encoding is graded on, and it matches.
     const HEADSHOT: &str =
         "https://metadata-static.plex.tv/a/people/0123456789abcdef0123456789abcdef.jpg";
     /// The same, encoded — every `:` and `/` gone, which is the whole reason the PMS photo
@@ -2490,15 +2448,6 @@ mod tests {
         assert!(
             k.ends_with(&format!("&X-Plex-Token={tok}")),
             "the token belongs to the OUTER request: {k}"
-        );
-
-        // The headroom the doc quotes, pinned. A headshot key is the longest shape the store holds
-        // today; if a future one crosses KEY_MAX it is refused rather than truncated (below), so
-        // this failing means artwork silently became skeletons, not that anything corrupted.
-        assert!(
-            k.len() <= KEY_MAX,
-            "a headshot key must fit a slot: {} bytes",
-            k.len()
         );
     }
 
@@ -2640,74 +2589,48 @@ mod tests {
         assert!(!started.still_current(), "the grant moved under the bake");
     }
 
-    /// The cliff absolute URLs brought within sight, and the reason [`poster_key`] gates on
-    /// [`KEY_MAX`] instead of trusting the caller's 352-byte buffer.
-    ///
-    /// `set_key` truncates into [`PT_KEYLEN`]. A truncated key never equals the probe that built
-    /// it, so the slot can never be found again: every frame misses, claims a fresh slot and
-    /// evicts a real poster — the whole store thrashing over one tile, which is far worse than the
-    /// tile simply not loading. The sizes are DERIVED from a probe build rather than written down,
-    /// so this keeps grading the real boundary if the request shape ever changes.
+    /// **#1408.** A Live TV channel logo from a Threadfin tuner is a `wsrv.nl` resizer link with
+    /// the logo's own URL encoded inside it; built into `/photo/:/transcode?…&url=…` it came to
+    /// 326 bytes, and the store's fixed 256-byte key slot refused it, so the tile stayed a
+    /// skeleton while PMS served the image fine. The store keeps the whole request path, so a
+    /// path of any length claims a slot, is stored intact, and is found again by the next draw.
     #[test]
-    fn a_path_too_long_for_a_slot_is_refused_rather_than_truncated() {
-        let (_g, sid, _) = one_server();
-        // Everything around the source, measured: build with a one-character source and subtract
-        // it. The filler is alphanumeric, so it passes through `enc` one byte per byte.
-        let overhead = key_for(sid, "x", 300, 300, 0).len() - 1;
-
-        let exact = key_for(sid, &"a".repeat(KEY_MAX - overhead), 300, 300, 0);
+    fn an_art_path_longer_than_255_bytes_claims_and_keeps_a_slot() {
+        let (_fresh, sid, _) = one_server();
+        plx_ui::card_motion::begin_frame(crate::app::clock::now());
+        let logo = "https://wsrv.nl/?url=https%3A%2F%2Fexample-cdn.invalid%2Fchannels%2Flogos%2Flove-nature-4k%2Flogo-dark-background-transparent-1920x1080.png&w=300&h=450&fit=contain&output=png";
+        let key = key_for(sid, logo, 300, 450, 1);
+        assert!(!key.is_empty(), "the store refused the key: the tile stays a skeleton");
+        assert!(key.len() > 255, "the fixture must exceed the old 255-byte slot: {} bytes", key.len());
+        assert!(is_fetchable(&key), "a long key is still a request the server can answer");
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            g.frame = 1;
+        }
+        assert_eq!(lookup(sid, &key, Touch::Draw).1, Warm::Claimed, "the first draw claims a slot");
+        let claimed: Vec<usize> = store().slots.iter().enumerate()
+            .filter(|(_, s)| s.state == P_WANT && key_bytes(s) == key.as_bytes())
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(claimed.len(), 1, "the slot holds the whole key, not a truncation of it");
+        store().frame = 2;
+        assert_eq!(lookup(sid, &key, Touch::Draw).1, Warm::Known, "the next draw finds the same slot");
         assert_eq!(
-            exact.len(),
-            KEY_MAX,
-            "the fixture must land exactly on the boundary"
+            store().slots.iter().filter(|s| s.state != P_EMPTY).count(),
+            1,
+            "a repeated draw must not claim a second slot (the thrash a truncated key caused)"
         );
-        let mut s = Pslot::ZERO;
-        set_key(&mut s, &exact);
-        assert_eq!(
-            key_bytes(&s),
-            exact.as_bytes(),
-            "a key the gate accepts must survive a slot intact"
-        );
-
-        let over = key_for(sid, &"a".repeat(KEY_MAX - overhead + 1), 300, 300, 0);
-        assert_eq!(
-            over, "",
-            "one byte past what a slot holds must be refused, not handed out"
-        );
-
-        // …because this is what handing it out would have meant. Not a claim about `set_key`, a
-        // claim about `lookup`: the probe it compares against is the FULL string.
-        let would_be = "b".repeat(KEY_MAX + 1);
-        set_key(&mut s, &would_be);
-        assert_ne!(
-            key_bytes(&s),
-            would_be.as_bytes(),
-            "a truncated slot can never match its own probe"
-        );
+        store().slots = [Pslot::ZERO; PT_CAP];
     }
 
-    /// The store's precondition, asserted where it actually lives.
-    ///
-    /// `poster_key` refusing is only half the guarantee: [`lookup`] takes a `&str` from three
-    /// `pub(crate)` entry points that each accept a raw `*const c_char`, so a key built by any
-    /// other route reaches the 256-byte array without passing the producer's gate. Testing
-    /// [`is_fetchable`] directly is the whole reason it was split out — `lookup` itself cannot be
-    /// called from a host test binary (it reaches `gfx::delete_tex`, and nothing here links GL).
+    /// The store's precondition, asserted where it actually lives: [`lookup`] claims no slot for
+    /// an empty key (no request could be built), and length is no part of the answer.
     #[test]
-    fn only_a_key_that_survives_a_slot_is_fetchable() {
+    fn only_an_empty_key_is_unfetchable() {
         assert!(!is_fetchable(""), "an empty key names no request");
-        assert!(
-            is_fetchable("/photo/:/transcode?url=x"),
-            "an ordinary key is fetchable"
-        );
-        assert!(
-            is_fetchable(&"a".repeat(KEY_MAX)),
-            "exactly what a slot holds is still fetchable"
-        );
-        assert!(
-            !is_fetchable(&"a".repeat(KEY_MAX + 1)),
-            "one byte past the array must never claim a slot"
-        );
+        assert!(is_fetchable("/photo/:/transcode?url=x"), "an ordinary key is fetchable");
+        assert!(is_fetchable(&"a".repeat(4096)), "a long key is fetchable");
     }
 
     /// A settled, drawable slot: READY, last touched on frame `frame` with LRU age `use_`.
@@ -3975,7 +3898,7 @@ mod tests {
             "an untouched store fills from the front"
         );
 
-        let mut one_hole = [ready(100, 1); PT_CAP];
+        let mut one_hole: [Pslot; PT_CAP] = std::array::from_fn(|_| ready(100, 1));
         one_hole[40] = Pslot::ZERO;
         assert_eq!(
             victim(&one_hole, 7),
@@ -3983,7 +3906,7 @@ mod tests {
             "an empty slot beats every settled one"
         );
 
-        let mut full = [ready(100, 1); PT_CAP];
+        let mut full: [Pslot; PT_CAP] = std::array::from_fn(|_| ready(100, 1));
         full[17].use_ = 3; // the oldest
         full[52].use_ = 9;
         assert_eq!(
@@ -3993,7 +3916,7 @@ mod tests {
         );
 
         // FAILED is settled too — a 404 must not pin a slot forever.
-        let mut failed = [ready(100, 1); PT_CAP];
+        let mut failed: [Pslot; PT_CAP] = std::array::from_fn(|_| ready(100, 1));
         failed[8] = Pslot {
             state: P_FAILED,
             use_: 1,
@@ -4118,7 +4041,7 @@ mod tests {
     #[test]
     fn a_warmed_slot_is_evicted_before_anything_the_frame_drew() {
         let f: c_uint = 42;
-        let mut slots = [ready(c_uint::MAX - 1, f); PT_CAP]; // 64 tiles this frame drew
+        let mut slots: [Pslot; PT_CAP] = std::array::from_fn(|_| ready(c_uint::MAX - 1, f)); // 64 tiles this frame drew
         slots[31] = ready(0, f.wrapping_sub(1)); // …and one warmed a moment ago
         assert_eq!(
             victim(&slots, f),
@@ -4126,7 +4049,7 @@ mod tests {
             "the prefetched slot is the cheapest to throw away"
         );
 
-        let drawn = [ready(5, f); PT_CAP];
+        let drawn: [Pslot; PT_CAP] = std::array::from_fn(|_| ready(5, f));
         assert_eq!(
             victim(&drawn, f),
             None,
@@ -4135,7 +4058,7 @@ mod tests {
 
         // frame counters wrap (`wrapping_add` in poster_pump), and a warm at frame 0 stamps
         // c_uint::MAX — which must still read as "not this frame" rather than as protection.
-        let mut wrapped = [ready(c_uint::MAX - 1, 0); PT_CAP];
+        let mut wrapped: [Pslot; PT_CAP] = std::array::from_fn(|_| ready(c_uint::MAX - 1, 0));
         wrapped[2] = ready(0, 0u32.wrapping_sub(1));
         assert_eq!(victim(&wrapped, 0), Some(2));
     }
@@ -4146,12 +4069,12 @@ mod tests {
     #[test]
     fn an_in_flight_slot_is_never_evicted() {
         for st in [P_WANT, P_LOADING, P_DECODED] {
-            let slots = [Pslot {
+            let slots: [Pslot; PT_CAP] = std::array::from_fn(|_| Pslot {
                 state: st,
                 use_: 0,
                 frame: 0,
                 ..Pslot::ZERO
-            }; PT_CAP];
+            });
             assert_eq!(victim(&slots, 7), None, "state {st} must not be evictable");
         }
     }
@@ -4194,7 +4117,7 @@ mod tests {
         // slot must be rejected before either is even compared
         let evicted = Pslot {
             state: P_EMPTY,
-            ..s
+            ..s.clone()
         };
         assert!(!same_art(&evicted, a, KEY.as_bytes()));
 
@@ -4300,20 +4223,20 @@ mod tests {
             "an untouched store is idle"
         );
         for st in [P_READY, P_EVICTED, P_FAILED] {
-            let slots = [Pslot {
+            let slots: [Pslot; PT_CAP] = std::array::from_fn(|_| Pslot {
                 state: st,
                 ..Pslot::ZERO
-            }; PT_CAP];
+            });
             assert!(
                 idle_of(&slots),
                 "settled state {st} is not work in progress"
             );
         }
         for st in [P_WANT, P_LOADING, P_DECODED] {
-            let mut slots = [Pslot {
+            let mut slots: [Pslot; PT_CAP] = std::array::from_fn(|_| Pslot {
                 state: P_READY,
                 ..Pslot::ZERO
-            }; PT_CAP];
+            });
             slots[63] = Pslot {
                 state: st,
                 ..Pslot::ZERO
@@ -4432,7 +4355,7 @@ mod tests {
         slots[7].frame = f - WANT_STALE_FRAMES;
         assert_eq!(victim(&slots, f), Some(7));
         // The lookahead's claim obeys the same rule (it had only recency before).
-        assert_eq!(ahead_victim(&[drawn(5, f - 1); PT_CAP], f), None);
+        assert_eq!(ahead_victim(&std::array::from_fn(|_| drawn(5, f - 1)), f), None);
     }
 
     /// The same defect through the store itself: a held scroll whose server answers slower than
@@ -4630,10 +4553,10 @@ mod tests {
         assert_eq!(ahead_victim(&mixed, f), None,
             "below the lookahead cap with every ordinary slot protected: no slot, the warming stops");
         // A drawn-this-frame slot is never a victim, protected or not.
-        let drawn = [ready(1, f); PT_CAP];
+        let drawn: [Pslot; PT_CAP] = std::array::from_fn(|_| ready(1, f));
         assert_eq!(ahead_victim(&drawn, f), None);
         // Empty first.
-        let mut one_hole = [ready(1, 3); PT_CAP];
+        let mut one_hole: [Pslot; PT_CAP] = std::array::from_fn(|_| ready(1, 3));
         one_hole[40] = Pslot::ZERO;
         assert_eq!(ahead_victim(&one_hole, f), Some(40));
     }

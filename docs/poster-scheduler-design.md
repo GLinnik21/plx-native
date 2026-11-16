@@ -52,7 +52,7 @@ Also, [storage_worker.rs](../rust-modules/base/src/storage_worker.rs) already ca
 ### The concrete boundaries we must preserve
 
 * [task.rs](../rust-modules/base/src/task.rs) uses `Builder::spawn` and reports refusal, returning `Option<JoinHandle<()>>` or `bool`. Its documented reason is the panic from `std::thread::spawn` on OS refusal crossing the C entry seam. `spawn_small` chooses 256 KiB; its own contract excludes demux/decode/encode. Poster workers currently use normal `spawn` and must continue to do so. Caller-specific refusal cleanup stays with the caller.
-* The poster store has 64 slots and 256-byte path storage, with `KEY_MAX = 255`; identity is server plus the complete built image path (including size/format and token). Fetch/decode happens off-lock; publication checks slot generation and `P_LOADING`. `P_READY` means handed to the render cache, **not resident**. `drain_decoded` currently copies C pixels into `tex::Decoded`, then `tex::accept` queues them; `prepare` uploads under the frame budget. See `poster.rs::{lookup,poster_worker,drain_decoded}` and [ui/tex.rs](../rust-modules/src/ui/tex.rs).
+* The poster store has 64 slots, each holding its full path whole (a `String`, no length bound since #1408); identity is server plus the complete built image path (including size/format and token). Fetch/decode happens off-lock; publication checks slot generation and `P_LOADING`. `P_READY` means handed to the render cache, **not resident**. `drain_decoded` currently copies C pixels into `tex::Decoded`, then `tex::accept` queues them; `prepare` uploads under the frame budget. See `poster.rs::{lookup,poster_worker,drain_decoded}` and [ui/tex.rs](../rust-modules/src/ui/tex.rs).
 * The main loop calls `begin_frame` and `drain_decoded` before its texture `prepare` path ([app/run.rs](../rust-modules/src/app/run.rs), around lines 327–409). Main-thread retry deadlines use the app clock; workers park transient results without reading that clock. Retry waits are 1, 2, 4, 8, 16, then 30 seconds. Only a draw restarts a due retry; warm requests do not retry failures.
 * `poster_worker` also reads/writes the existing avatar disk cache and may do a `refresh_after` fetch **after publishing pixels**. This still consumes a worker after the slot looks complete. Moreover, on its successful publication path the local `MutexGuard g` has no explicit drop before that refresh block; only the stale-result branch drops it. The new protocol must make the lock scope end before all subsequent I/O. Treat this as a source-level concern requiring a blocked-refresh regression, not a newly measured TV stall.
 * The target constraints are real: [agent-reference.md](agent-reference.md)'s toolchain section specifies glibc 2.12, ARMv7-A / 32-bit ARM; `ui/tex.rs::TEX_RESIDENT_BYTES_MAX` is 44 MiB (scaled by render area at cache construction). The texture budget is not a bound on compressed input, decoder scratch, pending RGBA, or worker stacks.
@@ -86,7 +86,7 @@ enum WorkKind { AcquirePixels, RefreshAvatarFile }
 #[derive(Clone, PartialEq, Eq)]
 struct ImageIdentity {
     server: crate::plex::ServerId,
-    path: Box<str>,                // validated full path, <= existing KEY_MAX
+    path: Box<str>,                // validated full path, any length
 }
 struct ImageRequest {
     id: RequestId,
