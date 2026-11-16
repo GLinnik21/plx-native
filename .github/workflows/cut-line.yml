@@ -1,0 +1,127 @@
+name: Cut a release line
+
+# Every release is cut from a release line, `release/vX.Y`, never from `main`, so `main` keeps taking
+# pull requests while a release stabilizes. This workflow starts a line:
+#
+#   1. It names the line: the next minor (or, with `bump: major`, the next major) after the version
+#      `main`'s files carry. Those files name the last line cut, so `0.11.0` on `main` means
+#      `release/v0.11` exists and the next line is `release/v0.12`.
+#   2. It pushes `release/vX.Y` at `main`'s head, through MAIN_PUSH_KEY, the deploy key the
+#      release-line ruleset lets create the branch. The line carries no `RELEASE_LINE` marker yet,
+#      so until it ships `X.Y.0` its builds report `X.Y.0-dev` (trunk's "next minor" rule, read
+#      from the files it inherited); `X.Y.0`'s release commit adds the marker
+#      (`ci/bump-version.py --line`), and from then on its builds report the next patch.
+#   3. It creates the label `backport release/vX.Y`. A pull request into `main` carrying it is
+#      cherry-picked onto the line when it merges (backport.yml).
+#   4. It opens the pull request that writes `X.Y.0` into `main`'s version files, so `main`'s dev
+#      builds and nightlies report `X.(Y+1).0` from then on and never the version the line is
+#      shipping: one version, one stream, in Sentry, in bug reports and in semver order.
+#
+# Then: release candidates and the release itself are rc.yml and release.yml with `line` set to the
+# new branch. The `cut-release` skill has the whole procedure.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'minor (the usual) or major'
+        type: choice
+        options: [minor, major]
+        default: minor
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cut-line
+  cancel-in-progress: false
+
+jobs:
+  cut:
+    name: cut the release line and move main on
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A line is cut from `main` and nothing else: dispatched on another ref, this would branch the
+    # line off whatever that ref is.
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      pull-requests: write
+      # ci/bot-pr.sh starts CI on the pull request it opens
+      actions: write
+      # the backport label
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          # A new `release/v*` branch is created through the deploy key the release-line ruleset
+          # names as a bypass actor, as release.yml pushes `main` and the lines.
+          ssh-key: ${{ secrets.MAIN_PUSH_KEY }}
+
+      - name: Name the line
+        id: name
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          cur=$(python3 ci/bump-version.py --current)
+          IFS=. read -r major minor _ <<< "$cur"
+          if [ "$BUMP" = major ]; then
+            new="$((major + 1)).0.0"
+          else
+            new="$major.$((minor + 1)).0"
+          fi
+          line="release/v${new%.0}"
+          if git ls-remote --exit-code --heads origin "refs/heads/$line" >/dev/null; then
+            echo "::error::$line already exists."
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/v$new" >/dev/null; then
+            echo "::error::v$new is already released."
+            exit 1
+          fi
+          {
+            echo "version=$new"
+            echo "line=$line"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Push the line
+        env:
+          LINE: ${{ steps.name.outputs.line }}
+        run: |
+          set -euo pipefail
+          git push origin "HEAD:refs/heads/$LINE"
+          echo "cut **$LINE** at $(git rev-parse --short HEAD)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create the backport label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LINE: ${{ steps.name.outputs.line }}
+        run: |
+          gh label create "backport $LINE" --repo "$GITHUB_REPOSITORY" --force --color 1d76db \
+            --description "When merged into main, also cherry-pick onto $LINE (backport.yml)"
+
+      - name: Open the pull request that moves main on
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LINE: ${{ steps.name.outputs.line }}
+          VERSION: ${{ steps.name.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          python3 ci/bump-version.py "$VERSION"
+          git add pkg/appinfo.json ipkroot/ctl/control rust-modules/Cargo.toml rust-modules/Cargo.lock
+          git commit -m "Move main past $VERSION: $LINE is cut"
+          IFS=. read -r major minor _ <<< "$VERSION"
+          {
+            echo "\`$LINE\` was cut from \`main\` at \`$(git rev-parse --short HEAD^)\`; \`$VERSION\` ships from there."
+            echo
+            echo "This writes \`$VERSION\` into \`main\`'s version files, so \`main\`'s dev builds and nightlies report"
+            echo "\`$major.$((minor + 1)).0\` from now on rather than the version the line is shipping."
+            echo
+            echo "A fix that \`$LINE\` needs lands here first, with the \`backport $LINE\` label."
+          } > "$RUNNER_TEMP/body.md"
+          ci/bot-pr.sh main "cut/${LINE#release/}" "Move main past $VERSION: $LINE is cut" "$RUNNER_TEMP/body.md"

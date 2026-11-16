@@ -23,15 +23,19 @@ Usage:
     ci/bump-version.py --current          print the current version and exit
     ci/bump-version.py patch|minor|major  compute the next version and write it
 
-`patch` stays supported here and is NOT what trunk cuts. Development is trunk-based: `main` cuts
-minors and majors, and a patch belongs to an existing minor's own maintenance line —
-`.github/workflows/release.yml` refuses to publish a version that does not end in `.0` when it is
-checking out, tagging and pushing `main` (the default), and enforces the matching `X.Y.N` (`N>=1`)
-rule instead when its `line` dispatch input names a `release/vX.Y` branch to cut a patch from. This
-script itself never reads which line it is running on; the level lives here because that is where
-the arithmetic lives, and the policy is enforced where the release is actually cut.
     ci/bump-version.py 1.2.3              write an explicit version
     ci/bump-version.py patch --dry-run    print what would change, write nothing
+    ci/bump-version.py minor --line release/v1.3
+                                          a RELEASE bump on a release line (release.yml, rc.yml)
+
+Every release is cut from a release line, `release/vX.Y`, never from `main`
+(`.github/workflows/cut-line.yml` makes the line and moves `main` to `X.Y.0`, so `main`'s builds
+report the next minor while the line stabilizes). `--line` names the line this checkout is, and
+refuses a version that line may not publish (`ci/version_rule.py::line_release_error`): a fresh
+line, with no `RELEASE_LINE` marker yet, publishes `X.Y.0`, and this bump writes the marker so every
+build of the line after it reports the next patch; a line with the marker publishes `X.Y.N`,
+`N >= 1`. Without `--line` the script writes what it is told and nothing else, which is how
+cut-line moves `main`.
 
 Exactly three integers, always: LG rejects anything else, and `ci/check-package.py` asserts it.
 There is deliberately no pre-release or build-metadata support — `1.0.0-rc1` is not installable
@@ -45,12 +49,15 @@ import re
 import sys
 from pathlib import Path
 
+import version_rule
+
 ROOT = Path(__file__).resolve().parent.parent
 APPINFO = ROOT / "pkg/appinfo.json"
 CONTROL = ROOT / "ipkroot/ctl/control"
 CARGO_TOML = ROOT / "rust-modules/Cargo.toml"
 CARGO_LOCK = ROOT / "rust-modules/Cargo.lock"
 CRATE = "plxnative-modules"
+RELEASE_LINE = ROOT / "RELEASE_LINE"
 
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
@@ -108,6 +115,7 @@ def main() -> None:
     ap.add_argument("spec", nargs="?", help="patch | minor | major | X.Y.Z")
     ap.add_argument("--current", action="store_true", help="print the current version and exit")
     ap.add_argument("--dry-run", action="store_true", help="report changes without writing")
+    ap.add_argument("--line", help="the release line (release/vX.Y) a release bump is made on")
     a = ap.parse_args()
 
     cur = current()
@@ -128,11 +136,23 @@ def main() -> None:
         # where the answer actually lives.
         sys.exit(f"{new} is lower than the current {cur} — releases only move forwards")
 
-    if new == cur:
+    marker = None
+    if a.line:
+        marker = RELEASE_LINE.read_text() if RELEASE_LINE.exists() else None
+        err = version_rule.line_release_error(new, a.line, marker, cur)
+        if err:
+            sys.exit(f"refusing {new} on {a.line}: {err}")
+
+    changed = [] if new == cur else write(new, a.dry_run)
+    if a.line and marker is None:
+        # The line's first release: from this commit on it is a maintenance line, and every build
+        # of it reports the next patch (`rust-modules/build.rs`, `ci/version_rule.py`).
+        if not a.dry_run:
+            RELEASE_LINE.write_text(a.line.removeprefix("release/v") + "\n")
+        changed.append(str(RELEASE_LINE.relative_to(ROOT)))
+    if not changed:
         print(f"{cur} unchanged — nothing to write")
         return
-
-    changed = write(new, a.dry_run)
     verb = "would update" if a.dry_run else "updated"
     print(f"{cur} -> {new}  ({verb} {len(changed)} files)")
     for c in changed:
