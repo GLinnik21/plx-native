@@ -49,6 +49,12 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   whole. The reason is the history itself: `main` is read by `git log`, by the release audit and by
   `git bisect`, and a trunk of "fix typo" / "wip" / merge commits pollutes all three. Push `main`
   only when the user asked for it.
+- **Releases are cut from release lines, and fixes reach a line from `main`.** `main` never holds
+  a PR back for a release: `cut-line.yml` branches `release/vX.Y` off `main` and moves `main` on,
+  and the release and its candidates ship from that line (the `cut-release` skill). A fix the line
+  needs lands on `main` first with the `backport release/vX.Y` label, and `backport.yml`
+  cherry-picks it into a PR against the line; a line takes squash merges only, like `main`. Never
+  fix only on the line: that is how `release/v0.6` once carried 37 fixes `main` never had.
 - **A diff stat is not a measure of change.** `dec32f2e` ran rustfmt over all of `ui/`, so
   `detail.rs` read +2416 lines for +113 characters of content. `git diff -w` does not rescue it —
   that ignores whitespace *within* a line, not one line split into three. Size a change by content

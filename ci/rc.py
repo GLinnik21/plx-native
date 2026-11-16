@@ -33,12 +33,11 @@ import re
 import subprocess
 import sys
 
+import version_rule
+
 #: Every candidate tag carries this prefix — the filter `plan` lists existing candidates with, and
 #: the reason a candidate is never mistaken for a release (`v…`) or a nightly (`nightly/v…`).
 TAG_PREFIX = "rc/v"
-
-_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
-_LINE = re.compile(r"release/v(\d+)\.(\d+)")
 
 
 def rc_label(version: str, n: int) -> str:
@@ -49,26 +48,18 @@ def rc_tag(label: str) -> str:
     return f"{TAG_PREFIX}{label}"
 
 
-def line_rule_error(version: str, line: str) -> "str | None":
-    """The version/line rule release.yml's `prepare` enforces, asked BEFORE a candidate is cut so a
-    candidate can never be one the release would refuse: trunk (`main`) cuts `X.Y.0`; a maintenance
-    line `release/vX.Y` cuts `X.Y.N` with `N >= 1`. `None` when the pair is one release.yml accepts.
-    """
-    v = _VERSION.fullmatch(version)
-    if not v:
-        return f"{version!r} is not X.Y.Z"
-    major, minor, patch = (int(x) for x in v.groups())
-    if line == "main":
-        return None if patch == 0 else (
-            f"refusing a candidate for {version} from main — trunk releases end in .0; a patch "
-            "belongs to its own release/vX.Y line")
-    m = _LINE.fullmatch(line)
-    if not m:
-        return f"line {line!r} is neither main nor release/vX.Y"
-    if (int(m.group(1)), int(m.group(2))) != (major, minor) or patch < 1:
-        return (f"refusing a candidate for {version} from {line} — a maintenance line publishes "
-                f"{m.group(1)}.{m.group(2)}.N with N>=1")
-    return None
+def line_rule_error(version: str, line: str, marker_content: "str | None") -> "str | None":
+    """The rule release.yml's `prepare` enforces (`ci/version_rule.py::line_release_error`), asked
+    BEFORE a candidate is cut so a candidate can never be one the release would refuse: every
+    release comes from a release line, a fresh one (no `RELEASE_LINE` yet) cuts `X.Y.0` and a
+    released one `X.Y.N` with `N >= 1`. `marker_content` is the line's marker before this bump."""
+    return version_rule.line_release_error(version, line, marker_content)
+
+
+def _head_marker() -> "str | None":
+    """`RELEASE_LINE` as COMMITTED at HEAD, i.e. before this run's own bump wrote one."""
+    r = subprocess.run(["git", "show", "HEAD:RELEASE_LINE"], capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
 
 
 def next_rc(version: str, existing_tags: "list[str]") -> "tuple[int, str | None]":
@@ -95,7 +86,7 @@ def _git(args: "list[str]") -> str:
 
 
 def cmd_plan(version: str, line: str, dry: bool) -> int:
-    err = line_rule_error(version, line)
+    err = line_rule_error(version, line, _head_marker())
     if err and not dry:
         print(f"::error::{err}", file=sys.stderr)
         return 1
@@ -185,13 +176,18 @@ def _selftest() -> int:
 
     check(rc_tag(rc_label("0.8.0", 2)) == "rc/v0.8.0-rc.2", "label and tag shape")
 
-    check(line_rule_error("0.8.0", "main") is None, "main cuts X.Y.0")
-    check(line_rule_error("0.8.1", "main") is not None, "main refuses a patch")
-    check(line_rule_error("0.6.2", "release/v0.6") is None, "a line cuts its own X.Y.N, N>=1")
-    check(line_rule_error("0.6.0", "release/v0.6") is not None, "a line refuses .0")
-    check(line_rule_error("0.7.1", "release/v0.6") is not None, "a line refuses another minor")
-    check(line_rule_error("0.8", "main") is not None, "two components is not a version")
-    check(line_rule_error("0.8.0", "release/0.8") is not None, "a malformed line name")
+    check(line_rule_error("0.8.0", "main", None) is not None, "main cuts no release at all")
+    check(line_rule_error("0.8.0", "release/v0.8", None) is None, "a fresh line cuts X.Y.0")
+    check(line_rule_error("0.8.1", "release/v0.8", None) is not None,
+          "a fresh line cuts nothing but X.Y.0")
+    check(line_rule_error("0.6.2", "release/v0.6", "0.6\n") is None,
+          "a released line cuts its own X.Y.N, N>=1")
+    check(line_rule_error("0.6.0", "release/v0.6", "0.6\n") is not None, "a released line refuses .0")
+    check(line_rule_error("0.7.1", "release/v0.6", "0.6\n") is not None, "a line refuses another minor")
+    check(line_rule_error("0.6.1", "release/v0.6", "0.5\n") is not None,
+          "a marker naming another line is refused")
+    check(line_rule_error("0.8", "release/v0.8", None) is not None, "two components is not a version")
+    check(line_rule_error("0.8.0", "release/0.8", None) is not None, "a malformed line name")
 
     check(next_rc("0.8.0", []) == (1, None), "the first candidate is rc.1")
     tags = ["v0.7.0", "rc/v0.8.0-rc.1", "rc/v0.8.0-rc.2", "rc/v0.7.0-rc.5",
