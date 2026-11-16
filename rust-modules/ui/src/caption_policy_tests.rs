@@ -81,6 +81,9 @@ fn video_and_age_rating_lines() {
     let at = |details| caption_lines(&CaptionPolicy::same(false, details), &f, cx)[1].clone();
     assert_eq!(at(DetailParts::of(&[DetailPart::VideoQuality])).as_deref(), Some("4K \u{b7} HDR"));
     assert_eq!(at(DetailParts::of(&[DetailPart::AgeRating, DetailPart::Score])).as_deref(), Some("PG-13 \u{b7} 7.8"));
+    let dv = CaptionFacts { dolby_vision: true, ..f.clone() };
+    assert_eq!(caption_lines(&CaptionPolicy::same(false, DetailParts::of(&[DetailPart::VideoQuality])), &dv, cx)[1].as_deref(),
+        Some("4K \u{b7} Dolby Vision"), "the detail page's and Home hero's word for it");
     let hd = CaptionFacts { video_resolution: Some("1080".into()), ..Default::default() };
     assert_eq!(caption_lines(&CaptionPolicy::same(false, DetailParts::of(&[DetailPart::VideoQuality])), &hd, cx)[1].as_deref(), Some("1080p"));
 }
