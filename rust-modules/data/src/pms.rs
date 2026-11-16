@@ -2509,8 +2509,10 @@ struct Src {
     adoptable: bool,
     retry_s: f32,
     retry_n: u32,
-    /// A fetch was wanted and the fan-out gate had no room for it. Stays set until the fetch starts,
-    /// so the tick asks again; nothing is dropped.
+    /// A fetch was wanted and the fan-out gate had no room for it, so the tick asks again. Stays set
+    /// until a read for this source goes out (`begin_request`) or what it was deferred for is
+    /// withdrawn: a cancelled or ring-dropped page takes its deferral with it, and only a quiet read
+    /// the gate refused keeps it (`deferred = quiet`).
     deferred: bool,
     /// Rows `(hub id, key)` whose reload failed for good while held; asked again only after the
     /// screen's hold moves. A screen's `HoldBand` sends a band once per about three rows of

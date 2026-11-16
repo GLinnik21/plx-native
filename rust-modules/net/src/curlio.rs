@@ -1166,7 +1166,9 @@ impl<A: UrlAuthorizer> CurlSource<A> {
             *act = Some(Arc::clone(&self.abort));
         }
         self.start_range_until(0, None, deadline, checkpoint)?;
-        // The new transfer answers the old body failure, exactly as a successful `seek` does: HLS
+        // The new transfer answers the old body failure, as a successful `seek` does (that one clears
+        // only `heal_pending` and leaves `failure` masked behind it; `body_failure` reads `None`
+        // after either): HLS
         // reuses one source across segments, and a failure left pinned here would be named by
         // `body_failure` for every later, unrelated stop. Cleared only after the request succeeded,
         // so a refused reopen still reports the cause it was answering.
