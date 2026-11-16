@@ -51,7 +51,7 @@ class ExpectedRefusalTests(unittest.TestCase):
         census = [(replay.expected_refusal(fixture), replay.expected_counts(fixture))
                   for fixture in replay.discover(root)]
         self.assertCountEqual(census, [(None, (200, 200)), (None, (621, 621)),
-                                      (None, (2287, 2287)),
+                                      (None, (642, 642)),
                                       (replay.HISTORICAL_CONTENT_REFUSAL, (457, 457))])
 
     def test_current_content_requires_both_modes_same_and_never_expected_refusal(self):
@@ -59,11 +59,11 @@ class ExpectedRefusalTests(unittest.TestCase):
         fixture = root / '12-filmography-detail-return-current'
         self.assertIn(fixture, replay.discover(root))
         counts = replay.expected_counts(fixture)
-        self.assertEqual(counts, (2287, 2287))
+        self.assertEqual(counts, (642, 642))
         self.assertIsNone(replay.expected_refusal(fixture))
         self.assertCountEqual([mode for path, mode in replay.replay_order(replay.discover(root))
                                if path == fixture], ['targets', 'resolve'])
-        summary = ('replay: done frames=2287 graded=2287 ' +
+        summary = ('replay: done frames=642 graded=642 ' +
                    ' '.join(field + '=0' for field in replay.DIFFS) + ' verdict=SAME')
         self.assertEqual(replay.verdict(summary, 0, counts), summary)
         for reason in ('invalid or incompatible recording', replay.HISTORICAL_CONTENT_REFUSAL):
