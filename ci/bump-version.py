@@ -139,7 +139,7 @@ def main() -> None:
     marker = None
     if a.line:
         marker = RELEASE_LINE.read_text() if RELEASE_LINE.exists() else None
-        err = version_rule.line_release_error(new, a.line, marker)
+        err = version_rule.line_release_error(new, a.line, marker, cur)
         if err:
             sys.exit(f"refusing {new} on {a.line}: {err}")
 

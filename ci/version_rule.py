@@ -109,7 +109,8 @@ def nightly_package_triplet(
 _LINE_NAME = re.compile(r"release/v(\d+)\.(\d+)")
 
 
-def line_release_error(version: str, line: str, marker_content: "str | None") -> "str | None":
+def line_release_error(version: str, line: str, marker_content: "str | None",
+                       current: "str | None" = None) -> "str | None":
     """Whether `version` may be released (or a candidate cut for it) from `line`. Pure.
 
     Every release is cut from a release line, `release/vX.Y`, never from `main`: `main` keeps
@@ -125,6 +126,11 @@ def line_release_error(version: str, line: str, marker_content: "str | None") ->
         version files still name the release `main` was at when the line was cut.
       * marker `X.Y`: the line has shipped `X.Y.0`, and every later release is a patch, `X.Y.N`
         with `N >= 1`.
+
+    `current` is the version the line's files carried before this bump, when the caller knows it
+    (`ci/bump-version.py` does). `X.Y.0` on a line that already has its marker is then allowed when
+    the files already say `X.Y.0`: a re-run whose bump commit was pushed but whose tag push failed.
+    Whether `vX.Y.0` was really released is a question about the tag, which release.yml asks next.
 
     `None` when the pair is allowed, else the reason it is not.
     """
@@ -149,6 +155,6 @@ def line_release_error(version: str, line: str, marker_content: "str | None") ->
     marker = parse_release_line(marker_content)
     if marker != (lx, ly):
         return f"{line}'s RELEASE_LINE marker says {marker_content.strip()!r}, not {lx}.{ly}"
-    if patch < 1:
+    if patch < 1 and version != current:
         return f"{line} already released {lx}.{ly}.0 (RELEASE_LINE is present); its next release is a patch"
     return None

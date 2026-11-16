@@ -74,10 +74,13 @@ def next_rc(version: str, existing_tags: "list[str]") -> "tuple[int, str | None]
     return numbers[-1] + 1, rc_tag(rc_label(version, numbers[-1]))
 
 
-def last_release(release_tags: "list[str]") -> "str | None":
-    """The highest plain `vX.Y.Z` tag — the release a candidate's changes are listed against."""
-    parsed = [(tuple(int(x) for x in m.groups()), t)
-              for t in release_tags if (m := re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", t))]
+def last_release(release_tags: "list[str]", below: "str | None" = None) -> "str | None":
+    """The highest plain `vX.Y.Z` tag — the release a candidate's changes are listed against —
+    below `below` when given: a patch of an older line follows that line's last release, not a newer
+    line's `X.Y.0`."""
+    limit = tuple(int(x) for x in below.split(".")) if below else None
+    parsed = [(v, t) for t in release_tags if (m := re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", t))
+              if (v := tuple(int(x) for x in m.groups())) and (limit is None or v < limit)]
     return max(parsed)[1] if parsed else None
 
 
@@ -102,7 +105,7 @@ def cmd_plan(version: str, line: str, dry: bool) -> int:
     print(f"label={label}")
     print(f"tag={rc_tag(label)}")
     print(f"prev_tag={prev or ''}")
-    print(f"base_tag={last_release(tags) or ''}")
+    print(f"base_tag={last_release(tags, below=version) or ''}")
     return 0
 
 
@@ -202,6 +205,8 @@ def _selftest() -> int:
     check(last_release(["v0.6.1", "v0.10.0", "v0.9.3", "rc/v0.11.0-rc.1", "nightly/v1.0.0-x"]) == "v0.10.0",
           "the last release is the highest plain vX.Y.Z, compared numerically")
     check(last_release(["rc/v0.1.0-rc.1"]) is None, "no release yet")
+    check(last_release(["v0.11.0", "v0.12.0", "v0.11.1"], below="0.11.2") == "v0.11.1",
+          "a patch of an older line is listed against that line's last release, not a newer line's")
 
     body = render_notes(label="0.8.0-rc.2", sha="abc1234def" + "0" * 30, base_tag="v0.7.0",
                         prev_tag="rc/v0.8.0-rc.1", ipk="plxnative-v0.8.0-rc.2.ipk",

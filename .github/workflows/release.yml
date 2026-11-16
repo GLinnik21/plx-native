@@ -229,9 +229,15 @@ jobs:
             rest="${version#*.}"
             minor="${rest%%.*}"
             line="release/v$major.$minor"
-            if ! git ls-remote --exit-code --heads "${{ github.server_url }}/${{ github.repository }}" "refs/heads/$line" >/dev/null; then
-              line=main
-            fi
+            # exit 2 is "no such branch" (`--exit-code`); anything else is a failed lookup, and
+            # guessing `main` then would commit the audit straight to it.
+            found=0
+            git ls-remote --exit-code --heads "${{ github.server_url }}/${{ github.repository }}" "refs/heads/$line" >/dev/null || found=$?
+            case "$found" in
+              0) ;;
+              2) line=main ;;
+              *) echo "::error::could not look up $line (git ls-remote exit $found)"; exit 1 ;;
+            esac
           fi
           echo "line=$line" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -47,6 +47,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          # Pushed through the deploy key, not the workflow token: GitHub refuses a GITHUB_TOKEN push
+          # of a commit that touches `.github/workflows/`, and a CI fix is exactly what a line needs
+          # backported. A deploy-key push of a `backport/*` branch starts no workflow (ci.yml's
+          # `push` trigger names `main` and `release/v*` only); ci/bot-pr.sh dispatches CI itself.
+          ssh-key: ${{ secrets.MAIN_PUSH_KEY }}
 
       - name: Cherry-pick and open the pull requests
         env:
@@ -57,10 +62,15 @@ jobs:
           NUMBER: ${{ github.event.pull_request.number }}
           SHA: ${{ github.event.pull_request.merge_commit_sha }}
           TITLE: ${{ github.event.pull_request.title }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           git config user.name  'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
+          # `main`'s copy, taken before the loop checks a line out: a line cut before the script
+          # existed has none, and a later one may carry an older copy.
+          bot_pr="$RUNNER_TEMP/bot-pr.sh"
+          cp ci/bot-pr.sh "$bot_pr"
           # Closing acts on every backport label; a label added after the merge acts on that one only,
           # so labelling a second line later does not reopen the first.
           if [ "$ACTION" = labeled ]; then
@@ -86,6 +96,13 @@ jobs:
             git fetch origin "$line"
             git checkout -B "$branch" "origin/$line"
             if ! git cherry-pick -x "$SHA"; then
+              if [ -z "$(git status --porcelain --untracked-files=no)" ]; then
+                # Nothing to pick: the line already has this change (an empty cherry-pick).
+                git cherry-pick --abort || git cherry-pick --skip || true
+                gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+                  --body "Backport to \`$line\`: the line already has this change, so there is nothing to backport."
+                continue
+              fi
               git cherry-pick --abort
               {
                 echo "Backport to \`$line\` did not apply cleanly, so no pull request was opened. To do it by hand:"
@@ -102,6 +119,10 @@ jobs:
             fi
             printf 'Backport of #%s to `%s`: `git cherry-pick -x %s`.\n' "$NUMBER" "$line" "${SHA:0:12}" \
               > "$RUNNER_TEMP/body.md"
-            ci/bot-pr.sh "$line" "$branch" "[${line#release/}] $TITLE" "$RUNNER_TEMP/body.md"
+            if ! "$bot_pr" "$line" "$branch" "[${line#release/}] $TITLE" "$RUNNER_TEMP/body.md"; then
+              gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --body "Backport to \`$line\`: the cherry-pick applied, but pushing it or opening the pull request failed. See $RUN_URL"
+              failed=1
+            fi
           done <<< "$(printf '%b' "$wanted")"
           exit "$failed"
