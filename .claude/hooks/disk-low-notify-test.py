@@ -372,8 +372,29 @@ def main():
         rig = Rig(free=4 * GIB, env={"PLX_DISK_NOTIFY_STATE": os.path.join(blocker, "sub")})
         check(rig.run(post()) is not None and rig.run(post(), now=NOW + 1) is not None,
               "unwritable state dir: no exception; the note is given every time (the safe side)")
+        # state and stamp are written to a temp file and renamed over, so a concurrent reader never sees a truncation
         rig = Rig(free=4 * GIB)
-        old = os.path.join(rig.env["PLX_DISK_NOTIFY_STATE"], "old-session.json")
+        rig.run(post())
+        directory = rig.env["PLX_DISK_NOTIFY_STATE"]
+        state_file = os.path.join(directory, "s1.json")
+        stamp_file = os.path.join(directory, notify.STAMP)
+        before = (os.stat(state_file).st_ino, os.stat(stamp_file).st_ino)
+        rig.run(post(), now=NOW + 31 * 60)
+        check(len(rig.launches) == 2 and (os.stat(state_file).st_ino, os.stat(stamp_file).st_ino)[0] != before[0]
+              and os.stat(stamp_file).st_ino != before[1],
+              "state and stamp: replaced by a new file (a new inode), not truncated in place")
+        check([n for n in os.listdir(directory) if n.endswith(".tmp")] == [], "state and stamp: no temp file left behind")
+        target = os.path.join(tmp, "target-is-a-directory")
+        os.makedirs(target)
+        try:
+            notify.write_atomic(target, "x", NOW)
+            raised = False
+        except OSError:
+            raised = True
+        check(raised and [n for n in os.listdir(tmp) if n.endswith(".tmp")] == [],
+              "write_atomic: a failing rename raises and removes its temp file")
+        rig = Rig(free=4 * GIB)
+        old =os.path.join(rig.env["PLX_DISK_NOTIFY_STATE"], "old-session.json")
         os.makedirs(rig.env["PLX_DISK_NOTIFY_STATE"])
         open(old, "w").write("{}")
         os.utime(old, (NOW - 4 * 86400, NOW - 4 * 86400))

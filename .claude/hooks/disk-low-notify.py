@@ -37,10 +37,11 @@ The phrases are matched in `error` only, never in `tool_input` and never in a su
 THROTTLE. One note per level per session (a subagent has its own key, its context is separate), again only
 if free space fell by 5 GiB since that level's last note or 30 minutes passed. A critical note fires its
 first time even after a low one, and counts as the low one too. State is a small JSON file per session in
-`${TMPDIR:-/tmp}/plxnative-disk-notify/` (`$PLX_DISK_NOTIFY_STATE` names another directory). The reclaim is
-started only when a note is, and at most once per 10 minutes machine-wide (a stamp file in the same
+`${TMPDIR:-/tmp}/plxnative-disk-notify/` (`$PLX_DISK_NOTIFY_STATE` names another directory), written to a
+temp file and renamed over, so a concurrent call never reads a truncated one. The reclaim is started only
+when a low or critical note is, and at most once per 10 minutes machine-wide (a stamp file in the same
 directory); `build-gc.sh --auto` also takes its own single-instance mkdir lock, so a second copy that gets
-through exits quietly. On a volume at 0 bytes the state and stamp may not be writable: the note is then
+through exits quietly. On a volume at 0 bytes the temp file may not be creatable: the note is then
 given on every call and the reclaim started on every call (the script's lock absorbs it). That is the right
 side to fail on.
 
@@ -217,9 +218,7 @@ def ensure_gc(env, root, now, directory, launcher):
     argv, cwd = command
     try:
         os.makedirs(directory, exist_ok=True)
-        with open(stamp, "w") as f:
-            f.write("%d\n" % now)
-        os.utime(stamp, (now, now))
+        write_atomic(stamp, "%d\n" % now, now)
     except OSError:
         pass                              # cannot dedupe here; build-gc.sh's own lock still holds
     try:
@@ -256,17 +255,32 @@ def load_state(path):
         return {}
 
 
+def write_atomic(path, text, now):
+    """Write `text` to a temp file beside `path`, then `os.replace` it over: a concurrent reader (another Bash
+    call's hook) sees the old file or the new one, never a truncated one. File times follow the hook's clock."""
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    try:
+        with open(tmp, "w") as f:
+            f.write(text)
+        os.utime(tmp, (now, now))
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def save_state(directory, path, state, now):
     """Best effort: an unwritable state only means the next call speaks again."""
     import json
     try:
         os.makedirs(directory, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(state, f)
-        os.utime(path, (now, now))           # file times follow the hook's clock, as the stamp's do
+        write_atomic(path, json.dumps(state), now)
         for name in os.listdir(directory):
             old = os.path.join(directory, name)
-            if name.endswith(".json") and old != path and now - os.path.getmtime(old) > STATE_MAX_AGE_SECONDS:
+            if name.endswith((".json", ".tmp")) and old != path and now - os.path.getmtime(old) > STATE_MAX_AGE_SECONDS:
                 os.unlink(old)
     except OSError:
         pass
