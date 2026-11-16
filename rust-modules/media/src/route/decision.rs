@@ -4112,8 +4112,8 @@ fn finish_encoder_cleanup_check(
     }
 }
 
-/// The claim `take_unchecked` made on one cleanup record. If the observation unwinds (or the
-/// worker is torn down) before it publishes, dropping this releases the claim without a verdict,
+/// The claim `take_unchecked` made on one cleanup record. If the observation unwinds (panics)
+/// before it publishes, dropping this releases the claim without a verdict,
 /// so `checking` cannot stay set for the process and defer every later ABR trial on that server.
 struct EncoderCleanupClaim {
     check: Option<EncoderCleanupCheck>,
