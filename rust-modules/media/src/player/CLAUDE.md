@@ -431,6 +431,31 @@ something.
     `Prepared` (the candidate's projection and remux follow the rebuilt stream), a refusal as
     `OriginalTrial(Failed)`, a second suspend as `Prepared`; a failed open of the rebuilt Original
     still rolls back to the retained HLS. A trial that is `Starting` or `AwaitingFrame` is refused.
+- **A starved direct-play (progressive) stream is HELD and reads Buffering, like a starved HLS one**
+  (`feed_pump::maybe_begin_rebuffer`, `PlayerAdapter` -> `HoldRoute`). SCRATCH BUILD
+  `diag/progressive-v5-hold` (plan v5 W1, never merged): direct play has no rungs and no segments,
+  so nothing but the sink's late-frame drop used to answer a link that stopped delivering. The hold
+  is the HLS hold's own machine (`ClockHold::ProgressiveRebuffer`, the same Pause,
+  `hls_rebuffering` mirror and `try_prime` Play) with its own certificate. It begins on one of two
+  arms: the CLOCK DEBT (`plx_playback_contract::clock_debt::ClockDebt`, a Page CUSUM of
+  `wall advance - position advance` stepped once per native position callback, reset while the app
+  video queue holds more than the gate; fires at `S >= h`) or a stopped native clock over a remnant it
+  will never spend (`native_clock_stopped`, over `progressive_reserve_ns`, the FURTHER lane). There is
+  no reserve floor and no arming latch. `k`, `h`, the gate and a hold headroom are read from the
+  `diag-hold` developer trigger at Load (`play-feed/src/diag_hold.rs`, scratch only). It never
+  holds a trailer preview, the looped `Source::Sample`, a viewer Pause, a seek, the first picture,
+  a non-1x rate, or a stream whose demuxer is done; under Auto (`HoldRoute::ProgressiveSupervised`,
+  an Original watch exists) the trigger's `auto_hold` decides. It releases on the first of the end of
+  the stream (`reason=eof`; `pushEOS` follows once the video lane drains) or a full video queue
+  (`reason=full`: the capped queue is the reserve the stream played with when healthy). The hold
+  line carries `n`, `arm`, `S`, `debt_since_reset`, `pos`, `vtail`, `atail`, `qv`, `qa`, `reserve`,
+  `silent` and the knobs; the resume line `n`, `reason`, `held`, `reserve`, `qv`, `hold_arm`,
+  `hold_S` and `hold_debt_since_reset`. A viewer Resume inside a hold stays held (the hold's own
+  certificate plays it). The Auto watchdog (`OriginalQuantum`) reads the same inputs it always did;
+  the hold raises neither the viewer's pause nor a seek. What a hold does to the watchdog's exits
+  is plan v5's T2b question, not settled here.
+  `progressive_rebuffer_pump_tests.rs` drives the whole chain through the real `pump()` (its rig
+  stamps the position callbacks with a virtual wall, `Rig::with_virtual_wall`).
 - **The k5lp/k3lp sandbox preflight refuses native playback when `/dev/rtkmem` is unreadable.**
   The device fact is cached at boot, while the refusal belongs to `PlaybackSession` and clears
   on exit. Explicit Repair confirmation spends `Player.repair` once for the whole app lifetime;

@@ -28,7 +28,7 @@ use std::time::Duration;
 // The verdict types a tick returns are contract vocabulary (`plx_playback_contract::feed`); the
 // old paths stay for this crate's own code.
 pub use plx_playback_contract::feed::{
-    CtorGate, LoadTick, LoadTimeout, PausedSeekStep, PresentationTick, SeekPause, StuckSeekAction,
+    CtorGate, HoldRoute, LoadTick, LoadTimeout, PausedSeekStep, PresentationTick, SeekPause, StuckSeekAction,
 };
 
 pub struct LoadGate {
@@ -905,10 +905,10 @@ pub const NATIVE_CLOCK_STOPPED_MS: u32 = NATIVE_POSITION_PERIOD_MS * NATIVE_CLOC
 
 /// When the silence observation was last restarted, in [`crate::shared::vclock_ms`] milliseconds.
 ///
-/// Every state that legitimately stops the native clock — user Pause, an internal rebuffer hold,
-/// a stage below `Playing`, a route that is not segmented HLS — restarts it, because otherwise a
-/// viewer who paused for a minute would resume straight into an internal hold. Main-thread only;
-/// an atomic merely to avoid a `static mut`.
+/// Every state that legitimately stops the native clock — user Pause, an internal rebuffer hold
+/// (segmented HLS or progressive), a stage below `Playing`, a stream that is never held (a trailer
+/// preview, a looped sample) — restarts it, because otherwise a viewer who paused for a minute would
+/// resume straight into an internal hold. Main-thread only; an atomic merely to avoid a `static mut`.
 pub static CLOCK_WATCH_SINCE_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Everything that stops the clock on purpose restarts the silence observation with it.
@@ -932,6 +932,70 @@ pub fn native_clock_silence_ms() -> Option<u32> {
     Some(crate::shared::vclock_ms().saturating_sub(since))
 }
 
+/// W0-DIAG (scratch branch only, never merged): observation-only. One `W0D` line at most every 190 ms
+/// of the monotonic clock (about 5 Hz), from EVERY tick whatever the begin rule would decide, so the
+/// W0 report can compute any candidate signal offline. `t` is `vclock_ms` (monotonic), `wall` is the
+/// unix ms of the TV's own clock (offset to the host measured per run); the lane fields are raw so
+/// the report derives tails, leads and reserve itself; `disp`/`drop` are frame counts from the
+/// sink counters since the previous W0D line.
+fn w0_diag_sample(eng: &mut Engine, route: HoldRoute) {
+    use std::sync::atomic::{AtomicU32, AtomicU64};
+    static LAST_MS: AtomicU32 = AtomicU32::new(0);
+    static LAST_DISP: AtomicU64 = AtomicU64::new(0);
+    static LAST_DROP: AtomicU64 = AtomicU64::new(0);
+    let now = crate::shared::vclock_ms();
+    if now.wrapping_sub(LAST_MS.load(Relaxed)) < 190 {
+        return;
+    }
+    LAST_MS.store(now, Relaxed);
+    let disp_total = crate::sf_event::W0_DISPLAYED.load(Relaxed);
+    let drop_total = crate::sf_event::W0_DROPPED.load(Relaxed);
+    let disp = disp_total.wrapping_sub(LAST_DISP.swap(disp_total, Relaxed));
+    let drop_ = drop_total.wrapping_sub(LAST_DROP.swap(drop_total, Relaxed));
+    let vq = eng.aq_video.as_mut().map_or(std::ptr::null_mut(), |q| &mut **q as *mut crate::aq::AuQueue);
+    let aq = eng.aq_audio.as_mut().map_or(std::ptr::null_mut(), |q| &mut **q as *mut crate::aq::AuQueue);
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    let vat = FEED_SHARED.dg_vpres_at.load(Relaxed);
+    log(&format!(
+        "W0D base=hold t={now} wall={wall} pos={} vfed={} afed={} vspan={} aspan={} qv={} qa={} vpark={} apark={} \
+         sil={} vat={vat} disp={disp} drop={drop_} vpres={} frames={} paused={} prime={} stage={:?} seek={} \
+         body_bytes={} body_active_us={} buffered_ms={} dvtail={} datail={} debt={} S_us={} debt_us={} hold={} holds={} route={route:?}",
+        FEED_SHARED.pres_fed.load(Relaxed),
+        eng.max_fed_video_pts,
+        eng.max_fed_audio_pts,
+        crate::aq::aq_span_ns(vq),
+        crate::aq::aq_span_ns(aq),
+        crate::aq::aq_bytes(vq),
+        crate::aq::aq_bytes(aq),
+        crate::aq::aq_would_park(vq) as u8,
+        crate::aq::aq_would_park(aq) as u8,
+        native_clock_silence_ms().map_or(-1, i64::from),
+        FEED_SHARED.dg_vpres_ct.load(Relaxed),
+        FEED_SHARED.frames.load(Relaxed),
+        FEED_TX.paused.load(Relaxed) as u8,
+        eng.prime_play as u8,
+        eng.stage,
+        (FEED_TX.seek_to_ns.load(Relaxed) >= 0) as u8,
+        crate::diag_hold::DIAG_BODY_BYTES.load(Relaxed),
+        crate::diag_hold::DIAG_BODY_ACTIVE_US.load(Relaxed),
+        crate::diag_hold::DIAG_BUFFERED_MS.load(Relaxed),
+        crate::diag_hold::DIAG_VTAIL_NS.load(Relaxed),
+        crate::diag_hold::DIAG_ATAIL_NS.load(Relaxed),
+        match eng.debt_watch.debt {
+            plx_playback_contract::clock_debt::ClockDebt::Ineligible => "inelig",
+            plx_playback_contract::clock_debt::ClockDebt::Watching { .. } => "watch",
+            plx_playback_contract::clock_debt::ClockDebt::Fired { .. } => "fired",
+        },
+        eng.debt_watch.debt.s_us(),
+        eng.debt_watch.debt.debt_since_reset_us(),
+        FEED_SHARED.hls_rebuffering.load(Relaxed) as u8,
+        eng.debt_watch.holds,
+    ));
+}
+
+
 /// **The terminal reserve boundary as a PHYSICAL fact rather than an arithmetic one.**
 ///
 /// `hls_buffered_ms` is content-time bookkeeping: the demuxed tail minus the playhead. It reaches
@@ -953,7 +1017,7 @@ pub fn native_clock_silence_ms() -> Option<u32> {
 /// boundary, so a stream holding 5.6 s whose callback is 1.2 s late keeps playing and only a
 /// reserve the stopped clock has already outlasted counts. An unknowable reserve (`None`, the
 /// audio lane silent after an open or a seek) holds nothing, exactly as it arms no `StallGuard`.
-/// User Pause never reaches here — [`maybe_begin_hls_rebuffer`] returns before this on
+/// User Pause never reaches here — [`maybe_begin_rebuffer`] returns before this on
 /// `FEED_TX.paused` and restarts the observation — and an internal hold cannot re-arm, because the
 /// hold sets `prime_play`, which returns at the same place.
 pub fn native_clock_stopped(silence_ms: Option<u32>, buffered_ms: Option<i64>) -> bool {
@@ -989,6 +1053,83 @@ pub fn should_begin_hls_rebuffer(
     requested || buffered_ms == Some(0) || native_clock_stopped
 }
 
+/// The states of a PROGRESSIVE (direct play) stream in which its native clock is, or is about to be,
+/// stopped or re-timed by something other than starvation, as plain values the pump samples each
+/// tick. While any holds, nothing is judged: the clock-debt watch resets and the silence
+/// observation restarts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProgressiveStall {
+    /// The viewer paused: the clock is stopped on purpose.
+    pub user_paused: bool,
+    /// A prime owns the clock (`prime_play`): a seek, the first Play, or an earlier hold.
+    pub priming: bool,
+    /// A seek is armed, rebasing, landing or counted as in flight.
+    pub seek_in_flight: bool,
+    /// The session has put a picture on the panel; before that nothing can stall.
+    pub first_picture_seen: bool,
+    /// The demuxer finished: a hold could never be released by arriving media.
+    pub producer_done: bool,
+    /// The Dolby Vision landing guard holds the landing keyframe for its reload
+    /// ([`crate::dv_start::Guard::landing_held`]): neither lane feeds, so the reserve it leaves is
+    /// the guard's doing and the Engine is about to be replaced.
+    pub landing_held: bool,
+}
+
+impl ProgressiveStall {
+    /// The clock is, or is about to be, stopped by something other than starvation.
+    pub fn clock_stopped_on_purpose(&self) -> bool {
+        self.user_paused
+            || self.priming
+            || self.seek_in_flight
+            || !self.first_picture_seen
+            || self.producer_done
+            || self.landing_held
+    }
+}
+
+/// Has a native position callback landed after the silence observation was last restarted
+/// (`CLOCK_WATCH_SINCE_MS`, restarted by every state that stops the clock on purpose)? Both are
+/// [`crate::shared::vclock_ms`] milliseconds, so the comparison is wrapping. Silence only means a
+/// STOPPED clock once the clock has been heard from since its Play; without this a hold that
+/// releases on a short runway would read the first second of its own resume as a dead clock.
+pub fn tick_since_watch_restart(last_tick_ms: u32, watch_since_ms: u32) -> bool {
+    last_tick_ms != 0 && (last_tick_ms.wrapping_sub(watch_since_ms) as i32) > 0
+}
+
+/// Begin a hold on a PROGRESSIVE stream (plan v5 D1): the clock debt fired (the position callback
+/// has fallen behind the wall while the app's video queue is empty,
+/// [`plx_playback_contract::clock_debt::ClockDebt`]), or the native clock has physically stopped
+/// over a remnant it will never spend ([`native_clock_stopped`], the HLS hold's own
+/// coefficient-free observation, unchanged). Beside [`should_begin_hls_rebuffer`]; the caller has
+/// already excluded every state that stops the clock on purpose.
+pub fn should_begin_progressive_rebuffer(debt_fired: bool, native_clock_stopped: bool) -> bool {
+    debt_fired || native_clock_stopped
+}
+
+/// The rule [`maybe_begin_rebuffer`] applies to the stream this tick, if any.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RebufferRule {
+    /// Segmented HLS: its worker's request or its measured reserve.
+    SegmentedHls,
+    /// A streamed direct-play file: the clock debt or a stopped clock
+    /// ([`should_begin_progressive_rebuffer`]).
+    Progressive,
+}
+
+/// Which streams are ever held. A trailer preview is not (its stall ends the preview, never the
+/// player's read-out), and neither is the looped local sample (`source_is_stream` false): it has no
+/// AU queues and nothing a link could starve, and a hold on it would never release. A direct-play
+/// stream the Auto supervisor watches is held only if the scratch policy says so (`auto_hold`,
+/// [`crate::diag_hold`]: plan v5 D4's T2b-failed fallback is `false`).
+fn rebuffer_rule(route: HoldRoute, source_is_stream: bool, auto_hold: bool) -> Option<RebufferRule> {
+    match route {
+        HoldRoute::Preview => None,
+        HoldRoute::SegmentedHls => Some(RebufferRule::SegmentedHls),
+        HoldRoute::Progressive => source_is_stream.then_some(RebufferRule::Progressive),
+        HoldRoute::ProgressiveSupervised => (source_is_stream && auto_hold).then_some(RebufferRule::Progressive),
+    }
+}
+
 pub fn rebuffer_request_is_current(
     requested: bool,
     requested_tail_ns: i64,
@@ -1000,16 +1141,26 @@ pub fn rebuffer_request_is_current(
 /// Stop the INTERNAL A/V clock at a physical reserve boundary while leaving demux and feeding
 /// alive. This is intentionally not `FEED_TX.paused`: the viewer did not pause, and the whole point is
 /// to keep acquiring until `try_prime` sees enough measured runway to resume smoothly.
-fn maybe_begin_hls_rebuffer(segmented_hls: bool, mt: &MainThread, eng: &mut Engine, hooks: &NativeHooks) {
-    if !segmented_hls
-        || eng.stage < Stage::Playing
-        || eng.prime_play
-        || FEED_TX.paused.load(Relaxed)
-    {
+///
+/// Segmented HLS holds on its worker's request or its measured reserve; a progressive (direct play)
+/// stream holds on the same two coefficient-free observations of its own ([`ProgressiveStall`]).
+/// Both take the same Pause, show the same Buffering state, and are released by the same
+/// `try_prime`, each against its own certificate of fresh media.
+fn maybe_begin_rebuffer(route: HoldRoute, mt: &MainThread, eng: &mut Engine, hooks: &NativeHooks) {
+    let Some(rule) = rebuffer_rule(route, matches!(eng.source, Source::Stream), eng.debt_watch.cfg.auto_hold) else {
+        restart_native_clock_watch();
+        return;
+    };
+    if eng.stage < Stage::Playing || eng.prime_play || FEED_TX.paused.load(Relaxed) {
         // Each of these legitimately stops the native clock, so none of them may be read later as
         // a stalled one: a viewer paused for a minute must resume into playback, not into an
         // instant internal hold, and the tick after this hold releases must start counting again.
         restart_native_clock_watch();
+        eng.debt_watch.reset();
+        return;
+    }
+    if rule == RebufferRule::Progressive {
+        maybe_begin_progressive_rebuffer(mt, eng, hooks);
         return;
     }
     // Consume atomically: a worker request racing this tick must either be the value returned here
@@ -1093,6 +1244,131 @@ fn maybe_begin_hls_rebuffer(segmented_hls: bool, mt: &MainThread, eng: &mut Engi
 }
 
 
+/// The progressive half of [`maybe_begin_rebuffer`]: sample the stream, decide purely
+/// ([`should_begin_progressive_rebuffer`]), and issue the hold's Pause.
+///
+/// Two arms (plan v5 D2). (a) The clock debt: stepped once per native position callback with the
+/// callback's own wall ms and position and the app video queue's bytes
+/// ([`plx_playback_contract::clock_debt::ClockDebt`]). (b) The dead link: [`native_clock_stopped`]
+/// over the FURTHER lane's reserve ([`crate::native_executor::progressive_reserve_ns`]), because
+/// the callbacks stop when the clock stops and the debt step then sees no sample. An audio lane
+/// that never opened (`max_fed_audio_pts` still 0) cannot be the further one, so a late-audio file
+/// is not held for audio that has not begun, and a lane that legitimately ends early is not
+/// starvation. No reserve floor and no arming latch.
+fn maybe_begin_progressive_rebuffer(mt: &MainThread, eng: &mut Engine, hooks: &NativeHooks) {
+    use crate::native_executor::{progressive_reserve_ns, LaneTail};
+    use plx_playback_contract::clock_debt::DebtSample;
+    let queue = |q: &mut Option<Box<crate::aq::AuQueue>>| {
+        q.as_mut().map_or(std::ptr::null_mut(), |q| &mut **q as *mut crate::aq::AuQueue)
+    };
+    let vq = queue(&mut eng.aq_video);
+    let aq = queue(&mut eng.aq_audio);
+    let video = LaneTail {
+        fed_ns: eng.max_fed_video_pts,
+        queued_ns: crate::aq::aq_span_ns(vq),
+    };
+    let audio = LaneTail {
+        fed_ns: eng.max_fed_audio_pts,
+        queued_ns: crate::aq::aq_span_ns(aq),
+    };
+    // The callback counter first (Acquire): the callback stores its time and position before
+    // bumping it, so the reads below belong to that callback.
+    let pos_ticks = FEED_SHARED.dg_pos_ticks.load(Acquire);
+    let position_ns = FEED_SHARED.pres_fed.load(Relaxed);
+    let callback_ms = FEED_SHARED.dg_vpres_at.load(Relaxed);
+    let reserve_ms = progressive_reserve_ns(position_ns, video, Some(audio)).map(|ns| ns / 1_000_000);
+    let facts = ProgressiveStall {
+        user_paused: FEED_TX.paused.load(Relaxed),
+        priming: eng.prime_play,
+        seek_in_flight: FEED_TX.seek_to_ns.load(Relaxed) >= 0
+            || eng.rebase_pending
+            || eng.segment_landing.is_some()
+            || eng.presentation_rearm_pending
+            || FEED_SHARED.seeking.load(Relaxed),
+        first_picture_seen: FEED_SHARED.seen_frame.load(Relaxed),
+        producer_done: crate::aq::aq_producer_done(vq),
+        landing_held: eng.dv_start.landing_held(),
+    };
+    if facts.clock_stopped_on_purpose() {
+        restart_native_clock_watch();
+        eng.debt_watch.reset();
+        return;
+    }
+    // (a) the debt: one step per native position callback, at the unity rate only (the position
+    // advances at the rate otherwise, not at the wall).
+    let unity = FEED_SHARED.applied_rate_permille.load(Relaxed) == plx_playback_contract::RATE_NORMAL
+        && position_ns != PRES_NONE;
+    if !unity {
+        eng.debt_watch.reset();
+        eng.debt_watch.seen_pos_ticks = pos_ticks;
+    } else if pos_ticks != eng.debt_watch.seen_pos_ticks {
+        eng.debt_watch.seen_pos_ticks = pos_ticks;
+        let sample = DebtSample {
+            wall_ms: callback_ms,
+            pos_ns: position_ns,
+            video_queue_bytes: crate::aq::aq_bytes(vq).max(0) as usize,
+            eligible: true,
+        };
+        eng.debt_watch.debt = eng.debt_watch.debt.step(&eng.debt_watch.cfg.params, sample);
+    }
+    let debt_fired = eng.debt_watch.debt.fired();
+    // (b) the dead link, over the reserve of the further lane.
+    let presented_since_play = tick_since_watch_restart(callback_ms, CLOCK_WATCH_SINCE_MS.load(Relaxed));
+    let silence_ms = native_clock_silence_ms();
+    let stopped = native_clock_stopped(if presented_since_play { silence_ms } else { None }, reserve_ms);
+    if !should_begin_progressive_rebuffer(debt_fired, stopped) {
+        return;
+    }
+    let Some(pause_token) = FEED_SHARED.prepare_progressive_rebuffer_pause(crate::shared::vclock_ms())
+    else {
+        return; // the clock is mid-transition; the next tick looks again
+    };
+    let paused = unsafe { (hooks.feed.sink)().pause(mt) };
+    match FEED_SHARED.complete_hls_rebuffer_pause(pause_token, paused != 0) {
+        HlsPauseCompletion::Accepted => {}
+        HlsPauseCompletion::Refused => {
+            log("feed: progressive rebuffer pause refused by Starfish; will retry");
+            return;
+        }
+        HlsPauseCompletion::Stale => {
+            log("feed: progressive rebuffer pause result was stale; will retry");
+            return;
+        }
+    }
+    arm_live_clock_prime(eng);
+    let arm = match (debt_fired, stopped) {
+        (true, true) => "both",
+        (true, false) => "debt",
+        _ => "silence",
+    };
+    let w = &mut eng.debt_watch;
+    w.hold_s_us = w.debt.s_us();
+    w.hold_debt_us = w.debt.debt_since_reset_us();
+    w.hold_arm = arm;
+    w.holds += 1;
+    w.reset();
+    let headroom = w.cfg.headroom_bytes;
+    if headroom > 0 {
+        crate::aq::aq_set_headroom(vq, headroom);
+    }
+    log(&format!(
+        "feed: progressive rebuffer hold n={} arm={arm} S={}ms debt_since_reset={}ms pos={position_ns} vtail={} atail={} qv={}B qa={}B reserve={}ms silent={}ms headroom={}B k={}pm h={}ms gate={}B",
+        w.holds,
+        w.hold_s_us / 1_000,
+        w.hold_debt_us / 1_000,
+        video.tail_ns(),
+        audio.tail_ns(),
+        crate::aq::aq_bytes(vq),
+        crate::aq::aq_bytes(aq),
+        reserve_ms.unwrap_or(-1),
+        silence_ms.map_or(-1, i64::from),
+        headroom,
+        w.cfg.params.k_permille,
+        w.cfg.params.h_us / 1_000,
+        w.cfg.params.gate_bytes,
+    ));
+}
+
 /// Ticks `FEED_SHARED.frames` must have reached before the ACB bind (`setMediaVideoData`) may be sent.
 /// The pipeline's sink is bound to MAIN once the decoder produces output (the order the original
 /// C engine documented: "once the decoder is producing frames so the videosink is bound to
@@ -1112,7 +1388,7 @@ fn acb_bind_frames_needed(preroll_open: bool) -> i32 {
 /// Common route policy supplies immutable source facts and receives only the state needed for
 /// its HUD and terminal decision after physical work completes.
 pub fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
-    segmented_hls: bool, immersive: bool) -> PresentationTick {
+    route: HoldRoute, immersive: bool) -> PresentationTick {
     let hooks = feed.hooks();
     let eng = feed.engine().expect("presentation tick belongs to live feed");
     let stream = matches!(eng.source, Source::Stream);
@@ -1229,7 +1505,8 @@ pub fn tick_presentation(feed: &mut FeedResources, mt: &MainThread,
     // issuing Play. NOT while a seek is armed: on a resume the seek is armed before PLAYING, so
     // feeding first would present the file start for a frame before the seek repositions — a
     // visible jump. ----------
-    maybe_begin_hls_rebuffer(segmented_hls, mt, eng, hooks);
+    w0_diag_sample(eng, route);
+    maybe_begin_rebuffer(route, mt, eng, hooks);
     if eng.stage >= Stage::Playing && FEED_TX.feed_allowed() && FEED_TX.seek_to_ns.load(Relaxed) < 0 {
         if stream {
             // Two-lane feed, then the prime attempt — the ordering and the reason both live in
@@ -1524,5 +1801,84 @@ mod tests {
         assert_eq!(native_attempt_facts().position_ns, Some(90_000_000_000),
             "a reload armed at 90 s reads 90 s until its first frame");
         FEED_SHARED.reset_session();
+    }
+}
+
+#[cfg(test)]
+mod progressive_begin_tests {
+    use super::*;
+
+    /// A stream mid-playback in none of the states that stop its clock on purpose.
+    fn running() -> ProgressiveStall {
+        ProgressiveStall {
+            user_paused: false,
+            priming: false,
+            seek_in_flight: false,
+            first_picture_seen: true,
+            producer_done: false,
+            landing_held: false,
+        }
+    }
+
+    #[test]
+    fn either_arm_begins_a_hold_and_neither_does_not() {
+        assert!(should_begin_progressive_rebuffer(true, false), "the clock debt fired");
+        assert!(should_begin_progressive_rebuffer(false, true), "the native clock stopped");
+        assert!(should_begin_progressive_rebuffer(true, true));
+        assert!(!should_begin_progressive_rebuffer(false, false));
+    }
+
+    /// A clock stopped over a remnant it will never spend is the HLS hold's own observation, read
+    /// over the reserve of the further lane.
+    #[test]
+    fn a_stopped_clock_over_a_remnant_it_will_never_spend_is_the_dead_link_arm() {
+        assert!(native_clock_stopped(Some(NATIVE_CLOCK_STOPPED_MS), Some(258)));
+        assert!(!native_clock_stopped(Some(NATIVE_CLOCK_STOPPED_MS), Some(5_668)), "a large reserve is not a stop");
+        assert!(!native_clock_stopped(Some(9_000), None), "an unknowable reserve holds nothing");
+    }
+
+    /// The hold's own resume must not read as a dead clock: until the clock has reported a position
+    /// since its Play, silence is the Play's latency and not a stall.
+    #[test]
+    fn a_position_callback_counts_only_if_it_landed_after_the_watch_restarted() {
+        assert!(!tick_since_watch_restart(0, 0), "no callback this session");
+        assert!(!tick_since_watch_restart(5_000, 5_000), "the same instant as the restart");
+        assert!(!tick_since_watch_restart(4_900, 5_000), "a callback from before the Play");
+        assert!(tick_since_watch_restart(5_201, 5_000));
+        assert!(tick_since_watch_restart(100, u32::MAX - 100), "the millisecond clock wrapped");
+    }
+
+    #[test]
+    fn nothing_that_legitimately_stops_the_clock_is_judged() {
+        assert!(!running().clock_stopped_on_purpose());
+        for (what, s) in [
+            ("user pause", ProgressiveStall { user_paused: true, ..running() }),
+            ("a prime (seek, initial or an earlier hold)", ProgressiveStall { priming: true, ..running() }),
+            ("a seek in flight", ProgressiveStall { seek_in_flight: true, ..running() }),
+            ("before the first picture", ProgressiveStall { first_picture_seen: false, ..running() }),
+            ("the demuxer is done: nothing more can arrive", ProgressiveStall { producer_done: true, ..running() }),
+            ("the Dolby Vision guard holds the landing keyframe", ProgressiveStall { landing_held: true, ..running() }),
+        ] {
+            assert!(s.clock_stopped_on_purpose(), "{what}");
+        }
+    }
+
+    #[test]
+    fn only_a_streamed_direct_play_file_that_is_not_a_preview_is_ever_held() {
+        assert_eq!(rebuffer_rule(HoldRoute::Progressive, true, true), Some(RebufferRule::Progressive));
+        assert_eq!(rebuffer_rule(HoldRoute::Progressive, false, true), None, "the looped sample has nothing to starve");
+        assert_eq!(rebuffer_rule(HoldRoute::Preview, true, true), None, "a preview's stall ends the preview");
+        assert_eq!(rebuffer_rule(HoldRoute::Preview, false, true), None);
+        assert_eq!(rebuffer_rule(HoldRoute::SegmentedHls, true, true), Some(RebufferRule::SegmentedHls));
+    }
+
+    /// Under Auto the scratch knob decides: `auto_hold=1` holds like Original, `auto_hold=0` keeps
+    /// Auto's own exits (plan v5 D4's fallback), and Quality=Original ignores the knob.
+    #[test]
+    fn a_stream_the_auto_supervisor_watches_is_held_only_by_the_auto_hold_knob() {
+        assert_eq!(rebuffer_rule(HoldRoute::ProgressiveSupervised, true, true), Some(RebufferRule::Progressive));
+        assert_eq!(rebuffer_rule(HoldRoute::ProgressiveSupervised, true, false), None);
+        assert_eq!(rebuffer_rule(HoldRoute::ProgressiveSupervised, false, true), None);
+        assert_eq!(rebuffer_rule(HoldRoute::Progressive, true, false), Some(RebufferRule::Progressive));
     }
 }

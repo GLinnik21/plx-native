@@ -7191,6 +7191,19 @@ pub fn demux(
                     } else {
                         av_packet_unref(pkt);
                     }
+                    // W0D (scratch, observation only): publish the read loop's counters for the main
+                    // thread's diagnostic line, whether or not an Original watch exists (Quality=Original).
+                    {
+                        use std::sync::atomic::Ordering::Relaxed;
+                        crate::diag_hold::DIAG_BODY_BYTES.store(state.body_bytes, Relaxed);
+                        crate::diag_hold::DIAG_BODY_ACTIVE_US.store(state.body_active_us, Relaxed);
+                        let clock = session.clock();
+                        crate::diag_hold::DIAG_VTAIL_NS.store(clock.video_tail_ns(), Relaxed);
+                        crate::diag_hold::DIAG_ATAIL_NS.store(clock.audio_tail_ns(), Relaxed);
+                        let audio_expected = ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed);
+                        crate::diag_hold::DIAG_BUFFERED_MS
+                            .store(progressive_buffered_ms(clock, audio_expected).unwrap_or(-1), Relaxed);
+                    }
                     if !session.clock().seeking() {
                         if let Some(watch) = original_watch.as_mut() {
                             let pause_state = session.clock_mut().pause_event(PauseLane::Original);

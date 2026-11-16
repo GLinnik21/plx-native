@@ -3,6 +3,7 @@
 
 pub mod aq;
 pub mod control;
+pub mod diag_hold;
 pub mod dv_start;
 pub mod era_callbacks;
 pub mod demux_clock;

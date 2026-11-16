@@ -432,6 +432,20 @@ pub fn aq_set_eof(q: *mut AuQueue) {
     }
 }
 
+/// Has the producer finished (`aq_set_eof`)? AUs may still be queued: this says nothing more will
+/// be pushed, not that the queue is drained.
+pub fn aq_producer_done(q: *mut AuQueue) -> bool {
+    if q.is_null() {
+        return false;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        let done = (*q).eof != 0;
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+        done
+    }
+}
+
 pub fn aq_abort(q: *mut AuQueue) {
     if q.is_null() {
         return;

@@ -303,6 +303,38 @@ pub struct LoadTick {
     pub speed_fallback: Option<&'static str>,
 }
 
+/// Which internal clock-hold rule the Feed applies to the stream it presents this tick. The route
+/// is the common player's fact (`is_segmented_hls`, `is_preview`); the Feed adds its own source
+/// (a looped local sample is never held) when it decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoldRoute {
+    /// Segmented HLS: its worker's request or its measured reserve starts a hold.
+    SegmentedHls,
+    /// A direct-play (progressive) stream with no Original watch (Quality=Original): the clock
+    /// debt, or a stopped native clock, starts a hold.
+    Progressive,
+    /// A direct-play stream the Auto Original supervisor watches (`cur_auto_original_watched`):
+    /// the same rule as [`HoldRoute::Progressive`], unless the Feed's policy keeps Auto's own exits
+    /// (plan v5 D4: the hold could suppress the exit Auto relies on until T2b says otherwise).
+    ProgressiveSupervised,
+    /// Never held: a trailer preview. Its stall ends the preview, never the player's read-out.
+    Preview,
+}
+
+impl HoldRoute {
+    pub const fn of(segmented_hls: bool, preview: bool, auto_original_watched: bool) -> Self {
+        if preview {
+            Self::Preview
+        } else if segmented_hls {
+            Self::SegmentedHls
+        } else if auto_original_watched {
+            Self::ProgressiveSupervised
+        } else {
+            Self::Progressive
+        }
+    }
+}
+
 /// The physical presentation state after one tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PresentationTick {
@@ -813,7 +845,7 @@ pub trait FeedLoad {
     /// Physical Load and Play transition. `no_audio` is the common player's no-audio arming.
     fn tick_load(&mut self, mt: &MainThread, now: u32, segmented_hls: bool,
         speed_deadline_ms: u32, no_audio: bool) -> LoadTick;
-    fn tick_presentation(&mut self, mt: &MainThread, segmented_hls: bool, immersive: bool)
+    fn tick_presentation(&mut self, mt: &MainThread, route: HoldRoute, immersive: bool)
         -> PresentationTick;
     /// Whether native construction is callable yet.
     fn ctor_gate(&mut self, mt: &MainThread) -> CtorGate;

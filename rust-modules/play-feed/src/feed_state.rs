@@ -134,6 +134,9 @@ pub struct Engine {
     /// The post-seek keyframe has installed its segment but has not yet been accepted by
     /// Starfish. Native presentation callbacks remain fenced until that exact AU returns `O`.
     pub presentation_rearm_pending: bool,
+    /// The progressive hold's clock-debt detector and its scratch knobs ([`crate::diag_hold`]): read
+    /// and stepped by the pump's begin decision only.
+    pub debt_watch: crate::diag_hold::DebtWatch,
     pub max_fed_video_pts: i64, // high-water fed pts, VIDEO lane (g_max_fed_pts)
     pub max_fed_audio_pts: i64, // high-water fed pts, AUDIO lane (two-lane feed)
     /// Fed pts of the AU that opened this timeline's audio — the one the demuxer marked as its

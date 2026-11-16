@@ -10190,6 +10190,12 @@ pub fn is_preview(ps: &PlaybackSession) -> bool {
     ps.preview
 }
 
+/// Is the playing Original stream watched by the Auto supervisor (`cur_auto_original_watched`:
+/// Auto running Original)? The Feed's hold policy reads it as data (`HoldRoute::of`).
+pub fn auto_original_is_watched(ps: &PlaybackSession) -> bool {
+    ps.cur_auto_original_watched
+}
+
 pub fn clear_preview(ps: &mut PlaybackSession) {
     ps.preview = false;
 }
