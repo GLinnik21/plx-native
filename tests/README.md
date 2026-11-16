@@ -60,9 +60,9 @@ fixture list. Expected outcomes: **SAME=6, REFUSED_EXPECTED=2, unexpected=0**.
   both modes require the exact early scheduler REFUSED (raw exit 1), before any graded frame.
   This is a typed compatibility outcome, not a supported replay, SAME, quarantine or skip.
 
-The current recording uses the synthetic Flow 12 producer. After media deletion changed the screen
-state shape and the Detail menu became Delete-only, `tools/plxnative-rec rerecord` replaced the
-incompatible current recording and retained its anchor flag. The immutable historical recordings retain their original bytes.
+The current recordings use the synthetic Home and Flow 12 producers. After the Detail menu became
+Delete-only, `tools/plxnative-rec rerecord` replaced both incompatible current recordings and
+retained their anchor flags. The immutable historical recordings retain their original bytes.
 Manifest preference/language strings pass only the checker's closed exact-path enums.
 All remaining text and metric bytes retain the synthetic alphabet gate. Rust fixture preflight and
 canonical initial-hash tests include the current recording. No production name/path/hash whitelist exists.
