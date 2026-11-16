@@ -201,26 +201,57 @@ def main():
               and "critical" not in Rig(free=int(3 * GIB)).run(post())["systemMessage"],
               "exactly at the reserve is low, not critical")
 
-        for label, payload in [
-            ("PostToolUse stdout", post(FULL)),
-            ("PostToolUse stderr", post("", "cc: " + FULL)),
-            ("PostToolUseFailure error", failure("Exit code 1\n" + FULL)),
+        # --- the full-disk text counts ONLY in a PostToolUseFailure's `error` -----------------------------------
+        failing = [
+            ("failure error", failure("Exit code 1\n" + FULL)),
             ("ENOSPC", failure("Exit code 1\nENOSPC: no space left on device, write")),
-            ("enospc, lower case", post("os error: enospc")),
             ("Disk quota exceeded", failure("Exit code 1\ncp: Disk quota exceeded")),
             ("Rust's wording", failure("Exit code 101\nfailed to write: No space left on device (os error 28)")),
+            ("enospc, lower case", failure("os error: enospc")),
+        ]
+        succeeding = [
+            ("PostToolUse stdout", post(FULL)),
+            ("PostToolUse stderr", post("", "cc: " + FULL)),
+            ("a grep of the source", post("src/io.rs:12: // ENOSPC", command="grep -rn ENOSPC src/")),
+            ("a cat of this hook", post("full-disk phrases: ... enospc ...", command="cat .claude/hooks/disk-low-notify.py")),
             ("a response that is one string", dict(post(), tool_response="x: " + FULL)),
             ("a content-block response", dict(post(), tool_response={"content": [{"type": "text", "text": FULL}]})),
-        ]:
+            ("a PostToolUse that carries an error key", dict(post(), error=FULL)),
+        ]
+        for label, payload in succeeding:
+            rig = Rig(free=100 * GIB)
+            check(rig.run(payload) is None and not rig.launches, f"exit 0 with the phrase, space free: silent: {label}")
+            rig = Rig(free=15 * GIB)
+            out = rig.run(payload)
+            check(out is not None and "critical" not in out["systemMessage"] and "full filesystem" not in context(out)
+                  and len(rig.launches) == 1, f"exit 0 with the phrase, below comfort: only the low note: {label}", repr(out))
+        for label, payload in failing:
             rig = Rig(free=100 * GIB)
             out = rig.run(payload)
+            check(out is not None and "critical" not in out["systemMessage"].lower()
+                  and "critical" not in context(out).lower()
+                  and out["systemMessage"] == "disk-low-notify: a command reported a full filesystem; this volume has "
+                  "100.0 GiB free." and not rig.launches
+                  and not os.path.exists(os.path.join(rig.env["PLX_DISK_NOTIFY_STATE"], notify.STAMP)),
+                  f"failure with the phrase, this volume fine: a note, no critical, NO reclaim: {label}", repr(out))
+            rig = Rig(free=15 * GIB)
+            out = rig.run(payload)
             check(out is not None and "critical" in out["systemMessage"] and len(rig.launches) == 1,
-                  f"full-disk text is critical even with space free: {label}", repr(out))
+                  f"failure with the phrase, below comfort: critical, reclaim started: {label}", repr(out))
         rig = Rig(free=100 * GIB)
         ctx = context(rig.run(failure(FULL)))
-        check(ctx and "Free space is 100.0 GiB" in ctx and "another volume" in ctx and "quote the error" in ctx
-              and "fail partway" not in ctx, "full-disk text with space free: the note says so and shows the reading",
+        check(ctx and "Free space is 100.0 GiB" in ctx and "another volume" in ctx and "was not started" in ctx
+              and "build-gc.sh --auto was started" not in ctx and "fail partway" not in ctx and "owner" in ctx,
+              "failure with the phrase, this volume fine: the note says another volume may be full and why no reclaim",
               repr(ctx))
+        check(rig.run(failure(FULL), now=NOW + 60) is None, "elsewhere: once per session")
+        out = rig.run(post(), now=NOW + 120, free=4 * GIB)
+        check(out is not None and "critical" not in out["systemMessage"] and len(rig.launches) == 1,
+              "elsewhere: a later real low reading is not covered by it, and starts the reclaim")
+        check(Rig(free=20 * GIB).run(failure(FULL)) is not None
+              and not Rig(free=20 * GIB).launches, "elsewhere: exactly at the comfort line is not below it")
+        out = Rig(free=100 * GIB).run(dict(failure(FULL), agent_id="a1", agent_type="general-purpose"))
+        check(out is not None and "This session is a subagent" in context(out), "elsewhere: the subagent variant")
         rig = Rig(free=None)
         ctx = context(rig.run(failure(FULL)))
         check(ctx and "could not be read" in ctx, "full-disk text with an unreadable volume: still told", repr(ctx))
@@ -229,6 +260,7 @@ def main():
         imperative = ("STOP", "NEVER", "MUST", "Never ", "Do not", "You must", "Always ")
         for label, out in (("low", Rig(free=4 * GIB).run(post())),
                            ("critical", Rig(free=1 * GIB).run(failure(FULL))),
+                           ("elsewhere", Rig(free=100 * GIB).run(failure(FULL))),
                            ("subagent", Rig(free=1 * GIB).run(dict(post(), agent_id="a1", agent_type="general-purpose"))),
                            ("failed launch", Rig(free=1 * GIB, launcher_error=OSError("no")).run(post())),
                            ("no script", Rig(free=1 * GIB, script=False).run(post()))):
@@ -407,12 +439,13 @@ def main():
         absurd = {"PLX_GC_MIN_FREE_GIB": "100000000", "PLX_MIN_FREE_MB": "0"}  # everything is below 100 PiB
         pid = None
         try:
-            rc, out, err = run_hook(json.dumps(failure("Exit code 1\n" + FULL)), **silent)
+            rc, out, err = run_hook(json.dumps(failure("Exit code 1\n" + FULL)), **absurd)
             body = json.loads(out) if out.strip() else None
             check(rc == 0 and err == "" and isinstance(body, dict) and sorted(body) == ["hookSpecificOutput", "systemMessage"]
                   and body["hookSpecificOutput"]["hookEventName"] == "PostToolUseFailure"
-                  and "full filesystem" in body["hookSpecificOutput"]["additionalContext"] and out.count("\n") == 1,
-                  "process: a PostToolUseFailure with 'No space left on device' is one JSON line, critical",
+                  and "full filesystem" in body["hookSpecificOutput"]["additionalContext"] and out.count("\n") == 1
+                  and "critical" in body["systemMessage"],
+                  "process: a PostToolUseFailure with 'No space left on device', volume below comfort: one JSON line, critical",
                   f"rc={rc} out={out!r} err={err!r}")
             for _ in range(200):                      # the detached stub, polled for up to ~10 s
                 if os.path.exists(pidfile) and open(pidfile).read().strip() and os.path.exists(log) \
@@ -440,8 +473,20 @@ def main():
                   and "comfort line" in body["hookSpecificOutput"]["additionalContext"],
                   "process: a PostToolUse below an absurd comfort line is a PostToolUse note", f"rc={rc} out={out!r}")
 
+            elsewhere_state = os.path.join(proc_dir, "state-elsewhere")
+            rc, out, err = run_hook(json.dumps(failure(FULL)), PLX_DISK_NOTIFY_STATE=elsewhere_state,
+                                    PLX_DISK_NOTIFY_LAUNCH=quick, **silent)
+            body = json.loads(out) if out.strip() else None
+            check(rc == 0 and err == "" and isinstance(body, dict) and out.count("\n") == 1
+                  and body["hookSpecificOutput"]["hookEventName"] == "PostToolUseFailure"
+                  and body["systemMessage"].startswith("disk-low-notify: a command reported a full filesystem; this volume has ")
+                  and "critical" not in out.lower()
+                  and not os.path.exists(os.path.join(elsewhere_state, notify.STAMP)),
+                  "process: a failure with the phrase on a volume above comfort: a note, no critical, no reclaim started",
+                  f"rc={rc} out={out!r} err={err!r}")
             for label, stdin, env in [
                 ("room to spare", json.dumps(post("fine")), silent),
+                ("exit 0 with the phrase in the result (a grep, a cat)", json.dumps(post(FULL)), silent),
                 ("the command mentions ENOSPC, the result does not", json.dumps(post(command="echo ENOSPC")), silent),
                 ("PLX_DISK_NOTIFY=off", json.dumps(failure(FULL)), dict(absurd, PLX_DISK_NOTIFY="off")),
                 ("PLX_DISK_NOTIFY=OFF", json.dumps(failure(FULL)), dict(absurd, PLX_DISK_NOTIFY="OFF")),

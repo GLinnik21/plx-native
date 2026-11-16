@@ -24,13 +24,15 @@ reserve `PLX_MIN_FREE_MB` (default 3072 MiB), same defaults, same digits-only pa
 defaults to that file's constants). Free space is `f_bavail * f_frsize` on the volume holding
 `$CLAUDE_PROJECT_DIR` (else the payload's `cwd`), as `disk_budget.free_at` computes it.
   low       free < comfort. The reclaim is started and the note says so.
-  critical  free < reserve, OR the Bash result text holds "No space left on device", "ENOSPC" or "disk
-            quota exceeded" (only `tool_response` and `error` are read, never `tool_input`: a command that
-            merely mentions ENOSPC is not one). The note adds that builds, `make check` and new worktrees
-            can fail partway, that the reclaim also runs in the foreground, and what the foreground
-            reclaim checks that `rm -rf` and `git clean` do not. The reclaim is started here too.
-A reading that says ENOSPC while the checkout's volume is fine is reported as that (another volume, or a
-file that quotes the error: `cat` of this very file prints the word); the note names both.
+  critical  free < reserve, OR a PostToolUseFailure `error` holds "No space left on device", "ENOSPC" or
+            "disk quota exceeded" while free < comfort (or unreadable). The note adds that builds, `make
+            check` and new worktrees can fail partway, that the reclaim also runs in the foreground, and
+            what the foreground reclaim checks that `rm -rf` and `git clean` do not. The reclaim is started.
+  elsewhere a failure holds one of those phrases while THIS volume is at or above the comfort line: another
+            volume may be full. The note is given, the reclaim is NOT started (it frees space here, not
+            there), and the `systemMessage` says so without the word critical.
+The phrases are matched in `error` only, never in `tool_input` and never in a successful PostToolUse's
+`tool_response`: a `grep ENOSPC src/` or a `cat` of this very file exits 0 and stays silent.
 
 THROTTLE. One note per level per session (a subagent has its own key, its context is separate), again only
 if free space fell by 5 GiB since that level's last note or 30 minutes passed. A critical note fires its
@@ -56,8 +58,8 @@ subagent's payload carries `agent_id` (measured).
 
 WHAT IT DOES NOT SEE. A command that hangs or runs for an hour is seen when it returns. A volume other than
 the checkout's (the cold store, a tmp dir on another disk) is seen only when a command's text says so.
-Only Bash calls are watched: an Edit or Write that fails with ENOSPC is not. A successful command that
-prints one of the phrases (`grep ENOSPC src/`) reads as critical; the note then shows the real free space.
+Only Bash calls are watched: an Edit or Write that fails with ENOSPC is not. A command that exits 0 with
+the phrase in its output (`make 2>&1 | tail`, which hides make's status) is not read for it.
 `PLX_DISK_NOTIFY=off` disables the hook. `PLX_DISK_NOTIFY_LAUNCH` names an executable run instead of
 `sh tools/build-gc.sh --auto` (tests only).
 
@@ -80,6 +82,8 @@ RENOTIFY_SECONDS = 30 * 60               # ... or when this long has passed
 LAUNCH_DEDUPE_SECONDS = 10 * 60          # the reclaim is started at most this often, machine-wide
 STATE_MAX_AGE_SECONDS = 3 * 24 * 3600    # a session's state file older than this is removed
 STAMP = "gc-launch.stamp"
+SUBAGENT_LINE = ("This session is a subagent, so its report goes to the caller and not to the owner; this note "
+                 "belongs at the start of that report so the caller can tell the owner.")
 FULL_DISK_PHRASES = ("no space left on device", "enospc", "disk quota exceeded")
 EVENTS = ("PostToolUse", "PostToolUseFailure")
 
@@ -302,15 +306,22 @@ def compose(level, free, comfort, reserve, root, now, gc, log, subagent, enospc)
     status, when = gc
     lines = ["Disk check at %s (a snapshot taken then; the text is replayed, not re-run, when a session resumes)."
              % stamp]
+    if level == "elsewhere":
+        lines.append("A command's output in this session reports a full filesystem. %s, above the comfort line, so "
+                     "the full filesystem may be another volume." % reading)
+        lines.append("tools/build-gc.sh --auto was not started: it frees space on this volume, which is above the "
+                     "comfort line. `make disk` shows this volume's build trees. If another volume is full, what to "
+                     "free there is for the owner to decide.")
+        if subagent:
+            lines.append(SUBAGENT_LINE)
+        return "\n".join(lines), ("disk-low-notify: a command reported a full filesystem; this volume has %s free."
+                                  % gib_text(free))
     if level == "low":
         lines.append("%s, below the %s comfort line (PLX_GC_MIN_FREE_GIB); builds also need a %s reserve "
                      "(PLX_MIN_FREE_MB) on top of their own size." % (reading, gib_text(comfort), gib_text(reserve)))
     elif enospc:
-        elsewhere = free is not None and free >= comfort
-        lines.append("A command's output in this session reports a full filesystem. %s. %s" % (reading, (
-            "That is above the comfort line, so the full filesystem may be another volume, or the text may only "
-            "quote the error." if elsewhere else
-            "Builds, make check and new worktrees can fail partway with ENOSPC while it stays full.")))
+        lines.append("A command's output in this session reports a full filesystem. %s. Builds, make check and new "
+                     "worktrees can fail partway with ENOSPC while it stays full." % reading)
     else:
         lines.append("%s, below the %s reserve (PLX_MIN_FREE_MB) that a build needs on top of its own size. Builds, "
                      "make check and new worktrees can fail partway with ENOSPC at this level."
@@ -337,8 +348,7 @@ def compose(level, free, comfort, reserve, root, now, gc, log, subagent, enospc)
         why = "a command reported a full filesystem" if enospc else "below the %s reserve" % gib_text(reserve)
         summary = "disk-low-notify: critical, %s, %s; %s." % (free_text, why, started)
     if subagent:
-        lines.append("This session is a subagent, so its report goes to the caller and not to the owner; this note "
-                     "belongs at the start of that report so the caller can tell the owner.")
+        lines.append(SUBAGENT_LINE)
     return "\n".join(lines), summary
 
 
@@ -347,13 +357,15 @@ def respond(payload, env, now, free_fn=free_bytes, launcher=launch_gc):
     if not isinstance(payload, dict):
         return None
     comfort, reserve = thresholds(env)
-    enospc = mentions_full_disk(flatten(payload.get("tool_response")) + "\n" + flatten(payload.get("error")))
+    enospc = event_name(payload) == "PostToolUseFailure" and mentions_full_disk(flatten(payload.get("error")))
     root = project_root(payload, env)
     free = free_fn(root)
-    if enospc or (free is not None and free < reserve):
+    if (enospc and (free is None or free < comfort)) or (free is not None and free < reserve):
         level = "critical"
     elif free is not None and free < comfort:
         level = "low"
+    elif enospc:
+        level = "elsewhere"                  # this volume is fine, so the full one is another
     else:
         return None
     directory = state_dir(env)
@@ -361,7 +373,7 @@ def respond(payload, env, now, free_fn=free_bytes, launcher=launch_gc):
     state = load_state(path)
     if not should_speak(state.get(level), free, now):
         return None
-    gc = ensure_gc(env, root, now, directory, launcher)
+    gc = (None, None) if level == "elsewhere" else ensure_gc(env, root, now, directory, launcher)
     note = {"t": now, "free": free}
     state[level] = note
     if level == "critical":
