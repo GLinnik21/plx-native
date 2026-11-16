@@ -99,7 +99,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-11-16T00:47:31Z",
+ "generated": "2026-11-16T00:53:20Z",
  "metrics": [
   {
    "change30_pct": 50.0,
@@ -144,18 +144,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 2.8,
-   "change7_pct": -3.9,
+   "change30_pct": 2.4,
+   "change7_pct": -4.2,
    "d30": 433,
-   "delta30": 12,
-   "delta7": -18,
+   "delta30": 10.5,
+   "delta7": -19.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 69,
+   "n_now": 70,
    "n_prev": 51,
-   "now": 445,
+   "now": 443.5,
    "prev7": 463,
    "shown": true,
    "state": "flat",
@@ -411,15 +411,15 @@
    "change30_pct": 45.9,
    "change7_pct": 6.0,
    "d30": 229,
-   "delta30": 105,
-   "delta7": 19,
+   "delta30": 105.0,
+   "delta7": 19.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 49,
-   "now": 334,
+   "now": 334.0,
    "prev7": 315,
    "shown": true,
    "state": "flat",
@@ -450,18 +450,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 50.7,
-   "change7_pct": 6.5,
+   "change30_pct": 49.7,
+   "change7_pct": 5.8,
    "d30": 152,
-   "delta30": 77,
-   "delta7": 14,
+   "delta30": 75.5,
+   "delta7": 12.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 49,
-   "now": 229,
+   "now": 227.5,
    "prev7": 215,
    "shown": true,
    "state": "flat",
@@ -492,18 +492,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 5.9,
-   "change7_pct": -8.8,
+   "change30_pct": 7.3,
+   "change7_pct": -7.6,
    "d30": 186,
-   "delta30": 11,
-   "delta7": -19,
+   "delta30": 13.5,
+   "delta7": -16.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 49,
-   "now": 197,
+   "now": 199.5,
    "prev7": 216,
    "shown": true,
    "state": "flat",
@@ -602,15 +602,15 @@
    "change30_pct": 11.8,
    "change7_pct": -5.0,
    "d30": 17,
-   "delta30": 2,
-   "delta7": -1,
+   "delta30": 2.0,
+   "delta7": -1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 57,
+   "n_now": 58,
    "n_prev": 49,
-   "now": 19,
+   "now": 19.0,
    "prev7": 20,
    "shown": false,
    "state": "flat",
@@ -709,11 +709,6 @@
    "change_pct": 39.6,
    "commits": [
     {
-     "pr": 1393,
-     "sha": "5570be823",
-     "title": "Image subtitles turned on mid-play show the read-ahead window's lines instead of a ~10 s gap"
-    },
-    {
      "pr": 1396,
      "sha": "038e8e992",
      "title": "ACB: create the URI engine's handle at the first Experimental offer, not at boot"
@@ -757,6 +752,11 @@
      "pr": 1392,
      "sha": "fe6efc1bc",
      "title": "refactor(ui): complete owned presentation and replay inputs"
+    },
+    {
+     "pr": 1409,
+     "sha": "990d04394",
+     "title": "fix(posters): store a slot's key whole, so long art paths load (#1408)"
     }
    ],
    "from": 202,
@@ -797,7 +797,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 334
+   "now": 334.0
   }
  ],
  "slowest_local": [

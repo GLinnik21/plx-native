@@ -1,4 +1,4 @@
-{"updated":"2026-11-16T00:47:16Z",
+{"updated":"2026-11-16T00:53:03Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5216,7 +5216,8 @@
 {"id":43771838746,"at":"2026-11-15T22:54:09Z","sha":"118fa28be","title":"Re-pin the read-only proof certificates to the zip 9.5.1 lockfile","pr":1402,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":398,"macOS simulator build + launch":180,"Windows launcher syntax":15,"macOS tests against bundled FFmpeg and ASS":210}},
 {"id":43774620180,"at":"2026-11-15T23:24:22Z","sha":"2c20048de","title":"fix(ci): reconcile generated enum certificate","pr":1392,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":109,"Windows launcher syntax":17,"macOS simulator build + launch":230,"Linux simulator build + launch":428}},
 {"id":43775338537,"at":"2026-11-15T23:32:09Z","sha":"fe6efc1bc","title":"refactor(ui): complete owned presentation and replay inputs","pr":1392,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":112,"macOS simulator build + launch":262,"Linux simulator build + launch":345,"Windows launcher syntax":21}},
-{"id":43781725282,"at":"2026-11-16T00:40:05Z","sha":"0cb269426","title":"fix(posters): drop the stale KEY_MAX cap classification and lookup comment","pr":1409,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":210,"Linux simulator build + launch":343,"macOS simulator build + launch":230,"Windows launcher syntax":19}}
+{"id":43781725282,"at":"2026-11-16T00:40:05Z","sha":"0cb269426","title":"fix(posters): drop the stale KEY_MAX cap classification and lookup comment","pr":1409,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":210,"Linux simulator build + launch":343,"macOS simulator build + launch":230,"Windows launcher syntax":19}},
+{"id":43782462586,"at":"2026-11-16T00:47:33Z","sha":"990d04394","title":"fix(posters): store a slot's key whole, so long art paths load (#1408)","pr":1409,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":296,"macOS tests against bundled FFmpeg and ASS":205,"Linux simulator build + launch":316,"Windows launcher syntax":29}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
