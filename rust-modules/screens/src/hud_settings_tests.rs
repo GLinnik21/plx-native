@@ -621,6 +621,37 @@ fn an_offer_opens_the_prompt_with_cancel_focused_and_each_answer_names_the_offer
     }
 }
 
+/// **An offer that lands while the viewer is answering their own drop-file question waits for that answer.** A fetch
+/// started from the address row can land on any tick, and it used to replace the open question (same title, focus back
+/// on Cancel): the viewer's answer then went to the fetched package and the file they had picked was never installed.
+#[test]
+fn an_offer_landing_over_an_open_drop_question_waits_for_the_answer() {
+    let (mut page, tx) = page_with(list());
+    let key = key_of(&page, &HudId::Drop(Sha::of(&[9])));
+    drive(&mut page, ScreenEvent::Activate(key), key);
+    assert_eq!(page.asking, Some(Asking::Drop(Sha::of(&[9]))));
+    let asked = page.prompt.body_for_test().to_vec();
+
+    let mut l = list();
+    l.offer = Some(offered());
+    tx.send(l).unwrap();
+    drive(&mut page, tick(), ALERT + 1);
+    assert_eq!(page.asking, Some(Asking::Drop(Sha::of(&[9]))), "the question on screen is still the viewer's own");
+    assert_eq!(page.prompt.body_for_test(), asked, "and it still says what it said");
+    assert!(page.prompt.is_open() && page.state.confirming);
+
+    let emitted = drive(&mut page, ScreenEvent::PressCommit(PressId(0)), ALERT + 1);
+    assert!(matches!(huds(&emitted).as_slice(), [HudCmd::InstallDrop(sha)] if *sha == Sha::of(&[9])), "yes installs the file that was asked about");
+    assert!(!page.prompt.is_open() && page.asking.is_none());
+
+    // The offer was never asked, so it is asked now, as its own question, and its answer names it.
+    drive(&mut page, tick(), 0);
+    assert_eq!(page.asking, Some(Asking::Offer(Sha::of(&[7]))));
+    assert!(page.prompt.is_open() && page.state.confirming && !page.prompt.choice(), "Cancel is the answer focused");
+    let emitted = drive(&mut page, ScreenEvent::PressCommit(PressId(0)), ALERT);
+    assert!(matches!(huds(&emitted).as_slice(), [HudCmd::DeclineOffer(sha)] if *sha == Sha::of(&[7])));
+}
+
 /// The prompt names the package, where it came from, that a plain-http source is a development one, and that it is unreviewed.
 #[test]
 fn the_offer_prompt_says_what_it_is_about() {

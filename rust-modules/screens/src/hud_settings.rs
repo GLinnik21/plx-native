@@ -761,18 +761,35 @@ impl HudPage {
         }
     }
 
-    /// Open the two-answer prompt about `asking`: `paragraphs` under `question`, Cancel focused.
-    fn ask(&mut self, asking: Asking, question: &'static std::ffi::CStr, paragraphs: Vec<Cow<'static, str>>, fx: &mut Effects<'_, InnerHost>) {
+    /// The viewer opened the question on screen themselves (OK on a drop file), so it is theirs to answer.
+    fn holds_own_question(&self) -> bool {
+        matches!(self.asking, Some(Asking::Drop(_)))
+    }
+
+    /// Open the two-answer prompt about `asking`: `paragraphs` under `question`, Cancel focused. False when it did
+    /// not open.
+    ///
+    /// **Every question opens here, so what happens to one already open is decided here**: the viewer's own is never
+    /// replaced, and an offer's is (the store holds one offer, so the newer one is the only one an answer can name).
+    /// It used to assign `asking` whatever was open: an offer landing on a later tick took over a drop-file question
+    /// under the same title, and the viewer's answer installed or declined a package they had not been asked about.
+    fn ask(&mut self, asking: Asking, question: &'static std::ffi::CStr, paragraphs: Vec<Cow<'static, str>>, fx: &mut Effects<'_, InnerHost>) -> bool {
+        if self.holds_own_question() {
+            return false;
+        }
         self.asking = Some(asking);
         self.prompt.open_paragraphs(question, paragraphs);
         self.state.confirming = true;
         self.state.affirmative = false;
         self.state.alert_scroll = self.prompt.scroll_target_bits();
         self.focus(fx, ALERT_GROUP);
+        true
     }
 
     /// Ask about the package the store holds from an address when the listing brings a new one: its name and version,
     /// where it came from (and that a plain `http://` source is a development one), *Unreviewed*, and what installing does.
+    /// An offer that arrives behind the viewer's own question waits for its answer: it is not latched as asked until
+    /// its prompt has opened, so the first tick after the answer asks it.
     fn sync_offer(&mut self, fx: &mut Effects<'_, InnerHost>) {
         if !self.state.visible { return }
         let Some(offer) = self.list.offer.clone() else {
@@ -783,13 +800,14 @@ impl HudPage {
             matches!(self.page, SettingsPage::HudDetail(sha) if sha == offer.sha)
         } else { self.page == SettingsPage::PlayerHud };
         if !owns { return }
-        if self.offered == Some(offer.sha) {
+        if self.offered == Some(offer.sha) || self.holds_own_question() {
             return;
         }
-        self.offered = Some(offer.sha);
         if offer.source == plx_data::hudpacks::Source::Registry {
-            self.ask(Asking::Offer(offer.sha), plx_platform::i18n::msg::settings_hud_gallery_install_question_c(),
-                vec![Cow::Borrowed(plx_platform::i18n::msg::settings_hud_gallery_install_body())], fx);
+            if self.ask(Asking::Offer(offer.sha), plx_platform::i18n::msg::settings_hud_gallery_install_question_c(),
+                vec![Cow::Borrowed(plx_platform::i18n::msg::settings_hud_gallery_install_body())], fx) {
+                self.offered = Some(offer.sha);
+            }
             return;
         }
         let mut facts = Vec::new();
@@ -805,7 +823,9 @@ impl HudPage {
             Cow::Owned(join(&facts)),
             Cow::Borrowed(plx_platform::i18n::msg::settings_hud_offer_body()),
         ];
-        self.ask(Asking::Offer(offer.sha), plx_platform::i18n::msg::settings_hud_install_question_c(), paragraphs, fx);
+        if self.ask(Asking::Offer(offer.sha), plx_platform::i18n::msg::settings_hud_install_question_c(), paragraphs, fx) {
+            self.offered = Some(offer.sha);
+        }
     }
 
     /// Put the keyboard down (its text stays in the draft) and show the row as it is without it.
