@@ -1770,9 +1770,10 @@ impl Machine<InnerHost> for RootPage {
                         landed = true;
                     }
                 }
-                // The HTTP/3 switch's receipt, held exactly as `pending_auto`'s above: a refused or
-                // dropped write gives the row back to the stored value, a saved one keeps the pick
-                // until the settled session shows it.
+                // The HTTP/3 switch's receipt, held on the page as `pending_auto`'s is above: a
+                // refused or dropped write gives the row back to the stored value, a saved one keeps
+                // the pick until the settled session shows it. (The write itself is the unguarded
+                // install write the resolution picker's is, `session::set_http3_experimental`.)
                 if let Some((value, ticket)) = &self.pending_http3 {
                     if self.http3_receipt.is_none() {
                         self.http3_receipt = match ticket.try_recv() {

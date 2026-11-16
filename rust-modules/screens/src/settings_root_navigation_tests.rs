@@ -888,6 +888,40 @@ fn flipping_the_http3_switch_writes_it_through_the_app_and_shows_the_pick() {
     assert!(!page.state.http3, "a refused write is not claimed");
 }
 
+/// **A saved HTTP/3 write keeps the pick until the captured session shows it**, as the auto
+/// sign-in switch does (`a_success_receipt_waits_for_the_next_captured_authority`): an older
+/// captured snapshot cannot undo a successful write, and the next one that carries the value
+/// takes the pending pick away.
+#[test]
+fn a_saved_http3_write_waits_for_the_next_captured_authority() {
+    let _serial = plx_base::testlock::serial();
+    let mut inputs = crate::registry::ScreenInputs::default();
+    inputs.session = std::sync::Arc::new(inputs.session.with_http3_experimental(false));
+    inputs.settled = true;
+    let mut cx = cx(None);
+    cx.views.inputs = &inputs;
+    let mut page = RootPage::new(EntryId(0), cx.views.directory, cx.views.inputs);
+    page.offers_http3 = true;
+    let (reply, ticket) = std::sync::mpsc::channel();
+    reply.send(true).unwrap();
+    page.pending_http3 = Some((true, ticket));
+    page.rebuild(cx.views.directory);
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    page.step(&ScreenEvent::Tick(Default::default()), &cx,
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
+    assert!(page.state.http3, "an old captured snapshot cannot undo a successful write");
+    assert!(page.pending_http3.is_some());
+    let mut confirmed = inputs.clone();
+    confirmed.session = std::sync::Arc::new(confirmed.session.with_http3_experimental(true));
+    confirmed.visible_generation += 1;
+    cx.views.inputs = &confirmed;
+    page.step(&ScreenEvent::Tick(Default::default()), &cx,
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
+    assert!(page.pending_http3.is_none());
+    assert!(page.state.http3);
+}
+
 /// **Reordering the root moves no identity.** A form that declares the same rows in a different
 /// order (About first, Language before Playback, Legal before Privacy) answers every Id-addressed
 /// question exactly as `root_form` does: the same key, the same activation. The seat a BACK
