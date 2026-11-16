@@ -63,6 +63,18 @@ struct BackCursorOwner {
 }
 
 impl Pointer {
+    /// **Enter D-pad mode** — the one place its state is written, for the arrow keys and PLAY
+    /// alike. Each caller keeps its own decision to call `hide_cursor()`; this is the state
+    /// half: the cursor reads hidden, Back no longer owns it, motion is counted afresh against
+    /// `DPAD_MOTION_GATE` and the edge glide stops.
+    pub(crate) fn enter_dpad(&mut self) {
+        self.dpad_mode = true;
+        self.cur_hidden = true;
+        self.back_cursor = None;
+        self.mot_accum = 0.0;
+        self.edge.stop();
+    }
+
     /// Pointer mode, cursor shown, nothing held or dragging — where the loop starts.
     pub(crate) const IDLE: Pointer = Pointer {
         dpad_mode: false,
@@ -1252,11 +1264,7 @@ pub(crate) unsafe fn begin_fresh_press(
         if !ptr.dpad_mode || !ptr.cur_hidden {
             hide_cursor();
         }
-        ptr.dpad_mode = true;
-        ptr.cur_hidden = true;
-        ptr.back_cursor = None;
-        ptr.mot_accum = 0.0;
-        ptr.edge.stop();
+        ptr.enter_dpad();
     }
 }
 
