@@ -716,8 +716,7 @@ impl ItemMenuScreen {
         }
         self.built = true;
         let form = match &self.arg.kind {
-            ItemMenuKind::Detail { mark, .. } => Form::new().section(state_rows(FormSection::new(""),
-                &self.arg.rk, *mark, false, false, None, "")),
+            ItemMenuKind::Detail { .. } => Form::new(),
             ItemMenuKind::Card { row, from_deck } => {
                 let trailer = cached_trailer(self.arg.sid, row, meta);
                 // A Watchlist tile with a reachable copy is a card of that copy, and Remove joins it.
@@ -739,7 +738,7 @@ impl ItemMenuScreen {
         let form = if self.deletion.request.is_some() {
             form.section(FormSection::new("").item(ItemRow::Delete, RowKind::Button,
                 Action::Delete(self.arg.rk.clone()),
-                Row::new(plx_platform::i18n::msg::browse_delete_action()).licon(Icon::Close).destructive(true)))
+                Row::new(plx_platform::i18n::msg::browse_delete_action()).licon(Icon::Trash).danger()))
         } else { form };
         self.form.set(form, None);
     }

@@ -83,6 +83,21 @@ mod tests {
         assert_eq!(send(&mut ui, &ScreenEvent::PressCommit(PressId(0)), DELETE).1, 0);
         assert_eq!(ui.phase, 2);
     }
+
+    #[test]
+    fn the_detail_menu_only_offers_delete() {
+        let _guard = plx_base::testlock::serial();
+        let arg = ItemMenuArg { sid: plx_plex::plex::ServerId::UNSET, rk: "42".into(),
+            kind: ItemMenuKind::Detail { kind: 0, title: "Disposable movie".into(),
+                show_rk: String::new() },
+            host: EntryId(1), focus: None, anchor: [0; 4], loaded_episode: false,
+            from_home: false, catalog: None, watchlist: None };
+        let mut menu = ItemMenuScreen::new(EntryId(7), arg);
+        menu.deletion = question();
+        with_cx(|cx| menu.build_rows(<HostFixture as crate::registry::MetadataLike>::metadata(cx), DeckPress::Details));
+        assert!(matches!(menu.form.binding_at(0), Some(binding) if binding.id == ItemRow::Delete));
+        assert!(menu.form.binding_at(1).is_none());
+    }
 }
 impl DeleteUi {
     pub fn new() -> Self { Self { request: None, title: String::new(), alert: DecisionAlert::new(), phase: 0, result: None } }

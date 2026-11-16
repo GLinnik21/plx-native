@@ -33,7 +33,7 @@ impl ScreenArg for TestArg {
 pub(super) struct TestHost;
 
 impl crate::registry::ScreenInputsLike for TestHost {
-    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::empty_fixture() }
+    fn screen_inputs<'a>(cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { cx.views }
 }
 
 impl crate::registry::PlayerLike for TestHost {
@@ -48,7 +48,7 @@ impl Host for TestHost {
     type Fx = AppFx;
     type Msg = AppMsg;
     type Elem = u32;
-    type Views<'a> = ();
+    type Views<'a> = &'a crate::registry::ScreenInputs;
     // `super::super::` (detail -> screens -> family) rather than the absolute spelling: `family`
     // is the Settings family's shared vocabulary, not a sibling screen — see `screens::family`'s
     // own module doc, and `screens::legal`/`screens::settings`'s identical `super::family::` use.
@@ -87,7 +87,7 @@ impl crate::registry::MetadataLike for TestHost {
 
 fn cx<'a>(measure: &'a dyn plx_machine::machine::Measure, elem: Option<u32>) -> Cx<'a, TestHost> {
     Cx {
-        views: (),
+        views: crate::registry::empty_fixture(),
         tick: Default::default(),
         measure,
         press: PressRead::default(),
@@ -149,6 +149,7 @@ fn bare(_guard: &plx_base::testlock::Serial, sid: ServerId, rk: &str) -> DetailS
 pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
     let mut screen = DetailScreen {
         caption_policy: crate::registry::captions::policy(),
+        delete_allowed: false,
         entry: EntryId(7),
         sid,
         rk: rk.into(),
@@ -270,6 +271,15 @@ fn step(
     event: &ScreenEvent<TestHost>,
     focus: Option<u32>,
 ) -> (Handled, Vec<plx_machine::machine::Stamped<TestHost>>) {
+    step_with_inputs(screen, event, focus, crate::registry::empty_fixture())
+}
+
+fn step_with_inputs(
+    screen: &mut DetailScreen,
+    event: &ScreenEvent<TestHost>,
+    focus: Option<u32>,
+    inputs: &crate::registry::ScreenInputs,
+) -> (Handled, Vec<plx_machine::machine::Stamped<TestHost>>) {
     screen.sync_keys(test_store().view());
     let focus = focus.and_then(|key| screen.engine_key(key).or(Some(key)));
     let translated;
@@ -286,7 +296,8 @@ fn step(
         _ => event,
     };
     let measure = plx_ui::fixture::FixtureMeasure;
-    let context = cx(&measure, focus);
+    let mut context = cx(&measure, focus);
+    context.views = inputs;
     let mut effects = Vec::new();
     let mut present = plx_machine::present::Present::new();
     let handled = {
@@ -1621,7 +1632,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                         "the preview path replaced the Trailer disc"
                     );
                     let (controls, n) = hero::hero_ctls(set);
-                    assert_eq!(n, 4 + usize::from(restart) + usize::from(alt));
+                    assert_eq!(n, 3 + usize::from(restart) + usize::from(alt));
                     sizes.insert(n);
                     for unfurl in [
                         [0.0, 0.0, 0.0, 0.0, 0.0],
@@ -1675,7 +1686,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
             }
         }
     }
-    assert_eq!(sizes.into_iter().collect::<Vec<_>>(), vec![4, 5, 6]);
+    assert_eq!(sizes.into_iter().collect::<Vec<_>>(), vec![3, 4, 5]);
     assert_eq!(cases, 192);
     clear();
     plx_plex::plex::reset_servers_for_test();
@@ -5733,7 +5744,7 @@ fn an_episode_gets_a_go_to_show_disc_that_presses_the_item_menus_navigation() {
     let mut screen = bare(&_guard, ServerId::UNSET, "ep");
     let set = screen.hero_set(test_store().view());
     assert!(set.go_show);
-    assert!(set.more, "the episode page offers its own item menu");
+    assert!(!set.more, "this profile has no deletion permission");
     assert!(!set.watchlist, "no plex guid: the bookmark disc is not in this row");
     assert_eq!(hero::index_of(set, hero::HeroCtl::GoToShow), Some(1));
     let (_, fx) = step(
@@ -5768,3 +5779,38 @@ fn only_an_episode_page_gets_a_go_to_show_disc() {
 
 #[path = "hero_shade_tests.rs"]
 mod hero_shade;
+
+#[test]
+fn the_detail_more_disc_is_absent_without_delete_permission() {
+    let _guard = install(Detail { sid: ServerId::UNSET, rk: "movie".into(),
+        title: "Disposable movie".into(), kind: "movie".into(), ..Default::default() });
+    let screen = bare(&_guard, ServerId::UNSET, "movie");
+    assert!(!screen.hero_set(test_store().view()).more);
+    clear();
+}
+
+#[test]
+fn the_detail_more_disc_tracks_the_captured_server_delete_permission() {
+    for kind in ["movie", "show", "season", "episode"] {
+        let _guard = install(Detail { sid: ServerId::UNSET, rk: "42".into(),
+            title: "Disposable item".into(), kind: kind.into(), ..Default::default() });
+        let mut screen = bare(&_guard, ServerId::UNSET, "42");
+        let key = plx_plex::plex::ClientKey { instance: 1, token: 2, grant: 3 };
+        let mut inputs = crate::registry::ScreenInputs::default();
+        inputs.deletable = std::sync::Arc::new(vec![(ServerId::from_raw(3), key)]);
+        step_with_inputs(&mut screen, &ScreenEvent::Tick(Default::default()), None, &inputs);
+        assert!(!screen.hero_set(test_store().view()).more, "another server's permission is insufficient");
+        inputs.deletable = std::sync::Arc::new(vec![(ServerId::UNSET, key)]);
+        step_with_inputs(&mut screen, &ScreenEvent::Tick(Default::default()), None, &inputs);
+        assert!(screen.hero_set(test_store().view()).more, "{kind}");
+        let focus = Some(FocusKey { entry: EntryId(7), elem: hero::ELEM_MORE });
+        assert!(screen.hero_menu_subject(focus, test_store().view()).is_some());
+        inputs.deletable = Default::default();
+        let (_, fx) = step_with_inputs(&mut screen, &ScreenEvent::Activate(hero::ELEM_MORE),
+            Some(hero::ELEM_MORE), &inputs);
+        assert!(!screen.hero_set(test_store().view()).more);
+        assert!(screen.hero_menu_subject(focus, test_store().view()).is_none());
+        assert!(!fx.iter().any(|effect| matches!(&effect.fx, Fx::App(AppFx::Content(ContentReq::ItemMenu)))));
+        clear();
+    }
+}

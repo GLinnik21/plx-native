@@ -1823,15 +1823,6 @@ impl Bridge {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
             let meta = <AppHost as plx_screens::registry::MetadataLike>::metadata(&cx);
-            if let Some((ep, mark)) = page.hero_menu_episode(ret.focus, meta) {
-                let mut arg = strip_menu_arg(sid, &ep.rk,
-                    ItemMenuKind::Episode { mark, versions: ep.versions.clone() }, entry, ret.focus, rect);
-                // The on-deck episode need not be in the loaded season window. The ordinary
-                // addressed item path fetches it, rather than the filmstrip's loaded-only path.
-                arg.loaded_episode = false;
-                arg.watchlist = self.watchlist_face(page.watchlist_hex(), plx_data::watchlist::model::Kind::Show, true);
-                return Some(arg);
-            }
             if let Some((rk, kind)) = page.hero_menu_subject(ret.focus, meta) {
                 return Some(strip_menu_arg(sid, &rk, kind, entry, ret.focus, rect));
             }

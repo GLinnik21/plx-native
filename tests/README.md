@@ -53,7 +53,7 @@ fixture list. Expected outcomes: **SAME=6, REFUSED_EXPECTED=2, unexpected=0**.
   mode (its frame count is pinned by `tests/test_replay_fixtures.py`'s census and
   `fixture_preflight_tests` in `app/recorder.rs`); Settings: 621 in each.
 - `12-filmography-detail-return-current`: the current V11 default Flow 12 producer's typed
-  Person → Filmography → item Detail → Back → Back/focus-memory flow, 642 fully graded frames
+  Person → Filmography → item Detail → Back → Back/focus-memory flow, 640 fully graded frames
   in each mode. Both require raw exit 0, exactly one SAME, and all eight difference counters zero.
   Any current refusal, including a historical scheduler reason, fails the gate.
 - Immutable `12-filmography-detail-return`: historical content scheduling is incompatible;
@@ -61,8 +61,8 @@ fixture list. Expected outcomes: **SAME=6, REFUSED_EXPECTED=2, unexpected=0**.
   This is a typed compatibility outcome, not a supported replay, SAME, quarantine or skip.
 
 The current recording uses the synthetic Flow 12 producer. After media deletion changed the screen
-state shape, `tools/plxnative-rec rerecord` replaced the incompatible current recording and retained
-its anchor flag. The immutable historical recordings retain their original bytes.
+state shape and the Detail menu became Delete-only, `tools/plxnative-rec rerecord` replaced the
+incompatible current recording and retained its anchor flag. The immutable historical recordings retain their original bytes.
 Manifest preference/language strings pass only the checker's closed exact-path enums.
 All remaining text and metric bytes retain the synthetic alphabet gate. Rust fixture preflight and
 canonical initial-hash tests include the current recording. No production name/path/hash whitelist exists.

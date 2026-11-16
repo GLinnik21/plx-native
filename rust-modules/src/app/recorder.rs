@@ -2928,7 +2928,7 @@ mod fixture_preflight_tests {
             ("1-boot-home-chip-grid", state_fp(), 266),
             ("6-settings-family", FP_PRIOR, 621),
             ("12-filmography-detail-return", FP_PRIOR, 457),
-            ("12-filmography-detail-return-current", state_fp(), 642),
+            ("12-filmography-detail-return-current", state_fp(), 640),
         ] {
             let dir = root.join(name);
             let manifest = std::fs::read_to_string(dir.join("manifest.json")).unwrap();

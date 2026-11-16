@@ -174,6 +174,8 @@ const EP_RETRY_MS: u32 = 1000;
 pub struct DetailScreen {
     /// Derived frame input, shared by shelf captions and live/target section geometry.
     caption_policy: plx_ui::caption_policy::CaptionPolicy,
+    /// Derived frame input: the captured profile and server allow deletion.
+    delete_allowed: bool,
     entry: EntryId,
     sid: ServerId,
     rk: String,
@@ -546,6 +548,7 @@ impl DetailScreen {
         }
         Self {
             caption_policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT),
+            delete_allowed: false,
             entry,
             sid,
             rk,
@@ -844,26 +847,17 @@ impl DetailScreen {
         }
     }
 
-    /// The item's own menu when the hero has no separate on-deck subject.
+    /// The detail menu addresses this page's item, including when its hero plays a next-up episode.
     pub fn hero_menu_subject(&self, focus: Option<FocusKey<u32>>, meta: plx_data::metadata::MetadataView<'_>)
         -> Option<(String, crate::registry::ItemMenuKind)> {
         let key = focus.filter(|key| key.entry == self.entry)?;
-        if key.elem != hero::ELEM_MORE { return None; }
+        if key.elem != hero::ELEM_MORE || !self.hero_set(meta).more { return None; }
         let d = self.detail(meta)?;
         let kind = match d.kind.as_str() { "movie" => 0, "show" => 1, "season" => 2, "episode" => 3, _ => return None };
         let title = if kind == 3 { format!("{} · S{} E{} · {}", d.show_title, d.season, d.index, d.title) }
             else { d.title.clone() };
         Some((d.rk.clone(), crate::registry::ItemMenuKind::Detail { kind, title,
-            show_rk: if kind == 2 { d.parent_rk.clone() } else { d.show_rk.clone() }, mark: hero::hero_mark(d) }))
-    }
-
-    /// The More disc follows the on-deck subject even when a different season is loaded below it.
-    pub fn hero_menu_episode<'a>(&self, focus: Option<FocusKey<u32>>, meta: plx_data::metadata::MetadataView<'a>)
-        -> Option<(&'a plx_data::metadata::Episode, PosterMark)> {
-        let key = focus.filter(|key| key.entry == self.entry)?;
-        if key.elem != hero::ELEM_MORE { return None; }
-        let ep = hero::hero_episode(self.detail(meta)?)?;
-        Some((ep, episodes::watch_state(ep)))
+            show_rk: if kind == 2 { d.parent_rk.clone() } else { d.show_rk.clone() } }))
     }
 
     pub fn focused_episode(
@@ -2050,6 +2044,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
         // setting, so the band each reserves and the caption `cards::label` builds cannot disagree.
         // Extras (landscape stills) and Cast (headshots) are not posters and keep the legacy block.
         self.caption_policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
+        self.delete_allowed = H::screen_inputs(cx).deletable.iter().any(|(sid, _)| *sid == self.sid);
         let policy = Some(self.caption_policy);
         self.related.set_caption_policy(policy);
         self.collection.set_caption_policy(policy);
@@ -4348,7 +4343,8 @@ impl DetailScreen {
         // `!hero_set().trailer` and then drive `ELEM_TRAILER` directly to prove `activate_hero`'s
         // handling stays correct even though the disc itself is never shown.)
         hero::HeroSet {
-            more: self.detail(meta).is_some_and(|d| matches!(d.kind.as_str(), "movie" | "episode" | "show" | "season")),
+            more: self.delete_allowed && self.detail(meta).is_some_and(|d|
+                !d.rk.is_empty() && !d.title.is_empty() && matches!(d.kind.as_str(), "movie" | "episode" | "show" | "season")),
             version: self.detail(meta).is_some_and(|d| hero_versions(d).len() >= 2),
             go_show: self.detail(meta).is_some_and(|d| hero::go_to_show_target(d).is_some()),
             restart,
@@ -4573,7 +4569,9 @@ impl DetailScreen {
                     }
                 }
             }
-            hero::HeroCtl::More => self.content(fx, ContentReq::ItemMenu),
+            hero::HeroCtl::More => {
+                if self.hero_set(meta).more { self.content(fx, ContentReq::ItemMenu); }
+            }
             hero::HeroCtl::MarkWatched | hero::HeroCtl::MarkUnwatched => {
                 if let Some(d) = self.detail(meta) {
                     fx.push(Fx::App(AppFx::Store(

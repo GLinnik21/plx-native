@@ -629,7 +629,7 @@ class ReplayFixtures(unittest.TestCase):
             '1-boot-home-chip-grid': 13512213413816145485,
             '6-settings-family': 4239819007634745513,
             '12-filmography-detail-return': 4239819007634745513,
-            '12-filmography-detail-return-current': 6570290539035135891,
+            '12-filmography-detail-return-current': 17681848580094001383,
         })
 
     def _tool(self, *args):

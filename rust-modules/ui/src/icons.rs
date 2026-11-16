@@ -250,6 +250,8 @@ pub enum Icon {
     /// ("= Date added v"); it says "ordered by", not "filter". The Design System's own `sort.svg`
     /// byte for byte (`M4 7L20 7M7 12L17 12M10 17L14 17`, stroke 2.2, round caps), so it has no third-party entry.
     Sort,
+    /// Permanent deletion, distinct from the reversible Remove actions' X.
+    Trash,
 }
 
 /// **Where a mark's INK sits inside its 24-unit viewBox**, as `(left, right)` fractions — and
@@ -280,6 +282,7 @@ pub const fn ink_x(id: Icon) -> (f32, f32) {
         Icon::Clock | Icon::ServerSlash | Icon::CircleSlash => (1.9 / 24.0, 22.1 / 24.0),
         // The sort bars: path x 4..20 plus the 2.2-unit stroke's 1.1 each side.
         Icon::Sort => (2.9 / 24.0, 21.1 / 24.0),
+        Icon::Trash => (3.0 / 24.0, 21.0 / 24.0),
         _ => (0.0, 1.0),
     }
 }
@@ -298,6 +301,7 @@ pub const fn band(id: Icon) -> f32 {
         Icon::Bookmark | Icon::BookmarkFill => 19.5 / 24.0,
         Icon::Clock | Icon::CircleSlash => 20.2 / 24.0,
         Icon::ServerSlash => 21.0 / 24.0,
+        Icon::Trash => 19.5 / 24.0,
         _ => 1.0,
     }
 }
@@ -346,6 +350,7 @@ fn src(id: Icon) -> &'static str {
         Icon::Next => include_str!("../../../assets/icons/next.svg"),
         Icon::PlayStart => include_str!("../../../assets/icons/play-start.svg"),
         Icon::Close => include_str!("../../../assets/icons/close.svg"),
+        Icon::Trash => include_str!("../../../assets/icons/trash.svg"),
         Icon::More => include_str!("../../../assets/icons/more.svg"),
         Icon::Search => include_str!("../../../assets/icons/search.svg"),
         Icon::Tomato => include_str!("../../../assets/icons/tomato.svg"),
@@ -674,6 +679,20 @@ mod ink_tests {
             // is wider for the top bar than the middle, and for the middle than the bottom.
             let ink_in_row = |unit: f32| (0..px).filter(|&x| alpha(x, (unit / 24.0 * px as f32) as i32) > 127).count();
             assert!(ink_in_row(7.0) > ink_in_row(12.0) && ink_in_row(12.0) > ink_in_row(17.0));
+        }
+    }
+
+    #[test]
+    fn the_trash_mark_rasterizes_at_menu_size_without_clipping() {
+        for px in [26, 104] {
+            let rgba = plx_gfx::svg::rasterize(src(Icon::Trash), px, px).expect("trash rasterizes");
+            let alpha = |x: i32, y: i32| rgba[((y * px + x) * 4 + 3) as usize];
+            assert_eq!((0..px).flat_map(|y| (0..px).map(move |x| alpha(x, y))).max(), Some(255));
+            for i in 0..px {
+                for (x, y) in [(i, 0), (i, px - 1), (0, i), (px - 1, i)] {
+                    assert_eq!(alpha(x, y), 0, "trash clips at {px}px ({x},{y})");
+                }
+            }
         }
     }
 
