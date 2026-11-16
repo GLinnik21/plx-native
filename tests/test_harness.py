@@ -9656,21 +9656,30 @@ impl PersonOwnerGateFixture {
 
     @_grades("fxlanes")
     def test_fxlanes_ledger_fails_a_new_appfx_side_queue_but_not_a_deliver_arm(self):
-        """RED: in `Bridge::app_effect` an `AppFx` arm that pushes `Fx::Deliver(` rides the ordered
-        FIFO and costs nothing; an arm that parks its request on a side queue must be a ledger line,
-        so a NEW variant with a side queue fails `fxlanes` while a new Deliver arm does not."""
+        """Current typed inline deliveries and async ports pass; retaining either an inline
+        command or the taken external Loop request fails. Mutate real production execution,
+        not the removed boolean classifier/unreachable fallback."""
+        baseline = self._deps()
+        self.assertEqual(baseline.returncode, 0, baseline.stdout + baseline.stderr)
         r = self._mutate(
-            "app/bridge.rs", 'AppFx::Loop(_) => unreachable!("Loop commands yield to the FIFO runner"),',
-            'AppFx::Loop(_) => unreachable!("Loop commands yield to the FIFO runner"),\n'
-            "            AppFx::Sneaky(req) => self.sneaky_reqs.push(req),\n"
-            "            AppFx::Orderly(cmd) => out.push(Fx::Deliver(MachineId::Consent,\n"
-            "                Delivery::Machine(AppMsg::Consent(cmd)))),")
+            "app/bridge.rs",
+            "InlineAppFx::Consent(command) => out.push(Fx::Deliver(\n"
+            "                MachineId::Consent, Delivery::Machine(AppMsg::Consent(command)))),",
+            "InlineAppFx::Consent(command) => self.pending.push(command),")
         out = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0, out)
         self.assertIn("fxlanes:", out)
-        self.assertIn("rust-modules/src/app/bridge.rs::AppFx::Sneaky", out)
-        self.assertNotIn("AppFx::Orderly", out)
+        self.assertIn("rust-modules/src/app/bridge.rs::AppFx::Consent", out)
+        self.assertNotIn("::AppFx::Store", out, "addressed Deliver arms remain on the FIFO")
         self.assertIn("ci/allow/fxlanes/app.txt", out)
+        r = self._mutate(
+            "app/bridge.rs",
+            "super::run::execute_loop_command(request, d, self, resources)",
+            "self.pending.push(request); AppCommandOutcome::Completed")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("app-command-routing: runner arm parks work", out)
+        self.assertIn("fxlanes: external FIFO proof failed", out)
 
     @_grades("workers", "globals", "forks")
     def test_ledgers_ignore_tests_comments_strings_and_declarations(self):
@@ -10031,26 +10040,31 @@ impl PersonOwnerGateFixture {
 
     @_grades("fxlanes")
     def test_fxlanes_ledger_sees_every_variant_of_an_arm_and_a_catch_all_arm(self):
-        """RED: an or-pattern arm (`AppFx::A(r) | AppFx::B(r) => ..`, on one line or wrapped) is a site
-        for EVERY variant on its head, and an arm with no `AppFx::` head (`other => ..`, `_ => ..`) is a
-        site of its own, keyed `AppFx::_`: both used to ride on the first variant's line, or on nothing.
-        An or-pattern arm that pushes `Fx::Deliver(` is on the ordered lane and costs nothing."""
+        """Every typed variant in a wrapped or-pattern and an untyped catch-all must be
+        guarded. Whole-effect bindings keep the or-pattern payload type valid even across
+        different command families; the external catch-all cannot bypass real named arms."""
         r = self._mutate(
-            "app/bridge.rs", 'AppFx::Loop(_) => unreachable!("Loop commands yield to the FIFO runner"),',
-            'AppFx::Loop(_) => unreachable!("Loop commands yield to the FIFO runner"),\n'
-            "            AppFx::PlantedOr(req) | AppFx::PlantedFirst(req)\n"
-            "                | AppFx::PlantedWrapped(req) => self.planted_reqs.push(req),\n"
-            "            AppFx::PlantedOk(cmd) | AppFx::PlantedOk2(cmd) => out.push(Fx::Deliver(MachineId::Consent,\n"
-            "                Delivery::Machine(AppMsg::Consent(cmd)))),\n"
+            "app/bridge.rs",
+            "InlineAppFx::Consent(command) => out.push(Fx::Deliver(\n"
+            "                MachineId::Consent, Delivery::Machine(AppMsg::Consent(command)))),",
+            "effect @ InlineAppFx::Session(_) | effect @ InlineAppFx::Consent(_)\n"
+            "                | effect @ InlineAppFx::Huds(_) => self.pending.push(effect),\n"
             "            other => self.misc_reqs.push(other),")
         out = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0, out)
         key = "rust-modules/src/app/bridge.rs::AppFx::"
-        for variant in ("PlantedOr", "PlantedFirst", "PlantedWrapped", "_"):
+        for variant in ("Session", "Consent", "Huds", "_"):
             with self.subTest(variant=variant):
                 self.assertIn(f"{key}{variant}  (ledger: ci/allow/fxlanes/app.txt)", out)
-        self.assertNotIn("PlantedOk", out)
-        self.assertNotIn(f"{key}Loop", out, "the existing externally yielded variant is not a new lane")
+        self.assertNotIn(f"{key}Store", out, "addressed Deliver arms remain on the FIFO")
+        r = self._mutate(
+            "app/bridge.rs", "Err(outcome) => outcome,",
+            "Err(outcome) => outcome,\n"
+            "            other => { self.pending.push(other); AppCommandOutcome::Completed },")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("app-command-routing: runner must explicitly match external variants or Err", out)
+        self.assertIn("fxlanes: external FIFO proof failed", out)
 
     @_grades("globals")
     def test_globals_ledger_sees_every_spelling_of_the_player_transport_in_lifecycle(self):

@@ -1207,6 +1207,7 @@ mod tests {
             tick: Tick::default(),
             measure,
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             focus: FocusRead { current: focus , ..Default::default() },
             owner: InputOwner::Entry(focus.map_or(EntryId(0), |k| k.entry)),
         }

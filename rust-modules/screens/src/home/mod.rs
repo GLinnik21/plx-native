@@ -1931,6 +1931,9 @@ impl HomeScreen {
             tick: cx.tick,
             measure: cx.measure,
             press: cx.press,
+            modal: cx.modal,
+            page_image: cx.page_image,
+            hold_hint: cx.hold_hint,
             focus: plx_machine::machine::FocusRead {
                 current: visible_focus,
             ..Default::default() },
@@ -1954,7 +1957,9 @@ impl HomeScreen {
         );
         self.prefetch(view);
         let hint = self.hint_input(cx, snap_moving);
-        self.hold_hint.step(hint, t.ms, dt, &mut |ev| fx.note(ev));
+        if let Some(event) = self.hold_hint.step(hint, t.ms, dt, &mut |ev| fx.note(ev), cx.hold_hint) {
+            fx.push(Fx::HoldHint(event));
+        }
 
         let moving = self.outgoing.is_some()
             || snap_moving

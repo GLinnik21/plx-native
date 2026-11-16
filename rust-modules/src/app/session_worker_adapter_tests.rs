@@ -72,9 +72,11 @@ fn signing_out_leaves_no_consent_and_no_identifier_for_the_next_account() {
         "the decision was persisted for account A"
     );
 
-    let mut bridge = crate::app::bridge::Bridge::for_consent_resource_test(
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_consent_resource_test(
         consent::current().expect("account A decision is published"),
     );
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut bridge = harness.bridge();
     let mut dispatcher =
         plx_ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
     dispatcher.emit(

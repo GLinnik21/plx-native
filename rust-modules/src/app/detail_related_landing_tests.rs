@@ -42,7 +42,8 @@ fn a_related_window_that_lands_is_never_drawn_before_the_page_has_heard_of_it() 
     plx_plex::plex::reset_servers_for_test();
     let sid = plx_plex::plex::register_for_test("related-landing", "127.0.0.1", 9, "synthetic", "fixture");
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     // Installed before the mount: the page keys its element identities from the item it finds.
     plx_data::metadata::set_current_for_test(rig.stores.metadata.state_mut(), Some(with_tail(sid, 0)));
     d.request(MachineId::Nav, NavOp::Root(AppArg::Content(ContentArg::Detail { sid, rk: "movie".into() })));

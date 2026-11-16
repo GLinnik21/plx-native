@@ -808,7 +808,7 @@ impl RecommendedScreen {
     /// CARD focus rests on, one whose hold opens an item menu, and whether it has arrived.
     fn hint_input<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> plx_ui::hold_hint::HintInput {
         let none = plx_ui::hold_hint::HintInput::default();
-        if !self.hold_hint.wants_input(cx.press.held_ms.is_some()) { return none; }
+        if !self.hold_hint.wants_input(cx.press.held_ms.is_some(), cx.hold_hint) { return none; }
         let Some(key) = cx.focus.current.filter(|key| key.entry == self.entry) else { return none };
         if self.focused_item(Some(key), cx).is_none_or(|item| !crate::registry::item_has_menu(item)) { return none; }
         let Some(drawn) = <Self as Focusable<H>>::place(self, &key.elem, cx, At::Drawn) else { return none };
@@ -823,7 +823,7 @@ impl RecommendedScreen {
     /// `Want` are not used: `CardSource::more` is `false`.
     ///
     /// **The shelves are held at rest while the page is not yet seen** (`Shelf::dormant`): under
-    /// the route dip's image (`page_image_held`) or while the shelves dissolve in (the page's
+    /// the owner's route dip image (`cx.page_image`) or while the shelves dissolve in (the page's
     /// `fade`). Under the image a card that was lifted (a shelf the page froze mid-ease) is put at
     /// rest on the first tick, because an ease stepped under the image would hold it past the
     /// dissolve; while the shelves dissolve in the page is in view and the let-go eases like an
@@ -839,7 +839,7 @@ impl RecommendedScreen {
     /// the `Enter`; only the one the focus is on keeps anything, the rest are put to rest as above.
     fn shelves_on<H: LibraryLike>(&mut self, ev: &ScreenEvent<H>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let hubs = H::section_hubs(cx);
-        let unseen = self.fade.is_arriving() || plx_ui::containers::transition::page_image_held();
+        let unseen = self.fade.is_arriving() || cx.page_image.is_held();
         let focus = cx.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
         let ticking = matches!(ev, ScreenEvent::Tick(_));
         let mut asks = Vec::new();
@@ -1056,7 +1056,9 @@ impl RecommendedScreen {
                     self.scroll.step(self.scroll_target, K_SCROLL, dt);
                     self.relayout(focused);
                     let hint = self.hint_input(cx);
-                    self.hold_hint.step(hint, tick.ms, dt, &mut |ev| fx.note(ev));
+                    if let Some(event) = self.hold_hint.step(hint, tick.ms, dt, &mut |ev| fx.note(ev), cx.hold_hint) {
+                        fx.push(Fx::HoldHint(event));
+                    }
                     // The page's own first seat: the first row, once there is one.
                     if self.initial && self.readout == Readout::Rows {
                         self.initial = false;

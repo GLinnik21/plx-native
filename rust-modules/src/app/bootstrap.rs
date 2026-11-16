@@ -7,6 +7,7 @@ use plx_ui::rec::Recording;
 use serde::{Deserialize, Serialize};
 pub(crate) const CONTENT_SHAPE: &str = "ContentInitialV1{detail:str,detailsec:u32,detailok:bool,filmography:bool,personcredits:u32,nowan:bool};ContentResourcesV2{admission:Metadata(sid,rk,gen,client)|MetadataCancel(boundary,retired:DetailBatch)|Person(slot,gen,arg,guid,local?,client?,sid?),admitted:bool;result:DetailBatch(seq,req,terminal,Data(key,Option<Detail>)|Dropped(req)|Refused(req))|Person(slot,Mail(gen,Resolve|Media|Profile|Credits|Roles));PersonTerminal:slot+gen+kind-bound;DetailFloats:bits;ContentEffectsV1:complete_nav_store_request_return_memory}";
 pub(crate) mod effects;
+pub(crate) mod presentation;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -105,6 +106,7 @@ pub(crate) fn validate_admission(value: &serde_json::Value, client: u32) -> Resu
 /// to refuse those artifacts at the shape boundary and permit a genuine fresh recording.
 /// V6 / SessionInitV5 adds the captured language preference; controlled System resolves to en-US/24-hour.
 pub(crate) const SHAPE: &str = "ControlledHomeInitV6{locale:capturedSessionPreference_systemEnUS24,version:u32,session:SessionInitV5,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,settings:Option<root|privacy|legal>,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
+#[cfg(test)]
 pub(crate) const SHAPE_V7: &str = "ControlledHomeInitV7{locale:capturedSessionPreference_systemEnUS24,version:u32,session:SessionInitV6,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,settings:Option<root|privacy|legal>,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
 #[cfg(test)]
 pub(crate) const PRE_SETTINGS_SHAPE: &str = "ControlledHomeInitV1{version:u32,session:SessionInit,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
@@ -135,6 +137,24 @@ fn ui_preferences(saved: &plx_plex::plex::session::Session) -> plx_plex::plex::s
         ..Default::default()
     }
 }
+
+/// Install-scoped persisted training, independent of this run's shown/learned latches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InstallHoldHint {
+    pub card: bool,
+    pub pill: bool,
+}
+impl InstallHoldHint {
+    fn capture(saved: &plx_plex::plex::session::Session) -> Self {
+        let taught = saved.hold_hint_taught();
+        Self { card: taught.card, pill: taught.pill }
+    }
+    pub(crate) fn input(self) -> plx_machine::machine::HoldHintRead {
+        plx_machine::machine::HoldHintRead { learned: false, card: self.card, pill: self.pill, context: 0 }
+    }
+}
+pub(crate) const INSTALL_HOLD_HINT_SHAPE: &str = "ControlledInstallHoldHintV1{card:bool,pill:bool}";
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -183,6 +203,8 @@ pub(crate) struct Initial {
     pub install_language: Option<plx_platform::i18n::Preference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub running_language: Option<plx_platform::i18n::Preference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_hold_hint: Option<InstallHoldHint>,
     pub session: plx_session::auth::SessionInit,
     pub consent: plx_telemetry::telemetry::consent::Consent,
     pub home: plx_data::pms::initial::Initial,
@@ -223,7 +245,7 @@ impl Initial {
         let primary = plx_plex::plex::session::ServerRef { address:"127.0.0.1".into(), port:i64::from(port),
             origin_url:origin.base(),token:format!("s{:08x}",seed.wrapping_add(1)),
             tier:Some(plx_plex::plex::probe::Location::Local), ..Default::default() };
-        let initial = Self { version:1, install_language:Some(saved.language), running_language:Some(saved.language), runtime_policy:Some(RuntimePolicy { harness_driven:true, lookahead_rows:3 }), ui_preferences:Some(ui_preferences(&saved)), session:plx_session::auth::SessionInit::captured_boot(saved,Some(primary),Vec::new()),
+        let initial = Self { version:1, install_hold_hint:Some(InstallHoldHint::capture(&saved)), install_language:Some(saved.language), running_language:Some(saved.language), runtime_policy:Some(RuntimePolicy { harness_driven:true, lookahead_rows:3 }), ui_preferences:Some(ui_preferences(&saved)), session:plx_session::auth::SessionInit::captured_boot(saved,Some(primary),Vec::new()),
             consent:Default::default(),home:plx_data::pms::initial::Initial::fresh(),clock_start:0,
             entropy:Entropy::Seeded(seed),primary_client:1,automated:true,settings:settings.clone(),
             content:None, triggers:vec!["plxnative-app-init".into(),"plxnative-rec".into(),
@@ -244,7 +266,7 @@ impl Initial {
             origin_url: plx_plex::plex::Origin::http(host, port).base(), token,
             tier: Some(plx_plex::plex::probe::configured_tier(host)), ..Default::default()
         });
-        let initial = Self { version: 1, install_language: Some(saved.language), running_language: Some(saved.language), runtime_policy: Some(RuntimePolicy::capture()), ui_preferences: Some(ui_preferences(&saved)),
+        let initial = Self { version: 1, install_hold_hint: Some(InstallHoldHint::capture(&saved)), install_language: Some(saved.language), running_language: Some(saved.language), runtime_policy: Some(RuntimePolicy::capture()), ui_preferences: Some(ui_preferences(&saved)),
             session: plx_session::auth::SessionInit::captured_boot(saved, primary, Vec::new()),
             consent: plx_telemetry::telemetry::capture_initial(), clock_start: 0, entropy: Entropy::Captured(entropy),
             primary_client: plx_plex::plex::Client::capture_generation_seed(),
@@ -350,18 +372,17 @@ impl Initial {
 
     pub(crate) fn decode_profile(mut value: serde_json::Value, expected_hash: u64, fingerprint: u64)
         -> Result<Self, &'static str> {
-        use super::recorder::{FP_PRIOR, FP_V6};
-        // Unpublished V9 captured only six preferences. Missing machine inputs cannot be
-        // reconstructed honestly from ambient cells or silently filled with today's defaults.
-        if fingerprint == super::recorder::state_fp_v9() { return Err("incompatible six-field UI preference profile; requires V10 capture"); }
-        let current = fingerprint == super::recorder::state_fp();
-        if value.get("runtime_policy").is_some() != current { return Err("incompatible runtime policy profile"); }
-        if value.get("ui_preferences").is_some() != current { return Err("incompatible UI preference profile"); }
-        if fingerprint == super::recorder::state_fp_v10() { return Err("incompatible install fact profile; requires V11 capture"); }
-        if value.get("install_language").is_some() != current || value.get("running_language").is_some() != current { return Err("incompatible install language profile"); }
+        // Older captures omit owned hint state or positive-swap player observations.
+        // Refuse before decoding boot inputs or touching resources; no legacy scheduler.
+        if fingerprint != super::recorder::state_fp() {
+            return Err("incompatible owner-input/presentation state; requires V13 capture");
+        }
+        if value.get("install_hold_hint").is_none() { return Err("missing controlled install hold-hint fact"); }
+        if value.get("runtime_policy").is_none() { return Err("incompatible runtime policy profile"); }
+        if value.get("ui_preferences").is_none() { return Err("incompatible UI preference profile"); }
+        if value.get("install_language").is_none() || value.get("running_language").is_none() { return Err("incompatible install language profile"); }
         match fingerprint {
-            FP_PRIOR => Self::decode(value, expected_hash),
-            fp if fp == FP_V6 || fp == super::recorder::state_fp_v7() || current => {
+            fp if fp == super::recorder::state_fp() => {
                 let session = value.get_mut("session").ok_or("invalid session codec")?;
                 let envelope = session.as_object_mut().ok_or("invalid session codec")?;
                 if envelope.len() != 2 || envelope.get("codec").and_then(|v| v.as_u64()) != Some(6) {
@@ -415,6 +436,9 @@ impl LogicalState for Initial {
         if let Some(prefs) = &self.ui_preferences {
             c.str(UI_PREFERENCES_SHAPE).str(&serde_json::to_string(prefs).expect("finite typed UI preferences"));
         }
+        if let Some(taught) = self.install_hold_hint {
+            c.str(INSTALL_HOLD_HINT_SHAPE).bool(taught.card).bool(taught.pill);
+        }
     }
     fn probe(&self, out: &mut String) { out.push_str("controlled=home version=1"); }
 }
@@ -436,8 +460,6 @@ impl Preflight {
                 let (mode, path) = super::recorder::ReplayMode::parse(&path)?;
                 let path = std::path::Path::new(path);
                 let recording = Recording::load(path, super::recorder::state_fp())
-                    .or_else(|_| Recording::load(path, super::recorder::state_fp_v7()))
-                    .or_else(|_| Recording::load(path, super::recorder::FP_PRIOR))
                     .map_err(|_| "invalid or incompatible recording")?;
                 let initial = Initial::decode_profile(recording.header.init_data.clone(), recording.header.init_hash,
                     recording.header.state_fp)?;

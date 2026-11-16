@@ -967,6 +967,7 @@ mod tests {
             tick: Tick::default(),
             measure,
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             focus: FocusRead::default(),
             owner: InputOwner::Entry(ENTRY),
         }

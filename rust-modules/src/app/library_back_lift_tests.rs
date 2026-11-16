@@ -30,15 +30,15 @@ struct Rig {
     w: World,
     dip: DipImage,
     frames: Vec<Frame>,
-    _held: ImageHeld,
+
 }
 
 impl Rig {
     fn new(name: &str) -> Rig {
         let mut w = World::movies_library(name, false);
         w.d.nav.tabs.stack.transition = Box::new(PageDip::new());
-        w.bridge.stores.browse.borrow_mut().seed_items_for_test(120);
-        let mut rig = Rig { w, dip: DipImage::default(), frames: Vec::new(), _held: ImageHeld };
+        w.bridge.bridge().stores.browse.borrow_mut().seed_items_for_test(120);
+        let mut rig = Rig { w, dip: DipImage::default(), frames: Vec::new() };
         rig.run(90);
         assert_eq!(rig.w.grid_cell(), Some((0, 0)), "premise: the library opens on its first poster");
         rig

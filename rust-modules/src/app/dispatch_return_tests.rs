@@ -14,7 +14,8 @@ fn filmography_fifo_first_navigation_phase() {
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::with_transition(Box::new(
         plx_ui::containers::transition::PageDip::new()));
-    let mut rig = super::Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     let detail = AppArg::Content(ContentArg::Detail {
         sid: plx_plex::plex::ServerId::UNSET, rk: "phase-oracle".into(),
     });
@@ -44,28 +45,26 @@ fn filmography_fifo_first_navigation_phase() {
 #[test]
 fn watchlist_commands_use_the_product_fifo_runner() {
     let _guard = plx_base::testlock::serial();
-    let rig = super::Bridge::for_test(|| 0);
-    assert!(rig.external_app_fx(&AppFx::Watchlist(
-        plx_screens::watchlist::page::WatchlistOut::Retry)),
+    assert!(matches!(AppFx::Watchlist(
+        plx_screens::watchlist::page::WatchlistOut::Retry).route(), EffectDisposition::External(ExternalAppFx::Watchlist(_))),
         "Watchlist admission must yield at its FIFO position, not accumulate a family queue");
 }
 
 #[test]
 fn search_commands_use_the_product_fifo_runner() {
     let _guard = plx_base::testlock::serial();
-    let rig = super::Bridge::for_test(|| 0);
-    assert!(rig.external_app_fx(&AppFx::Search(plx_screens::registry::SearchReq::Back)),
+    assert!(matches!(AppFx::Search(plx_screens::registry::SearchReq::Back).route(), EffectDisposition::External(ExternalAppFx::Search(_))),
         "Search commands must yield at their FIFO position");
 }
 
 #[test]
 fn resource_screen_commands_use_the_product_fifo_runner() {
     let _guard = plx_base::testlock::serial();
-    let rig = super::Bridge::for_test(|| 0);
+
     for fx in [AppFx::Library(LibraryReq::Account),
         AppFx::Home(plx_screens::registry::HomeReq::Account),
         AppFx::Content(plx_screens::registry::ContentReq::Back)] {
-        assert!(rig.external_app_fx(&fx), "resource-backed screen commands must yield before execution");
+        assert!(matches!(fx.route(), EffectDisposition::External(_)), "resource-backed screen commands must yield before execution");
     }
 }
 
@@ -75,7 +74,8 @@ fn product_runner_preserves_mixed_family_order_and_mounts_the_surface_in_the_sam
     use plx_screens::watchlist::page::WatchlistOut;
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = super::Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     super::nav_root(&mut d, AppArg::Watchlist);
     super::frame(&mut d, &mut rig, Tick::default(), vec![]);
     let watchlist = MachineId::Instance(d.nav.top_page().unwrap().inst.as_ref().unwrap().id);
@@ -83,20 +83,20 @@ fn product_runner_preserves_mixed_family_order_and_mounts_the_surface_in_the_sam
     for i in 1..32 { super::frame(&mut d, &mut rig, Tick { ms: i * 16, dt_us: 16_000 }, vec![]); }
     let entry = d.nav.top_page().unwrap().id;
     let search = MachineId::Instance(d.nav.top_page().unwrap().inst.as_ref().unwrap().id);
-    rig.completed_screen_commands.clear();
-    rig.screen_command_receipts.clear();
+    rig.retained.completed_screen_commands.clear();
+    rig.retained.screen_command_receipts.clear();
     d.emit(search, Fx::App(AppFx::Search(SearchReq::Tab(HomeTab::Search))));
     d.emit(watchlist, Fx::App(AppFx::Watchlist(WatchlistOut::SetOptions(Default::default()))));
     d.emit(search, Fx::App(AppFx::Search(SearchReq::Account)));
     super::frame(&mut d, &mut rig, Tick { ms: 512, dt_us: 16_000 }, vec![]);
-    assert_eq!(rig.completed_screen_commands.len(), 3);
-    assert_eq!(rig.completed_screen_commands[0], "search:Tab(Search)");
-    assert!(rig.completed_screen_commands[1].starts_with("watchlist:SetOptions"));
-    assert_eq!(rig.completed_screen_commands[2], "search:Account");
-    assert_eq!(rig.screen_command_receipts.iter().map(|(_, from, outcome)| (*from, *outcome)).collect::<Vec<_>>(),
+    assert_eq!(rig.retained.completed_screen_commands.len(), 3);
+    assert_eq!(rig.retained.completed_screen_commands[0], "search:Tab(Search)");
+    assert!(rig.retained.completed_screen_commands[1].starts_with("watchlist:SetOptions"));
+    assert_eq!(rig.retained.completed_screen_commands[2], "search:Account");
+    assert_eq!(rig.retained.screen_command_receipts.iter().map(|(_, from, outcome)| (*from, *outcome)).collect::<Vec<_>>(),
         [(search, AppCommandOutcome::Completed), (watchlist, AppCommandOutcome::Completed),
             (search, AppCommandOutcome::Completed)]);
-    assert!(rig.screen_command_receipts.windows(2).all(|pair| pair[0].0.0 < pair[1].0.0));
+    assert!(rig.retained.screen_command_receipts.windows(2).all(|pair| pair[0].0.0 < pair[1].0.0));
     assert_eq!(d.nav.top_page().unwrap().id, entry, "the own-tab no-op preserves the page");
     assert!(d.nav.modals.top().is_some_and(|surface| surface.entry.inst.is_some()),
         "the runner finishes ahead of this frame's one navigation commit");
@@ -109,7 +109,8 @@ fn product_runner_refuses_covered_search_and_retires_an_unmounted_sender() {
     use plx_screens::registry::{AppArg, SearchReq};
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = super::Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     super::nav_root(&mut d, AppArg::Search);
     super::frame(&mut d, &mut rig, Tick::default(), vec![]);
     let search = MachineId::Instance(d.nav.top_page().unwrap().inst.as_ref().unwrap().id);
@@ -117,7 +118,7 @@ fn product_runner_refuses_covered_search_and_retires_an_unmounted_sender() {
     for i in 1..32 { super::frame(&mut d, &mut rig, Tick { ms: i * 16, dt_us: 16_000 }, vec![]); }
     d.emit(search, Fx::App(AppFx::Search(SearchReq::Back)));
     super::frame(&mut d, &mut rig, Tick { ms: 512, dt_us: 16_000 }, vec![]);
-    assert_eq!(rig.screen_command_receipts.last().map(|(_, from, outcome)| (*from, *outcome)),
+    assert_eq!(rig.retained.screen_command_receipts.last().map(|(_, from, outcome)| (*from, *outcome)),
         Some((search, AppCommandOutcome::Refused)));
     assert!(d.top_arg() == Some(&AppArg::Watchlist));
     d.emit(search, Fx::App(AppFx::ItemMenu(plx_screens::registry::ItemMenuReq {
@@ -126,21 +127,47 @@ fn product_runner_refuses_covered_search_and_retires_an_unmounted_sender() {
         loaded_episode: false, from_home: false,
     })));
     super::frame(&mut d, &mut rig, Tick { ms: 528, dt_us: 16_000 }, vec![]);
-    assert_eq!(rig.screen_command_receipts.last().map(|(_, from, outcome)| (*from, *outcome)),
+    assert_eq!(rig.retained.screen_command_receipts.last().map(|(_, from, outcome)| (*from, *outcome)),
         Some((search, AppCommandOutcome::Refused)), "a covered page cannot execute an item action");
     super::nav_root(&mut d, AppArg::Home);
     for i in 33..65 { super::frame(&mut d, &mut rig, Tick { ms: i * 16, dt_us: 16_000 }, vec![]); }
     d.emit(search, Fx::App(AppFx::Search(SearchReq::Back)));
     super::frame(&mut d, &mut rig, Tick { ms: 1040, dt_us: 16_000 }, vec![]);
-    assert_eq!(rig.screen_command_receipts.last().map(|(_, from, outcome)| (*from, *outcome)),
+    assert_eq!(rig.retained.screen_command_receipts.last().map(|(_, from, outcome)| (*from, *outcome)),
         Some((search, AppCommandOutcome::RetiredSender)));
-    assert!(!rig.completed_screen_commands.iter().any(|label| label == "search:Back"));
+    assert!(!rig.retained.completed_screen_commands.iter().any(|label| label == "search:Back"));
     assert!(d.top_arg() == Some(&AppArg::Home));
     assert_eq!(d.queued(), 0);
 }
 
+#[test]
+fn product_bridge_reports_noncompleted_command_outcomes_to_event_log() {
+    let _guard = plx_base::testlock::serial();
+    plx_base::eventlog::with_private_log(|| {
+        let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = owner.bridge();
+        let sender = MachineId::Nav;
+        let mut dispatcher = Dispatcher::<AppHost>::new();
+        dispatcher.emit(sender, Fx::App(AppFx::Library(LibraryReq::Account)));
+        super::frame(&mut dispatcher, &mut bridge, Tick::default(), vec![]);
+        let (id, _, _) = *bridge.retained.screen_command_receipts.iter()
+            .find(|(_, from, outcome)| *from == sender && *outcome == AppCommandOutcome::Refused)
+            .expect("the resource-free runner refuses the command");
+        bridge.app_command_done(AppCommandId(42), sender, AppCommandOutcome::Failed);
+        let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+        for expected in [
+            format!("app command: id={id:?} from={sender:?} outcome=Refused"),
+            format!("app command: id={:?} from={sender:?} outcome=Failed", AppCommandId(42)),
+        ] {
+            assert_eq!(log.lines().filter(|line| line.contains(&expected)).count(), 1,
+                "expected one {expected:?} in {log:?}");
+        }
+    });
+}
+
 use super::AppHost;
-use plx_screens::registry::{AppFx, LibraryReq};
+use plx_screens::registry::{AppFx, InlineAppFx, ExternalAppFx, LibraryReq};
+use plx_machine::machine::{AppEffect, EffectDisposition};
 use plx_data::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
 use plx_ui::dispatch::{CxParts, Dispatcher, FrameReport, NoTap, Rig, Split};
@@ -225,6 +252,7 @@ impl plx_ui::dispatch::Tap<ProbeHost> for OwnedTap {
     fn tick(&mut self, _: u64, _: Tick) { self.calls.push("tick"); }
     fn effect(&mut self, _: u64, _: &plx_machine::machine::Stamped<ProbeHost>) { self.calls.push("effect"); }
     fn frame_done(&mut self, _: u64) { self.calls.push("done"); }
+    fn command_done(&mut self, _: u64, _: AppCommandId, _: MachineId, _: AppCommandOutcome) { self.calls.push("command"); }
 }
 
 #[derive(Default)]
@@ -237,22 +265,21 @@ struct ProbeRig {
         owned_tap: Option<OwnedTap>,
 }
 impl Rig<ProbeHost> for ProbeRig {
-    fn dispatch_tap(&mut self) -> Option<&mut dyn plx_ui::dispatch::Tap<ProbeHost>> {
-            self.owned_tap.as_mut().map(|tap| tap as &mut dyn plx_ui::dispatch::Tap<ProbeHost>)
+    fn dispatch_tap(&mut self) -> plx_ui::dispatch::FrameObservers<'_, ProbeHost> {
+        match &mut self.owned_tap {
+            Some(tap) => plx_ui::dispatch::FrameObservers::Owned(tap),
+            None => plx_ui::dispatch::FrameObservers::Caller,
         }
+    }
         fn split(&mut self) -> Split<'_, ProbeHost> {
         Split { mounter: &mut self.probe, views: (), measure: &FixtureMeasure }
     }
     fn deliver(&mut self, _: MachineId, _: &(), _: &CxParts<u32>, _: &mut Effects<'_, ProbeHost>) -> Handled { Handled::No }
     fn timer(&mut self, _: MachineId, _: TimerId, _: &CxParts<u32>, _: &mut Effects<'_, ProbeHost>) {}
     fn app_return(&mut self, _: MachineId, ret: ReturnState<u32, Memory>) { self.current_return = ret.memory; }
-    fn app_fx(&mut self, _: MachineId, fx: AppFx, _: &CxParts<u32>, _: &mut Effects<'_, ProbeHost>) {
-
+    fn app_fx(&mut self, _: MachineId, _: InlineAppFx, _: &CxParts<u32>, _: &mut Effects<'_, ProbeHost>) {
         if let Some(tap) = &mut self.owned_tap { tap.calls.push("execute"); }
-                self.executed.push((matches!(fx, AppFx::Library(LibraryReq::Account)), self.current_return.0));
-    }
-    fn external_app_fx(&self, fx: &AppFx) -> bool {
-        self.defer_library && matches!(fx, AppFx::Library(LibraryReq::Account) | AppFx::Content(_) | AppFx::Home(_))
+        self.executed.push((false, self.current_return.0));
     }
     fn app_command_done(&mut self, id: AppCommandId, from: MachineId, outcome: AppCommandOutcome) {
         self.receipts.push((id, from, outcome));
@@ -263,6 +290,12 @@ impl Rig<ProbeHost> for ProbeRig {
     fn opaque_route(&mut self, _: bool) {}
     fn clear_opaque_region(&mut self) {}
     fn now_us(&self) -> u64 { 0 }
+}
+impl ProbeRig {
+    fn execute_external(&mut self, _: MachineId, fx: ExternalAppFx, _: &CxParts<u32>, _: &mut Effects<'_, ProbeHost>) {
+        if let Some(tap) = &mut self.owned_tap { tap.calls.push("execute"); }
+        self.executed.push((matches!(fx, ExternalAppFx::Library(LibraryReq::Account)), self.current_return.0));
+    }
 }
 fn booted() -> (Dispatcher<ProbeHost>, ProbeRig) {
     let mut d = Dispatcher::new();
@@ -288,7 +321,18 @@ fn enqueue(d: &mut Dispatcher<ProbeHost>, fx: AppFx, absorb: bool) {
     else { d.emit(MachineId::Nav, Fx::App(fx)); }
 }
 fn drain(d: &mut Dispatcher<ProbeHost>, rig: &mut ProbeRig, max: u32) {
-    d.drain(rig, &d.parts(Tick::default()), max, &mut FrameReport::default(), &mut NoTap);
+    let parts = d.parts(Tick::default());
+    let mut report = FrameReport::default();
+    d.drain(rig, &parts, max, &mut report, &mut NoTap);
+    if !rig.defer_library {
+        while let Some(command) = d.take_app_command() {
+            rig.app_return(command.from, command.return_state);
+            let mut out = vec![];
+            rig.execute_external(command.from, command.effect.ok().unwrap(), &parts,
+                &mut Effects::new(&mut out, command.from, &mut d.present));
+            d.resume_app_command(rig, command.id, AppCommandOutcome::Completed, out, &mut report, &mut NoTap).unwrap();
+        }
+    }
 }
 
 #[test]
@@ -340,12 +384,12 @@ fn owned_observer_and_command_resources_are_borrowed_sequentially_once() {
     let command = d.take_app_command().unwrap();
     let mut out = vec![];
     rig.app_return(command.from, command.return_state);
-    rig.app_fx(command.from, command.effect.unwrap_or_else(|_| panic!("live command")), &parts,
+    rig.execute_external(command.from, command.effect.unwrap_or_else(|_| panic!("live command")), &parts,
         &mut Effects::new(&mut out, command.from, &mut d.present));
     assert_eq!(d.resume_app_command(&mut rig, command.id, AppCommandOutcome::Completed,
         out, &mut report, &mut fallback), Ok(1));
-    assert_eq!(rig.owned_tap.as_ref().unwrap().calls, ["effect", "execute", "effect", "execute"]);
-    assert_eq!(fallback.0, 0, "a single owner must receive every callback, never two observers");
+    assert_eq!(rig.owned_tap.as_ref().unwrap().calls, ["effect", "execute", "command", "effect", "execute"]);
+    assert_eq!(fallback.0, 2, "the passive caller must observe each effect across yield/resume exactly once");
     assert_eq!(rig.receipts.len(), 1);
 }
 
@@ -382,7 +426,7 @@ fn external_commands_keep_frozen_sender_bookmarks_budget_and_once_only_trace() {
         let first = command.id;
         assert_eq!(command.from, MachineId::Nav);
         assert_eq!(command.return_state.memory.0, 11);
-        assert!(matches!(command.effect, Ok(AppFx::Library(LibraryReq::Account))));
+        assert!(matches!(command.effect, Ok(ExternalAppFx::Library(LibraryReq::Account))));
         assert!(d.take_app_command().is_none());
         assert_eq!(d.drain(&mut rig, &parts, 100, &mut report, &mut tap), 0);
         assert_eq!(tap.0, 1, "a held head must not be traced again");
@@ -391,7 +435,7 @@ fn external_commands_keep_frozen_sender_bookmarks_budget_and_once_only_trace() {
         // The outside runner executes the owned command once; no borrowed page crosses this call.
         rig.app_return(command.from, command.return_state);
         let mut out = vec![];
-        rig.app_fx(command.from, command.effect.ok().unwrap(), &parts,
+        rig.execute_external(command.from, command.effect.ok().unwrap(), &parts,
             &mut Effects::new(&mut out, command.from, &mut d.present));
         assert_eq!(d.resume_app_command(&mut rig, first, AppCommandOutcome::Completed,
             out, &mut report, &mut tap), Ok(1));
@@ -425,9 +469,9 @@ fn mixed_app_families_are_yielded_in_emission_order_not_family_order() {
     let mut seen = vec![];
     while let Some(command) = d.take_app_command() {
         seen.push(match command.effect {
-            Ok(AppFx::Content(_)) => "content",
-            Ok(AppFx::Home(_)) => "home",
-            Ok(AppFx::Library(_)) => "library",
+            Ok(ExternalAppFx::Content(_)) => "content",
+            Ok(ExternalAppFx::Home(_)) => "home",
+            Ok(ExternalAppFx::Library(_)) => "library",
             _ => panic!("unexpected command"),
         });
         d.resume_app_command(&mut rig, command.id, AppCommandOutcome::Completed, vec![],
@@ -521,7 +565,13 @@ fn every_external_terminal_outcome_unblocks_without_reexecuting_the_head() {
             assert!(d.resume_app_command(&mut rig, id, AppCommandOutcome::Completed,
                 vec![], &mut report, &mut NoTap).is_err());
         } else { assert!(command.effect.is_ok()); }
-        assert_eq!(d.resume_app_command(&mut rig, id, outcome, vec![], &mut report, &mut NoTap), Ok(1));
+        let mut caller = OwnedTap::default();
+        rig.owned_tap = Some(OwnedTap::default());
+        assert_eq!(d.resume_app_command(&mut rig, id, outcome, vec![], &mut report, &mut caller), Ok(1));
+        assert_eq!(caller.calls, ["command", "effect"]);
+        assert_eq!(rig.owned_tap.as_ref().unwrap().calls, ["command", "effect", "execute"]);
+        assert!(d.resume_app_command(&mut rig, id, outcome, vec![], &mut report, &mut caller).is_err());
+        assert_eq!(caller.calls, ["command", "effect"], "duplicate resume cannot publish another receipt");
         assert_eq!(rig.executed, [(false, 0)]);
         assert_eq!(rig.receipts, [(id, source, outcome)]);
         assert_eq!(d.queued(), 0);

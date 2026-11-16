@@ -80,7 +80,7 @@ impl Drop for Servers {
 
 /// One delivery of the Search pump arm with `dt_us` of frame time, as the frame loop makes it.
 fn pump(rig: &mut Bridge, dt_us: u32) {
-    let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
+    let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: tick(0), press: Default::default(), focus: Default::default(),
         owner: InputOwner::Entry(EntryId(0)) };
     let mut present = Present::new();
     let mut effects = Vec::new();
@@ -101,7 +101,8 @@ fn finish_fetches(rig: &mut Bridge) {
 #[test]
 fn a_query_over_two_slots_makes_one_fetch_per_slot_and_lands_both() {
     let servers = Servers::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     // A store's first pump sees the registry as changed from nothing and supersedes whatever is
     // armed; take that pump before the query so the query is not wiped by it.
     pump(&mut rig, 0);
@@ -139,7 +140,8 @@ fn a_query_over_two_slots_makes_one_fetch_per_slot_and_lands_both() {
 #[test]
 fn a_superseded_querys_late_landing_is_dropped() {
     let servers = Servers::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     pump(&mut rig, 0);
 
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("fi".into()));

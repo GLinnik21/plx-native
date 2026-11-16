@@ -341,10 +341,10 @@ fn an_episode_pages_go_to_show_disc_opens_the_show_on_the_episodes_season_and_ba
     // reveals asks its server again, so for a moment the page has no item (its hero is Play and the
     // watch disc) and then the episode lands. The disc must be focused again once it has.
     let show = plx_data::metadata::Detail { sid, rk: "show-7".into(), is_show: true, kind: "show".into(), ..Default::default() };
-    plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(), Some(show));
+    plx_data::metadata::set_current_for_test(w.bridge.bridge().stores.metadata.state_mut(), Some(show));
     w.tap(Key::Back, 2);
     assert!(w.on(&episode), "BACK returns to the episode page");
-    plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(),
+    plx_data::metadata::set_current_for_test(w.bridge.bridge().stores.metadata.state_mut(),
         Some(World::episode_detail(sid, "ep-5", "show-7", 3)));
     w.frames(60);
     assert_eq!(w.elem(), Some(GO_SHOW), "BACK returns with the disc focused");

@@ -98,7 +98,7 @@ fn both_sort_and_filter_panels_name_facts_and_directions_the_same_way() {
     let entry = |key: &str, title: &str, default_desc: bool| plx_data::browse::SortEntry {
         key: key.into(), desc_key: String::new(), title: title.into(), default_desc };
     // What a PMS declares for a movie library (tests/mock_pms.py), titles as the server writes them.
-    w.bridge.stores.browse.borrow_mut().seed_query_choices_for_test(vec![
+    w.bridge.bridge().stores.browse.borrow_mut().seed_query_choices_for_test(vec![
         entry("titleSort", "Title", false), entry("addedAt", "Date Added", true),
         entry("originallyAvailableAt", "Release Date", true), entry("rating", "Critic Rating", true),
         entry("lastViewedAt", "Date Viewed", true)], Vec::new());

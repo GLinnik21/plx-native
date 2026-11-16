@@ -5,7 +5,9 @@ use super::mock::{FrameCache, PIXELS};
 use super::*;
 
 // Legacy host-only cases have no typed runtime damage; production passes it explicitly.
-fn begin_frame(page_moving: bool) { super::begin_frame(page_moving, false); }
+fn begin_frame(modal: &crate::containers::modal::ModalPresentation, page_moving: bool) {
+    super::begin_frame(modal, 0.0, page_moving, false);
+}
 
 #[test]
 fn typed_page_damage_refreshes_frozen_host_but_surface_damage_does_not() {
@@ -18,9 +20,9 @@ fn typed_page_damage_refreshes_frozen_host_but_surface_damage_does_not() {
     let draw = |present: &mut Present, ms, during_draw| {
         report::collect_into(present, ms);
         present.take(ms);
-        super::begin_frame(false, present.page_damaged());
+        super::begin_frame(&_reset.modal, 0.0, false, present.page_damaged());
         {
-            let _page = page_pass();
+            let _page = page_pass(&_reset.modal);
             ink("page");
         }
         if during_draw {
@@ -50,26 +52,97 @@ fn typed_page_damage_refreshes_frozen_host_but_surface_damage_does_not() {
     assert_eq!(page_epoch(), captured.wrapping_add(2));
 }
 
+#[test]
+fn nested_decision_alert_discards_cached_pixels_without_publishing_modal_policy() {
+    use crate::decision_alert::{Answers, DecisionAlert};
+    let _serial = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
+    // A Settings/consent-style parent already owns its modal presentation. The embedded
+    // DecisionAlert has local choreography, but cannot change that parent's host/input policy.
+    let (d, _, _) = crate::fixture::booted();
+    let other_before = d.modal_presentation();
+    embedded_alert_frame(&_reset.modal, true, true);
+    assert!(matches!(held(), Held::Ground(_)));
+    let epoch = page_epoch();
+    let parent_before = _reset.modal.read;
+    let mut alert = DecisionAlert::new();
+    alert.open_card(c"Confirm", vec!["Synthetic disclosure".into()], Answers::Two);
+    assert!(held() == Held::Nothing, "opening a nested outline discards the old pixels");
+    embedded_alert_frame(&_reset.modal, true, true);
+    assert_eq!(page_epoch(), epoch.wrapping_add(1));
+    assert!(matches!(held(), Held::Ground(_)));
+    alert.close();
+    assert!(held() == Held::Nothing, "closing cannot keep the alert baked into a composite");
+    embedded_alert_frame(&_reset.modal, true, true);
+    assert_eq!(page_epoch(), epoch.wrapping_add(2));
+    assert_eq!(_reset.modal.read, parent_before);
+    assert_eq!(d.modal_presentation().read, other_before.read,
+        "discarding context-local pixels never publishes another runtime's modal policy");
+}
+
+#[test]
+fn same_thread_owner_switch_never_reuses_another_hosts_frozen_pixels() {
+    use crate::dispatch::NoTap;
+    use crate::fixture::{booted, tick, FixtureArg};
+    use crate::containers::modal::Style;
+    use plx_machine::machine::{MachineId, NavOp};
+    let _serial = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
+    let (mut a, mut ar, _) = booted();
+    let (mut b, mut br, _) = booted();
+    a.nav.next_style = Style::Compact;
+    a.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    a.frame(&mut ar, tick(16), vec![], vec![], &mut NoTap);
+    let a_open = a.modal_presentation();
+    let draw = |modal: &crate::containers::modal::ModalPresentation, page| {
+        super::begin_frame(modal, 0.0, false, false);
+        PIXELS.with(|p| p.borrow_mut().clear());
+        { let _page = page_pass(modal); ink(page); }
+        PIXELS.with(|p| p.borrow().clone())
+    };
+    assert_eq!(draw(&a_open, "A"), ["A"]);
+    let epoch = page_epoch();
+    assert_eq!(draw(&a_open, "wrong"), ["A"], "same owner reuses its frozen host");
+    assert_eq!(page_epoch(), epoch);
+    b.frame(&mut br, tick(32), vec![], vec![], &mut NoTap);
+    let b_rest = b.modal_presentation();
+    assert_eq!(draw(&b_rest, "B"), ["B"], "a resting owner never inherits A's freeze");
+    assert_eq!(draw(&a_open, "A-new"), ["A-new"], "returning A recaptures rather than serving B's pixels");
+    b.nav.next_style = Style::Compact;
+    b.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    b.frame(&mut br, tick(48), vec![], vec![], &mut NoTap);
+    let b_open = b.modal_presentation();
+    assert_eq!(a.nav.modals.top().unwrap().entry.id, b.nav.modals.top().unwrap().entry.id,
+        "equal per-dispatcher entry ids are the aliasing case");
+    assert_eq!(draw(&b_open, "B-open"), ["B-open"]);
+    assert_eq!(draw(&a_open, "A-back"), ["A-back"]);
+    assert_eq!(a.modal_presentation().read, a_open.read, "render cache switches cannot mutate modal authority");
+}
+
 struct Reset {
-    users: u32,
+    modal: crate::containers::modal::ModalPresentation,
     frozen: bool,
 }
 impl Reset {
     fn new(cache_off: bool) -> Self {
-        let users = HOST_USERS.swap(1, Relaxed);
+        let mut stack = crate::containers::modal::ModalStack::<crate::fixture::FixtureHost>::new();
+        stack.present(&mut crate::containers::Minter::default(), crate::fixture::FixtureArg::Modal,
+            crate::containers::modal::Style::Sheet);
+        let modal = stack.presentation();
+        CACHE_OWNER.set(None);
         let frozen = plx_gfx::gfx::set_page_frozen(false);
         cache(|c| *c = FrameCache { snapshot: None, off: cache_off, prev: None });
         HELD.set(Held::Nothing);
         CAPTURE_OWED.store(false, Relaxed);
         CAPTURE_POINTLESS.store(false, Relaxed);
         GROUND_DRAWN.store(false, Relaxed);
-        Self { users, frozen }
+        Self { modal, frozen }
     }
 }
 impl Drop for Reset {
     fn drop(&mut self) {
         invalidate();
-        HOST_USERS.store(self.users, Relaxed);
+        CACHE_OWNER.set(None);
         plx_gfx::gfx::set_page_frozen(self.frozen);
         CAPTURE_OWED.store(false, Relaxed);
         CAPTURE_POINTLESS.store(false, Relaxed);
@@ -83,12 +156,12 @@ fn ink(label: &'static str) {
     }
 }
 
-fn embedded_alert_frame(settled: bool, later_scope: bool) -> Vec<&'static str> {
-    begin_frame(false);
+fn embedded_alert_frame(modal: &crate::containers::modal::ModalPresentation, settled: bool, later_scope: bool) -> Vec<&'static str> {
+    begin_frame(modal, false);
     // BUFFER_DESTROYED: every present starts with no usable prior framebuffer contents.
     PIXELS.with(|p| p.borrow_mut().clear());
     {
-        let _page = page_pass();
+        let _page = page_pass(modal);
         ink("page");
         {
             let _scrim = live();
@@ -115,12 +188,12 @@ fn captured_ground_cannot_overwrite_an_embedded_alerts_foreground() {
     let _serial = plx_base::testlock::serial();
     let _reset = Reset::new(false);
     let expected = vec!["page", "scrim", "glass", "title/body/buttons"];
-    assert_eq!(embedded_alert_frame(false, true), expected, "opening frame");
-    assert_eq!(embedded_alert_frame(true, true), expected, "first settled frame");
-    assert_eq!(embedded_alert_frame(true, true), expected, "cached input frame");
+    assert_eq!(embedded_alert_frame(&_reset.modal, false, true), expected, "opening frame");
+    assert_eq!(embedded_alert_frame(&_reset.modal, true, true), expected, "first settled frame");
+    assert_eq!(embedded_alert_frame(&_reset.modal, true, true), expected, "cached input frame");
     // Capture attribution is now supplied by the owning Present.
-    super::begin_frame(false, true);
-    assert_eq!(embedded_alert_frame(true, true), expected, "host damage recapture");
+    super::begin_frame(&_reset.modal, 0.0, false, true);
+    assert_eq!(embedded_alert_frame(&_reset.modal, true, true), expected, "host damage recapture");
 }
 
 #[test]
@@ -129,11 +202,11 @@ fn cache_off_and_no_later_scope_explain_the_old_green_paths() {
     let expected = vec!["page", "scrim", "glass", "title/body/buttons"];
     {
         let _reset = Reset::new(true);
-        assert_eq!(embedded_alert_frame(true, true), expected, "cache-off simulator");
+        assert_eq!(embedded_alert_frame(&_reset.modal, true, true), expected, "cache-off simulator");
     }
     {
         let _reset = Reset::new(false);
-        assert_eq!(embedded_alert_frame(true, false), expected, "alert drawn last");
+        assert_eq!(embedded_alert_frame(&_reset.modal, true, false), expected, "alert drawn last");
     }
 }
 
@@ -144,13 +217,13 @@ fn reconciling_card_content_invalidates_its_cached_ground_only_when_changed() {
     let _reset = Reset::new(false);
     let mut alert = DecisionAlert::new();
     alert.open_card(c"Details", vec!["support".into()], Answers::One);
-    embedded_alert_frame(true, true);
+    embedded_alert_frame(&_reset.modal, true, true);
     assert!(matches!(held(), Held::Ground(_)));
     assert!(!alert.reconcile_card(c"Details", vec!["support".into()], Answers::One));
     assert!(matches!(held(), Held::Ground(_)), "unchanged content keeps its snapshot");
     assert!(alert.reconcile_card(c"Details", vec!["receipt".into(), "support".into()], Answers::Two));
     assert!(held() == Held::Nothing, "the taller card cannot reuse the old panel outline");
-    assert_eq!(embedded_alert_frame(true, true), ["page", "scrim", "glass", "title/body/buttons"]);
+    assert_eq!(embedded_alert_frame(&_reset.modal, true, true), ["page", "scrim", "glass", "title/body/buttons"]);
 }
 
 // Moved here from `gfx.rs`'s tests (module-layers step L5): it drives the popover host's
@@ -161,8 +234,9 @@ fn a_field_keeps_its_dither_through_every_motion() {
     use plx_machine::motion::report::{frame_begin, note_spring, page_moving, present_moving, MotionScope};
 
     let _g = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
     frame_begin(1.0 / 60.0);
-    begin_frame(false);
+    begin_frame(&_reset.modal, false);
     assert_eq!(plx_gfx::gfx::dither_for_field(700.0, 700.0), plx_gfx::gfx::DITHER_LSB, "at rest, the field pays");
 
     // A POPOVER's spring: 100 units from its target, stepped inside its own scope, the way
@@ -172,7 +246,7 @@ fn a_field_keeps_its_dither_through_every_motion() {
     note_spring(0.0, 100.0, 0.0);
     assert!(scope.close(), "the scope saw the spring");
     assert!(present_moving() && !page_moving());
-    begin_frame(false);
+    begin_frame(&_reset.modal, false);
     assert_eq!(
         plx_gfx::gfx::dither_for_field(700.0, 700.0),
         plx_gfx::gfx::DITHER_LSB,
@@ -185,7 +259,7 @@ fn a_field_keeps_its_dither_through_every_motion() {
     frame_begin(1.0 / 60.0);
     note_spring(0.0, 100.0, 0.0);
     assert!(page_moving());
-    begin_frame(true);
+    begin_frame(&_reset.modal, true);
     assert_eq!(plx_gfx::gfx::dither_for_field(700.0, 700.0), plx_gfx::gfx::DITHER_LSB, "page motion is not a field's business");
 }
 
@@ -388,8 +462,8 @@ fn a_morphing_panel_grows_from_the_pill_and_its_glass_is_whole_once_it_is_down()
 /// **A menu's glass stands on ONE capture of its host while it opens and stays, and one more for
 /// its whole close.** Frames of a menu over a still page, through the real host protocol: the
 /// snapshot is taken once ([`page_epoch`] moves once) for the open and the stay, however its own
-/// springs move; the dismiss drops it (`Popover::release`) and the close's first frame takes it
-/// again, after which the fade re-takes nothing. The glass's rim reads the snapshot's texture
+/// springs move; the container's dismissal changes its snapshot signature and the close's first
+/// frame takes it again, after which the fade re-takes nothing. The rim reads the snapshot's texture
 /// (the CPU stand-in's).
 #[test]
 fn a_menu_glass_reads_one_host_capture_through_open_stay_and_close() {
@@ -405,10 +479,10 @@ fn a_menu_glass_reads_one_host_capture_through_open_stay_and_close() {
     let (mut frames, mut drawn, mut closing, mut closed_at) = (0, 0, false, 0);
     while pop.visible() {
         pop.update(1.0 / 60.0);
-        begin_frame(false);
+        begin_frame(&_reset.modal, false);
         PIXELS.with(|p| p.borrow_mut().clear());
         {
-            let _page = page_pass();
+            let _page = page_pass(&_reset.modal);
             ink("page");
             let _scrim = live();
             ink("scrim");
@@ -431,19 +505,21 @@ fn a_menu_glass_reads_one_host_capture_through_open_stay_and_close() {
             assert!(sharp != 0 && glass[0] == want(sharp)[0], "the rim reads the host snapshot");
             assert!(glass[0] != want(0)[0]);
             // The app captures input attribution and addresses only its owned surface.
-            assert!(!fading_only(), "premise: the close key is delivered to the open panel");
+            assert!(!_reset.modal.read.closing_only, "premise: the close key is delivered to the open panel");
             let mut present = plx_machine::present::Present::new();
             present.note_in_scope(plx_machine::present::Scope::Surface,
                 plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
             assert!(!present.page_damaged());
             pop.dismiss();
+            // The owner changes the snapshot plan; Popover publishes no process-wide state.
+            invalidate();
             closing = true;
         }
         assert!(frames < 600);
     }
     assert!(closing && drawn > 0, "the glass drew: {drawn}");
-    // `Popover::release` drops the snapshot on the dismiss itself (a ground-stage snapshot holds
-    // the panel), so the close's first frame takes the page once more; its fade takes nothing.
+    // The container's dismissal invalidates the old ground-stage composite. The close's first
+    // frame takes the page once more; its fade takes nothing.
     assert_eq!(page_epoch().wrapping_sub(epoch), 2, "one capture for open and stay, one at the dismiss, over {frames} frames");
     unlatch(tex);
 }
@@ -557,16 +633,16 @@ fn morph_rows_are_clipped_to_the_surface_and_wait_for_the_glass() {
 
 /// One frame of a surface over a page, as `embedded_alert_frame` draws it, with the page's ink
 /// named so a test sees WHICH page was drawn. The page raises damage (it is moving).
-fn reflow_frame(page: &'static str, moving: bool) -> Vec<&'static str> {
+fn reflow_frame(modal: &crate::containers::modal::ModalPresentation, page: &'static str, moving: bool) -> Vec<&'static str> {
     let mut present = plx_machine::present::Present::new();
     if moving {
         plx_machine::machine::PresentHandle::of(&mut present).note(
             plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
     }
-    super::begin_frame(moving, present.page_damaged());
+    super::begin_frame(modal, 1.0 / 60.0, moving, present.page_damaged());
     PIXELS.with(|p| p.borrow_mut().clear());
     {
-        let _page = page_pass();
+        let _page = page_pass(modal);
         ink(page);
         {
             let _scrim = live();
@@ -603,39 +679,36 @@ fn counts() -> (u32, u32, u32, u32, usize) {
 #[test]
 fn a_reflowing_page_is_live_under_the_glass_and_the_host_is_retaken_once() {
     let _serial = plx_base::testlock::serial();
-    let _reset = Reset::new(false);
+    let mut _reset = Reset::new(false);
     reset_reflow();
     mock::CAPTURES.with(|c| c.set(0));
     mock::PREV_COPIES.with(|c| c.set(0));
     mock::PREV_RELEASES.with(|c| c.set(0));
     mock::PREV_DRAWS.with(|d| d.borrow_mut().clear());
-    let dt = 1.0 / 60.0;
     // open: the page stage, then the settled ground
     for _ in 0..3 {
-        reflow_frame("page-open", false);
+        reflow_frame(&_reset.modal, "page-open", false);
     }
     assert!(matches!(held(), Held::Ground(_)), "premise: the ground is held");
     let (epoch, caps, ..) = counts();
     assert_eq!(caps, 2, "premise: one page capture and one ground capture to open");
 
-    set_reflow(true, dt);
+    _reset.modal.reflow = true;
     for k in 0..10 {
         let name: &'static str = ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9"][k];
-        assert_eq!(reflow_frame(name, true), vec![name, "scrim", "glass", "foreground"], "frame {k}: the live page, under the glass");
-        set_reflow(true, dt);
+        assert_eq!(reflow_frame(&_reset.modal, name, true), vec![name, "scrim", "glass", "foreground"], "frame {k}: the live page, under the glass");
         let (e, c, ..) = counts();
         assert_eq!((e, c), (epoch, caps), "frame {k}: nothing is captured while the page moves");
     }
 
     // it stops: the exit frame is still live and keeps the old look
-    set_reflow(false, dt);
-    assert_eq!(reflow_frame("r-final", false), vec!["r-final", "scrim", "glass", "foreground"], "the exit frame is live");
+    _reset.modal.reflow = false;
+    assert_eq!(reflow_frame(&_reset.modal, "r-final", false), vec!["r-final", "scrim", "glass", "foreground"], "the exit frame is live");
     let (e, c, copies, released, _) = counts();
     assert_eq!((e, c, copies, released), (epoch, caps, 1, 0), "the exit frame copies the old look, once, and captures nothing");
 
     // the next frame takes the host once: page (epoch + 1) and ground (one more snapshot)
-    set_reflow(false, dt);
-    reflow_frame("r-final", false);
+    reflow_frame(&_reset.modal, "r-final", false);
     let (e, c, copies, released, draws) = counts();
     assert_eq!(e, epoch + 1, "page_epoch moved exactly once for the whole reflow");
     assert_eq!(c, caps + 2, "one page capture and one ground capture, nothing per frame");
@@ -645,8 +718,7 @@ fn a_reflowing_page_is_live_under_the_glass_and_the_host_is_retaken_once() {
     // the blend runs to 1 over about 150 ms of ticks, drawing the old look at 1 - b
     let mut frames = 0;
     while crossfade().is_some() && frames < 30 {
-        set_reflow(false, dt);
-        reflow_frame("r-final", false);
+        reflow_frame(&_reset.modal, "r-final", false);
         frames += 1;
     }
     assert!(crossfade().is_none(), "the blend finished");
@@ -658,7 +730,6 @@ fn a_reflowing_page_is_live_under_the_glass_and_the_host_is_retaken_once() {
     assert_eq!((e, c, copies, released), (epoch + 1, caps + 2, 1, 1), "still one retake in all; the old texture is released at b = 1");
     assert!(!cache(|c| c.has_prev()), "and the cache keeps no second slot");
     let after = counts().4;
-    set_reflow(false, dt);
-    reflow_frame("r-final", false);
+    reflow_frame(&_reset.modal, "r-final", false);
     assert_eq!(counts().4, after, "no old-look quad once it is released");
 }

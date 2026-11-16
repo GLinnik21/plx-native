@@ -20,7 +20,7 @@ fn flow12_default_producer_long_recording_passes_current_preflight() {
     for f in 0..3000 {
         recorder.tick(f * 16, if f == 0 { 0.0 } else { 0.016 });
         recorder.capture_readiness(plx_ui::rec::Readiness::default());
-        use plx_ui::dispatch::Tap;
+        use plx_ui::dispatch::{Tap, ReplayAuthority};
         recorder.resolve_focus(u64::from(f), 0, plx_machine::machine::EntryId(1), Some(plx_ui::dispatch::FocusAnswer {
             outcome: plx_ui::focus::Outcome::Nothing, focus: None, group: None,
         }));
@@ -71,14 +71,49 @@ fn adjacent_v11_install_boot_facts_are_strict_hashed_and_legacy_owned() {
 }
 
 #[test]
+fn v12_install_hold_hint_is_explicit_typed_hashed_and_not_ambient() {
+    let initial = Initial::synthetic_home(17, 32517, None).unwrap();
+    let fp = super::super::recorder::state_fp();
+    for card in [false, true] { for pill in [false, true] {
+        let mut captured = initial.clone();
+        captured.install_hold_hint = Some(InstallHoldHint { card, pill });
+        let value = captured.to_v6_value().unwrap();
+        let decoded = Initial::decode_profile(value.clone(), captured.hash(), fp).unwrap();
+        assert_eq!(decoded.install_hold_hint.unwrap().input(),
+            plx_machine::machine::HoldHintRead { learned: false, card, pill, context: 0 });
+        if card || pill { assert_ne!(captured.hash(), initial.hash()); }
+        for invalid in [json!(null), json!(true), json!(0), json!({}),
+            json!({"card":"true","pill":false}), json!({"card":false,"pill":true,"extra":false})] {
+            let mut bad = value.clone(); bad["install_hold_hint"] = invalid;
+            assert!(Initial::decode_profile(bad, captured.hash(), fp).is_err());
+        }
+        let mut missing = value; missing.as_object_mut().unwrap().remove("install_hold_hint");
+        assert!(Initial::decode_profile(missing, captured.hash(), fp).is_err());
+        // Contrast a differently captured Session preference: only the explicit boot fact
+        // seeds Input, even though that old Session projection does not canonicalize it.
+        let mut contrasting = decoded;
+        contrasting.session.persisted = contrasting.session.persisted.with_hold_hint_taught(
+            plx_plex::plex::session::HoldHintTaught { card: true, pill: true });
+        assert_eq!(contrasting.install_hold_hint.unwrap().input(),
+            plx_machine::machine::HoldHintRead { learned: false, card, pill, context: 0 });
+    }}
+    let mut missing = initial;
+    missing.install_hold_hint = None;
+    assert!(super::super::recorder::Recplay::recording_with_sink(&missing,
+        Box::new(plx_ui::rec::MemSink::default())).is_err());
+}
+
+#[test]
 fn controlled_boot_binds_policy_and_keeps_legacy_default_explicit() {
     let _serial = plx_base::testlock::serial();
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let mut initial = Initial::synthetic_home(17, 32517, None).unwrap();
     initial.runtime_policy = Some(RuntimePolicy { harness_driven: true, lookahead_rows: 0 });
-    let first = crate::app::bridge::Bridge::controlled_home(|| 0, &initial, &mt, true);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, true);
+    let first = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
     initial.runtime_policy = Some(RuntimePolicy { harness_driven: false, lookahead_rows: 4 });
-    let second = crate::app::bridge::Bridge::controlled_home(|| 0, &initial, &mt, true);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, true);
+    let second = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
     assert!(first.views().inputs.runtime_policy.harness_driven);
     assert_eq!(first.views().inputs.runtime_policy.lookahead_rows, 0);
     assert!(!second.views().inputs.runtime_policy.harness_driven);
@@ -87,7 +122,8 @@ fn controlled_boot_binds_policy_and_keeps_legacy_default_explicit() {
     assert!(!first.views().native_preview_available && !second.views().native_preview_available,
         "controlled owners never expose a native preview port, independent of harness policy");
     initial.runtime_policy = None;
-    let legacy = crate::app::bridge::Bridge::controlled_home(|| 0, &initial, &mt, true);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, true);
+    let legacy = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
     assert_eq!(legacy.views().inputs.runtime_policy, plx_screens::inputs::RuntimePolicy::default());
     assert!(crate::app::recorder::Recplay::recording_with_sink(&initial, Box::new(plx_ui::rec::MemSink::default())).is_err());
 }
@@ -118,6 +154,7 @@ fn session_codec_profiles_require_canonical_exact_matching_envelopes() {
     historical.ui_preferences = None;
     historical.install_language = None;
     historical.running_language = None;
+    historical.install_hold_hint = None;
     let legacy = serde_json::to_value(&historical).unwrap();
     let legacy_v6 = historical.to_v6_value().unwrap();
     let legacy_hash = historical.hash();
@@ -128,9 +165,10 @@ fn session_codec_profiles_require_canonical_exact_matching_envelopes() {
     assert_eq!(Initial::decode_profile(current.clone(), initial.hash(), owned).unwrap().hash(), initial.hash());
     assert!(Initial::decode_profile(legacy.clone(), initial.hash(), owned).is_err());
     assert_eq!(current["session"], serde_json::json!({"codec":6,"boot":legacy["session"]}));
-    assert_eq!(Initial::decode_profile(legacy.clone(), legacy_hash, prior).unwrap().hash(), legacy_hash);
-    assert_eq!(Initial::decode_profile(legacy_v6.clone(), legacy_hash, v6).unwrap().hash(), legacy_hash);
-    assert_eq!(Initial::decode_profile(legacy_v6.clone(), legacy_hash, super::super::recorder::state_fp_v7()).unwrap().hash(), legacy_hash);
+    for fp in [prior, v6, super::super::recorder::state_fp_v7(), super::super::recorder::state_fp_v11()] {
+        assert_eq!(Initial::decode_profile(legacy.clone(), legacy_hash, fp).err(),
+            Some("incompatible owner-input/presentation state; requires V13 capture"));
+    }
     assert!(Initial::decode_profile(legacy_v6, legacy_hash, owned).is_err());
     assert!(Initial::decode_profile(current.clone(), initial.hash(), prior).is_err());
     assert!(Initial::decode_profile(current.clone(), initial.hash(), v6).is_err());
@@ -166,6 +204,7 @@ fn session_app_initial_probe_only() {
     initial.ui_preferences = None;
     initial.install_language = None;
     initial.running_language = None;
+    initial.install_hold_hint = None;
     let value = serde_json::to_value(&initial).unwrap();
     let bytes = serde_json::to_vec(&initial).unwrap();
     assert_eq!(bytes.as_slice(), include_bytes!("../fixtures/session-codec-v5/initial-v5.json"));
@@ -329,9 +368,8 @@ fn committed_replay_initials_remain_canonical_and_hash_bound() {
         if fp == super::super::recorder::FP_PRIOR {
             Initial::from_value(value.clone()).unwrap_or_else(|error| panic!("{name}: {error}"));
         }
-        let decoded = Initial::decode_profile(value, expected_hash, fp)
-            .unwrap_or_else(|error| panic!("{name}: {error}"));
-        assert_eq!(decoded.hash(), expected_hash, "{name}");
+        assert_eq!(Initial::decode_profile(value, expected_hash, fp).err(),
+            Some("incompatible owner-input/presentation state; requires V13 capture"), "{name}");
     }
 }
 
@@ -400,8 +438,10 @@ fn normal_and_controlled_activation_publish_the_owner_supplied_scope() {
     plx_plex::plex::reset_servers_for_test();
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let initial = Initial::synthetic_home(19,9,None).unwrap();
-    let mut live = super::super::bridge::Bridge::new(
+    let (runtime, retained) = super::super::bridge::BridgeRetained::new(
         ||0, initial.session.clone(), initial.consent.clone(), &mt);
+    let mut live_owner = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut live = live_owner.bridge();
     activate(&mut live);
     let live_view = live.profile_resource_view().unwrap();
     let live_owner = live.snapshot_session_init();
@@ -410,7 +450,9 @@ fn normal_and_controlled_activation_publish_the_owner_supplied_scope() {
     let ambient = plx_plex::plex::session::current_snapshot();
     plx_plex::plex::reset_servers_for_test();
     plx_plex::plex::Client::restore_generation_seed(initial.primary_client).unwrap();
-    let mut controlled = super::super::bridge::Bridge::controlled_home(||0,&initial,&mt,true);
+    let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(||0,&initial,&mt,true);
+    let mut controlled_owner = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut controlled = controlled_owner.bridge();
     let retained = controlled.profile_resource_view().unwrap();
     activate(&mut controlled);
     let scoped = controlled.profile_resource_view().unwrap();
@@ -450,7 +492,9 @@ fn controlled_home_arms_the_detail_tracker_when_content_initial_is_present() {
     });
     plx_data::stores::tape::init(initial.person_credits(), false);
     plx_machine::landgate::arm_recording();
-    let mut bridge = super::super::bridge::Bridge::controlled_home(||0,&initial,&mt,false);
+    let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(||0,&initial,&mt,false);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut bridge = harness.bridge();
     let sid = plx_plex::plex::ServerId::UNSET;
     plx_data::stores::tape::begin(Default::default(), Default::default());
     let gen = plx_data::metadata::begin_detail_for_test(bridge.metadata_mut().adapter_ref(), sid, "show");

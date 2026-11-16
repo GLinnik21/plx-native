@@ -416,3 +416,9 @@ python3 ci/test_readonly_generated.py
 # (one darwin-only test drives the real one); touches no real cache, config or volume.
 python3 ci/test_cold_store.py
 python3 ci/test_verdict_data_captured_inputs_source_oracle.py
+# Current owned hold-hint codec source controls; runtime oracles also execute in the Rust suite.
+python3 tests/test_owned_hold_hint_codec.py
+# Actual App owner declarations and fixture-constructor retirement; negative source controls.
+python3 ci/test_runtime_ownership_contract.py
+# Rust lifetime probes compile extracted production declarations (no cargo or shared artifacts).
+python3 ci/test_runtime_ownership_borrows.py

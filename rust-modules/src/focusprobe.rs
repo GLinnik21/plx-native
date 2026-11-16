@@ -67,8 +67,8 @@ use plx_appkit::player_hud::ControlSlot;
 
 /// Which screen the frame ended on, as the probe dispatches on it.
 ///
-/// `app.rs` maps its private `Route` onto this with an EXHAUSTIVE `match`, so a new route is a
-/// compile error here rather than a screen that silently fingerprints as nothing. The route WORD
+/// Registry-owned data-only metadata chooses the schema; ordinary screens use Content with
+/// their own Screen logical projection and the engine's focus. The route WORD
 /// printed on the line is not taken from this type — it is `app.rs`'s own `rn`, handed to
 /// [`sample`] separately, so the fingerprint's `route=` and the heartbeat's `route=` are the same
 /// string built by the same expression and a harness can join the two lines on it.
@@ -128,17 +128,17 @@ pub(crate) enum Screen {
         /// not, and has to be re-recorded.
         row: i32,
     },
-    /// the home hero + grid
-    Home,
-    Library,
-    Detail,
-    Person,
-    Collection,
-    Search,
-    /// The Watchlist page (`screens::watchlist`), owned like Search: its fields ride on `content`.
-    Watchlist,
-    /// The catalog page of a title no server holds (`screens::catalog`); its fields ride on `content`.
-    Catalog,
+    /// The mounted screen's read projection, including generic engine focus and logical state.
+    Content,
+    // Historical formatter vocabulary retained only for byte-golden characterization tests.
+    #[cfg(test)] Home,
+    #[cfg(test)] Library,
+    #[cfg(test)] Detail,
+    #[cfg(test)] Person,
+    #[cfg(test)] Collection,
+    #[cfg(test)] Search,
+    #[cfg(test)] Watchlist,
+    #[cfg(test)] Catalog,
     /// `overlay` is the same word the heartbeat prints after `overlay=`, supplied by `app.rs` from
     /// its own exhaustive match on the private `Overlay` enum.
     Player {
@@ -260,12 +260,13 @@ fn push_fields(ps: &plx_media::route::PlaybackSession, s: &mut String, screen: S
             // dispatcher to get one screen's cursor.
             let _ = write!(s, " list={} row={row}", b(list));
         }
-        Screen::Home => s.push_str(content),
-        Screen::Library => s.push_str(content),
-        Screen::Detail | Screen::Person | Screen::Collection | Screen::Catalog => s.push_str(content),
+        Screen::Content => s.push_str(content),
+        #[cfg(test)]
+        Screen::Home | Screen::Library | Screen::Detail | Screen::Person | Screen::Collection | Screen::Catalog => s.push_str(content),
         // Owned like Library/Detail/Person: the content string is built generically by the
         // caller (`super::bridge::content_probe`, from the mounted `SearchScreen`'s own
         // `LogicalState::probe` output), not read off a legacy global here.
+        #[cfg(test)]
         Screen::Search | Screen::Watchlist => s.push_str(content),
         // The panels' own fields ride on `content`, for the same reason Library's, Detail's and
         // Search's do: since restructure phase 9 each is the state of a MOUNTED INSTANCE
@@ -444,6 +445,33 @@ mod tests {
             ("player", Screen::Player { overlay: "none", busy: plx_appkit::player_hud::Busy::None }),
             ("player", Screen::Player { overlay: "info", busy: plx_appkit::player_hud::Busy::None }),
         ]
+    }
+
+    #[test]
+    fn descriptor_content_preserves_every_legacy_content_schema_byte_for_byte() {
+        let _serial = plx_base::testlock::serial();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let store = test_store();
+        let ctrl = ControlSlot::Discs(plx_appkit::player_hud::Controls::NONE);
+        for (word, legacy) in [
+            ("home", Screen::Home), ("library", Screen::Library), ("detail", Screen::Detail),
+            ("person", Screen::Person), ("collection", Screen::Collection), ("catalog", Screen::Catalog),
+            ("search", Screen::Search), ("watchlist", Screen::Watchlist),
+        ] {
+            let content = " group=3 elem=4097 marker=1";
+            let old = line(&ps, word, legacy, hud(), ctrl, content, store.view(), false);
+            let new = line(&ps, word, Screen::Content, hud(), ctrl, content, store.view(), false);
+            assert_eq!(old, format!("focus route={word} group=3 elem=4097 marker=1 press=0"));
+            assert_eq!(new, old);
+        }
+        for (screen, expected) in [
+            (Screen::Login { phase: plx_session::auth::Phase::Idle, has_control: true }, "focus route=login phase=Idle ctl=1 press=0"),
+            (Screen::Profiles { elem: 2 }, "focus route=profiles elem=2 press=0"),
+            (Screen::Onboard { list: true, row: 3 }, "focus route=onboard list=1 row=3 press=0"),
+        ] {
+            let word = expected.split_whitespace().nth(1).unwrap().strip_prefix("route=").unwrap();
+            assert_eq!(line(&ps, word, screen, hud(), ctrl, "", store.view(), false), expected);
+        }
     }
 
     /// **The property the whole instrument rests on**: with nothing moved between two samples, the

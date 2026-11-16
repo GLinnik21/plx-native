@@ -107,7 +107,7 @@ const ROWS: [Row; 4] = [
 /// A page mounted the way the app mounts it, and the means to press keys at it.
 struct Rig {
     d: Dispatcher<AppHost>,
-    bridge: Bridge,
+    bridge: crate::app::runtime_owners::Harness,
     frame: u32,
     /// Landing what a page's store brought (the Watchlist's scripted plex.tv), once per frame.
     feed: Option<fn(&mut Dispatcher<AppHost>, &mut Bridge)>,
@@ -125,7 +125,8 @@ impl Rig {
         let shared = plx_plex::plex::register_for_test("regions-shared", "127.0.0.1", 10, "synthetic", "fixture");
         plx_plex::plex::set_current(own);
         let d = Dispatcher::<AppHost>::new();
-        let mut bridge = Bridge::for_test(|| 0);
+        let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = owner.bridge();
         bridge.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
         bridge.refresh_browse_directory();
         bridge.seed_collections_for_test(plx_plex::plex::collections::CollectionsCount::Count(super::test_support::RIG_COLLECTIONS));
@@ -136,15 +137,16 @@ impl Rig {
             browse.seed_shelves_for_test(0, &["One", "Two", "Three", "Four", "Five", "Six"], 3);
             browse.seed_landscape_for_test(0, "Synthetic show");
         }
-        Rig { d, bridge, frame: 0, feed: None, _script: None, performed: Vec::new() }
+        Rig { d, bridge: owner, frame: 0, feed: None, _script: None, performed: Vec::new() }
     }
 
     fn step(&mut self, inputs: Vec<InputEvent<u32>>) {
         self.frame += 1;
-        if let Some(feed) = self.feed { feed(&mut self.d, &mut self.bridge); }
+        let mut bridge = self.bridge.bridge();
+        if let Some(feed) = self.feed { feed(&mut self.d, &mut bridge); }
         plx_machine::motion::report::frame_begin(0.016);
-        super::frame(&mut self.d, &mut self.bridge, tick(self.frame), inputs);
-        self.performed.extend(pump_navigation(&mut self.d, &mut self.bridge));
+        super::frame(&mut self.d, &mut bridge, tick(self.frame), inputs);
+        self.performed.extend(pump_navigation(&mut self.d, &mut bridge));
     }
 
     fn frames(&mut self, n: u32) {
@@ -232,7 +234,7 @@ fn movies_library() -> Rig {
     let mut r = Rig::new();
     super::show_page(&mut r.d, AppArg::Home);
     r.frames(40);
-    super::nav_tab(&mut r.d, &mut r.bridge, HomeTab::Movies, None, None);
+    super::nav_tab(&mut r.d, &mut r.bridge.bridge(), HomeTab::Movies, None, None);
     r.frames(90);
     assert!(r.on(&AppArg::Library), "premise: the library is on top");
     r
@@ -243,7 +245,7 @@ fn collections() -> Rig {
     let mut r = movies_library();
     r.open_from_header("collections", AppArg::LibraryCollections { section: 0 });
     // The page asked the store for its own listing; its answer is what it shows.
-    r.bridge.stores.browse.borrow_mut().seed_items_for_test(120);
+    r.bridge.bridge().stores.browse.borrow_mut().seed_items_for_test(120);
     r.frames(60);
     r
 }
@@ -264,7 +266,7 @@ fn watchlist() -> Rig {
         bridge.watchlist_pump();
         bridge.watchlist_feed(d);
     }), _script: Some(script), performed: Vec::new() };
-    super::nav_tab(&mut r.d, &mut r.bridge, HomeTab::Watchlist, None, None);
+    super::nav_tab(&mut r.d, &mut r.bridge.bridge(), HomeTab::Watchlist, None, None);
     r.frames(120);
     assert!(r.on(&AppArg::Watchlist), "premise: the Watchlist is on top");
     r
@@ -418,7 +420,8 @@ fn the_strip_is_published_exactly_when_the_route_wears_the_tab_bar() {
     let _guard = plx_base::testlock::serial();
     for route in super::super::words::every_route() {
         let mut d = Dispatcher::<AppHost>::new();
-        let mut rig = Bridge::for_test(|| 0);
+        let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = owner.bridge();
         super::test_support::frame(&mut d, &mut rig, route.clone(), tick(0), vec![]);
         for t in 1..4 {
             super::frame(&mut d, &mut rig, tick(t), vec![]);
@@ -450,7 +453,8 @@ fn every_route_that_wears_the_tab_bar_owns_the_pointer() {
     for route in super::super::words::every_route() {
         if route.chrome() != plx_machine::machine::Chrome::TabBar { continue; }
         let mut d = Dispatcher::<AppHost>::new();
-        let mut rig = Bridge::for_test(|| 0);
+        let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = owner.bridge();
         super::test_support::frame(&mut d, &mut rig, route.clone(), tick(0), vec![]);
         for t in 1..4 {
             super::frame(&mut d, &mut rig, tick(t), vec![]);
@@ -471,7 +475,8 @@ fn every_route_that_wears_the_tab_bar_owns_the_pointer() {
 fn home_up_from_a_far_card_lands_on_the_home_pill() {
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     rig.stores.hubs.seed_grid_for_test(3, 24);
     let mut i = 0;
     fn run(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, i: &mut u32, key: Option<Key>, n: u32) {

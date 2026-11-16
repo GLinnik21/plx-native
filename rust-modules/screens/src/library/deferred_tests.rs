@@ -97,6 +97,7 @@ impl Fixture {
             measure: &FixtureMeasure,
             focus: Default::default(),
             press: Default::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             owner: InputOwner::Entry(EntryId(81)),
         }
     }

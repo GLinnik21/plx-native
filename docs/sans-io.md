@@ -9,8 +9,8 @@ is gated by `ci/machines.ini` (see "Machine shape" below).
 
 ## Project UI review (in progress; not acceptance)
 
-The project-wide review in `.empryo/reviews/project-ui-architecture-audit-2026-11-13.md` remains
-incomplete. Its original 4 workers / 19 globals / 61 forks / 11 fxlanes were tracked sites, not
+The project-wide review remains incomplete; see the [public evidence summary](ui-review-evidence.md).
+Its original 4 workers / 19 globals / 61 forks / 11 fxlanes were tracked sites, not
 95 proven machine violations: scans include IO job bodies, runners and fixture seams. The current
 integration comparison retires the login/lookahead and card-motion forks plus eleven family
 app-command lanes (4/19/61/11 to 4/19/58/0); explicit captured policy and same-FIFO
@@ -19,12 +19,13 @@ render-policy and full call-path review are not closed. `build_stream(&OffFrame)
 off-frame IO body, not a pure reducer; storage/registry executors and GL/fixture seams must not be
 removed to reach zero ledgers. Source gates do not prove runtime ordering or full project coverage.
 
-Step-8 replacement evidence is `.empryo/reviews/step8-recovery-result-2026-11-14.md`.
-Pinned compiler feature checks pass in an isolated snapshot, but full default/hostsim gates fail
+At the historical Step-8 replacement checkpoint, pinned compiler feature checks passed in an
+isolated snapshot, but full default/hostsim gates failed
 on a media timing assertion; Python 3.12 also retains generated-proof/Session-shape and lock
 selftest failures. The unchanged ambient oracle still fails two groups. Source scan scope and
 IO-port registries remain intact; source inventory is not complete runtime acceptance. No ARM
-artifact, authorized CI publication, CURRENT Filmography roundtrip or device acceptance was obtained.
+artifact or device acceptance was obtained at that checkpoint. Later historical CI and local
+Filmography replay evidence is scoped in the public summary; neither establishes current acceptance.
 The earlier Git-isolation incident report is retained as history, not attributed to this run.
 Historical checkpoints below are not rewritten as current gate results.
 

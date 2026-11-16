@@ -39,7 +39,8 @@ fn a_detail_panel_parks_across_a_push_and_returns_with_the_same_instance() {
     // a frame on `detail_arg("m1")` mounts that detail page and a frame on `person_arg("p1")`
     // stacks the person page over it — which is the shape the loop really produces.
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     rig.metadata_run(plx_data::stores::metadata::MetadataCmd::AltInstall {
         sid: here,
         rk: "m1".into(),

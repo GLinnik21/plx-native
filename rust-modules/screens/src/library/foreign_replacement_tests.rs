@@ -92,6 +92,7 @@ impl Publication {
             measure: &FixtureMeasure,
             focus: engine.read(OWNER),
             press: Default::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             owner: OWNER,
         }
     }

@@ -215,6 +215,31 @@ pub(crate) fn app(effect: &AppFx) -> Result<Value, &'static str> {
     })
 }
 
+/// Validate the already-partitioned head without widening it back to `AppFx`.
+pub(crate) fn external(effect: &plx_screens::registry::ExternalAppFx) -> Result<Value, &'static str> {
+    use plx_screens::registry::ExternalAppFx;
+    match effect {
+        ExternalAppFx::SessionEffect(effect) => Ok(json!({"session_effect":wire(effect)?})),
+        ExternalAppFx::Content(req) => Ok(json!({"content":content_request(req)?})),
+        ExternalAppFx::Home(plx_screens::registry::HomeReq::FoldToHero) => Ok(json!({"home":"fold"})),
+        ExternalAppFx::Preferences(_) => Err("unsupported controlled preferences effect"),
+        ExternalAppFx::Loop(_) | ExternalAppFx::Player(_) | ExternalAppFx::Catalog(_)
+        | ExternalAppFx::Home(_) | ExternalAppFx::Library(_) | ExternalAppFx::Search(_)
+        | ExternalAppFx::Watchlist(_) | ExternalAppFx::ItemMenu(_) => Err("unsupported Home application effect"),
+    }
+}
+
+pub(crate) fn inline(effect: &plx_screens::registry::InlineAppFx) -> Result<Value, &'static str> {
+    use plx_screens::registry::InlineAppFx;
+    match effect {
+        InlineAppFx::Session(command) => Ok(json!({"session":wire(command)?})),
+        InlineAppFx::PlaybackTrace(plx_platform::playback_trace::Command::Status) => Ok(json!({"playback_trace":"status"})),
+        InlineAppFx::Store(id, command) => Ok(json!({"store":id.ord().0,"command":store(command)?})),
+        InlineAppFx::StoreWork(work) => Ok(json!({"work":work_value(work)?})),
+        InlineAppFx::PlaybackTrace(_) | InlineAppFx::Consent(_) | InlineAppFx::Huds(_) => Err("unsupported Home application effect"),
+    }
+}
+
 fn work_value(work: &plx_data::stores::StoreWork) -> Result<Value, &'static str> {
     Ok(match work {
         plx_data::stores::StoreWork::Hubs => json!("hubs"),
@@ -288,12 +313,30 @@ pub(crate) fn message(message: &AppMsg) -> Result<Value, &'static str> {
         AppMsg::StoreWork(work) => work_value(work)?,
         AppMsg::HubsResult(result) => plx_data::pms::record::encode(result),
         AppMsg::Home(command) => json!({"home_command":home_command(command)}),
+        // Pure addressed owner inputs are observable; this does not authorize native
+        // playback commands, compiled resources, or a controlled playback bootstrap.
+        AppMsg::PlayerPinHud { now, duration_ms, tab } =>
+            json!({"player_pin_hud":{"now":now,"duration_ms":duration_ms,"tab":tab}}),
+        AppMsg::PlayerPresented { watch, paired } => json!({"player_presented":{"codec":1,"paired":paired,
+            "watch":watch.map(|id| json!({"scope":id.scope,"entry":id.entry,"playback":id.playback,"marker":id.marker}))}}),
+        AppMsg::PlayerTransportReset { for_reload } => json!({"player_transport_reset":for_reload}),
+        AppMsg::PlayerExtendHud { now, duration_ms } =>
+            json!({"player_extend_hud":{"now":now,"duration_ms":duration_ms}}),
         _ => return Err("unsupported Home message"),
     })
 }
 
 /// The retained Person sender duplicates the effect envelope, not the legacy delivery payload.
 /// Validate that equality before using the historical wire spelling; never erase forged provenance.
+/// Closed pure-owner observation alphabet. This never authorizes the persistence writer.
+pub(crate) fn validate_hold_hint(value: &Value) -> Result<(), &'static str> {
+    if value.as_object().is_none_or(|object| object.len() != 1)
+        || !matches!(value["hold_hint"].as_str(), Some("learned" | "read_card" | "read_pill")) {
+        return Err("invalid controlled hold-hint observation");
+    }
+    Ok(())
+}
+
 pub(crate) fn encode_from(from: plx_machine::machine::MachineId,
     effect: &Fx<super::super::bridge::AppHost>) -> Result<Value, &'static str> {
     if let Fx::Deliver(to, Delivery::Machine(AppMsg::PersonCommand { from: sender, .. })) = effect {
@@ -332,6 +375,11 @@ pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value
         Fx::Remember { group, elem } => json!({"group":group.0,"elem":elem}),
         Fx::Press(arm) => json!({"press":{"key":focus(arm.key),"from":match arm.from {
             plx_machine::machine::PressFrom::Key => "key", plx_machine::machine::PressFrom::Pointer => "pointer" },"holdable":arm.holdable}}),
+        Fx::HoldHint(event) => json!({"hold_hint":match event {
+            plx_machine::machine::HoldHintEvent::Learned => "learned",
+            plx_machine::machine::HoldHintEvent::ReadCard => "read_card",
+            plx_machine::machine::HoldHintEvent::ReadPill => "read_pill",
+        }}),
         Fx::Log(line) => json!({"log":line.0}),
         Fx::Deliver(to, delivery) => {
             let body = match delivery {
@@ -377,6 +425,9 @@ pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value
                             "to":focus(*to),"by":match by { plx_ui::screen::By::Dir => "dir",
                                 plx_ui::screen::By::Pointer => "pointer", plx_ui::screen::By::Restore => "restore",
                                 plx_ui::screen::By::Reconcile => "reconcile" }}),
+                        ScreenEvent::Presented(receipt) => json!({"paint_frame":receipt.frame(),
+                            "entry":receipt.entry().0,"instance":receipt.instance().0,
+                            "message":message(receipt.message())?}),
                         ScreenEvent::App(msg) => message(msg)?,
                         ScreenEvent::Async(req, msg) => json!({"req":req.0,"message":message(msg)?}),
                     };
@@ -526,5 +577,25 @@ mod tests {
         let tab = encode(&Fx::Nav(NavOp::SelectTab(AppArg::Home))).unwrap();
         assert_eq!(root, serde_json::json!({"root": "home"}));
         assert_ne!(root, tab);
+    }
+
+    #[test]
+    fn player_owner_observations_keep_payload_truth_without_authorizing_native_playback() {
+        use super::message;
+        use plx_screens::registry::{AppFx, AppMsg};
+        use serde_json::json;
+        let pin = |now, duration_ms, tab| message(&AppMsg::PlayerPinHud { now, duration_ms, tab }).unwrap();
+        let expected = pin(10, 500, Some(1));
+        assert_eq!(expected, json!({"player_pin_hud":{"now":10,"duration_ms":500,"tab":1}}));
+        for changed in [pin(11, 500, Some(1)), pin(10, 501, Some(1)), pin(10, 500, None)] {
+            assert_ne!(expected, changed);
+        }
+        assert_ne!(message(&AppMsg::PlayerTransportReset { for_reload: true }).unwrap(),
+            message(&AppMsg::PlayerTransportReset { for_reload: false }).unwrap());
+        assert_ne!(message(&AppMsg::PlayerExtendHud { now: 10, duration_ms: 500 }).unwrap(), expected);
+        assert!(encode(&Fx::App(AppFx::Player(plx_screens::registry::PlayerReq::ExtendHud(500)))).is_err(),
+            "observing a message never authorizes a native application command");
+        assert!(message(&AppMsg::PlayerCompiled(plx_appkit::player_hud::loaded::classic_for_test())).is_err(),
+            "compiled resources still require a separate replay contract");
     }
 }

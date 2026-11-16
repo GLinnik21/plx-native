@@ -75,6 +75,7 @@ fn cx<'a>(measure: &'a dyn plx_machine::machine::Measure, elem: Option<u32>) -> 
         tick: Default::default(),
         measure,
         press: PressRead::default(),
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         focus: plx_machine::machine::FocusRead {
             current: elem.map(|elem| FocusKey { entry: EntryId(8), elem }),
         ..Default::default() },

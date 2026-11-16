@@ -91,8 +91,10 @@ fn prove_home_observations(conflicting_owner: bool) {
     let mut init = plx_session::auth::SessionInit::captured(owner_input);
     init.epoch = u64::from(u32::MAX) + 97;
     if conflicting_owner { init.phase = plx_session::auth::Phase::Ready; }
-    let mut rig = Bridge::for_session_test(init);
-    rig.session_adapter = super::super::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
+    *rig.session_adapter = super::super::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
     let mut d = Dispatcher::<AppHost>::new();
     if !conflicting_owner {
         command(&mut rig, &mut d, plx_session::auth::SessionCmd::ResumeStored);
@@ -209,8 +211,10 @@ fn admitted_endpoint_lifecycle_and_nonterminal_rejections_preserve_current_inter
         let before = std::fs::read(tmp.path()).unwrap();
         let id = plx_plex::plex::register_for_test("stored-machine", "127.0.0.1", 32400,
             "profile-token-a", "synthetic-client");
-        let mut rig = Bridge::for_session_test(plx_session::auth::SessionInit::captured(disk));
-        rig.session_adapter = super::super::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(plx_session::auth::SessionInit::captured(disk));
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
+        *rig.session_adapter = super::super::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
         let mut d = Dispatcher::<AppHost>::new();
         let req = rig.session.snapshot_init().next_req + 1;
         let epoch = rig.auth_read().0.flow_epoch;
@@ -252,7 +256,9 @@ fn rejected_terminal_waits_in_owner_fifo_until_preceding_commit_ack() {
     let mut witnessed = false;
     for remaining in 1..20 {
         let disk = saved();
-        let mut rig = Bridge::for_session_test(plx_session::auth::SessionInit::captured(disk.clone()));
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(plx_session::auth::SessionInit::captured(disk.clone()));
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
         rig.session_adapter.fixture_resources().disk = disk.clone();
         let mut d = Dispatcher::<AppHost>::new();
         let mut wrong = disk.clone();

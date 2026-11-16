@@ -1154,6 +1154,7 @@ mod tests {
     }
     pub(super) fn cx<'a>(view: plx_data::collection::CollectionView<'a>, focus: Option<plx_machine::machine::FocusKey<u32>>) -> Cx<'a, CollectionHost> {
         Cx { views: view, tick: Tick::default(), measure: &FixtureMeasure,
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             press: PressRead::default(), focus: FocusRead { current: focus, ..Default::default() },
             owner: InputOwner::Entry(EntryId(9)) }
     }
@@ -1268,8 +1269,7 @@ mod tests {
     #[test]
     fn the_hold_hint_stands_on_a_resting_member_once_per_install() {
         let _g = plx_base::testlock::serial();
-        plx_ui::hold_hint::reset_learned_for_test();
-        plx_ui::hold_hint::reset_shown_for_test();
+        let hint = std::cell::Cell::new(plx_machine::machine::HoldHintRead::default());
         let (store, mut screen) = seeded();
         let c = store.view().current().unwrap();
         let (a, b) = (screen.key_at(c, 0), screen.key_at(c, 1));
@@ -1277,7 +1277,14 @@ mod tests {
         let mut rest = |screen: &mut CollectionScreen, key, secs: f32| {
             for _ in 0..(secs * 60.0) as u32 {
                 ms += 17;
-                tick_at(screen, &store, Some(key), ms);
+                let mut context = cx(store.view(), Some(key));
+                context.hold_hint = hint.get();
+                let out = step(screen, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }), &context);
+                let mut read = hint.get();
+                for effect in out {
+                    if let plx_machine::machine::Fx::HoldHint(event) = effect.fx { read.apply(event); }
+                }
+                hint.set(read);
             }
         };
         rest(&mut screen, a, 1.2);
@@ -1287,11 +1294,11 @@ mod tests {
         // a menu open over the page: focus is the menu's, not this page's
         let menu = plx_machine::machine::FocusKey { entry: EntryId(77), elem: 0 };
         rest(&mut screen, menu, 3.0);
-        assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(), "never while a menu is open");
+        assert!(!screen.stack.hint_visible() && !hint.get().card, "never while a menu is open");
         // nor on the header, which is not a card
         let header = plx_machine::machine::FocusKey { entry: EntryId(9), elem: HEADER_ELEM };
         rest(&mut screen, header, 3.0);
-        assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(), "never on a non-card focus");
+        assert!(!screen.stack.hint_visible() && !hint.get().card, "never on a non-card focus");
         rest(&mut screen, a, 3.6);
         assert!(screen.stack.hint_visible(), "after the dwell, on a settled member");
         rest(&mut screen, menu, 1.0);
@@ -1301,10 +1308,20 @@ mod tests {
         assert!(!screen.stack.hint_visible(), "not twice on the same page");
         let (store2, mut again) = seeded();
         let k = again.key_at(store2.view().current().unwrap(), 0);
-        for n in 0..240 { tick_at(&mut again, &store2, Some(k), 100 + n * 17); }
+        for n in 0..240 {
+            let mut context = cx(store2.view(), Some(k));
+            context.hold_hint = hint.get();
+            let out = step(&mut again, ScreenEvent::Tick(Tick { ms: 100 + n * 17, dt_us: 16_667 }), &context);
+            let mut read = hint.get();
+            for effect in out {
+                if let plx_machine::machine::Fx::HoldHint(event) = effect.fx { read.apply(event); }
+            }
+            hint.set(read);
+        }
         assert!(!again.stack.hint_visible(), "not on a second Collection page");
         // a held OK still shows it, with its fill
         let mut held = cx(store2.view(), Some(k));
+        held.hold_hint = hint.get();
         held.press.held_ms = Some(300);
         step(&mut again, ScreenEvent::Tick(Tick { ms: 5000, dt_us: 16_667 }), &held);
         assert!(again.stack.hint_visible(), "a physical hold shows it regardless");
@@ -1571,6 +1588,7 @@ mod tests {
         assert!(named.iter().any(|run| run == parent()), "the frame draws {:?}: {named:?}", parent());
 
         let rooted = Cx::<RootedHost> { views: store.view(), tick: Tick::default(), measure: &FixtureMeasure,
+            modal: context.modal, page_image: context.page_image, hold_hint: context.hold_hint,
             press: PressRead::default(), focus: FocusRead::default(), owner: InputOwner::Entry(EntryId(9)) };
         assert_eq!(Screen::<RootedHost>::crumb(&screen, &rooted), None, "BACK leaves: nothing to declare");
         let bare = plx_gfx::text::capture_text_runs_for_test(|| {

@@ -10,7 +10,7 @@
 //! owning HudPage ingests its changed HudList (`Effects::invalidate(Landing(Session))`);
 //! the worker never claims page/surface provenance.
 //!
-//! **The driver** ([`HudDriver`], owned by the Bridge) steps the store with the answers, executes the
+//! **The driver** ([`HudDriver`], owned by App's `HudRuntimeOwner` and lent to Bridge) steps the store with the answers, executes the
 //! effects it returns (`Selection` persists the profile's pick, `Notice` is kept for the Settings page) and
 //! decides what the player draws: the compiled package of the store's `resolved` selection, fitted with the
 //! television's own measurer and priced by the HUD cost model, and cached as one entry keyed by (package sha256, language)
@@ -1140,6 +1140,51 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn late_worker_results_stay_with_the_actual_hud_runtime_owner() {
+        let _serial = plx_base::testlock::serial();
+        let (mut first, mut first_publications) = crate::app::bridge::BridgeRetained::for_test(|| 0);
+        let (mut second, mut second_publications) = crate::app::bridge::BridgeRetained::for_test(|| 0);
+        let first_dir = Dir::new("owner-first");
+        let second_dir = Dir::new("owner-second");
+        first.hud.driver = driver(&first_dir);
+        second.hud.driver = driver(&second_dir);
+        first.hud.driver.refresh("first-choice".into());
+        second.hud.driver.refresh("second-choice".into());
+        settle(&mut first.hud.driver, &english());
+        settle(&mut second.hud.driver, &english());
+        first.hud.driver.fetch(plx_data::hudpacks::address::parse("https://example.org/old.hud").unwrap());
+        let tag = first.hud.driver.runner.fetches[0].0;
+        let (reply, answer) = std::sync::mpsc::channel();
+        first.hud.driver.runner.fetches[0].1 = Slot::Waiting(answer);
+        {
+            let turn = first.bridge(&mut first_publications);
+            turn.huds.refresh("new-choice".into());
+        }
+        assert!(matches!(first.hud.driver.take_notices().as_slice(), [Notice::NotWritten { sha: None }]),
+            "refresh terminates the displaced fetch exactly once before its late answer");
+        assert!(!first.hud.driver.runner.fetches.is_empty(), "dropping the loan preserves pending work");
+        let second_revision = second.hud.driver.revision();
+        reply.send(HudEvent::Fetched { tag, result: Err(FetchError::Unreachable) }).unwrap();
+        settle(&mut first.hud.driver, &english());
+        assert_eq!(first.hud.driver.store().selected(), "new-choice");
+        assert!(first.hud.driver.take_notices().is_empty(), "stale result is not a new operation's terminal");
+        assert!(first.hud.driver.runner.is_idle());
+        let revision = first.hud.driver.revision();
+        settle(&mut first.hud.driver, &english());
+        assert_eq!(first.hud.driver.revision(), revision, "terminal is consumed only once");
+        assert_eq!(second.bridge(&mut second_publications).huds.store().selected(), "second-choice");
+        assert_eq!(second.hud.driver.revision(), second_revision);
+        first.hud.driver.fetch(plx_data::hudpacks::address::parse("https://example.org/reset.hud").unwrap());
+        let tag = first.hud.driver.runner.fetches[0].0;
+        let (reply, answer) = std::sync::mpsc::channel();
+        first.hud.driver.runner.fetches[0].1 = Slot::Waiting(answer);
+        first.hud.driver = HudDriver::off();
+        assert!(reply.send(HudEvent::Fetched { tag, result: Err(FetchError::Unreachable) }).is_err(),
+            "reset of the actual owner retires its result channel");
+        assert_eq!(second.hud.driver.revision(), second_revision);
     }
 
     /// The shipped regular and bold face as the host has them (`pkg/`): the driver's own pair is

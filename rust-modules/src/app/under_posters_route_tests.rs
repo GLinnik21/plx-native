@@ -32,7 +32,7 @@ fn caption_under_focused_poster(w: &mut World) -> Vec<String> { w.drawn().captio
 fn the_under_posters_setting_changes_the_caption_under_the_library_grids_posters() {
     let mut w = World::movies_library("r13-caption", false);
     let _cell = Cell::default();
-    w.bridge.stores.browse.borrow_mut().seed_items_for_test(120);
+    w.bridge.bridge().stores.browse.borrow_mut().seed_items_for_test(120);
     w.frames(30);
     assert_eq!(w.grid_cell(), Some((0, 0)), "premise: focus is on the first poster");
     // (The seeded films carry no year or length, so the default's details line says what they are.)
@@ -72,7 +72,7 @@ fn a_name_the_face_cuts_rides_the_caption_by_the_one_collection_rule() {
     let mut w = World::collections("s23-caption", false);
     let _cell = Cell::default();
     let longer = [long; 3].join(" ");
-    w.bridge.stores.browse.borrow_mut().seed_named_collections_for_test(&[
+    w.bridge.bridge().stores.browse.borrow_mut().seed_named_collections_for_test(&[
         (long, FAN),
         ("Marvel", FAN),
         (long, "/library/metadata/5/thumb/1"),

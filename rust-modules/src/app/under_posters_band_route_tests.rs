@@ -112,7 +112,7 @@ pub(super) fn focus_first_poster(w: &mut World, surface: &str) {
 fn the_library_grid_opens_the_band_its_setting_asks_for() {
     let mut w = World::movies_library("band-grid", false);
     let _cell = Cell::default();
-    w.bridge.stores.browse.borrow_mut().seed_items_for_test(120);
+    w.bridge.bridge().stores.browse.borrow_mut().seed_items_for_test(120);
     w.frames(30);
     assert_eq!(w.grid_cell(), Some((0, 0)), "premise: the library opens on its first poster");
     grade_grid_bands(&mut w, "Library");
@@ -204,7 +204,7 @@ fn home_opens_the_band_its_setting_asks_for() {
 #[test]
 fn recommended_opens_the_band_its_setting_asks_for() {
     let mut w = World::recommended_pending("band-recommended");
-    w.bridge.stores.browse.borrow_mut().seed_named_shelves_for_test(
+    w.bridge.bridge().stores.browse.borrow_mut().seed_named_shelves_for_test(
         0, &[("hub.movie.recent", "", "Recently Added"), ("hub.movie.top", "", "Top Rated")], 3);
     w.frames(60);
     grade_shelf_bands(&mut w, "Recommended", "Recently Added", "Top Rated");

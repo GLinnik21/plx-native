@@ -486,6 +486,7 @@ impl LibraryLike for RailHost {
         let directory = plx_data::stores::browse::DirectoryView::empty_for_test();
         let (listing, hubs) = (plx_data::stores::browse::ListingSnapshot::empty_for_test(), plx_data::stores::browse::HubsSnapshot::empty_for_test());
         let cx = Cx::<RailHost> {
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             views: NoViews { listing: listing.view(), directory, hubs: hubs.view() },
             tick: Tick::default(), measure: &plx_ui::fixture::FixtureMeasure, press: PressRead::default(),
             focus: FocusRead::default(), owner: InputOwner::Entry(rail.entry),
@@ -591,6 +592,7 @@ impl LibraryLike for RailHost {
         let directory = plx_data::stores::browse::DirectoryView::empty_for_test();
         let (listing, hubs) = (plx_data::stores::browse::ListingSnapshot::empty_for_test(), plx_data::stores::browse::HubsSnapshot::empty_for_test());
         let cx = Cx::<RailHost> {
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             views: NoViews { listing: listing.view(), directory, hubs: hubs.view() },
             tick: Tick::default(), measure: &plx_ui::fixture::FixtureMeasure, press: PressRead::default(),
             focus: FocusRead::default(), owner: InputOwner::Entry(rail.entry),
@@ -680,6 +682,7 @@ impl LibraryLike for RailHost {
 
         fn cx<'a>(&'a self, entry: EntryId, focus: Option<FocusKey<u32>>) -> Cx<'a, RailHost> {
             Cx::<RailHost> {
+                modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
                 views: NoViews { listing: self.listing.view(), directory: plx_data::stores::browse::DirectoryView::empty_for_test(), hubs: self.hubs.view() },
                 tick: Tick::default(), measure: &plx_ui::fixture::FixtureMeasure, press: PressRead::default(),
                 focus: FocusRead { current: focus, ..FocusRead::default() }, owner: InputOwner::Entry(entry),
