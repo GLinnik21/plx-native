@@ -283,10 +283,11 @@ pub(crate) fn arm_glassload(glass: &mut plx_ui::frame::glass::GlassPlan) {
 }
 
 /// `/tmp/plxnative-navblur` — the blurred-route-transition prototype.
-pub(crate) fn arm_navblur(glass: &mut plx_ui::frame::glass::GlassPlan) {
+pub(crate) fn arm_navblur(glass: &mut plx_ui::frame::glass::GlassPlan) -> bool {
     if let Some(v) = plx_base::devtrig::read("navblur") {
         glass.configure_navblur(&v);
     }
+    glass.blur_dissolve()
 }
 
 /// `/tmp/plxnative-overdraw` — the CPU-side per-draw-class overdraw ledger.
@@ -353,9 +354,9 @@ pub(crate) fn arm_cpuprof() {
 }
 
 /// `/tmp/plxnative-noidle` — turn the whole-frame present gate off.
-pub(crate) fn arm_noidle() {
+pub(crate) fn arm_noidle(present: &mut plx_machine::present::Present) {
     if plx_base::devtrig::flag("noidle") {
-        plx_machine::idle::set_enabled(false);
+        present.set_enabled(false);
         #[cfg(feature = "devtriggers")]
         plx_base::eventlog::log("idle: present gate DISABLED by /tmp/plxnative-noidle");
     }
@@ -1388,7 +1389,7 @@ fn press_arm(app: &mut App, fr: &mut Frame) {
     }
     if app.scenarios.press_release_at != 0 && fr.now.wrapping_sub(app.scenarios.press_release_at) < 0x8000_0000 {
         app.scenarios.press_release_at = 0;
-        app.input.press.release(fr.now);
+
         app.inputs.push(crate::app::bridge::script_key(Key::Ok,
             Tick { ms: fr.now, dt_us: 0 })[1].clone());
     }
@@ -1415,7 +1416,8 @@ fn acct_arm(app: &mut App, fr: &mut Frame) {
     let Some(rest) = latched(&mut app.scenarios.acct_rest, crate::dev::scenarios::acct_armed) else {
         return;
     };
-    if screenshot::at_rest(fr.now, rest) && matches!(app.route(), AppArg::Home) && app.pages.top_page().is_some() {
+    if screenshot::at_rest(fr.now, rest, app.pages.present.last_change_ms(),
+            app.pages.present.changed() || plx_machine::motion::report::present_moving()) && matches!(app.route(), AppArg::Home) && app.pages.top_page().is_some() {
         app.scenarios.acct_tried = true;
         crate::app::bridge::open_account_menu(&mut app.pages);
     } else if fr.now.wrapping_sub(app.t0) > 12_000 {
@@ -1915,7 +1917,7 @@ fn submenuosc_arm(app: &mut App, fr: &mut Frame) {
     if period == 0 || !matches!(app.route(), AppArg::Player) || fr.now.wrapping_sub(app.t0) < 7000 {
         return;
     }
-    plx_machine::idle::wake();
+    app.pages.present.note(plx_machine::present::PresentEvent::Wake);
     if fr.now.wrapping_sub(app.scenarios.submenu_osc.last) < period {
         return;
     }
@@ -1962,7 +1964,7 @@ fn moreosc_arm(app: &mut App, fr: &mut Frame) {
     if period == 0 || !matches!(app.route(), AppArg::Player) || fr.now.wrapping_sub(app.t0) < 7000 {
         return;
     }
-    plx_machine::idle::wake();
+    app.pages.present.note(plx_machine::present::PresentEvent::Wake);
     if fr.now.wrapping_sub(app.scenarios.more_osc.last) < period {
         return;
     }
@@ -2504,7 +2506,7 @@ pub(crate) fn search_osc_tick(app: &mut App, now: u32) {
 /// `/tmp/plxnative-acctosc` — drive the profile menu's own TableView.
 pub(crate) fn account_osc_tick(app: &mut App, now: u32) {
     if app.scenarios.dev.account_osc && crate::app::bridge::account_menu_up(&app.pages) {
-        plx_machine::idle::wake();
+        app.pages.present.note(plx_machine::present::PresentEvent::Wake);
         if now.wrapping_sub(app.scenarios.account_osc_last) > 520 {
             app.scenarios.account_osc_last = now;
             // The surface's own focus engine moves the selection now, so the oscillator presses a
@@ -3088,7 +3090,7 @@ pub(crate) fn alert_tick(app: &mut App, now: u32, dt: f32) {
 /// `/tmp/plxnative-settingsosc` — hold Settings open under a continuous focus sweep.
 pub(crate) fn settings_osc_tick(app: &mut App, now: u32, dt: f32) {
     if app.scenarios.dev.settings_osc && crate::app::bridge::settings_up(&app.pages) {
-        plx_machine::idle::wake();
+        app.pages.present.note(plx_machine::present::PresentEvent::Wake);
         if now.wrapping_sub(app.scenarios.settings_osc_last) > 520 {
             app.scenarios.settings_osc_last = now;
             let key = if app.scenarios.settings_osc_down { Key::Down } else { Key::Up };
@@ -3102,7 +3104,7 @@ pub(crate) fn settings_osc_tick(app: &mut App, now: u32, dt: f32) {
 /// `/tmp/plxnative-consentosc` — sweep the first-run consent question's focus.
 pub(crate) fn consent_osc_tick(app: &mut App, now: u32, dt: f32) {
     if app.scenarios.dev.consent_osc && crate::app::bridge::consent_up(&app.pages) {
-        plx_machine::idle::invalidate();
+        app.note_presentation_damage(plx_machine::present::Provenance::Input);
         if now.wrapping_sub(app.scenarios.consent_osc_last) > 520 {
             app.scenarios.consent_osc_last = now;
             let key = if app.scenarios.consent_osc_down { Key::Down } else { Key::Up };
@@ -3116,7 +3118,7 @@ pub(crate) fn consent_osc_tick(app: &mut App, now: u32, dt: f32) {
 /// `/tmp/plxnative-onboardosc` — sweep the first-run sources editor's focus.
 pub(crate) fn onboard_osc_tick(app: &mut App, now: u32, dt: f32) {
     if app.scenarios.dev.onboard_osc && matches!(app.route(), AppArg::Onboard) {
-        plx_machine::idle::invalidate();
+        app.note_presentation_damage(plx_machine::present::Provenance::Input);
         if now.wrapping_sub(app.scenarios.onboard_osc_last) > 520 {
             app.scenarios.onboard_osc_last = now;
             let key = if app.scenarios.onboard_osc_right { Key::Right } else { Key::Left };

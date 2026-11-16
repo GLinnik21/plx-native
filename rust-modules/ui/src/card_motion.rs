@@ -184,35 +184,22 @@ fn art_after(prev: ArtPhase, hit: bool, now: u32) -> (ArtPhase, f32) {
     }
 }
 
-/// The speed limit the dev trigger `plxnative-cardspeed=<px/s>` imposed, if it did: while it is
-/// `Some`, a card faster than it is `Moving` AND declines poster work ([`declines_request`]), which
-/// reproduces the gate this app shipped with (`cardspeed=120`) for an A/B on the device. Read ONCE
-/// (at the first card drawn, i.e. before any measured frame) so the hot path is an atomic load,
-/// never a `/tmp` stat. `devtrig::read` is `None` at COMPILE time without the `devtriggers`
-/// feature, so a release build is always `None` and this carries no `#[cfg]` pair.
-///
-/// This crate's own unit tests never read the host's trigger file (a leftover
-/// `/tmp/plxnative-cardspeed` on a dev machine would change every speed they classify): they see
-/// no trigger, and [`parse_limit`] is the pure rule they grade.
-fn enforced_limit() -> Option<f32> {
-    static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
-    *SEEN.get_or_init(|| {
-        #[cfg(test)]
-        let text: Option<String> = None;
-        #[cfg(not(test))]
-        let text = plx_base::devtrig::read("cardspeed");
-        let text = text?;
-        let limit = parse_limit(&text);
-        match limit {
-            Some(limit) => plx_base::eventlog::log(&format!(
-                "card_motion: moving cards above {limit} px/s decline poster work (plxnative-cardspeed)")),
-            None => plx_base::eventlog::log(&format!(
-                "card_motion: plxnative-cardspeed {:?} ignored (want px/s > 0); moving cards keep their poster work",
-                text.trim())),
-        }
-        limit
-    })
+/// Captured render policy. Parsing is pure; only the app boundary may read a trigger.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AdmissionPolicy(Option<f32>);
+impl AdmissionPolicy {
+    pub fn from_trigger(text: Option<&str>) -> Self { Self(text.and_then(parse_limit)) }
+    /// Scope all render walks to one owner's captured choice, restoring the enclosing owner.
+    pub fn enter(self) -> PolicyScope { PolicyScope(POLICY.with(|policy| policy.replace(self))) }
 }
+thread_local! { static POLICY: Cell<AdmissionPolicy> = const { Cell::new(AdmissionPolicy(None)) }; }
+pub struct PolicyScope(AdmissionPolicy);
+impl Drop for PolicyScope {
+    fn drop(&mut self) { POLICY.with(|policy| policy.set(self.0)); }
+}
+
+/// App-captured speed gate for this draw. No reader, process latch or test-only default.
+fn enforced_limit() -> Option<f32> { POLICY.with(|policy| policy.get().0) }
 
 /// The speed above which a card is `Moving`: the trigger's limit, else [`MOVING_SPEED`].
 fn moving_limit() -> f32 { enforced_limit().unwrap_or(MOVING_SPEED) }
@@ -281,7 +268,7 @@ impl Scope {
             }
             None => HISTORY.with(|h| h.borrow().art_of(slot)),
         };
-        if matches!(phase, ArtPhase::Arriving { .. }) { plx_machine::idle::invalidate(); }
+        if matches!(phase, ArtPhase::Arriving { .. }) { plx_machine::motion::report::note_motion(); }
         shown
     }
     #[cfg(any(test, feature = "test-support"))]
@@ -343,12 +330,64 @@ fn declines_in(dump: bool, verdict: Option<Verdict>, moving_declines: bool) -> b
     }
 }
 
-/// A declined miss has no worker whose completion could wake it. The next sample
-/// MUST present, including an unknown card first appearing on an otherwise idle page.
-pub fn deferred() { plx_machine::idle::invalidate(); }
+/// A declined motion sample needs another frame to establish its speed. This is
+/// frame-captured motion infrastructure, not resource damage or a worker wake.
+pub fn deferred() { plx_machine::motion::report::note_motion(); }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mutation_only_caches_do_not_publish_damage_or_worker_wakes() {
+        use plx_machine::{machine::PresentHandle, present::{Present, PresentEvent, Provenance}};
+        let _serial = plx_base::testlock::serial();
+        plx_machine::motion::report::reset_for_test();
+        let mut a = Present::global();
+        let mut b = Present::global();
+        a.take(0);
+        a.acknowledge(0);
+        b.take(0);
+        b.acknowledge(0);
+        let mut art = crate::widgets::ArtCycle::default();
+        art.set_frames(&["one", "two"]);
+        begin_frame(16);
+        assert!(crate::testpat::set("ramp"));
+        // Exercise the production capture boundary: the removed global adapter used
+        // to damage whichever unrelated owner happened to collect first.
+        plx_machine::motion::report::collect_into(&mut a, 16);
+        plx_machine::motion::report::collect_into(&mut b, 16);
+        assert!(!a.changed(), "cache mutation cannot leak damage or a global worker wake");
+        assert!(!b.changed(), "independent owner remains idle after the same mutations");
+        assert!(crate::testpat::set("off"));
+        PresentHandle::of(&mut a).note(PresentEvent::Damage(Provenance::Input));
+        assert!(a.page_damaged(), "the runner applies the successful UI effect to its owner");
+        assert!(!b.changed(), "an addressed UI effect never damages another owner");
+    }
+    #[test]
+    fn captured_policy_isolates_independent_hosts_and_restores_the_enclosing_draw() {
+        let first = AdmissionPolicy::from_trigger(Some("480"));
+        let second = AdmissionPolicy::from_trigger(Some("60"));
+        let controlled = AdmissionPolicy::default();
+        let _first = first.enter();
+        assert_eq!(moving_limit(), 480.0);
+        assert!(declines_moving());
+        {
+            let _second = second.enter();
+            assert_eq!(moving_limit(), 60.0);
+            assert!(declines_moving());
+            {
+                let _controlled = controlled.enter();
+                assert_eq!(moving_limit(), MOVING_SPEED);
+                assert!(!declines_moving());
+                let _moving = Scope::moving_for_test();
+                assert!(!declines_request());
+            }
+            assert_eq!(moving_limit(), 60.0);
+        }
+        assert_eq!(moving_limit(), 480.0);
+        let _moving = Scope::moving_for_test();
+        assert!(declines_request());
+        assert!(!declines_in(true, verdict(), declines_moving()), "dump still admits moving cards");
+    }
     use super::*;
     const ID: Identity = Identity { owner: 1, asset: 7 };
     fn sample(h: &mut History, x: f32, y: f32, ms: u32) -> Verdict {
@@ -529,9 +568,9 @@ mod tests {
             assert!(!declines_request());
         }
         assert!(!declines_request(), "hero/heading work outside card() has no motion scope");
-        plx_machine::idle::take_local_damage();
+        plx_machine::motion::report::take_local_motion();
         deferred();
-        assert!(plx_machine::idle::take_local_damage() > 0, "a declined miss must request its next observation");
+        assert!(plx_machine::motion::report::take_local_motion() > 0, "a declined miss must request its next observation");
     }
 
     #[test]

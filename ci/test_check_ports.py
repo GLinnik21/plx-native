@@ -7,6 +7,10 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location('check_ports', Path(__file__).with_name('check-ports.py'))
 gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
+caps_spec = importlib.util.spec_from_file_location('check_list_caps', Path(__file__).with_name('check-list-caps.py'))
+caps = importlib.util.module_from_spec(caps_spec)
+caps_spec.loader.exec_module(caps)
+UNTERMINATED = 'const S: &str = r#"never closed;\n'
 class Ports(unittest.TestCase):
     def fixture(self, name='rust-modules/data/src/job_ports.rs', source='fn run() { Instant::now(); }', ini=None):
         temp = tempfile.TemporaryDirectory()
@@ -38,6 +42,24 @@ class Ports(unittest.TestCase):
         for source in ('fn f() { let now = Instant :: now; }', 'fn f() { i . elapsed ( ); }'):
             root = self.fixture(ini='', source=source)
             self.assertTrue(gate.check(root))
+    def test_unlexable_file_with_a_wall_word_fails_unless_it_is_wholly_test(self):
+        root = self.fixture(ini='', source='fn run() { Instant::now(); }\n' + UNTERMINATED)
+        with self.assertRaisesRegex(ValueError, 'unterminated Rust raw string'): gate.check(root)
+        root = self.fixture(name='rust-modules/session/src/lib.rs', ini='', source='#[cfg(test)] mod fixture;')
+        (root / 'rust-modules/session/src/fixture.rs').write_text('fn test() { Instant::now(); }\n' + UNTERMINATED)
+        self.assertEqual(gate.check(root), [])
+    def test_unlexable_file_without_a_wall_word_is_left_to_the_list_caps_gate(self):
+        root = self.fixture(ini='', source='fn run() {}\n' + UNTERMINATED)
+        self.assertEqual(gate.check(root), [])
+        with self.assertRaisesRegex(ValueError, 'unterminated Rust raw string'): caps.read_hits(root / 'rust-modules')
+    def test_unbalanced_token_group_fails_the_wall_rule_only_when_a_wall_site_needs_classifying(self):
+        root = self.fixture(name='rust-modules/data/src/lib.rs', ini='', source='mod other; fn f() { ( }')
+        other = root / 'rust-modules/data/src/other.rs'
+        other.write_text('fn run() {}')
+        self.assertEqual(gate.check(root), [])
+        with self.assertRaisesRegex(ValueError, 'unbalanced Rust token group'): caps.read_hits(root / 'rust-modules')
+        other.write_text('fn run() { Instant::now(); }')
+        with self.assertRaisesRegex(ValueError, 'unbalanced Rust token group'): gate.check(root)
     def test_directories_globs_traversal_and_absolute_paths_are_rejected(self):
         for name in ('rust-modules/data/src', 'rust-modules/data/src/*.rs', '../outside.rs',
                      '/absolute.rs', 'rust-modules/data/src/../x.rs', 'rust-modules/data/src/./x.rs'):

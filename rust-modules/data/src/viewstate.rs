@@ -770,7 +770,7 @@ pub fn publish_view(
         person(crate::stores::person::PersonCmd::ApplyView { at: at.clone(), edit });
         collection(crate::stores::collection::CollectionCmd::ApplyView { at, edit });
     }
-    plx_machine::idle::invalidate(); // the tick/veil/bar just changed with no spring behind it
+     // the tick/veil/bar just changed with no spring behind it
     endpoints
 }
 
@@ -1038,7 +1038,7 @@ pub fn pump_with_gate(
         // the same staleness, one screen over: a library's own shelves carry watch state and its
         // own Continue Watching row, so the burst that made Home's hubs stale made these stale too
         browse(crate::stores::browse::BrowseCmd::HubsInvalidateAll);
-        plx_machine::idle::invalidate();
+
     }
     endpoints
 }

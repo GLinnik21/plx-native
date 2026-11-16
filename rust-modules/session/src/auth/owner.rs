@@ -7520,7 +7520,8 @@ mod tests {
                 measure: &plx_machine::machine::BareMeasure, press: Default::default(),
                 focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
             let mut present = plx_machine::present::Present::new();
-            let _ = present.take(0); // the spinner's last frame has been presented
+            assert!(present.take(0)); // admit the spinner's last frame
+            present.acknowledge(0); // its simulated swap has completed
             assert!(!present.peek(0), "rig: nothing is owed before the result lands");
             let mut sink = Vec::new();
             owner.step(&SessionEvent::Result(envelope), &cx,

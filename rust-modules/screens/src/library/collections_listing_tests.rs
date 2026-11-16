@@ -180,7 +180,7 @@ fn a_long_collection_name_is_held_to_its_lifted_tile_with_a_fade_and_marquees() 
     use plx_machine::machine::Measure as _;
     let _guard = plx_base::testlock::serial();
     let _lang = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::from_tag("en"));
-    plx_machine::idle::frame_begin(1.0 / 60.0);
+    plx_machine::motion::report::frame_begin(1.0 / 60.0);
     let name = "The Complete Blender Foundation Open Movie Projects: Every Short Film and Making-Of, Extended Cuts, \
         Commentary Tracks, Concept Art and the Complete Behind-the-Scenes Production Diaries, Box Set";
     let item = plx_data::pms::PmsMovie {

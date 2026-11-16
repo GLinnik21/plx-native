@@ -27,7 +27,7 @@
 //! retry is the product driver's ladder (`register_ladder`, the one decision both call): it waits in
 //! `AwaitingClose`, then arms the new register deadline after `Closed`.
 //!
-//! The ACB arms require an existing boot-created playerType0 handle and a known SDR720p24
+//! The ACB arms require an ACB display (the gate creates the playerType0 handle on demand) and a known SDR720p24
 //! fixture unless a validated native sourceInfo envelope arrives. They start service Play at
 //! loadCompleted independently of the staged 200/200/200/300ms bind. Bus release triggers one
 //! main-thread UNLOADED, then plane ownership stays quarantined until process exit: each arm
@@ -2508,6 +2508,32 @@ mod tests {
             drive_report_after(&mut rig, 200, resumed);
             let summary = summary_after_back(&mut rig);
             assert!(summary.contains(&format!("pause={expected} ")), "{summary}");
+        }
+    }
+
+    /// The webOS 25 C2 drive run (LG C2, firmware 10.x, #1064), replayed: its probe printed
+    /// `pause=unconfirmed` on the grader of the day. The run's recorded numbers are a pause sent at
+    /// position 2410, a `paused` event inside the dwell, no position report while paused, and 2729
+    /// as the first position after `resume` (134 ms after it was sent). This grader's verdict on
+    /// them is `pause=froze` on `pause_basis=paused_event_and_resume`; the major 10 row of
+    /// `docs/uri-mode.md` stands on this test (rule (c), amendment (1)). The bound is 1000 ms from
+    /// the paused position: 3410 and 1410 are the last resumes that confirm it, 3411 and 1409 the
+    /// first that do not.
+    #[test]
+    fn uri_drive_webos_25_c2_run_replays_to_pause_froze_from_the_paused_event_and_resume() {
+        for (resumed, expected) in [(2729, "froze"), (3410, "froze"), (1410, "froze"), (3411, "unconfirmed"), (1409, "unconfirmed")] {
+            let mut rig = drive_pause_rig_at(2410);
+            rig.msg("subscribe", r#"{"mediaId":"_m1","paused":true}"#);
+            rig.tick(DRIVE_STEP_MS);
+            drive_report_after(&mut rig, 134, resumed);
+            let summary = summary_after_back(&mut rig);
+            assert!(summary.contains(&format!("pause={expected} ")), "resume at {resumed}: {summary}");
+            if resumed == 2729 {
+                // The run itself: no samples, so the event and the resume position are the whole basis.
+                for token in ["pause_basis=paused_event_and_resume ", "pause_samples=0 ", "paused_event=yes ", "resume_from=2729 "] {
+                    assert!(summary.contains(token), "{token}: {summary}");
+                }
+            }
         }
     }
 

@@ -455,9 +455,17 @@ pub trait DimSink {
 }
 
 /// The production [`DimSink`].
-pub struct GlDims;
+pub struct GlDims<'a> {
+    present: plx_machine::machine::PresentHandle<'a>,
+}
 
-impl DimSink for GlDims {
+impl<'a> GlDims<'a> {
+    pub fn new(present: &'a mut plx_machine::present::Present) -> Self {
+        Self { present: plx_machine::machine::PresentHandle::of(present) }
+    }
+}
+
+impl DimSink for GlDims<'_> {
     fn video_plane(&self) -> bool {
         plx_gfx::gfx::video_plane_frame()
     }
@@ -491,7 +499,7 @@ impl DimSink for GlDims {
         if pending {
             // A frame for the read to land in, without claiming the page changed — which would
             // re-capture the host and restart the read it is waiting on.
-            plx_machine::idle::wake();
+            self.present.note(plx_machine::present::PresentEvent::Wake);
         }
     }
     fn dim(&mut self, field: &crate::underlay::UnderlayField, alpha: f32) {
@@ -762,7 +770,7 @@ impl<H: Host> ModalStack<H> {
     /// One frame: EVERY surface's motion steps — Closing ones unconditionally, whatever the host
     /// fold says — and an Opening surface whose spring settled becomes Open.
     ///
-    /// **Each surface's step runs in its OWN [`MotionScope`](plx_machine::idle::MotionScope)** (§4.4),
+    /// **Each surface's step runs in its OWN [`MotionScope`](plx_machine::motion::report::MotionScope)** (§4.4),
     /// the `plx_machine::idle` half of the `Present::set_scope(Surface)` the dispatcher already sets around
     /// it: a panel's appear spring is the PANEL's motion, never the host page's. The scope merges
     /// back, so it changes who the motion is attributed to and never whether it counts.
@@ -771,7 +779,7 @@ impl<H: Host> ModalStack<H> {
             if s.phase == Phase::Hidden {
                 continue;
             }
-            let _scope = plx_machine::idle::MotionScope::open();
+            let _scope = plx_machine::motion::report::MotionScope::open();
             if s.phase == Phase::Opening {
                 if let Some(inst) = s.entry.inst.as_ref() {
                     s.motion.choose(inst.screen.entry_motion());
@@ -879,21 +887,22 @@ impl<H: Host> ModalStack<H> {
     ///
     /// The dims only: a surface's LIFT (the element it was opened from) is drawn after every
     /// surface, by the dispatcher's lift pass, so the panel's glass grows out from under it.
-    pub fn draw_scrims(&mut self, nav_page_alpha: f32) {
+    pub fn draw_scrims(&mut self, nav_page_alpha: f32, present: &mut plx_machine::present::Present) {
+        let mut sink = GlDims::new(present);
         // Nothing is up: no dim to paint, and the field is not this frame's to touch.
         if self.surfaces.is_empty() {
             return;
         }
-        if plx_gfx::gfx::blur_source_pass() {
+        if plx_gfx::gfx::blur_source_pass() || crate::frame::backdrop::source_walk() {
             // Declaration/source traversals consume the published field. Only the visible
             // traversal may advance its capture/readback lifecycle or the held-ground ledger.
             let dims = self.scrims(nav_page_alpha);
             for (_, alpha) in &dims {
-                GlDims.dim(self.underlay.field(), *alpha);
+                sink.dim(self.underlay.field(), *alpha);
             }
             return;
         }
-        self.draw_scrims_on(nav_page_alpha, &mut GlDims);
+        self.draw_scrims_on(nav_page_alpha, &mut sink);
     }
 
     /// **The stack's latched underlay field**: the frozen ground a lifted opener's glass stands on
@@ -1068,6 +1077,25 @@ mod hide_tests {
         assert_eq!(ms.surface(id).unwrap().motion.appear, 0.0);
         let life = ms.prune();
         assert_eq!(life.len(), 2, "…and it retires on the next frame");
+    }
+
+    #[test]
+    fn deferred_dim_wakes_its_private_owner_not_the_worker_door() {
+        use plx_machine::present::Present;
+        let _serial = plx_base::testlock::serial();
+        let mut owner = Present::new();
+        let mut other = Present::new();
+        let mut worker = Present::global();
+        for p in [&mut owner, &mut other, &mut worker] { p.take(0); p.acknowledge(0); }
+        let mut dims = GlDims::new(&mut owner);
+        dims.in_flight(true);
+        dims.in_flight(false);
+        drop(dims);
+        assert!(owner.peek(1), "a deferred dim must schedule its addressed private-door owner");
+        assert!(!other.peek(1));
+        assert!(!worker.peek(1), "rendering cannot notify the process-global worker door");
+        assert!(!owner.page_damaged());
+        assert!(!owner.page_moving());
     }
 
     /// **The hold lasts until the host snapshot has left the GPU, not one frame.** The frame after

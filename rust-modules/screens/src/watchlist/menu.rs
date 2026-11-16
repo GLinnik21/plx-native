@@ -216,7 +216,7 @@ impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
     /// morph is its own entrance, and the pill above it is the opener lift's.
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
-        self.menu.draw(f.painter, f.underlay, f.measure);
+        self.menu.draw(f.painter.alpha(f.nav_page_alpha), f.underlay, f.measure);
         for row in 0..OptionsRow::ALL.len() {
             let Some(rect) = self.menu.row_frame(row, f.measure) else { continue };
             f.stop(

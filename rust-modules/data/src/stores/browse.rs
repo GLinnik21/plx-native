@@ -51,6 +51,13 @@ pub struct BrowsePublications {
     pub section_hubs: HubsSnapshot,
 }
 
+/// Command admission is not presentation damage: a wanted range or an admitted read can be quiet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommandOutcome {
+    pub accepted: bool,
+    pub changed: bool,
+}
+
 /// Every mutation of the browse store a screen may ask for.
 #[derive(Clone, Debug)]
 pub enum BrowseCmd {
@@ -189,6 +196,15 @@ impl BrowseStore {
         cmd: BrowseCmd,
         input: &BrowseRosterInput<'_>,
     ) -> bool {
+        self.run_with_input_outcome(cmd, input).accepted
+    }
+
+    /// The owner reports presentation damage independently of the command's synchronous answer.
+    pub fn run_with_input_outcome(
+        &mut self,
+        cmd: BrowseCmd,
+        input: &BrowseRosterInput<'_>,
+    ) -> CommandOutcome {
         let keys = input.keys;
         let session = input.session;
         use crate::viewstate::ViewEdit;
@@ -199,6 +215,7 @@ impl BrowseStore {
         let quiet = matches!(&cmd, BrowseCmd::Addressed {
             work: LibraryWork::Want { .. } | LibraryWork::Letters { .. } | LibraryWork::Genres | LibraryWork::HubPage { .. } | LibraryWork::HubPageCancel { .. }, ..
         });
+        let letters = matches!(&cmd, BrowseCmd::Addressed { work: LibraryWork::Letters { .. }, .. });
         let roster_changed = if matches!(&cmd, BrowseCmd::RecheckShares) {
             self.sync_roster(input)
         } else {
@@ -208,11 +225,13 @@ impl BrowseStore {
             self.adapter = Arc::new(Default::default());
         }
         self.state.observe_roster_context(input);
-        let changed = self.state.run_owned(&self.adapter, cmd, keys, session, &mut self.jobs) || roster_changed;
-        if !quiet && (!change_sensitive || changed) {
+        let mut outcome = self.state.run_owned_outcome(&self.adapter, cmd, keys, session, &mut self.jobs);
+        outcome.accepted |= roster_changed;
+        outcome.changed |= roster_changed;
+        if (!quiet && (!change_sensitive || outcome.changed)) || (letters && outcome.changed) {
             self.bump();
         }
-        changed
+        outcome
     }
 
     /// Run one command on a registry that holds no client (no section-hubs or directory read leaves): the
@@ -534,6 +553,11 @@ impl BrowseStore {
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_calendar_bands_for_test(&mut self, counted: [i32; 3], today: Option<[i32; 3]>) {
+        crate::browse::seed_calendar_bands_for_owner_test(&mut self.state, counted, today);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn owe_letters_for_test(&mut self) {
         crate::browse::owe_letters_for_owner_test(&mut self.state);
     }
@@ -703,8 +727,8 @@ impl BrowseStore {
         crate::browse::queue_genre_for_owner_test(&mut self.state, &self.adapter, client);
     }
 
-    #[cfg(test)]
-    fn queue_page_failure_for_test(&mut self, client: &'static plx_plex::plex::Client) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn queue_page_failure_for_test(&mut self, client: &'static plx_plex::plex::Client) {
         crate::browse::queue_page_failure_for_owner_test(&mut self.state, &self.adapter, client);
     }
 
@@ -1202,6 +1226,12 @@ mod contract_tests {
         let _ = stores.take_notices();
         let before_notice = stores.browse.borrow().gen();
         let before_sources = stores.browse.borrow().source_list_gen_for_test();
+        // Data publication cannot dirty or wake an independent presentation owner.
+        let mut present = plx_machine::present::Present::global();
+        assert!(present.take(0));
+        present.acknowledge(0);
+        assert!(!present.changed());
+        let damage = (present.damage_epoch(), present.page_damage_epoch());
         plx_plex::plex::register_for_test(
             "", "127.0.0.1", 9, "synthetic", "fixture");
         let launches = refused_discovery_step(&stores);
@@ -1211,7 +1241,8 @@ mod contract_tests {
         assert_eq!(stores.browse.borrow().gen(), before_notice + 1);
         assert_eq!(stores.take_notices(), [(StoreId::Browse, before_notice + 1)]);
         assert!(stores.take_notices().is_empty());
-        let _ = plx_machine::idle::take_local_damage();
+        assert_eq!((present.damage_epoch(), present.page_damage_epoch()), damage);
+        assert!(!present.changed(), "a data publication must not wake an unrelated owner");
 
         let settled_notice = stores.browse.borrow().gen();
         let settled_sources = stores.browse.borrow().source_list_gen_for_test();
@@ -1220,8 +1251,9 @@ mod contract_tests {
         assert_eq!(stores.browse.borrow().gen(), settled_notice);
         assert_eq!(stores.browse.borrow().source_list_gen_for_test(), settled_sources);
         assert!(stores.take_notices().is_empty());
-        assert_eq!(plx_machine::idle::take_local_damage(), 0,
-            "an empty-to-empty machine identity must not invalidate the settled frame");
+        assert_eq!((present.damage_epoch(), present.page_damage_epoch()), damage);
+        assert!(!present.changed(),
+            "an empty-to-empty machine identity must not dirty or wake an unrelated owner");
 
         plx_plex::plex::reset_servers_for_test();
     }
@@ -1311,6 +1343,52 @@ mod contract_tests {
         assert!(stores.take_notices().is_empty());
 
         plx_plex::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn browse_requests_separate_admission_from_visible_calendar_damage() {
+        let _guard = plx_base::testlock::serial();
+        let mut store = BrowseStore::default();
+        store.seed_two_source_table_for_test();
+        store.run_for_test(BrowseCmd::SetCur(0));
+        let id = store.listing_snapshot().view().id().unwrap();
+        let target = SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section };
+        let keys = ClientKeys::default();
+        let session = plx_plex::plex::session::Session::default();
+        let input = BrowseRosterInput { tenure: 0, keys: &keys, session: &session,
+            visible_generation: 0, settled: false, profile_key: "" };
+        let ask = |store: &mut BrowseStore, target, work| store.run_with_input_outcome(
+            BrowseCmd::Addressed { target, work }, &input);
+        let quiet = CommandOutcome { accepted: true, changed: false };
+        let changed = CommandOutcome { accepted: true, changed: true };
+        let before = store.gen();
+        for _ in 0..3 {
+            assert_eq!(ask(&mut store, target, LibraryWork::Want { lo: 0, hi: 24, focus: Some(3) }), quiet);
+            assert_eq!(ask(&mut store, target, LibraryWork::Letters { today: Some([2026, 10, 31]) }), quiet);
+        }
+        assert_eq!(ask(&mut store, target, LibraryWork::Want { lo: 24, hi: 48, focus: Some(30) }), quiet);
+        assert_eq!(store.gen(), before, "even changed request bounds are not pixels");
+        assert_eq!(ask(&mut store, SectionAddress { epoch: target.epoch.wrapping_add(1), ..target },
+            LibraryWork::Want { lo: 0, hi: 1, focus: None }), CommandOutcome { accepted: false, changed: false });
+
+        let day = [2026, 10, 31];
+        store.seed_calendar_bands_for_test(day, None);
+        assert!(!store.listing_snapshot().view().bands_available());
+        assert_eq!(ask(&mut store, target, LibraryWork::Letters { today: Some(day) }), changed);
+        assert!(store.listing_snapshot().view().bands_available());
+        assert_eq!(store.gen(), before + 1, "a cached rail becoming visible is published");
+        assert_eq!(ask(&mut store, target, LibraryWork::Letters { today: Some(day) }), quiet);
+        assert_eq!(ask(&mut store, target, LibraryWork::Letters { today: Some([2026, 11, 1]) }), quiet,
+            "midnight keeps yesterday's rail while asking for new counts");
+        assert_eq!(ask(&mut store, target, LibraryWork::Letters { today: None }), changed);
+        assert!(!store.listing_snapshot().view().bands_available());
+        assert_eq!(ask(&mut store, target, LibraryWork::Letters { today: None }), quiet);
+        assert_eq!(ask(&mut store, target, LibraryWork::Letters { today: Some(day) }), changed);
+        assert!(store.listing_snapshot().view().bands_available());
+        assert_eq!(store.gen(), before + 3);
+        assert!(store.run_with_input(BrowseCmd::Addressed { target,
+            work: LibraryWork::Want { lo: 0, hi: 24, focus: None } }, &input),
+            "legacy synchronous callers retain their acceptance answer");
     }
 
     #[test]

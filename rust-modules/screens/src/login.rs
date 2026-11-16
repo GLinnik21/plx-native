@@ -1147,6 +1147,7 @@ impl LoginScreen {
     /// the alert down when the offer it asks about has gone, and step the motion.
     fn tick_report<H: AuthLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         use auth::owner::IncidentState as S;
+        let alert_was_visible = self.report.alert.visible();
         let offer = self.report.offer.clone();
         let id = offer.as_ref().map(|o| o.id);
         if self.report.support_for != id {
@@ -1173,7 +1174,7 @@ impl LoginScreen {
                 _ => false,
             };
             if stale
-                && !harness_driven()
+                && !H::screen_inputs(cx).runtime_policy.harness_driven
                 && self.report.last_resolve != Some((o.id, revision))
             {
                 self.report.last_resolve = Some((o.id, revision));
@@ -1215,7 +1216,12 @@ impl LoginScreen {
             use plx_ui::decision_alert::Answers;
             let body = self.report.details_body();
             let answers = if self.report.sendable() { Answers::Two } else { Answers::One };
-            self.report.alert.reconcile_card(plx_platform::i18n::msg::settings_login_details_c(), body, answers);
+            if self.report.alert.reconcile_card(plx_platform::i18n::msg::settings_login_details_c(), body, answers) {
+                fx.invalidate(plx_machine::present::Provenance::Lifecycle);
+            }
+        }
+        if alert_was_visible != self.report.alert.visible() {
+            fx.invalidate(plx_machine::present::Provenance::Lifecycle);
         }
         self.report.alert.update(t.dt());
         let focused = cx
@@ -1639,7 +1645,7 @@ impl LoginScreen {
         mut o: StatusOverlay<'_>,
         focus: Option<u32>,
     ) {
-        let press = f.press.scale;
+        let press = f.press;
         let pop = &self.report.pop;
         if o.action.is_some() {
             o = o
@@ -1842,7 +1848,7 @@ impl LoginScreen {
         if let Some(rect) = details {
             Button::new(plx_platform::i18n::msg::settings_login_details_c().as_ptr(), theme::size::BODY, rect)
                 .focused(focus == Some(DETAILS))
-                .scale(self.report.pop.scale_with(1, f.press.scale))
+                .scale(self.report.pop.scale_with(1, f.press))
                 .draw(&Env::inert(), p);
         }
         self.draw_disclosure(p, layout, f.measure);
@@ -1889,13 +1895,13 @@ impl LoginScreen {
         if !self.report.alert.visible() {
             return;
         }
-        self.report.alert.draw_scrim();
+        self.report.alert.draw_scrim(f);
         let (cancel, affirm) = match self.report.sheet {
             Sheet::Question => (plx_platform::i18n::msg::settings_plaintext_not_now_c(), plx_platform::i18n::msg::settings_login_send_report_c()),
             Sheet::Details => (plx_platform::i18n::msg::settings_login_close_c(), plx_platform::i18n::msg::settings_login_send_report_c()),
             Sheet::Plaintext => PlaintextQuestion::verbs(),
         };
-        self.report.alert.draw(cancel, affirm, f.measure);
+        self.report.alert.draw(cancel, affirm, f.measure, f.route_navigation(), f.press);
         let frames = self.report.alert.frames(f.measure);
         if self.report.alert.is_open() && self.report.alert.settled() {
             for &elem in self.alert_elems() {
@@ -1952,39 +1958,6 @@ impl LoginScreen {
         self.qr_px = (0, 0);
         self.qr_tex_gen = live;
     }
-}
-
-/// Is a harness driving this boot? The onboarding offer is a modal question, and a scripted run
-/// (a test identity, a forced profile pick, a recording) must not stop on one. **Narrow on
-/// purpose**, where `dev::any_trigger_present` is broad: every other trigger — `plxnative-login`,
-/// `-nowan`, `-signinfail`, the consent state — is how the offer is PUT on screen for a capture,
-/// and a gate that saw them would hide the thing being captured. Read once.
-///
-/// It only reads trigger files, so it lives with its one caller rather than in `dev::scenarios`,
-/// which a screen may not name.
-fn harness_driven() -> bool {
-    // A test never has a harness behind it. The application's own tests build this crate without
-    // `cfg(test)`, so the feature that marks them is the second half of the condition.
-    if cfg!(any(test, feature = "test-support")) { return false; }
-    static DRIVEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *DRIVEN.get_or_init(|| {
-        plx_base::devtrig::read("token").is_some_and(|t| !t.is_empty())
-            || plx_base::devtrig::read("pickuser").is_some()
-            || recorder_armed()
-    })
-}
-
-/// Is `plxnative-rec` armed (the recorder's mode value present and valid)? The same raw read
-/// `dev::scenarios::rec_trigger` makes for the controlled-boot preflight. Compiled out, not merely
-/// guarded, in a release build: a runtime check would leave the trigger name in the binary's bytes,
-/// where `ci/check-package.py` grades them.
-#[cfg(feature = "devtriggers")]
-fn recorder_armed() -> bool {
-    matches!(plx_ui::rec::mode_value(&plx_base::devtrig::path("rec")), Ok(Some(_)))
-}
-#[cfg(not(feature = "devtriggers"))]
-fn recorder_armed() -> bool {
-    false
 }
 
 impl LoginScreen {
@@ -2398,20 +2371,20 @@ mod tests {
         type Fx = AppFx;
         type Msg = AppMsg;
         type Elem = u32;
-        type Views<'a> = auth::SessionRead<'a>;
+        type Views<'a> = (auth::SessionRead<'a>, &'a crate::registry::ScreenInputs);
         type Init = super::super::family::NoInit;
         type Memory = ();
     }
 
     impl crate::registry::ScreenInputsLike for SessionHost {
-    fn screen_inputs<'a>(_cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
-        crate::registry::empty_fixture()
+    fn screen_inputs<'a>(cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        cx.views.1
     }
 }
 
 impl AuthLike for SessionHost {
         fn auth<'a>(cx: &Cx<'a, Self>) -> auth::SessionRead<'a> {
-            cx.views
+            cx.views.0
         }
     }
 
@@ -2888,7 +2861,7 @@ impl AuthLike for SessionHost {
         snapshot: &'a auth::owner::SessionSnapshot,
     ) -> Cx<'a, SessionHost> {
         Cx {
-            views: snapshot.read(),
+            views: (snapshot.read(), crate::registry::empty_fixture()),
             tick: plx_machine::machine::Tick::default(),
             measure: m,
             press: PressRead::default(),
@@ -3564,6 +3537,27 @@ impl AuthLike for SessionHost {
 
     /// (b) A sign-in failure whose incident has not been resolved yet is resolved by the screen
     /// that shows it, against the permission and revision it reads now — once, not every frame.
+    #[test]
+    fn explicit_harness_policy_controls_pending_incident_resolution() {
+        let _serial = plx_base::testlock::serial();
+        let mut failed = snapshot(Phase::Error, 0, "");
+        failed.incident = Some(incident(auth::owner::IncidentState::Pending,
+            plx_telemetry::telemetry::incident::IncidentKind::PinCreate));
+        let measure = plx_ui::fixture::FixtureMeasure;
+        for harness_driven in [true, false] {
+            let mut screen = LoginScreen::new(EntryId(0), failed.read());
+            let mut inputs = crate::registry::ScreenInputs::default();
+            inputs.runtime_policy.harness_driven = harness_driven;
+            let mut cx = cx_with(&measure, &failed);
+            cx.views.1 = &inputs;
+            let mut present = Present::new();
+            let mut buf: Vec<Stamped<SessionHost>> = Vec::new();
+            let mut fx = Effects::new(&mut buf, MachineId::Instance(InstanceId(0)), &mut present);
+            Machine::<SessionHost>::step(&mut screen, &tick_ev(16), &cx, &mut fx);
+            assert_eq!(screen.report.last_resolve.is_some(), !harness_driven);
+        }
+    }
+
     #[test]
     fn a_pending_incident_is_resolved_once_by_the_screen_that_shows_it() {
         let _serial = plx_base::testlock::serial();

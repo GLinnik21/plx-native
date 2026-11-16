@@ -27,6 +27,10 @@ impl Host for WatchHost {
     type Memory = PageMemory;
 }
 
+impl crate::registry::ScreenInputsLike for WatchHost {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+}
+
 pub(crate) const ENTRY: EntryId = EntryId(9);
 
 /// A row titled `<i>`, a movie of 2000 + i.
@@ -246,7 +250,7 @@ impl Harness {
     pub(crate) fn step_fx(&mut self, ev: ScreenEvent<WatchHost>) -> (Vec<plx_machine::machine::Stamped<WatchHost>>, bool) {
         let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
-        let (_, moving) = plx_machine::idle::scoped_motion(|| {
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
             let cx = Cx {
                 views: (),
                 tick: Tick { ms: self.ms, dt_us: 16_667 },

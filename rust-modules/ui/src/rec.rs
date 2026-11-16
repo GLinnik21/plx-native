@@ -726,7 +726,9 @@ impl Recording {
                     continue;
                 }
                 n += 1;
+                let before_decode = budget.remaining();
                 let v = strict_json::decode_with(line, &budget).map_err(|_| malformed(n,"record JSON/budget"))?;
+                let decoded_bytes = before_decode - budget.remaining();
                 let f = v["f"].as_u64().ok_or_else(|| malformed(n, "f"))?;
                 let kind = v["t"].as_str().ok_or_else(|| malformed(n, "t"))?;
                 if frames.last().map(|x| x.f) != Some(f) {
@@ -831,6 +833,13 @@ impl Recording {
                     _ => return Err(malformed(n, "record kind")),
                 }
                 after_tick = kind == "tick";
+                // These rows retain only scalars in the already-reserved Frame. Their
+                // temporary JSON trees are gone before the next decode, not cumulative
+                // recording storage. All cloned payloads/strings keep their charges.
+                let scalar_row = matches!(kind, "tick" | "capture" | "st" | "fo")
+                    || (kind == "present" && fr.present_why.is_none());
+                drop(v);
+                if scalar_row { budget.release(decoded_bytes); }
             }
         }
         if frames.last().is_some_and(|frame| frame.tick.is_none()) { return Err(malformed(n,"completed frame lacks tick")); }
@@ -1200,6 +1209,24 @@ mod tests {
         }
     }
     use super::*;
+
+    #[test]
+    fn decoded_budget_tracks_live_trees_not_discarded_scalar_rows() {
+        let manifest = serde_json::to_string(&Header::new(17, &Init).to_json()).unwrap();
+        let rows = (0..100).map(|f| format!(
+            "{{\"f\":{f},\"t\":\"tick\",\"ms\":0,\"dt_us\":0}}\n{{\"f\":{f},\"t\":\"capture\",\"pending\":false,\"text\":false}}\n{{\"f\":{f},\"t\":\"present\",\"bit\":false}}\n{{\"f\":{f},\"t\":\"st\",\"hash\":0}}\n{{\"f\":{f},\"t\":\"fo\",\"entry\":null,\"elem\":null,\"group\":null}}\n"
+        )).collect::<String>();
+        assert!(Recording::parse_budget(&manifest,&[rows.as_bytes()],17,512 * 1024).is_ok());
+        // Strings retained by present and arbitrary payload Values still accumulate.
+        for retained in [format!("\"t\":\"present\",\"bit\":false,\"why\":{}",json!("kept".repeat(128))),
+            format!("\"t\":\"rs\",\"payload\":{}",json!([0; 128].as_slice()))] {
+            let rows = (0..100).map(|f| format!("{{\"f\":{f},\"t\":\"tick\",\"ms\":0,\"dt_us\":0}}\n{{\"f\":{f},{retained}}}\n")).collect::<String>();
+            assert!(Recording::parse_budget(&manifest,&[rows.as_bytes()],17,512 * 1024).is_err());
+        }
+        // A transient tree must fit at its peak, before it can be released.
+        let oversized = format!("{}\n",json!({"f":0,"t":"tick","ms":0,"dt_us":0,"extra":vec![0;2048]}));
+        assert!(Recording::parse_budget(&manifest,&[oversized.as_bytes()],17,64 * 1024).is_err());
+    }
 
     #[test]
     fn decoded_budget_rejects_large_initial_collection() {

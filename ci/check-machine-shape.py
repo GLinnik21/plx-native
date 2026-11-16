@@ -4,10 +4,11 @@
 Every listed machine has a validated strict writer binding and an enum policy. Bool/Option counts
 remain report-only. See machines.ini for the conservative proof limits; Clippy classifies enums.
 """
+from functools import lru_cache
 from pathlib import Path
 import configparser
 import sys
-from machine_readonly import macro_invocation
+from machine_readonly import Tokens, derived, lexed, macro_invocation, shadows_of
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rust_test_modules as rtm  # noqa: E402
@@ -21,7 +22,12 @@ OPEN, SHUT = '([{<', ')]}>'
 def struct_fields(source, name):
     """[(is_pub, field name or index, type tokens)] of the braced or tuple struct `name`, or None
     when the source declares no such struct. Comments and strings are gone after lexing."""
-    tokens = [t for t in source if t != '<test>'] if isinstance(source, list) else rust_tokens(source)
+    tokens = source if isinstance(source, list) else rust_tokens(source)
+    return derived(tokens, ('struct_fields', name), lambda t: _struct_fields(t, name))
+
+
+def _struct_fields(source, name):
+    tokens = [t for t in source if t != '<test>']
     start = next((i for i in range(len(tokens) - 1) if tokens[i] == 'struct' and tokens[i + 1] == name), None)
     if start is None: return None
     body, angle = start + 2, 0
@@ -61,9 +67,17 @@ def shape(index, tokens):
     return is_pub, str(index), tokens  # a tuple struct's field
 
 
+# The lexing entry points are pure functions of the source TEXT, and one source is lexed over and over
+# (every machine's analysis re-reads its production closure and every module a type resolves through,
+# and the registry's mutation matrix re-checks each machine dozens of times with one file changed).
+# They memoize on that text, never on a path or an mtime, and hand out one shared read-only `Tokens`.
+@lru_cache(maxsize=64)
 def rust_tokens(source):
     """Code tokens with raw identifiers normalized; literals cannot join adjacent code."""
-    raw = [text if kind == 'code' else '<literal>' for kind, text in rtm.lex(source)]
+    # Interned: a lexed file is mostly a few hundred distinct words repeated, and the memo below keeps
+    # many of these lists alive at once.
+    raw = [sys.intern(text) if kind == 'code' else '<literal>' for kind, text in rtm.lex(source)]
+    if not any(raw[i] == 'r' and raw[i + 1] == '#' for i in range(len(raw) - 2)): return Tokens(raw)
     out, i = [], 0
     while i < len(raw):
         if raw[i:i + 2] == ['r', '#'] and i + 2 < len(raw):
@@ -73,16 +87,17 @@ def rust_tokens(source):
             out.append(identifier); i += 3
         else:
             out.append(raw[i]); i += 1
-    return out
+    return Tokens(out)
 
 
 def ends_of(tokens):
-    return rtm.group_ends([('code', token) for token in tokens])
+    return derived(tokens, 'ends', lambda t: rtm.group_ends([('code', token) for token in t]))
 
 
+@lru_cache(maxsize=384)
 def production_tokens(source):
     """Erase items proven cfg(test)-only, keeping item boundaries."""
-    tokens = rust_tokens(source)
+    tokens = list(rust_tokens(source))
     ends = ends_of(tokens)
     i = 0
     while i + 1 < len(tokens):
@@ -110,11 +125,15 @@ def production_tokens(source):
         tokens[i:j] = ['<test>'] * (j - i)
         if j > i: tokens[j - 1] = boundary  # retain an item boundary for the following production impl
         i = j
-    return [token for token in tokens if token != '<test>']
+    return Tokens(token for token in tokens if token != '<test>')
 
 
 def item_bodies(tokens):
     """Return inherent impl and function spans; nested functions remain separate."""
+    return derived(tokens, 'bodies', _item_bodies)
+
+
+def _item_bodies(tokens):
     ends = ends_of(tokens)
     impls, functions = [], []
     for i, token in enumerate(tokens):
@@ -185,14 +204,8 @@ def builtin_macro(tokens, bang, macro):
     """Accept an unqualified builtin only when no local definition/import can shadow it."""
     if bang < 1 or tokens[bang - 1] != macro: return False
     if bang >= 3 and tokens[bang - 3:bang - 1] == [':', ':']: return False
-    if any(tokens[j:j + 3] == ['macro_rules', '!', macro] for j in range(len(tokens) - 2)):
-        return False
-    for j, token in enumerate(tokens):
-        if token == 'use':
-            end = j + 1
-            while end < len(tokens) and tokens[end] != ';': end += 1
-            if macro in tokens[j + 1:end] or '*' in tokens[j + 1:end]: return False
-    return True
+    shadows = shadows_of(tokens)
+    return macro not in shadows.macro_rules and macro not in shadows.imported and '*' not in shadows.imported
 
 
 def readonly_match(tokens, bang, ends, field):
@@ -217,6 +230,10 @@ def readonly_match(tokens, bang, ends, field):
 
 
 def copy_enum_types(tokens):
+    return derived(tokens, 'copy_enums', _copy_enum_types)
+
+
+def _copy_enum_types(tokens):
     """Recognize derived-Copy fieldless enums; payloads and aliases stay conservative."""
     ends = ends_of(tokens)
     safe = set()
@@ -234,14 +251,8 @@ def copy_enum_types(tokens):
         enum_name = tokens[i + 1]
         declarations = sum(tokens[j] in ('enum', 'struct', 'type', 'union') and tokens[j + 1] == enum_name
                            for j in range(len(tokens) - 1))
-        imported = False
-        for j, token in enumerate(tokens):
-            if token == 'use':
-                end = j + 1
-                while end < len(tokens) and tokens[end] != ';': end += 1
-                if enum_name in tokens[j + 1:end] or '*' in tokens[j + 1:end]:
-                    imported = True
-                    break
+        shadows = shadows_of(tokens)
+        imported = enum_name in shadows.imported or '*' in shadows.imported
         if declarations == 1 and not imported and variants and all(
                 t == ',' or (t.isidentifier() and t[0].isupper()) for t in variants):
             safe.add(enum_name)
@@ -434,9 +445,10 @@ def writer_problems(source, name, field, transition, constructor, label, require
             problems.append(f'{label}::{method}: consuming the machine must use an owner event')
     machine_methods = {n: [(a, b, sig) for a, b, m, sig in declared if m == n] for _, _, n, _ in declared}
     all_inert = proof is not None and substitutions is not None and all(proof.inert(state_path, [part for token in t for part in substitutions.get(token, [token])]) for _, _, t in fields)
-    def machine_body(i): return any(a < i < b and inherent_target(h[h.index('for') + 1:] if 'for' in h else h, name) for a, b, h in impls)
-    for i, token in enumerate(tokens):
-        if not machine_body(i): continue
+    machine_body = sorted({i for a, b, h in impls if inherent_target(h[h.index('for') + 1:] if 'for' in h else h, name)
+                           for i in range(a + 1, b)})
+    for i in machine_body:
+        token = tokens[i]
         if token == 'unsafe': problems.append(f'{label}: unsafe machine authority cannot be proved')
         if token == 'self' and tokens[i + 1:i + 2] == ['.'] and tokens[i + 3:i + 4] == ['(']:
             method = tokens[i + 2]
@@ -468,7 +480,7 @@ def _field_writer_problems(source, name, field, transition, constructor, label, 
     else: tokens, impls, functions, ends, contexts = analysis
     if analysis is None: contexts = {}
     owned = [(a, b) for a, b, h in impls if inherent_target(h, name)]
-    closures = closure_spans(tokens, ends)
+    closures = derived(tokens, 'closures', lambda t: closure_spans(t, ends_of(t)))
 
     def compute_context(index):
         if any(a <= index < b for a, b in closures): return None
@@ -485,15 +497,15 @@ def _field_writer_problems(source, name, field, transition, constructor, label, 
     problems = []
     fields = struct_fields(tokens, name) or []
     field_types = [typ for _, field_name, typ in fields if field_name == field]
-    plain_struct = any(tokens[j:j + 3] == ['struct', name, '{'] for j in range(len(tokens) - 2))
+    plain_struct = derived(tokens, ('plain_struct', name), lambda t: any(t[j:j + 3] == ['struct', name, '{'] for j in range(len(t) - 2)))
     copy_field = (plain_struct and len(field_types) == 1 and len(field_types[0]) == 1
                   and field_types[0][0] in copy_enum_types(tokens))
-    safe_matches = {i: span for i, token in enumerate(tokens) if token == '!'
-                    and (span := readonly_match(tokens, i, ends, field)) is not None}
+    bangs = derived(tokens, 'bangs', lambda t: [i for i, token in enumerate(t) if token == '!'])
+    safe_matches = {i: span for i in bangs if (span := readonly_match(tokens, i, ends, field)) is not None}
     # These wrappers consume only the bool result, with no formatting expressions.
     safe_asserts = set()
-    for i, token in enumerate(tokens):
-        if token != '!' or i + 1 not in ends: continue
+    for i in bangs:
+        if i + 1 not in ends: continue
         if not any(builtin_macro(tokens, i, macro) for macro in ('assert', 'debug_assert')): continue
         inner = i + 3
         if inner not in safe_matches or inner + 1 not in ends: continue
@@ -521,8 +533,8 @@ def _field_writer_problems(source, name, field, transition, constructor, label, 
 
     # Only a direct associated Self struct literal is an authorized constant constructor.
     constants = []
-    for i in range(len(tokens) - 6):
-        if tokens[i:i + 6] != ['const', constructor, ':', 'Self', '=', 'Self']:
+    for i in derived(tokens, 'consts', lambda t: [j for j, token in enumerate(t) if token == 'const']):
+        if i >= len(tokens) - 6 or tokens[i:i + 6] != ['const', constructor, ':', 'Self', '=', 'Self']:
             continue
         brace = i + 6
         if brace not in ends or tokens[brace] != '{' or tokens[ends[brace] + 1:ends[brace] + 2] != [';']:
@@ -658,8 +670,7 @@ def _field_writer_problems(source, name, field, transition, constructor, label, 
         for method in ('replace', 'take'):
             expected = ['std', ':', ':', 'mem', ':', ':', method, '(', '&', 'mut', 'self', '.']
             if tokens[max(0, index - len(expected)):index] == expected:
-                if any(tokens[j:j + 2] in (['mod', 'std'], ['as', 'std']) for j in range(len(tokens) - 1)): return False
-                return True
+                return not shadows_of(tokens).std_named
         return False
 
     def owned_bool_match(index, owner):
@@ -795,9 +806,7 @@ def production_sources(path, root):
             raise ValueError(f'production include escapes rust-modules: {current}')
         if current in seen: continue
         seen.add(current)
-        source = current.read_text(encoding='utf-8')
-        tokens = rtm.lex(source)
-        ends = rtm.group_ends(tokens)
+        tokens, ends = lexed(current.read_text(encoding='utf-8'))
         module_dir = current.parent if current.name in ('mod.rs', 'lib.rs', 'main.rs') else current.with_suffix('')
         def walk(start, stop, directory, attribute_base, inherited_test=False):
             i, attrs = start, []

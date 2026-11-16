@@ -794,9 +794,9 @@ fn wash_frame_with(
     moving: bool,
     glass: impl Fn(crate::Painter),
 ) -> bool {
-    plx_machine::idle::frame_begin(1.0 / 60.0);
+    plx_machine::motion::report::frame_begin(1.0 / 60.0);
     if moving {
-        plx_machine::idle::note_motion();
+        plx_machine::motion::report::note_motion();
     }
     sources.borrow_mut().begin(vec![]);
     {

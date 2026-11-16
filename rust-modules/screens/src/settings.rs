@@ -487,7 +487,7 @@ fn mount_page(
 ) -> Box<dyn Screen<InnerHost>> {
     match arg {
         SettingsPage::Root => Box::new(RootPage::new(entry, cx.views.directory, &cx.views.inputs)),
-        SettingsPage::Language => Box::new(LanguagePage::new(entry)),
+        SettingsPage::Language => Box::new(LanguagePage::new(entry, cx.views.inputs)),
         SettingsPage::UnderPosters => Box::new(under_posters::UnderPostersPage::new(entry)),
         SettingsPage::UnderPostersDetails(kind) => Box::new(under_posters::DetailsPage::new(entry, kind)),
         SettingsPage::Contribute => Box::new(super::legal::DocumentPage::contribute(entry)),
@@ -891,7 +891,7 @@ impl<H: DirectoryLike> Screen<H> for RouteSurface {
                 // opaque ground at rest and what fades out over the host on dismissal
                 let dim = theme::scrim_black(settings_scrim_alpha(a, f.nav_page_alpha));
                 root.rect(Rect::FULL, 0.0, dim, dim, 0.0);
-                plx_ui::profile::phase("st.ground", || self.ground.draw_host(root.alpha(a)));
+                plx_ui::profile::phase("st.ground", || { if self.ground.draw_host(root.alpha(a)) { f.request_frame(); } });
             }
             Family::FirstRunConsent => {
                 self.ground.draw_home(root);
@@ -917,6 +917,7 @@ impl<H: DirectoryLike> Screen<H> for RouteSurface {
         if let Some(inst) = self.top_mut() {
             let mut inner = DrawFrame::with_navigation(&icx, f.painter, navigation);
             inst.screen.draw(&mut inner);
+            if inner.take_frame_request() { f.request_frame(); }
         }
         self.push.route.walked();
     }
@@ -994,6 +995,7 @@ impl RouteSurface {
             if let Some(inst) = self.top_mut() {
                 let mut inner = DrawFrame::with_navigation(&icx, entrance, navigation);
                 inst.screen.draw(&mut inner);
+                if inner.take_frame_request() { f.request_frame(); }
                 stops.extend(inner.into_stops());
             }
         } else {
@@ -1002,6 +1004,7 @@ impl RouteSurface {
                     let mut inner = DrawFrame::with_navigation(&icx, parent_p, navigation);
                     inner.push = parent_frame;
                     inst.screen.draw(&mut inner);
+                    if inner.take_frame_request() { f.request_frame(); }
                     stops.extend(inner.into_stops());
                 }
             }
@@ -1015,6 +1018,7 @@ impl RouteSurface {
                     let mut inner = DrawFrame::with_navigation(&icx, child_p, navigation);
                     inner.push = child_frame;
                     inst.screen.draw(&mut inner);
+                    if inner.take_frame_request() { f.request_frame(); }
                     // a leaving page takes no input: its stops are not registered
                     if !popping {
                         stops.extend(inner.into_stops());
@@ -1459,8 +1463,8 @@ impl RootPage {
         let multi_user = sess.home_users.len() > 1;
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;
-        self.state.language = plx_platform::i18n::saved_preference();
-        self.state.under_posters = plx_media::route::under_posters();
+        self.state.language = self.inputs.install_language;
+        self.state.under_posters = self.inputs.preference::<plx_plex::plex::session::UnderPostersPref>();
         let plaintext = if signed_in { self.plaintext_inputs() } else { Vec::new() };
         let form = root_form(&RootInputs {
             trace: self.state.trace,
@@ -1669,7 +1673,9 @@ impl Machine<InnerHost> for RootPage {
                     self.under_ask.step(cx, fx);
                 }
                 let key = self.inputs.session_key();
-                let mut landed = self.session_watch != Some(key);
+                let mut landed = self.session_watch != Some(key)
+                    || self.state.language != self.inputs.install_language
+                    || self.state.under_posters != self.inputs.preference::<plx_plex::plex::session::UnderPostersPref>();
                 self.session_watch = Some(key);
                 if let Some((value, ticket)) = &self.pending_auto {
                     if self.auto_receipt.is_none() {
@@ -1969,6 +1975,7 @@ struct LanguagePage {
     form: FormTable<LangId, LangAction, SettingsPage>,
     state: LanguageState,
     save: Option<(plx_platform::i18n::Preference, std::sync::mpsc::Receiver<bool>)>,
+    running_language: plx_platform::i18n::Preference,
 }
 
 struct LanguageState {
@@ -1996,16 +2003,16 @@ fn restart_hint() -> plx_ui::widgets::KeyHint<'static> {
 }
 
 impl LanguagePage {
-    fn new(entry: EntryId) -> Self {
-        let selected = plx_platform::i18n::saved_preference();
+    fn new(entry: EntryId, inputs: &crate::registry::ScreenInputs) -> Self {
+        let selected = inputs.install_language;
         let sel = LangId::Choice(selected).key();
-        let mut page = Self { entry, form: FormTable::new(super::registry::BAND), state: LanguageState { selected, sel, failed: false, busy: false }, save: None };
+        let mut page = Self { entry, form: FormTable::new(super::registry::BAND), state: LanguageState { selected, sel, failed: false, busy: false }, save: None, running_language: inputs.running_language };
         page.rebuild();
         page
     }
 
     fn pending(&self) -> bool {
-        self.state.selected != plx_platform::i18n::current().preference()
+        self.state.selected != self.running_language
     }
 
     /// Re-derive the rows, keeping the cursor on its row by identity (the saved language on the

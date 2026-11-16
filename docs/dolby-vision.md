@@ -106,6 +106,56 @@ the same Dolby Vision tail was measured on a webOS 6 set (LG C1, webOS 6.5.3, 20
 AV1 Profile 10.1 file direct-played with the node put the panel in Dolby Vision and played through,
 where without it the same file showed HDR10. It is unmeasured on any other firmware, and the webOS 4.5 dev set never reaches it (no AV1 row in its codec table).
 
+### 1a. Active-area offsets from another raster (#1367)
+
+**The bug class.** An RPU's Level 5 block is the picture's active area, as four offsets (`left`,
+`right`, `top`, `bottom`), and the TV's Dolby Vision engine blanks everything outside it. A
+re-encode cropped from a letterboxed master keeps the master's L5 in every RPU. The report: a
+1920x802 Profile 8.1 file cut from a 3840x2160 master (`dovi_tool info -s`: `L5 offsets: top=276,
+bottom=277, left=0, right=0`) played on an LG C8 (webOS 4.4.3, Feed) as a strip 249 rows high,
+802 - 553. With Dolby Vision off it played whole: the RPU NALs are still fed (nothing drops
+`UNSPEC62` on that path), but the pipeline is built without Dolby Vision, so nothing applies them
+and the HDR10 base layer shows.
+
+**The rule** (`ff::dv_active_area_is_foreign`, per RPU, against the raster the demuxer reports:
+`codecpar`, the displayed one, 1920x802 and not the coded 808). A wrong keep cuts real picture; a
+wrong clear only shows the black bars the encode itself carries, which is what `dovi_tool --crop`
+does. So it leans to clear:
+1. All-zero offsets, or an unknown raster: nothing to do.
+2. **A raster that is not 16:9** (`width * 9 != height * 16`) was cropped and has no bars for an
+   active area to describe: ANY nonzero offsets are cleared. This is what catches 1920x1038 (a 1.85:1
+   master's `top=bottom=42` leaves a plausible 2.01:1 and would still blank 84 rows), 1920x960
+   (`120 / 120`, 2.67:1), 3840x1600 and 4096x2160, which a test of the area's shape alone keeps.
+3. **A 16:9 raster** keeps offsets that can describe it (`ff::dv_active_area_fits`): `left + right <
+   width`, `top + bottom < height`, and an area no wider than 3:1 (`DV_AREA_WIDEST`) and no narrower
+   than 1:2 (`DV_AREA_NARROWEST`); no released picture is wider than 2.76:1 (Ultra Panavision 70) or
+   narrower than 9:16 portrait. A genuine 1920x1080 letterbox (`top=138`, `bottom=139`, 2.39:1) and
+   a 3840x2160 master's own `276 / 277` are kept. Plus a per-stream **latch**
+   (`ff::DvActiveArea::foreign_seen`, owned by the demux loop): once one RPU of the stream has been
+   cleared, every later RPU with nonzero offsets is cleared too, which catches a variable-aspect 4K
+   master downscaled to 1080p, whose 1.90:1 scenes (`69 / 70`) look plausible on their own.
+
+**What is fed.** `ff::packet_to_annexb` checks every HEVC RPU of every profile, the Profile 7
+conversion's output included. When the rule fires, `ff::clear_foreign_active_area` zeroes the four
+offsets (`DoviRpu::crop`) and writes the RPU again, every other field kept; the event log says
+`ff: DV RPU #n active area ... cannot describe WxH; cleared`. Any other RPU is fed as it reached the
+check, not re-serialised: the original bytes, or for a converted Profile 7 the conversion's output.
+That covers offsets that are kept, no L5 block, an RPU that does not parse (a Profile 7 one is
+still dropped, as before) and a raster the demuxer did not report.
+
+**Firmware evidence.** W18O `libkadaptor.so.2.0.1`, `dolbyGenerateRegNLuts_IP` at `0xe620c`, writes
+the L5 offsets into the DM registers `Active_area_*`.
+
+**Limits.** Three, none verified:
+- The URI engine, where the TV reads the file itself, is not covered: nothing of the file passes
+  through this app. Nor is AV1 Profile 10 on the Feed path, whose RPUs go through
+  `av1_packet_to_tu` and are not checked.
+- A 16:9 picture whose first foreign offsets still leave a plausible area is kept: a 1080p downscale
+  of a 1.85:1 master that kept its 4K offsets (`top=bottom=42`, 1.93:1 left) passes and blanks 21
+  rows of picture at each edge. Nothing in the file says the offsets are not its own.
+- It is not verified on a device: our dev set's W19H `libkadaptor` has no `active_area` string, so
+  it cannot reproduce the strip, and the reporter's C8 is where the failure was seen.
+
 ---
 
 ## 2. The Load payload: two nodes, both recovered from the set's own binaries

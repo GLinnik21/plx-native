@@ -271,9 +271,9 @@ fn long_line(drawn: &Drawn) -> Option<(f32, usize)> {
 
 /// Draw the frame, and say whether a marquee is moving in it (past its rest beat).
 fn draw_and_glides(w: &mut World) -> (Drawn, bool) {
-    let _ = plx_machine::idle::take_local_damage();
+    let _ = plx_machine::motion::report::take_local_motion();
     let frame = w.drawn();
-    (frame, plx_machine::idle::take_local_damage() > 0)
+    (frame, plx_machine::motion::report::take_local_motion() > 0)
 }
 
 /// **A held Right along a Home shelf glides the focused caption while the shelf headings stay clear

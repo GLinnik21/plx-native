@@ -153,7 +153,7 @@ Pin = collections.namedtuple("Pin", "key urls sha256 kind member version licence
 PINS = {
     "linux-x86_64": Pin(
         "linux-x86_64",
-        ("https://github.com/GLinnik21/plx-native/releases/download/"
+        ("https://github.com/plxnative/plx-native/releases/download/"
          "mirror/ffmpeg-btbn-autobuild-2026-11-12-15-40/ffmpeg-n9.0.2-57-gd838f9f9ae-linux64-gpl-9.0.tar.xz",
          "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-12-15-40/"
          "ffmpeg-n9.0.2-57-gd838f9f9ae-linux64-gpl-9.0.tar.xz"),

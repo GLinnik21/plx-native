@@ -27,6 +27,10 @@ impl ScreenArg for TestArg {
 
 struct TestHost;
 
+impl crate::registry::ScreenInputsLike for TestHost {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::empty_fixture() }
+}
+
 impl crate::registry::PlayerLike for TestHost {
     fn session<'a>(_cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession {
         plx_media::route::idle_session_for_test()
@@ -80,6 +84,7 @@ fn cx<'a>(measure: &'a dyn plx_machine::machine::Measure, elem: Option<u32>) -> 
 
 fn bare(sid: ServerId, rk: &str) -> DetailScreen {
     let mut screen = DetailScreen {
+        caption_policy: crate::registry::captions::policy(),
         entry: EntryId(8),
         sid,
         rk: rk.into(),

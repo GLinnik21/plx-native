@@ -75,7 +75,7 @@ pub mod master_detail; // RESTRUCTURE (spec §10): reusable two-region focus/ret
 // no module-level deletion counter remains for a newly mounted screen to poll.
 pub mod page_stack; // the drill-in page stack Tracks and More share
 pub mod panel_motion; // the resize/page-slide spring of the in-player table popovers (Tracks, More)
-pub mod nav; // the page transition's PRESENTATION, published once a frame from the container
+
 pub mod breadcrumb; // 'Films > Collections' crumb (PR5)
 pub mod hstack; // one gap between a run of measured items (UIStackView spacing)
 pub mod vstack; // the same stack top to bottom (VStack/VFlow over hstack's engine) + the alert head ladder
@@ -89,7 +89,7 @@ pub mod scroll_capsule; // the scroll capsule + top fade a tucked long page leav
 pub mod popover_glass; // the popover panel's glass: gradient face, rim, highlight, shadow (DS6)
 pub mod popover_morph; // the morph open style (pill -> panel) beside the shared K_APPEAR fade+slide
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
-pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
+
 pub use plx_gfx::gfx::profile; // the draw-phase profiler lives in `gfx` now (module-layers step L5)
 pub mod preview_controls;
 pub mod route_screen;
@@ -223,7 +223,7 @@ impl Spring {
     /// a card to the focus program for as long as the row keeps focus elsewhere).
     ///
     /// Arrived means within [`LAND_REL`] of the larger magnitude (plus one) and travelling less than
-    /// that per frame (`vel * dt`, the form [`plx_machine::idle::settled`] judges): about 1.2e-4 for
+    /// that per frame (`vel * dt`, the form [`plx_machine::motion::report::settled`] judges): about 1.2e-4 for
     /// a 0..1 pop, a hundredth of a pixel on a 280 px scroll, a thousand times the ulp it has to
     /// catch and a seventeenth of what the idle gate already treats as finished, so nothing visible moves.
     /// The caller picks which springs: a cell that is NOT focused calls it with its rest value.
@@ -249,7 +249,7 @@ impl Spring {
     /// would pin the loop at 60 fps on precisely the screen the present gate exists for.
     #[inline]
     pub fn jump(&mut self, v: f32) {
-        plx_machine::idle::note_jump(self.pos != v || self.vel != 0.0);
+        plx_machine::motion::report::note_jump(self.pos != v || self.vel != 0.0);
         self.pos = v;
         self.vel = 0.0;
     }
@@ -1643,7 +1643,7 @@ impl Painter {
     /// being ignored. That is the only reading of "fade this out" an opaque full-screen field HAS,
     /// and it is the right one: the app's ground is what lies behind a page (`gfx::frame_clear` lays
     /// down `theme::CLEAR_RGB`, the same colour), so at alpha 0 the wash IS the ground and
-    /// [`ui::nav`](crate::nav)'s page dip has no seam where the framebuffer was cleared and the
+    /// the owning stack's page dip has no seam where the framebuffer was cleared and the
     /// next screen takes over.
     ///
     /// Alpha 1 is bit-for-bit the old call, which is every call outside a page transition; only the
@@ -1797,7 +1797,7 @@ impl Painter {
         plx_gfx::gfx::draw_scrim_layer(m.x, m.y, m.w, m.h, ink, &scrim);
     }
     /// Does the cascade hand a wash's corners to the GPU as they are: no alpha mixing them toward
-    /// [`theme::SURFACE_APP`] (a page dipping for [`ui::nav`](crate::nav)'s route transition moves
+    /// [`theme::SURFACE_APP`] (a page dipping for the owning stack's route transition moves
     /// the drawn corners every frame with every spring at rest) and no gain? Only then is a wash
     /// whose springs have landed also a wash whose drawn corners have stopped changing, which is
     /// what a glass above it re-takes its source on.
@@ -2791,7 +2791,8 @@ mod spring_tests {
     //! `Spring`'s own reports to the present gate. They need `testlock`, which the geometry tests
     //! above do not (`plx_machine::idle`'s gate state is process-wide).
     use super::Spring;
-    use plx_machine::idle::{frame_begin, note_present, reset_for_test, should_present};
+    use plx_machine::motion::report::{frame_begin, reset_for_test};
+    use plx_machine::present::Present;
 
     /// A jump reports only when it actually moved — `home.rs` jumps to the same value every frame
     /// while the hub list is empty, and an unguarded report would pin 60fps on that exact screen.
@@ -2802,14 +2803,18 @@ mod spring_tests {
         let _g = plx_base::testlock::serial();
         reset_for_test();
         let mut s = Spring::at(1.0);
-        note_present(10_000);
+        let mut present = Present::new();
+        present.take(10_000);
+        present.acknowledge(10_000);
         frame_begin(1.0 / 60.0);
         s.jump(1.0); // already there
-        assert!(!should_present(10_016));
+        plx_machine::motion::report::collect_into(&mut present, 10_016);
+        assert!(!present.take(10_016));
 
         frame_begin(1.0 / 60.0);
         s.jump(2.0); // teleported
-        assert!(should_present(10_032));
+        plx_machine::motion::report::collect_into(&mut present, 10_032);
+        assert!(present.take(10_032));
     }
 
     /// `step` parks a released spring one ulp off its target and leaves it there; `land` is what puts
@@ -2856,14 +2861,18 @@ mod spring_tests {
         let _g = plx_base::testlock::serial();
         reset_for_test();
         let mut s = Spring { pos: 1.0 + 1.2e-7, vel: -9.8e-7 }; // where a released pop parks
-        note_present(10_000);
+        let mut present = Present::new();
+        present.take(10_000);
+        present.acknowledge(10_000);
         frame_begin(1.0 / 60.0);
         assert!(s.land(1.0, 1.0 / 60.0));
-        assert!(should_present(10_016), "the landing is a change, so the exactly-resting frame is presented");
-        note_present(10_016);
+        plx_machine::motion::report::collect_into(&mut present, 10_016);
+        assert!(present.take(10_016), "the landing is a change, so the exactly-resting frame is presented");
+        present.acknowledge(10_016);
         frame_begin(1.0 / 60.0);
         assert!(s.land(1.0, 1.0 / 60.0));
-        assert!(!should_present(10_032), "already there: nothing to report");
+        plx_machine::motion::report::collect_into(&mut present, 10_032);
+        assert!(!present.take(10_032), "already there: nothing to report");
         assert!(!Spring::at(1.5).land(1.0, 1.0 / 60.0), "a spring half a unit away has not arrived");
         assert!(!Spring { pos: 1.0, vel: 5.0 }.land(1.0, 1.0 / 60.0), "on the target but still travelling is not arrived");
     }

@@ -7,7 +7,7 @@
 - Reference source: examples/reference/manifest.json, hud.json and assets/*.svg
 - Native artifacts: examples/minimal.plxhud and examples/reference.plxhud
 - Invalid source cases: examples/invalid/<case>/manifest.json and hud.json
-- Full format: https://github.com/GLinnik21/plx-native/blob/main/docs/hud-plugins.md
+- Full format: https://github.com/plxnative/plx-native/blob/main/docs/hud-plugins.md
 
 Use the native SDK for packaging, schema export, inspection, all-language linting and previews.
 The manifest and HUD have independent version axes, initially 1.0. The archive SHA256 identifies

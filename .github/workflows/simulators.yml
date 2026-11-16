@@ -213,6 +213,7 @@ jobs:
           path: |
             ${{ runner.temp }}/plxnative-replay/**/plxnative-events.log
             ${{ runner.temp }}/plxnative-replay/**/sim.out
+            ${{ runner.temp }}/plxnative-replay/**/process.json
           if-no-files-found: ignore
           retention-days: 7
       - name: Launch and capture 1080p frame

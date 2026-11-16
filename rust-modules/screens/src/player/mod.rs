@@ -12,11 +12,9 @@
 //! region and the capture skip — are the loop's three privileged calls (§3.3 steps 1, 9 and 10) and
 //! are not made here.
 //!
-//! **What is here and what is not.** Phase 9 moves the STATE and the DRAW; the key ladder in
-//! `app/run.rs` remains a CALLER of this screen for the bare transport, exactly as `ui::press`'s
-//! typed facade left the ladders callers of `App.input.press` in phase 2 (§14, "Press during
-//! coexistence"). The overlays are different: they are entries on this page's own
-//! `ModalStack` and own their input outright, so their arms left the ladder with them.
+//! **Input ownership.** The dispatcher delivers keys and pointer input to this page and its
+//! overlays. Both row input modes arm the dispatcher's single press and receive an addressed
+//! commit; the application performs only the resulting typed command or stand-in request.
 //!
 //! Two fields are PUBLISHED rather than owned by `player::TX` (§2.3): `hud.until` and `scrub.ns`.
 //! [`PlayerScreen::publish`] mirrors both into the atomics the draw path and the engine read, and
@@ -181,6 +179,8 @@ pub struct PlayerScreen {
     /// Who owns the "pipeline is working" signal this frame — resolved once, after `player::pump`,
     /// and handed to both the transport and the read-out so they can never both light.
     pub busy: plx_appkit::player_hud::Busy,
+    /// The same complete app publication consumed by keys, stops and the failure painter.
+    pub presentation: player_hud::Presentation,
     /// What the surfaces over this page do to the transport this frame — see [`HudPolicy`].
     /// Pushed once per frame by `app/run.rs` through [`Self::set_hud_policy`].
     hud_policy: HudPolicy,
@@ -227,6 +227,7 @@ impl PlayerScreen {
             auto_skip: Default::default(), drawn_watch: None, declined_pair: None,
             slot: ControlSlot::Discs(player_hud::Controls::NONE),
             busy: plx_appkit::player_hud::Busy::None,
+            presentation: Default::default(),
             hud_policy: HudPolicy::Normal,
             origin: None,
             render: PlayerRender::default(),
@@ -242,6 +243,11 @@ impl PlayerScreen {
             model: HudModel::default(),
             compiled,
         }
+    }
+
+    pub fn set_presentation(&mut self, presentation: player_hud::Presentation) {
+        self.busy = presentation.busy;
+        self.presentation = presentation;
     }
 
     pub fn set_model(&mut self, model: HudModel) {
@@ -371,6 +377,12 @@ impl PlayerScreen {
             .then(|| self.auto_skip.progress());
         let frame = plx_appkit::player_hud::render::Frame {
             entry: self.entry,
+            press: plx_machine::machine::PressRead {
+                scale: df.press.scale, identity: df.press.identity,
+                live: df.press.live, active: df.press.active,
+                is_long: df.press.is_long, held_ms: df.press.held_ms,
+                owner: df.press.owner.and_then(|k| k.elem.index().map(|elem| plx_machine::machine::FocusKey { entry: k.entry, elem })),
+            },
             ps,
             model: &model,
             up: &self.up_next,
@@ -494,7 +506,7 @@ impl PlayerScreen {
 
     /// **Everything this page draws from a CLOCK, folded into ONE value** (spec §8.3, §9).
     ///
-    /// The loop compares it with the previous frame's and raises `plx_machine::idle::invalidate()` when it
+    /// The loop compares it with the previous frame's and applies owned lifecycle damage when it
     /// changes; `Player::note_clock` owns the comparison. This is what replaces the exemption the
     /// player route used to have from the present gate.
     ///
@@ -573,7 +585,7 @@ impl PlayerScreen {
             ControlSlot::UpNext(_) => 3,
             ControlSlot::AutomaticUpNext(_) => 32,
         });
-        mix(match plx_appkit::player_hud::busy(ps) {
+        mix(match self.busy {
             plx_appkit::player_hud::Busy::None => 1,
             plx_appkit::player_hud::Busy::Transport => 2,
             // the caption is a `&'static CStr`: its ADDRESS is a stable identity for the message
@@ -667,8 +679,8 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
     /// [`Stop`]s — see [`Screen::draw`]) is resolved the same way `PlayerOverlayScreen::step`
     /// resolves one. Anything privileged (pausing/resuming, seeking, presenting an overlay, leaving
     /// the player) is a `fx.push(Fx::App(AppFx::Player(PlayerReq::…)))` request, exactly as
-    /// [`PlayerOverlayScreen::ask`] performs one — `PlayerReq::OpenOverlay`/`ArmControlRow`/`Exit`
-    /// are the three variants this package added for it. `Exit`, the remote's own key, is the one
+    /// [`PlayerOverlayScreen::ask`] performs one — for example `PlayerReq::OpenOverlay`/`Exit`.
+    /// `Exit`, the remote's own key, is the one
     /// this screen deliberately does NOT try to own (see the doc this replaced); it is not matched
     /// below and falls to `Handled::No`.
     ///
@@ -706,6 +718,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
     /// this the stop landed on `key_ok`'s final `else` and toggled play/pause, and the drag flag
     /// was a field of the loop's pointer machine whose producer had become unreachable.
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        self.set_presentation(H::screen_inputs(cx).player_presentation.clone());
         if self.repair_alert.visible() {
             match ev {
                 ScreenEvent::FocusMoved { to, .. } => {
@@ -913,6 +926,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                         self.handle_key(
                             ps, classified, *edge, *at_edge, input.at.ms,
                             focused, self.focused_command(focused), fx, H::metadata(cx),
+                            H::screen_inputs(cx).preference::<plx_plex::plex::session::InstantDpadSeekingPref>(), H::screen_inputs(cx).preference::<plx_plex::plex::session::SkipIntervalPref>(),
                         )
                     }
                     InputKind::Click { hit, x, y } => {
@@ -1094,7 +1108,7 @@ impl PlayerScreen {
     /// press can only ever do what the focused control says.
     fn failure_activate<H: AppLike>(&mut self, ps: &plx_media::route::PlaybackSession, idx: usize, fx: &mut Effects<'_, H>) {
         use plx_media::player::FailureAction as A;
-        let readout = player_hud::FailureReadout::now(ps);
+        let Some(readout) = self.presentation.failure.as_ref() else { return; };
         let Some(action) = readout.actions().get(idx).copied() else { return };
         self.failure_sel = idx;
         match action {
@@ -1146,7 +1160,7 @@ impl PlayerScreen {
         fx: &mut Effects<'_, H>,
     ) -> Handled {
         use player_hud::{ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_SCRUB, ELEM_TAB_BASE};
-        let failed = plx_appkit::player_hud::transport_hidden(ps);
+        let failed = player_hud::readout_owns_frame(self.busy);
         let Some(elem) = hit else {
             // **A click that lands on no control at all toggles play/pause** — the `else` arm of
             // the old pointer block, and the reason clicking the PICTURE works: over full-screen
@@ -1203,7 +1217,7 @@ impl PlayerScreen {
                 }
                 self.hud.nav.btn = btn;
                 self.seat_elem(fx, e);
-                self.arm_control_row(fx);
+                self.arm_control_row(e, fx);
                 Handled::Yes
             }
             e if (ELEM_TAB_BASE..ELEM_FAILURE_BASE).contains(&e) => {
@@ -1287,6 +1301,8 @@ impl PlayerScreen {
         command: Option<player_hud::command::HudCommand>,
         fx: &mut Effects<'_, H>,
         meta: plx_data::metadata::MetadataView<'_>,
+        instant_dpad_seeking: plx_plex::plex::session::InstantDpadSeeking,
+        interval: plx_plex::plex::session::SkipInterval,
     ) -> Handled {
         use consts::Key;
         if edge == Edge::Down && !matches!(key, Key::Left { .. } | Key::Right { .. }) {
@@ -1303,7 +1319,7 @@ impl PlayerScreen {
         // Info card over a read-out from a tab row nothing had painted. Port of `key_player_failed`,
         // whose loop arm this replaces; the panel-first half of its BACK is the container's now
         // (an open `…` popover is a surface and answers the key before this screen sees it).
-        if plx_appkit::player_hud::transport_hidden(ps) && !matches!(key, Key::Exit) {
+        if player_hud::readout_owns_frame(self.busy) && !matches!(key, Key::Exit) {
             // …every key but EXIT, which is the remote's own and ends the PROCESS. It is not a
             // control on this frame, so "nothing that is not drawn may be driven" does not reach
             // it, and swallowing it would make a failed playback the one screen in the app an
@@ -1317,11 +1333,11 @@ impl PlayerScreen {
                     Key::Right { .. } => input::FailedKey::Right,
                     _ => input::FailedKey::Other,
                 };
-                let n = player_hud::FailureReadout::now(ps).actions().len();
+                let n = self.presentation.failure.as_ref().map_or(0, |readout| readout.actions().len());
                 match input::failed_key_action(key, self.failure_sel, n) {
                     input::FailedKeyAction::Focus(i) => {
                         self.failure_sel = i;
-                        plx_machine::idle::invalidate();
+                        fx.invalidate(plx_machine::present::Provenance::Input);
                     }
                     input::FailedKeyAction::Activate(i) => self.failure_activate(ps, i, fx),
                     input::FailedKeyAction::Return => Self::ask(fx, PlayerReq::Exit),
@@ -1336,7 +1352,7 @@ impl PlayerScreen {
         if self.hud.sections.any() && self.modal() && matches!(key, Key::Left { alt: true } | Key::Right { alt: true }) {
             return Handled::Yes;
         }
-        if self.jump_key(ps, key, edge, now, fx) {
+        if self.jump_key(ps, key, edge, now, fx, instant_dpad_seeking, interval) {
             return Handled::Yes;
         }
         if self.hud.visible_at_press && matches!(self.hud.nav.focus, GROUP_ROW | GROUP_STRIP)
@@ -1466,7 +1482,7 @@ impl PlayerScreen {
                         if self.scrub.key.release_pending() && !self.scrub.key.continues(fwd, now) {
                             self.end_hold("a different press settled the release");
                         }
-                        self.key_scrub_fresh(ps, key, now, fx, meta)
+                        self.key_scrub_fresh(ps, key, now, fx, meta, interval)
                     }
                     Edge::Repeat => self.key_scrub_repeat(now),
                     Edge::Up => self.key_scrub_release(now),
@@ -1565,11 +1581,15 @@ impl PlayerScreen {
         }
     }
 
-    /// The control row's deferred press (`PlayerReq::ArmControlRow`). It takes the page from the
-    /// scrubber, so a pending target is cancelled with it.
-    fn arm_control_row<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
+    /// Arm the exact clicked row control in the dispatcher's input owner. Commit follows the
+    /// same addressed `PressCommit` and command/stand-in path as a keyboard press.
+    fn arm_control_row<H: AppLike>(&mut self, elem: u32, fx: &mut Effects<'_, H>) {
         self.scrub.cancel();
-        Self::ask(fx, PlayerReq::ArmControlRow);
+        fx.push(Fx::Press(plx_machine::machine::PressArm {
+            key: FocusKey { entry: self.entry, elem },
+            from: plx_machine::machine::PressFrom::Pointer,
+            holdable: false,
+        }));
     }
 
     /// **The screen's answer to `Step::Edge`**: the dispatcher re-delivers a direction the engine
@@ -1747,6 +1767,7 @@ impl PlayerScreen {
         now: u32,
         fx: &mut Effects<'_, H>,
         meta: plx_data::metadata::MetadataView<'_>,
+        interval: plx_plex::plex::session::SkipInterval,
     ) {
         let fwd = matches!(key, consts::Key::Right { .. });
         let Some(dur) = plx_media::player::duration_ns(ps) else { return };
@@ -1800,7 +1821,7 @@ impl PlayerScreen {
                     self.scrub.ns = plx_media::player::intended_pos_ns(ps);
                 }
                 if !self.scrub.key.engaged {
-                    let step = if fwd { input::scrub_step_ns() } else { -input::scrub_step_ns() };
+                    let step = input::scrub_step_ns(interval) * if fwd { 1 } else { -1 };
                     self.scrub.ns = Scrub::clamp_target(self.scrub.ns.max(0) + step, dur);
                 }
                 self.scrub.key.press(now, fwd);
@@ -2412,7 +2433,8 @@ impl PlayerScreen {
             self.busy,
             plx_appkit::player_hud::Busy::Readout(plx_ui::widgets::StatusKind::Failed, _)
         ) {
-            let frames = player_hud::FailureReadout::now(H::session(cx)).frames(cx.measure);
+            let Some(readout) = self.presentation.failure.as_ref() else { return; };
+            let frames = readout.frames(cx.measure);
             let extent = frames.iter().flatten().copied().reduce(|a, b| a.union(b)).unwrap_or(Rect::FULL);
             out.push(GroupSpec {
                 id: GROUP_FAILURE,
@@ -2452,7 +2474,7 @@ impl PlayerScreen {
                 geo.tabs.get((e - ELEM_TAB_BASE) as usize).copied().flatten()?
             }
             e if (ELEM_FAILURE_BASE..ELEM_FAILURE_END).contains(&e) => {
-                player_hud::FailureReadout::now(H::session(cx)).frames(cx.measure)[(e - ELEM_FAILURE_BASE) as usize]?
+                self.presentation.failure.as_ref()?.frames(cx.measure)[(e - ELEM_FAILURE_BASE) as usize]?
             }
             e if (player_hud::ELEM_SECTION_BASE..player_hud::ELEM_SECTION_END).contains(&e) => {
                 let chapters = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
@@ -2696,9 +2718,8 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         //
         // `Activate::Direct` on them, and it is not the same statement `ElemKind` makes
         // elsewhere: the transport's control row DOES dip, and OK on it is the engine's own press
-        // (`key_ok` leaves it alone, the commit is `row_pressed`). A pointer CLICK on it is still
-        // the loop's (`PlayerReq::ArmControlRow` → `press.begin_ctl` → `activate_player_row` on the
-        // spring-back), which the hit census pins; both converge on `perform_hud_command`. Direct
+        // (`key_ok` leaves it alone, the commit is `row_pressed`). A pointer click arms the same
+        // dispatcher input with the clicked row key; both converge on `row_pressed`. Direct
         // delivery, and the screen decides what the element means — including the scrubber, whose
         // meaning needs the click's `x` and so cannot be carried by a bare `ScreenEvent::Activate`
         // at all, and the tabs, which ask their section's toggle at once with no dip to wait for.
@@ -2715,10 +2736,10 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         // terminal `Error` (which is not `is_busy()`, so it does not pin the HUD) keeps its message
         // instead of vanishing with the 4.5 s linger. AFTER the transport, so it is never dimmed by
         // the scrim; BEFORE the overlay panels, which the container draws above this page.
-        plx_appkit::player_hud::classic::draw_readout(ps, self.busy, now, self.failure_sel, f.measure);
+        plx_appkit::player_hud::classic::draw_readout(self.presentation.failure.as_deref(), self.busy, now, self.failure_sel, f.measure);
         if self.repair_alert.visible() {
-            self.repair_alert.draw_scrim();
-            self.repair_alert.draw(plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::widgets_repair_action_c(), f.measure);
+            self.repair_alert.draw_scrim(f);
+            self.repair_alert.draw(plx_platform::i18n::msg::settings_cancel_c(), plx_platform::i18n::msg::widgets_repair_action_c(), f.measure, f.route_navigation(), f.press);
         }
         self.record_stops(f, hud_drawn);
     }
@@ -2775,24 +2796,25 @@ mod clock_animator_tests {
     /// the machine's comparison, exactly as `app::run`'s prepare phase runs them. `true` = THIS
     /// path raised damage, i.e. this frame is owed a present.
     ///
-    /// Graded on `idle::take_local_damage`, which counts what this THREAD reported, rather than on
-    /// `should_present`, which reads the process-wide `DIRTY`/`DAMAGE_GEN` that every unlocked
-    /// test repainting anything also moves — the flake `plx_machine::idle`'s own `LOCAL_DAMAGE` doc
-    /// describes, and which cost this test two red runs in six before it was written this way.
-    /// The gate's own half is asserted once, below, where it cannot be made false by another
-    /// thread: a spurious `invalidate` elsewhere can only make `should_present` MORE true.
+    /// Apply the clock comparison's explicit changed outcome to an independent owner;
+    /// another input or a worker cannot publish or consume this owner's page damage.
     fn reported(pl: &mut Player, screen: &PlayerScreen, ps: &PlaybackSession, now: u32) -> bool {
-        let _ = plx_machine::idle::take_local_damage();
-        if pl.note_clock(screen.clock_fingerprint(ps, now)) {
-            plx_machine::idle::invalidate();
+        let mut present = plx_machine::present::Present::new();
+        present.take(now);
+        present.acknowledge(now);
+        let changed = pl.note_clock(screen.clock_fingerprint(ps, now));
+        if changed {
+            present.note_in_scope(plx_machine::present::Scope::Page,
+                plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Lifecycle));
         }
-        plx_machine::idle::take_local_damage() > 0
+        assert_eq!(present.take(now), changed, "the actual report must schedule precisely its owned frame");
+        present.page_damaged()
     }
 
     /// Run the page to a standstill, so that a report below can only be this test's own doing.
     fn settled(pl: &mut Player, screen: &PlayerScreen, ps: &PlaybackSession, now: u32) {
-        plx_machine::idle::set_enabled(true);
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         for t in 0..4 {
             reported(pl, screen, ps, now + t);
         }
@@ -2804,9 +2826,7 @@ mod clock_animator_tests {
     }
 
     /// The other half, asserted once per test: a report really does open the gate.
-    fn presents(now: u32) -> bool {
-        plx_machine::idle::should_present(now)
-    }
+
 
     /// **The MEDIA CLOCK class** — the scrub bar, the playhead, both clocks, the hold-to-scrub
     /// ramp. Everything derived from `playpos_ns`, which LG's media thread writes and no spring
@@ -2833,7 +2853,6 @@ mod clock_animator_tests {
             reported(&mut pl, &screen, &ps, 1_005),
             "the playhead moved half a second: the scrub bar and both clocks must report",
         );
-        assert!(presents(1_005), "…and a report is a frame");
     }
 
     /// **The DEADLINE class** — the HUD's auto-hide. At `now == until` the whole transport leaves
@@ -2853,7 +2872,6 @@ mod clock_animator_tests {
             reported(&mut pl, &screen, &ps, 2_600),
             "the transport disappeared on this frame: it must report",
         );
-        assert!(presents(2_600), "…and a report is a frame");
     }
 
     /// **The TRANSPORT MARK class** — the two-second `Play` glyph, whose own doc used to record
@@ -2879,7 +2897,6 @@ mod clock_animator_tests {
             reported(&mut pl, &screen, &ps, after),
             "the Play mark stopped being drawn on this frame: it must report",
         );
-        assert!(presents(after), "…and a report is a frame");
     }
 
     /// **The READ-OUT class** — `busy`, i.e. the centred status surface appearing and vanishing.
@@ -2898,11 +2915,11 @@ mod clock_animator_tests {
         // state has to move where the read-out reads it — the session's readout, which the pump
         // updates with the state it derives.
         super::overlay_tests::derive_state(&mut ps, plx_media::player::PlaybackState::Error);
+        screen.set_presentation(super::overlay_tests::presentation_fixture(&ps));
         assert!(
             reported(&mut pl, &screen, &ps, 9_005),
             "the failure read-out took the screen on this frame: it must report",
         );
-        assert!(presents(9_005), "…and a report is a frame");
     }
 }
 
@@ -3045,6 +3062,7 @@ mod travel_rig {
             page: &mut PlayerScreen,
             ev: ScreenEvent<TestHost>,
         ) -> (Handled, Vec<PlayerReq>) {
+            crate::player::overlay_tests::publish_presentation_fixture(crate::player::overlay_tests::presentation_fixture(self.session));
             let mut reqs = Vec::new();
             let mut first = None;
             let mut queue = VecDeque::from([ev]);
@@ -3184,6 +3202,7 @@ mod step_ladder_tests {
         wcode: u32,
         edge: Edge,
     ) -> (Handled, Vec<PlayerReq>) {
+        super::overlay_tests::publish_presentation_fixture(super::overlay_tests::presentation_fixture(ps));
         let mut out = Vec::new();
         let mut present = plx_machine::present::Present::new();
         let ev = ScreenEvent::<TestHost>::Input(InputEvent {
@@ -3213,6 +3232,7 @@ mod step_ladder_tests {
     }
 
     fn click(page: &mut PlayerScreen, elem: u32) -> (Handled, Vec<PlayerReq>) {
+        super::overlay_tests::publish_presentation_fixture(page.presentation.clone());
         let mut out = Vec::new();
         let mut present = plx_machine::present::Present::new();
         let ev = ScreenEvent::<TestHost>::Input(InputEvent {
@@ -3225,6 +3245,16 @@ mod step_ladder_tests {
             &cx(),
             &mut Effects::new(&mut out, MachineId::Instance(INST), &mut present),
         );
+        if player_hud::row_index(elem).is_some() {
+            let arms: Vec<_> = out.iter().filter_map(|e| match &e.fx {
+                Fx::Press(arm) => Some(arm),
+                _ => None,
+            }).collect();
+            assert_eq!(arms.len(), 1, "one dispatcher arm for a clicked control");
+            assert_eq!(arms[0].key, FocusKey { entry: ENTRY, elem });
+            assert_eq!(arms[0].from, plx_machine::machine::PressFrom::Pointer);
+            assert!(!arms[0].holdable);
+        }
         let reqs = out
             .into_iter()
             .filter_map(|e| match e.fx {
@@ -3238,6 +3268,7 @@ mod step_ladder_tests {
     /// One frame's `ScreenEvent::Tick` through `PlayerScreen::step`: the per-frame half of the page,
     /// where nothing is pressed.
     fn tick(ps: &plx_media::route::PlaybackSession, page: &mut PlayerScreen, ms: u32) {
+        super::overlay_tests::publish_presentation_fixture(super::overlay_tests::presentation_fixture(ps));
         let mut out = Vec::new();
         let mut present = plx_machine::present::Present::new();
         page.step(
@@ -3528,7 +3559,8 @@ mod step_ladder_tests {
         assert!(matches!(skip, ControlSlot::Skip(_)) && matches!(up_next, ControlSlot::UpNext(_)));
         let failed = Busy::Readout(plx_ui::widgets::StatusKind::Failed, c"Playback failed");
         let row = |n: u32| (0..n).map(|i| ELEM_CONTROL_BASE + i).collect::<Vec<_>>();
-        let failure_n = player_hud::FailureReadout::now(TestHost::session(&cx())).actions().len() as u32;
+        let failure = std::sync::Arc::new(super::overlay_tests::failure_fixture(TestHost::session(&cx())));
+        let failure_n = failure.actions().len() as u32;
         assert!(failure_n >= 1, "Back is always offered");
         let cases: [(&str, ControlSlot, Busy, Vec<u32>); 5] = [
             ("discs", ControlSlot::Discs(player_hud::Controls::NONE), Busy::None, [(2..5).map(|i| ELEM_CONTROL_BASE + i).collect::<Vec<_>>(), vec![ELEM_TAB_BASE]].concat()),
@@ -3542,6 +3574,7 @@ mod step_ladder_tests {
             let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
             page.slot = slot;
             page.busy = busy;
+            page.presentation = player_hud::Presentation { busy, failure: Some(failure.clone()) };
                 let cx = cx();
             let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
             page.record_stops(&mut f, true);
@@ -3573,12 +3606,12 @@ mod step_ladder_tests {
                     page.repair_alert.close();
                     continue;
                 }
-                assert!(!reqs.is_empty(), "{name}: a click on {elem} asked for nothing");
+                assert!(player_hud::row_index(elem).is_some() || !reqs.is_empty(), "{name}: a click on {elem} asked for nothing");
                 assert!(!reqs.iter().any(|r| matches!(r, PlayerReq::Transport(_))), "{name}: {elem} -> {reqs:?}");
                 assert!(page.hud.until >= 1_000 + input::HUD_LINGER_MS, "{name}: a click re-arms the linger");
                 if player_hud::row_index(elem).is_some() {
                     assert_eq!(page.hud.nav.btn, (elem - ELEM_CONTROL_BASE) as i32, "{name}: the CLICKED item arms");
-                    assert_eq!(reqs, vec![PlayerReq::ArmControlRow]);
+                    assert!(reqs.is_empty(), "the pointer arm is a dispatcher effect");
                 }
                 if elem == ELEM_TAB_BASE {
                     assert_eq!(reqs, vec![PlayerReq::Command(HudCommand::ToggleSection(Section::Info))], "{name}: Info");
@@ -4095,7 +4128,7 @@ mod step_ladder_tests {
         assert_eq!(handled, Handled::Yes);
         assert_eq!(page.hud.nav.focus, GROUP_ROW);
         assert_eq!(page.hud.nav.btn, player_hud::BTN_AUDIO);
-        assert_eq!(reqs, vec![PlayerReq::ArmControlRow]);
+        assert!(reqs.is_empty(), "the pointer arm is a dispatcher effect");
     }
 
     /// The scrubber's registered `Stop` is the exact band `scrub_hit` tests, so a click resolved
@@ -4233,6 +4266,7 @@ mod scrub_ownership_tests {
     }
 
     fn run(ps: &plx_media::route::PlaybackSession, page: &mut PlayerScreen, ev: ScreenEvent<TestHost>) -> (Handled, Vec<PlayerReq>) {
+        super::overlay_tests::publish_presentation_fixture(super::overlay_tests::presentation_fixture(ps));
         let mut out = Vec::new();
         let mut present = plx_machine::present::Present::new();
         let handled = page.step(
@@ -4361,7 +4395,7 @@ mod scrub_ownership_tests {
             (SkipInterval::Seconds30, 80 * S, 20 * S),
             (SkipInterval::Seconds60, DUR - 3 * S, 0),
         ] {
-            let _i = player_hud::SkipIntervalGuard::set(interval);
+            let _i = super::overlay_tests::SkipIntervalGuard::set(interval);
             for (sym, want) in [(SDLK_RIGHT, fwd), (SDLK_LEFT, back)] {
                 let mut page = page_on_the_bar();
                 let (handled, reqs) = key(&f.session, &mut page, sym, Edge::Down, 1_000);
@@ -5217,7 +5251,7 @@ mod scrub_ownership_tests {
         {
             let mut out = Vec::new();
             let mut present = plx_machine::present::Present::new();
-            page.arm_control_row(&mut Effects::<TestHost>::new(&mut out, MachineId::Instance(INST), &mut present));
+            page.arm_control_row(player_hud::control_elem(page.hud.nav.btn), &mut Effects::<TestHost>::new(&mut out, MachineId::Instance(INST), &mut present));
         }
         settled(&mut page, "the control row's press");
         let mut page = pending();
@@ -5302,6 +5336,9 @@ mod repair_confirmation_tests {
         type Init = plx_ui::fixture::FixtureArg;
         type Memory = crate::registry::PageMemory;
     }
+    impl crate::registry::ScreenInputsLike for TestHost {
+        fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { super::overlay_tests::retained_inputs_fixture() }
+    }
     impl PlayerLike for TestHost {
         fn session<'a>(cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession { cx.views }
         fn transport_paused(_cx: &Cx<'_, Self>) -> bool { false }
@@ -5325,6 +5362,7 @@ mod repair_confirmation_tests {
         cx
     }
     fn deliver(page: &mut PlayerScreen, ps: &plx_media::route::PlaybackSession, elem: Option<u32>, ev: ScreenEvent<TestHost>) -> Vec<PlayerReq> {
+        super::overlay_tests::publish_presentation_fixture(super::overlay_tests::presentation_fixture(ps));
         let mut out = Vec::new();
         let mut present = plx_machine::present::Present::new();
         page.step(&ev, &context(ps, elem), &mut Effects::new(&mut out, MachineId::Instance(InstanceId(1)), &mut present));
@@ -5429,7 +5467,7 @@ mod repair_confirmation_tests {
         for state in [plx_platform::tv::sandbox::State::Running, plx_platform::tv::sandbox::State::Repaired, plx_platform::tv::sandbox::State::Failed(plx_platform::tv::sandbox::Failure::Timeout)] {
             let mut ps = blocked(); ps.repair_status = state;
             plx_media::route::reset_player_control_for_test(&ps);
-            let row = plx_appkit::player_hud::FailureReadout::now(&ps).actions().to_vec();
+            let row = super::overlay_tests::failure_fixture(&ps).actions().to_vec();
             assert!(!row.contains(&plx_media::player::FailureAction::Repair), "{state:?}: {row:?}");
             let mut page = PlayerScreen::new(EntryId(1), plx_appkit::player_hud::loaded::classic_for_test());
             // OK performs the row's first control, which is no longer the repair question: with
@@ -5648,7 +5686,7 @@ mod automatic_marker_tests {
                 at: Tick { ms: 2_000, dt_us: 0 }, source: Source::Sdl,
                 kind: InputKind::Click { x: 1_600.0, y: 830.0, hit: Some(player_hud::control_elem(button)) },
             }));
-            assert_eq!(reqs, if button == up_next::BTN_NEXT { vec![PlayerReq::ArmControlRow] } else { vec![] });
+            assert!(reqs.is_empty(), "pointer presses arm dispatcher input, not app requests");
             assert_eq!(page.hud.nav.focus, GROUP_ROW);
             assert_eq!(page.hud.nav.btn, button, "the pointer seats the button it chose");
             assert_eq!(rig.current(), Some(player_hud::control_elem(button)));

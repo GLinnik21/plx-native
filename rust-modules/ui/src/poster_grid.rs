@@ -655,7 +655,7 @@ mod tests {
         bands.focus(Some(0), false);
         bands.focus(Some(1), true);
         let k = RowStyle::HOME.k_scroll;
-        let (_, moving) = plx_machine::idle::scoped_motion(|| bands.tick(k, 1.0 / 60.0));
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| bands.tick(k, 1.0 / 60.0));
         assert!(moving, "caption motion keeps the presenter awake");
         let geometry = bands.geometry();
         let opened = geometry.iter().find(|b| b.row == 1).unwrap().expansion;
@@ -663,7 +663,7 @@ mod tests {
         assert!(opened > 0.0 && opened < 1.0 && closing > 0.0 && closing < 1.0);
         assert!((opened + closing - 1.0).abs() < 0.0001);
         for _ in 0..120 { bands.tick(k, 1.0 / 60.0); }
-        let (_, moving) = plx_machine::idle::scoped_motion(|| bands.tick(k, 1.0 / 60.0));
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| bands.tick(k, 1.0 / 60.0));
         assert!(!moving, "a settled grid lets idle suppression sleep");
         assert_eq!(bands.slots.iter().filter(|s| s.row.is_some()).count(), 1);
         let settled = bands.geometry().iter().find(|b| b.row == 1).unwrap().expansion;
@@ -758,7 +758,7 @@ mod tests {
         for _ in 0..120 { pop.tick(Some(at(4)), &style, dt); }
         assert!((pop.scale(4, true, &style) - style.focus_scale).abs() < 0.001);
         assert_eq!(pop.scale(3, false, &style), 1.0);
-        let (_, moving) = plx_machine::idle::scoped_motion(|| pop.tick(Some(at(4)), &style, dt));
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| pop.tick(Some(at(4)), &style, dt));
         assert!(!moving, "a settled grid lets idle suppression sleep");
     }
 

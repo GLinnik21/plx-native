@@ -14,10 +14,14 @@ name: Issue labels
 # whatever the model answers is filtered down to the repository's own labels before anything is
 # written. The token can write issues and nothing else.
 #
-# A model picks the labels when the repository has a `COPILOT_GITHUB_TOKEN` Actions secret (a
-# fine-grained personal access token with the "Copilot Requests" permission; Copilot Free works) or
-# an `ANTHROPIC_API_KEY` one. Without either the job still runs and labels from keyword rules (one
-# kind, one area, `user-report`).
+# Claude Haiku picks the labels through the Anthropic API. The job holds no API key: it signs in with
+# Workload Identity Federation (the `id-token: write` permission below; ci/label-issue.py exchanges
+# GitHub's identity token for a short-lived Anthropic token). The federation rule's ids are not
+# secrets; they live in the repository VARIABLES ANTHROPIC_FEDERATION_RULE_ID,
+# ANTHROPIC_ORGANIZATION_ID, ANTHROPIC_SERVICE_ACCOUNT_ID and, if the rule covers several
+# workspaces, ANTHROPIC_WORKSPACE_ID. The rule should accept only this repository's default branch.
+# There is no keyword fallback: when sign-in or the model fails, only `user-report` is added and the
+# job FAILS, so a broken rule shows up as a red run instead of weeks of silently wrong labels.
 
 on:
   issues:
@@ -37,6 +41,7 @@ on:
 permissions:
   contents: read
   issues: write
+  id-token: write
 
 concurrency:
   group: issue-labels-${{ github.event.issue.number || github.run_id }}
@@ -47,27 +52,19 @@ jobs:
     name: label issues
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      HAS_COPILOT: ${{ secrets.COPILOT_GITHUB_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: |
             ci/label-issue.py
-            tools/package.json
-            tools/package-lock.json
           sparse-checkout-cone-mode: false
-      - name: Install the Copilot CLI
-        if: env.HAS_COPILOT == 'true'
-        # The version pinned in tools/package.json (Dependabot bumps it with its lockfile); ci/label-issue.py finds `copilot` on PATH.
-        run: |
-          npm ci --prefix tools
-          echo "$PWD/tools/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Label
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_FEDERATION_RULE_ID: ${{ vars.ANTHROPIC_FEDERATION_RULE_ID }}
+          ANTHROPIC_ORGANIZATION_ID: ${{ vars.ANTHROPIC_ORGANIZATION_ID }}
+          ANTHROPIC_SERVICE_ACCOUNT_ID: ${{ vars.ANTHROPIC_SERVICE_ACCOUNT_ID }}
+          ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
           EVENT: ${{ github.event_name }}
           ACTION: ${{ github.event.action }}
           ISSUE: ${{ github.event.issue.number }}

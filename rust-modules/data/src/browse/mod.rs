@@ -1830,7 +1830,7 @@ impl BrowseState {
             source.retry_cd = 0;
         }
         self.bump_source_facts_gen();
-        plx_machine::idle::invalidate();
+
         true
     }
     /// Ask for one of the current section's value lists, if it is owed and not already out. Nothing
@@ -1907,7 +1907,7 @@ impl BrowseState {
             | adapter.letters.take_refused(self.letters_req)
             | adapter.bands.take_refused(self.bands_req);
         if refused {
-            plx_machine::idle::invalidate();
+
         }
     }
     /// Take the date the Library's ask carries into every section's state, where a calendar family's key
@@ -2055,7 +2055,7 @@ impl BrowseState {
         touched[index] = true;
         self.record_pins(true, &touched);
         self.bump_sections_gen();
-        plx_machine::idle::invalidate();
+
         true
     }
     #[cfg(any(test, feature = "test-support"))]
@@ -2377,13 +2377,13 @@ impl BrowseState {
     /// profile's RECORD (`apply_pins_from`). Both end in the same question — what does
     /// `pins::resolve` say about every row now — so they ask it the same way rather than each
     /// keeping a version of the answer. A row that moves without `bump_sections_gen` +
-    /// `plx_machine::idle::invalidate` is a table nothing republishes, which is a pill strip and a set of
+    /// a changed publication outcome is a table nothing republishes, which is a pill strip and a set of
     /// shelves still drawing the previous resolve.
     fn reconcile_pins(&mut self, record: Option<plx_plex::plex::session::HomePins>) -> bool {
         let moved = self.resolve_pins_with(record);
         if moved {
             self.bump_sections_gen();
-            plx_machine::idle::invalidate();
+
         }
         moved
     }
@@ -2439,7 +2439,7 @@ impl BrowseState {
             self.seed_saved_view(index);
         }
         self.bump_sections_gen();
-        plx_machine::idle::invalidate();
+
     }
     #[cfg(test)]
     fn record_pins(&mut self, asked: bool, touched: &[bool])
@@ -2547,7 +2547,7 @@ impl BrowseState {
         if changed {
             self.repoint_cur(!current_had_pin);
             self.bump_sections_gen();
-            plx_machine::idle::invalidate();
+
         }
         // Reconcile the pending selection immediately. Until its receipt lands, a captured
         // older session must not undo the viewer's edits. This is not a durability claim.
@@ -2568,7 +2568,7 @@ impl BrowseState {
                 source.retry_cd = 0;
             }
         }
-        plx_machine::idle::invalidate();
+
     }
     fn apply_discovery(
         &mut self,
@@ -2579,7 +2579,7 @@ impl BrowseState {
         user: &str,
         adapter: &BrowseAdapter,
     ) -> crate::stores::StoreOutcome {
-        plx_machine::idle::invalidate();
+
         if epoch != self.table_epoch() {
             return Default::default();
         }
@@ -2779,7 +2779,7 @@ impl BrowseState {
                     self.src_facts_gen = self.src_facts_gen.wrapping_add(changes);
                     if changes != 0 {
                         changed = true;
-                        plx_machine::idle::invalidate();
+
                     }
                 }
                 None => {
@@ -2840,8 +2840,39 @@ impl BrowseState {
             source.sections_done = false;
             source.counts_done = false;
         }
-        plx_machine::idle::invalidate();
+
     }
+    /// Keep admission separate from visible damage. Want/Genres only ask for work; Letters can
+    /// also select a different cached calendar rail when the host's date appears or disappears.
+    pub fn run_owned_outcome(
+        &mut self,
+        adapter: &Arc<BrowseAdapter>,
+        cmd: crate::stores::browse::BrowseCmd,
+        keys: &ClientKeys,
+        session: &plx_plex::plex::session::Session,
+        jobs: &mut Vec<crate::stores::StoreJob>,
+    ) -> crate::stores::browse::CommandOutcome {
+        use crate::stores::browse::{BrowseCmd, CommandOutcome, LibraryWork};
+        let request_only = matches!(&cmd, BrowseCmd::Addressed {
+            work: LibraryWork::Want { .. } | LibraryWork::Genres, ..
+        });
+        let letters = matches!(&cmd, BrowseCmd::Addressed { work: LibraryWork::Letters { .. }, .. });
+        let shown = |owner: &Self| owner.cur_state().zip(owner.section_kind(owner.cur()))
+            .and_then(|(state, kind)| state.shown_bands(kind)).cloned();
+        let before = if letters { shown(self) } else { None };
+        let accepted = self.run_owned(adapter, cmd, keys, session, jobs);
+        let changed = if letters {
+            match (before, shown(self)) {
+                (Some(before), Some(after)) => !Arc::ptr_eq(&before, &after),
+                (None, None) => false,
+                _ => true,
+            }
+        } else {
+            accepted && !request_only
+        };
+        CommandOutcome { accepted, changed }
+    }
+
     pub fn run_owned(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
@@ -3021,7 +3052,7 @@ impl BrowseState {
         let taken = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Browse,
             || fetch.busy(), || fetch.take());
         let Some(result) = taken else { return false };
-        plx_machine::idle::invalidate();
+
         if result.epoch != self.table_epoch() {
             return false;
         }
@@ -3181,7 +3212,7 @@ impl BrowseState {
         let page = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Browse,
             || adapter.page.busy(), || adapter.page.take());
         if let Some(result) = page {
-            plx_machine::idle::invalidate();
+
             if let Some(source) = self.sections.get(result.sec).map(|section| section.src) {
                 let client = result.client;
                 let token_gen = result.token_gen;
@@ -4271,6 +4302,26 @@ pub fn seed_letter_counts_for_owner_test(
                 .collect(),
         );
     }
+}
+
+/// Seed a cached calendar rail, optionally hidden while the host has no date.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_calendar_bands_for_owner_test(state: &mut BrowseState, counted: bands::Day, today: Option<bands::Day>) {
+    plx_base::testlock::assert_held("an owned calendar rail");
+    let current = state.cur();
+    let section = state.state_mut(current).expect("a current section");
+    section.sorts = Arc::new(vec![SortEntry {
+        key: "addedAt".into(), desc_key: String::new(), title: "Date added".into(), default_desc: true,
+    }]);
+    section.sort_idx = 0;
+    section.sort_desc = true;
+    section.today = Some(counted);
+    let key = section.bands_key(bands::BandFamily::DateAdded);
+    let ladder = bands::plan(bands::BandFamily::DateAdded, counted, counted[0]);
+    let counts: Vec<u32> = (1..=ladder.len() as u32).collect();
+    let rail = bands::BandRail::new(&ladder, &counts, 400).expect("trusted calendar bands");
+    section.land_bands(key, Some(rail));
+    section.today = today;
 }
 
 /// The current section's A-Z counts are owed again (the registered fixture table lands them done).

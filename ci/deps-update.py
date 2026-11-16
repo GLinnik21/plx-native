@@ -63,7 +63,7 @@ SAFE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 REPO = re.compile(r'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')
 # Only the dependency-graph submission needs these; the detector is this script.
 DETECTOR = {'name': 'plxnative-deps-update', 'version': '1',
-            'url': 'https://github.com/GLinnik21/plx-native/blob/main/ci/deps-update.py'}
+            'url': 'https://github.com/plxnative/plx-native/blob/main/ci/deps-update.py'}
 
 
 class BumpError(Exception):

@@ -792,6 +792,11 @@ pub fn hubs_snapshot(state: &PmsState) -> HubsSnapshot {
     }
 }
 
+/// The visible publication includes its readout, even when no catalog rows were replaced.
+pub(crate) fn visible_projection(state: &PmsState) -> (u32, HubState) {
+    (state.catalog_gen, hub_state(state))
+}
+
 impl HubsSnapshot {
     /// An explicit empty retained publication; fixture construction must not capture globals.
     #[cfg(any(test, feature = "test-support"))]
@@ -3220,7 +3225,7 @@ fn commit(state: &mut PmsState, build: HubBuild) -> c_int {
     let n = new_cat.len();
     state.published = Some(Arc::new(HomeCatalog { items: new_cat, hubs: new_hubs, heroes: new_pool }));
     state.catalog_gen = state.catalog_gen.wrapping_add(1);
-    plx_machine::idle::invalidate();
+
     n as c_int
 }
 
@@ -3362,7 +3367,7 @@ fn settle_refused(state: &mut PmsState, adapter: &PmsAdapter) -> crate::stores::
         }
         endpoints.insert(landed_fail(s));
     }
-    if settled { plx_machine::idle::invalidate(); }
+    if settled {  }
     endpoints
 }
 
@@ -3573,9 +3578,9 @@ fn apply_landing(state: &mut PmsState, adapter: &Arc<PmsAdapter>, landing: &Land
 /// Test-only compatibility landing for fixtures without a retained directory.
 #[cfg(any(test, feature = "test-support"))]
 pub fn land(state: &mut PmsState, adapter: &Arc<PmsAdapter>, landing: &Landing) -> crate::stores::StoreOutcome {
-    let before = state.catalog_gen;
+    let before = visible_projection(state);
     let endpoints = apply_landing(state, adapter, landing);
-    crate::stores::StoreOutcome { changed: state.catalog_gen != before, endpoints }
+    crate::stores::StoreOutcome { changed: visible_projection(state) != before, endpoints }
 }
 
 /// Apply one addressed landing under the same retained directory policy the frame publishes.
@@ -3586,10 +3591,10 @@ pub fn land_with_directory(
     directory: crate::stores::browse::DirectoryView<'_>,
     clients: &ClientKeys,
 ) -> crate::stores::StoreOutcome {
-    let before = state.catalog_gen;
+    let before = visible_projection(state);
     let endpoints = emitting(state, adapter, |state, launch| step_landings_with_scope(state, adapter, None,
         || vec![landing.clone()], &BrowseScope::retained(directory, clients), launch));
-    crate::stores::StoreOutcome { changed: state.catalog_gen != before, endpoints }
+    crate::stores::StoreOutcome { changed: visible_projection(state) != before, endpoints }
 }
 
 /// `stores::hubs::HubsStore`'s one door onto every [`HubsCmd`](crate::stores::hubs::HubsCmd) (D3):
@@ -3638,18 +3643,18 @@ fn run_settled(
     use crate::stores::hubs::HubsCmd;
     match cmd {
         paging @ (HubsCmd::Page { .. } | HubsCmd::CancelPage { .. }) => {
-            let before = state.catalog_gen;
+            let before = visible_projection(state);
             let endpoints = run_page_cmd(state, adapter, scope, paging, launch);
-            crate::stores::StoreOutcome { changed: before != state.catalog_gen, endpoints }
+            crate::stores::StoreOutcome { changed: before != visible_projection(state), endpoints }
         }
         HubsCmd::RefetchHubs => crate::stores::StoreOutcome {
             changed: true,
             endpoints: request_refetch_hubs_with_scope(state, adapter, scope, launch),
         },
         HubsCmd::Hold { lo, hi } => {
-            let before = state.catalog_gen;
+            let before = visible_projection(state);
             let endpoints = run_hold(state, adapter, scope, lo, hi, launch);
-            crate::stores::StoreOutcome { changed: before != state.catalog_gen, endpoints }
+            crate::stores::StoreOutcome { changed: before != visible_projection(state), endpoints }
         }
         HubsCmd::Retry => {
             let gen = state.hub_gen;
@@ -3673,9 +3678,9 @@ fn run_settled(
             endpoints: refetch_source_quiet(state, adapter, scope, sid, launch),
         },
         HubsCmd::Publish { home_top_visible, focused_hub, press_live } => {
-            let before = state.catalog_gen;
+            let before = visible_projection(state);
             publish_staged(state, scope, home_top_visible, focused_hub, press_live);
-            crate::stores::StoreOutcome::changed(state.catalog_gen != before)
+            crate::stores::StoreOutcome::changed(visible_projection(state) != before)
         }
     }
 }
@@ -3691,9 +3696,9 @@ pub fn controlled_work(state: &mut PmsState, adapter: &Arc<PmsAdapter>, cmd: Opt
     let out = match cmd {
         Some(cmd) => run_with_scope(state, adapter, cmd, &BrowseScope::standalone()),
         None => {
-            let before = state.catalog_gen;
+            let before = visible_projection(state);
             let endpoints = pump_with_landings(state, adapter, dt, Vec::new);
-            crate::stores::StoreOutcome { changed: state.catalog_gen != before, endpoints }
+            crate::stores::StoreOutcome { changed: visible_projection(state) != before, endpoints }
         }
     };
     start_for_test(state, launch);
@@ -3853,7 +3858,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         // A landing that COMMITS repaints from inside `commit`; this is the one that does not —
         // a failure rewrites no shelf but does change the status caption, under a Home screen that
         // may have gone idle with nothing else on it to move.
-        plx_machine::idle::invalidate();
+
     }
     if let Some((build, took)) = build {
         let bytes = catalog_bytes(&build.0);
@@ -4294,6 +4299,43 @@ pub fn seed_continue_window_for_test(state: &mut PmsState, adapter: &Arc<PmsAdap
     let build = merge(&srcs);
     state.srcs = srcs;
     let scope = BrowseScope::standalone();
+    remember_roster(state, &scope);
+    state.seen_facts = facts_key(&scope);
+    commit(state, build);
+}
+
+/// Test hook: ONE server's Continue Watching answer lands on the store the way a whole-source answer
+/// lands it (`landed_ok`, `settle_deck`, the merge, the commit), so a test sees what a household sees
+/// when its servers answer one after the other, in either order. `cards` is `(rating key, last viewed)`,
+/// newest first (empty for a server with nothing to continue), and `slot` names the server; the first
+/// call starts from an empty table. The hook lands a first answer, or a refresh whose reload failed
+/// (both join the deck through `place`); a refresh whose reload succeeds goes through `deck::reload`,
+/// which this hook does not stand for.
+#[cfg(any(test, feature = "test-support"))]
+pub fn land_deck_lane_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, slot: u16, cards: &[(&str, i64)]) {
+    plx_base::testlock::assert_held("the pms hub catalog (land_deck_lane_for_test)");
+    let scope = BrowseScope::standalone();
+    if state.srcs.is_empty() { reset_with_scope(state, adapter, &scope); }
+    let sid = ServerId::from_raw(slot);
+    let cw: Vec<CwItem> = cards.iter().enumerate().map(|(position, &(rk, last_viewed_at))| CwItem {
+        last_viewed_at,
+        m: Arc::new(PmsMovie { sid, rk: rk.into(), title: rk.into(), thumb: "/t".into(), art: "/a".into(), ..Default::default() }),
+        position,
+    }).collect();
+    let key = |card: Option<&(&str, i64)>| card.map_or_else(String::new, |card| card.0.to_string());
+    // A server with nothing to continue keeps the default lane, as `project_deck` leaves it.
+    let lane = if cards.is_empty() { deck::Lane::default() }
+        else { deck::Lane::preview(&key(cards.first()), &key(cards.last()), cards.len(), cards.len(), true) };
+    let mut srcs = std::mem::take(&mut state.srcs);
+    let at = srcs.iter().position(|source| source.sid == sid).unwrap_or_else(|| {
+        srcs.push(Src::new(sid, String::new(), &registry_keys_for_test()));
+        srcs.len() - 1
+    });
+    srcs[at].ledger = state.ledger.clone();
+    landed_ok(&mut srcs[at], SourceBuild { cw, lane, shelves: Vec::new() });
+    settle_deck(&mut srcs, true);
+    let build = merge_with_scope(&srcs, &scope);
+    state.srcs = srcs;
     remember_roster(state, &scope);
     state.seen_facts = facts_key(&scope);
     commit(state, build);

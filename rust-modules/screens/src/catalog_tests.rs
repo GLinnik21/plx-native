@@ -23,6 +23,9 @@ const HEX: [u8; 12] = [7; 12];
 
 /// A host with no stores: the page reads its record from itself.
 struct CatHost;
+impl crate::registry::ScreenInputsLike for CatHost {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+}
 impl Host for CatHost {
     type Arg = crate::registry::SettingsPage;
     type Fx = AppFx;

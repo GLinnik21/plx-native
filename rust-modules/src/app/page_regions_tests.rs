@@ -142,7 +142,7 @@ impl Rig {
     fn step(&mut self, inputs: Vec<InputEvent<u32>>) {
         self.frame += 1;
         if let Some(feed) = self.feed { feed(&mut self.d, &mut self.bridge); }
-        plx_machine::idle::frame_begin(0.016);
+        plx_machine::motion::report::frame_begin(0.016);
         super::frame(&mut self.d, &mut self.bridge, tick(self.frame), inputs);
         self.performed.extend(pump_navigation(&mut self.d, &mut self.bridge));
     }

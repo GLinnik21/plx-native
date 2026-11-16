@@ -4,6 +4,7 @@ Only immutable standard containers are axioms. Local fields and aliases are foll
 module imports; opaque/ambiguous types, callbacks, raw pointers and interior authority fail closed.
 Safe Rust then prevents an &self method from changing the proved owned state.
 """
+from functools import lru_cache
 from pathlib import Path
 import re
 
@@ -27,6 +28,58 @@ def cache_proof(method):
         if key not in self.memo: self.memo[key] = method(self, *args, **kwargs)
         return self.memo[key]
     return cached
+
+class Tokens(list):
+    """A token list that is built once and never changed, so one lexed source can be shared and can
+    remember what is derived from it (`derived`) instead of every consumer recomputing it.
+
+    Every mutator raises: a caller that needs a changeable copy writes `list(tokens)`."""
+    def __init__(self, tokens=()):
+        super().__init__(tokens)
+        self.derived = {}
+
+    def _frozen(self, *args, **kwargs):
+        raise TypeError('Tokens are shared and read-only; copy with list(tokens)')
+    __setitem__ = __delitem__ = __iadd__ = __imul__ = _frozen
+    append = extend = insert = pop = remove = clear = reverse = sort = _frozen
+
+
+def derived(tokens, key, compute):
+    """compute(tokens), remembered on a shared `Tokens` list; a plain list is computed every time."""
+    if not isinstance(tokens, Tokens): return compute(tokens)
+    if key not in tokens.derived: tokens.derived[key] = compute(tokens)
+    return tokens.derived[key]
+
+
+class Shadows:
+    """What in one token list can shadow a builtin macro or the `std` crate: its macro definitions,
+    every token of its `use` items and whether `mod std` / `as std` appear. One pass over the list
+    answers what a rescan at every macro call used to."""
+    def __init__(self, tokens):
+        self.macro_rules, self.macro_items, self.imported, self.std_named = set(), set(), set(), False
+        count = len(tokens)
+        for j, token in enumerate(tokens):
+            if token == 'macro_rules' and j + 2 < count and tokens[j + 1] == '!': self.macro_rules.add(tokens[j + 2])
+            elif token == 'macro' and j + 2 < count: self.macro_items.add(tokens[j + 1])
+            elif token == 'use':
+                end = j + 1
+                while end < count and tokens[end] != ';': end += 1
+                self.imported.update(tokens[j + 1:end])
+            elif token in ('mod', 'as') and j + 1 < count and tokens[j + 1] == 'std': self.std_named = True
+
+
+def shadows_of(tokens):
+    return derived(tokens, 'shadows', Shadows)
+
+
+@lru_cache(maxsize=64)
+def lexed(source):
+    """(raw lexer tokens, their bracket ends) of one source TEXT, shared and never changed: the module
+    walk and each child lookup read the same file's text once per check, so this lexes it once."""
+    import rust_test_modules as rtm
+    tokens = rtm.lex(source)
+    return Tokens(tokens), rtm.group_ends(tokens)
+
 
 def macro_invocation(tokens, bang, ends):
     """A bang after an identifier is a macro, unlike logical negation after if/return."""
@@ -61,6 +114,8 @@ class Proof:
     def __init__(self, root, shape):
         self.root, self.shape = Path(root), shape
         self.cache, self.visiting, self.audit = {}, set(), set()
+        self.real_paths = {}
+        self.real_root = self.real(self.root)
         self.crates = {}
         for manifest in self.root.glob('*/Cargo.toml'):
             text = manifest.read_text(encoding='utf-8')
@@ -70,13 +125,22 @@ class Proof:
             name = match[1].replace('-', '_') if match else ''
             if name: self.crates[name] = manifest.parent / 'src/lib.rs'
 
+    def real(self, path):
+        """Path(path).resolve(), looked up once per path for this proof's lifetime: the tree is not
+        changed while a proof is being made (module() already memoizes every file it reads)."""
+        if path not in self.real_paths: self.real_paths[path] = Path(path).resolve()
+        return self.real_paths[path]
+
     def module(self, path):
-        path = Path(path).resolve()
+        path = self.real(path)
         if path in self.cache: return self.cache[path]
         from readonly_generated import declarations
         generated = declarations(self.root, path)
-        tokens = self.shape.production_tokens(path.read_text(encoding='utf-8') + '\n' + generated)
-        if generated: self.audit.add('source-backed generated data ' + path.relative_to(self.root.resolve()).as_posix())
+        text = path.read_text(encoding='utf-8')
+        # With nothing generated the appended newline lexes to no token; leaving it off lets the module
+        # share the memoized tokens of the same text the checker's own walk already lexed.
+        tokens = self.shape.production_tokens(text + '\n' + generated if generated else text)
+        if generated: self.audit.add('source-backed generated data ' + path.relative_to(self.real_root).as_posix())
         ends = self.shape.ends_of(tokens)
         reverse = {end: begin for begin, end in ends.items()}
         definitions, uses = {}, []
@@ -155,11 +219,11 @@ class Proof:
     def child(self, path, name):
         """Resolve one declared child, including a literal path attribute; conditional paths fail."""
         import rust_test_modules as rtm
-        path = Path(path).resolve()
-        tokens = rtm.lex(path.read_text(encoding='utf-8'))
-        ends = rtm.group_ends(tokens)
+        path = self.real(path)
+        tokens, ends = lexed(path.read_text(encoding='utf-8'))
         reverse = {b: a for a, b in ends.items()}
-        matches = [i for i in range(len(tokens) - 2) if tokens[i:i + 3] == [('code', 'mod'), ('code', name), ('code', ';')]]
+        mods = derived(tokens, 'mods', lambda t: [i for i in range(len(t) - 2) if t[i] == ('code', 'mod')])
+        matches = [i for i in mods if tokens[i:i + 3] == [('code', 'mod'), ('code', name), ('code', ';')]]
         if len(matches) != 1: return None
         before = matches[0] - 1
         if tokens[before:before + 1] == [('code', 'pub')]: before -= 1
@@ -176,7 +240,7 @@ class Proof:
             before = begin - 2
         directory = path.parent if path.name in ('lib.rs', 'mod.rs', 'main.rs') else path.with_suffix('')
         candidates = [path.parent / paths[0]] if len(paths) == 1 else [directory / (name + '.rs'), directory / name / 'mod.rs'] if not paths else []
-        found = [p.resolve() for p in candidates if p.is_file() and p.resolve().is_relative_to(self.root.resolve())]
+        found = [p.resolve() for p in candidates if p.is_file() and p.resolve().is_relative_to(self.real_root)]
         if len(found) != 1: return None
         from readonly_generated import canonical_child
         if not canonical_child(self.root, path, name, found[0]): return None
@@ -194,7 +258,7 @@ class Proof:
 
     @cache_proof
     def resolve(self, path, names, seen=None):
-        path, names = Path(path).resolve(), tuple(names)
+        path, names = self.real(path), tuple(names)
         key = (path, names)
         seen = set() if seen is None else seen
         if key in seen: return None
@@ -306,7 +370,7 @@ class Proof:
         # Cache only completed roots: recursive coinductive successes are provisional.
         substitutions = substitutions or {}
         concrete = tuple(part for token in tokens for part in substitutions.get(token, [token]))
-        key = (Path(path).resolve(), concrete)
+        key = (self.real(path), concrete)
         if self.visiting: return self._inert(path, list(concrete))
         if not hasattr(self, 'inert_roots'): self.inert_roots = {}
         if key not in self.inert_roots:
@@ -352,20 +416,20 @@ class Proof:
         sub = dict(zip(parameters, args))
         result = all(self.inert(owner, field, sub) for field in payloads)
         self.visiting.remove(key)
-        if result: self.audit.add(owner.relative_to(self.root.resolve()).as_posix() + '::' + name)
+        if result: self.audit.add(owner.relative_to(self.real_root).as_posix() + '::' + name)
         return result
 
     @cache_proof
     def dependency_certificate(self, path, tokens):
         """Cache exact dependency evidence only within this immutable source snapshot."""
         try:
-            from readonly_dependencies import certify, provenance
+            from readonly_dependencies import provenance
         except ModuleNotFoundError as error:
             if error.name == 'readonly_dependencies': return None
             raise
         namespace = self.module(path)
         context = {'imports': namespace[3], 'definitions': list(namespace[2])}
-        if not certify(self.root, Path(path), tokens, namespace_context=context): return None
+        # `certify` is `provenance(...) is not None`: one verification, not two.
         return provenance(self.root, Path(path), tokens, namespace_context=context)
 
     def shared_method(self, path, state_type, method):
@@ -445,14 +509,14 @@ class Proof:
 
 
     def builtin(self, path, name, seen=None):
-        path = Path(path).resolve()
+        path = self.real(path)
         seen = set() if seen is None else seen
         if path in seen: return True
         seen = seen | {path}
         tokens, _, _, uses = self.module(path)
         if 'macro_use' in tokens: return False
-        if any(tokens[i:i + 3] == ['macro_rules', '!', name] or tokens[i:i + 2] == ['macro', name] for i in range(len(tokens) - 2)):
-            return False
+        shadows = shadows_of(tokens)
+        if name in shadows.macro_rules or name in shadows.macro_items: return False
         if any(alias == name for alias, _ in uses): return False
         for alias, target in uses:
             if alias != '*': continue

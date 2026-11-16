@@ -36,7 +36,7 @@ impl TestApp {
     /// One frame with no input.
     pub fn frame(&mut self) -> &FrameReport {
         let t = self.clock.tick();
-        self.last = self.d.frame(&mut self.rig, t, vec![], vec![], &mut NoTap);
+        self.last = super::fixture::frame_and_swap(&mut self.d, &mut self.rig, t, vec![], vec![], &mut NoTap);
         let un = self.last.unmounted.clone();
         self.d.prune(&un);
         &self.last
@@ -52,7 +52,7 @@ impl TestApp {
     /// One frame carrying one key press (the DOWN edge).
     pub fn press(&mut self, k: Key) -> &FrameReport {
         let t = self.clock.tick();
-        self.last = self.d.frame(&mut self.rig, t, vec![key(k, t)], vec![], &mut NoTap);
+        self.last = super::fixture::frame_and_swap(&mut self.d, &mut self.rig, t, vec![key(k, t)], vec![], &mut NoTap);
         let un = self.last.unmounted.clone();
         self.d.prune(&un);
         &self.last

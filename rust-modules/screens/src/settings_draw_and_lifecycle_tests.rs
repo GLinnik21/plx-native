@@ -57,7 +57,7 @@ fn nested_draw_preserves_navigation_at_rest_and_through_push_and_pop() {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let instance = |id| Instance {
             id: InstanceId(id),
-            screen: Box::new(DrawProbe { id, seen: Rc::clone(&seen) }) as Box<dyn Screen<InnerHost>>,
+            screen: Box::new(DrawProbe { id, wake: order.last() == Some(&id), seen: Rc::clone(&seen) }) as Box<dyn Screen<InnerHost>>,
             inflight: Vec::new(),
             staged: false,
             staged_effects: Vec::new(),
@@ -83,6 +83,14 @@ fn nested_draw_preserves_navigation_at_rest_and_through_push_and_pop() {
         let mut f = DrawFrame::with_navigation(&c, Painter::root(), navigation);
         let before = LogicalState::hash(&surface);
         surface.draw_pages(&mut f, Painter::root());
+        let mut owner = plx_machine::present::Present::new();
+        let mut unrelated = plx_machine::present::Present::new();
+        for p in [&mut owner, &mut unrelated] { p.take(0); p.acknowledge(0); }
+        f.apply_frame_requests(&mut owner);
+        assert!(owner.peek(1), "{label}: even a leaving child must forward its deferred demand");
+        assert!(!unrelated.peek(1));
+        assert!(!owner.page_damaged());
+        assert!(!owner.page_moving());
         assert_eq!(LogicalState::hash(&surface), before, "{label}: draw changed logical state");
         actual.push((label, seen.borrow().clone()));
         expected.push((label, order.iter().map(|&id| (id, navigation)).collect::<Vec<_>>()));

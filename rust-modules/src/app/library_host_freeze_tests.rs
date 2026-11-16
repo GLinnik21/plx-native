@@ -168,9 +168,9 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
 
     // a settled panel over a settled page: nothing moves, and in particular the panel's own
     // appear spring (`ModalStack::tick`, now in a scope of its own) is not the page's motion
-    plx_machine::idle::frame_begin(1.0 / 60.0);
+    plx_machine::motion::report::frame_begin(1.0 / 60.0);
     frame(&mut d, &mut rig, AppArg::Library, tick(120), vec![]);
-    assert!(!plx_machine::idle::page_moving(), "a settled host does not move");
+    assert!(!plx_machine::motion::report::page_moving(), "a settled host does not move");
 
     // dismiss: input returns to the page while the panel is still visible, and the page is driven
     d.request(MachineId::Nav, NavOp::Dismiss(menu));
@@ -178,12 +178,12 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
     Bridge::library_command(&mut d, plx_screens::registry::LibraryCmd::FocusGrid { row: 0, col: 0 });
     let mut moved = 0;
     for i in 122..136u32 {
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let (_, report) = frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
         // The panel's own close MORPH is motion too (S11: the menu runs back into its control), in
         // the panel's scope; it is not the page's. A frame counts here when the page's own spring
         // moved, and the attribution bug this pins shows as that never happening.
-        if !plx_machine::idle::page_moving() {
+        if !plx_machine::motion::report::page_moving() {
             continue;
         }
         moved += 1;
@@ -194,7 +194,7 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
             report.underlay_moving
         );
         assert!(
-            plx_ui::popover::host_refresh(true, false, plx_machine::idle::page_moving()),
+            plx_ui::popover::host_refresh(true, false, plx_machine::motion::report::page_moving()),
             "frame {i}: …so the fading panel's frozen snapshot is re-taken"
         );
     }
