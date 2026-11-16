@@ -1,0 +1,15 @@
+{
+  "sort_facts.title": "Naslov",
+  "sort_facts.date_added": "Datum dodavanja",
+  "sort_facts.release_date": "Datum izlaska",
+  "sort_facts.rating": "Ocjena",
+  "sort_facts.audience_rating": "Ocjena publike",
+  "sort_facts.last_viewed": "Datum gledanja",
+  "sort_facts.random": "Nasumično",
+  "sort_facts.a_to_z": "A–Ž",
+  "sort_facts.z_to_a": "Ž–A",
+  "sort_facts.oldest_first": "Od najstarijeg",
+  "sort_facts.newest_first": "Od najnovijeg",
+  "sort_facts.lowest_first": "Od najniže ocjene",
+  "sort_facts.highest_first": "Od najviše ocjene"
+}
