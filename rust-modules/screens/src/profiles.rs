@@ -1065,8 +1065,10 @@ impl ProfilesScreen {
         let target = self.pad.target as u32;
         self.pad = Pad::new();
         self.pending_selection = None;
-        self.sync_pin_state();
+        // Clear the verdict BEFORE publishing: a closed pad must never be published beside a
+        // standing `pin_denied`.
         self.pin_denied = false;
+        self.sync_pin_state();
         if dismiss_pin_error {
             fx.push(Fx::App(AppFx::Session(auth::SessionCmd::DismissPinError)));
         }
