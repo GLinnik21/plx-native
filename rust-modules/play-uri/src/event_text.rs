@@ -62,9 +62,11 @@ mod tests {
             // the service's own `hdrType` word, as the 4.5 set and the Feed envelope spell it
             (r#"{"mediaId":"_m1","videoInfo":{"width":3840,"height":2160,"frameRate":24,"hdrType":"HDR10"}}"#,
                 "ev=videoInfo width=3840 height=2160 frameRate=24 hdrType=HDR10"),
+            (r#"{"mediaId":"_m1","videoInfo":{"width":3840,"height":2160,"hdrType":"DolbyVision"}}"#,
+                "ev=videoInfo width=3840 height=2160 hdrType=DolbyVision"),
             (r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"hdrType":"none"}}"#,
                 "ev=videoInfo width=1280 height=720 hdrType=none"),
-            // anything that is not one short word is never repeated
+            // a word outside the firmware's table is never repeated
             (r#"{"mediaId":"_m1","videoInfo":{"width":1280,"height":720,"hdrType":"abc.plex.direct"}}"#,
                 "ev=videoInfo width=1280 height=720"),
             (r#"{"mediaId":"_m1","bufferRange":{"beginTime":0,"endTime":58,"remainingTime":12,"percent":40}}"#,

@@ -365,7 +365,9 @@ fn scalar(value: &Value) -> Option<String> {
         Value::Bool(b) => Some(b.to_string()),
         Value::String(s) => match s.as_str() {
             "aac" | "ac3" | "eac3" | "dts" | "H264" | "H265" | "h264" | "hevc" | "AV1" | "VP9"
-            | "sdr" | "hdr10" | "dolbyVision" => Some(s.clone()),
+            // `videoInfo.hdrType`: the firmware's whole HDR table (`getHdrTypeString`,
+            // docs/measurements/uri-acb-envelope-2026-11-05.md)
+            | "none" | "HDR10" | "DolbyVision" | "HLG" | "Prime" => Some(s.clone()),
             _ => None,
         },
         Value::Object(o) => {
@@ -400,15 +402,6 @@ fn details_by(value: &Value, keys: &[&str], show: fn(&Value) -> Option<String>) 
         })
         .collect();
     parts.join(" ")
-}
-
-/// The `hdrType` the service names for the stream it decoded (`"none"`, `"HDR10"`, `"HLG"` on the
-/// sets read so far; the Dolby Vision spelling is not known yet): a short word of ASCII letters,
-/// digits and underscores, so no host or URL can pass.
-fn hdr_type(value: &Value) -> Option<String> {
-    let word = value.as_str()?;
-    (!word.is_empty() && word.len() <= 16 && word.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
-        .then(|| word.to_owned())
 }
 
 /// [`details_by`] with [`scalar`]: numbers, booleans and the finite codec vocabulary.
@@ -549,15 +542,10 @@ pub fn parse_event(payload: &str) -> Message {
             continue;
         }
         let detail = match ev {
-            Ev::VideoInfo => {
-                let mut text = details(value, &["width", "height", "codec", "frameRate", "hdr", "currentBitrate", "contentBitrate"]);
-                if let Some(word) = value.get("hdrType").and_then(hdr_type) {
-                    if !text.is_empty() { text.push(' '); }
-                    text.push_str("hdrType=");
-                    text.push_str(&word);
-                }
-                text
-            }
+            Ev::VideoInfo => details(
+                value,
+                &["width", "height", "codec", "frameRate", "hdrType", "currentBitrate", "contentBitrate"],
+            ),
             Ev::AudioInfo => details(value, &["codec", "channels", "sampleRate", "track"]),
             Ev::BufferRange => details(value, &["beginTime", "endTime", "remainingTime", "percent"]),
             // The track kind and index the service says it selected, when it names them: already
