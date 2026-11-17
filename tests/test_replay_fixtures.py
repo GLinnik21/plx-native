@@ -49,7 +49,7 @@ class ExpectedRefusalTests(unittest.TestCase):
         # the v13 anchor and the by-id anchor, each re-recorded onto the `Id` resolution row's shape
         # (docs/ui-replay-v13-anchor.md)
         self.assertEqual({p.name: replay.expected_counts(p) for p in current},
-                         {'v13-owned-input-content': (922, 922), '13-by-id-filmography': (980, 980)})
+                         {'v13-owned-input-content': (922, 922), '13-by-id-filmography': (1209, 1209)})
         for fixture in current:
             counts = replay.expected_counts(fixture)
             manifest = json.loads((fixture / 'manifest.json').read_text())

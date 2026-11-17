@@ -298,11 +298,16 @@ record_flow 11 pointer-stops "" "ck:960,92 sleep:1 ck:133,92 sleep:1 back sleep:
 record_flow 12 filmography-detail-return "detail=$RK_MOVIE detailsec=1 detailok filmography personcredits nowan" "sleep:2 down ok sleep:2 back sleep:2 back" 'route=person'
 
 # 13 The by-id inputs (a11y-ids plan, D3/D6) on Flow 12's controlled domain, the only manifest shape
-# the closed fixture gates admit. `focus:nav.watchlist` is REFUSED (Filmography owns input and has no
-# strip: one `a11y: refused ...` log line, which ALPHABET lists literally), `focus:` seats a credit
-# row, and `press:` on the first row is the OK Down/Up that opens Detail exactly as Flow 12's
-# `down ok` does; the two BACKs are keys. Same triggers and checks as 12.
-record_flow 13 by-id-filmography "detail=$RK_MOVIE detailsec=1 detailok filmography personcredits nowan" "sleep:2 focus:nav.watchlist focus:filmography.row.3 press:filmography.row.0 sleep:2 back sleep:2 back" 'route=person'
+# the closed fixture gates admit. `focus:nav.watchlist` is first REFUSED (Filmography owns input and has
+# no strip: one `a11y: refused ...` log line, which ALPHABET lists literally), `focus:` seats a credit
+# row, and `press:` on the first row is the OK Down/Up that opens Detail exactly as Flow 12's `down ok`
+# does. Four BACKs unwind the stack to Home (Filmography, Person, Detail, Home), where
+# `focus:nav.watchlist` RESOLVES to the strip's Watchlist tab. No press on Home: a Home press
+# (nav.profile, nav.movies, home.hero.info) records an application effect the controlled replay
+# refuses. The sleeps are one second because the loader's decoded-recording budget
+# (rec/strict_json.rs Budget) refuses a longer take at load ("record JSON/budget", a 1.5 MB take failed
+# at line 13918 of 15444): Home frames cost ~100 KB per 100 frames. Same triggers and checks as 12.
+record_flow 13 by-id-filmography "detail=$RK_MOVIE detailsec=1 detailok filmography personcredits nowan" "sleep:2 focus:nav.watchlist focus:filmography.row.3 press:filmography.row.0 sleep:1 back sleep:1 back sleep:1 back sleep:1 back sleep:1 focus:nav.watchlist" 'route=person'
 
 echo "=== focusfp: $passed passed, $fails failed, $skipped skipped of $selected ==="
 [ "$fails" -eq 0 ]
