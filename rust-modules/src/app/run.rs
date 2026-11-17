@@ -5095,6 +5095,7 @@ mod lifecycle_regression_tests {
                 width: 0,
                 height: 0,
                 bitrate: 0,
+                video_kbps: 0,
                 dovi: Default::default(),
                 markers: Vec::new(),
                 chapters: (1..=2).map(chapter).collect(),
