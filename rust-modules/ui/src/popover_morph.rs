@@ -116,7 +116,7 @@ pub const SHAPE_AT: f32 = 0.94;
 /// The stiffness of the spring that carries the corner between the lens (0) and the panel's radius
 /// (1): critically damped, ~100 ms to within 4%. A spring of its own, because the rect springs
 /// approach rest in two frames (a clock read off them cannot carry a 100 ms ease), and it lands
-/// exactly ([`Spring::land`]) so the radius IS the panel's when the open settles.
+/// exactly ([`Spring::land_if_still`]) so the radius IS the panel's when the open settles.
 pub const K_SHAPE: f32 = 1200.0;
 /// Width spring stiffness while opening: the underdamped fit to the iOS 26 recording (2026-11-17,
 /// see the module doc), `ZETA_WIDTH` 0.7 after [`WIDTH_LAG`]. Largest error against the measured
@@ -520,20 +520,30 @@ impl Morph {
     /// Advance one frame toward the open (`true`) or closed (`false`) end.
     ///
     /// An open is the two UNDERDAMPED rect springs ([`K_HEIGHT`], and [`K_WIDTH`] after its
-    /// [`WIDTH_LAG`]); `out` and the `fold` return to 0 if a close had raised them. Each spring
-    /// is put EXACTLY on the panel once it has arrived ([`Spring::land`]): an underdamped spring
-    /// only ever decays toward its target, and [`settled`](Self::settled) must not fire at the first
-    /// crossing while it rings.
+    /// [`WIDTH_LAG`]); `out` and the `fold` return to 0 if a close had raised them. EVERY spring the
+    /// morph owns is put exactly on its target when the frame loop's rest test stops calling it moving
+    /// ([`Spring::land_if_still`]): an underdamped spring only ever decays toward its target,
+    /// [`settled`](Self::settled) must not fire at the first crossing while it rings, and the loop must
+    /// not be woken for a sub-pixel tail after it has slept.
     ///
     /// A close is NOT that reversed: the rect springs are released on the first frame with an
     /// outward [`BULGE_KICK_H`] (a settled panel bulges before it shrinks), `out` rises with them (the
     /// rows and the frost leave while the slab shrinks), and the fold is released once the slab is
     /// within [`FOLD_AT`] of the drain rect.
     pub fn step(&mut self, open: bool, dt: f32) {
+        // Every spring below is put EXACTLY on its target the moment the frame loop's own rest test (the one
+        // its integrators report `Motion` by) stops calling it moving at this step's `dt`: the instant the loop
+        // would stop asking for frames. The tight threshold `Spring::land` uses lets an underdamped spring
+        // ring on under the loop's quarter-pixel test after it fell asleep, and each idle wake, which steps
+        // by up to `FRAME_DT_CLAMP`, then reports motion again and presents one more sub-pixel frame; a
+        // spring that is landed when the loop sleeps cannot be woken by any later step.
+        let still = dt;
         if open {
             self.closing = false;
             self.out.step(0.0, K_OUT, dt);
+            self.out.land_if_still(0.0, still);
             self.fold.step(0.0, K_FOLD, dt);
+            self.fold.land_if_still(0.0, still);
             let mut dt_w = dt;
             if self.lag > 0.0 {
                 let waited = self.lag.min(dt);
@@ -544,16 +554,15 @@ impl Morph {
             if dt_w > 0.0 {
                 self.w.step_zeta(1.0, K_WIDTH, ZETA_WIDTH, dt_w);
             }
-            self.h.land(1.0, dt);
-            self.w.land(1.0, dt);
+            self.h.land_if_still(1.0, still);
+            self.w.land_if_still(1.0, still);
             self.lens.step_zeta(1.0, K_LENS, ZETA_LENS, dt);
-            self.lens.land(1.0, dt);
+            self.lens.land_if_still(1.0, still);
             let panel_corner = if self.w.pos.min(self.h.pos) >= SHAPE_AT { 1.0 } else { 0.0 };
             self.shape.step(panel_corner, K_SHAPE, dt);
-            if panel_corner == 1.0 {
-                self.shape.land(1.0, dt);
-            }
+            self.shape.land_if_still(panel_corner, still);
             self.rows.step_zeta(1.0, K_ROWS, ZETA_ROWS, dt);
+            self.rows.land_if_still(1.0, still);
             return;
         }
         self.lag = 0.0;
@@ -565,16 +574,23 @@ impl Morph {
             }
         }
         self.out.step(1.0, K_OUT, dt);
+        self.out.land_if_still(1.0, still);
         self.w.step(CLOSE_W_TARGET, K_CLOSE_W, dt);
+        self.w.land_if_still(CLOSE_W_TARGET, still);
         self.h.step(CLOSE_H_TARGET, K_CLOSE_H, dt);
+        self.h.land_if_still(CLOSE_H_TARGET, still);
         self.lens.step_zeta(1.0, K_LENS, ZETA_LENS, dt);
+        self.lens.land_if_still(1.0, still);
         self.shape.step(0.0, K_SHAPE, dt);
+        self.shape.land_if_still(0.0, still);
         if self.h.pos <= FOLD_AT {
             self.fold.step(1.0, K_FOLD, dt);
+            self.fold.land_if_still(1.0, still);
         } else {
             self.fold.vel = 0.0;
         }
         self.rows.step_zeta(ROWS_FROM, K_ROWS, ZETA_ROWS, dt);
+        self.rows.land_if_still(ROWS_FROM, still);
     }
 
     /// Has the close finished for an opener the slab drains into: the slab gone ([`A_GONE_AT`])?
@@ -593,19 +609,13 @@ impl Morph {
         self.w.pos <= 0.001 && self.h.pos <= 0.001 && self.rows.pos <= ROWS_FROM + 0.001
     }
 
-    /// Has the open visibly arrived? Both rect springs LANDED on the panel (not merely crossed it:
-    /// they ring past it first). A close that has begun ([`step`](Self::step) with `false`) raises
-    /// `out` on its first frame, so the settled panel stops being settled with it.
+    /// Has the open arrived? EVERY spring LANDED (not merely crossed its target: the rect, the lens
+    /// and the rows ring past it first), so no later step, however long an idle wake makes it, can move
+    /// anything. A close that has begun ([`step`](Self::step) with `false`) raises `out` on its first
+    /// frame, so the settled panel stops being settled with it.
     pub fn settled(&self) -> bool {
-        self.w.pos == 1.0
-            && self.w.vel == 0.0
-            && self.h.pos == 1.0
-            && self.h.vel == 0.0
-            && (self.rows.pos - 1.0).abs() <= 0.001
-            && (self.lens.pos - 1.0).abs() <= 0.003
-            && self.shape.pos == 1.0
-            && self.out.pos <= 0.001
-            && self.fold.pos <= 0.001
+        [&self.w, &self.h, &self.rows, &self.lens, &self.shape].iter().all(|s| s.pos == 1.0 && s.vel == 0.0)
+            && [&self.out, &self.fold].iter().all(|s| s.pos == 0.0 && s.vel == 0.0)
     }
 
     /// The draw state now, for the opener rect `from` (`None` = the fade+scale fallback) and the
