@@ -1478,7 +1478,7 @@ fn a_scripted_arrival_ends_the_provisional_focus_as_a_key_does() {
     use plx_machine::machine::By;
     let mut page = gallery_page(SettingsPage::PlayerHud);
     let to = FocusKey { entry: EntryId(0), elem: 0 };
-    for (by, ends) in [(By::Dir, true), (By::Pointer, true), (By::Restore, false), (By::Reconcile, false)] {
+    for (by, ends) in [(By::Dir, true), (By::Pointer, true), (By::Script, true), (By::Restore, false), (By::Reconcile, false)] {
         page.state.provisional = true;
         drive(&mut page, ScreenEvent::FocusMoved { from: None, to, by }, 0);
         assert_eq!(!page.state.provisional, ends, "{by:?}");
