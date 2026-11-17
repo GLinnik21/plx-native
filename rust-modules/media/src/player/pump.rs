@@ -2215,17 +2215,17 @@ mod flight_tests {
 
     const SEEK_TARGET_NS: i64 = 120_000_000_000;
 
-    struct Rig {
-        ps: crate::route::PlaybackSession,
-        pa: super::super::adapter::PlayerAdapter,
-        flight: FlightRig,
+    pub(super) struct Rig {
+        pub(super) ps: crate::route::PlaybackSession,
+        pub(super) pa: super::super::adapter::PlayerAdapter,
+        pub(super) flight: FlightRig,
         now: u32,
     }
 
     impl Rig {
         /// A playing transcode `rig-1` on a loopback server whose `/decision` takes `delay`, and
         /// an Engine streaming it.
-        fn new(delay_ms: u64) -> Rig {
+        pub(super) fn new(delay_ms: u64) -> Rig {
             let mut ps = crate::route::PlaybackSession::IDLE;
             let flight = FlightRig::start(&mut ps, Duration::from_millis(delay_ms));
             Rig::on(ps, flight)
@@ -2241,7 +2241,7 @@ mod flight_tests {
         }
 
         /// [`Rig::new`] on a direct play of the Part, no transcode session (`FlightRig::start_direct`).
-        fn direct(delay_ms: u64) -> Rig {
+        pub(super) fn direct(delay_ms: u64) -> Rig {
             let mut ps = crate::route::PlaybackSession::IDLE;
             let flight = FlightRig::start_direct(&mut ps, Duration::from_millis(delay_ms));
             Rig::on(ps, flight)
@@ -2288,7 +2288,7 @@ mod flight_tests {
 
         /// One frame, exactly as the run loop drives it: inside a `FrameScope`, so a PMS call
         /// without an `allow_blocking` panics.
-        fn frame(&mut self) {
+        pub(super) fn frame(&mut self) {
             let _frame = plx_base::task::FrameScope::enter();
             self.now += 16;
             // The app's frame drain owns a rollback whose trial Load was refused before
@@ -2303,7 +2303,7 @@ mod flight_tests {
         }
 
         /// Frames until `done`, bounded: the worker lands on its own thread.
-        fn frames_until(&mut self, what: &str, done: impl Fn(&Rig) -> bool) {
+        pub(super) fn frames_until(&mut self, what: &str, done: impl Fn(&Rig) -> bool) {
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             while !done(self) {
                 assert!(std::time::Instant::now() < deadline,
@@ -2448,7 +2448,7 @@ mod flight_tests {
     /// Both lanes of the reloaded Engine filled past the prime thresholds (`PRIME_NS` of video,
     /// `PRIME_AUDIO_NS` of audio): what the field's "both AU lanes full" was, pushed into the
     /// queues the pump's feed lanes drain.
-    fn fill_both_lanes(rig: &mut Rig) {
+    pub(super) fn fill_both_lanes(rig: &mut Rig) {
         const V_STEP_NS: i64 = 41_708_333; // 23.976 fps
         const A_STEP_NS: i64 = 32_000_000; // 1536 samples at 48 kHz
         let mut eng = rig.pa.engine().expect("the reloaded Engine");
@@ -2470,7 +2470,7 @@ mod flight_tests {
     /// runner commands the reloaded stream's first Play (`primed` is whether that Play waits for
     /// the prime proof or goes at once), it reaches the sink, the feed gate is open and the
     /// clock runs and advances.
-    fn assert_scrub_reload_plays(rig: &mut Rig, primed: bool) {
+    pub(super) fn assert_scrub_reload_plays(rig: &mut Rig, primed: bool) {
         let (goal_after_landing, plays) = scrub_until_reloaded(rig);
         {
             let eng = rig.pa.engine().expect("the reloaded Engine");
@@ -2646,7 +2646,7 @@ mod flight_tests {
     }
 
     /// A rig whose route is a live fixed-rung HLS transcode under an applied Auto contract.
-    fn hls_rig(delay_ms: u64) -> Rig {
+    pub(super) fn hls_rig(delay_ms: u64) -> Rig {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let flight = FlightRig::start_hls(&mut ps, Duration::from_millis(delay_ms));
         crate::player::reset_session_for_test();
@@ -6162,6 +6162,9 @@ mod native_seek_pump_tests {
 #[cfg(all(test, feature = "hostsim"))]
 #[path = "dv_start_pump_tests.rs"]
 mod dv_start_pump_tests;
+#[cfg(all(test, feature = "hostsim"))]
+#[path = "held_prime_play_tests.rs"]
+mod held_prime_play_tests;
 
 /// **A film whose audio outlasts its video ends on the host sink too (#865).** The pipeline stops
 /// its clock at the last video frame, so the playhead never comes within [`EOS_TAIL_NS`](crate::player::readout::EOS_TAIL_NS) of the
