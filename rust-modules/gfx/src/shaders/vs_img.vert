@@ -46,6 +46,11 @@ varying highp vec2 v_dither_nc;
 uniform highp vec2 u_still_band; // inverse band height, card-local band start
 varying mediump float v_still_ramp;
 #endif
+#ifdef PLX_RCLIP
+// The authored px of this fragment, for the rounded clip's mask (`shaders/rclip.glsl`), linked behind
+// `gfx::VS_IMG_RC` with `fs_tex.frag` and bound only while a rounded clip is live.
+varying highp vec2 v_px;
+#endif
 void main(){
   v_cuv = u_uvrect.xy + a_pos * u_uvrect.zw;
   v_p = (a_pos - 0.5) * u_trect.zw;
@@ -63,6 +68,9 @@ void main(){
   v_still_ramp = (v_p.y - u_still_band.y) * u_still_band.x;
 #endif
   vec2 px = u_trect.xy + a_pos * u_trect.zw;
+#ifdef PLX_RCLIP
+  v_px = px;
+#endif
 #ifdef PLX_DITHER_NC
   v_dither_nc = px * (1.0 / 256.0);
 #endif

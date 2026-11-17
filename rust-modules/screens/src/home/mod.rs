@@ -1089,6 +1089,15 @@ impl HomeScreen {
         self.items[index].elem
     }
 
+    /// [`sync_catalog`](Self::sync_catalog), reporting whether the catalog it projects changed (a
+    /// new generation). A page that comes back from under a cover raises damage on this and on a
+    /// moved caption policy (`step`'s head), and on nothing else.
+    fn sync_catalog_changed<H: HomeLike>(&mut self, cx: &Cx<'_, H>) -> bool {
+        let projected = self.projected_generation;
+        self.sync_catalog(cx);
+        self.projected_generation != projected
+    }
+
     /// Project the published catalog onto the page's rows, keys and shelves. **The cost follows the
     /// change, not the catalog**: the ring moves a row on or off its cards on every press of a long
     /// page, and a row whose identity, title and cards (or descriptor size) are the ones it was
@@ -3459,7 +3468,14 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
 
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         self.deck_press = H::screen_inputs(cx).preference::<plx_plex::plex::session::DeckPressPref>();
-        self.caption_policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
+        // What the page draws under each poster is the Under posters setting, which Settings
+        // changes while it covers Home and which nothing else tells the page about: this is where
+        // it is noticed, on whichever event comes first, and it is what repaints the page (a
+        // returning Home raises no damage of its own, see `Uncover`).
+        let policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
+        if std::mem::replace(&mut self.caption_policy, policy) != policy {
+            fx.invalidate(Provenance::Nav);
+        }
         match self.plaintext_alert.step(ev, cx) {
             AlertStep::Pass => {}
             AlertStep::Done(handled) => return handled,
@@ -3551,9 +3567,14 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 self.cta_available = self.hero_len(H::hubs(cx)) > 0;
                 Handled::Yes
             }
-            ScreenEvent::Enter(_) => {
-                self.sync_catalog(cx);
-                fx.invalidate(Provenance::Nav);
+            ScreenEvent::Enter(enter) => {
+                // A page that ARRIVES (a push, a root, a tab) is drawn for the first time and
+                // paints; one that RETURNS (`Restored`: a modal's dismissal, a pop) is the page it
+                // was, and paints again only if what it draws changed while it was away.
+                let changed = self.sync_catalog_changed(cx);
+                if changed || matches!(enter, Enter::Fresh { .. }) {
+                    fx.invalidate(Provenance::Nav);
+                }
                 Handled::Yes
             }
             ScreenEvent::Cover => {
@@ -3564,8 +3585,17 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
             ScreenEvent::Uncover => {
                 self.covered = false;
                 self.hero_auto = HERO_AUTO_S;
-                self.sync_catalog(cx);
-                fx.invalidate(Provenance::Nav);
+                // **Damage only for what changed under the cover.** Raised unconditionally this
+                // made Home redraw itself on the BACK commit of every glass menu: the page damage
+                // retakes the host snapshot on the close's first frame, which is the frame that
+                // redraws the page into it, re-sources the tab bar's blur and re-latches the dim
+                // (131% of a 60 Hz frame's GPU budget on the TV). What a covered Home can have
+                // missed is the catalog (reported here) and the Under posters setting (reported by
+                // `step`'s head, which raises its own damage); `covered` and the hero countdown
+                // are not drawn.
+                if self.sync_catalog_changed(cx) {
+                    fx.invalidate(Provenance::Nav);
+                }
                 Handled::Yes
             }
             ScreenEvent::Tick(tick) => {

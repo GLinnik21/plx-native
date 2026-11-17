@@ -106,6 +106,12 @@ pub fn sin_cos(x: f32) -> (f32, f32) {
 const REST_REL: f32 = 1e-3;
 const REST_CAP: f32 = 0.25;
 
+/// The largest `dt` the frame loop ever hands a step: an iteration that slept (the idle wake) measures the
+/// time since the last one, and the loop clamps it here so a long stall cannot throw a spring a long way
+/// (`app/run.rs`'s clock). A state that has to hold still across an idle wake is judged at THIS dt: a
+/// spring that [`moving`] calls at rest at 16 ms can still report motion when the wake steps it by 50.
+pub const FRAME_DT_CLAMP: f32 = 0.05;
+
 /// **Is a spring still moving?** The rest test the integrators below report `Motion` by, public so a state that
 /// snaps a spring onto its target can snap by the SAME test: a copy of it would let the spring go quiet (no more
 /// frames asked for) a hair short of a target the copy had not yet reached.

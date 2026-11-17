@@ -3220,7 +3220,9 @@ impl Rig<AppHost> for CommandRig<'_, '_, '_> {
         self.bridge.navigation_presentation(nav)
     }
     fn draw_chrome(&mut self, arg: &AppArg, parts: &CxParts<u32>, nav: plx_ui::screen::NavPresentation,
-        glass: Option<&mut plx_ui::frame::glass::GlassPlan>) { self.bridge.draw_chrome(arg, parts, nav, glass); }
+        glass: Option<&mut plx_ui::frame::glass::GlassPlan>, lifted: Option<u32>) {
+        self.bridge.draw_chrome(arg, parts, nav, glass, lifted);
+    }
     fn bar_member_rect(&self, elem: u32, nav: plx_ui::screen::NavPresentation) -> Option<plx_ui::Rect> {
         self.bridge.bar_member_rect(elem, nav)
     }
@@ -3241,12 +3243,16 @@ impl Rig<AppHost> for CommandRig<'_, '_, '_> {
 impl Rig<AppHost> for Bridge<'_> {
     fn draw_chrome(&mut self, arg: &AppArg, _parts: &CxParts<u32>,
         nav: plx_ui::screen::NavPresentation,
-        glass: Option<&mut plx_ui::frame::glass::GlassPlan>) {
+        glass: Option<&mut plx_ui::frame::glass::GlassPlan>,
+        lifted: Option<u32>) {
         if !Self::draws_chrome_for(arg) { return; }
         let Some(glass) = glass else { return };
         let p = plx_ui::Painter::root().alpha(nav.chrome_alpha).translate(0.0, -nav.chrome_lift);
         let chrome = self.retained.chrome.read(self.retained.strip.chip_expand_pos());
         self.retained.strip.draw(chrome.labels, p, glass.tab_band_mut(), nav);
+        // The chip a morphing menu consumed (`lifted`) is the lift's alone: left out here, it is not
+        // under the dim and not in the host snapshot the panel's rim refracts.
+        if lifted == Some(plx_ui::widgets::TAB_KEY_CHIP) { return; }
         plx_ui::widgets::profile_chip_with(
             p,
             chrome.profile,

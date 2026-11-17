@@ -143,8 +143,27 @@ macro_rules! glsl_vs_dithered {
     };
 }
 
+/// The ROUNDED-CLIP variant of a fragment source: the same file behind `#define PLX_RCLIP` with
+/// `shaders/rclip.glsl` (the coverage mask and its two uniforms) in front of it, whose header is the
+/// argument for all of it. A masked variant is its own program, bound only while [`rclip_set`] holds a
+/// clip (`dither.glsl` cost rule 1: a program per variant, never a uniform branch in the plain one).
+macro_rules! glsl_rclip {
+    ($file:literal) => {
+        // SAFETY: as `glsl!` — GLSL sources contain no interior NUL.
+        unsafe {
+            ::std::ffi::CStr::from_bytes_with_nul_unchecked(
+                concat!("#define PLX_RCLIP\n", include_str!("shaders/rclip.glsl"), include_str!($file), "\0").as_bytes(),
+            )
+        }
+    };
+}
+
 const VS_SRC: &CStr = glsl!("shaders/vs_src.vert");
 const FS_SRC: &CStr = glsl!("shaders/fs_src.frag");
+/// The rect program under a rounded clip ([`RECT_RC`]): `vs_src.vert` handing the fragment its
+/// authored px, and `fs_src.frag` writing every fragment through `rclip_out`.
+const VS_SRC_RC: &CStr = glsl!("shaders/vs_src.vert", "#define PLX_RCLIP\n");
+const FS_SRC_RC: &CStr = glsl_rclip!("shaders/fs_src.frag");
 const FS_AMBIENT: &CStr = glsl_dithered!("shaders/fs_ambient.frag");
 const FS_AMBIENT_PLAIN: &CStr = glsl_undithered!("shaders/fs_ambient.frag");
 const VS_AMBIENT: &CStr = glsl!("shaders/vs_ambient.vert");
@@ -195,6 +214,10 @@ const FS_RAMP: &CStr = glsl!("shaders/fs_ramp.frag");
 /// The PLAIN TEXTURE program's fragment half ([`PLAIN_IMAGE`]): `fs_img.frag`'s `u_card.z < 0.5`
 /// exit as a whole program, linked against [`VS_IMG`] like every other image program.
 const FS_TEX: &CStr = glsl!("shaders/fs_tex.frag");
+/// The plain texture program under a rounded clip ([`PLAIN_IMAGE_RC`]): the same two files behind
+/// `PLX_RCLIP`, like [`VS_SRC_RC`] / [`FS_SRC_RC`].
+const VS_IMG_RC: &CStr = glsl!("shaders/vs_img.vert", "#define PLX_RCLIP\n");
+const FS_TEX_RC: &CStr = glsl_rclip!("shaders/fs_tex.frag");
 const VS_ART_SCRIM: &CStr = glsl!("shaders/vs_art_scrim.vert");
 const FS_ART_SCRIM: &CStr = glsl!("shaders/fs_art_scrim.frag");
 /// The straighten pass (`gfx/straighten.rs`): one vertex shader that stretches the unit quad over a box
@@ -444,6 +467,87 @@ unsafe fn scissor_off() {
     LIVE_SCISSOR = None;
 }
 
+/// A ROUNDED CLIP in authored px: the rounded rect the draws that carry a coverage mask are cut by,
+/// edge-anti-aliased, on top of the scissor box ([`clip_set`]), which stays the cheap bounding-box cut
+/// for every program and is what holds the draws that have no mask. `radius` is held to the half
+/// extents by [`rclip_fold`], like an ink shape's. The first user is the glass menu's morph: its rows
+/// are cut by the lens's round edge instead of an inscribed rect (`ui::screen::ClipScope::
+/// open_rounded_in`). Which programs wear it is `shaders/rclip.glsl`'s header.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct RClip {
+    pub x0: f32,
+    pub y0: f32,
+    pub x1: f32,
+    pub y1: f32,
+    pub radius: f32,
+}
+
+/// The rounded clip in force, if any: authored px, so it needs no map into the bound target (the
+/// masked programs read their coordinate from a varying, not `gl_FragCoord`). Written only by
+/// [`rclip_set`].
+static mut LIVE_RCLIP: Option<RClip> = None;
+
+/// Counts the changes of [`LIVE_RCLIP`]: a masked program uploads its two uniforms only when the
+/// generation it last saw is not this one, so a menu's hundred row draws send them once.
+static mut RCLIP_GEN: u32 = 0;
+
+/// **The one writer of the rounded clip.** Called by `ui::screen::ClipScope` (open and close) and by
+/// the guards that switch the target under a page ([`RegionTarget`], `DirectPass`); the scissor pair
+/// ([`clip_set`] / [`clip_clear`]) never touches it, so a nested rect scope narrows the box and keeps
+/// the rounding. The generation moves only on a real change.
+pub fn rclip_set(c: Option<RClip>) {
+    // SAFETY: written and read on the render thread only, like every static in this file.
+    unsafe {
+        let live = LIVE_RCLIP;
+        if live != c {
+            LIVE_RCLIP = c;
+            RCLIP_GEN = RCLIP_GEN.wrapping_add(1);
+        }
+    }
+}
+
+/// The rounded clip in force, if any (see [`LIVE_RCLIP`]).
+#[inline]
+pub fn rclip() -> Option<RClip> {
+    // SAFETY: as `rclip_set`; a `Copy` read by value, never a reference to the static.
+    unsafe { LIVE_RCLIP }
+}
+
+/// The rounded clip as the shader takes it: `(centre.xy, half extent - radius)` and the radius, held
+/// to the half extents (a capsule at most; `text::bind_ink`'s clamp) and to 0 from below. An inverted
+/// box has no extent to round.
+pub fn rclip_fold(c: RClip) -> ([f32; 4], f32) {
+    let (hw, hh) = ((c.x1 - c.x0) * 0.5, (c.y1 - c.y0) * 0.5);
+    let r = c.radius.min(hw).min(hh).max(0.0);
+    ([(c.x0 + c.x1) * 0.5, (c.y0 + c.y1) * 0.5, (hw - r).max(0.0), (hh - r).max(0.0)], r)
+}
+
+/// `shaders/rclip.glsl`'s `rclip_cover` on the CPU: the share of a pixel at `p` (authored px) the
+/// clip keeps. 1 half a pixel inside the edge, 0.5 on it, 0 half a pixel outside.
+pub fn rclip_cover(p: [f32; 2], c: RClip) -> f32 {
+    let (k, r) = rclip_fold(c);
+    let q = [(p[0] - k[0]).abs() - k[2], (p[1] - k[1]).abs() - k[3]];
+    let d = (q[0].max(0.0).powi(2) + q[1].max(0.0).powi(2)).sqrt() + q[0].max(q[1]).min(0.0) - r;
+    (0.5 - d).clamp(0.0, 1.0)
+}
+
+/// Send the live rounded clip to a masked program's two uniforms, once per generation: `seen` is that
+/// program's own record of the last one it was sent (`u32::MAX` at link, which no generation reaches
+/// before it wraps). A `-1` location (the plain twin of a program that shares a draw function with its
+/// masked variant) is skipped by GL itself; the caller only reaches here with a clip live.
+#[inline]
+unsafe fn rclip_upload(rc: c_int, rr: c_int, seen: *mut u32) {
+    if *seen == RCLIP_GEN {
+        return;
+    }
+    if let Some(c) = rclip() {
+        let (k, r) = rclip_fold(c);
+        glUniform4f(rc, k[0], k[1], k[2], k[3]);
+        glUniform1f(rr, r);
+    }
+    *seen = RCLIP_GEN;
+}
+
 /// The clear colour the GL context holds, as the last [`set_clear_color`] left it (GL's initial
 /// transparent black before any). There is no getter bound for it, and the `glClear`s that set no
 /// colour of their own (the blur chain's tiler hints) read whatever is held, so a draw that clears
@@ -676,24 +780,100 @@ pub fn gl_flush() {
 }
 
 static mut PROG: c_uint = 0;
-static mut LOC_RECT: c_int = 0;
-static mut LOC_SCREEN: c_int = 0;
-static mut LOC_SIZE: c_int = 0;
-static mut LOC_PAD: c_int = 0;
-static mut LOC_RADIUS: c_int = 0;
-static mut LOC_COLTOP: c_int = 0;
-static mut LOC_COLBOT: c_int = 0;
-static mut LOC_FOCUS: c_int = 0;
-static mut LOC_RGB_CAP: c_int = 0;
-static mut LOC_RADR: c_int = 0;
-static mut LOC_RIMW: c_int = 0;
-static mut LOC_RIMCOL: c_int = 0;
-static mut LOC_RIMTOP: c_int = 0;
-/// The capsule outline's two solved vectors and the focused face's inner glow — see
-/// `shaders/fs_src.frag`, and [`pill_off`] for the default every other draw sends.
-static mut LOC_PILL1: c_int = 0;
-static mut LOC_PILL2: c_int = 0;
-static mut LOC_GLOW: c_int = 0;
+/// The rect program's uniform locations ([`FS_SRC`] behind [`VS_SRC`]): one `Copy` struct, so the
+/// ROUNDED-CLIP twin ([`RECT_RC`], the same sources behind `PLX_RCLIP`) can carry its own — two
+/// programs linked from one source are not promised the same locations. Obtained by value from
+/// [`rect_program`] and nowhere else, which binds the program the live clip calls for: a draw that
+/// wrote the plain program's locations while the masked one is bound would be a silent miss.
+#[derive(Clone, Copy)]
+struct RectUniforms {
+    rect: c_int,
+    screen: c_int,
+    size: c_int,
+    pad: c_int,
+    radius: c_int,
+    col_top: c_int,
+    col_bot: c_int,
+    focus: c_int,
+    rgb_cap: c_int,
+    rad_r: c_int,
+    rimw: c_int,
+    rimcol: c_int,
+    rimtop: c_int,
+    /// The capsule outline's two solved vectors and the focused face's inner glow — see
+    /// `shaders/fs_src.frag`, and [`pill_off`] for the default every other draw sends.
+    pill1: c_int,
+    pill2: c_int,
+    glow: c_int,
+    /// The rounded clip's two uniforms (`shaders/rclip.glsl`): `-1` on the plain program, which has none.
+    rc: c_int,
+    rr: c_int,
+}
+
+impl RectUniforms {
+    const NONE: RectUniforms = RectUniforms {
+        rect: 0, screen: 0, size: 0, pad: 0, radius: 0, col_top: 0, col_bot: 0, focus: 0, rgb_cap: 0,
+        rad_r: 0, rimw: 0, rimcol: 0, rimtop: 0, pill1: 0, pill2: 0, glow: 0, rc: -1, rr: -1,
+    };
+
+    /// Look every location up in `program`.
+    unsafe fn of(program: c_uint) -> RectUniforms {
+        let loc = |name: &CStr| glGetUniformLocation(program, name.as_ptr());
+        RectUniforms {
+            rect: loc(c"u_rect"),
+            screen: loc(c"u_screen"),
+            size: loc(c"u_size"),
+            pad: loc(c"u_pad"),
+            radius: loc(c"u_radius"),
+            col_top: loc(c"u_colTop"),
+            col_bot: loc(c"u_colBot"),
+            focus: loc(c"u_focus"),
+            rgb_cap: loc(c"u_rgb_cap"),
+            rad_r: loc(c"u_radR"),
+            rimw: loc(c"u_rimw"),
+            rimcol: loc(c"u_rimcol"),
+            rimtop: loc(c"u_rimtop"),
+            pill1: loc(c"u_pill1"),
+            pill2: loc(c"u_pill2"),
+            glow: loc(c"u_glow"),
+            rc: loc(c"u_rc"),
+            rr: loc(c"u_rr"),
+        }
+    }
+}
+
+/// [`PROG`]'s locations, written once at [`init_gl`].
+static mut RECT_UNIFORMS: RectUniforms = RectUniforms::NONE;
+/// The rect program under a ROUNDED CLIP ([`VS_SRC_RC`] / [`FS_SRC_RC`]), linked at boot beside the
+/// plain one so the first menu open pays no compile hitch. Bound by [`rect_program`] only while
+/// [`rclip`] is `Some`; `None` (a driver that refused it) keeps the plain program and the scissor box.
+static mut RECT_RC: Option<(c_uint, RectUniforms)> = None;
+/// The generation of [`RCLIP_GEN`] the masked rect program was last sent ([`rclip_upload`]).
+static mut RECT_RC_SEEN: u32 = u32::MAX;
+
+/// **The rect program for this draw, bound, with its uniform locations**: the masked variant while a
+/// rounded clip is live (and linked), else the plain program. The ONLY way a draw obtains the rect
+/// program's locations. Under a clip it also sends the clip's two uniforms when they changed.
+#[inline]
+unsafe fn rect_program() -> RectUniforms {
+    if rclip().is_some() {
+        if let Some((program, u)) = std::ptr::addr_of!(RECT_RC).read() {
+            use_prog(program);
+            rclip_upload(u.rc, u.rr, std::ptr::addr_of_mut!(RECT_RC_SEEN));
+            return u;
+        }
+    }
+    use_prog(PROG);
+    std::ptr::addr_of!(RECT_UNIFORMS).read()
+}
+
+/// Is the masked rect program the one a rect draw takes right now? A flat or ramp rect then goes
+/// through it ([`rect_fill`]): `fs_flat` and `fs_ramp` stay branch-free and unmasked.
+#[inline]
+fn rect_masked() -> bool {
+    // SAFETY: as every static here: render thread only; read by value.
+    rclip().is_some() && unsafe { std::ptr::addr_of!(RECT_RC).read() }.is_some()
+}
 
 static mut APROG: c_uint = 0;
 static mut AL_RECT: c_int = 0;
@@ -894,6 +1074,8 @@ static mut FOCUS_IMAGE: Option<(c_uint, ImageUniforms)> = None;
 #[derive(Clone, Copy)]
 struct PlainUniforms {
     rect: c_int, tint: c_int, uvrect: c_int,
+    /// The rounded clip's two uniforms (`shaders/rclip.glsl`): `-1` on the plain program, which has none.
+    rc: c_int, rr: c_int,
 }
 /// Optional PLAIN TEXTURE program ([`VS_IMG`]/[`FS_TEX`]): a picture that `fs_img.frag` would leave
 /// through its `u_card.z < 0.5` exit for every fragment — a square-cornered image (the Home hero's
@@ -903,6 +1085,13 @@ struct PlainUniforms {
 /// draws go here is [`plain_texture_program`]. [`IPROG`] remains the fallback — the same picture,
 /// drawn by the larger program — if this fails to link.
 static mut PLAIN_IMAGE: Option<(c_uint, PlainUniforms)> = None;
+/// [`PLAIN_IMAGE`] under a ROUNDED CLIP ([`VS_IMG_RC`] / [`FS_TEX_RC`]): the same texture x tint with
+/// the clip's coverage in its alpha, so a glyph-less icon in the glass menu's rows is cut by the lens's
+/// arc like its labels. Linked at boot; [`plain_program_for_clip`] picks it while [`rclip`] is `Some`,
+/// and `None` (a driver that refused it) leaves the draw on the plain program and its scissor box.
+static mut PLAIN_IMAGE_RC: Option<(c_uint, PlainUniforms)> = None;
+/// The generation of [`RCLIP_GEN`] the masked plain program was last sent ([`rclip_upload`]).
+static mut PLAIN_RC_SEEN: u32 = u32::MAX;
 
 /// The wash-with-art program — see [`draw_art_wash`]. Linked at [`init_image`] beside the image
 /// programs, not lazily: it serves shipped frames (Home's dive, Detail's scroll), and a link on
@@ -1098,9 +1287,62 @@ static mut CUR_PROG: c_uint = 0;
 #[inline]
 pub fn use_prog(p: c_uint) {
     unsafe {
+        #[cfg(debug_assertions)]
+        if rclip().is_some() {
+            rclip_note_unmasked(p);
+        }
         if CUR_PROG != p {
             glUseProgram(p);
             CUR_PROG = p;
+        }
+    }
+}
+
+/// The programs that wear the rounded clip's mask, for [`rclip_note_unmasked`] to tell from the ones
+/// that are only bounded by its scissor box: the two linked here and the ink text program, which
+/// registers itself ([`rclip_masked_program`]).
+#[cfg(debug_assertions)]
+static mut RCLIP_MASKED_PROGS: [c_uint; 4] = [0; 4];
+/// The programs [`rclip_note_unmasked`] has already named, so each is logged once.
+#[cfg(debug_assertions)]
+static mut RCLIP_NAMED_PROGS: [c_uint; 24] = [0; 24];
+
+/// Register `p` as a program that wears the rounded clip's mask. A no-op in a release build.
+pub fn rclip_masked_program(p: c_uint) {
+    #[cfg(debug_assertions)]
+    // SAFETY: render thread only, like every static here.
+    unsafe {
+        if p != 0 {
+            let table = &mut *std::ptr::addr_of_mut!(RCLIP_MASKED_PROGS);
+            if let Some(slot) = table.iter_mut().find(|s| **s == 0 || **s == p) {
+                *slot = p;
+            }
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = p;
+}
+
+/// **Debug only: a program is bound while a rounded clip is live and it does not wear the mask.** It
+/// is then bounded by the clip's scissor box and nothing else (the image, shadow, glass, blur, field,
+/// art and fade-text programs, and a masked program that did not link), which is the v1 contract: the
+/// rows of a rounded scope draw rects, labels and icons. The first bind of each program says so once
+/// in the event log, so a draw that grows into the scope shows itself instead of leaking a corner.
+/// Never panics.
+#[cfg(debug_assertions)]
+fn rclip_note_unmasked(p: c_uint) {
+    // SAFETY: render thread only, like every static here.
+    unsafe {
+        if (*std::ptr::addr_of!(RCLIP_MASKED_PROGS)).contains(&p) {
+            return;
+        }
+        let named = &mut *std::ptr::addr_of_mut!(RCLIP_NAMED_PROGS);
+        if let Some(slot) = named.iter_mut().find(|s| **s == 0 || **s == p) {
+            if *slot == p {
+                return;
+            }
+            *slot = p;
+            log(&format!("rclip: GL program {p} is bound under a rounded clip and is not masked; the scissor box bounds it"));
         }
     }
 }
@@ -1189,23 +1431,25 @@ pub fn init_gl() {
             plx_base::process::exit_now(1);
         });
         use_prog(PROG);
-        LOC_RECT = glGetUniformLocation(PROG, c"u_rect".as_ptr());
-        LOC_SCREEN = glGetUniformLocation(PROG, c"u_screen".as_ptr());
-        LOC_SIZE = glGetUniformLocation(PROG, c"u_size".as_ptr());
-        LOC_PAD = glGetUniformLocation(PROG, c"u_pad".as_ptr());
-        LOC_RADIUS = glGetUniformLocation(PROG, c"u_radius".as_ptr());
-        LOC_COLTOP = glGetUniformLocation(PROG, c"u_colTop".as_ptr());
-        LOC_COLBOT = glGetUniformLocation(PROG, c"u_colBot".as_ptr());
-        LOC_FOCUS = glGetUniformLocation(PROG, c"u_focus".as_ptr());
-        LOC_RGB_CAP = glGetUniformLocation(PROG, c"u_rgb_cap".as_ptr());
-        LOC_RADR = glGetUniformLocation(PROG, c"u_radR".as_ptr());
-        LOC_RIMW = glGetUniformLocation(PROG, c"u_rimw".as_ptr());
-        LOC_RIMCOL = glGetUniformLocation(PROG, c"u_rimcol".as_ptr());
-        LOC_RIMTOP = glGetUniformLocation(PROG, c"u_rimtop".as_ptr());
-        LOC_PILL1 = glGetUniformLocation(PROG, c"u_pill1".as_ptr());
-        LOC_PILL2 = glGetUniformLocation(PROG, c"u_pill2".as_ptr());
-        LOC_GLOW = glGetUniformLocation(PROG, c"u_glow".as_ptr());
-        glUniform2f(LOC_SCREEN, SCR_W, SCR_H);
+        RECT_UNIFORMS = RectUniforms::of(PROG);
+        glUniform2f(RECT_UNIFORMS.screen, SCR_W, SCR_H);
+        // The same program behind `PLX_RCLIP`, for the draws made under a rounded clip. Optional:
+        // the plain program and the scissor box are the fallback, and `use_prog` logs the first
+        // unmasked bind under a clip.
+        RECT_RC = link_optional_program(VS_SRC_RC.as_ptr(), FS_SRC_RC.as_ptr()).map(|program| {
+            use_prog(program);
+            let u = RectUniforms::of(program);
+            glUniform2f(u.screen, SCR_W, SCR_H);
+            (program, u)
+        });
+        RECT_RC_SEEN = u32::MAX;
+        if let Some((program, _)) = std::ptr::addr_of!(RECT_RC).read() {
+            rclip_masked_program(program);
+        }
+        if std::ptr::addr_of!(RECT_RC).read().is_none() {
+            log("rect rclip prog unavailable — a rounded clip bounds the rows by its scissor box only");
+        }
+        use_prog(PROG);
 
         let mut vbo: c_uint = 0;
         glGenBuffers(1, &mut vbo);
@@ -1433,31 +1677,31 @@ pub type GlowArgs = [f32; 4];
 /// the capsule's must leave behind. Uniforms are per-PROGRAM and persist across draws, so a shape
 /// left armed would put the last capsule's outline on the next scrim.
 #[inline]
-unsafe fn pill_off() {
+unsafe fn pill_off(u: &RectUniforms) {
     unsafe {
-        glUniform4f(LOC_PILL1, 0.0, 0.0, 0.0, 0.0);
-        glUniform4f(LOC_PILL2, 0.0, 0.0, 0.0, 0.0);
-        glUniform4f(LOC_GLOW, 0.0, 0.0, 0.0, 0.0);
+        glUniform4f(u.pill1, 0.0, 0.0, 0.0, 0.0);
+        glUniform4f(u.pill2, 0.0, 0.0, 0.0, 0.0);
+        glUniform4f(u.glow, 0.0, 0.0, 0.0, 0.0);
     }
 }
 
 /// [`pill_off`]'s opposite: arm an outline and a glow, either of which may be absent.
 #[inline]
-unsafe fn pill_on(pill: Option<&PillArgs>, glow: Option<&GlowArgs>) {
+unsafe fn pill_on(u: &RectUniforms, pill: Option<&PillArgs>, glow: Option<&GlowArgs>) {
     unsafe {
         match pill {
             Some(p) => {
-                glUniform4f(LOC_PILL1, p[0], p[1], p[2], p[3]);
-                glUniform4f(LOC_PILL2, p[4], p[5], p[6], p[7]);
+                glUniform4f(u.pill1, p[0], p[1], p[2], p[3]);
+                glUniform4f(u.pill2, p[4], p[5], p[6], p[7]);
             }
             None => {
-                glUniform4f(LOC_PILL1, 0.0, 0.0, 0.0, 0.0);
-                glUniform4f(LOC_PILL2, 0.0, 0.0, 0.0, 0.0);
+                glUniform4f(u.pill1, 0.0, 0.0, 0.0, 0.0);
+                glUniform4f(u.pill2, 0.0, 0.0, 0.0, 0.0);
             }
         }
         match glow {
-            Some(g) => glUniform4f(LOC_GLOW, g[0], g[1], g[2], g[3]),
-            None => glUniform4f(LOC_GLOW, 0.0, 0.0, 0.0, 0.0),
+            Some(g) => glUniform4f(u.glow, g[0], g[1], g[2], g[3]),
+            None => glUniform4f(u.glow, 0.0, 0.0, 0.0, 0.0),
         }
     }
 }
@@ -1496,7 +1740,12 @@ enum RectFill {
 /// `u_focus < 0.001` may compare in fp16 and round a focus just under 1e-3 differently; no caller
 /// passes such a value on a square rect, and `draw_flat` already had the same property.
 #[inline]
-fn rect_fill(radius: f32, focus: f32, one_colour: bool) -> RectFill {
+fn rect_fill(radius: f32, focus: f32, one_colour: bool, clipped: bool) -> RectFill {
+    // Under a rounded clip the masked rect program draws every rect (`rect_masked`): its flat fast
+    // path IS the flat and ramp programs' expression, and it carries the mask they do not.
+    if clipped {
+        return RectFill::Sdf;
+    }
     if radius < 0.5 && focus < 0.001 {
         if one_colour {
             RectFill::Flat
@@ -1512,20 +1761,20 @@ fn rect_fill(radius: f32, focus: f32, one_colour: bool) -> RectFill {
 /// renderer has, and the one every full-screen scrim is. Falls back to the fill program's flat path
 /// (same pixels, ~2 shader words a fragment dearer) when the flat program failed to link.
 unsafe fn draw_flat(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
-    if FPROG == 0 {
-        use_prog(PROG);
-        let ext = set_rect(LOC_RECT, x, y, w, h);
-        glUniform2f(LOC_SIZE, w, h);
-        glUniform1f(LOC_PAD, 0.0);
-        glUniform1f(LOC_RADIUS, 0.0);
-        glUniform1f(LOC_RADR, 0.0);
-        glUniform4fv(LOC_COLTOP, 1, col);
-        glUniform4fv(LOC_COLBOT, 1, col);
-        glUniform1f(LOC_FOCUS, 0.0);
-        glUniform1f(LOC_RIMW, 0.0);
-        glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0);
-        glUniform1f(LOC_RIMTOP, 0.0);
-        pill_off();
+    if FPROG == 0 || rect_masked() {
+        let u = rect_program();
+        let ext = set_rect(u.rect, x, y, w, h);
+        glUniform2f(u.size, w, h);
+        glUniform1f(u.pad, 0.0);
+        glUniform1f(u.radius, 0.0);
+        glUniform1f(u.rad_r, 0.0);
+        glUniform4fv(u.col_top, 1, col);
+        glUniform4fv(u.col_bot, 1, col);
+        glUniform1f(u.focus, 0.0);
+        glUniform1f(u.rimw, 0.0);
+        glUniform4f(u.rimcol, 0.0, 0.0, 0.0, 0.0);
+        glUniform1f(u.rimtop, 0.0);
+        pill_off(&u);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         return;
     }
@@ -1540,20 +1789,20 @@ unsafe fn draw_flat(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
 /// fragment) when the ramp program failed to compile or link. The quad is exactly `x, y, w, h` on both paths,
 /// the AA bleed being the SDF path's alone.
 unsafe fn draw_ramp(x: f32, y: f32, w: f32, h: f32, top: *const f32, bot: *const f32) {
-    if RPROG == 0 {
-        use_prog(PROG);
-        let ext = set_rect(LOC_RECT, x, y, w, h);
-        glUniform2f(LOC_SIZE, w, h);
-        glUniform1f(LOC_PAD, 0.0);
-        glUniform1f(LOC_RADIUS, 0.0);
-        glUniform1f(LOC_RADR, 0.0);
-        glUniform4fv(LOC_COLTOP, 1, top);
-        glUniform4fv(LOC_COLBOT, 1, bot);
-        glUniform1f(LOC_FOCUS, 0.0);
-        glUniform1f(LOC_RIMW, 0.0);
-        glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0);
-        glUniform1f(LOC_RIMTOP, 0.0);
-        pill_off();
+    if RPROG == 0 || rect_masked() {
+        let u = rect_program();
+        let ext = set_rect(u.rect, x, y, w, h);
+        glUniform2f(u.size, w, h);
+        glUniform1f(u.pad, 0.0);
+        glUniform1f(u.radius, 0.0);
+        glUniform1f(u.rad_r, 0.0);
+        glUniform4fv(u.col_top, 1, top);
+        glUniform4fv(u.col_bot, 1, bot);
+        glUniform1f(u.focus, 0.0);
+        glUniform1f(u.rimw, 0.0);
+        glUniform4f(u.rimcol, 0.0, 0.0, 0.0, 0.0);
+        glUniform1f(u.rimtop, 0.0);
+        pill_off(&u);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         return;
     }
@@ -1639,7 +1888,7 @@ pub fn draw_rect(
         // `pad` is not an input to the routing: `fs_src.frag`'s own flat path never reads it
         // either, so the programs draw the same quad for a square, unfocused rect whatever it was
         // given. A uniform one goes to the flat program, a two-stop gradient to the ramp program.
-        match rect_fill(radius, focus, same_colour(top, bot)) {
+        match rect_fill(radius, focus, same_colour(top, bot), rect_masked()) {
             RectFill::Flat => {
                 draw_flat(x, y, w, h, top);
                 return;
@@ -1659,7 +1908,7 @@ pub fn draw_rect(
         // lowered the occupancy of a path that never ran them, and the uniform test ahead of the
         // `mix` ran on every fragment. `draw_ramp` is the same `mix` in a program with nothing else
         // in it, which is why it, and not the ambient field, is where a square gradient goes.
-        use_prog(PROG);
+        let u = rect_program();
         // Only the rounded/focus SDF path needs the AA bleed; a plain rect (the flat and ramp
         // programs above, `fs_src.frag`'s own fast path) must stay exactly its bounds (a 1px
         // overhang would fatten scrims/backgrounds).
@@ -1668,22 +1917,22 @@ pub fn draw_rect(
         } else {
             0.0
         };
-        let ext = set_rect(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
-        glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
-        glUniform1f(LOC_PAD, pad + aa);
-        glUniform1f(LOC_RADIUS, radius);
-        glUniform1f(LOC_RADR, radius);
-        glUniform4fv(LOC_COLTOP, 1, top);
-        glUniform4fv(LOC_COLBOT, 1, bot);
-        glUniform1f(LOC_FOCUS, focus);
+        let ext = set_rect(u.rect, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
+        glUniform2f(u.size, w + 2.0 * aa, h + 2.0 * aa);
+        glUniform1f(u.pad, pad + aa);
+        glUniform1f(u.radius, radius);
+        glUniform1f(u.rad_r, radius);
+        glUniform4fv(u.col_top, 1, top);
+        glUniform4fv(u.col_bot, 1, bot);
+        glUniform1f(u.focus, focus);
         // Fill/rim colours arrive pre-scaled by the Painter's RGB gain; `rgb_cap` is that gain
         // itself, the ceiling the shader holds the SUM of fill, rim, glow and focus ring to (see
         // `fs_src.frag`'s `u_rgb_cap`). Every PROG draw sets it: uniforms persist per program.
-        glUniform1f(LOC_RGB_CAP, rgb_cap);
-        glUniform1f(LOC_RIMW, 0.0);
-        glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0); // no edge-sheen (default)
-        glUniform1f(LOC_RIMTOP, 0.0);
-        pill_off();
+        glUniform1f(u.rgb_cap, rgb_cap);
+        glUniform1f(u.rimw, 0.0);
+        glUniform4f(u.rimcol, 0.0, 0.0, 0.0, 0.0); // no edge-sheen (default)
+        glUniform1f(u.rimtop, 0.0);
+        pill_off(&u);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
 }
@@ -1734,21 +1983,21 @@ pub fn draw_rect_shaped(
         return;
     }
     unsafe {
-        use_prog(PROG);
+        let u = rect_program();
         let aa = AA_BLEED; // a sheened tile is always rounded → always SDF path
-        let ext = set_rect(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
-        glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
-        glUniform1f(LOC_PAD, aa);
-        glUniform1f(LOC_RADIUS, radius);
-        glUniform1f(LOC_RADR, radius);
-        glUniform4fv(LOC_COLTOP, 1, top);
-        glUniform4fv(LOC_COLBOT, 1, bot);
-        glUniform1f(LOC_FOCUS, 0.0);
-        glUniform1f(LOC_RIMW, rimw);
-        glUniform4fv(LOC_RIMCOL, 1, rimcol);
-        glUniform1f(LOC_RIMTOP, rimtop);
-        glUniform1f(LOC_RGB_CAP, rgb_cap);
-        pill_on(pill, glow);
+        let ext = set_rect(u.rect, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
+        glUniform2f(u.size, w + 2.0 * aa, h + 2.0 * aa);
+        glUniform1f(u.pad, aa);
+        glUniform1f(u.radius, radius);
+        glUniform1f(u.rad_r, radius);
+        glUniform4fv(u.col_top, 1, top);
+        glUniform4fv(u.col_bot, 1, bot);
+        glUniform1f(u.focus, 0.0);
+        glUniform1f(u.rimw, rimw);
+        glUniform4fv(u.rimcol, 1, rimcol);
+        glUniform1f(u.rimtop, rimtop);
+        glUniform1f(u.rgb_cap, rgb_cap);
+        pill_on(&u, pill, glow);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
 }
@@ -2125,27 +2374,27 @@ pub fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *
             draw_flat(x, y, w, h, col);
             return;
         }
-        use_prog(PROG);
+        let u = rect_program();
         // Rounded corners always take the SDF path, so always give the edge band its bleed.
         let aa = if rad_l >= 0.5 || rad_r >= 0.5 {
             AA_BLEED
         } else {
             0.0
         };
-        let ext = set_rect(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
-        glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
-        glUniform1f(LOC_PAD, aa);
-        glUniform1f(LOC_RADIUS, rad_l);
-        glUniform1f(LOC_RADR, rad_r);
-        glUniform4fv(LOC_COLTOP, 1, col);
-        glUniform4fv(LOC_COLBOT, 1, col);
+        let ext = set_rect(u.rect, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
+        glUniform2f(u.size, w + 2.0 * aa, h + 2.0 * aa);
+        glUniform1f(u.pad, aa);
+        glUniform1f(u.radius, rad_l);
+        glUniform1f(u.rad_r, rad_r);
+        glUniform4fv(u.col_top, 1, col);
+        glUniform4fv(u.col_bot, 1, col);
         // A single colour: no ramp to quantise, so the policy answers 0 and the branch is skipped.
-        glUniform1f(LOC_FOCUS, 0.0);
-        glUniform1f(LOC_RIMW, 0.0);
-        glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0); // no edge-sheen (default)
-        glUniform1f(LOC_RIMTOP, 0.0);
-        glUniform1f(LOC_RGB_CAP, 1.0); // no rim, glow or ring to hold
-        pill_off();
+        glUniform1f(u.focus, 0.0);
+        glUniform1f(u.rimw, 0.0);
+        glUniform4f(u.rimcol, 0.0, 0.0, 0.0, 0.0); // no edge-sheen (default)
+        glUniform1f(u.rimtop, 0.0);
+        glUniform1f(u.rgb_cap, 1.0); // no rim, glow or ring to hold
+        pill_off(&u);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
 }
@@ -2168,22 +2417,22 @@ pub fn draw_rrect_sheened(
         return;
     }
     unsafe {
-        use_prog(PROG);
+        let u = rect_program();
         let aa = AA_BLEED;
-        let ext = set_rect(LOC_RECT, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
-        glUniform2f(LOC_SIZE, w + 2.0 * aa, h + 2.0 * aa);
-        glUniform1f(LOC_PAD, aa);
-        glUniform1f(LOC_RADIUS, rad_l);
-        glUniform1f(LOC_RADR, rad_r);
-        glUniform4fv(LOC_COLTOP, 1, col);
-        glUniform4fv(LOC_COLBOT, 1, col);
+        let ext = set_rect(u.rect, x - aa, y - aa, w + 2.0 * aa, h + 2.0 * aa);
+        glUniform2f(u.size, w + 2.0 * aa, h + 2.0 * aa);
+        glUniform1f(u.pad, aa);
+        glUniform1f(u.radius, rad_l);
+        glUniform1f(u.rad_r, rad_r);
+        glUniform4fv(u.col_top, 1, col);
+        glUniform4fv(u.col_bot, 1, col);
         // A single colour: no ramp to quantise, so the policy answers 0 and the branch is skipped.
-        glUniform1f(LOC_FOCUS, 0.0);
-        glUniform1f(LOC_RIMW, rimw);
-        glUniform4fv(LOC_RIMCOL, 1, rimcol);
-        glUniform1f(LOC_RIMTOP, rimtop);
-        glUniform1f(LOC_RGB_CAP, rgb_cap);
-        pill_off();
+        glUniform1f(u.focus, 0.0);
+        glUniform1f(u.rimw, rimw);
+        glUniform4fv(u.rimcol, 1, rimcol);
+        glUniform1f(u.rimtop, rimtop);
+        glUniform1f(u.rgb_cap, rgb_cap);
+        pill_off(&u);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
     }
 }
@@ -2508,10 +2757,27 @@ pub fn init_image() {
             use_prog(program);
             glUniform2f(loc(c"u_tscreen"), SCR_W, SCR_H);
             glUniform1i(loc(c"u_tex"), 0);
-            (program, PlainUniforms { rect: loc(c"u_trect"), tint: loc(c"u_tint"), uvrect: loc(c"u_uvrect") })
+            (program, PlainUniforms { rect: loc(c"u_trect"), tint: loc(c"u_tint"), uvrect: loc(c"u_uvrect"), rc: -1, rr: -1 })
         });
         if std::ptr::addr_of!(PLAIN_IMAGE).read().is_none() {
             log("plain image prog unavailable — square-cornered pictures and card interiors stay on the image program");
+        }
+        PLAIN_IMAGE_RC = link_optional_program(VS_IMG_RC.as_ptr(), FS_TEX_RC.as_ptr()).map(|program| {
+            let loc = |name: &CStr| glGetUniformLocation(program, name.as_ptr());
+            use_prog(program);
+            glUniform2f(loc(c"u_tscreen"), SCR_W, SCR_H);
+            glUniform1i(loc(c"u_tex"), 0);
+            (program, PlainUniforms {
+                rect: loc(c"u_trect"), tint: loc(c"u_tint"), uvrect: loc(c"u_uvrect"),
+                rc: loc(c"u_rc"), rr: loc(c"u_rr"),
+            })
+        });
+        PLAIN_RC_SEEN = u32::MAX;
+        if let Some((program, _)) = std::ptr::addr_of!(PLAIN_IMAGE_RC).read() {
+            rclip_masked_program(program);
+        }
+        if std::ptr::addr_of!(PLAIN_IMAGE_RC).read().is_none() {
+            log("plain image rclip prog unavailable — icons under a rounded clip are bounded by its scissor box only");
         }
 
         ART_WASH = link_optional_program(VS_ART_WASH.as_ptr(), FS_ART_WASH.as_ptr()).map(|prog| {
@@ -2986,6 +3252,26 @@ fn plain_texture_program<P>(plain: Option<P>, overridden: bool, radius: f32) -> 
     plain.filter(|_| !overridden && takes_plain_exit(radius))
 }
 
+/// The plain texture program a draw starts from: the ROUNDED-CLIP variant while a clip is live and it
+/// linked, else the plain one (`None` when neither did, or no clip is live and it did not link). The
+/// choice [`plain_texture_program`] then admits or refuses for the draw's own radius and override is
+/// made on whichever this returns, so a rounded card under a clip still keeps the image program.
+#[inline]
+fn plain_program_for_clip<P>(plain: Option<P>, masked: Option<P>, clipped: bool) -> Option<P> {
+    if clipped { masked.or(plain) } else { plain }
+}
+
+/// The plain texture program a split card's INTERIOR piece draws with: `unmasked` (never the
+/// clip's variant, [`plain_program_for_clip`]) when the card carries no `overridden` program. The
+/// ring pieces stay on the draw's image program, which has no rounded-clip slot, so a card is
+/// either wholly bounded by its scissor or wholly masked: its middle is not cut by a lens's round
+/// edge while its ring is cut by the scissor's rectangle. The interior has radius 0, so it always
+/// takes the plain exit ([`plain_texture_program`]).
+#[inline]
+fn interior_plain_program<P>(unmasked: Option<P>, overridden: bool) -> Option<P> {
+    plain_texture_program(unmasked, overridden, 0.0)
+}
+
 /// Bind the plain texture program for one quad and send it everything it reads that changes from
 /// draw to draw: the quad, the source window and the tint (its screen size and sampler unit were
 /// set at link time). Uniforms persist per program, so all three go on every call.
@@ -2995,6 +3281,9 @@ unsafe fn bind_plain_image(program: c_uint, loc: PlainUniforms, tint: *const f32
     glUniform4fv(loc.tint, 1, tint);
     glUniform4f(loc.uvrect, uv[0], uv[1], uv[2], uv[3]);
     glUniform4f(loc.rect, quad[0], quad[1], quad[2], quad[3]);
+    if loc.rc >= 0 {
+        rclip_upload(loc.rc, loc.rr, std::ptr::addr_of_mut!(PLAIN_RC_SEEN));
+    }
 }
 
 /// `u_focus`, the focused tile's lit-glass edge AND its risen shadow (see `fs_img.frag`'s FOCUS
@@ -3107,7 +3396,8 @@ fn draw_tex_core_in(
         // card's interior piece below. It is chosen here, after `gate` has booked the quad and
         // before the card-path ledger below books the card, and neither depends on it: the
         // ledger counts the same draws with either program behind them.
-        let plain = std::ptr::addr_of!(PLAIN_IMAGE).read();
+        let plain_unmasked = std::ptr::addr_of!(PLAIN_IMAGE).read();
+        let plain = plain_program_for_clip(plain_unmasked, std::ptr::addr_of!(PLAIN_IMAGE_RC).read(), rclip().is_some());
         if let Some((program, loc)) = plain_texture_program(plain, image.is_some(), radius) {
             bind_plain_image(program, loc, tint, uv, quad);
         } else {
@@ -3164,8 +3454,10 @@ fn draw_tex_core_in(
             // else through the image program with a `u_card.z` of 0, the shader's own plain exit.
             // A still-fused card's interior is neither: its override keeps it on the still program
             // (`plain_texture_program` refuses it), whose `u_card.z` of 0 exits through `stillOver`.
+            // The UNMASKED plain program, never the clip's variant: the ring is on the image program,
+            // which has no clip slot, and a card is masked wholly or bounded by its scissor wholly.
             if piece.interior {
-                match plain_texture_program(plain, image.is_some(), 0.0) {
+                match interior_plain_program(plain_unmasked, image.is_some()) {
                     Some((program, loc)) => bind_plain_image(program, loc, tint, uv, quad),
                     None => glUniform4fv(loc.card, 1, image_card_geometry(chw, chh, 0.0).as_ptr()),
                 }
@@ -3837,7 +4129,11 @@ impl FrameCache {
                 clip_target: CLIP_TARGET,
                 cull: CULL_RECT,
                 clear: CLEAR_COLOR,
+                rclip: rclip(),
             };
+            // The fill draws a page layer into the region's own texture: a rounded clip held by the
+            // frame is not that layer's, and the guard puts it back.
+            rclip_set(None);
             // Authored y counts down from the canvas top and GL's rows count up, so the rect's bottom
             // edge sits `vh - y - h` rows above the canvas bottom, which must land on the target's row 0.
             let (ox, oy) = (-x, -(vh - y - h));
@@ -3995,7 +4291,7 @@ fn frame_cache_uv() -> [f32; 4] {
 }
 
 /// A [`FrameCache::render_region`] in progress: dropping it puts back everything the fill borrowed
-/// (the viewport, [`CLIP_TARGET`], [`CULL_RECT`], the scissor box, the clear colour) and rebinds the
+/// (the viewport, [`CLIP_TARGET`], [`CULL_RECT`], the scissor box, the rounded clip, the clear colour) and rebinds the
 /// frame's framebuffer. `BLUR_IN_PASS` is never touched: the region is drawn at full resolution, as
 /// the frame is.
 pub struct RegionTarget {
@@ -4004,6 +4300,7 @@ pub struct RegionTarget {
     clip_target: Option<(c_int, c_int, f32, c_int, c_int)>,
     cull: Option<[f32; 4]>,
     clear: [f32; 4],
+    rclip: Option<RClip>,
 }
 
 impl Drop for RegionTarget {
@@ -4012,6 +4309,7 @@ impl Drop for RegionTarget {
         unsafe {
             CLIP_TARGET = self.clip_target;
             CULL_RECT = self.cull;
+            rclip_set(self.rclip);
             let (vx, vy, vw, vh) = plx_base::surface::viewport();
             glViewport(vx, vy, vw, vh);
             match self.scissor {
@@ -5145,6 +5443,15 @@ static mut GL_SHARP_RECT: c_int = 0;
 static mut GL_SHARP_PX: c_int = 0;
 static mut GL_SHARPW: c_int = 0;
 static mut GL_RIMCLEAR: c_int = 0;
+/// `u_boff`, `u_mrg`, `u_mrg_rk`, `u_mrg_tint`, `u_clear`: a morphing menu glass's join, the colour
+/// the joined shape wears and its clarity ([`GlassMorph`]). Uniforms are per-program state, so EVERY
+/// draw of `GPROG` sets them: the ones at their off values (no offset, `k` 0, tint amount 0, clear 0)
+/// are today's glass.
+static mut GL_BOFF: c_int = 0;
+static mut GL_MRG: c_int = 0;
+static mut GL_MRG_RK: c_int = 0;
+static mut GL_MRG_TINT: c_int = 0;
+static mut GL_CLEAR: c_int = 0;
 static mut GL_DEEP: c_int = 0;
 static mut GL_SOURCE_ALPHA: c_int = 0;
 static mut GL_SOURCE_GROUND: c_int = 0;
@@ -5487,6 +5794,11 @@ fn blur_lazy_init() -> bool {
         GL_SHARP_PX = glGetUniformLocation(GPROG, c"u_sharp_px".as_ptr());
         GL_SHARPW = glGetUniformLocation(GPROG, c"u_sharpw".as_ptr());
         GL_RIMCLEAR = glGetUniformLocation(GPROG, c"u_rimclear".as_ptr());
+        GL_BOFF = glGetUniformLocation(GPROG, c"u_boff".as_ptr());
+        GL_MRG = glGetUniformLocation(GPROG, c"u_mrg".as_ptr());
+        GL_MRG_RK = glGetUniformLocation(GPROG, c"u_mrg_rk".as_ptr());
+        GL_MRG_TINT = glGetUniformLocation(GPROG, c"u_mrg_tint".as_ptr());
+        GL_CLEAR = glGetUniformLocation(GPROG, c"u_clear".as_ptr());
         GL_DEEP = glGetUniformLocation(GPROG, c"u_deep".as_ptr());
         GL_SOURCE_ALPHA = glGetUniformLocation(GPROG, c"u_source_alpha".as_ptr());
         GL_SOURCE_GROUND = glGetUniformLocation(GPROG, c"u_source_ground".as_ptr());
@@ -7016,6 +7328,7 @@ impl Drop for DirectPass {
             CLIP_TARGET = None;
             CULL_RECT = None;
             scissor_off();
+            rclip_set(None);
             glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
             let (vx, vy, vw, vh) = plx_base::surface::viewport();
             glViewport(vx, vy, vw, vh);
@@ -7134,6 +7447,8 @@ pub fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) -> bool
             // Armed before anything else, and disarmed by `DirectPass::drop` however this exits.
             BLUR_IN_PASS = true;
             let _restore = DirectPass;
+            // The replayed page is not the rows a rounded clip was opened for.
+            rclip_set(None);
             glBindFramebuffer(GL_FRAMEBUFFER, c.a_fbo);
             glViewport(vx, vy, c.gw / step, c.gh / step);
             // The viewport places the image; the scissor is what stops the rest of the page
@@ -7274,6 +7589,50 @@ impl GlassFace {
         rim_lit: [0.0; 4],
         rim_w: 1.0,
     };
+}
+
+/// **The second shape a morphing menu's glass is joined to** ([`GlassMorph`]): a rounded rect
+/// (`rect`, corner `radius`) that `fs_glass.frag` unions with the panel through a polynomial smooth
+/// minimum reaching `k` px, so the two read as one body with a neck between them (a metaball).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlassMerge {
+    pub rect: Rect,
+    pub radius: f32,
+    pub k: f32,
+    /// The colour the joined shape's face blends toward, straight RGB, and HOW MUCH of it in the
+    /// alpha (0 = the glass's own face, the join as it always was; 1 = this flat colour). The
+    /// shader weighs it per pixel by how much of the pixel is the joined shape rather than the
+    /// panel (the smooth minimum's own blend factor, `1 - hb`), so the neck shades from one face
+    /// into the other. It is an amount, not an opacity: the painter's alpha does not scale it.
+    pub tint: [f32; 4],
+}
+
+/// **What a menu glass does while its morph runs** (`ui::popover_morph::Frame`): optionally JOINED
+/// to a second shape ([`GlassMerge`]) and CLEAR — the sharp page over the whole face instead of the
+/// frosted material. [`GlassMorph::NONE`] (no join, clarity 0) is the glass every settled menu and
+/// every chip wears, bit for bit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlassMorph {
+    pub merge: Option<GlassMerge>,
+    /// 0 = the frosted material, 1 = clear (the sharp source over the whole face, no scrim). Held
+    /// at 0 when the draw has no sharp source.
+    pub clear: f32,
+}
+impl GlassMorph {
+    pub const NONE: Self = Self { merge: None, clear: 0.0 };
+
+    /// The quad the glass is drawn on for a body at `(x, y, w, h)`: the body itself, or the
+    /// bounding box of the body and the joined shape, grown by the join's reach (a quarter of `k`
+    /// is the most the smooth minimum can pull the union outward) and the edge's antialiasing.
+    pub fn quad(&self, x: f32, y: f32, w: f32, h: f32) -> Rect {
+        let Some(m) = self.merge.filter(|m| m.k > 0.0) else {
+            return Rect::new(x, y, w, h);
+        };
+        let pad = m.k * 0.25 + 2.0;
+        let (x0, y0) = (x.min(m.rect.x) - pad, y.min(m.rect.y) - pad);
+        let (x1, y1) = ((x + w).max(m.rect.x + m.rect.w) + pad, (y + h).max(m.rect.y + m.rect.h) + pad);
+        Rect::new(x0, y0, x1 - x0, y1 - y0)
+    }
 }
 
 /// **Snapshot UV back to the screen**: `(su, sv, ou, ov)` with `screen_uv = uv * (su, sv) + (ou, ov)`
@@ -7449,6 +7808,12 @@ pub fn draw_blur_backdrop(
         }
         // The sharp grab below is off the finished framebuffer: the dim is in it already.
         glUniform1f(GL_DIM_SHARP, 0.0);
+        // A live glass is never a morphing menu's: the join and the clear glass are OFF, so a
+        // frozen menu's last draw (the uniforms are the program's) cannot reach this surface.
+        glUniform2f(GL_BOFF, 0.0, 0.0);
+        glUniform2f(GL_MRG_RK, 0.0, 0.0);
+        glUniform4f(GL_MRG_TINT, 0.0, 0.0, 0.0, 0.0);
+        glUniform1f(GL_CLEAR, 0.0);
         // A BLUR is the slowest field the app produces, so the policy is the area test, per draw
         // — moving or not: a panel's glass is a fraction of the screen and the tile is one fetch,
         // and gating it on motion (one day, 2026-09-04) flickered the bands in and out on every
@@ -7623,6 +7988,10 @@ fn frozen_dim_field(ground: c_uint, dim_tex: c_uint) -> f32 {
     }
 }
 
+/// The draw [the block above](frozen_dim_field) describes, for a body at `(x, y, w, h)`. `morph`
+/// is [`GlassMorph::NONE`] for every menu at rest and every chip; a MORPHING menu joins the body to
+/// a second shape and/or draws it clear (`fs_glass.frag`'s `u_mrg*`, `u_clear`), on a quad that
+/// grows to hold both ([`GlassMorph::quad`]).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_glass_frozen(
     x: f32,
@@ -7636,6 +8005,7 @@ pub fn draw_glass_frozen(
     tint: *const f32,
     rim: GlassRim,
     face: GlassFace,
+    morph: GlassMorph,
 ) -> bool {
     if ground == 0 || unsafe { GPROG } == 0 || unsafe { BLUR_OFF } {
         return false;
@@ -7645,7 +8015,14 @@ pub fn draw_glass_frozen(
     if video_plane_refuses("Glass::frozen") {
         return false;
     }
-    if culled(x, y, w, h) || gate(Class::Glass, x, y, w, h) {
+    // The quad this draws on: the panel's own rect, or — while a morph joins it to a second shape —
+    // the box around both, so the neck has pixels to live on. Everything below that is the PANEL's
+    // (radius, half-size, the snapshot window) stays the panel's; only the quad and its UV window
+    // grow, and `u_boff` says where the panel sits in it.
+    let merge = morph.merge.filter(|m| m.k > 0.0 && m.rect.w > 0.0 && m.rect.h > 0.0);
+    let morph = GlassMorph { merge, ..morph };
+    let q = morph.quad(x, y, w, h);
+    if culled(q.x, q.y, q.w, q.h) || gate(Class::Glass, q.x, q.y, q.w, q.h) {
         return true;
     }
     unsafe {
@@ -7673,7 +8050,7 @@ pub fn draw_glass_frozen(
         // so the last live glass's `1` would otherwise stay).
         glUniform1f(GL_WASH_ON, 0.0);
         glUniform1f(GL_DIM_SHARP, if sharp != 0 { 1.0 } else { 0.0 });
-        glUniform1f(GL_DITHER_AMT, dither_for_field(w, h));
+        glUniform1f(GL_DITHER_AMT, dither_for_field(q.w, q.h));
         glBindTexture(GL_TEXTURE_2D, ground);
         glUniform2f(GL_UVPX, 1.0 / SCR_W, 1.0 / SCR_H);
         let sharpw = if sharp != 0 { rim.sharp() } else { 0.0 };
@@ -7700,10 +8077,29 @@ pub fn draw_glass_frozen(
         glUniform4fv(GL_RIMCOL_G, 1, face.rim.as_ptr());
         glUniform4fv(GL_RIMLIT_G, 1, face.rim_lit.as_ptr());
         glUniform1f(GL_RIMW_G, face.rim_w);
-        glUniform4f(GL_UVRECT, x / SCR_W, y / SCR_H, w / SCR_W, h / SCR_H);
+        glUniform4f(GL_UVRECT, q.x / SCR_W, q.y / SCR_H, q.w / SCR_W, q.h / SCR_H);
         glUniform1f(GL_RADIUS, radius);
         glUniform2f(GL_CH, w * 0.5, h * 0.5);
-        let ext = set_rect(GL_RECT, x, y, w, h);
+        // The join and the clarity, set on EVERY draw (the program's state): the panel's centre in
+        // the quad's own frame, the joined shape's centre, half-size, radius and reach (`k` 0 = no
+        // join), the colour the joined shape wears (amount 0 = none), and the clarity, which needs
+        // a sharp source to show.
+        let (qcx, qcy) = (q.x + q.w * 0.5, q.y + q.h * 0.5);
+        glUniform2f(GL_BOFF, x + w * 0.5 - qcx, y + h * 0.5 - qcy);
+        match merge {
+            Some(m) => {
+                glUniform4f(GL_MRG, m.rect.x + m.rect.w * 0.5 - qcx, m.rect.y + m.rect.h * 0.5 - qcy, m.rect.w * 0.5, m.rect.h * 0.5);
+                glUniform2f(GL_MRG_RK, m.radius, m.k);
+                glUniform4f(GL_MRG_TINT, m.tint[0], m.tint[1], m.tint[2], m.tint[3].clamp(0.0, 1.0));
+            }
+            None => {
+                glUniform4f(GL_MRG, 0.0, 0.0, 0.0, 0.0);
+                glUniform2f(GL_MRG_RK, 0.0, 0.0);
+                glUniform4f(GL_MRG_TINT, 0.0, 0.0, 0.0, 0.0);
+            }
+        }
+        glUniform1f(GL_CLEAR, if sharp != 0 { morph.clear.clamp(0.0, 1.0) } else { 0.0 });
+        let ext = set_rect(GL_RECT, q.x, q.y, q.w, q.h);
         profile::phase("glass.frozen", || {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         });
@@ -8710,12 +9106,16 @@ mod tests {
         }
         let code = shader_code(FS_GLASS);
         let main = &code[code.find("void main(){").expect("main")..];
-        let guard = main.find("if (!all(lessThan(abs(v_p), u_ch - vec2(max(u_iradius, u_bevel) + 1.0))))").expect("the pre-test");
-        let sdf = main.find("d = sdBox(v_p, u_ch, u_iradius);").expect("the guarded sdBox");
+        let guard = main.find("if (!all(lessThan(abs(pb), u_ch - vec2(max(u_iradius, u_bevel) + 1.0))))").expect("the pre-test");
+        let sdf = main.find("d = sdBox(pb, u_ch, u_iradius);").expect("the guarded sdBox");
         let exit = main.find("if (d < -u_bevel)").expect("the interior exit");
         assert!(guard < sdf && sdf < exit, "the pre-test guards the sdBox, and both precede the exit");
         assert!(main.starts_with("void main(){\n  highp float d = -u_bevel - 1.0;"), "the skipped d is an interior value");
-        assert_eq!(main.matches("sdBox(").count(), 1, "main evaluates sdBox once, behind the pre-test");
+        // Two sites, both behind the pre-test: the panel's, and the joined shape's (a morph's
+        // second shape, behind its own uniform branch, which sees only fragments the pre-test left).
+        assert_eq!(main.matches("sdBox(").count(), 2, "main evaluates sdBox behind the pre-test only");
+        let join = main.find("sdBox(v_p - u_mrg.xy").expect("the join's sdBox");
+        assert!(sdf < join && join < exit, "the joined shape's distance is computed inside the pre-test's guard");
         assert_eq!(GlassRim::Menu.params().0, tokens::MENU_BEVEL);
         for (case, &(w, h, r, bevel)) in [
             (382.0f32, 339.0f32, 20.0f32, tokens::MENU_BEVEL),
@@ -9052,25 +9452,25 @@ mod tests {
     /// shader.
     #[test]
     fn a_square_unfocused_rect_is_flat_or_ramp_and_anything_else_is_the_sdf_fill() {
-        assert_eq!(rect_fill(0.0, 0.0, true), RectFill::Flat, "one colour: the scrim");
-        assert_eq!(rect_fill(0.0, 0.0, false), RectFill::Ramp, "two colours: the hero's ramp band");
+        assert_eq!(rect_fill(0.0, 0.0, true, false), RectFill::Flat, "one colour: the scrim");
+        assert_eq!(rect_fill(0.0, 0.0, false, false), RectFill::Ramp, "two colours: the hero's ramp band");
         for one_colour in [true, false] {
-            assert_eq!(rect_fill(14.0, 0.0, one_colour), RectFill::Sdf, "rounded");
-            assert_eq!(rect_fill(0.0, 1.0, one_colour), RectFill::Sdf, "focused");
-            assert_eq!(rect_fill(14.0, 1.0, one_colour), RectFill::Sdf, "rounded and focused");
-            assert_eq!(rect_fill(0.5, 0.0, one_colour), RectFill::Sdf, "radius 0.5 is the first rounded");
-            assert_eq!(rect_fill(0.001, 0.001, one_colour), RectFill::Sdf, "focus 0.001 is the first focused");
-            assert_eq!(rect_fill(f32::NAN, 0.0, one_colour), RectFill::Sdf, "NaN radius");
-            assert_eq!(rect_fill(0.0, f32::NAN, one_colour), RectFill::Sdf, "NaN focus");
+            assert_eq!(rect_fill(14.0, 0.0, one_colour, false), RectFill::Sdf, "rounded");
+            assert_eq!(rect_fill(0.0, 1.0, one_colour, false), RectFill::Sdf, "focused");
+            assert_eq!(rect_fill(14.0, 1.0, one_colour, false), RectFill::Sdf, "rounded and focused");
+            assert_eq!(rect_fill(0.5, 0.0, one_colour, false), RectFill::Sdf, "radius 0.5 is the first rounded");
+            assert_eq!(rect_fill(0.001, 0.001, one_colour, false), RectFill::Sdf, "focus 0.001 is the first focused");
+            assert_eq!(rect_fill(f32::NAN, 0.0, one_colour, false), RectFill::Sdf, "NaN radius");
+            assert_eq!(rect_fill(0.0, f32::NAN, one_colour, false), RectFill::Sdf, "NaN focus");
         }
-        assert_eq!(rect_fill(0.499, 0.0, false), RectFill::Ramp, "just under the radius threshold");
-        assert_eq!(rect_fill(0.0, 0.000_999, false), RectFill::Ramp, "just under the focus threshold");
-        assert_eq!(rect_fill(0.0, 0.000_999, true), RectFill::Flat);
+        assert_eq!(rect_fill(0.499, 0.0, false, false), RectFill::Ramp, "just under the radius threshold");
+        assert_eq!(rect_fill(0.0, 0.000_999, false, false), RectFill::Ramp, "just under the focus threshold");
+        assert_eq!(rect_fill(0.0, 0.000_999, true, false), RectFill::Flat);
         // The same pair test feeds it, so the common call (one array passed twice) is a scrim.
         let a = [0.0f32, 0.0, 0.0, 0.5];
         let b = [0.0f32, 0.0, 0.0, 0.0];
-        assert_eq!(rect_fill(0.0, 0.0, same_colour(a.as_ptr(), a.as_ptr())), RectFill::Flat);
-        assert_eq!(rect_fill(0.0, 0.0, same_colour(a.as_ptr(), b.as_ptr())), RectFill::Ramp);
+        assert_eq!(rect_fill(0.0, 0.0, same_colour(a.as_ptr(), a.as_ptr()), false), RectFill::Flat);
+        assert_eq!(rect_fill(0.0, 0.0, same_colour(a.as_ptr(), b.as_ptr()), false), RectFill::Ramp);
     }
 
     /// **The ramp program is `fs_src.frag`'s flat path and nothing else.** The picture only stays
@@ -9109,11 +9509,11 @@ mod tests {
         };
         let ramp_draw = body("unsafe fn draw_ramp(");
         assert!(ramp_draw.contains("set_rect(RP_RECT, x, y, w, h);"), "exactly the rect's bounds");
-        assert!(ramp_draw.contains("if RPROG == 0 {") && ramp_draw.contains("use_prog(PROG);"), "the fallback");
+        assert!(ramp_draw.contains("if RPROG == 0 || rect_masked() {") && ramp_draw.contains("rect_program()"), "the fallback");
         let rect_draw = body("pub fn draw_rect(");
         let (gated, routed) = (
             rect_draw.find("gate(Class::Rect, x, y, w, h)").expect("the ledger gate"),
-            rect_draw.find("rect_fill(radius, focus, same_colour(top, bot))").expect("the routing"),
+            rect_draw.find("rect_fill(radius, focus, same_colour(top, bot), rect_masked())").expect("the routing"),
         );
         assert!(gated < routed, "the draw is booked in the ledger before a program is chosen");
         // Each arm is cut out of the routing `match` (up to the next arm) and must call its own
@@ -9273,7 +9673,7 @@ mod tests {
         for d in draws {
             let at = src.find(d).expect(d);
             let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
-            assert!(body.contains("glUniform1f(LOC_RGB_CAP,"), "{d} must set the cap");
+            assert!(body.contains("glUniform1f(u.rgb_cap,"), "{d} must set the cap");
         }
     }
 
@@ -9623,7 +10023,7 @@ mod tests {
         let (gate, whole, interior) = (
             draw.find("gate(class, qx, qy, qw, qh)").expect("the ledger's gate"),
             draw.find("plain_texture_program(plain, image.is_some(), radius)").expect("the whole-draw choice"),
-            draw.find("plain_texture_program(plain, image.is_some(), 0.0)").expect("the interior piece's choice"),
+            draw.find("interior_plain_program(plain_unmasked, image.is_some())").expect("the interior piece's choice"),
         );
         let plan = draw.find("card_plan(&boxes").expect("the piece plan");
         assert!(gate < whole && whole < plan && plan < interior, "gate {gate}, whole {whole}, plan {plan}, interior {interior}");
@@ -9665,7 +10065,7 @@ mod tests {
             "link_optional_program(VS_IMG.as_ptr(), FS_TEX.as_ptr())",
             "glUniform2f(loc(c\"u_tscreen\"), SCR_W, SCR_H);",
             "glUniform1i(loc(c\"u_tex\"), 0);",
-            "(program, PlainUniforms { rect: loc(c\"u_trect\"), tint: loc(c\"u_tint\"), uvrect: loc(c\"u_uvrect\") })",
+            "(program, PlainUniforms { rect: loc(c\"u_trect\"), tint: loc(c\"u_tint\"), uvrect: loc(c\"u_uvrect\"), rc: -1, rr: -1 })",
         ] {
             assert!(link.contains(needle), "`{needle}` is gone from the plain program's link block:\n{link}");
         }
@@ -10736,6 +11136,298 @@ mod tests {
         let tap: PxBox = [0, 0, 480, 270];
         assert_eq!(ground_clear([0, 0, 480, 270], tap, None, false), Some(ClearBox::Within(tap)));
         assert_eq!(ground_clear([0, 0, 480, 270], tap, Some(tap), false), Some(ClearBox::Open), "under its live box");
+    }
+
+    // ---- THE ROUNDED CLIP (`RClip`, `shaders/rclip.glsl`) ------------------------------------------
+
+    fn rclip_box(x0: f32, y0: f32, x1: f32, y1: f32, radius: f32) -> RClip {
+        RClip { x0, y0, x1, y1, radius }
+    }
+
+    /// The folded form the shader takes: centre, half extent minus radius, and the radius held to
+    /// the half extents (a capsule at most), which is `text::bind_ink`'s clamp. A zero radius is a
+    /// plain box: the fold's `zw` is then the whole half extent.
+    #[test]
+    fn the_rounded_clip_folds_to_centre_half_extent_less_radius_and_a_clamped_radius() {
+        let (k, r) = rclip_fold(rclip_box(100.0, 200.0, 300.0, 260.0, 22.0));
+        assert_eq!((k, r), ([200.0, 230.0, 78.0, 8.0], 22.0));
+        let (k, r) = rclip_fold(rclip_box(100.0, 200.0, 300.0, 260.0, 500.0));
+        assert_eq!((k, r), ([200.0, 230.0, 70.0, 0.0], 30.0), "a radius past the half height is the capsule");
+        let (k, r) = rclip_fold(rclip_box(100.0, 200.0, 300.0, 260.0, 0.0));
+        assert_eq!((k, r), ([200.0, 230.0, 100.0, 30.0], 0.0));
+        let (k, r) = rclip_fold(rclip_box(100.0, 200.0, 300.0, 260.0, -4.0));
+        assert_eq!((k, r), ([200.0, 230.0, 100.0, 30.0], 0.0), "a negative radius is none");
+        let (k, r) = rclip_fold(rclip_box(300.0, 260.0, 100.0, 200.0, 9.0));
+        assert_eq!((k[2], k[3], r), (0.0, 0.0, 0.0), "an inverted box has no extent to round");
+    }
+
+    /// The CPU mirror of the mask: 1 well inside, 0.5 exactly on the edge (a straight one and the
+    /// arc), 0 from half a pixel outside, and the same half-pixel ramp `fs_text_ink.frag`'s
+    /// `shape_cover` has, which is what keeps the rows' edge on the glass's own (`fs_glass.frag`'s
+    /// `cov` is 0.5 on the edge too).
+    #[test]
+    fn the_rounded_clip_covers_one_inside_half_on_the_edge_and_nothing_past_half_a_pixel() {
+        let c = rclip_box(0.0, 0.0, 200.0, 100.0, 20.0);
+        let near = |a: f32, b: f32, what: &str| assert!((a - b).abs() < 1e-4, "{what}: {a} != {b}");
+        near(rclip_cover([100.0, 50.0], c), 1.0, "the centre");
+        near(rclip_cover([200.0, 50.0], c), 0.5, "on the right edge");
+        near(rclip_cover([100.0, 0.0], c), 0.5, "on the top edge");
+        near(rclip_cover([199.5, 50.0], c), 1.0, "half a pixel in");
+        near(rclip_cover([200.5, 50.0], c), 0.0, "half a pixel out");
+        near(rclip_cover([230.0, 50.0], c), 0.0, "far out");
+        // the arc: the point at distance `r` from the corner's circle centre, along the diagonal
+        let k = 20.0 - 20.0 / 2.0_f32.sqrt();
+        near(rclip_cover([k, k], c), 0.5, "on the top-left arc");
+        near(rclip_cover([200.0 - k, 100.0 - k], c), 0.5, "on the bottom-right arc");
+        // the square corner a rectangular scissor would have kept is OUTSIDE the arc
+        near(rclip_cover([1.0, 1.0], c), 0.0, "the corner a scissor keeps");
+        // a capsule: the end is a half circle
+        let cap = rclip_box(0.0, 0.0, 100.0, 40.0, 1.0e6);
+        near(rclip_cover([50.0, 20.0], cap), 1.0, "capsule centre");
+        near(rclip_cover([0.0, 20.0], cap), 0.5, "capsule tip");
+        near(rclip_cover([2.0, 2.0], cap), 0.0, "capsule corner");
+    }
+
+    /// **One SDF, three spellings.** The glass-edge coverage in the prelude, in the ink program's
+    /// `shape_cover`, and the CPU mirror all read the same `length(max(q, 0)) + min(max(q.x, q.y), 0)
+    /// - r` box distance and the same half-pixel `clamp(0.5 - d, 0, 1)`; the two shaders are pinned as
+    /// text (the mirror by [`the_rounded_clip_covers_one_inside_half_on_the_edge_and_nothing_past_half_a_pixel`]),
+    /// so editing one without the other fails here. The prelude takes its coordinate from the
+    /// authored-px varying: no `gl_FragCoord` (cost rule 4, `dither.glsl`) and no derivative (nothing in
+    /// this renderer links `OES_standard_derivatives`).
+    #[test]
+    fn the_rounded_clip_sdf_is_one_expression_in_the_prelude_and_the_ink_shape() {
+        let code_of = |s: &str| s.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        let prelude = code_of(include_str!("shaders/rclip.glsl"));
+        let ink = code_of(include_str!("shaders/fs_text_ink.frag"));
+        for line in [
+            "min(max(q.x, q.y), 0.0)",
+            "length(max(q, 0.0))",
+            "return clamp(0.5 - d, 0.0, 1.0);",
+        ] {
+            assert!(prelude.contains(line), "rclip.glsl lost `{line}`");
+            assert!(ink.contains(line), "fs_text_ink.frag's shape_cover lost `{line}`");
+        }
+        for line in [
+            "varying highp vec2 v_px;",
+            "uniform highp vec4 u_rc;",
+            "uniform highp float u_rr;",
+            "rclip_cover(v_px)",
+        ] {
+            assert!(prelude.contains(line), "rclip.glsl lost `{line}`");
+        }
+        for banned in ["gl_FragCoord", "dFdx", "dFdy", "fwidth", "discard"] {
+            assert!(!prelude.contains(banned), "the prelude must not use {banned}");
+        }
+        assert!(
+            ink.contains("uniform highp vec4 u_mc;") && ink.contains("uniform highp vec2 u_mq;")
+                && ink.contains("if (u_mq.y != 0.0) a *= shape_cover(u_mc, u_mq.x);"),
+            "the ink program's third slot is the rounded clip, in A's and B's form"
+        );
+    }
+
+    /// **The plain programs are byte-identical to what shipped.** The masked variants are the same
+    /// files behind `#define PLX_RCLIP`; preprocessed WITHOUT it, nothing of the mask is left in any
+    /// of the four sources (no varying, no uniform, no helper), which is what makes "zero cost off the
+    /// rounded clip" a property of the source and not of a measurement.
+    #[test]
+    fn the_plain_rect_and_texture_programs_carry_nothing_of_the_rounded_clip() {
+        for (name, src) in [
+            ("fs_src.frag", FS_SRC),
+            ("fs_tex.frag", FS_TEX),
+            ("vs_src.vert", VS_SRC),
+            ("vs_img.vert", VS_IMG),
+        ] {
+            let plain = preprocess(src.to_str().unwrap(), &[]);
+            for needle in ["v_px", "u_rc", "u_rr", "rclip"] {
+                assert!(!plain.contains(needle), "{name} (plain) names `{needle}`:\n{plain}");
+            }
+            assert!(!shader_code(src).contains("rclip.glsl"), "{name}: the prelude is a prefix of the variant only");
+        }
+        for (name, src) in [("fs_src.frag", FS_SRC_RC), ("fs_tex.frag", FS_TEX_RC)] {
+            let code = shader_code(src);
+            assert!(code.starts_with("#define PLX_RCLIP"), "{name}: the masked variant defines the macro first");
+            assert!(code.contains("float rclip_cover(") && code.contains("uniform highp vec4 u_rc;"), "{name}: the prelude");
+        }
+        for (name, src) in [("vs_src.vert", VS_SRC_RC), ("vs_img.vert", VS_IMG_RC)] {
+            assert!(shader_code(src).starts_with("#define PLX_RCLIP"), "{name}: the masked vertex variant");
+        }
+    }
+
+    /// Every fragment write of a masked variant goes through `rclip_out` (coverage into the ALPHA,
+    /// the colour straight, never a read-back of `gl_FragColor`), and the plain line survives in the
+    /// `#else` so the raw-text pins on it hold. The vertex variants hand the fragment the authored px
+    /// they already computed.
+    #[test]
+    fn the_masked_variants_write_every_fragment_through_rclip_out_and_hand_over_the_authored_px() {
+        for (name, file, writes) in [
+            ("fs_src.frag", include_str!("shaders/fs_src.frag"), 3),
+            ("fs_tex.frag", include_str!("shaders/fs_tex.frag"), 1),
+        ] {
+            let masked = preprocess(file, &["PLX_RCLIP"]);
+            let plain = preprocess(file, &[]);
+            assert_eq!(masked.matches("gl_FragColor =").count(), writes, "{name}: writes");
+            assert_eq!(masked.matches("gl_FragColor = rclip_out(").count(), writes, "{name}: every write is masked");
+            assert_eq!(plain.matches("gl_FragColor =").count(), writes, "{name}: the plain writes");
+            assert!(!plain.contains("rclip_out"), "{name}: the plain program has no mask");
+            assert!(!masked.contains("gl_FragColor.a") && !masked.contains("= gl_FragColor"), "{name}: no read-back of gl_FragColor");
+        }
+        for (name, file) in [("vs_src.vert", include_str!("shaders/vs_src.vert")), ("vs_img.vert", include_str!("shaders/vs_img.vert"))] {
+            let masked = preprocess(file, &["PLX_RCLIP"]);
+            assert!(masked.contains("varying highp vec2 v_px;") && masked.contains("v_px = px;"), "{name}: authored px");
+            assert!(!preprocess(file, &[]).contains("v_px"), "{name}: the plain vertex shader has no varying for it");
+        }
+    }
+
+    /// The wiring no host test can drive, pinned in the source. Both masked programs are OPTIONAL
+    /// links at boot (a driver that refuses one leaves the plain program and a log line, never an
+    /// exit, and linking at boot avoids a compile hitch the first time a menu opens), the live
+    /// record has ONE writer that counts the generation, and the two guards that switch the target
+    /// out from under a page clear it, so a rounded clip never masks an FBO pass.
+    #[test]
+    fn the_rounded_clip_has_one_writer_optional_programs_and_is_cleared_by_the_target_guards() {
+        let src = include_str!("gfx.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the unit tests")];
+        let code = |needle: &str| {
+            prod.lines().filter(|l| !l.trim_start().starts_with("//") && l.contains(needle)).count()
+        };
+        let body = |head: &str| {
+            let from = prod.find(head).unwrap_or_else(|| panic!("`{head}` is gone"));
+            let rest = &prod[from..];
+            &rest[..rest.find("\n}\n").expect("the end of the function")]
+        };
+        assert!(
+            prod.contains("RECT_RC = link_optional_program(VS_SRC_RC.as_ptr(), FS_SRC_RC.as_ptr())"),
+            "the masked rect program is vs_src.vert + fs_src.frag behind PLX_RCLIP, an optional link"
+        );
+        assert!(
+            prod.contains("PLAIN_IMAGE_RC = link_optional_program(VS_IMG_RC.as_ptr(), FS_TEX_RC.as_ptr())"),
+            "the masked plain texture program is vs_img.vert + fs_tex.frag behind PLX_RCLIP, an optional link"
+        );
+        assert_eq!(code("LIVE_RCLIP = "), 1, "a second writer of the live rounded clip");
+        assert_eq!(code("RCLIP_GEN = "), 1, "a second writer of the generation");
+        let set = body("pub fn rclip_set(");
+        assert!(set.contains("LIVE_RCLIP = ") && set.contains("RCLIP_GEN = "), "the one writer counts the generation");
+        assert!(set.contains("!="), "the generation moves only on a real change");
+        assert!(!body("pub fn clip_set(").contains("rclip") && !body("pub fn clip_clear(").contains("rclip"),
+            "the scissor pair stays scissor-only: a nested rect scope must not drop the rounding");
+        let region = body("impl Drop for RegionTarget {");
+        assert!(region.contains("rclip_set(self.rclip)"), "a region fill puts the clip back");
+        assert!(body("pub fn render_region(").contains("rclip_set(None)") || prod.contains("rclip: rclip()"), "and starts with none");
+        assert!(body("impl Drop for DirectPass {").contains("rclip_set(None)"), "the direct pass leaves with none");
+    }
+
+    /// Under a live rounded clip a flat or ramp rect is the rect program's SDF fill (its flat fast
+    /// path is the same expression), because the dedicated `fs_flat` / `fs_ramp` stay branch-free
+    /// and unmasked; every other rect keeps its program, and nothing changes while no clip is live.
+    #[test]
+    fn a_live_rounded_clip_routes_flat_and_ramp_rects_to_the_masked_sdf_program() {
+        let a = [0.2f32, 0.3, 0.4, 0.5];
+        let b = [0.0f32, 0.0, 0.0, 0.0];
+        for (radius, focus) in [(0.0, 0.0), (0.4, 0.0), (0.0, 0.0005)] {
+            for one in [true, false] {
+                assert_eq!(rect_fill(radius, focus, one, true), RectFill::Sdf, "radius {radius}, one colour {one}");
+            }
+        }
+        assert_eq!(rect_fill(0.0, 0.0, same_colour(a.as_ptr(), a.as_ptr()), false), RectFill::Flat);
+        assert_eq!(rect_fill(0.0, 0.0, same_colour(a.as_ptr(), b.as_ptr()), false), RectFill::Ramp);
+        assert_eq!(rect_fill(12.0, 0.0, true, false), RectFill::Sdf);
+        let src = include_str!("gfx.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the unit tests")];
+        let body = |head: &str| {
+            let from = prod.find(head).unwrap_or_else(|| panic!("`{head}` is gone"));
+            let rest = &prod[from..];
+            &rest[..rest.find("\n}\n").expect("the end of the function")]
+        };
+        // the two dedicated programs' direct callers (`draw_rrect`'s flat arm) route under a clip too
+        assert!(body("unsafe fn draw_flat(").contains("rect_masked()"), "draw_flat under a clip");
+        assert!(body("unsafe fn draw_ramp(").contains("rect_masked()"), "draw_ramp under a clip");
+        assert!(body("pub fn draw_rect(").contains("rect_masked()"), "draw_rect's routing reads the clip");
+        // every draw of the rect program binds it through `rect_program()`, so the masked variant's
+        // own uniform locations are the ones written: no `use_prog(PROG)` is left in a draw
+        for head in ["unsafe fn draw_flat(", "unsafe fn draw_ramp(", "pub fn draw_rect(", "pub fn draw_rect_shaped(", "pub fn draw_rrect(", "pub fn draw_rrect_sheened("] {
+            let b = body(head);
+            assert!(b.contains("rect_program()"), "{head} binds the rect program through rect_program()");
+            assert!(!b.contains("use_prog(PROG)"), "{head} still binds the plain rect program directly");
+            assert!(!b.contains("LOC_"), "{head} writes the plain program's locations");
+        }
+    }
+
+    /// Under a live rounded clip the plain texture draw takes the masked program; without one (or
+    /// with a masked program that did not link) it keeps the program it had. It is picked once per
+    /// draw, before the whole-draw and interior-piece choices, which then refuse it for an overridden
+    /// or rounded draw as before.
+    #[test]
+    fn the_plain_texture_program_pick_follows_the_rounded_clip() {
+        assert_eq!(plain_program_for_clip(Some(7u32), Some(9), true), Some(9));
+        assert_eq!(plain_program_for_clip(Some(7u32), Some(9), false), Some(7));
+        assert_eq!(plain_program_for_clip(Some(7u32), None, true), Some(7), "unlinked: the plain one, bounded by its scissor");
+        assert_eq!(plain_program_for_clip(None::<u32>, Some(9), true), Some(9));
+        assert_eq!(plain_program_for_clip(None::<u32>, Some(9), false), None);
+        let src = include_str!("gfx.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the unit tests")];
+        let from = prod.find("fn draw_tex_core_in(").expect("draw_tex_core_in");
+        let draw = &prod[from..from + prod[from..].find("\n}\n").unwrap()];
+        let (pick, whole) = (
+            draw.find("plain_program_for_clip(").expect("the clip's pick"),
+            draw.find("plain_texture_program(plain, image.is_some(), radius)").expect("the whole-draw choice"),
+        );
+        assert!(pick < whole, "the clip picks the program the draw's own rule then admits or refuses");
+    }
+
+    /// **A card is wholly masked or wholly bounded by its scissor.** A split card's ring pieces stay on
+    /// the draw's image program, which carries no rounded-clip slot, so its interior piece must not
+    /// take the clip's MASKED plain program either: the card's middle would be cut by the lens's round
+    /// edge while its ring is cut by the scissor's rectangle, two answers for one card. The interior
+    /// piece's choice therefore reads the UNMASKED plain program, never the clip-picked one
+    /// ([`plain_program_for_clip`] doc: "a rounded card under a clip still keeps the image program").
+    #[test]
+    fn a_split_cards_interior_never_takes_the_rounded_clips_masked_program() {
+        // the pure choice: under a live rounded clip with its masked program linked, a rounded card's
+        // whole draw is refused the plain program (it stays on the image program) and its interior
+        // piece takes the UNMASKED one, never the clip's variant
+        let (unmasked, masked) = (Some(7u32), Some(9u32));
+        let under_clip = plain_program_for_clip(unmasked, masked, true);
+        assert_eq!(under_clip, masked, "premise: the clip picks the masked variant for a square draw");
+        assert_eq!(plain_texture_program(under_clip, false, 12.0), None, "a rounded card is not the plain program");
+        assert_eq!(interior_plain_program(unmasked, false), Some(7), "its interior is the unmasked plain program");
+        assert_eq!(interior_plain_program(unmasked, true), None, "an overridden card's interior keeps its own program");
+        assert_eq!(interior_plain_program(None::<u32>, false), None, "an unlinked program leaves the image program");
+        let src = include_str!("gfx.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the unit tests")];
+        let from = prod.find("fn draw_tex_core_in(").expect("draw_tex_core_in");
+        let draw = &prod[from..from + prod[from..].find("\n}\n").unwrap()];
+        let branch = draw.find("if piece.interior {").expect("the interior branch of the piece loop");
+        let interior = &draw[branch..branch + draw[branch..].find("glScissor").expect("the piece's scissor")];
+        assert!(
+            interior.contains("interior_plain_program(plain_unmasked, image.is_some())"),
+            "the interior piece takes the unmasked plain program, not the clip's variant: {interior}"
+        );
+        assert!(draw.contains("let plain_unmasked = std::ptr::addr_of!(PLAIN_IMAGE).read();"),
+            "the unmasked program is read from its own static, before the clip picks a variant");
+    }
+
+    /// Text: the ink program carries the rounded clip's slot, so `draw_text` widens its gate to a
+    /// live rounded clip, while `draw_mask_inked` keeps `ink_clip()` alone (a radius-0 colour
+    /// picture is not a mask; under the rounded clip an icon takes the masked texture program, and
+    /// inside `paint_inked` it takes the ink program, which carries the slot too). `bind_ink` uploads
+    /// the slot from the one live record, or zeros.
+    #[test]
+    fn text_wears_the_rounded_clip_through_the_ink_program_and_a_mask_only_under_an_ink_clip() {
+        let src = include_str!("text.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").unwrap_or(src.len())];
+        let body = |head: &str| {
+            let from = prod.find(head).unwrap_or_else(|| panic!("`{head}` is gone"));
+            let rest = &prod[from..];
+            &rest[..rest.find("\n}\n").expect("the end of the function")]
+        };
+        let draw = body("pub fn draw_text(");
+        assert!(draw.contains("rclip().is_some()"), "draw_text's gate reads the rounded clip");
+        assert!(draw.contains("InkClip::default"), "with only the rounded clip live the ink clip is empty");
+        let mask = body("pub fn draw_mask_inked(");
+        assert!(!mask.contains("rclip"), "draw_mask_inked's gate stays on the ink clip alone");
+        let bind = body("unsafe fn bind_ink(");
+        assert!(bind.contains("rclip()") && bind.contains("TLI_C") && bind.contains("TLI_Q"), "the slot is uploaded from the live record");
     }
 }
 
