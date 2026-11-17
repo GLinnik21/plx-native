@@ -913,7 +913,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                         self.hud.nav.btn = (to.elem - player_hud::ELEM_CHAPTER_BASE) as i32;
                     }
                 }
-                if *by == By::Dir && from.and_then(|f| Self::hud_group_of(f.elem)) != Some(group) {
+                if matches!(*by, By::Dir | By::Script) && from.and_then(|f| Self::hud_group_of(f.elem)) != Some(group) {
                     if group != GROUP_SCRUB {
                         self.scrub.ns = -1;
                         self.scrub.disengage();
