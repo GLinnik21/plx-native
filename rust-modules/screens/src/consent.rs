@@ -6,7 +6,9 @@
 //! appears only once the draft differs from the stored answer, with one line beside it saying
 //! what BACK does; [`ConsentPage::first_run`] is one
 //! STAGE of the sign-in's question — a full disclosure, the reading list and two equal answers
-//! in one row. Exceptional overflow scrolls at BODY size while the selected answer retains focus;
+//! in one row. The disclosure is set at the route's `COPY_SIZE` (the 26 of every Settings page's
+//! sentence, not a first-run size of its own), and exceptional overflow scrolls while the selected
+//! answer retains focus;
 //! the second
 //! stage is a push of the same type carrying the first answer in its argument, so BACK from the
 //! second is the surface's ordinary pop.
