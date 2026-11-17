@@ -312,7 +312,7 @@ impl Shelf {
                 let arrived = (to.entry == self.entry).then(|| here(&to.elem)).flatten();
                 // the reader has moved on from what the page returned with: a deliberate move, or
                 // focus gone from this shelf's cards (a header control, another shelf)
-                if arrived.is_none() || matches!(by, By::Dir | By::Script | By::Pointer) {
+                if arrived.is_none() || matches!(by, By::Dir | By::Pointer) {
                     self.returning = false;
                 }
                 if let Some(a) = arrived {

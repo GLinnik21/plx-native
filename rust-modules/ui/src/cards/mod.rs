@@ -419,7 +419,7 @@ impl Seen {
 
     pub(crate) fn of(by: &crate::screen::By, arrived: usize) -> Self {
         // a by-id jump (`By::Script`) is as deliberate as a key: the eye should see the card arrive
-        if matches!(by, crate::screen::By::Dir | crate::screen::By::Script | crate::screen::By::Pointer) { Seen::Deliberate(arrived) } else { Seen::Other }
+        if matches!(by, crate::screen::By::Dir | crate::screen::By::Pointer) { Seen::Deliberate(arrived) } else { Seen::Other }
     }
 }
 

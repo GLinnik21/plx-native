@@ -1442,7 +1442,7 @@ impl LibraryScreen {
                 // focus WITHIN the page. Only the latter claims the arrival from the cells that land.
                 let engine_seat = by == &By::Dir && self.initial && !self.switched && to.entry == self.entry
                     && from.is_none_or(|from| from.entry != self.entry);
-                if matches!(by, By::Dir | By::Pointer | By::Script) && !engine_seat {
+                if matches!(by, By::Dir | By::Pointer) && !engine_seat {
                     self.initial = false;
                     self.provisional = None;
                 }

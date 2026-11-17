@@ -1269,13 +1269,13 @@ impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
                 let page = &mut self.page;
-                if matches!(by, By::Dir | By::Pointer | By::Script)
+                if matches!(by, By::Dir | By::Pointer)
                     || page.person(cx).is_some_and(|person| page.locate(person, to.elem).is_some())
                 {
                     page.return_pending = false;
                 }
                 if matches!(page.person(cx).and_then(|p| page.locate(p, to.elem)), Some(Located::Header))
-                    && matches!(by, By::Dir | By::Pointer | By::Script)
+                    && matches!(by, By::Dir | By::Pointer)
                 {
                     page.header_marked = true;
                 }

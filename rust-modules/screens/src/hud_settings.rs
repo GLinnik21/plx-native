@@ -1126,7 +1126,7 @@ impl Machine<InnerHost> for HudPage {
                 Handled::No
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
-                if matches!(by, plx_machine::machine::By::Dir | plx_machine::machine::By::Pointer | plx_machine::machine::By::Script) { self.state.provisional = false; }
+                if matches!(by, plx_machine::machine::By::Dir | plx_machine::machine::By::Pointer) { self.state.provisional = false; }
                 form_focus(&mut self.form, to.elem);
                 self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
                 self.follow.follow(&self.sentence());
