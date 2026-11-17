@@ -24,7 +24,7 @@ A run, per case:
 
   1. `materialize ID --into DIR` rebuilds the repository as the reviewer would have met it: a clone
      that shares this checkout's objects and holds no ref but `base` (the squash's parent) and `head`
-     (the squash), so no branch, tag or log leads to the fix. It prints the task to hand the reviewer.
+     (the squash) and no reflog, so no branch, tag or log leads to the fix. It prints the task to hand the reviewer.
      The answer key is never printed by this command.
   2. Start `pr-reviewer` with that task and save its report.
   3. `grade-prompt ID --report FILE` prints the grading task (the key and the report) for a second
@@ -44,6 +44,7 @@ and the cause is readable in that pull request's diff; never edit a key to fit a
 """
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -144,6 +145,9 @@ def materialize(case, into, repo=ROOT):
         done = git(into, *step)
         if done.returncode != 0:
             sys.exit('git %s failed in %s: %s' % (step[0], into, done.stderr.strip()))
+    # `git clone` logged the source's HEAD, which has the fix behind it: `git reflog` would lead there.
+    shutil.rmtree(into / '.git' / 'logs', ignore_errors=True)
+    git(into, 'config', 'core.logAllRefUpdates', 'false')
     left = git(into, 'for-each-ref', '--format=%(refname)').stdout.split()
     if sorted(left) != ['refs/heads/base', 'refs/heads/head']:
         sys.exit('%s still holds other refs: %s' % (into, ' '.join(left)))

@@ -95,6 +95,7 @@ class Replay(unittest.TestCase):
             self.assertEqual(git(into, "rev-parse", "base", "head", "HEAD").split(), [start, bug, bug])
             self.assertEqual((into / "f.txt").read_text(), "b\n")
             self.assertNotIn(fix, git(into, "log", "--all", "--format=%H"))
+            self.assertNotIn(fix, git(into, "log", "--reflog", "--format=%H"))  # the clone's own reflog names it
             self.assertEqual(git(into, "tag"), "")
             self.assertEqual(git(into, "remote"), "")
 
