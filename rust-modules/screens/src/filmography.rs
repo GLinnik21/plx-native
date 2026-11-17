@@ -1857,6 +1857,40 @@ mod tests {
         }
         plx_ui::table::assert_no_fit_failures(&out);
     }
+
+    /// **The accessibility ids:** the screen answers its own namespace (`filmography`, not the
+    /// `person` word it shares), the department pills `tab.<i>` and the open department's credits
+    /// `row.<i>`; a credit a server holds carries that copy's ratingKey as its subject, and the
+    /// view conforms.
+    #[test]
+    fn tabs_and_rows_answer_their_ids_and_conform() {
+        use plx_ui::a11y::{conformance, A11yPath, Role};
+        let serial = plx_base::testlock::serial();
+        let mut s = screen(7, &serial);
+        let measure = FixtureMeasure;
+        let c = cx(&measure, None);
+        assert_eq!(Screen::<FilmographyHost>::a11y_ns(&s), "filmography");
+        conformance::<FilmographyHost, _>(&s, &c);
+
+        let find = |text: &str| Focusable::<FilmographyHost>::a11y_find(&s, &A11yPath::parse_relative(text).unwrap(), &c);
+        assert_eq!(find("tab.0"), s.elem_for_tab(0));
+        assert_eq!(find("tab.1"), s.elem_for_tab(1));
+        assert_eq!(find("tab.2"), None, "two departments");
+        assert_eq!(find("row.39"), s.elem_for_row(39));
+        assert_eq!(find("row.40"), None, "forty credits in Actor");
+        let row = Focusable::<FilmographyHost>::a11y(&s, &find("row.3").unwrap(), &c).unwrap();
+        assert_eq!(row.role, Role::Row);
+        assert_eq!(row.label.as_deref(), Some("Film 3"));
+        assert_eq!(row.subject, None, "no copy on a server");
+
+        s.department = "Writer".to_string();
+        s.sync_keys(); // re-indexes the open department's credits
+        s.sync_rows(0, false);
+        conformance::<FilmographyHost, _>(&s, &c);
+        let first = Focusable::<FilmographyHost>::a11y_find(&s, &A11yPath::parse_relative("row.0").unwrap(), &c).unwrap();
+        let written = Focusable::<FilmographyHost>::a11y(&s, &first, &c).unwrap();
+        assert_eq!(written.subject.as_deref(), Some("77"), "the held copy's ratingKey");
+    }
 }
 
 #[cfg(test)]
@@ -1891,39 +1925,5 @@ mod preview_gap_tests {
         let short_top = preview_frame(layout, title, "x", &measure).y;
         assert!(short_top >= PV.y && short_top < long_top);
         assert_eq!(short_top, PV.y.max(text.y + short_h + theme::space::LG));
-    }
-
-    /// **The accessibility ids:** the screen answers its own namespace (`filmography`, not the
-    /// `person` word it shares), the department pills `tab.<i>` and the open department's credits
-    /// `row.<i>`; a credit a server holds carries that copy's ratingKey as its subject, and the
-    /// view conforms.
-    #[test]
-    fn tabs_and_rows_answer_their_ids_and_conform() {
-        use plx_ui::a11y::{conformance, A11yPath, Role};
-        let serial = plx_base::testlock::serial();
-        let mut s = screen(7, &serial);
-        let measure = FixtureMeasure;
-        let c = cx(&measure, None);
-        assert_eq!(Screen::<FilmographyHost>::a11y_ns(&s), "filmography");
-        conformance::<FilmographyHost, _>(&s, &c);
-
-        let find = |text: &str| Focusable::<FilmographyHost>::a11y_find(&s, &A11yPath::parse_relative(text).unwrap(), &c);
-        assert_eq!(find("tab.0"), s.elem_for_tab(0));
-        assert_eq!(find("tab.1"), s.elem_for_tab(1));
-        assert_eq!(find("tab.2"), None, "two departments");
-        assert_eq!(find("row.39"), s.elem_for_row(39));
-        assert_eq!(find("row.40"), None, "forty credits in Actor");
-        let row = Focusable::<FilmographyHost>::a11y(&s, &find("row.3").unwrap(), &c).unwrap();
-        assert_eq!(row.role, Role::Row);
-        assert_eq!(row.label.as_deref(), Some("Film 3"));
-        assert_eq!(row.subject, None, "no copy on a server");
-
-        s.department = "Writer".to_string();
-        s.sync_keys(); // re-indexes the open department's credits
-        s.sync_rows(0, false);
-        conformance::<FilmographyHost, _>(&s, &c);
-        let first = Focusable::<FilmographyHost>::a11y_find(&s, &A11yPath::parse_relative("row.0").unwrap(), &c).unwrap();
-        let written = Focusable::<FilmographyHost>::a11y(&s, &first, &c).unwrap();
-        assert_eq!(written.subject.as_deref(), Some("77"), "the held copy's ratingKey");
     }
 }
