@@ -1361,6 +1361,52 @@ fn an_id_under_a_modal_is_refused_and_focus_does_not_move() {
     assert_eq!(refusals(&rig).len(), 1, "the modal's own id resolves: {:?}", rig.log);
 }
 
+/// **A by-id input whose owner changed before its delivery is refused by the owner guard**, not run
+/// against the page it was addressed to. The batch is `[an input that opens a surface, MAX_STEPS_PRE
+/// no-op deliveries, focus:<page id>]`: the pre-commit drain's budget runs out before the by-id
+/// delivery, so it is CARRIED across the nav commit that raised the surface. It was addressed to
+/// the page at ingest, but when it is delivered the new surface owns input. It leaves the one
+/// `no_owner` refusal line, moves no focus on the page, and emits no key.
+#[test]
+fn a_by_id_input_carried_past_a_commit_that_changed_the_owner_is_refused_not_run_against_the_page() {
+    use plx_machine::machine::InputOwner;
+    // A card's OK opens a page, a request presents a modal: each is parked and commits after the drain.
+    for opener in ["a card's OK opens a page", "a presented modal"] {
+        let (mut d, mut rig) = boot(FixtureArg::Home);
+        d.nav.next_style = Style::Compact;
+        let page = d.nav.top_page().unwrap().id;
+        let page_focus = d.input.engine.read(InputOwner::Entry(page)).current;
+        assert!(page_focus.is_some_and(|k| k.elem != 1), "the test needs a real move on the page");
+        let page_inputs = events_of(&d, 0).matches("\"input\"").count();
+        let page_moves = events_of(&d, 0).matches("\"focus_moved\"").count();
+
+        let mut batch = Vec::new();
+        if opener == "a presented modal" {
+            d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+        } else {
+            batch.push(key(Key::Ok, tick(16)));
+        }
+        // a Left RELEASE with nothing armed moves nothing: it only spends one delivery each
+        batch.extend((0..super::dispatch::MAX_STEPS_PRE).map(|_| key_up(Key::Left, tick(16))));
+        batch.push(by_id("home.row.1", false, None, tick(16)));
+        let r = d.frame(&mut rig, tick(16), batch, vec![], &mut NoTap);
+
+        let owner = d.focus().map(|k| k.entry);
+        assert_ne!(owner, Some(page), "{opener}: the commit moved input off the page");
+        let ns = d.nav.entry(owner.unwrap()).and_then(|e| e.inst.as_ref()).unwrap().screen.a11y_ns();
+        assert_eq!(refusals(&rig), vec![format!("a11y: refused focus home.row.1 no_owner owner={ns}")],
+            "{opener}: {:?}", rig.log);
+        assert!(r.dropped_deliveries >= 1, "{opener}: the owner guard dropped it");
+        assert_eq!(d.input.engine.read(InputOwner::Entry(page)).current, page_focus,
+            "{opener}: the page's focus did not move");
+        let events = events_of(&d, 0);
+        assert!(!events.contains("by_script"), "{opener}: {events}");
+        assert_eq!(events.matches("\"focus_moved\"").count(), page_moves, "{opener}: no focus move reached the page: {events}");
+        assert!(events.matches("\"input\"").count() >= page_inputs + super::dispatch::MAX_STEPS_PRE as usize / 2,
+            "{opener}: the batch's earlier inputs ran against the page");
+    }
+}
+
 /// **`press:` makes the screen receive OK Down and Up**: the engine's press commits on a card, and a
 /// bare element activates on the down edge.
 #[test]

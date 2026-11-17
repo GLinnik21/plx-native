@@ -694,7 +694,8 @@ pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootst
     Ok(())
 }
 pub(crate) fn validate_resolution_recording(recording:&Recording) -> Result<(), &'static str> {
-    let (mut id_rows, mut id_inputs) = (0usize, 0usize);
+    // By-id inputs tapped so far and not yet resolved: see the pairing note below.
+    let mut id_owed = 0usize;
     for frame in &recording.frames {
         if frame.focus.is_none() { return Err("missing controlled focus truth"); }
         if frame.focus.flatten().is_some_and(|(entry,_,_)|entry==0) { return Err("invalid focus entry"); }
@@ -710,14 +711,19 @@ pub(crate) fn validate_resolution_recording(recording:&Recording) -> Result<(), 
         // Legacy pointers have no rs rows; current product pages are all Engine pages. Runtime
         // observation accounting still protects generic legacy test doubles.
         if hits!=pointer_inputs { return Err("incoherent pointer truth"); }
-        id_rows += frame.resolutions.iter().filter(|row|row["payload"]["kind"]=="Id").count();
-        id_inputs += frame.inputs.iter().filter(|row|matches!(decode_input(row),
+        // Every by-id input is resolved exactly once, at its ORDERED DELIVERY position, and that
+        // position is not the pre-pass a pointer resolves in: a delivery the drain's budget carried
+        // runs in a later frame than the one that tapped it. A pointer's Hit rows therefore pair
+        // with its frame's inputs exactly, while Id rows pair as a running balance: a frame's rows
+        // are those of inputs tapped in this frame or an earlier one (a row ahead of its input is an
+        // extra row), and the balance is zero at the end (an input left over has no row). With
+        // nothing carried this is the exact per-frame pairing.
+        id_owed += frame.inputs.iter().filter(|row|matches!(decode_input(row),
             Ok(plx_machine::machine::InputEvent{kind:plx_machine::machine::InputKind::ById{..},..}))).count();
+        let id_rows = frame.resolutions.iter().filter(|row|row["payload"]["kind"]=="Id").count();
+        id_owed = id_owed.checked_sub(id_rows).ok_or("id resolution without a by-id input")?;
     }
-    // Every by-id input is resolved exactly once, at its ordered delivery position. That position
-    // can be a later frame than the one that tapped it (a delivery the batch carried), so the two
-    // are paired over the whole recording rather than frame by frame.
-    if id_rows!=id_inputs { return Err("incoherent id truth"); }
+    if id_owed != 0 { return Err("by-id input without an id resolution"); }
     Ok(())
 }
 impl Replay {
@@ -2193,6 +2199,46 @@ mod tests {
         plx_machine::landgate::disarm();
     }
 
+    /// **An Id row pairs with its by-id input**: exactly in a frame with nothing carried, and as a
+    /// running balance when the drain's budget carried the delivery into a later frame. A missing row,
+    /// an extra row, and a row that runs AHEAD of its input are all refused.
+    #[test]
+    fn a_by_id_input_pairs_with_one_id_row_and_a_missing_or_extra_row_is_refused() {
+        use plx_machine::machine::{InputEvent, InputKind, Source, Tick};
+        let initial=super::super::bootstrap::Initial::synthetic_home(1,32517,None).unwrap();
+        let frame=|f:u64,inputs:usize,rows:usize|{
+            let by_id=InputEvent {at:Tick{ms:(f*16) as u32,dt_us:16_000},source:Source::RemoteFifo,
+                kind:InputKind::ById{id:"home.row.2".into(),press:None,expect:None}};
+            let mut input=super::super::bootstrap::effects::input(&by_id).unwrap();
+            input["f"]=json!(f);input["t"]=json!("in");
+            // an unaddressed by-id input: no page owned input, so a `NoOwner` row names entry 0
+            let payload=serde_json::to_value(ResolutionWire::Id{entry:0,focus:None,group:None,
+                refusal:plx_ui::dispatch::IdRefusal::NoOwner.code()}).unwrap();
+            plx_ui::rec::Frame {f,focus:Some(None),st:Some(7),inputs:vec![input;inputs],
+                resolutions:vec![json!({"f":f,"t":"rs","payload":payload});rows],..Default::default()}
+        };
+        let recording=|frames:Vec<plx_ui::rec::Frame>|Recording {header:Header::new(state_fp(),&initial),
+            frames,metrics:Default::default(),stopped_at:None};
+        // one input, one row, the same frame; two of each; none of either
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,1,1)])),Ok(()));
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,2,2),frame(2,0,0)])),Ok(()));
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,0,0)])),Ok(()));
+        // a carried delivery: tapped in frame 1, resolved in frame 3
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,1,0),frame(2,0,0),frame(3,0,1)])),Ok(()));
+        // a MISSING row: the input has none, in its frame or after
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,1,0)])),
+            Err("by-id input without an id resolution"));
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,2,1),frame(2,0,0)])),
+            Err("by-id input without an id resolution"));
+        // an EXTRA row: none in the recording, a second beside one input, one a frame AHEAD of its input
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,0,1)])),
+            Err("id resolution without a by-id input"));
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,1,2)])),
+            Err("id resolution without a by-id input"));
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,0,1),frame(2,1,0)])),
+            Err("id resolution without a by-id input"));
+    }
+
     #[test]
     fn product_targets_and_resolve_grade_pointwise_and_continue_before_effects() {
         let _serial=plx_base::testlock::serial();
@@ -2779,7 +2825,11 @@ mod tests {
         assert_eq!(plx_ui::rec::state_fp(APP_SHAPES), 0x19b7_5414_e5d4_c071);
         // V13 adds the exact captured presentation ingress, canonical latest-source
         // generation and sealed queued event. The V12 fixture/census remains history.
-        assert_eq!(state_fp(), 0xea74_3865_5115_46c5, "current V13 producer census");
+        // `ProductResolutionV2` (the by-id `Id` resolution row, a11y-ids D6) moves the full census
+        // from 0xea74_3865_5115_46c5, which `the_pre_content_navigation_recording_shape_is_refused`
+        // keeps refused at the shape boundary like every older value.
+        assert_eq!(state_fp(), 0x7f1d_280c_909c_8603, "current V13 producer census");
+        assert_ne!(state_fp(), 0xea74_3865_5115_46c5, "the census without the `Id` resolution row");
         assert_ne!(state_fp(), 0x3ed9_2e0f_25bd_7f8e, "V12 cannot describe captured positive-swap presentation inputs");
     }
 
@@ -2853,7 +2903,8 @@ mod tests {
         for old in [0x8446_64d2_3399_0e72, 0x002c_b89e_e6a9_3668, 0x51ac_a85c_c16b_4b59,
             0x8af1_d09e_bbb1_1d47, 0x76d4_1ddb_e172_6b88, 0x702b_f9f7_e7c8_fe57,
             0x7252_4cf7_ed8d_97a3, 0x5ba4_34ad_d5db_5bdf, 0xe61b_6d55_f442_8637,
-            0x1006_0b14_b43f_5f57, 0x19e7_c63b_e018_e61f, 0x489b_bd48_8180_e355] {
+            0x1006_0b14_b43f_5f57, 0x19e7_c63b_e018_e61f, 0x489b_bd48_8180_e355,
+            0xea74_3865_5115_46c5] {
             let manifest = format!(r#"{{"schema": {}, "state_fp": {old}}}"#, plx_ui::rec::SCHEMA);
             assert_eq!(plx_ui::rec::Recording::parse(&manifest, &[], state_fp()).err(),
                 Some(plx_ui::rec::RecError::StateShape { theirs: old, ours: state_fp() }));

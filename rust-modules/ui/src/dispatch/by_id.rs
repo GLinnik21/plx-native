@@ -185,20 +185,24 @@ where
     }
 
     /// Act on one by-id input at its delivery position. `inst` is the instance the delivery was
-    /// addressed to at ingest; it is the owner only if nothing earlier in the batch changed that.
+    /// addressed to at ingest. `instance_owns_input` is the verdict of the owner guard in
+    /// `execute_deliver`, which runs first: `false` means input moved away from `inst` after
+    /// ingest (an earlier delivery of the batch, or a commit before a carried delivery ran), so the
+    /// input resolves as a `NoOwner` refusal. The television keyboard owns input without moving the
+    /// page's entry, so it is checked here.
     pub(super) fn deliver_by_id(
         &mut self,
         rig: &mut dyn Rig<H>,
         parts: &CxParts<H::Elem>,
         inst: InstanceId,
         ev: &InputEvent<H::Elem>,
+        instance_owns_input: bool,
         out: &mut Vec<Stamped<H>>,
     ) {
         let InputKind::ById { id, press, expect } = &ev.kind else { return };
         let act = if press.is_some() { "press" } else { "focus" };
         let entry = self.nav.entry_of_instance(inst);
-        let owned = !self.input.keyboard && entry.is_some() && self.owner_entry() == entry
-            && entry.and_then(|entry| self.nav.instance_of(entry)) == Some(inst);
+        let owned = instance_owns_input && !self.input.keyboard && entry.is_some();
         let row_entry = entry.unwrap_or(EntryId(0));
         // Targets mode feeds the recorded answer without computing one; every other mode computes
         // it, and Resolve grades it against the row.

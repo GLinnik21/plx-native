@@ -406,13 +406,32 @@ mod tests {
     /// keyboard in the way lists nothing.
     #[test]
     fn the_dispatcher_projects_its_owner_and_a_keyboard_lists_nothing() {
+        use crate::containers::tabs::StripMember;
+        use crate::widgets::{TAB_KEY_HOME, TAB_KEY_WATCHLIST};
         let (mut d, mut rig, _home) = booted();
+        // the shared strip is composed: two pills, named by their destinations, ahead of the page's row
+        d.nav.tabs.strip = vec![
+            StripMember::new(TAB_KEY_HOME, Rect::new(100.0, 10.0, 160.0, 48.0)),
+            StripMember::new(TAB_KEY_WATCHLIST, Rect::new(280.0, 10.0, 160.0, 48.0)),
+        ];
         let name = d.top_screen().expect("a page is mounted").name();
         let snap = d.a11y_snapshot(&mut rig);
         assert_eq!((snap.route, snap.owner, snap.frame), (Some(name), OwnerKind::Page, d.frame_index()));
         let ns = snap.ns.expect("a page owns input");
-        assert!(snap.elems.iter().all(|e| e.id.starts_with(&format!("{ns}.")) || e.id.starts_with("nav.")));
-        assert!(snap.elems.iter().filter(|e| e.focused).count() <= 1);
+        assert_eq!(ns, "home", "the fixture's Home answers its route word");
+        // Not vacuous: a non-empty list, with the concrete ids of BOTH halves of the composed view
+        // (`PageWithStrip` forwards the strip's pills under `nav` and the page's own under its word).
+        let ids: Vec<&str> = snap.elems.iter().map(|e| e.id.as_str()).collect();
+        assert!(!ids.is_empty(), "the booted page lists elements");
+        for want in ["nav.home", "nav.watchlist", "home.row.0"] {
+            assert!(ids.contains(&want), "{want} is listed: {ids:?}");
+        }
+        assert!(snap.elems.iter().all(|e| e.id.starts_with(&format!("{ns}.")) || e.id.starts_with("nav.")), "{ids:?}");
+        assert!(snap.groups.iter().any(|g| g.prefix == "nav" && g.len == 2), "the strip is one group: {:?}", snap.groups);
+        assert!(snap.groups.iter().any(|g| g.prefix == "home.row"), "{:?}", snap.groups);
+        assert_eq!(snap.elems.iter().filter(|e| e.focused).count(), usize::from(snap.focused.is_some()));
+        let focused = snap.focused.as_deref().expect("the booted page seats focus");
+        assert!(ids.contains(&focused), "the focused id is one of the listed elements: {focused}");
         assert_eq!(snap, d.a11y_snapshot(&mut rig), "the projection reads, it does not move anything");
 
         d.input.keyboard = true;

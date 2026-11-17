@@ -3039,24 +3039,36 @@ where
                         self.cancel_keyboard_gestures(report);
                     }
                 }
-                // An accessibility-id focus/press acts HERE, at its ordered delivery position (every
-                // earlier input of the batch has already acted), and no screen is stepped with it:
-                // the dispatcher resolves it, moves focus and queues the OK key's edges itself.
-                if let ScreenEvent::Input(input) = &ev {
-                    if matches!(input.kind, InputKind::ById { .. }) {
-                        self.deliver_by_id(rig, parts, id, input, out);
-                        return;
-                    }
-                }
                 // A carried event can outlive its input owner. Reject it before the handler
                 // can write stores or request playback; a later navigation-effect guard is
                 // too late. Addressed commands, notices and lifecycle restoration still reach
                 // covered entries (including the host beneath a restored modal).
+                //
+                // A by-id focus/press (`InputKind::ById`) is the one input this guard does not
+                // drop without a trace: it still owes the recording its resolution row and the
+                // reader its refusal line, so it resolves as a `NoOwner` refusal instead
+                // (`deliver_by_id` with `instance_owns_input = false`), moving no focus and
+                // emitting no key.
+                let by_id = match &ev {
+                    ScreenEvent::Input(input) if matches!(input.kind, InputKind::ById { .. }) => Some(input),
+                    _ => None,
+                };
                 if matches!(ev, ScreenEvent::Input(_) | ScreenEvent::Activate(_) |
                     ScreenEvent::PressHold(_) | ScreenEvent::PressCommit(_))
                     && self.owner_entry().and_then(|entry| self.nav.instance_of(entry)) != Some(id)
                 {
                     report.dropped_deliveries += 1;
+                    if let Some(input) = by_id {
+                        self.deliver_by_id(rig, parts, id, input, false, out);
+                    }
+                    return;
+                }
+                // An accessibility-id focus/press acts HERE, once the delivery has passed the
+                // owner guard, at its ordered delivery position (every earlier input of the batch
+                // has already acted), and no screen is stepped with it: the dispatcher resolves
+                // it, moves focus and queues the OK key's edges itself.
+                if let Some(input) = by_id {
+                    self.deliver_by_id(rig, parts, id, input, true, out);
                     return;
                 }
                 // Ingest releases an already-live gesture before the press Tick. A Down in

@@ -5,8 +5,8 @@
 //! waits until the file's `nonce` is the one it sent (`tools/a11y.py`).
 //!
 //! **Where it sits.** The token is parsed in `ingress_token` BEFORE `dispatch_remote_token`, so it
-//! notes no input damage and, being no key, is not recorded. The request waits in a one-slot
-//! frame-thread cell (the latest nonce wins); [`serve`] takes it at the frame tail
+//! notes no input damage and, being no key, is not recorded. The request waits in the app's
+//! [`Pending`] slot, `App::a11y_pending` (the latest nonce wins); [`serve`] takes it at the frame tail
 //! (`run.rs::report`), which both the presented and the skipped path reach, and asks for no frame:
 //! like the focus probe it must never hold the idle gate open. On a skipped path the answer can lag by
 //! one idle poll, which the reader's nonce wait absorbs. A full writer queue leaves the request
@@ -28,7 +28,6 @@
 //! never writes the file; `run.rs` names the module only behind the same cfg. Over Lab Control the
 //! token is accepted in a non-RELEASE `LAB=1` build, and writes a file Lab cannot read.
 
-use std::cell::Cell;
 use std::io::Write as _;
 use std::path::Path;
 
@@ -46,7 +45,7 @@ const NONCE_BYTES: usize = 32;
 const SCHEMA: u32 = 1;
 
 /// One request's nonce, held by value: fixed, `Copy` and ASCII by construction, so the pending slot
-/// is a plain `Cell` and owns no heap.
+/// owns no heap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Nonce {
     len: u8,
@@ -73,10 +72,42 @@ impl Nonce {
     }
 }
 
-thread_local! {
-    /// The latest `state:` request not yet served. The frame thread parses it (`ingress_token`) and
-    /// serves it (`report`), so the cell is that thread's and a test thread has its own.
-    static PENDING: Cell<Option<Nonce>> = const { Cell::new(None) };
+/// **The latest `state:` request not yet served**, the app's one slot (`App::a11y_pending`). The frame
+/// thread parses a request into it (`ingress_token`) and serves it (`report`), so no thread shares it
+/// and a test builds its own.
+#[derive(Default)]
+pub(super) struct Pending(Option<Nonce>);
+
+impl Pending {
+    /// **The ingress seam** (`run.rs::ingress_token`, before `dispatch_remote_token`): `Some(accepted)`
+    /// when `token` is a `state:` token, `None` for every other token. It touches only this slot, so it
+    /// records nothing and notes no damage. A valid nonce replaces any request still waiting (the
+    /// latest wins); a malformed one is refused and leaves the waiting request alone.
+    pub(super) fn intercept(&mut self, token: &str) -> Option<bool> {
+        let nonce = token.strip_prefix("state:")?;
+        match Nonce::parse(nonce) {
+            Some(nonce) => {
+                self.0 = Some(nonce);
+                Some(true)
+            }
+            None => {
+                plx_base::eventlog::log(Note::BadNonce.line());
+                Some(false)
+            }
+        }
+    }
+
+    /// Take the pending request (the latest nonce), if any.
+    pub(super) fn take(&mut self) -> Option<Nonce> {
+        self.0.take()
+    }
+
+    /// Put a request back (the writer queue was full) unless a newer one has arrived meanwhile.
+    fn keep_unless_newer(&mut self, nonce: Nonce) {
+        if self.0.is_none() {
+            self.0 = Some(nonce);
+        }
+    }
 }
 
 /// Every line this module may log: closed words, so no snapshot text can reach the event log.
@@ -102,34 +133,12 @@ fn write_failed(kind: std::io::ErrorKind) -> String {
     format!("a11y: state write failed ({kind:?})")
 }
 
-/// **The ingress seam** (`run.rs::ingress_token`, before `dispatch_remote_token`): `Some(accepted)`
-/// when `token` is a `state:` token, `None` for every other token. It touches only the pending slot,
-/// so it records nothing and notes no damage.
-pub(super) fn intercept(token: &str) -> Option<bool> {
-    let nonce = token.strip_prefix("state:")?;
-    match Nonce::parse(nonce) {
-        Some(nonce) => {
-            PENDING.with(|pending| pending.set(Some(nonce)));
-            Some(true)
-        }
-        None => {
-            plx_base::eventlog::log(Note::BadNonce.line());
-            Some(false)
-        }
-    }
-}
-
-/// Take the pending request (the latest nonce), if any.
-pub(super) fn take() -> Option<Nonce> {
-    PENDING.with(Cell::take)
-}
-
 /// **The frame tail's half** (`run.rs::report`): answer the pending request, if there is one. The
 /// snapshot is read here, on the frame thread, and the file is written by one off-frame job.
 pub(super) fn serve(app: &mut App) {
     plx_base::step::assert_io_allowed("a11y state runner");
-    let Some(nonce) = take() else { return };
-    let App { runtime, bridge, pages, .. } = app;
+    let Some(nonce) = app.a11y_pending.take() else { return };
+    let App { runtime, bridge, pages, .. } = &mut *app;
     let snapshot = pages.a11y_snapshot(&mut runtime.bridge(bridge));
     let body = to_json(&snapshot, nonce.as_str()).into_bytes();
     // The instance root is captured on the app boundary, never inside the worker.
@@ -143,11 +152,7 @@ pub(super) fn serve(app: &mut App) {
         // Dropping the ticket does not cancel accepted work.
         Ok(_) => {}
         // A full queue is transient: keep the request unless a newer one has arrived.
-        Err(SubmitError::Full) => PENDING.with(|pending| {
-            if pending.get().is_none() {
-                pending.set(Some(nonce));
-            }
-        }),
+        Err(SubmitError::Full) => app.a11y_pending.keep_unless_newer(nonce),
         Err(SubmitError::Stopped | SubmitError::StartFailed) => {
             plx_base::eventlog::log(Note::WriterStopped.line());
         }
@@ -357,26 +362,35 @@ mod tests {
     /// leaves the pending request alone), every other token is not this module's.
     #[test]
     fn a_state_token_is_intercepted_and_only_a_valid_nonce_is_kept() {
-        let _ = take();
-        assert_eq!(intercept("down"), None);
-        assert_eq!(intercept("statefoo"), None, "no colon: not a state token");
-        assert_eq!(intercept("txt:state:abc"), None);
-        assert_eq!(take(), None);
+        let mut pending = Pending::default();
+        assert_eq!(pending.intercept("down"), None);
+        assert_eq!(pending.intercept("statefoo"), None, "no colon: not a state token");
+        assert_eq!(pending.intercept("txt:state:abc"), None);
+        assert_eq!(pending.take(), None);
 
-        assert_eq!(intercept("state:1"), Some(true));
-        assert_eq!(intercept("state:Ab_-9"), Some(true));
-        assert_eq!(take().as_ref().map(Nonce::as_str), Some("Ab_-9"), "the latest nonce wins");
-        assert_eq!(take(), None, "serving consumes it");
+        assert_eq!(pending.intercept("state:1"), Some(true));
+        assert_eq!(pending.intercept("state:Ab_-9"), Some(true));
+        assert_eq!(pending.take().as_ref().map(Nonce::as_str), Some("Ab_-9"), "the latest nonce wins");
+        assert_eq!(pending.take(), None, "serving consumes it");
 
         let longest = format!("state:{}", "a".repeat(NONCE_BYTES));
         let too_long = format!("{longest}a");
-        assert_eq!(intercept(&longest), Some(true));
-        let _ = take();
-        assert_eq!(intercept("state:one"), Some(true));
+        assert_eq!(pending.intercept(&longest), Some(true));
+        let _ = pending.take();
+        assert_eq!(pending.intercept("state:one"), Some(true));
         for bad in ["state:", too_long.as_str(), "state:a.b", "state:a b", "state:é", "state:a/b", "state:a;b"] {
-            assert_eq!(intercept(bad), Some(false), "{bad:?}");
+            assert_eq!(pending.intercept(bad), Some(false), "{bad:?}");
         }
-        assert_eq!(take().as_ref().map(Nonce::as_str), Some("one"), "a refusal leaves the request");
+        assert_eq!(pending.take().as_ref().map(Nonce::as_str), Some("one"), "a refusal leaves the request");
+
+        // a request the full writer queue handed back waits again, but never over a newer one
+        let mut pending = Pending::default();
+        let old = Nonce::parse("old").unwrap();
+        pending.keep_unless_newer(old);
+        assert_eq!(pending.take(), Some(old));
+        pending.intercept("state:new");
+        pending.keep_unless_newer(old);
+        assert_eq!(pending.take().as_ref().map(Nonce::as_str), Some("new"));
     }
 
     /// **The writer leaves only the two fixed names**: after a write there is the state file and
