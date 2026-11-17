@@ -319,19 +319,7 @@ def owned_ui_state_violations(source, family):
                     errors.append('modal cache identity must retain its reviewed field shape')
                     continue
                 fields = re.sub(r'\bstd::sync::', '', code(tokens[j + 1:ends[j]])).replace(' ', '').rstrip(',')
-                if fields != 'owner:Arc<()>,layers:Vec<CacheLayer>':
-                    errors.append('modal cache identity cannot retain logical readout/policy facts')
-            # A layer of the key is the surface's id, whether it is closing, and whether its style kept
-            # the host live while open (what `bind_owner` needs to know a close may keep the page's
-            # snapshot): GL cache provenance read once, off the sole policy table, when the key is
-            # made. Nothing else about a surface may ride in it.
-            if token == ('code', 'struct') and tokens[i + 1] == ('code', 'CacheLayer'):
-                j = i + 2
-                if tokens[j] != ('code', '{'):
-                    errors.append('modal cache identity must retain its reviewed field shape')
-                    continue
-                fields = code(tokens[j + 1:ends[j]]).replace(' ', '').rstrip(',')
-                if fields != 'id:EntryId,closing:bool,live_while_open:bool':
+                if fields != 'owner:Arc<()>,layers:Vec<(EntryId,bool)>':
                     errors.append('modal cache identity cannot retain logical readout/policy facts')
         for name in ('page_veiled', 'page_veil', 'is_open', 'host_users', 'host_closing', 'shown_this_run'):
             if re.search(r'\bfn\s+' + name + r'\(\)', text):

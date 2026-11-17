@@ -346,7 +346,7 @@ class BoundaryTests(unittest.TestCase):
             ('modal', 'struct Owner { modal: ModalRead, presentation: ModalPresentation }'),
             ('hint', 'struct Fixture { read: HoldHintRead } impl Fixture { fn event(&mut self, event: HoldHintEvent) { self.read.apply(event); } }'),
             ('modal', 'thread_local! { static CACHE: std::cell::RefCell<FrameCache> = RefCell::new(FrameCache::new()); static HELD: Cell<Held> = Cell::new(Held::Nothing); static TARGET: RefCell<Option<plx_base::surface::PageTarget>> = RefCell::new(None); static CACHE_OWNER: RefCell<Option<crate::containers::modal::ModalCacheKey>> = RefCell::new(None); }'),
-            ('modal', 'struct ModalCacheKey { owner: std::sync::Arc<()>, layers: Vec<CacheLayer> } struct CacheLayer { id: EntryId, closing: bool, live_while_open: bool } impl ModalCacheKey { fn same_snapshot(&self, other: &Self) -> bool { Arc::ptr_eq(&self.owner, &other.owner) && self.layers == other.layers } }'),
+            ('modal', 'struct ModalCacheKey { owner: std::sync::Arc<()>, layers: Vec<(EntryId, bool)> } impl ModalCacheKey { fn same_snapshot(&self, other: &Self) -> bool { Arc::ptr_eq(&self.owner, &other.owner) && self.layers == other.layers } }'),
             ('hint', '#[cfg(test)] mod fixtures { thread_local! { static LESSON: Cell<bool> = Cell::new(false); } }'),
             ('modal', '// static OPEN_COUNT: AtomicU32 = value;\nfn decoy() { let s = "static AGAIN: Cell<bool> = value;"; }'),
             ('navigation', 'struct Owner { image: PageImage } impl Owner { fn read(&self, entry: EntryId, instance: InstanceId) -> PageImageRead { self.image.read(entry, instance) } }'),
@@ -357,9 +357,7 @@ class BoundaryTests(unittest.TestCase):
 
     def test_owned_ui_state_cache_identity_cannot_publish_policy(self):
         for source in (
-            'struct ModalCacheKey { owner: Arc<()>, layers: Vec<CacheLayer>, read: ModalRead }',
-            'struct ModalCacheKey { owner: Arc<()>, layers: Vec<CacheLayer> } struct CacheLayer { id: EntryId, closing: bool, live_while_open: bool, read: ModalRead }',
-            'struct ModalCacheKey { owner: Arc<()>, layers: Vec<(EntryId, bool)> }',
+            'struct ModalCacheKey { owner: Arc<()>, layers: Vec<(EntryId, bool)>, read: ModalRead }',
             'fn renamed_policy(input: &ModalPresentation, key: &ModalCacheKey) -> bool { key.same_snapshot(&input.cache_key()) }',
             'thread_local! { static CACHE_OWNER: RefCell<Option<ModalRead>> = RefCell::new(None); }',
             'thread_local! { static CACHE_OWNER: RefCell<Option<ModalCacheKey>> = RefCell::new(None); } fn page_veiled() -> bool { CACHE_OWNER.with_borrow(|value| value.is_some()) }',
