@@ -330,6 +330,15 @@ impl ModalCacheKey {
     pub fn same_snapshot(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.owner, &other.owner) && self.layers == other.layers
     }
+    /// Is `other` this key's stack with the same layers, some of which STARTED closing and none of
+    /// which came or went (a layer is `(entry, closing)`; true when the keys are equal)? What a
+    /// dismissal changes and nothing else: the host cache then keeps the page's snapshot and drops
+    /// only a ground-stage one (`popover::host::bind_owner`).
+    pub fn only_began_closing(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.owner, &other.owner)
+            && self.layers.len() == other.layers.len()
+            && self.layers.iter().zip(&other.layers).all(|(a, b)| a.0 == b.0 && (a.1 == b.1 || (!a.1 && b.1)))
+    }
 }
 impl ModalPresentation {
     pub fn cache_key(&self) -> ModalCacheKey { self.key.clone() }

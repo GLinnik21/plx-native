@@ -119,6 +119,59 @@ fn same_thread_owner_switch_never_reuses_another_hosts_frozen_pixels() {
     assert_eq!(a.modal_presentation().read, a_open.read, "render cache switches cannot mutate modal authority");
 }
 
+/// **The container's own dismissal of a surface keeps the page's snapshot.** A caching surface
+/// starting to close changes the owner's cache key (its layer is `Closing` now), and `bind_owner`
+/// answered with a full `invalidate()`: the close's first frame then redrew the page into the
+/// snapshot, re-sourced the tab bar's blur and re-latched the dim field, the 131% of a 60 Hz
+/// frame's GPU budget that `Popover::release` no longer costs a glass menu. A closing flip drops
+/// what a close must not show (a GROUND-stage composite, the panel at full strength) and keeps the
+/// page's: the page under a fading menu has not changed, and real page damage and motion still
+/// re-take through `begin_frame`.
+#[test]
+fn a_surface_that_starts_closing_keeps_the_page_snapshot_and_drops_only_a_ground_stage() {
+    use crate::dispatch::NoTap;
+    use crate::fixture::{booted, tick, FixtureArg};
+    use crate::containers::modal::Style;
+    use plx_machine::machine::{MachineId, NavOp};
+    let _serial = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
+    let (mut d, mut rig, _) = booted();
+    d.nav.next_style = Style::Compact;
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    let id = d.nav.modals.top().expect("presented").entry.id;
+    let open = d.modal_presentation();
+    assert!(open.read.host_cached && !open.read.closing_only, "premise: an open surface that caches its host");
+    let draw = |modal: &crate::containers::modal::ModalPresentation, page| {
+        super::begin_frame(modal, 0.0, false, false);
+        PIXELS.with(|p| p.borrow_mut().clear());
+        { let _page = page_pass(modal); ink(page); }
+        PIXELS.with(|p| p.borrow().clone())
+    };
+    assert_eq!(draw(&open, "page"), ["page"]);
+    assert!(held() == Held::Page, "premise: the open surface froze the page");
+    let epoch = page_epoch();
+
+    d.request(MachineId::Nav, NavOp::Dismiss(id));
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    let closing = d.modal_presentation();
+    assert!(closing.read.closing_only, "premise: the surface is closing");
+    assert!(!open.cache_key().same_snapshot(&closing.cache_key()), "premise: the close changed the cache key");
+    let before = invalidations();
+    assert_eq!(draw(&closing, "retaken"), ["page"], "the close serves the page's snapshot, it does not redraw the page");
+    assert_eq!(page_epoch(), epoch, "the close's first frame re-took nothing");
+    assert_eq!(invalidations(), before, "…and threw nothing away");
+    assert!(held() == Held::Page);
+
+    // the guard: a GROUND-stage snapshot is the panel at full strength, which a fade must not be
+    // drawn over, so the same flip still drops it
+    let _ = embedded_alert_frame(&open, true, true);
+    let _ = embedded_alert_frame(&open, true, true);
+    assert!(matches!(held(), Held::Ground(_)), "premise: a caching panel's ground is held");
+    super::begin_frame(&closing, 0.0, false, false);
+    assert!(held() == Held::Nothing, "a closing surface keeps no ground snapshot");
+}
+
 struct Reset {
     modal: crate::containers::modal::ModalPresentation,
     frozen: bool,

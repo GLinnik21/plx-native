@@ -601,8 +601,9 @@ impl Popover {
     /// close's first frame the one that redraws the page into the snapshot, re-sources the tab
     /// bar's blur and re-latches the dim field: 131% of a 60 Hz frame's GPU budget on the TV.
     /// Real page damage and page motion during the fade still re-take through
-    /// [`host::begin_frame`], and the host cache's own owner key (the `ModalStack`'s presentation)
-    /// retakes it when the modal changes.
+    /// [`host::begin_frame`]; the host cache's owner key treats the container's own dismissal the
+    /// same way (`host::bind_owner`: a layer that starts closing drops only a ground stage), so the
+    /// close's first frame is not the frame that re-takes the page either.
     fn release(&mut self) {
         self.open = false;
         host::ground_invalidate();
@@ -1038,9 +1039,21 @@ pub mod host {
 
     fn bind_owner(modal: &crate::containers::modal::ModalPresentation) {
         let key = modal.cache_key();
-        let changed = CACHE_OWNER.with_borrow(|old| old.as_ref().is_none_or(|old| !old.same_snapshot(&key)));
+        let (changed, began_closing) = CACHE_OWNER.with_borrow(|old| match old {
+            None => (true, false),
+            Some(old) => (!old.same_snapshot(&key), old.only_began_closing(&key)),
+        });
         if changed {
-            invalidate();
+            // **A layer that only STARTED closing drops a GROUND-stage snapshot and keeps the
+            // page's.** A ground composite is the panel at full strength, which the fade must not be
+            // drawn over; the page under a fading surface has not changed (the scrim and the lift are
+            // drawn live above its snapshot), and real page damage and motion re-take through
+            // [`begin_frame`] below. A full `invalidate()` here made the close's first frame the one
+            // that redraws the page into the snapshot, re-sources the tab bar's blur and re-latches the
+            // dim field: 131% of a 60 Hz frame's GPU budget on the TV, measured on a glass menu's BACK.
+            // A layer that came or went, another stack, or a snapshot a navigation transition owns is
+            // not a dismissal: all of those drop everything.
+            if began_closing && !TRANSITION_OWNS.load(Relaxed) { ground_invalidate(); } else { invalidate(); }
             reset_reflow();
             TRANSITION_OWNS.store(false, Relaxed);
             CACHE_OWNER.set(Some(key));
