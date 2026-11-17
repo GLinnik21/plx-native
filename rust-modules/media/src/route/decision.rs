@@ -7035,6 +7035,12 @@ pub fn resolve_as_preview_for_test(ps: &mut PlaybackSession) {
 pub fn mark_preview_for_test(ps: &mut PlaybackSession) {
     ps.preview = true;
 }
+/// Test-only: mark `ps` as a direct-play playback the Auto Original supervisor watches, as
+/// `apply_plan` leaves it when Quality is Auto and the route is Original.
+#[cfg(any(test, feature = "test-support"))]
+pub fn mark_auto_original_watched_for_test(ps: &mut PlaybackSession) {
+    ps.cur_auto_original_watched = true;
+}
 /// Test-only: install a live transcode route (`encoder` session, optional remux, optional
 /// fixed-HLS delivery) the way a successful [`apply_plan`] leaves it.
 #[cfg(any(test, feature = "test-support"))]
