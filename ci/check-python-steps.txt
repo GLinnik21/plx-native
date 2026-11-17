@@ -186,6 +186,8 @@ python3 ci/test_module_cycle.py
 python3 ci/check-module-cycle.py
 python3 tests/player_pointer.py --selftest
 python3 tests/test_replay_fixtures.py
+# The accessibility-id harness tool (tools/a11y.py): token grammar, state-file wait, id matching.
+python3 tests/test_a11y_tool.py
 python3 tools/prune-gh-caches.py --selftest
 # The demo library and the screenshot scene manifest (make screenshots). Offline: the cases
 # that serve the catalog skip, and say so, where the derived artwork cache is absent.
