@@ -12,7 +12,8 @@ fn search_publication_is_frozen_for_the_frame_then_notified_once_at_the_next_spl
     // This contract measures query publications, not asynchronous source discovery.
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     // Search is owned by `rig` now, so there is no process-wide state to reset — the store's
     // whole lifetime is this test's own `rig` binding.
     rig.search_run(SearchCmd::SetQuery("before".into()));
@@ -20,33 +21,33 @@ fn search_publication_is_frozen_for_the_frame_then_notified_once_at_the_next_spl
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     let count = |d: &Dispatcher<AppHost>| notices(d).split("notices=").nth(1).unwrap().parse::<u32>().unwrap();
     let baseline = count(&d);
-    let retained = rig.search.clone();
+    let retained = rig.retained.search.clone();
     d.emit(MachineId::Nav, Fx::App(AppFx::Store(StoreId::Search,
         StoreCmd::Search(SearchCmd::SetQuery("after".into())))));
     frame(&mut d, &mut rig, AppArg::Search, tick(1), vec![]);
-    assert_eq!({ let household = rig.views().inputs.session.household_ids(); rig.stores.search_snapshot_for_test(rig.directory.view(), &household) }.view().query(), "after",
+    assert_eq!({ let household = rig.views().inputs.session.household_ids(); rig.stores.search_snapshot_for_test(rig.retained.directory.view(), &household) }.view().query(), "after",
         "real store delivery ran");
-    assert_eq!(rig.search.view().query(), "before", "the frame split precedes the store drain");
-    assert!(rig.search.same_publication(&retained));
+    assert_eq!(rig.retained.search.view().query(), "before", "the frame split precedes the store drain");
+    assert!(rig.retained.search.same_publication(&retained));
     frame(&mut d, &mut rig, AppArg::Search, tick(2), vec![]);
-    assert_eq!(rig.search.view().query(), "after");
+    assert_eq!(rig.retained.search.view().query(), "after");
     assert_eq!(retained.view().query(), "before");
     assert_eq!(count(&d), baseline + 1, "capture and pending store notice must coalesce");
-    let settled = rig.search.clone();
+    let settled = rig.retained.search.clone();
     for i in 3..7 {
         frame(&mut d, &mut rig, AppArg::Search, tick(i), vec![]);
-        assert!(rig.search.same_publication(&settled));
+        assert!(rig.retained.search.same_publication(&settled));
         assert_eq!(count(&d), baseline + 1, "unchanged publications must stay quiet");
     }
     rig.search_run(SearchCmd::SetQuery("after ".into()));
     frame(&mut d, &mut rig, AppArg::Search, tick(7), vec![]);
-    assert_eq!(rig.search.view().query(), "after ");
-    assert_eq!(rig.search.view().query_gen(), settled.view().query_gen());
+    assert_eq!(rig.retained.search.view().query(), "after ");
+    assert_eq!(rig.retained.search.view().query_gen(), settled.view().query_gen());
     assert_eq!(count(&d), baseline + 2, "raw text changes still update the field");
     rig.search_run(SearchCmd::SetQuery("unqueued".into()));
     let _ = rig.stores.take_notices();
     frame(&mut d, &mut rig, AppArg::Search, tick(8), vec![]);
-    assert_eq!(rig.search.view().query(), "unqueued");
+    assert_eq!(rig.retained.search.view().query(), "unqueued");
     assert_eq!(count(&d), baseline + 3, "a changed publication with no queued notice still reconciles");
     plx_plex::plex::reset_servers_for_test();
 }
@@ -77,21 +78,22 @@ fn capture_views_grades_the_scope_with_the_sessions_current_household() {
         owned: false, home: false, owner_id: OWNER_ID,
     });
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
-    assert!(rig.search.view().scope().sources()[0].household,
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
+    assert!(rig.retained.search.view().scope().sources()[0].household,
         "the first publication, taken at construction, is graded with the household too");
 
     rig.capture_views(&mut d);
-    let inside = rig.search.clone();
+    let inside = rig.retained.search.clone();
     assert_eq!(inside.view().scope().sources().len(), 1, "the registered server is the scope");
     assert!(inside.view().scope().sources()[0].household,
         "the owner is a member of the signed-in profile's household");
 
     plx_plex::plex::session::save(&session_with(Vec::new()));
     rig.capture_views(&mut d);
-    assert!(!rig.search.view().scope().sources()[0].household,
+    assert!(!rig.retained.search.view().scope().sources()[0].household,
         "a household without that member regrades the scope in the very next capture");
-    assert!(!rig.search.same_publication(&inside), "the regraded scope is a new publication");
+    assert!(!rig.retained.search.same_publication(&inside), "the regraded scope is a new publication");
 
     plx_plex::plex::reset_servers_for_test();
 }

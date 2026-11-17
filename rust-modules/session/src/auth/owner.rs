@@ -625,6 +625,14 @@ pub enum SessionFx {
     RefreshCache { req: u32, generation: u64 },
 }
 
+impl plx_machine::machine::AppEffect for SessionFx {
+    type Inline = Self;
+    type ExternalFx = std::convert::Infallible;
+    fn route(self) -> plx_machine::machine::EffectDisposition<Self, Self::ExternalFx> {
+        plx_machine::machine::EffectDisposition::Inline(self)
+    }
+}
+
 pub trait SessionHost: plx_machine::machine::Host {
     fn session_effect(effect: SessionFx) -> Self::Fx;
 }
@@ -7518,6 +7526,7 @@ mod tests {
             let publication = owner.publication();
             let cx = Cx::<OwnerHost> { views: publication.read(), tick: Tick::default(),
                 measure: &plx_machine::machine::BareMeasure, press: Default::default(),
+                modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
                 focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
             let mut present = plx_machine::present::Present::new();
             assert!(present.take(0)); // admit the spinner's last frame

@@ -56,6 +56,7 @@ impl Harness {
 
     fn cx(&self) -> Cx<'_, CollectionHost> {
         Cx { views: self.store.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
             focus: FocusRead { current: self.focus, ..Default::default() },
             owner: InputOwner::Entry(ENTRY) }
@@ -67,6 +68,7 @@ impl Harness {
         let mut out = Vec::new();
         let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
             let cx = Cx { views: self.store.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
+                modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
                 press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
                 focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
             let mut fx = Effects::new(&mut out,

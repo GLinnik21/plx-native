@@ -77,6 +77,37 @@ class GeneratedProofTests(unittest.TestCase):
         self.assertIsNotNone(generated.provenance(self.root, module))
         self.assertTrue(Proof(self.root, gate).inert(module, ['StoreOrd']))
 
+    def test_reviewed_runtime_contracts_are_not_generated_data(self):
+        module = self.root / 'machine/src/machine.rs'
+        self.assertIsNotNone(generated.provenance(self.root, module))
+        proof = Proof(self.root, gate)
+        self.assertFalse(proof.inert(module, ['PresentationAuthority']))
+        self.assertFalse(proof.copy_value(module, ['PresentationReceipt', '<', 'u32', '>']))
+        self.assertFalse(proof.inert(module, ['PresentationReceipt', '<', 'std', ':', ':', 'cell', ':', ':', 'Cell', '<', 'u32', '>', '>']))
+        declarations = generated.declarations(self.root, module)
+        self.assertEqual(declarations.count('pub struct '), 10)
+        self.assertNotIn('Presentation', declarations)
+        self.assertNotIn('AppEffect', declarations)
+
+    def test_certificate_payload_and_manifest_tampering_fail_closed(self):
+        from unittest.mock import patch
+        certificate = json.loads(generated.CERTIFICATE_PATH.read_text(encoding='utf-8'))
+        forged = self.root.parent / 'forged-certificate.json'
+        for key, value in (('machine_newtype', 'any Copy type'), ('grammar', {})):
+            with self.subTest(certificate_key=key):
+                changed = dict(certificate, **{key: value})
+                forged.write_text(json.dumps(changed), encoding='utf-8')
+                with patch.object(generated, 'CERTIFICATE_PATH', forged):
+                    self.assertIsNone(self.evidence())
+        for relative in ('machine/Cargo.toml', 'platform/Cargo.toml', 'Cargo.lock'):
+            with self.subTest(path=relative):
+                path = self.root / relative
+                original = path.read_bytes()
+                path.write_bytes(original + b'\n# unreviewed whole-file change\n')
+                self.assertIsNone(self.evidence())
+                path.write_bytes(original)
+        self.assertIsNotNone(self.evidence())
+
     def test_additional_language_remains_data_only(self):
         entries = json.loads(self.catalogue.read_text(encoding='utf-8'))
         entries.append(dict(tag='sv', native_name='Svenska', region='sv-SE', script='Latn', plurals=['one', 'other'], row=entries[-1]['row'] + 1))

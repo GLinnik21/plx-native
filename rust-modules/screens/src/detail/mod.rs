@@ -3956,7 +3956,9 @@ impl DetailScreen {
                 plx_media::route::is_preview(H::session(cx)) && H::transport_paused(cx), fx, meta);
         }
         let hint = self.hint_input(cx, focused);
-        self.hold_hint.step(hint, t.ms, dt, &mut |ev| fx.note(ev));
+        if let Some(event) = self.hold_hint.step(hint, t.ms, dt, &mut |ev| fx.note(ev), cx.hold_hint) {
+            fx.push(Fx::HoldHint(event));
+        }
     }
 
     /// The two screen-specific answers the hold hint needs (`ui::hold_hint`, "Adopting it"): the
@@ -3978,7 +3980,7 @@ impl DetailScreen {
         };
         match focused {
             Some(Located::Related(_) | Located::Collection(_)) => {
-                if !self.hold_hint.wants_input(ok_held) {
+                if !self.hold_hint.wants_input(ok_held, cx.hold_hint) {
                     return none;
                 }
                 let has_menu = self
@@ -3996,7 +3998,7 @@ impl DetailScreen {
             // nothing), and `focused_episode` is the gate, the menu's own: it answers `None` while
             // a switched season reloads and for an episode with no `rk`.
             Some(Located::Episode(_, episodes::Row::Still)) => {
-                if !self.hold_hint.wants_input(ok_held) {
+                if !self.hold_hint.wants_input(ok_held, cx.hold_hint) {
                     return none;
                 }
                 let has_menu = self
@@ -4019,7 +4021,7 @@ impl DetailScreen {
             // (the hint stands at the bottom of the screen); the capsule glide is quick enough not
             // to be waited for. Pinned animation clocks (documentation figures) never settle.
             Some(Located::Season(_)) => {
-                if !self.hold_hint.wants_input_on(Surface::SeasonPill, ok_held) {
+                if !self.hold_hint.wants_input_on(Surface::SeasonPill, ok_held, cx.hold_hint) {
                     return none;
                 }
                 let menu = self.focused_season(Some(key), <H as crate::registry::MetadataLike>::metadata(cx)).is_some();

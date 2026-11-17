@@ -352,6 +352,9 @@ pub fn inner_cx<'o, 'a: 'o, H: DirectoryLike>(cx: &Cx<'a, H>) -> Cx<'o, InnerHos
         tick: cx.tick,
         measure: cx.measure,
         press: cx.press,
+        modal: cx.modal,
+        page_image: cx.page_image,
+        hold_hint: cx.hold_hint,
         focus: cx.focus.clone(),
         owner: cx.owner,
     }

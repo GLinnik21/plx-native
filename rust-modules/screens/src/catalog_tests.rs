@@ -61,6 +61,7 @@ fn cx(focus: Option<FocusKey<u32>>) -> Cx<'static, CatHost> {
         tick: Tick { ms: 0, dt_us: 16_667 },
         measure: &FixtureMeasure,
         press: PressRead::default(),
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         focus: FocusRead { current: focus, ..Default::default() },
         owner: InputOwner::Entry(ENTRY),
     }

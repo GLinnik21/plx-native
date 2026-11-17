@@ -56,6 +56,7 @@ impl Harness {
         let snap = plx_data::pms::hubs_snapshot(&h.state);
         {
             let cx = Cx::<HomeHost> { views: snap.view(), tick: Tick::default(), measure: &FixtureMeasure,
+                modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
                 press: PressRead::default(), focus: FocusRead::default(), owner: InputOwner::Entry(ENTRY) };
             h.screen.get_mut().sync_catalog(&cx);
         }
@@ -87,6 +88,7 @@ impl Harness {
 
     fn cx(&self) -> Cx<'_, HomeHost> {
         Cx { views: self.snap.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
             focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) }
     }
@@ -96,6 +98,7 @@ impl Harness {
         let mut out = Vec::new();
         let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
             let cx = Cx::<HomeHost> { views: self.snap.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
+                modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
                 press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
                 focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
             let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(INSTANCE), &mut present);

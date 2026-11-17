@@ -323,7 +323,8 @@ mod root_back_tests {
         plx_platform::tv::home::release_root_press();
         let before = plx_platform::tv::home::home_requests();
         let mut d = plx_ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
-        let mut rig = crate::app::bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         crate::app::bridge::nav_root(&mut d, plx_screens::registry::AppArg::Home);
         crate::app::bridge::frame(&mut d, &mut rig, plx_machine::machine::Tick::default(), vec![]);
         let entry = d.nav.top_page().expect("Home root").id;
@@ -337,7 +338,7 @@ mod root_back_tests {
         let requests = rig.take_observed_loop_commands();
         assert!(matches!(requests.as_slice(),
             [plx_screens::registry::LoopReq::BackAtRoot]));
-        assert!(rig.screen_command_receipts.iter().any(|(_, _, outcome)|
+        assert!(rig.retained.screen_command_receipts.iter().any(|(_, _, outcome)|
             *outcome == plx_machine::machine::AppCommandOutcome::Completed));
         assert_eq!(plx_platform::tv::home::home_requests(), before + 1);
         assert_eq!(d.nav.top_page().map(|page| page.id), Some(entry));
@@ -354,7 +355,8 @@ mod root_back_tests {
         plx_platform::tv::home::release_root_press();
         let before = plx_platform::tv::home::home_requests();
         let mut d = plx_ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
-        let mut rig = crate::app::bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         crate::app::bridge::nav_root(&mut d, plx_screens::registry::AppArg::Home);
         crate::app::bridge::frame(&mut d, &mut rig, plx_machine::machine::Tick::default(), vec![]);
         crate::app::bridge::nav_push(&mut d, plx_screens::registry::AppArg::Content(
@@ -371,7 +373,7 @@ mod root_back_tests {
         assert!(!report.back_at_root);
         assert!(rig.take_observed_loop_commands().iter().all(|req|
             !matches!(req, plx_screens::registry::LoopReq::BackAtRoot)));
-        assert!(rig.screen_command_receipts.iter().any(|(_, from, outcome)|
+        assert!(rig.retained.screen_command_receipts.iter().any(|(_, from, outcome)|
             *from == plx_machine::machine::MachineId::Instance(detail_instance)
                 && *outcome == plx_machine::machine::AppCommandOutcome::Completed),
             "the owned Detail Back executes through the product runner");
@@ -388,7 +390,8 @@ mod root_back_tests {
     fn onboard_back_request_mounts_the_owned_profiles_screen() {
         let _guard = plx_base::testlock::serial();
         let mut d = plx_ui::dispatch::Dispatcher::<crate::app::bridge::AppHost>::new();
-        let mut rig = crate::app::bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         crate::app::bridge::nav_root(&mut d, plx_screens::registry::AppArg::Onboard);
         crate::app::bridge::frame(&mut d, &mut rig, plx_machine::machine::Tick::default(), vec![]);
         let onboard_entry = d.nav.top_page().expect("Onboard root").id;
@@ -403,7 +406,7 @@ mod root_back_tests {
         assert!(matches!(requests.as_slice(),
             [plx_screens::registry::LoopReq::OnboardBack]));
 
-        assert!(rig.screen_command_receipts.iter().any(|(_, from, outcome)|
+        assert!(rig.retained.screen_command_receipts.iter().any(|(_, from, outcome)|
             *from == plx_machine::machine::MachineId::Instance(onboard_instance)
                 && *outcome == plx_machine::machine::AppCommandOutcome::Completed));
         crate::app::bridge::frame(&mut d, &mut rig,

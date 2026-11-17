@@ -27,12 +27,12 @@ use plx_data::browse::LibraryType;
 fn switching_libraries_restores_an_open_page_until_back_closes_it() {
     let mut w = World::movies_library("remember-open-library-page", false);
     w.d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::PageDip::new());
-    let key = w.bridge.directory.view().sections()[0].key;
+    let key = w.bridge.retained().directory.view().sections()[0].key;
     let recommended = AppArg::LibraryRecommended { section: u32::try_from(key).unwrap() };
     w.open_from_header(9, recommended.clone());
 
     let switch = |w: &mut World, tab| {
-        super::nav_tab(&mut w.d, &mut w.bridge, tab, None, None);
+        super::nav_tab(&mut w.d, &mut w.bridge.bridge(), tab, None, None);
         w.frames(90);
     };
     switch(&mut w, plx_screens::registry::HomeTab::Shows);
@@ -53,12 +53,12 @@ fn collections_restores_from_saved_preferences_for_the_same_profile() {
     use plx_screens::registry::HomeTab;
 
     let mut w = World::movies_library("persist-collections-page", false);
-    let sections = w.bridge.directory.view().sections();
+    let sections = w.bridge.retained().directory.view().sections();
     let key = sections[0].key;
     assert_eq!(sections[FILM_CLUB].key, key, "both fixture servers use this PMS key");
     let collections = AppArg::LibraryCollections { section: u32::try_from(key).unwrap() };
     w.open_from_header(8, collections.clone());
-    super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Shows, None, None);
+    super::nav_tab(&mut w.d, &mut w.bridge.bridge(), HomeTab::Shows, None, None);
     w.frames(90);
     plx_base::storage_worker::drain_for_test();
 
@@ -69,8 +69,8 @@ fn collections_restores_from_saved_preferences_for_the_same_profile() {
     assert!(saved.views_for(&user).and_then(|views| views.get("route-shared", key)).is_none());
     assert!(saved.views_for("another-profile").is_none());
 
-    w.bridge.library_pages = None;
-    super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Movies, None, None);
+    w.bridge.bridge().retained.library_pages = None;
+    super::nav_tab(&mut w.d, &mut w.bridge.bridge(), HomeTab::Movies, None, None);
     w.frames(90);
     assert!(w.d.top_arg() == Some(&collections), "the durable preference restores the Collections route");
     assert!(w.d.nav.tabs.stack.under_top().is_some_and(|entry| entry.arg == AppArg::Library));
@@ -85,24 +85,24 @@ fn a_new_tab_press_supersedes_a_child_restore_at_the_dip_floor() {
 
     let mut w = World::movies_library("cancel-library-page-restore", false);
     w.d.nav.tabs.stack.transition = Box::new(PageDip::new());
-    let directory = w.bridge.directory.view();
+    let directory = w.bridge.retained().directory.view();
     let key = directory.sections()[directory.preferred(SecKind::Show).unwrap()].key;
-    w.bridge.remember_library_page("route-own", key, LibraryPage::Recommended);
+    w.bridge.bridge().remember_library_page("route-own", key, LibraryPage::Recommended);
 
-    super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Shows, None, None);
+    super::nav_tab(&mut w.d, &mut w.bridge.bridge(), HomeTab::Shows, None, None);
     // The first frame parks the request. The other ticks leave one tick before the floor.
     w.frames((DIP_OUT_MS / 16.0).ceil() as u32);
     assert!(matches!(w.d.nav.tabs.stack.pending_dest(), Some(AppArg::LibraryRecommended { .. })));
-    super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Movies, None, None);
+    super::nav_tab(&mut w.d, &mut w.bridge.bridge(), HomeTab::Movies, None, None);
     w.frames(90);
     assert!(w.on(&AppArg::Library), "the last pill press keeps the grid");
-    let directory = w.bridge.directory.view();
+    let directory = w.bridge.retained().directory.view();
     assert_eq!(directory.current().map(|index| directory.sections()[index].kind), Some(SecKind::Movie));
 }
 
 /// What the store's one query is listing now: its type, and the section key it belongs to.
 fn listed(w: &World) -> (LibraryType, Option<i64>) {
-    let snapshot = w.bridge.stores.browse.borrow_mut().listing_snapshot();
+    let snapshot = w.bridge.stores().browse.borrow_mut().listing_snapshot();
     let view = snapshot.view();
     (view.library_type(), view.id().map(|id| id.section))
 }
@@ -110,8 +110,8 @@ fn listed(w: &World) -> (LibraryType, Option<i64>) {
 #[test]
 fn the_collections_page_repays_its_loan_on_back_and_asks_again_for_the_library_switched_to() {
     let mut w = World::collections("r15-collections-loan", true);
-    let movies = w.bridge.directory.view().sections()[0].key;
-    let film_club = w.bridge.directory.view().sections()[FILM_CLUB].key;
+    let movies = w.bridge.retained().directory.view().sections()[0].key;
+    let film_club = w.bridge.retained().directory.view().sections()[FILM_CLUB].key;
     assert_eq!(listed(&w), (LibraryType::Collections, Some(movies)), "premise: the page asked for Movies' collections");
 
     // BACK leaves the page (a first press returns its scroll to the top, a second pops it).
@@ -122,7 +122,7 @@ fn the_collections_page_repays_its_loan_on_back_and_asks_again_for_the_library_s
     w.frames(60);
     assert!(w.on(&AppArg::Library), "premise: BACK returned to the grid");
     // The repaid loan is a requery of the section's films; the server's answer lands.
-    w.bridge.stores.browse.borrow_mut().seed_items_for_test(120);
+    w.bridge.stores().browse.borrow_mut().seed_items_for_test(120);
     w.frames(60);
     assert_eq!(listed(&w), (LibraryType::Primary, Some(movies)), "the grid on top again puts the query back on films");
 
@@ -131,7 +131,7 @@ fn the_collections_page_repays_its_loan_on_back_and_asks_again_for_the_library_s
     w.walk_header_to(name);
     w.press(Key::Ok);
     w.frames(60);
-    w.bridge.stores.browse.borrow_mut().seed_items_for_test(120);
+    w.bridge.stores().browse.borrow_mut().seed_items_for_test(120);
     w.frames(60);
     assert_eq!(listed(&w), (LibraryType::Primary, Some(film_club)), "premise: the switch landed on Film Club's films");
 
@@ -144,7 +144,7 @@ fn the_collections_page_repays_its_loan_on_back_and_asks_again_for_the_library_s
 /// OK on the library at `index` of the directory, as the header's name delivers it: the page that
 /// asked hears `LibrarySelect` addressed to the section.
 fn select(w: &mut World, index: usize) {
-    let view = w.bridge.directory.view();
+    let view = w.bridge.retained().directory.view();
     let section = &view.sections()[index];
     let target = plx_data::stores::browse::SectionAddress {
         epoch: view.epoch().unwrap(), sid: section.sid.unwrap(), section: section.key,
@@ -158,8 +158,8 @@ fn select(w: &mut World, index: usize) {
 /// page's fades play out.
 fn answer(w: &mut World, index: usize) {
     w.frames(60);
-    w.bridge.stores.browse.borrow_mut().seed_items_for_test(120);
-    w.bridge.stores.browse.borrow_mut().seed_shelves_for_test(index, &[], 4);
+    w.bridge.stores().browse.borrow_mut().seed_items_for_test(120);
+    w.bridge.stores().browse.borrow_mut().seed_shelves_for_test(index, &[], 4);
     w.frames(90);
 }
 
@@ -176,7 +176,7 @@ fn a_library_switched_back_to_lands_down_on_the_tile_it_was_left_at_and_scrolls_
     // A -> B: the page shows the new library from its top, under a header focus stays on.
     select(&mut w, FILM_CLUB);
     answer(&mut w, FILM_CLUB);
-    assert_eq!(listed(&w).1, Some(w.bridge.directory.view().sections()[FILM_CLUB].key), "premise: Film Club is listed");
+    assert_eq!(listed(&w).1, Some(w.bridge.retained().directory.view().sections()[FILM_CLUB].key), "premise: Film Club is listed");
     assert!(w.on_header(), "focus stays on the header after a switch");
     assert_eq!(w.scroll_target(), 0.0, "a switch keeps the header on screen");
     // First visit of a library: the Down that enters the grid lands on its first row.

@@ -117,7 +117,8 @@ fn person() -> AppArg {
 
 fn chain(host: AppArg, episode: bool, accept_request: bool, accept_start: bool) {
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     let mut now = 0;
     bridge::show_page(&mut d, host.clone());
     settle(&mut d, &mut rig, &mut now);
@@ -195,7 +196,7 @@ fn chain(host: AppArg, episode: bool, accept_request: bool, accept_start: bool) 
     let expected_outcome = if accept_request && accept_start {
         plx_machine::machine::AppCommandOutcome::Completed
     } else { plx_machine::machine::AppCommandOutcome::Refused };
-    assert_eq!(rig.screen_command_receipts.iter().filter(|(_, from, outcome)|
+    assert_eq!(rig.retained.screen_command_receipts.iter().filter(|(_, from, outcome)|
         *from == sender && *outcome == expected_outcome).count(), 1,
         "the real command has one explicit terminal outcome");
     let mut expected = if episode {

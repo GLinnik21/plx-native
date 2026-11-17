@@ -108,6 +108,14 @@ mod tests {
         );
     }
 
+    impl plx_machine::machine::AppEffect for ServerId {
+        type Inline = Self;
+        type ExternalFx = std::convert::Infallible;
+        fn route(self) -> plx_machine::machine::EffectDisposition<Self, Self::ExternalFx> {
+            plx_machine::machine::EffectDisposition::Inline(self)
+        }
+    }
+
     struct EmitHost;
     impl plx_machine::machine::Host for EmitHost {
         type Arg = plx_machine::machine::BareArg;

@@ -65,7 +65,7 @@
 //! `idle::decorative`: while they run the dispatcher keeps a page image held. A landing that
 //! arrives while the page IS an image starts at once, so its first live frame shows the start
 //! state (the old slots and a full-alpha ghost), but it does not step while the image is held
-//! ([`page_image_held`](crate::containers::transition::page_image_held)); the stepping begins on
+//! (`Cx::page_image`, derived from this owner's page capture); the stepping begins on
 //! the first tick after the image is released.
 //!
 //! The springs step on the frame's own `dt` through [`Spring::step`](crate::Spring::step); the
@@ -250,8 +250,8 @@ impl Landing {
 
     /// Whether a landing has started but waits for the page image to go, so a frame must follow
     /// the release.
-    pub(crate) fn held(&self) -> bool {
-        self.anim.is_some() && crate::containers::transition::page_image_held()
+    pub(crate) fn held(&self, page_image: plx_machine::machine::PageImageRead) -> bool {
+        self.anim.is_some() && page_image.is_held()
     }
 
     /// A landing is playing but its last step did not run: the menu's veil has not yet dropped
@@ -471,10 +471,10 @@ impl Landing {
     /// after the previous tick never shows its end before it moves. `occupy` is the grid's
     /// cells: an arriving card waits at alpha 0 until the moving survivors cover less than half of
     /// its cell (their rects as they stand after this step).
-    pub(crate) fn step(&mut self, dt: f32, k: (f32, f32), occupy: Option<&Occupancy<'_>>) {
+    pub(crate) fn step(&mut self, dt: f32, k: (f32, f32), occupy: Option<&Occupancy<'_>>, modal: plx_machine::machine::ModalRead, page_image: plx_machine::machine::PageImageRead) {
         let Some(a) = self.anim.as_mut() else { return };
         self.paused = true;
-        if crate::containers::transition::page_image_held() || crate::containers::modal::page_veiled() {
+        if page_image.is_held() || modal.page_veiled() {
             // a held image, or the menu's own fade presenting these frames: nothing of the page
             // moves, and what is drawn meanwhile IS the start state, so the first live step is
             // not skipped

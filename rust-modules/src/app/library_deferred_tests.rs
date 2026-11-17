@@ -48,7 +48,8 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
         plx_plex::plex::register_for_test("back-shared", "127.0.0.1", 10, "synthetic", "fixture");
     plx_plex::plex::set_current(sid);
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
     rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
@@ -56,7 +57,7 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
     frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     let page = d.nav.top_page().unwrap().id;
     let host = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
-    let listing = rig.listing.view().id().unwrap();
+    let listing = rig.retained.listing.view().id().unwrap();
     d.nav.next_style = plx_ui::containers::modal::Style::Compact;
     d.request(
         MachineId::Nav,
@@ -110,7 +111,7 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
         trace.commits.is_empty(),
         "the test must press BACK before the fade floor"
     );
-    assert!(!rig.listing.view().unwatched());
+    assert!(!rig.retained.listing.view().unwatched());
     frame_with_tap(
         &mut d,
         &mut rig,
@@ -144,6 +145,6 @@ fn back_dismisses_the_filter_menu_before_the_floor_without_cancelling_its_query(
         vec![plx_data::stores::browse::QueryEdit::Unwatched(true)],
         "dismissal preserves the pending desired action and commits it exactly once"
     );
-    assert!(rig.listing.view().unwatched());
-    assert_ne!(rig.listing.view().id().unwrap().query, listing.query);
+    assert!(rig.retained.listing.view().unwatched());
+    assert_ne!(rig.retained.listing.view().id().unwrap().query, listing.query);
 }

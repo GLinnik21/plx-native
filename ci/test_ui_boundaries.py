@@ -7,6 +7,37 @@ import ui_boundaries as boundary
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_closed_arg_ladders_require_registry_registration(self):
+        for source in (
+            'fn word(arg: &AppArg) { match arg { AppArg::Home => "home", AppArg::Search => "search" } }',
+            'fn probe() { helper(); } fn helper() { match app.route() { AppArg::Home => {}, AppArg::Settings(_) => {} } }',
+            'use registry::AppArg as Renamed; fn helper(a: Renamed) { match a { Renamed::Home => 0, Renamed::Search => 1 } }',
+        ):
+            with self.subTest(source=source):
+                self.assertTrue(boundary.external_arg_match_violations(source))
+
+    def test_partial_resource_queries_and_descriptor_dispatch_pass(self):
+        for source in (
+            'match app.route() { AppArg::Player => play(), _ => idle() }',
+            'match app.route().route_probe().kind { ProbeKind::Generic => generic(), ProbeKind::Player => player() }',
+            '// match arg { AppArg::Home => 0 }\nfn word(a: &AppArg) { a.route_word() }',
+            '#[cfg(test)] fn fixture() { match a { AppArg::Home => 0 } }',
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(boundary.external_arg_match_violations(source), [])
+
+    def test_product_has_no_external_closed_arg_ladder(self):
+        self.assertEqual(boundary.check_extension_registration(Path('.')), [])
+
+    def test_page_census_cannot_move_to_an_external_array_or_wrapper(self):
+        for source in (
+            '#[cfg(test)] fn every_route() { vec![AppArg::Home] }',
+            'fn every_route() { helper() } fn helper() { vec![AppArg::Home] }',
+        ):
+            self.assertTrue(boundary.page_census_violations(source))
+        self.assertEqual(boundary.page_census_violations(
+            '#[cfg(test)] fn every_route() { plx_screens::registry::every_page_arg() }'), [])
+
     def test_direct_trigger_and_file_reads_fail(self):
         for source in ('fn tick() { plx_base::devtrig::read("x"); }',
                        'fn tick() { std::fs::read("x"); }',
@@ -80,6 +111,9 @@ class BoundaryTests(unittest.TestCase):
 
     def test_new_family_storage_fails_without_old_field_name(self):
         for source in ('struct Bridge { renamed: VecDeque<(Source, HomeReq)> }',
+                       'struct Bridge { renamed: Vec<ExternalAppFx> }',
+                       'struct Bridge { renamed: Vec<ResourceAppFx> }',
+                       'struct Bridge { renamed: Vec<InlineAppFx> }',
                        'fn helper() { let renamed: Vec<LoopReq> = Vec::new(); }'):
             self.assertTrue(boundary.command_storage_violations(source))
 
@@ -196,6 +230,157 @@ class BoundaryTests(unittest.TestCase):
             path = Path('rust-modules/appkit/src/player_hud') / name
             self.assertEqual(boundary.presentation_helper_violations(path.read_text(encoding='utf-8')), [])
         self.assertEqual(boundary.root_settings_violations(Path('rust-modules/screens/src/settings.rs').read_text(encoding='utf-8')), [])
+
+    def test_product_frame_owner_and_negative_controls(self):
+        run = Path('rust-modules/src/app/run.rs').read_text(encoding='utf-8')
+        dispatch = Path('rust-modules/ui/src/dispatch.rs').read_text(encoding='utf-8')
+        self.assertEqual(boundary.product_frame_violations(run, dispatch), [])
+        mutations = (
+            (run.replace('Dispatcher::product_frame(&mut runtime);', 'update(app, fr);'), dispatch),
+            (run.replace('Dispatcher::product_frame(&mut runtime);', 'Dispatcher::product_frame(&mut runtime); ingest(app, fr);'), dispatch),
+            (run.replace('Dispatcher::product_frame(&mut runtime);', 'Dispatcher::product_frame(&mut runtime); runtime.prepare();'), dispatch),
+            (run, dispatch.replace('runtime.ingest();', 'runtime.ingest(); runtime.ingest();')),
+            (run, dispatch.replace('runtime.pump();', 'runtime.step();')),
+            (run, dispatch.replace('if runtime.admit(demand) {', 'if true {')),
+            (run, dispatch.replace('if swapped {', 'if true {')),
+            (run, dispatch.replace('finish_presentation(swapped)', 'finish_presentation(true)')),
+            (run.replace('fn finish_prepare(app: &mut App) {', 'fn finish_prepare(app: &mut App) { app.pages.present.acknowledge(0);'), dispatch),
+        )
+        for changed_run, changed_dispatch in mutations:
+            with self.subTest(change=mutations.index((changed_run, changed_dispatch))):
+                self.assertTrue(boundary.product_frame_violations(changed_run, changed_dispatch))
+        # Comments, strings and test-only decoys cannot satisfy the production owner pin.
+        bad = run.replace('Dispatcher::product_frame(&mut runtime);', 'legacy();')
+        decoys = '\n// Dispatcher::product_frame(&mut runtime);\n#[cfg(test)] fn decoy() { Dispatcher::product_frame(&mut runtime); }'
+        self.assertTrue(boundary.product_frame_violations(bad + decoys, dispatch))
+
+    def test_actual_player_draw_is_logically_read_only_through_helpers(self):
+        source = Path('rust-modules/screens/src/player/mod.rs').read_text(encoding='utf-8')
+        self.assertEqual(boundary.player_draw_violations(source), [])
+        for write in ('self.drawn_watch = None;', 'self.auto_skip.presented();',
+                      'self.auto_skip.cancel();', 'self.drawn_watch.take();'):
+            changed = source.replace('let measure = df.measure;', 'let measure = df.measure; ' + write)
+            self.assertTrue(boundary.player_draw_violations(changed), write)
+        changed = source.replace('let measure = df.measure;', 'let measure = df.measure; self.hidden_write();')
+        changed += '\nimpl PlayerScreen { fn hidden_write(&mut self) { self.auto_skip.presented(); } }'
+        self.assertTrue(boundary.player_draw_violations(changed))
+        self.assertTrue(boundary.player_draw_violations(source.replace('self.drawn_watch.as_ref()', 'None.as_ref()')))
+        forged = source + '\nfn external_write() { match ev { ScreenEvent::App(AppMsg::PlayerPresented { watch, .. }) => self.auto_skip.presented(), _ => {} } }'
+        self.assertTrue(boundary.player_draw_violations(forged))
+        self.assertEqual(boundary.player_draw_violations(source + '\n#[cfg(test)] fn hidden_write() { self.auto_skip.presented(); }'), [])
+
+    def test_typed_effect_partition_and_observer_negative_controls(self):
+        bridge = Path('rust-modules/src/app/bridge.rs').read_text(encoding='utf-8')
+        dispatch = Path('rust-modules/ui/src/dispatch.rs').read_text(encoding='utf-8')
+        self.assertEqual(boundary.effect_partition_violations(bridge, dispatch), [])
+        for changed_bridge, changed_dispatch in (
+            (bridge + '\nfn external_app_fx() -> bool { true }', dispatch),
+            (bridge.replace('fx: InlineAppFx', 'fx: AppFx'), dispatch),
+            (bridge, dispatch.replace('ExternalFx<H>', 'H::Fx')),
+            (bridge, dispatch + '\nimpl Rig<Host> for Malicious { fn route_app_fx(&self, fx: Fx) { drop(fx); } }'),
+            (bridge, dispatch.replace('plx_machine::machine::AppEffect::route(app_fx)', 'rig.route_app_fx(app_fx)')),
+            (bridge, dispatch.replace('plx_machine::machine::AppEffect::route(app_fx)', 'drop(app_fx)')),
+            (bridge, dispatch.replace('plx_machine::machine::AppEffect::route(app_fx)',
+                                      'plx_machine::machine::AppEffect::route(app_fx); plx_machine::machine::AppEffect::route(app_fx)')),
+            (bridge.replace('let command = d.take_app_command()?;',
+                            '#[cfg(test)] let observed = true; let command = d.take_app_command()?;'), dispatch),
+            (bridge.replace('observation.finish(self, outcome);', ''), dispatch),
+            (bridge.replace('self.preference_effect(request, &mut out);', 'unreachable!();'), dispatch),
+        ):
+            self.assertTrue(boundary.effect_partition_violations(changed_bridge, changed_dispatch))
+        decoys = '\n// fn external_app_fx() -> bool {}\n#[cfg(test)] fn external_app_fx() -> bool { true }'
+        self.assertEqual(boundary.effect_partition_violations(bridge + decoys, dispatch), [])
+
+    def test_actual_observer_fanout_rejects_drops_duplicates_and_second_authority(self):
+        dispatch = Path('rust-modules/ui/src/dispatch.rs').read_text(encoding='utf-8')
+        bridge = Path('rust-modules/src/app/bridge.rs').read_text(encoding='utf-8')
+        self.assertEqual(boundary.observer_violations(dispatch, bridge), [])
+        for before, after in (
+            ('PassiveObservers { owned, caller }', 'PassiveObservers { owned: None, caller }'),
+            ('FrameObservers::Owned(tap) => Some(tap)', 'FrameObservers::Owned(_) => None'),
+            ('self.caller.$name($($arg),*);', ''),
+            ('self.caller.$name($($arg),*);', 'self.caller.$name($($arg),*); self.caller.$name($($arg),*);'),
+            ('owned.$name($($arg),*);', ''),
+            ('owned.$name($($arg),*);', 'owned.$name($($arg),*); owned.$name($($arg),*);'),
+            ('result(f: u64, addr: &Addr, msg: &H::Msg);', ''),
+            ('FrameObservers::Replay(replay) => call(replay)', 'FrameObservers::Replay(replay) => call(caller)'),
+            ('FrameObservers::Caller | FrameObservers::Owned(_) => call(&mut LiveAuthority)',
+             'FrameObservers::Caller | FrameObservers::Owned(caller) => call(caller)'),
+            ('pub trait Tap<H: Host> {', 'pub trait Tap<H: Host> { fn resolution_mode(&self) -> Option<bool> { Some(false) }'),
+            ('let mut once = || *cached.get_or_insert_with(&mut *hash);', 'let mut once = || hash();'),
+        ):
+            with self.subTest(before=before):
+                self.assertIn(before, dispatch)
+                self.assertTrue(boundary.observer_violations(dispatch.replace(before, after), bridge))
+        changed_bridge = bridge.replace('FrameObservers::Replay(self.resources.rec)', 'FrameObservers::Owned(self.resources.rec)')
+        self.assertNotEqual(changed_bridge, bridge)
+        self.assertTrue(boundary.observer_violations(dispatch, changed_bridge))
+
+    def test_owned_ui_state_rejects_renamed_logical_storage(self):
+        cases = (
+            ('modal', 'static AGAIN: AtomicU32 = AtomicU32::new(0);'),
+            ('modal', 'thread_local! { static LIFT_OWNS: Cell<bool> = Cell::new(false); }'),
+            ('modal', '#[cfg(feature = "devtriggers")] thread_local! { static RENAMED_LIFT: Cell<bool> = Cell::new(false); }'),
+            ('modal', 'static mut RENAMED: bool = false;'),
+            ('modal', 'thread_local! { static RENAMED: Cell<bool> = Cell::new(false); }'),
+            ('modal', 'thread_local! { static CACHE: Cell<f32> = Cell::new(0.0); }'),
+            ('modal', 'thread_local! { static OTHER: RefCell<ModalRead> = RefCell::new(read); }'),
+            ('modal', 'thread_local! { static OTHER: RefCell<Option<ModalPresentation>> = RefCell::new(None); }'),
+            ('modal', 'struct Renamed { input_covered: bool, veil: f32 } thread_local! { static CACHE: RefCell<Renamed> = RefCell::new(value); }'),
+            ('hint', 'thread_local! { static RENAMED: Cell<bool> = Cell::new(false); }'),
+            ('hint', 'thread_local! { static CACHE: RefCell<HoldHintRead> = RefCell::new(read); }'),
+            ('hint', 'struct Renamed { learned: bool, card: bool, pill: bool } static OWNER: Mutex<Renamed> = Mutex::new(read);'),
+            ('navigation', 'thread_local! { static PAGE_IMAGE_HELD: Cell<bool> = Cell::new(false); }'),
+            ('navigation', 'thread_local! { static RENAMED_PAGE_POLICY: Cell<bool> = Cell::new(false); }'),
+            ('navigation', 'static GENERIC: AtomicBool = AtomicBool::new(false);'),
+            ('navigation', 'thread_local! { static CACHE: RefCell<Option<PageImageRead>> = RefCell::new(None); }'),
+            ('navigation', 'fn page_image_held() -> bool { false }'),
+            ('navigation', 'fn set_page_image_held(held: bool) {}'),
+        )
+        for family, source in cases:
+            with self.subTest(family=family, source=source):
+                self.assertTrue(boundary.owned_ui_state_violations(source, family))
+
+    def test_owned_ui_state_keeps_instance_facts_and_render_caches(self):
+        sources = (
+            ('modal', 'struct Owner { modal: ModalRead, presentation: ModalPresentation }'),
+            ('hint', 'struct Fixture { read: HoldHintRead } impl Fixture { fn event(&mut self, event: HoldHintEvent) { self.read.apply(event); } }'),
+            ('modal', 'thread_local! { static CACHE: std::cell::RefCell<FrameCache> = RefCell::new(FrameCache::new()); static HELD: Cell<Held> = Cell::new(Held::Nothing); static TARGET: RefCell<Option<plx_base::surface::PageTarget>> = RefCell::new(None); static CACHE_OWNER: RefCell<Option<crate::containers::modal::ModalCacheKey>> = RefCell::new(None); }'),
+            ('modal', 'struct ModalCacheKey { owner: std::sync::Arc<()>, layers: Vec<(EntryId, bool)> } impl ModalCacheKey { fn same_snapshot(&self, other: &Self) -> bool { Arc::ptr_eq(&self.owner, &other.owner) && self.layers == other.layers } }'),
+            ('hint', '#[cfg(test)] mod fixtures { thread_local! { static LESSON: Cell<bool> = Cell::new(false); } }'),
+            ('modal', '// static OPEN_COUNT: AtomicU32 = value;\nfn decoy() { let s = "static AGAIN: Cell<bool> = value;"; }'),
+            ('navigation', 'struct Owner { image: PageImage } impl Owner { fn read(&self, entry: EntryId, instance: InstanceId) -> PageImageRead { self.image.read(entry, instance) } }'),
+        )
+        for family, source in sources:
+            with self.subTest(family=family, source=source):
+                self.assertEqual(boundary.owned_ui_state_violations(source, family), [])
+
+    def test_owned_ui_state_cache_identity_cannot_publish_policy(self):
+        for source in (
+            'struct ModalCacheKey { owner: Arc<()>, layers: Vec<(EntryId, bool)>, read: ModalRead }',
+            'fn renamed_policy(input: &ModalPresentation, key: &ModalCacheKey) -> bool { key.same_snapshot(&input.cache_key()) }',
+            'thread_local! { static CACHE_OWNER: RefCell<Option<ModalRead>> = RefCell::new(None); }',
+            'thread_local! { static CACHE_OWNER: RefCell<Option<ModalCacheKey>> = RefCell::new(None); } fn page_veiled() -> bool { CACHE_OWNER.with_borrow(|value| value.is_some()) }',
+            'thread_local! { static HELD: Cell<Held> = Cell::new(Held::Nothing); } fn page_veiled() -> bool { renamed() } fn renamed() -> bool { HELD.with(|value| value.get() != Held::Nothing) }',
+        ):
+            with self.subTest(source=source):
+                self.assertTrue(boundary.owned_ui_state_violations(source, 'modal'))
+
+    def test_owned_ui_state_checks_real_roots_and_detects_reintroduction(self):
+        roots = (
+            ('hint', Path('rust-modules/ui/src/hold_hint.rs')),
+            ('modal', Path('rust-modules/ui/src/containers/modal.rs')),
+            ('modal', Path('rust-modules/ui/src/popover.rs')),
+            ('navigation', Path('rust-modules/ui/src/containers/transition.rs')),
+            ('navigation', Path('rust-modules/ui/src/dispatch.rs')),
+            ('navigation', Path('rust-modules/ui/src/cards/landing.rs')),
+        )
+        self.assertEqual(boundary.check_owned_ui_state(Path('.')), [])
+        for family, path in roots:
+            source = path.read_text(encoding='utf-8')
+            with self.subTest(path=path):
+                self.assertEqual(boundary.owned_ui_state_violations(source, family), [])
+                self.assertTrue(boundary.owned_ui_state_violations(source + '\nthread_local! { static RENAMED_LOGIC: Cell<bool> = Cell::new(false); }', family))
 
     def test_check_deps_runs_screen_boundary_gate(self):
         script = Path('ci/check-deps.sh').read_text(encoding='utf-8')

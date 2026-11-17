@@ -22,7 +22,8 @@ fn mixed_remaining_commands_admit_in_fifo_order_and_reply_before_the_next_head()
     }
     let _guard = plx_base::testlock::serial();
     let _session = plx_plex::plex::session::TempSession::new("mixed-remaining-fifo");
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     let mut d = Dispatcher::<AppHost>::new();
     let (reply, receipt) = std::sync::mpsc::channel();
     let mut observer = Observe { receipt, checked: false };
@@ -38,7 +39,7 @@ fn mixed_remaining_commands_admit_in_fifo_order_and_reply_before_the_next_head()
     for (from, effect) in effects { d.emit(from, Fx::App(effect)); }
     super::frame_with_tap(&mut d, &mut rig, Tick::default(), vec![], &mut observer);
     assert!(observer.checked);
-    let receipts = rig.screen_command_receipts[..5].to_vec();
+    let receipts = rig.retained.screen_command_receipts[..5].to_vec();
     assert_eq!(receipts.iter().map(|(_, from, outcome)| (*from, *outcome)).collect::<Vec<_>>(),
         vec![(MachineId::Nav, AppCommandOutcome::Completed), (MachineId::Nav, AppCommandOutcome::Completed),
             (MachineId::Nav, AppCommandOutcome::Completed), (MachineId::Session, AppCommandOutcome::Completed),
@@ -46,7 +47,7 @@ fn mixed_remaining_commands_admit_in_fifo_order_and_reply_before_the_next_head()
     assert!(receipts.windows(2).all(|pair| pair[0].0.0 < pair[1].0.0));
     super::frame(&mut d, &mut rig, Tick { ms: 16, dt_us: 16_000 }, vec![]);
     for (id, _, _) in receipts {
-        assert_eq!(rig.screen_command_receipts.iter().filter(|receipt| receipt.0 == id).count(), 1);
+        assert_eq!(rig.retained.screen_command_receipts.iter().filter(|receipt| receipt.0 == id).count(), 1);
     }
 }
 
@@ -57,7 +58,9 @@ fn controlled_remaining_commands_refuse_before_any_resource_execution() {
     let _guard = plx_base::testlock::serial();
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let initial = super::super::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-    let mut rig = Bridge::controlled_home(|| 0, &initial, &mt, true);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, true);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     let before = rig.session_subhash();
     let mut d = Dispatcher::<AppHost>::new();
     let (reply, receipt) = std::sync::mpsc::channel();
@@ -70,8 +73,8 @@ fn controlled_remaining_commands_refuse_before_any_resource_execution() {
     }
     super::frame(&mut d, &mut rig, Tick::default(), vec![]);
     assert_eq!(rig.session_subhash(), before);
-    assert_eq!(rig.screen_command_receipts.len(), 5);
-    assert!(rig.screen_command_receipts.iter().all(|(_, _, outcome)| *outcome == AppCommandOutcome::Refused));
+    assert_eq!(rig.retained.screen_command_receipts.len(), 5);
+    assert!(rig.retained.screen_command_receipts.iter().all(|(_, _, outcome)| *outcome == AppCommandOutcome::Refused));
     assert!(matches!(receipt.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
     assert!(rig.take_observed_loop_commands().is_empty());
     assert!(rig.controlled_failure().is_some());
@@ -81,10 +84,10 @@ fn controlled_remaining_commands_refuse_before_any_resource_execution() {
 #[test]
 fn remaining_main_thread_commands_yield_before_resource_execution() {
     let _guard = plx_base::testlock::serial();
-    let rig = Bridge::for_test(|| 0);
+
     for effect in [AppFx::Loop(LoopReq::OnboardDone),
         AppFx::Player(plx_screens::registry::PlayerReq::CommitSeek(123))] {
-        assert!(plx_ui::dispatch::Rig::external_app_fx(&rig, &effect),
+        assert!(matches!(plx_machine::machine::AppEffect::route(effect), plx_machine::machine::EffectDisposition::External(_)),
             "MainThread commands must execute at their FIFO head, not park a family queue");
     }
 }
@@ -92,14 +95,14 @@ fn remaining_main_thread_commands_yield_before_resource_execution() {
 #[test]
 fn remaining_bridge_io_commands_yield_before_resource_execution() {
     let _guard = plx_base::testlock::serial();
-    let rig = Bridge::for_test(|| 0);
+
     let (reply, _receipt) = std::sync::mpsc::channel();
     for effect in [
         AppFx::SessionEffect(plx_session::auth::owner::SessionFx::Pump),
         AppFx::Preferences(plx_screens::registry::PreferenceCmd::Load { reply }),
         AppFx::Catalog(plx_screens::catalog::CatalogOut::Add { hex: [0; 12] }),
     ] {
-        assert!(plx_ui::dispatch::Rig::external_app_fx(&rig, &effect),
+        assert!(matches!(plx_machine::machine::AppEffect::route(effect), plx_machine::machine::EffectDisposition::External(_)),
             "resource admission must yield outside the dispatcher step, before the FIFO tail");
     }
 }
@@ -114,12 +117,13 @@ fn browse_tab_generation_is_owned_and_chrome_never_replays_a_stale_shape() {
         "bridge-tabs-own", "127.0.0.1", 9, "synthetic", "fixture");
     let shared = plx_plex::plex::register_for_test(
         "bridge-tabs-shared", "127.0.0.1", 10, "synthetic", "fixture");
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
     let mut pages = Dispatcher::<AppHost>::new();
     rig.capture_views(&mut pages);
     rig.capture_chrome(&mut pages);
-    let before = rig.chrome.labels();
+    let before = rig.retained.chrome.labels();
     assert!(before.faces.iter().any(|face| matches!(face, plx_ui::widgets::TabFace::Label(l) if l == "TV Shows")));
     let before_gen = before.generation;
 
@@ -127,16 +131,16 @@ fn browse_tab_generation_is_owned_and_chrome_never_replays_a_stale_shape() {
         plx_data::stores::browse::BrowseCmd::ApplyPins(vec![(1, false)]));
     rig.capture_views(&mut pages);
     rig.capture_chrome(&mut pages);
-    let changed = rig.chrome.labels();
+    let changed = rig.retained.chrome.labels();
     assert!(changed.generation > before_gen);
     assert!(!changed.faces.iter().any(|face| matches!(face, plx_ui::widgets::TabFace::Label(l) if l == "TV Shows")));
     let changed_gen = changed.generation;
 
     rig.capture_views(&mut pages);
     rig.capture_chrome(&mut pages);
-    assert_eq!(rig.chrome.labels().generation, changed_gen,
+    assert_eq!(rig.retained.chrome.labels().generation, changed_gen,
         "capturing again must not republish the owner's old tab generation");
-    assert!(!rig.chrome.labels().faces.iter().any(|face| matches!(face, plx_ui::widgets::TabFace::Label(l) if l == "TV Shows")));
+    assert!(!rig.retained.chrome.labels().faces.iter().any(|face| matches!(face, plx_ui::widgets::TabFace::Label(l) if l == "TV Shows")));
     plx_plex::plex::reset_servers_for_test();
 }
 
@@ -183,18 +187,20 @@ fn production_bridges_do_not_share_browse_state_or_landings() {
         "bridge-browse-own", "127.0.0.1", 9, "synthetic", "fixture");
     let shared = plx_plex::plex::register_for_test(
         "bridge-browse-shared", "127.0.0.1", port as i32, "synthetic", "fixture");
-    let mut first = Bridge::for_test(|| 0);
-    let mut second = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut first = harness.bridge();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut second = harness.bridge();
     first.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
     first.stores.browse.borrow_mut().prepare_page_for_test(shared);
     let mut pages = Dispatcher::<AppHost>::new();
     frame(&mut pages, &mut first, AppArg::Library, tick(0), vec![]);
     // The pump the frame's `StoreWork::Browse` runs: the keys the step decides from, the step, and
     // the page read it left, started by the runner (which resolves the key and starts the worker).
-    crate::app::adapters::stores::refill_client_keys(&mut first.client_keys);
+    crate::app::adapters::stores::refill_client_keys(&mut first.retained.client_keys);
     first.stores.browse.borrow().observe_pin_write();
     let input = plx_data::browse::BrowseRosterInput { tenure: 0,
-        keys: &first.client_keys, session: &plx_plex::plex::session::peek(),
+        keys: &first.retained.client_keys, session: &plx_plex::plex::session::peek(),
         visible_generation: plx_plex::plex::session::visible_generation(),
         settled: plx_plex::plex::session::peek_settled().is_some(),
         profile_key: &plx_plex::plex::session::current_profile_key(),
@@ -206,7 +212,7 @@ fn production_bridges_do_not_share_browse_state_or_landings() {
     let _ = first.stores.take_notices();
     let before = first.stores.gen(StoreId::Browse);
     second.capture_views(&mut pages);
-    assert_eq!(second.directory.view().current(), None,
+    assert_eq!(second.retained.directory.view().current(), None,
         "a command and its later worker landings belong only to the addressed Bridge store");
     release_tx.send(()).unwrap();
     server.join().unwrap();
@@ -258,7 +264,9 @@ fn session_boot_picker_publishes_captured_profile_without_ready_handoff() {
         home_users: vec![plx_plex::plex::session::HomeUserRef { uuid: "synthetic-user".into(),
             title: "A".into(), protected: true, ..Default::default() }], ..Default::default()
     };
-    let mut rig = Bridge::for_session_test(plx_session::auth::SessionInit::captured(stored));
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(plx_session::auth::SessionInit::captured(stored));
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     let mut d = Dispatcher::<AppHost>::new();
     execute_session_command(&mut d, plx_session::auth::SessionCmd::StartSwitch(plx_session::auth::Picker::Boot));
     d.frame_with(&mut rig, Tick::default(), Vec::new(), Vec::new(), &mut NoTap, false);
@@ -283,7 +291,9 @@ fn session_stored_boot_publishes_before_handoff_without_saving_credentials() {
             ..Default::default() }, ..Default::default()
     };
     assert!(stored.can_go_local());
-    let mut rig = Bridge::for_session_test(plx_session::auth::SessionInit::captured(stored));
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(plx_session::auth::SessionInit::captured(stored));
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     // Stored boot installs the captured authority; it must not rewrite a more recent
     // file merely to publish the initial profile and restore its granted registry.
     rig.session_adapter.fixture_resources().disk.account_token = "synthetic-new-disk-token".into();
@@ -325,7 +335,9 @@ fn session_current_negative_commit_reply_unblocks_independent_carried_work() {
             admission: AdmissionState::Awaiting(AdmissionId(req)) });
     }
     let expected = plx_session::auth::SessionIdentity::of(&init.persisted);
-    let mut rig = Bridge::for_session_test(init);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     rig.session_adapter.launch(RequestId(1), a_key, true, |job| { job(); true }, |output| {
         assert!(output.complete(LoginProgress::SignedIn { epoch: 1,
             server: plx_plex::plex::session::ServerRef { machine_id: "synthetic-server".into(),
@@ -383,7 +395,9 @@ fn session_cancel_preserves_carried_receipts_until_unique_discard() {
     init.pending.insert(1, Pending { key, expected: Identity::of(&init.persisted),
         lifecycle: None, last_arrival: None, phase: StreamPhase::Running, capture: None,
         admission: AdmissionState::Awaiting(AdmissionId(1)) });
-    let mut rig = Bridge::for_session_test(init);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     assert!(rig.session.work_is_current(1, key, AdmissionId(1)), "rig: the discovering attempt owns this carried work");
     rig.session_adapter.launch(RequestId(1), key, true, |job| { job(); true }, |output| {
         assert!(output.progress(AuthProgress::Registry(RegistryProgress::Install {
@@ -443,14 +457,18 @@ fn two_session_bridges_dispatch_without_global_capture_or_a_serial_lock() {
     let init = || SessionInit::captured(plx_plex::plex::session::Session {
         client_id: "synthetic-client".into(), ..Default::default()
     });
-    let mut a = Bridge::for_session_test(init());
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init());
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut a = harness.bridge();
     let mut b_init = init();
     b_init.phase = Phase::Waiting;
     b_init.pin_code = "BBBB".into();
     b_init.qr_png = vec![2, 3, 4];
     b_init.qr_gen = 7;
     b_init.next_qr = 7;
-    let mut b = Bridge::for_session_test(b_init);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(b_init);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut b = harness.bridge();
     let retained_b = b.session.publication();
     let before_b = b.session.subhash();
     let mut da = Dispatcher::<AppHost>::new();
@@ -507,7 +525,9 @@ fn session_registry_then_terminal_waits_for_queued_commit_replies() {
         init.pending.insert(1, Pending { key, expected: Identity::of(&init.persisted),
             lifecycle: None, last_arrival: None, phase: StreamPhase::Running, capture: None,
             admission: AdmissionState::Awaiting(AdmissionId(1)) });
-        let mut rig = Bridge::for_session_test(init);
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
         rig.session_adapter.launch(RequestId(1), key, true, |job| { job(); true }, move |output| {
             for _ in 0..2 {
                 assert!(output.progress(AuthProgress::Registry(RegistryProgress::Install {
@@ -586,7 +606,8 @@ fn session_replies_cross_the_production_queued_drain_with_exact_correlation() {
     // This existing constructor captures other global store publications. This test is
     // dispatch evidence, not the still-owed lock-free two-Bridge fixture proof.
     let _guard = plx_base::testlock::serial();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     let mut dispatcher = Dispatcher::<AppHost>::new();
     let mut replies = Replies(Vec::new());
     for command in [
@@ -608,9 +629,10 @@ fn session_replies_cross_the_production_queued_drain_with_exact_correlation() {
 fn session_frame_read_borrows_the_bridge_publication() {
     use plx_screens::registry::AuthLike;
     let _guard = plx_base::testlock::serial();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     let retained = rig.session.publication();
-    let parts = CxParts { tick: Tick::default(), press: Default::default(),
+    let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: Tick::default(), press: Default::default(),
         focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
     let split = rig.split();
     let cx = parts.cx::<AppHost>(split.views, split.measure);
@@ -626,7 +648,8 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
     plx_plex::plex::describe_server(a, "Synthetic", "Synthetic share", plx_plex::plex::GrantEvidence::outside());
     let expected = [b, a]; // Home's own-first observation order, deliberately not slot order.
     crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
-        let mut rig = Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         // A refused launch is settled by the NEXT Hubs step: the refetch's refusals by the retry,
         // the retry's by whatever steps Hubs after it.
         for (cmd, settles) in [(plx_data::stores::hubs::HubsCmd::RefetchHubs, false),
@@ -640,7 +663,7 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
                 if settles { expected.to_vec() } else { Vec::new() });
             assert_eq!(rig.stores.take_notices(), [(StoreId::Hubs, generation + 1)]);
         }
-        let parts = CxParts { tick: Tick::default(), press: Default::default(),
+        let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: Tick::default(), press: Default::default(),
             focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
         let mut present = plx_machine::present::Present::default();
         let mut out = Vec::new();
@@ -653,9 +676,9 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
         let mut next = Vec::new();
         let mut fx = Effects::new(&mut next, MachineId::Session, &mut present);
         for stamped in out {
-            let Fx::App(command @ AppFx::Session(_)) = stamped.fx
+            let Fx::App(AppFx::Session(command)) = stamped.fx
                 else { panic!("recovery was not translated into a Session command") };
-            rig.app_fx(stamped.from, command, &parts, &mut fx);
+            rig.app_fx(stamped.from, plx_screens::registry::InlineAppFx::Session(command), &parts, &mut fx);
         }
         drop(fx);
         for stamped in next {

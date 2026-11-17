@@ -178,8 +178,9 @@ mod tests {
         use plx_machine::machine::{EntryId, InputOwner, Tick};
         use plx_screens::registry::LibraryLike;
         use plx_ui::dispatch::CxParts;
-        let mut bridge = Bridge::for_test(|| 0);
-        let parts = CxParts { tick: Tick::default(), press: Default::default(), focus: Default::default(),
+        let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = owner.bridge();
+        let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: Tick::default(), press: Default::default(), focus: Default::default(),
             owner: InputOwner::Entry(EntryId(0)) };
         // What a screen sees: a `Cx` over the Bridge's views, asked through the Library's host trait.
         let seen = |bridge: &Bridge| {

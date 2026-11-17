@@ -99,7 +99,7 @@ fn down_from_the_hero_after_back_from_the_last_shelf_dives_to_the_first_shelf_on
         "premise: the page rests on the last shelf (Alpha off, Foxtrot on): {:?}", deep.iter().map(|h| (h.title, h.rect.y, h.alpha)).collect::<Vec<_>>());
     w.press(Key::Back);
     w.frames(60);
-    assert!(on_hero(&w), "premise: BACK folded focus to the billboard (grid {:?}, snap target {}, snap {}, focus {:?})", grid_at(&w), w.bridge.home_snap_target(&w.d), w.bridge.home_snap_pos(&w.d), w.focus());
+    assert!(on_hero(&w), "premise: BACK folded focus to the billboard (grid {:?}, snap target {}, snap {}, focus {:?})", grid_at(&w), w.with_home(|home, _, _| home.snap_target()).unwrap_or(0.0), w.with_home(|home, _, _| home.snap_pos()).unwrap_or(0.0), w.focus());
     let frames = watch_headings(&mut w, Key::Down, DIVE_FRAMES);
     assert_dives_to_the_first_shelf_only("after BACK from the last shelf", &frames);
 }
@@ -125,7 +125,7 @@ fn down_from_the_hero_after_up_from_a_deep_walk_dives_to_the_first_shelf_only() 
 /// The x the card at `(row, col)` is DRAWN at (its centre: the focus pop grows it about that), if the
 /// page places it.
 fn card_cx(w: &World, row: usize, col: usize) -> f32 {
-    w.bridge.with_home(&w.d, |home, cx, _| {
+    w.with_home(|home, cx, _| {
         let key = home.dev_focus_key::<AppHost>(row, col, cx).expect("the shelf holds the card");
         Focusable::<AppHost>::place(home, &key.elem, cx, At::Drawn).expect("the page places the card").rect.cx()
     }).expect("Home is on top")
@@ -133,12 +133,12 @@ fn card_cx(w: &World, row: usize, col: usize) -> f32 {
 
 /// Is focus on the billboard (not on a shelf, a heading or the top bar), and the dive headed there?
 fn on_hero(w: &World) -> bool {
-    grid_at(w).is_none() && w.bridge.home_snap_target(&w.d) == 0.0
+    grid_at(w).is_none() && w.with_home(|home, _, _| home.snap_target()).unwrap_or(0.0) == 0.0
 }
 
 /// Where focus stands on the shelves, `(shelf, card)`.
 fn grid_at(w: &World) -> Option<(usize, usize)> {
-    w.bridge.with_home(&w.d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx)).flatten()
+    w.with_home(|home, cx, focus| home.grid_position::<AppHost>(focus, cx)).flatten()
 }
 
 /// The first shelf walked Right to its eighth card: the shelf holds an offset, and its third card

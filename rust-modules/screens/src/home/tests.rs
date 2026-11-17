@@ -72,6 +72,7 @@ fn cx<'a>(view: HubsView<'a>, focus: Option<FocusKey<u32>>) -> Cx<'a, TestHost> 
         tick: Tick::default(),
         measure: &MEASURE,
         press: PressRead::default(),
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         focus: FocusRead { current: focus , ..Default::default() },
         owner: InputOwner::Entry(focus.map_or(EntryId(7), |k| k.entry)),
     }
@@ -4168,19 +4169,31 @@ fn stable_keys_are_bounded_oldest_first() {
 const HINT_TICK_MS: u32 = 16;
 
 /// A Home seated on the grid with `rows` shelves, nothing focused yet.
-fn hint_home(view: HubsView<'_>) -> HomeScreen {
-    plx_ui::hold_hint::reset_learned_for_test();
-    plx_ui::hold_hint::reset_shown_for_test();
+struct HintHome {
+    screen: HomeScreen,
+    read: plx_machine::machine::HoldHintRead,
+}
+
+impl std::ops::Deref for HintHome {
+    type Target = HomeScreen;
+    fn deref(&self) -> &Self::Target { &self.screen }
+}
+
+impl std::ops::DerefMut for HintHome {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.screen }
+}
+
+fn hint_home(view: HubsView<'_>) -> HintHome {
     let mut s = screen(view);
     s.snap.jump(1.0);
     s.snap_target = 1.0;
-    s
+    HintHome { screen: s, read: Default::default() }
 }
 
 /// Tick `frames` times with `focus` and a card held `held_ms` (None = no press), from `ms0`;
 /// returns the next tick's clock.
 fn hint_ticks(
-    s: &mut HomeScreen,
+    s: &mut HintHome,
     view: HubsView<'_>,
     focus: Option<FocusKey<u32>>,
     held_ms: Option<u32>,
@@ -4194,9 +4207,16 @@ fn hint_ticks(
     let mut ms = ms0;
     for _ in 0..frames {
         ms += HINT_TICK_MS;
+        context.hold_hint = s.read;
         let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
         let tick = ScreenEvent::Tick(Tick { ms, dt_us: HINT_TICK_MS * 1000 });
-        Machine::<TestHost>::step(s, &tick, &context, &mut fx);
+        Machine::<TestHost>::step(&mut s.screen, &tick, &context, &mut fx);
+        drop(fx);
+        for effect in out.drain(..) {
+            if let plx_machine::machine::Fx::HoldHint(event) = effect.fx {
+                s.read.apply(event);
+            }
+        }
     }
     ms
 }
@@ -4211,7 +4231,7 @@ fn second_card(s: &HomeScreen) -> FocusKey<u32> {
 
 /// Run `body` against a hint-ready Home over three ready shelves, holding the serial lock the
 /// shared stores and the idle gate need for the whole test.
-fn with_hint_home(body: impl FnOnce(HomeScreen, HubsView<'_>)) {
+fn with_hint_home(body: impl FnOnce(HintHome, HubsView<'_>)) {
     let _guard = plx_base::testlock::serial();
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
@@ -4315,13 +4335,13 @@ fn the_hint_is_retired_for_good_once_a_menu_has_been_opened() {
         let card = Some(first_card(&s));
         let ms = hint_ticks(&mut s, view, card, None, 0, hint_secs(5.0));
         assert!(s.hold_hint.visible());
-        plx_ui::hold_hint::mark_learned();
+        s.read.apply(plx_machine::machine::HoldHintEvent::Learned);
         let ms = hint_ticks(&mut s, view, card, None, ms, hint_secs(1.5));
         assert!(!s.hold_hint.visible(), "learned: a standing hint goes");
         let other = Some(second_card(&s));
         hint_ticks(&mut s, view, other, Some(100), ms, hint_secs(10.0));
         assert!(!s.hold_hint.visible(), "and neither dwell nor a hold brings it back");
-        plx_ui::hold_hint::reset_learned_for_test();
+
     });
 }
 
@@ -4332,7 +4352,8 @@ fn a_settled_hint_lets_the_gate_close() {
         let ms = hint_ticks(&mut s, view, card, None, 0, hint_secs(6.0));
         assert!(s.hold_hint.visible());
         // Home settled with the hint standing still: nothing in the tick may ask for a present.
-        let context = cx(view, card);
+        let mut context = cx(view, card);
+        context.hold_hint = s.read;
         let mut present = plx_machine::present::Present::new();
         swap_requested_frame(&mut present);
         let mut out = Vec::new();
@@ -4341,7 +4362,7 @@ fn a_settled_hint_lets_the_gate_close() {
             {
                 let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
                 let tick = ScreenEvent::Tick(Tick { ms: ms + i * HINT_TICK_MS, dt_us: HINT_TICK_MS * 1000 });
-                Machine::<TestHost>::step(&mut s, &tick, &context, &mut fx);
+                Machine::<TestHost>::step(&mut s.screen, &tick, &context, &mut fx);
             }
             asked += u32::from(swap_requested_frame(&mut present));
         }

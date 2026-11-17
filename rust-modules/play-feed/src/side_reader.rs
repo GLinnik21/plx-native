@@ -578,6 +578,24 @@ mod tests {
             stop("test-handed");
         });
     }
+    struct MeasuredJob;
+    static MEASURED_JOB: MeasuredJob = MeasuredJob;
+    impl SideReaderJobPort for MeasuredJob {
+        fn read_once(
+            &self, cfg: &ReadCfg, stop: &Arc<SideStop>, anchor: &Anchor, delta: &mut Option<i64>,
+            resume_part_ns: &dyn Fn(i64) -> i64, playpos: &dyn Fn() -> i64,
+            clock: &dyn Fn() -> (i64, i64), retention: &dyn Fn() -> CaptionRetention,
+            on_exact_delta: &dyn Fn(i64),
+        ) -> RunEnd {
+            *delta = Some(-2_169_000_000);
+            on_exact_delta(delta.unwrap());
+            JOB.read_once(cfg, stop, anchor, delta, resume_part_ns, playpos, clock, retention, on_exact_delta)
+        }
+        fn desired_sub_idx(&self) -> i32 { JOB.desired_sub_idx() }
+        fn request_subtitle(&self, ordinal: i32) { JOB.request_subtitle(ordinal); }
+        fn clear_bitmaps(&self) {}
+    }
+
     /// The production path for a carried delta is `apply` (a track switch mid-play), not `start`:
     /// an exact delta a TRACK run measured is the same engine run's mapping, so a pick that moves
     /// the reader to the clock-only role keeps it — and the clock-only run has nothing left to scan.
@@ -587,12 +605,14 @@ mod tests {
         plx_base::eventlog::with_private_log(|| {
             let port = 1;
             *FEED_SHARED.side_anchor.lock().unwrap() = Some(Anchor::of(0, &[1, 2, 3]));
-            assert!(start(spec(port), &JOB));
-            // what `read_once` publishes on a byte-exact match, and what the run hands on
-            publish_exact(-2_169_000_000);
-            *LAST_DELTA.lock().unwrap() = Some(-2_169_000_000);
+            assert!(start(spec(port), &MEASURED_JOB));
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while exact_delta_ns().is_none() {
+                assert!(Instant::now() < deadline, "the reader did not measure the delta");
+                std::thread::sleep(Duration::from_millis(10));
+            }
             let epoch = EPOCH.load(Ordering::Acquire);
-            apply(epoch, Some(clock_only_spec(port, None)), &JOB);
+            apply(epoch, Some(clock_only_spec(port, None)), &MEASURED_JOB);
             assert_eq!(running().as_ref().map(|r| r.ordinal), Some(SIDE_READER_CLOCK_ONLY), "the reader measures the clock only now");
             assert_eq!(exact_delta_ns(), Some(-2_169_000_000), "the run's measurement is the sidecar's too");
             wait_until_the_reader_ends();

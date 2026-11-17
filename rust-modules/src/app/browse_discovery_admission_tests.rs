@@ -38,15 +38,16 @@ fn one_server() -> (ServerId, &'static plx_plex::plex::Client) {
     (sid, plx_plex::plex::client_for(sid).expect("registered"))
 }
 
-fn controlled(replay: bool) -> Bridge {
+fn controlled(replay: bool) -> crate::app::runtime_owners::Harness {
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let initial = crate::app::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-    Bridge::controlled_home(|| 0, &initial, &mt, replay)
+    let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, replay);
+    crate::app::runtime_owners::Harness::from_parts(runtime, retained)
 }
 
 /// One message to the Browse store, as the central dispatcher delivers it.
 fn deliver(bridge: &mut Bridge, msg: AppMsg) {
-    let parts = CxParts { tick: Tick::default(), press: Default::default(),
+    let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: Tick::default(), press: Default::default(),
         focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
     let mut present = plx_machine::present::Present::default();
     let mut out = Vec::new();
@@ -78,7 +79,8 @@ fn recording_the_discovery_arm_writes_the_sections_request_and_starts_the_job_in
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
     let (_sid, client) = one_server();
-    let mut bridge = controlled(false);
+    let mut owner = controlled(false);
+    let mut bridge = owner.bridge();
 
     deliver(&mut bridge, AppMsg::StoreWork(StoreWork::BrowseDiscovery));
 
@@ -95,7 +97,8 @@ fn replaying_the_discovery_arm_answers_from_the_line_and_launches_nothing() {
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
     let (_sid, client) = one_server();
-    let mut bridge = controlled(true);
+    let mut owner = controlled(true);
+    let mut bridge = owner.bridge();
     bridge.supply_admissions(VecDeque::from([sections_request(client, true)]));
 
     deliver(&mut bridge, AppMsg::StoreWork(StoreWork::BrowseDiscovery));
@@ -120,7 +123,8 @@ fn replaying_the_discovery_arm_against_a_different_line_fails_the_run() {
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
     let (_sid, client) = one_server();
-    let mut bridge = controlled(true);
+    let mut owner = controlled(true);
+    let mut bridge = owner.bridge();
     let mut line = sections_request(client, true);
     line["counts"] = serde_json::json!([1]);
     bridge.supply_admissions(VecDeque::from([line]));

@@ -40,7 +40,7 @@ fn two_servers() -> (ServerId, ServerId, &'static plx_plex::plex::Client) {
 
 /// One message to a store, as the central dispatcher delivers it.
 fn deliver(bridge: &mut Bridge, msg: AppMsg) {
-    let parts = CxParts { tick: Tick::default(), press: Default::default(),
+    let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: Tick::default(), press: Default::default(),
         focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
     let mut present = plx_machine::present::Present::default();
     let mut out = Vec::new();
@@ -65,10 +65,11 @@ fn browse_delivery_damages_real_calendar_changes_and_results_not_repeated_reques
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
     let (own, shared, client) = two_servers();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = owner.bridge();
     bridge.park_page_reads_for_test();
     let target = seeded(&mut bridge, own, shared);
-    let parts = CxParts { tick: Tick::default(), press: Default::default(),
+    let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: Tick::default(), press: Default::default(),
         focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
     let mut present = plx_machine::present::Present::default();
     let mut damage = |bridge: &mut Bridge, msg: AppMsg| {
@@ -135,7 +136,8 @@ fn outside_a_controlled_run_the_same_table_asks_for_a_directory_and_a_page() {
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
     let (own, shared, _client) = two_servers();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = owner.bridge();
     bridge.park_page_reads_for_test();
     let target = seeded(&mut bridge, own, shared);
 
@@ -160,7 +162,9 @@ fn a_controlled_runs_browse_commands_emit_no_page_or_directory_read() {
     for replay in [false, true] {
         let (own, shared, client) = two_servers();
         let initial = crate::app::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-        let mut bridge = Bridge::controlled_home(|| 0, &initial, &mt, replay);
+        let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, replay);
+        let mut owner = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut bridge = owner.bridge();
         seeded(&mut bridge, own, shared);
         let mode = if replay { "replay" } else { "record" };
 
@@ -182,7 +186,8 @@ fn the_controlled_encoder_refuses_every_way_to_ask_for_a_page_or_a_directory() {
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
     let (own, shared, client) = two_servers();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = owner.bridge();
     let target = seeded(&mut bridge, own, shared);
     let encode = |command: StoreCmd| crate::app::bootstrap::effects::app(&AppFx::Store(StoreId::Browse, command));
 

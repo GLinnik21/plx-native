@@ -81,6 +81,7 @@ pub fn cx_with<'a>(
         tick: Tick::default(),
         measure: &MEASURE,
         press: PressRead::default(),
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         focus: FocusRead {
             current: focus,
             ..Default::default()
