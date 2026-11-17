@@ -78,6 +78,14 @@ arguments, and its time is the `dt` it is handed.
    nothing here is close — and then it lands *here*, as a reusable `View`, so the next screen gets
    it for free.
 
+   **A new focusable element answers an accessibility id.** Tests and agents reach it with
+   `focus:<id>` / `press:<id>` (`tools/a11y.py`), not by walking keys to it, so an element that
+   cannot be named cannot be tested. It gets its id from the three `Focusable` hooks (`a11y`,
+   `a11y_elems`, `a11y_find`, `screen.rs`) or from the shared widget it composes (`card_a11y` for a
+   card, `PageHeader`, `LinkedHeading`, `MasterDetail`), never from a screen-local table.
+   `rust-modules/screens/src/a11y_coverage_tests.rs` is an exhaustive `match` over `AppArg`, so a
+   new screen does not compile until it is tabled there.
+
    A mechanism is forked the same way and more quietly, because it looks like three lines of glue.
    Find the ready-made one first; if it almost fits, extend it in place for every caller; if it
    truly cannot do the job, say why before writing a new one, which then lands here. PR #843

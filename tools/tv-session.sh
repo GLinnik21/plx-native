@@ -6,6 +6,11 @@
 #   tv-session.sh status         re-assert an existing session without disturbing it
 #   tv-session.sh key <token>…   send key tokens (down, ok, back, play, pause, stop, …)
 #   tv-session.sh click <x> <y>  click at authored 1920x1080 coords
+#   tv-session.sh focus <id>     move focus to the element an accessibility id names (`nav.watchlist`)
+#   tv-session.sh press <id> [--rk <ratingKey>]
+#                                focus that element and press OK; a card id (`...card.N`) needs --rk
+#   tv-session.sh state [--out FILE]
+#                                what is on screen, by id: the focused id, the groups, every element
 #   tv-session.sh shot [out.png] grab the panel (video plane included) via the capture service
 #   tv-session.sh log [pattern]  fetch the on-device event log, optionally grepped
 #   tv-session.sh screen off|on  blank the PANEL while the app keeps running (see below)
@@ -118,7 +123,15 @@
 # its own reasons is the only one that knows when unmuting is correct; restoring automatically
 # would fight a human who muted the set on purpose before handing it to a lane.
 #
-# THE TV LOCK: every subcommand that DRIVES the set (up, key, click, shot, down) requires the
+# BY ID, NOT BY WALK: `focus`, `press` and `state` are the FIFO's accessibility-id tokens (`focus:<id>`,
+# `press:<id>[@<ratingKey>]`, `state:<nonce>`; debug builds only, `devtriggers`). Ids are place-based dot paths
+# (`nav.watchlist`, `home.hero.play`, `detail.hero.play`, `watchlist.grid.card.3`); `state` lists the real ones.
+# Prefer them to `key` walks, which are for tests whose subject is travel. Never press OK on a card whose
+# ratingKey you have not read: `press` refuses a card id without `--rk`, and the app refuses the press when
+# the card now there carries another one (`a11y: refused press <id> subject_mismatch ...` in the event log).
+# A `state` snapshot holds titles and rating keys: it is for you, not for an issue or a recording.
+#
+# THE TV LOCK: every subcommand that DRIVES the set (up, key, click, focus, press, state, shot, down) requires the
 # television's lock and refuses when another lane holds it; `status`, `log` and `fg` are read-only
 # and only name the holder. Take one for a whole session rather than letting each command take its own
 # 10-minute implicit lease — the gap between two of your own commands is exactly where another
@@ -1050,6 +1063,36 @@ cmd_selftest() {
   }
   ok "tv-session direct-screen contract"
 
+  # ---- by accessibility id: the grammar, the card guard and the nonce match. Pure: nothing is sent.
+  local aid
+  for aid in nav.watchlist home.hero.play home.shelf.2.card.5 watchlist.grid.card.0 under-posters.row.3 \
+             library.rail.12 itemmenu.version.0 detail.hero.mark_watched; do
+    a11y_id_ok "$aid" || { bad "a11y_id_ok refused the well-formed id $aid"; return 1; }
+  done
+  for aid in "" home nav. .nav nav..x Nav.watchlist nav.Watchlist nav.watch-list nav.05 nav.-1 "nav.a b" "nav.a;b" \
+             "nav.x'y" 'nav.$HOME' 'nav.a[0]' nav.0x1 under-posters.row-3 "nav.watchlist
+nav.home"; do
+    ! a11y_id_ok "$aid" || { bad "a11y_id_ok accepted a malformed id: $aid"; return 1; }
+  done
+  [ "$(a11y_token focus nav.watchlist)" = "focus:nav.watchlist" ] || { bad "focus token"; return 1; }
+  [ "$(a11y_token press detail.hero.play)" = "press:detail.hero.play" ] || { bad "press token"; return 1; }
+  [ "$(a11y_token press home.shelf.2.card.5 1234)" = "press:home.shelf.2.card.5@1234" ] || { bad "press-with-subject token"; return 1; }
+  [ "$(a11y_token press catalog.primary 5d7768ab)" = "press:catalog.primary@5d7768ab" ] || { bad "press subject on a non-card"; return 1; }
+  if a11y_token press home.shelf.2.card.5 >/dev/null 2>&1; then bad "a card press without --rk was accepted"; return 1; fi
+  if a11y_token press home.continue.card.0 >/dev/null 2>&1; then bad "a Continue Watching card press without --rk was accepted"; return 1; fi
+  for aid in "1 2" "12'34" '12@3' '12$x' "12;x" ""; do
+    if a11y_token press watchlist.grid.card.3 "$aid" >/dev/null 2>&1; then bad "an unsafe --rk was accepted: $aid"; return 1; fi
+  done
+  if a11y_token focus nav.watchlist 123 >/dev/null 2>&1; then bad "focus accepted a ratingKey"; return 1; fi
+  if a11y_token press "nav.Bad" >/dev/null 2>&1; then bad "press accepted a malformed id"; return 1; fi
+  a11y_answers abc '{"schema":1,"nonce":"abc","elements":[]}' || { bad "a11y_answers missed its own nonce"; return 1; }
+  a11y_answers abc '{ "nonce" : "abc" }' || { bad "a11y_answers is whitespace-sensitive"; return 1; }
+  if a11y_answers abc '{"nonce":"abd"}'; then bad "a11y_answers took another request's file"; return 1; fi
+  if a11y_answers abc '{"label":"abc"}'; then bad "a11y_answers matched a value that is not the nonce"; return 1; fi
+  aid=$(a11y_nonce)
+  [ "${#aid}" -eq 16 ] || { bad "a11y_nonce is not 16 characters"; return 1; }
+  ok "tv-session by-id contract (grammar, card needs --rk, nonce match)"
+
   # ---- identity: `--guest` must resolve the real managed-user token or REFUSE, and must never
   # fall through to the owner's — the 2026-09-10 TV session 5 defect (a warning printed, then the
   # owner's token pushed anyway; a real playback wrote progress into the household Plex account,
@@ -1157,13 +1200,18 @@ cmd_status() {
   fi
 }
 
+# One token into the remote FIFO. The app drains it each frame; the write is time-boxed so a FIFO
+# with no reader (app not running) cannot wedge this shell. The token sits inside single quotes in
+# the remote command, so a caller passes only what it has validated (`a11y_id_ok`, `a11y_subject_ok`).
+fifo_send() {  # $1 = one token
+  tv "(printf '%s\n' '$1' > $REMOTE_FIFO) & P=\$!; sleep 2; kill \$P 2>/dev/null" 2>/dev/null
+}
+
 cmd_key() {
   [ $# -gt 0 ] || { echo "usage: tv-session.sh key <token>..." >&2; exit 2; }
   require_lock "tv-session key"
-  # the app drains the FIFO each frame; time-box the write so a FIFO with no reader
-  # (app not running) cannot wedge this shell
   for t in "$@"; do
-    tv "(printf '%s\n' '$t' > $REMOTE_FIFO) & P=\$!; sleep 2; kill \$P 2>/dev/null" 2>/dev/null
+    fifo_send "$t"
     info "sent $t"
   done
 }
@@ -1171,6 +1219,121 @@ cmd_key() {
 cmd_click() {
   [ $# -eq 2 ] || { echo "usage: tv-session.sh click <x> <y>   (authored 1920x1080)" >&2; exit 2; }
   cmd_key "ck:$1,$2"
+}
+
+# ----------------------------------------------------- by accessibility id ----
+# `focus:<id>`, `press:<id>[@<subject>]` and `state:<nonce>` are FIFO tokens of a `devtriggers` build
+# (rust-modules/ui/src/a11y.rs, dispatch/by_id.rs, src/app/a11y_state.rs). The checks below are the
+# grammar's own, so a malformed id stops HERE rather than as a refusal line on the set, and so nothing
+# but a validated word ever reaches the quoted remote command in `fifo_send`.
+#
+#   id       <ns>.<path>: ns [a-z][a-z0-9_-]*, then one or more segments, each a name [a-z][a-z0-9_]*
+#            or a canonical decimal index (0, or digits with no leading zero)
+#   subject  a ratingKey (or a catalog hex id): [A-Za-z0-9_-]+, a subset of what the app accepts
+A11Y_ID_RE='^[a-z][a-z0-9_-]*(\.([a-z][a-z0-9_]*|0|[1-9][0-9]*))+$'
+A11Y_SUBJECT_RE='^[A-Za-z0-9_-]+$'
+A11Y_STATE_TRIES=24     # `state` polls the runtime root this many times, a half second apart
+
+a11y_id_ok() {  # $1 = a full accessibility id. LC_ALL=C: [a-z] must not follow a locale's collation.
+  case "$1" in *$'\n'*) return 1 ;; esac
+  printf '%s\n' "$1" | LC_ALL=C grep -Eq "$A11Y_ID_RE"
+}
+
+a11y_subject_ok() {  # $1 = a ratingKey / subject
+  case "$1" in *$'\n'*) return 1 ;; esac
+  printf '%s\n' "$1" | LC_ALL=C grep -Eq "$A11Y_SUBJECT_RE"
+}
+
+# The token for focusing or pressing an id; says why not (stderr) and returns 2 when it must not be sent.
+#   a11y_token focus <id>            -> focus:<id>
+#   a11y_token press <id> [<rk>]     -> press:<id> or press:<id>@<rk>
+# A card id (any id with a `.card.` segment) is a poster: pressing one opens or plays a title, so the
+# press names the title it means (`--rk`), the real-account rule's own guard (never press OK on a card
+# whose ratingKey you have not read). The app compares it against the card it finds there.
+a11y_token() {
+  local act="$1" id="${2:-}" rk="${3:-}"
+  a11y_id_ok "$id" || { echo "tv-session: not an accessibility id: '$id' (want <ns>.<segment>..., e.g. nav.watchlist)" >&2; return 2; }
+  case "$act" in
+    focus)
+      [ -z "$rk" ] || { echo "tv-session: focus takes no ratingKey" >&2; return 2; }
+      printf 'focus:%s\n' "$id" ;;
+    press)
+      case "$id" in
+        *.card.*) [ -n "$rk" ] || {
+          echo "tv-session: press $id: a card needs --rk <ratingKey> (read it from \`state\` or the log first)" >&2; return 2; } ;;
+      esac
+      if [ -n "$rk" ]; then
+        a11y_subject_ok "$rk" || { echo "tv-session: --rk wants a ratingKey of letters, digits, _ and -" >&2; return 2; }
+        printf 'press:%s@%s\n' "$id" "$rk"
+      else
+        printf 'press:%s\n' "$id"
+      fi ;;
+    *) echo "tv-session: internal: a11y_token focus|press" >&2; return 2 ;;
+  esac
+}
+
+cmd_focus() {
+  [ $# -eq 1 ] || { echo "usage: tv-session.sh focus <id>   (e.g. nav.watchlist)" >&2; exit 2; }
+  local tok; tok=$(a11y_token focus "$1") || exit 2
+  cmd_key "$tok"
+}
+
+cmd_press() {
+  local id="" rk="" usage="usage: tv-session.sh press <id> [--rk <ratingKey>]"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --rk)   [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
+              rk="$2"; shift 2 ;;
+      --rk=*) rk="${1#*=}"; shift ;;
+      -*)     echo "$usage" >&2; exit 2 ;;
+      *)      [ -z "$id" ] || { echo "$usage" >&2; exit 2; }
+              id="$1"; shift ;;
+    esac
+  done
+  [ -n "$id" ] || { echo "$usage" >&2; exit 2; }
+  local tok; tok=$(a11y_token press "$id" "$rk") || exit 2
+  cmd_key "$tok"
+}
+
+# A nonce in the app's grammar ([A-Za-z0-9_-]{1,32}): 16 hex digits.
+a11y_nonce() { od -An -N8 -tx1 /dev/urandom | tr -d ' \n'; }
+
+# Does the state file text `$2` answer the request that carried nonce `$1`? The file is compact JSON,
+# so the member reads `"nonce":"<nonce>"`; a stale file names another nonce and does not match.
+a11y_answers() { printf '%s' "$2" | grep -Eq "\"nonce\" *: *\"$1\""; }
+
+# Ask the app what is on screen: write `state:<nonce>`, then read `$RUNDIR/plxnative-a11y.json` over ssh
+# until it names that nonce (a bounded wait: the app is not running, was built without devtriggers, or is
+# stalled). Prints the snapshot, or writes it to FILE (owner-only) and prints one line about it.
+cmd_state() {
+  local out="" usage="usage: tv-session.sh state [--out FILE]"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --out)   [ $# -ge 2 ] && [ -n "$2" ] || { echo "$usage" >&2; exit 2; }
+               out="$2"; shift 2 ;;
+      --out=*) out="${1#*=}"; [ -n "$out" ] || { echo "$usage" >&2; exit 2; }; shift ;;
+      *)       echo "$usage" >&2; exit 2 ;;
+    esac
+  done
+  require_lock "tv-session state"
+  local nonce doc i
+  nonce=$(a11y_nonce)
+  fifo_send "state:$nonce"
+  for i in $(seq 1 "$A11Y_STATE_TRIES"); do
+    doc=$(tvq "cat $RUNDIR/plxnative-a11y.json")
+    if [ -n "$doc" ] && a11y_answers "$nonce" "$doc"; then
+      if [ -n "$out" ]; then
+        ( umask 077; printf '%s\n' "$doc" > "$out" ) || { bad "cannot write $out"; return 1; }
+        ok "state:$nonce answered; $(printf '%s' "$doc" | wc -c | tr -d ' ') bytes written to $out"
+      else
+        printf '%s\n' "$doc"
+      fi
+      return 0
+    fi
+    sleep 0.5
+  done
+  bad "no snapshot named state:$nonce appeared in $RUNDIR (app not running, a RELEASE=1 build, or its loop is stalled)"
+  return 1
 }
 
 cmd_shot() {
@@ -1481,8 +1644,11 @@ case "${1:-}" in
   status) shift; cmd_status ;;
   key)    shift; cmd_key "$@" ;;
   click)  shift; cmd_click "$@" ;;
+  focus)  shift; cmd_focus "$@" ;;
+  press)  shift; cmd_press "$@" ;;
+  state)  shift; cmd_state "$@" ;;
   shot)   shift; cmd_shot "$@" ;;
   log)    shift; cmd_log "$@" ;;
   down)   shift; cmd_down ;;
-  *) sed -n '3,55p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '3,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

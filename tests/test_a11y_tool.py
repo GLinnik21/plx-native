@@ -1,20 +1,33 @@
-"""tools/a11y.py: the nonce matching of the `state:<nonce>` read-back, with no app, no television and no
-real clock. A fake clock and an injected `sleep` stand in for time; the "app" is a function that reads
-the token the tool wrote to a real FIFO and answers into a temp directory the way the app does
-(replace the state file whole)."""
+"""tools/a11y.py: the nonce matching of the `state:<nonce>` read-back, the id grammar, the `focus:` /
+`press:` tokens and `expect_focus`, with no app, no television and no real clock. A fake clock and an
+injected `sleep` stand in for time; the "app" is a function that reads the token the tool wrote to a real
+FIFO and answers into a temp directory the way the app does (replace the state file whole).
+
+It also holds the harness half of the first by-id migration: tools/watchlist_captures.py's step
+classification and focus check, and the committed tests/scenarios/watchlist_captures.json held to the
+id grammar (no simulator is needed to know a token is malformed, or that a walk crept back in)."""
 import importlib.util
 import json
 import os
 import pathlib
 import re
 import shutil
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("a11y_tool", ROOT / "tools" / "a11y.py")
 a11y = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(a11y)
+
+# The capture driver does `import a11y` from its own directory; give it THIS module so the exceptions it
+# catches are the ones the tests raise.
+sys.modules["a11y"] = a11y
+_cspec = importlib.util.spec_from_file_location("watchlist_captures_tool", ROOT / "tools" / "watchlist_captures.py")
+captures = importlib.util.module_from_spec(_cspec)
+_cspec.loader.exec_module(captures)
 
 HAS_FIFO = hasattr(os, "mkfifo")
 
@@ -187,6 +200,341 @@ class State(unittest.TestCase):
             a11y.state(self.runtime, timeout=0.1, clock=self.clock, sleep=self.clock.sleep)
         (nonce,) = self.requested()
         self.assertTrue(re.fullmatch(a11y.NONCE_RE, nonce), nonce)
+
+
+GOOD_IDS = [
+    "nav.watchlist", "nav.profile", "home.hero.play", "home.shelf.2.card.5", "home.continue.card.0",
+    "watchlist.grid.card.0", "watchlist.header.sort", "watchlist_menu.type_all", "library.rail.12",
+    "itemmenu.version.0", "detail.hero.mark_watched", "under-posters.row.3", "player.control.subtitles",
+]
+BAD_IDS = [
+    "", "home", "nav.", ".nav", "nav..x", "Nav.watchlist", "nav.Watchlist", "nav.watch-list", "nav.05",
+    "nav.-1", "nav.a b", "nav.a;b", "nav.x'y", "nav.$HOME", "nav.a[0]", "nav.0x1", "under-posters.row-3",
+    "nav.watchlist\nnav.home", "nav.watchlist ", " nav.watchlist", "-nav.x", "1nav.x", "nav.x@12", None, 7,
+]
+
+
+class IdGrammar(unittest.TestCase):
+    """The app's grammar (`plx_ui::a11y::A11yPath::parse_id`), mirrored; tools/tv-session.sh mirrors it too
+    (its `cmd_selftest` holds the same lists)."""
+
+    def test_well_formed_ids_pass(self):
+        for id_ in GOOD_IDS:
+            self.assertTrue(a11y.valid_id(id_), id_)
+
+    def test_everything_else_is_refused_before_it_is_sent(self):
+        for id_ in BAD_IDS:
+            self.assertFalse(a11y.valid_id(id_), repr(id_))
+
+    def test_an_index_is_canonical_and_a_hyphen_is_only_for_the_namespace(self):
+        self.assertTrue(a11y.valid_id("nav.0"))
+        self.assertTrue(a11y.valid_id("nav.10"))
+        self.assertFalse(a11y.valid_id("nav.00"))
+        self.assertFalse(a11y.valid_id("nav.01"))
+        self.assertTrue(a11y.valid_id("a-b.c_d"))
+        self.assertFalse(a11y.valid_id("a-b.c-d"))
+
+    def test_a_press_subject_is_printable_ascii_with_no_space_and_no_at(self):
+        for ok in ["1234", "5d7768ab", "a_b-c", "1.2", "x:y"]:
+            self.assertTrue(a11y.valid_subject(ok), ok)
+        for bad in ["", "1 2", "12@3", "tab\t", "é", "new\nline", None]:
+            self.assertFalse(a11y.valid_subject(bad), repr(bad))
+
+
+class Tokens(unittest.TestCase):
+    def test_the_builders_and_the_parser_are_inverses(self):
+        self.assertEqual(a11y.focus_token("nav.watchlist"), "focus:nav.watchlist")
+        self.assertEqual(a11y.press_token("detail.hero.play"), "press:detail.hero.play")
+        self.assertEqual(a11y.press_token("home.shelf.2.card.5", "1234"), "press:home.shelf.2.card.5@1234")
+        for token, parsed in [
+            ("focus:nav.watchlist", ("focus", "nav.watchlist", None)),
+            ("press:detail.hero.play", ("press", "detail.hero.play", None)),
+            ("press:watchlist.grid.card.3@9001", ("press", "watchlist.grid.card.3", "9001")),
+        ]:
+            self.assertEqual(a11y.parse_token(token), parsed)
+
+    def test_a_malformed_id_or_subject_never_becomes_a_token(self):
+        for id_ in BAD_IDS:
+            with self.assertRaises(ValueError, msg=repr(id_)):
+                a11y.focus_token(id_)
+            with self.assertRaises(ValueError, msg=repr(id_)):
+                a11y.press_token(id_)
+        for subject in ["", "1 2", "12@3", "é"]:
+            with self.assertRaises(ValueError, msg=repr(subject)):
+                a11y.press_token("watchlist.grid.card.3", subject)
+
+    def test_focus_takes_no_subject_and_other_tokens_are_not_by_id(self):
+        for token in ["focus:nav.watchlist@12", "focus:", "press:", "press:nav", "ok", "state:abc", "ck:1,2",
+                      "FOCUS:nav.x", "press:nav.x@", "press:nav.x@a@b"]:
+            with self.assertRaises(ValueError, msg=token):
+                a11y.parse_token(token)
+
+    def test_refusal_lines_are_picked_out_of_an_event_log(self):
+        log = "\n".join([
+            "12:00:00 boot: fine",
+            "12:00:01 a11y: refused press watchlist.grid.card.3 subject_mismatch owner=watchlist",
+            "12:00:02 route=watchlist",
+            "a11y: refused focus nav.nope unknown owner=home  ",
+        ])
+        self.assertEqual(a11y.refusals(log), [
+            "a11y: refused press watchlist.grid.card.3 subject_mismatch owner=watchlist",
+            "a11y: refused focus nav.nope unknown owner=home",
+        ])
+        self.assertEqual(a11y.refusals("nothing here\n"), [])
+
+
+@unittest.skipUnless(HAS_FIFO, "needs os.mkfifo")
+class Fifo(unittest.TestCase):
+    def setUp(self):
+        self.runtime = tempfile.mkdtemp(prefix="a11y-tool-")
+        self.addCleanup(shutil.rmtree, self.runtime, ignore_errors=True)
+        self.fifo = pathlib.Path(self.runtime, a11y.FIFO_NAME)
+        os.mkfifo(self.fifo)
+        self.reader = os.open(self.fifo, os.O_RDONLY | os.O_NONBLOCK)
+        self.addCleanup(os.close, self.reader)
+
+    def written(self):
+        try:
+            return os.read(self.reader, 4096).decode().split()
+        except BlockingIOError:
+            return []
+
+    def test_focus_and_press_write_their_tokens(self):
+        a11y.focus(self.fifo, "nav.watchlist")
+        a11y.press(self.fifo, "detail.hero.play")
+        a11y.press(self.fifo, "home.shelf.0.card.1", "4711")
+        self.assertEqual(self.written(), ["focus:nav.watchlist", "press:detail.hero.play", "press:home.shelf.0.card.1@4711"])
+
+    def test_a_malformed_id_writes_nothing(self):
+        with self.assertRaises(ValueError):
+            a11y.focus(self.fifo, "Nav.Watchlist")
+        with self.assertRaises(ValueError):
+            a11y.press(self.fifo, "nav.x", "1 2")
+        self.assertEqual(self.written(), [])
+
+
+@unittest.skipUnless(HAS_FIFO, "needs os.mkfifo")
+class ExpectFocus(unittest.TestCase):
+    """`expect_focus` asks `state` again until the focused id is the one wanted; the fake app answers each
+    request (by its nonce) with the next focus of a script."""
+
+    def setUp(self):
+        self.runtime = tempfile.mkdtemp(prefix="a11y-tool-")
+        self.addCleanup(shutil.rmtree, self.runtime, ignore_errors=True)
+        self.fifo = pathlib.Path(self.runtime, a11y.FIFO_NAME)
+        os.mkfifo(self.fifo)
+        self.reader = os.open(self.fifo, os.O_RDONLY | os.O_NONBLOCK)
+        self.addCleanup(os.close, self.reader)
+        self.clock = Clock()
+
+    def app(self, focuses, route="watchlist", owner="page"):
+        """An idle hook that answers every state request with the next entry of `focuses` (the last repeats)."""
+        script = list(focuses)
+        asked = []
+
+        def sleep(seconds):
+            self.clock.sleep(seconds)
+            try:
+                data = os.read(self.reader, 4096).decode()
+            except BlockingIOError:
+                return
+            for token in data.split():
+                if token.startswith("state:"):
+                    focused = script.pop(0) if len(script) > 1 else script[0]
+                    asked.append(focused)
+                    answer_file(self.runtime, {"nonce": token[len("state:"):], "route": route, "owner": owner,
+                                               "focused": focused, "elements": []})
+        return sleep, asked
+
+    def test_it_returns_the_snapshot_when_the_focus_is_already_there(self):
+        sleep, asked = self.app(["nav.watchlist"])
+        got = a11y.expect_focus(self.runtime, "nav.watchlist", clock=self.clock, sleep=sleep)
+        self.assertEqual(got["focused"], "nav.watchlist")
+        self.assertEqual(asked, ["nav.watchlist"], "one request")
+
+    def test_it_asks_again_until_the_focus_lands(self):
+        sleep, asked = self.app([None, "home.hero.play", "nav.watchlist"])
+        got = a11y.expect_focus(self.runtime, "nav.watchlist", timeout=10, clock=self.clock, sleep=sleep)
+        self.assertEqual(got["focused"], "nav.watchlist")
+        self.assertEqual(asked, [None, "home.hero.play", "nav.watchlist"], "a fresh state each time, until it matched")
+
+    def test_a_focus_that_never_lands_is_a_mismatch_naming_both_ids_and_the_route(self):
+        sleep, _ = self.app(["home.shelf.0.card.0"], route="home", owner="page")
+        with self.assertRaises(a11y.FocusMismatch) as caught:
+            a11y.expect_focus(self.runtime, "nav.watchlist", timeout=1, clock=self.clock, sleep=sleep)
+        e = caught.exception
+        self.assertIsInstance(e, AssertionError)
+        self.assertEqual((e.want, e.got), ("nav.watchlist", "home.shelf.0.card.0"))
+        message = str(e)
+        for part in ["nav.watchlist", "home.shelf.0.card.0", "'home'", "'page'"]:
+            self.assertIn(part, message)
+        self.assertGreaterEqual(self.clock.now, 1.0, "it waited out its time")
+
+    def test_an_app_that_never_answers_is_a_timeout_not_a_mismatch(self):
+        with self.assertRaises(TimeoutError) as caught:
+            a11y.expect_focus(self.runtime, "nav.watchlist", timeout=0.5, clock=self.clock, sleep=self.clock.sleep)
+        self.assertNotIsInstance(caught.exception, a11y.FocusMismatch)
+
+    def test_nothing_focused_reads_as_a_mismatch_with_none(self):
+        sleep, _ = self.app([None])
+        with self.assertRaises(a11y.FocusMismatch) as caught:
+            a11y.expect_focus(self.runtime, "nav.watchlist", timeout=0.3, clock=self.clock, sleep=sleep)
+        self.assertIsNone(caught.exception.got)
+
+    def test_an_app_that_goes_quiet_after_answering_is_a_mismatch_with_what_it_said(self):
+        answers = {"n": 0}
+
+        def sleep(seconds):
+            self.clock.sleep(seconds)
+            data = b""
+            try:
+                data = os.read(self.reader, 4096)
+            except BlockingIOError:
+                pass
+            if answers["n"] == 0 and data:
+                answers["n"] += 1
+                (token,) = data.decode().split()
+                answer_file(self.runtime, {"nonce": token[len("state:"):], "focused": "home.hero.play"})
+
+        with self.assertRaises(a11y.FocusMismatch) as caught:
+            a11y.expect_focus(self.runtime, "nav.watchlist", timeout=8, clock=self.clock, sleep=sleep)
+        self.assertEqual(caught.exception.got, "home.hero.play")
+
+    def test_a_malformed_id_is_refused_before_anything_is_sent(self):
+        with self.assertRaises(ValueError):
+            a11y.expect_focus(self.runtime, "Nav.Watchlist", clock=self.clock, sleep=self.clock.sleep)
+        try:
+            data = os.read(self.reader, 4096)
+        except BlockingIOError:
+            data = b""
+        self.assertEqual(data, b"", "no state request went out")
+
+
+class CaptureDriver(unittest.TestCase):
+    """tools/watchlist_captures.py: how a `keys` entry is classified and when `expect_focus` is checked."""
+
+    def test_every_keys_entry_has_one_kind(self):
+        for token, kind in [
+            ("hold", "hold"), ("up", "key"), ("ok", "key"), ("back", "key"), ("ok@0.12", "key"),
+            ("ck:854,91", "key"), ("mock:{\"pms\":\"fail\"}", "mock"), ("lib:{\"op\":\"add\"}", "lib"),
+            ("sleep:3", "sleep"), ("focus:nav.watchlist", "byid"), ("press:detail.hero.play", "byid"),
+            ("press:watchlist.grid.card.3@9001", "byid"),
+        ]:
+            self.assertEqual(captures.step_kind(token), kind, token)
+
+    def test_the_at_of_a_press_subject_is_not_a_timing(self):
+        """`press:<id>@<rk>` must never reach the `key@wait` branch, which would send the bare press and sleep <rk> s."""
+        token = "press:watchlist.grid.card.3@9001"
+        self.assertNotEqual(captures.step_kind(token), "key")
+        self.assertEqual(captures.expect_position(["focus:nav.x", token]), 2, "not a timed key: checked after the walk")
+
+    def test_the_focus_is_checked_after_the_walk_or_before_a_final_timed_key(self):
+        self.assertEqual(captures.expect_position([]), 0)
+        self.assertEqual(captures.expect_position(["focus:nav.watchlist"]), 1)
+        self.assertEqual(captures.expect_position(["focus:nav.watchlist", "hold"]), 2)
+        self.assertEqual(captures.expect_position(["focus:detail.hero.watchlist", "ok@0.12"]), 1,
+                         "the shot must follow the timed key within its wait: check before it")
+        self.assertEqual(captures.expect_position(["ok@0.12", "focus:nav.watchlist"]), 2, "only the LAST entry decides")
+
+    def test_a_malformed_by_id_step_fails_before_anything_boots(self):
+        captures.check_steps("a.png", ["focus:nav.watchlist", "press:home.shelf.0.card.1@12", "hold", "back"])
+        for token in ["focus:Nav.Watchlist", "press:nav", "focus:nav.x@12", "press:nav.x@a b", "focus:"]:
+            with self.assertRaises(captures.Failure, msg=token):
+                captures.check_steps("a.png", [token])
+
+    def test_no_expect_focus_checks_nothing(self):
+        with mock.patch.object(a11y, "expect_focus", side_effect=AssertionError("must not ask")):
+            captures.check_focus(pathlib.Path("/nonexistent"), {"file": "a.png"})
+
+    def test_a_mismatch_fails_the_capture_with_both_ids_and_the_apps_refusals(self):
+        runtime = pathlib.Path(tempfile.mkdtemp(prefix="a11y-tool-"))
+        self.addCleanup(shutil.rmtree, runtime, ignore_errors=True)
+        (runtime / "plxnative-events.log").write_text(
+            "boot\na11y: refused focus watchlist.grid.card.99 unknown owner=watchlist\n")
+        err = a11y.FocusMismatch("watchlist.grid.card.99", "watchlist.grid.card.0", {"route": "watchlist", "owner": "page"})
+        with mock.patch.object(a11y, "expect_focus", side_effect=err):
+            with self.assertRaises(captures.Failure) as caught:
+                captures.check_focus(runtime, {"file": "a.png", "expect_focus": "watchlist.grid.card.99"})
+        message = str(caught.exception)
+        for part in ["a.png", "watchlist.grid.card.99", "watchlist.grid.card.0", "a11y: refused focus watchlist.grid.card.99 unknown"]:
+            self.assertIn(part, message)
+
+    def test_an_app_that_never_answers_fails_the_capture_naming_the_cause(self):
+        with mock.patch.object(a11y, "expect_focus", side_effect=TimeoutError("no snapshot named state:x")):
+            with self.assertRaises(captures.Failure) as caught:
+                captures.check_focus(pathlib.Path("/nonexistent"), {"file": "a.png", "expect_focus": "nav.x"})
+        self.assertIn("RELEASE=1", str(caught.exception))
+
+    def test_the_wait_is_passed_to_the_read_back(self):
+        with mock.patch.object(a11y, "expect_focus", return_value={}) as asked:
+            captures.check_focus(pathlib.Path("/nonexistent"), {"file": "a.png", "expect_focus": "nav.watchlist"})
+        asked.assert_called_once_with(pathlib.Path("/nonexistent"), "nav.watchlist", timeout=captures.FOCUS_WAIT_S)
+
+
+class CommittedScenario(unittest.TestCase):
+    """The committed tests/scenarios/watchlist_captures.json, held to the grammar without a simulator."""
+
+    # A capture that still walks with direction keys, because the target it reaches cannot be named from the
+    # code without running the app: `w6/hold-menu.png` presses Down four times from the Home hero to a shelf
+    # card whose position depends on the mock's hubs; `w6/detail-offline.png` clicks (`ck:`), which is a pointer.
+    KEPT_WALKS = {"w6/hold-menu.png"}
+    # Captures with no `expect_focus`: a trigger decides what is focused (an account or item menu opens on a
+    # row that depends on the session and the card), or a pointer click does (`ck:`).
+    NO_EXPECT = {"account-menu-new.png", "item-menu-new.png", "w6/detail-offline.png", "w6/hold-menu.png"}
+    DIRECTIONS = {"up", "down", "left", "right"}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.doc = json.loads((ROOT / "tests" / "scenarios" / "watchlist_captures.json").read_text())
+        cls.captures = {c["file"]: c for c in cls.doc["captures"]}
+
+    def test_every_by_id_token_and_every_expect_focus_is_in_the_grammar(self):
+        by_id = 0
+        for file, spec in self.captures.items():
+            captures.check_steps(file, spec["keys"])
+            by_id += sum(captures.step_kind(k) == "byid" for k in spec["keys"])
+            if "expect_focus" in spec:
+                self.assertTrue(a11y.valid_id(spec["expect_focus"]), f"{file}: {spec['expect_focus']!r}")
+        self.assertGreater(by_id, 10, "the migration is in the file")
+
+    def test_no_capture_walks_with_direction_keys_to_reach_its_target(self):
+        for file, spec in self.captures.items():
+            walked = [k for k in spec["keys"] if k.partition("@")[0] in self.DIRECTIONS]
+            if file in self.KEPT_WALKS:
+                self.assertTrue(walked, f"{file} no longer walks: drop it from KEPT_WALKS")
+            else:
+                self.assertEqual(walked, [], f"{file} walks with {walked}: name the target by id (focus:/press:)")
+
+    def test_a_capture_without_expect_focus_is_a_named_exception(self):
+        missing = {file for file, spec in self.captures.items() if "expect_focus" not in spec}
+        self.assertEqual(missing, self.NO_EXPECT)
+
+    def test_the_first_capture_is_the_nav_watchlist_tab_by_id(self):
+        spec = self.captures["home-bookmark-tab-focused.png"]
+        self.assertEqual(spec["keys"], ["focus:nav.watchlist"])
+        self.assertEqual(spec["expect_focus"], "nav.watchlist")
+
+    def test_the_keys_that_stay_are_the_ones_whose_subject_is_the_key(self):
+        """A hold, a timing and back stay keys; the mid-flip captures focus by id and then send the timed OK."""
+        for file in ["w6/detail-added-midflip.png", "home-hero/added-midflip.png"]:
+            keys = self.captures[file]["keys"]
+            self.assertEqual(len(keys), 2, file)
+            self.assertEqual((captures.step_kind(keys[0]), keys[1]), ("byid", "ok@0.12"), file)
+            self.assertEqual(captures.expect_position(keys), 1, file)
+        for file in ["hold-menu.png", "after-removal.png", "w6/watchlist-hold.png", "w6/watchlist-hold-unplayable.png"]:
+            self.assertIn("hold", self.captures[file]["keys"], file)
+        self.assertEqual(self.captures["filtered.png"]["keys"][-1], "back")
+
+    def test_the_comment_describes_the_forms_the_driver_takes(self):
+        comment = self.doc["comment"]
+        for part in ["focus:<id>", "press:<id>", "expect_focus", "`hold`", "ok@0.12", "`back`", "state:"]:
+            self.assertIn(part, comment)
+        self.assertNotIn("sends each key as a FIFO token", comment, "the old recipe sentence is gone")
+
+    def test_a_hold_that_opens_a_menu_expects_the_menus_namespace(self):
+        for file in ["hold-menu.png", "w6/watchlist-hold.png", "w6/watchlist-hold-unplayable.png"]:
+            self.assertTrue(self.captures[file]["expect_focus"].startswith("itemmenu."), file)
+        self.assertTrue(self.captures["sort-filter-open.png"]["expect_focus"].startswith("watchlist_menu."))
 
 
 if __name__ == "__main__":

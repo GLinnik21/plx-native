@@ -2696,7 +2696,10 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   in authored 1920x1080 coords, and they replay through the real key/pointer handlers. `ok` is a
   TAP (both edges at once); **`okdown` / `okup` are the split halves**, which is the only way to
   drive a press-and-**hold** — `okdown`, sleep past `press::LONG_MS` (500 ms), `okup` opens the
-  item context menu;
+  item context menu; a debug build also takes `focus:<id>`, `press:<id>[@<ratingKey>]` and
+  `state:<nonce>` (the structured readback `plxnative-a11y.json`, beside `focusprobe`'s fingerprint),
+  via `tools/tv-session.sh focus|press|state` or `tools/a11y.py`. Prefer them over a key walk to a
+  target; walks remain for tests whose subject is travel (fps walks, focus fingerprints);
   With `devtriggers`, `hang:<ms>` stalls the frame thread under the `dev hang probe` guard and
   `hang-raw:<ms>` sleeps without a label; both accept unsigned decimal u64 milliseconds capped at
   5000, via `tools/tv-session.sh key hang:1000` or `key hang-raw:1000` with the existing TV lock.

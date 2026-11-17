@@ -160,6 +160,19 @@ The split is not just anonymisation. The symbolic key keeps "five cases delibera
 item" visible in the tracked file — which is the fact the per-case resume reset exists for — and
 it makes a mis-set item a named setup error instead of a mystery failure.
 
+## Reaching a target by accessibility id, not by key walk
+
+A debug (`devtriggers`) build takes `focus:<id>`, `press:<id>[@<ratingKey>]` and `state:<nonce>` on
+the remote FIFO (`tools/a11y.py` writes and reads them; `tools/tv-session.sh focus|press|state` is
+the television's form). An id is a place-based dot path in the namespace of whoever owns input
+(`nav.watchlist`, `watchlist.grid.card.7`, `itemmenu.watchlist_remove`); `state` writes
+`plxnative-a11y.json` (route, owner, the focused id, every element) and echoes the nonce, so a script
+can assert where focus is before it takes a screenshot. **A script that only needs to REACH a screen
+element uses these**, as `tests/scenarios/watchlist_captures.json` does (`keys` entries, plus an
+`expect_focus` checked before `shot`) and `tests/player_shots.sh` does (`press:player.control.*`). A key
+walk stays where the walk is the subject: the fps scenes, the focus fingerprints (`tests/focusfp.sh`),
+`hold` and timed keys.
+
 ## Which install it drives (`--flavor`)
 
 Three builds can sit on one television: **`com.beb.plxnative`**, the app users install,

@@ -221,6 +221,17 @@ Tokens: `up`/`down`/`left`/`right`, `ok`, `back`, `play`/`pause`/`stop`, `ck:X,Y
 authored 1920×1080 coords), `okdown`/`okup` (split halves — the only way to drive a press-and-hold
 past `press::LONG_MS`), and `shot` (simulator only).
 
+**Reach a target by id, not by walking to it.** A debug (`devtriggers`) build also takes
+`focus:<id>`, `press:<id>` (focus, then an ordinary OK) and `press:<id>@<ratingKey>` (refuses and
+presses nothing when the focused card is another title), plus `state:<nonce>`, which writes
+`plxnative-a11y.json` in the runtime dir (route, owner, the focused full id, every element's id, role,
+rect, `visible`, `loaded`, label and subject) with the nonce echoed back. An id is a place-based dot
+path (`nav.watchlist`, `watchlist.grid.card.7`, `detail.hero.play`) in the namespace of whoever OWNS
+input, so inside a menu it is the menu's (`itemmenu.watchlist_remove`); a refusal presses nothing and
+logs `a11y: refused <act> <id> <reason> owner=<ns>`. `tools/a11y.py` writes the tokens
+(`focus`, `press`) and reads the answer (`expect_focus`). Prefer these over key walks; a walk stays
+where the test's subject IS the travel (fps walks, focus fingerprints, a held key).
+
 A desktop keyboard also works directly in `make sim-macos-run`: arrows, RETURN, ESC (`is_ok`/`is_back`
 have always accepted keyboard keys), plus space=pause, `p`=play, `s`=stop, backspace=BACK.
 
