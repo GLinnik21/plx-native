@@ -709,3 +709,10 @@ re-recorded as a current `AppFrameV5`/codec-6 recording (`tests/focusfp.sh --rec
 `anchor` flag. That retires this one fixture's `AppFrameV4` ledger; `6-settings-family` remains the key-only
 fixture that replays SAME. `make check-replay` replays every fixture as SAME or REFUSED_EXPECTED in Targets and
 Resolve with every difference counter at zero (three consecutive runs, one of them at the CI window, 960x540).
+
+The shared route anatomy (2026-11-17: every route title, Filmography's included, is the 48 Settings
+title) changed recorded behaviour without moving the shape: the `v13-owned-input-content` anchor was
+observed being refused in both modes (`replay: REFUSED — replay measurement table miss`) and was
+recorded afresh the same way (`tests/focusfp.sh --rec --only 12`, `plxnative-rec import`, `anchor:
+true` restored), then replayed SAME in Targets and Resolve on three consecutive runs.
+`docs/ui-replay-v13-anchor.md` has the record.

@@ -674,6 +674,10 @@ pub(super) enum PartAnswer {
     /// remux that is still live), `206`/`200` for any other session id or none. This is what a
     /// real PMS measured on 2026-10-06 (`docs/pms-api.md` M8).
     RefuseSession(&'static str),
+    /// The connection is closed with no response at all: curl reports `CURLE_GOT_NOTHING`, a
+    /// transport failure of the OPEN (no header ever arrives), which is the shape of #1425's
+    /// `Open(Transport(_))` (a preflight that gets no answer), not a status the server chose.
+    Hangup,
 }
 
 /// [`enhancement_pms`] with the raw Part's answer chosen separately from `start.mkv`'s.
@@ -703,6 +707,8 @@ pub(super) fn enhancement_pms_parts(
                         || (line.starts_with("GET /library/parts/") && matches!(parts, PartAnswer::Refuse))
                     {
                         write_status(&mut socket, 503);
+                    } else if line.starts_with("GET /library/parts/") && matches!(parts, PartAnswer::Hangup) {
+                        drop(socket);
                     } else if line.starts_with("GET /library/parts/") && matches!(parts, PartAnswer::Reset) {
                         // A valid 206 answer to the exact Range the admission asked for, then the
                         // connection dies before any of the promised body arrives: curl reports

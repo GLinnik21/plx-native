@@ -2742,3 +2742,29 @@ fn a_page_opened_over_a_closing_surface_returns_to_a_live_host() {
     let last = |name: &str| ev.rfind(&format!("\"{name}\""));
     assert!(last("uncover") > last("cover"), "the host ends uncovered: {ev}");
 }
+
+/// **`input_owner_after_dismissals`: who holds input once the dismissals already parked commit
+/// (#1424).** A surface that closes on a pick parks its own `Dismiss` and reports the pick to the
+/// page, whose command reaches the FIFO head before NAV COMMIT: `input_owner` still names the
+/// closing surface there, this names the page. Nothing parked, or only a `Dismiss` of another entry,
+/// changes nothing; after the commit the two agree.
+#[test]
+fn the_owner_after_dismissals_is_the_page_once_the_surfaces_dismiss_is_parked() {
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    let menu = open_modal(&mut d, &mut rig, Style::Compact, 16);
+    assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(menu)), "premise: the surface holds input");
+    assert_eq!(d.input_owner_after_dismissals(), Some(InputOwner::Entry(menu)), "nothing parked: the same owner");
+
+    d.request(MachineId::Nav, NavOp::Dismiss(EntryId(menu.0 + 100)));
+    assert_eq!(d.input_owner_after_dismissals(), Some(InputOwner::Entry(menu)), "another entry's dismissal is not this surface's");
+
+    d.request(MachineId::Nav, NavOp::Dismiss(menu));
+    assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(menu)), "parked, not committed: the container still says the surface");
+    assert_eq!(d.input_owner_after_dismissals(), Some(InputOwner::Entry(home)), "the page, once the dismissal commits");
+
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    assert_eq!(d.nav.modals.surface(menu).map(|s| s.phase), Some(Phase::Closing), "committed");
+    assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(home)));
+    assert_eq!(d.input_owner_after_dismissals(), d.nav.input_owner(), "after the commit the two agree");
+}

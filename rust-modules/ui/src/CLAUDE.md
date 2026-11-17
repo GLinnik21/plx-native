@@ -66,8 +66,8 @@ arguments, and its time is the `dt` it is handed.
    `text::text_cap_band`. See `label.rs`'s module docs for the rule.
    Tracking (DS8): a string that needs letter-spacing goes through `Label::tracking` /
    `TextView::tracking` (they wrap and measure by the tracked width and reach `Painter::text_tracked`),
-   never a hand-spaced draw. Screens use it today: the Settings page title (`TitleStyle::Page`,
-   -.02em) and the board section headers (`TableView::board_metrics`, .06em). A fixed pixel
+   never a hand-spaced draw. The route family uses it: every route's title (`route_screen::TITLE_SIZE`,
+   -.02em) and a page table's section headers (`TableView::page`, .06em). A fixed pixel
    tracking has a named constant (`theme::TRACKING_TITLE_TIGHT`, -0.5 px, the DS8 title case); at
    `0.0` it is exactly `text`. The gaps are n-1 between characters (CSS adds one after the last
    too, a sub-pixel difference shipped code keeps).

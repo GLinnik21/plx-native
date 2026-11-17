@@ -180,10 +180,17 @@ fn the_roster_opens_on_the_seated_users_tile() {
 /// takes the roster and the footer out from under it.
 #[test]
 fn the_roster_answers_ids_for_its_tiles_and_the_footer() {
+    assert!(!profiles_conforms().is_empty());
+}
+
+/// The picker over three profiles, roster then PIN pad, run through the id conformance with the id
+/// asserts above (`AppArg::Profiles`; the coverage table calls this, and so does the test above).
+pub(crate) fn profiles_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
     let snap = snapshot(Phase::Profiles, vec![user("Ana", false), user("Bea", true), user("Cy", false)]);
     let mut s = ProfilesScreen::new(EntryId(0), snap.read());
     let c = cx_with(None, &snap);
-    plx_ui::a11y::conformance(&s, &c);
+    let mut namespaces = vec![conform::<SessionHost, _>(&s, &c)];
 
     let mut tiles = Vec::new();
     Focusable::<SessionHost>::a11y_elems(&s, ROSTER_GROUP, &c, &mut tiles);
@@ -206,8 +213,9 @@ fn the_roster_answers_ids_for_its_tiles_and_the_footer() {
     assert_eq!(find(&s, &past), None, "{past} is past the roster");
 
     s.pad = Pad::opened(1);
-    plx_ui::a11y::conformance(&s, &c);
+    namespaces.push(conform::<SessionHost, _>(&s, &c));
     assert_eq!(find(&s, "sign_out"), None, "the pad traps the picker");
     assert!(Focusable::<SessionHost>::a11y(&s, &0, &c).is_none(), "the roster is under the pad");
     assert_eq!(find(&s, "pad.digit.1"), Some(pad_elem(0, 0)));
+    namespaces
 }

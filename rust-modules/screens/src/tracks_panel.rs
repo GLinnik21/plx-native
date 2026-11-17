@@ -1363,7 +1363,7 @@ fn sheet_painter(appear: f32) -> Painter {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Q6, painted: the footer's chevrons stand by their INK, so the gap the eye reads (ink to ink, and
@@ -2010,13 +2010,19 @@ mod tests {
         );
     }
 
+    /// The *Track information* sheet, run through the id conformance (`AppArg::TracksPanel`; the
+    /// coverage table calls this).
+    pub(crate) fn tracks_panel_conforms() -> plx_ui::a11y::Namespaces {
+        vec![plx_ui::a11y::conform::<HostFixture, _>(&panel(EntryId(3)), &fixture_cx(None))]
+    }
+
     /// The one element has an id, and the id finds it again: `tracks.body` (the namespace is the
     /// host's; the screen answers `body`).
     #[test]
     fn the_one_element_answers_an_id() {
         let p = panel(EntryId(3));
         let cx = fixture_cx(None);
-        plx_ui::a11y::conformance::<HostFixture, _>(&p, &cx);
+        plx_ui::a11y::conform::<HostFixture, _>(&p, &cx);
         let body = plx_ui::a11y::A11yPath::parse_relative("body").expect("a well-formed path");
         assert_eq!(Focusable::<HostFixture>::a11y_find(&p, &body, &cx), Some(0));
         let elsewhere = plx_ui::a11y::A11yPath::parse_relative("page.1").expect("a well-formed path");

@@ -17,7 +17,7 @@ use plx_ui::route_screen::RouteLayout;
 use plx_ui::screen::{DrawFrame, FocusSource, HitSource, Part, RenderStrategy, Screen, ScreenEvent};
 use plx_ui::table::Row;
 use plx_ui::table_screen::{DocumentFocus, DocumentScreen, Header, TableScreen};
-use plx_ui::{theme, Rect};
+use plx_ui::Rect;
 
 use super::family::{form_activate, form_focus, form_right_target, InnerHost, SettingsPage};
 use super::registry::word;
@@ -239,10 +239,7 @@ impl LogicalState for IndexState {
 
 impl LegalIndex {
     pub fn new(entry: EntryId) -> Self {
-        let mut form = FormTable::new(super::registry::BAND);
-        form.table.compact = false;
-        form.table.board_metrics(true);
-        form.table.header_ink = theme::TEXT_READING;
+        let mut form = FormTable::page(super::registry::BAND);
         form.set(legal_form(), None);
         form.table.list_focused = true;
         let sel = form.key_at(form.table.sel.max(0) as usize).unwrap_or(RowKey(0));
@@ -259,7 +256,7 @@ impl LegalIndex {
     fn view(&self) -> TableScreen<'_> {
         TableScreen::new(
             Header::new(
-                RouteLayout::settings_page(),
+                RouteLayout::screen(),
                 Some(plx_platform::i18n::msg::settings_title()),
                 plx_platform::i18n::msg::settings_legal_title(),
                 plx_platform::i18n::msg::settings_legal_copy(),
@@ -278,7 +275,7 @@ impl Machine<InnerHost> for LegalIndex {
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Handled {
         match ev {
             ScreenEvent::Tick(t) => {
-                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 self.follow.update(t.dt());
                 Handled::Yes
             }
@@ -414,7 +411,7 @@ impl DocumentPage {
             body: Cow::Borrowed(page.body()),
             qr: None,
             guide_caption: None,
-            layout: RouteLayout::settings_page(),
+            layout: RouteLayout::screen(),
             word: word::LEGAL,
             state: DocState { which: i, pos: 0 },
         }
@@ -430,7 +427,7 @@ impl DocumentPage {
             body: Cow::Borrowed(&ABOUT),
             qr: None,
             guide_caption: None,
-            layout: RouteLayout::settings_page(),
+            layout: RouteLayout::screen(),
             word: word::LEGAL,
             state: DocState { which: WHICH_ABOUT, pos: 0 },
         }
@@ -453,7 +450,7 @@ impl DocumentPage {
     }
 
     fn document_frame(&self) -> Rect {
-        self.layout.document(true)
+        self.layout.document()
     }
 
     fn guide(&self) -> Option<plx_ui::qr::QrLink<'_>> {
@@ -583,7 +580,7 @@ fn contribution_address() -> String {
 /// test's expectation, built by the page's own form builder.
 #[cfg(test)]
 pub fn nav_items_for_test() -> Vec<(u32, SettingsPage)> {
-    let mut form: FormTable<Page, (), SettingsPage> = FormTable::new(super::registry::BAND);
+    let mut form: FormTable<Page, (), SettingsPage> = FormTable::page(super::registry::BAND);
     form.set(legal_form(), None);
     (0..form.table.n_rows() as usize)
         .filter_map(|i| match form.binding_at(i)?.kind.clone() {
@@ -1190,7 +1187,7 @@ mod tests {
     #[test]
     fn a_click_on_a_document_parks_nothing_and_the_screen_declines_the_activation() {
         let mut doc = DocumentPage::legal(EntryId(13), 2);
-        let frame = RouteLayout::settings_page().document(true);
+        let frame = RouteLayout::screen().document();
 
         let mut map: HitMap<u32> = HitMap::new();
         map.fill(vec![Stop {
@@ -1292,16 +1289,6 @@ mod tests {
         assert_eq!(index_sentence(None), plx_platform::i18n::msg::settings_legal_copy());
     }
 
-    /// Legal and About set their title at the Settings page rung; the Language page's Contribute
-    /// page keeps its hero.
-    #[test]
-    fn legal_and_about_wear_the_page_title_and_contribute_keeps_the_hero() {
-        use plx_ui::route_screen::TitleStyle;
-        assert_eq!(DocumentPage::legal(EntryId(0), 0).layout.title_style, TitleStyle::Page);
-        assert_eq!(DocumentPage::about(EntryId(0)).layout.title_style, TitleStyle::Page);
-        assert_eq!(DocumentPage::contribute(EntryId(0)).layout.title_style, TitleStyle::Hero);
-    }
-
     /// **A title that wraps to two lines pushes the sentence down for the whole page and never
     /// overlaps it**, in every shipped language: at most two title lines, the sentence frame
     /// starting below the title's box, the reader hanging from the guide where the title starts.
@@ -1310,8 +1297,8 @@ mod tests {
         use plx_base::fontcov::advances::ShippedMeasure;
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let _serial = plx_base::testlock::serial();
-        let layout = RouteLayout::settings_page();
-        let leading = layout.title_style.leading();
+        let layout = RouteLayout::screen();
+        let leading = RouteLayout::narrative_title("").line_h();
         let mut two_line = 0;
         let mut out = Vec::new();
         for language in SHIPPED {
@@ -1342,10 +1329,10 @@ mod tests {
         }
         assert!(two_line > 0, "the board's case (a title on two lines) is exercised");
         assert!(out.is_empty(), "{}", out.join("\n"));
-        assert_eq!(layout.document(true).y, layout.narrative.y, "the reader hangs from the title's anchor");
+        assert_eq!(layout.document().y, layout.narrative.y, "the reader hangs from the title's anchor");
     }
 
-    fn layout_copy_size() -> std::os::raw::c_int { plx_ui::theme::size::LABEL }
+    fn layout_copy_size() -> std::os::raw::c_int { plx_ui::route_screen::COPY_SIZE }
 
     /// The Legal index's sentences each fit five lines in every language.
     #[test]
@@ -1354,7 +1341,7 @@ mod tests {
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         use plx_ui::text_view::TextView;
         let _serial = plx_base::testlock::serial();
-        let layout = RouteLayout::settings_page();
+        let layout = RouteLayout::screen();
         let leading = plx_ui::theme::size::LABEL as f32 + plx_ui::theme::space::XS;
         let mut out = Vec::new();
         for language in SHIPPED {

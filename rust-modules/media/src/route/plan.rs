@@ -2064,7 +2064,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     .filter(|&kbps| kbps > 0)
                     .unwrap_or(src_kbps);
                 let (width, height) = plan.playing.as_ref().map_or((0, 0), |p| (p.width, p.height));
-                let quality = if forced { Quality::Original } else { env.quality };
+                let quality = playback_quality;
                 // What Standard would decide about this original, from the same rules and the same
                 // frozen inputs it plans from below (the caps, the frozen Dolby Vision decision, the
                 // audio predicate, the container test); the qualifier reads the verdicts and derives
@@ -2676,6 +2676,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             // guarding: it is the one place this function does live network I/O before that refusal
             // check, and a preview is exactly the request most likely to hit a non-direct-playable item.
             let preview_already_refused = env.preview && (!directplay || part.is_empty());
+            // The one preflight outcome a preview acts on: the open got no response at all, so nothing
+            // was measured (`RemoteProbe::NoResponse`). See `preview_unmeasured` below.
+            let mut probe_no_response = false;
             let decision = match (playback_quality, link_kind) {
                 (Quality::Auto, Some(link)) => {
                     // The probe is the only expensive input, so it is only taken where it can change the
@@ -2686,10 +2689,12 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                         && !preview_already_refused)
                         .then(|| {
                             if directplay {
-                                measure_remote_original(
+                                let probed = measure_remote_original(
                                     &client.direct_play_url(part, &session).to_url(),
                                     source_transport_kbps,
-                                )
+                                );
+                                probe_no_response = matches!(probed, super::decision::RemoteProbe::NoResponse);
+                                probed.sample()
                             } else {
                                 // Part GET 503s after a transcode MDE. Sample the remux we would actually play.
                                 remux_probed = true;
@@ -2735,7 +2740,18 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 plan.auto_prior_kbps = decision.prior.map(|prior| prior.slow_kbps).unwrap_or(0);
                 plan.auto_bootstrap_rung = Some(decision.rung);
             }
-            let auto_original = decision.as_ref().is_some_and(|d| d.original);
+            // **A preview whose preflight got no response plays the Original.** A preview is direct play
+            // or nothing, so Auto's HLS fallback can never serve it: it only turns the preview into a
+            // refusal. When the preflight measured NOTHING (its open failed in the network, #1425: a
+            // trailer reached through two cross-origin redirects; `RemoteProbe::NoResponse`), the refusal
+            // would rest on no evidence about the link, and the preview takes the direct play, as it does
+            // under quality Original. A sample of any kind (`Ok`, even an incomplete one) is the link's own
+            // answer and still decides as it does for a play: a link too slow for the file refuses the
+            // preview, because nothing rescues a direct play that stalls (`auto_original_watched` is false
+            // for a preview, and a Load that fails before a picture arms the preview breaker). A server's
+            // own refusal of the Part is not "no response" either (`RemoteProbe::of_failure`).
+            let preview_unmeasured = env.preview && probe_no_response;
+            let auto_original = decision.as_ref().is_some_and(|d| d.original) || preview_unmeasured;
             let adaptive = auto_uses_hls(playback_quality, auto_original);
             // Whether a direct play was on offer BEFORE the override just below sets `directplay` false
             // for HLS. The preview gate's reason needs it: after the override `directplay` is false for
@@ -2763,7 +2779,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 ));
             } else {
                 plan.contract.ceiling = playback_quality.ceiling();
-                if playback_quality == Quality::Auto {
+                if preview_unmeasured {
+                    crate::player::log(&format!(
+                        "route: Auto preview — the remote Original preflight got no response, so it measured nothing; planned as Original (a preview is direct play or nothing); source {source_transport_kbps}kbps {src_w}x{src_h}"
+                    ));
+                } else if playback_quality == Quality::Auto {
                     crate::player::log(&format!(
                         "route: Auto Original — source {source_transport_kbps}kbps {src_w}x{src_h}; no video encode"
                     ));

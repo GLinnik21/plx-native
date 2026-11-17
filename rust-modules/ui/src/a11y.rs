@@ -504,6 +504,24 @@ pub fn conformance<H: Host, F: Focusable<H> + ?Sized>(view: &F, cx: &Cx<'_, H>) 
     assert!(complaints.is_empty(), "a11y conformance:\n{}", complaints.join("\n"));
 }
 
+/// **Run [`conformance`] over one mounted screen and answer its namespace** (`Screen::a11y_ns`): the
+/// one call every `<screen>_conforms` makes per mounting, so a mount cannot be run through
+/// conformance without its namespace being read and checked too. It lives here, beside
+/// [`conformance`], because it uses nothing a screen owns: a screen's test module names it as
+/// `plx_ui::a11y::conform`, never through a sibling module.
+#[cfg(any(test, feature = "test-support"))]
+pub fn conform<H: Host, S: super::screen::Screen<H> + ?Sized>(view: &S, cx: &Cx<'_, H>) -> &'static str {
+    conformance::<H, _>(view, cx);
+    let ns = super::screen::Screen::<H>::a11y_ns(view);
+    assert!(is_ns(ns), "{ns:?} is not a namespace");
+    ns
+}
+
+/// What a covered screen's `<screen>_conforms` answers: the namespace of each mounting it ran
+/// ([`conform`]).
+#[cfg(any(test, feature = "test-support"))]
+pub type Namespaces = Vec<&'static str>;
+
 /// Every element `view` lists, as it projects, in group order and then index order: the whole id
 /// set a test reads (an element that projects nothing is skipped; [`conformance`] is what complains
 /// of that). For a test that asserts the names a page gives its sections.

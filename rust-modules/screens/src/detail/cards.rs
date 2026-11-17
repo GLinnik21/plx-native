@@ -64,12 +64,19 @@ pub(super) struct Cards<'a> {
 }
 
 impl<'a> Cards<'a> {
-    /// **Card `i`'s accessibility projection**, `<shelf>.card.<i>` ([`Which::a11y_name`]), given its
+    /// **Card `i`'s accessibility projection**, `<shelf>.card.<n>` ([`Which::a11y_name`]), given its
     /// shape by the shared [`card_a11y`](ui_cards::card_a11y): the page composes its own shelves, so it
-    /// supplies the path. The index is the card's position in the shelf, so a card off screen has its
-    /// id as well.
+    /// supplies the section. `n` is the card's place in the shelf's listing (the Related tail's
+    /// window pages: [`CardSource::global`](ui_cards::CardSource::global)), so a card off screen has
+    /// its id as well and a window that pages never gives one id to another title.
     pub(super) fn a11y_card<H: Host<Elem = u32>>(&self, i: usize) -> A11y<'static> {
-        ui_cards::card_a11y::<H, _>(A11yPath::new().name(self.which.a11y_name()).name("card").index(i), self, i)
+        ui_cards::card_a11y::<H, _>(A11yPath::new().name(self.which.a11y_name()), self, i)
+    }
+
+    /// The inverse of [`Self::a11y_card`]'s index: the shelf's window index of the card at listing
+    /// position `listing`, or `None` when the window does not hold it.
+    pub(super) fn window_index<H: Host<Elem = u32>>(&self, listing: usize) -> Option<usize> {
+        ui_cards::card_window_index::<H, _>(self, listing)
     }
 
     /// How many cards the shelf holds (`CardSource::len`, for a caller with no host type at hand).

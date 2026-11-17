@@ -217,8 +217,9 @@ the only part anybody needs. Keep the BACK-return `KeyHint` on read-only ALERT p
 it supplies their dismissal affordance; do not repeat it beside a route's return crumb.
 
 First-run consent sizes its narrative from the complete disclosure and the related-link column.
-Its contextual answer verbs share one horizontal row, separated from BODY-sized reading copy by
-`space::MD`. Exceptional overflow scrolls with UP/DOWN while the selected answer stays focused.
+Its contextual answer verbs share one horizontal row, separated by `space::MD` from reading copy
+set at `route_screen::COPY_SIZE`, the one copy rung of every route (first run has no larger reading
+size of its own). Exceptional overflow scrolls with UP/DOWN while the selected answer stays focused.
 
 ## Where to look when you are changing something
 

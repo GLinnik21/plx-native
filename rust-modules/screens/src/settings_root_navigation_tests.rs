@@ -1066,8 +1066,7 @@ fn adjacent_root_pending_install_pick_refreshes_with_unchanged_cache_and_profile
 /// page it was read on, though a Legal document, the Legal index and About share one heartbeat word.
 #[test]
 fn every_page_the_surface_mounts_conforms_and_answers_a_namespace_of_its_own() {
-    let _g = plx_base::testlock::serial();
-    let _sess = scratch_session("a11y-pages");
+    // `settings_page_conforms` takes the serial lock and the scratch session for each mount itself
     let pages = [
         SettingsPage::Root,
         SettingsPage::Language,
@@ -1089,12 +1088,29 @@ fn every_page_the_surface_mounts_conforms_and_answers_a_namespace_of_its_own() {
     ];
     let mut seen: Vec<&'static str> = Vec::new();
     for page in pages {
-        let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, page);
-        step(&mut s, ScreenEvent::Mount, None);
-        let ns = <RouteSurface as Screen<InnerHost>>::a11y_ns(&s);
-        assert!(plx_ui::a11y::is_ns(ns), "{page:?}: {ns:?} is not a namespace");
+        let [ns] = settings_page_conforms(page)[..] else { panic!("{page:?}: one mounting, one namespace") };
         assert!(!seen.contains(&ns), "{page:?}: the namespace {ns:?} is another page's already");
         seen.push(ns);
-        plx_ui::a11y::conformance::<InnerHost, _>(&s, &cx(None));
     }
+}
+
+/// The first-run consent question mounted as `AppArg::FirstRunConsent` mounts it: the same
+/// `RouteSurface` in the first-run family, over the stage-0 page (the coverage table calls this).
+pub(crate) fn first_run_consent_conforms() -> plx_ui::a11y::Namespaces {
+    let _g = plx_base::testlock::serial();
+    let _sess = scratch_session("a11y-first-run-consent");
+    let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::FirstRunConsent, SettingsPage::ConsentStage(0));
+    step(&mut s, ScreenEvent::Mount, None);
+    vec![plx_ui::a11y::conform::<InnerHost, _>(&s, &cx(None))]
+}
+
+/// One page of the Settings family mounted as its surface mounts it (`RouteSurface` rooted at `page`,
+/// the Mount event delivered) and run through the id conformance; the namespace is the page's own.
+/// The coverage table calls this for every `SettingsPage` arm.
+pub(crate) fn settings_page_conforms(page: SettingsPage) -> plx_ui::a11y::Namespaces {
+    let _g = plx_base::testlock::serial();
+    let _sess = scratch_session("a11y-pages");
+    let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, page);
+    step(&mut s, ScreenEvent::Mount, None);
+    vec![plx_ui::a11y::conform::<InnerHost, _>(&s, &cx(None))]
 }

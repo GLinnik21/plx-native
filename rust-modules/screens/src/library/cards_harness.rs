@@ -488,7 +488,15 @@ mod return_tests {
 /// is open.
 #[test]
 fn the_page_answers_its_ids_and_conforms() {
-    use plx_ui::a11y::{conformance, A11yPath, Role};
+    assert!(!library_conforms().is_empty());
+}
+
+/// The Library grid page (grid, rail, plaintext question), run through the id conformance with the id
+/// asserts above (`AppArg::Library`; the coverage table calls this, and so does the test above).
+pub(crate) fn library_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    use plx_ui::a11y::{A11yPath, Role};
     let _guard = plx_base::testlock::serial();
     let _policy = crate::registry::captions::PolicyPin::default_setting();
     let mut h = Harness::new(Set::Grid, 5);
@@ -497,14 +505,14 @@ fn the_page_answers_its_ids_and_conforms() {
     // unfocused: the rail's group is not declared, so its ids are not there either
     {
         let cx = h.cx();
-        conformance::<LibHost, _>(&h.screen, &cx);
+        namespaces.push(conform::<LibHost, _>(&h.screen, &cx));
         assert_eq!(Focusable::<LibHost>::a11y_find(&h.screen, &rel("rail.0"), &cx), None);
     }
     CardHarness::focus(&mut h, first, By::Dir);
     let rail = h.screen.pair.master.elems.clone();
     {
         let cx = h.cx();
-        conformance::<LibHost, _>(&h.screen, &cx);
+        namespaces.push(conform::<LibHost, _>(&h.screen, &cx));
         let screen = &h.screen;
         let find = |text: &str| Focusable::<LibHost>::a11y_find(screen, &rel(text), &cx);
         assert_eq!(find("header.sort"), Some(SORTFILTER));
@@ -534,23 +542,32 @@ fn the_page_answers_its_ids_and_conforms() {
     let mut fx = Effects::new(&mut out, MachineId::Instance(INSTANCE), &mut present);
     h.screen.plaintext_alert.open::<LibHost>("lan-machine", None, MachineId::Instance(INSTANCE), &mut fx);
     let cx = h.cx();
-    conformance::<LibHost, _>(&h.screen, &cx);
+    namespaces.push(conform::<LibHost, _>(&h.screen, &cx));
     let find = |text: &str| Focusable::<LibHost>::a11y_find(&h.screen, &rel(text), &cx);
     assert_eq!(find("alert.connect"), Some(PLAINTEXT_CONNECT));
     assert_eq!(find("alert.not_now"), Some(PLAINTEXT_CANCEL));
     assert_eq!(find("grid.card.0"), None, "the page under a question is no owner's");
+    namespaces
 }
 
 /// **The Recommended page's accessibility ids:** the page conforms, its crumb is `header.crumb`, and
 /// each hub card is `shelf.<row>.card.<col>` with the hub item's ratingKey as the subject.
 #[test]
 fn the_recommended_page_answers_its_ids_and_conforms() {
-    use plx_ui::a11y::{conformance, A11yPath, Role};
+    assert!(!recommended_conforms().is_empty());
+}
+
+/// The Recommended page over four hubs, run through the id conformance with the id asserts above
+/// (`AppArg::LibraryRecommended`; the coverage table calls this, and so does the test above).
+pub(crate) fn recommended_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    use plx_ui::a11y::{A11yPath, Role};
     let _guard = plx_base::testlock::serial();
     let _policy = crate::registry::captions::PolicyPin::default_setting();
     let h = Harness::new(Set::Shelf, 4);
     let cx = h.cx();
-    conformance::<LibHost, _>(&h.rec, &cx);
+    namespaces.push(conform::<LibHost, _>(&h.rec, &cx));
     let rel = |text: &str| A11yPath::parse_relative(text).expect("a well-formed id");
     let find = |text: &str| Focusable::<LibHost>::a11y_find(&h.rec, &rel(text), &cx);
     assert_eq!(find("header.crumb"), Some(toolbar::CRUMB_ROOT));
@@ -568,4 +585,5 @@ fn the_recommended_page_answers_its_ids_and_conforms() {
     }
     assert_eq!(find(&format!("shelf.{}.card.0", h.rec.shelves.len())), None, "a row that does not exist");
     assert_eq!(Screen::<LibHost>::a11y_ns(&h.rec), "recommended");
+    namespaces
 }

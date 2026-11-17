@@ -551,9 +551,8 @@ fn mount_page(
 ///  * `ConsentPage` (Privacy & data, and each first-run stage) → `ConsentState`: the mode, both
 ///    halves of the draft decision, and whether the delete alert is up.
 ///  * `OnboardScreen` (Favorite libraries) → `OnboardState`: whether it is the Settings or the
-///    first-run instance, whether it currently HAS an action band (the group set the engine is
-///    reasoning about, cached at `rebuild` for the reason that field's own doc gives), and the
-///    whole draft pin list.
+///    first-run instance, where it is in its lifecycle (`Exit`: editing, committing after a pin
+///    commit count, or left), and the whole draft pin list.
 ///  * `DocumentPage` (the six Legal documents and About) → `DocState`: WHICH document, and its
 ///    reading position in whole `document_reader::STEP`s.
 ///  * `PreviewPage` (the five Privacy previews) → `PreviewState`: which preview. **Its reading
@@ -1450,7 +1449,7 @@ impl RootPage {
     fn new(entry: EntryId, directory: plx_data::stores::browse::DirectoryView<'_>, inputs: &crate::registry::ScreenInputs) -> Self {
         let mut s = Self {
             entry,
-            form: FormTable::new(super::registry::BAND),
+            form: FormTable::page(super::registry::BAND),
             session_watch: Default::default(),
             inputs: inputs.clone(),
             session_snapshot: Default::default(),
@@ -1511,9 +1510,6 @@ impl RootPage {
             under_posters: self.state.under_posters, plaintext,
         });
         let keep = self.form.selected_id().cloned();
-        self.form.table.compact = false;
-        self.form.table.board_metrics(true);
-        self.form.table.header_ink = theme::TEXT_READING;
         self.form.set(form, keep.as_ref());
         self.form.table.list_focused = true;
         if let Some(key) = self.form.key_at(self.form.table.sel.max(0) as usize) {
@@ -1579,7 +1575,7 @@ impl RootPage {
     fn view(&self) -> TableScreen<'_> {
         TableScreen::new(
             Header::new(
-                RouteLayout::settings_page(),
+                RouteLayout::screen(),
                 None,
                 plx_platform::i18n::msg::settings_title(),
                 plx_platform::i18n::msg::settings_root_copy(),
@@ -1769,7 +1765,7 @@ impl Machine<InnerHost> for RootPage {
                 if landed { fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session)); }
 
                 self.form.table
-                    .update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                    .update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 self.follow.update(t.dt());
                 Handled::Yes
             }
@@ -1942,7 +1938,7 @@ mod text_fit_tests;
 
 #[cfg(test)]
 #[path = "settings_root_navigation_tests.rs"]
-mod root_navigation_tests;
+pub(crate) mod root_navigation_tests;
 
 #[cfg(test)]
 #[path = "settings_pop_and_remember_tests.rs"]
@@ -2070,7 +2066,7 @@ impl LanguagePage {
     fn new(entry: EntryId, inputs: &crate::registry::ScreenInputs) -> Self {
         let selected = inputs.install_language;
         let sel = LangId::Choice(selected).key();
-        let mut page = Self { entry, form: FormTable::new(super::registry::BAND), state: LanguageState { selected, sel, failed: false, busy: false }, save: None, running_language: inputs.running_language };
+        let mut page = Self { entry, form: FormTable::page(super::registry::BAND), state: LanguageState { selected, sel, failed: false, busy: false }, save: None, running_language: inputs.running_language };
         page.rebuild();
         page
     }
@@ -2083,8 +2079,6 @@ impl LanguagePage {
     /// first build).
     fn rebuild(&mut self) {
         let keep = self.form.selected_id().cloned().unwrap_or(LangId::Choice(self.state.selected));
-        self.form.table.compact = false;
-        self.form.table.board_metrics(true);
         self.form.set(language_form(self.state.selected, self.state.busy), Some(&keep));
         self.form.table.list_focused = true;
     }
@@ -2099,7 +2093,7 @@ impl LanguagePage {
         } else {
             plx_platform::i18n::msg::settings_language_copy()
         };
-        TableScreen::new(Header::new(RouteLayout::settings_page(), Some(plx_platform::i18n::msg::settings_title()),
+        TableScreen::new(Header::new(RouteLayout::screen(), Some(plx_platform::i18n::msg::settings_title()),
             plx_platform::i18n::msg::settings_language_title(), copy).with_hint(restart_hint()),
             &self.form.table, GroupId(0), self.entry).keyed(&self.form)
     }
@@ -2156,7 +2150,7 @@ impl Machine<InnerHost> for LanguagePage {
             }
             ScreenEvent::Tick(t) => {
                 if self.poll_save() { fx.invalidate(plx_machine::present::Provenance::Input); }
-                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {
