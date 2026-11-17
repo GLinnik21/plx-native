@@ -1,4 +1,4 @@
-{"updated":"2026-11-17T19:51:34Z",
+{"updated":"2026-11-17T19:51:58Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5333,6 +5333,7 @@
 {"id":44156846890,"at":"2026-11-17T19:16:43Z","sha":"f5850beef","title":"a11y runtime: merge a11y/ids (main + the id review fixes)","pr":1432,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Linux simulator build + launch":336,"macOS tests against bundled FFmpeg and ASS":358,"Windows launcher syntax":19}},
 {"id":44154070130,"at":"2026-11-17T19:19:26Z","sha":"d844fd5fb","title":"Segment landing reads a decision flag for the displayed counter, not the dg_ census","pr":1437,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"macOS simulator build + launch":188,"macOS tests against bundled FFmpeg and ASS":198,"Windows launcher syntax":20,"Linux simulator build + launch":390},"wall":1581},
 {"id":44158889340,"at":"2026-11-17T19:28:06Z","sha":"b71b0e5c4","title":"Seek: land a Segment seek on the clock alone when the session sends no displayed-frame counter","pr":1437,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":20,"macOS simulator build + launch":140,"macOS tests against bundled FFmpeg and ASS":254,"Linux simulator build + launch":297}},
+{"id":44162103677,"at":"2026-11-17T19:46:00Z","sha":"3b9eb0a77","title":"Merge branch 'a11y/ids' into a11y/runtime","pr":1432,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":16,"macOS tests against bundled FFmpeg and ASS":264,"Linux simulator build + launch":344},"failed":["macOS simulator build + launch"]},
 {"id":44158996332,"at":"2026-11-17T19:48:07Z","sha":"78fbc6ecd","title":"a11y ids: Detail's conformance lives in its test module (the localization gate reads cards_harness.rs)","pr":1431,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"macOS tests against bundled FFmpeg and ASS":162,"Linux simulator build + launch":399,"Windows launcher syntax":24,"macOS simulator build + launch":209},"wall":1331}
 ],
 "nightly":[
