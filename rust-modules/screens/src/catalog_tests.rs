@@ -550,8 +550,8 @@ fn the_pill_answers_catalog_primary_only_when_loaded() {
 
 /// The catalog page loaded, and in each state with no record, run through the id conformance with the
 /// id asserts above (`ContentArg::Catalog`; the coverage table calls this, and so does the test above).
-pub(crate) fn catalog_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+pub(crate) fn catalog_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
     let mut namespaces = Vec::new();
     let _g = language_on_this_thread_for_test(Preference::En);
     let s = page(loaded(Status::None, None), Membership::Off);

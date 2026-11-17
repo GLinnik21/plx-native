@@ -1096,21 +1096,21 @@ fn every_page_the_surface_mounts_conforms_and_answers_a_namespace_of_its_own() {
 
 /// The first-run consent question mounted as `AppArg::FirstRunConsent` mounts it: the same
 /// `RouteSurface` in the first-run family, over the stage-0 page (the coverage table calls this).
-pub(crate) fn first_run_consent_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+pub(crate) fn first_run_consent_conforms() -> plx_ui::a11y::Namespaces {
     let _g = plx_base::testlock::serial();
     let _sess = scratch_session("a11y-first-run-consent");
     let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::FirstRunConsent, SettingsPage::ConsentStage(0));
     step(&mut s, ScreenEvent::Mount, None);
-    vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<InnerHost, _>(&s, &cx(None))]
+    vec![plx_ui::a11y::conform::<InnerHost, _>(&s, &cx(None))]
 }
 
 /// One page of the Settings family mounted as its surface mounts it (`RouteSurface` rooted at `page`,
 /// the Mount event delivered) and run through the id conformance; the namespace is the page's own.
 /// The coverage table calls this for every `SettingsPage` arm.
-pub(crate) fn settings_page_conforms(page: SettingsPage) -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+pub(crate) fn settings_page_conforms(page: SettingsPage) -> plx_ui::a11y::Namespaces {
     let _g = plx_base::testlock::serial();
     let _sess = scratch_session("a11y-pages");
     let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, page);
     step(&mut s, ScreenEvent::Mount, None);
-    vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<InnerHost, _>(&s, &cx(None))]
+    vec![plx_ui::a11y::conform::<InnerHost, _>(&s, &cx(None))]
 }

@@ -888,7 +888,7 @@ pub(crate) mod tests {
     }
 
     /// One mounting over a catalogue with two sources, run through the id conformance.
-    fn onboard_over_two_sources(build: impl Fn(DirectoryView<'_>) -> OnboardScreen) -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    fn onboard_over_two_sources(build: impl Fn(DirectoryView<'_>) -> OnboardScreen) -> plx_ui::a11y::Namespaces {
         let _g = plx_base::testlock::serial();
         let _t = TempSession::new("onboard-a11y");
         let m = plx_ui::fixture::FixtureMeasure;
@@ -896,30 +896,30 @@ pub(crate) mod tests {
         browse.seed_two_sources();
         let screen = build(browse.capture());
         let cx = test_cx(&m, None, browse.capture());
-        vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<InnerHost, _>(&screen, &cx)]
+        vec![plx_ui::a11y::conform::<InnerHost, _>(&screen, &cx)]
     }
 
     /// The first-run screen (`AppArg::Onboard`): over two sources, and with nothing discovered, where
     /// its band's `Try again` is still the one control (the coverage table calls this).
-    pub(crate) fn onboard_first_run_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    pub(crate) fn onboard_first_run_conforms() -> plx_ui::a11y::Namespaces {
         let mut namespaces = onboard_over_two_sources(|directory| OnboardScreen::first_run(EntryId(0), directory));
         let _g = plx_base::testlock::serial();
         let _t = TempSession::new("onboard-a11y");
         let m = plx_ui::fixture::FixtureMeasure;
         let nothing = OnboardScreen::first_run(EntryId(0), DirectoryView::empty_for_test());
         let cx = test_cx(&m, None, DirectoryView::empty_for_test());
-        namespaces.push(crate::cards_conformance_tests::a11y_coverage_tests::conform::<InnerHost, _>(&nothing, &cx));
+        namespaces.push(plx_ui::a11y::conform::<InnerHost, _>(&nothing, &cx));
         namespaces
     }
 
     /// The Settings editor's mounting (`SettingsPage::Favourites`; the coverage table calls this).
-    pub(crate) fn onboard_settings_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    pub(crate) fn onboard_settings_conforms() -> plx_ui::a11y::Namespaces {
         onboard_over_two_sources(|directory| OnboardScreen::settings(EntryId(0), directory))
     }
 
     /// The Library's contextual mounting (`SettingsPage::LibraryFavourites`; the coverage table
     /// calls this).
-    pub(crate) fn onboard_library_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    pub(crate) fn onboard_library_conforms() -> plx_ui::a11y::Namespaces {
         onboard_over_two_sources(|directory| OnboardScreen::library(EntryId(0), directory))
     }
 

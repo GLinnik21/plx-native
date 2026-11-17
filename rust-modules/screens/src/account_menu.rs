@@ -597,7 +597,7 @@ pub(crate) mod tests {
     fn each_row_answers_the_id_of_its_action() {
         use plx_ui::a11y::{A11yPath, Role};
         with_signed_in_menu(|menu, cx| {
-            crate::cards_conformance_tests::a11y_coverage_tests::conform::<MenuHost, _>(menu, cx);
+            plx_ui::a11y::conform::<MenuHost, _>(menu, cx);
             let mut keys = Vec::new();
             Focusable::<MenuHost>::a11y_elems(menu, GroupId(0), cx, &mut keys);
             assert_eq!(keys.len(), 2);
@@ -613,8 +613,8 @@ pub(crate) mod tests {
     /// The profile menu mounted as the registry mounts it, signed in (so Settings and Sign out are
     /// its rows), and run through the id conformance (`AppArg::AccountMenu`; the coverage table
     /// calls this).
-    pub(crate) fn account_menu_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-        with_signed_in_menu(|menu, cx| vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<MenuHost, _>(menu, cx)])
+    pub(crate) fn account_menu_conforms() -> plx_ui::a11y::Namespaces {
+        with_signed_in_menu(|menu, cx| vec![plx_ui::a11y::conform::<MenuHost, _>(menu, cx)])
     }
 
     /// The one mounting both the ids test and the coverage table read: a signed-in session's menu

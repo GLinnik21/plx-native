@@ -2555,11 +2555,11 @@ pub(crate) mod tests {
 
     /// The item menu on a leaf with versions, both pages (the rows, then Play Version's), run
     /// through the id conformance (`AppArg::ItemMenu`; the coverage table calls this).
-    pub(crate) fn item_menu_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    pub(crate) fn item_menu_conforms() -> plx_ui::a11y::Namespaces {
         let mut s = leaf_menu_with_versions();
-        let mut namespaces = vec![with_cx(|cx| crate::cards_conformance_tests::a11y_coverage_tests::conform::<HostFixture, _>(&s, cx))];
+        let mut namespaces = vec![with_cx(|cx| plx_ui::a11y::conform::<HostFixture, _>(&s, cx))];
         open_play_version_page(&mut s);
-        namespaces.push(with_cx(|cx| crate::cards_conformance_tests::a11y_coverage_tests::conform::<HostFixture, _>(&s, cx)));
+        namespaces.push(with_cx(|cx| plx_ui::a11y::conform::<HostFixture, _>(&s, cx)));
         namespaces
     }
 
@@ -2569,7 +2569,7 @@ pub(crate) mod tests {
     #[test]
     fn rows_are_named_by_their_item_row_and_conform() {
         use plx_ui::a11y::A11yPath;
-        use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+        use plx_ui::a11y::conform;
         let mut s = leaf_menu_with_versions();
         with_cx(|cx| {
             conform::<HostFixture, _>(&s, cx);

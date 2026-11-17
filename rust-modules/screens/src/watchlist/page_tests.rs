@@ -1316,8 +1316,8 @@ fn the_options_menu_rows_answer_their_names() {
 
 /// The Sort & Filter menu opened over three tiles, run through the id conformance with the id
 /// asserts above (`AppArg::WatchlistMenu`; the coverage table calls this, and so does the test above).
-pub(crate) fn watchlist_menu_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+pub(crate) fn watchlist_menu_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
     let mut namespaces = Vec::new();
     use super::cards_harness::{WatchHost, ENTRY};
     use super::menu::WatchlistMenuScreen;
@@ -1365,8 +1365,8 @@ fn the_page_answers_its_ids_and_conforms() {
 
 /// The Watchlist page over sixty tiles, run through the id conformance with the id asserts above
 /// (`AppArg::Watchlist`; the coverage table calls this, and so does the test above).
-pub(crate) fn watchlist_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+pub(crate) fn watchlist_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
     let mut namespaces = Vec::new();
     use super::cards_harness::WatchHost;
     use plx_ui::a11y::{A11yPath, Role};

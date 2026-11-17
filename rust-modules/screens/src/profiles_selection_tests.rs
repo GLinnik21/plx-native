@@ -185,8 +185,8 @@ fn the_roster_answers_ids_for_its_tiles_and_the_footer() {
 
 /// The picker over three profiles, roster then PIN pad, run through the id conformance with the id
 /// asserts above (`AppArg::Profiles`; the coverage table calls this, and so does the test above).
-pub(crate) fn profiles_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+pub(crate) fn profiles_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
     let snap = snapshot(Phase::Profiles, vec![user("Ana", false), user("Bea", true), user("Cy", false)]);
     let mut s = ProfilesScreen::new(EntryId(0), snap.read());
     let c = cx_with(None, &snap);

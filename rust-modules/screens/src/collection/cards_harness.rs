@@ -94,8 +94,8 @@ fn the_page_answers_accessibility_ids() {
 
 /// The Collection page over eight members, run through the id conformance (`ContentArg::Collection`;
 /// the coverage table calls this, and so does the test above).
-pub(crate) fn collection_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+pub(crate) fn collection_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
     let mut namespaces = Vec::new();
     let _guard = plx_base::testlock::serial();
     let _policy = crate::registry::captions::PolicyPin::default_setting();

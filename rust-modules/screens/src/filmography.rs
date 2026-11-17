@@ -1869,8 +1869,8 @@ pub(crate) mod tests {
 
     /// The Filmography page over two departments, run through the id conformance with the id asserts
     /// above (`ContentArg::Filmography`; the coverage table calls this, and so does the test above).
-    pub(crate) fn filmography_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-        use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+    pub(crate) fn filmography_conforms() -> plx_ui::a11y::Namespaces {
+        use plx_ui::a11y::conform;
         let mut namespaces = Vec::new();
         use plx_ui::a11y::{A11yPath, Role};
         let serial = plx_base::testlock::serial();

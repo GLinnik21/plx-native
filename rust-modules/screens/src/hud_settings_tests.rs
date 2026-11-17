@@ -1449,21 +1449,21 @@ fn the_pill_under_a_withdrawn_hud_is_the_ghost_and_under_the_built_in_the_solid(
 
 /// The gallery's first package's page for `page` (its sha is the page's argument), ticked once and run
 /// through the id conformance.
-fn gallery_package_page_conforms(page: impl FnOnce(plx_data::hudpacks::Sha) -> SettingsPage) -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+fn gallery_package_page_conforms(page: impl FnOnce(plx_data::hudpacks::Sha) -> SettingsPage) -> plx_ui::a11y::Namespaces {
     let list = gallery_list();
     let sha = list.catalog.index.as_ref().unwrap().entries[0].sha();
     let mut page = gallery_page(page(sha));
     drive(&mut page, tick(), 1);
-    vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<InnerHost, _>(&page, &context(1))]
+    vec![plx_ui::a11y::conform::<InnerHost, _>(&page, &context(1))]
 }
 
 /// A HUD package's detail page (`SettingsPage::HudDetail`; the coverage table calls this).
-pub(crate) fn hud_detail_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+pub(crate) fn hud_detail_conforms() -> plx_ui::a11y::Namespaces {
     gallery_package_page_conforms(SettingsPage::HudDetail)
 }
 
 /// A HUD package's About page (`SettingsPage::HudAbout`; the coverage table calls this).
-pub(crate) fn hud_about_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+pub(crate) fn hud_about_conforms() -> plx_ui::a11y::Namespaces {
     gallery_package_page_conforms(SettingsPage::HudAbout)
 }
 
@@ -1476,8 +1476,8 @@ fn the_preview_answers_back_and_one_tab_per_scene() {
 
 /// The full-screen HUD preview over the Reference package (`SettingsPage::HudPreview`; the coverage
 /// table calls this, and so does the test above).
-pub(crate) fn hud_preview_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+pub(crate) fn hud_preview_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
     let mut namespaces = Vec::new();
     use plx_ui::a11y::{A11yPath, Role};
     let list = gallery_list();

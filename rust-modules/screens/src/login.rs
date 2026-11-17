@@ -3721,8 +3721,8 @@ impl AuthLike for SessionHost {
 
     /// The sign-in screen in each state, run through the id conformance with the id asserts above
     /// (`AppArg::Login`; the coverage table calls this, and so does the test above).
-    pub(crate) fn login_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-        use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+    pub(crate) fn login_conforms() -> plx_ui::a11y::Namespaces {
+        use plx_ui::a11y::conform;
         let mut namespaces = Vec::new();
         let _serial = plx_base::testlock::serial();
         let m = plx_ui::fixture::FixtureMeasure;
@@ -4034,7 +4034,7 @@ impl AuthLike for SessionHost {
     /// `alert.cancel` / `alert.send` resolve only on the report's own sheets.
     #[test]
     fn the_plaintext_question_names_not_now_and_connect_and_never_send() {
-        use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+        use plx_ui::a11y::conform;
         let _serial = plx_base::testlock::serial();
         let m = plx_ui::fixture::FixtureMeasure;
         fn find(s: &LoginScreen, text: &str, cx: &Cx<'_, SessionHost>) -> Option<u32> {

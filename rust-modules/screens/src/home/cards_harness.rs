@@ -218,8 +218,8 @@ fn the_page_answers_its_ids_and_conforms() {
 
 /// The Home page over five seeded shelves, run through the id conformance with the id asserts above
 /// (`AppArg::Home`; the coverage table calls this, and so does the test above).
-pub(crate) fn home_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+pub(crate) fn home_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
     let mut namespaces = Vec::new();
     use plx_ui::a11y::{A11yPath, Role};
     let _guard = plx_base::testlock::serial();

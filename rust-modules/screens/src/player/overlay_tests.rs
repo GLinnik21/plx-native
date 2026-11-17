@@ -1302,8 +1302,8 @@ fn every_panel_answers_accessibility_ids() {
 
 /// Every player panel (Tracks on both tabs, More at its root and on Quality, Timing), run through the
 /// id conformance (`AppArg::PlayerOverlay`; the coverage table calls this, and so does the test above).
-pub(crate) fn player_overlay_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+pub(crate) fn player_overlay_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
     let mut namespaces = Vec::new();
     let _g = plx_base::testlock::serial();
     let ps = plx_media::route::PlaybackSession::IDLE;

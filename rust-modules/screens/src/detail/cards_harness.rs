@@ -384,8 +384,8 @@ fn the_page_answers_its_ids_and_conforms() {
 
 /// A show page with every section on it, run through the id conformance with the id asserts above
 /// (`ContentArg::Detail`; the coverage table calls this, and so does the test above).
-pub(crate) fn detail_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+pub(crate) fn detail_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
     let mut namespaces = Vec::new();
     use plx_ui::a11y::{A11yPath, Role};
     let _guard = plx_base::testlock::serial();

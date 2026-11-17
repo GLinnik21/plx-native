@@ -2012,8 +2012,8 @@ pub(crate) mod tests {
 
     /// The *Track information* sheet, run through the id conformance (`AppArg::TracksPanel`; the
     /// coverage table calls this).
-    pub(crate) fn tracks_panel_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-        vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<HostFixture, _>(&panel(EntryId(3)), &fixture_cx(None))]
+    pub(crate) fn tracks_panel_conforms() -> plx_ui::a11y::Namespaces {
+        vec![plx_ui::a11y::conform::<HostFixture, _>(&panel(EntryId(3)), &fixture_cx(None))]
     }
 
     /// The one element has an id, and the id finds it again: `tracks.body` (the namespace is the
@@ -2022,7 +2022,7 @@ pub(crate) mod tests {
     fn the_one_element_answers_an_id() {
         let p = panel(EntryId(3));
         let cx = fixture_cx(None);
-        crate::cards_conformance_tests::a11y_coverage_tests::conform::<HostFixture, _>(&p, &cx);
+        plx_ui::a11y::conform::<HostFixture, _>(&p, &cx);
         let body = plx_ui::a11y::A11yPath::parse_relative("body").expect("a well-formed path");
         assert_eq!(Focusable::<HostFixture>::a11y_find(&p, &body, &cx), Some(0));
         let elsewhere = plx_ui::a11y::A11yPath::parse_relative("page.1").expect("a well-formed path");

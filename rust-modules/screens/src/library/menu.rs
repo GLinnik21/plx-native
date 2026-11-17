@@ -1134,8 +1134,8 @@ impl LibraryLike for HostFixture {
     /// The Library menu's three pages (Sources, Sort & filter, Genre) mounted and run through the id
     /// conformance, with the ids each names (`AppArg::LibraryMenu`; the coverage table calls this):
     /// a row of a list is `<list>.<n>` by its place, and a row that is one of a kind is its word.
-    pub(crate) fn library_menu_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-        use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+    pub(crate) fn library_menu_conforms() -> plx_ui::a11y::Namespaces {
+        use plx_ui::a11y::conform;
         use plx_ui::a11y::Role;
         let _guard = plx_base::testlock::serial();
         let _locale = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);

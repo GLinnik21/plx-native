@@ -4415,8 +4415,8 @@ pub(crate) mod step_ladder_tests {
 
         /// The player page on a film (the classic HUD), run through the id conformance with the id asserts
     /// above (`AppArg::Player`; the coverage table calls this, and so does the test above).
-    pub(crate) fn player_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-        use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+    pub(crate) fn player_conforms() -> plx_ui::a11y::Namespaces {
+        use plx_ui::a11y::conform;
         let mut namespaces = Vec::new();
         let _g = plx_base::testlock::serial();
         let page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());

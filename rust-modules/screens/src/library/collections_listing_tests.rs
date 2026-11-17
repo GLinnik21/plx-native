@@ -12,12 +12,12 @@ fn collections_page() -> LibraryScreen {
 
 /// The Collections page over three collection rows, mounted and run through the id conformance
 /// (`AppArg::LibraryCollections`; the coverage table calls this).
-pub(crate) fn library_collections_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+pub(crate) fn library_collections_conforms() -> plx_ui::a11y::Namespaces {
     let _guard = plx_base::testlock::serial();
     let fixture = as_collections(3);
     let mut page = collections_page();
     run(&mut page, &fixture, ScreenEvent::Mount);
-    vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<HostFixture, _>(&page, &fixture.cx(None))]
+    vec![plx_ui::a11y::conform::<HostFixture, _>(&page, &fixture.cx(None))]
 }
 
 fn run(page: &mut LibraryScreen, fixture: &Fixture, event: ScreenEvent<HostFixture>) -> Vec<Fx<HostFixture>> {

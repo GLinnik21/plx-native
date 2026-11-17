@@ -493,8 +493,8 @@ fn the_page_answers_its_ids_and_conforms() {
 
 /// The Library grid page (grid, rail, plaintext question), run through the id conformance with the id
 /// asserts above (`AppArg::Library`; the coverage table calls this, and so does the test above).
-pub(crate) fn library_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+pub(crate) fn library_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
     let mut namespaces = Vec::new();
     use plx_ui::a11y::{A11yPath, Role};
     let _guard = plx_base::testlock::serial();
@@ -559,8 +559,8 @@ fn the_recommended_page_answers_its_ids_and_conforms() {
 
 /// The Recommended page over four hubs, run through the id conformance with the id asserts above
 /// (`AppArg::LibraryRecommended`; the coverage table calls this, and so does the test above).
-pub(crate) fn recommended_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
-    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+pub(crate) fn recommended_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
     let mut namespaces = Vec::new();
     use plx_ui::a11y::{A11yPath, Role};
     let _guard = plx_base::testlock::serial();

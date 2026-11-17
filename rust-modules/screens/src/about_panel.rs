@@ -1090,18 +1090,18 @@ pub(crate) mod tests {
 
     /// The Detail About sheet mounted as the registry mounts it and run through the id conformance
     /// (`AppArg::AboutPanel`; the coverage table calls this).
-    pub(crate) fn about_panel_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    pub(crate) fn about_panel_conforms() -> plx_ui::a11y::Namespaces {
         let measure = plx_ui::fixture::FixtureMeasure;
         let cx = cx(&measure);
-        vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<TestHost, _>(&AboutPanelScreen::new(ENTRY), &cx)]
+        vec![plx_ui::a11y::conform::<TestHost, _>(&AboutPanelScreen::new(ENTRY), &cx)]
     }
 
     /// The Collection summary sheet, the same panel over `collection::current()`
     /// (`AppArg::CollectionAbout`; the coverage table calls this).
-    pub(crate) fn collection_about_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    pub(crate) fn collection_about_conforms() -> plx_ui::a11y::Namespaces {
         let measure = plx_ui::fixture::FixtureMeasure;
         let cx = cx(&measure);
-        vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<TestHost, _>(&AboutPanelScreen::collection(ENTRY), &cx)]
+        vec![plx_ui::a11y::conform::<TestHost, _>(&AboutPanelScreen::collection(ENTRY), &cx)]
     }
 
     /// The panel declares no group, so it has no element to name: the id conformance holds because

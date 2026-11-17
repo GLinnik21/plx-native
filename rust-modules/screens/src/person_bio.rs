@@ -890,10 +890,10 @@ pub(crate) mod tests {
 
     /// The biography sheet mounted as the registry mounts it and run through the id conformance
     /// (`AppArg::PersonBio`; the coverage table calls this).
-    pub(crate) fn person_bio_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    pub(crate) fn person_bio_conforms() -> plx_ui::a11y::Namespaces {
         let measure = plx_ui::fixture::FixtureMeasure;
         let cx = cx(&measure);
-        vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<TestHost, _>(&PersonBioScreen::new(ENTRY), &cx)]
+        vec![plx_ui::a11y::conform::<TestHost, _>(&PersonBioScreen::new(ENTRY), &cx)]
     }
 
     fn dismissed(out: &[Stamped<TestHost>]) -> bool {

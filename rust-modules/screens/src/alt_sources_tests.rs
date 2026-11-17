@@ -950,9 +950,9 @@ pub(crate) mod focus_and_hit {
 
     /// The *Also available* panel over two servers' rows, run through the id conformance
     /// (`AppArg::AltSources`; the coverage table calls this, and so does the ids test below).
-    pub(crate) fn alt_sources_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    pub(crate) fn alt_sources_conforms() -> plx_ui::a11y::Namespaces {
         let (p, ..) = two_row_panel();
-        vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<HostFixture, _>(&p, &fixture_cx(None))]
+        vec![plx_ui::a11y::conform::<HostFixture, _>(&p, &fixture_cx(None))]
     }
 
     /// **Every row has an id, `row.<n>` in table order, and the id finds the row again**; the label
@@ -961,7 +961,7 @@ pub(crate) mod focus_and_hit {
     fn every_row_answers_an_id_in_table_order() {
         let (p, ..) = two_row_panel();
         let cx = fixture_cx(None);
-        crate::cards_conformance_tests::a11y_coverage_tests::conform::<HostFixture, _>(&p, &cx);
+        plx_ui::a11y::conform::<HostFixture, _>(&p, &cx);
         for n in 0..2u32 {
             let path = plx_ui::a11y::A11yPath::parse_relative(&format!("row.{n}")).expect("a well-formed path");
             assert_eq!(Focusable::<HostFixture>::a11y_find(&p, &path, &cx), Some(n), "row.{n} is table row {n}");
