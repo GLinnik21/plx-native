@@ -11362,6 +11362,28 @@ mod tests {
         assert!(pick < whole, "the clip picks the program the draw's own rule then admits or refuses");
     }
 
+    /// **A card is wholly masked or wholly bounded by its scissor.** A split card's ring pieces stay on
+    /// the draw's image program, which carries no rounded-clip slot, so its interior piece must not
+    /// take the clip's MASKED plain program either: the card's middle would be cut by the lens's round
+    /// edge while its ring is cut by the scissor's rectangle, two answers for one card. The interior
+    /// piece's choice therefore reads the UNMASKED plain program, never the clip-picked one
+    /// ([`plain_program_for_clip`] doc: "a rounded card under a clip still keeps the image program").
+    #[test]
+    fn a_split_cards_interior_never_takes_the_rounded_clips_masked_program() {
+        let src = include_str!("gfx.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the unit tests")];
+        let from = prod.find("fn draw_tex_core_in(").expect("draw_tex_core_in");
+        let draw = &prod[from..from + prod[from..].find("\n}\n").unwrap()];
+        let branch = draw.find("if piece.interior {").expect("the interior branch of the piece loop");
+        let interior = &draw[branch..branch + draw[branch..].find("glScissor").expect("the piece's scissor")];
+        assert!(
+            interior.contains("plain_texture_program(plain_unmasked, image.is_some(), 0.0)"),
+            "the interior piece takes the unmasked plain program, not the clip's variant: {interior}"
+        );
+        assert!(draw.contains("let plain_unmasked = std::ptr::addr_of!(PLAIN_IMAGE).read();"),
+            "the unmasked program is read from its own static, before the clip picks a variant");
+    }
+
     /// Text: the ink program carries the rounded clip's slot, so `draw_text` widens its gate to a
     /// live rounded clip, while `draw_mask_inked` keeps `ink_clip()` alone (a radius-0 colour
     /// picture is not a mask; under the rounded clip an icon takes the masked texture program, and
