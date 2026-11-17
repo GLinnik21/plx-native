@@ -232,8 +232,21 @@ pub(crate) mod tests {
         sharp: u32,
         face: GlassFace,
     ) -> Vec<std::rc::Rc<crate::frame::backdrop::Paint>> {
+        expected_morphing(p, r, rad, ground, sharp, face, plx_gfx::gfx::GlassMorph::NONE)
+    }
+
+    /// [`expected`] for a glass a morph has joined and/or cleared (`Frame::glass_morph`).
+    pub(crate) fn expected_morphing(
+        p: Painter,
+        r: Rect,
+        rad: f32,
+        ground: u32,
+        sharp: u32,
+        face: GlassFace,
+        morph: plx_gfx::gfx::GlassMorph,
+    ) -> Vec<std::rc::Rc<crate::frame::backdrop::Paint>> {
         declared_glass(|| {
-            assert!(p.glass_frozen(r, rad, ground, sharp, None, [1.0; 4], GlassRim::Menu, face, plx_gfx::gfx::GlassMorph::NONE));
+            assert!(p.glass_frozen(r, rad, ground, sharp, None, [1.0; 4], GlassRim::Menu, face, morph));
         })
     }
 

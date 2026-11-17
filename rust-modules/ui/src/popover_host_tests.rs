@@ -341,7 +341,7 @@ fn the_default_popover_keeps_the_shared_fade_and_slide() {
 /// there carried a part-faded face over the rows (frame dump, n181: rows outside a faint glass).
 #[test]
 fn a_morphing_panel_grows_from_the_pill_and_its_glass_is_whole_once_it_is_down() {
-    use crate::popover_glass::{face_at, tests::{declared_glass, expected, latched, unlatch}};
+    use crate::popover_glass::{face_at, tests::{declared_glass, expected, expected_morphing, latched, unlatch}};
     let _g = plx_base::testlock::serial();
     let _reset = Reset::new(false);
     let tex = 9_751;
@@ -373,7 +373,9 @@ fn a_morphing_panel_grows_from_the_pill_and_its_glass_is_whole_once_it_is_down()
         // The glass rides the fill's one ramp, painter alpha and face together (N-b: no opaque slab
         // past the opener), and is whole once the fill is.
         let a = f.ground_alpha;
-        let ramped = expected(root.alpha(a), f.rect, f.radius, tex, sharp, face_at(a));
+        // ... wearing the droplet's join and clarity (`Frame::glass_morph`): a morph is clear and joined
+        // to the opener's shrinking shape until it has grown, and the declared box is the one around both.
+        let ramped = expected_morphing(root.alpha(a), f.rect, f.radius, tex, sharp, face_at(a), f.glass_morph());
         assert!(declared[0] == ramped[0], "mid-open: the morph rect and radius on the fill ramp {a}: {f:?}");
         grew = true;
         assert!(f.rect.w <= panel.w + 1e-3 && f.rect.h <= panel.h + 1e-3 && f.rect.w >= pill.w - 1e-3);

@@ -983,8 +983,7 @@ impl Popover {
         // are a soft edge under the opener (still lit there: it fades over the first 15% of the
         // progress, the glass over the first 18%) rather than an opaque slab hanging below it.
         let (alpha, shadow) = if self.from.is_some() { (f.ground_alpha, f.ground_alpha) } else { (f.ground_alpha, 1.0) };
-        let merge = f.merge.map(|m| plx_gfx::gfx::GlassMerge { rect: m.rect, radius: m.radius, k: m.k });
-        Some(MorphGround { rect: f.rect, radius: f.radius, alpha, shadow, morph: plx_gfx::gfx::GlassMorph { merge, clear: f.clear } })
+        Some(MorphGround { rect: f.rect, radius: f.radius, alpha, shadow, morph: f.glass_morph() })
     }
 
     /// The boundary between this popover's GROUND and its FOREGROUND, reported to [`host`].

@@ -148,6 +148,17 @@ pub struct Frame {
     pub clear: f32,
 }
 
+impl Frame {
+    /// What the glass wears at this instant: the join and the clarity, as the gfx layer draws them
+    /// (`Popover::ground` hands it to `popover_glass::draw_shadowed`).
+    pub fn glass_morph(&self) -> plx_gfx::gfx::GlassMorph {
+        plx_gfx::gfx::GlassMorph {
+            merge: self.merge.map(|m| plx_gfx::gfx::GlassMerge { rect: m.rect, radius: m.radius, k: m.k }),
+            clear: self.clear,
+        }
+    }
+}
+
 /// The second shape of a merging glass: where it is, how round, and how far its neck reaches.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Merge {
