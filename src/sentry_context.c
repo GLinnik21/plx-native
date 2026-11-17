@@ -87,6 +87,25 @@ plx_sentry_set_user_id(const char *id)
     sentry_set_user(user);
 }
 
+/*
+ * How far the process has got (`running` / `shutdown` / `exiting`, the same words the crash
+ * tracer's reports use), as the `crash.phase` tag and the `crash` context's `phase`. The native
+ * backend's daemon builds the crash event from the scope as it stood BEFORE the fault, so the
+ * phase has to be put on the scope when it changes, not read at crash time. Each call rewrites the
+ * daemon's base-event file, like `plx_sentry_set_user_id`. The caller passes a closed word only.
+ */
+void
+plx_sentry_set_crash_phase(const char *phase)
+{
+    if (!phase || !phase[0]) {
+        return;
+    }
+    sentry_set_tag("crash.phase", phase);
+    sentry_value_t context = sentry_value_new_object();
+    sentry_value_set_by_key(context, "phase", sentry_value_new_string(phase));
+    sentry_set_context("crash", context);
+}
+
 /* Sparse, typed window diagnostics. The caller accepts only closed stage labels and optional
  * booleans / SDL version bytes. Negative integers mean absent. No sentry_value_t crosses FFI. */
 void

@@ -674,6 +674,17 @@ pub fn set_crash_phase(phase: CrashPhase) {
     plx_crash_phase.store(phase as u32, Ordering::Relaxed);
 }
 
+/// The phase last stored by [`set_crash_phase`] (or the tracer's `plx_exit_record`, which stores
+/// [`CrashPhase::Exiting`] straight into [`plx_crash_phase`]). Anything past the known values reads
+/// as `Exiting`, the last phase.
+pub fn crash_phase() -> CrashPhase {
+    match plx_crash_phase.load(Ordering::Relaxed) {
+        0 => CrashPhase::Running,
+        1 => CrashPhase::Shutdown,
+        _ => CrashPhase::Exiting,
+    }
+}
+
 /// Send the freeze probe `seq` to the main thread, if there is a handler to answer it.
 ///
 /// The probe is `SIGUSR2` (`src/crashtrace.c` says why that number and what the handler does).
@@ -834,6 +845,16 @@ mod tests {
     const HW: Policy = Policy { log_only: false, software_gl: false };
 
     fn signals() -> &'static Signals { Box::leak(Box::new(Signals::new())) }
+
+    /// `crash_phase` reads back what the tracer's fault handler would read from `plx_crash_phase`.
+    #[test]
+    fn the_crash_phase_reads_back_what_was_stored() {
+        let _lock = crate::testlock::serial();
+        for phase in [CrashPhase::Shutdown, CrashPhase::Exiting, CrashPhase::Running] {
+            set_crash_phase(phase);
+            assert_eq!(crash_phase(), phase);
+        }
+    }
 
     #[test]
     fn the_host_harness_does_not_start_or_advance_the_watchdog() {

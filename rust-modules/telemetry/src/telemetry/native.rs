@@ -275,7 +275,40 @@ const TOP_FIELDS: &[&str] = &[
     "threads",
     "debug_meta",
     "breadcrumbs",
+    "tags",
 ];
+/// `tags` survives as exactly `{"crash.phase": <one of the three phase words>}` and the `crash`
+/// context as exactly `{"phase": <the same>}`: how far the process had got when it faulted, the
+/// word the C tracer's reports carry too (`crashreport::CrashPhase`). The SDK's scope has no other
+/// tag or `crash` field, and anything else there is a future SDK's own, so it goes.
+const TAG_FIELDS: &[&str] = &["crash.phase"];
+const CRASH_FIELDS: &[&str] = &["phase"];
+/// What the consent preview shows where a real report carries a phase word.
+pub const PREVIEW_PHASE: &str = "<running / shutdown>";
+
+fn closed_phase(value: Option<&serde_json::Value>) -> Option<String> {
+    let word = value?.as_str()?;
+    let known = super::crashreport::CrashPhase::ALL.iter().any(|phase| phase.as_str() == word);
+    (known || word == PREVIEW_PHASE).then(|| word.to_string())
+}
+
+/// Rebuild `tags` and the `crash` context from their closed words. Runs on the event as the SDK
+/// wrote it, before the context allowlist below drops every context but ours.
+fn sanitise_phase(event: &mut serde_json::Value) {
+    let tag = closed_phase(event.pointer("/tags/crash.phase"));
+    let context = closed_phase(event.pointer("/contexts/crash/phase"));
+    let Some(object) = event.as_object_mut() else { return };
+    match tag {
+        Some(word) => { object.insert("tags".into(), serde_json::json!({ TAG_FIELDS[0]: word })); }
+        None => { object.remove("tags"); }
+    }
+    if let Some(contexts) = object.get_mut("contexts").and_then(serde_json::Value::as_object_mut) {
+        match context {
+            Some(word) => { contexts.insert("crash".into(), serde_json::json!({ CRASH_FIELDS[0]: word })); }
+            None => { contexts.remove("crash"); }
+        }
+    }
+}
 /// `user` survives with exactly its `id`, and only when that id has the shape this app mints
 /// (`telemetry::is_minted_id`): the crash-report identifier `sdk::start` put on the scope. Email,
 /// username, name and `ip_address` are the four other fields Relay reads as identity, and any of
@@ -382,6 +415,7 @@ fn sanitise_event(event: &mut serde_json::Value, event_id: &str) {
     if let Some(o) = event.as_object_mut() {
         retain_fields(o, TOP_FIELDS);
     }
+    sanitise_phase(event);
     if let Some(contexts) = event
         .get_mut("contexts")
         .and_then(serde_json::Value::as_object_mut)
@@ -389,7 +423,8 @@ fn sanitise_event(event: &mut serde_json::Value, event_id: &str) {
         // The SDK creates a random trace/span pair even though this application does no tracing;
         // retaining only kernel + our fixed firmware/hardware compatibility contexts removes that
         // identifier and any future context by default.
-        contexts.retain(|key, _| key == "os" || key == "webos" || key == "hardware");
+        // `crash` is already rebuilt from its closed word by `sanitise_phase`.
+        contexts.retain(|key, _| key == "os" || key == "webos" || key == "hardware" || key == "crash");
         if let Some(os) = contexts
             .get_mut("os")
             .and_then(serde_json::Value::as_object_mut)
@@ -543,7 +578,9 @@ pub fn preview_event() -> Vec<u8> {
         "dist": "<ELF build id>",
         "sdk": {"name": "plxnative", "version": "0.16.5"},
         "user": {"id": PREVIEW_USER_ID},
+        "tags": {"crash.phase": PREVIEW_PHASE},
         "contexts": {
+            "crash": {"phase": PREVIEW_PHASE},
             "os": {"type": "os", "name": "Linux", "version": "<kernel release>",
                 "build": "<kernel build suffix>", "kernel_version": "<kernel release>"},
             "webos": {"type": "webos", "name": "webOS TV", "release": "<webOS release>",
@@ -824,6 +861,7 @@ mod sdk {
             install: *const c_char,
         );
         fn plx_sentry_set_user_id(id: *const c_char);
+        fn plx_sentry_set_crash_phase(phase: *const c_char);
         fn plx_sentry_window_breadcrumb(stage: *const c_char, playing: c_int,
             major: c_int, minor: c_int, patch: c_int, display: c_int, surface: c_int);
     }
@@ -838,6 +876,18 @@ mod sdk {
         let id = id.filter(|id| !id.is_empty()).and_then(cstring);
         unsafe {
             plx_sentry_set_user_id(id.as_ref().map_or(std::ptr::null(), |id| id.as_ptr()));
+        }
+    }
+
+    /// Put the process phase (one of the tracer's three words) on the SDK scope as the
+    /// `crash.phase` tag and the `crash` context, which the native backend writes to the daemon's
+    /// base-event file so it is on disk before any fault. No-op while the backend is not running.
+    pub(super) fn set_crash_phase(word: &str) {
+        if !ACTIVE.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(word) = cstring(word) {
+            unsafe { plx_sentry_set_crash_phase(word.as_ptr()) };
         }
     }
 
@@ -942,6 +992,9 @@ mod sdk {
                 // After ACTIVE, because `set_user` refuses to touch a backend that is not running;
                 // still inside `start`, so no caller can observe an active backend with no id.
                 set_user(super::super::consent::errors_id().as_deref());
+                // The phase the process is in NOW: a backend started mid-session is in `running`,
+                // and one started later (never in practice) would not report an older phase.
+                set_crash_phase(super::phase_word(plx_base::task::watchdog::crash_phase()));
                 plx_base::eventlog::log("telemetry: native ARM crash capture active");
             } else {
                 // `sentry_init` takes ownership even when backend startup fails.
@@ -984,6 +1037,25 @@ fn set_user(id: Option<&str>) {
 
 #[cfg(not(all(target_os = "linux", target_arch = "arm")))]
 fn set_user(_id: Option<&str>) {}
+
+fn phase_word(phase: plx_base::task::watchdog::CrashPhase) -> &'static str {
+    super::crashreport::CrashPhase::from(phase).as_str()
+}
+
+/// Record the process phase for BOTH crash reporters, from the one call: the C tracer's
+/// `plx_crash_phase` (which its fault handler reads at crash time) and the native backend's scope
+/// (which has to hold it BEFORE the fault, because the daemon builds the event from the scope as it
+/// stood). The app calls this where it used to call `watchdog::set_crash_phase`. `Exiting` is set by
+/// `process::exit_now`, in the base layer, after the capture backend is closed, so a native report
+/// is `running` or `shutdown`; only the tracer's reports can say `exiting`.
+pub fn set_crash_phase(phase: plx_base::task::watchdog::CrashPhase) {
+    plx_base::task::watchdog::set_crash_phase(phase);
+    let word = phase_word(phase);
+    #[cfg(all(target_os = "linux", target_arch = "arm"))]
+    sdk::set_crash_phase(word);
+    #[cfg(not(all(target_os = "linux", target_arch = "arm")))]
+    let _ = word;
+}
 
 /// Sparse breadcrumbs use the already-running, consent-gated native capture backend. Its
 /// transport is disabled; these leave the device only with a later crash event.
@@ -1213,6 +1285,8 @@ mod tests {
         assert_keys(&value, "/sdk", SDK_FIELDS);
         assert_keys(&value, "/user", USER_FIELDS);
         assert_eq!(value["user"]["id"], PREVIEW_USER_ID);
+        assert_keys(&value, "/tags", TAG_FIELDS);
+        assert_keys(&value, "/contexts/crash", CRASH_FIELDS);
         assert_keys(&value, "/contexts/os", OS_FIELDS);
         let shown: Vec<&str> = WEBOS_FIELDS.iter().copied().filter(|key| *key != "build").collect();
         assert_keys(&value, "/contexts/webos", &shown);
@@ -1373,6 +1447,50 @@ mod tests {
         assert_eq!(v["contexts"]["hardware"]["rtkmem"], "missing");
         assert_eq!(v["contexts"]["hardware"]["install"], "devmode");
         assert!(v["contexts"]["hardware"].get("serial").is_none());
+    }
+
+    /// PLX-NATIVE-K: the native backend's daemon writes the event, so the phase has to be on the SDK
+    /// scope BEFORE the fault. This is the shape the scope carries after `set_crash_phase(Shutdown)`
+    /// (`plx_sentry_set_crash_phase` in `src/sentry_context.c`: the `crash.phase` tag and the
+    /// `crash` context's `phase`), and a crash report built then must carry the shutdown code,
+    /// the same word the C tracer's reports use (`crashreport::CrashPhase`), and nothing else of
+    /// either object.
+    #[test]
+    fn a_crash_report_built_during_shutdown_carries_the_shutdown_phase() {
+        let word = crashreport::CrashPhase::from(plx_base::task::watchdog::CrashPhase::Shutdown).as_str();
+        assert_eq!(word, "shutdown");
+        let bytes = envelope(
+            "91ad1844-535b-4dac-89d9-5384165d703c",
+            serde_json::json!({
+                "platform": "native", "level": "fatal",
+                "tags": {"crash.phase": word, "release": "must-not-pass"},
+                "contexts": {"crash": {"phase": word, "type": "must-not-pass", "other": "must-not-pass"}}
+            }),
+        );
+        let (_, body, _) = event_from_envelope(&bytes).expect("valid envelope");
+        assert!(!String::from_utf8(body.clone()).unwrap().contains("must-not-pass"));
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["tags"], serde_json::json!({"crash.phase": "shutdown"}));
+        assert_eq!(v["contexts"]["crash"], serde_json::json!({"phase": "shutdown"}));
+    }
+
+    /// The phase is one of the tracer's three words or it is not sent: a tag value of any other
+    /// text drops the whole `tags` object, and a bad context value drops the `crash` context.
+    #[test]
+    fn a_phase_outside_the_closed_set_is_not_sent() {
+        let bytes = envelope(
+            "91ad1844-535b-4dac-89d9-5384165d703c",
+            serde_json::json!({
+                "platform": "native", "level": "fatal",
+                "tags": {"crash.phase": "/private/path"},
+                "contexts": {"crash": {"phase": "must-not-pass"}}
+            }),
+        );
+        let (_, body, _) = event_from_envelope(&bytes).expect("valid envelope");
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(v.get("tags").is_none());
+        assert!(v["contexts"].get("crash").is_none());
+        assert!(!String::from_utf8(body).unwrap().contains("must-not-pass"));
     }
 
     /// **A `user.id` that is not our crash-report id is not an id we send.** A future SDK could

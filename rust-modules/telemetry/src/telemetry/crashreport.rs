@@ -125,7 +125,23 @@ pub enum CrashPhase {
     Exiting,
 }
 
+/// The tracer's phase and this wire vocabulary are one set: a native report and a C-tracer report
+/// say `running` / `shutdown` / `exiting` through the same words.
+impl From<plx_base::task::watchdog::CrashPhase> for CrashPhase {
+    fn from(phase: plx_base::task::watchdog::CrashPhase) -> Self {
+        use plx_base::task::watchdog::CrashPhase as Live;
+        match phase {
+            Live::Running => CrashPhase::Running,
+            Live::Shutdown => CrashPhase::Shutdown,
+            Live::Exiting => CrashPhase::Exiting,
+        }
+    }
+}
+
 impl CrashPhase {
+    /// Every phase, for the allowlist that decides which word a native report may carry.
+    pub const ALL: [CrashPhase; 3] = [CrashPhase::Running, CrashPhase::Shutdown, CrashPhase::Exiting];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             CrashPhase::Running => "running",
