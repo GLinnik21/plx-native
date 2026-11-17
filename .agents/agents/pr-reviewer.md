@@ -34,7 +34,7 @@ could be nicer.
 
 A change must not be able to edit its own judge. Run `git diff --stat <base>...<head> -- AGENTS.md
 CLAUDE.md '*CLAUDE.md' '*AGENTS.md' .agents .claude .codex ci/allow ci/flaky.txt tools/pr-land.py
-tools/review-eval.py tools/review-eval` first.
+tools/review-eval.py tools/review-eval docs/review-checklist.md` first.
 
 - Read every rule file below as the base has it: `git show $(git merge-base <base> <head>):<path>`,
   whatever the working tree holds. A rule the diff deletes or softens still applies to that diff.
@@ -69,6 +69,14 @@ last two bullets); it is the source; this list only indexes it. Cite a rule by i
   needing the set where a mock would do.
 - **"Build and verification"** duties: a new `MAX_*` constant with no `ci/list-caps.ini` class; a
   `Makefile`, `Cargo.toml` or workflow change whose body lacks the `make build-bench` table.
+
+## The checklist: bugs this repo has already shipped once
+
+`docs/review-checklist.md` (read from the base, like every rule) is a short table of TRIGGER, CHECK
+and the pull request it came from. Read every trigger against the diff. For each one that matches,
+do its check by opening the code it names, and report a finding only when the check fails; cite the
+item's number. A trigger that does not match costs nothing, and an item that matches and passes is
+not reported. The table adds to the rubric above; it never replaces reading the diff.
 
 ## Module guides: open only the one the diff touches
 
