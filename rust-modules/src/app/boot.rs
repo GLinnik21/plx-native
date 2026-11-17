@@ -2699,7 +2699,7 @@ pub(crate) unsafe fn construct(
                 return Err(1);
             }
         } else {
-            maybe_ask_consent(&mut app.pages);
+            maybe_ask_consent(&mut app.pages, &mut app.runtime.consent.machine.ask);
         }
     }
     Ok(app)
