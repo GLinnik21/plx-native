@@ -38,6 +38,6 @@ first credit row and opens Detail exactly as Flow 12's `down ok` does; two of th
 (the `Id` resolution rows, `refusal` 0). `focus:nav.watchlist` is REFUSED on purpose: the Filmography
 page owns input and has no tab strip, so the log line `a11y: refused focus nav.watchlist unknown
 owner=filmography` is recorded, and it is the one by-id refusal `ALPHABET.json` lists, literally.
-A `press:` on a navigating Home card is not recordable in this controlled domain (Home refuses an
-application effect it cannot replay), which is why the by-id fixture lives on Flow 12's page and not
-on Home, where `focus:nav.watchlist` would resolve.
+Pressing a Home element (`press:nav.profile`, `press:nav.movies`, `press:home.hero.info`) aborts the
+controlled recording with `replay: REFUSED -- unsupported Home application effect`, so the by-id
+fixture lives on Flow 12's page and not on Home, where `focus:nav.watchlist` would resolve.

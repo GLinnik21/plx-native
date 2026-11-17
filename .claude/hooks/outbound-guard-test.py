@@ -584,6 +584,7 @@ def alphabet_id_case():
         (True, "nav.watchlist"),
         (True, "nav.tab.7"),
         (True, "home.hero.play"),
+        (True, "home.shelf.2.card.5"),
         (True, "detail.shelf.1.card.2"),
         (True, "library.shelf.2.card.3"),
         (True, "filmography.row.0"),

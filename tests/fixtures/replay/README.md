@@ -131,8 +131,8 @@ Detail like Flow 12's `down ok`), then the two BACK keys. It carries the only `b
 A recording of a `press:<id>@<subject>` token holds the subject (a ratingKey) in its `in` row and no
 pattern admits it, so such a recording cannot become a fixture. The fixture lives on Flow 12's page
 because that is the only controlled domain whose manifest shape the closed gates admit and where a
-press records: a `press:` on a navigating Home card aborts the controlled boot with
-`unsupported Home application effect`.
+press records: `press:nav.profile`, `press:nav.movies` and `press:home.hero.info` on the controlled
+Home abort the recording with `replay: REFUSED -- unsupported Home application effect`.
 
 **Historical Phase 12 (D1) rerecorded all three again**, and it is the cleanest example of what `rerecord` is
 for: `enum Route` was folded into `AppArg`, so `ARG_SHAPE` lost its nested `Legacy:Route{…}` and
