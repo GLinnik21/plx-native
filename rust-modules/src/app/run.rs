@@ -4560,10 +4560,12 @@ mod lifecycle_regression_tests {
             assert!(editing(&app), "premise: the field is editing");
             assert!(!super::super::bridge::search_owns_input(&app.pages), "premise: Search is not the recipient");
 
-            // Type it as each door delivers it: the FIFO in one token, the television's keyboard in commits short
-            // enough for SDL's `text[32]`.
+            // Type it as each door delivers it: the FIFO in one token, the television's keyboard one key, one commit.
+            // (A multi-character commit at the end of the field is an LG word prediction, which REPLACES the word being
+            // typed: `TextBuffer::commit`. So two chunks would leave only the second.)
             let pending = crate::textinput::pending();
-            for chunk in [&ADDRESS[..20], &ADDRESS[20..]] {
+            let commits: Vec<&str> = if fifo { vec![ADDRESS] } else { (0..ADDRESS.len()).map(|i| &ADDRESS[i..i + 1]).collect() };
+            for chunk in commits {
                 if fifo {
                     assert!(unsafe { ingress_token(&mut app, &mut fr, &format!("txt:{chunk}")) });
                 } else {
