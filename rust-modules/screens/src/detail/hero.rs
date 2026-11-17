@@ -167,6 +167,40 @@ impl HeroCtl {
     pub fn is_watch(self) -> bool {
         matches!(self, HeroCtl::MarkWatched | HeroCtl::MarkUnwatched)
     }
+    /// **The control's accessibility word** (`detail.hero.<word>`): one static word per variant, never
+    /// derived from the label, which changes with the item (Play wears "Resume" mid-title: both are
+    /// `play`) and the language. The watched toggle's two faces are two words, for what pressing each does.
+    pub const fn a11y_name(self) -> &'static str {
+        match self {
+            HeroCtl::Play => "play",
+            HeroCtl::Restart => "restart",
+            HeroCtl::Trailer => "trailer",
+            HeroCtl::Alt => "alt",
+            HeroCtl::MarkWatched => "mark_watched",
+            HeroCtl::MarkUnwatched => "mark_unwatched",
+            HeroCtl::Watchlist => "watchlist",
+            HeroCtl::GoToShow => "go_to_show",
+            HeroCtl::Version => "version",
+            HeroCtl::More => "more",
+        }
+    }
+    /// The inverse of [`a11y_name`](Self::a11y_name): the control a word names, whether the row
+    /// shows it or not (the caller checks that).
+    pub fn of_a11y_name(word: &str) -> Option<Self> {
+        const ALL: [HeroCtl; 10] = [
+            HeroCtl::Play,
+            HeroCtl::Restart,
+            HeroCtl::Trailer,
+            HeroCtl::Alt,
+            HeroCtl::MarkWatched,
+            HeroCtl::MarkUnwatched,
+            HeroCtl::Watchlist,
+            HeroCtl::GoToShow,
+            HeroCtl::Version,
+            HeroCtl::More,
+        ];
+        ALL.into_iter().find(|ctl| ctl.a11y_name() == word)
+    }
 }
 
 /// Which of the conditional controls the row is showing: the independent bits (bookmark, Go to

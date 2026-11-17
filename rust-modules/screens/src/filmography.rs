@@ -21,6 +21,7 @@ use plx_machine::machine::{
     Machine, Measure, Tick,
 };
 use plx_machine::present::{PresentEvent, Provenance};
+use plx_ui::a11y::{A11y, A11yPath, Role as A11yRole, Seg};
 use plx_ui::route_screen::{RouteGround, RouteLayout};
 use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, FocusSource, Focusable, GroupKind,
@@ -942,6 +943,43 @@ impl<H: ContentLike + PersonLike> Focusable<H> for FilmographyScreen {
             .unwrap_or_else(|| self.selected_tab());
         self.focus_key(Located::Tab(i))
     }
+
+    /// `filmography.tab.<i>` (a department's pill, by its position) and `filmography.row.<i>` (a
+    /// credit of the open department, by its position). A credit's subject is the ratingKey of the
+    /// copy a server holds, when it has one.
+    fn a11y(&self, key: &u32, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        match self.locate(*key)? {
+            Located::Tab(i) => {
+                let department = self.model.get(i)?;
+                Some(A11y::new(A11yPath::new().name("tab").index(i), A11yRole::Tab).with_label(department.title.as_str()))
+            }
+            Located::Row(i) => {
+                let credit = self.rows().get(i)?;
+                let a = A11y::new(A11yPath::new().name("row").index(i), A11yRole::Row).with_label(credit.title.as_str());
+                Some(match &credit.local {
+                    Some((_, rk)) => a.with_subject(rk.as_str()),
+                    None => a,
+                })
+            }
+        }
+    }
+
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == TAB_GROUP {
+            out.extend((0..self.model.len()).filter_map(|i| self.elem_for_tab(i)));
+        } else if g == LIST_GROUP {
+            out.extend((0..self.rows().len()).filter_map(|i| self.elem_for_row(i)));
+        }
+    }
+
+    fn a11y_find(&self, path: &A11yPath, _cx: &Cx<'_, H>) -> Option<u32> {
+        let mut segs = path.segs();
+        match (segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("tab")), Some(Seg::Index(i)), None) => self.elem_for_tab(i),
+            (Some(Seg::Name("row")), Some(Seg::Index(i)), None) => self.elem_for_row(i),
+            _ => None,
+        }
+    }
 }
 
 impl<H: ContentLike + PersonLike> Machine<H> for FilmographyScreen {
@@ -1038,6 +1076,10 @@ impl<H: ContentLike + PersonLike> Screen<H> for FilmographyScreen {
         // The test manifest intentionally records this opaque modal as route=person.
         super::registry::word::PERSON
     }
+    /// Its own id namespace: `name()` is the word `Person` shares, and an id names its owner.
+    fn a11y_ns(&self) -> &'static str {
+        "filmography"
+    }
 
     fn state(&self) -> &dyn LogicalState {
         self
@@ -1083,7 +1125,7 @@ impl<H: ContentLike + PersonLike> Screen<H> for FilmographyScreen {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use plx_ui::fixture::FixtureMeasure;
     use plx_machine::machine::{
@@ -1809,6 +1851,50 @@ mod tests {
             out.extend(table.app_fit_failures(w, language.tag()));
         }
         plx_ui::table::assert_no_fit_failures(&out);
+    }
+
+    /// **The accessibility ids:** the screen answers its own namespace (`filmography`, not the
+    /// `person` word it shares), the department pills `tab.<i>` and the open department's credits
+    /// `row.<i>`; a credit a server holds carries that copy's ratingKey as its subject, and the
+    /// view conforms.
+    #[test]
+    fn tabs_and_rows_answer_their_ids_and_conform() {
+        assert!(!filmography_conforms().is_empty());
+    }
+
+    /// The Filmography page over two departments, run through the id conformance with the id asserts
+    /// above (`ContentArg::Filmography`; the coverage table calls this, and so does the test above).
+    pub(crate) fn filmography_conforms() -> plx_ui::a11y::Namespaces {
+        use plx_ui::a11y::conform;
+        let mut namespaces = Vec::new();
+        use plx_ui::a11y::{A11yPath, Role};
+        let serial = plx_base::testlock::serial();
+        let mut s = screen(7, &serial);
+        let measure = FixtureMeasure;
+        let c = cx(&measure, None);
+        assert_eq!(Screen::<FilmographyHost>::a11y_ns(&s), "filmography");
+        namespaces.push(conform::<FilmographyHost, _>(&s, &c));
+
+        let find = |text: &str| Focusable::<FilmographyHost>::a11y_find(&s, &A11yPath::parse_relative(text).unwrap(), &c);
+        assert_eq!(find("tab.0"), s.elem_for_tab(0));
+        assert_eq!(find("tab.1"), s.elem_for_tab(1));
+        assert_eq!(find("tab.2"), None, "two departments");
+        assert_eq!(find("row.39"), s.elem_for_row(39));
+        assert_eq!(find("row.40"), None, "forty credits in Actor");
+        let row = Focusable::<FilmographyHost>::a11y(&s, &find("row.3").unwrap(), &c).unwrap();
+        assert_eq!(row.role, Role::Row);
+        assert_eq!(row.label.as_deref(), Some("Film 3"));
+        assert_eq!(row.subject, None, "no copy on a server");
+
+        s.department = "Writer".to_string();
+        s.sync_keys(); // re-indexes the open department's credits
+        s.sync_rows(0, false);
+        namespaces.push(conform::<FilmographyHost, _>(&s, &c));
+        let first = Focusable::<FilmographyHost>::a11y_find(&s, &A11yPath::parse_relative("row.0").unwrap(), &c).unwrap();
+        let written = Focusable::<FilmographyHost>::a11y(&s, &first, &c).unwrap();
+        assert_eq!(written.subject.as_deref(), Some("77"), "the held copy's ratingKey");
+    
+        namespaces
     }
 }
 

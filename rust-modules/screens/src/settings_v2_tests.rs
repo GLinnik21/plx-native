@@ -262,3 +262,28 @@ fn the_root_asks_for_posters_while_favorite_libraries_has_focus_and_the_fan_is_e
         .with_shelf_sample(vec![cached_poster("Alpha")]);
     assert_eq!(asked(tick(&mut root, &filled)), 0, "a fan with a poster asks for nothing");
 }
+
+// ---- accessibility ids -----------------------------------------------------------------------
+
+/// **Every row of the root and of Diagnostics names itself** with a segment the id grammar accepts, and no
+/// two rows of a page share a name. A server's switch repeats, so it answers none and its position names
+/// it (`row.<i>`).
+#[test]
+fn the_root_and_diagnostics_rows_name_themselves_with_distinct_ids() {
+    let root = [
+        RootId::Favourites, RootId::UnderPosters, RootId::Playback, RootId::AudioSubtitles, RootId::Language,
+        RootId::AutoSignIn, RootId::TrailerAutoplay, RootId::Resolution, RootId::Privacy, RootId::Diagnostics,
+        RootId::Legal, RootId::About,
+    ];
+    let mut names: Vec<&str> = root.iter().map(|id| id.a11y().expect("a root row names itself")).collect();
+    let diag = [diagnostics::DiagId::Trace, diagnostics::DiagId::Export, diagnostics::DiagId::Delete];
+    let mut diag_names: Vec<&str> = diag.iter().map(|id| id.a11y().expect("a Diagnostics row names itself")).collect();
+    for set in [&mut names, &mut diag_names] {
+        assert!(set.iter().all(|n| plx_ui::a11y::is_name(n)), "a name outside the id grammar: {set:?}");
+        let before = set.len();
+        set.sort_unstable();
+        set.dedup();
+        assert_eq!(set.len(), before, "two rows of one page share a name");
+    }
+    assert_eq!(RootId::Plaintext(ServerMachineId("machine".into())).a11y(), None);
+}

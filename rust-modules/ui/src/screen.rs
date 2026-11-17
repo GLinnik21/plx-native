@@ -13,6 +13,7 @@
 use std::borrow::Cow;
 use std::ops::Deref;
 
+use super::a11y::{A11y, A11yPath};
 use super::frame::{Budget, RenderReport};
 use plx_machine::machine::{
     Cx, Effects, EntryId, FocusKey, GroupId, Host, InstanceId, Leave, LogicalState, Machine,
@@ -107,6 +108,13 @@ impl Scrim {
 pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// The heartbeat word — byte-identical to today's route word (§15.3).
     fn name(&self) -> &'static str;
+    /// **The accessibility namespace** (`a11y::A11yPath`, the `<ns>` of an id `<ns>.<path>`): the
+    /// route word as it is, `-` included. It defaults to [`Self::name`]; two screens that share a
+    /// heartbeat word override it so their ids do not meet (Filmography answers `filmography`,
+    /// Recommended `recommended`). A screen's `Focusable::a11y` answers a path RELATIVE to it.
+    fn a11y_ns(&self) -> &'static str {
+        self.name()
+    }
     /// **How far the page has tucked the app's top chrome away** (the nav tab bar and the profile
     /// chip), 0 (fully shown, the default) to 1 (gone). The dispatcher hands the chrome pass
     /// [`NavPresentation::tucked`]: the nav's chrome alpha multiplied by `1 - tuck`, and the band
@@ -552,6 +560,25 @@ pub trait Focusable<H: Host> {
     fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, at: At) -> Option<Placed>;
     fn reconcile(&self, want: FocusKey<H::Elem>, cx: &Cx<'_, H>) -> FocusKey<H::Elem>;
     fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<H::Elem>;
+
+    /// **The accessibility projection of `key`** (`a11y`, the a11y-ids plan D2): its id relative to
+    /// this view, its role, and what a test reads about it. `None` for a key this view does not own.
+    /// Unconditional and defaulted, so nothing changes until a widget answers; `a11y::conformance`
+    /// is the suite an implementation runs. The borrow is of `self`: a view built per query returns
+    /// `A11y::into_owned`.
+    fn a11y(&self, _key: &H::Elem, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        None
+    }
+    /// Every element of group `g`, in index order, pushed onto `out` (`GroupSpec::len` only counts
+    /// them, and no other method maps a group and an index to a key). A view pushes NOTHING for a
+    /// group it does not own, and lists the off-screen elements too.
+    fn a11y_elems(&self, _g: GroupId, _cx: &Cx<'_, H>, _out: &mut Vec<H::Elem>) {}
+    /// The inverse of [`Self::a11y`]: the element whose projected path is `path`, off-screen
+    /// elements included. The default walks every group (`a11y::default_walk`); an indexed widget
+    /// overrides it to read the index out of the path and answer `elem(i)` directly, bounds-checked.
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<H::Elem> {
+        crate::a11y::default_walk(self, path, cx)
+    }
 }
 
 /// A component that can be focused AND drawn — what `&dyn Focusable` cannot (§7.1).
@@ -654,6 +681,48 @@ pub fn composed_seat<H: Host, T: Composed<H> + ?Sized>(s: &T, g: GroupId, from: 
     s.part(first).seat(g, from, cx)
 }
 
+/// The first part that projects `key` answers, as `composed_place` does for a placement. The parts
+/// answer relative paths that do not meet (a collection's name is its own part's), so a container
+/// that needs a prefix adds it in its own `a11y`.
+pub fn composed_a11y<'a, H: Host, T: Composed<H> + ?Sized>(
+    s: &'a T,
+    key: &H::Elem,
+    cx: &Cx<'_, H>,
+) -> Option<A11y<'a>> {
+    s.layout(cx).into_iter().find_map(|(id, _)| s.part(id).a11y(key, cx))
+}
+
+/// Group `g`'s elements, from the part that declares `g` (as `composed_seat` finds its owner), so a
+/// part that lists elements for a group it does not own cannot double them.
+pub fn composed_a11y_elems<H: Host, T: Composed<H> + ?Sized>(
+    s: &T,
+    g: GroupId,
+    cx: &Cx<'_, H>,
+    out: &mut Vec<H::Elem>,
+) {
+    let mut specs = Vec::new();
+    for (id, _) in s.layout(cx) {
+        specs.clear();
+        let part = s.part(id);
+        part.groups(cx, &mut specs);
+        if specs.iter().any(|sp| sp.id == g) {
+            part.a11y_elems(g, cx, out);
+            return;
+        }
+    }
+}
+
+/// The first part that finds `path` answers.
+pub fn composed_a11y_find<H: Host, T: Composed<H> + ?Sized>(
+    s: &T,
+    path: &A11yPath,
+    cx: &Cx<'_, H>,
+) -> Option<H::Elem> {
+    s.layout(cx)
+        .into_iter()
+        .find_map(|(id, _)| s.part(id).a11y_find(path, cx))
+}
+
 /// `impl Focusable<H> for $t` by delegation to its `Composed` parts (see `composed_groups`).
 #[macro_export]
 macro_rules! focusable_via_composed {
@@ -699,6 +768,28 @@ macro_rules! focusable_via_composed {
                 cx: &plx_machine::machine::Cx<'_, $h>,
             ) -> plx_machine::machine::FocusKey<<$h as plx_machine::machine::Host>::Elem> {
                 $crate::screen::composed_seat(self, g, from, cx)
+            }
+            fn a11y(
+                &self,
+                key: &<$h as plx_machine::machine::Host>::Elem,
+                cx: &plx_machine::machine::Cx<'_, $h>,
+            ) -> Option<$crate::a11y::A11y<'_>> {
+                $crate::screen::composed_a11y(self, key, cx)
+            }
+            fn a11y_elems(
+                &self,
+                g: plx_machine::machine::GroupId,
+                cx: &plx_machine::machine::Cx<'_, $h>,
+                out: &mut Vec<<$h as plx_machine::machine::Host>::Elem>,
+            ) {
+                $crate::screen::composed_a11y_elems(self, g, cx, out)
+            }
+            fn a11y_find(
+                &self,
+                path: &$crate::a11y::A11yPath,
+                cx: &plx_machine::machine::Cx<'_, $h>,
+            ) -> Option<<$h as plx_machine::machine::Host>::Elem> {
+                $crate::screen::composed_a11y_find(self, path, cx)
             }
         }
     };
@@ -757,6 +848,31 @@ macro_rules! focusable_via_view {
                 cx: &plx_machine::machine::Cx<'_, $h>,
             ) -> plx_machine::machine::FocusKey<<$h as plx_machine::machine::Host>::Elem> {
                 $crate::screen::Focusable::<$h>::seat(&self.$view $($turbofish)* ($(cx.$press)?), g, from, cx)
+            }
+            // The view is a temporary built for this query, so the projection it answers cannot
+            // borrow from it: it is handed back owning its text.
+            fn a11y(
+                &self,
+                key: &<$h as plx_machine::machine::Host>::Elem,
+                cx: &plx_machine::machine::Cx<'_, $h>,
+            ) -> Option<$crate::a11y::A11y<'_>> {
+                $crate::screen::Focusable::<$h>::a11y(&self.$view $($turbofish)* ($(cx.$press)?), key, cx)
+                    .map($crate::a11y::A11y::into_owned)
+            }
+            fn a11y_elems(
+                &self,
+                g: plx_machine::machine::GroupId,
+                cx: &plx_machine::machine::Cx<'_, $h>,
+                out: &mut Vec<<$h as plx_machine::machine::Host>::Elem>,
+            ) {
+                $crate::screen::Focusable::<$h>::a11y_elems(&self.$view $($turbofish)* ($(cx.$press)?), g, cx, out)
+            }
+            fn a11y_find(
+                &self,
+                path: &$crate::a11y::A11yPath,
+                cx: &plx_machine::machine::Cx<'_, $h>,
+            ) -> Option<<$h as plx_machine::machine::Host>::Elem> {
+                $crate::screen::Focusable::<$h>::a11y_find(&self.$view $($turbofish)* ($(cx.$press)?), path, cx)
             }
         }
     };

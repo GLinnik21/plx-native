@@ -25,13 +25,14 @@ mod seek_jump;
 pub mod input;
 pub mod overlay;
 #[cfg(test)]
-mod overlay_tests;
+pub(crate) mod overlay_tests;
 #[cfg(test)]
 mod compiled_geometry_tests;
 
 use std::borrow::Cow;
 
 use crate::registry::{AppFx, AppLike, AppMsg, PlayerLike, PlayerReq, RepeatGate, PANEL_REPEAT_MS};
+use plx_ui::a11y::{A11y, A11yPath, Role};
 use plx_ui::consts;
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
@@ -1252,6 +1253,14 @@ impl PlayerScreen {
         if confirm { Self::ask(fx, PlayerReq::RepairSandbox); }
         Self::repair_focus(fx, GROUP_FAILURE);
     }
+    /// The confirmation's answers as an accessibility id names them: `repair.cancel`, and
+    /// `repair.confirm` while the alert offers two.
+    fn repair_answers(&self) -> plx_ui::decision_alert::AlertAnswers {
+        plx_ui::decision_alert::AlertAnswers::new(GROUP_REPAIR, REPAIR_CANCEL, REPAIR_CONFIRM, "cancel", "confirm")
+            .under("repair")
+            .counted(self.repair_alert.answers())
+    }
+
     fn repair_rect(&self, confirm: bool, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let (cancel, repair) = self.repair_alert.frames(measure);
         if confirm { repair } else { cancel }
@@ -2605,6 +2614,38 @@ impl PlayerScreen {
         };
         Some(Placed { rect, rest_rect: rect, clip: Rect::FULL, index: None })
     }
+
+    /// The word that names item `i` of the control row in an id (`player_hud::geometry::row_word`): the
+    /// command of the control the package placed there, whether enabled or not, or the stand-in's own.
+    fn row_word(&self, i: i32) -> Option<&'static str> {
+        player_hud::geometry::row_word(&self.compiled, self.hud.sections.bits(), self.eff_slot(), &self.model, i)
+    }
+
+    /// **The id of item `i` of the control row**, relative to the screen: `control.<word>` where the
+    /// item has a word (`next`, `subtitles`, `skip`, `next_episode`) and no earlier item of the row
+    /// has the same one, else `control.<i>`, its position. A package can place two controls with one
+    /// command (two seeks), so a word alone is not an id; the position is unique by construction.
+    /// Both spellings are built from static names and an integer, never from content.
+    fn control_path(&self, i: i32) -> A11yPath {
+        let path = A11yPath::new().name("control");
+        match self.row_word(i) {
+            Some(word) if (0..i).all(|j| self.row_word(j) != Some(word)) => path.name(word),
+            _ => path.index(i as usize),
+        }
+    }
+
+    /// The failure read-out's row, when the read-out owns the frame: the read-out and each action's rect
+    /// (`None` for a slot the row does not draw). The condition `groups_in` declares the row under.
+    fn failure_row(
+        &self,
+        measure: &dyn plx_machine::machine::Measure,
+    ) -> Option<(&player_hud::FailureReadout, [Option<Rect>; plx_ui::widgets::STATUS_ROW_MAX])> {
+        if !matches!(self.busy, plx_appkit::player_hud::Busy::Readout(plx_ui::widgets::StatusKind::Failed, _)) {
+            return None;
+        }
+        let readout = self.presentation.failure.as_ref()?;
+        Some((readout, readout.frames(measure)))
+    }
 }
 
 /// **The four registered regions**: scrubber, control row, bottom tabs and failure actions.
@@ -2712,6 +2753,98 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             _ => player_hud::ELEM_SCRUB,
         };
         FocusKey { entry: self.entry, elem }
+    }
+    /// **The ids** (relative; the host qualifies them `player.`), named from the HUD's own groups and
+    /// slots and never from content: `scrub`; `control.<word>` or `control.<i>` for the row's items
+    /// (the word names the control's command, or the stand-in that has taken the row: `next`,
+    /// `subtitles`, `skip`, `next_episode`); `tab.info` and `tab.chapters`; `section.<i>` for an open
+    /// section's buttons; `chapter.<i>` for the strip's cards; `failure.<action word>` for the
+    /// read-out's row; `repair.cancel` and `repair.confirm` for the confirmation, which hides
+    /// everything else while it is up. An element exists exactly when [`Self::groups_in`] declares
+    /// its group AND the frame places it (`place`): a disc the row cannot use (Previous on a film, or
+    /// on the first episode) and a tab the layout does not draw are cells `GroupSpec::len` counts but
+    /// no elements, like a form table's separator, so they have no id.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        use player_hud::{ELEM_CHAPTER_BASE, ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_SCRUB, ELEM_SECTION_BASE, ELEM_SECTION_END, ELEM_TAB_BASE};
+        let key = *key;
+        if self.repair_alert.visible() {
+            return self.repair_answers().a11y(key);
+        }
+        let chapters = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
+        if key == ELEM_SCRUB {
+            return self.middle_up().then(|| A11y::new(A11yPath::new().name("scrub"), Role::Button));
+        }
+        if let Some(i) = player_hud::row_index(key) {
+            let at = i as usize;
+            if !self.middle_up() || at >= self.row_len(chapters).max(1) || !self.row_enabled(i) {
+                return None;
+            }
+            let item = A11y::new(self.control_path(i), Role::Button);
+            return Some(match self.row_word(i) {
+                Some(word) => item.with_label(word),
+                None => item,
+            });
+        }
+        if (ELEM_TAB_BASE..ELEM_FAILURE_BASE).contains(&key) {
+            let tab = (key - ELEM_TAB_BASE) as usize;
+            self.hud_geometry(cx).tabs.get(tab).copied().flatten()?;
+            let word = match Section::of_tab(tab as i32)? {
+                Section::Info => "info",
+                Section::Chapters => "chapters",
+            };
+            return Some(A11y::new(A11yPath::new().name("tab").name(word), Role::Tab));
+        }
+        if (ELEM_FAILURE_BASE..ELEM_FAILURE_END).contains(&key) {
+            let at = (key - ELEM_FAILURE_BASE) as usize;
+            let (readout, frames) = self.failure_row(cx.measure)?;
+            frames.get(at).copied().flatten()?;
+            let word = player_hud::failure_action_word(*readout.actions().get(at)?);
+            return Some(A11y::new(A11yPath::new().name("failure").name(word), Role::Button));
+        }
+        if (ELEM_SECTION_BASE..ELEM_SECTION_END).contains(&key) {
+            let at = (key - ELEM_SECTION_BASE) as usize;
+            return (at < self.section_rects(chapters).len())
+                .then(|| A11y::new(A11yPath::new().name("section").index(at), Role::Button));
+        }
+        if (ELEM_CHAPTER_BASE..plx_ui::dispatch::STRIP_BASE).contains(&key) {
+            let (_, src) = self.strip_source(cx)?;
+            let at = CardSource::<H>::index_of(&src, &key)?;
+            return Some(A11y::new(A11yPath::new().name("chapter").index(at), Role::Card));
+        }
+        None
+    }
+    /// **Every element of a group, in index order**, read off the group `groups_in` declares (so a
+    /// group the frame does not declare lists nothing). The index groups are addressed contiguously,
+    /// but only the slots the frame places are elements: the row's disabled discs and the tabs the
+    /// layout does not draw are counted by `GroupSpec::len` and listed by nobody, and the failure row
+    /// (whose `len` counts only the drawn actions) is as sparse.
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        let geo = self.hud_geometry(cx);
+        let mut declared = Vec::new();
+        self.groups_in(&geo, cx, &mut declared);
+        let Some(len) = declared.iter().find(|spec| spec.id == g).map(|spec| spec.len) else { return };
+        match g {
+            GROUP_REPAIR => self.repair_answers().elems(g, out),
+            GROUP_SCRUB => out.push(player_hud::ELEM_SCRUB),
+            GROUP_ROW => out.extend((0..len as i32).filter(|&i| self.row_enabled(i)).map(player_hud::control_elem)),
+            GROUP_TABS => out.extend(
+                (0..len).filter(|&i| geo.tabs.get(i).copied().flatten().is_some()).map(|i| player_hud::ELEM_TAB_BASE + i as u32),
+            ),
+            GROUP_SECTION => out.extend((0..len).map(|i| player_hud::geometry::section_elem(i as u32))),
+            GROUP_STRIP => {
+                if let Some((_, src)) = self.strip_source(cx) {
+                    out.extend((0..len).map(|i| CardSource::<H>::elem(&src, i)));
+                }
+            }
+            GROUP_FAILURE => {
+                if let Some((_, frames)) = self.failure_row(cx.measure) {
+                    out.extend(
+                        frames.iter().enumerate().filter(|(_, frame)| frame.is_some()).map(|(i, _)| player_hud::ELEM_FAILURE_BASE + i as u32),
+                    );
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -3269,7 +3402,7 @@ mod travel_rig {
 /// so it can no longer reach another case; `player::state` still reads other crate globals
 /// (`seeking`, the resolve window), which is what the lock is for.
 #[cfg(test)]
-mod step_ladder_tests {
+pub(crate) mod step_ladder_tests {
     use super::*;
     use crate::player::overlay_tests::{derive_state, TestHost};
     use crate::registry::AppFx;
@@ -4269,6 +4402,119 @@ mod step_ladder_tests {
         .expect("the scrubber always places");
         let want = player_hud::audit_geometry().grab;
         assert_eq!((placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h), (want.x, want.y, want.w, want.h));
+    }
+
+    /// **The HUD's elements have ids, named from its geometry and never from content**, and each id
+    /// finds its element again: the scrubber, each classic disc by its command, and the Info tab. A
+    /// disc the row cannot use (Previous and Next on a film) is a cell the group counts and no
+    /// element: it has no id, by its command or by its position.
+    #[test]
+    fn every_hud_element_answers_an_id() {
+        assert!(!player_conforms().is_empty());
+    }
+
+        /// The player page on a film (the classic HUD), run through the id conformance with the id asserts
+    /// above (`AppArg::Player`; the coverage table calls this, and so does the test above).
+    pub(crate) fn player_conforms() -> plx_ui::a11y::Namespaces {
+        use plx_ui::a11y::conform;
+        let mut namespaces = Vec::new();
+        let _g = plx_base::testlock::serial();
+        let page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+        let cx = cx();
+        namespaces.push(conform::<TestHost, _>(&page, &cx));
+        let by_id = |text: &str| {
+            let path = plx_ui::a11y::A11yPath::parse_relative(text).expect("a well-formed path");
+            Focusable::<TestHost>::a11y_find(&page, &path, &cx)
+        };
+        assert_eq!(by_id("scrub"), Some(player_hud::ELEM_SCRUB));
+        for (id, ordinal) in [
+            ("control.subtitles", player_hud::BTN_SUBTITLES),
+            ("control.audio", player_hud::BTN_AUDIO),
+            ("control.more", player_hud::BTN_MORE),
+        ] {
+            assert_eq!(by_id(id), Some(player_hud::control_elem(ordinal)), "{id} is classic's control {ordinal}");
+        }
+        assert_eq!(by_id("tab.info"), Some(player_hud::ELEM_TAB_BASE));
+        assert_eq!(by_id("control.5"), None, "classic has five controls");
+        for id in ["control.previous", "control.next", "control.0", "control.1"] {
+            assert_eq!(by_id(id), None, "{id}: a film's row has no Previous or Next to name");
+        }
+        let previous = player_hud::control_elem(player_hud::BTN_PREVIOUS);
+        assert!(Focusable::<TestHost>::a11y(&page, &previous, &cx).is_none(), "Previous is no element on a film");
+        let subtitles = Focusable::<TestHost>::a11y(&page, &player_hud::control_elem(player_hud::BTN_SUBTITLES), &cx)
+            .expect("Subtitles projects");
+        assert!(subtitles.loaded);
+        assert_eq!(subtitles.role, plx_ui::a11y::Role::Button);
+    
+        namespaces
+    }
+
+    /// **A pair with one live button names that one**: on the first episode Previous is disabled and
+    /// Next is live, so `control.next` is the element and the disabled Previous is a cell of the
+    /// group (the row still counts its slot) with no id, as it has no stop and no place.
+    #[test]
+    fn the_live_button_of_a_pair_has_an_id_and_the_disabled_one_none() {
+        let _g = plx_base::testlock::serial();
+        let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+        let controls = player_hud::Controls::for_item(true, false, true);
+        page.slot = ControlSlot::Discs(controls);
+        page.model.controls = controls;
+        page.model.is_episode = true;
+        let cx = cx();
+        plx_ui::a11y::conformance::<TestHost, _>(&page, &cx);
+        let by_id = |text: &str| {
+            let path = plx_ui::a11y::A11yPath::parse_relative(text).expect("a well-formed path");
+            Focusable::<TestHost>::a11y_find(&page, &path, &cx)
+        };
+        assert_eq!(by_id("control.next"), Some(player_hud::control_elem(player_hud::BTN_NEXT)));
+        assert_eq!(by_id("control.previous"), None, "a disabled disc is no element");
+        assert_eq!(by_id("control.subtitles"), Some(player_hud::control_elem(player_hud::BTN_SUBTITLES)));
+        let mut groups = Vec::new();
+        Focusable::<TestHost>::groups(&page, &cx, &mut groups);
+        let row = groups.iter().find(|g| g.id == GROUP_ROW).expect("the row is declared");
+        let mut elems = Vec::new();
+        Focusable::<TestHost>::a11y_elems(&page, GROUP_ROW, &cx, &mut elems);
+        assert_eq!(elems.len(), 4, "Next, Subtitles, Audio and More");
+        assert!(row.len > elems.len(), "the group counts the disabled Previous too: {} cells", row.len);
+    }
+
+    /// **A middle episode names BOTH Previous and Next**: `every_hud_element_answers_an_id` reads a film,
+    /// where the pair is absent, and the test above reads the first episode, where Previous is not live.
+    /// With both live, `control.previous` and `control.next` each project, place and resolve, and the
+    /// id an element projects finds that same element again.
+    #[test]
+    fn a_middle_episode_names_both_previous_and_next() {
+        let _g = plx_base::testlock::serial();
+        let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+        let controls = player_hud::Controls::for_item(true, true, true);
+        assert!(controls.previous && controls.next, "rig: both neighbours are live");
+        page.slot = ControlSlot::Discs(controls);
+        page.model.controls = controls;
+        page.model.is_episode = true;
+        let cx = cx();
+        plx_ui::a11y::conformance::<TestHost, _>(&page, &cx);
+        let mut elems = Vec::new();
+        Focusable::<TestHost>::a11y_elems(&page, GROUP_ROW, &cx, &mut elems);
+        for (id, ordinal) in [("control.previous", player_hud::BTN_PREVIOUS), ("control.next", player_hud::BTN_NEXT)] {
+            let key = player_hud::control_elem(ordinal);
+            let named = plx_ui::a11y::A11yPath::parse_relative(id).expect("a well-formed path");
+            assert!(elems.contains(&key), "{id} is listed by the row's group");
+            assert!(Focusable::<TestHost>::place(&page, &key, &cx, At::Drawn).is_some(), "{id} places");
+            let projected = Focusable::<TestHost>::a11y(&page, &key, &cx).unwrap_or_else(|| panic!("{id} projects"));
+            assert_eq!(projected.path, named, "the element projects the id it is found by");
+            assert_eq!(projected.role, plx_ui::a11y::Role::Button, "{id}");
+            assert_eq!(Focusable::<TestHost>::a11y_find(&page, &named, &cx), Some(key), "{id} resolves");
+            assert_eq!(
+                Focusable::<TestHost>::a11y_find(&page, &projected.path, &cx),
+                Some(key),
+                "{id}: a11y_find(a11y(k).path) == Some(k)"
+            );
+        }
+        assert_eq!(elems.len(), 5, "Previous, Next, Subtitles, Audio and More");
+        let mut groups = Vec::new();
+        Focusable::<TestHost>::groups(&page, &cx, &mut groups);
+        let row = groups.iter().find(|g| g.id == GROUP_ROW).expect("the row is declared");
+        assert_eq!(row.len, elems.len(), "with both live no cell of the row is a hole");
     }
 
     /// Every group this screen declares resolves back through `group_of` to the group it came
@@ -5550,6 +5796,14 @@ mod repair_confirmation_tests {
         let from = Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None };
         assert_eq!(Focusable::<TestHost>::seat(&page, GROUP_REPAIR, from, &cx).elem, REPAIR_CANCEL);
         assert!(matches!(Focusable::<TestHost>::neighbour(&page, FocusKey { entry: EntryId(1), elem: REPAIR_CANCEL }, Dir::Right, &cx), Step::Move(FocusKey { elem: REPAIR_CONFIRM, .. })));
+        // the confirmation hides the HUD, and its two answers have ids
+        plx_ui::a11y::conformance::<TestHost, _>(&page, &cx);
+        for (id, elem) in [("repair.cancel", REPAIR_CANCEL), ("repair.confirm", REPAIR_CONFIRM)] {
+            let path = plx_ui::a11y::A11yPath::parse_relative(id).expect("a well-formed path");
+            assert_eq!(Focusable::<TestHost>::a11y_find(&page, &path, &cx), Some(elem), "{id}");
+        }
+        let scrub = plx_ui::a11y::A11yPath::parse_relative("scrub").expect("a well-formed path");
+        assert_eq!(Focusable::<TestHost>::a11y_find(&page, &scrub, &cx), None, "the confirmation holds the HUD");
         let req = deliver(&mut page, &ps, Some(REPAIR_CONFIRM), ScreenEvent::PressCommit(PressId(1)));
         assert_eq!(req, vec![PlayerReq::RepairSandbox]);
         assert!(deliver(&mut page, &ps, Some(REPAIR_CONFIRM), ScreenEvent::PressCommit(PressId(1))).is_empty());

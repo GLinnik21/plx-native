@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use plx_data::pms::{HeroRef, HubIdentity, HubRef, HubsView, PmsMovie};
+use plx_ui::a11y::{A11y, A11yPath, Role as A11yRole, Seg};
 use plx_data::stores::hubs::HubsCmd;
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
 use plx_ui::cards::{self as ui_cards, RowStyle};
@@ -2656,6 +2657,13 @@ impl HomeScreen {
         HomeCards { paging: false, home: self, view, row, hover: Hover::Focus }
     }
 
+    /// The card of row `row` at listing position `listing` (the `<n>` of its id), when the row's
+    /// window holds it: the element of the window index that `CardSource::global` maps to it.
+    fn card_in_listing<H: HomeLike>(&self, view: HubsView<'_>, row: usize, listing: usize) -> Option<u32> {
+        let at = ui_cards::card_window_index::<H, _>(&self.cards(view, row), listing)?;
+        self.rows.get(row)?.elems.get(at).copied()
+    }
+
     fn draw_status(&self, view: HubsView<'_>, env: &Env, p: Painter, focus: Option<Located>) {
         let Some(overlay) = status_overlay(view, &self.plaintext, &self.clock) else {
             return;
@@ -3223,6 +3231,103 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
             entry: self.entry,
             elem: row.elems.get(col).copied().unwrap_or(HERO_PLAY_ELEM),
         }
+    }
+
+    /// **The ids** (`home.<path>`): the hero `hero.play|info|watchlist` (the failure read-out's lone
+    /// action is `hero.action`), each shelf `shelf.<row>.card.<n>`, the Continue Watching deck
+    /// `continue.card.<n>`, a linked heading `shelf.<row>.heading`, and the plaintext question's
+    /// answers, which are [`PlaintextAlert`]'s own (`alert.not_now|connect`: the alert names its
+    /// answers, so the one question has one id set wherever it opens). `<row>` is the row's
+    /// position in the page and `<n>` the card's place in the row's LISTING (the hub's window offset
+    /// plus its place in the window, `CardSource::global`), so a window that pages never gives one id
+    /// to another title; the card's `subject` (its ratingKey) is what a press names to stay safe
+    /// when a publication moves them. A listing position the window does not hold is no element.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        // while the question is open its answers are the page's only elements
+        if let Some(answer) = self.plaintext_alert.a11y(*key) {
+            return answer;
+        }
+        let view = H::hubs(cx);
+        match self.locate(*key)? {
+            Located::Hero(slot) => {
+                if !self.hero_has(view, slot) {
+                    return None;
+                }
+                let name = match slot {
+                    _ if status_read(view).is_some() => "action",
+                    0 => "play",
+                    1 => "info",
+                    _ => "watchlist",
+                };
+                Some(A11y::new(A11yPath::new().name("hero").name(name), A11yRole::Button))
+            }
+            Located::Heading(row) => {
+                let title = self.rows.get(row)?.title.as_str();
+                Some(A11y::new(shelf_path(self.rows.get(row)?, row).name("heading"), A11yRole::Button).with_label(title))
+            }
+            Located::Item(row, col) => {
+                let projection = self.rows.get(row)?;
+                // a slot whose card has not landed exists and can be focused, not pressed: it is
+                // not loaded, which `card_a11y` says by the same rule the shelf's draw skips it by
+                Some(ui_cards::card_a11y::<H, _>(shelf_path(projection, row), &self.cards(view, row), col))
+            }
+        }
+    }
+
+    /// Every element of group `g` in index order: the hero's controls in ROW order, a shelf's cards
+    /// (the window, placeholders included), a linked heading's one element, the alert's answers.
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if self.plaintext_alert.a11y_elems(g, out) {
+            return;
+        }
+        if g == HERO_GROUP {
+            let (slots, n) = self.hero_slots(H::hubs(cx));
+            out.extend(slots[..n].iter().map(|&slot| hero_elem(slot)));
+        } else if let Some(row) = self.rows.iter().find(|r| heading_group(r.group) == g && r.link.is_some()) {
+            out.push(heading_elem(row.group));
+        } else if let Some(row) = self.rows.iter().find(|r| r.group == g) {
+            out.extend(row.elems.iter().copied());
+        }
+    }
+
+    /// The inverse of [`Self::a11y`]: the path names its candidate (a hero slot, a row's card, a
+    /// heading), and the projection of that candidate must answer the same path, so the two cannot
+    /// disagree about what exists.
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        if let Some(found) = self.plaintext_alert.a11y_find(path) {
+            return found;
+        }
+        let mut segs = path.segs();
+        let candidate = match (segs.next(), segs.next(), segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("hero")), Some(Seg::Name(name)), None, ..) => match name {
+                "play" | "action" => Some(hero_elem(0)),
+                "info" => Some(hero_elem(1)),
+                "watchlist" => Some(hero_elem(2)),
+                _ => None,
+            },
+            (Some(Seg::Name("continue")), Some(Seg::Name("card")), Some(Seg::Index(n)), None, ..) => self
+                .rows
+                .iter()
+                .position(|r| r.identity == HomeHubIdentity::ContinueWatching)
+                .and_then(|row| self.card_in_listing::<H>(H::hubs(cx), row, n)),
+            (Some(Seg::Name("shelf")), Some(Seg::Index(row)), Some(Seg::Name("card")), Some(Seg::Index(n)), None) => {
+                self.card_in_listing::<H>(H::hubs(cx), row, n)
+            }
+            (Some(Seg::Name("shelf")), Some(Seg::Index(row)), Some(Seg::Name("heading")), None, ..) => {
+                self.rows.get(row).map(|r| heading_elem(r.group))
+            }
+            _ => None,
+        }?;
+        self.a11y(&candidate, cx).filter(|a| a.path == *path).map(|_| candidate)
+    }
+}
+
+/// A row's id prefix: `continue` for the Continue Watching deck, else `shelf.<row>`.
+fn shelf_path(projection: &HubProjection, row: usize) -> A11yPath {
+    if projection.identity == HomeHubIdentity::ContinueWatching {
+        A11yPath::new().name("continue")
+    } else {
+        A11yPath::new().name("shelf").index(row)
     }
 }
 
@@ -4427,6 +4532,16 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
 
     fn index_of(&self, e: &u32) -> Option<usize> {
         self.home.item_col(self.row, *e)
+    }
+
+    /// The card's ratingKey: what a by-id press names to stay on the title it read.
+    fn subject(&self, i: usize) -> Option<Cow<'_, str>> {
+        self.item(i).map(|m| Cow::Borrowed(m.rk.as_str()))
+    }
+
+    /// The item's own title: the Continue Watching deck draws no label block under its stills.
+    fn a11y_title(&self, i: usize) -> Option<Cow<'_, str>> {
+        self.item(i).map(|m| Cow::Borrowed(m.title.as_str()))
     }
 
     /// The card the PICTURE shows focused: none until the dive has made the shelves the picture,

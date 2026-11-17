@@ -39,6 +39,7 @@ use super::screen::{
     GroupSpec, HitSource, Mounter, Placed, ReturnState, Screen, ScreenArg, ScreenEvent, Step, Stop,
 };
 
+use super::a11y::{A11y, A11yPath, Role, Seg};
 use super::{Painter, Rect};
 
 #[cfg(test)]
@@ -49,6 +50,46 @@ mod presentation_tests;
 /// A removed pill therefore cannot renumber another destination or collide with a page's tile.
 pub const STRIP_BASE: u32 = 0xFFFF_0000;
 const _: () = assert!(STRIP_BASE >= super::geom::NAMESPACE_FLOOR);
+
+/// The strip's members by the name their accessibility ids carry (`nav.home`): the `TAB_KEY_*`
+/// destinations of `widgets`, each a destination's identity, never a position in the strip. Any
+/// other member is `nav.tab.<stable_id>`, its key less [`STRIP_BASE`] ([`strip_path`]).
+const STRIP_NAMES: &[(u32, &str)] = &[
+    (super::widgets::TAB_KEY_HOME, "home"),
+    (super::widgets::TAB_KEY_MOVIES, "movies"),
+    (super::widgets::TAB_KEY_SHOWS, "shows"),
+    (super::widgets::TAB_KEY_SEARCH, "search"),
+    (super::widgets::TAB_KEY_CHIP, "profile"),
+    (super::widgets::TAB_KEY_WATCHLIST, "watchlist"),
+];
+
+/// The id of strip member `key` (a key at or above [`STRIP_BASE`]): `nav.<name>`, or
+/// `nav.tab.<stable_id>` for a destination `STRIP_NAMES` does not name.
+fn strip_path(key: u32) -> A11yPath {
+    let nav = A11yPath::new().qualified("nav");
+    match STRIP_NAMES.iter().find(|(k, _)| *k == key) {
+        Some(&(_, name)) => nav.name(name),
+        None => nav.name("tab").index((key - STRIP_BASE) as usize),
+    }
+}
+
+/// The member of `members` the path `path` (a `nav.` id) names: the inverse of [`strip_path`], so a
+/// named destination has no second spelling as `nav.tab.<stable_id>`.
+fn strip_find<E: IndexElem>(path: &A11yPath, members: &[super::containers::tabs::StripMember<E>]) -> Option<E> {
+    let mut segs = path.segs();
+    let key = match (segs.next(), segs.next(), segs.next()) {
+        (Some(Seg::Name(name)), None, None) => STRIP_NAMES.iter().find(|(_, n)| *n == name)?.0,
+        (Some(Seg::Name("tab")), Some(Seg::Index(id)), None) => {
+            let key = STRIP_BASE.checked_add(u32::try_from(id).ok()?)?;
+            if STRIP_NAMES.iter().any(|(k, _)| *k == key) {
+                return None;
+            }
+            key
+        }
+        _ => return None,
+    };
+    members.iter().find(|m| m.elem.index() == Some(key)).map(|m| m.elem)
+}
 
 /// The input owner's page COMPOSED with the container's strip (§6.2): the strip is a `Row`
 /// group above the page's own, contributed only while the page allows it.
@@ -146,6 +187,273 @@ where
             }
             _ => self.page.seat(g, from, cx),
         }
+    }
+
+    /// **The owner view's accessibility projection** (the a11y-ids plan, D1): a strip pill is
+    /// `nav.<name>` ([`Role::Tab`], [`strip_path`]), and the page's own element is the path the page
+    /// answered, qualified by the page's `a11y_ns` (a page answers a path RELATIVE to itself, so a
+    /// shared widget never names the screen it sits on).
+    fn a11y(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        match (key.index(), &self.strip) {
+            (Some(i), Some((_, members))) if i >= STRIP_BASE => {
+                members.iter().any(|m| m.elem == *key).then(|| A11y::new(strip_path(i), Role::Tab))
+            }
+            _ => self
+                .page
+                .a11y(key, cx)
+                .map(|a| A11y { path: a.path.qualified(self.page.a11y_ns()), ..a }),
+        }
+    }
+    /// The strip's pills in strip order for its own group, else the page's elements of `g`.
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        match &self.strip {
+            Some((spec, members)) if spec.id == g => out.extend(members.iter().map(|m| m.elem)),
+            _ => self.page.a11y_elems(g, cx, out),
+        }
+    }
+    /// The inverse of [`Self::a11y`], routed by the id's namespace: `nav` to the strip, the page's
+    /// own `a11y_ns` to the page (which gets the path RELATIVE to itself), and any other namespace
+    /// finds nothing. A path with no namespace is nobody's id here.
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<H::Elem> {
+        match path.ns()? {
+            "nav" => self.strip.as_ref().and_then(|(_, members)| strip_find(path, members)),
+            ns if ns == self.page.a11y_ns() => self.page.a11y_find(&path.relative(), cx),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod strip_a11y_tests {
+    use std::borrow::Cow;
+
+    use super::*;
+    use crate::containers::tabs::StripMember;
+    use crate::fixture::{FixtureHost, FixtureMeasure, FixtureView, FixtureViews};
+    use crate::screen::{AxisMask, GroupKind, RenderStrategy, Seat};
+    use crate::widgets::{
+        TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST,
+    };
+    use plx_machine::machine::{LogicalState, Machine};
+
+    const ENTRY: EntryId = EntryId(4);
+    const STRIP: GroupId = GroupId(1);
+    const PAGE_GROUP: GroupId = GroupId(5);
+    const PAGE_CARDS: u32 = 3;
+    /// A destination the strip names no word for.
+    const UNNAMED: u32 = STRIP_BASE + 9;
+
+    /// A page of three cards, `card.<i>`, that answers a path relative to itself and takes the
+    /// default `a11y_find`: the smallest page an owner view can be built over.
+    struct ProbePage;
+
+    impl Focusable<FixtureHost> for ProbePage {
+        fn groups(&self, _cx: &Cx<'_, FixtureHost>, out: &mut Vec<GroupSpec>) {
+            out.push(GroupSpec {
+                id: PAGE_GROUP,
+                kind: GroupKind::Row { wrap: false },
+                seat: Seat::First,
+                reachable: AxisMask::BOTH,
+                edge: [EdgeRule::Stop; 4],
+                extent: Rect::new(0.0, 300.0, 900.0, 200.0),
+                len: PAGE_CARDS as usize,
+                elem: ElemKind::Card,
+            });
+        }
+        fn group_of(&self, key: &u32, _cx: &Cx<'_, FixtureHost>) -> Option<GroupId> {
+            (*key < PAGE_CARDS).then_some(PAGE_GROUP)
+        }
+        fn neighbour(&self, _key: FocusKey<u32>, _dir: Dir, _cx: &Cx<'_, FixtureHost>) -> Step<u32> {
+            Step::Edge
+        }
+        /// Card `key` in its own cell of the group's extent, so every card the group lists places.
+        fn place(&self, key: &u32, _cx: &Cx<'_, FixtureHost>, _at: At) -> Option<Placed> {
+            (*key < PAGE_CARDS).then(|| {
+                let rect = Rect::new(*key as f32 * 300.0, 300.0, 280.0, 200.0);
+                Placed { rect, rest_rect: rect, clip: Rect::new(0.0, 300.0, 900.0, 200.0), index: Some(*key) }
+            })
+        }
+        fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, FixtureHost>) -> FocusKey<u32> {
+            want
+        }
+        fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, FixtureHost>) -> FocusKey<u32> {
+            FocusKey { entry: ENTRY, elem: 0 }
+        }
+        fn a11y(&self, key: &u32, _cx: &Cx<'_, FixtureHost>) -> Option<A11y<'_>> {
+            (*key < PAGE_CARDS).then(|| A11y::new(A11yPath::new().name("card").index(*key as usize), Role::Card))
+        }
+        fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, FixtureHost>, out: &mut Vec<u32>) {
+            if g == PAGE_GROUP {
+                out.extend(0..PAGE_CARDS);
+            }
+        }
+    }
+
+    impl Machine<FixtureHost> for ProbePage {
+        type Ev = ScreenEvent<FixtureHost>;
+        fn step(&mut self, _ev: &Self::Ev, _cx: &Cx<'_, FixtureHost>, _fx: &mut Effects<'_, FixtureHost>) -> Handled {
+            Handled::No
+        }
+    }
+
+    impl Screen<FixtureHost> for ProbePage {
+        fn name(&self) -> &'static str {
+            "probe"
+        }
+        fn state(&self) -> &dyn LogicalState {
+            &()
+        }
+        fn crumb(&self, _cx: &Cx<'_, FixtureHost>) -> Option<Cow<'_, str>> {
+            None
+        }
+        fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {}
+        fn draw(&mut self, _f: &mut DrawFrame<'_, '_, FixtureHost>) {}
+        fn render(&self) -> RenderStrategy {
+            RenderStrategy::Page
+        }
+    }
+
+    /// The strip's pills in VISUAL order (Watchlist before Search, as the application lays them),
+    /// then one destination with no word of its own.
+    fn members() -> Vec<StripMember<u32>> {
+        [TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST, TAB_KEY_SEARCH, TAB_KEY_CHIP, UNNAMED]
+            .into_iter()
+            .enumerate()
+            .map(|(i, key)| StripMember::new(key, Rect::new(i as f32 * 100.0, 0.0, 90.0, 60.0)))
+            .collect()
+    }
+
+    fn view<'a>(page: &'a ProbePage, members: Option<&'a [StripMember<u32>]>) -> PageWithStrip<'a, FixtureHost> {
+        let strip = members.map(|m| {
+            let spec = GroupSpec {
+                id: STRIP,
+                kind: GroupKind::Row { wrap: false },
+                seat: Seat::Nearest,
+                reachable: AxisMask::VERTICAL,
+                edge: [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
+                extent: Rect::new(0.0, 0.0, 700.0, 60.0),
+                len: m.len(),
+                elem: ElemKind::Control,
+            };
+            (spec, m)
+        });
+        PageWithStrip { page, strip, strip_fallback: None, strip_selected: None, entry: ENTRY }
+    }
+
+    fn with_cx<R>(f: impl FnOnce(&Cx<'_, FixtureHost>) -> R) -> R {
+        let (measure, store) = (FixtureMeasure, FixtureView::default());
+        let cx = Cx {
+            views: FixtureViews { store: &store },
+            tick: Tick::default(),
+            measure: &measure,
+            press: PressRead::default(),
+            focus: FocusRead::default(),
+            owner: InputOwner::Entry(ENTRY),
+            modal: Default::default(),
+            page_image: Default::default(),
+            hold_hint: Default::default(),
+        };
+        f(&cx)
+    }
+
+    fn id(text: &str) -> A11yPath {
+        A11yPath::parse_id(text).expect("a well-formed id")
+    }
+
+    /// **The owner view conforms**, the strip group and the page's own, and each pill is named by
+    /// its destination: `nav.home`, `nav.movies`, `nav.shows`, `nav.search`, `nav.profile`,
+    /// `nav.watchlist`, and `nav.tab.<stable_id>` for one with no word. The page's cards are
+    /// qualified by the page's namespace.
+    #[test]
+    fn the_owner_view_names_the_strip_and_qualifies_the_page() {
+        with_cx(|cx| {
+            let (page, pills) = (ProbePage, members());
+            let v = view(&page, Some(&pills));
+            crate::a11y::conformance(&v, cx);
+            let path = |key: u32| v.a11y(&key, cx).expect("projects").path.to_string();
+            assert_eq!(path(TAB_KEY_HOME), "nav.home");
+            assert_eq!(path(TAB_KEY_MOVIES), "nav.movies");
+            assert_eq!(path(TAB_KEY_SHOWS), "nav.shows");
+            assert_eq!(path(TAB_KEY_SEARCH), "nav.search");
+            assert_eq!(path(TAB_KEY_CHIP), "nav.profile");
+            assert_eq!(path(TAB_KEY_WATCHLIST), "nav.watchlist");
+            assert_eq!(path(UNNAMED), "nav.tab.9");
+            assert_eq!(path(1), "probe.card.1");
+            assert_eq!(v.a11y(&TAB_KEY_HOME, cx).unwrap().role, Role::Tab);
+            assert_eq!(v.a11y(&1, cx).unwrap().role, Role::Card);
+            // a key of neither the strip nor the page projects nothing
+            assert!(v.a11y(&77, cx).is_none());
+            assert!(v.a11y(&(STRIP_BASE + 40), cx).is_none(), "not a member of this strip");
+        });
+    }
+
+    /// **Elements are listed by group**, the strip's in strip order and the page's in index order,
+    /// and nothing for a group neither declares.
+    #[test]
+    fn each_group_lists_its_own_elements() {
+        with_cx(|cx| {
+            let (page, pills) = (ProbePage, members());
+            let v = view(&page, Some(&pills));
+            let list = |g: GroupId| {
+                let mut out = Vec::new();
+                v.a11y_elems(g, cx, &mut out);
+                out
+            };
+            assert_eq!(list(STRIP), pills.iter().map(|m| m.elem).collect::<Vec<_>>());
+            assert_eq!(list(PAGE_GROUP), vec![0, 1, 2]);
+            assert!(list(GroupId(99)).is_empty());
+        });
+    }
+
+    /// **The inverse routes by namespace**: `nav` to the strip, the page's word to the page (with
+    /// the path relative to it), and nothing for another screen's word or a path with no namespace.
+    /// A named destination has one spelling, its name.
+    #[test]
+    fn an_id_is_routed_by_its_namespace() {
+        with_cx(|cx| {
+            let (page, pills) = (ProbePage, members());
+            let v = view(&page, Some(&pills));
+            assert_eq!(v.a11y_find(&id("nav.watchlist"), cx), Some(TAB_KEY_WATCHLIST));
+            assert_eq!(v.a11y_find(&id("nav.profile"), cx), Some(TAB_KEY_CHIP));
+            assert_eq!(v.a11y_find(&id("nav.tab.9"), cx), Some(UNNAMED));
+            assert_eq!(v.a11y_find(&id("nav.tab.0"), cx), None, "Home is nav.home, not nav.tab.0");
+            assert_eq!(v.a11y_find(&id("nav.tab.8"), cx), None, "no such member");
+            assert_eq!(v.a11y_find(&id("nav.tab"), cx), None);
+            assert_eq!(v.a11y_find(&id("nav.home.0"), cx), None);
+            assert_eq!(v.a11y_find(&id("probe.card.2"), cx), Some(2));
+            assert_eq!(v.a11y_find(&id("probe.card.3"), cx), None, "past the end");
+            assert_eq!(v.a11y_find(&id("other.card.1"), cx), None, "another screen's namespace");
+            let relative = A11yPath::parse_relative("card.1").expect("a relative path");
+            assert_eq!(v.a11y_find(&relative, cx), None, "a path with no namespace is nobody's id here");
+        });
+    }
+
+    /// **A page that does not wear the strip has no `nav` ids**: the strip's group is not listed,
+    /// its keys project nothing and `nav.home` finds nothing; the page still conforms.
+    #[test]
+    fn a_page_without_the_strip_has_no_nav_ids() {
+        with_cx(|cx| {
+            let page = ProbePage;
+            let v = view(&page, None);
+            crate::a11y::conformance(&v, cx);
+            assert!(v.a11y(&TAB_KEY_HOME, cx).is_none());
+            assert_eq!(v.a11y_find(&id("nav.home"), cx), None);
+            assert_eq!(v.a11y_find(&id("probe.card.0"), cx), Some(0));
+        });
+    }
+
+    /// A strip that lacks a destination (a type with no favourite library draws no pill) does not
+    /// answer that destination's id.
+    #[test]
+    fn a_pill_the_strip_does_not_draw_finds_nothing() {
+        with_cx(|cx| {
+            let page = ProbePage;
+            let pills: Vec<_> = members().into_iter().filter(|m| m.elem != TAB_KEY_MOVIES).collect();
+            let v = view(&page, Some(&pills));
+            crate::a11y::conformance(&v, cx);
+            assert_eq!(v.a11y_find(&id("nav.movies"), cx), None);
+            assert_eq!(v.a11y_find(&id("nav.shows"), cx), Some(TAB_KEY_SHOWS));
+        });
     }
 }
 

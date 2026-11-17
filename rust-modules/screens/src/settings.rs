@@ -37,6 +37,7 @@
 use std::borrow::Cow;
 
 use plx_ui::containers::modal::EntryMotion;
+use plx_ui::a11y::{A11y, A11yPath};
 use plx_ui::containers::stack::{Instance, NavStack};
 use plx_ui::containers::transition::Immediate;
 use plx_ui::containers::{Life, Minter};
@@ -853,11 +854,29 @@ impl<H: DirectoryLike> Focusable<H> for RouteSurface {
             |t| t.screen.seat(g, from, &inner_cx(cx)),
         )
     }
+    // The ids are the top page's own, relative to it: the surface adds nothing and answers for the
+    // page that owns input (its namespace is the page's, `Screen::a11y_ns` below).
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        self.top().and_then(|t| t.screen.a11y(key, &inner_cx(cx)))
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if let Some(top) = self.top() {
+            top.screen.a11y_elems(g, &inner_cx(cx), out);
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        self.top().and_then(|t| t.screen.a11y_find(path, &inner_cx(cx)))
+    }
 }
 
 impl<H: DirectoryLike> Screen<H> for RouteSurface {
     fn name(&self) -> &'static str {
         self.top_word()
+    }
+    /// The top page's namespace, not its heartbeat word: two pages that share a word (a Legal
+    /// document and the index, a Privacy preview and the page) answer different namespaces.
+    fn a11y_ns(&self) -> &'static str {
+        self.top().map_or(word::SETTINGS, |i| i.screen.a11y_ns())
     }
     fn state(&self) -> &dyn LogicalState {
         // the surface itself, so the hash covers the inner stack — see the `LogicalState` impl
@@ -1101,6 +1120,24 @@ impl FormId for RootId {
             RootId::Diagnostics => 12,
             // the base; `root_form` adds the position (`item_keyed`)
             RootId::Plaintext(_) => PLAINTEXT_KEY_BASE,
+        })
+    }
+    fn a11y(&self) -> Option<&'static str> {
+        Some(match self {
+            RootId::Favourites => "favourites",
+            RootId::UnderPosters => "under_posters",
+            RootId::Playback => "playback",
+            RootId::AudioSubtitles => "audio_subtitles",
+            RootId::Language => "language",
+            RootId::AutoSignIn => "auto_sign_in",
+            RootId::TrailerAutoplay => "trailer_autoplay",
+            RootId::Resolution => "resolution",
+            // one row per server, so no one name fits them all: the position names each (`row.<i>`)
+            RootId::Plaintext(_) => return None,
+            RootId::Privacy => "privacy",
+            RootId::Diagnostics => "diagnostics",
+            RootId::Legal => "legal",
+            RootId::About => "about",
         })
     }
 }
@@ -1805,6 +1842,25 @@ impl Focusable<InnerHost> for RootPage {
             None => Focusable::<InnerHost>::seat(&self.view(), g, from, cx),
         }
     }
+    // While the question is open its two answers are the page's only elements (`alert.not_now`,
+    // `alert.connect`); the rows beneath it answer nothing, as `groups` lists none of them.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, InnerHost>) -> Option<A11y<'_>> {
+        match self.alert.a11y(*key) {
+            Some(answer) => answer,
+            None => Focusable::<InnerHost>::a11y(&self.view(), key, cx).map(A11y::into_owned),
+        }
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, InnerHost>, out: &mut Vec<u32>) {
+        if !self.alert.a11y_elems(g, out) {
+            Focusable::<InnerHost>::a11y_elems(&self.view(), g, cx, out)
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, InnerHost>) -> Option<u32> {
+        match self.alert.a11y_find(path) {
+            Some(answer) => answer,
+            None => Focusable::<InnerHost>::a11y_find(&self.view(), path, cx),
+        }
+    }
 }
 
 impl Screen<InnerHost> for RootPage {
@@ -1882,7 +1938,7 @@ mod text_fit_tests;
 
 #[cfg(test)]
 #[path = "settings_root_navigation_tests.rs"]
-mod root_navigation_tests;
+pub(crate) mod root_navigation_tests;
 
 #[cfg(test)]
 #[path = "settings_pop_and_remember_tests.rs"]
@@ -1932,6 +1988,13 @@ impl FormId for LangId {
             LangId::Choice(p) => p.settings_row(),
             LangId::Contribute => 1000,
         })
+    }
+    fn a11y(&self) -> Option<&'static str> {
+        match self {
+            // one row per language, so the position names each (`row.<i>`)
+            LangId::Choice(_) => None,
+            LangId::Contribute => Some("contribute"),
+        }
     }
 }
 

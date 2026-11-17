@@ -286,6 +286,11 @@ impl<H: Host<Elem = u32>> CardSource<H> for Members<'_> {
         self.collection.item(i).map(|item| member_caption(item, &self.policy)).unwrap_or_default()
     }
     fn progress(&self, i: usize) -> Option<f32> { self.collection.item(i)?.resume_frac() }
+    /// The member's ratingKey: what a by-id press names to stay on the title it read (the id's
+    /// position, `items.card.<i>`, moves when the listing does).
+    fn subject(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
+        self.collection.item(i).map(|item| std::borrow::Cow::Borrowed(item.rk.as_str()))
+    }
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
         let persistent = self.label_at(i);
         if persistent.is_empty() { return; }
@@ -621,13 +626,15 @@ impl<H: ContentLike + CollectionLike> StackPage<H> for Page {
         let collection = self.collection(cx);
         let head = collection.is_some_and(CollectionScreen::shows_head);
         let failed = collection.is_some_and(|c| c.status == CollectionStatus::Failed);
-        out.push(SectionSpec::new(Sec::Head, Kind::Custom { height: GRID_TOP, focusable: head && self.summary_more }, HEADER_GROUP).ranked(1));
-        out.push(SectionSpec::new(Sec::Items, Kind::Grid { spec: GridSpec::new(GRID_TOP, CONTENT_TOP) }, GRID_GROUP));
+        // The sections are named for what they ARE (the accessibility ids: `head.0`, `items.card.<i>`,
+        // `status.0`), not by position: the head or the status comes and goes with the data.
+        out.push(SectionSpec::new(Sec::Head, Kind::Custom { height: GRID_TOP, focusable: head && self.summary_more }, HEADER_GROUP).ranked(1).named("head"));
+        out.push(SectionSpec::new(Sec::Items, Kind::Grid { spec: GridSpec::new(GRID_TOP, CONTENT_TOP) }, GRID_GROUP).named("items"));
         let retry = if failed {
             CollectionScreen::status_overlay(collection, cx.tick.ms, cx.measure).action_frame_measured(cx.measure)
         } else { None };
         out.push(SectionSpec::new(Sec::Status,
-            Kind::Overlay { rect: retry.unwrap_or(CollectionScreen::status_frame()), focusable: retry.is_some() }, STATUS_GROUP).ranked(2));
+            Kind::Overlay { rect: retry.unwrap_or(CollectionScreen::status_frame()), focusable: retry.is_some() }, STATUS_GROUP).ranked(2).named("status"));
     }
 
     fn fallback(&self, _cx: &Cx<'_, H>, out: &mut Vec<Sec>) {

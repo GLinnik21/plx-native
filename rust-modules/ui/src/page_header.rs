@@ -44,6 +44,7 @@ use std::ffi::CString;
 
 use plx_machine::machine::{EntryId, FocusKey, GroupId, Measure};
 
+use super::a11y::{A11y, A11yPath, Role};
 use super::breadcrumb::{self, Crumb};
 use super::hstack::{Align, Flow, HStack, Item};
 use super::page_regions::row_neighbour;
@@ -137,6 +138,11 @@ pub struct HeaderItem {
     /// item's text); the row keeps its one [`GAP`] between the divider's two neighbours and the
     /// divider adds its own width and two [`DIVIDER_MARGIN`]s to it.
     pub divider: bool,
+    /// **The control's accessibility name** (`sort`, `collections`): one lowercase word
+    /// (`[a-z][a-z0-9_]*`, unique in its row) a UI test reaches the control by, `<page>.header.sort`.
+    /// `None` leaves the control to its position (`header.right.<n>`, `header.left.<n>`), which moves
+    /// when a read-out comes or goes; a library name is runtime text and keeps its position.
+    pub a11y: Option<&'static str>,
 }
 
 impl HeaderItem {
@@ -152,7 +158,7 @@ impl HeaderItem {
     pub fn sort_control(name: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             label: name.into(), value: Some(value.into()), glyph: Some(Icon::Sort), value_only: true,
-            fold_glyph: true, fold_quiet: true, focusable: true, ..Default::default()
+            fold_glyph: true, fold_quiet: true, focusable: true, a11y: Some("sort"), ..Default::default()
         }
     }
 }
@@ -695,6 +701,68 @@ pub struct HeaderRow {
 impl HeaderRow {
     pub fn new(page: PageHeader, layout: HeaderLayout, stops: Vec<(u32, usize)>) -> Self {
         Self { page, layout, stops }
+    }
+
+    /// The spec item a laid-out slot is: the "+N" and a crumb's parts are the row's own, not items.
+    fn spec_item(&self, slot: Slot) -> Option<&HeaderItem> {
+        match slot {
+            Slot::Left(i) => self.page.spec().left.get(i),
+            Slot::Right(i) => self.page.spec().right.get(i),
+            Slot::Overflow | Slot::CrumbRoot | Slot::CrumbPage => None,
+        }
+    }
+
+    /// **The id of the control in `slot`, and what it is**, under `header`: its own name when the
+    /// item has one (`header.sort`), else its position in its family (`header.left.<n>` for a
+    /// library name, `header.right.<n>`), `header.more` for the "+N" and `header.crumb` for a
+    /// breadcrumb's root. A crumb's page name is a title and no control: `None`.
+    fn a11y_path(&self, slot: Slot) -> Option<(A11yPath, Role)> {
+        let head = A11yPath::new().name("header");
+        let named = |family: &'static str, i: usize| match self.spec_item(slot).and_then(|item| item.a11y) {
+            Some(name) => head.clone().name(name),
+            None => head.clone().name(family).index(i),
+        };
+        Some(match slot {
+            Slot::Left(i) => (named("left", i), Role::Tab),
+            Slot::Right(i) => (named("right", i), Role::Button),
+            Slot::Overflow => (head.clone().name("more"), Role::Button),
+            Slot::CrumbRoot => (head.clone().name("crumb"), Role::Button),
+            Slot::CrumbPage => return None,
+        })
+    }
+
+    /// **The accessibility projection of stop `elem`** (the page's own key for the stop, as
+    /// [`HeaderFocus`] knows it): its id under `header` (see [`Self::a11y_path`]), its role and its
+    /// words as the label. The page answers its `Focusable::a11y` with this for a key that
+    /// [`HeaderFocus::contains`], so every page that wears a header names its controls the same way.
+    pub fn a11y(&self, elem: u32) -> Option<A11y<'_>> {
+        let (_, index) = self.stops.iter().find(|(stop, _)| *stop == elem)?;
+        let slot = self.layout.items.get(*index)?.slot;
+        let (path, role) = self.a11y_path(slot)?;
+        let label = match slot {
+            Slot::CrumbRoot => self.page.spec().crumb.as_ref().map(|c| c.root.as_str()),
+            _ => self.spec_item(slot).map(|item| item.label.as_str()),
+        };
+        let a = A11y::new(path, role);
+        Some(match label.filter(|l| !l.is_empty()) {
+            Some(label) => a.with_label(label),
+            None => a,
+        })
+    }
+
+    /// Every stop of the row, in focus order: what the page's `Focusable::a11y_elems` lists for the
+    /// header's group.
+    pub fn a11y_elems(&self, out: &mut Vec<u32>) {
+        out.extend(self.stops.iter().map(|(elem, _)| *elem));
+    }
+
+    /// The stop whose id is `path` (relative to the page: `header.sort`), the inverse of
+    /// [`Self::a11y`]. It compares projected paths, so it cannot disagree with them.
+    pub fn a11y_find(&self, path: &A11yPath) -> Option<u32> {
+        self.stops.iter().find_map(|(elem, index)| {
+            let slot = self.layout.items.get(*index)?.slot;
+            (self.a11y_path(slot)?.0 == *path).then_some(*elem)
+        })
     }
 
     /// The plate (focus and hit rect) of `elem` in document space.

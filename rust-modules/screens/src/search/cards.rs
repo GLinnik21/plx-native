@@ -72,6 +72,17 @@ impl<H: SearchLike> CardSource<H> for RowCards<'_> {
             _ => None,
         }
     }
+    /// The hit's ratingKey, for a card that has one: a library item's, or a collection's own. A
+    /// person (a tag, whose id is a tag id and not a ratingKey) and a tag-shaped collection (no
+    /// ratingKey) have none, so a press names them by their place.
+    fn subject(&self, i: usize) -> Option<Cow<'_, str>> {
+        let rk = match self.items.get(i)? {
+            Item::Media(media) => media.rk.as_str(),
+            Item::Collection(hit) => hit.item.rk.as_str(),
+            Item::Tag(_) => return None,
+        };
+        (!rk.is_empty()).then(|| Cow::Borrowed(rk))
+    }
     fn more(&self) -> bool { self.window.after }
     fn page_epoch(&self) -> u32 { self.epoch }
     fn more_before(&self) -> bool { self.window.before }

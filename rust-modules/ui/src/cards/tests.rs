@@ -71,6 +71,9 @@ struct Cards {
     title_only: bool,
     /// ...with the details line alone (the stored default: title off, Year · Length).
     details_only: bool,
+    /// Every card has a title and a subject for the accessibility projection (`Title <elem>`,
+    /// `rk<elem>`), through the stack page's source ([`CardSource::subject`]).
+    named: bool,
     /// How many times the section asked for a card's element ([`CardSource::elem`]): what a hash of
     /// a card's identity costs the section, as a test reads it.
     elem_calls: std::cell::Cell<usize>,
@@ -81,7 +84,7 @@ const TILE_PAINTED: u64 = 9999;
 
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
-        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, captioned: false, sort_caption: false, title_only: false, details_only: false, elem_calls: Default::default() }
+        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, captioned: false, sort_caption: false, title_only: false, details_only: false, named: false, elem_calls: Default::default() }
     }
 }
 
@@ -2556,8 +2559,15 @@ mod stack {
         fn elem(&self, i: usize) -> u32 { self.elems[i] }
         fn index_of(&self, e: &u32) -> Option<usize> { self.elems.iter().position(|x| x == e) }
         fn art(&self, _i: usize) -> Art<'_> { Art::Poster(None) }
-        fn label(&self, _i: usize) -> TileLabel { TileLabel::default() }
+        fn label(&self, i: usize) -> TileLabel {
+            if self.named { TileLabel::title(&format!("Title {}", self.elems[i])) } else { TileLabel::default() }
+        }
         fn more(&self) -> bool { self.more }
+        fn global(&self, i: usize) -> usize { self.first + i }
+        fn loaded(&self, i: usize) -> bool { !self.unloaded.contains(&i) }
+        fn subject(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
+            self.named.then(|| format!("rk{}", self.elems[i]).into())
+        }
     }
 
     impl StackPage<FixtureHost> for Page {
@@ -3101,12 +3111,24 @@ mod stack {
         shelf: Cards,
         revision: u64,
         foot: f32,
+        /// What each of the further shelves keeps under its block ([`StackPage::shelf_foot`]).
+        more_foot: f32,
         /// Further shelves after `Shelf`, each at the default reveal margin.
         more: Vec<Cards>,
         /// What `recover` answers (`None`: the trait's default).
         recover_to: Option<u32>,
         /// `Shelf`'s group extent is its own head tile rather than the page's width.
         narrow: bool,
+        /// The page names its sections and the elements of two of them for the accessibility ids
+        /// ([`SectionSpec::named`], [`StackPage::plain_name`]); unnamed, they are positional.
+        named: bool,
+    }
+
+    impl Multi {
+        /// `spec`, named `name` when the page names its sections.
+        fn tag(&self, spec: SectionSpec<Msec>, name: &'static str) -> SectionSpec<Msec> {
+            if self.named { spec.named(name) } else { spec }
+        }
     }
 
     impl StackPage<FixtureHost> for Multi {
@@ -3114,20 +3136,28 @@ mod stack {
         type Cards<'a> = &'a Cards;
         fn revision(&self, _cx: &Cx9<'_>) -> u64 { self.revision }
         fn sections(&self, _cx: &Cx9<'_>, out: &mut Vec<SectionSpec<Msec>>) {
-            out.push(SectionSpec::new(Msec::Field, Kind::Custom { height: FIELD_H, focusable: true }, GroupId(10)));
+            out.push(self.tag(SectionSpec::new(Msec::Field, Kind::Custom { height: FIELD_H, focusable: true }, GroupId(10)), "field"));
             if self.rows > 0 {
-                out.push(SectionSpec::new(Msec::List, Kind::Custom { height: self.rows as f32 * ROW_H, focusable: true }, GroupId(11)));
-                out.push(SectionSpec::new(Msec::Clear, Kind::Custom { height: 0.0, focusable: true }, GroupId(12)));
+                out.push(self.tag(SectionSpec::new(Msec::List, Kind::Custom { height: self.rows as f32 * ROW_H, focusable: true }, GroupId(11)), "list"));
+                out.push(self.tag(SectionSpec::new(Msec::Clear, Kind::Custom { height: 0.0, focusable: true }, GroupId(12)), "clear"));
             }
-            out.push(
+            out.push(self.tag(
                 SectionSpec::new(Msec::Shelf, Kind::Shelf { style: ROW_STYLE, heading: 60.0 }, GroupId(13))
                     .seated(Seat::Projected)
                     .edges([EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop])
                     .of_kind(ElemKind::Bare),
-            );
+                "shelf",
+            ));
             for n in 0..self.more.len() as u8 {
-                out.push(SectionSpec::new(Msec::More(n), Kind::Shelf { style: ROW_STYLE, heading: 60.0 }, GroupId(20 + n as u32)));
+                let spec = SectionSpec::new(Msec::More(n), Kind::Shelf { style: ROW_STYLE, heading: 60.0 }, GroupId(20 + n as u32));
+                out.push(if self.named { spec.named_at("more", n as usize) } else { spec });
             }
+        }
+        fn plain_name(&self, k: Msec, _n: usize) -> Option<&'static str> {
+            if !self.named {
+                return None;
+            }
+            match k { Msec::Field => Some("input"), Msec::Clear => Some("clear_all"), _ => None }
         }
         fn fallback(&self, _cx: &Cx9<'_>, out: &mut Vec<Msec>) { out.extend([Msec::Field]) }
         fn cards<'a>(&'a self, _cx: &'a Cx9<'_>, k: Msec) -> Option<&'a Cards> {
@@ -3176,13 +3206,15 @@ mod stack {
         }
         fn reveal_with(&self, k: Msec) -> Option<Msec> { matches!(k, Msec::List | Msec::Clear).then_some(Msec::Field) }
         fn reveal_margin(&self, k: Msec) -> f32 { if k == Msec::Shelf { SHELF_MARGIN } else { crate::consts::MARGIN_Y } }
-        fn shelf_foot(&self, _cx: &Cx9<'_>, k: Msec) -> f32 { if k == Msec::Shelf { self.foot } else { 0.0 } }
+        fn shelf_foot(&self, _cx: &Cx9<'_>, k: Msec) -> f32 {
+            match k { Msec::Shelf => self.foot, Msec::More(_) => self.more_foot, _ => 0.0 }
+        }
     }
 
     fn mrig(rows: u32, shelf: usize, build: impl FnOnce(Stack<Msec>) -> Stack<Msec>) -> Mrig {
         let mut r = PageRig {
             stack: build(Stack::new(ENTRY)),
-            page: Multi { rows, shelf: Cards::new((0..shelf as u32).map(|i| 100 + i).collect(), false), revision: 1, foot: 0.0, more: Vec::new(), recover_to: None, narrow: false },
+            page: Multi { rows, shelf: Cards::new((0..shelf as u32).map(|i| 100 + i).collect(), false), revision: 1, foot: 0.0, more_foot: 0.0, more: Vec::new(), recover_to: None, narrow: false, named: false },
             view: FixtureView::default(),
             focus: None,
             ms: 0,
@@ -3194,6 +3226,165 @@ mod stack {
 
     fn moved(s: Step<u32>) -> Option<u32> {
         match s { Step::Move(k) => Some(k.elem), _ => None }
+    }
+
+    // ---- accessibility ids ---------------------------------------------------------------------
+
+    use crate::a11y::{self, A11yPath, Role};
+
+    fn relative(text: &str) -> A11yPath {
+        A11yPath::parse_relative(text).expect("a relative path")
+    }
+
+    /// **A page of every kind of section conforms to the id contract**: every element of every
+    /// group projects, the ids are unique, the inverse finds each element and no group lists more
+    /// than it declares (or, one that declares any, none). A section the page did not name is `section.<position>`, its cards
+    /// `<section>.card.<i>` and the element of a `Custom` / `Overlay` one `<section>.<n>`.
+    #[test]
+    fn a_stack_page_conforms_and_names_unnamed_sections_by_position() {
+        let mut r = rig(4, 12);
+        r.page.status = true;
+        r.page.aside = true;
+        r.page.revision += 1;
+        r.run(2);
+        let cx = r.cx();
+        let view = r.stack.view(&r.page);
+        a11y::conformance(&view, &cx);
+        // the sections, in document order: Head 0, Aside 1, Row 2, Items 3, Status 4
+        let path = |elem: u32| view.a11y(&elem, &cx).map(|a| a.path.to_string());
+        assert_eq!(path(HEAD_ELEM).as_deref(), Some("section.0.0"));
+        assert_eq!(path(ASIDE_ELEM).as_deref(), Some("section.1.0"));
+        assert_eq!(path(STATUS_ELEM).as_deref(), Some("section.4.0"));
+        assert_eq!(path(100).as_deref(), Some("section.2.card.0"));
+        assert_eq!(path(103).as_deref(), Some("section.2.card.3"));
+        assert_eq!(path(1000).as_deref(), Some("section.3.card.0"));
+        assert_eq!(path(1011).as_deref(), Some("section.3.card.11"));
+        assert_eq!(path(7777), None, "an element of no section projects nothing");
+        assert_eq!(view.a11y(&100, &cx).map(|a| a.role), Some(Role::Card));
+        assert_eq!(view.a11y(&HEAD_ELEM, &cx).map(|a| a.role), Some(Role::Button));
+    }
+
+    /// **A card is found by the index in its path**, bounds-checked, and a path that is not an
+    /// element of this page finds nothing: a section's own path, a leaf past the end, a longer
+    /// path, an unknown section, a path with a namespace (this view is relative).
+    #[test]
+    fn a_card_is_found_by_its_index_and_any_other_path_finds_nothing() {
+        let r = rig(4, 12);
+        let cx = r.cx();
+        let view = r.stack.view(&r.page);
+        let find = |text: &str| view.a11y_find(&relative(text), &cx);
+        // no aside, no status: Head 0, Row 1, Items 2
+        assert_eq!(find("section.1.card.3"), Some(103));
+        assert_eq!(find("section.1.card.4"), None, "past the end of the shelf");
+        assert_eq!(find("section.2.card.11"), Some(1011));
+        assert_eq!(find("section.2.card.12"), None, "past the end of the grid");
+        assert_eq!(find("section.0.0"), Some(HEAD_ELEM));
+        assert_eq!(find("section.0.1"), None, "the header holds one element");
+        assert_eq!(find("section.0"), None, "a section is not an element");
+        assert_eq!(find("section.1.card"), None);
+        assert_eq!(find("section.1.card.3.x"), None);
+        assert_eq!(find("section.9.card.0"), None, "no such section");
+        assert_eq!(find("card.3"), None);
+        let qualified = A11yPath::parse_id("home.section.1.card.3").expect("a full id");
+        assert_eq!(view.a11y_find(&qualified, &cx), None, "a path with a namespace is not relative to this view");
+    }
+
+    /// **A card's id is its place in the LISTING, not in the window**: a shelf whose window has paged
+    /// (it starts at listing position 40) names its cards `card.40 ..`, so the id of a title is the
+    /// same before and after the window slides, the old window-relative `card.1` names nothing, and
+    /// a position the window does not hold is no element. Every card round-trips.
+    #[test]
+    fn a_paged_window_names_its_cards_by_their_place_in_the_listing() {
+        let mut r = rig(4, 12);
+        r.page.row.first = 40;
+        let cx = r.cx();
+        let view = r.stack.view(&r.page);
+        a11y::conformance(&view, &cx);
+        // no aside, no status: Head 0, Row 1, Items 2
+        let path = |elem: u32| view.a11y(&elem, &cx).map(|a| a.path.to_string());
+        assert_eq!(path(100).as_deref(), Some("section.1.card.40"));
+        assert_eq!(path(103).as_deref(), Some("section.1.card.43"));
+        assert_eq!(path(1000).as_deref(), Some("section.2.card.0"), "a window that has not paged is its listing");
+        let find = |text: &str| view.a11y_find(&relative(text), &cx);
+        for (elem, id) in [(100, "section.1.card.40"), (101, "section.1.card.41"), (103, "section.1.card.43")] {
+            assert_eq!(find(id), Some(elem), "{id}");
+            assert_eq!(path(elem).as_deref(), Some(id), "{id} round-trips");
+        }
+        assert_eq!(find("section.1.card.1"), None, "the window index is no id once the window has paged");
+        assert_eq!(find("section.1.card.39"), None, "paged out before the window");
+        assert_eq!(find("section.1.card.44"), None, "past the end of the window");
+        assert_eq!(crate::cards::card_window_index::<FixtureHost, _>(&r.page.row, 42), Some(2));
+        assert_eq!(crate::cards::card_window_index::<FixtureHost, _>(&r.page.row, 0), None);
+    }
+
+    /// **A card carries its title and its subject once it is loaded** (the title its caption shows,
+    /// `CardSource::subject`); a slot whose page has not landed exists, is not loaded and carries
+    /// neither, and the group still lists it.
+    #[test]
+    fn a_loaded_card_carries_its_title_and_subject_and_an_unloaded_one_neither() {
+        let mut r = rig(4, 12);
+        r.page.row.named = true;
+        r.page.row.unloaded = 2..3;
+        let cx = r.cx();
+        let view = r.stack.view(&r.page);
+        let card = view.a11y(&100, &cx).expect("projects");
+        assert_eq!(card.label.as_deref(), Some("Title 100"));
+        assert_eq!(card.subject.as_deref(), Some("rk100"));
+        assert!(card.loaded);
+        let slot = view.a11y(&102, &cx).expect("an unloaded slot exists");
+        assert!(!slot.loaded);
+        assert!(slot.label.is_none() && slot.subject.is_none(), "{slot:?}");
+        // a source that names nothing leaves both off
+        let plain = view.a11y(&1000, &cx).expect("projects");
+        assert!(plain.label.is_none() && plain.subject.is_none(), "{plain:?}");
+        a11y::conformance(&view, &cx);
+    }
+
+    /// **A named section and a named element replace the positional ids**: `<name>` for a section,
+    /// `<name>.<index>` for one of several of a kind ([`SectionSpec::named_at`]), and a `Custom`
+    /// element is `<section>.<leaf>` when the page names it ([`StackPage::plain_name`]), else
+    /// `<section>.<n>`. A named element has one spelling, so its position is not an id.
+    #[test]
+    fn named_sections_and_elements_replace_the_positional_ids() {
+        let mut r = mrig(3, 4, |s| s);
+        {
+            let cx = r.cx();
+            let view = r.stack.view(&r.page);
+            a11y::conformance(&view, &cx);
+            // Field 0, List 1, Clear 2, Shelf 3
+            assert_eq!(view.a11y(&(LIST_BASE + 1), &cx).map(|a| a.path.to_string()).as_deref(), Some("section.1.1"));
+            assert_eq!(view.a11y(&102, &cx).map(|a| a.path.to_string()).as_deref(), Some("section.3.card.2"));
+        }
+        r.page.named = true;
+        // shelves stacked one under another each keep the label band's air under them, which the
+        // `Stack` insists on for every shelf that has another below it
+        r.page.foot = crate::consts::UNDER_LABEL_AIR;
+        r.page.more_foot = crate::consts::UNDER_LABEL_AIR;
+        r.page.more = vec![
+            Cards::new((0..3).map(|i| 300 + i).collect(), false),
+            Cards::new((0..2).map(|i| 400 + i).collect(), false),
+        ];
+        r.page.revision += 1;
+        r.run(2);
+        let cx = r.cx();
+        let view = r.stack.view(&r.page);
+        a11y::conformance(&view, &cx);
+        let path = |elem: u32| view.a11y(&elem, &cx).map(|a| a.path.to_string());
+        assert_eq!(path(FIELD_ELEM).as_deref(), Some("field.input"));
+        assert_eq!(path(LIST_BASE + 2).as_deref(), Some("list.2"));
+        assert_eq!(path(CLEAR_ELEM).as_deref(), Some("clear.clear_all"));
+        assert_eq!(path(102).as_deref(), Some("shelf.card.2"));
+        assert_eq!(path(300).as_deref(), Some("more.0.card.0"));
+        assert_eq!(path(401).as_deref(), Some("more.1.card.1"));
+        let find = |text: &str| view.a11y_find(&relative(text), &cx);
+        assert_eq!(find("field.input"), Some(FIELD_ELEM));
+        assert_eq!(find("field.0"), None, "a named element has one spelling");
+        assert_eq!(find("list.1"), Some(LIST_BASE + 1));
+        assert_eq!(find("list.3"), None, "past the end of the list");
+        assert_eq!(find("clear.clear_all"), Some(CLEAR_ELEM));
+        assert_eq!(find("more.1.card.0"), Some(400));
+        assert_eq!(find("more.2.card.0"), None);
+        assert_eq!(find("section.0.0"), None, "a named section has no positional id");
     }
 
     #[test]

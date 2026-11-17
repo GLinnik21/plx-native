@@ -17,6 +17,7 @@ use super::identity::{KeyRegistry, KeyRegion, region_of_elem};
 use super::layout::{band_pill_pad, band_track_w, rail_geom, rail_pitch, rail_scroll_target, BandRows, BAND_PILL_H, RAIL_TRACK_W};
 use super::rail_bands;
 use crate::registry::{LibraryIdentity, LibraryLike, LibrarySectionIdentity};
+use plx_ui::a11y::{A11y, A11yPath, Role as A11yRole, Seg};
 use plx_ui::consts::K_SCROLL;
 use plx_ui::frame::Budget;
 use plx_machine::machine::{Canon, Cx, EntryId, FocusKey, GroupId};
@@ -386,6 +387,33 @@ impl<H: LibraryLike> Focusable<H> for RailPart {
     fn seat(&self, _: GroupId, from: Placed, _: &Cx<'_, H>) -> FocusKey<u32> {
         let index = self.skip_empty(self.letter_for_item(from.index.unwrap_or(0) as usize));
         FocusKey { entry: self.entry, elem: self.elems.get(index).copied().unwrap_or(0) }
+    }
+
+    /// **`rail.<i>`**: the i-th letter (or band) of the rail, with the letter as its label. It exists
+    /// where the group does (`group_of`: while focus is in the grid or the rail), and a letter no
+    /// title starts with is `loaded` false: there is nothing behind it to press.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        if !self.in_region(cx) { return None; }
+        let i = self.elems.iter().position(|elem| elem == key)?;
+        let a = A11y::new(A11yPath::new().name("rail").index(i), A11yRole::Row).with_loaded(!self.letter_empty(i));
+        Some(match self.labels.get(i).and_then(|label| label.to_str().ok()).filter(|label| !label.is_empty()) {
+            Some(label) => a.with_label(label),
+            None => a,
+        })
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == self.group && self.in_region(cx) {
+            out.extend(self.elems.iter().copied());
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        let mut segs = path.segs();
+        let i = match (segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("rail")), Some(Seg::Index(i)), None) => i,
+            _ => return None,
+        };
+        let elem = *self.elems.get(i)?;
+        Focusable::<H>::a11y(self, &elem, cx).map(|_| elem)
     }
 }
 impl<H: LibraryLike> Part<H> for RailPart {
