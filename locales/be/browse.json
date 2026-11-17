@@ -296,5 +296,6 @@
   "browse.clock.key_changed": "Ключ вашага сервера змяніўся. Злучыце тэлевізар з інтэрнэтам адзін раз, каб праграма магла праверыць яго зноў.",
   "browse.detail.mark_episode_watched": "Пазначыць серыю прагледжанай",
   "browse.detail.mark_episode_unwatched": "Пазначыць серыю непрагледжанай",
-  "browse.detail.minutes_left": "Засталося {minutes} хв"
+  "browse.detail.minutes_left": "Засталося {minutes} хв",
+  "browse.server_security.notice": "Абнавіце сервер Plex «{name}»: патрэбнае выпраўленне бяспекі."
 }

@@ -272,5 +272,6 @@
   "browse.clock.key_changed": "De sleutel van je server is gewijzigd. Verbind de tv één keer met internet zodat de app hem opnieuw kan controleren.",
   "browse.detail.mark_episode_watched": "Aflevering markeren als bekeken",
   "browse.detail.mark_episode_unwatched": "Aflevering markeren als niet bekeken",
-  "browse.detail.minutes_left": "Nog {minutes} min"
+  "browse.detail.minutes_left": "Nog {minutes} min",
+  "browse.server_security.notice": "Werk Plex-server {name} bij voor de beveiliging."
 }

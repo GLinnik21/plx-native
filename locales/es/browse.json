@@ -284,5 +284,6 @@
   "browse.clock.key_changed": "La clave de tu servidor ha cambiado. Conecta el televisor a internet una vez para que la app pueda comprobarla de nuevo.",
   "browse.detail.mark_episode_watched": "Marcar episodio como visto",
   "browse.detail.mark_episode_unwatched": "Marcar episodio como no visto",
-  "browse.detail.minutes_left": "Quedan {minutes} min"
+  "browse.detail.minutes_left": "Quedan {minutes} min",
+  "browse.server_security.notice": "Actualiza el servidor Plex {name} por seguridad."
 }
