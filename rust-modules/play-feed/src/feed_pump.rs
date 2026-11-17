@@ -989,12 +989,24 @@ fn restart_native_clock_watch() {
 /// The [`CLOCK_WATCH_SINCE_MS`] floor does the same for the deliberate holds, which do not clear
 /// the stamp.
 pub fn native_clock_silence_ms() -> Option<u32> {
-    let last_tick = FEED_SHARED.dg_vpres_at.load(Relaxed);
-    if last_tick == 0 {
+    silence_between(
+        FEED_SHARED.dg_vpres_at.load(Relaxed),
+        CLOCK_WATCH_SINCE_MS.load(Relaxed),
+        crate::shared::vclock_ms(),
+    )
+}
+
+/// [`native_clock_silence_ms`] over explicit stamps, all [`crate::shared::vclock_ms`] milliseconds
+/// (so every comparison wraps). The observation starts at the later of the last callback and the
+/// last restart of the watch: a clock that has not reported since the restart is silent from the
+/// restart, not from a callback the deliberate hold swallowed. `None` while the epoch has seen no
+/// callback (`last_tick_ms == 0`). A stamp ahead of `now_ms` reads as no silence at all.
+pub fn silence_between(last_tick_ms: u32, watch_since_ms: u32, now_ms: u32) -> Option<u32> {
+    if last_tick_ms == 0 {
         return None;
     }
-    let since = last_tick.max(CLOCK_WATCH_SINCE_MS.load(Relaxed));
-    Some(crate::shared::vclock_ms().saturating_sub(since))
+    let since = if (last_tick_ms.wrapping_sub(watch_since_ms) as i32) >= 0 { last_tick_ms } else { watch_since_ms };
+    Some((now_ms.wrapping_sub(since) as i32).max(0) as u32)
 }
 
 /// **The terminal reserve boundary as a PHYSICAL fact rather than an arithmetic one.**
@@ -1070,6 +1082,10 @@ pub struct ProgressiveStall {
     pub first_picture_seen: bool,
     /// The demuxer finished: a hold could never be released by arriving media.
     pub producer_done: bool,
+    /// A video or audio queue is at its byte cap: the demuxer is parked, so the hold's own release
+    /// ([`crate::native_executor::progressive_hold_releases`]) is already true and beginning one
+    /// would Pause and Play in the same tick, over and over.
+    pub queue_parked: bool,
     /// The Dolby Vision landing guard holds the landing keyframe for its reload
     /// ([`crate::dv_start::Guard::landing_held`]): neither lane feeds, so the reserve it leaves is
     /// the guard's doing and the Engine is about to be replaced.
@@ -1084,17 +1100,9 @@ impl ProgressiveStall {
             || self.seek_in_flight
             || !self.first_picture_seen
             || self.producer_done
+            || self.queue_parked
             || self.landing_held
     }
-}
-
-/// Has a native position callback landed after the silence observation was last restarted
-/// (`CLOCK_WATCH_SINCE_MS`, restarted by every state that stops the clock on purpose)? Both are
-/// [`crate::shared::vclock_ms`] milliseconds, so the comparison is wrapping. Silence only means a
-/// STOPPED clock once the clock has been heard from since its Play; without this a hold that
-/// releases on a short runway would read the first second of its own resume as a dead clock.
-pub fn tick_since_watch_restart(last_tick_ms: u32, watch_since_ms: u32) -> bool {
-    last_tick_ms != 0 && (last_tick_ms.wrapping_sub(watch_since_ms) as i32) > 0
 }
 
 /// Begin a hold on a PROGRESSIVE stream: the clock debt fired (the position callback has fallen
@@ -1245,7 +1253,11 @@ fn maybe_begin_rebuffer(route: HoldRoute, mt: &MainThread, eng: &mut Engine, hoo
 
 /// The states in which a progressive stream's clock is not judged, sampled from the Engine and the
 /// shared facts as plain values ([`ProgressiveStall`]).
-fn progressive_stall_facts(eng: &Engine, vq: *mut crate::aq::AuQueue) -> ProgressiveStall {
+fn progressive_stall_facts(
+    eng: &Engine,
+    vq: *mut crate::aq::AuQueue,
+    aq: *mut crate::aq::AuQueue,
+) -> ProgressiveStall {
     ProgressiveStall {
         user_paused: FEED_TX.paused.load(Relaxed),
         priming: eng.prime_play,
@@ -1256,6 +1268,7 @@ fn progressive_stall_facts(eng: &Engine, vq: *mut crate::aq::AuQueue) -> Progres
             || FEED_SHARED.seeking.load(Relaxed),
         first_picture_seen: FEED_SHARED.seen_frame.load(Relaxed),
         producer_done: crate::aq::aq_producer_done(vq),
+        queue_parked: crate::aq::aq_would_park(vq) || crate::aq::aq_would_park(aq),
         landing_held: eng.dv_start.landing_held(),
     }
 }
@@ -1285,7 +1298,7 @@ fn maybe_begin_progressive_rebuffer(mt: &MainThread, eng: &mut Engine, hooks: &N
     let position_ns = FEED_SHARED.pres_fed.load(Relaxed);
     let callback_ms = FEED_SHARED.dg_vpres_at.load(Relaxed);
     let reserve_ms = progressive_reserve_ns(position_ns, video, Some(audio)).map(|ns| ns / 1_000_000);
-    if progressive_stall_facts(eng, vq).clock_stopped_on_purpose() {
+    if progressive_stall_facts(eng, vq, aq).clock_stopped_on_purpose() {
         restart_native_clock_watch();
         eng.progressive_hold.reset();
         return;
@@ -1310,9 +1323,13 @@ fn maybe_begin_progressive_rebuffer(mt: &MainThread, eng: &mut Engine, hooks: &N
     }
     let debt_fired = watch.debt.fired();
     // (b) the dead link, over the reserve of the further lane.
-    let presented_since_play = tick_since_watch_restart(callback_ms, CLOCK_WATCH_SINCE_MS.load(Relaxed));
+    // Silence is read exactly as the HLS rule reads it: from the later of the last callback and the
+    // last restart of the watch ([`silence_between`]). A link that dies before the first callback
+    // after a Play or a Resume is therefore silent from the restart and is held; a resume that
+    // leaves a full queue is not mistaken for it, because `native_clock_stopped` weighs the
+    // reserve against the silence.
     let silence_ms = native_clock_silence_ms();
-    let stopped = native_clock_stopped(if presented_since_play { silence_ms } else { None }, reserve_ms);
+    let stopped = native_clock_stopped(silence_ms, reserve_ms);
     if !should_begin_progressive_rebuffer(debt_fired, stopped) {
         return;
     }
@@ -1819,6 +1836,7 @@ mod progressive_begin_tests {
             seek_in_flight: false,
             first_picture_seen: true,
             producer_done: false,
+            queue_parked: false,
             landing_held: false,
         }
     }
@@ -1840,15 +1858,24 @@ mod progressive_begin_tests {
         assert!(!native_clock_stopped(Some(9_000), None), "an unknowable reserve holds nothing");
     }
 
-    /// The hold's own resume must not read as a dead clock: until the clock has reported a position
-    /// since its Play, silence is the Play's latency and not a stall.
+    /// The silence observation over explicit stamps: it starts at the later of the last callback and
+    /// the last restart of the watch, so a link that dies before ANY callback lands after a Play or
+    /// a Resume (the restart is later than the last callback) is silent from the restart, and one
+    /// that dies in the very millisecond of the restart is silent from it too.
     #[test]
-    fn a_position_callback_counts_only_if_it_landed_after_the_watch_restarted() {
-        assert!(!tick_since_watch_restart(0, 0), "no callback this session");
-        assert!(!tick_since_watch_restart(5_000, 5_000), "the same instant as the restart");
-        assert!(!tick_since_watch_restart(4_900, 5_000), "a callback from before the Play");
-        assert!(tick_since_watch_restart(5_201, 5_000));
-        assert!(tick_since_watch_restart(100, u32::MAX - 100), "the millisecond clock wrapped");
+    fn the_silence_runs_from_the_later_of_the_last_callback_and_the_watch_restart() {
+        assert_eq!(silence_between(0, 0, 9_000), None, "no callback this epoch: no observation");
+        assert_eq!(silence_between(0, 4_000, 9_000), None, "a seek zeroed the stamp: no observation");
+        assert_eq!(silence_between(4_000, 0, 9_000), Some(5_000), "dead after a callback");
+        assert_eq!(silence_between(4_000, 7_000, 9_000), Some(2_000), "dead after a resume: from the restart");
+        assert_eq!(silence_between(7_000, 7_000, 9_000), Some(2_000), "a callback in the millisecond of the restart");
+        assert_eq!(silence_between(9_100, 7_000, 9_000), Some(0), "a stamp ahead of now is no silence");
+        assert_eq!(silence_between(2, u32::MAX - 100, 1_005), Some(1_003), "the millisecond clock wrapped");
+        assert_eq!(silence_between(u32::MAX - 100, u32::MAX - 100, 1_004), Some(1_105), "the wrap, restart at the stamp");
+        // The verdict on top of it: a dead link after a resume is a stopped clock over a small reserve.
+        let silent = silence_between(4_000, 7_000, 7_000 + NATIVE_CLOCK_STOPPED_MS);
+        assert!(native_clock_stopped(silent, Some(573)));
+        assert!(!native_clock_stopped(silent, Some(5_000)), "the queue the resume leaves is not a remnant");
     }
 
     #[test]
@@ -1860,6 +1887,7 @@ mod progressive_begin_tests {
             ("a seek in flight", ProgressiveStall { seek_in_flight: true, ..running() }),
             ("before the first picture", ProgressiveStall { first_picture_seen: false, ..running() }),
             ("the demuxer is done: nothing more can arrive", ProgressiveStall { producer_done: true, ..running() }),
+            ("a queue is at its cap: the hold's own release is already true", ProgressiveStall { queue_parked: true, ..running() }),
             ("the Dolby Vision guard holds the landing keyframe", ProgressiveStall { landing_held: true, ..running() }),
         ] {
             assert!(s.clock_stopped_on_purpose(), "{what}");
