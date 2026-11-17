@@ -236,8 +236,12 @@ fn a_morphing_popover_is_one_surface_and_settles_both_ways() {
         }
         let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
         one_surface(f);
-        assert!(f.rect.h <= last + 1e-3, "the close only shrinks");
-        last = f.rect.h;
+        // the slab shrinks into the opener until it is gone; after that the frame is the closed one
+        // (the opener at rest, no glass), which stays until the appear fade lands
+        if f.ground_alpha > 0.0 {
+            assert!(f.rect.h <= last + 1e-3, "the close only shrinks: {f:?} after {last}");
+            last = f.rect.h;
+        }
     }
     assert!(!pop.visible(), "the close lands and the panel is gone");
     let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
@@ -245,14 +249,18 @@ fn a_morphing_popover_is_one_surface_and_settles_both_ways() {
     pop.close();
 }
 
-/// **N-b: the glass leaves its opener as a ramp, never as an opaque slab.** The first glass frame of
-/// an open (and the last of a close) used to be laid at FULL strength while the springs had already
-/// pushed its rect ~25 px past the lit opener, so a ~165x62 dark slab hung under the pill for one
-/// frame (5-menus/libsf-zoom n=155 / 247). The rule, over every header opener: whenever the glass
-/// stands outside the opener's rect, its alpha AND its shadow are the morph's one fill ramp, so it is
-/// never opaque on the frame it first appears or last shows.
+/// **N-b: the glass leaves its opener as a ramp, never as an opaque slab; and it comes back as a
+/// drop that drains.** The first glass frame of an open used to be laid at FULL strength while the
+/// springs had already pushed its rect ~25 px past the lit opener, so a ~165x62 dark slab hung under
+/// the pill for one frame (5-menus/libsf-zoom n=155 / 247). The rule, over every header opener:
+/// whenever an OPENING glass stands outside the opener's rect, its alpha AND its shadow are the
+/// morph's one fill ramp, so it is never opaque on the frame it first appears. A CLOSE is the
+/// droplet's (owner, 2026-11-17, measured from iOS 26): the clear slab is whole glass all the way
+/// into the opener, so the ramp does not apply; what is held instead is that once it has arrived
+/// it hangs only in the drain band under the opener (no wider than the drain, no lower than it) and
+/// that the last frame of glass is a bead a fraction of the drain's size, never a slab.
 #[test]
-fn the_glass_leaves_every_header_opener_as_a_ramp_on_open_and_on_close() {
+fn the_glass_leaves_every_header_opener_as_a_ramp_and_drains_back_on_close() {
     let _g = plx_base::testlock::serial();
     let openers = [
         ("Library Sort & Filter", crate::Rect::new(1589.0, 146.0, 204.0, 60.0)),
@@ -263,16 +271,8 @@ fn the_glass_leaves_every_header_opener_as_a_ramp_on_open_and_on_close() {
     ];
     for (name, pill) in openers {
         let panel = crate::popover::cover_opener(pill, (316.0, 400.0), crate::consts::SAFE);
+        let drain = crate::popover_morph::drain_rect(pill);
         let outside = |r: crate::Rect| r.x < pill.x - 1.0 || r.y < pill.y - 1.0 || r.x + r.w > pill.x + pill.w + 1.0 || r.y + r.h > pill.y + pill.h + 1.0;
-        let check = |pop: &crate::popover::Popover, what: &str, frame: usize, shown: &mut Vec<f32>| {
-            let Some(g) = pop.ground(panel, RAD) else { return };
-            let fill = crate::popover_morph::fill_at(pop.morph_frame(Some(pill), panel, RAD).unwrap().progress);
-            shown.push(g.alpha);
-            if outside(g.rect) {
-                assert!(g.alpha <= fill + 1e-4 && g.shadow <= fill + 1e-4,
-                    "{name} {what} frame {frame}: glass {} / shadow {} past the opener outruns the fill ramp {fill}", g.alpha, g.shadow);
-            }
-        };
         let mut pop = crate::popover::Popover::new().morphing();
         pop.open_from(Some(pill));
         // the morph begins ON the opener, in its own corner: the lit opener's rect and its round
@@ -282,23 +282,43 @@ fn the_glass_leaves_every_header_opener_as_a_ramp_on_open_and_on_close() {
         let mut opening = Vec::new();
         for n in 0..240 {
             pop.update(1.0 / 60.0);
-            check(&pop, "open", n, &mut opening);
+            let Some(g) = pop.ground(panel, RAD) else { continue };
+            let fill = crate::popover_morph::fill_at(pop.morph_frame(Some(pill), panel, RAD).unwrap().progress);
+            opening.push(g.alpha);
+            if outside(g.rect) {
+                assert!(g.alpha <= fill + 1e-4 && g.shadow <= fill + 1e-4,
+                    "{name} open frame {n}: glass {} / shadow {} past the opener outruns the fill ramp {fill}", g.alpha, g.shadow);
+            }
         }
         assert!(opening.first().is_some_and(|a| *a < 1.0), "{name}: the first glass frame is not opaque: {opening:?}");
         assert!(opening.windows(2).all(|w| w[1] >= w[0] - 1e-4), "{name}: the glass only strengthens while opening");
         pop.dismiss();
-        let mut closing = Vec::new();
+        let mut bead = None;
         for n in 0..240 {
             pop.update(1.0 / 60.0);
             if !pop.visible() {
                 break;
             }
-            check(&pop, "close", n, &mut closing);
+            let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
+            if f.ground_alpha <= 0.0 {
+                continue;
+            }
+            if f.progress <= crate::popover_morph::FOLD_AT {
+                // the slab's travel is within FOLD_AT (+1%) of done: its edges are that far, at most,
+                // from the drain's
+                let slack = crate::popover_morph::FOLD_AT + 0.01;
+                let g = f.rect;
+                assert!(g.y >= drain.y - slack * (drain.y - panel.y) && g.x >= drain.x - slack * panel.w
+                    && g.x + g.w <= drain.x + drain.w + slack * panel.w && g.y + g.h <= drain.y + drain.h + slack * panel.h,
+                    "{name} close frame {n}: the arrived slab {g:?} strays from the drain band {drain:?}");
+            }
+            bead = Some(f.rect);
         }
-        assert!(closing.last().is_some_and(|a| *a < 1.0), "{name}: the last glass frame is not opaque: {closing:?}");
+        let bead = bead.expect("the close draws glass");
+        assert!(bead.w * bead.h <= 0.15 * drain.w * drain.h, "{name}: the last glass frame {bead:?} is a bead, not a slab (drain {drain:?})");
         let end = pop.morph_frame(Some(pill), panel, RAD).unwrap();
-        assert_eq!((end.rect, end.radius), (pill, pill.h * 0.5), "{name}: the close lands on the opener's rect and corner");
-        assert!(closing.windows(2).all(|w| w[1] <= w[0] + 1e-4), "{name}: the glass only weakens while closing");
+        assert_eq!((end.rect, end.radius, end.ground_alpha, end.opener_alpha), (pill, pill.h * 0.5, 0.0, 1.0),
+            "{name}: the close lands on the opener's rect and corner, the opener whole");
         pop.close();
     }
 }

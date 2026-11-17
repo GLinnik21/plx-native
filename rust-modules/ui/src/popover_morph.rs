@@ -42,14 +42,25 @@
 //!   and are opaque by [`ROWS_OPAQUE_AT`]. They are clipped to the current rect
 //!   (`Popover::morph_rows`), so no row ever draws outside the surface.
 //!
-//! **A close is NOT the open reversed**; it is three phases (iOS 26's Photos filter menu):
-//! 1. the rows and the frost vanish ([`Frame::content_alpha`] and [`Frame::clear`] ride the `out`
-//!    spring, [`K_OUT`], about 33 ms), leaving clear glass in the panel's rect; the rect HOLDS
+//! **A close is NOT the open reversed**; it is a droplet that drains back into the opener, measured
+//! from iOS 26's Photos filter menu (60 fps, about 230 ms in all):
+//! 1. (about 33 ms) the rows and the frost vanish ([`Frame::content_alpha`] and [`Frame::clear`]
+//!    ride the `out` spring, [`K_OUT`]), leaving clear glass in the panel's rect; the rect HOLDS
 //!    until `out` reaches [`OUT_GATE`];
-//! 2. the clear slab shrinks and slides back toward the opener (the rect springs, [`K_CLOSE`]);
-//! 3. as `progress` falls under [`MERGE_END_AT`] the opener re-forms as a blob at its own spot and
-//!    the slab drains into it through a neck (the same [`Frame::merge`] curve, now growing), and
-//!    the opener's own face fades back in over the last [`OPENER_OUT_AT`].
+//! 2. (to about 150 ms) the clear slab A springs from the panel to the DRAIN rect ([`drain_rect`]):
+//!    just BELOW the opener, centred on it, about its height and [`DRAIN_WIDTH`] of its width, a
+//!    capsule, [`DRAIN_GAP`] under it (closer than [`MERGE_K`], so the glass can bridge it). The
+//!    opener re-forms as its OWN blob B at its own rect as A closes in ([`REFORM_FROM`]), the same
+//!    [`Frame::merge`] shape the open shrinks;
+//! 3. (to about 235 ms) the fold ([`K_FOLD`], released once A is within [`FOLD_AT`] of the drain):
+//!    B grows to the opener's full rect while A shrinks to nothing toward its own top-centre,
+//!    draining UP into B through the smooth-minimum neck, and the opener's own face fades back in
+//!    over the last of it ([`OPENER_BACK_FROM`]). When A is gone ([`A_GONE_AT`]) the frame IS the
+//!    closed frame, the opener at rest, exactly.
+//!
+//! The open is NOT the close either: the opener's rect grows into the panel's (the panel now
+//! COVERS its opener, `popover::cover_opener`), height leading, clear then frosted, the opener's
+//! face consumed.
 //!
 //! **No measured opener, no morph.** [`Frame`] with `from == None` is the fade+scale FALLBACK:
 //! the panel scales about its centre from [`FALLBACK_SCALE_FROM`] to 1 and its glass fades in on
@@ -70,10 +81,36 @@ pub const RADIUS_BULGE: f32 = 13.0;
 pub const K_WIDTH: f32 = 620.0;
 /// Height spring stiffness while opening (brief: k ~ 950; ≈150 ms to within 6% of rest).
 pub const K_HEIGHT: f32 = 950.0;
-/// Both rect springs while CLOSING: the height stiffness, so the slab's travel back to the opener
-/// takes ≈150 ms (the open's slower width spring would make it ≈190). They only start once the
-/// content has left ([`OUT_GATE`]).
-pub const K_CLOSE: f32 = K_HEIGHT;
+/// Both rect springs while CLOSING: the slab's travel from the panel to the drain rect
+/// ([`drain_rect`]) takes about 115 ms (within 6% of rest), the measured iOS phase between the
+/// content leaving and the fold. Critically damped, so there is no overshoot past the drain. They
+/// only start once the content has left ([`OUT_GATE`]).
+pub const K_CLOSE: f32 = 2000.0;
+/// The drain rect's width as a share of the opener's: the slab drains into a narrower drop than
+/// the opener it joins ([`drain_rect`]; never wider than the opener).
+pub const DRAIN_WIDTH: f32 = 0.6;
+/// The drain rect's height as a share of the opener's (never taller than the drain is wide, so a
+/// round opener drains as a round drop).
+pub const DRAIN_HEIGHT: f32 = 1.0;
+/// The air between the opener's bottom edge and the drain rect's top, in px: smaller than
+/// [`MERGE_K`], so the smooth minimum bridges the two and the neck shows.
+pub const DRAIN_GAP: f32 = 8.0;
+/// The progress (the slab's travel, 1 = the panel, 0 = the drain) under which a close's FOLD is
+/// released: the slab is within 12% of the drain rect and starts to drain up into the opener.
+pub const FOLD_AT: f32 = 0.12;
+/// The fold spring's stiffness (0 = the slab whole under the opener, 1 = drained into it):
+/// critically damped, the slab is within 4% of gone in about 130 ms.
+pub const K_FOLD: f32 = 1500.0;
+/// The opener's re-formed blob B ([`Frame::merge`]) as a share of the opener's own size as the
+/// slab arrives at the drain, scaled by the same curve as the open's merge, so it appears as a
+/// small bead and is about half size when the fold begins. The fold grows it to 1.
+pub const REFORM_FROM: f32 = 0.7;
+/// The fold at which the opener's own face starts to fade back in ([`Frame::opener_alpha`]): the
+/// face returns over the last of the drain, on the blob.
+pub const OPENER_BACK_FROM: f32 = 0.55;
+/// The slab's scale (1 = the drain rect) at which it is gone: the close is over and the frame is
+/// the closed one. A few pixels of glass, already inside the blob's neck.
+pub const A_GONE_AT: f32 = 0.04;
 /// The stiffness of the `out` spring that carries a close's first phase, the rows and the frost
 /// leaving (0 = content in, 1 = content out). Critically damped, so ≈48 ms to within 6% of rest and
 /// ≈33 ms to within 18%: the content is gone in about two frames, leaving clear glass.
@@ -134,13 +171,16 @@ pub struct Frame {
     /// Scale of the rows about their own centres (0.82 -> 1, with a small overshoot).
     pub rows_scale: f32,
     /// How much of the OPENER's own face is left (1 = whole, 0 = consumed): fades out over the
-    /// first [`OPENER_OUT_AT`] of the progress on an open and back in on a close. 1 for the
+    /// first [`OPENER_OUT_AT`] of the progress on an open and back in over the last of a close's
+    /// fold ([`OPENER_BACK_FROM`]). 1 for the
     /// fallback, which has no opener to consume. The host's opener lift paints at this alpha
     /// (`Screen::opener_alpha`).
     pub opener_alpha: f32,
     /// The shape the glass is JOINED to, or `None` once there is nothing to join (the settled
-    /// panel, the fallback): the opener's rect scaled about its own centre by
-    /// `1 - smoothstep(0, MERGE_END_AT, progress)`.
+    /// panel, the fallback). On an open: the opener's rect scaled about its own centre by
+    /// `1 - smoothstep(0, MERGE_END_AT, progress)`. On a close: the opener's re-formed blob B, the
+    /// same rect scaled by [`REFORM_FROM`] times that curve as the slab arrives and by the fold up
+    /// to 1 as it drains in.
     pub merge: Option<Merge>,
     /// How CLEAR the glass is, 0 = the frosted material the settled panel wears, 1 = clear glass
     /// (the sharp page refracted through the whole face). A close is clear from its first frames
@@ -200,6 +240,27 @@ pub fn merge_scale_at(t: f32) -> f32 {
 /// FROST_TO, t)`.
 pub fn clear_at(t: f32) -> f32 {
     1.0 - smooth(t, FROST_FROM, FROST_TO)
+}
+
+/// **The drain rect** a close's slab travels to ([`Morph::frame`]): centred on the `opener`
+/// horizontally, its top [`DRAIN_GAP`] under the opener's bottom edge, [`DRAIN_WIDTH`] of its width
+/// (so never wider) and about its height ([`DRAIN_HEIGHT`], never taller than wide): a small drop
+/// of glass hanging just below the control, close enough to be joined to it by the neck.
+pub fn drain_rect(opener: Rect) -> Rect {
+    let w = opener.w * DRAIN_WIDTH;
+    let h = (opener.h * DRAIN_HEIGHT).min(w);
+    Rect::new(opener.cx() - w * 0.5, opener.y + opener.h + DRAIN_GAP, w, h)
+}
+
+/// `a` to `b` by `t`, per edge.
+fn lerp_rect(a: Rect, b: Rect, t: f32) -> Rect {
+    let l = |x: f32, y: f32| x + (y - x) * t;
+    Rect::new(l(a.x, b.x), l(a.y, b.y), l(a.w, b.w), l(a.h, b.h))
+}
+
+/// `r` scaled by `s` about its own top-centre: a slab that drains UP toward the opener above it.
+fn shrink_to_top_centre(r: Rect, s: f32) -> Rect {
+    Rect::new(r.cx() - r.w * s * 0.5, r.y, r.w * s, r.h * s)
 }
 
 /// The panel's rect when the width spring is at `pw` and the height spring at `ph` (0 = the
@@ -262,11 +323,14 @@ pub struct Morph {
     rows: Spring,
     /// A close's content-and-frost phase: 0 = in, 1 = out ([`K_OUT`]).
     out: Spring,
+    /// A close's fold, the slab draining into the re-formed opener: 0 = whole under it, 1 = gone
+    /// ([`K_FOLD`]). Released once the slab is within [`FOLD_AT`] of the drain rect.
+    fold: Spring,
 }
 
 impl Morph {
     pub const fn new() -> Self {
-        Morph { w: Spring::at(0.0), h: Spring::at(0.0), rows: Spring::at(ROWS_FROM), out: Spring::at(0.0) }
+        Morph { w: Spring::at(0.0), h: Spring::at(0.0), rows: Spring::at(ROWS_FROM), out: Spring::at(0.0), fold: Spring::at(0.0) }
     }
 
     /// Back to the pill, with no motion in between.
@@ -276,32 +340,49 @@ impl Morph {
 
     /// Advance one frame toward the open (`true`) or closed (`false`) end.
     ///
-    /// An open is the rect springs alone (`out` returns to 0 on [`K_OUT`] if a close had raised
-    /// it). A close is NOT that reversed: `out` rises first, and the rect springs hold where they
-    /// are (their velocity dropped, so they do not coast) until it passes [`OUT_GATE`].
+    /// An open is the rect springs alone (`out` and the `fold` return to 0 if a close had raised
+    /// them). A close is NOT that reversed: `out` rises first, and the rect springs hold where they
+    /// are (their velocity dropped, so they do not coast) until it passes [`OUT_GATE`]; the fold
+    /// is released only once the slab is within [`FOLD_AT`] of the drain rect.
     pub fn step(&mut self, open: bool, dt: f32) {
         if open {
             self.out.step(0.0, K_OUT, dt);
+            self.fold.step(0.0, K_FOLD, dt);
             self.w.step(1.0, K_WIDTH, dt);
             self.h.step(1.0, K_HEIGHT, dt);
             self.rows.step_zeta(1.0, K_ROWS, ZETA_ROWS, dt);
             return;
         }
         self.out.step(1.0, K_OUT, dt);
-        if self.out.pos >= OUT_GATE {
+        let gated = self.out.pos >= OUT_GATE;
+        if gated {
             self.w.step(0.0, K_CLOSE, dt);
             self.h.step(0.0, K_CLOSE, dt);
         } else {
             self.w.vel = 0.0;
             self.h.vel = 0.0;
         }
+        if gated && self.w.pos.min(self.h.pos) <= FOLD_AT {
+            self.fold.step(1.0, K_FOLD, dt);
+        } else {
+            self.fold.vel = 0.0;
+        }
         self.rows.step_zeta(ROWS_FROM, K_ROWS, ZETA_ROWS, dt);
     }
 
-    /// Has the close finished — the rect back on the pill and the rows back at their start? (`out`
-    /// is not asked: a rect that never left the pill has nothing to wait for, and `Popover::update`
-    /// resets the morph, `out` included, when it lands.)
+    /// Has the close finished for an opener the slab drains into: the slab gone ([`A_GONE_AT`])
+    /// and the rows back at their start? (`Popover::update` resets the morph, `out` included,
+    /// when it lands.) A close with no opener rect has no droplet: [`closed_for`](Self::closed_for).
     pub fn closed(&self) -> bool {
+        self.fold.pos >= 1.0 - A_GONE_AT && self.rows.pos <= ROWS_FROM + 0.001
+    }
+
+    /// [`closed`](Self::closed) for a morph with an opener (`has_opener`), or for the fade+scale
+    /// fallback, which has no droplet to wait for: the rect back at its start and the rows too.
+    pub fn closed_for(&self, has_opener: bool) -> bool {
+        if has_opener {
+            return self.closed();
+        }
         self.w.pos <= 0.001 && self.h.pos <= 0.001 && self.rows.pos <= ROWS_FROM + 0.001
     }
 
@@ -312,6 +393,7 @@ impl Morph {
             && self.h.pos >= 0.999
             && (self.rows.pos - 1.0).abs() <= 0.001
             && self.out.pos <= 0.001
+            && self.fold.pos <= 0.001
     }
 
     /// The draw state now, for the opener rect `from` (`None` = the fade+scale fallback) and the
@@ -322,28 +404,58 @@ impl Morph {
     pub fn frame(&self, from: Option<Rect>, panel: Rect, panel_radius: f32) -> Frame {
         let (pw, ph) = (self.w.pos.clamp(0.0, 1.0), self.h.pos.clamp(0.0, 1.0));
         let out = self.out.pos.clamp(0.0, 1.0);
+        let fold = self.fold.pos.clamp(0.0, 1.0);
         let progress = pw.min(ph);
-        let ground_alpha = fill_at(progress);
-        let pill_radius = from.map_or(panel_radius, |f| f.w.min(f.h) * 0.5);
-        // The merge shape: the opener's rect shrinking about its own centre, gone at `s == 0`.
-        let merge = from.and_then(|f| {
-            let s = merge_scale_at(progress);
-            (s > 0.0).then(|| Merge {
-                rect: Rect::new(f.cx() - f.w * s * 0.5, f.cy() - f.h * s * 0.5, f.w * s, f.h * s),
-                radius: pill_radius * s,
-                k: MERGE_K,
-            })
+        let content_alpha = ramp(progress, ROWS_FROM_AT, ROWS_OPAQUE_AT) * (1.0 - out);
+        let Some(f) = from else {
+            return Frame {
+                rect: rect_at_xy(None, panel, pw, ph),
+                radius: panel_radius,
+                progress,
+                ground_alpha: fill_at(progress),
+                content_alpha,
+                rows_scale: self.rows.pos,
+                opener_alpha: 1.0,
+                merge: None,
+                clear: 0.0,
+            };
+        };
+        // The slab is gone: the close is over and the frame is the closed one, exactly (the same
+        // frame a fresh morph gives), so the hand-back to the page's own opener has no step.
+        if fold >= 1.0 - A_GONE_AT {
+            return Morph::new().frame(from, panel, panel_radius);
+        }
+        // A CLOSE is the `out` spring's story (c = 1), an open the other (c = 0): every part that
+        // differs between them is blended by it, so a close that interrupts an open (or the other
+        // way round) is continuous rather than snapping from one path to the other.
+        let c = out;
+        let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+        let pill_radius = f.w.min(f.h) * 0.5;
+        let drain = drain_rect(f);
+        // where the slab's travel starts from: the opener's rect on an open, the drain rect on a close
+        let start = lerp_rect(f, drain, c);
+        let travelled = rect_at_xy(Some(start), panel, pw, ph);
+        let sa = 1.0 - fold;
+        let start_radius = lerp(pill_radius, drain.h * 0.5, c);
+        // The merge shape B: the opener's rect shrinking about its own centre on an open; on a close
+        // the opener re-forming there, a bead as the slab arrives and the whole opener as it drains in.
+        let sb = lerp(merge_scale_at(progress), lerp(REFORM_FROM * merge_scale_at(progress), 1.0, fold), c);
+        let merge = (sb > 0.0).then(|| Merge {
+            rect: Rect::new(f.cx() - f.w * sb * 0.5, f.cy() - f.h * sb * 0.5, f.w * sb, f.h * sb),
+            radius: pill_radius * sb,
+            k: MERGE_K,
         });
         Frame {
-            rect: rect_at_xy(from, panel, pw, ph),
-            radius: if from.is_some() { radius_at(pill_radius, panel_radius, ph) } else { panel_radius },
+            rect: shrink_to_top_centre(travelled, sa),
+            radius: radius_at(start_radius, panel_radius, ph) * sa,
             progress,
-            ground_alpha,
-            content_alpha: ramp(progress, ROWS_FROM_AT, ROWS_OPAQUE_AT) * (1.0 - out),
+            // a close's slab is glass all the way into the opener; an open's is the one fill ramp
+            ground_alpha: lerp(fill_at(progress), 1.0, c),
+            content_alpha,
             rows_scale: self.rows.pos,
-            opener_alpha: if from.is_some() { opener_alpha_at(progress) } else { 1.0 },
+            opener_alpha: lerp(opener_alpha_at(progress), smooth(fold, OPENER_BACK_FROM, 1.0), c),
             merge,
-            clear: if from.is_some() { clear_at(progress).max(out) } else { 0.0 },
+            clear: clear_at(progress).max(out),
         }
     }
 }
@@ -417,13 +529,14 @@ mod tests {
         }
         let fr = m.frame(Some(PILL), PANEL, RAD);
         assert!((fr.rect.w - PANEL.w).abs() < 0.07 * (PANEL.w - PILL.w), "open lands by ~190 ms");
-        // A close leads with its content phase (two frames to `OUT_GATE`, then the rect springs),
-        // so the slab is near the pill by ~150 ms after the gate, ~50 ms after the press.
+        // A close leads with its content phase (two frames to `OUT_GATE`, then the rect springs to
+        // the drain and the fold takes over), so ~150 ms after the gate the slab has arrived at the
+        // drain and is all but drained into the opener.
         for _ in 0..((0.15 + 3.0 * DT) / DT).round() as usize {
             m.step(false, DT);
         }
         let fr = m.frame(Some(PILL), PANEL, RAD);
-        assert!((fr.rect.w - PILL.w).abs() < 0.12 * (PANEL.w - PILL.w), "close is near the pill ~150 ms after the gate");
+        assert!(fr.rect.w < 0.3 * drain_rect(PILL).w, "the slab is drained ~150 ms after the gate: {fr:?}");
         for _ in 0..120 {
             m.step(false, DT);
         }
@@ -522,7 +635,8 @@ mod tests {
         assert!(open.iter().take_while(|fr| fr.progress < ROWS_FROM_AT).count() >= 2, "the rows wait for the glass");
         // The rows leave FIRST on a close (the `out` spring), while the rect is still the panel's.
         let gone = close.iter().find(|fr| fr.content_alpha < 0.05).expect("the rows leave");
-        assert!(gone.rect.w > PILL.w + 0.4 * (PANEL.w - PILL.w), "the rows are gone while the rect is still large: {gone:?}");
+        let drain = drain_rect(PILL);
+        assert!(gone.rect.w > drain.w + 0.4 * (PANEL.w - drain.w), "the rows are gone while the rect is still large: {gone:?}");
         assert_eq!(open.last().unwrap().content_alpha, 1.0);
     }
 
@@ -619,30 +733,108 @@ mod tests {
         assert!(close.iter().skip(5).all(|f| f.content_alpha < 0.02), "no rows on the way back");
     }
 
-    /// CLOSE, phases 2 and 3: the clear slab shrinks back, the droplet re-forms under the neck
-    /// reach as progress falls, and the opener returns whole at the very end.
+    /// The close, stepped at 60 fps until the morph says it is closed (the frames the droplet draws).
+    fn close_frames() -> Vec<Frame> {
+        let mut m = Morph::new();
+        for _ in 0..120 {
+            m.step(true, DT);
+        }
+        let mut out = Vec::new();
+        for _ in 0..120 {
+            m.step(false, DT);
+            out.push(m.frame(Some(PILL), PANEL, RAD));
+            if m.closed() {
+                break;
+            }
+        }
+        assert!(m.closed(), "the close lands");
+        out
+    }
+
+    /// CLOSE, phase 2: after the content has left, the clear slab A lies BELOW the opener (in the
+    /// drain band, closer than the neck reach) and is smaller than it: the drain rect is
+    /// [`DRAIN_WIDTH`] of the opener's width, its height, a capsule, centred on it.
     #[test]
-    fn a_close_drains_into_a_reforming_droplet_and_the_opener_returns() {
-        let (_, close) = open_then_close(Some(PILL));
-        for fr in &close {
-            if fr.progress >= MERGE_END_AT {
-                assert_eq!(fr.merge, None, "no droplet while the slab is far: {fr:?}");
+    fn a_close_sends_the_slab_to_a_drain_just_below_the_opener() {
+        let drain = drain_rect(PILL);
+        assert_eq!(drain.y, PILL.y + PILL.h + DRAIN_GAP, "its top is a few px under the opener's bottom");
+        assert!(DRAIN_GAP < MERGE_K, "closer than the neck reach, so the glass can bridge it");
+        assert!((drain.cx() - PILL.cx()).abs() < 1e-3, "centred on the opener");
+        assert!((drain.w - PILL.w * DRAIN_WIDTH).abs() < 1e-3 && drain.w <= PILL.w, "{DRAIN_WIDTH} of its width, never wider");
+        assert!(drain.h <= PILL.h + 1e-3 && drain.h > 0.9 * PILL.h, "about its height");
+        let round = drain_rect(Rect::new(96.0, 54.0, 76.0, 76.0));
+        assert!(round.h <= round.w + 1e-3, "a round opener drains as a round drop, never a tall one");
+        let close = close_frames();
+        let arrived = close.iter().find(|f| f.progress <= 0.03).expect("the slab arrives");
+        assert!(arrived.rect.y >= PILL.y + PILL.h, "A lies below the opener: {arrived:?}");
+        assert!(arrived.rect.w < PILL.w && arrived.rect.w * arrived.rect.h < PILL.w * PILL.h, "and is smaller than it: {arrived:?}");
+        // the slab only moves toward the drain (its rect shrinks) from the first frame the rect is released
+        let released = close.iter().position(|f| f.rect != close[0].rect).expect("the rect leaves");
+        for pair in close[released..close.len() - 1].windows(2) {
+            assert!(pair[1].rect.h <= pair[0].rect.h + 1e-3, "the slab only shrinks on a close: {pair:?}");
+        }
+    }
+
+    /// CLOSE, phase 3: the opener re-forms as its own blob B at its own spot (about its own centre,
+    /// never past its own rect) and the slab drains up into it through the neck: A and B are both
+    /// there for several frames with the merge active, A reaches nothing, the opener's face only
+    /// returns, and the last frame is the closed frame exactly.
+    #[test]
+    fn a_close_drains_the_slab_into_the_reforming_opener_through_a_neck() {
+        let close = close_frames();
+        for f in &close {
+            if f.progress >= MERGE_END_AT {
+                assert_eq!(f.merge, None, "no blob while the slab is far: {f:?}");
             }
-            if fr.progress >= OPENER_OUT_AT {
-                assert_eq!(fr.opener_alpha, 0.0, "the opener stays consumed until the last 15%: {fr:?}");
+            if f.progress >= OPENER_OUT_AT {
+                assert_eq!(f.opener_alpha, 0.0, "the opener stays consumed until the slab is near: {f:?}");
+            }
+            if let Some(b) = f.merge {
+                assert!((b.rect.cx() - PILL.cx()).abs() < 1e-3 && (b.rect.cy() - PILL.cy()).abs() < 1e-3, "B is centred on the opener");
+                assert!(b.rect.w <= PILL.w + 1e-3 && b.rect.h <= PILL.h + 1e-3 && b.k == MERGE_K, "B never exceeds the opener: {b:?}");
             }
         }
-        let forming = close.iter().find(|f| f.merge.is_some()).expect("the droplet re-forms");
-        assert!(forming.progress < MERGE_END_AT && forming.clear > 0.99);
-        for pair in close.windows(2) {
-            let s = |f: &Frame| f.merge.map_or(0.0, |m| m.rect.w);
-            assert!(s(&pair[1]) >= s(&pair[0]) - 1e-3, "the droplet only grows on a close");
-            assert!(pair[1].opener_alpha >= pair[0].opener_alpha - 1e-3, "the opener only returns on a close");
+        let neck = close.iter().filter(|f| f.merge.is_some_and(|b| b.rect.w > 0.0) && f.rect.w > 0.0 && f.rect.h > 0.0 && f.ground_alpha > 0.0).count();
+        assert!(neck >= 3, "A and B both have size, merged, on {neck} frames");
+        let fold = close.iter().find(|f| f.rect.w < drain_rect(PILL).w).expect("the fold starts");
+        let b = fold.merge.expect("B is there as A drains");
+        assert!(b.rect.w > 0.3 * PILL.w && b.rect.w < PILL.w, "B is about half size as the fold begins: {b:?}");
+        // B only grows, A only shrinks, and the opener's face only returns, once the fold is under way
+        let from = close.iter().position(|f| f.progress <= FOLD_AT).expect("the fold");
+        for pair in close[from..close.len() - 1].windows(2) {
+            let (a, b) = (|f: &Frame| f.rect.w, |f: &Frame| f.merge.map_or(0.0, |m| m.rect.w));
+            assert!(a(&pair[1]) <= a(&pair[0]) + 1e-3, "A drains: {pair:?}");
+            assert!(b(&pair[1]) >= b(&pair[0]) - 1e-3, "B grows: {pair:?}");
         }
+        let alphas: Vec<f32> = close.iter().map(|f| f.opener_alpha).collect();
+        assert!(alphas.windows(2).all(|w| w[1] >= w[0] - 1e-6), "the opener only returns: {alphas:?}");
+        assert!(alphas.iter().any(|a| *a > 0.0 && *a < 1.0), "its face fades back in over frames: {alphas:?}");
         let last = close.last().unwrap();
-        assert_eq!((last.rect, last.opener_alpha), (PILL, 1.0), "whole again, on the opener");
-        let m = last.merge.expect("the droplet is the opener's own shape at the end");
+        let tiny = close[close.len() - 2];
+        assert!(tiny.rect.w < 0.2 * drain_rect(PILL).w, "A has all but gone a frame before the end: {tiny:?}");
+        assert_eq!(*last, Morph::new().frame(Some(PILL), PANEL, RAD), "the last frame IS the closed frame");
+        assert_eq!((last.rect, last.opener_alpha, last.ground_alpha), (PILL, 1.0, 0.0));
+        let m = last.merge.expect("the opener's own blob, whole");
         assert_eq!((m.rect, m.radius), (PILL, PILL.h * 0.5));
+        assert!((11..=17).contains(&close.len()), "about 14 frames (230 ms) at 60 fps, got {}", close.len());
+    }
+
+    /// OPEN: now that the panel covers its opener, the first frame IS the opener's live rect (and its
+    /// round corner), and the open is continuous: the rect only grows from there, with no jump.
+    #[test]
+    fn the_open_starts_exactly_on_the_openers_rect_over_a_panel_that_covers_it() {
+        let panel = Rect::new(PILL.x + PILL.w - 316.0, PILL.y, 316.0, 400.0);
+        assert!(panel.x <= PILL.x && panel.y == PILL.y && panel.w >= PILL.w && panel.h >= PILL.h, "premise: the panel covers the opener");
+        let mut m = Morph::new();
+        let first = m.frame(Some(PILL), panel, RAD);
+        assert_eq!((first.rect, first.radius), (PILL, PILL.h * 0.5), "the first frame is the opener's rect and corner");
+        let mut prev = first.rect;
+        for _ in 0..60 {
+            m.step(true, DT);
+            let r = m.frame(Some(PILL), panel, RAD).rect;
+            assert!(r.y == PILL.y && r.x <= prev.x + 1e-3 && r.x + r.w >= prev.x + prev.w - 1e-3, "grows out of itself, never jumping: {prev:?} -> {r:?}");
+            prev = r;
+        }
     }
 
     /// The `out` spring is stiff (k 9000: ω·dt = 1.6 at 60 fps), but it is the closed form, so it

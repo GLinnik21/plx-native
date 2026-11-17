@@ -117,7 +117,11 @@ fn the_dim_and_the_glass_morph_open_and_close_on_one_clock() {
         close.push(dim_and_morph(&w));
     }
     let turned = |pick: fn(&(f32, f32)) -> f32| close.iter().position(|reading| pick(reading) < 0.999).expect("it falls");
-    assert_eq!(turned(|reading| reading.0), turned(|reading| reading.1), "the dim and the morph turn round on the same frame: {close:?}");
+    // The droplet close leads with the rows and the frost leaving while the glass's rect HOLDS for
+    // about two frames (`popover_morph`, phase 1), so the rect's reading turns that long after the
+    // dim does and never before it. The rows and the frost start leaving on the dim's own frame.
+    let (dim_turn, morph_turn) = (turned(|reading| reading.0), turned(|reading| reading.1));
+    assert!((dim_turn..=dim_turn + 3).contains(&morph_turn), "the dim turns round on the first close frame, the glass's rect within the content phase: {close:?}");
     let gone = |pick: fn(&(f32, f32)) -> f32| close.iter().position(|reading| pick(reading) <= 0.0);
     assert!(gone(|reading| reading.1).is_some(), "the glass is back on the chip: {close:?}");
 }
