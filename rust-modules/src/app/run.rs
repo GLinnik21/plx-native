@@ -1048,8 +1048,11 @@ pub(crate) unsafe fn ingest(app: &mut App, fr: &mut Frame) {
             crate::lab::command_done(command.id, ok);
         }
         // The FIFO's tokens are collected first so the recorder (a field beside `remote`) can
-        // be written per token; a token that pushes SDL events is recorded where they are
-        // polled, a DIRECT one (`pat:`, `shot`, `txt:`) here — `token_is_direct` is the split.
+        // be written per token. Where a token is recorded depends on what it is: a token that
+        // pushes SDL events (a key, a click) is recorded where those are polled; a DIRECT one
+        // (`pat:`, `shot`, `txt:`; `token_is_direct`) here, as a `token` row; `focus:<id>` and
+        // `press:<id>[@<subject>]` become ONE typed `InputKind::ById` input that the tap records
+        // at its ordered delivery position; `state:<nonce>` is not recorded at all.
         let mut toks: Vec<String> = Vec::new();
         if let Some(r) = app.remote.as_mut() {
             r.drain(|tok| toks.push(tok.to_string()));

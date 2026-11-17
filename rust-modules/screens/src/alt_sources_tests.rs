@@ -949,7 +949,7 @@ pub(crate) mod focus_and_hit {
     }
 
     /// The *Also available* panel over two servers' rows, run through the id conformance
-    /// (`AppArg::AltSources`; the coverage table calls this, and so does the ids test below).
+    /// (`AppArg::AltSources`; the coverage table calls this).
     pub(crate) fn alt_sources_conforms() -> plx_ui::a11y::Namespaces {
         let (p, ..) = two_row_panel();
         vec![plx_ui::a11y::conform::<HostFixture, _>(&p, &fixture_cx(None))]

@@ -1061,9 +1061,10 @@ fn adjacent_root_pending_install_pick_refreshes_with_unchanged_cache_and_profile
 // ---- accessibility ids -----------------------------------------------------------------------
 
 /// **Every page of the family the surface mounts answers ids that conform** (`a11y::conformance`: every
-/// element projects, ids are unique, `a11y_find` inverts `a11y`, `a11y_elems` matches each group's count),
-/// and **no two pages answer one namespace**: the surface answers its top page's, so an id says which
-/// page it was read on, though a Legal document, the Legal index and About share one heartbeat word.
+/// element projects, ids are unique, `a11y_find` inverts `a11y`, `a11y_elems` lists no more keys than each
+/// group declares, and some when it declares any), and **no two pages answer one namespace**: the surface
+/// answers its top page's, so an id says which page it was read on, though a Legal document, the Legal
+/// index and About share one heartbeat word.
 #[test]
 fn every_page_the_surface_mounts_conforms_and_answers_a_namespace_of_its_own() {
     // `settings_page_conforms` takes the serial lock and the scratch session for each mount itself

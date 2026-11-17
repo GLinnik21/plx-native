@@ -7,8 +7,8 @@
 //! (an adapter result's address and payload or blob hash), `land` (how many landings a STORE
 //! consumed on this frame — the schedule `plx_machine::landgate` holds a replay to), `life`, `timer`, `st`
 //! (the logical-state hash, on every EVENT frame), plus schema-3 `metrics` typed measurement
-//! records, pointwise `rs` Focus/Hit resolutions and exactly one final `fo` product-focus
-//! observation per frame. The
+//! records, pointwise `rs` resolutions (Focus, Hit and Id: three families) and exactly one final
+//! `fo` product-focus observation per frame. The
 //! header carries `schema`,
 //! `state_fp`, the build, the features, the armed triggers, `init` (the application's initial
 //! conditions, `H::Init`) and the clock origin.
@@ -973,7 +973,7 @@ thread_local! {
 /// Detail page is held as an image while the Down key focuses a cast card, and the Person page is
 /// pushed before any replacement capture draws that card, so the anchor never measured the focused
 /// caption the held-page walk warms. The pass itself draws nothing and decides nothing; replay
-/// still grades every frame's state hash, presents, effects, and Focus/Hit resolutions, so an
+/// still grades every frame's state hash, presents, effects, and Focus/Hit/Id resolutions, so an
 /// answer that leaked out of the pass into the product would diverge there, not pass silently.
 pub fn speculative<R>(pass: impl FnOnce() -> R) -> R {
     struct Restore(bool);

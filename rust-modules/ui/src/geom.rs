@@ -92,8 +92,9 @@ fn clamp_index<K: IndexElem>(entry: EntryId, want: FocusKey<K>, n: usize) -> Foc
 }
 
 /// The index `i` of `name.<i>` when `path` is exactly that two-segment RELATIVE path and `i < n`:
-/// what every indexed widget's `a11y_find` reads (`card.3`, `row.1`, `tab.0`, `band.1`), so none of
-/// them scans. A qualified path never matches (the owner view strips the namespace before it hands a
+/// what every indexed widget's `a11y_find` reads (`card.3`, `tab.0`, `band.1`), so none of them
+/// scans. (A table's `row.<n>` reads it for the parse alone and resolves through [`table_elems`],
+/// `table_a11y_find`.) A qualified path never matches (the owner view strips the namespace before it hands a
 /// path down), the same rule [`crate::a11y::default_walk`] keeps by comparing whole paths.
 pub(crate) fn indexed(path: &A11yPath, name: &str, n: usize) -> Option<usize> {
     if path.ns().is_some() {
@@ -141,8 +142,8 @@ pub fn table_elems<'a>(
 }
 
 /// **The one convention for the id of a table row**, shared by [`Table`], `table_screen::TablePart`
-/// and every screen that answers the hooks over a `FormTable` itself (the card menu's and the
-/// Source and Version pickers' panels): a row is `row.<n>`, where `n` is the row's ORDINAL among the
+/// and every screen that answers the hooks over a `FormTable` itself (the Source and Version
+/// pickers' panels): a row is `row.<n>`, where `n` is the row's ORDINAL among the
 /// table's element rows ([`table_elems`]), so a separator or a note never leaves a gap
 /// (`row.0`, `row.1`, `row.2`) and an id never depends on how many dividers the layout carries. A
 /// row whose form id names itself ([`FormId::a11y`](super::form::FormId::a11y), read through
@@ -166,9 +167,10 @@ pub fn table_a11y<'t>(
     Some(if row.label.is_empty() { a } else { a.with_label(row.label.as_str()) })
 }
 
-/// The inverse of [`table_a11y`]: the LAYOUT index the relative `path` names, `row.<n>` for the
-/// `n`th element row that has no name of its own, or the name of the one that has. A path that
-/// names no element (an ordinal past the last, a name no row declares) is `None`.
+/// The inverse of [`table_a11y`]: the LAYOUT index the relative `path` names. `row.<n>` names the
+/// `n`th element row, named rows counted, and answers only when that row has no name of its own; a
+/// named row answers to its name alone. A path that names no element (an ordinal past the last, a
+/// name no row declares) is `None`.
 pub fn table_a11y_find(
     t: &super::table::TableView,
     keys: Option<&dyn super::form::RowKeys>,

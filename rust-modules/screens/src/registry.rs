@@ -3279,10 +3279,10 @@ mod compaction_tests {
 /// and `SettingsPage` it wraps, with NO wildcard: a new screen does not compile until it is tabled
 /// here. An arm is [`Coverage::Covered`] by a function that MOUNTS that screen and runs
 /// `plx_ui::a11y::conformance` over it; the function is the screen's own test body, exposed from its
-/// test module (`<screen>_conforms`) and called by that module's test too, so the table cannot say
-/// "covered" about a mount the screen's tests no longer run. An arm that cannot be mounted on the
-/// host is [`Coverage::Pending`] with the true reason, and the table's tests print it. The table only
-/// shrinks; precedent: `cards_conformance_tests.rs`'s `table()`.
+/// test module (`<screen>_conforms`). Where that module's ids test shares the mounting helper, a
+/// change to the mount reaches both; otherwise the table is the function's only caller. An arm that
+/// cannot be mounted on the host is [`Coverage::Pending`] with the true reason, and the table's
+/// tests print it. The table only shrinks; precedent: `cards_conformance_tests.rs`'s `table()`.
 ///
 /// A covered function returns the namespace of every mounting it exercised (`Screen::a11y_ns`), and
 /// `plx_ui::a11y::conform` is the one way a test module produces one: it runs conformance and reads the
@@ -3525,6 +3525,67 @@ mod a11y_coverage_tests {
         for (ns, arms, _) in ONE_SCREEN_TWO_MOUNTINGS {
             assert_eq!(by_namespace.get(ns).map(|a| a.len()), Some(arms.len()), "{ns:?} no longer shares: drop its allow-list entry");
         }
+    }
+
+    /// **The replay alphabet names exactly the namespaces the table reports, and the bound `MAX_ID_SEGS`.**
+    /// `tests/fixtures/replay/ALPHABET.json` has one pattern for an accessibility id, and
+    /// `.claude/hooks/outbound-guard.py` lets a recording that matches it be committed and pushed. Its first
+    /// segment is a CLOSED alternation (an open `[a-z]+` would pass a household hostname like `nas.local`),
+    /// so a screen that gains a namespace fails here until the alternation is told, and a namespace no screen
+    /// answers any more fails here until it is dropped. `nav` is the one the table cannot report: the shared
+    /// strip answers it, not a screen (`plx_ui::dispatch`, `strip_path`). The repeat bound is
+    /// `plx_ui::a11y::MAX_ID_SEGS`, which the conformance suite holds every id to.
+    #[test]
+    fn the_replay_alphabet_names_exactly_the_namespaces_the_table_reports() {
+        use std::collections::BTreeSet;
+        let alphabet: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/replay/ALPHABET.json"
+        )))
+        .expect("ALPHABET.json is JSON");
+        // the id pattern is `(<ns>|<ns>|...)(\.(<name>|0|<index>)){1,<MAX_ID_SEGS>}`
+        const TAIL: &str = r"(\.([a-z][a-z0-9_]*|0|[1-9][0-9]*)){1,";
+        let pattern = alphabet["patterns"]
+            .as_array()
+            .expect("patterns is a list")
+            .iter()
+            .filter_map(|p| p.as_str())
+            .find(|p| p.contains(TAIL))
+            .expect("ALPHABET.json has the accessibility-id pattern");
+        let (head, bound) = pattern.split_once(TAIL).expect("the id pattern splits at its tail");
+        let named: BTreeSet<&str> = head
+            .strip_prefix('(')
+            .and_then(|h| h.strip_suffix(')'))
+            .expect("the id pattern opens with the parenthesised namespace alternation")
+            .split('|')
+            .collect();
+        assert_eq!(
+            bound.strip_suffix('}').and_then(|b| b.parse::<usize>().ok()),
+            Some(plx_ui::a11y::MAX_ID_SEGS),
+            "the id pattern's repeat bound is plx_ui::a11y::MAX_ID_SEGS: {pattern}"
+        );
+
+        let mut answered: BTreeSet<&'static str> = BTreeSet::new();
+        answered.insert("nav");
+        for entry in tabled() {
+            if let Coverage::Covered(_, run) = entry {
+                answered.extend(run());
+            }
+        }
+        let answered: BTreeSet<&str> = answered.into_iter().collect();
+        for ns in &answered {
+            assert!(
+                ns.starts_with(|c: char| c.is_ascii_lowercase()) && ns.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'),
+                "{ns:?} is not a well-formed namespace"
+            );
+        }
+        let missing: Vec<_> = answered.difference(&named).collect();
+        let stale: Vec<_> = named.difference(&answered).collect();
+        assert!(
+            missing.is_empty() && stale.is_empty(),
+            "ALPHABET.json's accessibility-id pattern must list exactly the namespaces the screens answer (plus nav): \
+             add {missing:?}, drop {stale:?}"
+        );
     }
 }
 

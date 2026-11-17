@@ -209,8 +209,9 @@ impl CardHarness for Harness {
 
 /// **The accessibility ids:** the page conforms (every element projects, ids are unique, each id
 /// finds its element), the hero answers `hero.play|info`, and the first shelf's cards answer
-/// `shelf.<row>.card.<col>` (`continue.card.<col>` for the Continue Watching deck) with the card's
-/// ratingKey as their subject.
+/// `shelf.<row>.card.<global index>` (`continue.card.<global index>` for the Continue Watching deck:
+/// the card's place in its listing, `CardSource::global`, as `cards::card_a11y` names it) with the
+/// card's ratingKey as their subject.
 #[test]
 fn the_page_answers_its_ids_and_conforms() {
     assert!(!home_conforms().is_empty());

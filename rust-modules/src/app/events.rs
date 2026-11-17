@@ -367,9 +367,12 @@ pub(crate) fn remote_synth_lifecycle(code: u32) {
 }
 
 /// A remote token that acts DIRECTLY rather than by pushing SDL events — the recorder writes
-/// these as `token` records (the SDL kinds are recorded where they are polled), and the replay
-/// driver re-dispatches them. `txt:` is here because its payload never becomes an SDL event on
-/// this host (`dispatch_remote_token`'s arm says why).
+/// these as `token` records, and the replay driver re-dispatches them. It is one of four fates:
+/// the SDL-synthesised kinds (a key, a click) are recorded where they are polled; a direct token
+/// (this predicate) is recorded as a `token` row; `focus:<id>` / `press:<id>[@<subject>]`
+/// (`by_id_token`) become one typed `InputKind::ById` input that the tap records, not a token
+/// row; and `state:<nonce>` is not recorded at all. `txt:` is here because its payload never
+/// becomes an SDL event on this host (`dispatch_remote_token`'s arm says why).
 pub(crate) fn token_is_direct(tok: &str) -> bool {
     #[cfg(feature = "devtriggers")]
     if crate::remote::HangProbe::parse(tok).is_some() {

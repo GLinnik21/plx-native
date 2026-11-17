@@ -551,7 +551,8 @@ pub(crate) fn library_conforms() -> plx_ui::a11y::Namespaces {
 }
 
 /// **The Recommended page's accessibility ids:** the page conforms, its crumb is `header.crumb`, and
-/// each hub card is `shelf.<row>.card.<col>` with the hub item's ratingKey as the subject.
+/// each hub card is `shelf.<row>.card.<global index>` (its place in the listing, `CardSource::global`,
+/// as `cards::card_a11y` names it) with the hub item's ratingKey as the subject.
 #[test]
 fn the_recommended_page_answers_its_ids_and_conforms() {
     assert!(!recommended_conforms().is_empty());

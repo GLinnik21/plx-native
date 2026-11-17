@@ -380,7 +380,8 @@ def observer_violations(dispatch_source, bridge_source):
             opening = next(j for j in range(i + 2, len(tokens)) if tokens[j] == ('code', '{'))
             tap = code(tokens[opening + 1:ends[opening]])
             break
-    decisions = ('resolution_mode', 'resolution_active', 'resolution_error', 'resolve_focus', 'resolve_hit', 'focus_continuation')
+    decisions = ('resolution_mode', 'resolution_active', 'resolution_error', 'resolve_focus', 'resolve_hit', 'resolve_id',
+                 'focus_continuation')
     if not tap or any(re.search(r'\bfn ' + name + r'\b', tap) for name in decisions):
         errors.append('Tap must contain passive callbacks only, never replay decisions')
     fanout = function_body(dispatch_source, 'frame_tap')

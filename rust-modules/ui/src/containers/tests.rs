@@ -2037,7 +2037,8 @@ fn select_tab_covers_the_root_rather_than_replacing_it_and_back_returns_to_it() 
 /// report #17): a `SelectTab` cover-and-mint always originates FROM the visible strip, so its
 /// first `FocusMoved` must read as a deliberate move (`By::Dir`, the same as a directional press
 /// — the thing that already makes `library::LibraryScreen`'s tile grow from rest instead of
-/// snapping, `pop_from_rest`, gated on `By::Dir | By::Pointer`), not as `By::Restore` ("this page
+/// snapping, the `Seen::of` gate of `plx_ui::cards`, which reads `By::Dir`, `By::Pointer` and
+/// `By::Script` as deliberate), not as `By::Restore` ("this page
 /// is back where it was", which was never true the first time a tab is visited this session and
 /// silently disabled every screen's own arrival animation for this one path). Before the fix,
 /// `FocusTarget::FirstInGroup`'s `By::Restore` made a fresh Home → Page(9) mint SNAP its first
