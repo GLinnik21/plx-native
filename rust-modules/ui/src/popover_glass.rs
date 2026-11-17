@@ -122,11 +122,13 @@ fn dims_under_surface() -> (usize, Option<Dim>) {
 /// `false` = nothing frozen to stand on, nothing drawn.
 #[must_use]
 pub fn draw(p: Painter, r: Rect, radius: f32, field: Option<&crate::underlay::UnderlayField>) -> bool {
-    draw_shadowed(p, r, radius, field, 1.0)
+    draw_shadowed(p, r, radius, field, 1.0, plx_gfx::gfx::GlassMorph::NONE)
 }
 
 /// [`draw`] with the drop shadow at `shadow` of the painter's opacity: a morph hands the glass and
 /// its shadow the same fill ramp (`Popover::ground`), a fallback open keeps its shadow whole.
+/// `morph` is the morph's join and clarity ([`plx_gfx::gfx::GlassMorph`], `NONE` at rest): a joined
+/// glass is drawn on the box around both shapes, and its shadow goes UNDER it (below).
 #[must_use]
 pub fn draw_shadowed(
     p: Painter,
@@ -134,6 +136,7 @@ pub fn draw_shadowed(
     radius: f32,
     field: Option<&crate::underlay::UnderlayField>,
     shadow: f32,
+    morph: plx_gfx::gfx::GlassMorph,
 ) -> bool {
     let Some(ground) = field.and_then(crate::underlay::UnderlayField::ground_tex) else {
         return false;
@@ -148,13 +151,20 @@ pub fn draw_shadowed(
     }
     let sharp = crate::popover::host::page_tex().unwrap_or(0);
     let face = face_at(p.opacity());
-    if !p.glass_frozen(r, radius, ground, sharp, dim, [1.0; 4], GlassRim::Menu, face) {
+    // A JOINED glass takes its shadow first: `shadow_outside` cuts only the PANEL's shape out of
+    // the penumbra, so drawn after the glass it would darken the joined shape and the neck; drawn
+    // before, the (opaque) glass covers it there.
+    let joined = morph.merge.is_some();
+    if joined && shadow > 0.0 {
+        p.alpha(shadow).shadow_outside(r, radius, theme::MENU_SHADOW_BLUR, theme::MENU_SHADOW_DY, theme::MENU_SHADOW);
+    }
+    if !p.glass_frozen(r, radius, ground, sharp, dim, [1.0; 4], GlassRim::Menu, face, morph) {
         return false;
     }
     // After the glass, not before: `shadow_outside` cuts the panel's own rounded shape out of the
     // penumbra, so a translucent face has no ink under it. The shadow rides the painter's cascade
     // (alpha and slide) itself.
-    if shadow > 0.0 {
+    if !joined && shadow > 0.0 {
         p.alpha(shadow).shadow_outside(r, radius, theme::MENU_SHADOW_BLUR, theme::MENU_SHADOW_DY, theme::MENU_SHADOW);
     }
     true
@@ -223,7 +233,7 @@ pub(crate) mod tests {
         face: GlassFace,
     ) -> Vec<std::rc::Rc<crate::frame::backdrop::Paint>> {
         declared_glass(|| {
-            assert!(p.glass_frozen(r, rad, ground, sharp, None, [1.0; 4], GlassRim::Menu, face));
+            assert!(p.glass_frozen(r, rad, ground, sharp, None, [1.0; 4], GlassRim::Menu, face, plx_gfx::gfx::GlassMorph::NONE));
         })
     }
 

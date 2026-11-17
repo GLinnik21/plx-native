@@ -861,6 +861,11 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<u32>>)> {
         self.arg.opener.map(|(entry, control)| (entry, Some(FocusKey { entry, elem: control })))
     }
+    /// The opener is CONSUMED by the morph (`popover_morph`): the lift paints it at the morph's
+    /// `opener_alpha`, out as the glass detaches from it and back in as it merges into it.
+    fn opener_alpha(&self) -> f32 {
+        self.popover.opener_alpha()
+    }
     fn name(&self) -> &'static str {
         "library_menu"
     }

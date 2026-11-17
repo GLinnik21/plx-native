@@ -5145,6 +5145,13 @@ static mut GL_SHARP_RECT: c_int = 0;
 static mut GL_SHARP_PX: c_int = 0;
 static mut GL_SHARPW: c_int = 0;
 static mut GL_RIMCLEAR: c_int = 0;
+/// `u_boff`, `u_mrg`, `u_mrg_rk`, `u_clear`: a morphing menu glass's join and clarity
+/// ([`GlassMorph`]). Uniforms are per-program state, so EVERY draw of `GPROG` sets them: the
+/// ones at their off values (no offset, `k` 0, clear 0) are today's glass.
+static mut GL_BOFF: c_int = 0;
+static mut GL_MRG: c_int = 0;
+static mut GL_MRG_RK: c_int = 0;
+static mut GL_CLEAR: c_int = 0;
 static mut GL_DEEP: c_int = 0;
 static mut GL_SOURCE_ALPHA: c_int = 0;
 static mut GL_SOURCE_GROUND: c_int = 0;
@@ -5487,6 +5494,10 @@ fn blur_lazy_init() -> bool {
         GL_SHARP_PX = glGetUniformLocation(GPROG, c"u_sharp_px".as_ptr());
         GL_SHARPW = glGetUniformLocation(GPROG, c"u_sharpw".as_ptr());
         GL_RIMCLEAR = glGetUniformLocation(GPROG, c"u_rimclear".as_ptr());
+        GL_BOFF = glGetUniformLocation(GPROG, c"u_boff".as_ptr());
+        GL_MRG = glGetUniformLocation(GPROG, c"u_mrg".as_ptr());
+        GL_MRG_RK = glGetUniformLocation(GPROG, c"u_mrg_rk".as_ptr());
+        GL_CLEAR = glGetUniformLocation(GPROG, c"u_clear".as_ptr());
         GL_DEEP = glGetUniformLocation(GPROG, c"u_deep".as_ptr());
         GL_SOURCE_ALPHA = glGetUniformLocation(GPROG, c"u_source_alpha".as_ptr());
         GL_SOURCE_GROUND = glGetUniformLocation(GPROG, c"u_source_ground".as_ptr());
@@ -7276,6 +7287,44 @@ impl GlassFace {
     };
 }
 
+/// **The second shape a morphing menu's glass is joined to** ([`GlassMorph`]): a rounded rect
+/// (`rect`, corner `radius`) that `fs_glass.frag` unions with the panel through a polynomial smooth
+/// minimum reaching `k` px, so the two read as one body with a neck between them (a metaball).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlassMerge {
+    pub rect: Rect,
+    pub radius: f32,
+    pub k: f32,
+}
+
+/// **What a menu glass does while its morph runs** (`ui::popover_morph::Frame`): optionally JOINED
+/// to a second shape ([`GlassMerge`]) and CLEAR — the sharp page over the whole face instead of the
+/// frosted material. [`GlassMorph::NONE`] (no join, clarity 0) is the glass every settled menu and
+/// every chip wears, bit for bit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlassMorph {
+    pub merge: Option<GlassMerge>,
+    /// 0 = the frosted material, 1 = clear (the sharp source over the whole face, no scrim). Held
+    /// at 0 when the draw has no sharp source.
+    pub clear: f32,
+}
+impl GlassMorph {
+    pub const NONE: Self = Self { merge: None, clear: 0.0 };
+
+    /// The quad the glass is drawn on for a body at `(x, y, w, h)`: the body itself, or the
+    /// bounding box of the body and the joined shape, grown by the join's reach (a quarter of `k`
+    /// is the most the smooth minimum can pull the union outward) and the edge's antialiasing.
+    pub fn quad(&self, x: f32, y: f32, w: f32, h: f32) -> Rect {
+        let Some(m) = self.merge.filter(|m| m.k > 0.0) else {
+            return Rect::new(x, y, w, h);
+        };
+        let pad = m.k * 0.25 + 2.0;
+        let (x0, y0) = (x.min(m.rect.x) - pad, y.min(m.rect.y) - pad);
+        let (x1, y1) = ((x + w).max(m.rect.x + m.rect.w) + pad, (y + h).max(m.rect.y + m.rect.h) + pad);
+        Rect::new(x0, y0, x1 - x0, y1 - y0)
+    }
+}
+
 /// **Snapshot UV back to the screen**: `(su, sv, ou, ov)` with `screen_uv = uv * (su, sv) + (ou, ov)`
 /// over the whole canvas, top-down — `blur_uv_rect` inverted, for the region `reg` the snapshot holds
 /// in a window of `span` of its texture. Both composite-time terms that live on the page (the dim's
@@ -7449,6 +7498,11 @@ pub fn draw_blur_backdrop(
         }
         // The sharp grab below is off the finished framebuffer: the dim is in it already.
         glUniform1f(GL_DIM_SHARP, 0.0);
+        // A live glass is never a morphing menu's: the join and the clear glass are OFF, so a
+        // frozen menu's last draw (the uniforms are the program's) cannot reach this surface.
+        glUniform2f(GL_BOFF, 0.0, 0.0);
+        glUniform2f(GL_MRG_RK, 0.0, 0.0);
+        glUniform1f(GL_CLEAR, 0.0);
         // A BLUR is the slowest field the app produces, so the policy is the area test, per draw
         // — moving or not: a panel's glass is a fraction of the screen and the tile is one fetch,
         // and gating it on motion (one day, 2026-09-04) flickered the bands in and out on every
@@ -7623,6 +7677,10 @@ fn frozen_dim_field(ground: c_uint, dim_tex: c_uint) -> f32 {
     }
 }
 
+/// The draw [the block above](frozen_dim_field) describes, for a body at `(x, y, w, h)`. `morph`
+/// is [`GlassMorph::NONE`] for every menu at rest and every chip; a MORPHING menu joins the body to
+/// a second shape and/or draws it clear (`fs_glass.frag`'s `u_mrg*`, `u_clear`), on a quad that
+/// grows to hold both ([`GlassMorph::quad`]).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_glass_frozen(
     x: f32,
@@ -7636,6 +7694,7 @@ pub fn draw_glass_frozen(
     tint: *const f32,
     rim: GlassRim,
     face: GlassFace,
+    morph: GlassMorph,
 ) -> bool {
     if ground == 0 || unsafe { GPROG } == 0 || unsafe { BLUR_OFF } {
         return false;
@@ -7645,7 +7704,14 @@ pub fn draw_glass_frozen(
     if video_plane_refuses("Glass::frozen") {
         return false;
     }
-    if culled(x, y, w, h) || gate(Class::Glass, x, y, w, h) {
+    // The quad this draws on: the panel's own rect, or — while a morph joins it to a second shape —
+    // the box around both, so the neck has pixels to live on. Everything below that is the PANEL's
+    // (radius, half-size, the snapshot window) stays the panel's; only the quad and its UV window
+    // grow, and `u_boff` says where the panel sits in it.
+    let merge = morph.merge.filter(|m| m.k > 0.0 && m.rect.w > 0.0 && m.rect.h > 0.0);
+    let morph = GlassMorph { merge, ..morph };
+    let q = morph.quad(x, y, w, h);
+    if culled(q.x, q.y, q.w, q.h) || gate(Class::Glass, q.x, q.y, q.w, q.h) {
         return true;
     }
     unsafe {
@@ -7673,7 +7739,7 @@ pub fn draw_glass_frozen(
         // so the last live glass's `1` would otherwise stay).
         glUniform1f(GL_WASH_ON, 0.0);
         glUniform1f(GL_DIM_SHARP, if sharp != 0 { 1.0 } else { 0.0 });
-        glUniform1f(GL_DITHER_AMT, dither_for_field(w, h));
+        glUniform1f(GL_DITHER_AMT, dither_for_field(q.w, q.h));
         glBindTexture(GL_TEXTURE_2D, ground);
         glUniform2f(GL_UVPX, 1.0 / SCR_W, 1.0 / SCR_H);
         let sharpw = if sharp != 0 { rim.sharp() } else { 0.0 };
@@ -7700,10 +7766,26 @@ pub fn draw_glass_frozen(
         glUniform4fv(GL_RIMCOL_G, 1, face.rim.as_ptr());
         glUniform4fv(GL_RIMLIT_G, 1, face.rim_lit.as_ptr());
         glUniform1f(GL_RIMW_G, face.rim_w);
-        glUniform4f(GL_UVRECT, x / SCR_W, y / SCR_H, w / SCR_W, h / SCR_H);
+        glUniform4f(GL_UVRECT, q.x / SCR_W, q.y / SCR_H, q.w / SCR_W, q.h / SCR_H);
         glUniform1f(GL_RADIUS, radius);
         glUniform2f(GL_CH, w * 0.5, h * 0.5);
-        let ext = set_rect(GL_RECT, x, y, w, h);
+        // The join and the clarity, set on EVERY draw (the program's state): the panel's centre in
+        // the quad's own frame, the joined shape's centre, half-size, radius and reach (`k` 0 = no
+        // join), and the clarity, which needs a sharp source to show.
+        let (qcx, qcy) = (q.x + q.w * 0.5, q.y + q.h * 0.5);
+        glUniform2f(GL_BOFF, x + w * 0.5 - qcx, y + h * 0.5 - qcy);
+        match merge {
+            Some(m) => {
+                glUniform4f(GL_MRG, m.rect.x + m.rect.w * 0.5 - qcx, m.rect.y + m.rect.h * 0.5 - qcy, m.rect.w * 0.5, m.rect.h * 0.5);
+                glUniform2f(GL_MRG_RK, m.radius, m.k);
+            }
+            None => {
+                glUniform4f(GL_MRG, 0.0, 0.0, 0.0, 0.0);
+                glUniform2f(GL_MRG_RK, 0.0, 0.0);
+            }
+        }
+        glUniform1f(GL_CLEAR, if sharp != 0 { morph.clear.clamp(0.0, 1.0) } else { 0.0 });
+        let ext = set_rect(GL_RECT, q.x, q.y, q.w, q.h);
         profile::phase("glass.frozen", || {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         });
@@ -8710,12 +8792,16 @@ mod tests {
         }
         let code = shader_code(FS_GLASS);
         let main = &code[code.find("void main(){").expect("main")..];
-        let guard = main.find("if (!all(lessThan(abs(v_p), u_ch - vec2(max(u_iradius, u_bevel) + 1.0))))").expect("the pre-test");
-        let sdf = main.find("d = sdBox(v_p, u_ch, u_iradius);").expect("the guarded sdBox");
+        let guard = main.find("if (!all(lessThan(abs(pb), u_ch - vec2(max(u_iradius, u_bevel) + 1.0))))").expect("the pre-test");
+        let sdf = main.find("d = sdBox(pb, u_ch, u_iradius);").expect("the guarded sdBox");
         let exit = main.find("if (d < -u_bevel)").expect("the interior exit");
         assert!(guard < sdf && sdf < exit, "the pre-test guards the sdBox, and both precede the exit");
         assert!(main.starts_with("void main(){\n  highp float d = -u_bevel - 1.0;"), "the skipped d is an interior value");
-        assert_eq!(main.matches("sdBox(").count(), 1, "main evaluates sdBox once, behind the pre-test");
+        // Two sites, both behind the pre-test: the panel's, and the joined shape's (a morph's
+        // second shape, behind its own uniform branch, which sees only fragments the pre-test left).
+        assert_eq!(main.matches("sdBox(").count(), 2, "main evaluates sdBox behind the pre-test only");
+        let join = main.find("sdBox(v_p - u_mrg.xy").expect("the join's sdBox");
+        assert!(sdf < join && join < exit, "the joined shape's distance is computed inside the pre-test's guard");
         assert_eq!(GlassRim::Menu.params().0, tokens::MENU_BEVEL);
         for (case, &(w, h, r, bevel)) in [
             (382.0f32, 339.0f32, 20.0f32, tokens::MENU_BEVEL),

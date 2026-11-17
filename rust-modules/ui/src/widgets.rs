@@ -185,11 +185,12 @@ pub fn panel_ground(
     field: Option<&crate::underlay::UnderlayField>,
     ground: Ground,
 ) {
-    panel_ground_shadowed(p, r, radius, field, ground, 1.0);
+    panel_ground_shadowed(p, r, radius, field, ground, 1.0, plx_gfx::gfx::GlassMorph::NONE);
 }
 
 /// [`panel_ground`] with a menu glass's drop shadow at `shadow` of the painter's opacity
-/// ([`crate::popover_glass::draw_shadowed`]); the field ground casts none, so it is unchanged.
+/// ([`crate::popover_glass::draw_shadowed`]) and a morph's join and clarity (`morph`, which only the
+/// glass wears: the field ground casts no shadow and has neither, so it is unchanged).
 pub fn panel_ground_shadowed(
     p: Painter,
     r: Rect,
@@ -197,11 +198,12 @@ pub fn panel_ground_shadowed(
     field: Option<&crate::underlay::UnderlayField>,
     ground: Ground,
     shadow: f32,
+    morph: plx_gfx::gfx::GlassMorph,
 ) {
     // DS6: a menu is glass on the frozen ground (`popover_glass`); the field ground below is the
     // fallback when there is nothing frozen to stand on. A sheet never takes this branch.
     if ground == Ground::Menu
-        && crate::profile::phase("panel.glass", || crate::popover_glass::draw_shadowed(p, r, radius, field, shadow))
+        && crate::profile::phase("panel.glass", || crate::popover_glass::draw_shadowed(p, r, radius, field, shadow, morph))
     {
         return;
     }
@@ -2927,6 +2929,9 @@ fn glass_capsule(
     };
     if let Some(ground) = frozen {
         let sharp = crate::popover::host::page_tex().unwrap_or(0);
+        // A GlassFace does not ride the painter's alpha (`popover_glass::face_at`): the lift of a
+        // morphing menu's opener fades, and its rim must fade with it.
+        let face = chip_face(face, p.opacity().clamp(0.0, 1.0));
         return p.glass_frozen(
             cap,
             cap.h * 0.5,
@@ -2936,6 +2941,7 @@ fn glass_capsule(
             [1.0, 1.0, 1.0, e],
             plx_gfx::gfx::GlassRim::Standing,
             face,
+            plx_gfx::gfx::GlassMorph::NONE,
         );
     }
     Glass::DYNAMIC_BACKDROP.backdrop(

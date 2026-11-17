@@ -477,6 +477,11 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
     fn opener_rect(&mut self, drawn: plx_ui::Rect) {
         self.popover.track_opener(drawn);
     }
+    /// The opener is CONSUMED by the morph (`popover_morph`): the lift paints it at the morph's
+    /// `opener_alpha`, out as the glass detaches from it and back in as it merges into it.
+    fn opener_alpha(&self) -> f32 {
+        self.popover.opener_alpha()
+    }
     /// The modal dim: the COMPACT role, as every menu hung off a chip: how dark the page goes behind
     /// this menu, the peak the container ramps with the appear spring (`ModalStack::draw_scrims`).
     fn scrim(&self) -> Scrim {

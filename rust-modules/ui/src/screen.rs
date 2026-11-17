@@ -254,6 +254,14 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// draw so its morph starts and ends on the live opener, not on a rect measured once at mount.
     /// Called only for a surface that answers [`bar_opener`](Self::bar_opener).
     fn opener_rect(&mut self, _drawn: crate::Rect) {}
+    /// **How much of the opener this surface leaves**, 1.0 (whole, the default) .. 0.0 (consumed):
+    /// the lift pass (`Z::OPENER`) paints the opener it lifts at this alpha. A MORPHING menu answers
+    /// its popover's [`opener_alpha`](crate::popover::Popover::opener_alpha): the glass detaches from
+    /// the opener on open (it fades out) and merges back into it on close (it fades back in), so the
+    /// opener is part of the morph rather than a control the glass grows from under.
+    fn opener_alpha(&self) -> f32 {
+        1.0
+    }
     /// **The opener element LEFT this page and is still drawn as it goes** (a removed card's
     /// landing ghost). While a menu fades, the opener lift stands down once focus moves off the
     /// opener; a page answering `true` here keeps it up instead, because focus moved only because

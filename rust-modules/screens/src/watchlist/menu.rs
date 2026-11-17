@@ -194,6 +194,11 @@ impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<u32>>)> {
         Some((self.arg.host, Some(FocusKey { entry: self.arg.host, elem: super::page::PILL_ELEM })))
     }
+    /// The opener is CONSUMED by the morph (`popover_morph`): the lift paints it at the morph's
+    /// `opener_alpha`, out as the glass detaches from it and back in as it merges into it.
+    fn opener_alpha(&self) -> f32 {
+        self.menu.popover().opener_alpha()
+    }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

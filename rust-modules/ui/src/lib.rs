@@ -2013,6 +2013,10 @@ impl Painter {
     /// its rim's sharp source and the frame's modal `dim` applied to both. `false` when the glass
     /// program or the ground is missing — the caller's cue for its field ground.
     /// `crate::popover_glass::draw` is the component; reach for that.
+    ///
+    /// `morph` is a morphing menu's join and clarity ([`plx_gfx::gfx::GlassMorph`]);
+    /// `GlassMorph::NONE` for everything else. Joined, the glass is drawn on the box around both
+    /// shapes, so that box (not `r`) is what the draw declares.
     #[allow(clippy::too_many_arguments)]
     pub fn glass_frozen(
         self,
@@ -2024,8 +2028,10 @@ impl Painter {
         tint: [f32; 4],
         rim: plx_gfx::gfx::GlassRim,
         face: plx_gfx::gfx::GlassFace,
+        morph: plx_gfx::gfx::GlassMorph,
     ) -> bool {
-        if self.declare(r, frame::backdrop::GLASS_FROZEN_COMMAND, |data| {
+        let quad = morph.quad(r.x, r.y, r.w, r.h);
+        if self.declare(quad, frame::backdrop::GLASS_FROZEN_COMMAND, |data| {
             use frame::backdrop::Value;
             rad.record(data);
             ground.record(data);
@@ -2035,11 +2041,18 @@ impl Painter {
             tint.record(data);
             face.scrim_top.record(data); face.scrim_bot.record(data);
             face.rim.record(data); face.rim_lit.record(data); face.rim_w.record(data);
+            let j = morph.merge.map_or([0.0; 4], |j| [j.rect.x, j.rect.y, j.rect.w, j.rect.h]);
+            j.record(data);
+            [morph.merge.map_or(0.0, |j| j.radius), morph.merge.map_or(0.0, |j| j.k), morph.clear, 0.0].record(data);
         }) { return ground != 0; }
         if self.records() { return false; }
         let t = self.c(tint);
         let m = self.place(r);
-        plx_gfx::gfx::draw_glass_frozen(m.x, m.y, m.w, m.h, self.px(rad), ground, sharp, dim, t.as_ptr(), rim, face)
+        let morph = plx_gfx::gfx::GlassMorph {
+            merge: morph.merge.map(|j| plx_gfx::gfx::GlassMerge { rect: self.place(j.rect), radius: self.px(j.radius), k: self.px(j.k) }),
+            ..morph
+        };
+        plx_gfx::gfx::draw_glass_frozen(m.x, m.y, m.w, m.h, self.px(rad), ground, sharp, dim, t.as_ptr(), rim, face, morph)
     }
     /// draw text at absolute (x,y) plus the cascade translate; returns width
     pub fn text(

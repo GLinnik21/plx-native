@@ -523,6 +523,8 @@ pub(crate) struct MorphGround {
     pub(crate) radius: f32,
     pub(crate) alpha: f32,
     pub(crate) shadow: f32,
+    /// The glass's join and clarity while the morph runs (`GlassMorph::NONE` at rest).
+    pub(crate) morph: plx_gfx::gfx::GlassMorph,
 }
 
 pub struct Popover {
@@ -598,6 +600,16 @@ impl Popover {
         rad: f32,
     ) -> Option<crate::popover_morph::Frame> {
         (self.style == OpenStyle::Morph).then(|| self.morph.frame(from, panel, rad))
+    }
+    /// **How much of the opener is left while this popover's morph runs** (1 = whole, 0 = consumed
+    /// by the glass), for the host's opener lift to paint it at: [`Frame::opener_alpha`](crate::popover_morph::Frame::opener_alpha).
+    /// 1 for a popover that is not [`morphing`](Self::morphing) and for the fallback (no opener
+    /// rect), which has nothing to consume.
+    pub fn opener_alpha(&self) -> f32 {
+        if self.style != OpenStyle::Morph || self.from.is_none() {
+            return 1.0;
+        }
+        self.morph.frame(self.from, Rect::FULL, 0.0).opener_alpha
     }
     /// The opener's rect the morph grows from and lands back on: the one handed to
     /// [`open_from`](Self::open_from) / [`track_opener`](Self::track_opener), `None` before either.
@@ -919,7 +931,7 @@ impl Popover {
         ground: crate::widgets::Ground,
     ) {
         if let Some(g) = self.ground(r, rad) {
-            crate::widgets::panel_ground_shadowed(p.alpha(g.alpha), g.rect, g.radius, field, ground, g.shadow);
+            crate::widgets::panel_ground_shadowed(p.alpha(g.alpha), g.rect, g.radius, field, ground, g.shadow, g.morph);
         }
         self.ground_done();
     }
@@ -958,7 +970,7 @@ impl Popover {
     /// share (one ramp, over the lit opener the host keeps). The fallback: the glass fades in on the fill's share, its shadow whole.
     pub(crate) fn ground(&self, r: Rect, rad: f32) -> Option<MorphGround> {
         if self.style != OpenStyle::Morph || self.morph.settled() {
-            return Some(MorphGround { rect: r, radius: rad, alpha: 1.0, shadow: 1.0 });
+            return Some(MorphGround { rect: r, radius: rad, alpha: 1.0, shadow: 1.0, morph: plx_gfx::gfx::GlassMorph::NONE });
         }
         let f = self.morph.frame(self.from, r, rad);
         if f.ground_alpha <= 0.0 {
@@ -968,7 +980,8 @@ impl Popover {
         // that has left the opener is never at full strength, so the first and last glass frame
         // are a soft edge under the lit opener rather than an opaque slab hanging below it.
         let (alpha, shadow) = if self.from.is_some() { (f.ground_alpha, f.ground_alpha) } else { (f.ground_alpha, 1.0) };
-        Some(MorphGround { rect: f.rect, radius: f.radius, alpha, shadow })
+        let merge = f.merge.map(|m| plx_gfx::gfx::GlassMerge { rect: m.rect, radius: m.radius, k: m.k });
+        Some(MorphGround { rect: f.rect, radius: f.radius, alpha, shadow, morph: plx_gfx::gfx::GlassMorph { merge, clear: f.clear } })
     }
 
     /// The boundary between this popover's GROUND and its FOREGROUND, reported to [`host`].
