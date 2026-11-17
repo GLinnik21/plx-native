@@ -68,8 +68,8 @@
 //!   `Popover::dim` and `Scrim::following`, instead of the container's own appear spring.
 //!
 //! **A close is NOT the open reversed**; it is a droplet that drains back into the opener, retimed to
-//! the same recording's close (60 fps; the opener is whole at ~215 ms, iOS ~200, the droplet gone by
-//! ~250). The width and the height are separate springs: the width ([`K_CLOSE_W`]) reaches the
+//! the same recording's close (60 fps; the hand-back is at ~233 ms: iOS has the button whole at ~200 and
+//! the droplet gone by ~250). The width and the height are separate springs: the width ([`K_CLOSE_W`]) reaches the
 //! opener's width by ~133 ms, the height ([`K_CLOSE_H`]) bulges ~7% of its travel at ~33 ms
 //! ([`BULGE_KICK_H`]) and then drains over ~250 ms (`the_close_follows_the_ios_reference_curve`):
 //! 1. the slab BULGES outward, then shrinks; the rows and the frost leave over about 50 ms
@@ -81,12 +81,12 @@
 //!    it (closer than [`MERGE_K`], so the glass can bridge it). The opener re-forms as its OWN blob B,
 //!    growing up from the opener's bottom edge as A closes in ([`BLOB_BORN`] to [`REFORM_FROM`]), the
 //!    same [`Frame::merge`] shape the open shrinks;
-//! 3. the fold ([`K_FOLD`], released at half the height's travel, [`FOLD_AT`], ~133 ms: A is still
-//!    travelling): B grows to the opener's full rect while A shrinks to nothing toward its own
-//!    top-centre, draining UP into B through the smooth-minimum neck, and the opener's own face fades
+//! 3. the fold ([`K_FOLD`], released in the last fifth of the height's travel, [`FOLD_AT`], ~175 ms: A is
+//!    still travelling and the drawn height follows the table's tail): B grows to the opener's full
+//!    rect while A narrows to nothing, and drains its height, toward its own top-centre, draining UP into B through the smooth-minimum neck, and the opener's own face fades
 //!    back in over the last of it ([`OPENER_BACK_FROM`]). **B whitens as it re-forms**: its face blends
 //!    from the glass toward the opener's FOCUSED fill ([`Merge::tint`], [`blob_tint`]: 0 when it
-//!    is born, [`REFORM_TINT`] when the slab arrives, all of it when A is gone), so the pill the host's lift
+//!    is born, [`REFORM_TINT`] when the slab arrives, all of it by [`TINT_WHOLE_AT`]), so the pill the host's lift
 //!    paints when A is gone ([`A_GONE_AT`]) is the colour B already wore and nothing pops; the
 //!    opener's face (its label) never leads that tint ([`Frame::opener_alpha`] is at most the
 //!    tint on every frame). The modal dim follows the HEIGHT out and is gone with A. When A is
@@ -118,7 +118,7 @@ pub const SHAPE_AT: f32 = 0.94;
 /// (1): critically damped, ~100 ms to within 4%. A spring of its own, because the rect springs
 /// approach rest in two frames (a clock read off them cannot carry a 100 ms ease), and it lands
 /// exactly ([`Spring::land`]) so the radius IS the panel's when the open settles.
-pub const K_SHAPE: f32 = 1500.0;
+pub const K_SHAPE: f32 = 1200.0;
 /// The inset, in radii, of the largest rectangle that fits in a rounded corner: `1 - 1/sqrt(2)`.
 pub const INSCRIBED: f32 = 0.292_893_2;
 /// Width spring stiffness while opening: the underdamped fit to the iOS 26 recording (2026-11-17,
@@ -142,20 +142,20 @@ pub const ZETA_HEIGHT: f32 = 0.66;
 /// does not slow to a crawl at it): fitted to iOS 26's measured close (2026-11-17; `series.md`
 /// "Iteration 2", the slab reaches the opener's width by ~133 ms), largest error 0.03 of the travel.
 /// It used to be one `K_CLOSE` 2000 for both axes, a slab at the drain by ~60 ms: twice as fast as iOS.
-pub const K_CLOSE_W: f32 = 450.0;
+pub const K_CLOSE_W: f32 = 460.0;
 /// Where the close's width spring is driven (0 = the drain's width; the rect clamps at it).
-pub const CLOSE_W_TARGET: f32 = -0.3;
+pub const CLOSE_W_TARGET: f32 = -0.37;
 /// The close's HEIGHT spring: the slower clock of the two (the height drains over ~250 ms while the
 /// width is done by ~133), largest error 0.05 against the measured table.
-pub const K_CLOSE_H: f32 = 140.0;
+pub const K_CLOSE_H: f32 = 120.0;
 /// Where the close's height spring is driven (below the drain, so the drain is passed at speed).
-pub const CLOSE_H_TARGET: f32 = -0.4;
+pub const CLOSE_H_TARGET: f32 = -0.67;
 /// The outward velocity (progress units per second) the WIDTH spring is given on the first frame of a
 /// close from a settled panel: a hair of a bulge (iOS: width 0.98 at 17 ms).
-pub const BULGE_KICK_W: f32 = 4.0;
+pub const BULGE_KICK_W: f32 = 5.3;
 /// The same for the HEIGHT: the slab BULGES ~7% of its travel at ~33 ms (iOS: 1.027 at 17 ms, 1.07 at
 /// 33) before it drains; with [`K_CLOSE_H`] pulling in, this peaks at 1.06 at ~25 ms.
-pub const BULGE_KICK_H: f32 = 6.0;
+pub const BULGE_KICK_H: f32 = 5.5;
 /// The drain rect's width as a share of the opener's ([`drain_rect`]; never wider than the opener):
 /// the slab reaches the opener's own width, as iOS's does (the table's width 0 is the button's), and
 /// the fold then narrows it as it drains.
@@ -167,12 +167,15 @@ pub const DRAIN_HEIGHT: f32 = 1.0;
 /// [`MERGE_K`], so the smooth minimum bridges the two and the neck shows.
 pub const DRAIN_GAP: f32 = 8.0;
 /// The height progress (the slab's travel, 1 = the panel, 0 = the drain) under which a close's FOLD is
-/// released: half the height is drained (~133 ms) and the slab starts to drain up into the opener, so
-/// the opener is whole by ~215 ms (iOS: ~200, gone by ~250) while the slab is still travelling.
-pub const FOLD_AT: f32 = 0.5;
+/// released: the slab is in the last fifth of its way (~175 ms) and starts to drain up into the opener.
+/// The recording's bbox drains through ~200 ms and is gone by ~250, so the fold takes only the TAIL (a
+/// fold released at half the travel collapsed the drawn slab by a third of the panel in one frame, the
+/// owner's film at +133 ms); the hand-back is at ~233 ms. The drawn series is fitted, not the springs
+/// (`the_close_follows_the_ios_reference_curve`).
+pub const FOLD_AT: f32 = 0.2;
 /// The fold spring's stiffness (0 = the slab whole under the opener, 1 = drained into it):
-/// critically damped, the slab is within 4% of gone in about 80 ms.
-pub const K_FOLD: f32 = 3600.0;
+/// critically damped, the slab is within 4% of gone in about 50 ms (three frames).
+pub const K_FOLD: f32 = 5800.0;
 /// The opener's re-formed blob B ([`Frame::merge`]) as a share of the opener's own size once the
 /// slab has arrived at the drain: it grows from [`BLOB_BORN`] to this over the slab's approach (the
 /// open's merge curve, [`merge_scale_at`]), so it is about half size when the fold begins. The fold
@@ -192,6 +195,9 @@ pub const REFORM_TINT: f32 = 0.4;
 /// The fold at which the opener's own face starts to fade back in ([`Frame::opener_alpha`]): the
 /// face returns over the last of the drain, on the blob.
 pub const OPENER_BACK_FROM: f32 = 0.55;
+/// The fold at which the blob B wears ALL of the opener's fill ([`blob_tint`]): a little before A is
+/// gone ([`A_GONE_AT`]), so the last glass frame is whole whatever step the fold takes on it.
+pub const TINT_WHOLE_AT: f32 = 0.9;
 /// The slab's scale (1 = the drain rect) at which it is gone: the close is over and the frame is
 /// the closed one. A few pixels of glass, already inside the blob's neck.
 pub const A_GONE_AT: f32 = 0.04;
@@ -373,8 +379,8 @@ pub fn clear_at(t: f32) -> f32 {
 /// **How much of the opener's focused fill the re-formed blob B wears** on a close, from the
 /// re-form's `reform` (0 when B is born, 1 once the slab has arrived at the drain, the open's merge
 /// curve [`merge_scale_at`]) and the `fold` (0 = the slab whole under the opener, 1 = drained in):
-/// [`REFORM_TINT`] of it over the re-form, then the rest over the fold, the whole of it exactly when
-/// A is gone ([`A_GONE_AT`], the frame the close hands back). B is born as glass, whitens as it
+/// [`REFORM_TINT`] of it over the re-form, then the rest over the fold, the whole of it by
+/// [`TINT_WHOLE_AT`], before A is gone ([`A_GONE_AT`], the frame the close hands back). B is born as glass, whitens as it
 /// re-forms and arrives whole, so the pill the host's lift paints in its place is the colour B
 /// already wears (owner film, 2026-11-17: B was dark glass on every frame and popped white on the
 /// hand-back). It rides the same two clocks as B's size, which are eased already (a smoothstep and
@@ -382,7 +388,7 @@ pub fn clear_at(t: f32) -> f32 {
 /// kept to a share so the fast arrival of the slab (four frames) cannot make it step by more than
 /// about a fifth of the range.
 pub fn blob_tint(reform: f32, fold: f32) -> f32 {
-    let gone = (fold / (1.0 - A_GONE_AT)).clamp(0.0, 1.0);
+    let gone = (fold / TINT_WHOLE_AT).clamp(0.0, 1.0);
     let reform = reform.clamp(0.0, 1.0);
     REFORM_TINT * reform * reform * (1.0 - gone) + gone
 }
@@ -408,9 +414,10 @@ fn lerp_rect(a: Rect, b: Rect, t: f32) -> Rect {
     Rect::new(l(a.x, b.x), l(a.y, b.y), l(a.w, b.w), l(a.h, b.h))
 }
 
-/// `r` scaled by `s` about its own top-centre: a slab that drains UP toward the opener above it.
-fn shrink_to_top_centre(r: Rect, s: f32) -> Rect {
-    Rect::new(r.cx() - r.w * s * 0.5, r.y, r.w * s, r.h * s)
+/// `r` scaled by `sw` wide and `sh` tall about its own top-centre: a slab that drains UP toward the
+/// opener above it.
+fn shrink_to_top_centre(r: Rect, sw: f32, sh: f32) -> Rect {
+    Rect::new(r.cx() - r.w * sw * 0.5, r.y, r.w * sw, r.h * sh)
 }
 
 /// The panel's rect when the width spring is at `pw` and the height spring at `ph` (0 = the
@@ -674,7 +681,9 @@ impl Morph {
             // `MERGE_END_AT`, and its face fades as the opener's does (a cross-fade, no hand-over)
             Merge { rect: Rect::new(f.cx() - w * 0.5, top, w, h), radius: pill_radius * sb, k: MERGE_K, tint: blob_tint(reform, fold) * c }
         });
-        let rect = shrink_to_top_centre(travelled, sa);
+        // the fold narrows A linearly and drains its height with the SQUARE of the fold, so the slab
+        // keeps its height while the fold takes hold and the drawn series follows the table's tail
+        let rect = shrink_to_top_centre(travelled, sa, 1.0 - fold * fold);
         // The round LENS: half the smaller side while the glass is small (and again as a close shrinks
         // it), easing to the caller's radius as it nears rest (the shape spring)
         let settle = self.shape.pos.clamp(0.0, 1.0);

@@ -458,7 +458,7 @@ presentation in a design pass.
    appear at ~75 ms and are opaque by ~150 ms, clipped to the rect's INSCRIBED rectangle (the shared
    scissor; a true rounded clip is the shared-layer follow-up). A close bulges ~7% by ~33 ms (width and
    height on their own springs, fitted to the recording's close), then the slab shrinks with its rows
-   and frost leaving over ~50 ms and drains into the opener by ~215 ms. The modal dim of a
+   and frost leaving over ~50 ms and drains into the opener (hand-back at ~233 ms; the drawn series is what the close test fits). The modal dim of a
    morphing menu FOLLOWS the morph (`Popover::dim` -> `Scrim::following`: in by ~150 ms, out with
    the slab), not the container's appear spring; a screen's `scrim()` returns `self.popover.dim(DIM_*)`.
    **The header menus morph the glass ONLY (design review S11/S12):** Library Sort & Filter, the
