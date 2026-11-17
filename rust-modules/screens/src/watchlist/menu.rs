@@ -213,7 +213,7 @@ impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
     }
     /// The COMPACT role (DS6's 30% scrim): a chip-shaped control on a live page opening a list.
     fn scrim(&self) -> Scrim {
-        Scrim::dim(plx_ui::theme::underlay::DIM_COMPACT)
+        self.menu.popover().dim(plx_ui::theme::underlay::DIM_COMPACT)
     }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
     /// The panel, growing out of the pill's rect (`OptionsMenu::draw`). Drawn on the frame painter,

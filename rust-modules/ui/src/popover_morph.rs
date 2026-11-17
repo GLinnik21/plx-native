@@ -18,41 +18,58 @@
 //! the springs this module names; where it disagrees with the brief the brief wins (recorded on
 //! the constants below).
 //!
-//! **Five springs, one clock.** The panel rect's width and height are separate critically damped
-//! springs (width the slower, so the pill widens after it has begun to open); the corner radius is
-//! derived from the height spring with a bulge; the rows ride an UNDER-damped scale spring
-//! (`0.82 -> 1`, ζ 0.6, so they settle with a 1.7% overshoot rather than ringing); and a fifth,
-//! stiff one ([`K_OUT`]) carries the CLOSE's first phase, the content and the frost leaving.
-//! Durations are not stated, they fall out of the stiffnesses: the height spring (the one the eye
-//! follows) is within 6% of rest at 150 ms and the width spring within 6% at 190 ms.
+//! **The open is UNDERDAMPED, fitted to a measurement.** The owner's verdict on the first critically
+//! damped morph was "too fast" (it was still after ~150 ms, with its rows done by ~80), and the
+//! owner's screen recording of an iOS 26 glass menu (the Claude app's "..." menu, 60 fps, measured
+//! frame by frame against the static page, 2026-11-17; this SUPERSEDES the earlier Photos-menu
+//! reference that saw no overshoot) shows why: the glass's height overshoots by about 9% of its
+//! travel (peaking ~150 ms), its width lags the height by about two frames and overshoots by about
+//! 4% (peaking ~220 ms), and both settle slowly to rest by ~400 ms. The width and height are
+//! therefore separate UNDERDAMPED springs ([`K_HEIGHT`]/[`ZETA_HEIGHT`], [`K_WIDTH`]/[`ZETA_WIDTH`]
+//! after a [`WIDTH_LAG`]), fitted to that table (minimising the largest per-frame error, t = 0 on the
+//! first frame the glass draws; a single second-order spring cannot trace the slow tail, so the fit
+//! keeps the overshoot a little under the measured one: 6% and 4% against 9% and 4%, within 0.06 of
+//! the table on every frame, `the_open_follows_the_ios_reference_curve`). The rect is larger than
+//! the panel while it rings. The corner radius is derived from the height with a bulge; the ROWS do
+//! not have a spring on an open at all: they are laid out in the glass and ride its overshoot
+//! ([`Frame::rows_scale`] is the glass's height over the panel's); and a stiff spring ([`K_OUT`])
+//! carries the CLOSE's first phase, the content and the frost leaving. The old rows spring
+//! ([`K_ROWS`]) remains for the fade+scale fallback only.
 //!
-//! **One surface, one clock.** The pill and the panel are ONE surface whose rect, radius and fill
-//! animate. Everything but the rows' scale and the close's `out` is a function of
-//! [`Frame::progress`], the slower of the two rect springs (0 = the opener's rect, 1 = the panel):
+//! **One surface, two clocks.** The pill and the panel are ONE surface whose rect, radius and fill
+//! animate. The glass's cross-in is a function of the HEIGHT alone (it leads, so the glass draws from
+//! the first step: iOS shows it on frame 0, a thin drop extending below the button); everything else
+//! but the close's `out` is a function of [`Frame::progress`], the slower of the two rect springs
+//! (clamped to 0..1: 0 = the opener's rect, 1 = the panel, which the rect passes while it rings):
 //!
-//! - the glass and its SHADOW cross in together over the first [`FILL_AT`] of the progress, a
+//! - the glass and its SHADOW cross in together over the first [`FILL_AT`] of the HEIGHT, a
 //!   smoothstep ([`Frame::ground_alpha`]): the ONE ramp, so a rect that has left the opener is
 //!   never opaque (an opaque first frame hung a slab ~25 px below the pill, N-b);
 //! - the OPENER fades out over the first [`OPENER_OUT_AT`] ([`Frame::opener_alpha`]) and the glass
 //!   is JOINED to a shrinking copy of the opener's rect ([`Frame::merge`]) until [`MERGE_END_AT`],
 //!   so the glass reads as detaching from the button rather than appearing over it;
 //! - the glass is CLEAR (the sharp page refracted through it) while it is small and FROSTED once it
-//!   is big ([`Frame::clear`], from [`FROST_FROM`] to [`FROST_TO`]);
-//! - the ROWS ([`Frame::content_alpha`]) start at [`ROWS_FROM_AT`], once the glass has taken over,
-//!   and are opaque by [`ROWS_OPAQUE_AT`]. They are clipped to the current rect
-//!   (`Popover::morph_rows`), so no row ever draws outside the surface.
+//!   is big ([`Frame::clear`], from [`FROST_FROM`] to [`FROST_TO`], complete at the first peak,
+//!   ~150 ms, not after the settle);
+//! - the ROWS ([`Frame::content_alpha`]) start at [`ROWS_FROM_AT`] (~100 ms, as iOS shows them),
+//!   and are opaque by [`ROWS_OPAQUE_AT`] (~150 ms). They are scaled with the glass
+//!   ([`Frame::rows_scale`]) and clipped to the current rect (`Popover::morph_rows`), so no row
+//!   ever draws outside the surface;
+//! - the modal DIM ([`Frame::dim`], [`dim_at`]) follows the progress too (in by ~150 ms), through
+//!   `Popover::dim` and `Scrim::following`, instead of the container's own appear spring.
 //!
 //! **A close is NOT the open reversed**; it is a droplet that drains back into the opener, measured
-//! from iOS 26's Photos filter menu (60 fps, about 230 ms in all):
-//! 1. (about 33 ms) the rows and the frost vanish ([`Frame::content_alpha`] and [`Frame::clear`]
-//!    ride the `out` spring, [`K_OUT`]), leaving clear glass in the panel's rect; the rect HOLDS
-//!    until `out` reaches [`OUT_GATE`];
-//! 2. (to about 150 ms) the clear slab A springs from the panel to the DRAIN rect ([`drain_rect`]):
+//! from iOS 26's Photos filter menu and the Claude app's menu (60 fps, about 230 ms in all):
+//! 1. the slab BULGES outward on its first frame ([`BULGE_KICK`]: the reference's bottom edge goes
+//!    out ~2% of the height), then shrinks from the second; the rows and the frost leave over about
+//!    50 ms ([`Frame::content_alpha`] and [`Frame::clear`] ride the `out` spring, [`K_OUT`], gone
+//!    by ~67 ms), shrinking WITH the slab ([`Frame::rows_scale`]), leaving clear glass;
+//! 2. (to about 110 ms) the clear slab A springs from the panel to the DRAIN rect ([`drain_rect`]):
 //!    just BELOW the opener, centred on it, about its height and [`DRAIN_WIDTH`] of its width, a
 //!    capsule, [`DRAIN_GAP`] under it (closer than [`MERGE_K`], so the glass can bridge it). The
 //!    opener re-forms as its OWN blob B, growing up from the opener's bottom edge as A closes in
 //!    ([`BLOB_BORN`] to [`REFORM_FROM`]), the same [`Frame::merge`] shape the open shrinks;
-//! 3. (to about 235 ms) the fold ([`K_FOLD`], released once A is within [`FOLD_AT`] of the drain):
+//! 3. (to about 215 ms) the fold ([`K_FOLD`], released once A is within [`FOLD_AT`] of the drain):
 //!    B grows to the opener's full rect while A shrinks to nothing toward its own top-centre,
 //!    draining UP into B through the smooth-minimum neck, and the opener's own face fades back in
 //!    over the last of it ([`OPENER_BACK_FROM`]). **B whitens as it re-forms**: its face blends
@@ -65,7 +82,7 @@
 //!
 //! The open is NOT the close either: the opener's rect grows into the panel's (the panel now
 //! COVERS its opener, `popover::cover_opener`), height leading, clear then frosted, the opener's
-//! face consumed. Its merge shape is never whitened: frame 0 draws no glass (the face alone), and
+//! face consumed, ringing past the panel before it rests. Its merge shape is never whitened: frame 0 draws no glass (the face alone), and
 //! the face's fall and the glass's rise run on one progress, a cross-fade with no frame at which
 //! white is swapped for dark.
 //!
@@ -84,15 +101,33 @@ pub const PANEL_RADIUS: f32 = 22.0;
 /// How far past the straight pill-to-panel radius ramp the corner swells mid-open, in px. The
 /// board's radius runs 19 -> 34 -> 22 for a 38 px pill (a swell of about 13 over the ramp's 20).
 pub const RADIUS_BULGE: f32 = 13.0;
-/// Width spring stiffness while opening (brief: k ~ 620; ≈190 ms to within 6% of rest).
-pub const K_WIDTH: f32 = 620.0;
-/// Height spring stiffness while opening (brief: k ~ 950; ≈150 ms to within 6% of rest).
-pub const K_HEIGHT: f32 = 950.0;
+/// Width spring stiffness while opening: the underdamped fit to the iOS 26 recording (2026-11-17,
+/// see the module doc), `ZETA_WIDTH` 0.7 after [`WIDTH_LAG`]. Largest error against the measured
+/// table 0.035 (frame 3), width overshoot 4.6% at ~220 ms against the measured ~4% at ~220.
+pub const K_WIDTH: f32 = 450.0;
+/// The width spring's damping ratio ([`K_WIDTH`]): ringing 4.6% past the panel, back to rest by ~0.4 s.
+pub const ZETA_WIDTH: f32 = 0.7;
+/// How long the width waits before it starts to open, in seconds: the recording's width does not
+/// move for the first two frames (0.00, -0.02, 0.07) while its height is already 0.08 -> 0.37, so
+/// the glass first extends DOWN from the button and then widens (about 1.6 frames).
+pub const WIDTH_LAG: f32 = 0.026;
+/// Height spring stiffness while opening: the underdamped fit to the same recording, `ZETA_HEIGHT`
+/// 0.66, from the first glass frame with no delay. Largest error against the table 0.053 (frames 1
+/// and 10): a second-order spring cannot hold the measured 9% peak AND the slow tail, so the fit
+/// peaks at 6.3% (at ~120 ms; measured: 9% at ~150) and decays a little faster than the table.
+pub const K_HEIGHT: f32 = 920.0;
+/// The height spring's damping ratio ([`K_HEIGHT`]): ringing 6.3% past the panel, back to rest by ~0.35 s.
+pub const ZETA_HEIGHT: f32 = 0.66;
 /// Both rect springs while CLOSING: the slab's travel from the panel to the drain rect
 /// ([`drain_rect`]) takes about 115 ms (within 6% of rest), the measured iOS phase between the
 /// content leaving and the fold. Critically damped, so there is no overshoot past the drain. They
-/// only start once the content has left ([`OUT_GATE`]).
+/// They are released on the first frame of a close, with a [`BULGE_KICK`].
 pub const K_CLOSE: f32 = 2000.0;
+/// The outward velocity (in progress units per second) both rect springs are given on the first
+/// frame of a close from a settled panel: the reference's slab BULGES before it shrinks (the bottom
+/// edge goes out ~17 px of a ~750 px panel, 2.3%, on the first frame at 17 ms; 25/s gives 2.6% of
+/// the panel's travel on the first 60 fps frame, then the close spring pulls it back in).
+pub const BULGE_KICK: f32 = 25.0;
 /// The drain rect's width as a share of the opener's: the slab drains into a narrower drop than
 /// the opener it joins ([`drain_rect`]; never wider than the opener).
 pub const DRAIN_WIDTH: f32 = 0.6;
@@ -131,25 +166,24 @@ pub const OPENER_BACK_FROM: f32 = 0.55;
 /// the closed one. A few pixels of glass, already inside the blob's neck.
 pub const A_GONE_AT: f32 = 0.04;
 /// The stiffness of the `out` spring that carries a close's first phase, the rows and the frost
-/// leaving (0 = content in, 1 = content out). Critically damped, so ≈48 ms to within 6% of rest and
-/// ≈33 ms to within 18%: the content is gone in about two frames, leaving clear glass.
-pub const K_OUT: f32 = 9000.0;
-/// The `out` value at which a close's rect springs are released: until then the panel holds its
-/// rect while its rows and frost leave, so the rect starts shrinking when the content is almost
-/// gone (two frames at 60 fps).
-pub const OUT_GATE: f32 = 0.8;
-/// The rows' scale spring stiffness (brief: k ~ 720).
+/// leaving (0 = content in, 1 = content out). Critically damped, so ≈50 ms to within 10% of rest and
+/// ≈67 ms to within 4%: the content leaves over about three frames while the slab shrinks (the
+/// reference's rows are gone by 50-67 ms; the old 9000 had them gone in two frames, over a rect that held).
+pub const K_OUT: f32 = 6000.0;
+/// The rows' scale spring stiffness (brief: k ~ 720). Only the fade+scale FALLBACK uses the rows'
+/// own spring now; with an opener the rows ride the glass ([`Frame::rows_scale`]).
 pub const K_ROWS: f32 = 720.0;
 /// The rows' damping ratio (brief and board: 0.6 — underdamped, one small overshoot).
 pub const ZETA_ROWS: f32 = 0.6;
 /// The rows' scale when the morph starts (the board's `scale(.82)`).
 pub const ROWS_FROM: f32 = 0.82;
-/// Progress at which the glass is fully in: the growing shape is all glass before it gets big.
+/// The HEIGHT at which the glass is fully in: the growing shape is all glass before it gets big.
 pub const FILL_AT: f32 = 0.18;
-/// Progress at which the rows begin to appear: not before the glass has taken over.
-pub const ROWS_FROM_AT: f32 = 0.3;
-/// Progress at which the rows are fully opaque.
-pub const ROWS_OPAQUE_AT: f32 = 0.6;
+/// Progress (the slower of the two rect springs) at which the rows begin to appear: ~100 ms after
+/// the first glass frame, where the recording first shows them (frame 6, 0.70 of the width).
+pub const ROWS_FROM_AT: f32 = 0.7;
+/// Progress at which the rows are fully opaque: ~150 ms, as the glass reaches its size (0.96).
+pub const ROWS_OPAQUE_AT: f32 = 0.96;
 /// Progress at which the opener's own face is fully gone on an open (and starts to return on a
 /// close): it fades out over `[0, OPENER_OUT_AT]` as the glass detaches from it
 /// ([`Frame::opener_alpha`]; the host's opener lift paints the opener at that alpha).
@@ -163,10 +197,11 @@ pub const MERGE_END_AT: f32 = 0.35;
 pub const MERGE_K: f32 = 28.0;
 /// Progress at which the glass starts to frost: below it the glass is fully CLEAR (the sharp page
 /// refracted through it, [`Frame::clear`] = 1).
-pub const FROST_FROM: f32 = 0.2;
+pub const FROST_FROM: f32 = 0.25;
 /// Progress at which the glass is fully frosted: the material the settled panel wears
-/// ([`Frame::clear`] = 0).
-pub const FROST_TO: f32 = 0.7;
+/// ([`Frame::clear`] = 0). 0.96 is ~150 ms, the first peak: the frost is complete when the glass
+/// first reaches its size, not after the settle.
+pub const FROST_TO: f32 = 0.96;
 /// Fallback when the opener has no measured rect to morph from: a fade+scale of the panel about
 /// its centre, starting at this scale. The board's `menuout` keyframes leave a menu at 0.92, so an
 /// entrance from the same scale is the matching motion.
@@ -179,7 +214,8 @@ pub struct Frame {
     pub rect: Rect,
     /// Its current corner radius.
     pub radius: f32,
-    /// The morph's progress, 0 = the opener's rect, 1 = the panel: the slower rect spring.
+    /// The morph's progress, 0 = the opener's rect, 1 = the panel: the slower rect spring, clamped to
+    /// 0..1 (the rect itself passes the panel while the springs ring).
     pub progress: f32,
     /// The glass's share of the fill (0 = none, 1 = all glass): the alpha of the glass, with an
     /// opener also its shadow's (the one ramp); for the fallback the glass's alpha alone.
@@ -187,7 +223,10 @@ pub struct Frame {
     /// Alpha of the panel's rows: 0 until [`ROWS_FROM_AT`], so a row is only ever drawn on a
     /// surface whose fill is all glass.
     pub content_alpha: f32,
-    /// Scale of the rows about their own centres (0.82 -> 1, with a small overshoot).
+    /// Scale of the rows about [`rows_anchor`]: with an opener the glass's current height over the
+    /// settled panel's (the rows are laid out IN the glass: above 1 while it rings past the panel,
+    /// 1 at rest, shrinking with the slab on a close); for the fade+scale fallback its own rows
+    /// spring (0.82 -> 1).
     pub rows_scale: f32,
     /// How much of the OPENER's own face is left (1 = whole, 0 = consumed): fades out over the
     /// first [`OPENER_OUT_AT`] of the progress on an open and back in over the last of a close's
@@ -207,6 +246,9 @@ pub struct Frame {
     /// (the sharp page refracted through the whole face). A close is clear from its first frames
     /// (the `out` spring), an open frosts from [`FROST_FROM`] to [`FROST_TO`]. 0 for the fallback.
     pub clear: f32,
+    /// How much of the modal dim has come in, 0..1 ([`dim_at`] of the progress): the share of the
+    /// surface's peak dim (`Popover::dim` hands it to the container as `Scrim::following`).
+    pub dim: f32,
 }
 
 impl Frame {
@@ -265,6 +307,14 @@ pub fn fill_at(t: f32) -> f32 {
 /// The opener's own alpha at progress `t`: `1 - smoothstep(0, OPENER_OUT_AT, t)`.
 pub fn opener_alpha_at(t: f32) -> f32 {
     1.0 - smooth(t, 0.0, OPENER_OUT_AT)
+}
+
+/// **The modal dim's share at progress `t`**: a smoothstep over the whole progress, so the page dims
+/// as the panel grows (in by ~150 ms, when the glass first reaches its size) and clears as the slab
+/// shrinks to the drain on a close (gone by ~110 ms), the container's own appear spring (k 300:
+/// 73% at 150 ms, still 14% at 200 ms on the way out) no longer deciding it for a morphing menu.
+pub fn dim_at(t: f32) -> f32 {
+    smooth(t, 0.0, 1.0)
 }
 
 /// The merge shape's scale at progress `t`: `1 - smoothstep(0, MERGE_END_AT, t)`.
@@ -372,17 +422,30 @@ pub fn rows_zoom(from: Option<Rect>, panel: Rect, scale: f32) -> Zoom {
 pub struct Morph {
     w: Spring,
     h: Spring,
+    /// The fade+scale fallback's rows spring (0.82 -> 1); an opener's rows ride the glass instead.
     rows: Spring,
     /// A close's content-and-frost phase: 0 = in, 1 = out ([`K_OUT`]).
     out: Spring,
     /// A close's fold, the slab draining into the re-formed opener: 0 = whole under it, 1 = gone
     /// ([`K_FOLD`]). Released once the slab is within [`FOLD_AT`] of the drain rect.
     fold: Spring,
+    /// What is left of the width's [`WIDTH_LAG`], in seconds.
+    lag: f32,
+    /// A close has begun (and its [`BULGE_KICK`] has been given); an open ends it.
+    closing: bool,
 }
 
 impl Morph {
     pub const fn new() -> Self {
-        Morph { w: Spring::at(0.0), h: Spring::at(0.0), rows: Spring::at(ROWS_FROM), out: Spring::at(0.0), fold: Spring::at(0.0) }
+        Morph {
+            w: Spring::at(0.0),
+            h: Spring::at(0.0),
+            rows: Spring::at(ROWS_FROM),
+            out: Spring::at(0.0),
+            fold: Spring::at(0.0),
+            lag: WIDTH_LAG,
+            closing: false,
+        }
     }
 
     /// Back to the pill, with no motion in between.
@@ -392,29 +455,48 @@ impl Morph {
 
     /// Advance one frame toward the open (`true`) or closed (`false`) end.
     ///
-    /// An open is the rect springs alone (`out` and the `fold` return to 0 if a close had raised
-    /// them). A close is NOT that reversed: `out` rises first, and the rect springs hold where they
-    /// are (their velocity dropped, so they do not coast) until it passes [`OUT_GATE`]; the fold
-    /// is released only once the slab is within [`FOLD_AT`] of the drain rect.
+    /// An open is the two UNDERDAMPED rect springs ([`K_HEIGHT`], and [`K_WIDTH`] after its
+    /// [`WIDTH_LAG`]); `out` and the `fold` return to 0 if a close had raised them. Each spring
+    /// is put EXACTLY on the panel once it has arrived ([`Spring::land`]): an underdamped spring
+    /// only ever decays toward its target, and [`settled`](Self::settled) must not fire at the first
+    /// crossing while it rings.
+    ///
+    /// A close is NOT that reversed: the rect springs are released on the first frame with an
+    /// outward [`BULGE_KICK`] (a settled panel bulges before it shrinks), `out` rises with them (the
+    /// rows and the frost leave while the slab shrinks), and the fold is released once the slab is
+    /// within [`FOLD_AT`] of the drain rect.
     pub fn step(&mut self, open: bool, dt: f32) {
         if open {
+            self.closing = false;
             self.out.step(0.0, K_OUT, dt);
             self.fold.step(0.0, K_FOLD, dt);
-            self.w.step(1.0, K_WIDTH, dt);
-            self.h.step(1.0, K_HEIGHT, dt);
+            let mut dt_w = dt;
+            if self.lag > 0.0 {
+                let waited = self.lag.min(dt);
+                self.lag -= waited;
+                dt_w = dt - waited;
+            }
+            self.h.step_zeta(1.0, K_HEIGHT, ZETA_HEIGHT, dt);
+            if dt_w > 0.0 {
+                self.w.step_zeta(1.0, K_WIDTH, ZETA_WIDTH, dt_w);
+            }
+            self.h.land(1.0, dt);
+            self.w.land(1.0, dt);
             self.rows.step_zeta(1.0, K_ROWS, ZETA_ROWS, dt);
             return;
         }
-        self.out.step(1.0, K_OUT, dt);
-        let gated = self.out.pos >= OUT_GATE;
-        if gated {
-            self.w.step(0.0, K_CLOSE, dt);
-            self.h.step(0.0, K_CLOSE, dt);
-        } else {
-            self.w.vel = 0.0;
-            self.h.vel = 0.0;
+        self.lag = 0.0;
+        if !self.closing {
+            self.closing = true;
+            if self.w.pos >= 0.9 && self.h.pos >= 0.9 {
+                self.w.vel += BULGE_KICK;
+                self.h.vel += BULGE_KICK;
+            }
         }
-        if gated && self.w.pos.min(self.h.pos) <= FOLD_AT {
+        self.out.step(1.0, K_OUT, dt);
+        self.w.step(0.0, K_CLOSE, dt);
+        self.h.step(0.0, K_CLOSE, dt);
+        if self.w.pos.min(self.h.pos) <= FOLD_AT {
             self.fold.step(1.0, K_FOLD, dt);
         } else {
             self.fold.vel = 0.0;
@@ -422,11 +504,11 @@ impl Morph {
         self.rows.step_zeta(ROWS_FROM, K_ROWS, ZETA_ROWS, dt);
     }
 
-    /// Has the close finished for an opener the slab drains into: the slab gone ([`A_GONE_AT`])
-    /// and the rows back at their start? (`Popover::update` resets the morph, `out` included,
-    /// when it lands.) A close with no opener rect has no droplet: [`closed_for`](Self::closed_for).
+    /// Has the close finished for an opener the slab drains into: the slab gone ([`A_GONE_AT`])?
+    /// (`Popover::update` resets the morph, `out` included, when it lands.) A close with no opener
+    /// rect has no droplet: [`closed_for`](Self::closed_for).
     pub fn closed(&self) -> bool {
-        self.fold.pos >= 1.0 - A_GONE_AT && self.rows.pos <= ROWS_FROM + 0.001
+        self.fold.pos >= 1.0 - A_GONE_AT
     }
 
     /// [`closed`](Self::closed) for a morph with an opener (`has_opener`), or for the fade+scale
@@ -438,11 +520,14 @@ impl Morph {
         self.w.pos <= 0.001 && self.h.pos <= 0.001 && self.rows.pos <= ROWS_FROM + 0.001
     }
 
-    /// Has the open visibly arrived? A close that has begun ([`step`](Self::step) with `false`)
-    /// raises `out` on its first frame, so the settled panel stops being settled with it.
+    /// Has the open visibly arrived? Both rect springs LANDED on the panel (not merely crossed it:
+    /// they ring past it first). A close that has begun ([`step`](Self::step) with `false`) raises
+    /// `out` on its first frame, so the settled panel stops being settled with it.
     pub fn settled(&self) -> bool {
-        self.w.pos >= 0.999
-            && self.h.pos >= 0.999
+        self.w.pos == 1.0
+            && self.w.vel == 0.0
+            && self.h.pos == 1.0
+            && self.h.vel == 0.0
             && (self.rows.pos - 1.0).abs() <= 0.001
             && self.out.pos <= 0.001
             && self.fold.pos <= 0.001
@@ -454,11 +539,16 @@ impl Morph {
     /// `panel_radius` is the caller's own panel corner radius: the morph ENDS on it (and a close
     /// starts from it), so the settled ground and the morphing one are the same shape.
     pub fn frame(&self, from: Option<Rect>, panel: Rect, panel_radius: f32) -> Frame {
-        let (pw, ph) = (self.w.pos.clamp(0.0, 1.0), self.h.pos.clamp(0.0, 1.0));
+        // The springs ring past 1 (and a close's bulge too): the rect extrapolates with them, every
+        // clock below reads them clamped to 0..1. The glass's cross-in reads the HEIGHT alone (it
+        // leads, so the glass draws from the first step while the width still waits its lag).
+        let (pw_raw, ph_raw) = (self.w.pos.max(0.0), self.h.pos.max(0.0));
+        let (pw, ph) = (pw_raw.min(1.0), ph_raw.min(1.0));
         let out = self.out.pos.clamp(0.0, 1.0);
         let fold = self.fold.pos.clamp(0.0, 1.0);
         let progress = pw.min(ph);
         let content_alpha = ramp(progress, ROWS_FROM_AT, ROWS_OPAQUE_AT) * (1.0 - out);
+        let dim = dim_at(progress);
         let Some(f) = from else {
             return Frame {
                 rect: rect_at_xy(None, panel, pw, ph),
@@ -470,6 +560,7 @@ impl Morph {
                 opener_alpha: 1.0,
                 merge: None,
                 clear: 0.0,
+                dim,
             };
         };
         // The slab is gone: the close is over and the frame is the closed one, exactly (the same
@@ -486,7 +577,7 @@ impl Morph {
         let drain = drain_rect(f);
         // where the slab's travel starts from: the opener's rect on an open, the drain rect on a close
         let start = lerp_rect(f, drain, c);
-        let travelled = rect_at_xy(Some(start), panel, pw, ph);
+        let travelled = rect_at_xy(Some(start), panel, pw_raw, ph_raw);
         let sa = 1.0 - fold;
         let start_radius = lerp(pill_radius, drain.h * 0.5, c);
         // The merge shape B: the opener's rect shrinking about its own centre on an open; on a close
@@ -505,17 +596,20 @@ impl Morph {
             // `MERGE_END_AT`, and its face fades as the opener's does (a cross-fade, no hand-over)
             Merge { rect: Rect::new(f.cx() - w * 0.5, top, w, h), radius: pill_radius * sb, k: MERGE_K, tint: blob_tint(reform, fold) * c }
         });
+        let rect = shrink_to_top_centre(travelled, sa);
         Frame {
-            rect: shrink_to_top_centre(travelled, sa),
+            rect,
             radius: radius_at(start_radius, panel_radius, ph) * sa,
             progress,
             // a close's slab is glass all the way into the opener; an open's is the one fill ramp
-            ground_alpha: lerp(fill_at(progress), 1.0, c),
+            ground_alpha: lerp(fill_at(ph), 1.0, c),
             content_alpha,
-            rows_scale: self.rows.pos,
+            // the rows are laid out in the glass: they are as big as it is, over the settled panel's
+            rows_scale: if panel.h > 0.0 { rect.h / panel.h } else { 1.0 },
             opener_alpha: lerp(opener_alpha_at(progress), smooth(fold, OPENER_BACK_FROM, 1.0), c),
             merge,
             clear: clear_at(progress).max(out),
+            dim,
         }
     }
 }
@@ -793,7 +887,6 @@ mod tests {
         let big = open.iter().find(|fr| fr.rect.w > PILL.w + 0.2 * (PANEL.w - PILL.w)).expect("it grows");
         assert_eq!(big.ground_alpha, 1.0, "all glass by the time it is 20% grown: {big:?}");
         // the rows still wait for their own threshold, and never draw on a part-glass surface
-        assert_eq!(ROWS_FROM_AT, 0.3);
         assert!(FILL_AT < ROWS_FROM_AT);
     }
 
@@ -1208,5 +1301,39 @@ mod tests {
         let f = m.frame(Some(PILL), PANEL, RAD);
         assert!(m.settled(), "the re-open settles");
         assert!(f.content_alpha > 0.999 && f.clear < 0.001 && f.merge.is_none(), "{f:?}");
+    }
+
+    /// The modal dim of a MORPHING menu follows its morph (`Popover::dim`, the shared place every
+    /// header menu's `Screen::scrim` goes through): in by ~150 ms and out by ~200 ms, where the
+    /// container's own appear spring (k 300) is 73% at 150 ms and still 14% at 200 ms on the way out.
+    /// A popover that does not morph asks for the container's spring, unchanged.
+    #[test]
+    fn the_dim_follows_the_morph_for_a_morphing_menu_and_is_the_containers_for_any_other() {
+        let _g = plx_base::testlock::serial();
+        let mut pop = crate::popover::Popover::new().morphing();
+        pop.open_from(Some(PILL));
+        let dim = |p: &crate::popover::Popover| p.dim(0.30).ramp.expect("a morphing menu's dim has its own ramp");
+        assert_eq!(dim(&pop), 0.0, "no dim before the first step");
+        let mut coming = Vec::new();
+        for _ in 0..40 {
+            pop.update(DT);
+            coming.push(dim(&pop));
+        }
+        assert!(coming[9] >= 0.98, "in by ~150 ms: {}", coming[9]);
+        assert!(coming[2] < 0.5, "and not in two frames: {}", coming[2]);
+        assert!(coming.windows(2).all(|w| w[1] >= w[0] - 1e-3), "it only comes in: {coming:?}");
+        assert_eq!(*coming.last().unwrap(), 1.0);
+        pop.dismiss();
+        let mut going = Vec::new();
+        for _ in 0..30 {
+            pop.update(DT);
+            going.push(dim(&pop));
+        }
+        assert!(going[0] > 0.9, "a close has not dimmed out on its first frame: {}", going[0]);
+        assert!(going[11] <= 0.05, "out by ~200 ms: {}", going[11]);
+        assert!(going.windows(2).all(|w| w[1] <= w[0] + 1e-3), "it only goes out: {going:?}");
+        let plain = crate::popover::Popover::new();
+        let scrim = plain.dim(0.30);
+        assert_eq!((scrim.alpha, scrim.ramp), (0.30, None), "a popover that does not morph keeps the container's spring");
     }
 }

@@ -645,6 +645,20 @@ impl Popover {
         }
         self.morph.frame(self.from, Rect::FULL, 0.0).opener_alpha
     }
+    /// **The modal dim a surface owning this popover asks its container for** (`Screen::scrim`), at
+    /// the role's peak `weight` (a `theme::underlay::DIM_*` row): the container's appear spring ramps
+    /// it for every popover but a [`morphing`](Self::morphing) one, whose dim FOLLOWS the morph
+    /// ([`Scrim::following`](crate::screen::Scrim::following), [`popover_morph::dim_at`](crate::popover_morph::dim_at)):
+    /// in as the glass grows (by ~150 ms) and out as the slab drains (gone by ~110 ms), not in
+    /// ~2 frames on the container's k 300 spring that is 73% at 150 ms and 14% at 200 ms on the way out.
+    pub fn dim(&self, weight: f32) -> crate::screen::Scrim {
+        let scrim = crate::screen::Scrim::dim(weight);
+        if self.style == OpenStyle::Morph {
+            scrim.following(self.morph.frame(None, Rect::FULL, 0.0).dim)
+        } else {
+            scrim
+        }
+    }
     /// The opener's rect the morph grows from and lands back on: the one handed to
     /// [`open_from`](Self::open_from) / [`track_opener`](Self::track_opener), `None` before either.
     pub fn opener(&self) -> Option<Rect> {

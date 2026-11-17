@@ -446,11 +446,18 @@ presentation in a design pass.
 
    **Popover open styles.** Two exist. `Appear` (default) is the shared `K_APPEAR` fade+slide.
    `Morph` (`Popover::morphing()` is the one selector; open with `open_from(opener.rect)`) is the glass opener's pill-to-panel
-   morph in `popover_morph.rs`: width spring k 620 and height spring k 950 critically damped, radius
-   pill -> THE CALLER'S panel radius with a bulge (so settle and the start of a close do not snap),
-   rows 0.82 -> 1 at zeta 0.6 k 720, and a 0.92 -> 1 fade+scale fallback when the opener has no
-   rect. The glass is laid whole at the morphing rect and the rows come in over it (from 30%,
-   opaque by 60%, clipped to the current rect), all on one clock (the slower rect spring).
+   morph in `popover_morph.rs`, fitted to a frame-by-frame measurement of iOS 26's glass menu (the
+   owner's recording, 2026-11-17): UNDERDAMPED width and height springs (height k 920 zeta 0.66,
+   width k 450 zeta 0.7 after a 26 ms lag; the rect rings 6% / 4.6% past the panel and lands by
+   ~0.4 s, within 0.06 of the measured table on every frame), the radius pill -> THE CALLER'S panel
+   radius with a bulge (so settle and the start of a close do not snap), a 0.92 -> 1 fade+scale
+   fallback (with its own 0.82 -> 1 rows spring) when the opener has no rect. The glass is laid whole at the
+   morphing rect, clear then frosted by ~150 ms, and the rows are laid out IN the glass: they ride
+   its overshoot (scale = the glass's height over the panel's), appear at ~100 ms and are opaque by
+   ~150 ms, clipped to the current rect. A close bulges ~2% for a frame, then the slab shrinks with
+   its rows and frost leaving over ~50 ms and drains into the opener by ~215 ms. The modal dim of a
+   morphing menu FOLLOWS the morph (`Popover::dim` -> `Scrim::following`: in by ~150 ms, out with
+   the slab), not the container's appear spring; a screen's `scrim()` returns `self.popover.dim(DIM_*)`.
    **The header menus morph the glass ONLY (design review S11/S12):** Library Sort & Filter, the
    Library's `+N` list and the Watchlist's Sort & Filter all open this way, and their opener is
    never part of the morph. A morphing surface names its opener (`Screen::opener`), the page
@@ -462,7 +469,7 @@ presentation in a design pass.
    scrim AND the panel, so the glass grows out from under a pill that does not change and a close
    shrinks back into it (`the_page_openers_lift_is_drawn_after_the_surfaces_on_both_plans`). The shared painters are
    `Popover::panel` (the glass at the morphing rect) and `Popover::morph_rows` (the rows, scaled
-   about the panel anchor by the row spring). The morph draws no opener face: every header
+   about the panel anchor by the glass's size). The morph draws no opener face: every header
    opener, the profile chip included, is the lift pass's, and the morph starts and ends on the opener's LIVE drawn rect (`Screen::opener_rect` -> `Popover::track_opener`, so the chip follows the bar's tuck). The morph is not
    faded by the container's appear: the surface begins and ends as the opener. A held surface is ticked with no time, so a morph starts on the first
    frame anyone sees. The item hold menu keeps lift+appear. A new morph constant is named in

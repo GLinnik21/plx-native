@@ -283,7 +283,8 @@ fn the_glass_leaves_every_header_opener_as_a_ramp_and_drains_back_on_close() {
         for n in 0..240 {
             pop.update(1.0 / 60.0);
             let Some(g) = pop.ground(panel, RAD) else { continue };
-            let fill = crate::popover_morph::fill_at(pop.morph_frame(Some(pill), panel, RAD).unwrap().progress);
+            // the fill ramp is the HEIGHT's (it leads, so the glass draws from the first step): read it off the rect
+            let fill = crate::popover_morph::fill_at(((g.rect.h - pill.h) / (panel.h - pill.h)).clamp(0.0, 1.0));
             opening.push(g.alpha);
             if outside(g.rect) {
                 assert!(g.alpha <= fill + 1e-4 && g.shadow <= fill + 1e-4,

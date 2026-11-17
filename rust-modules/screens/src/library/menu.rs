@@ -877,7 +877,7 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
     /// chip-shaped control on a live page opening a list beside it. The page recedes (inheriting
     /// its own light through the container's field) and stays readable.
     fn scrim(&self) -> plx_ui::screen::Scrim {
-        plx_ui::screen::Scrim::dim(plx_ui::theme::underlay::DIM_COMPACT)
+        self.popover.dim(plx_ui::theme::underlay::DIM_COMPACT)
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);

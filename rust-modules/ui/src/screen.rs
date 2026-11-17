@@ -60,6 +60,9 @@ pub struct Scrim {
     /// Where the dim's inherited light comes from — see [`UnderlaySource`]. Every constructor
     /// but [`Scrim::over_video`] answers [`UnderlaySource::Page`].
     pub source: UnderlaySource,
+    /// The surface's OWN 0..1 ramp for the dim, when it has one: the container uses it in place of
+    /// the surface's appear spring ([`Scrim::following`]). `None` = the appear spring.
+    pub ramp: Option<f32>,
 }
 
 /// **What a surface's dim inherits.** A dim here is not a black sheet: the container paints it
@@ -81,6 +84,7 @@ impl Scrim {
     pub const NONE: Scrim = Scrim {
         alpha: 0.0,
         source: UnderlaySource::Page,
+        ramp: None,
     };
 
     /// A dim of `alpha`. `alpha` is a `theme::underlay::DIM_*`
@@ -89,6 +93,7 @@ impl Scrim {
         Scrim {
             alpha,
                 source: UnderlaySource::Page,
+            ramp: None,
         }
     }
 
@@ -99,7 +104,15 @@ impl Scrim {
         Scrim {
             alpha,
                 source: UnderlaySource::Flat,
+            ramp: None,
         }
+    }
+
+    /// This dim with the surface's own `ramp` (0..1) in place of the container's appear spring: a
+    /// morphing menu's dim follows its MORPH (`Popover::dim`), so the page dims as the glass grows
+    /// and clears as the slab drains, not on a clock of its own.
+    pub const fn following(self, ramp: f32) -> Scrim {
+        Scrim { alpha: self.alpha, source: self.source, ramp: Some(ramp) }
     }
 }
 

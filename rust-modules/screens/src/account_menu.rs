@@ -495,7 +495,7 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
     /// The modal dim: the COMPACT role, as every menu hung off a chip: how dark the page goes behind
     /// this menu, the peak the container ramps with the appear spring (`ModalStack::draw_scrims`).
     fn scrim(&self) -> Scrim {
-        Scrim::dim(plx_ui::theme::underlay::DIM_COMPACT)
+        self.popover.dim(plx_ui::theme::underlay::DIM_COMPACT)
     }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {

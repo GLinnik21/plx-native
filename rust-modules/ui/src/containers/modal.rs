@@ -984,7 +984,7 @@ impl<H: Host> ModalStack<H> {
             }
             let Some(inst) = s.entry.inst.as_ref() else { continue };
             let scrim = inst.screen.scrim();
-            let a = scrim.alpha * s.motion.appear * nav_page_alpha;
+            let a = scrim.alpha * scrim.ramp.unwrap_or(s.motion.appear) * nav_page_alpha;
             if a > 0.0 {
                 out.push((s.entry.id, a));
             }
