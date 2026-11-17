@@ -158,6 +158,23 @@ impl OptionsRow {
         OptionsRow::Show(ShowFilter::OnYourServers),
     ];
 
+    /// The row's accessibility name (`watchlist_menu.<name>`): its meaning as a static word, never
+    /// its position (the order is draw order and may change).
+    pub fn a11y_name(self) -> &'static str {
+        match self {
+            OptionsRow::Type(TypeFilter::All) => "type_all",
+            OptionsRow::Type(TypeFilter::Movies) => "type_movies",
+            OptionsRow::Type(TypeFilter::Shows) => "type_shows",
+            OptionsRow::Sort(SortKey::DateAdded) => "sort_date_added",
+            OptionsRow::Sort(SortKey::Title) => "sort_title",
+            OptionsRow::Sort(SortKey::Release) => "sort_release",
+            OptionsRow::Sort(SortKey::Rating) => "sort_rating",
+            OptionsRow::Show(ShowFilter::All) => "show_all",
+            OptionsRow::Show(ShowFilter::Released) => "show_released",
+            OptionsRow::Show(ShowFilter::OnYourServers) => "show_on_servers",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             OptionsRow::Type(TypeFilter::All) => msg::watchlist_filter_type_all(),

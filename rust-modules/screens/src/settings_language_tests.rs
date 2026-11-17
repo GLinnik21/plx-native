@@ -193,3 +193,13 @@ fn adjacent_language_restart_decision_uses_owned_running_and_next_launch_facts()
     assert!(first.poll_save());
     assert!(!first.pending(), "the confirmed pick now equals this owner's running boot");
 }
+
+/// **The guide row names itself and the language rows are named by position**: one row per language, so no
+/// one static name fits them (`row.<i>`).
+#[test]
+fn the_language_rows_are_named_by_position_and_the_guide_by_name() {
+    assert_eq!(LangId::Contribute.a11y(), Some("contribute"));
+    for p in LANGUAGES {
+        assert_eq!(LangId::Choice(p).a11y(), None, "{p:?}");
+    }
+}

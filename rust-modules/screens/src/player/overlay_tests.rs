@@ -1163,7 +1163,7 @@ fn the_player_panels_dim_through_the_container_in_the_neutral_dim_whatever_the_i
     let mut store = plx_data::stores::metadata::MetadataStore::default();
     assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(plx_data::metadata::PlayingItem {
         sid: plx_plex::plex::ServerId::from_raw(0), rk: "rk".into(), show_rk: String::new(), kind: String::new(), duration_ms: None, audio: Vec::new(), subs: Vec::new(),
-        video_fps: 0.0, width: 0, height: 0, bitrate: 0, dovi: Default::default(),
+        video_fps: 0.0, width: 0, height: 0, bitrate: 0, video_kbps: 0, dovi: Default::default(),
         markers: Vec::new(), chapters: Vec::new(), hdr: false,
     }))));
     for (kind, alpha) in [
@@ -1290,6 +1290,35 @@ fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
         let gaps = pointer_gaps(&mut map, ENTRY, &rows);
         assert!(gaps.is_empty(), "{kind:?}: rows the pointer cannot click:\n{}", gaps.join("\n"));
     }
+}
+
+/// **Every panel's rows have ids**: what the active panel's part projects is a conforming view of
+/// its groups (every row named, the ids unique, each found again), and the Timing capsule, which
+/// declares no group, names nothing.
+#[test]
+fn every_panel_answers_accessibility_ids() {
+    assert!(!player_overlay_conforms().is_empty());
+}
+
+/// Every player panel (Tracks on both tabs, More at its root and on Quality, Timing), run through the
+/// id conformance (`AppArg::PlayerOverlay`; the coverage table calls this, and so does the test above).
+pub(crate) fn player_overlay_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    let _g = plx_base::testlock::serial();
+    let ps = plx_media::route::PlaybackSession::IDLE;
+    for kind in [
+        OverlayKind::Tracks { tab: 0 },
+        OverlayKind::Tracks { tab: 1 },
+        OverlayKind::More { page: None },
+        OverlayKind::More { page: Some(MorePage::Quality) },
+        OverlayKind::Timing,
+    ] {
+        let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
+        let cx = cx();
+        namespaces.push(conform::<TestHost, _>(&page, &cx));
+    }
+    namespaces
 }
 
 /// **`OverlayKind::ALL` lists every kind exactly once**, and the census derived from it cannot

@@ -49,11 +49,24 @@ pub trait RowKeys {
     /// landing wins over the engine's key until the engine's next `FocusMoved` (see
     /// [`FormTable::note_engine_key`]).
     fn reseat(&self) -> Option<RowKey>;
+    /// The accessibility name of the row at `index` ([`FormId::a11y`]), when its id declares one:
+    /// what `TablePart` projects as the row's id instead of `row.<n>`. A map with no names (the
+    /// default) leaves every row to its position.
+    fn a11y_name(&self, _index: usize) -> Option<&'static str> {
+        None
+    }
 }
 
 /// A page's row id type names its keys once, so call sites do not repeat them.
 pub trait FormId {
     fn key(&self) -> RowKey;
+    /// **The row's accessibility name** (`a11y`): one lowercase word (`[a-z][a-z0-9_]*`, unique in
+    /// its form) a UI test reaches the row by (`playback.direct_play`). `None`, the default, leaves
+    /// the row to its ordinal among the element rows (`row.<n>`): right for a position-keyed list, wrong for a
+    /// page whose rows move, which should name them.
+    fn a11y(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// What activating an item does. Presentation (chevron, knob, checkmark) stays on the [`Row`].
@@ -85,7 +98,9 @@ pub struct Binding<Id, A, Dest> {
 }
 
 enum Slot<Id, A, Dest> {
-    Item(Binding<Id, A, Dest>, Row),
+    /// A focusable row: its binding, its presentation and its accessibility name ([`FormId::a11y`];
+    /// the name belongs to the row, so it rides along when [`Form::map`] re-types the binding).
+    Item(Binding<Id, A, Dest>, Row, Option<&'static str>),
     /// A separator or note: takes a layout index, has no id/key/action, never focusable.
     Inert(Row),
 }
@@ -123,14 +138,21 @@ impl<Id, A, Dest> FormSection<Id, A, Dest> {
         self.visible = v;
         self
     }
-    /// A focusable row with an explicit key (dynamic rows: per-page base + position).
-    pub fn item_keyed(
+    /// A focusable row with an explicit key (dynamic rows: per-page base + position). It has no
+    /// accessibility name, so it is `row.<n>`.
+    pub fn item_keyed(self, id: Id, key: RowKey, kind: RowKind<Dest>, action: A, row: Row) -> Self {
+        self.push_item(id, key, kind, action, row, None)
+    }
+    /// The one place a focusable row is declared: [`Self::item_keyed`] (no accessibility name) and
+    /// [`Self::item`] (the id's own) both come here.
+    fn push_item(
         mut self,
         id: Id,
         key: RowKey,
         kind: RowKind<Dest>,
         action: A,
         row: Row,
+        a11y: Option<&'static str>,
     ) -> Self {
         // a drill-in row always reads as one: the chevron comes from the kind, never a second call
         // (an explicit trailing icon the caller chose stays)
@@ -147,6 +169,7 @@ impl<Id, A, Dest> FormSection<Id, A, Dest> {
                 disabled: false,
             },
             row,
+            a11y,
         ));
         self
     }
@@ -159,7 +182,7 @@ impl<Id, A, Dest> FormSection<Id, A, Dest> {
     /// was skipped: `.item_if(false, …).disabled(true)` ("dim it during this state") must not
     /// disable the row BEFORE the one that was never declared.
     pub fn disabled(mut self, cond: bool) -> Self {
-        if let Some(Slot::Item(b, row)) = self.slots.last_mut().filter(|_| cond && !self.skipped) {
+        if let Some(Slot::Item(b, row, _)) = self.slots.last_mut().filter(|_| cond && !self.skipped) {
             b.disabled = true;
             row.disabled = true;
         }
@@ -193,10 +216,11 @@ impl<Id, A, Dest> FormSection<Id, A, Dest> {
     }
 }
 impl<Id: FormId, A, Dest> FormSection<Id, A, Dest> {
-    /// A focusable row; its key comes from [`FormId::key`].
+    /// A focusable row; its key comes from [`FormId::key`] and its accessibility name from
+    /// [`FormId::a11y`].
     pub fn item(self, id: Id, kind: RowKind<Dest>, action: A, row: Row) -> Self {
-        let key = id.key();
-        self.item_keyed(id, key, kind, action, row)
+        let (key, a11y) = (id.key(), id.a11y());
+        self.push_item(id, key, kind, action, row, a11y)
     }
     /// A [`RowKind::Choice`] row whose checkmark is derived, not hand-set: it is checked when
     /// `is_current(&id)` holds, so a picker declares its rows once and passes the page's current
@@ -251,7 +275,7 @@ impl<Id, A, Dest> Form<Id, A, Dest> {
             .iter()
             .filter(|s| s.visible)
             .flat_map(|s| &s.slots)
-            .any(|slot| matches!(slot, Slot::Item(b, _) if &b.id == id))
+            .any(|slot| matches!(slot, Slot::Item(b, _, _) if &b.id == id))
     }
     /// The form's slots in layout order (visible sections only): `Some(binding)` for a focusable
     /// row, `None` for a separator or note. A READ of what was declared — for a caller that must
@@ -262,7 +286,7 @@ impl<Id, A, Dest> Form<Id, A, Dest> {
             .filter(|s| s.visible)
             .flat_map(|s| &s.slots)
             .map(|slot| match slot {
-                Slot::Item(b, _) => Some(b),
+                Slot::Item(b, _, _) => Some(b),
                 Slot::Inert(_) => None,
             })
             .collect()
@@ -284,8 +308,8 @@ impl<Id, A, Dest> Form<Id, A, Dest> {
                         .slots
                         .into_iter()
                         .map(|slot| match slot {
-                            Slot::Item(b, row) => match f(b) {
-                                Some(b2) => Slot::Item(b2, row),
+                            Slot::Item(b, row, name) => match f(b) {
+                                Some(b2) => Slot::Item(b2, row, name),
                                 None => Slot::Inert(row),
                             },
                             Slot::Inert(row) => Slot::Inert(row),
@@ -295,35 +319,45 @@ impl<Id, A, Dest> Form<Id, A, Dest> {
                 .collect(),
         }
     }
-    /// Exactly the `Vec<Section>` a hand builder would make, and the bindings indexed by GLOBAL
-    /// row index (`None` at inert slots).
-    fn build(self) -> (Vec<Section>, Vec<Option<Binding<Id, A, Dest>>>) {
+    /// Exactly the `Vec<Section>` a hand builder would make, and the bindings and accessibility
+    /// names indexed by GLOBAL row index (`None` at inert slots).
+    fn build(self) -> Built<Id, A, Dest> {
         let mut sections = Vec::new();
         let mut bindings = Vec::new();
+        let mut names = Vec::new();
         for fs in self.sections.into_iter().filter(|s| s.visible) {
             let mut sec = fs.head;
             for slot in fs.slots {
                 match slot {
-                    Slot::Item(b, row) => {
+                    Slot::Item(b, row, name) => {
                         sec.rows.push(row);
                         bindings.push(Some(b));
+                        names.push(name);
                     }
                     Slot::Inert(row) => {
                         sec.rows.push(row);
                         bindings.push(None);
+                        names.push(None);
                     }
                 }
             }
             sections.push(sec);
         }
-        (sections, bindings)
+        (sections, bindings, names)
     }
 }
+
+/// What [`Form::build`] makes: the sections the table draws, and, by global row index, each row's
+/// binding (`None` at an inert slot) and accessibility name.
+type Built<Id, A, Dest> = (Vec<Section>, Vec<Option<Binding<Id, A, Dest>>>, Vec<Option<&'static str>>);
 
 /// A [`TableView`] and its row bindings, replaced together by [`FormTable::set`].
 pub struct FormTable<Id, A, Dest> {
     pub table: TableView,
     bindings: Vec<Option<Binding<Id, A, Dest>>>,
+    /// Each row's accessibility name ([`FormId::a11y`]), by global row index, installed with the
+    /// bindings it parallels.
+    names: Vec<Option<&'static str>>,
     key_ceiling: u32,
     /// The key the focus engine last reported holding. A rebuild can reassign it to another row
     /// (a position-keyed row moves up), so it is compared by identity after [`Self::set`].
@@ -339,6 +373,20 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
         Self {
             table: TableView::new(),
             bindings: Vec::new(),
+            names: Vec::new(),
+            key_ceiling,
+            engine_key: None,
+            reseat: None,
+        }
+    }
+
+    /// [`Self::new`] over a route page's table ([`TableView::page`]): how every page drawn in a
+    /// `RouteLayout` builds its form, so the page look is the design system's, never the screen's.
+    pub const fn page(key_ceiling: u32) -> Self {
+        Self {
+            table: TableView::page(),
+            bindings: Vec::new(),
+            names: Vec::new(),
             key_ceiling,
             engine_key: None,
             reseat: None,
@@ -374,9 +422,10 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
     /// The shared body of [`Self::set`], [`Self::set_or_open`] and [`Self::set_sliding`]: land on
     /// `keep` by identity (`neighbour`: else its nearest survivor), snapping unless `slide`.
     fn install_keeping(&mut self, form: Form<Id, A, Dest>, keep: Option<&Id>, slide: bool, neighbour: bool) {
-        let (sections, bindings) = self.check(form);
+        let (sections, bindings, names) = self.check(form);
         let landing = keep.and_then(|k| self.landing_for(k, &bindings, neighbour));
         self.bindings = bindings;
+        self.names = names;
         match landing {
             Some(i) => self.table.set_sections(sections, i as i32, slide),
             None => self.table.open_sections(sections),
@@ -389,9 +438,10 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
     /// old order to fall back through: a page's initial focus is an explicit id the caller chose,
     /// and a missing one is simply "no initial".
     pub fn open(&mut self, form: Form<Id, A, Dest>, initial: Option<&Id>) {
-        let (sections, bindings) = self.check(form);
+        let (sections, bindings, names) = self.check(form);
         let at = initial.and_then(|id| Self::position_of(&bindings, id));
         self.bindings = bindings;
+        self.names = names;
         match at {
             Some(i) => self.table.set_sections(sections, i as i32, false),
             None => self.table.open_sections(sections),
@@ -413,7 +463,7 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
     /// "sensible row" when the viewer's row is gone, e.g. the checked track), then the old-order
     /// neighbour as in [`Self::set`]. Each step applies only when the new form still has that id.
     pub fn refresh_with(&mut self, form: Form<Id, A, Dest>, prefer: Option<&Id>, fallback: Option<&Id>) {
-        let (sections, bindings) = self.check(form);
+        let (sections, bindings, names) = self.check(form);
         let find = |id: &Id| Self::position_of(&bindings, id);
         let keep = self.selected_id().cloned();
         let landing = prefer
@@ -422,6 +472,7 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
             .or_else(|| fallback.and_then(find))
             .or_else(|| keep.as_ref().and_then(|k| self.landing_for(k, &bindings, true)));
         self.bindings = bindings;
+        self.names = names;
         self.table.set_sections_or_open(sections, landing.map(|i| i as i32), true);
         self.reseat_after_install();
     }
@@ -430,9 +481,10 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
     /// [`TableView::opening_row`]) and the scroll is put back at `scroll` (see
     /// [`TableView::scroll_pos`]), so the list comes back exactly as it was left.
     pub fn restore(&mut self, form: Form<Id, A, Dest>, id: Option<&Id>, scroll: f32) {
-        let (sections, bindings) = self.check(form);
+        let (sections, bindings, names) = self.check(form);
         let at = id.and_then(|id| Self::position_of(&bindings, id));
         self.bindings = bindings;
+        self.names = names;
         self.table.restore_sections(sections, at.map(|i| i as i32), scroll);
         self.reseat_after_install();
     }
@@ -442,8 +494,8 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
     }
 
     /// Build the form and, in debug builds, assert its ids and keys are unique and below the ceiling.
-    fn check(&self, form: Form<Id, A, Dest>) -> (Vec<Section>, Vec<Option<Binding<Id, A, Dest>>>) {
-        let (sections, bindings) = form.build();
+    fn check(&self, form: Form<Id, A, Dest>) -> Built<Id, A, Dest> {
+        let (sections, bindings, names) = form.build();
         #[cfg(debug_assertions)]
         {
             let items: Vec<&Binding<Id, A, Dest>> = bindings.iter().flatten().collect();
@@ -460,7 +512,7 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
                 }
             }
         }
-        (sections, bindings)
+        (sections, bindings, names)
     }
 
     /// The landing is by identity; the engine still holds the key it had. If that key no longer
@@ -559,5 +611,8 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> RowKeys for FormTable<Id, A, 
     }
     fn reseat(&self) -> Option<RowKey> {
         self.reseat
+    }
+    fn a11y_name(&self, index: usize) -> Option<&'static str> {
+        self.names.get(index).copied().flatten()
     }
 }

@@ -72,12 +72,10 @@ fn the_root_with_every_conditional_row_scrolls_with_focus() {
         ..inputs(true)
     };
     let scroll_to_last = |inputs: &RootInputs| {
-        let mut form = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
-        form.table.compact = false;
-        form.table.board_metrics(true); // the table the root draws, in the root's own layout
+        let mut form = FormTable::<RootId, Action, SettingsPage>::page(super::super::registry::BAND);
         form.set(root_form(inputs), Some(&RootId::About));
         for _ in 0..600 {
-            form.table.update(1.0 / 60.0, RouteLayout::settings_page().sectioned_table().h);
+            form.table.update(1.0 / 60.0, RouteLayout::screen().sectioned_table().h);
         }
         form.table.scroll_pos()
     };
@@ -131,14 +129,14 @@ fn moving_focus_moves_the_followed_sentence() {
 #[test]
 fn every_followed_sentence_fits_five_lines_in_every_language() {
     use plx_ui::text_view::TextView;
-    let layout = RouteLayout::settings_page();
+    let layout = RouteLayout::screen();
     let mut out = Vec::new();
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         let tag = language.tag();
         let frame = layout.narrative_copy_frame(false, msg::settings_title(), layout.action.y, &ShippedMeasure);
         // `Header::paint` hangs the sentence its CSS box's cap drop (~7px) below the frame's top
-        let drop = layout.copy_cap_drop(theme::size::LABEL, &ShippedMeasure);
+        let drop = layout.copy_cap_drop(&ShippedMeasure);
         let mut all: Vec<RootId> = vec![RootId::Favourites, RootId::UnderPosters, RootId::Playback, RootId::AudioSubtitles,
             RootId::Language, RootId::AutoSignIn, RootId::TrailerAutoplay, RootId::Resolution, RootId::Privacy,
             RootId::Diagnostics, RootId::Legal, RootId::About];
@@ -263,4 +261,29 @@ fn the_root_asks_for_posters_while_favorite_libraries_has_focus_and_the_fan_is_e
     let filled = DirectorySnapshot::fixture(7, 0, vec![section(1, SecKind::Movie), section(2, SecKind::Show)])
         .with_shelf_sample(vec![cached_poster("Alpha")]);
     assert_eq!(asked(tick(&mut root, &filled)), 0, "a fan with a poster asks for nothing");
+}
+
+// ---- accessibility ids -----------------------------------------------------------------------
+
+/// **Every row of the root and of Diagnostics names itself** with a segment the id grammar accepts, and no
+/// two rows of a page share a name. A server's switch repeats, so it answers none and its position names
+/// it (`row.<i>`).
+#[test]
+fn the_root_and_diagnostics_rows_name_themselves_with_distinct_ids() {
+    let root = [
+        RootId::Favourites, RootId::UnderPosters, RootId::Playback, RootId::AudioSubtitles, RootId::Language,
+        RootId::AutoSignIn, RootId::TrailerAutoplay, RootId::Resolution, RootId::Privacy, RootId::Diagnostics,
+        RootId::Legal, RootId::About,
+    ];
+    let mut names: Vec<&str> = root.iter().map(|id| id.a11y().expect("a root row names itself")).collect();
+    let diag = [diagnostics::DiagId::Trace, diagnostics::DiagId::Export, diagnostics::DiagId::Delete];
+    let mut diag_names: Vec<&str> = diag.iter().map(|id| id.a11y().expect("a Diagnostics row names itself")).collect();
+    for set in [&mut names, &mut diag_names] {
+        assert!(set.iter().all(|n| plx_ui::a11y::is_name(n)), "a name outside the id grammar: {set:?}");
+        let before = set.len();
+        set.sort_unstable();
+        set.dedup();
+        assert_eq!(set.len(), before, "two rows of one page share a name");
+    }
+    assert_eq!(RootId::Plaintext(ServerMachineId("machine".into())).a11y(), None);
 }

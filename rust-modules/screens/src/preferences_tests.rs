@@ -677,3 +677,26 @@ fn retained_profile_identity_does_not_follow_an_ambient_seat_change() {
     page.step(&tick(), &cx, &mut Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present));
     assert_eq!(page.copy, plx_platform::i18n::msg::settings_playback_copy_profile("Noah"));
 }
+
+// ---- accessibility ids -----------------------------------------------------------------------
+
+/// **Every field row, the Player HUD row and Retry name themselves** with a segment the id grammar accepts,
+/// and no two share a name (a page lists a subset of them, so distinct everywhere is distinct on each).
+#[test]
+fn the_field_rows_name_themselves_with_distinct_ids() {
+    use PickerKind as K;
+    let fields = [
+        K::Quality, K::DirectPlay, K::SubtitleSize, K::SubtitlePosition, K::SubtitleColor, K::HdrOverlay,
+        K::NextEpisode, K::SkipInterval, K::DeckPress, K::AudioLanguage, K::SubtitleMode, K::SubtitleLanguage,
+        K::ForcedSubtitles, K::UiResolution, K::InstantDpadSeeking, K::UriEngine, K::DolbyVision, K::IntroSkip,
+        K::CreditsSkip,
+    ];
+    let mut names: Vec<&str> = fields.iter().map(|k| RowId::Field(*k).a11y().expect("a field names itself")).collect();
+    names.push(RowId::PlayerHud.a11y().expect("the HUD row names itself"));
+    names.push(RowId::Retry.a11y().expect("Retry names itself"));
+    assert!(names.iter().all(|n| plx_ui::a11y::is_name(n)), "a name outside the id grammar: {names:?}");
+    let before = names.len();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), before, "two rows share a name");
+}

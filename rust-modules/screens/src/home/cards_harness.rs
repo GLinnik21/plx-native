@@ -206,3 +206,48 @@ impl CardHarness for Harness {
         Ok(Box::new(fresh))
     }
 }
+
+/// **The accessibility ids:** the page conforms (every element projects, ids are unique, each id
+/// finds its element), the hero answers `hero.play|info`, and the first shelf's cards answer
+/// `shelf.<row>.card.<global index>` (`continue.card.<global index>` for the Continue Watching deck:
+/// the card's place in its listing, `CardSource::global`, as `cards::card_a11y` names it) with the
+/// card's ratingKey as their subject.
+#[test]
+fn the_page_answers_its_ids_and_conforms() {
+    assert!(!home_conforms().is_empty());
+}
+
+/// The Home page over five seeded shelves, run through the id conformance with the id asserts above
+/// (`AppArg::Home`; the coverage table calls this, and so does the test above).
+pub(crate) fn home_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    use plx_ui::a11y::{A11yPath, Role};
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let h = Harness::new(5);
+    let cx = h.cx();
+    let screen = h.screen.borrow();
+    namespaces.push(conform::<HomeHost, _>(&*screen, &cx));
+
+    let rel = |text: &str| A11yPath::parse_relative(text).expect("a well-formed id");
+    let find = |text: &str| Focusable::<HomeHost>::a11y_find(&*screen, &rel(text), &cx);
+    assert_eq!(find("hero.play"), Some(HERO_PLAY_ELEM));
+    assert_eq!(find("hero.info"), Some(HERO_INFO_ELEM));
+    assert_eq!(find("hero.nope"), None);
+    assert_eq!(find("shelf.99.card.0"), None, "a row that does not exist");
+
+    let row = &screen.rows[0];
+    let prefix = if row.identity == HomeHubIdentity::ContinueWatching { "continue".to_string() } else { "shelf.0".to_string() };
+    assert!(!row.elems.is_empty(), "the seeded shelf has cards");
+    for (col, elem) in row.elems.iter().enumerate() {
+        assert_eq!(find(&format!("{prefix}.card.{col}")), Some(*elem), "card {col}");
+        let a = Focusable::<HomeHost>::a11y(&*screen, elem, &cx).expect("every card projects");
+        assert_eq!(a.role, Role::Card);
+        let item = screen.item_at(cx.views, 0, col).expect("a seeded card has its item");
+        assert_eq!(a.subject.as_deref(), Some(item.rk.as_str()), "the subject is the ratingKey");
+        assert!(a.loaded);
+    }
+    assert_eq!(find(&format!("{prefix}.card.{}", row.elems.len())), None, "one past the end");
+    namespaces
+}

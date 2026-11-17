@@ -278,8 +278,8 @@ pub struct PlaybackSession {
     /// that decision is made from the same numbers `build_stream` used rather than from a guess.
     cur_src: (i64, i64, i64),
     /// Whole Part transport bitrate, including audio. Auto's progressive watchdog compares the
-    /// live socket against this rather than `cur_src.0` (the video stream's rate for a default version measured
-    /// from the detail, a fetched version's whole-file rate otherwise), because the wire has to carry
+    /// live socket against this rather than `cur_src.0` (the video stream's rate where PMS gave one,
+    /// else the whole file's), because the wire has to carry
     /// both lanes. `0` means PMS did not provide one and disables the watchdog fail-safely.
     cur_transport_kbps: i64,
     /// **Can this television decode the SOURCE video stream as it stands** — `video_direct_plays`
@@ -9457,14 +9457,14 @@ fn apply_quality_choice(ps: &mut PlaybackSession, q: Quality) {
 /// and proves nothing. What it does NOT do is decide anything — [`crate::abr::bootstrap`] owns the
 /// admission rule, so the policy is stated once and is host-testable without a network.
 ///
-/// `None` means there is nothing to reason from (no source bitrate, or the transfer never
-/// returned), which is deliberately distinct from a completed slow probe.
-pub(super) fn measure_remote_original(url: &str, source_kbps: i64) -> Option<crate::abr::CapacityObservation> {
+/// Anything but [`RemoteProbe::Sample`] means there is nothing to reason from (no source bitrate, or
+/// the transfer never returned), which is deliberately distinct from a completed slow probe.
+pub(super) fn measure_remote_original(url: &str, source_kbps: i64) -> RemoteProbe {
     let Some(plan) = remote_probe_plan(source_kbps) else {
         crate::player::log(
             "auto: remote Original unavailable — source bitrate is unknown; using HLS",
         );
-        return None;
+        return RemoteProbe::Unmeasured;
     };
     // `url` already names the playback's own identity. Direct play samples the Part; a remux
     // Original samples start.mkv. A throwaway `source-N` forces an exact miss and makes PMS run a
@@ -9480,7 +9480,7 @@ pub(super) fn measure_remote_original(url: &str, source_kbps: i64) -> Option<cra
             crate::player::log(&format!(
                 "auto: remote Original preflight produced no capacity sample failure={failure:?}; using HLS"
             ));
-            return None;
+            return RemoteProbe::of_failure(failure);
         }
     };
     let measured = sample.kbps();
@@ -9490,12 +9490,50 @@ pub(super) fn measure_remote_original(url: &str, source_kbps: i64) -> Option<cra
         sample.elapsed.as_millis(),
         sample.target_reached as i32,
     ));
-    Some(crate::abr::CapacityObservation {
+    RemoteProbe::Sample(crate::abr::CapacityObservation {
         kbps: u32::try_from(measured).unwrap_or(u32::MAX),
         bytes: u64::try_from(sample.bytes).unwrap_or(0),
         active_us: u64::try_from(sample.elapsed.as_micros()).unwrap_or(u64::MAX),
         completed: sample.target_reached,
     })
+}
+
+/// **What Auto's remote Original preflight came back with**, typed so the planner can tell a slow
+/// link from a request that never got an answer. Both used to be `None`, and only the first says
+/// anything about capacity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RemoteProbe {
+    /// The server answered and bytes were read, however few ([`crate::abr::CapacityObservation::completed`]
+    /// says whether the target was reached). This is the link's own answer.
+    Sample(crate::abr::CapacityObservation),
+    /// The network never produced a response: DNS, TLS, connect, a timeout or the setup deadline
+    /// before the first header (#1425: `Open(Transport(28))` on a trailer reached through two
+    /// cross-origin redirects; which phase timed out is not known). Nothing was measured, so the
+    /// preflight says nothing about the link's rate.
+    NoResponse,
+    /// Nothing to reason from, for any other reason: no source bitrate, a status or range refusal
+    /// from the server, local machinery failing, or a transfer that failed after it had opened.
+    Unmeasured,
+}
+
+impl RemoteProbe {
+    pub(super) fn sample(self) -> Option<crate::abr::CapacityObservation> {
+        match self {
+            Self::Sample(observation) => Some(observation),
+            Self::NoResponse | Self::Unmeasured => None,
+        }
+    }
+
+    /// Only an open that failed in the network counts as [`Self::NoResponse`]. A server's own
+    /// status (503 after a transcode MDE, a range it ignored) is a statement about the request,
+    /// and a body that stalled or broke after the open is a slow or bad link: neither is "no answer".
+    fn of_failure(failure: crate::curlio::ThroughputFailure) -> Self {
+        use crate::curlio::{OpenErr, ThroughputFailure};
+        match failure {
+            ThroughputFailure::Open(OpenErr::Transport(_) | OpenErr::Deadline) => Self::NoResponse,
+            _ => Self::Unmeasured,
+        }
+    }
 }
 
 /// PMS 1.43 503s a Part GET after a transcode MDE. The Original we would actually play is a
@@ -9563,7 +9601,7 @@ pub(super) fn measure_remote_remux(
         crate::player::log("auto: remote remux preflight refused by /decision; using HLS");
         return RemuxProbe { sample: None, enhancement_refused };
     }
-    let sample = measure_remote_original(&client.transcode_start_url(&spec).to_url(), source_kbps);
+    let sample = measure_remote_original(&client.transcode_start_url(&spec).to_url(), source_kbps).sample();
     if sample.is_none() {
         // Same playback identity the HLS/remux that follows will register. closeResourceSession=1
         // would 503 that next start; physical-stop keeps the Streaming Resource.
@@ -10060,6 +10098,7 @@ struct PreviewFile<'a> {
     width: i64,
     height: i64,
     kbps: i64,
+    ceiling_kbps: i64,
     acodec: &'a str,
     audio: &'a [plx_data::metadata::Stream],
     subs: &'a [plx_data::metadata::Stream],
@@ -10079,6 +10118,7 @@ fn preview_file<'a>(
         width: d.width,
         height: d.height,
         kbps: d.bitrate,
+        ceiling_kbps: source_kbps(d),
         acodec: &d.acodec,
         audio: &d.audio,
         subs: &d.subs,
@@ -10101,6 +10141,7 @@ fn preview_file<'a>(
         width: v.width,
         height: v.height,
         kbps: v.kbps,
+        ceiling_kbps: ceiling_kbps(v.video_kbps, v.kbps),
         acodec: &v.acodec,
         audio: &file.audio,
         subs: &file.subs,
@@ -10151,15 +10192,15 @@ fn playback_preview_with_capability(
     // The user's quality ceiling is the LAST gate `build_stream` applies, so it is the last one
     // here too — and it can only ever downgrade, never promote. Without this the facts row would
     // promise "Direct Play" for a source the rung is about to send to an encoder, which is the
-    // exact mismatch this preview's doc says it exists to avoid. `file.kbps`/`width`/`height` are
-    // those of the version Play starts, i.e. the same numbers `ResolveEnv` hands the resolve.
+    // exact mismatch this preview's doc says it exists to avoid. `file.ceiling_kbps`/`width`/`height`
+    // are those of the version Play starts, i.e. the same numbers `ResolveEnv` hands the resolve.
     let location = plx_plex::plex::client_for(d.sid).and_then(|client| client.link());
     // A detail page has not downloaded the file yet, so it reports what can preserve the source,
     // not a fictitious failed bandwidth result. Remote Auto is measured at Play. Relay remains a
     // conversion because its independent link policy refuses both original-rate flavors.
     let policy = direct_play_policy(mode, flavors_allowed(
         plx_plex::plex::link_policy(location),
-        quality_policy(quality(), true, file.kbps, file.width, file.height),
+        quality_policy(quality(), true, file.ceiling_kbps, file.width, file.height),
     ));
     Some(match p {
         Preview::DirectPlay if !policy.direct_play && policy.remux && mode == DirectPlayMode::Disabled => Preview::Remux,

@@ -103,6 +103,51 @@ impl Harness {
     }
 }
 
+/// **The page's elements have ids**: the header, the Filmography pill and the credit shelves it composes
+/// on the stack all project, are unique, and are found again (`plx_ui::a11y::conformance`). The ids are
+/// the stack's own; this page adds no group of its own beyond the sections it hands the stack.
+#[test]
+fn the_page_answers_accessibility_ids() {
+    assert!(!person_conforms().is_empty());
+}
+
+/// The Person page over eight credits, run through the id conformance (`ContentArg::Person`; the
+/// coverage table calls this, and so does the test above).
+pub(crate) fn person_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let h = Harness::new((0..8).map(|i| format!("m{i}")).collect());
+    namespaces.push(conform::<PersonHost, _>(&h.screen, &h.cx()));
+    namespaces
+}
+
+/// **The sections are named for what they ARE, and a credit's id carries its ratingKey**: a credit
+/// shelf is `shelf.<kind>` (0 = Movies, 1 = Shows) and a credit's subject is its ratingKey. A person
+/// with no movie credits has the Shows shelf at the same name (`shelf.1`), which a position-named
+/// section (`section.<i>`) would have moved up by one.
+#[test]
+fn the_sections_are_named_and_a_credit_names_its_rating_key() {
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let cards = |movies: usize| -> Vec<(String, Option<String>)> {
+        let h = Harness::new((0..movies).map(|i| format!("m{i}")).collect());
+        let ids = plx_ui::a11y::listing::<PersonHost, _>(&h.screen, &h.cx());
+        assert!(ids.iter().all(|a| !a.path.to_string().starts_with("section.")), "a section left unnamed");
+        ids.into_iter()
+            .filter(|a| a.role == plx_ui::a11y::Role::Card)
+            .map(|a| (a.path.to_string(), a.subject.map(|s| s.into_owned())))
+            .collect()
+    };
+    let credit = |path: &str, rk: &str| (path.to_owned(), Some(rk.to_owned()));
+    assert_eq!(cards(2), [
+        credit("shelf.0.card.0", "m0"), credit("shelf.0.card.1", "m1"),
+        credit("shelf.1.card.0", "s0"), credit("shelf.1.card.1", "s1"), credit("shelf.1.card.2", "s2"),
+    ]);
+    assert_eq!(cards(0), [credit("shelf.1.card.0", "s0"), credit("shelf.1.card.1", "s1"), credit("shelf.1.card.2", "s2")]);
+}
+
 impl CardHarness for Harness {
     fn cards(&self) -> Vec<u32> {
         let p = self.store.view().current().unwrap();

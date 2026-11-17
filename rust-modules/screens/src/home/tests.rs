@@ -3084,6 +3084,32 @@ fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
     assert_eq!(Focusable::<TestHost>::seat(&s, PLAINTEXT_GROUP, from, &context).elem, PLAINTEXT_CANCEL_ELEM,
         "seated on Not now");
 
+    // One question, one id set: Home answers the three accessibility hooks with the alert's own,
+    // so `alert.not_now` / `alert.connect` read the same wherever the question opens, and the page
+    // under it is no owner's while it is open.
+    let alert = &s.plaintext_alert;
+    let (mut ours, mut theirs) = (Vec::new(), Vec::new());
+    Focusable::<TestHost>::a11y_elems(&s, PLAINTEXT_GROUP, &context, &mut ours);
+    assert!(alert.a11y_elems(PLAINTEXT_GROUP, &mut theirs), "the open alert owns its group's listing");
+    assert_eq!(ours, theirs);
+    assert_eq!(ours, [PLAINTEXT_CANCEL_ELEM, PLAINTEXT_CONNECT_ELEM]);
+    for key in ours {
+        let home = Focusable::<TestHost>::a11y(&s, &key, &context).expect("an answer projects");
+        let own = alert.a11y(key).flatten().expect("the alert projects its own answer");
+        assert_eq!(home, own);
+        assert_eq!(
+            Focusable::<TestHost>::a11y_find(&s, &own.path, &context),
+            alert.a11y_find(&own.path).flatten()
+        );
+        assert_eq!(Focusable::<TestHost>::a11y_find(&s, &own.path, &context), Some(key));
+    }
+    let hero_path = A11yPath::parse_relative("hero.play").unwrap();
+    assert!(Focusable::<TestHost>::a11y(&s, &HERO_PLAY_ELEM, &context).is_none());
+    assert_eq!(Focusable::<TestHost>::a11y_find(&s, &hero_path, &context), None);
+    let mut under = Vec::new();
+    Focusable::<TestHost>::a11y_elems(&s, HERO_GROUP, &context, &mut under);
+    assert!(under.is_empty(), "the page under the question lists nothing");
+
     let connect = Some(FocusKey { entry, elem: PLAINTEXT_CONNECT_ELEM });
     let (_, answered, _) = step(&mut s, view, connect, &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
     let answers: Vec<_> = answered.iter().filter_map(|st| match &st.fx {

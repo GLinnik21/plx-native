@@ -462,8 +462,8 @@ class ReplayFixtures(unittest.TestCase):
         """Actual CLI and actual guard, without executing any outbound operation."""
         source = os.path.join(self.FIXTURES, 'v13-owned-input-content')
         expected = {
-            'manifest.json': '38195ea404c823c6a85764457a9ef531b07d5685cfb08e876a7334e66dc0aa26',
-            'rec-0000.jsonl': '0090ab24ab23afb6e3165aaeb34d748ee6769b069ea55c736ad962834343516e',
+            'manifest.json': 'a3aa19a3ff80e6b827c0169e64c5bc3d3c5d155859f93e7adc15b6f2395d067e',
+            'rec-0000.jsonl': '8a9b45aa0a0221141a0312f2c278f03cf697a3f9667a44a07c3160e80d608f99',
         }
         for name, digest in expected.items():
             with open(os.path.join(source, name), 'rb') as f:

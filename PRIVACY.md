@@ -87,7 +87,8 @@ internal component labels, app and webOS versions, television model and hardware
 details needed to reproduce and symbolicate the failure.
 
 A native crash report may also contain the last 16 window diagnostic steps: entering or leaving
-background, releasing the borrowed window surface, querying the native window, finishing the background
+background, releasing the borrowed window surface, querying the native window, noticing that the system
+has replaced the window's surface (a fixed label, never the surface's address), finishing the background
 or return step, and beginning or completing the first frame after return. While the app is being sent to
 the background or brought back it also records the video player's teardown and video-window steps:
 unloading, destroying or retaining the player's native object, releasing the video plane, and creating

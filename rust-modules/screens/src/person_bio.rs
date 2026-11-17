@@ -589,7 +589,7 @@ fn draw_foot(p: Painter, person: &Person, c: Rect, measure: &dyn plx_machine::ma
 
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use plx_ui::prose_scroll::scroll_at;
     use plx_ui::consts::{SDLK_DOWN, SDLK_UP};
@@ -879,6 +879,21 @@ mod tests {
             edge: Edge::Down,
             at_edge: false,
         }
+    }
+
+    /// The sheet declares no group, so it has no element to name: the id conformance holds, and holds
+    /// because there is nothing to project (the default `a11y_elems` is the right answer).
+    #[test]
+    fn the_bio_sheet_has_no_element_to_name() {
+        assert!(!person_bio_conforms().is_empty());
+    }
+
+    /// The biography sheet mounted as the registry mounts it and run through the id conformance
+    /// (`AppArg::PersonBio`; the coverage table calls this).
+    pub(crate) fn person_bio_conforms() -> plx_ui::a11y::Namespaces {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let cx = cx(&measure);
+        vec![plx_ui::a11y::conform::<TestHost, _>(&PersonBioScreen::new(ENTRY), &cx)]
     }
 
     fn dismissed(out: &[Stamped<TestHost>]) -> bool {

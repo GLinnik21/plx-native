@@ -34,6 +34,7 @@ use plx_machine::machine::{Canon, Cx, Effects, EntryId, FocusKey, GroupId, Host,
 use plx_machine::present::PresentEvent;
 
 use super::{CardEvent, CardSource, Grid, GridSpec, SectionFrame, Shelf};
+use crate::a11y::{A11y, A11yPath, Role, Seg};
 use crate::card_row::{self, RowStyle};
 use crate::consts::{K_SCROLL, MARGIN_Y, SCR_H, SCR_W, UNDER_LABEL_AIR};
 use crate::screen::{
@@ -78,6 +79,9 @@ pub struct SectionSpec<K> {
     seat: Option<Seat>,
     edge: Option<[EdgeRule; 4]>,
     elem: Option<ElemKind>,
+    /// The section's name in the page's accessibility ids and the index after it, when it has one
+    /// ([`named`](Self::named), [`named_at`](Self::named_at)); `None` is `section.<position>`.
+    a11y: Option<(&'static str, Option<usize>)>,
 }
 
 impl<K> SectionSpec<K> {
@@ -89,7 +93,7 @@ impl<K> SectionSpec<K> {
 
     /// A section in document order, its group listed in document order too.
     pub fn new(key: K, kind: Kind, group: GroupId) -> Self {
-        Self { key, kind, group, rank: 0, seat: None, edge: None, elem: None }
+        Self { key, kind, group, rank: 0, seat: None, edge: None, elem: None, a11y: None }
     }
 
     /// Seat this section's group by `seat` instead of its kind's rule.
@@ -114,6 +118,34 @@ impl<K> SectionSpec<K> {
     pub fn ranked(mut self, rank: u32) -> Self {
         self.rank = rank;
         self
+    }
+
+    /// Name this section in the page's accessibility ids (`a11y`): its cards are `<name>.card.<i>`
+    /// and the elements of a `Custom` / `Overlay` one `<name>.<n>` (or `<name>.<leaf>`, see
+    /// [`StackPage::plain_name`]). `name` is `[a-z][a-z0-9_]*` and unique among the page's sections.
+    /// A section left unnamed is `section.<position>`, which moves when a section before it comes or
+    /// goes: a page whose tests address it by id names its sections.
+    pub fn named(mut self, name: &'static str) -> Self {
+        self.a11y = Some((name, None));
+        self
+    }
+
+    /// [`named`](Self::named) for one of several sections of a kind (`shelf.0`, `shelf.1`): `name`
+    /// then the index `i` the page gives it. Use an index that does not move when another section
+    /// comes or goes (the shelf's place in the page's own list, never its position among every section).
+    pub fn named_at(mut self, name: &'static str, i: usize) -> Self {
+        self.a11y = Some((name, Some(i)));
+        self
+    }
+
+    /// This section's path in the page's accessibility ids; `position` is where it stands in the
+    /// page's sections, the name of an unnamed one.
+    fn a11y_path(&self, position: usize) -> A11yPath {
+        match self.a11y {
+            Some((name, None)) => A11yPath::new().name(name),
+            Some((name, Some(i))) => A11yPath::new().name(name).index(i),
+            None => A11yPath::new().name("section").index(position),
+        }
     }
 }
 
@@ -179,6 +211,14 @@ pub trait StackPage<H: Host> {
     /// [`plain_step`](Self::plain_step) walks.
     fn plain_elem(&self, k: Self::Key, n: usize) -> Option<H::Elem> {
         if n == 0 { self.elem_of(k) } else { None }
+    }
+    /// The accessibility name of element `n` of a focusable `Custom` / `Overlay` section: the leaf of
+    /// its id under the section's own (`detail.hero.play` is the section `hero`, the leaf `play`).
+    /// `None`, the default, names it by its position, `<section>.<n>`. A name is `[a-z][a-z0-9_]*`
+    /// and unique among the section's elements; name an element by what it IS, so a list that
+    /// grows or reorders moves no id.
+    fn plain_name(&self, _k: Self::Key, _n: usize) -> Option<&'static str> {
+        None
     }
     /// Where a move `dir` from element `at` of a multi-element section ends inside it, as an index
     /// into [`plain_elem`](Self::plain_elem); `None` is the section's edge (its group's
@@ -1235,5 +1275,104 @@ impl<K: Copy + Eq, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Focusable<H> f
             .or_else(|| self.fallback_key(cx))
             .or_else(|| (0..s.specs.len()).find_map(|i| self.nth(cx, i, 0)).map(at))
             .unwrap_or(FocusKey { entry: s.entry, elem: s.last_elem })
+    }
+
+    /// **The accessibility projection** (`a11y`): a card is `<section>.card.<n>` ([`Role::Card`]),
+    /// `n` its place in its listing, given its label, subject and `loaded` by
+    /// [`card_a11y`](super::card_a11y); an element of a
+    /// focusable `Custom` / `Overlay` section is `<section>.<leaf>` or `<section>.<n>`
+    /// ([`StackPage::plain_name`], [`Role::Button`]). The section is [`SectionSpec::named`], else
+    /// `section.<position>`.
+    fn a11y(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let (s, p) = (self.stack, self.page);
+        let i = s.owner(p, cx, key)?;
+        let k = s.specs[i].key;
+        let section = s.specs[i].a11y_path(i);
+        match s.specs[i].kind {
+            Kind::Shelf { .. } | Kind::Grid { .. } => {
+                let cards = p.cards(cx, k)?;
+                let j = cards.index_of(key)?;
+                Some(super::card_a11y::<H, _>(section, &cards, j))
+            }
+            Kind::Custom { .. } | Kind::Overlay { .. } => {
+                let n = s.plain_index(p, i, key)?;
+                let path = match p.plain_name(k, n) {
+                    Some(leaf) => section.name(leaf),
+                    None => section.index(n),
+                };
+                Some(A11y::new(path, Role::Button))
+            }
+        }
+    }
+
+    /// Every element of the section whose group is `g`, in index order: all the cards of a
+    /// `Shelf` / `Grid` (off screen and unloaded ones too), or the elements of a focusable
+    /// `Custom` / `Overlay`. A group the page declares itself ([`StackPage::extra_groups`]) is the
+    /// page's to answer.
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        let (s, p) = (self.stack, self.page);
+        let Some(i) = s.index_of_group(g) else { return };
+        let k = s.specs[i].key;
+        match s.specs[i].kind {
+            Kind::Shelf { .. } | Kind::Grid { .. } => {
+                if let Some(cards) = p.cards(cx, k) {
+                    out.extend((0..cards.len()).map(|j| cards.elem(j)));
+                }
+            }
+            Kind::Custom { focusable: true, .. } | Kind::Overlay { focusable: true, .. } => {
+                out.extend((0..p.plain_len(k)).filter_map(|n| p.plain_elem(k, n)));
+            }
+            Kind::Custom { .. } | Kind::Overlay { .. } => {}
+        }
+    }
+
+    /// The inverse of [`Self::a11y`]. A card is found by the index in its path, without a scan:
+    /// `<section>.card.<n>` is `cards.elem(j)` for the window index `j` holding listing position `n`
+    /// ([`card_window_index`](super::card_window_index)), and a position outside the window is no
+    /// element. An element of a `Custom` / `Overlay`
+    /// section is found by its [`StackPage::plain_name`] (a scan of that one section's few elements),
+    /// or by its position when it has no name. A path that carries a namespace is not relative to
+    /// this view and finds nothing.
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<H::Elem> {
+        if path.ns().is_some() {
+            return None;
+        }
+        let (s, p) = (self.stack, self.page);
+        (0..s.specs.len()).find_map(|i| {
+            let section = s.specs[i].a11y_path(i);
+            let own = section.len();
+            // the section's own segments, then the leaf: `section.3` is not an element
+            if path.len() <= own || !path.segs().zip(section.segs()).all(|(a, b)| a == b) {
+                return None;
+            }
+            let mut rest = path.segs().skip(own);
+            let (a, b, c) = (rest.next(), rest.next(), rest.next());
+            let k = s.specs[i].key;
+            match (s.specs[i].kind, a, b, c) {
+                (Kind::Shelf { .. } | Kind::Grid { .. }, Some(Seg::Name("card")), Some(Seg::Index(n)), None) => {
+                    let cards = p.cards(cx, k)?;
+                    super::card_window_index::<H, _>(&cards, n).map(|j| cards.elem(j))
+                }
+                (
+                    Kind::Custom { focusable: true, .. } | Kind::Overlay { focusable: true, .. },
+                    Some(Seg::Index(n)),
+                    None,
+                    None,
+                ) => {
+                    // an element with a name has one spelling, the name
+                    if p.plain_name(k, n).is_some() || n >= p.plain_len(k) {
+                        return None;
+                    }
+                    p.plain_elem(k, n)
+                }
+                (
+                    Kind::Custom { focusable: true, .. } | Kind::Overlay { focusable: true, .. },
+                    Some(Seg::Name(leaf)),
+                    None,
+                    None,
+                ) => (0..p.plain_len(k)).find(|&n| p.plain_name(k, n) == Some(leaf)).and_then(|n| p.plain_elem(k, n)),
+                _ => None,
+            }
+        })
     }
 }

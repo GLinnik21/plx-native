@@ -92,6 +92,7 @@ use std::ops::Range;
 
 use plx_machine::machine::{Cx, EntryId, FocusRead, Host, Measure};
 
+use crate::a11y::{A11y, A11yPath, Role};
 use crate::screen::DrawFrame;
 use crate::widgets::Art;
 use crate::{Painter, Rect};
@@ -245,6 +246,33 @@ pub trait CardSource<H: Host> {
     fn with_label<R>(&self, i: usize, draw: impl FnOnce(&TileLabel) -> R) -> R {
         draw(&self.label(i))
     }
+    /// **What identifies the item behind card `i`**, for a test that presses "the card of THIS
+    /// item" (the accessibility projection, `a11y::A11y::subject`): the ratingKey of a catalog
+    /// card. `None` (the default) for a card with no identity of its own (a header tile, a person
+    /// with no key). Runtime text: it reaches the state file a test reads and nothing else, never a
+    /// log line, a recording or the heartbeat. Asked only for a card that is [`loaded`](Self::loaded),
+    /// and only when the projection is read, so a source may build it on the spot.
+    fn subject(&self, _i: usize) -> Option<std::borrow::Cow<'_, str>> {
+        None
+    }
+    /// **What names the item behind card `i`** in the accessibility projection ([`card_a11y`]): the
+    /// words a test reads to find "the card called X". The default is the title of the focused
+    /// label block ([`label`](Self::label)), right for a source whose label names its card; a source
+    /// whose label is shaped by the caption policy, is empty or is drawn elsewhere (a headshot's
+    /// name hangs under it as an overlay, the Continue Watching deck's footer is on the tile) names
+    /// the item itself. Runtime text, under [`subject`](Self::subject)'s rule: it reaches the state
+    /// file a test reads and nothing else. Asked only for a card the projection says is loaded.
+    fn a11y_title(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
+        // owned: the label is a temporary of this call, the borrow cannot outlive it
+        self.with_label(i, |l| l.title.as_ref().map(|t| std::borrow::Cow::Owned(t.to_string_lossy().into_owned())))
+    }
+    /// Whether card `i`'s page has landed, as the accessibility projection says it
+    /// ([`A11y::loaded`]): [`loaded`](Self::loaded) unless the source paints an unlanded slot as a
+    /// placeholder rather than skipping it (then `loaded` is true for every slot, and this says
+    /// which ones hold an item).
+    fn a11y_loaded(&self, i: usize) -> bool {
+        self.loaded(i)
+    }
 
     /// The amber resume fraction of card `i`, if it is partly watched.
     fn progress(&self, _i: usize) -> Option<f32> {
@@ -292,8 +320,10 @@ pub trait CardSource<H: Host> {
         false
     }
     /// Card `i`'s position in the whole listing this source is a window of, whichever window it
-    /// holds now (a slid shelf's first card is not listing position 0). Only the focus read-out
-    /// (`card_probe`) asks; the default is a source that holds its listing whole.
+    /// holds now (a slid shelf's first card is not listing position 0). It rises with `i` (a window
+    /// is a run of the listing, in order). The focus read-out (`card_probe`) asks, and so does the
+    /// accessibility projection, whose `card.<n>` is this number ([`card_a11y`]); the default is a
+    /// source that holds its listing whole.
     fn global(&self, i: usize) -> usize {
         i
     }
@@ -333,6 +363,49 @@ pub trait CardSource<H: Host> {
     fn more_before(&self) -> bool {
         false
     }
+}
+
+/// **Card `i`'s accessibility projection**, the one shape every card of every screen has: a
+/// [`Role::Card`] at `<section>.card.<n>`, [`loaded`](A11y::loaded) as [`CardSource::a11y_loaded`]
+/// says, and, only once it is loaded, the title [`CardSource::a11y_title`] names it by as its label
+/// and [`CardSource::subject`] as its subject (an empty word is no label and no subject). A slot
+/// whose page has not landed exists and carries neither.
+///
+/// **`n` is the card's place in its LISTING** ([`CardSource::global`]), never its place in the
+/// window the source holds now: a window that pages (a Search result, a hub shelf, the Related
+/// tail) would otherwise give one id to a different title before and after, and a `focus:` carries
+/// no subject guard. The screen supplies only the `section`, the one part that is its own place in
+/// its layout (owned, so a source that is a temporary of the call can be dropped before the
+/// projection is); the inverse is [`card_window_index`].
+pub fn card_a11y<H: Host, S: CardSource<H> + ?Sized>(section: A11yPath, src: &S, i: usize) -> A11y<'static> {
+    let loaded = src.a11y_loaded(i);
+    let mut a = A11y::new(section.name("card").index(src.global(i)), Role::Card).with_loaded(loaded);
+    if loaded {
+        if let Some(title) = src.a11y_title(i).filter(|t| !t.is_empty()) {
+            a = a.with_label(title.into_owned());
+        }
+        if let Some(subject) = src.subject(i).filter(|s| !s.is_empty()) {
+            a = a.with_subject(subject.into_owned());
+        }
+    }
+    a
+}
+
+/// **The inverse of [`card_a11y`]'s index**: the window index `j` of the card at listing position
+/// `global`, or `None` when the window the source holds now does not contain it (a card paged out,
+/// or past the end: the id is `Unknown`, and a "reveal" follow-up is what brings it back). It
+/// bisects [`CardSource::global`], which rises with the index, so it never scans.
+pub fn card_window_index<H: Host, S: CardSource<H> + ?Sized>(src: &S, global: usize) -> Option<usize> {
+    let (mut lo, mut hi) = (0, src.len());
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        match src.global(mid).cmp(&global) {
+            std::cmp::Ordering::Equal => return Some(mid),
+            std::cmp::Ordering::Less => lo = mid + 1,
+            std::cmp::Ordering::Greater => hi = mid,
+        }
+    }
+    None
 }
 
 /// Where one card was drawn, handed to [`CardSource::overlay`].

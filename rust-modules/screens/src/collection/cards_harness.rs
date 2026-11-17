@@ -84,6 +84,48 @@ impl Harness {
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: ENTRY, elem } }
 }
 
+/// **The page's elements have ids**: the head, the member grid and the status read-outs it composes on
+/// the stack all project, are unique, and are found again (`plx_ui::a11y::conformance`). The ids are the
+/// stack's own; this page adds no group of its own beyond the sections it hands the stack.
+#[test]
+fn the_page_answers_accessibility_ids() {
+    assert!(!collection_conforms().is_empty());
+}
+
+/// The Collection page over eight members, run through the id conformance (`ContentArg::Collection`;
+/// the coverage table calls this, and so does the test above).
+pub(crate) fn collection_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let h = Harness::new(8);
+    namespaces.push(conform::<CollectionHost, _>(&h.screen, &h.cx()));
+    namespaces
+}
+
+/// **The sections are named, and a member's id carries its ratingKey as the subject**: the member
+/// grid is `items.card.<i>` (never `section.<position>.card.<i>`, which moves with the sections),
+/// and each card's subject is its member's ratingKey (the id's index is only a place).
+#[test]
+fn the_sections_are_named_and_a_member_names_its_rating_key() {
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let h = Harness::new(8);
+    let all = plx_ui::a11y::listing::<CollectionHost, _>(&h.screen, &h.cx());
+    assert!(all.iter().all(|a| !a.path.to_string().starts_with("section.")), "a section left unnamed");
+    let ids: Vec<_> = all.into_iter().filter(|a| a.role == plx_ui::a11y::Role::Card).collect();
+    let paths: Vec<String> = ids.iter().map(|a| a.path.to_string()).collect();
+    assert_eq!(paths, (0..8).map(|i| format!("items.card.{i}")).collect::<Vec<_>>());
+    for (i, a) in ids.iter().enumerate() {
+        assert_eq!(a.subject.as_deref(), Some(format!("m{i}").as_str()), "{}", a.path);
+    }
+    let cx = h.cx();
+    let card = plx_ui::a11y::A11yPath::parse_relative("items.card.5").unwrap();
+    let cards = CardHarness::cards(&h);
+    assert_eq!(Focusable::<CollectionHost>::a11y_find(&h.screen, &card, &cx), Some(cards[5]));
+}
+
 impl CardHarness for Harness {
     fn cards(&self) -> Vec<u32> {
         let c = self.store.view().current().unwrap();

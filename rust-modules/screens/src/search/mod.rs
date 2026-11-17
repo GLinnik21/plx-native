@@ -659,12 +659,15 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
         h
     }
     fn sections(&self, _cx: &Cx<'_, H>, out: &mut Vec<SectionSpec<Sec>>) {
-        out.push(SectionSpec::new(Sec::Head, plx_ui::cards::Kind::Custom { height: layout::CONTENT_TOP, focusable: true }, FIELD_GROUP));
+        // The sections are named for what they ARE (the accessibility ids: `field.0`, `recents.<n>`,
+        // `clear.0`, `movies.card.<i>`), not by position: the recents come and go, and a result row
+        // is the page's one row of its kind (`layout::name`), wherever the results place it.
+        out.push(SectionSpec::new(Sec::Head, plx_ui::cards::Kind::Custom { height: layout::CONTENT_TOP, focusable: true }, FIELD_GROUP).named("field"));
         if !self.recents.is_empty() {
             let shown = self.recents.len().min(layout::RECENT_CAP) as f32;
             out.push(SectionSpec::new(Sec::Recents, plx_ui::cards::Kind::Custom {
-                height: plx_ui::table::HDR_H + shown * plx_ui::table::ROW_H, focusable: true }, RECENTS_GROUP));
-            out.push(SectionSpec::new(Sec::Clear, plx_ui::cards::Kind::Custom { height: 0.0, focusable: true }, CLEAR_GROUP));
+                height: plx_ui::table::HDR_H + shown * plx_ui::table::ROW_H, focusable: true }, RECENTS_GROUP).named("recents"));
+            out.push(SectionSpec::new(Sec::Clear, plx_ui::cards::Kind::Custom { height: 0.0, focusable: true }, CLEAR_GROUP).named("clear"));
         }
         for row in &self.rows {
             let elem = if matches!(row.kind, Kind::Movie | Kind::Show | Kind::Episode) { ElemKind::Card } else { ElemKind::Bare };
@@ -674,7 +677,8 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
                 plx_ui::cards::Kind::Shelf { style: layout::style(row.kind), heading: layout::HEAD_TO_ROW }, row.group)
                 .seated(Seat::Projected)
                 .edges([EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop])
-                .of_kind(elem));
+                .of_kind(elem)
+                .named(layout::name(row.kind)));
         }
     }
     fn fallback(&self, _cx: &Cx<'_, H>, out: &mut Vec<Sec>) { out.push(Sec::Head); }

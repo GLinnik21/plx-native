@@ -173,3 +173,49 @@ fn the_roster_opens_on_the_seated_users_tile() {
     snap.seated = Arc::from("nobody");
     assert_eq!(ProfilesScreen::new(EntryId(0), auth::SessionRead(&snap)).seated_tile(), None);
 }
+
+/// **The roster's tiles answer ids under `roster`, labelled with the profile's name, beside the
+/// footer's `sign_out`**; they conform (listed, unique, found), and an id the picker does not
+/// have (a tile past the roster, a pad key with the pad shut) finds nothing. Opening the PIN pad
+/// takes the roster and the footer out from under it.
+#[test]
+fn the_roster_answers_ids_for_its_tiles_and_the_footer() {
+    assert!(!profiles_conforms().is_empty());
+}
+
+/// The picker over three profiles, roster then PIN pad, run through the id conformance with the id
+/// asserts above (`AppArg::Profiles`; the coverage table calls this, and so does the test above).
+pub(crate) fn profiles_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let snap = snapshot(Phase::Profiles, vec![user("Ana", false), user("Bea", true), user("Cy", false)]);
+    let mut s = ProfilesScreen::new(EntryId(0), snap.read());
+    let c = cx_with(None, &snap);
+    let mut namespaces = vec![conform::<SessionHost, _>(&s, &c)];
+
+    let mut tiles = Vec::new();
+    Focusable::<SessionHost>::a11y_elems(&s, ROSTER_GROUP, &c, &mut tiles);
+    assert_eq!(tiles, [0, 1, 2]);
+    let mut last = String::new();
+    for (i, name) in ["Ana", "Bea", "Cy"].into_iter().enumerate() {
+        let a = Focusable::<SessionHost>::a11y(&s, &(i as u32), &c).unwrap();
+        assert_eq!(a.path.segs().next(), Some(Seg::Name("roster")), "{}", a.path);
+        assert_eq!(a.label.as_deref(), Some(name));
+        assert_eq!(Focusable::<SessionHost>::a11y_find(&s, &a.path, &c), Some(i as u32));
+        last = a.path.to_string();
+    }
+    let find = |s: &ProfilesScreen, text: &str| {
+        Focusable::<SessionHost>::a11y_find(s, &A11yPath::parse_relative(text).unwrap(), &c)
+    };
+    assert_eq!(find(&s, "sign_out"), Some(FOOTER));
+    assert_eq!(find(&s, "back"), None, "no read-out");
+    assert_eq!(find(&s, "pad.digit.1"), None, "the pad is shut");
+    let past = format!("{}3", last.strip_suffix('2').expect("the last tile is index 2"));
+    assert_eq!(find(&s, &past), None, "{past} is past the roster");
+
+    s.pad = Pad::opened(1);
+    namespaces.push(conform::<SessionHost, _>(&s, &c));
+    assert_eq!(find(&s, "sign_out"), None, "the pad traps the picker");
+    assert!(Focusable::<SessionHost>::a11y(&s, &0, &c).is_none(), "the roster is under the pad");
+    assert_eq!(find(&s, "pad.digit.1"), Some(pad_elem(0, 0)));
+    namespaces
+}

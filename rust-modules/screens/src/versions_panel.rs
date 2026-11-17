@@ -18,6 +18,7 @@ use std::convert::Infallible;
 use plx_data::pms::MediaVersion;
 use plx_plex::plex::{MediaId, ServerId};
 use crate::registry::{AppLike, AppMsg, PageMemory};
+use plx_ui::a11y::{A11y, A11yPath};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind,
@@ -205,6 +206,28 @@ impl<H: AppLike<Memory = PageMemory>> Focusable<H> for VersionsPanelScreen {
             elem: self.form.selected_key().or_else(|| self.form.opening_key()).map_or(0, |k| k.0),
         }
     }
+
+    /// **Row `n` is `row.<n>`**, the shared table convention
+    /// ([`plx_ui::geom::table_a11y`]): `n` is the row's ordinal among the focusable rows (the same
+    /// count `GroupSpec::len` states), so a separator or note never shifts an id. The label is the
+    /// row's own text, for the state file only. The elements and the inverse are the shared ones.
+    fn a11y(&self, elem: &u32, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let slot = self.form.index_of_key(RowKey(*elem))?;
+        plx_ui::geom::table_a11y(&self.form.table, Some(&self.form), slot)
+    }
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == GroupId(0) {
+            out.extend(
+                plx_ui::geom::table_elems(&self.form.table, Some(&self.form))
+                    .filter_map(|i| self.form.key_at(i))
+                    .map(|k| k.0),
+            );
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, _cx: &Cx<'_, H>) -> Option<u32> {
+        let slot = plx_ui::geom::table_a11y_find(&self.form.table, Some(&self.form), path)?;
+        self.form.key_at(slot).map(|k| k.0)
+    }
 }
 
 impl LogicalState for VersionsPanelScreen {
@@ -284,7 +307,7 @@ impl<H: AppLike<Memory = PageMemory>> Screen<H> for VersionsPanelScreen {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use plx_machine::machine::Host;
     use plx_ui::screen::ScreenArg;
@@ -327,6 +350,42 @@ mod tests {
             VersionsArg { host: InstanceId(9), sid: ServerId::from_raw(1), rk: "42".into(), anchor },
             &plx_appkit::version_list::sample(),
         )
+    }
+
+    fn cx() -> Cx<'static, HostFixture> {
+        use plx_machine::machine::{FocusRead, InputOwner, PressRead, Tick};
+        Cx {
+            views: (),
+            tick: Tick::default(),
+            measure: &plx_ui::fixture::FixtureMeasure,
+            focus: FocusRead::default(),
+            press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
+            owner: InputOwner::Entry(EntryId(3)),
+        }
+    }
+
+    /// The *Play Version* list over the sample versions, run through the id conformance
+    /// (`AppArg::VersionsPanel`; the coverage table calls this).
+    pub(crate) fn versions_panel_conforms() -> plx_ui::a11y::Namespaces {
+        vec![plx_ui::a11y::conform::<HostFixture, _>(&panel(), &cx())]
+    }
+
+    /// Every version is a row with an id, `row.<n>` in the server's order, and the id finds it
+    /// again.
+    #[test]
+    fn every_version_answers_an_id_in_the_servers_order() {
+        let p = panel();
+        let cx = cx();
+        plx_ui::a11y::conform::<HostFixture, _>(&p, &cx);
+        let n = plx_appkit::version_list::sample().len();
+        assert!(n >= 2, "the sample has several versions");
+        for i in 0..n {
+            let path = plx_ui::a11y::A11yPath::parse_relative(&format!("row.{i}")).expect("a well-formed path");
+            assert_eq!(Focusable::<HostFixture>::a11y_find(&p, &path, &cx), Some(i as u32), "row.{i} is version {i}");
+        }
+        let past = plx_ui::a11y::A11yPath::parse_relative(&format!("row.{n}")).expect("a well-formed path");
+        assert_eq!(Focusable::<HostFixture>::a11y_find(&p, &past, &cx), None);
     }
 
     /// OK on a row closes the panel and reports THAT version to the page that opened it.

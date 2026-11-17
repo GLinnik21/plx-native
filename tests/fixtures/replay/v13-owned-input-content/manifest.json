@@ -22,7 +22,7 @@
   ],
   "init": {
     "probe": "controlled=home version=1",
-    "hash": 14078699402826037697,
+    "hash": 327227068133784625,
     "data": {
       "automated": true,
       "clock_start": 0,
@@ -84,8 +84,8 @@
                 "address": "127.0.0.1",
                 "machine_id": "",
                 "name": "",
-                "origin": "http://127.0.0.1:57391",
-                "port": 57391,
+                "origin": "http://127.0.0.1:32498",
+                "port": 32498,
                 "tier": "local",
                 "token": "s00000002"
               }

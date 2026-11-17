@@ -482,6 +482,7 @@ impl Chaptered {
                 width: 0,
                 height: 0,
                 bitrate: 0,
+                video_kbps: 0,
                 dovi: Default::default(),
                 markers: Vec::new(),
                 chapters: (1..=count).map(chapter).collect(),
@@ -594,6 +595,9 @@ fn check_census(case: &Census) {
     let _chapters = case.chapters.then(Chaptered::install);
     let screen = census_screen(case.occupant, case.failed);
     let cx: Cx<'static, TestHost> = super::cx();
+    // whatever the occupant (discs, a Skip pill, Up Next's pair), the open strip or the read-out, every
+    // element the groups below declare has a unique id that finds it again
+    plx_ui::a11y::conformance::<TestHost, _>(&screen, &cx);
     let mut groups: Vec<GroupSpec> = Vec::new();
     Focusable::<TestHost>::groups(&screen, &cx, &mut groups);
     let ids: Vec<u32> = groups.iter().map(|g| g.id.0).collect();

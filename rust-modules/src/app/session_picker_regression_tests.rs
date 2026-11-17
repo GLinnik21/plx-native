@@ -404,6 +404,62 @@ fn first_run_consent_over_the_picker_does_not_flip_mounts_every_frame() {
     assert_eq!(d.nav.tabs.stack.page_alpha(), 1.0, "the page transition actually settled");
 }
 
+/// **The dev consent override presents the question ONCE on the picker path** (implicit-state
+/// audit 2026-11-17, finding 2). `follow_auth_landing` asks every frame once Profiles is the
+/// settled top; the override used to bypass every state, so the frame after the question went away
+/// (an override answer records nothing) presented it again, forever, and the picker was
+/// unreachable — what the simulator recording showed. Drives the production follower over the real
+/// `Bridge` + `Dispatcher` with the override's own trigger file armed in this test's private
+/// runtime root (`hostsim`, for the reason the test above gives), takes the question away, and
+/// counts presentations.
+#[cfg(feature = "hostsim")]
+#[test]
+fn the_dev_consent_override_presents_the_question_once_over_the_picker() {
+    use super::test_support::tick;
+    struct Trigger(std::path::PathBuf);
+    impl Drop for Trigger {
+        fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+    }
+    let _g = plx_base::testlock::serial();
+    let _trigger = {
+        let path = plx_base::paths::runtime_dir().join("plxnative-consent");
+        std::fs::write(&path, "crash").expect("arm the override in the private runtime root");
+        Trigger(path)
+    };
+    assert!(crate::dev::scenarios::consent_override().is_some(), "the override is armed");
+
+    let mut account = stored(true);
+    account.user = UserRef::default();
+    account.home_users = ["owner", "adult"].iter()
+        .map(|u| HomeUserRef { uuid: (*u).into(), ..Default::default() }).collect();
+    let mut harness = rig(account);
+    let mut rig = harness.bridge();
+    let mut d = Dispatcher::<AppHost>::with_transition(Box::new(
+        plx_ui::containers::transition::PageDip::new(),
+    ));
+    super::nav_root(&mut d, AppArg::Login);
+    for i in 0..20 { super::frame(&mut d, &mut rig, tick(i), vec![]); }
+    execute_session_command(&mut d, SessionCmd::StartSwitch(Picker::SignedIn));
+    super::frame(&mut d, &mut rig, tick(20), vec![]);
+    assert_eq!(rig.auth_read().0.phase, Phase::Profiles);
+
+    let mut consent_mounts = 0usize;
+    for i in 21..=200u32 {
+        let (_, report) = super::frame(&mut d, &mut rig, tick(i), vec![]);
+        consent_mounts += report.mounted.iter().filter(|(_, name)| *name == "settings").count();
+        // The question goes away (an override answer records nothing) once it has been up a while.
+        if i == 100 {
+            assert!(super::first_run_consent_up(&d), "the override presented the question");
+            super::dismiss_surfaces(&mut d);
+        }
+        if matches!(d.top_arg(), Some(AppArg::Login | AppArg::Profiles)) {
+            super::follow_auth_landing(&mut d, &mut rig);
+        }
+    }
+    assert_eq!(consent_mounts, 1, "presented once, never again after it went away");
+    assert!(!super::first_run_consent_up(&d), "and the picker is reachable");
+}
+
 /// **Login-phase twin: the same per-frame follower over the QR screen never re-mints it either.**
 ///
 /// The picker test above exercises `bridge::follow_auth_landing`'s `Phase::Profiles |

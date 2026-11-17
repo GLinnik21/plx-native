@@ -561,3 +561,56 @@ fn map_retypes_bindings_demotes_declined_rows_and_slots_read_the_layout() {
     assert_eq!(t.table.sections[0].rows[1].label, "Beta", "drawn exactly as declared");
     assert_eq!(t.index_of_key(RowKey(11)), Some(0), "the key the closure answered is the key bound");
 }
+
+/// A row id that names itself for the accessibility ids ([`FormId::a11y`]), or does not.
+#[derive(Clone, Debug, PartialEq)]
+struct Named(u32, Option<&'static str>);
+impl FormId for Named {
+    fn key(&self) -> RowKey {
+        RowKey(self.0)
+    }
+    fn a11y(&self) -> Option<&'static str> {
+        self.1
+    }
+}
+
+/// **A row's id names the row for the a11y ids, and the name is the row's** ([`RowKeys::a11y_name`],
+/// by layout index): the name a `FormId` declares, nothing for a row declared with an explicit key
+/// (it has no `FormId`), a separator or a note, and the name rides along when `Form::map` re-types
+/// the binding, because it belongs to the row and not to the id type.
+#[test]
+fn a_form_id_names_its_row_and_the_name_survives_a_retype() {
+    type Plain = Form<Named, (), ()>;
+    let form: Plain = Form::new().section(
+        FormSection::<Named, (), ()>::new("S")
+            .item(Named(1, Some("alpha")), RowKind::Button, (), Row::new("Alpha"))
+            .separator()
+            .item(Named(2, None), RowKind::Button, (), Row::new("Beta"))
+            .item_keyed(Named(3, Some("ignored")), RowKey(3), RowKind::Button, (), Row::new("Gamma"))
+            .note("careful"),
+    );
+    let mut t: FormTable<Named, (), ()> = FormTable::new(100);
+    t.set(form, None);
+    let names: Vec<_> = (0..6).map(|i| t.a11y_name(i)).collect();
+    assert_eq!(names, [Some("alpha"), None, None, None, None, None], "alpha, separator, beta, gamma (explicit key), note, past the end");
+
+    let retyped: Form<u32, (), ()> = Form::new()
+        .section(
+            FormSection::<Named, (), ()>::new("S")
+                .item(Named(1, Some("alpha")), RowKind::Button, (), Row::new("Alpha"))
+                .item(Named(2, None), RowKind::Button, (), Row::new("Beta")),
+        )
+        .map(|b| Some(Binding { id: b.id.0, key: b.key, kind: b.kind, action: (), disabled: b.disabled }));
+    let mut u: FormTable<u32, (), ()> = FormTable::new(100);
+    u.set(retyped, None);
+    assert_eq!((u.a11y_name(0), u.a11y_name(1)), (Some("alpha"), None), "the name rides along a re-type");
+
+    // a map that names nothing (the default) leaves every row to its position
+    struct Bare;
+    impl RowKeys for Bare {
+        fn key_at(&self, _: usize) -> Option<RowKey> { None }
+        fn index_of_key(&self, _: RowKey) -> Option<usize> { None }
+        fn reseat(&self) -> Option<RowKey> { None }
+    }
+    assert_eq!(Bare.a11y_name(0), None);
+}
