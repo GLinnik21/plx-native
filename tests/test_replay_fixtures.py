@@ -19,88 +19,82 @@ spec.loader.exec_module(replay)
 
 class ExpectedRefusalTests(unittest.TestCase):
     def test_exact_early_refusal_is_a_distinct_typed_outcome(self):
-        line = 'replay: REFUSED — incompatible historical content scheduler: requires post-dispatch admission'
-        self.assertEqual(replay.verdict(line, 1, (7, 5), replay.HISTORICAL_CONTENT_REFUSAL),
-                         'REFUSED_EXPECTED exit=1 reason=' + replay.HISTORICAL_CONTENT_REFUSAL)
+        line = 'replay: REFUSED — ' + replay.HISTORICAL_OWNER_REFUSAL
+        self.assertEqual(replay.verdict(line, 1, (7, 5), replay.HISTORICAL_OWNER_REFUSAL),
+                         'REFUSED_EXPECTED exit=1 reason=' + replay.HISTORICAL_OWNER_REFUSAL)
         for log, code in [('', 1), (line, 0), (line, -11), (line, 2),
-                          (line.replace('post-dispatch', 'pre-dispatch'), 1),
+                          (line.replace('V13', 'V12'), 1),
                           (line + '\nreplay: done verdict=SAME', 1),
                           ('replay: frame f=0\n' + line, 1),
                           ('video driver: offscreen\n' + line, 1),
                           ('bootstrap: captured\n' + line, 1),
                           ('discover: base=stand-in\n' + line, 1),
-                          ('plex.tv: boot\n' + line, 1),
-                          ('frame executed\n' + line, 1), (line + '\n' + line, 1)]:
+                          ('plex.tv: boot\n' + line, 1), (line + '\n' + line, 1),
+                          ('replay: REFUSED — invalid or incompatible recording', 1)]:
             with self.subTest(log=log, code=code), self.assertRaises(ValueError):
-                replay.verdict(log, code, (7, 5), replay.HISTORICAL_CONTENT_REFUSAL)
-        with self.assertRaises(ValueError):
-            replay.verdict(line, 1, (7, 5))
-        with self.assertRaises(ValueError):
-            replay.verdict(line, 1, (7, 5), 'arbitrary unsupported profile')
+                replay.verdict(log, code, (7, 5), replay.HISTORICAL_OWNER_REFUSAL)
+        for refusal in [None, 'arbitrary unsupported profile']:
+            with self.assertRaises(ValueError):
+                replay.verdict(line, 1, (7, 5), refusal)
 
-    def test_invalid_recording_refusal_and_same_cannot_satisfy_historical_expectation(self):
-        summary = ('replay: done frames=7 graded=5 ' +
-                   ' '.join(field + '=0' for field in replay.DIFFS) + ' verdict=SAME')
-        for log, code in [('replay: REFUSED — invalid or incompatible recording', 1),
-                          (summary, 0), ('', 0), ('', 1)]:
-            with self.subTest(log=log), self.assertRaises(ValueError):
-                replay.verdict(log, code, (7, 5), replay.HISTORICAL_CONTENT_REFUSAL)
-
-    def test_committed_policy_census_is_structural_and_keeps_supported_counts(self):
+    def test_committed_census_requires_eight_historical_refusals_and_two_current_same(self):
         root = Path(__file__).resolve().parent / 'fixtures/replay'
-        census = [(replay.expected_refusal(fixture), replay.expected_counts(fixture))
-                  for fixture in replay.discover(root)]
-        self.assertCountEqual(census, [(None, (266, 266)), (None, (621, 621)),
-                                      (None, (2287, 2287)),
-                                      (replay.HISTORICAL_CONTENT_REFUSAL, (457, 457))])
+        fixtures = replay.discover(root)
+        historical = [p for p in fixtures if replay.expected_refusal(p) is not None]
+        current = [p for p in fixtures if replay.expected_refusal(p) is None]
+        self.assertEqual(len(historical), 4)
+        self.assertEqual(len(current), 1)
+        self.assertCountEqual([replay.expected_counts(p) for p in historical],
+                              [(266, 266), (621, 621), (2287, 2287), (457, 457)])
+        for fixture in current:
+            counts = replay.expected_counts(fixture)
+            self.assertEqual(counts, (1216, 1216))
+            manifest = json.loads((fixture / 'manifest.json').read_text())
+            self.assertIs(manifest.get('anchor'), True)
+            self.assertNotIn((manifest['schema'], manifest['state_fp']),
+                             {(p['schema'], p['state_fp']) for p in replay.HISTORICAL_PROFILES})
+            self.assertEqual({mode for path, mode in replay.replay_order(fixtures) if path == fixture},
+                             {'targets', 'resolve'})
+            summary = (f'replay: done frames={counts[0]} graded={counts[1]} ' +
+                       ' '.join(field + '=0' for field in replay.DIFFS) + ' verdict=SAME')
+            self.assertEqual(replay.verdict(summary, 0, counts), summary)
+            with self.assertRaises(ValueError):
+                replay.verdict('replay: REFUSED — ' + replay.HISTORICAL_OWNER_REFUSAL, 1, counts)
 
-    def test_current_content_requires_both_modes_same_and_never_expected_refusal(self):
-        root = Path(__file__).resolve().parent / 'fixtures/replay'
-        fixture = root / '12-filmography-detail-return-current'
-        self.assertIn(fixture, replay.discover(root))
-        counts = replay.expected_counts(fixture)
-        self.assertEqual(counts, (2287, 2287))
-        self.assertIsNone(replay.expected_refusal(fixture))
-        self.assertCountEqual([mode for path, mode in replay.replay_order(replay.discover(root))
-                               if path == fixture], ['targets', 'resolve'])
-        summary = ('replay: done frames=2287 graded=2287 ' +
-                   ' '.join(field + '=0' for field in replay.DIFFS) + ' verdict=SAME')
-        self.assertEqual(replay.verdict(summary, 0, counts), summary)
-        for reason in ('invalid or incompatible recording', replay.HISTORICAL_CONTENT_REFUSAL):
-            with self.subTest(reason=reason), self.assertRaises(ValueError):
-                replay.verdict('replay: REFUSED — ' + reason, 1, counts,
-                               replay.expected_refusal(fixture))
-
-    def test_policy_uses_bounded_parsed_effects_not_log_strings_or_fixture_identity(self):
+    def test_policy_authenticates_raw_bytes_not_directory_names_or_only_fingerprints(self):
+        root = Path(__file__).resolve().parent / 'fixtures/replay/1-boot-home-chip-grid'
         with tempfile.TemporaryDirectory() as temp:
             fixture = Path(temp)
-            header = {'schema': 3, 'state_fp': 4239819007634745513}
             manifest = fixture / 'manifest.json'
             segment = fixture / 'rec-0000.jsonl'
-            manifest.write_text(json.dumps(header))
-            rows = [{'f': 0, 't': 'tick'}, {'f': 0, 't': 'st', 'hash': 1},
-                    {'f': 0, 't': 'eff', 'e': 'App', 'inst': 2, 'payload': {'content': {'push': {}}}}]
-            segment.write_text('\n'.join(map(json.dumps, rows)))
-            self.assertEqual(replay.expected_refusal(fixture), replay.HISTORICAL_CONTENT_REFUSAL)
+            original_manifest = (root / manifest.name).read_bytes()
+            original_segment = (root / segment.name).read_bytes()
+            manifest.write_bytes(original_manifest)
+            segment.write_bytes(original_segment)
+            self.assertEqual(replay.expected_refusal(fixture), replay.HISTORICAL_OWNER_REFUSAL)
+            header = json.loads(original_manifest)
             for fp in [12345, 741022075462080307, 999999999999999999]:
                 header['state_fp'] = fp
                 manifest.write_text(json.dumps(header))
                 self.assertIsNone(replay.expected_refusal(fixture))
-            header['state_fp'] = 4239819007634745513
-            manifest.write_text(json.dumps(header))
-            for collision in [dict(rows[-1], e='Log'),
-                              dict(rows[-1], payload={'log': json.dumps(rows[-1])}),
-                              dict(rows[-1], t='log')]:
-                segment.write_text('\n'.join(map(json.dumps, rows[:2] + [collision])))
+            header = json.loads(original_manifest)
+            header['unexpected'] = True
+            for mutated in [json.dumps(header).encode(), original_manifest + b' ']:
+                manifest.write_bytes(mutated)
                 self.assertIsNone(replay.expected_refusal(fixture))
-            for malformed in ['{bad}', json.dumps(rows[-1])[:-1],
-                              '{"t":"eff","t":"log","e":"App","payload":{"content":{}}}']:
-                segment.write_text(malformed)
-                with self.assertRaises(ValueError):
-                    replay.expected_refusal(fixture)
-            segment.write_text('x' * (replay.POLICY_MAX_LINE_BYTES + 1))
+            manifest.write_bytes(original_manifest)
+            segment.write_bytes(original_segment + b'\n')
             with self.assertRaises(ValueError):
                 replay.expected_refusal(fixture)
+            for malformed in [b'{bad}', original_segment[:len(original_segment)//2],
+                              b'{"t":"eff","t":"log","e":"App","payload":{}}']:
+                segment.write_bytes(malformed)
+                with self.assertRaises(ValueError):
+                    replay.expected_refusal(fixture)
+            segment.write_bytes(b'x' * (replay.POLICY_MAX_LINE_BYTES + 1))
+            with self.assertRaises(ValueError):
+                replay.expected_refusal(fixture)
+
 
 
 class ReplayCallerTests(unittest.TestCase):
@@ -115,7 +109,7 @@ class ReplayCallerTests(unittest.TestCase):
             (fixture / 'rec-0000.jsonl').write_text('\n'.join(map(json.dumps, rows)))
             output = root / 'evidence'
             output.mkdir()
-            line = 'replay: REFUSED — ' + replay.HISTORICAL_CONTENT_REFUSAL
+            line = 'replay: REFUSED — ' + replay.HISTORICAL_OWNER_REFUSAL
 
             def process(command, **kwargs):
                 self.assertFalse(any(key.startswith('GIT_') for key in kwargs['env']))
@@ -124,6 +118,7 @@ class ReplayCallerTests(unittest.TestCase):
                 return mock.Mock(returncode=1)
 
             with mock.patch.dict(replay.os.environ, {'GIT_DIR': 'hostile', 'GIT_CUSTOM': 'hostile'}), \
+                    mock.patch.object(replay, 'expected_refusal', return_value=replay.HISTORICAL_OWNER_REFUSAL), \
                     mock.patch.object(replay.subprocess, 'run', side_effect=process):
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out):
@@ -144,11 +139,11 @@ class ReplayCallerTests(unittest.TestCase):
                 def process(command, **kwargs):
                     runtime = Path(kwargs['env']['PLXNATIVE_RUNTIME_DIR'])
                     (runtime / 'plxnative-events.log').write_text(
-                        'replay: REFUSED — ' + replay.HISTORICAL_CONTENT_REFUSAL, encoding='utf-8')
+                        'replay: REFUSED — ' + replay.HISTORICAL_OWNER_REFUSAL, encoding='utf-8')
                     kwargs['stdout'].write(stderr)
                     return mock.Mock(returncode=1)
                 with self.subTest(stderr=stderr), \
-                        mock.patch.object(replay, 'expected_refusal', return_value=replay.HISTORICAL_CONTENT_REFUSAL), \
+                        mock.patch.object(replay, 'expected_refusal', return_value=replay.HISTORICAL_OWNER_REFUSAL), \
                         mock.patch.object(replay.subprocess, 'run', side_effect=process), \
                         self.assertRaisesRegex(ValueError, 'unexpected output'):
                     replay.run_fixture(root / 'sim', root, root, 'targets', output, 5)

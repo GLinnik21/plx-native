@@ -29,7 +29,8 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
             plx_plex::plex::register_for_test("shelf-shared", "127.0.0.1", 10, "synthetic", "fixture");
         plx_plex::plex::set_current(own);
         let mut d = Dispatcher::<AppHost>::new();
-        let mut rig = Bridge::for_test(|| 0);
+        let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = owner.bridge();
         rig.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
         rig.refresh_browse_directory();
         rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
@@ -55,7 +56,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
                 .unwrap()
                 .probe_viewport(d.focus())
         };
-        assert_eq!(rig.section_hubs.view().shelves().len(), 2);
+        assert_eq!(rig.retained.section_hubs.view().shelves().len(), 2);
         let mut i = 80;
         while position(&d).0 != "shelf" || position(&d).1 != row {
             assert!(
@@ -140,6 +141,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
                 .downcast_ref::<plx_screens::library::RecommendedScreen>()
                 .unwrap();
             let parts = CxParts {
+                modal: d.modal_presentation().read, page_image: d.page_image_read(), hold_hint: d.input.hold_hint,
                 tick: tick(n),
                 press: d.input.press_read(tick(n).ms),
                 focus: d.input.engine.read(InputOwner::Entry(key.entry)),
@@ -147,7 +149,7 @@ fn shelf_physical_hold_captures_engine_item_deck_flag_and_bridge_rest_opener() {
             };
             let cx = parts.cx::<AppHost>(
                 rig.views_with(plx_media::route::idle_session_for_test()),
-                &rig.measure,
+                &rig.retained.measure,
             );
             let placed = page.place(&key.elem, &cx, At::Drawn).unwrap();
             let (selected, opener) = rig.library_selection(&d, key.entry, Some(key)).unwrap();

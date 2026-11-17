@@ -779,6 +779,7 @@ mod tests {
             press: PressRead::default(),
             focus: FocusRead::default(),
             owner: OWNER,
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         }
     }
 

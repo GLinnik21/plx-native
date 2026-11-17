@@ -23,7 +23,8 @@ fn keyboard_rail_ok_down_up_returns_without_arming_or_requesting_a_card() {
         plx_plex::plex::register_for_test("rail-shared", "127.0.0.1", 10, "synthetic", "fixture");
     plx_plex::plex::set_current(sid);
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
     rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
@@ -109,7 +110,8 @@ fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
     use plx_screens::registry::{LibraryCmd, LibraryMenuArg, LibraryMenuKind};
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
     let host = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     d.nav.next_style = plx_ui::containers::modal::Style::Compact;
@@ -150,6 +152,7 @@ fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
     }
     let row_count = |d: &Dispatcher<AppHost>, rig: &mut Bridge| {
         let parts = CxParts {
+            modal: d.modal_presentation().read, page_image: d.page_image_read(), hold_hint: d.input.hold_hint,
             tick: tick(85),
             press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: d.focus(), ..Default::default() },
@@ -201,7 +204,8 @@ fn library_sweep_visits_the_whole_document_and_reverses_at_its_ends() {
         plx_plex::plex::register_for_test("sweep-shared", "127.0.0.1", 10, "synthetic", "fixture");
     plx_plex::plex::set_current(sid);
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
     rig.browse_run(plx_data::stores::browse::BrowseCmd::ApplyPins(vec![

@@ -288,15 +288,8 @@ pub fn surface_policy(style: Style, phase: Phase, ground_ready: bool) -> (HostUp
     }
 }
 
-/// **Does this STYLE hold a snapshot of its host?** — the one answer `popover`'s process-wide
-/// `HOST_USERS` counter is driven from (`app/bridge.rs`'s `sync_host`).
-///
-/// DERIVED from [`surface_policy`] rather than restating it as a second `matches!` over `Style`,
-/// and that is the whole point of the function existing. The counter is what arms
-/// `popover::host::page_pass`'s freeze, so a style the table calls `HostRender::Cached` and this
-/// answer calls `false` produces a surface whose host is redrawn in full on every frame it is up
-/// — with nothing failing, because the two statements live three modules apart and nothing
-/// compares them.
+/// Does this style retain a host snapshot? Derived from the sole policy table, never
+/// restated in Bridge or the renderer. `ModalPresentation` captures this request explicitly.
 ///
 /// **That is exactly what happened to `Style::Compact` (restructure phase 8).** The bridge listed
 /// `Sheet | Opaque { snapshot: true } | Alert` by hand and left Compact out — the one production
@@ -306,11 +299,8 @@ pub fn surface_policy(style: Style, phase: Phase, ground_ready: bool) -> (HostUp
 /// 58 ms frames with the whole library page — ambient wash, shelves, poster grid and all their
 /// text — re-rendered under an open menu, `loop=` 43-45 against a floor of 45.
 ///
-/// The phase is deliberately NOT a parameter. `HOST_USERS` is an ownership count held from the
-/// surface's first live frame to its release; a per-frame answer would flap as
-/// `Opaque { snapshot: true }` crosses into `Replaced` and the bridge would owe a release it
-/// never took. `Phase::Opening` with no ground drawn is the phase at which every style states
-/// its host policy in full.
+/// The snapshot may remain useful through an opaque surface's replaced phase and its close.
+/// Opening with no ground drawn states the style's full snapshot lifetime requirement.
 pub fn style_caches_host(style: Style) -> bool {
     surface_policy(style, Phase::Opening, false).1 != HostRender::Live
 }
@@ -320,34 +310,35 @@ pub fn style_caches_host(style: Style) -> bool {
 /// ~0.2 s of frames nobody can see, each one a full panel (and, for a glass menu, the source
 /// pass behind it, which a page reflowing under a Remove re-takes every frame). 2% of a panel and
 /// of a 30% dim is below what the panel can show.
-pub const CLOSING_GONE: f32 = 0.02;
+pub const CLOSING_GONE: f32 = plx_machine::machine::MODAL_CLOSING_GONE;
 
-thread_local! {
-    /// The most opaque surface over the page after this frame's surface step ([`set_veil`]).
-    pub(crate) static VEIL: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+/// Immutable owner-addressed render input. The identity only separates GL cache borrowers;
+/// every logical fact is derived from ModalStack, never published to TLS.
+#[derive(Clone, Debug)]
+pub struct ModalPresentation {
+    pub read: plx_machine::machine::ModalRead,
+    pub reflow: bool,
+    key: ModalCacheKey,
+}
+/// GL snapshot signature only. Never consulted for phase, policy, veil or input decisions.
+#[derive(Clone, Debug)]
+pub struct ModalCacheKey {
+    owner: std::sync::Arc<()>,
+    layers: Vec<(EntryId, bool)>,
+}
+impl ModalCacheKey {
+    pub fn same_snapshot(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.owner, &other.owner) && self.layers == other.layers
+    }
+}
+impl ModalPresentation {
+    pub fn cache_key(&self) -> ModalCacheKey { self.key.clone() }
 }
 
-/// The dispatcher's statement, right after it steps the surfaces and before any page tick, of how
-/// much of a surface stands over the page this frame: 1 for an `Opening` or `Open` one, the
-/// appear of a `Closing` one, the largest of them, 0 for none. Thread-local, like
-/// [`page_image_held`](super::transition::page_image_held), and for the same reader: a page's
-/// layout animation that must not run under a menu ([`page_veiled`]).
-pub fn set_veil(v: f32) {
-    VEIL.with(|c| c.set(v));
-}
+// Veil is captured by ModalStack::presentation before pages tick. Consumers read Cx.modal;
+// there is no ambient logical publication, even when two dispatchers share one render thread.
 
-/// The page is under a menu this frame: a surface is opening, open, or still at least
-/// [`CLOSING_GONE`] opaque on its way out, which is to say the menu still holds the host. **The page
-/// does not move while this is true**: a layout motion that a menu's choice started (the
-/// Watchlist's Remove, a card leaving its grid) waits for this to clear (`cards::landing`), and so
-/// does the data that would change what the page shows (`app/watchlist.rs`'s feed). A surface
-/// whose body answers [`Screen::lets_host_reflow`] (the Watchlist's Sort & Filter menu) casts no veil:
-/// the page reflows under it.
-pub fn page_veiled() -> bool {
-    VEIL.with(|c| c.get()) >= CLOSING_GONE
-}
-
-/// The veil a set of surfaces casts ([`set_veil`]).
+/// The veil captured from the owning stack, after its surfaces step.
 pub(crate) fn veil_of<H: Host>(surfaces: &[Surface<H>]) -> f32 {
     surfaces
         .iter()
@@ -376,6 +367,7 @@ pub struct ModalStack<H: Host> {
     pub retired: Vec<Entry<H>>,
     /// The ONE field every surface's dim inherits through — see [`ModalUnderlay`].
     pub underlay: ModalUnderlay,
+    presentation_owner: std::sync::Arc<()>,
 }
 
 /// **What the stack's underlay field was last latched from.** The latch is re-taken exactly when
@@ -636,6 +628,27 @@ impl<H: Host> ModalStack<H> {
             surfaces: Vec::new(),
             retired: Vec::new(),
             underlay: ModalUnderlay::new(),
+            presentation_owner: std::sync::Arc::new(()),
+        }
+    }
+
+    pub fn presentation(&self) -> ModalPresentation {
+        let holders: Vec<_> = self.surfaces.iter()
+            .filter(|s| s.phase != Phase::Hidden && style_caches_host(s.style))
+            .map(|s| s.entry.id).collect();
+        let closing_only = !holders.is_empty() && self.surfaces.iter()
+            .filter(|s| holders.contains(&s.entry.id)).all(|s| s.phase == Phase::Closing);
+        ModalPresentation {
+            read: plx_machine::machine::ModalRead {
+                input_covered: self.input_owner().is_some(),
+                host_cached: !holders.is_empty(),
+                closing_only,
+                veil: veil_of(&self.surfaces),
+            },
+            reflow: false,
+            key: ModalCacheKey { owner: self.presentation_owner.clone(),
+                layers: self.surfaces.iter().filter(|s| holders.contains(&s.entry.id))
+                    .map(|s| (s.entry.id, s.phase == Phase::Closing)).collect() },
         }
     }
 

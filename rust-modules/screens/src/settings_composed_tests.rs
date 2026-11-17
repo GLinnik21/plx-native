@@ -46,7 +46,7 @@
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
-use crate::registry::{self, AppFx, AppMsg};
+use crate::registry::{self, AppMsg};
 use plx_ui::containers::modal::{Phase, Style};
 use plx_ui::dispatch::{CxParts, Dispatcher, NoTap, Rig, Split};
 use plx_ui::fixture::{key, tick, FixtureMeasure};
@@ -145,18 +145,30 @@ impl Rig<InnerHost> for SurfaceRig {
     fn app_fx(
         &mut self,
         _from: MachineId,
-        effect: AppFx,
+        effect: crate::registry::InlineAppFx,
         _parts: &CxParts<u32>,
         _out: &mut Effects<'_, InnerHost>,
     ) {
         match effect {
-            AppFx::Preferences(command) => self.preference_commands.push(command),
-            AppFx::Session(plx_session::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. }) => {
+            crate::registry::InlineAppFx::Session(plx_session::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. }) => {
                 let account = plx_plex::plex::grant::account_key(&plx_plex::plex::session::peek().account_token);
                 plx_plex::plex::grant::record(&account, &machine_id, choice).expect("fixture grant answer");
             }
             _ => {}
         }
+    }
+    fn run_yielded_app_command(&mut self, d: &mut Dispatcher<InnerHost>,
+        report: &mut plx_ui::dispatch::FrameReport, tap: &mut dyn plx_ui::dispatch::Tap<InnerHost>) -> Option<u32> {
+        let command = d.take_app_command()?;
+        let outcome = match &command.effect {
+            Ok(_) => plx_machine::machine::AppCommandOutcome::Completed,
+            Err(outcome) => *outcome,
+        };
+        if let Ok(crate::registry::ExternalAppFx::Preferences(command)) = command.effect {
+            self.preference_commands.push(command);
+        }
+        Some(d.resume_app_command(self, command.id, outcome,
+            vec![], report, tap).unwrap())
     }
     fn log(&mut self, _line: &str) {}
     fn prepare(&mut self, _b: &mut Budget, _present: &mut Present) {}

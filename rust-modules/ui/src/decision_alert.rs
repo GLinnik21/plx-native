@@ -567,12 +567,12 @@ mod tests {
         for _ in 0..90 { alert.update(1.0 / 60.0); }
         assert!(alert.settled());
         let appear = alert.pop.appear();
-        let users = crate::popover::host_users_for_test();
+        let visible = alert.pop.visible();
         assert!(alert.reconcile_card(c"Details", vec!["receipt".into()], Answers::Two));
         assert_eq!(alert.body_for_test(), ["receipt"]);
         assert_eq!(alert.choice(), Choice::Destructive);
         assert_eq!(alert.pop.appear(), appear, "content must not restart the entrance");
-        assert_eq!(crate::popover::host_users_for_test(), users);
+        assert_eq!(alert.pop.visible(), visible);
         plx_machine::motion::report::take_local_motion();
         assert!(!alert.reconcile_card(c"Details", vec!["receipt".into()], Answers::Two));
         assert_eq!(plx_machine::motion::report::take_local_motion(), 0, "a settled card must stay idle");

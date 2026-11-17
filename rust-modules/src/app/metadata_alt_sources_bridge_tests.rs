@@ -35,8 +35,9 @@ fn detail_landing_emits_and_drains_alt_in_the_same_bridge_call_live_and_controll
     for controlled in [false, true] {
         tape::reset_for_test();
         let sid = servers();
-        let mut bridge = Bridge::for_test(|| 0);
-        bridge.store_runner = super::super::adapters::stores::StoreRunner::held_all();
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = harness.bridge();
+        *bridge.store_runner = super::super::adapters::stores::StoreRunner::held_all();
         if controlled {
             tape::init(None, false);
             tape::begin(Default::default(), Default::default());
@@ -45,13 +46,13 @@ fn detail_landing_emits_and_drains_alt_in_the_same_bridge_call_live_and_controll
         ready_detail(&mut bridge, sid);
         assert!(bridge.metadata_pump_detail());
         bridge.assert_no_store_jobs_left_for_test();
-        assert_eq!(bridge.late_store_jobs, 0);
+        assert_eq!(bridge.retained.late_store_jobs, 0);
         let jobs = bridge.take_held_store_jobs_for_test();
         assert_eq!(jobs.len(), 1, "detail landing's alt request drained in THIS call");
         let StoreJob::MetaAltSources(job, port) = jobs.into_iter().next().unwrap() else { panic!("alt job") };
         assert_eq!(job.req.sid, sid);
         assert_eq!(job.req.others.len(), 2);
-        assert_eq!(job.req.keys, bridge.client_keys);
+        assert_eq!(job.req.keys, bridge.retained.client_keys);
         if controlled {
             assert!(bridge.metadata_view().current().unwrap().source_override.is_none());
             assert_eq!(tape::finish(), (Vec::new(), None), "Direct alt has no admission bytes");
@@ -65,8 +66,9 @@ fn aggregate_metadata_pump_also_drains_landing_jobs_before_return() {
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
     let sid = servers();
-    let mut bridge = Bridge::for_test(|| 0);
-    bridge.store_runner = super::super::adapters::stores::StoreRunner::held_all();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
+    *bridge.store_runner = super::super::adapters::stores::StoreRunner::held_all();
     ready_detail(&mut bridge, sid);
     assert!(bridge.metadata_pump());
     bridge.assert_no_store_jobs_left_for_test();
@@ -83,12 +85,13 @@ fn direct_alt_drain_adds_no_admission_bytes_in_record_or_replay() {
     for replay in [false, true] {
         tape::reset_for_test();
         let sid = servers();
-        let mut bridge = Bridge::for_test(|| 0);
-        bridge.store_runner = super::super::adapters::stores::StoreRunner::held_all();
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = harness.bridge();
+        *bridge.store_runner = super::super::adapters::stores::StoreRunner::held_all();
         ready_detail(&mut bridge, sid);
         // Explicit input store compatibility path; it owes the jobs to this caller.
-        super::super::adapters::stores::refill_client_keys(&mut bridge.client_keys);
-        assert!(bridge.stores.metadata.pump_detail(&bridge.client_keys, false));
+        super::super::adapters::stores::refill_client_keys(&mut bridge.retained.client_keys);
+        assert!(bridge.stores.metadata.pump_detail(&bridge.retained.client_keys, false));
         let jobs = bridge.stores.metadata.take_jobs();
         assert_eq!(jobs.len(), 1);
         tape::init(None, replay);
@@ -106,13 +109,16 @@ fn direct_alt_drain_adds_no_admission_bytes_in_record_or_replay() {
 fn entering_controlled_home_never_reuses_a_live_detail_source_override() {
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
-    let mut live = Bridge::for_test(|| 0);
+    let mut live_owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let live = live_owner.bridge();
     metadata::set_current_for_test(live.stores.metadata.state_mut(), Some(Detail {
         source_override: Some("live-only".into()), ..Default::default()
     }));
     let initial = super::super::bootstrap::Initial::synthetic_home(41, 17, None).unwrap();
     let mt = unsafe { plx_base::task::MainThread::assume() };
-    let controlled = Bridge::controlled_home(|| 0, &initial, &mt, false);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, false);
+    let mut controlled_owner = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let controlled = controlled_owner.bridge();
     assert_eq!(live.metadata_view().current().unwrap().source(), "live-only");
     assert!(controlled.metadata_view().current().is_none(),
         "the existing controlled host boundary constructs a fresh Metadata owner, not a live projection");
@@ -125,8 +131,9 @@ fn ready_real_alt_wins_fallback_registration_once_then_next_pass_observes_roster
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
     let sid = servers();
-    let mut bridge = Bridge::for_test(|| 0);
-    bridge.store_runner = super::super::adapters::stores::StoreRunner::held_all();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
+    *bridge.store_runner = super::super::adapters::stores::StoreRunner::held_all();
     ready_detail(&mut bridge, sid);
     assert!(bridge.metadata_pump_detail());
     let held = bridge.take_held_store_jobs_for_test();
@@ -146,11 +153,11 @@ fn ready_real_alt_wins_fallback_registration_once_then_next_pass_observes_roster
     }));
     assert_eq!(bridge.metadata_view().alt_copies(sid, "item")[0].rk, "real", "real wins SAME call");
     assert_eq!(bridge.stores.metadata.gen(), before + 1, "one folded notice, not stand-in then real notices");
-    assert_eq!(bridge.client_keys, job.req.keys, "no intervening refill after registration");
+    assert_eq!(bridge.retained.client_keys, job.req.keys, "no intervening refill after registration");
     assert!(bridge.stores.metadata.take_notice().is_some());
     assert!(bridge.stores.metadata.take_notice().is_none());
     bridge.metadata_pump_alt_sources_with(|_, _| panic!("rk chance already consumed"));
-    assert_eq!(bridge.client_keys.iter().count(), 3, "NEXT pass refills newly registered roster");
+    assert_eq!(bridge.retained.client_keys.iter().count(), 3, "NEXT pass refills newly registered roster");
     assert!(!metadata::alt_sources_owed_for_test(bridge.stores.metadata.adapter_ref()));
     bridge.assert_no_store_jobs_left_for_test();
 }

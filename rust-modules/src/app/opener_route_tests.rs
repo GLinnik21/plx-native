@@ -9,19 +9,21 @@ use plx_ui::screen::Focusable;
 use super::test_support::*;
 use super::test_support::frame;
 
-fn home_rig() -> (Dispatcher<AppHost>, Bridge) {
+fn home_rig() -> (Dispatcher<AppHost>, crate::app::runtime_owners::Harness) {
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     rig.stores.hubs.seed_grid_for_test(6, 24);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
-    (d, rig)
+    (d, owner)
 }
 
 #[test]
 fn home_opener_anchors_at_the_drawn_rect_of_a_grid_card_and_at_nothing_for_the_hero() {
     let _guard = plx_base::testlock::serial();
-    let (mut d, mut rig) = home_rig();
+    let (mut d, mut owner) = home_rig();
+    let mut rig = owner.bridge();
     let entry = d.nav.top_page().unwrap().id;
     for i in 1..20 { frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]); }
     assert!(!rig.home_grid_focused(&d), "Home boots on the hero");
@@ -60,7 +62,8 @@ fn home_opener_anchors_at_the_drawn_rect_of_a_grid_card_and_at_nothing_for_the_h
 fn the_item_menu_trigger_is_answered_on_the_deck_row_while_the_page_rests_on_the_hero() {
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     rig.stores.hubs.seed_deck_home_for_test(3);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
@@ -84,7 +87,8 @@ fn the_item_menu_trigger_is_answered_on_the_deck_row_while_the_page_rests_on_the
 #[test]
 fn a_home_card_is_not_answered_by_the_library_search_or_content_builders() {
     let _guard = plx_base::testlock::serial();
-    let (mut d, mut rig) = home_rig();
+    let (mut d, mut owner) = home_rig();
+    let mut rig = owner.bridge();
     let entry = d.nav.top_page().unwrap().id;
     let instance = d.nav.instance_of(entry).unwrap();
     d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
@@ -109,7 +113,8 @@ fn a_library_card_is_not_answered_by_the_home_or_content_builders() {
     let shared = plx_plex::plex::register_for_test("opener-route-lib-shared", "127.0.0.1", 10, "synthetic", "fixture");
     plx_plex::plex::set_current(sid);
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
     rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
@@ -135,7 +140,8 @@ fn a_detail_related_card_opens_its_menu_at_the_drawn_rect_and_other_shelves_open
     let sid = plx_plex::plex::register_for_test("opener-route-detail", "127.0.0.1", 9, "synthetic", "fixture");
     let route = AppArg::Content(ContentArg::Detail { sid, rk: "movie".into() });
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     let related = |rk: &str| plx_data::pms::PmsMovie { sid, rk: rk.into(), sec: 1, ..Default::default() };
     // Installed BEFORE the mount: the page keys its element identities from the item it finds
     // current when it mounts.
@@ -161,10 +167,10 @@ fn a_detail_related_card_opens_its_menu_at_the_drawn_rect_and_other_shelves_open
     };
     let drawn = |d: &Dispatcher<AppHost>, rig: &Bridge, elem: u32| {
         let screen = &d.nav.entry(entry).unwrap().inst.as_ref().unwrap().screen;
-        let parts = CxParts { tick: Tick::default(), press: Default::default(),
+        let parts = CxParts { modal: d.modal_presentation().read, page_image: d.page_image_read(), hold_hint: d.input.hold_hint, tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: Some(FocusKey { entry, elem }), ..Default::default() },
             owner: InputOwner::Entry(entry) };
-        let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
+        let cx = parts.cx::<AppHost>(rig.views(), &rig.retained.measure);
         let page = screen.as_any().unwrap().downcast_ref::<plx_screens::detail::DetailScreen>().unwrap();
         Focusable::<AppHost>::place(page, &elem, &cx, At::Drawn).expect("a Related card is placed")
     };
@@ -208,7 +214,8 @@ fn pdf_proposal_more_opens_the_on_deck_episode_even_outside_the_loaded_season() 
     plx_plex::plex::reset_servers_for_test();
     let sid = plx_plex::plex::register_for_test("hero-more", "127.0.0.1", 9, "synthetic", "fixture");
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     plx_data::metadata::set_current_for_test(rig.stores.metadata.state_mut(), Some(plx_data::metadata::Detail {
         sid, rk: "show".into(), kind: "show".into(), is_show: true,
         on_deck: Some(plx_data::metadata::Episode { rk: "on-deck".into(), resume_ms: 60_000, dur_ms: 120_000, ..Default::default() }),

@@ -71,6 +71,7 @@ mod tests {
         let mut stub: StubAdapters<FixtureHost> = StubAdapters::new(|fx| match fx {
             FixtureFx::StoreAdd(v) => format!("store-add:{v}"),
             FixtureFx::Net(_) => "net".to_string(),
+            FixtureFx::ExternalNet(_) => "external-net".to_string(),
             FixtureFx::Poster(k) => format!("poster:{}", k.0),
         })
         .answering(|_from, fx, _parts, out| {
@@ -86,6 +87,7 @@ mod tests {
             press: Default::default(),
             focus: Default::default(),
             owner: plx_machine::machine::InputOwner::Entry(plx_machine::machine::EntryId(0)),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         };
         let mut present = plx_machine::present::Present::new();
         let mut buf = Vec::new();

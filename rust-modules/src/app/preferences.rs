@@ -38,6 +38,18 @@ pub(super) fn execute(command: PreferenceCmd) {
     match command {
         // These commands need the Bridge's admitted, profile-scoped feature publication.
         PreferenceCmd::EnsureMarkerAccess => {}
+        PreferenceCmd::HoldHint { taught, live, reply } => {
+            let _ = plx_base::storage_worker::submit_retained(move || {
+                use std::sync::atomic::Ordering;
+                let saved = plx_plex::plex::session::update_guarded_with_outcome(|current| {
+                    // A durable no-op is also success: never retry a lesson already stored.
+                    Some(current.with_hold_hint_taught(taught))
+                }, || live.load(Ordering::Acquire))
+                    .is_some_and(|write| write.outcome.persisted());
+                let _ = reply.send(saved);
+                plx_machine::present::wake_from_worker();
+            });
+        }
         PreferenceCmd::ChooseMarker { reply, .. } => { let _ = reply.send(false); }
         PreferenceCmd::Choose(Choice::IntroSkip(_) | Choice::CreditsSkip(_), reply) => { let _ = reply.send(false); }
         PreferenceCmd::Load { reply } => {
@@ -137,6 +149,32 @@ mod tests {
     fn account() -> Session {
         Session { client_id: "preference-client".into(), account_token: "synthetic-account".into(),
             ..Default::default() }.with_auto_sign_in(false)
+    }
+
+    #[test]
+    fn hold_hint_durable_receipt_and_cancelled_retained_write_are_lifetime_fenced() {
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("app-hold-hint-lifetime");
+        session::save(&account());
+        let queue = FullStorageQueue::new();
+        let live = Arc::new(AtomicBool::new(true));
+        let (reply, answer) = mpsc::channel();
+        execute(PreferenceCmd::HoldHint { taught: session::HoldHintTaught { card: true, pill: false },
+            live: live.clone(), reply });
+        assert_eq!(answer.try_recv(), Err(TryRecvError::Empty));
+        live.store(false, Ordering::Release);
+        drop(queue);
+        assert_eq!(answer.recv_timeout(std::time::Duration::from_secs(5)), Ok(false));
+        assert_eq!(session::peek().hold_hint_taught(), session::HoldHintTaught::NONE);
+        let (reply, answer) = mpsc::channel();
+        execute(PreferenceCmd::HoldHint { taught: session::HoldHintTaught { card: true, pill: false },
+            live: Arc::new(AtomicBool::new(true)), reply });
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!(answer.try_recv(), Ok(true));
+        assert_eq!(answer.try_recv(), Err(TryRecvError::Disconnected));
+        session::invalidate_for_test();
+        assert!(session::load().hold_hint_taught().card, "receipt means durable, not merely queued");
     }
 
     #[test]

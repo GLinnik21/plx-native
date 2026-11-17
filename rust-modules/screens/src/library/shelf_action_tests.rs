@@ -84,6 +84,7 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
         },
         tick: Tick::default(),
         measure: &FixtureMeasure,
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         focus: engine.read(owner),
         press: PressRead {
             scale: 0.85,
@@ -203,6 +204,7 @@ fn a_collection_shelf_heading_is_a_linked_focus_stop_that_opens_the_collection()
         views: Views { inputs: crate::registry::caption_fixture(), listing: listing.view(), directory: directory.view(), hubs: hubs.view() },
         tick: Tick::default(),
         measure: &FixtureMeasure,
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         focus: engine.read(owner),
         press: PressRead::default(),
         owner,

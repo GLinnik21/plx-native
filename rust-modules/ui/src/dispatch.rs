@@ -41,6 +41,10 @@ use super::screen::{
 
 use super::{Painter, Rect};
 
+#[cfg(test)]
+#[path = "dispatch/presentation_tests.rs"]
+mod presentation_tests;
+
 /// The strip's control namespace: `of_index(STRIP_BASE + stable_id)`, never display position.
 /// A removed pill therefore cannot renumber another destination or collide with a page's tile.
 pub const STRIP_BASE: u32 = 0xFFFF_0000;
@@ -154,10 +158,9 @@ pub const MAX_ROUNDS: u32 = 4;
 /// A debug build asserts when `carried` grows for this many consecutive frames.
 pub const CARRY_GROWTH_FRAMES: u8 = 8;
 
-/// The recorder's taps (spec §5.3): the dispatcher reports what it did, the recorder writes it.
-/// Every method has a no-op default so an unarmed frame costs a vtable call per event and nothing
-/// else. `NoTap` is the unarmed implementation.
-pub trait Tap<H: Host> {
+/// Replay resolution decisions (spec §5.3), supplied only by the rig's explicit owned capability.
+/// Passive callers cannot supply answers or change the replay mode. Unarmed rigs use live answers.
+pub trait ReplayAuthority<H: Host> {
     /// None is a live/recording dispatch; false feeds targets, true grades real resolution.
     fn resolution_mode(&self) -> Option<bool> { None }
     /// Recording must make the same pure validation/measurement queries as replay.
@@ -170,9 +173,17 @@ pub trait Tap<H: Host> {
     /// A final observation, including None; the optional outer value requests continuation.
     fn focus_continuation(&mut self, _f: u64, _engine: bool,
         _actual: Option<(u32, u32, Option<u32>)>) -> Option<Option<(u32, u32, Option<u32>)>> { None }
+}
+
+/// Passive observations only: no replay answers, resource admission or readiness authority.
+pub trait Tap<H: Host> {
+    fn command_done(&mut self, _f: u64, _id: AppCommandId, _from: MachineId, _outcome: AppCommandOutcome) {}
     fn tick(&mut self, _f: u64, _t: Tick) {}
     fn input(&mut self, _f: u64, _ev: &InputEvent<H::Elem>) {}
     fn result(&mut self, _f: u64, _addr: &Addr, _msg: &H::Msg) {}
+    /// Captured external evidence, delivered before this frame's input and Tick.
+    fn presentation(&mut self, _f: u64, _paint_frame: u64, _entry: EntryId,
+        _instance: InstanceId, _message: &H::Msg) {}
     fn effect(&mut self, _f: u64, _s: &Stamped<H>) {}
     fn present(&mut self, _f: u64, _bit: bool, _why: Option<plx_machine::present::Provenance>) {}
     /// On an event frame (a frame with input, or whose timers fired): the logical-state hash, offered
@@ -199,12 +210,101 @@ pub struct FocusAnswer<K> {
     pub group: Option<GroupId>,
 }
 
+/// Explicit native IO capabilities borrowed for one product frame. Implementations own
+/// resources, not ordering: only `Dispatcher::product_frame` calls these ports.
+/// No application type or native resource enters this layer.
+pub trait FrameRuntime<H: Host> {
+    fn dispatcher(&mut self) -> &mut Dispatcher<H>;
+    fn pump(&mut self);
+    fn ingest(&mut self);
+    fn results(&mut self) -> bool;
+    fn step(&mut self) -> bool;
+    /// Publish post-commit resource/player facts and close the original POST drain.
+    fn publish(&mut self);
+    fn admit(&mut self, demand: bool) -> bool;
+    fn prepare(&mut self);
+    /// True only after an actual platform swap has returned.
+    fn draw_and_swap(&mut self) -> bool;
+    fn skipped(&mut self);
+    fn end(&mut self);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProductPhase { Pump, Ingest, Results, Step, Stepped, Publish, Admit, Prepare, Draw, End }
+
+#[cfg(test)]
+mod observer_tests;
+#[cfg(any(test, feature = "test-support"))]
+mod replay_frame;
+#[cfg(any(test, feature = "test-support"))]
+pub use replay_frame::ReplayFrame;
+
 pub struct NoTap;
 impl<H: Host> Tap<H> for NoTap {}
 
-// Borrow the observer for one callback, releasing it before resource execution.
-fn frame_tap<'a, H: Host>(rig: &'a mut dyn Rig<H>, fallback: &'a mut dyn Tap<H>) -> &'a mut dyn Tap<H> {
-    rig.dispatch_tap().unwrap_or(fallback)
+/// Explicit combined recorder capability, borrowed sequentially, never fanned out as authority.
+pub trait ReplayControl<H: Host>: Tap<H> + ReplayAuthority<H> {}
+impl<H: Host, T: Tap<H> + ReplayAuthority<H>> ReplayControl<H> for T {}
+
+/// The caller always observes. Only Replay grants the rig's one decision provider.
+pub enum FrameObservers<'a, H: Host> {
+    Caller,
+    Owned(&'a mut dyn Tap<H>),
+    Replay(&'a mut dyn ReplayControl<H>),
+}
+
+struct LiveAuthority;
+impl<H: Host> ReplayAuthority<H> for LiveAuthority {}
+
+fn frame_authority<H: Host, T>(rig: &mut dyn Rig<H>, call: impl FnOnce(&mut dyn ReplayAuthority<H>) -> T) -> T {
+    match rig.dispatch_tap() {
+        FrameObservers::Replay(replay) => call(replay),
+        FrameObservers::Caller | FrameObservers::Owned(_) => call(&mut LiveAuthority),
+    }
+}
+
+struct PassiveObservers<'a, H: Host> {
+    owned: Option<&'a mut dyn Tap<H>>,
+    caller: &'a mut dyn Tap<H>,
+}
+
+// Release both passive borrows before any command/resource execution or authority query.
+fn frame_tap<'a, H: Host>(rig: &'a mut dyn Rig<H>, caller: &'a mut dyn Tap<H>) -> PassiveObservers<'a, H> {
+    let owned = match rig.dispatch_tap() {
+        FrameObservers::Caller => None,
+        FrameObservers::Owned(tap) => Some(tap),
+        FrameObservers::Replay(replay) => Some(replay as &mut dyn Tap<H>),
+    };
+    PassiveObservers { owned, caller }
+}
+
+macro_rules! observe_both {
+    ($($name:ident($($arg:ident: $ty:ty),*);)*) => {$ (
+        fn $name(&mut self, $($arg: $ty),*) {
+            if let Some(owned) = self.owned.as_deref_mut() { owned.$name($($arg),*); }
+            self.caller.$name($($arg),*);
+        }
+    )*};
+}
+
+impl<H: Host> Tap<H> for PassiveObservers<'_, H> {
+    observe_both! {
+        tick(f: u64, t: Tick);
+        input(f: u64, ev: &InputEvent<H::Elem>);
+        result(f: u64, addr: &Addr, msg: &H::Msg);
+        presentation(f: u64, paint_frame: u64, entry: EntryId, instance: InstanceId, message: &H::Msg);
+        effect(f: u64, stamped: &Stamped<H>);
+        present(f: u64, bit: bool, why: Option<plx_machine::present::Provenance>);
+        focus(f: u64, focus: Option<(u32, u32, Option<u32>)>);
+        frame_done(f: u64);
+        command_done(f: u64, id: AppCommandId, from: MachineId, outcome: AppCommandOutcome);
+    }
+    fn state(&mut self, f: u64, hash: &mut dyn FnMut() -> u64) {
+        let mut cached = None;
+        let mut once = || *cached.get_or_insert_with(&mut *hash);
+        if let Some(owned) = self.owned.as_deref_mut() { owned.state(f, &mut once); }
+        self.caller.state(f, &mut once);
+    }
 }
 
 /// The adapter drain order (spec §3.3 step 3): one rank per PUMP in the legacy loop's order — a
@@ -228,9 +328,8 @@ pub const ADAPTER_RANKS: [&str; 11] = [
 /// mounter, the views and the measure at once so a mount can read the stores it was built over.
 pub trait Rig<H: Host> {
     fn split(&mut self) -> Split<'_, H>;
-        /// Single-owner observer, borrowed sequentially with command execution.
-        /// Absent means that the explicit frame tap retains its original behavior.
-        fn dispatch_tap(&mut self) -> Option<&mut dyn Tap<H>> { None }
+    /// Owned passive observer or the explicit single replay capability; caller is never replaced.
+    fn dispatch_tap(&mut self) -> FrameObservers<'_, H> { FrameObservers::Caller }
     /// Step a non-instance machine (a store, `Session`, `Player`, `Cache`) with the app's message.
     /// The rig builds the `Cx` itself, because a store's views are every OTHER store's.
     fn deliver(
@@ -249,12 +348,11 @@ pub trait Rig<H: Host> {
     fn timer(&mut self, owner: MachineId, id: TimerId, parts: &CxParts<H::Elem>, fx: &mut Effects<'_, H>);
     /// Execute an application effect against the adapters; may emit more (an adapter result
     /// available at once, an `Emit`).
-    fn app_fx(&mut self, from: MachineId, fx: H::Fx, parts: &CxParts<H::Elem>, out: &mut Effects<'_, H>);
+    fn app_fx(&mut self, from: MachineId, fx: plx_machine::machine::InlineFx<H>, parts: &CxParts<H::Elem>, out: &mut Effects<'_, H>);
     /// Emission-time bookmark delivered before effect execution. Housekeeping which opts out
     /// through `Host::app_fx_needs_return` receives the default, clearing any previous bookmark.
     fn app_return(&mut self, _from: MachineId, _ret: ReturnState<H::Elem, H::Memory>) {}
-    /// Pure routing decision. External commands yield BEFORE `app_fx`, retaining their FIFO slot.
-    fn external_app_fx(&self, _fx: &H::Fx) -> bool { false }
+
     /// Exactly one terminal receipt per yielded obligation, not an asynchronous job completion.
     fn app_command_done(&mut self, _id: AppCommandId, _from: MachineId, _outcome: AppCommandOutcome) {}
     /// Optional App/MainThread runner seam, called outside every screen/store borrow, before
@@ -336,6 +434,9 @@ pub struct CxParts<K> {
     pub press: PressRead<K>,
     pub focus: FocusRead<K>,
     pub owner: InputOwner,
+    pub modal: plx_machine::machine::ModalRead,
+    pub page_image: plx_machine::machine::PageImageRead,
+    pub hold_hint: plx_machine::machine::HoldHintRead,
 }
 
 impl<K: Copy> CxParts<K> {
@@ -347,6 +448,12 @@ impl<K: Copy> CxParts<K> {
             press: self.press,
             focus: self.focus.clone(),
             owner: self.owner,
+            modal: self.modal,
+            page_image: match self.owner {
+                InputOwner::Entry(entry) => self.page_image.for_entry(entry),
+                InputOwner::System(_) => Default::default(),
+            },
+            hold_hint: self.hold_hint,
         }
     }
 
@@ -357,6 +464,7 @@ impl<K: Copy> CxParts<K> {
         entry: EntryId, focus: FocusRead<K>, beneath: Option<ScreenId>) -> Cx<'a, H> {
         let mut cx = self.cx::<H>(H::views_over(views, beneath), measure);
         cx.owner = InputOwner::Entry(entry);
+        cx.page_image = self.page_image.for_entry(entry);
         cx.focus = focus;
         cx
     }
@@ -415,10 +523,19 @@ pub struct FrameReport {
 struct PendingAppCommand<H: Host> {
     id: AppCommandId,
     from: MachineId,
-    command: Option<AppCommand<H::Fx, ReturnState<H::Elem, H::Memory>>>,
+    command: Option<AppCommand<plx_machine::machine::ExternalFx<H>, ReturnState<H::Elem, H::Memory>>>,
     remaining: u32,
     parts: CxParts<H::Elem>,
     retired: bool,
+}
+
+/// One bounded environmental observation, never an effect execution queue. Only this
+/// dispatcher's visible page walk can mint live evidence; only final swap can commit it.
+struct Presentation<H: Host> {
+    frame: u64,
+    entry: EntryId,
+    instance: InstanceId,
+    message: H::Msg,
 }
 
 /// The dispatcher: one FIFO, parked structural ops, timers, presentation, budget and tree.
@@ -475,6 +592,17 @@ pub struct Dispatcher<H: Host> {
     lifted_last: Option<FocusKey<H::Elem>>,
     /// This frame's prepare pass ran (a `draw` after a non-presenting frame runs it itself).
     prepared: bool,
+    /// Product IO can publish owner inputs after commit, before resource preparation.
+    /// This extends the same turn and POST budget; it is not another frame or queue.
+    product_turn: bool,
+    /// Native frame protocol, separate from the logical turn's POST continuation.
+    product_phase: Option<ProductPhase>,
+    presentation_authority: plx_machine::machine::PresentationAuthority,
+    presentation_draw: Option<Presentation<H>>,
+    presentation_swapped: Option<Presentation<H>>,
+    presentation_replay: bool,
+    // Logical ingress generation: a carried receipt survives budgets, not a newer paint.
+    presentation_latest: Option<(u64, EntryId, InstanceId)>,
     /// The previous frame's page-owned motion/resource verdict, retained past `Present::take` so
     /// the held transition image can wait for the destination's visual quiescence.
     page_quiescent: bool,
@@ -529,6 +657,13 @@ where
             last_tick: Tick::default(),
             lifted_last: None,
             prepared: false,
+            product_turn: false,
+            product_phase: None,
+            presentation_authority: Default::default(),
+            presentation_draw: None,
+            presentation_swapped: None,
+            presentation_replay: false,
+            presentation_latest: None,
             page_quiescent: false,
         }
     }
@@ -699,6 +834,10 @@ where
         let life = self.nav.reset_for_profile();
         self.parked_life.extend(life);
         self.input = InputMachine::new();
+        self.page_image = Default::default();
+        self.page_stops.clear();
+        self.page_debt = None;
+        self.page_image_alpha = None;
     }
 
     /// The top page's instance id, if mounted.
@@ -743,6 +882,12 @@ where
         self.nav.modals.surfaces.iter().any(|s| {
             s.phase != Phase::Hidden && s.entry.inst.as_ref().is_some_and(|i| i.screen.lets_host_reflow())
         }) && self.top_screen().is_some_and(|s| s.reflowing())
+    }
+
+    pub fn modal_presentation(&self) -> super::containers::modal::ModalPresentation {
+        let mut captured = self.nav.modals.presentation();
+        captured.reflow = self.host_reflow();
+        captured
     }
 
     pub fn top_screen(&self) -> Option<&dyn super::screen::Screen<H>> {
@@ -842,6 +987,9 @@ where
         CxParts {
             tick: Tick { ms: 0, dt_us: 0 },
             press: self.opener_press(),
+            modal: self.nav.modals.presentation().read,
+            page_image: self.page_image_read().for_entry(entry),
+            hold_hint: self.input.hold_hint,
             focus: FocusRead { current: focus, ..Default::default() },
             owner: InputOwner::Entry(entry),
         }
@@ -910,6 +1058,9 @@ where
         CxParts {
             tick,
             press: self.input.press_read(tick.ms),
+            modal: self.nav.modals.presentation().read,
+            page_image: self.page_image_read(),
+            hold_hint: self.input.hold_hint,
             focus: self.input.engine.read(owner),
             owner,
         }
@@ -971,6 +1122,43 @@ where
         !self.queue.is_empty() || !self.parked.is_empty() || !self.parked_life.is_empty() || self.pending_back
     }
 
+    /// Last visible page capture, revalidated against the current navigation owner on EVERY step.
+    /// No retained logical latch: source/prewarm walks cannot alter PageImage, replacement captures
+    /// remain held through the following tick, and only the next visible Live plan releases it.
+    /// GPU residency/availability is deliberately NOT a logical input (another runtime can evict it).
+    pub fn page_image_read(&self) -> plx_machine::machine::PageImageRead {
+        let (_, render) = self.nav.modals.host_policy();
+        if render != HostRender::Live || self.nav.suspended
+            || !self.nav.tabs.stack.transition.freezes_page() || self.video_plane_frame() {
+            return Default::default();
+        }
+        self.nav.top_page().and_then(|entry| entry.inst.as_ref().map(|inst|
+            self.page_image.transition_read(entry.id, inst.id,
+                self.nav.tabs.stack.transition.in_flight()))).unwrap_or_default()
+    }
+
+    /// Headless snapshot port: execute the SAME owned page-image planner without a GL capture.
+    /// Used only by route fixtures which cannot paint native screens; no ambient publication.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn plan_page_image_for_test(&mut self, ms: u32, valid: bool, quiescent: bool)
+        -> Option<super::containers::transition::PagePaint> {
+        use super::containers::transition::PagePaint;
+        let entry = self.nav.top_page()?;
+        let instance = entry.inst.as_ref()?.id;
+        let id = entry.id;
+        let valid = valid && self.page_image.read(id, instance).is_held();
+        let paint = self.page_image.plan(id, self.nav.tabs.stack.transition.in_flight(),
+            self.nav.tabs.stack.transition.page_alpha(), ms, valid, quiescent);
+        match paint {
+            PagePaint::Capture => self.page_image.captured(id),
+            PagePaint::ReplacementCapture => self.page_image.replacement_captured(id),
+            PagePaint::Live => self.page_image = Default::default(),
+            PagePaint::Held(_) => {},
+        }
+        if paint.captures_page() { self.page_image.bind_instance(instance); }
+        Some(paint)
+    }
+
     /// Whether this frame may show the page as a frozen image at all: a freezing transition, a
     /// snapshot texture to hold it, and no video plane under it.
     fn page_image_possible(&self, video_plane: bool) -> bool {
@@ -1005,6 +1193,11 @@ where
         draw: bool,
     ) -> FrameReport {
         let _frame_scope = plx_base::task::FrameScope::enter();
+        if let Some(phase) = self.product_phase {
+            assert_eq!(phase, ProductPhase::Step, "one logical step/nav commit per product frame");
+            assert!(!draw, "product draw belongs to the admitted native port");
+            self.product_phase = Some(ProductPhase::Stepped);
+        }
         self.frame += 1;
         self.last_tick = tick;
         self.prepared = false;
@@ -1012,13 +1205,43 @@ where
         let mut report = FrameReport::default();
         let queued_before = self.queue.len();
         frame_tap(rig, tap).tick(f, tick);
-        let event_frame = !inputs.is_empty()
+        let presentation = self.presentation_swapped.take().filter(|receipt|
+            receipt.frame.checked_add(1) == Some(f) && !self.nav.suspended
+                && self.owner_entry() == Some(receipt.entry)
+                && self.nav.instance_of(receipt.entry) == Some(receipt.instance));
+        let observed_presentation = presentation.is_some();
+        if let Some(receipt) = presentation {
+            // A newer real paint supersedes an older undelivered observation, never an
+            // ordinary effect. At most one receipt waits behind a blocked command head.
+            let authority = &self.presentation_authority;
+            self.queue.retain(|queued| !matches!(&queued.fx,
+                Fx::Deliver(_, Delivery::Screen(ScreenEvent::Presented(old))) if authority.owns(old)));
+            self.presentation_latest = Some((receipt.frame, receipt.entry, receipt.instance));
+            frame_tap(rig, tap).presentation(f, receipt.frame, receipt.entry, receipt.instance, &receipt.message);
+            self.queue.push_front(Stamped { from: MachineId::Present,
+                fx: Fx::Deliver(MachineId::Instance(receipt.instance),
+                    Delivery::Screen(ScreenEvent::Presented(self.presentation_authority.receipt(
+                        receipt.frame, receipt.entry, receipt.instance, receipt.message)))) });
+        }
+        let event_frame = observed_presentation || !inputs.is_empty()
             || !results.is_empty()
             || !self.parked.is_empty()
             || !self.parked_life.is_empty();
 
         // 1. the first privileged call
-        rig.ls2_pump();
+        if !self.product_turn { rig.ls2_pump(); }
+        // Product setup used to mutate mounted pages before ingest. Drain its
+        // addressed replacement (including focus repair) before resolving input,
+        // spending the SAME PRE budget and never committing navigation here.
+        if self.product_turn || observed_presentation {
+            let parts = self.parts(tick);
+            report.steps_pre = self.drain(rig, &parts, MAX_STEPS_PRE, &mut report, tap);
+            while let Some(id) = self.pending_app_command() {
+                let Some(steps) = rig.run_yielded_app_command(self, &mut report, tap) else { break };
+                report.steps_pre += steps;
+                assert_ne!(self.pending_app_command(), Some(id), "runner did not settle setup head");
+            }
+        }
 
         // 2. ingest: external events, delivered to the input owner, AHEAD of everything queued
         //    (external_events_are_drained_before_effect_results).
@@ -1047,10 +1270,10 @@ where
                     if self.hit_page() {
                         let owner_e = self.owner_entry();
                         let focused = self.focus();
-                        let actual = (frame_tap(rig, tap).resolution_mode() != Some(false)).then(||
+                        let actual = (frame_authority(rig, |a| a.resolution_mode()) != Some(false)).then(||
                             self.input.hit.resolve(owner_e, kind, x, y, focused));
-                        let Some(mut res) = frame_tap(rig, tap).resolve_hit(f, kind, owner_e, actual) else {
-                            frame_tap(rig, tap).resolution_error("missing hit resolution");
+                        let Some(mut res) = frame_authority(rig, |a| a.resolve_hit(f, kind, owner_e, actual)) else {
+                            frame_authority(rig, |a| a.resolution_error("missing hit resolution"));
                             continue;
                         };
                         // While the television keyboard is up, hover moves no focus. The keyboard
@@ -1058,9 +1281,9 @@ where
                         // way to the keys, and a focus move off a text field puts the keyboard
                         // away (search). A click still lands.
                         if keyboard && kind == PointerKind::Move { res.focus = None; }
-                        if frame_tap(rig, tap).resolution_active() && [res.hit, res.focus, res.activate.map(|v| v.0)].into_iter().flatten()
+                        if frame_authority(rig, |a| a.resolution_active()) && [res.hit, res.focus, res.activate.map(|v| v.0)].into_iter().flatten()
                             .any(|k| !self.valid_resolution_key(rig, &self.parts(tick), k, None, false)) {
-                            frame_tap(rig, tap).resolution_error("impossible hit resolution");
+                            frame_authority(rig, |a| a.resolution_error("impossible hit resolution"));
                             continue;
                         }
                         match &mut ev.kind {
@@ -1194,8 +1417,7 @@ where
             let mut ph = PresentHandle::of(present);
             nav.modals.tick(tick, &mut ph);
             present.set_scope(plx_machine::present::Scope::Page);
-            // the pages tick next: what of a menu stands over them this frame
-            super::containers::modal::set_veil(super::containers::modal::veil_of(&nav.modals.surfaces));
+            // Page contexts capture this stack's own veil, without an ambient publication.
         }
         let (host_update, host_render) = self.nav.modals.host_policy();
         report.host_update = Some(host_update);
@@ -1231,6 +1453,10 @@ where
             .filter_map(|s| Some((s.entry.inst.as_ref()?.id, s.motion.held())))
             .collect();
         // the press machine (§7.4): hold and commit are delivered from the Tick
+        let lift_target = self.lift_target().filter(|t| !t.2).and_then(|(entry, key, _)| {
+            Some((key?, self.nav.entry(entry)?.inst.as_ref()?.id))
+        });
+        self.input.validate_lift(lift_target);
         for pe in self.input.tick(tick.ms, tick.dt()) {
             let (delivery, owner) = match pe {
                 PressEvent::Hold(id, owner, key) => (Delivery::Press { id, key, held: true }, owner),
@@ -1282,7 +1508,8 @@ where
 
         // 6. the pre-commit drain
         let parts = self.parts(tick);
-        report.steps_pre = plx_base::diag::spans::span("dpre", || self.drain(rig, &parts, MAX_STEPS_PRE, &mut report, tap));
+        let remaining_pre = MAX_STEPS_PRE.saturating_sub(report.steps_pre);
+        report.steps_pre += plx_base::diag::spans::span("dpre", || self.drain(rig, &parts, remaining_pre, &mut report, tap));
         while let Some(id) = self.pending_app_command() {
             let Some(steps) = rig.run_yielded_app_command(self, &mut report, tap) else { break };
             report.steps_pre += steps;
@@ -1310,7 +1537,7 @@ where
         }
         // §7.3 step 6: after every landing and before draw, the owner's reconcile
         plx_base::diag::spans::span("drecon", || self.reconcile(rig, &parts, &mut report, tap));
-        let continuation = frame_tap(rig, tap).focus_continuation(f, self.engine_page(), self.focus_record());
+        let continuation = frame_authority(rig, |a| a.focus_continuation(f, self.engine_page(), self.focus_record()));
         // Engine continuations were applied per call and checked by the tap. Only Legacy
         // consumes an unchecked final target. Avoid a replay-only layout query here.
         if let Some(recorded) = continuation.filter(|_| !self.engine_page()) {
@@ -1325,21 +1552,21 @@ where
                             if self.focus()==Some(key) { self.set_focus_in(None,None); }
                             self.set_focus_in(Some(key), group.map(GroupId));
                         }
-                    } else { frame_tap(rig, tap).resolution_error("impossible final focus"); }
+                    } else { frame_authority(rig, |a| a.resolution_error("impossible final focus")); }
                 }
             }
         }
-        if frame_tap(rig, tap).resolution_active() && self.engine_page() {
+        if frame_authority(rig, |a| a.resolution_active()) && self.engine_page() {
             if let Some(key)=self.focus() {
                 let group=self.input.engine.current_group(InputOwner::Entry(key.entry));
                 if !self.valid_resolution_key(rig,&self.parts(tick),key,group,self.engine_page() && group.is_some()) {
-                    frame_tap(rig, tap).resolution_error("impossible final focus");
+                    frame_authority(rig, |a| a.resolution_error("impossible final focus"));
                 }
             }
         }
-        frame_tap(rig, tap).focus(f, self.focus_record());
+        if !self.product_turn { frame_tap(rig, tap).focus(f, self.focus_record()); }
         let timers_fired = report.steps_pre > 0 && event_frame;
-        if event_frame || timers_fired {
+        if !self.product_turn && (event_frame || timers_fired) {
             let mut hashed = None;
             frame_tap(rig, tap).state(f, &mut || {
                 *hashed.get_or_insert_with(|| plx_base::diag::spans::span("dhash", || self.state_hash()))
@@ -1389,7 +1616,7 @@ where
             && !self.present.changed()
             && !self.budget.has_queued_work();
         let will_present = self.present.peek(tick.ms) || self.budget.has_queued_work();
-        frame_tap(rig, tap).present(f, will_present, why);
+        if !self.product_turn { frame_tap(rig, tap).present(f, will_present, why); }
         // `prepare_does_not_change_the_logical_state_hash` (§5.4): a prepare pass touches render
         // resources only — graded on every presenting frame of a debug build
         // Hashed only when the prepare pass runs: otherwise nothing between the two hashes can
@@ -1403,7 +1630,7 @@ where
         if will_present && draw {
             plx_base::diag::spans::span("dprep", || self.prepare_pass(rig, tick));
         }
-        rig.opaque_route(self.present.video_plane());
+        if !self.product_turn { rig.opaque_route(self.present.video_plane()); }
         #[cfg(debug_assertions)]
         if let Some(before) = hash_before_prepare {
             debug_assert_eq!(
@@ -1418,7 +1645,7 @@ where
             self.draw_pass(rig, tick, &mut report);
         }
         report.presented = will_present;
-        frame_tap(rig, tap).frame_done(f);
+        if !self.product_turn { frame_tap(rig, tap).frame_done(f); }
         report
     }
 
@@ -1426,23 +1653,152 @@ where
     /// every surface, then the rig's own render cache — inside the budget's frame.
     /// Product prepare entry: called only after lifecycle/backbuffer admission.
     pub fn prepare(&mut self, rig: &mut dyn Rig<H>) {
+        if let Some(phase) = self.product_phase {
+            assert_eq!(phase, ProductPhase::Prepare, "prepare only after product admission");
+        }
+        assert!(!self.product_turn, "finish product owner inputs before resource preparation");
         if !self.prepared { self.prepare_pass(rig, self.last_tick); }
     }
 
+    /// One authoritative product lifecycle. The resource holder is borrowed afresh
+    /// for each callback, just like yielded commands; no inverted App borrow,
+    /// global runtime or interior-mutability escape is needed.
+    pub fn product_frame(runtime: &mut impl FrameRuntime<H>) -> bool {
+        let _scope = plx_base::task::FrameScope::enter();
+        assert!(runtime.dispatcher().product_phase.is_none(), "nested product frame");
+        assert!(!runtime.dispatcher().product_turn, "unfinished product turn");
+        runtime.dispatcher().presentation_draw = None;
+        runtime.dispatcher().product_phase = Some(ProductPhase::Pump);
+        runtime.pump();
+        runtime.dispatcher().product_phase = Some(ProductPhase::Ingest);
+        runtime.ingest();
+        runtime.dispatcher().product_phase = Some(ProductPhase::Results);
+        if !runtime.results() {
+            runtime.dispatcher().product_phase = None;
+            return false;
+        }
+        runtime.dispatcher().product_phase = Some(ProductPhase::Step);
+        runtime.dispatcher().begin_product_turn();
+        if !runtime.step() {
+            runtime.dispatcher().product_turn = false;
+            runtime.dispatcher().product_phase = None;
+            return false;
+        }
+        assert_eq!(runtime.dispatcher().product_phase, Some(ProductPhase::Stepped),
+            "product runtime must execute exactly one dispatcher step");
+        runtime.dispatcher().product_phase = Some(ProductPhase::Publish);
+        runtime.publish();
+        assert!(!runtime.dispatcher().product_turn, "publication must close the same POST budget");
+        runtime.dispatcher().product_phase = Some(ProductPhase::Admit);
+        let owner = runtime.dispatcher();
+        let now = owner.last_tick.ms;
+        let demand = owner.present.take(now) || owner.budget.has_queued_work();
+        if runtime.admit(demand) {
+            runtime.dispatcher().product_phase = Some(ProductPhase::Prepare);
+            runtime.prepare();
+            runtime.dispatcher().product_phase = Some(ProductPhase::Draw);
+            let swapped = runtime.draw_and_swap();
+            runtime.dispatcher().finish_presentation(swapped);
+            if swapped {
+                runtime.dispatcher().present.acknowledge(now);
+            }
+        } else {
+            runtime.skipped();
+        }
+        runtime.dispatcher().product_phase = Some(ProductPhase::End);
+        runtime.end();
+        runtime.dispatcher().product_phase = None;
+        true
+    }
+
+    fn finish_presentation(&mut self, swapped: bool) {
+        let receipt = self.presentation_draw.take();
+        if swapped && !self.presentation_replay {
+            self.presentation_swapped = receipt.filter(|receipt| receipt.frame == self.frame
+                && self.owner_entry() == Some(receipt.entry)
+                && self.nav.instance_of(receipt.entry) == Some(receipt.instance));
+        }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn finish_presentation_for_test(&mut self, swapped: bool) {
+        self.finish_presentation(swapped);
+    }
+
+    /// Replay substitutes recorded external observations, never native paint intent.
+    /// This mode does not grant any resource/native-command permission.
+    pub fn presentation_replay(&mut self, replay: bool) {
+        self.presentation_replay = replay;
+        if replay { self.presentation_draw = None; self.presentation_swapped = None; }
+    }
+
+    pub fn replay_presentation(&mut self, frame: u64, entry: EntryId, instance: InstanceId,
+        message: H::Msg) -> bool {
+        if !self.presentation_replay || frame == 0 || frame.checked_add(1).is_none()
+            || frame != self.frame || self.presentation_swapped.is_some()
+            || self.nav.suspended || self.owner_entry() != Some(entry)
+            || self.nav.instance_of(entry) != Some(instance) { return false; }
+        self.presentation_swapped = Some(Presentation { frame, entry, instance, message });
+        true
+    }
+
+    /// The app opens this before dispatcher input/results and closes it after its IO
+    /// publications, ahead of admission/prepare. Native IO stays outside StepScope.
+    pub fn begin_product_turn(&mut self) {
+        if let Some(phase) = self.product_phase {
+            assert_eq!(phase, ProductPhase::Step, "logical turn belongs to the step phase");
+        }
+        assert!(!self.product_turn, "the preceding product turn was not finished");
+        self.product_turn = true;
+    }
+
+    /// Complete the existing turn's FIFO with its remaining POST budget. Structural
+    /// requests stay parked for the next frame: this boundary never commits navigation.
+    pub fn finish_product_turn(&mut self, rig: &mut dyn Rig<H>, report: &mut FrameReport,
+        tap: &mut dyn Tap<H>) {
+        if let Some(phase) = self.product_phase {
+            assert_eq!(phase, ProductPhase::Publish, "POST continuation belongs to publication");
+        }
+        assert!(self.product_turn && !self.prepared, "product finish must precede prepare");
+        let parts = self.parts(self.last_tick);
+        let dropped_before = report.dropped_deliveries;
+        let left = MAX_STEPS_POST.saturating_sub(report.steps_post);
+        let steps = self.drain(rig, &parts, left, report, tap);
+        report.steps_post += steps;
+        while report.steps_post > 0 {
+            let Some(id) = self.pending_app_command() else { break };
+            let Some(steps) = rig.run_yielded_app_command(self, report, tap) else { break };
+            report.steps_post += steps;
+            assert_ne!(self.pending_app_command(), Some(id), "runner did not settle yielded head");
+        }
+        self.reconcile(rig, &parts, report, tap);
+        report.carried = self.queued();
+        self.last_carried = report.carried;
+        self.dropped_deliveries = self.dropped_deliveries.saturating_add(report.dropped_deliveries - dropped_before);
+        report.underlay_moving = self.present.page_moving();
+        let f = self.frame;
+        frame_tap(rig, tap).focus(f, self.focus_record());
+        let hash = self.state_hash();
+        report.state_hash = Some(hash);
+        frame_tap(rig, tap).state(f, &mut || hash);
+        let demand = self.present.peek(self.last_tick.ms) || self.budget.has_queued_work();
+        frame_tap(rig, tap).present(f, demand, self.present.why());
+        frame_tap(rig, tap).frame_done(f);
+        self.product_turn = false;
+    }
+
     fn prepare_pass(&mut self, rig: &mut dyn Rig<H>, tick: Tick) {
+        if let Some(phase) = self.product_phase {
+            assert_eq!(phase, ProductPhase::Prepare, "native preparation needs owner admission");
+        }
         self.prepared = true;
         let (_, host_render) = self.nav.modals.host_policy();
         // The budget's frame opens at the START of the prepare window and nowhere else (§8.1):
         // the ceiling measures how long THIS window has run, so an origin taken any earlier
         // charges the window for phases that are not its own.
         //
-        // **While the legacy loop still owns the product's frame there are two such windows in
-        // one iteration**, sharing the one budget: this pass (the owned screens', which spends
-        // nothing today) and the loop's own around the render cache's upload step, opened later
-        // and therefore the origin the uploads are admitted against. Two openings cost the
-        // instruments nothing — `take_frame_stats` accumulates until its reader drains it, and
-        // `begin_frame` resets only the quotas and the solo latch — and they collapse to one
-        // when the dispatcher owns the whole frame.
+        // Product admission opens one window here. The native resource port spends
+        // the same budget after screen preparation; it never resets the origin.
         self.budget.begin_frame(rig.now_us());
         // The cold-open line's `prepared=` term (§8.4): the budget's refusal count as this
         // frame's prepare window opens, differenced at the draw. Taken here rather than from
@@ -1474,7 +1830,9 @@ where
         let Dispatcher {
             budget, present, ..
         } = self;
-        rig.prepare(budget, present);
+        // Product resource preparation is the explicit FrameRuntime port, not an
+        // empty Bridge hook pretending to own native work.
+        if self.product_phase.is_none() { rig.prepare(budget, present); }
     }
 
     /// Step 10 on a frame the CALLER presents (the legacy loop's own gate, phase 5b): the
@@ -1504,6 +1862,8 @@ where
         if (valid || eligible) && self.nav.modals.host_policy().1 == HostRender::Live {
             if let Some(entry) = self.nav.top_page() {
                 let mut image = self.page_image;
+                let valid = valid && entry.inst.as_ref().is_some_and(|inst|
+                    image.read(entry.id, inst.id).is_held());
                 let paint = image.plan(entry.id, transition.in_flight(),
                     transition.page_alpha(), self.last_tick.ms, valid,
                     self.page_quiescent);
@@ -1600,13 +1960,16 @@ where
     fn draw_with(&mut self, rig: &mut dyn Rig<H>, tick: Tick, report: &mut FrameReport, pages: bool,
         mut glass: Option<&mut super::frame::glass::GlassPlan>, ceiling: super::frame::backdrop::Z) {
         use super::frame::backdrop::{self, Z};
+        if let Some(phase) = self.product_phase {
+            assert_eq!(phase, ProductPhase::Draw, "native draw needs owner preparation");
+        }
         let strip_owner = self.owner_entry();
         let navigation = rig.navigation_presentation(&self.nav);
         // The element the opener lift draws live above the host snapshot is NOT part of the page
         // pass (`DrawFrame::lifted`). When it changes (the menu mounts, or the lift stands down
         // because focus moved off the opener while the menu fades) the snapshot no longer matches
         // what the page should show, so it is re-taken and the card sections say again whether
-        // they left a card out (`popover::set_lift_owns`). Source and discovery walks neither
+        // they left a card out (a local LiftReceipt). Source and discovery walks neither
         // decide nor re-take: they redraw the page the visible pass is about to show.
         let target = self.lift_target();
         let page_lift = target.filter(|t| !t.2).map(|(entry, key, _)| (entry, key));
@@ -1628,9 +1991,10 @@ where
         }
         let lifted = page_lift.and_then(|(_, key)| key);
         let lift_parts = page_lift.map(|(entry, focus)| self.opener_parts(entry, focus));
-        if !backdrop::source_walk() && !plx_gfx::gfx::blur_source_pass() && lifted != self.lifted_last {
+        if !backdrop::source_walk() && !plx_gfx::gfx::blur_source_pass()
+            && !Painter::root().is_recording() && lifted != self.lifted_last {
             self.lifted_last = lifted;
-            super::popover::set_lift_owns(false);
+            // Cache identity only: Input validates evidence against the live target before tick.
             super::popover::host::invalidate();
         }
         let (_, host_render) = self.nav.modals.host_policy();
@@ -1639,8 +2003,8 @@ where
         let video_plane = self.video_plane_frame();
         let was_video_plane = plx_gfx::gfx::set_video_plane_frame(video_plane);
         if !plx_gfx::gfx::blur_source_pass() { rig.clear_opaque_region(); }
-        let parts = self.parts(tick);
-        let source_pass = backdrop::source_walk() || plx_gfx::gfx::blur_source_pass();
+        let source_pass = backdrop::source_walk() || plx_gfx::gfx::blur_source_pass()
+            || Painter::root().is_recording() || ceiling != Z::ALL;
         let eligible = pages && host_render == HostRender::Live
             && self.page_image_possible(video_plane);
         let page_quiescent = self.page_quiescent
@@ -1650,14 +2014,16 @@ where
             && !self.budget.has_queued_work();
         let mut image = self.page_image;
         let paint = if eligible {
-            self.nav.top_page().map_or(super::containers::transition::PagePaint::Live, |entry|
+            self.nav.top_page().map_or(super::containers::transition::PagePaint::Live, |entry| {
+                let valid = self.page_snapshot.valid() && entry.inst.as_ref().is_some_and(|inst|
+                    image.read(entry.id, inst.id).is_held());
                 image.plan(entry.id, self.nav.tabs.stack.transition.in_flight(),
-                    self.nav.tabs.stack.transition.page_alpha(), tick.ms, self.page_snapshot.valid(),
-                    page_quiescent))
+                    self.nav.tabs.stack.transition.page_alpha(), tick.ms, valid, page_quiescent)
+            })
         } else { super::containers::transition::PagePaint::Live };
         if !source_pass && (pages || host_render != HostRender::Live || video_plane) {
             self.page_image = image;
-            super::containers::transition::set_page_image_held(!matches!(paint, super::containers::transition::PagePaint::Live));
+
             if matches!(paint, super::containers::transition::PagePaint::Live) {
                 self.page_snapshot.release();
                 self.page_image = Default::default();
@@ -1674,7 +2040,9 @@ where
                 // This owned surface Motion already requests the next compositor frame.
             }
         }
-        let Dispatcher { nav, input, present, page_snapshot, page_image, page_stops, page_debt, page_image_alpha, .. } = self;
+        let parts = self.parts(tick);
+        let paint_frame = self.frame;
+        let Dispatcher { nav, input, present, page_snapshot, page_image, page_stops, page_debt, page_image_alpha, presentation_draw, .. } = self;
         if !source_pass { *page_image_alpha = None; }
         let mut stops = Vec::new();
         let mut set = RenderSet {
@@ -1756,18 +2124,26 @@ where
                 let _page_layer = backdrop::layer(page_z, false);
                 if let Some(inst) = e.inst.as_mut() {
                     let Split { views, measure, .. } = rig.split();
-                    let page_cx = parts.page_cx::<H>(views, measure, e.id,
+                    let mut page_cx = parts.page_cx::<H>(views, measure, e.id,
                         input.engine.read(InputOwner::Entry(e.id)), beneath[index.min(1)]);
                     use super::containers::transition::PagePaint;
                     let capture_guard = if paint.captures_page() && !source_pass {
                         super::containers::transition::PageCapture::begin(page_snapshot.as_mut())
                     } else { None };
                     let capture = capture_guard.is_some();
+                    if paint.captures_page() && !capture && !source_pass {
+                        // A refused capture draws live. Do not let old pixels keep the next tick
+                        // dormant, even when this is a recapture of the same mounted body.
+                        *page_image = Default::default();
+                        *page_debt = None;
+                        page_stops.clear();
+                        page_cx.page_image = Default::default();
+                    }
                     // Source/declaration walks never capture, and never paint a live page under a
                     // HELD image; the one live page a source walk draws is on a Capture frame,
                     // where no image exists yet. The visible pass captures it, at full alpha.
                     let visible_live = paint.draws_live()
-                        || (paint == PagePaint::Capture && !capture && !source_pass);
+                        || (paint.captures_page() && !capture && !source_pass);
                     // …which leaves the CAPTURE frames with no image to replay, so a source walk
                     // draws the page about to be captured, live at full alpha; the dip alpha rides
                     // the glass composite as for a held image (`backdrop_layers`). Drawing nothing
@@ -1780,10 +2156,22 @@ where
                         if full_alpha { page_navigation.page_alpha = 1.0; }
                         let mut f = DrawFrame::with_navigation(&page_cx, Painter::root(), page_navigation);
                         f.lifted = lifted;
+                        f.lift_owner = Some(inst.id);
                         // The stack's page alpha is already in `navigation`; apply it once.
                         let drawn_from = super::placeholder::mark();
                         backdrop::draw_span("page", || inst.screen.draw(&mut f));
                         f.apply_frame_requests(present);
+                        if !source_pass && visible_live && !capture && f.page_alpha >= 0.5
+                            && strip_owner == Some(e.id) && top_entry == Some(e.id) {
+                            if let Some(message) = f.take_presentation() {
+                                *presentation_draw = Some(Presentation { frame: paint_frame,
+                                    entry: e.id, instance: inst.id, message });
+                            }
+                        }
+                        if !source_pass && !f.painter.is_recording() && top_entry == Some(e.id) {
+                            input.lift_receipt = None;
+                            if let Some(receipt) = f.visible_lift_receipt() { input.accept_lift(receipt); }
+                        }
                         if capture { *page_debt = Some((e.id, super::placeholder::since(drawn_from))); }
                         report.drawn.push(inst.id);
                         let drawn_stops = f.into_stops();
@@ -1799,6 +2187,7 @@ where
                         } else {
                             page_image.captured(e.id);
                         }
+                        page_image.bind_instance(inst.id);
                         let alpha = if paint == PagePaint::ReplacementCapture { 1.0 }
                             else { nav.tabs.stack.transition.page_alpha() };
                         backdrop::draw_span("page.image", || page_snapshot.draw(alpha, true));
@@ -2046,6 +2435,14 @@ where
                 to.write_canon(&mut c);
                 c.bool(*up);
             } else { c.bool(false); }
+            if let Fx::Deliver(to, Delivery::Screen(ScreenEvent::Presented(receipt))) = &queued.fx {
+                c.u8(0xAD).u64(receipt.frame()).u32(receipt.entry().0).u32(receipt.instance().0);
+                queued.from.write_canon(&mut c);
+                to.write_canon(&mut c);
+            }
+        }
+        if let Some((frame, entry, instance)) = self.presentation_latest {
+            c.u8(0xAE).u64(frame).u32(entry.0).u32(instance.0);
         }
         // Do not perturb historical hashes for runtimes that have not opted into yielding.
         if let Some(pending) = &self.pending_app {
@@ -2080,7 +2477,7 @@ where
 
     /// Take exactly once for immediate synchronous admission/execution. Retired mounted senders
     /// have no executable payload; normal nav commits cannot overtake the outstanding head.
-    pub fn take_app_command(&mut self) -> Option<AppCommand<H::Fx, ReturnState<H::Elem, H::Memory>>> {
+    pub fn take_app_command(&mut self) -> Option<AppCommand<plx_machine::machine::ExternalFx<H>, ReturnState<H::Elem, H::Memory>>> {
         let live = self.app_sender_is_live(self.pending_app.as_ref()?.from);
         let pending = self.pending_app.as_mut()?;
         let mut command = pending.command.take()?;
@@ -2108,6 +2505,7 @@ where
         }
         let pending = self.pending_app.take().expect("validated pending app command");
         rig.app_command_done(id, pending.from, outcome);
+        frame_tap(rig, tap).command_done(self.frame, id, pending.from, outcome);
         self.absorb(out);
         Ok(self.drain(rig, &pending.parts, pending.remaining, report, tap))
     }
@@ -2142,6 +2540,13 @@ where
                         .push((id, parts.tick.ms.wrapping_add(after_ms), item.from));
                 }
                 Fx::CancelTimer(id) => self.timers.retain(|t| t.0 != id),
+                Fx::HoldHint(event) => {
+                    // Only a still-mounted sender can teach this runtime. A queued effect from
+                    // a retired page must not become a lesson for its replacement.
+                    if matches!(item.from, MachineId::Instance(id) if self.nav.entry_of_instance(id).is_some()) {
+                        self.input.hold_hint.apply(event);
+                    }
+                }
                 Fx::Press(arm) => {
                     steps += 1;
                     if !self.input.keyboard { self.input.arm(arm, item.from, parts.tick.ms); }
@@ -2182,16 +2587,19 @@ where
                         // Do not consume a later navigation effect's bookmark from this sender.
                         ReturnState::default()
                     };
-                    if rig.external_app_fx(&app_fx) {
+                    let app_fx = match plx_machine::machine::AppEffect::route(app_fx) {
+                        plx_machine::machine::EffectDisposition::External(external) => {
                         self.app_sequence = self.app_sequence.checked_add(1).expect("app command sequence exhausted");
                         let id = AppCommandId(self.app_sequence);
                         self.pending_app = Some(PendingAppCommand {
                             id, from: item.from,
-                            command: Some(AppCommand { id, from: item.from, return_state: captured, effect: Ok(app_fx) }),
+                            command: Some(AppCommand { id, from: item.from, return_state: captured, effect: Ok(external) }),
                             remaining: max_steps - steps, parts: parts.clone(), retired: false,
                         });
                         break;
-                    }
+                        }
+                        plx_machine::machine::EffectDisposition::Inline(inline) => inline,
+                    };
                     rig.app_return(item.from, captured);
                     let mut out: Vec<Stamped<H>> = Vec::new();
                     {
@@ -2286,6 +2694,17 @@ where
                 self.execute_deliver(rig, parts, from, to, Delivery::Screen(event), out, report, tap);
             }
             (MachineId::Instance(id), Delivery::Screen(ev)) => {
+                if let ScreenEvent::Presented(receipt) = &ev {
+                    if !self.presentation_authority.owns(receipt)
+                        || receipt.frame() >= self.frame
+                        || self.presentation_latest != Some((receipt.frame(), receipt.entry(), receipt.instance()))
+                        || receipt.instance() != id || self.nav.suspended
+                        || self.owner_entry() != Some(receipt.entry())
+                        || self.nav.instance_of(receipt.entry()) != Some(id) {
+                        report.dropped_deliveries += 1;
+                        return;
+                    }
+                }
                 // An OS ownership edge takes effect at its position in the delivery stream.
                 // It is global even if its original recipient retired while the event waited.
                 if let ScreenEvent::Input(InputEvent {
@@ -2344,6 +2763,7 @@ where
                     let entry_owner = InputOwner::Entry(entry);
                     addressed.owner = if self.owner_entry() == Some(entry) { self.owner() } else { entry_owner };
                     addressed.focus = self.input.engine.read(entry_owner);
+                    addressed.page_image = self.page_image_read().for_owner(entry, id);
                 }
                 // **A page whose first seat is still on its way HOLDS an arrow other than Up** (design
                 // review CONFIRM judgment 6, `PageRegions::holds`): with nothing focused there is no
@@ -2675,11 +3095,11 @@ where
     /// Resolve on a scratch scope during replay. An experimental algorithm cannot pollute
     /// remembered groups before the recorded answer is installed and its effects are emitted.
     fn focus_resolution(&mut self, rig: &mut dyn Rig<H>, parts: &CxParts<H::Elem>, entry: EntryId,
-        phase: u8, tap: &mut dyn Tap<H>,
+        phase: u8, _tap: &mut dyn Tap<H>,
         resolve: impl FnOnce(&mut super::focus::FocusEngine<H::Elem>, &PageWithStrip<'_, H>, &Cx<'_, H>) -> Outcome<H::Elem>,
     ) -> Outcome<H::Elem> {
         let owner = InputOwner::Entry(entry);
-        let mode = frame_tap(rig, tap).resolution_mode();
+        let mode = frame_authority(rig, |a| a.resolution_mode());
         let before = self.input.engine.current(owner);
         let actual = if mode == Some(false) { None } else {
             let Some(view) = Self::owner_view(&self.nav, entry) else { return Outcome::Nothing; };
@@ -2696,11 +3116,11 @@ where
             let outcome = resolve(engine, &view, &cx);
             Some(FocusAnswer { outcome, focus:engine.current(owner), group:engine.current_group(owner) })
         };
-        let Some(answer) = frame_tap(rig, tap).resolve_focus(self.frame, phase, entry, actual) else {
-            frame_tap(rig, tap).resolution_error("missing focus resolution");
+        let Some(answer) = frame_authority(rig, |a| a.resolve_focus(self.frame, phase, entry, actual)) else {
+            frame_authority(rig, |a| a.resolution_error("missing focus resolution"));
             return Outcome::Nothing;
         };
-        if frame_tap(rig, tap).resolution_active() {
+        if frame_authority(rig, |a| a.resolution_active()) {
             let valid = match answer.outcome {
                 Outcome::Moved { from, to, .. } => from == before && answer.focus == Some(to)
                     && (phase == 0 || before != Some(to))
@@ -2722,7 +3142,7 @@ where
                 },
                 None => answer.group.is_none(),
             };
-            if !valid { frame_tap(rig, tap).resolution_error("impossible focus resolution"); return Outcome::Nothing; }
+            if !valid { frame_authority(rig, |a| a.resolution_error("impossible focus resolution")); return Outcome::Nothing; }
             if mode.is_some() { self.set_focus_in(answer.focus, answer.group); }
         }
         answer.outcome
@@ -2858,6 +3278,7 @@ where
             // the body being mounted is the owner its `mount` reads (`cx.owner`)
             let mut p = parts.clone();
             p.owner = InputOwner::Entry(eid);
+            p.page_image = Default::default(); // a new body has no captured pixels
             p.focus = input.engine.read(p.owner);
             let cx = p.cx::<H>(views, measure);
             let mut fx = Effects::new(&mut out, MachineId::Instance(id), present);
@@ -2904,6 +3325,7 @@ where
             let Split { mounter, views, measure } = rig.split();
             let mut p = parts.clone();
             p.owner = InputOwner::Entry(eid);
+            p.page_image = Default::default(); // staging never inherits the outgoing page image
             p.focus = input.engine.read(p.owner);
             let cx = p.cx::<H>(views, measure);
             let mut fx = Effects::new(&mut out, MachineId::Instance(id), present);
@@ -3031,7 +3453,8 @@ mod product_resolution_contract_tests {
     use crate::fixture::{FixtureArg,FixtureHost,FixtureRig};
 
     struct RecordingAudit { errors:Vec<&'static str> }
-    impl Tap<FixtureHost> for RecordingAudit {
+    impl Tap<FixtureHost> for RecordingAudit {}
+    impl ReplayAuthority<FixtureHost> for RecordingAudit {
         fn resolution_active(&self)->bool { true }
         fn resolve_focus(&mut self,_:u64,_:u8,_:EntryId,actual:Option<FocusAnswer<u32>>)
             ->Option<FocusAnswer<u32>> { actual }
@@ -3041,7 +3464,8 @@ mod product_resolution_contract_tests {
     }
 
     struct CorruptSameKeyGroup { errors:Vec<&'static str>, touched:bool }
-    impl Tap<FixtureHost> for CorruptSameKeyGroup {
+    impl Tap<FixtureHost> for CorruptSameKeyGroup {}
+    impl ReplayAuthority<FixtureHost> for CorruptSameKeyGroup {
         fn resolution_active(&self)->bool { true }
         fn resolve_focus(&mut self,_:u64,_:u8,_:EntryId,actual:Option<FocusAnswer<u32>>)
             ->Option<FocusAnswer<u32>> {
@@ -3065,15 +3489,15 @@ mod product_resolution_contract_tests {
         let mut rig=FixtureRig::new();
         let mut tap=RecordingAudit{errors:Vec::new()};
         d.request(MachineId::Nav,NavOp::Root(FixtureArg::Home));
-        d.frame_with(&mut rig,Tick::default(),vec![],vec![],&mut tap,false);
+        d.frame_with(&mut ReplayFrame::new(&mut rig,&mut tap),Tick::default(),vec![],vec![],&mut NoTap,false);
         let key=FocusKey{entry:d.owner_entry().unwrap(),elem:1};
         d.set_focus(Some(key)); // pointer focus deliberately owns no remembered group
         assert_eq!(d.focus_record(),Some((key.entry.0,1,None)));
 
         d.request(MachineId::Nav,NavOp::Push(FixtureArg::Page(41)));
-        d.frame_with(&mut rig,Tick::default(),vec![],vec![],&mut tap,false);
+        d.frame_with(&mut ReplayFrame::new(&mut rig,&mut tap),Tick::default(),vec![],vec![],&mut NoTap,false);
         d.request(MachineId::Nav,NavOp::Pop);
-        d.frame_with(&mut rig,Tick::default(),vec![],vec![],&mut tap,false);
+        d.frame_with(&mut ReplayFrame::new(&mut rig,&mut tap),Tick::default(),vec![],vec![],&mut NoTap,false);
 
         assert_eq!(d.focus(),Some(key));
         assert_eq!(d.focus_record(),Some((key.entry.0,1,None)),
@@ -3087,14 +3511,14 @@ mod product_resolution_contract_tests {
         let mut rig=FixtureRig::new();
         let mut tap=CorruptSameKeyGroup{errors:Vec::new(),touched:false};
         d.request(MachineId::Nav,NavOp::Root(FixtureArg::Home));
-        d.frame_with(&mut rig,Tick::default(),vec![],vec![],&mut tap,false);
+        d.frame_with(&mut ReplayFrame::new(&mut rig,&mut tap),Tick::default(),vec![],vec![],&mut NoTap,false);
         let key=d.focus().unwrap();
         assert!(d.focus_record().unwrap().2.is_some());
 
         d.request(MachineId::Nav,NavOp::Push(FixtureArg::Page(42)));
-        d.frame_with(&mut rig,Tick::default(),vec![],vec![],&mut tap,false);
+        d.frame_with(&mut ReplayFrame::new(&mut rig,&mut tap),Tick::default(),vec![],vec![],&mut NoTap,false);
         d.request(MachineId::Nav,NavOp::Pop);
-        d.frame_with(&mut rig,Tick::default(),vec![],vec![],&mut tap,false);
+        d.frame_with(&mut ReplayFrame::new(&mut rig,&mut tap),Tick::default(),vec![],vec![],&mut NoTap,false);
 
         assert!(tap.touched,"the negative control did not reach a same-key grouped restore");
         assert_eq!(tap.errors,vec!["impossible focus resolution"]);
@@ -3105,7 +3529,7 @@ mod product_resolution_contract_tests {
     #[test]
     fn legacy_pages_keep_recorded_hits_and_never_enter_replay_resolvers() {
         struct LegacyTap { resolve:bool, pointers:usize, target:Option<(u32,u32,Option<u32>)> }
-        impl Tap<FixtureHost> for LegacyTap {
+        impl ReplayAuthority<FixtureHost> for LegacyTap {
             fn resolution_mode(&self)->Option<bool>{Some(self.resolve)}
             fn resolve_focus(&mut self,_:u64,_:u8,_:EntryId,_:Option<FocusAnswer<u32>>)->Option<FocusAnswer<u32>> {
                 panic!("a legacy page must never consult the engine");
@@ -3114,6 +3538,8 @@ mod product_resolution_contract_tests {
                 ->Option<super::super::hit::Resolution<u32>> { panic!("a legacy page must never consult the map"); }
             fn focus_continuation(&mut self,_:u64,engine:bool,_:Option<(u32,u32,Option<u32>)>)
                 ->Option<Option<(u32,u32,Option<u32>)>> { assert!(!engine);Some(self.target) }
+        }
+        impl Tap<FixtureHost> for LegacyTap {
             fn input(&mut self,_:u64,ev:&InputEvent<u32>){
                 if let InputKind::Pointer{hit,..}=ev.kind {assert_eq!(hit,Some(77));self.pointers+=1;}
             }
@@ -3123,18 +3549,18 @@ mod product_resolution_contract_tests {
             let mut rig=FixtureRig::new();
             let mut tap=LegacyTap{resolve,pointers:0,target:None};
             d.request(MachineId::Nav,NavOp::Root(FixtureArg::Legacy));
-            d.frame_with(&mut rig,Tick::default(),vec![],vec![],&mut tap,false);
+            d.frame_with(&mut ReplayFrame::new(&mut rig,&mut tap),Tick::default(),vec![],vec![],&mut NoTap,false);
             let owner=d.owner_entry().unwrap();
             tap.target=Some((owner.0,77,None));
             d.input.hit.fill(vec![Stop {key:FocusKey{entry:owner,elem:88},rect:Rect::FULL,rest_rect:Rect::FULL,
                 clip:Rect::FULL,hover:super::super::screen::Hover::Focus,activate:Activate::Press}]);
             d.input.hit.swap();
-            d.frame_with(&mut rig,Tick::default(),vec![InputEvent{at:Tick::default(),source:plx_machine::machine::Source::Replay,
-                kind:InputKind::Pointer{x:10.0,y:10.0,hit:Some(77)}}],vec![],&mut tap,false);
+            d.frame_with(&mut ReplayFrame::new(&mut rig,&mut tap),Tick::default(),vec![InputEvent{at:Tick::default(),source:plx_machine::machine::Source::Replay,
+                kind:InputKind::Pointer{x:10.0,y:10.0,hit:Some(77)}}],vec![],&mut NoTap,false);
             assert_eq!(tap.pointers,1);
             assert_eq!(d.focus(),Some(FocusKey{entry:owner,elem:77}));
             tap.target=None;
-            d.frame_with(&mut rig,Tick::default(),vec![],vec![],&mut tap,false);
+            d.frame_with(&mut ReplayFrame::new(&mut rig,&mut tap),Tick::default(),vec![],vec![],&mut NoTap,false);
             assert_eq!(d.focus(),None,"recorded None clears the previous target");
         }
     }
@@ -3825,7 +4251,7 @@ mod external_command_tests {
         fn app_fx(&mut self, from: MachineId, fx: FixtureFx, parts: &CxParts<u32>, out: &mut Effects<'_, FixtureHost>) {
             self.inner.app_fx(from, fx, parts, out);
         }
-        fn external_app_fx(&self, fx: &FixtureFx) -> bool { matches!(fx, FixtureFx::Net(_)) }
+
         fn app_command_done(&mut self, id: AppCommandId, _: MachineId, outcome: AppCommandOutcome) {
             self.receipts.push((id, outcome));
         }
@@ -3843,7 +4269,7 @@ mod external_command_tests {
         fn now_us(&self) -> u64 { self.inner.now_us() }
     }
     fn net(d: &mut Dispatcher<FixtureHost>, req: u32) {
-        d.emit(MachineId::Nav, Fx::App(FixtureFx::Net(Addr { to: MachineId::Nav, req: RequestId(req) })));
+        d.emit(MachineId::Nav, Fx::App(FixtureFx::ExternalNet(Addr { to: MachineId::Nav, req: RequestId(req) })));
     }
     fn execute(d: &mut Dispatcher<FixtureHost>, rig: &mut ExternalRig) -> AppCommandId {
         let command = d.take_app_command().unwrap();
@@ -3886,9 +4312,9 @@ mod external_command_tests {
         let mut d = Dispatcher::<FixtureHost>::new();
         let mut rig = ExternalRig { inner: FixtureRig::new(), receipts: vec![], automatic: true };
         net(&mut d, 7);
-        d.request(MachineId::Nav, NavOp::Root(crate::fixture::FixtureArg::Home));
+        d.request(MachineId::Nav, NavOp::Root(crate::fixture::FixtureArg::Page(974)));
         let report = d.frame_with(&mut rig, Tick::default(), vec![], vec![], &mut NoTap, false);
-        assert_eq!(d.top_arg(), Some(&crate::fixture::FixtureArg::Home));
+        assert_eq!(d.top_arg(), Some(&crate::fixture::FixtureArg::Page(974)));
         assert_eq!(report.mounted.len(), 1, "yield/resume must not delay mounting by a frame");
         assert_eq!(report.carried, 0);
         assert!(d.pending_app_command().is_none());

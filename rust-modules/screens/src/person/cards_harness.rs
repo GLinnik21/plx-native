@@ -64,6 +64,7 @@ impl Harness {
         self.store.install_credits_for_test(&[("Actor", 9)]);
         self.store.install_profile_for_test();
         let cx: Cx<'_, PersonHost> = Cx { views: self.store.view(), tick: Tick::default(), measure: &FixtureMeasure,
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             press: PressRead::default(), focus: FocusRead::default(), owner: InputOwner::Entry(ENTRY) };
         self.screen.page.refresh_store_cache(&cx);
         // the stack lays its sections out on the first event it sees after the content moved
@@ -72,6 +73,7 @@ impl Harness {
 
     fn cx(&self) -> Cx<'_, PersonHost> {
         Cx { views: self.store.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
             focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) }
     }
@@ -81,6 +83,7 @@ impl Harness {
         let mut out = Vec::new();
         let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
             let cx = Cx { views: self.store.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
+                modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
                 press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
                 focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
             let mut fx = Effects::new(&mut out,

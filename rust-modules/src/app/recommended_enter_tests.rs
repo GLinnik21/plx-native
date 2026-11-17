@@ -51,8 +51,7 @@ impl Entry {
         let Some(paint) = w.step_dip(&mut self.dip, inputs) else { return };
         let phase = w.d.nav.tabs.stack.transition.phase_word();
         let (heading, below) = if draw { heading_runs(w) } else { (None, None) };
-        // The test's draw is not the product's image pass: it must not undo the plan above.
-        plx_ui::containers::transition::set_page_image_held(!matches!(paint, PagePaint::Live));
+        // The discovery draw preserves the Dispatcher's owned plan for the next step.
         self.frames.push(Frame { phase, paint, scale: drawn_scale(w), heading, below });
     }
 
@@ -99,12 +98,13 @@ fn drawn_scale(w: &World) -> Option<f32> {
     let screen = &top.inst.as_ref()?.screen;
     screen.as_any()?.downcast_ref::<plx_screens::library::RecommendedScreen>()?;
     let parts = CxParts {
+        modal: w.d.modal_presentation().read, page_image: w.d.page_image_read(), hold_hint: w.d.input.hold_hint,
         tick: tick(w.frame),
         press: Default::default(),
         focus: plx_machine::machine::FocusRead { current: Some(key), ..Default::default() },
         owner: InputOwner::Entry(key.entry),
     };
-    let cx = parts.cx::<AppHost>(w.bridge.views(), &w.bridge.measure);
+    let cx = parts.cx::<AppHost>(w.bridge.views(), &w.bridge.retained().measure);
     let card = screen.focused_card(&cx, Some(key), Some(At::Drawn))?;
     let (drawn, settled) = (card.rect?, card.rest_rect?);
     Some(drawn.w / settled.w * FULL_LIFT)
@@ -140,7 +140,7 @@ fn warm_entry(name: &str, draw: bool) -> (World, Entry) {
 /// slack for the quiescence tick).
 #[test]
 fn a_warm_recommended_entry_lets_the_dip_image_go_when_its_dissolve_ends() {
-    let _held = ImageHeld;
+
     let (w, entry) = warm_entry("rec-enter-release", false);
     let (in_end, release) = (entry.in_end(), entry.release());
     assert!(w.on(&AppArg::LibraryRecommended { section: 0 }), "premise: the Recommended page is on top");
@@ -157,7 +157,7 @@ fn a_warm_recommended_entry_lets_the_dip_image_go_when_its_dissolve_ends() {
 /// off the page's own placement of the card, every frame.
 #[test]
 fn a_warm_recommended_entry_grows_its_focused_card_from_rest_after_the_image() {
-    let _held = ImageHeld;
+
     let (_w, entry) = warm_entry("rec-enter-grow", false);
     let release = entry.release();
     let scales: Vec<f32> = entry.frames[release..].iter().map_while(|f| f.scale).collect();
@@ -205,12 +205,12 @@ fn warm_return(name: &str, draw: bool) -> (World, Entry, usize, f32) {
 /// the push froze that ease mid-way (the page is covered, it does not tick), BACK resumed it under
 /// the BACK dip's image, and the layout animation it set moving (the heading, the caption band) held
 /// the image ~25 frames past the dissolve until the replacement capture snapped from mid-ease to
-/// rest. Nothing steps under an image that hides it (`transition::page_image_held`): a dormant
+/// rest. Nothing steps under its owner's image (`Cx::page_image`): a dormant
 /// shelf under one is at rest on its first tick, and the shelf that returns with the seat is already
 /// where it goes.
 #[test]
 fn a_recommended_page_returning_from_detail_lets_the_dip_image_go_when_its_dissolve_ends() {
-    let _held = ImageHeld;
+
     let (_w, entry, from, _) = warm_return("rec-return-release", false);
     let (in_end, release) = (entry.in_end_after(from), entry.release_after(from));
     assert!(
@@ -230,7 +230,7 @@ fn a_recommended_page_returning_from_detail_lets_the_dip_image_go_when_its_disso
 /// at, every frame from the dip's floor on, the image's release included.
 #[test]
 fn a_recommended_page_returning_from_detail_keeps_its_focused_card_lifted_and_the_shelf_below_still() {
-    let _held = ImageHeld;
+
     let (_w, entry, from, stood) = warm_return("rec-return-lifted", true);
     let (floor, release) = (entry.floor_after(from), entry.release_after(from));
     let frames = &entry.frames[floor..];
@@ -251,7 +251,7 @@ fn a_recommended_page_returning_from_detail_keeps_its_focused_card_lifted_and_th
 /// they are in.
 #[test]
 fn a_cold_recommended_page_dissolves_its_shelves_in_and_then_lifts_the_first_card() {
-    let _held = ImageHeld;
+
     let mut w = World::movies_library_unshelved("rec-enter-cold");
     w.d.nav.tabs.stack.transition = Box::new(PageDip::new());
     w.walk_header_to(9);
@@ -283,7 +283,7 @@ fn a_cold_recommended_page_dissolves_its_shelves_in_and_then_lifts_the_first_car
 /// drawn at its full ink.
 #[test]
 fn a_warm_recommended_entry_is_not_dissolved_twice() {
-    let _held = ImageHeld;
+
     let (_w, entry) = warm_entry("rec-enter-once", true);
     let floor = entry.frames.iter().position(|f| f.phase == "hold").expect("the dip reached its floor");
     let live: Vec<f32> = entry.frames[floor..].iter().filter(|f| f.phase == "live").filter_map(|f| f.heading).collect();

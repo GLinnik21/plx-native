@@ -27,7 +27,7 @@ mod tests {
         frame(rig, d, Vec::new());
     }
 
-    fn profile_rig(protected: bool) -> Bridge {
+    fn profile_rig(protected: bool) -> crate::app::runtime_owners::Harness {
         let mut stored = cached_fixture();
         if protected {
             stored.profiles[0].pin = Some(plx_plex::plex::session::PinVerifier::new("4821"));
@@ -39,7 +39,8 @@ mod tests {
             plx_session::auth::UserTile { uuid: "synthetic-kid".into(), title: "Kid".into(), protected, ..Default::default() },
             plx_session::auth::UserTile { uuid: "synthetic-admin".into(), title: "Admin".into(), ..Default::default() },
         ];
-        Bridge::for_session_test(init)
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+        crate::app::runtime_owners::Harness::from_parts(runtime, retained)
     }
 
     fn inject(rig: &mut Bridge, io: impl ProfileWorkIo + Send + 'static) {
@@ -77,7 +78,8 @@ mod tests {
         let origin = plx_plex::plex::Origin::http("192.168.0.10", 32400);
         plx_plex::plex::grant::mint(plx_plex::plex::grant::scope(), "lan-http", &origin,
             &plx_plex::plex::grant::eligible_evidence_for_test()).unwrap();
-        let mut rig = profile_rig(false);
+        let mut harness = profile_rig(false);
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         inject(&mut rig, RefusedIo);
         command(&mut rig, &mut d, SessionCmd::SelectProfile { index: 0, pin: None });
@@ -91,7 +93,8 @@ mod tests {
     #[test]
     fn r2a_offline_worker_completion_waits_for_main_application() {
         let _serial = plx_base::testlock::serial();
-        let mut rig = profile_rig(false);
+        let mut harness = profile_rig(false);
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         let before = resources(&mut rig);
         inject(&mut rig, OfflineIo);
@@ -132,7 +135,8 @@ mod tests {
         // Refused must not use valid cached credentials, even for the correct cached PIN.
         // The real policy deliberately separates a PIN flash (empty banner) and connection banner.
         for pin in [None, Some("4821".to_string())] {
-            let mut rig = profile_rig(pin.is_some());
+            let mut harness = profile_rig(pin.is_some());
+            let mut rig = harness.bridge();
             let mut d = Dispatcher::<AppHost>::new();
             inject(&mut rig, RefusedIo);
             let before = resources(&mut rig);
@@ -157,7 +161,8 @@ mod tests {
         }
         // The same protected cache seats only on its correct PIN when the service is unreachable.
         for (pin, denied) in [("4821", false), ("0000", true)] {
-            let mut rig = profile_rig(true);
+            let mut harness = profile_rig(true);
+            let mut rig = harness.bridge();
             let mut d = Dispatcher::<AppHost>::new();
             inject(&mut rig, OfflineIo);
             command(&mut rig, &mut d, SessionCmd::SelectProfile { index: 0, pin: Some(pin.into()) });
@@ -171,7 +176,8 @@ mod tests {
     #[test]
     fn a_late_profile_observation_cannot_replace_a_newer_flow() {
         let _serial = plx_base::testlock::serial();
-        let mut rig = profile_rig(true);
+        let mut harness = profile_rig(true);
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         inject(&mut rig, RefusedIo);
         command(&mut rig, &mut d, SessionCmd::SelectProfile { index: 0, pin: Some("4821".into()) });
@@ -260,7 +266,8 @@ mod tests {
         // Separate legal request histories: a stream permits one terminal roster, not the several
         // terminal ProfileRoster values the legacy mailbox test manufactured on one epoch.
         for roster_before_take in [true, false] {
-            let mut rig = profile_rig(false);
+            let mut harness = profile_rig(false);
+            let mut rig = harness.bridge();
             let mut d = Dispatcher::<AppHost>::new();
             let initial_disk = resources(&mut rig)["disk"].clone();
             let mut records = online_records(&mut rig, &mut d);
@@ -315,7 +322,8 @@ mod tests {
 
         // Erase beats receipt-bearing stale data already collected from the genuine worker.
         for ready_applied in [false, true] {
-            let mut rig = profile_rig(false);
+            let mut harness = profile_rig(false);
+            let mut rig = harness.bridge();
             let mut d = Dispatcher::<AppHost>::new();
             let mut stale = online_records(&mut rig, &mut d);
             if ready_applied {
@@ -379,7 +387,9 @@ mod tests {
         init.phase = plx_session::auth::Phase::Profiles;
         init.users = vec![plx_session::auth::UserTile { uuid: "synthetic-kid".into(), title: "Kid".into(),
             ..Default::default() }];
-        let mut rig = Bridge::for_session_test(init);
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
         rig.session_adapter.inject_fixture_work(1, |output, input| {
             let SessionWork::ProfileSwitch { session, tile, pin, recently_unreachable, .. } = input
                 else { panic!("selection launched another worker family") };

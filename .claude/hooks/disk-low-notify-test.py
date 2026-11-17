@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -404,8 +405,13 @@ def main():
         # --- free_bytes / main_checkout, for real -----------------------------------------------------------------
         real = notify.free_bytes(tmp)
         check(isinstance(real, int) and real > 0, "free_bytes: a real directory", repr(real))
-        check(notify.free_bytes(os.path.join(tmp, "not", "made", "yet")) == real,
-              "free_bytes: a path that does not exist reads its closest existing ancestor's volume")
+        # Free space can change between real reads while other CI steps write to this volume.
+        snapshot = os.statvfs(tmp)
+        with patch.object(notify.os, "statvfs", return_value=snapshot) as statvfs:
+            missing_free = notify.free_bytes(os.path.join(tmp, "not", "made", "yet"))
+            check(missing_free == snapshot.f_bavail * snapshot.f_frsize
+                  and statvfs.call_args_list == [((tmp,), {})],
+                  "free_bytes: a path that does not exist reads its closest existing ancestor's volume")
         check(notify.free_bytes(None) is None, "free_bytes: None is None, not an exception")
 
         git = shutil.which("git")

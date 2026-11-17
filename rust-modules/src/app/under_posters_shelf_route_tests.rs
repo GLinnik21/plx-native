@@ -67,7 +67,7 @@ const TABLE: [(bool, Details, Option<&str>); 8] = [
 
 fn home(resume: bool, name: &str) -> World {
     let mut w = World::home_with_disc(name, [7; 12]);
-    plx_data::pms::edit_test_item(w.bridge.stores.hubs.state_mut(), "1", &|m| { facts(resume)(m); m.title = "Heat".into(); });
+    plx_data::pms::edit_test_item(w.bridge.bridge().stores.hubs.state_mut(), "1", &|m| { facts(resume)(m); m.title = "Heat".into(); });
     w.frames(30);
     w.press(Key::Down);
     w.frames(60);
@@ -80,9 +80,9 @@ fn home(resume: bool, name: &str) -> World {
 /// shelf's: the deck above it draws none of its own (its footer stands on the still).
 fn home_poster(name: &str) -> World {
     let mut w = World::home_with_disc(name, [7; 12]);
-    w.bridge.stores.hubs.seed_deck_home_for_test(1);
+    w.bridge.bridge().stores.hubs.seed_deck_home_for_test(1);
     w.frames(30);
-    plx_data::pms::edit_test_item(w.bridge.stores.hubs.state_mut(), "r1", &|m| { facts(false)(m); m.title = "Heat".into(); });
+    plx_data::pms::edit_test_item(w.bridge.bridge().stores.hubs.state_mut(), "r1", &|m| { facts(false)(m); m.title = "Heat".into(); });
     w.frames(30);
     w.press(Key::Down);
     w.press(Key::Down);
@@ -144,7 +144,7 @@ fn the_focused_title_is_one_ink_on_every_poster_surface() {
 fn recommended(resume_on_deck: bool, name: &str, deck_first: bool) -> World {
     let mut w = World::recommended_pending(name);
     {
-        let mut browse = w.bridge.stores.browse.borrow_mut();
+        let mut browse = w.bridge.stores().browse.borrow_mut();
         let deck = ("hub.movie.inprogress.1", "", "Continue Watching");
         let recent = ("hub.movie.recent", "", "Recently Added");
         browse.seed_named_shelves_for_test(0, &if deck_first { [deck, recent] } else { [recent, deck] }, 3);
@@ -246,9 +246,9 @@ fn caption(w: &mut World) -> Vec<String> { w.drawn().caption_lines() }
 /// carries no state, as the deck's episodes do.
 fn home_tile(name: &str, edit: fn(&mut plx_data::pms::PmsMovie)) -> World {
     let mut w = World::home_with_disc(name, [7; 12]);
-    w.bridge.stores.hubs.seed_deck_home_for_test(1);
+    w.bridge.bridge().stores.hubs.seed_deck_home_for_test(1);
     w.frames(30);
-    plx_data::pms::edit_test_item(w.bridge.stores.hubs.state_mut(), "r1", &edit);
+    plx_data::pms::edit_test_item(w.bridge.bridge().stores.hubs.state_mut(), "r1", &edit);
     w.frames(30);
     w.press(Key::Down);
     w.press(Key::Down);
@@ -287,7 +287,7 @@ fn home_from_hubs(name: &str, hubs: &str) -> World {
     let mut w = World::home_with_disc(name, [7; 12]);
     let body = format!(r#"{{"MediaContainer":{{"Hub":{hubs}}}}}"#);
     let mc = serde_json::from_str::<plx_plex::plex::Envelope>(&body).expect("a /hubs answer").media_container;
-    w.bridge.stores.hubs.seed_hubs_response_for_test(&mc);
+    w.bridge.bridge().stores.hubs.seed_hubs_response_for_test(&mc);
     w.frames(60);
     w
 }
@@ -323,7 +323,7 @@ fn an_untitled_season_is_drawn_in_homes_recently_added_seasons() {
 /// with `edit(card, rating key)`, and let the page take the publication in.
 pub(super) fn describe_cards(w: &mut World, cols: usize, edit: &dyn Fn(&mut plx_data::pms::PmsMovie, usize)) {
     for rk in 1..=cols {
-        plx_data::pms::edit_test_item(w.bridge.stores.hubs.state_mut(), &rk.to_string(), &|m| edit(m, rk));
+        plx_data::pms::edit_test_item(w.bridge.bridge().stores.hubs.state_mut(), &rk.to_string(), &|m| edit(m, rk));
     }
     w.frames(30);
 }
@@ -341,7 +341,7 @@ pub(super) fn describe_cards(w: &mut World, cols: usize, edit: &dyn Fn(&mut plx_
 fn a_setting_changed_under_a_kept_home_reaches_the_card_after_back() {
     let mut w = home_poster("cap-home-kept");
     let _cell = Cell::default();
-    let published = |w: &World| plx_data::pms::hubs_snapshot(w.bridge.stores.hubs.state()).view().generation;
+    let published = |w: &World| plx_data::pms::hubs_snapshot(w.bridge.stores().hubs.state()).view().generation;
     let (focus, generation, entry) = (w.focus(), published(&w), w.d.nav.top_page().map(|page| page.id));
     assert!(focus.is_some() && entry.is_some(), "premise: Home holds focus on a poster");
     assert_eq!(w.drawn().caption_lines(), [YEAR_LENGTH], "premise: the default draws the year and length");

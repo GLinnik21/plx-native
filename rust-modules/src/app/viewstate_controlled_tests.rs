@@ -22,15 +22,31 @@ use plx_screens::item_menu::Action;
 use plx_screens::registry::ItemMenuReq;
 
 /// Send `fx` to a fresh controlled Bridge and say what that Bridge did with it.
-fn refused(replay: bool, fx: AppFx) -> (Option<&'static str>, Bridge, usize) {
+fn refused(replay: bool, fx: AppFx) -> (Option<&'static str>, crate::app::runtime_owners::Harness, usize) {
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let initial = super::super::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-    let mut bridge = Bridge::controlled_home(|| 0, &initial, &mt, replay);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, replay);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut bridge = harness.bridge();
     let mut emitted = Vec::new();
     let mut present = Present::new();
     let mut out = Effects::new(&mut emitted, MachineId::Instance(InstanceId(1)), &mut present);
-    bridge.app_effect(MachineId::Instance(InstanceId(1)), fx, &mut out);
-    (bridge.controlled_failure(), bridge, emitted.len())
+    match plx_machine::machine::AppEffect::route(fx) {
+        plx_machine::machine::EffectDisposition::Inline(fx) => bridge.app_effect(MachineId::Instance(InstanceId(1)), fx, &mut out),
+        plx_machine::machine::EffectDisposition::External(plx_screens::registry::ExternalAppFx::ItemMenu(request)) => {
+            // Exercise admission through the real FIFO rather than the inline-only executor.
+            drop(out);
+            let mut d = plx_ui::dispatch::Dispatcher::<AppHost>::new();
+            d.emit(MachineId::Nav, Fx::App(AppFx::ItemMenu(request)));
+            let mut report = plx_ui::dispatch::FrameReport::default();
+            d.drain(&mut bridge, &d.parts(plx_machine::machine::Tick::default()), 1,
+                &mut report, &mut plx_ui::dispatch::NoTap);
+            let (id, outcome, replies) = bridge.execute_yielded_command(&mut d, None, 0).unwrap();
+            d.resume_app_command(&mut bridge, id, outcome, replies, &mut report, &mut plx_ui::dispatch::NoTap).unwrap();
+        }
+        plx_machine::machine::EffectDisposition::External(_) => panic!("unexpected fixture effect"),
+    }
+    (bridge.controlled_failure(), harness, emitted.len())
 }
 
 #[test]
@@ -42,11 +58,12 @@ fn controlled_view_state_writes_fail_closed_before_any_io() {
             let detail_hero = AppFx::Store(StoreId::ViewState, StoreCmd::ViewState(ViewStateCmd::Request {
                 sid, rk: "1".into(), write, scope: Scope::Leaf, guid: String::new(),
             }));
-            let (failure, bridge, emitted) = refused(replay, detail_hero);
+            let (failure, mut harness, emitted) = refused(replay, detail_hero);
+            let bridge = harness.bridge();
             assert_eq!(failure, Some("unsupported Home store command"),
                 "the detail hero's {write:?} must be refused (replay = {replay})");
             assert_eq!(emitted, 0, "a refused store command is not delivered");
-            assert!(bridge.screen_command_receipts.is_empty());
+            assert!(bridge.retained.screen_command_receipts.is_empty());
             assert!(!bridge.stores.has_jobs(), "nothing sits on an outbox");
             assert!(!bridge.stores.viewstate.borrow().is_busy_for_test(), "no write was queued");
         }
@@ -54,12 +71,14 @@ fn controlled_view_state_writes_fail_closed_before_any_io() {
             let item_menu = AppFx::ItemMenu(ItemMenuReq {
                 act: act.clone(), sid, item: None, season: None, loaded_episode: false, from_home: true,
             });
-            let (failure, bridge, emitted) = refused(replay, item_menu);
+            let (failure, mut harness, emitted) = refused(replay, item_menu);
+            let bridge = harness.bridge();
             assert_eq!(failure, Some("unsupported Home application effect"),
                 "the item menu's {act:?} must be refused (replay = {replay})");
             assert_eq!(emitted, 0);
-            assert!(bridge.screen_command_receipts.is_empty(),
-                "the committed row never reaches the loop that would write it");
+            assert!(matches!(bridge.retained.screen_command_receipts.as_slice(),
+                [(_, MachineId::Nav, plx_machine::machine::AppCommandOutcome::Refused)]),
+                "the yielded row receives one refusal, never permission to write");
             assert!(!bridge.stores.has_jobs());
             assert!(!bridge.stores.viewstate.borrow().is_busy_for_test());
         }

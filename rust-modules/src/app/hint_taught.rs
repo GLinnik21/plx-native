@@ -1,110 +1,156 @@
-//! Carry what the "Hold [OK] for options" hint has taught from one run to the next.
-//!
-//! `plx_ui::hold_hint` keeps its latches per run on the frame thread and may not name a Plex type,
-//! so it offers two doors and this module is the application end of both: [`seed`] hands it what the
-//! install was already taught (boot, once, before the first frame), and [`HintTaught::poll`], called
-//! every frame, drains its newly-taught signal and queues ONE session write for it.
-//!
-//! The store is the session preference record (`Preferences::hold_hint_taught`, an Install row:
-//! the television's, kept across sign-out). The write goes through
-//! `session::learn_hold_hint_taught`, which only queues work for the storage worker and so never
-//! blocks the frame; it queues nothing for a lesson the cached session already holds. A write that
-//! finds no stored session (not signed in) is lost and the hint teaches once more on the next run,
-//! which is the right failure: it can only show again, never stay hidden by a failed save.
+//! Owned hold-learning persistence. UI steps emit typed input lessons; the runner owns
+//! durable receipts and request lifetime. No process/thread-local lesson or frame-thread IO.
+use plx_machine::machine::HoldHintRead;
+use plx_plex::plex::session::HoldHintTaught;
+use plx_screens::registry::PreferenceCmd;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc::{self, Receiver, TryRecvError}};
 
-use plx_plex::plex::session::{self, HoldHintTaught};
-
-/// Seed the hint's per-run latches from what the install was taught on an earlier run. Only the
-/// "shown" latches come back: a taught install still shows the capsule and its fill on a physical
-/// held OK, it just never offers itself again.
-pub(crate) fn seed(taught: HoldHintTaught) {
-    plx_ui::hold_hint::seed_taught(taught.card, taught.pill);
+struct Pending {
+    taught: HoldHintTaught,
+    answer: Receiver<bool>,
+    live: Arc<AtomicBool>,
+}
+impl Drop for Pending {
+    fn drop(&mut self) { self.live.store(false, Ordering::Release); }
 }
 
-/// What the frame loop owns: nothing but the poll.
-pub(crate) struct HintTaught;
+enum Write {
+    Idle,
+    Pending(Pending),
+    RetryAt(u32),
+}
 
+/// One application runtime's install fact and current profile-tenure request.
+pub(crate) struct HintTaught {
+    saved: HoldHintTaught,
+    scope: Option<u32>,
+    write: Write,
+}
 impl HintTaught {
-    pub(crate) fn new() -> Self {
-        Self
+    pub(crate) fn new(seed: HoldHintRead) -> Self {
+        Self { saved: taught(seed), scope: None, write: Write::Idle }
     }
 
-    /// One frame's look: a thread-local flag read unless the hint was just taught.
-    ///
-    /// `controlled` is a replay or a controlled recording (`App::boot_initial`): the run brings its
-    /// own session and must not touch the install's stored one, so the lesson is drained and
-    /// dropped (the signal is a one-shot edge; leaving it queued would only grow stale).
-    pub(crate) fn poll(&mut self, controlled: bool) {
-        self.poll_with(controlled, session::learn_hold_hint_taught);
-    }
-
-    /// The decision, with the write injected so a test can count it.
-    fn poll_with(&mut self, controlled: bool, write: impl FnOnce(HoldHintTaught) -> bool) {
-        if let Some(taught) = plx_ui::hold_hint::take_newly_taught() {
-            if !controlled {
-                write(HoldHintTaught { card: taught.card, pill: taught.pill });
+    pub(crate) fn poll(&mut self, scope: u32, read: &mut HoldHintRead, controlled: bool,
+        now: u32, mut emit: impl FnMut(PreferenceCmd)) {
+        if self.scope != Some(scope) {
+            if self.scope.is_some() {
+                // Dropping the old receipt cancels queued native work; a late result has no
+                // route back to this tenure. Only authoritative install facts cross profiles.
+                self.write = Write::Idle;
+                *read = HoldHintRead { learned: false, card: self.saved.card, pill: self.saved.pill, context: scope };
+            }
+            self.scope = Some(scope);
+            read.context = scope;
+        }
+        if controlled {
+            self.write = Write::Idle;
+            self.saved = self.saved.union(taught(*read));
+            return;
+        }
+        if let Write::Pending(pending) = &self.write {
+            match pending.answer.try_recv() {
+                Ok(true) => {
+                    self.saved = self.saved.union(pending.taught);
+                    self.write = Write::Idle;
+                }
+                Ok(false) | Err(TryRecvError::Disconnected) => self.write = Write::RetryAt(now.wrapping_add(1000)),
+                Err(TryRecvError::Empty) => return,
             }
         }
+        if let Write::RetryAt(at) = self.write {
+            if now.wrapping_sub(at) >= (1 << 31) { return; }
+            self.write = Write::Idle;
+        }
+        let wanted = taught(*read);
+        if self.saved.union(wanted) == self.saved { return; }
+        let (reply, answer) = mpsc::channel();
+        let live = Arc::new(AtomicBool::new(true));
+        self.write = Write::Pending(Pending { taught: wanted, answer, live: live.clone() });
+        emit(PreferenceCmd::HoldHint { taught: wanted, live, reply });
     }
+}
+fn taught(read: HoldHintRead) -> HoldHintTaught {
+    HoldHintTaught { card: read.card, pill: read.pill }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use plx_machine::machine::HoldHintEvent;
 
-    /// The hint's latches are thread-local and so is this test's whole world: reset on both sides.
-    struct Fresh;
-    impl Fresh {
-        fn new() -> Self {
-            plx_ui::hold_hint::reset_shown_for_test();
-            plx_ui::hold_hint::reset_learned_for_test();
-            let _ = plx_ui::hold_hint::take_newly_taught();
-            Fresh
-        }
-    }
-    impl Drop for Fresh {
-        fn drop(&mut self) {
-            plx_ui::hold_hint::reset_shown_for_test();
-            plx_ui::hold_hint::reset_learned_for_test();
-            let _ = plx_ui::hold_hint::take_newly_taught();
-        }
+    #[test]
+    fn independent_owners_retry_refusal_and_retire_late_receipts_without_cross_learning() {
+        let mut a = HoldHintRead::default();
+        let mut b = HoldHintRead::default();
+        let mut pa = HintTaught::new(a);
+        let mut pb = HintTaught::new(b);
+        let mut commands = Vec::new();
+        pa.poll(1, &mut a, false, 0, |c| commands.push(c));
+        pb.poll(1, &mut b, false, 0, |_| panic!("B has no lesson"));
+        a.apply(HoldHintEvent::Learned);
+        pa.poll(1, &mut a, false, 1, |c| commands.push(c));
+        assert_eq!(commands.len(), 1);
+        let PreferenceCmd::HoldHint { live, reply, taught } = commands.pop().unwrap() else { panic!() };
+        assert_eq!(taught, HoldHintTaught { card: true, pill: true });
+        assert_eq!(b, HoldHintRead { context: 1, ..Default::default() });
+        reply.send(false).unwrap();
+        pa.poll(1, &mut a, false, 2, |_| panic!("refusal backs off"));
+        assert!(!live.load(Ordering::Acquire));
+        pa.poll(1, &mut a, false, 1001, |_| panic!("not due"));
+        pa.poll(1, &mut a, false, 1002, |c| commands.push(c));
+        let PreferenceCmd::HoldHint { live, reply, .. } = commands.pop().unwrap() else { panic!() };
+        pa.poll(2, &mut a, false, 1003, |_| panic!("retired lesson is not new profile's"));
+        assert!(!live.load(Ordering::Acquire));
+        assert!(reply.send(true).is_err(), "late receipt has no live owner");
+        assert_eq!(a, HoldHintRead { context: 2, ..Default::default() });
+        pb.poll(1, &mut b, false, 1004, |_| panic!("A never taught B"));
     }
 
     #[test]
-    fn a_taught_install_seeds_the_latches_without_issuing_a_write() {
-        let _fresh = Fresh::new();
-        seed(HoldHintTaught { card: true, pill: false });
-        assert!(plx_ui::hold_hint::shown_this_run(), "the card latch is down");
-        let writes = RefCell::new(Vec::new());
-        HintTaught::new().poll_with(false, |t| { writes.borrow_mut().push(t); true });
-        assert!(writes.borrow().is_empty(), "seeding is not news: {:?}", writes.borrow());
+    fn saved_install_fact_crosses_profiles_once_and_controlled_never_writes() {
+        let mut read = HoldHintRead { card: true, ..Default::default() };
+        let mut owner = HintTaught::new(read);
+        owner.poll(1, &mut read, false, 0, |_| panic!("seed is not news"));
+        read.apply(HoldHintEvent::Learned);
+        let mut receipt = None;
+        owner.poll(1, &mut read, false, 1, |c| receipt = Some(c));
+        let Some(PreferenceCmd::HoldHint { reply, .. }) = receipt else { panic!() };
+        reply.send(true).unwrap();
+        owner.poll(1, &mut read, false, 2, |_| panic!("once only"));
+        owner.poll(2, &mut read, false, 3, |_| panic!("saved install fact"));
+        assert_eq!(read, HoldHintRead { learned: false, card: true, pill: true, context: 2 });
+        read.apply(HoldHintEvent::Learned);
+        owner.poll(2, &mut read, true, 4, |_| panic!("controlled IO"));
     }
 
     #[test]
-    fn a_newly_taught_transition_issues_exactly_one_write() {
-        let _fresh = Fresh::new();
-        let mut poller = HintTaught::new();
-        let writes = RefCell::new(Vec::new());
-        poller.poll_with(false, |t| { writes.borrow_mut().push(t); true });
-        assert!(writes.borrow().is_empty(), "nothing taught, nothing written");
-        plx_ui::hold_hint::mark_learned();
-        for _ in 0..3 {
-            poller.poll_with(false, |t| { writes.borrow_mut().push(t); true });
+    fn logical_hint_publishers_cannot_return_but_render_layout_cache_remains() {
+        let source = include_str!("../../ui/src/hold_hint.rs");
+        let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
+        for forbidden in ["static LEARNED", "static SHOWN", "static CHANGED", "pub fn mark_learned(",
+            "pub fn reset_learned_for_test(", "pub fn seed_taught(", "pub fn take_newly_taught("] {
+            assert!(!production.contains(forbidden), "logical publisher resurrected: {forbidden}");
         }
-        assert_eq!(*writes.borrow(), vec![HoldHintTaught { card: true, pill: true }],
-            "one write for the rising edge, none while it stays up");
+        assert!(production.contains("static LAYOUT:"), "render-only cache remains allowed");
+        assert_eq!(production.matches("thread_local!").count(), 1, "only the layout cache may be TLS");
+        for logical_cell in ["Cell<bool>", "Cell<u8>", "static mut", "Mutex<HoldHint", "RwLock<HoldHint"] {
+            assert!(!production.contains(logical_cell), "logical authority must stay owned: {logical_cell}");
+        }
+        assert!(production.contains("HoldHintRead"));
+        assert!(production.contains("Option<HoldHintEvent>"));
     }
 
     #[test]
-    fn a_controlled_run_drains_the_lesson_and_writes_nothing() {
-        let _fresh = Fresh::new();
-        let mut poller = HintTaught::new();
-        let writes = RefCell::new(Vec::new());
-        plx_ui::hold_hint::mark_learned();
-        poller.poll_with(true, |t| { writes.borrow_mut().push(t); true });
-        assert!(writes.borrow().is_empty(), "a replay never writes the real session: {:?}", writes.borrow());
-        poller.poll_with(false, |t| { writes.borrow_mut().push(t); true });
-        assert!(writes.borrow().is_empty(), "and the edge was consumed, not deferred");
+    fn dropping_owner_cancels_queued_request() {
+        let mut read = HoldHintRead::default();
+        let mut owner = HintTaught::new(read);
+        read.apply(HoldHintEvent::ReadCard);
+        let mut command = None;
+        owner.poll(1, &mut read, false, 0, |c| command = Some(c));
+        let Some(PreferenceCmd::HoldHint { live, reply, .. }) = command else { panic!() };
+        drop(owner);
+        assert!(!live.load(Ordering::Acquire));
+        assert!(reply.send(true).is_err());
     }
 }

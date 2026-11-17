@@ -333,6 +333,7 @@ impl RouteSurface {
                 Fx::App(a) => fx.push(Fx::App(a)),
                 Fx::Log(l) => fx.push(Fx::Log(l)),
                 Fx::Press(arm) => fx.push(Fx::Press(arm)),
+                Fx::HoldHint(event) => fx.push(Fx::HoldHint(event)),
                 Fx::Remember { group, elem } => {
                     // Forwarding re-stamps the emission as this surface. Preserve inner
                     // ownership before doing so: covered/leaving pages still receive ticks.

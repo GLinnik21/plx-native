@@ -187,6 +187,7 @@ mod tests {
             measure: &FixtureMeasure,
             focus: Default::default(),
             press: Default::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             owner: InputOwner::Entry(EntryId(9)),
         };
         let mut out = Vec::new();
@@ -289,6 +290,7 @@ mod tests {
         let playback = PlaybackFixture::new();
         let mut page = PlayerScreen::new(EntryId(9), plx_appkit::player_hud::loaded::classic_for_test());
         let cx: Cx<'_, TestHost> = Cx { views: &playback.session, tick: Tick::default(), measure: &FixtureMeasure,
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             focus: Default::default(), press: Default::default(), owner: InputOwner::Entry(EntryId(9)) };
         for (controls, primary, right, left) in [
             (player_hud::Controls::for_item(true, false, true), 1, 2, 1),
