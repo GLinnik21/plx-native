@@ -3868,6 +3868,9 @@ pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::
                 Some(on_deck) => {
                     if let Some(it) = on_deck.finish() {
                         parse_streams(&it, &mut d);
+                        if let Some(ep) = d.on_deck.as_mut() {
+                            ep.versions = crate::pms::versions_of(&it);
+                        }
                     }
                 }
                 None => {
