@@ -1057,3 +1057,44 @@ fn adjacent_root_pending_install_pick_refreshes_with_unchanged_cache_and_profile
     }
     assert_eq!(page.state.language, pending.install_language, "a retained next-launch pick must not wait for the stored Session Arc");
 }
+
+// ---- accessibility ids -----------------------------------------------------------------------
+
+/// **Every page of the family the surface mounts answers ids that conform** (`a11y::conformance`: every
+/// element projects, ids are unique, `a11y_find` inverts `a11y`, `a11y_elems` matches each group's count),
+/// and **no two pages answer one namespace**: the surface answers its top page's, so an id says which
+/// page it was read on, though a Legal document, the Legal index and About share one heartbeat word.
+#[test]
+fn every_page_the_surface_mounts_conforms_and_answers_a_namespace_of_its_own() {
+    let _g = plx_base::testlock::serial();
+    let _sess = scratch_session("a11y-pages");
+    let pages = [
+        SettingsPage::Root,
+        SettingsPage::Language,
+        SettingsPage::UnderPosters,
+        SettingsPage::UnderPostersDetails(PosterKind::Movie),
+        SettingsPage::UnderPostersDetails(PosterKind::Show),
+        SettingsPage::Contribute,
+        SettingsPage::Playback,
+        SettingsPage::AudioSubtitles,
+        SettingsPage::Picker(PickerKind::Quality),
+        SettingsPage::Privacy,
+        SettingsPage::Preview(0),
+        SettingsPage::Legal,
+        SettingsPage::About,
+        SettingsPage::Document(0),
+        SettingsPage::Diagnostics,
+        SettingsPage::PlayerHud,
+        SettingsPage::HudGallery,
+    ];
+    let mut seen: Vec<&'static str> = Vec::new();
+    for page in pages {
+        let mut s = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, page);
+        step(&mut s, ScreenEvent::Mount, None);
+        let ns = <RouteSurface as Screen<InnerHost>>::a11y_ns(&s);
+        assert!(plx_ui::a11y::is_ns(ns), "{page:?}: {ns:?} is not a namespace");
+        assert!(!seen.contains(&ns), "{page:?}: the namespace {ns:?} is another page's already");
+        seen.push(ns);
+        plx_ui::a11y::conformance::<InnerHost, _>(&s, &cx(None));
+    }
+}

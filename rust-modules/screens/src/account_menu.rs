@@ -591,6 +591,31 @@ mod tests {
         assert_eq!(scrim.alpha, plx_ui::theme::underlay::DIM_COMPACT);
     }
 
+    /// **Each row answers the id of its action** (`settings`, `sign_out`, ...), in the table's order, and
+    /// the menu's ids conform: the key the engine holds is the row's, and a path finds it back.
+    #[test]
+    fn each_row_answers_the_id_of_its_action() {
+        use plx_ui::a11y::{A11yPath, Role};
+        let _serial = plx_base::testlock::serial();
+        let _session = plx_plex::plex::session::TempSession::new("account-menu-ids");
+        plx_plex::plex::session::save(&local(Session { account_token: "acct".into(), ..Default::default() }));
+        let read = published(true);
+        let mut menu = AccountMenuScreen::new(EntryId(0));
+        tick(&mut menu, &read);
+        assert_eq!(menu_rows(&menu), [Action::Settings, Action::SignOut], "rig: the rows this test names");
+        let cx = cx_of(&read);
+        plx_ui::a11y::conformance::<MenuHost, _>(&menu, &cx);
+        let mut keys = Vec::new();
+        Focusable::<MenuHost>::a11y_elems(&menu, GroupId(0), &cx, &mut keys);
+        assert_eq!(keys.len(), 2);
+        for (key, id) in keys.iter().zip(["settings", "sign_out"]) {
+            let a = Focusable::<MenuHost>::a11y(&menu, key, &cx).expect("a row projects");
+            let want = A11yPath::parse_relative(id).unwrap();
+            assert_eq!((a.path.clone(), a.role), (want.clone(), Role::Row));
+            assert_eq!(Focusable::<MenuHost>::a11y_find(&menu, &want, &cx), Some(*key));
+        }
+    }
+
     /// A host whose only view is the Session publication — the one fact the menu reads off it.
     struct MenuHost;
     impl plx_machine::machine::Host for MenuHost {

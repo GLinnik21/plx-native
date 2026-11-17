@@ -1444,3 +1444,43 @@ fn the_pill_under_a_withdrawn_hud_is_the_ghost_and_under_the_built_in_the_solid(
     for _ in 0..240 { page.form.table.update(1.0 / 60.0, 600.0); }
     assert_eq!(solid_on(&page), 1.0);
 }
+
+// ---- accessibility ids -----------------------------------------------------------------------
+
+/// **The full-screen preview answers its controls**: `back` first, then one `scene.<i>` tab per scene
+/// (the elements are the controls' own keys, 0 for Back and `i + 1` for scene `i`), and the page conforms.
+#[test]
+fn the_preview_answers_back_and_one_tab_per_scene() {
+    use plx_ui::a11y::{A11yPath, Role};
+    let list = gallery_list();
+    let package = list.catalog.index.as_ref().unwrap().entries.iter().find(|p| p.name == "Reference").unwrap();
+    let mut page = gallery_page(SettingsPage::HudPreview(package.sha()));
+    drive(&mut page, tick(), 1);
+    let cx = context(1);
+    plx_ui::a11y::conformance::<InnerHost, _>(&page, &cx);
+    let mut keys = Vec::new();
+    Focusable::<InnerHost>::a11y_elems(&page, GroupId(0), &cx, &mut keys);
+    assert_eq!(keys, [0, 1, 2, 3]);
+    for (key, id, role) in [(0, "back", Role::Button), (1, "scene.0", Role::Tab), (3, "scene.2", Role::Tab)] {
+        let a = Focusable::<InnerHost>::a11y(&page, &key, &cx).expect("a control projects");
+        let want = A11yPath::parse_relative(id).unwrap();
+        assert_eq!((a.path.clone(), a.role), (want.clone(), role));
+        assert_eq!(Focusable::<InnerHost>::a11y_find(&page, &want, &cx), Some(key));
+    }
+    let past = A11yPath::parse_relative("scene.3").unwrap();
+    assert_eq!(Focusable::<InnerHost>::a11y_find(&page, &past, &cx), None, "a scene the page lacks has no control");
+}
+
+/// **A script's arrival on a row is as deliberate as a key's or a pointer's**: it ends the provisional focus
+/// the page opened on, and a restore or a reconcile does not.
+#[test]
+fn a_scripted_arrival_ends_the_provisional_focus_as_a_key_does() {
+    use plx_machine::machine::By;
+    let mut page = gallery_page(SettingsPage::PlayerHud);
+    let to = FocusKey { entry: EntryId(0), elem: 0 };
+    for (by, ends) in [(By::Dir, true), (By::Pointer, true), (By::Script, true), (By::Restore, false), (By::Reconcile, false)] {
+        page.state.provisional = true;
+        drive(&mut page, ScreenEvent::FocusMoved { from: None, to, by }, 0);
+        assert_eq!(!page.state.provisional, ends, "{by:?}");
+    }
+}

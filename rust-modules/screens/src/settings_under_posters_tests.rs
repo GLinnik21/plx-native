@@ -1322,3 +1322,22 @@ fn the_preview_draws_every_selected_example_inside_its_caption_column() {
     }
     plx_ui::table::assert_no_fit_failures(&out);
 }
+
+// ---- accessibility ids -----------------------------------------------------------------------
+
+/// **Every row of both pages names itself** with a segment the id grammar accepts, and no two rows of a
+/// page share a name.
+#[test]
+fn the_pages_rows_name_themselves_with_distinct_ids() {
+    let mut page: Vec<&str> = [UpId::Title, UpId::MovieDetails, UpId::ShowDetails, UpId::SortValue, UpId::Reset]
+        .iter().map(|id| id.a11y().expect("a row names itself")).collect();
+    let mut picker: Vec<&str> = [P::Year, P::Length, P::Seasons, P::Genre, P::VideoQuality, P::AgeRating, P::Score]
+        .into_iter().map(|part| PartId(part).a11y().expect("a part names itself")).collect();
+    for set in [&mut page, &mut picker] {
+        assert!(set.iter().all(|n| plx_ui::a11y::is_name(n)), "a name outside the id grammar: {set:?}");
+        let before = set.len();
+        set.sort_unstable();
+        set.dedup();
+        assert_eq!(set.len(), before, "two rows of one page share a name");
+    }
+}

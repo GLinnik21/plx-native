@@ -591,3 +591,47 @@ mod retained_input_tests {
         assert!(!watch.refresh(&[], Some("server"), Near::Only));
     }
 }
+
+#[cfg(test)]
+mod a11y_tests {
+    use super::*;
+
+    const ANSWERS: AlertAnswers = AlertAnswers::new(GroupId(2), 70, 71, "not_now", "connect");
+
+    fn path(id: &str) -> A11yPath {
+        A11yPath::parse_relative(id).expect("a relative path")
+    }
+
+    /// **The answers are `alert.<verb>` buttons**, listed for their own group and no other, and a
+    /// path finds exactly the element its key projects.
+    #[test]
+    fn the_answers_project_list_and_find_each_other() {
+        let mut elems = Vec::new();
+        ANSWERS.elems(GroupId(2), &mut elems);
+        assert_eq!(elems, [70, 71]);
+        elems.clear();
+        ANSWERS.elems(GroupId(3), &mut elems);
+        assert!(elems.is_empty(), "a foreign group lists nothing");
+        for (elem, id) in [(70, "alert.not_now"), (71, "alert.connect")] {
+            let a = ANSWERS.a11y(elem).expect("an answer projects");
+            assert_eq!(a.path, path(id));
+            assert_eq!(a.role, Role::Button);
+            assert_eq!(ANSWERS.find(&path(id)), Some(elem));
+        }
+        assert!(ANSWERS.a11y(72).is_none(), "a key that is not an answer projects nothing");
+        for stray in ["alert", "alert.other", "alert.connect.0", "row.0"] {
+            assert_eq!(ANSWERS.find(&path(stray)), None, "{stray} names no answer");
+        }
+    }
+
+    /// A closed alert answers nothing, so the host's own elements stand.
+    #[test]
+    fn a_closed_alert_leaves_the_host_its_own_elements() {
+        let alert = PlaintextAlert::new(GroupId(2), 70, 71);
+        assert!(alert.a11y(70).is_none());
+        let mut elems = Vec::new();
+        assert!(!alert.a11y_elems(GroupId(2), &mut elems));
+        assert!(elems.is_empty());
+        assert!(alert.a11y_find(&path("alert.connect")).is_none());
+    }
+}
