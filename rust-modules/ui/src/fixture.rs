@@ -608,6 +608,10 @@ pub struct FixtureModal {
     pub held_faces: Vec<bool>,
     /// One entry per [`Screen::draw_warm`] call: whether the painter it was handed records.
     pub warm_walks: Vec<bool>,
+    /// The morphing [`Popover`](crate::popover::Popover) a glass menu owns, when
+    /// [`modal_owns_popover`] is on: opened on `Mount`, dismissed on `Closing` and stepped on every
+    /// `Tick`, exactly the three things the library and account menus do with theirs.
+    pub popover: Option<crate::popover::Popover>,
 }
 
 thread_local! {
@@ -617,6 +621,17 @@ thread_local! {
 /// Make every [`FixtureModal`] drawn on this thread paint one line of text ("modal surface text").
 pub fn modal_draws_text(on: bool) {
     MODAL_TEXT.with(|t| t.set(on));
+}
+
+thread_local! {
+    static MODAL_POPOVER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Make every [`FixtureModal`] mounted on this thread own a morphing popover the way the glass
+/// menus do (`FixtureModal::popover`): the host-snapshot cost of a menu's own `Closing` handling
+/// is observable only with one standing there.
+pub fn modal_owns_popover(on: bool) {
+    MODAL_POPOVER.with(|p| p.set(on));
 }
 
 thread_local! {
@@ -664,6 +679,7 @@ impl FixtureModal {
             tick_dts: Vec::new(),
             held_faces: Vec::new(),
             warm_walks: Vec::new(),
+            popover: None,
         }
     }
 
@@ -772,7 +788,18 @@ impl Machine<FixtureHost> for FixtureModal {
                 self.inner
                     .request(NavOp::Root(FixtureArg::Page(100)), ReturnState::default());
                 self.run_inner();
+                if MODAL_POPOVER.with(|p| p.get()) {
+                    let mut pop = crate::popover::Popover::new().morphing();
+                    pop.open();
+                    self.popover = Some(pop);
+                }
                 Handled::Yes
+            }
+            ScreenEvent::Closing => {
+                if let Some(pop) = self.popover.as_mut() {
+                    pop.dismiss();
+                }
+                Handled::No
             }
             ScreenEvent::Input(InputEvent {
                 kind: InputKind::Key { key: Key::Ok, .. },
@@ -808,6 +835,9 @@ impl Machine<FixtureHost> for FixtureModal {
             }
             ScreenEvent::Tick(t) => {
                 self.tick_dts.push(t.dt_us);
+                if let Some(pop) = self.popover.as_mut() {
+                    pop.update(t.dt());
+                }
                 // a surface waiting for its text asks for the next frame, as a push's pre-roll does
                 if MODAL_WARMS.with(|w| w.get()) {
                     fx.note(plx_machine::present::PresentEvent::Motion);

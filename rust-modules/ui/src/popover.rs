@@ -710,12 +710,25 @@ impl Popover {
     /// The bookkeeping half of a close: input modality ends NOW, whether the
     /// panel then vanishes or fades. The host freeze is NOT in here — see
     /// [`release_host`](Self::release_host) for why it outlives a dismiss.
+    ///
+    /// **It drops only a GROUND-stage snapshot, never the page's.** A ground snapshot
+    /// ([`host::ground_invalidate`]) is page + scrim + opener + this panel's own ground at FULL
+    /// strength, so a fade drawn over it would keep showing the settled panel and it must be
+    /// retaken from the live ground; only a `caching_host` popover reaches that stage
+    /// (`decision_alert`). A PAGE snapshot is exactly what a fade-out wants to keep (the page under
+    /// it has not changed, and the scrim and the lift are drawn live above it), and the glass
+    /// menus' popovers hold none of their own. An unconditional `host::invalidate()` here made the
+    /// close's first frame the one that redraws the page into the snapshot, re-sources the tab
+    /// bar's blur and re-latches the dim field: 131% of a 60 Hz frame's GPU budget on the TV.
+    /// Real page damage and page motion during the fade still re-take through
+    /// [`host::begin_frame`]. (It was an `invalidate` since `becb4e56c`, when `release` also
+    /// released the host user; `release_host` took that over and the call stayed behind.)
     fn release(&mut self) {
         if self.open {
             OPEN_COUNT.fetch_sub(1, Relaxed);
         }
         self.open = false;
-        host::invalidate();
+        host::ground_invalidate();
     }
     /// Register this popover's frozen-host user — once, however many times it is (re)opened, and
     /// not at all under a `Live` policy. A re-open DURING the fade-out finds the user still held

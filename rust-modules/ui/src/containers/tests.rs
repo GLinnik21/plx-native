@@ -817,6 +817,55 @@ fn the_lifted_element_reaches_the_page_pass_and_every_change_of_it_retakes_the_s
 }
 
 
+/// **The BACK that dismisses a glass menu throws no host snapshot away.** A menu's own `Closing`
+/// handling is `Popover::dismiss`, which used to invalidate the snapshot unconditionally
+/// (`Popover::release`): the close's first frame then redrew the page into it, re-sourced the tab
+/// bar's blur and re-latched the dim field, 131% of a 60 Hz frame's GPU budget on the TV. The
+/// fixture modal owns a morphing popover the way both real menus do (`modal_owns_popover`), so the
+/// whole path is real: BACK, `NavOp::Dismiss`, `ScreenEvent::Closing`, `Popover::dismiss`.
+///
+/// The sibling `the_lifted_element_reaches_the_page_pass_and_every_change_of_it_retakes_the_snapshot`
+/// discards the BACK step's count; it cannot take this one's popover because the popover's open on
+/// Mount is itself an invalidation that test counts to one.
+#[test]
+fn the_back_that_dismisses_a_menu_retakes_no_host_snapshot() {
+    use crate::popover::host;
+    let _guard = plx_base::testlock::serial();
+    struct PopoverOff;
+    impl Drop for PopoverOff {
+        fn drop(&mut self) { crate::fixture::modal_owns_popover(false); }
+    }
+    crate::fixture::modal_owns_popover(true);
+    let _off = PopoverOff;
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    let opener = FocusKey { entry: home, elem: 0 };
+    let mut ms = 16;
+    let mut step = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, keys: Vec<_>| {
+        ms += 16;
+        let before = host::invalidations();
+        let r = d.frame(rig, tick(ms), keys, vec![], &mut NoTap);
+        d.draw(rig, true);
+        d.prune(&r.unmounted);
+        host::invalidations() - before
+    };
+    d.set_focus(Some(opener));
+    d.nav.next_style = Style::Compact;
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    step(&mut d, &mut rig, vec![]);
+    let id = d.nav.modals.top().expect("presented").entry.id;
+    modal_mut(&mut d, id).opener = Some((home, Some(opener)));
+    assert!(modal_of(&d, id).popover.as_ref().is_some_and(|p| p.is_open()), "premise: the menu's popover opened on Mount");
+    // the menu settles: nothing re-takes the snapshot while it stays
+    for _ in 0..40 { step(&mut d, &mut rig, vec![]); }
+    assert!(modal_of(&d, id).popover.as_ref().is_some_and(|p| p.appear_settled()), "premise: the panel has landed");
+
+    let back = step(&mut d, &mut rig, vec![key(Key::Back, tick(0))]);
+    assert_eq!(d.nav.modals.top().unwrap().phase, Phase::Closing);
+    assert!(modal_of(&d, id).popover.as_ref().is_some_and(|p| !p.is_open() && p.visible()), "premise: the popover is fading");
+    assert_eq!(back, 0, "the BACK that dismisses the menu threw the host snapshot away");
+}
+
 /// **The top page's opener lift is the dispatcher's, drawn in the ONE lift pass after the last
 /// surface, on BOTH plans** (`Dispatcher::draw_with`, review R1/R3). The element a menu was opened
 /// from (a header pill, a card) is lit above the dim AND the panel so a panel grows out from under

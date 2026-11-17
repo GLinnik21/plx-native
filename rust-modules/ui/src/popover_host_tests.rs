@@ -487,12 +487,14 @@ fn a_morphing_panel_grows_from_the_pill_and_its_glass_is_whole_once_it_is_down()
     unlatch(tex);
 }
 
-/// **A menu's glass stands on ONE capture of its host while it opens and stays, and one more for
-/// its whole close.** Frames of a menu over a still page, through the real host protocol: the
-/// snapshot is taken once ([`page_epoch`] moves once) for the open and the stay, however its own
-/// springs move; the dismiss drops it (`Popover::release`) and the close's first frame takes it
-/// again, after which the fade re-takes nothing. The glass's rim reads the snapshot's texture
-/// (the CPU stand-in's).
+/// **A menu's glass stands on ONE capture of its host for its whole life: the open, the stay and
+/// the close.** Frames of a menu over a still page, through the real host protocol: the snapshot is
+/// taken once ([`page_epoch`] moves once) for the open and the stay, however its own springs move,
+/// and the dismiss throws nothing away (`Popover::release` drops only a GROUND-stage snapshot, which
+/// a morphing panel's `Live` host never holds), so the close's first frame is not the frame that
+/// re-draws the page into the snapshot, re-sources the tab bar's blur and re-latches the dim field
+/// (131% of a 60 Hz frame's GPU budget on the TV, measured). The glass's rim reads the snapshot's
+/// texture (the CPU stand-in's).
 #[test]
 fn a_menu_glass_reads_one_host_capture_through_open_stay_and_close() {
     use crate::popover_glass::tests::{declared_glass, expected, latched, unlatch};
@@ -504,7 +506,7 @@ fn a_menu_glass_reads_one_host_capture_through_open_stay_and_close() {
     let epoch = page_epoch();
     let mut pop = crate::popover::Popover::new().morphing();
     pop.open_from(Some(crate::Rect::new(1500.0, 40.0, 196.0, 38.0)));
-    let (mut frames, mut drawn, mut closing, mut closed_at) = (0, 0, false, 0);
+    let (mut frames, mut drawn, mut closing) = (0, 0, false);
     while pop.visible() {
         pop.update(1.0 / 60.0);
         begin_frame(false);
@@ -520,13 +522,12 @@ fn a_menu_glass_reads_one_host_capture_through_open_stay_and_close() {
         assert!(glass.len() <= 1);
         drawn += glass.len();
         frames += 1;
-        // Each frame of the close after the first re-takes nothing (the first: below).
-        if closing && frames > closed_at + 1 {
-            assert_eq!(page_epoch().wrapping_sub(epoch), 2, "frame {frames} of the close re-took the host");
+        // Not one frame of the close re-takes the host, the first included.
+        if closing {
+            assert_eq!(page_epoch().wrapping_sub(epoch), 1, "frame {frames} of the close re-took the host");
         }
         if !closing && pop.appear_settled() {
             assert_eq!(page_epoch().wrapping_sub(epoch), 1, "one host capture for the open and the stay");
-            closed_at = frames;
             // The settled panel's glass, against one built with this capture's texture as its
             // rim's source and against one with none.
             let want = |sharp| expected(crate::Painter::root(), panel, RAD, tex, sharp, crate::popover_glass::FACE);
@@ -538,16 +539,49 @@ fn a_menu_glass_reads_one_host_capture_through_open_stay_and_close() {
             present.note_in_scope(plx_machine::present::Scope::Surface,
                 plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
             assert!(!present.page_damaged());
+            let invalidated = invalidations();
             pop.dismiss();
+            assert_eq!(invalidations(), invalidated, "the dismiss threw the host snapshot away");
             closing = true;
         }
         assert!(frames < 600);
     }
     assert!(closing && drawn > 0, "the glass drew: {drawn}");
-    // `Popover::release` drops the snapshot on the dismiss itself (a ground-stage snapshot holds
-    // the panel), so the close's first frame takes the page once more; its fade takes nothing.
-    assert_eq!(page_epoch().wrapping_sub(epoch), 2, "one capture for open and stay, one at the dismiss, over {frames} frames");
+    assert_eq!(page_epoch().wrapping_sub(epoch), 1, "one capture for the open, the stay and the close, over {frames} frames");
     unlatch(tex);
+}
+
+/// **The dismiss still drops a GROUND-stage snapshot — the one thing `Popover::release` has to
+/// protect.** A `Held::Ground` snapshot is page + scrim + lifted opener + the panel's own ground at
+/// FULL strength, so a fade drawn over it would keep showing the settled panel; it must be retaken
+/// from the live ground. (Only a `caching_host` popover reaches that stage: `decision_alert` is the
+/// production one. A `Live` host, every glass menu, never holds a ground, and a plain page snapshot
+/// is exactly what a fade-out wants to keep — see
+/// `a_menu_glass_reads_one_host_capture_through_open_stay_and_close`.) Green before and after the
+/// release narrowed from `invalidate` to `ground_invalidate`.
+#[test]
+fn a_dismiss_drops_the_ground_stage_of_a_caching_popover() {
+    let _serial = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
+    let mut pop = crate::popover::Popover::new().caching_host();
+    pop.open();
+    for _ in 0..240 {
+        pop.update(1.0 / 60.0);
+    }
+    assert!(pop.appear_settled(), "premise: the panel has landed");
+    for _ in 0..3 {
+        begin_frame(false);
+        PIXELS.with(|p| p.borrow_mut().clear());
+        let _page = page_pass();
+        ink("page");
+        let _scrim = live();
+        ink("scrim");
+        ground_drawn(pop.appear_settled());
+    }
+    assert!(matches!(held(), Held::Ground(_)), "premise: the settled panel's ground is held");
+    pop.dismiss();
+    assert!(held() == Held::Nothing, "the dismiss kept a snapshot of the panel at full strength");
+    pop.close();
 }
 
 /// Finding 1: the ground's radius is the caller's through the whole life of the panel. The old
