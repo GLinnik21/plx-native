@@ -456,23 +456,48 @@ pub(crate) mod tests {
         unlatch(tex);
     }
 
-    /// **A lift whose ground has not latched draws NOTHING** (CONFIRM2 CB1). The field latches a frame
-    /// after the OK that opens the menu (`gfx::FIELD_READ_LAG_SWAPS`), and on that frame the lift used
-    /// to fall back to the flat `scrim_black(TAB_TRACK_A)` capsule over the capsule the bar had already
-    /// drawn UNDER it: the chip blinked near-black for one frame on every open (F3 `c/chip-open.png`
-    /// n=194), because the dim is 0 on that frame and nothing darkens the bar's own chip but the second
-    /// capsule. The bar's chip is on screen already; the lift owes the frame nothing until it has a ground.
+    /// **A chip lift whose field has not latched still paints, on the host snapshot** (owner film,
+    /// 2026-11-17). The field latches a frame or two after the OK that opens the menu
+    /// (`gfx::FIELD_READ_LAG_SWAPS`), and the chrome pass has left the chip out since the menu mounted
+    /// (the host snapshot must never hold it), so a lift that drew nothing on those frames was a chip
+    /// that blinked out. The ground is chosen where it paints (`widgets::lift_ground`): the field once
+    /// latched, else the snapshot drawn CLEAR (ONE frozen glass whose `sharp` is the snapshot and whose
+    /// `GlassMorph::clear` is 1), else the flat capsule, never nothing and never a live glass. (CONFIRM2
+    /// CB1's near-black blink was this flat capsule drawn over the bar's own copy; the bar no longer
+    /// draws one while its menu owns the chip.)
     #[test]
-    fn a_chip_lift_with_no_latched_ground_draws_nothing() {
+    fn a_chip_lift_with_no_latched_field_still_paints() {
+        use crate::widgets::{chip_cap, lift_ground, lift_profile_chip, lift_profile_chip_on, LiftGround};
         let _g = plx_base::testlock::serial();
+        let tex = 9_746;
+        let field = latched(tex);
+        let unlatched = crate::underlay::UnderlayField::new();
         let profile = crate::widgets::ProfileChipRead { src: 0, thumb: "", initial: c"G", name: c"Guest", name_w: 60.0 };
         let face = crate::widgets::chip_face(FACE, 1.0);
-        let unlatched = crate::underlay::UnderlayField::new();
+
+        assert_eq!(lift_ground(&field, Some(1)), LiftGround::Field(tex), "the latched field wins over the snapshot");
+        assert_eq!(lift_ground(&field, None), LiftGround::Field(tex));
+        assert_eq!(lift_ground(&unlatched, Some(7)), LiftGround::Snapshot(7), "before the latch: the snapshot");
+        assert_eq!(lift_ground(&unlatched, None), LiftGround::Flat, "and with neither: the flat capsule");
+
         for expand in [0.0, 1.0] {
-            let all = declared_all(|| crate::widgets::lift_profile_chip(Painter::root(), profile, expand, Some(face), &unlatched));
-            assert!(all.is_empty(), "unlatched ground, expand {expand}: no capsule, no avatar, no name; drew {:?}",
-                all.iter().map(|p| p.kind()).collect::<Vec<_>>());
+            // neither exists: the flat capsule, the avatar and (expanded) the name, and no glass
+            let flat = declared_all(|| lift_profile_chip(Painter::root(), profile, expand, Some(face), &unlatched));
+            assert!(flat.len() >= 2, "no field, no snapshot, expand {expand}: the chip is still drawn: {:?}",
+                flat.iter().map(|p| p.kind()).collect::<Vec<_>>());
+            assert!(flat.iter().all(|p| p.kind() != "glass_frozen"), "…as the flat capsule, never live or frozen glass");
+            // the snapshot: one frozen glass over it, drawn clear, and the avatar on top of it
+            let cap = chip_cap(expand, 60.0);
+            let want = declared_glass(|| assert!(Painter::root().glass_frozen(
+                cap, cap.h * 0.5, tex, tex, None, [1.0; 4], GlassRim::Standing, face,
+                plx_gfx::gfx::GlassMorph { clear: 1.0, ..plx_gfx::gfx::GlassMorph::NONE })));
+            let on_snapshot = declared_all(|| lift_profile_chip_on(Painter::root(), profile, expand, Some(face), LiftGround::Snapshot(tex)));
+            let glass: Vec<_> = on_snapshot.iter().filter(|p| p.kind() == "glass_frozen").collect();
+            assert_eq!(glass.len(), 1, "expand {expand}: one frozen glass on the snapshot");
+            assert!(*glass[0] == want[0], "expand {expand}: …drawn clear, the snapshot as both its pictures");
+            assert!(on_snapshot.len() > 1, "expand {expand}: …with the chip's avatar over it");
         }
+        unlatch(tex);
     }
 
     /// **The rim's sharp source is the host snapshot**: `draw` hands the glass whatever

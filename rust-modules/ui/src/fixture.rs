@@ -1117,10 +1117,10 @@ pub struct FixtureRig {
     /// Every bar member the lift pass was asked to redraw (`Rig::lift_bar_member`), with the
     /// presentation it was asked under.
     pub bar_lifts: Vec<(u32, super::screen::NavPresentation)>,
-    /// How many of those asks the lift could paint: the ones whose `ground` had latched. The
-    /// profile chip's lift (`widgets::lift_profile_chip`) draws NOTHING on an unlatched field, so
-    /// a request on one is a chip painted by nobody.
-    pub bar_lifts_painted: usize,
+    /// What each of those asks would stand on, decided as the real lift decides it at paint time
+    /// (`widgets::lift_ground`, over the stack's field and the host snapshot): the chip's lift
+    /// paints on every ask, so an ask is a chip painted once.
+    pub bar_lift_grounds: Vec<super::widgets::LiftGround>,
     /// The bar member the opener lift owned on each chrome pass (`Rig::draw_chrome`'s `lifted`):
     /// the one the chrome pass left out.
     pub chrome_lifted: Vec<Option<u32>>,
@@ -1148,7 +1148,7 @@ impl FixtureRig {
             opaque_route_calls: Vec::new(),
             clears: 0,
             bar_lifts: Vec::new(),
-            bar_lifts_painted: 0,
+            bar_lift_grounds: Vec::new(),
             chrome_lifted: Vec::new(),
             us: 0,
         }
@@ -1194,7 +1194,7 @@ impl Rig<FixtureHost> for FixtureRig {
     fn lift_bar_member(&mut self, elem: u32, presented: super::screen::NavPresentation,
         _material: Option<plx_gfx::gfx::GlassFace>, ground: &super::underlay::UnderlayField) {
         self.bar_lifts.push((elem, presented));
-        self.bar_lifts_painted += usize::from(ground.ground_tex().is_some());
+        self.bar_lift_grounds.push(super::widgets::lift_ground(ground, crate::popover::host::page_tex()));
     }
     fn split(&mut self) -> Split<'_, FixtureHost> {
         Split {
