@@ -111,6 +111,69 @@ pub fn ctor_gate(feed: &mut FeedResources, mt: &MainThread) -> CtorGate {
     CtorGate::Awaiting { timeout }
 }
 
+/// What a Segment seek's landing reads after Play, as one value so the rule that lands the seek
+/// and the line the presentation deadline writes cannot name different facts.
+struct LandingFacts {
+    /// The sink's clock ticked since Play.
+    clock_advanced: bool,
+    /// The pipeline's reported position, in fed time (ns).
+    position: i64,
+    /// The accepted video, in fed time (ns). The requested position can be several seconds beyond
+    /// the landing keyframe, so the reported position is compared to this, not to the target.
+    runway: std::ops::RangeInclusive<i64>,
+    /// A positive displayed-frame count arrived since Play.
+    displayed: bool,
+    /// This session has received a displayed-frame callback, a zero count included
+    /// (`Shared::sink_counter_seen`). A set that never sends the counter cannot
+    /// show a fresh count, so waiting for one would reload every seek (#1436).
+    counter_present: bool,
+}
+
+impl LandingFacts {
+    fn read(play: &crate::feed_state::SegmentPlay, runway: std::ops::RangeInclusive<i64>) -> Self {
+        LandingFacts {
+            clock_advanced: FEED_SHARED.dg_pos_ticks.load(Acquire) != play.position_tick,
+            position: FEED_SHARED.pres_fed.load(Relaxed),
+            runway,
+            displayed: FEED_SHARED.sink_displayed_sequence.load(Acquire) != play.displayed,
+            counter_present: FEED_SHARED.sink_counter_seen.load(Relaxed),
+        }
+    }
+
+    fn in_runway(&self) -> bool {
+        self.runway.contains(&self.position)
+    }
+
+    /// The count is evidence only where the session sends one.
+    fn displayed_or_unsent(&self) -> bool {
+        self.displayed || !self.counter_present
+    }
+
+    fn landed(&self) -> bool {
+        self.clock_advanced && self.in_runway() && self.displayed_or_unsent()
+    }
+
+    /// The one event-log line for a Segment seek that ran out its presentation budget.
+    fn deadline_line(&self) -> String {
+        let missing = [
+            (!self.clock_advanced, "clock"),
+            (!self.in_runway(), "runway"),
+            (!self.displayed_or_unsent(), "displayed"),
+        ]
+        .iter()
+        .filter_map(|&(absent, name)| absent.then_some(name))
+        .collect::<Vec<_>>()
+        .join(",");
+        format!(
+            "seek: Segment presentation deadline: missing={missing} clock_advanced={} \
+             position_ms={} runway_ms={}..={} in_runway={} displayed={} counter_present={}",
+            self.clock_advanced, self.position / 1_000_000,
+            self.runway.start() / 1_000_000, self.runway.end() / 1_000_000,
+            self.in_runway(), self.displayed, self.counter_present,
+        )
+    }
+}
+
 /// The reopen budget measures the demux/keyframe phase. Once Play accepts a Segment seek,
 /// give the sink its own budget to display on the installed timeline.
 pub fn stuck_seek_due(feed: &mut FeedResources, now: u32, feed_allowed: bool,
@@ -122,13 +185,7 @@ pub fn stuck_seek_due(feed: &mut FeedResources, now: u32, feed_allowed: bool,
                 eng.segment_landing = None;
                 return false;
             }
-            let clock_advanced = FEED_SHARED.dg_pos_ticks.load(Acquire) != play.position_tick;
-            let position = FEED_SHARED.pres_fed.load(Relaxed);
-            let displayed = FEED_SHARED.sink_displayed_sequence.load(Acquire) != play.displayed;
-            // Compare the reported pipeline position to the accepted video, in fed time.
-            // The requested position can be several seconds beyond the landing keyframe.
-            let video_runway = eng.seek_base_pts..=eng.max_fed_video_pts;
-            if clock_advanced && video_runway.contains(&position) && displayed {
+            if LandingFacts::read(play, eng.seek_base_pts..=eng.max_fed_video_pts).landed() {
                 FEED_SHARED.seek_landed_epoch.store(landing.epoch, Release);
                 eng.segment_landing = None;
                 return false;
@@ -154,7 +211,9 @@ pub fn stuck_seek_due(feed: &mut FeedResources, now: u32, feed_allowed: bool,
 pub fn retry_stuck_seek(feed: &mut FeedResources, now: u32, target_ns: i64,
     can_retry: bool) -> StuckSeekAction {
     let eng = feed.engine().expect("stuck seek belongs to live feed");
-    if eng.segment_landing.as_ref().is_some_and(|seek| seek.play.is_some()) {
+    if let Some(play) = eng.segment_landing.as_ref().and_then(|seek| seek.play.as_ref()) {
+        // The landing is consumed here, so the line is written once per stuck seek.
+        log(&LandingFacts::read(play, eng.seek_base_pts..=eng.max_fed_video_pts).deadline_line());
         eng.segment_landing = None;
         return StuckSeekAction::Reload;
     }
@@ -606,7 +665,8 @@ pub fn native_audio_stall_fired(feed: &mut FeedResources, now: u32) -> bool {
 }
 
 /// The one event-log line for an era-chosen sink counter that never arrived in a played session
-/// ([`crate::era_callbacks`]). It only reads counters and logs; nothing branches on it.
+/// ([`crate::era_callbacks`]). It only reads counters and logs; nothing branches on it (the Segment
+/// landing reads its own flag for the same fact, [`LandingFacts`]).
 pub fn note_missing_era_callback(feed: &mut FeedResources) {
     let Some(eng) = feed.engine() else { return; };
     if eng.preview_abandon { return; }
@@ -1518,5 +1578,23 @@ mod tests {
         assert_eq!(native_attempt_facts().position_ns, Some(90_000_000_000),
             "a reload armed at 90 s reads 90 s until its first frame");
         FEED_SHARED.reset_session();
+    }
+
+    /// The landing rule over its facts (#1313, #1436): the clock and the runway always, the fresh
+    /// positive count only where the session sends one.
+    #[test]
+    fn a_segment_landing_needs_the_count_only_where_the_session_sends_one() {
+        let facts = |clock_advanced, position, displayed, counter_present| LandingFacts {
+            clock_advanced, position, runway: 10_000_000_000..=14_000_000_000, displayed, counter_present,
+        };
+        assert!(facts(true, 11_000_000_000, true, true).landed(), "a counting set with a fresh count");
+        assert!(!facts(true, 11_000_000_000, false, true).landed(), "a counting set without one");
+        assert!(facts(true, 11_000_000_000, false, false).landed(), "a set that never sends the counter");
+        assert!(!facts(false, 11_000_000_000, false, false).landed(), "the clock is always required");
+        assert!(!facts(true, 9_000_000_000, false, false).landed(), "the runway is always required");
+        let line = facts(true, 11_000_000_000, false, true).deadline_line();
+        assert!(line.contains("missing=displayed ") && line.contains("counter_present=true"), "{line}");
+        let line = facts(false, 9_000_000_000, false, false).deadline_line();
+        assert!(line.contains("missing=clock,runway ") && line.contains("counter_present=false"), "{line}");
     }
 }
