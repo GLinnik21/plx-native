@@ -83,8 +83,9 @@ arguments, and its time is the `dt` it is handed.
    cannot be named cannot be tested. It gets its id from the three `Focusable` hooks (`a11y`,
    `a11y_elems`, `a11y_find`, `screen.rs`) or from the shared widget it composes (`card_a11y` for a
    card, `PageHeader`, `LinkedHeading`, `MasterDetail`), never from a screen-local table.
-   `rust-modules/screens/src/a11y_coverage_tests.rs` is an exhaustive `match` over `AppArg`, so a
-   new screen does not compile until it is tabled there.
+   The `#[cfg(test)] mod a11y_coverage_tests` in `rust-modules/screens/src/registry.rs` (its
+   `coverage()`) is an exhaustive `match` over `AppArg`, so a new screen does not compile in the TEST
+   build until it is tabled there.
 
    A mechanism is forked the same way and more quietly, because it looks like three lines of glue.
    Find the ready-made one first; if it almost fits, extend it in place for every caller; if it
