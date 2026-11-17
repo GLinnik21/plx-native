@@ -278,8 +278,8 @@ pub struct PlaybackSession {
     /// that decision is made from the same numbers `build_stream` used rather than from a guess.
     cur_src: (i64, i64, i64),
     /// Whole Part transport bitrate, including audio. Auto's progressive watchdog compares the
-    /// live socket against this rather than `cur_src.0` (the video stream's rate for a default version measured
-    /// from the detail, a fetched version's whole-file rate otherwise), because the wire has to carry
+    /// live socket against this rather than `cur_src.0` (the video stream's rate where PMS gave one,
+    /// else the whole file's), because the wire has to carry
     /// both lanes. `0` means PMS did not provide one and disables the watchdog fail-safely.
     cur_transport_kbps: i64,
     /// **Can this television decode the SOURCE video stream as it stands** — `video_direct_plays`
@@ -10060,6 +10060,7 @@ struct PreviewFile<'a> {
     width: i64,
     height: i64,
     kbps: i64,
+    ceiling_kbps: i64,
     acodec: &'a str,
     audio: &'a [plx_data::metadata::Stream],
     subs: &'a [plx_data::metadata::Stream],
@@ -10079,6 +10080,7 @@ fn preview_file<'a>(
         width: d.width,
         height: d.height,
         kbps: d.bitrate,
+        ceiling_kbps: source_kbps(d),
         acodec: &d.acodec,
         audio: &d.audio,
         subs: &d.subs,
@@ -10101,6 +10103,7 @@ fn preview_file<'a>(
         width: v.width,
         height: v.height,
         kbps: v.kbps,
+        ceiling_kbps: ceiling_kbps(v.video_kbps, v.kbps),
         acodec: &v.acodec,
         audio: &file.audio,
         subs: &file.subs,
@@ -10151,15 +10154,15 @@ fn playback_preview_with_capability(
     // The user's quality ceiling is the LAST gate `build_stream` applies, so it is the last one
     // here too — and it can only ever downgrade, never promote. Without this the facts row would
     // promise "Direct Play" for a source the rung is about to send to an encoder, which is the
-    // exact mismatch this preview's doc says it exists to avoid. `file.kbps`/`width`/`height` are
-    // those of the version Play starts, i.e. the same numbers `ResolveEnv` hands the resolve.
+    // exact mismatch this preview's doc says it exists to avoid. `file.ceiling_kbps`/`width`/`height`
+    // are those of the version Play starts, i.e. the same numbers `ResolveEnv` hands the resolve.
     let location = plx_plex::plex::client_for(d.sid).and_then(|client| client.link());
     // A detail page has not downloaded the file yet, so it reports what can preserve the source,
     // not a fictitious failed bandwidth result. Remote Auto is measured at Play. Relay remains a
     // conversion because its independent link policy refuses both original-rate flavors.
     let policy = direct_play_policy(mode, flavors_allowed(
         plx_plex::plex::link_policy(location),
-        quality_policy(quality(), true, file.kbps, file.width, file.height),
+        quality_policy(quality(), true, file.ceiling_kbps, file.width, file.height),
     ));
     Some(match p {
         Preview::DirectPlay if !policy.direct_play && policy.remux && mode == DirectPlayMode::Disabled => Preview::Remux,
