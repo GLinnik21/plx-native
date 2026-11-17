@@ -286,30 +286,23 @@ fn a_dead_link_in_the_millisecond_of_the_watch_restart_is_held() {
     assert!(text.contains("progressive rebuffer hold n=1 arm=silence"), "no silence-arm hold line: {text}");
 }
 
-/// **A link that dies before the first callback after a Resume is held.** The viewer's Pause
-/// restarts the watch on every pump the clock stands, so after the Resume the last callback is OLDER
-/// than the restart. The silence runs from the restart; a rule that wanted a callback after it never
-/// held a link that died in that gap: a frozen picture and no Buffering. The same gap follows the
-/// Play that ends a hold.
+/// **A link that dies before the first callback after a restart of the watch is held.** Whatever
+/// stops the clock on purpose (the viewer's Pause, a hold) restarts the watch on every pump it
+/// stands, so after the Resume or the hold's Play the last callback is OLDER than the restart. The
+/// silence runs from the restart; a rule that wanted a callback after it never held a link that
+/// died in that gap: a frozen picture and no Buffering. The rig cannot make the gap by a real
+/// Pause and Resume (a Resume re-primes, and the nearly empty queue at the tail never primes), so it
+/// is set directly: the last callback 1500 ms ago, the restart 1100 ms ago, nothing since.
 #[test]
-fn a_link_that_dies_before_the_first_callback_after_a_resume_is_held() {
+fn a_link_that_dies_before_the_first_callback_after_a_restart_is_held() {
     let _serial = plx_base::testlock::serial();
     let ((), text) = logged(|| {
         let mut rig = a_stream_about_to_run_dry();
-        assert!(crate::player::pause(&mut rig.ps, &mut rig.pa), "the viewer's Pause is accepted");
-        let at_pause = pauses();
-        for _ in 0..3 {
-            rig.step_without_sink();
-        }
-        assert!(crate::player::resume(&mut rig.ps, &mut rig.pa), "the viewer's Resume is accepted");
-        rig.step_without_sink();
-        assert_eq!(pauses(), at_pause, "PRECONDITION FAILED, not the defect: the Resume itself was held: {}", rig.facts());
-        // The link died with the Resume: the last callback is from before the pause, the watch was
-        // restarted 1100 ms ago and nothing has reported since.
         age_observation(1_500, 1_100);
         rig.step_without_sink();
-        assert_eq!(pauses(), at_pause + 1, "a link dead since the Resume was not held: {}", rig.facts());
+        assert_eq!(pauses(), 1, "a link dead since the restart of the watch was not held: {}", rig.facts());
         assert!(FEED_SHARED.hls_rebuffering.load(Relaxed), "the hold did not raise Buffering");
+        assert_eq!(crate::player::rebuffering(&rig.ps), Some(true), "the readout does not say Buffering");
     });
     assert!(text.contains("progressive rebuffer hold n=1 arm=silence"), "no silence-arm hold line: {text}");
 }
