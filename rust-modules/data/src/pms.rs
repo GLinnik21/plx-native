@@ -255,6 +255,8 @@ pub struct MediaVersion {
     pub id: plx_plex::plex::MediaId,
     /// Whole-file bitrate, kbps.
     pub kbps: i64,
+    #[serde(default, skip_serializing_if = "crate::metadata::is_zero")]
+    pub video_kbps: i64,
     /// PMS's resolution class (`4k`, `1080`), with the frame size as its fallback.
     pub resolution: String,
     pub width: i64,
@@ -287,6 +289,7 @@ pub fn versions_of(it: &plx_plex::plex::Metadata) -> Vec<MediaVersion> {
             MediaVersion {
                 id: m.id,
                 kbps: m.bitrate,
+                video_kbps: part.and_then(|p| p.stream.iter().find(|s| s.stream_type == 1)).map_or(0, |s| s.bitrate),
                 resolution: clean(&m.video_resolution),
                 width: m.width,
                 height: m.height,
