@@ -999,10 +999,14 @@ impl Popover {
 
     /// Draw a MORPHING popover's rows through `draw`, in the shared choreography the board states:
     ///
-    /// - the rows are **clipped to the current surface rect** ([`ClipScope`](crate::screen::ClipScope),
-    ///   which nests with a table's own clip), so nothing draws outside it;
+    /// - the rows are **clipped to the surface's inscribed rect** ([`Frame::rows_clip`](crate::popover_morph::Frame::rows_clip):
+    ///   the current rect inset to the largest rectangle that fits inside its ROUND lens corners, through
+    ///   the shared [`ClipScope`](crate::screen::ClipScope), which nests with a table's own clip), so
+    ///   nothing draws outside the rounded glass. A true rounded clip would crop the rows exactly to
+    ///   the shape; the shared painter has only the scissor, so that is the follow-up in the shared layer;
     /// - they are **scaled about the panel anchor** ([`popover_morph::rows_anchor`](crate::popover_morph::rows_anchor))
-    ///   by the row spring, 0.82 -> 1 (and back on close);
+    ///   by the rows' lens spring ([`popover_morph::K_LENS`](crate::popover_morph::K_LENS)), which
+    ///   overshoots to ~1.12 (the shrinking slab's height ratio on a close);
     /// - they are drawn at [`Frame::content_alpha`](crate::popover_morph::Frame::content_alpha), which
     ///   is 0 until the glass has replaced the opener's fill. A frame on which they are invisible
     ///   does not draw them, except through the text recorder (a held surface's walk), which is
@@ -1020,9 +1024,9 @@ impl Popover {
             return;
         }
         let p = p.alpha(f.content_alpha);
-        let _clip = crate::screen::ClipScope::open_in(p, f.rect);
+        let _clip = crate::screen::ClipScope::open_in(p, f.rows_clip);
         let zoom = crate::popover_morph::rows_zoom(self.from, panel, f.rows_scale);
-        draw(p.clipped(f.rect).zoomed(zoom));
+        draw(p.clipped(f.rows_clip).zoomed(zoom));
     }
 
     /// What [`panel`](Self::panel) draws as the ground this frame, or `None` for nothing yet.

@@ -449,13 +449,16 @@ presentation in a design pass.
    morph in `popover_morph.rs`, fitted to a frame-by-frame measurement of iOS 26's glass menu (the
    owner's recording, 2026-11-17): UNDERDAMPED width and height springs (height k 920 zeta 0.66,
    width k 450 zeta 0.7 after a 26 ms lag; the rect rings 6% / 4.6% past the panel and lands by
-   ~0.4 s, within 0.06 of the measured table on every frame), the radius pill -> THE CALLER'S panel
-   radius with a bulge (so settle and the start of a close do not snap), a 0.92 -> 1 fade+scale
+   ~0.4 s, within 0.06 of the measured table on every frame), the glass is a round LENS (corner = half its
+   smaller side while small, relaxing to THE CALLER'S panel radius from ~150 ms by a spring that lands
+   exactly, so settle does not snap; a close rounds it back), a 0.92 -> 1 fade+scale
    fallback (with its own 0.82 -> 1 rows spring) when the opener has no rect. The glass is laid whole at the
-   morphing rect, clear then frosted by ~150 ms, and the rows are laid out IN the glass: they ride
-   its overshoot (scale = the glass's height over the panel's), appear at ~100 ms and are opaque by
-   ~150 ms, clipped to the current rect. A close bulges ~2% for a frame, then the slab shrinks with
-   its rows and frost leaving over ~50 ms and drains into the opener by ~215 ms. The modal dim of a
+   morphing rect, clear then frosted by ~150 ms, and the rows are laid out IN the glass: they are
+   magnified by the lens (their own spring: 0.65 when they first show, ~1.12 at ~167 ms, 1 by ~360 ms),
+   appear at ~75 ms and are opaque by ~150 ms, clipped to the rect's INSCRIBED rectangle (the shared
+   scissor; a true rounded clip is the shared-layer follow-up). A close bulges ~7% by ~33 ms (width and
+   height on their own springs, fitted to the recording's close), then the slab shrinks with its rows
+   and frost leaving over ~50 ms and drains into the opener by ~215 ms. The modal dim of a
    morphing menu FOLLOWS the morph (`Popover::dim` -> `Scrim::following`: in by ~150 ms, out with
    the slab), not the container's appear spring; a screen's `scrim()` returns `self.popover.dim(DIM_*)`.
    **The header menus morph the glass ONLY (design review S11/S12):** Library Sort & Filter, the

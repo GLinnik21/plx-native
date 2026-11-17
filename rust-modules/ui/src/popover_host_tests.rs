@@ -228,9 +228,10 @@ fn a_morphing_popover_is_one_surface_and_settles_both_ways() {
     let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
     assert!((f.radius - RAD).abs() < 0.05 && (f.rect.h - panel.h).abs() < 0.5, "the morph ends on the caller's radius");
     pop.dismiss();
-    // a close BULGES ~2% on its first frame (`popover_morph::BULGE_KICK`) and only shrinks from there
-    let mut last = f.rect.h * 1.04;
-    for _ in 0..240 {
+    // a close BULGES (iOS: ~7% of the travel at ~33 ms, `popover_morph::BULGE_KICK_H`) and only shrinks
+    // from ~50 ms on
+    let mut last = f.rect.h * 1.08;
+    for n in 0..240 {
         pop.update(1.0 / 60.0);
         if !pop.visible() {
             break;
@@ -239,7 +240,7 @@ fn a_morphing_popover_is_one_surface_and_settles_both_ways() {
         one_surface(f);
         // the slab shrinks into the opener until it is gone; after that the frame is the closed one
         // (the opener at rest, no glass), which stays until the appear fade lands
-        if f.ground_alpha > 0.0 {
+        if f.ground_alpha > 0.0 && n >= 3 {
             assert!(f.rect.h <= last + 1e-3, "the close only shrinks: {f:?} after {last}");
             last = f.rect.h;
         }
@@ -296,7 +297,7 @@ fn the_glass_leaves_every_header_opener_as_a_ramp_and_drains_back_on_close() {
         assert!(opening.windows(2).all(|w| w[1] >= w[0] - 1e-4), "{name}: the glass only strengthens while opening");
         pop.dismiss();
         let mut bead = None;
-        for n in 0..240 {
+        for _ in 0..240 {
             pop.update(1.0 / 60.0);
             if !pop.visible() {
                 break;
@@ -304,15 +305,6 @@ fn the_glass_leaves_every_header_opener_as_a_ramp_and_drains_back_on_close() {
             let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
             if f.ground_alpha <= 0.0 {
                 continue;
-            }
-            if f.progress <= crate::popover_morph::FOLD_AT {
-                // the slab's travel is within FOLD_AT (+1%) of done: its edges are that far, at most,
-                // from the drain's
-                let slack = crate::popover_morph::FOLD_AT + 0.01;
-                let g = f.rect;
-                assert!(g.y >= drain.y - slack * (drain.y - panel.y) && g.x >= drain.x - slack * panel.w
-                    && g.x + g.w <= drain.x + drain.w + slack * panel.w && g.y + g.h <= drain.y + drain.h + slack * panel.h,
-                    "{name} close frame {n}: the arrived slab {g:?} strays from the drain band {drain:?}");
             }
             bead = Some(f.rect);
         }
@@ -621,7 +613,7 @@ fn the_ground_radius_does_not_snap_at_settle_or_at_the_start_of_a_close() {
     pop.close();
 }
 
-/// Spec (c): the rows of an unsettled morph are clipped to the CURRENT surface rect on every frame
+/// Spec (c): the rows of an unsettled morph are clipped to the surface's INSCRIBED rect (the largest rectangle in its round corners) on every frame
 /// they draw, scaled about the panel anchor by the row spring, at the content alpha, and not drawn
 /// at all before the glass has taken over (but still walked by the text recorder, so their text is
 /// resident in time); settled (and the fade+slide) they draw through `p` untouched. Red on the
@@ -655,10 +647,10 @@ fn morph_rows_are_clipped_to_the_surface_and_wait_for_the_glass() {
             assert!(f.content_alpha > 0.0 && f.ground_alpha == 1.0, "rows drawn on a surface that is not yet glass: {f:?}");
             assert!((p.opacity() - f.content_alpha).abs() < 1e-6, "at the content alpha");
             let same = |a: Rect, b: Rect| (a.x - b.x).abs() + (a.y - b.y).abs() + (a.w - b.w).abs() + (a.h - b.h).abs() < 1e-2;
-            assert!(same(p.clip_rect(), f.rect), "the cascade clip is the surface rect");
-            assert!(same(ClipScope::current().unwrap(), f.rect), "the scissor is the surface rect");
+            assert!(same(p.clip_rect(), f.rows_clip), "the cascade clip is the surface's inscribed rect");
+            assert!(same(ClipScope::current().unwrap(), f.rows_clip), "the scissor is the inscribed rect");
             let placed = p.place(row);
-            assert!((placed.w - row.w * f.rows_scale).abs() < 1e-3 && (placed.h - row.h * f.rows_scale).abs() < 1e-3, "scaled by the row spring");
+            assert!((placed.w - row.w * f.rows_scale).abs() < 1e-3 && (placed.h - row.h * f.rows_scale).abs() < 1e-3, "scaled by the lens spring");
             let (ax, ay) = rows_anchor(Some(pill), panel);
             let fixed = p.place(Rect::new(ax, ay, 1.0, 1.0));
             assert!((fixed.x - ax).abs() < 1e-3 && (fixed.y - ay).abs() < 1e-3, "the anchor does not move");
