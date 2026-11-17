@@ -468,7 +468,7 @@ pub fn under_or_above(a: Rect, content_w: f32, content_h: f32) -> Rect {
     anchor_panel(a, (width, h), h, PANEL_GAP, Placement::UNDER_OR_ABOVE).rect
 }
 
-/// **Where a header menu's panel of width `w` starts across, hung under its opener `pill`** (the
+/// **Where a header menu's panel of width `w` starts across, hung from its opener `pill`** (the
 /// focused pill, outset included): the panel's NEAR edge is the opener's OUTER edge, the edge it
 /// morphs from, so the lit opener and the panel read as one object. The near edge is the one on
 /// the side of the screen the opener sits on: a control in the right half (the Library's and the
@@ -478,6 +478,25 @@ pub fn under_or_above(a: Rect, content_w: f32, content_h: f32) -> Rect {
 pub fn hang_x(pill: Rect, w: f32, keep: Rect) -> f32 {
     let x = if pill.cx() > keep.cx() { pill.x + pill.w - w } else { pill.x };
     x.clamp(keep.x, (keep.x + keep.w - w).max(keep.x))
+}
+
+/// **Where a MORPHING header menu's panel goes: OVER its opener, as on iOS** (owner decision,
+/// 2026-11-17). The panel's TOP edge is the opener's top edge and it hangs across by [`hang_x`]'s
+/// rule (the near edge is the opener's outer edge), so the settled panel covers the opener: the
+/// opener is consumed by the morph ([`crate::popover_morph`]) and the glass that replaces it is the
+/// panel itself, not a slab hung 16 px below an empty slot. `size` is the panel's own `(w, h)`; it
+/// is never narrower or shorter than the opener (a panel that did not cover it would leave the
+/// consumed opener's corner showing), and it stays inside `keep`: a panel taller than the room
+/// below the opener's top slides UP until its bottom edge is `keep`'s, rather than cutting rows
+/// off. An opener that itself sits above `keep` (a tucked bar) is not chased: the panel keeps the
+/// opener's top. ONE rule for every morphing menu (the Library's Sort & Filter and "+N" list, the
+/// Watchlist's Sort & Filter, the profile menu); the item hold menu does not morph and does not
+/// use it.
+pub fn cover_opener(pill: Rect, size: (f32, f32), keep: Rect) -> Rect {
+    let w = size.0.max(pill.w);
+    let h = size.1.max(pill.h);
+    let y = pill.y.min(keep.y + keep.h - h).max(keep.y.min(pill.y));
+    Rect::new(hang_x(pill, w, keep), y, w, h)
 }
 
 /// The [`Opener::redraw`] of a popover with nothing to lift — a named fn rather than a closure, so

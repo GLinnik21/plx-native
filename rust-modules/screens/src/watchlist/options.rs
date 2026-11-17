@@ -8,7 +8,7 @@ use plx_platform::i18n::msg;
 use plx_ui::popover::Popover;
 use plx_ui::table::{Row, Section, TableView};
 use plx_ui::widgets::Ground;
-use plx_ui::{theme, Painter, Rect};
+use plx_ui::{Painter, Rect};
 
 /// The Type section: `Movies & Shows` / `Movies` / `TV Shows`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -236,7 +236,7 @@ pub const PANEL_RAD: f32 = 24.0;
 pub struct OptionsMenu {
     popover: Popover,
     table: TableView,
-    /// The pill the panel grows from and hangs under.
+    /// The pill the panel grows from and covers.
     pill: Rect,
 }
 
@@ -308,20 +308,17 @@ impl OptionsMenu {
         changed
     }
 
-    /// The settled panel: hung under the pill, right edges aligned, as wide as its longest label and
-    /// never narrower than the pill ([`TableView::menu_panel_width_from`], the Library's rule too)
-    /// and as tall as its rows, held inside the safe frame.
+    /// The settled panel: laid OVER the pill (the shared rule, [`plx_ui::popover::cover_opener`]:
+    /// top edges flush, right edges flush), as wide as its longest label and never narrower than
+    /// the pill ([`TableView::menu_panel_width_from`], the Library's rule too) and as tall as its
+    /// rows, held inside the safe frame (a menu taller than the room below the pill's top slides up
+    /// rather than cutting its last rows off). The pill is consumed by the morph: the glass that
+    /// replaces it is this panel.
     pub fn panel_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let safe = plx_ui::consts::SAFE;
         let w = self.table.menu_panel_width_from(measure, self.pill);
-        let x = plx_ui::popover::hang_x(self.pill, w, safe);
         let h = self.table.measured_height().min(safe.h);
-        // Hung under the pill; a menu taller than the room below it slides up rather than cutting
-        // its last rows off (the ten-row menu fits under the header on a 1080 frame in every
-        // shipped language, so it does not today). The pill is drawn above the panel by the opener
-        // lift, never under its glass.
-        let y = (self.pill.y + self.pill.h + theme::space::SM).min(safe.y + safe.h - h);
-        Rect::new(x, y, w, h)
+        plx_ui::popover::cover_opener(self.pill, (w, h), safe)
     }
 
     /// The `row`-th row's drawn frame inside the settled panel (`OptionsRow::ALL` order), for the

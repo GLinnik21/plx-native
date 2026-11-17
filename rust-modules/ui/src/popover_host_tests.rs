@@ -262,7 +262,7 @@ fn the_glass_leaves_every_header_opener_as_a_ramp_on_open_and_on_close() {
         ("the account chip at rest, a circle", crate::widgets::chip_cap(0.0, 0.0)),
     ];
     for (name, pill) in openers {
-        let panel = crate::Rect::new(pill.x, pill.y + pill.h + 14.0, 316.0, 400.0);
+        let panel = crate::popover::cover_opener(pill, (316.0, 400.0), crate::consts::SAFE);
         let outside = |r: crate::Rect| r.x < pill.x - 1.0 || r.y < pill.y - 1.0 || r.x + r.w > pill.x + pill.w + 1.0 || r.y + r.h > pill.y + pill.h + 1.0;
         let check = |pop: &crate::popover::Popover, what: &str, frame: usize, shown: &mut Vec<f32>| {
             let Some(g) = pop.ground(panel, RAD) else { return };
@@ -316,6 +316,33 @@ fn a_panel_hangs_from_its_openers_outer_edge() {
     assert_eq!(crate::popover::hang_x(right, right.w, keep), right.x, "a panel as wide as its pill is the pill's own span");
     let at_edge = crate::Rect::new(keep.x - 2.0, 146.0, 100.0, 60.0);
     assert_eq!(crate::popover::hang_x(at_edge, 300.0, keep), keep.x, "held inside the safe frame");
+}
+
+/// **Owner, 2026-11-17: a morphing menu opens OVER its opener** (`popover::cover_opener`, the one
+/// shared rule): the panel's top edge is the opener's, the near edge hangs by [`hang_x`]'s rule, the
+/// panel is never narrower or shorter than the opener, and a panel taller than the room slides UP
+/// inside `keep` rather than down off it.
+#[test]
+fn a_panel_opens_over_its_opener_top_edges_flush() {
+    let keep = crate::consts::SAFE;
+    let right = crate::Rect::new(1589.0, 146.0, 204.0, 60.0);
+    let left = crate::Rect::new(120.0, 146.0, 230.0, 60.0);
+    let chip = crate::widgets::chip_cap(1.0, 120.0);
+    for pill in [right, left, chip] {
+        let panel = crate::popover::cover_opener(pill, (316.0, 400.0), keep);
+        assert_eq!(panel.y, pill.y, "{pill:?}: top edges flush");
+        assert!(panel.x <= pill.x + 1e-3 && panel.x + panel.w >= pill.x + pill.w - 1e-3, "{pill:?}: {panel:?} covers it across");
+        assert!(panel.y + panel.h >= pill.y + pill.h, "{pill:?}: {panel:?} covers it down");
+    }
+    assert_eq!(crate::popover::cover_opener(right, (316.0, 400.0), keep).x + 316.0, right.x + right.w, "a right control: right edges flush");
+    assert_eq!(crate::popover::cover_opener(left, (316.0, 400.0), keep).x, left.x, "a left control: left edges flush");
+    // never narrower than the opener, even when the rows are
+    let narrow = crate::popover::cover_opener(right, (120.0, 400.0), keep);
+    assert_eq!((narrow.x, narrow.w), (right.x, right.w), "a panel as narrow as its rows still spans the opener");
+    // a tall panel slides up to keep its bottom on keep's, and still covers the opener
+    let tall = crate::popover::cover_opener(right, (316.0, 900.0), keep);
+    assert_eq!(tall.y + tall.h, keep.y + keep.h, "the panel's bottom is held inside the safe frame");
+    assert!(tall.y < right.y && tall.y >= keep.y, "slid up, not down, and not off the top: {tall:?}");
 }
 
 /// DS7: every popover that does not opt in keeps the shared fade+slide, byte for byte.

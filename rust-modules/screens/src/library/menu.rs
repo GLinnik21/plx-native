@@ -498,16 +498,16 @@ impl LibraryMenu {
         plx_ui::widgets::focus_pill(Rect::new(x, y, w, h))
     }
     /// Hugs its rows: width is the shared menu rule ([`TableView::menu_panel_width_from`]: the
-    /// rows, never narrower than the control's focused pill), hung off the opener's near edge
-    /// ([`plx_ui::popover::hang_x`]) and held inside the safe frame. ONE placement for every kind: the
-    /// "+N" list opens under its "+N" pill exactly as Sort & Filter does; it differs only in its
+    /// rows, never narrower than the control's focused pill), laid OVER the opener by the shared
+    /// rule ([`plx_ui::popover::cover_opener`]: top edges flush, the near edge hung off the
+    /// opener's outer edge) and held inside the safe frame. ONE placement for every kind: the
+    /// "+N" list opens over its "+N" pill exactly as Sort & Filter does; it differs only in its
     /// ceiling, because its rows are library NAMES a user chose: as wide as the widest, up to the
     /// safe width, never cut with room to spare.
     fn frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         self.motion.natural(self.form.table.layout_rev(), || self.measure_frame(measure))
     }
     fn measure_frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
-        let [_, y, _, h] = self.arg.anchor.map(f32::from_bits);
         let height = self.form.table.measured_height().clamp(120.0, 740.0);
         let pill = self.pill();
         let width = if self.kind == LibraryMenuKind::Sources {
@@ -515,13 +515,8 @@ impl LibraryMenu {
         } else {
             self.form.table.menu_panel_width_from(measure, pill)
         };
-        Rect::new(
-            // The shared rule: the panel's near edge is the opener's outer edge (NV1).
-            plx_ui::popover::hang_x(pill, width, plx_ui::consts::SAFE),
-            (y + h + 16.0).clamp(96.0, 984.0 - height),
-            width,
-            height,
-        )
+        // The shared rule: the panel covers its opener, top edges flush, near edges flush (NV1).
+        plx_ui::popover::cover_opener(pill, (width, height), plx_ui::consts::SAFE)
     }
     /// The panel as it reads: each section's heading and its rows' `(label, value)`, for a route
     /// test that compares the Library's words with the Watchlist's.
