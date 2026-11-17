@@ -16,6 +16,7 @@
 #![allow(dead_code)] // since 5b screens run through most of this; suspend/resume/set_focus_source_override/viewport/frame_index still have no caller anywhere (grep-checked, not 3b's stale "screens from 5b")
 
 pub mod press;
+mod snapshot;
 
 use std::collections::VecDeque;
 

@@ -8,6 +8,8 @@
 #![allow(non_upper_case_globals)]
 pub(crate) mod hud_source;
 #[cfg(feature = "devtriggers")]
+mod a11y_state;
+#[cfg(feature = "devtriggers")]
 mod anim_diagnostics;
 mod card_motion_policy;
 mod player_presentation;

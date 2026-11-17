@@ -339,6 +339,90 @@ pub fn default_walk<H: Host, F: Focusable<H> + ?Sized>(
     None
 }
 
+/// Who owns input when a snapshot is taken: the `owner` word of the state file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnerKind {
+    /// A page owns input.
+    Page,
+    /// A modal surface owns input.
+    Surface,
+    /// The television keyboard is up: no element is addressable.
+    Keyboard,
+    /// No entry owns input (the tree has no page yet).
+    None,
+}
+
+impl OwnerKind {
+    /// The closed word the state file prints.
+    pub fn word(self) -> &'static str {
+        match self {
+            OwnerKind::Page => "page",
+            OwnerKind::Surface => "surface",
+            OwnerKind::Keyboard => "keyboard",
+            OwnerKind::None => "none",
+        }
+    }
+}
+
+/// One focus group of the owner view, as the state file lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupSnapshot {
+    /// `GroupId.0`, unique within the owner view.
+    pub group: u32,
+    /// The id prefix its elements share (`home.shelf.2.card`: an element's id is the prefix, then
+    /// its index; a one-element group names its parent, `home.hero`). Empty for a group no element
+    /// of which projected.
+    pub prefix: String,
+    /// `GroupSpec::len`: how many elements the group declares, listed or not.
+    pub len: usize,
+    /// The role of the group's first listed element (`None` when none is listed).
+    pub role: Option<Role>,
+}
+
+/// One element of the owner view, as the state file lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ElemSnapshot {
+    /// The full id, `<ns>.<path>`.
+    pub id: String,
+    /// The group it belongs to (`GroupSnapshot::group`).
+    pub group: u32,
+    /// Its position in the group's `a11y_elems` list.
+    pub index: usize,
+    pub role: Role,
+    /// Where it rests (`Focusable::place` at `SpringTarget`); `None` when the view places nothing
+    /// for it.
+    pub rest_rect: Option<super::Rect>,
+    /// Does any of it show: `rest_rect ∩ clip ∩ viewport` has an area.
+    pub visible: bool,
+    pub focused: bool,
+    pub loaded: bool,
+    /// Runtime text, the state file only. An unloaded element carries none.
+    pub label: Option<String>,
+    pub subject: Option<String>,
+}
+
+/// **What `state:<nonce>` reads back** (the a11y-ids plan, D8): the owner view of the dispatcher at
+/// one instant, owned and non-generic so the application can serialize it without `plx_ui` naming a
+/// JSON type. There is no cap on the element list. `label` and `subject` are runtime text: this value
+/// is for the state file and must not reach a `LogLine`, a heartbeat or a recording.
+#[derive(Clone, Debug, PartialEq)]
+pub struct A11ySnapshot {
+    /// The dispatcher's frame index.
+    pub frame: u64,
+    /// The route: the top PAGE's heartbeat word (`Screen::name`), also while a surface owns input
+    /// (`ns` names the owner); `None` when no page is mounted.
+    pub route: Option<&'static str>,
+    pub owner: OwnerKind,
+    /// The owner screen's `a11y_ns`; `None` unless a page or a surface owns input.
+    pub ns: Option<&'static str>,
+    /// The focused element's full id (`None` when nothing is focused or it does not project).
+    pub focused: Option<String>,
+    /// Strip group first (when the page wears the strip), then the page's, in declaration order.
+    pub groups: Vec<GroupSnapshot>,
+    /// Every element of every group, group by group in index order.
+    pub elems: Vec<ElemSnapshot>,
+}
+
 /// The complaints [`conformance`] has about `view`, one line each (empty when it conforms).
 ///
 /// For every group `view.groups` declares: `a11y_elems` lists exactly `GroupSpec::len` keys; every

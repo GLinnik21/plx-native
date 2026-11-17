@@ -1086,6 +1086,12 @@ unsafe fn ingress_token(app: &mut App, fr: &mut Frame, token: &str) -> bool {
             return true;
         }
     }
+    // `state:<nonce>`: the accessibility read-back request (`app/a11y_state.rs`). Parsed before
+    // `dispatch_remote_token`, which notes input damage for every token it sees, so a read-back
+    // wakes nothing; it is no key or click, so it is not recorded either. It only leaves the latest
+    // nonce pending: the frame tail (`report`) answers it.
+    #[cfg(feature = "devtriggers")]
+    if let Some(accepted) = super::a11y_state::intercept(token) { return accepted; }
     let scope = app.pages.input_scope();
     let accepted = dispatch_remote_token(token, &app.player.session, &app.adapters.player, &mut app.pages.present, scope);
     if accepted && token_is_direct(token) { app.rec.input(super::recorder::enc_token(token)); }
@@ -3308,6 +3314,11 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
     // Diagnostic facts leave machine scopes before any worker admission or file IO.
     #[cfg(feature = "devtriggers")]
     let _ = super::anim_diagnostics::drain();
+    // dev: answer the pending `state:<nonce>` request (`app/a11y_state.rs`). Here, at the tail both
+    // the presented and the skipped path reach, so a settled screen that stopped presenting still
+    // answers; it requests no frame and reports nothing to the idle gate.
+    #[cfg(feature = "devtriggers")]
+    super::a11y_state::serve(app);
         // dev: the stress-bench oscillators' own frame-time accumulator — right after Swap is
         // stamped (`present_and_swap`, just above this call in `run()`), the earliest point this
         // iteration's total is known. See `crate::dev::scenarios::bench_frame_tick`'s doc.
@@ -4427,6 +4438,43 @@ mod lifecycle_regression_tests {
         let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
         let _scope = plx_base::task::FrameScope::enter();
         assert!(unsafe { ingress_token(&mut app, &mut fr, "hang-raw:1") });
+    }
+
+    /// **`state:<nonce>` notes no damage and is not recorded** (the a11y-ids plan, D7): the token is
+    /// taken before `dispatch_remote_token` (which notes input damage for every token it sees) and
+    /// before the recorder's direct-token path, so a read-back leaves the present gate and the
+    /// recording exactly as it found them and only parks the nonce for the frame tail. A malformed
+    /// nonce is refused the same way (and parks nothing).
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn a_state_request_is_not_recorded_and_notes_no_damage() {
+        use super::super::{bootstrap::Initial, recorder::{Recplay, state_fp}};
+        use plx_ui::rec::{Header, MemSink, Recording};
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+        let initial = Initial::synthetic_home(1, 32517, None).unwrap();
+        let sink = MemSink::default();
+        let segments = sink.segments.clone();
+        let manifest = Header::new(state_fp(), &initial).to_json().to_string();
+        app.rec = Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
+        app.rec.tick(initial.clock_start, 0.0);
+        let _ = super::super::a11y_state::take();
+        let damage = app.pages.present.damage_epoch();
+        {
+            let _frame = plx_base::task::FrameScope::enter();
+            assert!(unsafe { ingress_token(&mut app, &mut fr, "state:probe-1") });
+            assert!(!unsafe { ingress_token(&mut app, &mut fr, "state:not a nonce") });
+        }
+        assert_eq!(app.pages.present.damage_epoch(), damage, "a read-back wakes nothing");
+        assert!(app.inputs.is_empty(), "a read-back is no input");
+        assert_eq!(super::super::a11y_state::take().as_ref().map(|n| n.as_str().to_owned()).as_deref(),
+            Some("probe-1"), "the request waits for the frame tail");
+        app.rec.end_frame(&|| 7);
+        std::mem::replace(&mut app.rec, Recplay::Off).finish(plx_machine::landgate::fixture_gate());
+        let recording = Recording::parse(&manifest,
+            &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(), state_fp()).unwrap();
+        assert!(recording.frames.iter().all(|frame| frame.inputs.is_empty()), "a read-back is not recorded");
     }
 
     #[cfg(feature = "devtriggers")]
