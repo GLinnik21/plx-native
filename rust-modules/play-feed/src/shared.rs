@@ -263,6 +263,13 @@ pub struct Shared {
     sink_displayed_live: AtomicBool,
     // A positive callback sequence, so an in-place seek can exclude callbacks before Play.
     pub(crate) sink_displayed_sequence: AtomicU32,
+    /// **Has the displayed-frame counter spoken this session?** Set by every displayed-counter
+    /// callback ([`Shared::note_displayed_frames`]), a zero count included, and cleared only by a
+    /// session reset: unlike `sink_displayed_live` the plane bind leaves it. A set that never sends
+    /// the counter cannot show a fresh count, so the Segment seek landing requires one only where
+    /// this is set (`feed_pump::stuck_seek_due`, #1436). A decision branches on this flag; none may
+    /// branch on the `dg_sink_displayed_cb` census, which is the era watch's observation.
+    pub(crate) sink_counter_seen: AtomicBool,
     /// **The raw pts of the first audio AU the demuxer pushed since its last open or seek**.
     /// Written by `ff::demux` BEFORE that push, so the feed thread that pops the AU
     /// sees it. The audio lane uses it to tell the real start of a late audio track (an MKV
@@ -484,7 +491,9 @@ pub struct Shared {
     // `FeedRaw::abr`; the handled-error snapshot's `dg_cb_err_num` is still a direct mailbox load.
     //
     // STRICTLY ONE-WAY: written by the pump and seam, read only for observation. Nothing in the
-    // playback state machine may ever branch on one, or a diagnostic becomes load-bearing.
+    // playback state machine may ever branch on one, or a diagnostic becomes load-bearing. The one
+    // exception is `dg_pos_ticks`, which the Segment seek landing compares to its Play-time baseline
+    // (#1313: `native_executor`'s Play, `feed_pump::stuck_seek_due`).
     /// `Stage` as u8 — where the bind/play sequence has got to. Unlike the expensive queue
     /// mirrors below, this scalar is always current enough for a terminal error report even when
     /// Stats for Nerds is closed.
@@ -708,6 +717,7 @@ impl Shared {
             seen_frame: AtomicBool::new(false),
             sink_displayed_live: AtomicBool::new(false),
             sink_displayed_sequence: AtomicU32::new(0),
+            sink_counter_seen: AtomicBool::new(false),
             first_audio_pts: AtomicI64::new(i64::MIN),
             load_completed: AtomicBool::new(false),
             media_id: Mutex::new(None),
@@ -911,6 +921,7 @@ impl Shared {
     /// nothing yet. (The callback census, `dg_sink_displayed_cb`, counts every callback and is
     /// written beside this call by `sf_event::note_sink_counter`.)
     pub fn note_displayed_frames(&self, num: i64) {
+        self.sink_counter_seen.store(true, Ordering::Relaxed);
         if num > 0 {
             self.sink_displayed_live.store(true, Ordering::Relaxed);
             self.sink_displayed_sequence.fetch_add(1, Ordering::Release);
@@ -1065,6 +1076,7 @@ impl Shared {
         // the centred read-out for the rest of the app's life.
         self.seen_frame.store(false, Ordering::Relaxed);
         self.sink_displayed_live.store(false, Ordering::Relaxed);
+        self.sink_counter_seen.store(false, Ordering::Relaxed);
         self.first_audio_pts.store(i64::MIN, Ordering::Relaxed);
         self.load_completed.store(false, Ordering::Relaxed);
         // issue #74 D.1: both are only ever cleared by the loadCompleted arm that consumes them
@@ -2189,6 +2201,23 @@ impl Transport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Segment landing's "this session's counter has spoken" fact (#1436): any displayed-counter
+    /// callback sets it, a zero count included; the plane bind leaves it; a session reset clears it.
+    #[test]
+    fn the_counter_seen_flag_is_per_session_and_counts_a_zero_and_survives_the_bind() {
+        let shared = Shared::new();
+        assert!(!shared.sink_counter_seen.load(Ordering::Relaxed), "a fresh session has heard nothing");
+        shared.note_displayed_frames(0);
+        assert!(shared.sink_counter_seen.load(Ordering::Relaxed), "a zero count is the counter speaking");
+        assert!(!shared.displayed_after_bind(), "but it is not a displayed frame");
+        shared.note_displayed_frames(4);
+        shared.forget_displayed_before_bind();
+        assert!(!shared.displayed_after_bind(), "the bind forgets the count");
+        assert!(shared.sink_counter_seen.load(Ordering::Relaxed), "and not that the set sends one");
+        shared.reset_session();
+        assert!(!shared.sink_counter_seen.load(Ordering::Relaxed), "a new session starts silent");
+    }
 
     #[test]
     fn demux_observer_cannot_publish_or_sample_a_successors_native_epoch() {
