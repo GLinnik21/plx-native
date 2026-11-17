@@ -1,4 +1,4 @@
-{"updated":"2026-11-17T16:56:22Z",
+{"updated":"2026-11-17T17:13:11Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5304,7 +5304,7 @@
 {"id":44126222689,"at":"2026-11-17T16:28:47Z","sha":"f149b8829","title":"Preview: an Auto trailer whose remote preflight gets no response plays the Original","pr":1430,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":142,"Windows launcher syntax":20,"macOS tests against bundled FFmpeg and ASS":224,"Linux simulator build + launch":358}},
 {"id":44126302791,"at":"2026-11-17T16:29:13Z","sha":"bbada7773","title":"Merge remote-tracking branch 'origin/a11y/fix-b' into a11y/ids","pr":1431,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":136,"macOS tests against bundled FFmpeg and ASS":234,"Windows launcher syntax":22,"Linux simulator build + launch":281}},
 {"id":44128082248,"at":"2026-11-17T16:38:35Z","sha":"c6458f233","title":"Crash breadcrumbs: record when SDL replaces the window's wl_surface (PLX-NATIVE-K)","pr":1429,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":22,"macOS simulator build + launch":188,"macOS tests against bundled FFmpeg and ASS":205,"Linux simulator build + launch":357}},
-{"id":44125466133,"at":"2026-11-17T16:41:06Z","sha":"006e53590","title":"Play Version and Also available act on a pick again: a closing surface no longer blocks its page's command","pr":1433,"event":"pull_request","conclusion":"failure","attempt":2,"jobs":{"Windows launcher syntax":23,"Linux simulator build + launch":302,"macOS tests against bundled FFmpeg and ASS":217},"wall":1883}
+{"id":44125466133,"at":"2026-11-17T16:57:44Z","sha":"006e53590","title":"Play Version and Also available act on a pick again: a closing surface no longer blocks its page's command","pr":1433,"event":"pull_request","conclusion":"failure","attempt":3,"jobs":{"macOS tests against bundled FFmpeg and ASS":217,"Linux simulator build + launch":302,"Windows launcher syntax":23},"wall":2883}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
