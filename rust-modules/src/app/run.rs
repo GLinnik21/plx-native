@@ -4516,8 +4516,13 @@ mod lifecycle_regression_tests {
             app.pages.nav.modals.top().expect("Settings is up").entry.inst.as_ref().unwrap().screen.state().probe(&mut probe);
             probe.rsplit_once("player-hud ").expect("the Player HUD page is the top page").1.contains("editing=true")
         };
+        // The loop's prepare window ticks the HUD driver (`huds_tick`, as `run::refresh_hud` does); `app_frame` alone does not.
         fn frames(app: &mut App, now: &mut u32, n: u32) {
-            for _ in 0..n { *now += 16; frame(app, *now); }
+            for _ in 0..n {
+                *now += 16;
+                frame(app, *now);
+                let _ = app.runtime.bridge(&mut app.bridge).huds_tick(false);
+            }
         }
         // One remote token through the real ingress, its SDL edges drained, and the frame that delivers them.
         fn keys(app: &mut App, fr: &mut Frame, now: &mut u32, token: &str) {
