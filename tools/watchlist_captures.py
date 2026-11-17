@@ -26,8 +26,9 @@ The ONE capture recipe (the scenario's `comment` repeats it):
      for a `state` snapshot (`a11y.expect_focus`) and fails the capture, naming both ids, when it
      differs; a walk that ends in a TIMED key is checked before that key (its shot must follow it within
      the wait, and a `state` round trip is longer). A capture whose boot trigger decides what is focused
-     (an opener row, `w6/detail-offline.png`'s pointer clicks) may leave it out. A refused id (`a11y: refused ...` in the event
-     log) fails the capture whatever the focus;
+     (an opener row: `account-menu-new.png`, `item-menu-new.png`) or whose pointer clicks do
+     (`w6/detail-offline.png`) may leave it out. A refused id (`a11y: refused ...` in the event log)
+     fails the capture whatever the focus;
      A capture with `unreachable` aims the plex.tv and Discover triggers at a closed loopback port
      AFTER the sign-in, so the stored mock session is the account but the service cannot answer
      (the "plex.tv unreachable" state);

@@ -234,10 +234,11 @@ stays where the test's subject IS the travel (fps walks, focus fingerprints, a h
 
 The simulator boots against the owner's real server unless you aim it at the mock, and OK on a title
 can play it, so the command line refuses to press one UNNAMED: `python3 tools/a11y.py press <runtime>
-<id> --subject <ratingKey>` (and `send press:<id>`) exits 2 and sends nothing for any element whose
-subject is a title (a card `*.card.*`, a Detail episode `detail.episodes.*`, a season tab, a Filmography
-credit, the catalog pill; `SUBJECT_BEARING` in `tools/a11y.py`). Read the ratingKey from `state` first.
-The library function `a11y.press` stays unguarded, for a script that drives the mock.
+<id>` WITHOUT `--subject <ratingKey>` (and `send press:<id>` without an `@<subject>`) exits 2 and sends
+nothing when the id is of an element whose subject is a title (a card `*.card.*`, a Detail episode
+`detail.episodes.*`, a season tab, a Filmography credit, the catalog pill; `SUBJECT_BEARING` in
+`tools/a11y.py`). Read the ratingKey from `state` first. The library function `a11y.press` stays
+unguarded, for a script that drives the mock.
 
 A desktop keyboard also works directly in `make sim-macos-run`: arrows, RETURN, ESC (`is_ok`/`is_back`
 have always accepted keyboard keys), plus space=pause, `p`=play, `s`=stop, backspace=BACK.
