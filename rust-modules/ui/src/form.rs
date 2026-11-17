@@ -386,6 +386,7 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
         Self {
             table: TableView::page(),
             bindings: Vec::new(),
+            names: Vec::new(),
             key_ceiling,
             engine_key: None,
             reseat: None,
