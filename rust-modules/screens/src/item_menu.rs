@@ -63,6 +63,7 @@ use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
     LogicalState, Machine, NavOp,
 };
+use plx_ui::a11y::{A11y, A11yPath, Role};
 use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step, Stop,
@@ -262,6 +263,28 @@ impl ItemRow {
     #[cfg(any(test, feature = "test-support"))]
     pub fn focus_key(self) -> u32 {
         self.key().0
+    }
+}
+
+impl ItemRow {
+    /// This row's accessibility name (`itemmenu.<name>`), a static word the way its key is a static
+    /// number. A `ItemRow::Version` is named by its position instead (`itemmenu.version.<n>`).
+    fn a11y_name(self) -> &'static str {
+        match self {
+            ItemRow::GoToItem => "go_to_item",
+            ItemRow::GoToShow => "go_to_show",
+            ItemRow::MarkWatched => "mark_watched",
+            ItemRow::MarkUnwatched => "mark_unwatched",
+            ItemRow::PlayFromStart => "play_from_start",
+            ItemRow::PlayTrailer => "play_trailer",
+            ItemRow::RemoveFromDeck => "remove_from_deck",
+            ItemRow::Play => "play",
+            ItemRow::GoToCatalog => "go_to_catalog",
+            ItemRow::WatchlistRemove => "watchlist_remove",
+            ItemRow::WatchlistAdd => "watchlist_add",
+            ItemRow::PlayVersion => "play_version",
+            ItemRow::Version(_) => "version",
+        }
     }
 }
 
@@ -747,6 +770,17 @@ impl ItemMenuScreen {
         (0..self.form.table.n_rows() as usize).filter_map(|i| self.form.key_at(i).map(|k| k.0))
     }
 
+    /// The words drawn on the row at table `index` (the accessibility label).
+    fn row_label(&self, index: usize) -> Option<&str> {
+        self.form
+            .table
+            .sections
+            .iter()
+            .flat_map(|s| s.rows.iter())
+            .nth(index)
+            .map(|r| r.label.as_str())
+    }
+
     fn step_focus(&self, from: u32, delta: i32) -> Option<u32> {
         self.form.step_key(RowKey(from), delta).map(|k| k.0)
     }
@@ -944,6 +978,26 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
         FocusKey {
             entry: self.entry,
             elem: self.form.selected_key().map_or_else(|| self.opening(), |k| k.0),
+        }
+    }
+    /// `itemmenu.<row>`: the menu's [`ItemRow`] names its rows (`ItemRow::a11y_name`; a plain word), the Play
+    /// Version page's one row per version `itemmenu.version.<n>`. The label is the row's drawn
+    /// words (read side only).
+    fn a11y(&self, key: &u32, _: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let index = self.form.index_of_key(RowKey(*key))?;
+        let path = match *self.form.id_at(index)? {
+            ItemRow::Version(n) => A11yPath::new().name("version").index(usize::from(n)),
+            row => A11yPath::new().name(row.a11y_name()),
+        };
+        let a = A11y::new(path, Role::Row);
+        Some(match self.row_label(index) {
+            Some(label) => a.with_label(label),
+            None => a,
+        })
+    }
+    fn a11y_elems(&self, g: GroupId, _: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == GroupId(0) {
+            out.extend(self.focusable());
         }
     }
 }
@@ -2486,5 +2540,44 @@ mod tests {
             }
         }
         plx_ui::table::assert_no_fit_failures(&out);
+    }
+
+    /// **The accessibility ids:** every row a menu can show is named by its `ItemRow` (the menu is
+    /// `itemmenu.<row>`), the Play Version page's rows by position (`itemmenu.version.<n>`), and
+    /// the whole view conforms: every row projects, the ids are unique, and each id finds its row.
+    #[test]
+    fn rows_are_named_by_their_item_row_and_conform() {
+        use plx_ui::a11y::{conformance, A11yPath};
+        let m = versioned(3);
+        let mut s = ItemMenuScreen::new(EntryId(7), card_arg(&m, false));
+        s.built = true;
+        s.form.set(build_card(&m, false, DeckPress::Play, None, None, None), None);
+        with_cx(|cx| {
+            conformance::<HostFixture, _>(&s, cx);
+            let play = A11yPath::parse_relative("play_version").expect("a plain row name");
+            let key = Focusable::<HostFixture>::a11y_find(&s, &play, cx).expect("a leaf with two versions offers Play Version");
+            assert_eq!(key, ItemRow::PlayVersion.focus_key());
+            let a = Focusable::<HostFixture>::a11y(&s, &key, cx).unwrap();
+            assert_eq!(a.role, plx_ui::a11y::Role::Row);
+            assert!(a.label.is_some_and(|l| !l.is_empty()), "the row's drawn words");
+        });
+
+        let choose = first_action(&s, |a| matches!(a, Action::ChooseVersion(_)));
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        let mut fx = Effects::new(
+            &mut out,
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(8)),
+            &mut present,
+        );
+        s.activate::<HostFixture>(choose, &mut fx);
+        with_cx(|cx| {
+            conformance::<HostFixture, _>(&s, cx);
+            for n in 0..2u16 {
+                let id = A11yPath::parse_relative(&format!("version.{n}")).unwrap();
+                let key = Focusable::<HostFixture>::a11y_find(&s, &id, cx).expect("one row per version");
+                assert_eq!(key, ItemRow::Version(n).focus_key());
+            }
+        });
     }
 }

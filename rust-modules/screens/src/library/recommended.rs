@@ -1033,7 +1033,7 @@ impl RecommendedScreen {
                 // comes from another page's focus or none: not the reader's key (see `LibraryScreen`).
                 let engine_seat = by == &By::Dir && self.initial && to.entry == self.entry
                     && from.is_none_or(|from| from.entry != self.entry);
-                if matches!(by, By::Dir | By::Pointer) && !engine_seat { self.initial = false; }
+                if matches!(by, By::Dir | By::Pointer | By::Script) && !engine_seat { self.initial = false; }
                 self.reveal_focus(*to, *by, cx);
             }
             ScreenEvent::Tick(tick) => {
@@ -1405,6 +1405,8 @@ impl<H: LibraryLike> Screen<H> for RecommendedScreen {
     // library family's word, so a scene that greps `route=library` keeps matching.
     fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str { "library" }
+    /// Its own id namespace: `name()` is the word the Library shares, and an id names its owner.
+    fn a11y_ns(&self) -> &'static str { "recommended" }
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> { None }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}

@@ -12,6 +12,7 @@ use std::borrow::Cow;
 use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key, LogicalState, Machine, NavOp,
 };
+use plx_ui::a11y::{A11y, A11yPath, Role};
 use plx_ui::frame::Budget;
 use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Hover, Placed,
@@ -178,6 +179,17 @@ impl<H: ContentLike> Focusable<H> for WatchlistMenuScreen {
     }
     fn seat(&self, _: GroupId, _: Placed, _: &Cx<'_, H>) -> FocusKey<u32> {
         self.key(self.sel)
+    }
+    /// `watchlist_menu.<row>`: each row is named by what it chooses (`OptionsRow::a11y_name`),
+    /// labelled with its drawn words.
+    fn a11y(&self, key: &u32, _: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let row = *OptionsRow::ALL.get(self.row_of(*key)?)?;
+        Some(A11y::new(A11yPath::new().name(row.a11y_name()), Role::Row).with_label(row.label()))
+    }
+    fn a11y_elems(&self, g: GroupId, _: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == GROUP {
+            out.extend((0..OptionsRow::ALL.len()).map(|row| row as u32));
+        }
     }
 }
 
