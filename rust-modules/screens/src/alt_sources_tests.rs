@@ -948,6 +948,25 @@ mod focus_and_hit {
         assert!(g.edge.iter().all(|e| matches!(e, plx_ui::screen::EdgeRule::Stop)));
     }
 
+    /// **Every row has an id, `row.<n>` in table order, and the id finds the row again**; the label
+    /// is the row's own text.
+    #[test]
+    fn every_row_answers_an_id_in_table_order() {
+        let (p, ..) = two_row_panel();
+        let cx = fixture_cx(None);
+        plx_ui::a11y::conformance::<HostFixture, _>(&p, &cx);
+        for n in 0..2u32 {
+            let path = plx_ui::a11y::A11yPath::parse_relative(&format!("row.{n}")).expect("a well-formed path");
+            assert_eq!(Focusable::<HostFixture>::a11y_find(&p, &path, &cx), Some(n), "row.{n} is table row {n}");
+            let a = Focusable::<HostFixture>::a11y(&p, &n, &cx).expect("the row projects");
+            assert_eq!(a.path, path);
+            assert_eq!(a.role, plx_ui::a11y::Role::Row);
+            assert_eq!(a.label.as_deref(), Some(p.rows[n as usize].label.as_str()), "the label is the row's text");
+        }
+        let past = plx_ui::a11y::A11yPath::parse_relative("row.2").expect("a well-formed path");
+        assert_eq!(Focusable::<HostFixture>::a11y_find(&p, &past, &cx), None, "no third row");
+    }
+
     /// **`neighbour` walks the table's own rows, and stops at either end** — the same order
     /// UP/DOWN produced by hand before the conversion (`table.move_sel`).
     #[test]
