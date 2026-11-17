@@ -2,11 +2,13 @@
 //! Cast), as content for `plx_ui::cards::Shelf`: each shelf's cards read over the published
 //! [`Detail`] and the page's element interning. The screen keeps what is not a card — the
 //! headings, the vertical flow, the focus groups and the press actions.
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use plx_data::metadata::Detail;
 use plx_data::pms::PmsMovie;
 use plx_machine::machine::{EntryId, FocusKey, Host, Measure, PressRead};
+use plx_ui::a11y::{A11y, A11yPath};
 use plx_ui::cards::{self as ui_cards, RowStyle, TileLabel};
 use plx_ui::cards::{CardSource, Tile};
 use plx_ui::widgets::Art;
@@ -25,6 +27,16 @@ pub(super) enum Which {
 }
 
 impl Which {
+    /// The shelf's name in the page's accessibility ids (`detail.related.card.3`).
+    pub(super) const fn a11y_name(self) -> &'static str {
+        match self {
+            Which::Related => "related",
+            Which::Collection => "collection",
+            Which::Extras => "extras",
+            Which::Cast => "cast",
+        }
+    }
+
     /// The shelf's tile style, the one its group, its placement and its draw all read.
     pub(super) const fn style(self) -> &'static RowStyle {
         match self {
@@ -52,6 +64,14 @@ pub(super) struct Cards<'a> {
 }
 
 impl<'a> Cards<'a> {
+    /// **Card `i`'s accessibility projection**, `<shelf>.card.<i>` ([`Which::a11y_name`]), given its
+    /// shape by the shared [`card_a11y`](ui_cards::card_a11y): the page composes its own shelves, so it
+    /// supplies the path. The index is the card's position in the shelf, so a card off screen has its
+    /// id as well.
+    pub(super) fn a11y_card<H: Host<Elem = u32>>(&self, i: usize) -> A11y<'static> {
+        ui_cards::card_a11y::<H, _>(A11yPath::new().name(self.which.a11y_name()).name("card").index(i), self, i)
+    }
+
     /// How many cards the shelf holds (`CardSource::len`, for a caller with no host type at hand).
     pub(super) fn count(&self) -> usize {
         self.len
@@ -180,6 +200,28 @@ impl<H: Host<Elem = u32>> CardSource<H> for Cards<'_> {
             Which::Related | Which::Collection => self.movies().get(i).and_then(|m| m.resume_frac()),
             Which::Extras | Which::Cast => None,
         }
+    }
+
+    /// The item's own title, whatever the label block shows: the cast's names are drawn under every
+    /// headshot (`overlay`), so theirs is the credit's name.
+    fn a11y_title(&self, i: usize) -> Option<Cow<'_, str>> {
+        let title = match self.which {
+            Which::Related | Which::Collection => self.movies().get(i).map(|m| m.title.as_str()),
+            Which::Extras => self.d.extras.get(i).map(|e| e.title.as_str()),
+            Which::Cast => self.d.credit(i).map(|c| c.tag.as_str()),
+        };
+        title.map(Cow::Borrowed)
+    }
+
+    /// The item's ratingKey: what a by-id press names to stay on the title it read. A headshot has
+    /// none (a person is not a ratingKey), and neither has a card whose key the server left empty.
+    fn subject(&self, i: usize) -> Option<Cow<'_, str>> {
+        let rk = match self.which {
+            Which::Related | Which::Collection => self.movies().get(i)?.rk.as_str(),
+            Which::Extras => self.d.extras.get(i)?.rk.as_str(),
+            Which::Cast => return None,
+        };
+        (!rk.is_empty()).then_some(Cow::Borrowed(rk))
     }
 
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {

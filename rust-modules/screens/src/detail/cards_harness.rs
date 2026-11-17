@@ -371,3 +371,81 @@ mod reach {
         plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 }
+
+/// **The page's accessibility ids:** a show page with every section on it conforms (every element of
+/// every group projects, ids are unique, each id finds its element), the hero's controls are
+/// `hero.<word>`, the seasons `season.<i>`, an episode's two elements `episodes.still|text.<i>`, each
+/// shelf's cards `<shelf>.card.<i>` (the one far down the row, off screen, included) with the
+/// ratingKey as their subject, and the heading and the About stops answer their names.
+#[test]
+fn the_page_answers_its_ids_and_conforms() {
+    use plx_ui::a11y::{conformance, A11yPath, Role};
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let sid = ServerId::UNSET;
+    let movies = |prefix: &str, n: usize| -> Vec<plx_data::pms::PmsMovie> {
+        (0..n).map(|i| plx_data::pms::PmsMovie { sid, rk: format!("{prefix}{i}"), title: format!("{prefix} {i}"), ..Default::default() }).collect()
+    };
+    let d = Detail {
+        sid,
+        rk: "page".into(),
+        is_show: true,
+        kind: "show".into(),
+        seasons: (1..=3)
+            .map(|i| plx_data::metadata::Season { rk: format!("s{i}"), index: i, title: format!("Season {i}"), leaf_count: 2, viewed_leaf_count: 0 })
+            .collect(),
+        episodes: (1..=3)
+            .map(|i| plx_data::metadata::Episode { rk: format!("e{i}"), index: i, season: 1, title: format!("Episode {i}"), dur_ms: 60_000, ..Default::default() })
+            .collect::<Vec<_>>()
+            .into(),
+        related: movies("r", 40),
+        extras: (0..3).map(|i| Extra { rk: format!("x{i}"), title: format!("Extra {i}"), ..Default::default() }).collect(),
+        cast: (0..4)
+            .map(|i| plx_data::metadata::Cast { tag: format!("Actor {i}"), id: 10 + i, role: String::new(), thumb: String::new(), tag_key: String::new() })
+            .collect(),
+        collection: Some(plx_data::metadata::CollectionShelf { title: "Saga".into(), section: 1, tag: 1, members: movies("c", 5), count: 5 }),
+        ..Default::default()
+    };
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d));
+    let mut screen = bare_held(sid, "page");
+    // the season tabs have a place once their strip is measured, which a landing does in the app
+    // (`season_metrics.update`): the held screen has had none
+    screen.season_metrics.update(test_store().view().current().expect("the page's detail is mounted"), &FixtureMeasure);
+    let cx = cx_of(0, 1.0, None);
+    conformance::<TestHost, _>(&screen, &cx);
+
+    let rel = |text: &str| A11yPath::parse_relative(text).expect("a well-formed id");
+    let find = |text: &str| Focusable::<TestHost>::a11y_find(&screen, &rel(text), &cx);
+    let project = |elem: u32| Focusable::<TestHost>::a11y(&screen, &elem, &cx).expect("an element of the page projects");
+
+    assert_eq!(find("hero.play"), Some(hero::ELEM_PLAY));
+    assert_eq!(project(hero::ELEM_PLAY).role, Role::Button);
+    assert_eq!(find("hero.nope"), None);
+    for (i, rk) in ["s1", "s2", "s3"].into_iter().enumerate() {
+        let elem = find(&format!("season.{i}")).expect("a season tab");
+        assert_eq!(Some(elem), screen.engine_key(season::elem(i).unwrap()));
+        let a = project(elem);
+        assert_eq!((a.role, a.subject.as_deref()), (Role::Tab, Some(rk)));
+    }
+    assert_eq!(find("season.3"), None, "one past the last season");
+    for (i, rk) in ["e1", "e2", "e3"].into_iter().enumerate() {
+        for (word, row) in [("still", episodes::Row::Still), ("text", episodes::Row::Text)] {
+            let elem = find(&format!("episodes.{word}.{i}")).expect("an episode's element");
+            assert_eq!(Some(elem), screen.engine_key(episodes::elem(i, row).unwrap()));
+            assert_eq!(project(elem).subject.as_deref(), Some(rk));
+        }
+    }
+    assert_eq!(find("episodes.still.3"), None, "one past the last episode");
+    for (shelf, last, rk, len) in [("related", 39, "r39", 40), ("collection", 4, "c4", 5), ("extras", 2, "x2", 3)] {
+        let elem = find(&format!("{shelf}.card.{last}")).unwrap_or_else(|| panic!("{shelf}'s last card"));
+        let a = project(elem);
+        assert_eq!((a.role, a.subject.as_deref(), a.loaded), (Role::Card, Some(rk), true), "{shelf}");
+        assert_eq!(find(&format!("{shelf}.card.{len}")), None, "{shelf}: one past the end");
+    }
+    let actor = project(find("cast.card.3").expect("the last headshot"));
+    assert_eq!((actor.label.as_deref(), actor.subject), (Some("Actor 3"), None), "a person is not a ratingKey");
+    let heading = project(find("collection.heading").expect("the collection's heading"));
+    assert_eq!((heading.role, heading.label.as_deref()), (Role::Button, Some("Saga")));
+    assert_eq!(find("about.card"), Some(about::CARD_ELEM));
+    assert_eq!(find("related.0"), None, "a card is `related.card.<i>`");
+}

@@ -270,8 +270,12 @@ mod strip_a11y_tests {
         fn neighbour(&self, _key: FocusKey<u32>, _dir: Dir, _cx: &Cx<'_, FixtureHost>) -> Step<u32> {
             Step::Edge
         }
-        fn place(&self, _key: &u32, _cx: &Cx<'_, FixtureHost>, _at: At) -> Option<Placed> {
-            None
+        /// Card `key` in its own cell of the group's extent, so every card the group lists places.
+        fn place(&self, key: &u32, _cx: &Cx<'_, FixtureHost>, _at: At) -> Option<Placed> {
+            (*key < PAGE_CARDS).then(|| {
+                let rect = Rect::new(*key as f32 * 300.0, 300.0, 280.0, 200.0);
+                Placed { rect, rest_rect: rect, clip: Rect::new(0.0, 300.0, 900.0, 200.0), index: Some(*key) }
+            })
         }
         fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, FixtureHost>) -> FocusKey<u32> {
             want

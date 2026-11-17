@@ -369,6 +369,11 @@ impl<H: ContentLike> CardSource<H> for ShelfCards<'_> {
     fn progress(&self, i: usize) -> Option<f32> {
         self.person.shelf(self.kind).get(i).and_then(|m| m.resume_frac())
     }
+    /// The credit's ratingKey: what a by-id press names to stay on the title it read (the id's
+    /// position, `shelf.<kind>.card.<i>`, moves when the credits do).
+    fn subject(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
+        self.person.shelf(self.kind).get(i).map(|m| std::borrow::Cow::Borrowed(m.rk.as_str()))
+    }
 }
 
 // -------------------------------------------------------------------------------------------
@@ -1098,14 +1103,17 @@ impl<H: ContentLike + PersonLike> StackPage<H> for Page {
     fn sections(&self, cx: &Cx<'_, H>, out: &mut Vec<SectionSpec<Sec>>) {
         let person = self.person(cx);
         let (kinds, n) = person.map_or(([0; NSHELF], 0), present);
-        out.push(SectionSpec::new(Sec::Head, Kind::Custom { height: HEADER_TOP + self.header.exp_h, focusable: person.is_some() }, HEADER_GROUP));
-        out.push(SectionSpec::new(Sec::Entry, Kind::Custom { height: 0.0, focusable: person.is_some_and(entry_reachable) }, ENTRY_GROUP));
-        out.push(SectionSpec::new(Sec::State, Kind::Custom { height: 0.0, focusable: false }, STATE_GROUP));
+        // The sections are named for what they ARE, not by position (the accessibility ids): which
+        // shelves are present moves a shelf's position, so a shelf is `shelf.<kind>` (0 = Movies,
+        // 1 = Shows) whatever stands before it.
+        out.push(SectionSpec::new(Sec::Head, Kind::Custom { height: HEADER_TOP + self.header.exp_h, focusable: person.is_some() }, HEADER_GROUP).named("head"));
+        out.push(SectionSpec::new(Sec::Entry, Kind::Custom { height: 0.0, focusable: person.is_some_and(entry_reachable) }, ENTRY_GROUP).named("filmography"));
+        out.push(SectionSpec::new(Sec::State, Kind::Custom { height: 0.0, focusable: false }, STATE_GROUP).named("state"));
         if n > 0 {
-            out.push(SectionSpec::new(Sec::Gap, Kind::Custom { height: BAND_GAP_TO_SHELF, focusable: false }, GAP_GROUP));
+            out.push(SectionSpec::new(Sec::Gap, Kind::Custom { height: BAND_GAP_TO_SHELF, focusable: false }, GAP_GROUP).named("gap"));
         }
         for &kind in &kinds[..n] {
-            out.push(SectionSpec::new(Sec::Shelf(kind), Kind::Shelf { style: &SHELF_STYLE, heading: SHELF_LABEL_H }, SHELF_GROUP[kind]));
+            out.push(SectionSpec::new(Sec::Shelf(kind), Kind::Shelf { style: &SHELF_STYLE, heading: SHELF_LABEL_H }, SHELF_GROUP[kind]).named_at("shelf", kind));
         }
     }
 

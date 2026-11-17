@@ -31,7 +31,8 @@
 //! plus the pointer stops translate key <-> index; without it the element is the index. The
 //! accessibility ids (`a11y`) follow the same map: a row is `row.<index>`, or the name its
 //! [`FormId::a11y`](super::form::FormId::a11y) declares, and a separator or note (no key) is no
-//! element, so a form-backed group's `len` counts only its keyed rows. The band is `band.<i>`.
+//! element (the group's `len` still counts it: it is the layout's row count, which seating reads,
+//! so the ids' conformance rule is "at most `len`"). The band is `band.<i>`.
 
 use crate::View;
 use std::ffi::CStr;
@@ -269,13 +270,6 @@ where
             g.edge[3] = EdgeRule::Screen;
             // a row commits on the DOWN edge, as every row in the app does (no press dip)
             g.elem = ElemKind::Bare;
-            // A form-backed table's elements are its KEYED rows: a separator or a note has no key,
-            // so no element, and `len` (a count of elements) must not count it (the id contract:
-            // `a11y_elems` lists exactly `len`). Only an emptiness test reads `len`, so this
-            // changes nothing for a table with a keyed row.
-            if let Some(k) = self.keys {
-                g.len = (0..g.len).filter(|&i| k.key_at(i).is_some()).count();
-            }
         }
     }
     fn group_of(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<GroupId> {
@@ -1196,8 +1190,9 @@ mod tests {
     /// **A form-backed table names its rows and has no element for an inert one.** The elements are
     /// the rows' keys (30, 10, 20 down the page); a row whose `FormId::a11y` names it is that name
     /// and ONLY that name, an unnamed one is `row.<layout index>`; the separator and the note, which
-    /// have no key, are no elements and `GroupSpec::len` does not count them (so `a11y_elems` lists
-    /// exactly `len`). A toggle row is a `Toggle`.
+    /// have no key, are no elements, yet `GroupSpec::len` still counts them (it is the layout's row
+    /// count, which seating reads), so `a11y_elems` lists fewer than `len`. A toggle row is a
+    /// `Toggle`.
     #[test]
     fn a_form_backed_table_names_its_rows_and_has_no_element_for_an_inert_one() {
         use crate::a11y::conformance;
@@ -1231,7 +1226,12 @@ mod tests {
 
         let mut groups = Vec::new();
         Focusable::<H>::groups(&keyed, &cx, &mut groups);
-        assert_eq!(groups[0].len, 3, "the keyed rows: not the separator, not the note");
+        assert_eq!(
+            groups[0].len,
+            form.table.n_rows().max(0) as usize,
+            "the layout's rows, as seating reads them: the separator and the note are counted"
+        );
+        assert!(groups[0].len > 3, "more cells than the three keyed rows, which are all that list");
         conformance(&keyed, &cx);
 
         let rel = |s: &str| A11yPath::parse_relative(s).unwrap();

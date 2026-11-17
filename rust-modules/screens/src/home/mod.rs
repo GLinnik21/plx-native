@@ -3229,17 +3229,15 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     /// **The ids** (`home.<path>`): the hero `hero.play|info|watchlist` (the failure read-out's lone
     /// action is `hero.action`), each shelf `shelf.<row>.card.<col>`, the Continue Watching deck
     /// `continue.card.<col>`, a linked heading `shelf.<row>.heading`, and the plaintext question's
-    /// answers `alert.cancel|connect`. `<row>` is the row's position in the page and `<col>` the
-    /// card's in the row's window, which is place semantics by design: the card's `subject`
-    /// (its ratingKey) is what a press names to stay safe when a publication moves them.
+    /// answers, which are [`PlaintextAlert`]'s own (`alert.not_now|connect`: the alert names its
+    /// answers, so the one question has one id set wherever it opens). `<row>` is the row's
+    /// position in the page and `<col>` the card's in the row's window, which is place semantics
+    /// by design: the card's `subject` (its ratingKey) is what a press names to stay safe when a
+    /// publication moves them.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
-        if self.plaintext_alert.is_open() {
-            let name = match *key {
-                PLAINTEXT_CANCEL_ELEM => "cancel",
-                PLAINTEXT_CONNECT_ELEM => "connect",
-                _ => return None,
-            };
-            return Some(A11y::new(A11yPath::new().name("alert").name(name), A11yRole::Button));
+        // while the question is open its answers are the page's only elements
+        if let Some(answer) = self.plaintext_alert.a11y(*key) {
+            return answer;
         }
         let view = H::hubs(cx);
         match self.locate(*key)? {
@@ -3262,13 +3260,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
             Located::Item(row, col) => {
                 let projection = self.rows.get(row)?;
                 let path = shelf_path(projection, row).name("card").index(col);
-                Some(match self.item_at(view, row, col) {
-                    Some(item) => A11y::new(path, A11yRole::Card)
-                        .with_label(item.title.clone())
-                        .with_subject(item.rk.clone()),
-                    // a slot whose card has not landed: it exists and can be focused, not pressed
-                    None => A11y::new(path, A11yRole::Card).with_loaded(false),
-                })
+                // a slot whose card has not landed exists and can be focused, not pressed: it is
+                // not loaded, which `card_a11y` says by the same rule the shelf's draw skips it by
+                Some(ui_cards::card_a11y::<H, _>(path, &self.cards(view, row), col))
             }
         }
     }
@@ -3276,10 +3270,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     /// Every element of group `g` in index order: the hero's controls in ROW order, a shelf's cards
     /// (the window, placeholders included), a linked heading's one element, the alert's answers.
     fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
-        if self.plaintext_alert.is_open() {
-            if g == PLAINTEXT_GROUP {
-                out.extend([PLAINTEXT_CANCEL_ELEM, PLAINTEXT_CONNECT_ELEM]);
-            }
+        if self.plaintext_alert.a11y_elems(g, out) {
             return;
         }
         if g == HERO_GROUP {
@@ -3296,17 +3287,15 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     /// heading), and the projection of that candidate must answer the same path, so the two cannot
     /// disagree about what exists.
     fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        if let Some(found) = self.plaintext_alert.a11y_find(path) {
+            return found;
+        }
         let mut segs = path.segs();
         let candidate = match (segs.next(), segs.next(), segs.next(), segs.next(), segs.next()) {
             (Some(Seg::Name("hero")), Some(Seg::Name(name)), None, ..) => match name {
                 "play" | "action" => Some(hero_elem(0)),
                 "info" => Some(hero_elem(1)),
                 "watchlist" => Some(hero_elem(2)),
-                _ => None,
-            },
-            (Some(Seg::Name("alert")), Some(Seg::Name(name)), None, ..) => match name {
-                "cancel" => Some(PLAINTEXT_CANCEL_ELEM),
-                "connect" => Some(PLAINTEXT_CONNECT_ELEM),
                 _ => None,
             },
             (Some(Seg::Name("continue")), Some(Seg::Name("card")), Some(Seg::Index(col)), None, ..) => self
@@ -4541,6 +4530,11 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
     /// The card's ratingKey: what a by-id press names to stay on the title it read.
     fn subject(&self, i: usize) -> Option<Cow<'_, str>> {
         self.item(i).map(|m| Cow::Borrowed(m.rk.as_str()))
+    }
+
+    /// The item's own title: the Continue Watching deck draws no label block under its stills.
+    fn a11y_title(&self, i: usize) -> Option<Cow<'_, str>> {
+        self.item(i).map(|m| Cow::Borrowed(m.title.as_str()))
     }
 
     /// The card the PICTURE shows focused: none until the dive has made the shelves the picture,

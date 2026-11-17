@@ -36,6 +36,7 @@ use plx_data::stores::viewstate::ViewStateCmd;
 use plx_data::stores::{StoreCmd, StoreId};
 use plx_ui::hstack::{Flow, Item};
 use plx_ui::cards as ui_cards;
+use plx_ui::a11y::{A11y, A11yPath, Role as A11yRole, Seg};
 use plx_ui::cards::{SectionFrame, Shelf};
 use plx_ui::frame::Budget;
 use plx_ui::hero_logo::{HeroLogo, LogoRung};
@@ -1978,6 +1979,121 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
                 .and_then(|located| self.key_of(located))
                 .unwrap_or(hero::ELEM_PLAY),
         }
+    }
+
+    /// **The ids** (`detail.<path>`): the hero's controls `hero.<word>` ([`hero::HeroCtl::a11y_name`]),
+    /// a season tab `season.<i>`, an episode's still `episodes.still.<i>` and its text block
+    /// `episodes.text.<i>`, a shelf's cards `related|collection|extras|cast.card.<i>`, the collection's
+    /// linked heading `collection.heading` and the About footer's two stops `about.card` and
+    /// `about.languages`. An index is a position in the collection its segment names, so a card or an
+    /// episode off screen has its id as well. The `subject` of a season, an episode or a card is its
+    /// ratingKey.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let meta = H::metadata(cx);
+        let located = self.locate(*key, meta).filter(|l| self.valid(*l, meta))?;
+        let d = self.detail(meta);
+        let named = |section: &'static str| A11yPath::new().name(section);
+        // the text is the page's own words as the data layer published them: cloned, since the
+        // projection outlives the borrow of the views (a read-side state file only)
+        let with_subject = |a: A11y<'static>, rk: &str| if rk.is_empty() { a } else { a.with_subject(rk.to_owned()) };
+        Some(match located {
+            Located::Hero(ctl) => A11y::new(named("hero").name(ctl.a11y_name()), A11yRole::Button),
+            Located::Season(i) => {
+                let season = d?.seasons.get(i)?;
+                let a = A11y::new(named("season").index(i), A11yRole::Tab).with_label(season.title.clone());
+                with_subject(a, &season.rk)
+            }
+            Located::Episode(i, row) => {
+                let episode = d?.episodes.get(i)?;
+                let part = match row {
+                    episodes::Row::Still => "still",
+                    episodes::Row::Text => "text",
+                };
+                let a = A11y::new(named("episodes").name(part).index(i), A11yRole::Card).with_label(episode.title.clone());
+                with_subject(a, &episode.rk)
+            }
+            Located::Related(i) => self.cards(cards::Which::Related, d?).a11y_card::<H>(i),
+            Located::Extras(i) => self.cards(cards::Which::Extras, d?).a11y_card::<H>(i),
+            Located::Collection(i) => self.cards(cards::Which::Collection, d?).a11y_card::<H>(i),
+            Located::Cast(i) => self.cards(cards::Which::Cast, d?).a11y_card::<H>(i),
+            Located::CollectionHeading => collection::heading(d?.collection.as_ref()?)
+                .a11y(named("collection").name("heading"))
+                .into_owned(),
+            Located::About(0) => A11y::new(named("about").name("card"), A11yRole::Button),
+            Located::About(_) => A11y::new(named("about").name("languages"), A11yRole::Button),
+        })
+    }
+
+    /// Every element of group `g`: the hero's controls as the row shows them (what `len` counts), a
+    /// shelf's cards, the seasons, the heading, the About stops. The episodes are a grid of two rows
+    /// of `len` columns (every still, then every text block), and only an episode that has landed
+    /// holds a key: the page's `GroupSpec::len` counts the slots of one that has not, which the
+    /// listing cannot name.
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        let meta = H::metadata(cx);
+        if g == hero::HERO_GROUP {
+            let (ctls, n) = hero::visible_ctls(self.hero_set(meta), self.full_trailer());
+            out.extend(ctls[..n].iter().map(|ctl| ctl.elem()));
+            return;
+        }
+        let Some(d) = self.detail(meta) else { return };
+        let shelf = [
+            (extras::EXTRAS_GROUP, cards::Which::Extras),
+            (related::RELATED_GROUP, cards::Which::Related),
+            (collection::COLLECTION_GROUP, cards::Which::Collection),
+            (cast::CAST_GROUP, cards::Which::Cast),
+        ]
+        .into_iter()
+        .find_map(|(group, which)| (group == g).then_some(which));
+        if let Some(which) = shelf {
+            let cards = self.cards(which, d);
+            out.extend((0..cards.count()).map(|j| ui_cards::CardSource::<H>::elem(&cards, j)));
+        } else if g == season::SEASON_GROUP {
+            out.extend((0..d.seasons.len()).filter_map(|i| self.key_of(Located::Season(i))));
+        } else if g == episodes::EPISODES_GROUP {
+            for row in [episodes::Row::Still, episodes::Row::Text] {
+                out.extend(d.episodes.iter_loaded().filter_map(|(i, _)| self.key_of(Located::Episode(i, row))));
+            }
+        } else if g == collection::HEADING_GROUP {
+            if d.collection.is_some() {
+                out.extend(self.key_of(Located::CollectionHeading));
+            }
+        } else if g == about::ABOUT_GROUP {
+            out.extend(self.key_of(Located::About(0)));
+            if self.tracks_available(meta) {
+                out.extend(self.key_of(Located::About(1)));
+            }
+        }
+    }
+
+    /// The inverse of [`Self::a11y`]: the path names its candidate (by position in a collection, never
+    /// by a scan), and the projection of that candidate must answer the same path, so the two cannot
+    /// disagree about what exists.
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        let mut segs = path.segs();
+        let located = match (segs.next(), segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("hero")), Some(Seg::Name(word)), None, _) => Located::Hero(hero::HeroCtl::of_a11y_name(word)?),
+            (Some(Seg::Name("season")), Some(Seg::Index(i)), None, _) => Located::Season(i),
+            (Some(Seg::Name("episodes")), Some(Seg::Name("still")), Some(Seg::Index(i)), None) => {
+                Located::Episode(i, episodes::Row::Still)
+            }
+            (Some(Seg::Name("episodes")), Some(Seg::Name("text")), Some(Seg::Index(i)), None) => {
+                Located::Episode(i, episodes::Row::Text)
+            }
+            (Some(Seg::Name(shelf)), Some(Seg::Name("card")), Some(Seg::Index(i)), None) => match shelf {
+                "related" => Located::Related(i),
+                "extras" => Located::Extras(i),
+                "collection" => Located::Collection(i),
+                "cast" => Located::Cast(i),
+                _ => return None,
+            },
+            (Some(Seg::Name("collection")), Some(Seg::Name("heading")), None, _) => Located::CollectionHeading,
+            (Some(Seg::Name("about")), Some(Seg::Name("card")), None, _) => Located::About(0),
+            (Some(Seg::Name("about")), Some(Seg::Name("languages")), None, _) => Located::About(1),
+            _ => return None,
+        };
+        let key = self.key_of(located)?;
+        self.a11y(&key, cx).filter(|a| a.path == *path).map(|_| key)
     }
 }
 

@@ -92,6 +92,7 @@ use std::ops::Range;
 
 use plx_machine::machine::{Cx, EntryId, FocusRead, Host, Measure};
 
+use crate::a11y::{A11y, A11yPath, Role};
 use crate::screen::DrawFrame;
 use crate::widgets::Art;
 use crate::{Painter, Rect};
@@ -254,6 +255,24 @@ pub trait CardSource<H: Host> {
     fn subject(&self, _i: usize) -> Option<std::borrow::Cow<'_, str>> {
         None
     }
+    /// **What names the item behind card `i`** in the accessibility projection ([`card_a11y`]): the
+    /// words a test reads to find "the card called X". The default is the title of the focused
+    /// label block ([`label`](Self::label)), right for a source whose label names its card; a source
+    /// whose label is shaped by the caption policy, is empty or is drawn elsewhere (a headshot's
+    /// name hangs under it as an overlay, the Continue Watching deck's footer is on the tile) names
+    /// the item itself. Runtime text, under [`subject`](Self::subject)'s rule: it reaches the state
+    /// file a test reads and nothing else. Asked only for a card the projection says is loaded.
+    fn a11y_title(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
+        // owned: the label is a temporary of this call, the borrow cannot outlive it
+        self.with_label(i, |l| l.title.as_ref().map(|t| std::borrow::Cow::Owned(t.to_string_lossy().into_owned())))
+    }
+    /// Whether card `i`'s page has landed, as the accessibility projection says it
+    /// ([`A11y::loaded`]): [`loaded`](Self::loaded) unless the source paints an unlanded slot as a
+    /// placeholder rather than skipping it (then `loaded` is true for every slot, and this says
+    /// which ones hold an item).
+    fn a11y_loaded(&self, i: usize) -> bool {
+        self.loaded(i)
+    }
 
     /// The amber resume fraction of card `i`, if it is partly watched.
     fn progress(&self, _i: usize) -> Option<f32> {
@@ -342,6 +361,27 @@ pub trait CardSource<H: Host> {
     fn more_before(&self) -> bool {
         false
     }
+}
+
+/// **Card `i`'s accessibility projection**, the one shape every card of every screen has: a
+/// [`Role::Card`] at `path`, [`loaded`](A11y::loaded) as [`CardSource::a11y_loaded`] says, and, only
+/// once it is loaded, the title [`CardSource::a11y_title`] names it by as its label and
+/// [`CardSource::subject`] as its subject (an empty word is no label and no subject). A slot whose
+/// page has not landed exists and carries neither. The screen supplies only the `path`, the one
+/// part that is its own place in its layout; owned, so a source that is a temporary of the call
+/// can be dropped before the projection is.
+pub fn card_a11y<H: Host, S: CardSource<H> + ?Sized>(path: A11yPath, src: &S, i: usize) -> A11y<'static> {
+    let loaded = src.a11y_loaded(i);
+    let mut a = A11y::new(path, Role::Card).with_loaded(loaded);
+    if loaded {
+        if let Some(title) = src.a11y_title(i).filter(|t| !t.is_empty()) {
+            a = a.with_label(title.into_owned());
+        }
+        if let Some(subject) = src.subject(i).filter(|s| !s.is_empty()) {
+            a = a.with_subject(subject.into_owned());
+        }
+    }
+    a
 }
 
 /// Where one card was drawn, handed to [`CardSource::overlay`].

@@ -67,9 +67,11 @@ fn item(label: impl Into<String>) -> HeaderItem {
     HeaderItem { label: label.into(), focusable: true, ..Default::default() }
 }
 
-/// A control that opens a page (Collections, Recommended): the row draws a chevron after it.
-fn place(label: impl Into<String>) -> HeaderItem {
-    HeaderItem { place: true, ..item(label) }
+/// A control that opens a page (Collections, Recommended): the row draws a chevron after it. `name`
+/// is its accessibility name (`header.collections`), a word and never its label, which is the
+/// language's.
+fn place(name: &'static str, label: impl Into<String>) -> HeaderItem {
+    HeaderItem { place: true, a11y: Some(name), ..item(label) }
 }
 
 /// The hairline between the places and the sort control. Not a stop.
@@ -199,7 +201,7 @@ impl LibraryScreen {
         // must not repack between the two (the room they pack into is measured once and never
         // moves).
         let slot_of = |count: u32| Some(locale.number(i64::from(count.max(999))));
-        let control = |value, slot| HeaderItem { value, value_slot: slot, ..place(msg::library_header_collections()) };
+        let control = |value, slot| HeaderItem { value, value_slot: slot, ..place("collections", msg::library_header_collections()) };
         match self.collections {
             CollectionsControl::Count(count) => {
                 let slot = slot_of(count);
@@ -213,8 +215,8 @@ impl LibraryScreen {
             }
         }
         right.push(HeaderItem { selected_plate: self.listing == Listing::Recommended,
-            ..place(msg::library_header_recommended()) });
-        widest.push(place(msg::library_header_recommended()));
+            ..place("recommended", msg::library_header_recommended()) });
+        widest.push(place("recommended", msg::library_header_recommended()));
         // The divider and the sort control draw what the criterion says, with no slot for it: the
         // control ends at the row's edge and the places slide as the criterion's width changes. The
         // widest criterion only sizes the room the library names may use.
@@ -322,7 +324,7 @@ impl LibraryScreen {
                     LIBRARY_GROUP, all.len());
                 all.push((elem, index));
             }
-            let more = HeaderItem { glyph: Some(plx_ui::icons::Icon::More), value_only: true,
+            let more = HeaderItem { glyph: Some(plx_ui::icons::Icon::More), value_only: true, a11y: Some("libraries"),
                 ..item(plx_platform::i18n::msg::browse_library_libraries()) };
             let more_w = page_header::cluster_width(&[more.clone()], measure);
             // Reserve a current-library slot whenever the roster can require one. The same

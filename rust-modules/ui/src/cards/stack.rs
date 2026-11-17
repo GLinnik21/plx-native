@@ -1279,10 +1279,10 @@ impl<K: Copy + Eq, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Focusable<H> f
     }
 
     /// **The accessibility projection** (`a11y`): a card is `<section>.card.<i>` ([`Role::Card`]),
-    /// with the title its label shows as its label and [`CardSource::subject`] as its subject, both
-    /// only once the card is loaded; an element of a focusable `Custom` / `Overlay` section is
-    /// `<section>.<leaf>` or `<section>.<n>` ([`StackPage::plain_name`], [`Role::Button`]). The
-    /// section is [`SectionSpec::named`], else `section.<position>`.
+    /// given its label, subject and `loaded` by [`card_a11y`](super::card_a11y); an element of a
+    /// focusable `Custom` / `Overlay` section is `<section>.<leaf>` or `<section>.<n>`
+    /// ([`StackPage::plain_name`], [`Role::Button`]). The section is [`SectionSpec::named`], else
+    /// `section.<position>`.
     fn a11y(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         let (s, p) = (self.stack, self.page);
         let i = s.owner(p, cx, key)?;
@@ -1292,19 +1292,7 @@ impl<K: Copy + Eq, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Focusable<H> f
             Kind::Shelf { .. } | Kind::Grid { .. } => {
                 let cards = p.cards(cx, k)?;
                 let j = cards.index_of(key)?;
-                let loaded = cards.loaded(j);
-                let mut a = A11y::new(section.name("card").index(j), Role::Card).with_loaded(loaded);
-                if loaded {
-                    // owned: the source is a temporary of this call, the borrow cannot outlive it
-                    let title = cards.with_label(j, |l| l.title.as_ref().map(|t| t.to_string_lossy().into_owned()));
-                    if let Some(title) = title {
-                        a = a.with_label(title);
-                    }
-                    if let Some(subject) = cards.subject(j) {
-                        a = a.with_subject(subject.into_owned());
-                    }
-                }
-                Some(a)
+                Some(super::card_a11y::<H, _>(section.name("card").index(j), &cards, j))
             }
             Kind::Custom { .. } | Kind::Overlay { .. } => {
                 let n = s.plain_index(p, i, key)?;
