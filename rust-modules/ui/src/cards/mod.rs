@@ -40,7 +40,7 @@
 //!   [`Grid`] plays them too when its [`GridSpec`] says `.animate_landings(true)`: slots are (x, y),
 //!   ghosts fade on K_SCALE, survivors spring home on K_SCROLL.
 //! - **The pop rule.** A tile the engine reports focused that no deliberate move (`By::Dir` /
-//!   `By::Pointer`) announced draws at FULL focus scale at once — a restore or reconcile is adopted
+//!   `By::Script` / `By::Pointer`) announced draws at FULL focus scale at once — a restore or reconcile is adopted
 //!   whole, a page returns as it was left (a dormant page's own seat, below, is the one thing that may
 //!   regrow from rest instead). An unfocused tile draws at rest (or the live
 //!   let-go of one that lost focus and has not landed). A deliberate move grows from rest (or from
@@ -245,6 +245,15 @@ pub trait CardSource<H: Host> {
     fn with_label<R>(&self, i: usize, draw: impl FnOnce(&TileLabel) -> R) -> R {
         draw(&self.label(i))
     }
+    /// **What identifies the item behind card `i`**, for a test that presses "the card of THIS
+    /// item" (the accessibility projection, `a11y::A11y::subject`): the ratingKey of a catalog
+    /// card. `None` (the default) for a card with no identity of its own (a header tile, a person
+    /// with no key). Runtime text: it reaches the state file a test reads and nothing else, never a
+    /// log line, a recording or the heartbeat. Asked only for a card that is [`loaded`](Self::loaded),
+    /// and only when the projection is read, so a source may build it on the spot.
+    fn subject(&self, _i: usize) -> Option<std::borrow::Cow<'_, str>> {
+        None
+    }
 
     /// The amber resume fraction of card `i`, if it is partly watched.
     fn progress(&self, _i: usize) -> Option<f32> {
@@ -396,7 +405,7 @@ pub(crate) enum Seen {
     /// None arrived: a focused card that is not where the section last had it is the SAME element
     /// moved by a content landing.
     Nothing,
-    /// A deliberate move (`By::Dir` / `By::Pointer`) handed focus to this card: it grows from rest.
+    /// A deliberate move (`By::Dir` / `By::Script` / `By::Pointer`) handed focus to this card: it grows from rest.
     Deliberate(usize),
     /// A restore, a reconcile or a seat: adopted whole.
     Other,
@@ -409,7 +418,8 @@ impl Seen {
     }
 
     pub(crate) fn of(by: &crate::screen::By, arrived: usize) -> Self {
-        if matches!(by, crate::screen::By::Dir | crate::screen::By::Pointer) { Seen::Deliberate(arrived) } else { Seen::Other }
+        // a by-id jump (`By::Script`) is as deliberate as a key: the eye should see the card arrive
+        if matches!(by, crate::screen::By::Dir | crate::screen::By::Script | crate::screen::By::Pointer) { Seen::Deliberate(arrived) } else { Seen::Other }
     }
 }
 

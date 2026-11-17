@@ -326,7 +326,7 @@ impl Grid {
                 // A deliberate move is the only focus change the eye should see travel; a restore
                 // or a reconcile is adopted whole by the next tick.
                 let arrival = to.entry == self.entry && std::mem::take(&mut self.arriving) && arrived.is_some();
-                let deliberate = arrival || matches!(by, By::Dir | By::Pointer);
+                let deliberate = arrival || matches!(by, By::Dir | By::Script | By::Pointer);
                 // the reader has moved on from what the page returned with: a deliberate move, or
                 // focus gone from the grid's cards (a header control, a BACK that walks to one)
                 if deliberate || arrived.is_none() {
