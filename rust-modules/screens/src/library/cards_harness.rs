@@ -540,3 +540,32 @@ fn the_page_answers_its_ids_and_conforms() {
     assert_eq!(find("alert.not_now"), Some(PLAINTEXT_CANCEL));
     assert_eq!(find("grid.card.0"), None, "the page under a question is no owner's");
 }
+
+/// **The Recommended page's accessibility ids:** the page conforms, its crumb is `header.crumb`, and
+/// each hub card is `shelf.<row>.card.<col>` with the hub item's ratingKey as the subject.
+#[test]
+fn the_recommended_page_answers_its_ids_and_conforms() {
+    use plx_ui::a11y::{conformance, A11yPath, Role};
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let h = Harness::new(Set::Shelf, 4);
+    let cx = h.cx();
+    conformance::<LibHost, _>(&h.rec, &cx);
+    let rel = |text: &str| A11yPath::parse_relative(text).expect("a well-formed id");
+    let find = |text: &str| Focusable::<LibHost>::a11y_find(&h.rec, &rel(text), &cx);
+    assert_eq!(find("header.crumb"), Some(toolbar::CRUMB_ROOT));
+    assert!(!h.rec.shelves.is_empty(), "the seeded hubs are shelves");
+    let published = h.hubs.view();
+    for (row, shelf) in h.rec.shelves.iter().enumerate() {
+        for (col, elem) in shelf.elems.iter().enumerate() {
+            assert_eq!(find(&format!("shelf.{row}.card.{col}")), Some(*elem), "row {row} card {col}");
+            let a = Focusable::<LibHost>::a11y(&h.rec, elem, &cx).expect("a card projects");
+            assert_eq!(a.role, Role::Card);
+            let item = &published.shelves()[row].items[col];
+            assert_eq!(a.subject.as_deref(), Some(item.rk.as_str()), "the subject is the ratingKey");
+        }
+        assert_eq!(find(&format!("shelf.{row}.card.{}", shelf.elems.len())), None, "one past the end of row {row}");
+    }
+    assert_eq!(find(&format!("shelf.{}.card.0", h.rec.shelves.len())), None, "a row that does not exist");
+    assert_eq!(Screen::<LibHost>::a11y_ns(&h.rec), "recommended");
+}
