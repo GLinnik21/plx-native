@@ -50,8 +50,8 @@
 //! 2. (to about 150 ms) the clear slab A springs from the panel to the DRAIN rect ([`drain_rect`]):
 //!    just BELOW the opener, centred on it, about its height and [`DRAIN_WIDTH`] of its width, a
 //!    capsule, [`DRAIN_GAP`] under it (closer than [`MERGE_K`], so the glass can bridge it). The
-//!    opener re-forms as its OWN blob B at its own rect as A closes in ([`REFORM_FROM`]), the same
-//!    [`Frame::merge`] shape the open shrinks;
+//!    opener re-forms as its OWN blob B, growing up from the opener's bottom edge as A closes in
+//!    ([`BLOB_BORN`] to [`REFORM_FROM`]), the same [`Frame::merge`] shape the open shrinks;
 //! 3. (to about 235 ms) the fold ([`K_FOLD`], released once A is within [`FOLD_AT`] of the drain):
 //!    B grows to the opener's full rect while A shrinks to nothing toward its own top-centre,
 //!    draining UP into B through the smooth-minimum neck, and the opener's own face fades back in
@@ -101,10 +101,18 @@ pub const FOLD_AT: f32 = 0.12;
 /// The fold spring's stiffness (0 = the slab whole under the opener, 1 = drained into it):
 /// critically damped, the slab is within 4% of gone in about 130 ms.
 pub const K_FOLD: f32 = 1500.0;
-/// The opener's re-formed blob B ([`Frame::merge`]) as a share of the opener's own size as the
-/// slab arrives at the drain, scaled by the same curve as the open's merge, so it appears as a
-/// small bead and is about half size when the fold begins. The fold grows it to 1.
+/// The opener's re-formed blob B ([`Frame::merge`]) as a share of the opener's own size once the
+/// slab has arrived at the drain: it grows from [`BLOB_BORN`] to this over the slab's approach (the
+/// open's merge curve, [`merge_scale_at`]), so it is about half size when the fold begins. The fold
+/// grows it to 1.
 pub const REFORM_FROM: f32 = 0.7;
+/// The opener's re-formed blob B's size on its FIRST frame, as a share of the opener's own size.
+/// It has to be a shape the smooth minimum can join the slab to, not a point: a bead a few px across is a point to it, which turned
+/// B into a one-frame spike on the slab's top edge, and the next frame into a capsule floating
+/// above the slab with the neck broken. It is born on the opener's BOTTOM edge, the one nearest the
+/// slab, and grows UP from it ([`Frame::merge`]), so the gap between B's bottom and the slab's top
+/// never exceeds [`DRAIN_GAP`], inside the neck's reach (half of [`MERGE_K`]).
+pub const BLOB_BORN: f32 = 0.3;
 /// The fold at which the opener's own face starts to fade back in ([`Frame::opener_alpha`]): the
 /// face returns over the last of the drain, on the blob.
 pub const OPENER_BACK_FROM: f32 = 0.55;
@@ -179,8 +187,9 @@ pub struct Frame {
     /// The shape the glass is JOINED to, or `None` once there is nothing to join (the settled
     /// panel, the fallback). On an open: the opener's rect scaled about its own centre by
     /// `1 - smoothstep(0, MERGE_END_AT, progress)`. On a close: the opener's re-formed blob B, the
-    /// same rect scaled by [`REFORM_FROM`] times that curve as the slab arrives and by the fold up
-    /// to 1 as it drains in.
+    /// same rect scaled about the centre of its BOTTOM edge (the edge nearest the slab, so it is
+    /// joined to the slab from its first frame) from [`BLOB_BORN`] to [`REFORM_FROM`] as the slab
+    /// arrives and by the fold up to 1 as it drains in.
     pub merge: Option<Merge>,
     /// How CLEAR the glass is, 0 = the frosted material the settled panel wears, 1 = clear glass
     /// (the sharp page refracted through the whole face). A close is clear from its first frames
@@ -438,12 +447,18 @@ impl Morph {
         let sa = 1.0 - fold;
         let start_radius = lerp(pill_radius, drain.h * 0.5, c);
         // The merge shape B: the opener's rect shrinking about its own centre on an open; on a close
-        // the opener re-forming there, a bead as the slab arrives and the whole opener as it drains in.
-        let sb = lerp(merge_scale_at(progress), lerp(REFORM_FROM * merge_scale_at(progress), 1.0, fold), c);
-        let merge = (sb > 0.0).then(|| Merge {
-            rect: Rect::new(f.cx() - f.w * sb * 0.5, f.cy() - f.h * sb * 0.5, f.w * sb, f.h * sb),
-            radius: pill_radius * sb,
-            k: MERGE_K,
+        // the opener re-forming, a bead of [`BLOB_BORN`] the frame the slab comes within the merge's
+        // reach, growing as it arrives and the whole opener as it drains in. A close's B grows UP
+        // from the opener's bottom edge, the one nearest the slab, so that edge never leaves the
+        // slab's top by more than the drain gap and the neck holds from B's first frame.
+        let reform = merge_scale_at(progress);
+        let closed_b = if reform > 0.0 { lerp(lerp(BLOB_BORN, REFORM_FROM, reform), 1.0, fold) } else { 0.0 };
+        let sb = lerp(reform, closed_b, c);
+        let merge = (sb > 0.0).then(|| {
+            let (w, h) = (f.w * sb, f.h * sb);
+            // the centre-anchored top on an open, the bottom-anchored top on a close (bit-exact at c = 0)
+            let top = lerp(f.cy() - h * 0.5, f.y + f.h - h, c);
+            Merge { rect: Rect::new(f.cx() - w * 0.5, top, w, h), radius: pill_radius * sb, k: MERGE_K }
         });
         Frame {
             rect: shrink_to_top_centre(travelled, sa),
@@ -775,8 +790,8 @@ mod tests {
         }
     }
 
-    /// CLOSE, phase 3: the opener re-forms as its own blob B at its own spot (about its own centre,
-    /// never past its own rect) and the slab drains up into it through the neck: A and B are both
+    /// CLOSE, phase 3: the opener re-forms as its own blob B at its own spot (growing from its
+    /// bottom edge, never past its own rect) and the slab drains up into it through the neck: A and B are both
     /// there for several frames with the merge active, A reaches nothing, the opener's face only
     /// returns, and the last frame is the closed frame exactly.
     #[test]
@@ -790,7 +805,8 @@ mod tests {
                 assert_eq!(f.opener_alpha, 0.0, "the opener stays consumed until the slab is near: {f:?}");
             }
             if let Some(b) = f.merge {
-                assert!((b.rect.cx() - PILL.cx()).abs() < 1e-3 && (b.rect.cy() - PILL.cy()).abs() < 1e-3, "B is centred on the opener");
+                assert!((b.rect.cx() - PILL.cx()).abs() < 1e-3, "B is centred across the opener");
+                assert!((b.rect.y + b.rect.h - (PILL.y + PILL.h)).abs() < 0.5, "B grows from the opener's bottom edge, the one nearest the slab: {b:?}");
                 assert!(b.rect.w <= PILL.w + 1e-3 && b.rect.h <= PILL.h + 1e-3 && b.k == MERGE_K, "B never exceeds the opener: {b:?}");
             }
         }
@@ -817,6 +833,104 @@ mod tests {
         let m = last.merge.expect("the opener's own blob, whole");
         assert_eq!((m.rect, m.radius), (PILL, PILL.h * 0.5));
         assert!((11..=17).contains(&close.len()), "about 14 frames (230 ms) at 60 fps, got {}", close.len());
+    }
+
+    /// The openers a morph closes into: the header pill the suite uses, the profile chip (a 60 px
+    /// circle) and a tall, wide control. A taller opener has its blob's bottom edge further from the
+    /// slab's top while the blob is small, which is where the neck used to break.
+    const OPENERS: [Rect; 3] = [PILL, Rect::new(76.0, 40.0, 60.0, 60.0), Rect::new(1400.0, 40.0, 240.0, 56.0)];
+    /// How far inside the glass the union must be at the middle of the gap between the blob and the
+    /// slab, in px. Below it the neck is a hair from breaking and reads as a gap once it is
+    /// antialiased.
+    const NECK_MARGIN: f32 = 1.0;
+    /// The smallest the blob may be on its first frame, as a share of the opener's height: below it
+    /// the smooth minimum sees a point, not a shape, and turns it into a one-frame cusp.
+    const BLOB_MIN_SIDE: f32 = 0.25;
+
+    /// The close for `pill`, under a panel that covers it (its top edge is the opener's, as
+    /// `popover::cover_opener` hangs every morphing menu), stepped at 60 fps until the morph says it
+    /// is closed.
+    fn close_frames_for(pill: Rect) -> Vec<Frame> {
+        let panel = Rect::new(pill.x + pill.w - PANEL.w.max(pill.w), pill.y, PANEL.w.max(pill.w), PANEL.h);
+        let mut m = Morph::new();
+        for _ in 0..120 {
+            m.step(true, DT);
+        }
+        let mut out = Vec::new();
+        for _ in 0..120 {
+            m.step(false, DT);
+            out.push(m.frame(Some(pill), panel, RAD));
+            if m.closed() {
+                break;
+            }
+        }
+        assert!(m.closed(), "the close lands for {pill:?}");
+        out
+    }
+
+    /// `fs_glass.frag`'s `sdBox`: the signed distance from `p` to the rect `r` with corner `radius`
+    /// (held to the rect's half extent).
+    fn sd_box(p: (f32, f32), r: Rect, radius: f32) -> f32 {
+        let radius = radius.min(r.w * 0.5).min(r.h * 0.5);
+        let q = ((p.0 - r.cx()).abs() - r.w * 0.5 + radius, (p.1 - r.cy()).abs() - r.h * 0.5 + radius);
+        let (ox, oy) = (q.0.max(0.0), q.1.max(0.0));
+        (ox * ox + oy * oy).sqrt() + q.0.max(q.1).min(0.0) - radius
+    }
+
+    /// The glass's own union at `p`: the slab A (`a`, its rect and corner radius) joined to the blob
+    /// B (`b`) by `fs_glass.frag`'s polynomial smooth minimum, `h = clamp(0.5 + 0.5 (db - da) / k, 0,
+    /// 1)`, `d = mix(db, da, h) - k h (1 - h)`. Inside the glass where it is negative. Halfway
+    /// between two flat edges `g` apart both distances are `g / 2` and `h` is a half, so the union is
+    /// `g / 2 - k / 4`: the neck bridges a gap up to `k / 2`, [`MERGE_K`] / 2 = 14 px.
+    fn union_sdf(p: (f32, f32), a: (Rect, f32), b: &Merge) -> f32 {
+        let (da, db) = (sd_box(p, a.0, a.1), sd_box(p, b.rect, b.radius));
+        let h = (0.5 + 0.5 * (db - da) / b.k).clamp(0.0, 1.0);
+        db + (da - db) * h - b.k * h * (1.0 - h)
+    }
+
+    /// CLOSE, the neck: from the first frame B exists until A is gone, the two are JOINED, on every
+    /// frame and at every opener (owner film, 2026-11-17: on B's second frame it was a small capsule
+    /// floating above the slab with a gap, and a frame later it was joined by a neck). The union of
+    /// the two, evaluated at B's centre across, halfway between B's bottom edge and A's top, is
+    /// inside the glass by [`NECK_MARGIN`].
+    ///
+    /// Red on the tree where B grew about the opener's centre from nothing: a taller opener's
+    /// bottom edge is further above the slab's top than the neck reaches while B is small.
+    #[test]
+    fn a_close_keeps_the_blob_joined_to_the_slab_on_every_frame_both_exist() {
+        for pill in OPENERS {
+            let mut both = 0;
+            for (n, f) in close_frames_for(pill).iter().enumerate() {
+                let Some(b) = f.merge.filter(|b| b.rect.w > 0.0 && b.rect.h > 0.0) else { continue };
+                if f.rect.w <= 0.0 || f.rect.h <= 0.0 {
+                    continue;
+                }
+                both += 1;
+                let mid = (b.rect.y + b.rect.h + f.rect.y) * 0.5;
+                let d = union_sdf((b.rect.cx(), mid), (f.rect, f.radius), &b);
+                assert!(
+                    d < -NECK_MARGIN,
+                    "opener {pill:?}, close frame {n}: B and A come apart (union {d} px at the middle of a {} px gap): {f:?}",
+                    f.rect.y - (b.rect.y + b.rect.h)
+                );
+            }
+            assert!(both >= 6, "A and B both stand for several frames at {pill:?}: {both}");
+        }
+    }
+
+    /// CLOSE, the birth: B is a bead with a size of its own on its first frame, not a point (owner
+    /// film: a one-frame spike on the slab's top edge). Its smaller side is at least
+    /// [`BLOB_MIN_SIDE`] of the opener's height.
+    #[test]
+    fn the_blob_is_born_big_enough_to_join_the_slab_without_a_cusp() {
+        for pill in OPENERS {
+            let first = close_frames_for(pill).iter().find_map(|f| f.merge).expect("the opener re-forms");
+            assert!(
+                first.rect.w.min(first.rect.h) >= BLOB_MIN_SIDE * pill.h,
+                "opener {pill:?}: B starts {} x {} px, under {BLOB_MIN_SIDE} of its height",
+                first.rect.w, first.rect.h
+            );
+        }
     }
 
     /// OPEN: now that the panel covers its opener, the first frame IS the opener's live rect (and its
