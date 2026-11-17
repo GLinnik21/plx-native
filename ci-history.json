@@ -1,4 +1,4 @@
-{"updated":"2026-11-17T15:10:43Z",
+{"updated":"2026-11-17T15:16:10Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5288,7 +5288,8 @@
 {"id":44101504744,"at":"2026-11-17T14:17:36Z","sha":"3878e4f55","title":"Quality ceiling: judge every version on its video bitrate, as Media[0] is","pr":1423,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":124,"Windows launcher syntax":28,"macOS tests against bundled FFmpeg and ASS":245,"Linux simulator build + launch":370}},
 {"id":44104946258,"at":"2026-11-17T14:36:22Z","sha":"59dd15896","title":"Warn only owners of affected Plex servers","pr":1422,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":24,"Linux simulator build + launch":391}},
 {"id":44107955041,"at":"2026-11-17T14:52:49Z","sha":"e0825d1d6","title":"test: type as each door delivers text","pr":1428,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":225,"Windows launcher syntax":21,"macOS simulator build + launch":200,"Linux simulator build + launch":365}},
-{"id":44108454324,"at":"2026-11-17T14:55:30Z","sha":"6c8526f52","title":"Merge remote-tracking branch 'origin/main' into codex/server-security-warning","pr":1422,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Linux simulator build + launch":370,"Windows launcher syntax":20,"macOS tests against bundled FFmpeg and ASS":246}}
+{"id":44108454324,"at":"2026-11-17T14:55:30Z","sha":"6c8526f52","title":"Merge remote-tracking branch 'origin/main' into codex/server-security-warning","pr":1422,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Linux simulator build + launch":370,"Windows launcher syntax":20,"macOS tests against bundled FFmpeg and ASS":246}},
+{"id":44111138037,"at":"2026-11-17T15:09:48Z","sha":"2f46df9e6","title":"Crash breadcrumbs: say a missing surface_changed is not a negative","pr":1429,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":213,"macOS tests against bundled FFmpeg and ASS":229,"Windows launcher syntax":22,"Linux simulator build + launch":357}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
