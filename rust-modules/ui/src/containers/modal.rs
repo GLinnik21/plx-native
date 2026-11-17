@@ -616,6 +616,18 @@ impl ModalUnderlay {
         self.held = Latched::Nothing;
         self.pending = None;
     }
+
+    /// The field as a stack that has read its page holds it: latched on texture `tex`, the read
+    /// landed. A host test has no framebuffer to read, and the fixture's surfaces declare no dim to
+    /// keep a latch alive (one would paint through GL, which a host test has no context for), so a
+    /// test states the field's condition at the top of a frame itself. `held` stays `Nothing`: the
+    /// frame's dim pass, with nobody dimming, then KEEPS the field (`latch_step`) through to the lift
+    /// pass, as a dimming surface's page source does on the device, instead of resetting it.
+    #[cfg(test)]
+    pub(crate) fn latch_for_test(&mut self, tex: u32) {
+        self.field = crate::underlay::UnderlayField::latched_for_test(tex);
+        self.held = Latched::Nothing;
+    }
 }
 
 impl Default for ModalUnderlay {

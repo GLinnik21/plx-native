@@ -277,11 +277,13 @@ pub trait Rig<H: Host> {
     }
     /// Shared chrome draws after its page and before surfaces, using a captured vocabulary.
     ///
-    /// `lifted` is **the bar member the opener lift owns this frame** ([`Screen::bar_opener`], the
-    /// profile chip while its menu is up), `None` otherwise. The chrome pass LEAVES IT OUT, as a page
-    /// leaves its lifted element out of its own pass ([`DrawFrame::lifted`]): the lift
-    /// ([`Self::lift_bar_member`]) is its only copy, painted at the morph's `opener_alpha`, so a
-    /// consumed chip is not under the dim, and the host snapshot the glass refracts does not hold it.
+    /// `lifted` is **the bar member the opener lift PAINTS this frame** ([`Screen::bar_opener`], the
+    /// profile chip while its menu is up and the field it stands on has latched), `None` otherwise,
+    /// the frames before the latch included: the bar draws the chip itself on those, so it is never
+    /// painted by neither. The chrome pass LEAVES IT OUT, as a page leaves its lifted element out of
+    /// its own pass ([`DrawFrame::lifted`]): the lift ([`Self::lift_bar_member`]) is its only copy,
+    /// painted at the morph's `opener_alpha`, so a consumed chip is not under the dim, and the host
+    /// snapshot the glass refracts does not hold it.
     fn draw_chrome(&mut self, _arg: &H::Arg, _parts: &CxParts<H::Elem>,
         _nav: super::screen::NavPresentation, _glass: Option<&mut super::frame::glass::GlassPlan>,
         _lifted: Option<H::Elem>) {}
@@ -1637,9 +1639,21 @@ where
             }
         }
         let lifted = page_lift.and_then(|(_, key)| key);
+        // **The bar member the lift PAINTS this frame: ONE decision, read by both sides.** The chip's
+        // lift stands on the stack's latched field and paints nothing before it has latched
+        // (`widgets::lift_profile_chip`), so the bar leaves the chip out of the chrome pass exactly
+        // when the lift draws it, and draws it itself until then: the frame the menu opens, and the
+        // one after it (the field lands inside that frame's dim pass, after the chrome pass), the
+        // chip is the bar's, never nobody's. Read ONCE here, before the dim pass can latch the field
+        // mid-frame, so the chrome pass and the lift pass cannot disagree about the frame. It is not
+        // gated on `opener_alpha`: a chip the morph has consumed is lifted at 0, which is nowhere,
+        // and the bar must not draw it back.
+        let bar_paint = bar_lift.filter(|_| self.nav.modals.lift_field().ground_tex().is_some());
         // What the lift owns, a page element or a bar member alike: when it changes the host
-        // snapshot is re-taken, so the one that was drawn into it (or left out) is not kept.
-        let owned = target.and_then(|t| t.1);
+        // snapshot is re-taken, so the one that was drawn into it (or left out) is not kept. A bar
+        // member is owned from the frame the lift paints it (`bar_paint`), not from the frame its
+        // menu mounts: until then it is in the snapshot, drawn by the bar.
+        let owned = target.and_then(|t| if t.2 { bar_paint.and(t.1) } else { t.1 });
         let lift_parts = page_lift.map(|(entry, focus)| self.opener_parts(entry, focus));
         if !backdrop::source_walk() && !plx_gfx::gfx::blur_source_pass() && owned != self.lifted_last {
             self.lifted_last = owned;
@@ -1843,7 +1857,7 @@ where
                         // (`chrome_presented`), and a skipped frame publishes no material, so the
                         // band's goes back to Flat rather than staying on the last drawn frame's face.
                         if let Some(navigation) = chrome_presented::<H>(navigation, &*inst.screen) {
-                            let bar_lifted = bar_lift.map(|(elem, _, _)| elem);
+                            let bar_lifted = bar_paint.map(|(elem, _, _)| elem);
                             backdrop::draw_span("chrome", || rig.draw_chrome(&e.arg, &chrome_parts, navigation, glass.as_deref_mut(), bar_lifted));
                         } else if let Some(glass) = glass.as_deref_mut() {
                             glass.tab_band_mut().reset_material();
@@ -1989,7 +2003,7 @@ where
                         frame.apply_frame_requests(present);
                     }
                 }
-                if let Some((elem, presented, _)) = bar_lift.filter(|_| pages && opener_alpha > 0.0) {
+                if let Some((elem, presented, _)) = bar_paint.filter(|_| pages && opener_alpha > 0.0) {
                     // the member is lifted at the alpha the chrome pass drew it with, times what the
                     // morphing menu has left of it
                     let presented = super::screen::NavPresentation { chrome_alpha: presented.chrome_alpha * opener_alpha, ..presented };

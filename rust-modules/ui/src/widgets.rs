@@ -3177,8 +3177,10 @@ fn profile_chip_on(
 /// blur source pass. **Before the field has latched it draws nothing** (CONFIRM2 CB1): the field
 /// latches a frame after the OK that opens the menu, the dim is still 0 on that frame, and the bar's
 /// own chip is already on screen at the same rect — the flat capsule this used to fall back to landed
-/// on top of that one and the chip blinked near-black for a frame on every open. The chip on the tab
-/// strip, with no menu up, stays live glass.
+/// on top of that one and the chip blinked near-black for a frame on every open. The dispatcher asks
+/// for this lift only once the field has latched (one reading per frame, `Dispatcher::draw_with`'s
+/// `bar_paint`), and the chrome pass leaves the chip out on exactly those frames, so until then the
+/// bar's copy is the chip's only one. The chip on the tab strip, with no menu up, stays live glass.
 pub fn lift_profile_chip(
     p: Painter,
     data: ProfileChipRead<'_>,

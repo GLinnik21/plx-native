@@ -145,18 +145,24 @@ fn a_bar_opener_is_lifted_once_per_frame_by_the_opener_pass_on_the_live_presenta
     assert_eq!(d.lifted_opener(), Some((host, Some(chip))), "the chip is the surface's opener, hosted by the page on top");
 
     d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    // the lift is asked for once the stack's field has latched; the fixture's surface declares no dim
+    // to keep it, so each drawn frame states it at its top, as the device's standing latch does
+    d.nav.modals.underlay.latch_for_test(LIFT_TEX);
     rig.bar_lifts.clear();
     d.draw(&mut rig, true);
     assert_eq!(rig.bar_lifts.len(), 1, "one lift in a drawn frame");
     assert_eq!(rig.bar_lifts[0].0, 7);
+    d.nav.modals.underlay.latch_for_test(LIFT_TEX);
     d.draw(&mut rig, true);
     assert_eq!(rig.bar_lifts.len(), 2, "one lift per drawn frame, not one per surface-and-pass");
+    d.nav.modals.underlay.latch_for_test(LIFT_TEX);
     d.draw(&mut rig, false);
     assert_eq!(rig.bar_lifts.len(), 2, "a surfaces-only pass owes none: the bar and its dim were not drawn");
 
     // a half-tucked bar: the lift, and the rect the surface is told, are where the bar is drawn
     let page = d.nav.tabs.stack.top_mut().unwrap().inst.as_mut().unwrap().screen.as_any_mut().unwrap();
     page.downcast_mut::<crate::fixture::FixtureScreen>().expect("fixture screen").tuck = 0.5;
+    d.nav.modals.underlay.latch_for_test(LIFT_TEX);
     d.draw(&mut rig, true);
     let lift = crate::screen::chrome_lift(0.5);
     let (_, presented) = *rig.bar_lifts.last().unwrap();
@@ -186,6 +192,9 @@ fn a_bar_opener_is_left_out_of_the_chrome_pass_while_the_lift_owns_it() {
 
     modal_mut(&mut d, id).bar_opener = Some(7);
     d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
+    // the lift stands on the stack's latched field and owns the chip only once it has latched
+    // (`the_chip_is_painted_exactly_once_on_every_frame_of_its_menus_open_and_close`)
+    d.nav.modals.underlay.latch_for_test(LIFT_TEX);
     rig.chrome_lifted.clear();
     d.draw(&mut rig, true);
     assert!(!rig.chrome_lifted.is_empty() && rig.chrome_lifted.iter().all(|l| *l == Some(7)),
@@ -193,6 +202,7 @@ fn a_bar_opener_is_left_out_of_the_chrome_pass_while_the_lift_owns_it() {
     // a consumed chip (the morph's opener alpha 0) is lifted at 0, so it is nowhere: the chrome pass
     // still leaves it out, never draws it back
     modal_mut(&mut d, id).opener_alpha = 0.0;
+    d.nav.modals.underlay.latch_for_test(LIFT_TEX);
     rig.chrome_lifted.clear();
     d.draw(&mut rig, true);
     assert!(rig.chrome_lifted.iter().all(|l| *l == Some(7)), "consumed: still the lift's: {:?}", rig.chrome_lifted);
@@ -202,6 +212,69 @@ fn a_bar_opener_is_left_out_of_the_chrome_pass_while_the_lift_owns_it() {
     rig.chrome_lifted.clear();
     d.draw(&mut rig, true);
     assert!(rig.chrome_lifted.iter().all(|l| l.is_none()), "no opener: the bar draws it: {:?}", rig.chrome_lifted);
+}
+
+/// A texture name for a host test's latched underlay field (any non-zero stand-in).
+const LIFT_TEX: u32 = 4242;
+
+/// **The profile chip is painted exactly once on every frame of its menu's open and close: by the
+/// bar until the lift can paint it, by the lift from then on, never by neither and never by both**
+/// (owner film, 2026-11-17: the chip blinked out for one frame on every open). The lift stands on
+/// the stack's latched underlay field and paints nothing before it has latched, while the bar had
+/// already left the chip out as soon as the menu mounted, so the first frame had no chip at all.
+/// There is ONE decision per frame, taken before the dim pass can latch the field mid-frame: the
+/// bar leaves the chip out of the chrome pass (`Rig::draw_chrome`'s `lifted`) exactly when the lift
+/// pass is asked to paint it (`Rig::lift_bar_member`). The host snapshot is re-taken on the frame
+/// the chip changes hands, and only then, so the chip the bar drew into it does not stay behind
+/// under the lift's copy.
+///
+/// Red on the tree where the chrome pass left the chip out from the frame its menu mounted: the
+/// frames before the field latched were painted zero times.
+#[test]
+fn the_chip_is_painted_exactly_once_on_every_frame_of_its_menus_open_and_close() {
+    use crate::popover::host;
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig, _) = booted();
+    let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    modal_mut(&mut d, id).bar_opener = Some(7);
+    d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
+
+    // (the field has latched at the top of the frame, the morph's opener alpha): the open (two
+    // frames before the read lands, then the lift paints through the fade), then the close
+    let frames: [(bool, f32); 12] = [
+        (false, 1.0), (false, 1.0), (true, 1.0), (true, 0.8), (true, 0.5), (true, 0.2), (true, 0.0),
+        (true, 0.0), (true, 0.3), (true, 0.7), (true, 1.0), (true, 1.0),
+    ];
+    let mut hands_changed = Vec::new();
+    for (n, (latched, alpha)) in frames.into_iter().enumerate() {
+        if latched { d.nav.modals.underlay.latch_for_test(LIFT_TEX) } else { d.nav.modals.underlay.reset() }
+        modal_mut(&mut d, id).opener_alpha = alpha;
+        let (bars, lifts, retakes) = (rig.chrome_lifted.len(), rig.bar_lifts.len(), host::invalidations());
+        let painted = rig.bar_lifts_painted;
+        d.draw(&mut rig, true);
+        let drawn_by_bar = rig.chrome_lifted[bars..].iter().filter(|l| l.is_none()).count();
+        // a lift on an unlatched field paints nothing, as `lift_profile_chip` does: it is no paint
+        let drawn_by_lift = rig.bar_lifts_painted - painted;
+        assert_eq!(rig.bar_lifts.len() - lifts, drawn_by_lift, "frame {n}: the lift is only asked for when it can paint");
+        if host::invalidations() > retakes { hands_changed.push(n); }
+        if alpha > 0.0 {
+            assert_eq!((drawn_by_bar, drawn_by_lift), if latched { (0, 1) } else { (1, 0) },
+                "frame {n} (latched {latched}, alpha {alpha}): the chip is painted by exactly one of the bar and the lift");
+        } else {
+            assert_eq!(drawn_by_bar, 0, "frame {n}: a consumed chip is never drawn back by the bar");
+        }
+    }
+    assert_eq!(hands_changed, vec![2], "the host snapshot is re-taken when the chip changes hands, and only then");
+
+    // the surface stands down: the bar draws the chip again, once, and the snapshot is re-taken
+    modal_mut(&mut d, id).bar_opener = None;
+    d.nav.modals.underlay.latch_for_test(LIFT_TEX);
+    let (bars, lifts, retakes) = (rig.chrome_lifted.len(), rig.bar_lifts.len(), host::invalidations());
+    d.draw(&mut rig, true);
+    assert_eq!(rig.chrome_lifted[bars..].iter().filter(|l| l.is_none()).count(), 1, "the bar draws its chip again");
+    assert_eq!(rig.bar_lifts.len(), lifts, "and the lift is gone");
+    assert_eq!(host::invalidations() - retakes, 1, "the chip changed hands back");
 }
 
 #[test]
@@ -218,6 +291,7 @@ fn a_bar_opener_does_not_draw_over_an_opaque_surface_that_is_arriving() {
 
     // The old surface still owns the lift while the new surface is held at zero opacity.
     rig.bar_lifts.clear();
+    d.nav.modals.underlay.latch_for_test(LIFT_TEX);
     d.draw(&mut rig, true);
     assert_eq!(rig.bar_lifts.len(), 1);
     let mut dip = PopoverMotion::at(0.0);
@@ -229,6 +303,7 @@ fn a_bar_opener_does_not_draw_over_an_opaque_surface_that_is_arriving() {
     assert!(dip.floor() > 0.0 && dip.appear == 0.0, "the dip starts by covering the old surface");
     d.nav.modals.surface_mut(settings).unwrap().motion = dip;
 
+    d.nav.modals.underlay.latch_for_test(LIFT_TEX);
     d.draw(&mut rig, true);
     assert_eq!(d.host_policy().1, HostRender::Cached, "the host is still cached during the dip");
     assert_eq!(rig.bar_lifts.len(), 1, "the dip covers the chip with the rest of the account surface");

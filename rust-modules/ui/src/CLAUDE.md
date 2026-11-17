@@ -656,7 +656,10 @@ tried first. None of it is reconstructable from the code without repeating the m
   lift pass through `Rig::lift_bar_member`), is a `glass_frozen`
   capsule on the stack's latched field (`ModalStack::lift_field`, no dim, the host snapshot behind its
   rim) and requests no backdrop entry or `src` pass; before the field latches the lift draws
-  nothing (the bar's own chip is already on screen at that rect). Only the chip on the tab strip, with no menu up, is live glass. The scrim behind a compact menu is
+  nothing and the BAR draws the chip: the dispatcher decides once per frame, before the dim pass can
+  latch the field (`draw_with`'s `bar_paint`), whether the lift paints it, and the chrome pass leaves
+  the chip out (`Rig::draw_chrome`'s `lifted`) on exactly those frames, so the chip is painted once on
+  every frame of the open and the close. Only the chip on the tab strip, with no menu up, is live glass. The scrim behind a compact menu is
   `theme::underlay::DIM_COMPACT`, 30%. The face colours and shadow are theme roles
   (`MENU_GLASS_TOP/BOT`, `MENU_SHADOW*`); the face fades with the panel's cascaded alpha.
   `GlassRim::Menu` over the LIVE path (`draw_blur_backdrop`) would turn on a per-frame sharp band
