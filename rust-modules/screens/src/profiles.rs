@@ -2029,7 +2029,7 @@ mod test_support;
 
 #[cfg(test)]
 #[path = "profiles_selection_tests.rs"]
-mod selection_tests;
+pub(crate) mod selection_tests;
 
 #[cfg(test)]
 #[path = "profiles_session_tests.rs"]

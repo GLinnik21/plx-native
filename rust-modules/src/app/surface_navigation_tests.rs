@@ -1470,7 +1470,7 @@ fn back_at_the_first_consent_stage_is_the_root_press_and_leaves_the_question_up(
     let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
     let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Profiles, tick(0), vec![]);
-    open_first_run_consent(&mut d);
+    open_first_run_consent_at(&mut d, 0);
     frame(&mut d, &mut rig, AppArg::Profiles, tick(1), vec![]);
     assert!(consent_up(&d));
     assert_eq!(overlay_word(&d), Some("consent"));

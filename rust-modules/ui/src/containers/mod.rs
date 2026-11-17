@@ -189,8 +189,14 @@ impl<H: Host> Navigation<H> {
 
     /// The input owner (§2.2): the shared modal stack first, then the top page.
     pub fn input_owner(&self) -> Option<InputOwner> {
+        self.input_owner_unless(|_| false)
+    }
+
+    /// [`input_owner`](Self::input_owner) with every surface `dismissed` names counted as already
+    /// closed: who holds input once those dismissals commit. Page ops are never read.
+    pub fn input_owner_unless(&self, dismissed: impl Fn(EntryId) -> bool) -> Option<InputOwner> {
         self.modals
-            .input_owner()
+            .input_owner_unless(dismissed)
             .or_else(|| self.top_page().map(|e| InputOwner::Entry(e.id)))
     }
 

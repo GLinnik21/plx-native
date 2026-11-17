@@ -25,7 +25,7 @@ mod seek_jump;
 pub mod input;
 pub mod overlay;
 #[cfg(test)]
-mod overlay_tests;
+pub(crate) mod overlay_tests;
 #[cfg(test)]
 mod compiled_geometry_tests;
 
@@ -1253,6 +1253,14 @@ impl PlayerScreen {
         if confirm { Self::ask(fx, PlayerReq::RepairSandbox); }
         Self::repair_focus(fx, GROUP_FAILURE);
     }
+    /// The confirmation's answers as an accessibility id names them: `repair.cancel`, and
+    /// `repair.confirm` while the alert offers two.
+    fn repair_answers(&self) -> plx_ui::decision_alert::AlertAnswers {
+        plx_ui::decision_alert::AlertAnswers::new(GROUP_REPAIR, REPAIR_CANCEL, REPAIR_CONFIRM, "cancel", "confirm")
+            .under("repair")
+            .counted(self.repair_alert.answers())
+    }
+
     fn repair_rect(&self, confirm: bool, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let (cancel, repair) = self.repair_alert.frames(measure);
         if confirm { repair } else { cancel }
@@ -2760,12 +2768,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
         use player_hud::{ELEM_CHAPTER_BASE, ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_SCRUB, ELEM_SECTION_BASE, ELEM_SECTION_END, ELEM_TAB_BASE};
         let key = *key;
         if self.repair_alert.visible() {
-            let word = match key {
-                REPAIR_CANCEL => "cancel",
-                REPAIR_CONFIRM if self.repair_alert.answers() == plx_ui::decision_alert::Answers::Two => "confirm",
-                _ => return None,
-            };
-            return Some(A11y::new(A11yPath::new().name("repair").name(word), Role::Button));
+            return self.repair_answers().a11y(key);
         }
         let chapters = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
         if key == ELEM_SCRUB {
@@ -2821,7 +2824,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
         self.groups_in(&geo, cx, &mut declared);
         let Some(len) = declared.iter().find(|spec| spec.id == g).map(|spec| spec.len) else { return };
         match g {
-            GROUP_REPAIR => out.extend([REPAIR_CANCEL, REPAIR_CONFIRM].into_iter().take(len)),
+            GROUP_REPAIR => self.repair_answers().elems(g, out),
             GROUP_SCRUB => out.push(player_hud::ELEM_SCRUB),
             GROUP_ROW => out.extend((0..len as i32).filter(|&i| self.row_enabled(i)).map(player_hud::control_elem)),
             GROUP_TABS => out.extend(
@@ -3399,7 +3402,7 @@ mod travel_rig {
 /// so it can no longer reach another case; `player::state` still reads other crate globals
 /// (`seeking`, the resolve window), which is what the lock is for.
 #[cfg(test)]
-mod step_ladder_tests {
+pub(crate) mod step_ladder_tests {
     use super::*;
     use crate::player::overlay_tests::{derive_state, TestHost};
     use crate::registry::AppFx;
@@ -4407,10 +4410,18 @@ mod step_ladder_tests {
     /// element: it has no id, by its command or by its position.
     #[test]
     fn every_hud_element_answers_an_id() {
+        assert!(!player_conforms().is_empty());
+    }
+
+        /// The player page on a film (the classic HUD), run through the id conformance with the id asserts
+    /// above (`AppArg::Player`; the coverage table calls this, and so does the test above).
+    pub(crate) fn player_conforms() -> plx_ui::a11y::Namespaces {
+        use plx_ui::a11y::conform;
+        let mut namespaces = Vec::new();
         let _g = plx_base::testlock::serial();
         let page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
         let cx = cx();
-        plx_ui::a11y::conformance::<TestHost, _>(&page, &cx);
+        namespaces.push(conform::<TestHost, _>(&page, &cx));
         let by_id = |text: &str| {
             let path = plx_ui::a11y::A11yPath::parse_relative(text).expect("a well-formed path");
             Focusable::<TestHost>::a11y_find(&page, &path, &cx)
@@ -4434,6 +4445,8 @@ mod step_ladder_tests {
             .expect("Subtitles projects");
         assert!(subtitles.loaded);
         assert_eq!(subtitles.role, plx_ui::a11y::Role::Button);
+    
+        namespaces
     }
 
     /// **A pair with one live button names that one**: on the first episode Previous is disabled and
@@ -4463,6 +4476,45 @@ mod step_ladder_tests {
         Focusable::<TestHost>::a11y_elems(&page, GROUP_ROW, &cx, &mut elems);
         assert_eq!(elems.len(), 4, "Next, Subtitles, Audio and More");
         assert!(row.len > elems.len(), "the group counts the disabled Previous too: {} cells", row.len);
+    }
+
+    /// **A middle episode names BOTH Previous and Next**: `every_hud_element_answers_an_id` reads a film,
+    /// where the pair is absent, and the test above reads the first episode, where Previous is not live.
+    /// With both live, `control.previous` and `control.next` each project, place and resolve, and the
+    /// id an element projects finds that same element again.
+    #[test]
+    fn a_middle_episode_names_both_previous_and_next() {
+        let _g = plx_base::testlock::serial();
+        let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+        let controls = player_hud::Controls::for_item(true, true, true);
+        assert!(controls.previous && controls.next, "rig: both neighbours are live");
+        page.slot = ControlSlot::Discs(controls);
+        page.model.controls = controls;
+        page.model.is_episode = true;
+        let cx = cx();
+        plx_ui::a11y::conformance::<TestHost, _>(&page, &cx);
+        let mut elems = Vec::new();
+        Focusable::<TestHost>::a11y_elems(&page, GROUP_ROW, &cx, &mut elems);
+        for (id, ordinal) in [("control.previous", player_hud::BTN_PREVIOUS), ("control.next", player_hud::BTN_NEXT)] {
+            let key = player_hud::control_elem(ordinal);
+            let named = plx_ui::a11y::A11yPath::parse_relative(id).expect("a well-formed path");
+            assert!(elems.contains(&key), "{id} is listed by the row's group");
+            assert!(Focusable::<TestHost>::place(&page, &key, &cx, At::Drawn).is_some(), "{id} places");
+            let projected = Focusable::<TestHost>::a11y(&page, &key, &cx).unwrap_or_else(|| panic!("{id} projects"));
+            assert_eq!(projected.path, named, "the element projects the id it is found by");
+            assert_eq!(projected.role, plx_ui::a11y::Role::Button, "{id}");
+            assert_eq!(Focusable::<TestHost>::a11y_find(&page, &named, &cx), Some(key), "{id} resolves");
+            assert_eq!(
+                Focusable::<TestHost>::a11y_find(&page, &projected.path, &cx),
+                Some(key),
+                "{id}: a11y_find(a11y(k).path) == Some(k)"
+            );
+        }
+        assert_eq!(elems.len(), 5, "Previous, Next, Subtitles, Audio and More");
+        let mut groups = Vec::new();
+        Focusable::<TestHost>::groups(&page, &cx, &mut groups);
+        let row = groups.iter().find(|g| g.id == GROUP_ROW).expect("the row is declared");
+        assert_eq!(row.len, elems.len(), "with both live no cell of the row is a hole");
     }
 
     /// Every group this screen declares resolves back through `group_of` to the group it came

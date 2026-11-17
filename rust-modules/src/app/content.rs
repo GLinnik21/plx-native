@@ -578,6 +578,18 @@ pub(crate) fn content_requests(app: &mut App, fr: &mut Frame) {
         bridge.metadata_view(), bridge.marker_preferences());
 }
 
+/// **May the page `entry`'s command run now?** Only the page that holds input acts: a page a
+/// surface still covers, or a page beneath another, is refused (a command it queued before it was
+/// covered must not navigate for it). A surface whose own `Dismiss` is already parked counts as
+/// closed. The FIFO runner executes a head in the drain, ahead of NAV COMMIT, so a picker that
+/// closes on its pick and reports to its page (*Play Version*, *Also available*) has only PARKED its
+/// dismissal when the page's command for that pick arrives. Before the runner (#1392) these gates ran
+/// after the frame's commit and never saw the closing surface; asked of the container alone they
+/// refused the pick (#1424). One answer for the five page-command families below.
+fn holds_input(pages: &plx_ui::dispatch::Dispatcher<bridge::AppHost>, entry: EntryId) -> bool {
+    pages.input_owner_after_dismissals() == Some(InputOwner::Entry(entry))
+}
+
 fn halt_screen_preview(app: &mut ScreenCommandApp<'_, '_>) {
     halt_preview_now(&mut app.player.session, &mut app.adapters.player);
 }
@@ -590,7 +602,7 @@ fn content_command(app: &mut ScreenCommandApp<'_, '_>, source: MachineId, reques
     let _ = now;
     let MachineId::Instance(instance) = source else { return AppCommandOutcome::Refused };
     let Some(entry) = app.pages.nav.entry_of_instance(instance) else { return AppCommandOutcome::RetiredSender };
-    if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) { return AppCommandOutcome::Refused; }
+    if !holds_input(app.pages, entry) { return AppCommandOutcome::Refused; }
     match request {
             ContentReq::Push(arg) => {
                 halt_screen_preview(app);
@@ -742,7 +754,7 @@ fn home_command(app: &mut ScreenCommandApp<'_, '_>, source: MachineId, request: 
     use plx_machine::machine::AppCommandOutcome;
     let MachineId::Instance(instance) = source else { return AppCommandOutcome::Refused };
     let Some(entry) = app.pages.nav.entry_of_instance(instance) else { return AppCommandOutcome::RetiredSender };
-    if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) || app.route() != AppArg::Home {
+    if !holds_input(app.pages, entry) || app.route() != AppArg::Home {
         return AppCommandOutcome::Refused;
     }
     match request {
@@ -813,8 +825,7 @@ pub(crate) fn execute_search_command(
     use plx_screens::registry::SearchReq;
     let MachineId::Instance(instance) = source else { return AppCommandOutcome::Refused };
     let Some(entry) = pages.nav.entry_of_instance(instance) else { return AppCommandOutcome::RetiredSender };
-    if pages.top_arg() != Some(&AppArg::Search)
-        || pages.nav.input_owner() != Some(InputOwner::Entry(entry)) { return AppCommandOutcome::Refused; }
+    if pages.top_arg() != Some(&AppArg::Search) || !holds_input(pages, entry) { return AppCommandOutcome::Refused; }
     match &request {
         SearchReq::Back => bridge::nav_tab(pages, rig, HomeTab::Home, None, Some(ret)),
         SearchReq::Tab(tab) => {
@@ -863,8 +874,7 @@ pub(crate) fn execute_watchlist_command(
     let Some(entry) = pages.nav.entry_of_instance(instance) else { return AppCommandOutcome::RetiredSender };
     // Options come from a surface over the page, so its live sender need not be the page.
     if !matches!(request, WatchlistOut::SetOptions(_))
-        && (pages.top_arg() != Some(&AppArg::Watchlist)
-            || pages.nav.input_owner() != Some(InputOwner::Entry(entry))) {
+        && (pages.top_arg() != Some(&AppArg::Watchlist) || !holds_input(pages, entry)) {
         return AppCommandOutcome::Refused;
     }
     watchlist_request(pages, rig, entry, request, ret);
@@ -987,7 +997,7 @@ fn library_command(app: &mut ScreenCommandApp<'_, '_>, source: MachineId,
         library_publish_shelves(app.pages, app.bridge, entry, target, hidden_page, at_head);
         return AppCommandOutcome::Completed;
     }
-    if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) || !app.route().is_library_family() {
+    if !holds_input(app.pages, entry) || !app.route().is_library_family() {
         return AppCommandOutcome::Refused;
     }
     if let Some(ret) = library_navigation(app.pages, app.bridge, &request, ret) {

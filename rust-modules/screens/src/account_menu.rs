@@ -563,7 +563,7 @@ impl LogicalState for AccountMenuScreen {
 /// so they touch no global and need no lock; the seventh drives the live `session::set_current`
 /// and takes `plx_base::testlock::serial()` for its whole body.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use plx_plex::plex::session::{HomeUserRef, ServerRef, Session, UserRef};
 
@@ -596,6 +596,30 @@ mod tests {
     #[test]
     fn each_row_answers_the_id_of_its_action() {
         use plx_ui::a11y::{A11yPath, Role};
+        with_signed_in_menu(|menu, cx| {
+            plx_ui::a11y::conform::<MenuHost, _>(menu, cx);
+            let mut keys = Vec::new();
+            Focusable::<MenuHost>::a11y_elems(menu, GroupId(0), cx, &mut keys);
+            assert_eq!(keys.len(), 2);
+            for (key, id) in keys.iter().zip(["settings", "sign_out"]) {
+                let a = Focusable::<MenuHost>::a11y(menu, key, cx).expect("a row projects");
+                let want = A11yPath::parse_relative(id).unwrap();
+                assert_eq!((a.path.clone(), a.role), (want.clone(), Role::Row));
+                assert_eq!(Focusable::<MenuHost>::a11y_find(menu, &want, cx), Some(*key));
+            }
+        });
+    }
+
+    /// The profile menu mounted as the registry mounts it, signed in (so Settings and Sign out are
+    /// its rows), and run through the id conformance (`AppArg::AccountMenu`; the coverage table
+    /// calls this).
+    pub(crate) fn account_menu_conforms() -> plx_ui::a11y::Namespaces {
+        with_signed_in_menu(|menu, cx| vec![plx_ui::a11y::conform::<MenuHost, _>(menu, cx)])
+    }
+
+    /// The one mounting both the ids test and the coverage table read: a signed-in session's menu
+    /// after its first tick, with the rows the ids test names.
+    fn with_signed_in_menu<R>(read_menu: impl FnOnce(&AccountMenuScreen, &Cx<'_, MenuHost>) -> R) -> R {
         let _serial = plx_base::testlock::serial();
         let _session = plx_plex::plex::session::TempSession::new("account-menu-ids");
         plx_plex::plex::session::save(&local(Session { account_token: "acct".into(), ..Default::default() }));
@@ -604,16 +628,7 @@ mod tests {
         tick(&mut menu, &read);
         assert_eq!(menu_rows(&menu), [Action::Settings, Action::SignOut], "rig: the rows this test names");
         let cx = cx_of(&read);
-        plx_ui::a11y::conformance::<MenuHost, _>(&menu, &cx);
-        let mut keys = Vec::new();
-        Focusable::<MenuHost>::a11y_elems(&menu, GroupId(0), &cx, &mut keys);
-        assert_eq!(keys.len(), 2);
-        for (key, id) in keys.iter().zip(["settings", "sign_out"]) {
-            let a = Focusable::<MenuHost>::a11y(&menu, key, &cx).expect("a row projects");
-            let want = A11yPath::parse_relative(id).unwrap();
-            assert_eq!((a.path.clone(), a.role), (want.clone(), Role::Row));
-            assert_eq!(Focusable::<MenuHost>::a11y_find(&menu, &want, &cx), Some(*key));
-        }
+        read_menu(&menu, &cx)
     }
 
     /// A host whose only view is the Session publication — the one fact the menu reads off it.

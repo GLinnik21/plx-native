@@ -459,7 +459,7 @@ fn the_picture_draws_each_kinds_whole_column_at_its_opacity() {
     let _guard = plx_base::testlock::serial();
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
     let _live = Live::set(UnderPosters { title: true, ..UnderPosters::DEFAULT });
-    let slot = RouteLayout::settings_page().picture_slot();
+    let slot = RouteLayout::screen().picture_slot();
     let alphas = |opacity: [f32; 2]| {
         let picture = RootPicture { value: UnderPosters { title: true, ..UnderPosters::DEFAULT }, posters: &[], sorted: false, opacity };
         plx_ui::draw_census::capture_runs(|| {
@@ -830,27 +830,21 @@ fn every_under_posters_string_fits_in_every_language() {
     use plx_ui::text_view::TextView;
     let _guard = plx_base::testlock::serial();
     let _live = Live::set(UnderPosters::DEFAULT);
-    let layout = RouteLayout::settings_page();
+    let layout = RouteLayout::screen();
     let mut out = Vec::new();
     for language in SHIPPED {
         let _lang = language_on_this_thread_for_test(language);
         let tag = language.tag();
         for value in every_value() {
-            let mut page = FormTable::<UpId, UpAction, SettingsPage>::new(crate::registry::BAND);
-            page.table.compact = false;
-            page.table.board_metrics(true); // as the page draws it
+            let mut page = FormTable::<UpId, UpAction, SettingsPage>::page(crate::registry::BAND);
             page.set(under_posters_form(value), None);
             out.extend(page.table.app_fit_failures(layout.sectioned_table().w, &format!("{tag} under posters {value:?}")));
             for kind in [PosterKind::Movie, PosterKind::Show] {
-                let mut picker = FormTable::<PartId, DetailPart, SettingsPage>::new(crate::registry::BAND);
-                picker.table.compact = false;
-                picker.table.board_metrics(true);
+                let mut picker = FormTable::<PartId, DetailPart, SettingsPage>::page(crate::registry::BAND);
                 picker.set(details_form(kind, kind.parts(value), &picture_facts(kind, None)), None);
                 out.extend(picker.table.app_fit_failures(layout.sectioned_table().w, &format!("{tag} {kind:?} details picker {value:?}")));
             }
-            let mut root = FormTable::<RootId, Action, SettingsPage>::new(crate::registry::BAND);
-            root.table.compact = false;
-            root.table.board_metrics(true);
+            let mut root = FormTable::<RootId, Action, SettingsPage>::page(crate::registry::BAND);
             root.set(root_form(&RootInputs { under_posters: value, ..text_fit_inputs() }), None);
             out.extend(root.table.app_fit_failures(layout.sectioned_table().w, &format!("{tag} settings root {value:?}")));
         }
@@ -871,7 +865,7 @@ fn every_under_posters_string_fits_in_every_language() {
         }
         for (what, title, copy) in sentences {
             let frame = layout.narrative_copy_frame(true, title, layout.action.y, &ShippedMeasure);
-            let drop = layout.copy_cap_drop(theme::size::LABEL, &ShippedMeasure);
+            let drop = layout.copy_cap_drop(&ShippedMeasure);
             let leading = theme::size::LABEL as f32 + theme::space::XS;
             let view = TextView::new(&copy, theme::size::LABEL, theme::TEXT_READING)
                 .leading(leading)
@@ -1048,7 +1042,7 @@ fn a_title_with_no_poster_path_is_not_art_and_never_a_sample() {
 fn placeholders_of(value: UnderPosters, posters: &[&PmsMovie]) -> plx_ui::placeholder::Frame {
     use plx_ui::follow_copy::PictureSlot;
     let picture = RootPicture { value, posters, sorted: false, opacity: [1.0, 1.0] };
-    plx_ui::placeholder::capture_declared(|| picture.draw(plx_ui::Painter::root(), RouteLayout::settings_page().picture_slot(), &ShippedMeasure)).1
+    plx_ui::placeholder::capture_declared(|| picture.draw(plx_ui::Painter::root(), RouteLayout::screen().picture_slot(), &ShippedMeasure)).1
 }
 
 #[test]
@@ -1105,7 +1099,7 @@ fn a_line_the_setting_turns_on_is_never_drawn_empty_and_a_blank_setting_draws_no
     let words = |v: UnderPosters, posters: &[&PmsMovie]| -> Vec<String> {
         let picture = RootPicture { value: v, posters, sorted: false, opacity: [1.0, 1.0] };
         plx_ui::draw_census::capture_text(|| {
-            plx_gfx::gfx::without_frame_clear(|| plx_ui::follow_copy::PictureSlot::draw(&picture, plx_ui::Painter::recording(), RouteLayout::settings_page().picture_slot(), &ShippedMeasure));
+            plx_gfx::gfx::without_frame_clear(|| plx_ui::follow_copy::PictureSlot::draw(&picture, plx_ui::Painter::recording(), RouteLayout::screen().picture_slot(), &ShippedMeasure));
         }).into_iter().map(|(t, _)| t).collect()
     };
     assert_eq!(words(off, &[]), ["MOVIE", "TV SHOW"], "with no caption chosen the picture is faces under their kinds, and no line");
@@ -1187,7 +1181,7 @@ fn the_sort_value_picture_words_the_year_of_every_kind_of_item() {
     let drawn = |posters: &[&PmsMovie]| -> Vec<String> {
         let picture = RootPicture { value, posters, sorted: true, opacity: [1.0, 1.0] };
         plx_ui::draw_census::capture_text(|| {
-            plx_gfx::gfx::without_frame_clear(|| plx_ui::follow_copy::PictureSlot::draw(&picture, plx_ui::Painter::recording(), RouteLayout::settings_page().picture_slot(), &ShippedMeasure));
+            plx_gfx::gfx::without_frame_clear(|| plx_ui::follow_copy::PictureSlot::draw(&picture, plx_ui::Painter::recording(), RouteLayout::screen().picture_slot(), &ShippedMeasure));
         }).into_iter().map(|(t, _)| t).collect()
     };
     let movie = poster("A", 1999, "Noir");
@@ -1216,7 +1210,7 @@ fn the_picture_paints_into_the_slot_it_is_handed() {
             plx_gfx::gfx::without_frame_clear(|| picture.draw(plx_ui::Painter::recording(), slot, &ShippedMeasure));
         })
     };
-    let slot = RouteLayout::settings_page().picture_slot();
+    let slot = RouteLayout::screen().picture_slot();
     assert!(slot.w >= PICTURE_TILE_STEP + PICTURE_TILE_W, "the slot holds both tiles: {slot:?}");
     let runs = at(slot);
     let words: Vec<&str> = runs.iter().map(|(s, _)| s.as_str()).collect();
@@ -1249,7 +1243,7 @@ fn the_picture_paints_into_the_slot_it_is_handed() {
 fn with_title_on_the_bold_title_stands_above_the_details_line() {
     let _guard = plx_base::testlock::serial();
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
-    let slot = RouteLayout::settings_page().picture_slot();
+    let slot = RouteLayout::screen().picture_slot();
     let picture = RootPicture { value: UnderPosters { title: true, ..UnderPosters::DEFAULT }, posters: &[], sorted: false, opacity: [1.0, 1.0] };
     let runs = plx_ui::draw_census::capture_runs(|| {
         plx_gfx::gfx::without_frame_clear(|| plx_ui::follow_copy::PictureSlot::draw(&picture, plx_ui::Painter::recording(), slot, &ShippedMeasure));
@@ -1270,7 +1264,7 @@ fn the_kind_captions_wear_the_section_header_look_under_every_setting() {
     let _guard = plx_base::testlock::serial();
     let _en = language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
     let (movie, tv) = (poster("Alpha", 1999, "Noir"), show("Sitcom", 2011, "Comedy"));
-    let slot = RouteLayout::settings_page().picture_slot();
+    let slot = RouteLayout::screen().picture_slot();
     for value in every_value() {
         for (sorted, posters) in [(false, vec![]), (false, vec![&movie, &tv]), (true, vec![&movie, &tv])] {
             let picture = RootPicture { value, posters: &posters, sorted, opacity: [1.0, 1.0] };
@@ -1291,7 +1285,7 @@ fn the_kind_captions_wear_the_section_header_look_under_every_setting() {
 fn the_preview_draws_every_selected_example_inside_its_caption_column() {
     use plx_machine::machine::Measure;
     let _guard = plx_base::testlock::serial();
-    let slot = RouteLayout::settings_page().picture_slot();
+    let slot = RouteLayout::screen().picture_slot();
     let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut out = Vec::new();
     for language in SHIPPED {

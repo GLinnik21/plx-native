@@ -2563,6 +2563,7 @@ mod stack {
             if self.named { TileLabel::title(&format!("Title {}", self.elems[i])) } else { TileLabel::default() }
         }
         fn more(&self) -> bool { self.more }
+        fn global(&self, i: usize) -> usize { self.first + i }
         fn loaded(&self, i: usize) -> bool { !self.unloaded.contains(&i) }
         fn subject(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
             self.named.then(|| format!("rk{}", self.elems[i]).into())
@@ -3286,6 +3287,34 @@ mod stack {
         assert_eq!(find("card.3"), None);
         let qualified = A11yPath::parse_id("home.section.1.card.3").expect("a full id");
         assert_eq!(view.a11y_find(&qualified, &cx), None, "a path with a namespace is not relative to this view");
+    }
+
+    /// **A card's id is its place in the LISTING, not in the window**: a shelf whose window has paged
+    /// (it starts at listing position 40) names its cards `card.40 ..`, so the id of a title is the
+    /// same before and after the window slides, the old window-relative `card.1` names nothing, and
+    /// a position the window does not hold is no element. Every card round-trips.
+    #[test]
+    fn a_paged_window_names_its_cards_by_their_place_in_the_listing() {
+        let mut r = rig(4, 12);
+        r.page.row.first = 40;
+        let cx = r.cx();
+        let view = r.stack.view(&r.page);
+        a11y::conformance(&view, &cx);
+        // no aside, no status: Head 0, Row 1, Items 2
+        let path = |elem: u32| view.a11y(&elem, &cx).map(|a| a.path.to_string());
+        assert_eq!(path(100).as_deref(), Some("section.1.card.40"));
+        assert_eq!(path(103).as_deref(), Some("section.1.card.43"));
+        assert_eq!(path(1000).as_deref(), Some("section.2.card.0"), "a window that has not paged is its listing");
+        let find = |text: &str| view.a11y_find(&relative(text), &cx);
+        for (elem, id) in [(100, "section.1.card.40"), (101, "section.1.card.41"), (103, "section.1.card.43")] {
+            assert_eq!(find(id), Some(elem), "{id}");
+            assert_eq!(path(elem).as_deref(), Some(id), "{id} round-trips");
+        }
+        assert_eq!(find("section.1.card.1"), None, "the window index is no id once the window has paged");
+        assert_eq!(find("section.1.card.39"), None, "paged out before the window");
+        assert_eq!(find("section.1.card.44"), None, "past the end of the window");
+        assert_eq!(crate::cards::card_window_index::<FixtureHost, _>(&r.page.row, 42), Some(2));
+        assert_eq!(crate::cards::card_window_index::<FixtureHost, _>(&r.page.row, 0), None);
     }
 
     /// **A card carries its title and its subject once it is loaded** (the title its caption shows,

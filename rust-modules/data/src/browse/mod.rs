@@ -1048,6 +1048,21 @@ pub struct BrowseState {
     recorded: Option<plx_plex::plex::session::HomePins>,
     preference_writes: preferences_job::Preferences,
     pending_pins: Option<(String, std::sync::Arc<std::sync::Mutex<PinWrite>>)>,
+    /// The outcome of the last editor commit ([`apply_pins_from`](Self::apply_pins_from)),
+    /// published on the directory ([`super::view::DirectoryView::pin_commit`]) so the screen that
+    /// sent it can wait for its answer instead of assuming one.
+    pin_commit: PinCommit,
+}
+
+/// **What the last `ApplyPins` came to**: `seq` counts the commits this store has run (a screen
+/// remembers the value it sent its own commit after, and waits for it to move), `recorded` says
+/// whether that commit produced a record (`false`: the session it was handed had no `client_id`, or
+/// the write queue refused it, so the selection stands for this run only). Not a durability claim:
+/// the write itself lands later.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PinCommit {
+    pub seq: u32,
+    pub recorded: bool,
 }
 
 /// Shared by a cloned Browse snapshot, so consuming a receipt never makes another clone
@@ -1147,6 +1162,7 @@ impl Default for BrowseState {
             view_memory: Default::default(),
             recorded: None,
             pending_pins: None,
+            pin_commit: PinCommit::default(),
             preference_writes: Default::default(),
             session_generation: 0,
             current_sid: ServerId::UNSET,
@@ -2233,6 +2249,9 @@ impl BrowseState {
         };
         state.shown_bands(kind).is_some_and(|rail| rail.listed(state.sort_desc).populated() >= 2)
     }
+    pub(crate) fn pin_commit(&self) -> PinCommit {
+        self.pin_commit
+    }
     fn discovery_state(&self) -> SecFetch {
         if !self.sections.is_empty() || self.sources.iter().all(|source| source.sections_done) {
             SecFetch::Ready
@@ -2549,6 +2568,7 @@ impl BrowseState {
             self.bump_sections_gen();
 
         }
+        self.pin_commit = PinCommit { seq: self.pin_commit.seq.wrapping_add(1), recorded: produced.is_some() };
         // Reconcile the pending selection immediately. Until its receipt lands, a captured
         // older session must not undo the viewer's edits. This is not a durability claim.
         match produced {

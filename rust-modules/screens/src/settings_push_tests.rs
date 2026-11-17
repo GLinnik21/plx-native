@@ -232,7 +232,7 @@ fn the_narrative_frame_is_constant_and_the_list_travels_on_every_held_page() {
             };
             // the page's title is the largest run standing in the narrative column at rest (the header's heading,
             // over its crumb and copy): that column holds it still under either role, at the narrative's alpha
-            let column = plx_ui::route_screen::RouteLayout::settings_page().narrative;
+            let column = plx_ui::route_screen::RouteLayout::screen().narrative;
             let in_column = |r: &plx_ui::draw_census::Run| r.at.x >= column.x - 0.5 && r.at.x < column.x + column.w;
             let (title_at, title) = rest.iter().enumerate().filter(|(_, r)| in_column(r))
                 .fold(None, |best: Option<(usize, &plx_ui::draw_census::Run)>, (i, r)| match best { Some(b) if b.1.size >= r.size => Some(b), _ => Some((i, r)) })

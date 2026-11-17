@@ -18,7 +18,7 @@ use std::convert::Infallible;
 use plx_data::pms::MediaVersion;
 use plx_plex::plex::{MediaId, ServerId};
 use crate::registry::{AppLike, AppMsg, PageMemory};
-use plx_ui::a11y::{A11y, A11yPath, Role};
+use plx_ui::a11y::{A11y, A11yPath};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind,
@@ -207,23 +207,26 @@ impl<H: AppLike<Memory = PageMemory>> Focusable<H> for VersionsPanelScreen {
         }
     }
 
-    /// **Row `n` is `row.<n>`**: `n` is the row's position among the focusable rows (the same
-    /// count `GroupSpec::len` states), so a separator or note never shifts an id. The label is
-    /// the row's own text, for the state file only.
+    /// **Row `n` is `row.<n>`**, the shared table convention
+    /// ([`plx_ui::geom::table_a11y`]): `n` is the row's ordinal among the focusable rows (the same
+    /// count `GroupSpec::len` states), so a separator or note never shifts an id. The label is the
+    /// row's own text, for the state file only. The elements and the inverse are the shared ones.
     fn a11y(&self, elem: &u32, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         let slot = self.form.index_of_key(RowKey(*elem))?;
-        let n = (0..slot).filter(|&i| self.form.key_at(i).is_some()).count();
-        let a11y = A11y::new(A11yPath::new().name("row").index(n), Role::Row);
-        let label = self.form.table.sections.iter().flat_map(|s| s.rows.iter()).nth(slot);
-        Some(match label {
-            Some(row) => a11y.with_label(row.label.as_str()),
-            None => a11y,
-        })
+        plx_ui::geom::table_a11y(&self.form.table, Some(&self.form), slot)
     }
     fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<u32>) {
         if g == GroupId(0) {
-            out.extend((0..self.form.table.n_rows().max(0) as usize).filter_map(|i| self.form.key_at(i)).map(|k| k.0));
+            out.extend(
+                plx_ui::geom::table_elems(&self.form.table, Some(&self.form))
+                    .filter_map(|i| self.form.key_at(i))
+                    .map(|k| k.0),
+            );
         }
+    }
+    fn a11y_find(&self, path: &A11yPath, _cx: &Cx<'_, H>) -> Option<u32> {
+        let slot = plx_ui::geom::table_a11y_find(&self.form.table, Some(&self.form), path)?;
+        self.form.key_at(slot).map(|k| k.0)
     }
 }
 
@@ -304,7 +307,7 @@ impl<H: AppLike<Memory = PageMemory>> Screen<H> for VersionsPanelScreen {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use plx_machine::machine::Host;
     use plx_ui::screen::ScreenArg;
@@ -362,13 +365,19 @@ mod tests {
         }
     }
 
+    /// The *Play Version* list over the sample versions, run through the id conformance
+    /// (`AppArg::VersionsPanel`; the coverage table calls this).
+    pub(crate) fn versions_panel_conforms() -> plx_ui::a11y::Namespaces {
+        vec![plx_ui::a11y::conform::<HostFixture, _>(&panel(), &cx())]
+    }
+
     /// Every version is a row with an id, `row.<n>` in the server's order, and the id finds it
     /// again.
     #[test]
     fn every_version_answers_an_id_in_the_servers_order() {
         let p = panel();
         let cx = cx();
-        plx_ui::a11y::conformance::<HostFixture, _>(&p, &cx);
+        plx_ui::a11y::conform::<HostFixture, _>(&p, &cx);
         let n = plx_appkit::version_list::sample().len();
         assert!(n >= 2, "the sample has several versions");
         for i in 0..n {

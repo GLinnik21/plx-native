@@ -718,4 +718,4 @@ impl<H: ContentLike> Screen<H> for CatalogScreen {
 
 #[cfg(test)]
 #[path = "catalog_tests.rs"]
-mod tests;
+pub(crate) mod tests;

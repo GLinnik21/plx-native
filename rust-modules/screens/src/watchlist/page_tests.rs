@@ -1311,11 +1311,19 @@ fn the_header_row_is_built_once_per_key_not_once_per_question() {
 /// chooses (`watchlist_menu.sort_title`), not by its draw position, and the view conforms.
 #[test]
 fn the_options_menu_rows_answer_their_names() {
+    assert!(!watchlist_menu_conforms().is_empty());
+}
+
+/// The Sort & Filter menu opened over three tiles, run through the id conformance with the id
+/// asserts above (`AppArg::WatchlistMenu`; the coverage table calls this, and so does the test above).
+pub(crate) fn watchlist_menu_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
     use super::cards_harness::{WatchHost, ENTRY};
     use super::menu::WatchlistMenuScreen;
     use super::options::OptionsRow;
     use plx_machine::machine::EntryId;
-    use plx_ui::a11y::{conformance, A11yPath, Role};
+    use plx_ui::a11y::{A11yPath, Role};
     use plx_ui::screen::Focusable;
     let h = Harness::new(tiles(3));
     let arg = crate::registry::WatchlistMenuArg {
@@ -1334,7 +1342,7 @@ fn the_options_menu_rows_answer_their_names() {
         let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(10)), &mut present);
         Machine::<WatchHost>::step(&mut menu, &ScreenEvent::Mount, &cx, &mut fx);
     }
-    conformance::<WatchHost, _>(&menu, &cx);
+    namespaces.push(conform::<WatchHost, _>(&menu, &cx));
     for (i, row) in OptionsRow::ALL.iter().enumerate() {
         let id = A11yPath::parse_relative(row.a11y_name()).expect("a plain row name");
         assert_eq!(Focusable::<WatchHost>::a11y_find(&menu, &id, &cx), Some(i as u32), "{}", row.a11y_name());
@@ -1344,6 +1352,7 @@ fn the_options_menu_rows_answer_their_names() {
     }
     let sort_title = A11yPath::parse_relative("sort_title").unwrap();
     assert_eq!(Focusable::<WatchHost>::a11y_find(&menu, &sort_title, &cx), Some(4), "Title is the fifth row");
+    namespaces
 }
 
 /// **The page's accessibility ids:** the header's one stop is `header.sort`, each title (the loaded
@@ -1351,12 +1360,20 @@ fn the_options_menu_rows_answer_their_names() {
 /// the unreachable read-out's Try again is `status.retry` once it is up, and the view conforms.
 #[test]
 fn the_page_answers_its_ids_and_conforms() {
+    assert!(!watchlist_conforms().is_empty());
+}
+
+/// The Watchlist page over sixty tiles, run through the id conformance with the id asserts above
+/// (`AppArg::Watchlist`; the coverage table calls this, and so does the test above).
+pub(crate) fn watchlist_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
     use super::cards_harness::WatchHost;
-    use plx_ui::a11y::{conformance, A11yPath, Role};
+    use plx_ui::a11y::{A11yPath, Role};
     use plx_ui::screen::Focusable;
     let h = Harness::new(tiles(60));
     let cx = h.cx();
-    conformance::<WatchHost, _>(&h.screen, &cx);
+    namespaces.push(conform::<WatchHost, _>(&h.screen, &cx));
     let rel = |id: &str| A11yPath::parse_relative(id).expect("a well-formed id");
     let find = |id: &str| Focusable::<WatchHost>::a11y_find(&h.screen, &rel(id), &cx);
     assert_eq!(find("header.sort"), Some(PILL_ELEM));
@@ -1372,4 +1389,5 @@ fn the_page_answers_its_ids_and_conforms() {
     assert_eq!(find("grid.card.60"), None, "one past the end");
     assert_eq!(find("status.retry"), None, "the read-out is not up");
     assert_eq!(find("grid.0"), None, "a card is `grid.card.<i>`");
+    namespaces
 }

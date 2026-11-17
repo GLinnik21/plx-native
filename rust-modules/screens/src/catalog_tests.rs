@@ -545,9 +545,17 @@ fn a_loaded_page_lays_the_shade_over_its_art_and_a_bare_page_lays_none() {
 /// what its (absent) group says.
 #[test]
 fn the_pill_answers_catalog_primary_only_when_loaded() {
+    assert!(!catalog_conforms().is_empty());
+}
+
+/// The catalog page loaded, and in each state with no record, run through the id conformance with the
+/// id asserts above (`ContentArg::Catalog`; the coverage table calls this, and so does the test above).
+pub(crate) fn catalog_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
     let _g = language_on_this_thread_for_test(Preference::En);
     let s = page(loaded(Status::None, None), Membership::Off);
-    plx_ui::a11y::conformance::<CatHost, _>(&s, &cx(None));
+    namespaces.push(conform::<CatHost, _>(&s, &cx(None)));
     let a = Focusable::<CatHost>::a11y(&s, &PILL_ELEM, &cx(None)).expect("a loaded page projects its pill");
     assert_eq!(a.path.to_string(), "primary");
     assert_eq!(a.role, plx_ui::a11y::Role::Button);
@@ -561,7 +569,8 @@ fn the_pill_answers_catalog_primary_only_when_loaded() {
 
     for load in [Load::Loading, Load::NotFound, Load::Unreachable] {
         let s = page(load, Membership::Off);
-        plx_ui::a11y::conformance::<CatHost, _>(&s, &cx(None));
+        namespaces.push(conform::<CatHost, _>(&s, &cx(None)));
         assert!(Focusable::<CatHost>::a11y(&s, &PILL_ELEM, &cx(None)).is_none());
     }
+    namespaces
 }

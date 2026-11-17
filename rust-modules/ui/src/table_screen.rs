@@ -29,7 +29,7 @@
 //! **Focus elements are row indices, except for a form-backed table.** `TablePart::keys` (a
 //! `ui::form::RowKeys`, i.e. a `FormTable`) makes the element a row's `RowKey`, and all five hooks
 //! plus the pointer stops translate key <-> index; without it the element is the index. The
-//! accessibility ids (`a11y`) follow the same map: a row is `row.<index>`, or the name its
+//! accessibility ids (`a11y`) follow the same map: a row is `row.<n>` (its ordinal among the element rows, `geom::table_a11y`), or the name its
 //! [`FormId::a11y`](super::form::FormId::a11y) declares, and a separator or note (no key) is no
 //! element (the group's `len` still counts it: it is the layout's row count, which seating reads,
 //! so the ids' conformance rule is "at most `len`"). The band is `band.<i>`.
@@ -41,7 +41,7 @@ use super::a11y::{A11y, A11yPath, Role};
 use super::document_reader::DocumentReader;
 use super::form::{RowKey, RowKeys};
 use super::frame::Budget;
-use super::geom::{indexed, sole_name, table_a11y, Document, IndexElem, Table};
+use super::geom::{indexed, table_a11y, table_a11y_find, table_elems, Document, IndexElem, Table};
 use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId, Host, Measure, NavOpKind, PartId};
 use super::route_screen::RouteLayout;
 use super::screen::{
@@ -64,7 +64,6 @@ pub struct Header<'a> {
     pub crumb: Option<&'a str>,
     pub title: &'a str,
     pub copy: &'a str,
-    pub copy_size: std::os::raw::c_int,
     /// One key-cap line stacked under the copy's measured height (the Language page's "Hold
     /// [BACK] to close PlxNative"). Never elided: a screen that sets one owns a fit test for it
     /// against [`RouteLayout`]'s narrative width.
@@ -89,7 +88,6 @@ impl<'a> Header<'a> {
             crumb,
             title,
             copy,
-            copy_size: theme::size::LABEL,
             hint: None,
             pending_copy: None,
             follow: None,
@@ -119,24 +117,16 @@ impl<'a> Header<'a> {
         self
     }
 
-    pub fn with_copy_size(mut self, sz: std::os::raw::c_int) -> Self {
-        self.copy_size = sz;
-        self
-    }
-
     /// The one drawing routine, for both loops.
     pub fn paint(&self, p: Painter, measure: &dyn Measure) {
         let copy_end = if let Some(follow) = self.follow {
             // the title (and crumb) alone, then the followed sentence in the fixed frame under it
-            self.layout.draw_narrative_pending(p, self.crumb, self.title, "", self.copy_size, measure, None);
-            let mut frame = self.layout.narrative_copy_frame(self.crumb.is_some(), self.title, self.layout.action.y, measure);
-            let drop = self.layout.copy_cap_drop(self.copy_size, measure);
-            frame.y += drop;
-            frame.h = (frame.h - drop).max(0.0);
-            follow.draw(p, frame, self.copy_size);
+            self.layout.draw_narrative_pending(p, self.crumb, self.title, "", measure, None);
+            let frame = self.layout.copy_text_frame(self.crumb.is_some(), self.title, self.layout.action.y, measure);
+            follow.draw(p, frame);
             frame.y
         } else {
-            self.layout.draw_narrative_pending(p, self.crumb, self.title, self.copy, self.copy_size, measure, self.pending_copy)
+            self.layout.draw_narrative_pending(p, self.crumb, self.title, self.copy, measure, self.pending_copy)
         };
         if let Some(picture) = self.picture {
             picture.draw(p, self.layout.picture_slot(), measure);
@@ -307,44 +297,21 @@ where
         let got = Focusable::<H>::seat(&self.view(), g, from, cx);
         FocusKey { entry: got.entry, elem: self.to_key(got.elem) }
     }
-    /// `row.<index>` (`geom::Table`'s), or the row's own name when its form id declares one
-    /// ([`FormId::a11y`](super::form::FormId::a11y)). In a form-backed table the element is the
-    /// row's key; a separator or note has none, so it is no element.
+    /// `row.<n>`, `n` the row's ordinal among the table's element rows, or the row's own name when
+    /// its form id declares one ([`FormId::a11y`](super::form::FormId::a11y)): the convention is
+    /// [`table_a11y`]'s, one for every table. In a form-backed table the element is the row's key; a
+    /// separator or note has none, so it is no element.
     fn a11y(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         let index = self.to_index(*key)?.index()? as usize;
-        let name = match self.keys {
-            None => None,
-            Some(k) => {
-                k.key_at(index)?;
-                k.a11y_name(index)
-            }
-        };
-        table_a11y(self.table, index, name)
+        table_a11y(self.table, self.keys, index)
     }
-    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
-        let mut rows = Vec::new();
-        Focusable::<H>::a11y_elems(&self.view(), g, cx, &mut rows);
-        match self.keys {
-            None => out.extend(rows),
-            Some(k) => out.extend(
-                rows.into_iter()
-                    .filter(|e| e.index().is_some_and(|i| k.key_at(i as usize).is_some()))
-                    .map(|e| self.to_key(e)),
-            ),
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        if g == self.group {
+            out.extend(table_elems(self.table, self.keys).map(|i| self.to_key(H::Elem::of_index(i as u32))));
         }
     }
-    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<H::Elem> {
-        let Some(k) = self.keys else {
-            return Focusable::<H>::a11y_find(&self.view(), path, cx);
-        };
-        let n = self.table.n_rows().max(0) as usize;
-        let index = match (indexed(path, "row", n), sole_name(path)) {
-            // a row with a name answers only to it, so one element has one spelling
-            (Some(i), _) => k.a11y_name(i).is_none().then_some(i)?,
-            (None, Some(name)) => (0..n).find(|&i| k.a11y_name(i) == Some(name))?,
-            (None, None) => return None,
-        };
-        k.key_at(index)?;
+    fn a11y_find(&self, path: &A11yPath, _cx: &Cx<'_, H>) -> Option<H::Elem> {
+        let index = table_a11y_find(self.table, self.keys, path)?;
         Some(self.to_key(H::Elem::of_index(index as u32)))
     }
 }
@@ -889,7 +856,7 @@ pub struct DocumentScreen<'a> {
 impl<'a> DocumentScreen<'a> {
     /// Over a route's own layout: the document hangs from the TITLE's anchor (`RouteLayout::document`).
     pub fn new(header: Header<'a>, reader: &'a mut DocumentReader, body: &'a str, group: GroupId, entry: EntryId) -> Self {
-        let frame = header.layout.document(header.crumb.is_some());
+        let frame = header.layout.document();
         Self {
             header,
             doc: DocumentPart {
@@ -1142,11 +1109,11 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert!(matches!(groups[0].kind, GroupKind::Document));
         assert_eq!(groups[0].edge[2], EdgeRule::Nav(NavOpKind::Back));
-        assert!(same(groups[0].extent, layout.document(true)));
+        assert!(same(groups[0].extent, layout.document()));
         let k = FocusKey { entry: E, elem: 0u32 };
         assert!(matches!(Focusable::<FixtureHost>::neighbour(&ds.doc, k, Dir::Up, &cx), Step::Edge), "at the top, UP leaves");
         assert!(matches!(Focusable::<FixtureHost>::neighbour(&ds.doc, k, Dir::Down, &cx), Step::Move(_)), "not at the end: DOWN scrolls inside");
-        assert!(same(Focusable::<FixtureHost>::place(&ds.doc, &0, &cx, At::Drawn).unwrap().rect, layout.document(true)));
+        assert!(same(Focusable::<FixtureHost>::place(&ds.doc, &0, &cx, At::Drawn).unwrap().rect, layout.document()));
     }
     /// The real Belarusian consent labels overflowed the horizontal band's width and aborted
     /// the simulator. Use Unicode-scalar measurement so UTF-8 byte length cannot create this
@@ -1189,7 +1156,8 @@ mod tests {
 
     /// **A form-backed table names its rows and has no element for an inert one.** The elements are
     /// the rows' keys (30, 10, 20 down the page); a row whose `FormId::a11y` names it is that name
-    /// and ONLY that name, an unnamed one is `row.<layout index>`; the separator and the note, which
+    /// and ONLY that name, an unnamed one is `row.<n>`, `n` its ordinal among the keyed rows (named
+    /// ones count: the convention is one for every table); the separator and the note, which
     /// have no key, are no elements, yet `GroupSpec::len` still counts them (it is the layout's row
     /// count, which seating reads), so `a11y_elems` lists fewer than `len`. A toggle row is a
     /// `Toggle`.
@@ -1239,15 +1207,15 @@ mod tests {
             Focusable::<H>::a11y(&keyed, &k, &cx).map(|a| (a.path, a.role, a.label.map(|l| l.into_owned())))
         };
         assert_eq!(at(30), Some((rel("alpha"), Role::Row, Some("Alpha".to_owned()))));
-        assert_eq!(at(10), Some((rel("row.2"), Role::Toggle, Some("Beta".to_owned()))));
+        assert_eq!(at(10), Some((rel("row.1"), Role::Toggle, Some("Beta".to_owned()))));
         assert_eq!(at(20), Some((rel("gamma"), Role::Row, Some("Gamma".to_owned()))));
         assert_eq!(at(0), None, "an index is not a key here");
         assert_eq!(at(99), None);
 
         let find = |s: &str| Focusable::<H>::a11y_find(&keyed, &rel(s), &cx);
-        assert_eq!((find("alpha"), find("row.2"), find("gamma")), (Some(30), Some(10), Some(20)));
-        for gone in ["row.0", "row.4", "row.1", "row.3", "row.5", "beta"] {
-            assert_eq!(find(gone), None, "{gone}: a named row has one spelling, an inert row none");
+        assert_eq!((find("alpha"), find("row.1"), find("gamma")), (Some(30), Some(10), Some(20)));
+        for gone in ["row.0", "row.2", "row.3", "row.4", "beta"] {
+            assert_eq!(find(gone), None, "{gone}: a named row has one spelling, an ordinal past the last none");
         }
         let mut elems = Vec::new();
         Focusable::<H>::a11y_elems(&keyed, G, &cx, &mut elems);
@@ -1300,7 +1268,7 @@ mod tests {
 
         let mut r = DocumentReader::new();
         r.set_extent_for_test(400.0);
-        let focus = DocumentFocus { reader: &r, frame: layout.document(true), group: G, entry: E };
+        let focus = DocumentFocus { reader: &r, frame: layout.document(), group: G, entry: E };
         conformance(&focus, &cx);
         let a = Focusable::<H>::a11y(&focus, &0, &cx).unwrap();
         assert_eq!((a.path, a.role), (rel("document"), Role::Text));

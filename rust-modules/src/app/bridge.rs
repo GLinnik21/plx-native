@@ -367,13 +367,19 @@ impl plx_screens::registry::MetadataLike for AppHost {
 /// publishes immutable snapshots; it never supplies the previous decision back to this owner.
 pub(crate) struct ConsentMachine {
     current: plx_telemetry::telemetry::consent::Consent,
+    /// Where the first-run question is ([`super::input::ConsentAsk`]); written only by
+    /// `input::maybe_ask_consent`. Presentation bookkeeping, not part of the decision, so it is
+    /// not in [`Self::subhash`].
+    pub(crate) ask: super::input::ConsentAsk,
 }
 
 impl ConsentMachine {
     pub(crate) const SHAPE: &'static str =
         "Consent{asked_version:u32,errors:bool,usage:bool,install_id:option<string>,errors_id:option<string>}";
 
-    pub(super) fn from_initial(current: plx_telemetry::telemetry::consent::Consent) -> Self { Self { current } }
+    pub(super) fn from_initial(current: plx_telemetry::telemetry::consent::Consent) -> Self {
+        Self { current, ask: Default::default() }
+    }
 
     fn record(&mut self, adapter: &mut super::adapters::consent::ConsentAdapter,
         errors: bool, usage: bool) {
@@ -4689,7 +4695,7 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         // than after the sign-in. The sign-in's question first, before any per-profile step. On a
         // Plex Home account it was already asked at the picker below and this is a no-op; on a
         // single-user account this is the earliest authorized moment there is.
-        super::input::maybe_ask_consent(pages);
+        super::input::maybe_ask_consent(pages, &mut bridge.consent.ask);
         bridge.refresh_browse_directory();
         if plx_data::stores::browse::onboard::asks(bridge.browse_directory(), &plx_plex::plex::session::peek(), &plx_plex::plex::session::current_profile_key()) {
             plx_base::eventlog::log("login: server installed — asking which sources feed Home");
@@ -4739,7 +4745,7 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
                 // entry the `Root` above is about to retire, and the very next commit would
                 // orphan it (TV 2026-09-17's mount/unmount loop).
                 if top_settled_on(pages, &AppArg::Profiles) {
-                    super::input::maybe_ask_consent(pages);
+                    super::input::maybe_ask_consent(pages, &mut bridge.consent.ask);
                 }
             }
             _ => {
@@ -5066,12 +5072,8 @@ pub(crate) fn open_settings_at(d: &mut Dispatcher<AppHost>, page: SettingsPage) 
     d.request(MachineId::Nav, NavOp::Present(AppArg::Settings(page)));
 }
 
-/// Present the first-run consent question at its first stage (idempotent while it is up).
-pub(crate) fn open_first_run_consent(d: &mut Dispatcher<AppHost>) {
-    open_first_run_consent_at(d, 0);
-}
-
-/// …at `stage`, which only `/tmp/plxnative-consent=product` ever names.
+/// Present the first-run consent question at `stage` (idempotent while it is up): `0`, or `1`
+/// when `/tmp/plxnative-consent=product` names the product stage.
 pub(crate) fn open_first_run_consent_at(d: &mut Dispatcher<AppHost>, stage: u8) {
     if surface_up(d, is_first_run_consent) {
         return;
@@ -5170,6 +5172,11 @@ fn tracks_probe(d: &Dispatcher<AppHost>) -> (bool, i32) {
         .map(|p| p.page())
         .unwrap_or(0);
     (true, page)
+}
+
+/// Is the first-run consent question up (any phase but Hidden)?
+pub(crate) fn first_run_consent_up(d: &Dispatcher<AppHost>) -> bool {
+    surface_up(d, is_first_run_consent)
 }
 
 fn surface_up(d: &Dispatcher<AppHost>, which: impl Fn(&AppArg) -> bool) -> bool {
