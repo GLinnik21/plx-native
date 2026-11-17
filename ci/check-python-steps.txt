@@ -13,7 +13,9 @@
 # fails, and each step's whole output is printed when it ends). So a step in this file must:
 #   * write only to a directory it made itself (`mktemp -d`, `tempfile`), never to a fixed path in
 #     /tmp or $TMPDIR, the checkout, `$HOME` or `~/.cache`; and a fixture that edits "the repo" edits
-#     a private copy of it;
+#     a private copy of it. The one exception is `check-c-unit`'s access leg
+#     (ci/access-interpose-test.c): its probe paths are the GPU driver's, fixed by the driver, so it
+#     takes a flock on /tmp;
 #   * bind port 0 (an ephemeral port), never a fixed one;
 #   * not take `tools/check-lock.py`'s real lock (ci/test_check_lock.py uses a throwaway path), not
 #     run cargo, and not assume it is the only `make` running;
