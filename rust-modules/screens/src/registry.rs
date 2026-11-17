@@ -3341,7 +3341,7 @@ mod a11y_coverage_tests {
             AppArg::Watchlist => Covered("Watchlist", crate::watchlist::page_tests::watchlist_conforms),
             AppArg::Player => Covered("Player", crate::player::step_ladder_tests::player_conforms),
             AppArg::Content(content) => match content {
-                ContentArg::Detail { .. } => Covered("Content::Detail", crate::detail::cards_harness::detail_conforms),
+                ContentArg::Detail { .. } => Covered("Content::Detail", crate::detail::tests::detail_conforms),
                 ContentArg::Person { .. } => Covered("Content::Person", crate::person::cards_harness::person_conforms),
                 ContentArg::Filmography { .. } => Covered("Content::Filmography", crate::filmography::tests::filmography_conforms),
                 ContentArg::Collection(_) => Covered("Content::Collection", crate::collection::cards_harness::collection_conforms),
