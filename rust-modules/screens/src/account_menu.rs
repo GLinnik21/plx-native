@@ -33,6 +33,7 @@ use std::convert::Infallible;
 
 use plx_plex::plex::session::Account;
 use crate::registry::{AppFx, AppLike, AuthLike, LoopReq};
+use plx_ui::a11y::{A11y, A11yPath, Role};
 use plx_ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
@@ -456,6 +457,17 @@ impl<H: AppLike> Focusable<H> for AccountMenuScreen {
         FocusKey {
             entry: self.entry,
             elem: self.form.selected_key().map_or(0, |k| k.0),
+        }
+    }
+    // One row per action, named by it (`change_profile`, `sign_in`, ...), in the table's order.
+    fn a11y(&self, elem: &u32, _: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let id = self.form.id_at(self.form.index_of_key(RowKey(*elem))?)?;
+        Some(A11y::new(A11yPath::new().name(id.a11y()?), Role::Row).with_label(label(*id)))
+    }
+    fn a11y_elems(&self, g: GroupId, _: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == GroupId(0) {
+            let rows = usize::try_from(self.form.table.n_rows()).unwrap_or(0);
+            out.extend((0..rows).filter_map(|i| self.form.key_at(i)).map(|k| k.0));
         }
     }
 }

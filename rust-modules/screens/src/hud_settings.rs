@@ -46,6 +46,7 @@ use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent, InputKind, InputOwner, InstanceId, Key, LogicalState,
     Machine, MachineId, TextEdit, NavOp,
 };
+use plx_ui::a11y::{A11y, A11yPath, Role, Seg};
 use plx_ui::decision_prompt::{DecisionPrompt, PromptStep};
 use plx_ui::follow_copy::{FollowCopy, LandscapePicture};
 use plx_ui::text_buffer::TextBuffer;
@@ -58,7 +59,11 @@ use plx_ui::table_screen::{Header, TableScreen};
 use plx_ui::{consts, theme, Rect};
 
 use super::family::{form_activate, form_focus, form_right_target, InnerHost, SettingsPage, ALERT_GROUP};
+use super::plaintext_question::AlertAnswers;
 use super::registry::{word, AppFx, HudCmd, ALERT, BAND};
+
+/// The install prompt's two answers as an accessibility id names them: `alert.cancel` and `alert.install`.
+const INSTALL_ANSWERS: AlertAnswers = AlertAnswers::new(ALERT_GROUP, ALERT, ALERT + 1, "cancel", "install");
 
 /// What the Bridge publishes to the page: the store's listing at one moment.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -647,6 +652,21 @@ impl HudPage {
 
     fn is_preview(&self) -> bool { matches!(self.page, SettingsPage::HudPreview(..)) }
 
+    /// A full-screen preview control as an id names it: key 0 is Back (`back`), key `i + 1` the scene
+    /// `i` (`scene.<i>`, labelled with the scene's own word).
+    fn preview_a11y(&self, key: u32) -> A11y<'static> {
+        match key.checked_sub(1) {
+            None => A11y::new(A11yPath::new().name("back"), Role::Button),
+            Some(i) => {
+                let tab = A11y::new(A11yPath::new().name("scene").index(i as usize), Role::Tab);
+                match self.scenes().get(i as usize) {
+                    Some((label, _)) => tab.with_label(*label),
+                    None => tab,
+                }
+            }
+        }
+    }
+
     fn activate_preview(&mut self, key: u32, fx: &mut Effects<'_, InnerHost>) -> Handled {
         if key == 0 {
             fx.push(Fx::Nav(NavOp::Pop));
@@ -1106,7 +1126,7 @@ impl Machine<InnerHost> for HudPage {
                 Handled::No
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
-                if matches!(by, plx_machine::machine::By::Dir | plx_machine::machine::By::Pointer) { self.state.provisional = false; }
+                if matches!(by, plx_machine::machine::By::Dir | plx_machine::machine::By::Pointer | plx_machine::machine::By::Script) { self.state.provisional = false; }
                 form_focus(&mut self.form, to.elem);
                 self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
                 self.follow.follow(&self.sentence());
@@ -1176,6 +1196,46 @@ impl Focusable<InnerHost> for HudPage {
             Some(key) => key,
             None => Focusable::<InnerHost>::seat(&self.view(), g, from, cx),
         }
+    }
+    // The full-screen preview answers its controls (`back`, `scene.<i>`); a prompt that is open answers
+    // its two answers ALONE (`alert.cancel`, `alert.install`), as `groups` lists them; any other page
+    // answers its table's rows.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, InnerHost>) -> Option<A11y<'_>> {
+        if self.is_preview() {
+            return self.controls.as_ref().filter(|c| c.contains(*key)).map(|_| self.preview_a11y(*key));
+        }
+        if self.prompt.is_open() {
+            return INSTALL_ANSWERS.a11y(*key);
+        }
+        Focusable::<InnerHost>::a11y(&self.view(), key, cx).map(A11y::into_owned)
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, InnerHost>, out: &mut Vec<u32>) {
+        if self.is_preview() {
+            if let Some(controls) = self.controls.as_ref().filter(|_| g == GroupId(0)) {
+                out.extend(0..controls.len() as u32);
+            }
+            return;
+        }
+        if self.prompt.is_open() {
+            INSTALL_ANSWERS.elems(g, out);
+            return;
+        }
+        Focusable::<InnerHost>::a11y_elems(&self.view(), g, cx, out)
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, InnerHost>) -> Option<u32> {
+        if self.is_preview() {
+            let controls = self.controls.as_ref()?;
+            let mut segs = path.segs();
+            return match (segs.next(), segs.next(), segs.next()) {
+                (Some(Seg::Name("back")), None, _) => Some(0),
+                (Some(Seg::Name("scene")), Some(Seg::Index(i)), None) if i + 1 < controls.len() => Some(i as u32 + 1),
+                _ => None,
+            };
+        }
+        if self.prompt.is_open() {
+            return INSTALL_ANSWERS.find(path);
+        }
+        Focusable::<InnerHost>::a11y_find(&self.view(), path, cx)
     }
 }
 

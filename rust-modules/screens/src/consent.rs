@@ -21,6 +21,7 @@ use std::borrow::Cow;
 use plx_telemetry::telemetry::consent::{self, Consent};
 use plx_ui::decision_alert::{Choice as AlertChoice, DecisionAlert};
 use plx_ui::document_reader::DocumentReader;
+use plx_ui::a11y::{A11y, A11yPath};
 use plx_ui::follow_copy::FollowCopy;
 use plx_ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKeys, RowKind};
 use plx_ui::frame::Budget;
@@ -40,6 +41,7 @@ use plx_ui::widgets::CtlPop;
 use plx_ui::{theme, Rect};
 
 use super::family::{form_activate, form_focus, form_right_target, palette, InnerHost, SettingsPage, ALERT_GROUP, BAND_GROUP, TABLE_GROUP};
+use super::plaintext_question::AlertAnswers;
 use super::registry::{alert_index, band_index, word, AppFx, ConsentCmd, LoopReq, ALERT};
 
 // ---- the words -------------------------------------------------------------------------------
@@ -78,6 +80,9 @@ const FIRST_RUN_PRODUCT: u8 = 0x20;
 /// `SettingsPage::ConsentStage`'s byte: the stage in bit 0, the first stage's answer in bit 4.
 const STAGE_PRODUCT: u8 = 0x01;
 const ERRORS_SHARED: u8 = 0x10;
+
+/// The delete alert's two answers as an accessibility id names them: `alert.cancel`, `alert.delete`.
+const DELETE_ANSWERS: AlertAnswers = AlertAnswers::new(ALERT_GROUP, ALERT, ALERT + 1, "cancel", "delete");
 
 /// A consent row's identity: what selection survives a rebuild by, and what a test addresses a
 /// row by. Its focus key ([`FormId::key`]) is hand-assigned below — the Privacy & data page's
@@ -736,6 +741,27 @@ impl Focusable<InnerHost> for ConsentView<'_> {
         }
         Focusable::<InnerHost>::seat(&self.screen(), g, from, cx)
     }
+    // While the alert is open its two answers are the page's only elements, as `groups` lists them.
+    // The table's projection is built for this query, so it is handed back owning its text.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, InnerHost>) -> Option<A11y<'_>> {
+        if self.alert_open {
+            return DELETE_ANSWERS.a11y(*key);
+        }
+        Focusable::<InnerHost>::a11y(&self.screen(), key, cx).map(A11y::into_owned)
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, InnerHost>, out: &mut Vec<u32>) {
+        if self.alert_open {
+            DELETE_ANSWERS.elems(g, out);
+            return;
+        }
+        Focusable::<InnerHost>::a11y_elems(&self.screen(), g, cx, out)
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, InnerHost>) -> Option<u32> {
+        if self.alert_open {
+            return DELETE_ANSWERS.find(path);
+        }
+        Focusable::<InnerHost>::a11y_find(&self.screen(), path, cx)
+    }
 }
 
 plx_ui::focusable_via_view!(ConsentPage, InnerHost, view, press);
@@ -1206,6 +1232,11 @@ impl Machine<InnerHost> for PreviewPage {
 impl Screen<InnerHost> for PreviewPage {
     fn name(&self) -> &'static str {
         self.word
+    }
+    /// A preview shares the heartbeat word of the page it opens from (`privacy`, `consent`), so it
+    /// answers a namespace of its own and an id names the page it was read on.
+    fn a11y_ns(&self) -> &'static str {
+        if self.word == word::CONSENT { "consent-preview" } else { "privacy-preview" }
     }
     fn state(&self) -> &dyn LogicalState {
         &self.state

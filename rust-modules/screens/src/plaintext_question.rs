@@ -25,6 +25,7 @@ use std::ffi::{CStr, CString};
 use plx_session::auth::{self, PlaintextVerdict, ReadoutSurface, SessionCmd};
 use plx_plex::plex::session::PlaintextChoice;
 use plx_plex::plex::ServerId;
+use plx_ui::a11y::{A11y, A11yPath, Role, Seg};
 use plx_ui::decision_alert::{Choice, DecisionAlert, Tone};
 use plx_machine::machine::{
     Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Host, InputEvent,
@@ -140,6 +141,59 @@ pub fn enter_group<H: Host>(fx: &mut Effects<'_, H>, to: MachineId, group: Group
         to,
         Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(group) })),
     ));
+}
+
+/// **A two-answer alert's buttons as an accessibility id names them**: `alert.<cancel>` and
+/// `alert.<affirm>`, both [`Role::Button`], in the one group the alert's answers form.
+///
+/// The alert's hosts (this module's [`PlaintextAlert`], Privacy & data's delete alert, the
+/// Playback picker's and the HUD page's `DecisionPrompt`) each know their answers' group and
+/// element ids and answer the `Focusable` a11y hooks from them while the alert is OPEN — then the
+/// answers are the only elements the page has, a modal's page beneath being no owner's — so the
+/// projection is written once here. The names are the answers' verbs, so a test presses
+/// `alert.connect` or `alert.delete`, never a position.
+#[derive(Clone, Copy, Debug)]
+pub struct AlertAnswers {
+    group: GroupId,
+    cancel: u32,
+    affirm: u32,
+    names: [&'static str; 2],
+}
+
+impl AlertAnswers {
+    /// The answers in `group`, with the host's element ids and each answer's static name.
+    pub const fn new(group: GroupId, cancel: u32, affirm: u32, cancel_name: &'static str, affirm_name: &'static str) -> Self {
+        Self { group, cancel, affirm, names: [cancel_name, affirm_name] }
+    }
+
+    /// `Focusable::a11y` for one element: an answer's button, else `None`.
+    pub fn a11y(&self, elem: u32) -> Option<A11y<'static>> {
+        let name = if elem == self.cancel {
+            self.names[0]
+        } else if elem == self.affirm {
+            self.names[1]
+        } else {
+            return None;
+        };
+        Some(A11y::new(A11yPath::new().name("alert").name(name), Role::Button))
+    }
+
+    /// `Focusable::a11y_elems`: the two answers for their own group, nothing for any other.
+    pub fn elems(&self, g: GroupId, out: &mut Vec<u32>) {
+        if g == self.group {
+            out.extend([self.cancel, self.affirm]);
+        }
+    }
+
+    /// `Focusable::a11y_find`: the answer a path names.
+    pub fn find(&self, path: &A11yPath) -> Option<u32> {
+        let mut segs = path.segs();
+        match (segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("alert")), Some(Seg::Name(n)), None) if n == self.names[0] => Some(self.cancel),
+            (Some(Seg::Name("alert")), Some(Seg::Name(n)), None) if n == self.names[1] => Some(self.affirm),
+            _ => None,
+        }
+    }
 }
 
 /// **The question on a surface with no alert of its own** — Home, a Library source, Settings.
@@ -354,6 +408,34 @@ impl PlaintextAlert {
     /// `Focusable::seat` for the answers' group: *Not now*.
     pub fn seat(&self, g: GroupId, entry: EntryId) -> Option<FocusKey<u32>> {
         (g == self.group).then(|| self.key(entry, self.cancel))
+    }
+
+    /// The answers as an accessibility id names them: `alert.not_now` and `alert.connect`.
+    pub fn answers(&self) -> AlertAnswers {
+        AlertAnswers::new(self.group, self.cancel, self.affirm, "not_now", "connect")
+    }
+
+    /// `Focusable::a11y` while open: `Some(answer)` — `Some(None)` for a key that is not an
+    /// answer, as the open alert makes every other element of the host nothing — and `None` when
+    /// closed (the host's).
+    pub fn a11y(&self, key: u32) -> Option<Option<A11y<'static>>> {
+        self.is_open().then(|| self.answers().a11y(key))
+    }
+
+    /// `Focusable::a11y_elems`: while open the answers are the ONLY group — list them for their
+    /// own group and return `true` so the host lists none of its own.
+    pub fn a11y_elems(&self, g: GroupId, out: &mut Vec<u32>) -> bool {
+        if !self.is_open() {
+            return false;
+        }
+        self.answers().elems(g, out);
+        true
+    }
+
+    /// `Focusable::a11y_find` while open: `Some(answer)`, `Some(None)` for a path that names no
+    /// answer (the page under a question is no owner's), and `None` when closed (the host's).
+    pub fn a11y_find(&self, path: &A11yPath) -> Option<Option<u32>> {
+        self.is_open().then(|| self.answers().find(path))
     }
 
     /// Draw the alert over the host's page, and register its answers' stops once it has settled.

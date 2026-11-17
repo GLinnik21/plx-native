@@ -357,6 +357,11 @@ pub struct DocumentPage {
     state: DocState,
 }
 
+/// [`DocState::which`] for the About page and for the Language page's Contribute page; a legal document's
+/// is its place in [`Page::ALL`].
+const WHICH_ABOUT: u8 = 0xff;
+const WHICH_CONTRIBUTE: u8 = 0xfe;
+
 struct DocState {
     which: u8,
     /// The reading position, folded into the hashed state so a replay can tell two frames of the
@@ -427,7 +432,7 @@ impl DocumentPage {
             guide_caption: None,
             layout: RouteLayout::settings_page(),
             word: word::LEGAL,
-            state: DocState { which: 0xff, pos: 0 },
+            state: DocState { which: WHICH_ABOUT, pos: 0 },
         }
     }
 
@@ -443,7 +448,7 @@ impl DocumentPage {
             guide_caption: Some(plx_platform::i18n::msg::settings_language_contribute_body()),
             layout: RouteLayout::screen(),
             word: "contribute",
-            state: DocState { which: 0xfe, pos: 0 },
+            state: DocState { which: WHICH_CONTRIBUTE, pos: 0 },
         }
     }
 
@@ -513,6 +518,15 @@ plx_ui::focusable_via_view!(DocumentPage, InnerHost, view);
 impl Screen<InnerHost> for DocumentPage {
     fn name(&self) -> &'static str {
         self.word
+    }
+    /// A Legal document and About share the heartbeat word of the Legal index (`legal`), so each answers
+    /// a namespace of its own and an id names the page it was read on.
+    fn a11y_ns(&self) -> &'static str {
+        match self.state.which {
+            WHICH_ABOUT => "about",
+            WHICH_CONTRIBUTE => self.word,
+            _ => "legal-document",
+        }
     }
     fn state(&self) -> &dyn LogicalState {
         &self.state
