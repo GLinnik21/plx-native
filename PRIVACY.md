@@ -129,6 +129,15 @@ A main-thread freeze (the app not responding for five seconds or more while it i
 
 When another part of the television's software ends PlxNative by calling `exit()` (for example the system closing it), the app records the call and reports it like a crash, under the same choice: the exit status (a number), which thread made the call (its number, whether it was the main thread, and its own name, a technical label set by PlxNative or a library), the library the call came from (its file name, never the folder, with its build identifier, load address and size, as for a crash report above) and the code address of the call, the time of the call to the second, and the details above.
 
+A report built from the crash log (a fault, a Rust panic, a freeze or an `exit()` call, as above) is
+sent the next time the app starts, which after an update is a newer build than the one that left
+the record. When the record names a different build of PlxNative than the one sending it, the report's
+`release` (the app version it is filed under) is left out rather than filed under the newer
+version, and it carries two tags instead: `crash.uploaded_by`, the app version that sent it, and
+`crash.build_id`, the build identifier of the build that crashed. Both are an app version and a
+binary build identifier, which these reports already carried; nothing new is collected. A report from the same
+build as the one sending it, or one whose build cannot be compared, carries `release` and neither tag.
+
 Every crash and error report carries a **Crash report ID**: a random identifier created on this
 television when you turn crash reports on, sent as the report's `user.id`. It exists so that
 repeated crashes under one Crash report ID are counted once rather than once each — Sentry's
