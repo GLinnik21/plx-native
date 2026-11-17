@@ -103,7 +103,9 @@ fn the_sections_are_named_and_a_member_names_its_rating_key() {
     let _guard = plx_base::testlock::serial();
     let _policy = crate::registry::captions::PolicyPin::default_setting();
     let h = Harness::new(8);
-    let ids = plx_ui::a11y::listing::<CollectionHost, _>(&h.screen, &h.cx());
+    let all = plx_ui::a11y::listing::<CollectionHost, _>(&h.screen, &h.cx());
+    assert!(all.iter().all(|a| !a.path.to_string().starts_with("section.")), "a section left unnamed");
+    let ids: Vec<_> = all.into_iter().filter(|a| a.role == plx_ui::a11y::Role::Card).collect();
     let paths: Vec<String> = ids.iter().map(|a| a.path.to_string()).collect();
     assert_eq!(paths, (0..8).map(|i| format!("items.card.{i}")).collect::<Vec<_>>());
     for (i, a) in ids.iter().enumerate() {
