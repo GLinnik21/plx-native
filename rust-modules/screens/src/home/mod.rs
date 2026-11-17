@@ -3260,13 +3260,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
             Located::Item(row, col) => {
                 let projection = self.rows.get(row)?;
                 let path = shelf_path(projection, row).name("card").index(col);
-                Some(match self.item_at(view, row, col) {
-                    Some(item) => A11y::new(path, A11yRole::Card)
-                        .with_label(item.title.clone())
-                        .with_subject(item.rk.clone()),
-                    // a slot whose card has not landed: it exists and can be focused, not pressed
-                    None => A11y::new(path, A11yRole::Card).with_loaded(false),
-                })
+                // a slot whose card has not landed exists and can be focused, not pressed: it is
+                // not loaded, which `card_a11y` says by the same rule the shelf's draw skips it by
+                Some(ui_cards::card_a11y::<H, _>(path, &self.cards(view, row), col))
             }
         }
     }
@@ -4534,6 +4530,11 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
     /// The card's ratingKey: what a by-id press names to stay on the title it read.
     fn subject(&self, i: usize) -> Option<Cow<'_, str>> {
         self.item(i).map(|m| Cow::Borrowed(m.rk.as_str()))
+    }
+
+    /// The item's own title: the Continue Watching deck draws no label block under its stills.
+    fn a11y_title(&self, i: usize) -> Option<Cow<'_, str>> {
+        self.item(i).map(|m| Cow::Borrowed(m.title.as_str()))
     }
 
     /// The card the PICTURE shows focused: none until the dive has made the shelves the picture,

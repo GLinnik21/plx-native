@@ -3110,6 +3110,8 @@ mod stack {
         shelf: Cards,
         revision: u64,
         foot: f32,
+        /// What each of the further shelves keeps under its block ([`StackPage::shelf_foot`]).
+        more_foot: f32,
         /// Further shelves after `Shelf`, each at the default reveal margin.
         more: Vec<Cards>,
         /// What `recover` answers (`None`: the trait's default).
@@ -3203,13 +3205,15 @@ mod stack {
         }
         fn reveal_with(&self, k: Msec) -> Option<Msec> { matches!(k, Msec::List | Msec::Clear).then_some(Msec::Field) }
         fn reveal_margin(&self, k: Msec) -> f32 { if k == Msec::Shelf { SHELF_MARGIN } else { crate::consts::MARGIN_Y } }
-        fn shelf_foot(&self, _cx: &Cx9<'_>, k: Msec) -> f32 { if k == Msec::Shelf { self.foot } else { 0.0 } }
+        fn shelf_foot(&self, _cx: &Cx9<'_>, k: Msec) -> f32 {
+            match k { Msec::Shelf => self.foot, Msec::More(_) => self.more_foot, _ => 0.0 }
+        }
     }
 
     fn mrig(rows: u32, shelf: usize, build: impl FnOnce(Stack<Msec>) -> Stack<Msec>) -> Mrig {
         let mut r = PageRig {
             stack: build(Stack::new(ENTRY)),
-            page: Multi { rows, shelf: Cards::new((0..shelf as u32).map(|i| 100 + i).collect(), false), revision: 1, foot: 0.0, more: Vec::new(), recover_to: None, narrow: false, named: false },
+            page: Multi { rows, shelf: Cards::new((0..shelf as u32).map(|i| 100 + i).collect(), false), revision: 1, foot: 0.0, more_foot: 0.0, more: Vec::new(), recover_to: None, narrow: false, named: false },
             view: FixtureView::default(),
             focus: None,
             ms: 0,
@@ -3232,8 +3236,8 @@ mod stack {
     }
 
     /// **A page of every kind of section conforms to the id contract**: every element of every
-    /// group projects, the ids are unique, the inverse finds each element and each group lists as
-    /// many as it declares. A section the page did not name is `section.<position>`, its cards
+    /// group projects, the ids are unique, the inverse finds each element and no group lists more
+    /// than it declares (or, one that declares any, none). A section the page did not name is `section.<position>`, its cards
     /// `<section>.card.<i>` and the element of a `Custom` / `Overlay` one `<section>.<n>`.
     #[test]
     fn a_stack_page_conforms_and_names_unnamed_sections_by_position() {
@@ -3323,6 +3327,10 @@ mod stack {
             assert_eq!(view.a11y(&102, &cx).map(|a| a.path.to_string()).as_deref(), Some("section.3.card.2"));
         }
         r.page.named = true;
+        // shelves stacked one under another each keep the label band's air under them, which the
+        // `Stack` insists on for every shelf that has another below it
+        r.page.foot = crate::consts::UNDER_LABEL_AIR;
+        r.page.more_foot = crate::consts::UNDER_LABEL_AIR;
         r.page.more = vec![
             Cards::new((0..3).map(|i| 300 + i).collect(), false),
             Cards::new((0..2).map(|i| 400 + i).collect(), false),

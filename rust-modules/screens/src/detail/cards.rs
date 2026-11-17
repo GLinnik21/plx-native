@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use plx_data::metadata::Detail;
 use plx_data::pms::PmsMovie;
 use plx_machine::machine::{EntryId, FocusKey, Host, Measure, PressRead};
-use plx_ui::a11y::{A11y, A11yPath, Role as A11yRole};
+use plx_ui::a11y::{A11y, A11yPath};
 use plx_ui::cards::{self as ui_cards, RowStyle, TileLabel};
 use plx_ui::cards::{CardSource, Tile};
 use plx_ui::widgets::Art;
@@ -64,26 +64,12 @@ pub(super) struct Cards<'a> {
 }
 
 impl<'a> Cards<'a> {
-    /// **Card `i`'s accessibility projection**, `<shelf>.card.<i>` ([`Which::a11y_name`]): the same
-    /// shape the shared stack gives a card (`Role::Card`, the title as its label, the item's
-    /// [`CardSource::subject`]), written here because the page composes its own shelves. The index is
-    /// the card's position in the shelf, so a card off screen has its id as well.
+    /// **Card `i`'s accessibility projection**, `<shelf>.card.<i>` ([`Which::a11y_name`]), given its
+    /// shape by the shared [`card_a11y`](ui_cards::card_a11y): the page composes its own shelves, so it
+    /// supplies the path. The index is the card's position in the shelf, so a card off screen has its
+    /// id as well.
     pub(super) fn a11y_card<H: Host<Elem = u32>>(&self, i: usize) -> A11y<'static> {
-        let path = A11yPath::new().name(self.which.a11y_name()).name("card").index(i);
-        let mut a = A11y::new(path, A11yRole::Card);
-        let title = match self.which {
-            Which::Related | Which::Collection => self.movies().get(i).map(|m| m.title.as_str()),
-            Which::Extras => self.d.extras.get(i).map(|e| e.title.as_str()),
-            // the names are drawn under every headshot, so the label block is empty: the credit's name
-            Which::Cast => self.d.credit(i).map(|c| c.tag.as_str()),
-        };
-        if let Some(title) = title.filter(|title| !title.is_empty()) {
-            a = a.with_label(title.to_owned());
-        }
-        if let Some(subject) = <Self as CardSource<H>>::subject(self, i) {
-            a = a.with_subject(subject.into_owned());
-        }
-        a
+        ui_cards::card_a11y::<H, _>(A11yPath::new().name(self.which.a11y_name()).name("card").index(i), self, i)
     }
 
     /// How many cards the shelf holds (`CardSource::len`, for a caller with no host type at hand).
@@ -214,6 +200,17 @@ impl<H: Host<Elem = u32>> CardSource<H> for Cards<'_> {
             Which::Related | Which::Collection => self.movies().get(i).and_then(|m| m.resume_frac()),
             Which::Extras | Which::Cast => None,
         }
+    }
+
+    /// The item's own title, whatever the label block shows: the cast's names are drawn under every
+    /// headshot (`overlay`), so theirs is the credit's name.
+    fn a11y_title(&self, i: usize) -> Option<Cow<'_, str>> {
+        let title = match self.which {
+            Which::Related | Which::Collection => self.movies().get(i).map(|m| m.title.as_str()),
+            Which::Extras => self.d.extras.get(i).map(|e| e.title.as_str()),
+            Which::Cast => self.d.credit(i).map(|c| c.tag.as_str()),
+        };
+        title.map(Cow::Borrowed)
     }
 
     /// The item's ratingKey: what a by-id press names to stay on the title it read. A headshot has

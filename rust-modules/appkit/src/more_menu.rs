@@ -1843,7 +1843,7 @@ mod focus_tests {
 
     /// Every row of `form` as the menu projects it: `(id, role)` in row order, after the menu
     /// passes the `a11y` conformance suite (every row projects, ids are unique, the inverse finds
-    /// each row and the group lists as many rows as it declares).
+    /// each row and the group lists no more rows than it declares).
     fn projected(form: MoreForm) -> Vec<(String, Role)> {
         plx_media::speed_audio::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let e = EntryId(4);

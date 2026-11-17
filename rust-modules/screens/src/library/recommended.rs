@@ -33,7 +33,7 @@ use plx_machine::machine::{
     InstanceId, Key, LogicalState, Machine, MachineId,
 };
 use plx_machine::present::Provenance;
-use plx_ui::a11y::{A11y, A11yPath, Role as A11yRole, Seg};
+use plx_ui::a11y::{A11y, A11yPath, Seg};
 use plx_ui::cards::{self as ui_cards, CardSource, RowStyle, SectionFrame, Tile};
 use plx_ui::consts::{CARD_DY, K_SCROLL, MARGIN_X, MARGIN_Y, SCR_H, SCR_W, TITLE_DY};
 use plx_ui::frame::Budget;
@@ -1267,15 +1267,7 @@ impl<H: LibraryLike> Focusable<H> for RecommendedScreen {
         if *key == CRUMB_ELEM { return self.header(cx).a11y(*key).map(A11y::into_owned); }
         let shelf = |row: usize| A11yPath::new().name("shelf").index(row);
         if let Some((row, col)) = self.cell_of(*key) {
-            let src = self.hub_src(row, cx);
-            let mut a = A11y::new(shelf(row).name("card").index(col), A11yRole::Card)
-                .with_loaded(<HubSrc<'_> as CardSource<H>>::loaded(&src, col));
-            if let Some(item) = src.item(col) {
-                // owned: the hub is the page's view, which this projection outlives
-                if !item.title.is_empty() { a = a.with_label(item.title.clone()); }
-                if let Some(subject) = <HubSrc<'_> as CardSource<H>>::subject(&src, col) { a = a.with_subject(subject.into_owned()); }
-            }
-            return Some(a);
+            return Some(ui_cards::card_a11y::<H, _>(shelf(row).name("card").index(col), &self.hub_src(row, cx), col));
         }
         let row = self.shelves.iter().position(|row| row.heading_elem() == Some(*key))?;
         Some(self.heading_widget(row, cx)?.a11y(shelf(row).name("heading")).into_owned())
@@ -1555,6 +1547,11 @@ impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
     /// item the hub has not published has none.
     fn subject(&self, i: usize) -> Option<Cow<'_, str>> {
         self.item(i).filter(|item| !item.rk.is_empty()).map(|item| Cow::Borrowed(item.rk.as_str()))
+    }
+    /// The item's own title: a landscape row's caption is a shaped title and one fact, and the
+    /// Continue Watching deck draws none under its stills.
+    fn a11y_title(&self, i: usize) -> Option<Cow<'_, str>> {
+        self.item(i).map(|item| Cow::Borrowed(item.title.as_str()))
     }
     fn more(&self) -> bool { self.paging && self.shelf.is_some_and(|shelf| shelf.more) }
     fn page_epoch(&self) -> u32 { self.shelf.map_or(0, |shelf| shelf.epoch) }

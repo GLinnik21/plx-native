@@ -343,8 +343,8 @@ pub fn default_walk<H: Host, F: Focusable<H> + ?Sized>(
 
 /// The complaints [`conformance`] has about `view`, one line each (empty when it conforms).
 ///
-/// For every group `view.groups` declares: `a11y_elems` lists AT MOST `GroupSpec::len` keys; every
-/// one places (`place(.., At::SpringTarget)` is `Some`: it is a real element of this view) and
+/// For every group `view.groups` declares: `a11y_elems` lists AT MOST `GroupSpec::len` keys, and at
+/// LEAST one when `len` is above 0; every one places (`place(.., At::SpringTarget)` is `Some`: it is a real element of this view) and
 /// projects `Some` (a path of one or more segments that re-parses to itself); the paths are unique
 /// across the whole view; and `a11y_find` of each path answers that same key (the elements off
 /// screen are listed too, so they are found). A view that declares no group has nothing to check.
@@ -355,6 +355,11 @@ pub fn default_walk<H: Host, F: Focusable<H> + ?Sized>(
 /// therefore exceed the listing, and is never bent to equal it (that would move where focus seats);
 /// a listing LONGER than `len` is still a fault, since an element the group does not count cannot
 /// be one of its elements.
+///
+/// **Why a group that counts cells must list one.** "At most" alone is satisfied by a view that
+/// answers no hook at all (every group lists nothing, so nothing is checked): the three hooks
+/// would pass vacuously. A group with `len > 0` has a cell a reader can reach, so one element at
+/// least has an id; a group whose cells are all blank is declared with `len` 0 or is not a group.
 #[cfg(any(test, feature = "test-support"))]
 pub fn conformance_report<H: Host, F: Focusable<H> + ?Sized>(view: &F, cx: &Cx<'_, H>) -> Vec<String> {
     use std::collections::HashSet;
@@ -371,6 +376,12 @@ pub fn conformance_report<H: Host, F: Focusable<H> + ?Sized>(view: &F, cx: &Cx<'
             complaints.push(format!(
                 "group {}: a11y_elems lists {} elements, more than GroupSpec.len {}",
                 g.id.0, elems.len(), g.len
+            ));
+        }
+        if g.len > 0 && elems.is_empty() {
+            complaints.push(format!(
+                "group {}: a11y_elems lists no element although GroupSpec.len is {} (the hook is not answered)",
+                g.id.0, g.len
             ));
         }
         for (i, k) in elems.iter().enumerate() {
@@ -467,6 +478,8 @@ mod tests {
         Unplaced,
         /// `a11y_find` answers the neighbour.
         Misfound,
+        /// `a11y_elems` lists nothing for a group that counts cells (a view that answers no hook).
+        Silent,
         /// NOT a fault: `GroupSpec.len` counts one more cell than there are elements (a note, a
         /// separator, a pad's blank cell), so the listing is one short of it.
         Blank,
@@ -544,7 +557,7 @@ mod tests {
             Some(A11y::new(self.path(i), Role::Card))
         }
         fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<u32>) {
-            if g == GroupId(7) {
+            if g == GroupId(7) && self.fault != Fault::Silent {
                 out.extend(0..self.listed() as u32);
             }
         }
@@ -586,8 +599,9 @@ mod tests {
         }
     }
 
-    /// **Each of the five properties is checked**: an element that projects, that is unique, that
-    /// places, that `a11y_find` answers, and a listing no longer than `GroupSpec.len`.
+    /// **Each of the six properties is checked**: an element that projects, that is unique, that
+    /// places, that `a11y_find` answers, a listing no longer than `GroupSpec.len` and, for a group
+    /// that counts any cell, no shorter than one element.
     #[test]
     fn conformance_names_each_broken_property() {
         for (fault, want) in [
@@ -596,6 +610,7 @@ mod tests {
             (Fault::Long, "more than GroupSpec.len"),
             (Fault::Unplaced, "place(SpringTarget) is None"),
             (Fault::Misfound, "is not that element"),
+            (Fault::Silent, "lists no element"),
         ] {
             let got = report(&Row { len: 3, indexed: true, fault });
             assert!(got.iter().any(|c| c.contains(want)), "{want:?} not reported: {got:?}");
@@ -624,6 +639,22 @@ mod tests {
             assert_eq!(report(&row), Vec::<String>::new());
             conformance(&row, &cx);
         }
+    }
+
+    /// **A view that answers no hook does not pass vacuously**: a group that counts cells and lists
+    /// no element is the one complaint, by walk and by index, and the same view with `len` 0 (a page
+    /// whose data has not landed) has nothing to list.
+    #[test]
+    fn a_group_that_counts_cells_must_list_an_element() {
+        for indexed in [false, true] {
+            let got = report(&Row { len: 3, indexed, fault: Fault::Silent });
+            assert_eq!(
+                got,
+                ["group 7: a11y_elems lists no element although GroupSpec.len is 3 (the hook is not answered)"],
+                "indexed: {indexed}"
+            );
+        }
+        assert!(report(&Row { len: 0, indexed: true, fault: Fault::Silent }).is_empty());
     }
 
     /// A view with no group has nothing to check (a page whose data has not landed).

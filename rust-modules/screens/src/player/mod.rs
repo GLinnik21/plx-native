@@ -2753,7 +2753,9 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
     /// section's buttons; `chapter.<i>` for the strip's cards; `failure.<action word>` for the
     /// read-out's row; `repair.cancel` and `repair.confirm` for the confirmation, which hides
     /// everything else while it is up. An element exists exactly when [`Self::groups_in`] declares
-    /// its group, so a disabled disc or an absent tab is a slot that is NOT loaded, not a missing one.
+    /// its group AND the frame places it (`place`): a disc the row cannot use (Previous on a film, or
+    /// on the first episode) and a tab the layout does not draw are cells `GroupSpec::len` counts but
+    /// no elements, like a form table's separator, so they have no id.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         use player_hud::{ELEM_CHAPTER_BASE, ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_SCRUB, ELEM_SECTION_BASE, ELEM_SECTION_END, ELEM_TAB_BASE};
         let key = *key;
@@ -2771,10 +2773,10 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
         }
         if let Some(i) = player_hud::row_index(key) {
             let at = i as usize;
-            if !self.middle_up() || at >= self.row_len(chapters).max(1) {
+            if !self.middle_up() || at >= self.row_len(chapters).max(1) || !self.row_enabled(i) {
                 return None;
             }
-            let item = A11y::new(self.control_path(i), Role::Button).with_loaded(self.row_enabled(i));
+            let item = A11y::new(self.control_path(i), Role::Button);
             return Some(match self.row_word(i) {
                 Some(word) => item.with_label(word),
                 None => item,
@@ -2782,15 +2784,12 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
         }
         if (ELEM_TAB_BASE..ELEM_FAILURE_BASE).contains(&key) {
             let tab = (key - ELEM_TAB_BASE) as usize;
-            let geo = self.hud_geometry(cx);
-            if tab > geo.tabs.iter().rposition(Option::is_some)? {
-                return None;
-            }
+            self.hud_geometry(cx).tabs.get(tab).copied().flatten()?;
             let word = match Section::of_tab(tab as i32)? {
                 Section::Info => "info",
                 Section::Chapters => "chapters",
             };
-            return Some(A11y::new(A11yPath::new().name("tab").name(word), Role::Tab).with_loaded(geo.tabs[tab].is_some()));
+            return Some(A11y::new(A11yPath::new().name("tab").name(word), Role::Tab));
         }
         if (ELEM_FAILURE_BASE..ELEM_FAILURE_END).contains(&key) {
             let at = (key - ELEM_FAILURE_BASE) as usize;
@@ -2812,9 +2811,10 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
         None
     }
     /// **Every element of a group, in index order**, read off the group `groups_in` declares (so a
-    /// group the frame does not declare lists nothing, and the count is `GroupSpec::len` by
-    /// construction). The index groups are contiguous in their address space; the failure row alone is
-    /// sparse (a slot the row does not draw has no element), as its `len` counts only the drawn ones.
+    /// group the frame does not declare lists nothing). The index groups are addressed contiguously,
+    /// but only the slots the frame places are elements: the row's disabled discs and the tabs the
+    /// layout does not draw are counted by `GroupSpec::len` and listed by nobody, and the failure row
+    /// (whose `len` counts only the drawn actions) is as sparse.
     fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
         let geo = self.hud_geometry(cx);
         let mut declared = Vec::new();
@@ -2823,8 +2823,10 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
         match g {
             GROUP_REPAIR => out.extend([REPAIR_CANCEL, REPAIR_CONFIRM].into_iter().take(len)),
             GROUP_SCRUB => out.push(player_hud::ELEM_SCRUB),
-            GROUP_ROW => out.extend((0..len).map(|i| player_hud::control_elem(i as i32))),
-            GROUP_TABS => out.extend((0..len).map(|i| player_hud::ELEM_TAB_BASE + i as u32)),
+            GROUP_ROW => out.extend((0..len as i32).filter(|&i| self.row_enabled(i)).map(player_hud::control_elem)),
+            GROUP_TABS => out.extend(
+                (0..len).filter(|&i| geo.tabs.get(i).copied().flatten().is_some()).map(|i| player_hud::ELEM_TAB_BASE + i as u32),
+            ),
             GROUP_SECTION => out.extend((0..len).map(|i| player_hud::geometry::section_elem(i as u32))),
             GROUP_STRIP => {
                 if let Some((_, src)) = self.strip_source(cx) {
@@ -4401,7 +4403,8 @@ mod step_ladder_tests {
 
     /// **The HUD's elements have ids, named from its geometry and never from content**, and each id
     /// finds its element again: the scrubber, each classic disc by its command, and the Info tab. A
-    /// disc the item cannot use (Previous on a film) still has its id, and is not loaded.
+    /// disc the row cannot use (Previous and Next on a film) is a cell the group counts and no
+    /// element: it has no id, by its command or by its position.
     #[test]
     fn every_hud_element_answers_an_id() {
         let _g = plx_base::testlock::serial();
@@ -4414,8 +4417,6 @@ mod step_ladder_tests {
         };
         assert_eq!(by_id("scrub"), Some(player_hud::ELEM_SCRUB));
         for (id, ordinal) in [
-            ("control.previous", player_hud::BTN_PREVIOUS),
-            ("control.next", player_hud::BTN_NEXT),
             ("control.subtitles", player_hud::BTN_SUBTITLES),
             ("control.audio", player_hud::BTN_AUDIO),
             ("control.more", player_hud::BTN_MORE),
@@ -4424,13 +4425,44 @@ mod step_ladder_tests {
         }
         assert_eq!(by_id("tab.info"), Some(player_hud::ELEM_TAB_BASE));
         assert_eq!(by_id("control.5"), None, "classic has five controls");
-        let previous = Focusable::<TestHost>::a11y(&page, &player_hud::control_elem(player_hud::BTN_PREVIOUS), &cx)
-            .expect("the disabled disc still projects");
-        assert!(!previous.loaded, "Previous is disabled on a film");
+        for id in ["control.previous", "control.next", "control.0", "control.1"] {
+            assert_eq!(by_id(id), None, "{id}: a film's row has no Previous or Next to name");
+        }
+        let previous = player_hud::control_elem(player_hud::BTN_PREVIOUS);
+        assert!(Focusable::<TestHost>::a11y(&page, &previous, &cx).is_none(), "Previous is no element on a film");
         let subtitles = Focusable::<TestHost>::a11y(&page, &player_hud::control_elem(player_hud::BTN_SUBTITLES), &cx)
             .expect("Subtitles projects");
         assert!(subtitles.loaded);
         assert_eq!(subtitles.role, plx_ui::a11y::Role::Button);
+    }
+
+    /// **A pair with one live button names that one**: on the first episode Previous is disabled and
+    /// Next is live, so `control.next` is the element and the disabled Previous is a cell of the
+    /// group (the row still counts its slot) with no id, as it has no stop and no place.
+    #[test]
+    fn the_live_button_of_a_pair_has_an_id_and_the_disabled_one_none() {
+        let _g = plx_base::testlock::serial();
+        let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+        let controls = player_hud::Controls::for_item(true, false, true);
+        page.slot = ControlSlot::Discs(controls);
+        page.model.controls = controls;
+        page.model.is_episode = true;
+        let cx = cx();
+        plx_ui::a11y::conformance::<TestHost, _>(&page, &cx);
+        let by_id = |text: &str| {
+            let path = plx_ui::a11y::A11yPath::parse_relative(text).expect("a well-formed path");
+            Focusable::<TestHost>::a11y_find(&page, &path, &cx)
+        };
+        assert_eq!(by_id("control.next"), Some(player_hud::control_elem(player_hud::BTN_NEXT)));
+        assert_eq!(by_id("control.previous"), None, "a disabled disc is no element");
+        assert_eq!(by_id("control.subtitles"), Some(player_hud::control_elem(player_hud::BTN_SUBTITLES)));
+        let mut groups = Vec::new();
+        Focusable::<TestHost>::groups(&page, &cx, &mut groups);
+        let row = groups.iter().find(|g| g.id == GROUP_ROW).expect("the row is declared");
+        let mut elems = Vec::new();
+        Focusable::<TestHost>::a11y_elems(&page, GROUP_ROW, &cx, &mut elems);
+        assert_eq!(elems.len(), 4, "Next, Subtitles, Audio and More");
+        assert!(row.len > elems.len(), "the group counts the disabled Previous too: {} cells", row.len);
     }
 
     /// Every group this screen declares resolves back through `group_of` to the group it came

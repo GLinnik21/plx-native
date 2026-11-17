@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::registry::{merged_ranges, row_neighbourhood, tile_facts, LibraryIdentity, LibraryLike, LibrarySectionIdentity};
-use plx_ui::a11y::{A11y, A11yPath, Role as A11yRole, Seg};
+use plx_ui::a11y::{A11y, A11yPath, Seg};
 use plx_ui::caption_policy::CaptionPolicy;
 use plx_ui::cards as ui_cards;
 use plx_ui::cards::{CardSource, Grid, GridSpec, Tile};
@@ -654,6 +654,13 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
     fn progress(&self, i: usize) -> Option<f32> {
         self.view.item(i).filter(|item| item.kind != 3).and_then(|item| item.resume_frac())
     }
+    /// The item's own title, whatever the caption policy shows under the focused card.
+    fn a11y_title(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
+        self.view.item(i).map(|item| std::borrow::Cow::Borrowed(item.title.as_str()))
+    }
+    /// A slot whose page has not landed draws a skeleton (`loaded` stays true so the grid paints
+    /// it), and is not loaded: it holds no item.
+    fn a11y_loaded(&self, i: usize) -> bool { self.view.item(i).is_some() }
     /// The item's ratingKey (a collection's, on the Collections page): what a by-id press names to stay
     /// on the title it read. A slot whose page has not landed has none.
     fn subject(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
@@ -784,20 +791,8 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
     /// only it can be focused: `GroupSpec::len` is the whole listing.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         let i = self.index_of(*key)?;
-        let src = self.source(cx);
-        let item = src.view.item(i);
         let path = A11yPath::new().name("grid").name("card").index(i);
-        let mut a = A11y::new(path, A11yRole::Card).with_loaded(item.is_some());
-        if let Some(item) = item {
-            // owned: the listing is the page's view, which this projection outlives
-            if !item.title.is_empty() {
-                a = a.with_label(item.title.clone());
-            }
-            if let Some(subject) = <GridSrc<'_, '_> as CardSource<H>>::subject(&src, i) {
-                a = a.with_subject(subject.into_owned());
-            }
-        }
-        Some(a)
+        Some(ui_cards::card_a11y::<H, _>(path, &self.source(cx), i))
     }
 
     /// Every card that holds a key, in listing order.
