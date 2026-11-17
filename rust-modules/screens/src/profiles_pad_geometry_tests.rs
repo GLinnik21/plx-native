@@ -298,7 +298,7 @@ fn the_pad_is_the_only_group_while_it_is_open() {
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].id, PAD_GROUP);
     assert_eq!(groups[0].elem, ElemKind::Bare);
-    assert_eq!(groups[0].len, PAD_KEYS, "the group counts its keys, not its cells: the hole is no element");
+    assert_eq!(groups[0].len, PAD_ROWS * PAD_COLS);
     assert!(matches!(
         groups[0].kind,
         GroupKind::Grid { cols: PAD_COLS, .. }
@@ -529,7 +529,7 @@ fn only_the_grid_group_is_reachable_while_the_pad_is_open() {
         "no roster group and no footer group while the pad is up"
     );
     assert_eq!(groups[0].id, PAD_GROUP);
-    assert_eq!(groups[0].len, PAD_KEYS, "the group counts its keys, not its cells: the hole is no element");
+    assert_eq!(groups[0].len, PAD_ROWS * PAD_COLS);
 }
 
 
@@ -574,7 +574,8 @@ fn id(text: &str) -> A11yPath {
 
 /// **Every key of the open pad has an id and the hole has none**: `pad.digit.<n>` types `n`,
 /// `pad.delete` deletes, `a11y_find` inverts each (a digit past 9, an extra or a missing segment
-/// find nothing), and the group's `len` is its eleven keys, so the listing conforms. With the pad
+/// find nothing), and the listing is its eleven keys while the group's `len` stays its twelve
+/// cells (the hole is a cell, not an element: the conformance rule is "at most `len`"). With the pad
 /// shut the pad's ids do not exist.
 #[test]
 fn the_open_pad_answers_an_id_for_each_key_and_none_for_the_hole() {
@@ -596,7 +597,7 @@ fn the_open_pad_answers_an_id_for_each_key_and_none_for_the_hole() {
     assert_eq!((one.path.to_string(), one.role), ("pad.digit.1".to_string(), Role::Button));
     let mut keys = Vec::new();
     Focusable::<SessionHost>::a11y_elems(&s, PAD_GROUP, &c, &mut keys);
-    assert_eq!(keys.len(), PAD_KEYS);
+    assert_eq!(keys.len(), PAD_ROWS * PAD_COLS - PAD_HOLES.len(), "the keys, not the cells");
     for refused in ["pad.digit.10", "pad.digit", "pad", "pad.delete.1", "pad.hole", "sign_out", "back"] {
         assert_eq!(find(refused), None, "{refused}");
     }

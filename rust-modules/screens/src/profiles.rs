@@ -167,9 +167,6 @@ const KEYS: [[Option<u8>; PAD_COLS]; PAD_ROWS] = [
 ];
 /// `(row, col)` holes in the keypad grid — one, the bottom-left cell.
 const PAD_HOLES: &[(usize, usize)] = &[(3, 0)];
-/// How many keys the pad has: its cells less the holes. This is the group's `len`, the count of
-/// ELEMENTS (a hole is no element, so it has no id and nothing to list).
-const PAD_KEYS: usize = PAD_ROWS * PAD_COLS - PAD_HOLES.len();
 
 /// The screen's `u32` element namespace: a roster tile is its own raw index (`geom::Shelf`'s
 /// convention), so the footer and the keypad each need a base far above any realistic roster
@@ -567,9 +564,7 @@ fn pad_group_spec(measure: &dyn Measure) -> GroupSpec {
         // completed PIN) is answered in `step`, not through an edge rule.
         edge: [EdgeRule::Stop; 4],
         extent: pad_extent(measure),
-        // the keys, not the cells: the group's `len` counts its elements, and the hole is none
-        // (`a11y_elems` lists exactly this many)
-        len: PAD_KEYS,
+        len: PAD_ROWS * PAD_COLS,
         elem: ElemKind::Bare,
     }
 }
