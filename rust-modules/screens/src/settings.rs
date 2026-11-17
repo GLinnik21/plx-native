@@ -549,9 +549,8 @@ fn mount_page(
 ///  * `ConsentPage` (Privacy & data, and each first-run stage) → `ConsentState`: the mode, both
 ///    halves of the draft decision, and whether the delete alert is up.
 ///  * `OnboardScreen` (Favorite libraries) → `OnboardState`: whether it is the Settings or the
-///    first-run instance, whether it currently HAS an action band (the group set the engine is
-///    reasoning about, cached at `rebuild` for the reason that field's own doc gives), and the
-///    whole draft pin list.
+///    first-run instance, where it is in its lifecycle (`Exit`: editing, committing after a pin
+///    commit count, or left), and the whole draft pin list.
 ///  * `DocumentPage` (the six Legal documents and About) → `DocState`: WHICH document, and its
 ///    reading position in whole `document_reader::STEP`s.
 ///  * `PreviewPage` (the five Privacy previews) → `PreviewState`: which preview. **Its reading

@@ -483,6 +483,7 @@ pub struct DirectorySnapshot {
     refreshing: bool,
     sections_gen: u32,
     tabs_gen: u32,
+    pin_commit: super::PinCommit,
 }
 
 /// Where a retained poster sits: an O(1) handle on the immutable rows that hold it, and its place
@@ -591,6 +592,7 @@ impl Default for DirectorySnapshot {
             refreshing: false,
             sections_gen: 0,
             tabs_gen: 0,
+            pin_commit: super::PinCommit::default(),
         }
     }
 }
@@ -624,6 +626,7 @@ impl DirectorySnapshot {
         self.refreshing = state.sources().iter().any(|source| source.reachable() && !source.sections_done);
         self.sections_gen = state.sections_gen();
         self.tabs_gen = state.tabs_gen();
+        self.pin_commit = state.pin_commit();
         for (i, kind) in [super::SecKind::Movie, super::SecKind::Show].into_iter().enumerate() {
             self.preferred[i] = state.tab_of_kind(kind).and_then(|tab| state.tab_section(tab));
             self.kind_fetch[i] = state.kind_state(kind);
@@ -658,6 +661,7 @@ impl DirectorySnapshot {
             refreshing: fetch == SecFetch::Loading,
             sections_gen: 0,
             tabs_gen: 0,
+            pin_commit: super::PinCommit::default(),
         }
     }
 
@@ -745,6 +749,7 @@ impl DirectorySnapshot {
             refreshing: false,
             sections_gen: 0,
             tabs_gen: 0,
+            pin_commit: super::PinCommit::default(),
         }
     }
 
@@ -885,6 +890,10 @@ impl<'a> DirectoryView<'a> {
     pub fn refreshing(self) -> bool { self.0.refreshing }
     pub fn discovery(self) -> SecFetch {
         self.0.discovery
+    }
+    /// The outcome of the last Favorite libraries commit the store ran ([`super::PinCommit`]).
+    pub fn pin_commit(self) -> super::PinCommit {
+        self.0.pin_commit
     }
     /// Press-time section, not necessarily the committed one during a page fade.
     /// Includes `section` itself even when unpinned so jumping to an unpinned library from

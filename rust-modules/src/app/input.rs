@@ -1441,27 +1441,139 @@ pub(crate) fn enter_profiles_from_onboard(pages: &mut plx_ui::dispatch::Dispatch
 /// property of the SURFACE, not of this function: presenting `AppArg::FirstRunConsent` mounts a
 /// `ConsentPage` holding a draft, and only its two answer pills reach `ConsentCmd::Record`.
 ///
-/// Phase 5b: the screen is the tree's, so this presents rather than opens. `bridge::open_*` is
-/// itself idempotent while the surface is up (any phase), which is what lets the three per-frame
-/// routing call sites go on simply asking.
-pub(crate) fn maybe_ask_consent(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>) {
+/// Phase 5b: the screen is the tree's, so this presents rather than opens. Where the question is
+/// in its lifecycle is [`ConsentAsk`], the Bridge's one field for it, and this is its only writer.
+pub(crate) fn maybe_ask_consent(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    ask: &mut ConsentAsk) {
     let c = plx_telemetry::telemetry::consent::current().unwrap_or_default();
-    // dev: /tmp/plxnative-consent[=<crash|product>] forces either first-run purpose even on an
-    // automated boot. This screen is suppressed BY the presence of any trigger, so without an
-    // override it cannot be reached headlessly at all. Selecting Product changes display state
-    // only; no answer is stored by a harness boot — the stage byte is where the surface STARTS,
-    // and reaching stage 1 that way skips the crash question rather than answering it.
-    if let Some(target) = crate::dev::scenarios::consent_override() {
-        // `screens::consent`'s `STAGE_PRODUCT`, spelled here because it is that module's private
-        // encoding of `SettingsPage::ConsentStage` and this is its only outside caller. The
-        // companion bit (`ERRORS_SHARED`, 0x10) is deliberately NOT set: a dev boot has answered
-        // nothing, so the product stage opens with the crash answer at its default.
-        let stage = u8::from(target.trim() == "product");
+    let facts = AskFacts {
+        // dev: /tmp/plxnative-consent[=<crash|product>] forces either first-run purpose even on an
+        // automated boot. This screen is suppressed BY the presence of any trigger, so without an
+        // override it cannot be reached headlessly at all. Selecting Product changes display state
+        // only; no answer is stored by a harness boot — the stage byte is where the surface STARTS,
+        // and reaching stage 1 that way skips the crash question rather than answering it.
+        // `screens::consent`'s `STAGE_PRODUCT` is spelled here as `1` because it is that module's
+        // private encoding of `SettingsPage::ConsentStage` and this is its only outside caller.
+        override_stage: crate::dev::scenarios::consent_override().map(|target| u8::from(target.trim() == "product")),
+        owed: plx_screens::consent::should_show(&c, crate::dev::any_trigger_present()),
+        answered: c.answered(),
+        shown: super::bridge::first_run_consent_up(pages),
+    };
+    let (next, present) = ask.step(facts);
+    *ask = next;
+    if let Some(stage) = present {
         super::bridge::open_first_run_consent_at(pages, stage);
-        return;
     }
-    if plx_screens::consent::should_show(&c, crate::dev::any_trigger_present()) {
-        super::bridge::open_first_run_consent(pages);
+}
+
+/// **Where the first-run consent question is** (implicit-state audit 2026-11-17, finding 2). It
+/// used to be no state at all: "owed" was the persisted decision, "presented" was whether a surface
+/// happened to exist, and the dev override bypassed both, so on the picker path (asked every frame)
+/// it presented the question again on the frame after each answer, forever.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum ConsentAsk {
+    /// Not presented since the last time it was owed.
+    #[default]
+    NotAsked,
+    /// The surface was presented; `overridden` when the dev override asked rather than the
+    /// persisted decision (an override answer is display-only and records nothing).
+    Presented { overridden: bool },
+    /// Answered (or the override's one presentation is spent). Asked again only if the decision is
+    /// owed again — the account signed out and `forget` cleared it.
+    Done,
+}
+
+/// What [`ConsentAsk::step`] decides from, read by its one caller.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AskFacts {
+    /// The dev override's stage, if armed.
+    pub(crate) override_stage: Option<u8>,
+    /// The persisted decision is owed on this boot (`consent::should_show`).
+    pub(crate) owed: bool,
+    /// A decision for the current policy is recorded.
+    pub(crate) answered: bool,
+    /// The first-run surface is up (any phase but Hidden).
+    pub(crate) shown: bool,
+}
+
+impl ConsentAsk {
+    /// The next state, and the stage to present at when the question must be put now. A surface
+    /// that went away is judged first: answered (or overridden) is done; lost unanswered is asked
+    /// again. The override is honoured once per process, from `NotAsked` only.
+    pub(crate) fn step(self, f: AskFacts) -> (Self, Option<u8>) {
+        let settled = match self {
+            Self::Presented { .. } if f.shown => return (self, None),
+            Self::Presented { overridden: true } => Self::Done,
+            Self::Presented { overridden: false } if f.answered => Self::Done,
+            Self::Presented { overridden: false } => Self::NotAsked,
+            other => other,
+        };
+        match settled {
+            Self::NotAsked => match (f.override_stage, f.owed) {
+                (Some(stage), _) => (Self::Presented { overridden: true }, Some(stage)),
+                (None, true) => (Self::Presented { overridden: false }, Some(0)),
+                (None, false) => (Self::NotAsked, None),
+            },
+            Self::Done if f.owed => (Self::Presented { overridden: false }, Some(0)),
+            other => (other, None),
+        }
+    }
+}
+
+#[cfg(test)]
+mod consent_ask_tests {
+    use super::{AskFacts, ConsentAsk};
+
+    fn facts(override_stage: Option<u8>, owed: bool, answered: bool, shown: bool) -> AskFacts {
+        AskFacts { override_stage, owed, answered, shown }
+    }
+
+    /// The simulator recording's loop: the dev override on the picker path, asked every frame.
+    /// The question is presented once; after it is answered (display-only, nothing recorded) and
+    /// the surface is gone, it is never presented again.
+    #[test]
+    fn the_dev_override_presents_the_question_once() {
+        let mut ask = ConsentAsk::NotAsked;
+        let mut presented = 0;
+        for frame in 0..120 {
+            // up from the first presentation until frame 60, when the product answer prunes it
+            let shown = presented > 0 && frame < 60;
+            let (next, present) = ask.step(facts(Some(0), false, false, shown));
+            presented += usize::from(present.is_some());
+            ask = next;
+        }
+        assert_eq!(presented, 1, "the override feeds the question once");
+        assert_eq!(ask, ConsentAsk::Done);
+    }
+
+    #[test]
+    fn an_owed_question_is_presented_once_while_it_is_up() {
+        let (ask, present) = ConsentAsk::NotAsked.step(facts(None, true, false, false));
+        assert_eq!((ask, present), (ConsentAsk::Presented { overridden: false }, Some(0)));
+        assert_eq!(ask.step(facts(None, true, false, true)), (ask, None), "up: nothing more to do");
+    }
+
+    #[test]
+    fn an_answered_question_is_done_and_a_lost_one_is_asked_again() {
+        let up = ConsentAsk::Presented { overridden: false };
+        assert_eq!(up.step(facts(None, false, true, false)), (ConsentAsk::Done, None), "answered");
+        assert_eq!(up.step(facts(None, true, false, false)), (ConsentAsk::Presented { overridden: false }, Some(0)),
+            "the surface went away unanswered: put it again");
+    }
+
+    #[test]
+    fn a_question_owed_again_after_sign_out_is_asked_again() {
+        assert_eq!(ConsentAsk::Done.step(facts(None, true, false, false)),
+            (ConsentAsk::Presented { overridden: false }, Some(0)));
+        assert_eq!(ConsentAsk::Done.step(facts(Some(1), false, false, false)), (ConsentAsk::Done, None),
+            "a spent override does not come back");
+        assert_eq!(ConsentAsk::NotAsked.step(facts(None, false, false, false)), (ConsentAsk::NotAsked, None),
+            "nothing owed, no override: nothing asked");
+    }
+
+    #[test]
+    fn the_override_names_the_stage_it_starts_at() {
+        assert_eq!(ConsentAsk::NotAsked.step(facts(Some(1), false, false, false)).1, Some(1));
     }
 }
 
