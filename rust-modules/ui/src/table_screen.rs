@@ -785,7 +785,7 @@ pub struct DocumentScreen<'a> {
 impl<'a> DocumentScreen<'a> {
     /// Over a route's own layout: the document hangs from the TITLE's anchor (`RouteLayout::document`).
     pub fn new(header: Header<'a>, reader: &'a mut DocumentReader, body: &'a str, group: GroupId, entry: EntryId) -> Self {
-        let frame = header.layout.document(header.crumb.is_some());
+        let frame = header.layout.document();
         Self {
             header,
             doc: DocumentPart {
@@ -1028,11 +1028,11 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert!(matches!(groups[0].kind, GroupKind::Document));
         assert_eq!(groups[0].edge[2], EdgeRule::Nav(NavOpKind::Back));
-        assert!(same(groups[0].extent, layout.document(true)));
+        assert!(same(groups[0].extent, layout.document()));
         let k = FocusKey { entry: E, elem: 0u32 };
         assert!(matches!(Focusable::<FixtureHost>::neighbour(&ds.doc, k, Dir::Up, &cx), Step::Edge), "at the top, UP leaves");
         assert!(matches!(Focusable::<FixtureHost>::neighbour(&ds.doc, k, Dir::Down, &cx), Step::Move(_)), "not at the end: DOWN scrolls inside");
-        assert!(same(Focusable::<FixtureHost>::place(&ds.doc, &0, &cx, At::Drawn).unwrap().rect, layout.document(true)));
+        assert!(same(Focusable::<FixtureHost>::place(&ds.doc, &0, &cx, At::Drawn).unwrap().rect, layout.document()));
     }
     /// The real Belarusian consent labels overflowed the horizontal band's width and aborted
     /// the simulator. Use Unicode-scalar measurement so UTF-8 byte length cannot create this

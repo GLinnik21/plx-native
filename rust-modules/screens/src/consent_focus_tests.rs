@@ -321,7 +321,7 @@ fn a_tick_advances_the_shared_table_highlight_spring() {
 /// false` (its focus is the answer band), so the inherited value silently drew Settings with
 /// focus on nothing at all, while the keys still moved and committed an invisible selection.
 /// **That channel does not exist any more to leak through**: `ConsentPage::bare` (this file,
-/// above) builds a fresh `TableView::new()` into `self.form.table` on every call, so `first_run`
+/// above) builds a fresh page table (`FormTable::page`) into `self.form` on every call, so `first_run`
 /// and `settings` each own a table that belongs to their OWN struct instance rather than to
 /// the module. Proven here by holding both alive at once and mutating the first before the
 /// second is ever built — the shape a shared static would have to survive, and a plain
@@ -657,7 +657,7 @@ fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
         .map(|p| (p.tag(), LocaleContext::resolve(p, None, None, None, None)))
         .chain([("pseudo", LocaleContext::pseudo_for_test())])
     {
-        let mut table = TableView::new();
+        let mut table = TableView::page(); // the page table first run sizes its columns with
         table.set_sections(vec![Section::new("")
             .row(Row::new(msg::settings_consent_example_in(&locale)).chevron(true))
             .row(Row::new(msg::settings_consent_policy_in(&locale)).chevron(true))], 0, false);

@@ -1127,7 +1127,7 @@ impl PreviewPage {
     fn view(&self) -> DocumentFocus<'_> {
         DocumentFocus {
             reader: &self.reader,
-            frame: RouteLayout::screen().document(true),
+            frame: RouteLayout::screen().document(),
             group: TABLE_GROUP,
             entry: self.entry,
         }

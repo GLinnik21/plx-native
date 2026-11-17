@@ -1055,27 +1055,16 @@ impl RouteLayout {
 
     /// Frame for a content column that is PLAIN TEXT rather than a table.
     ///
-    /// **A document hangs from the TITLE's anchor, not from the crumb's**, and that is the whole
-    /// of the fix for "on Settings screens that contain plain text rather than a table, the title
-    /// appears too high and is aligned roughly with the Back navigation control". A table's frame
-    /// is lifted by [`Self::sectioned_table`] so its first section LABEL lands on the shared top
-    /// guide — the guide the crumb also sits on — and the first thing that reads as content, the
-    /// first row's own label, therefore lands well below it, beside the narrative title. A
-    /// document has no section label to spend that band on, so drawn at the bare `content` rect
-    /// its first line — which on every document here is a bold all-caps heading, i.e. exactly what
-    /// a reader takes for the screen's title — landed ON the crumb's line, a whole title block
-    /// above the title it belongs to.
-    ///
-    /// So: one geometry rule in the layout, not an offset per screen. Both anchors are now used by
-    /// both columns — the guide carries the crumb and a table's first label, the title anchor
-    /// carries the narrative title and a document's first line.
-    ///
-    /// `has_crumb` for the same reason [`Self::narrative_top`] takes it: the title anchor moves by
-    /// exactly the crumb's band, and a document on a crumbless route must follow it up rather than
-    /// leaving a gap nothing explains. The crumb hangs ABOVE the title (the route title, see
-    /// [`TITLE_SIZE`]), so the two anchors are one y and `has_crumb` changes nothing.
-    pub fn document(self, has_crumb: bool) -> Rect {
-        let top = self.narrative_top(has_crumb);
+    /// **A document hangs from the TITLE's line, not from the crumb's.** A table's frame is lifted
+    /// by [`Self::sectioned_table`] so its first section LABEL lands on the top guide and its first
+    /// row's own label lands beside the narrative title. A document has no section label to spend
+    /// that band on, and its first line is on every document here a bold all-caps heading, which a
+    /// reader takes for the screen's title: drawn any higher it read as standing on the crumb
+    /// ("on Settings screens that contain plain text rather than a table, the title appears too
+    /// high and is aligned roughly with the Back navigation control"). So the document starts where
+    /// the route title does, on the guide; the crumb hangs above both and moves neither.
+    pub fn document(self) -> Rect {
+        let top = self.narrative_top();
         Rect::new(
             self.content.x,
             top,
@@ -1142,14 +1131,10 @@ impl RouteLayout {
     /// carries about a third of its width as bearing, so a box-to-text gap on a spacing rung comes
     /// out visibly loose and the pair stops reading as one object. Same rule the player HUD's
     /// transport slot uses, and [`icons::ink_x`] is where the numbers live.
-    /// The y the TITLE starts at, given whether a crumb precedes it.
-    ///
-    /// Pure and separate from [`Self::draw_narrative`] because it is the whole of the crumb's
-    /// layout cost, and a test that cannot call the draw (it measures through SDL2_ttf) can still
-    /// grade it. The first version of this test compared `RouteLayout::screen().content.y` with
-    /// its own `l.content.y` — a value against itself, which cannot fail.
-    pub fn narrative_top(self, has_crumb: bool) -> f32 {
-        self.narrative_flow(has_crumb, 0.0).title.y
+    /// The y the TITLE starts at: the column's guide, whether or not a crumb precedes it (a crumb
+    /// hangs above the guide and costs the title nothing).
+    pub fn narrative_top(self) -> f32 {
+        self.narrative_flow(false, 0.0).title.y
     }
 
     /// **The narrative column's vertical flow, stated once**: the title on the column's guide
@@ -1233,6 +1218,13 @@ impl RouteLayout {
         plx_gfx::text::css_cap_drop(TITLE_SIZE, TITLE_LEADING, measure.cap_h(TITLE_SIZE))
     }
 
+    /// **The route copy** as [`Self::draw_narrative`] sets it — [`COPY_SIZE`], a leading of
+    /// `size + XS` (the board's `26/34`), at most twelve lines — for a screen that measures the
+    /// copy's block (to hang something under it) without restating any of it.
+    pub fn copy_view(copy: &str, ink: [f32; 4]) -> TextView<'_> {
+        TextView::new(copy, COPY_SIZE, ink).leading(COPY_SIZE as f32 + theme::space::XS).max_lines(12)
+    }
+
     /// The same for the copy under the title ([`COPY_SIZE`], [`theme::space::XS`] over it as the
     /// pitch, the board's `26/34`): the sentence sits where the board's CSS box puts it.
     pub fn copy_cap_drop(self, measure: &dyn Measure) -> f32 {
@@ -1276,9 +1268,7 @@ impl RouteLayout {
         let copy_bottom = self.action.y - theme::space::XL;
         let (copy_p, copy_ink) = pending.map_or((p, theme::TEXT_READING), |key|
             crate::placeholder::ink(p, crate::placeholder::Reason::WorkingReadout, key, theme::TEXT_READING));
-        let copy_h = TextView::new(copy, COPY_SIZE, copy_ink)
-            .leading(COPY_SIZE as f32 + theme::space::XS)
-            .max_lines(12)
+        let copy_h = Self::copy_view(copy, copy_ink)
             .draw(
                 copy_p,
                 Rect::new(
@@ -1403,6 +1393,12 @@ mod tests {
             assert!(inside_safe(layout.content));
             assert!(inside_safe(layout.narrative));
         }
+        // A word wider than the preferred measure widens the column to hold it (and only that much).
+        let word = "Wwwwwwwwwwwwwwwwwwww"; // 20 characters: 576 px at the title rung under this measure
+        let wide = RouteLayout::screen_for_title(480.0, min_content, word, &measure);
+        let word_w = measure.width_str(word, TITLE_SIZE, true);
+        assert!(word_w > 480.0 && word_w < SAFE.w - COLUMN_GAP - min_content, "the word exercises the widening branch");
+        assert_eq!(wide.narrative.w, word_w.ceil(), "the column widens to the word");
         // Expansion beyond available width must wrap, never steal the content column.
         let title = "ФільмаграфіяФільмаграфія";
         let layout = RouteLayout::screen_for_title(480.0, min_content, title, &measure);
@@ -1431,7 +1427,7 @@ mod tests {
             reading_default - TITLE_LEADING > 12.0,
             "the correction has to be worth making: {reading_default} against {TITLE_LEADING}"
         );
-        // The box still contains the ink it was tightened around: a 72px cap plus its descender.
+        // The box still contains the ink it was tightened around: a 48px cap plus its descender.
         assert!(
             TITLE_LEADING > TITLE_SIZE as f32,
             "a pitch under the em box would clip a descender between two wrapped title lines"
@@ -1460,7 +1456,7 @@ mod tests {
                 assert!(!title.truncates(layout.narrative.w), "question was elided: {question}");
                 let height = title.measure_h(layout.narrative.w);
                 let copy = layout.narrative_copy_frame(false, question, layout.action.y, &measure);
-                assert_eq!(copy.y, layout.narrative_top(false) + height + theme::space::MD);
+                assert_eq!(copy.y, layout.narrative_top() + height + theme::space::MD);
                 assert!(copy.h > COPY_SIZE as f32 * 6.0, "disclosure keeps a readable viewport");
             }
         }
@@ -1521,8 +1517,9 @@ mod tests {
     #[test]
     fn a_crumb_moves_neither_the_title_nor_its_neighbours() {
         let l = RouteLayout::screen();
-        assert_eq!(l.narrative_top(false), l.narrative.y, "the title stands on the guide");
-        assert_eq!(l.narrative_top(true), l.narrative_top(false), "and a crumb does not move it");
+        assert_eq!(l.narrative_top(), l.narrative.y, "the title stands on the guide");
+        assert_eq!(l.narrative_flow(true, 50.0).title.y, l.narrative_flow(false, 50.0).title.y,
+            "and a crumb does not move it");
         // Its neighbours are anchored independently of it, so both columns still hang from the one
         // top guide however the narrative begins.
         assert_eq!(l.content.y, l.narrative.y);
@@ -1532,7 +1529,7 @@ mod tests {
         );
         assert_eq!(l.action.y + l.action.h, SAFE.y + SAFE.h);
         // And a crumbed narrative still has room for a two-line title and copy above the band.
-        assert!(l.narrative_top(true) + TITLE_SIZE as f32 * 2.0 + theme::space::MD
+        assert!(l.narrative_top() + TITLE_SIZE as f32 * 2.0 + theme::space::MD
             < l.action.y - theme::space::XL);
     }
 
@@ -1842,11 +1839,11 @@ mod tests {
     #[test]
     fn a_text_only_column_starts_on_the_title_line_not_on_the_crumbs() {
         let l = RouteLayout::screen();
-        for crumbed in [true, false] {
-            let doc = l.document(crumbed);
+        {
+            let doc = l.document();
             assert_eq!(
                 doc.y,
-                l.narrative_top(crumbed),
+                l.narrative_top(),
                 "a document's first line shares the narrative title's cap-top anchor"
             );
             assert_eq!(doc.x, l.content.x, "…in the content column, unmoved sideways");
@@ -1859,13 +1856,13 @@ mod tests {
             assert!(inside_safe(doc));
         }
         assert!(
-            l.document(true).y > l.sectioned_table().y,
+            l.document().y > l.sectioned_table().y,
             "a table is LIFTED so its first section label lands on the guide; a document, which \
              has no such label, must not be"
         );
         let crumb = l.narrative_flow(true, 0.0).crumb.expect("crumb");
         assert!(
-            l.document(true).y >= crumb.y + CRUMB_BAND,
+            l.document().y >= crumb.y + CRUMB_BAND,
             "…and specifically it must not start on the crumb's own line"
         );
     }
@@ -2072,14 +2069,15 @@ mod tests {
         assert_eq!(TITLE_SIZE, theme::size::DISPLAY);
         assert_eq!(TITLE_SIZE, 48);
         assert!((l.title_view("Settings").line_h() - theme::size::DISPLAY as f32 * 1.05).abs() < 0.01);
-        assert_eq!(l.narrative_top(false), l.narrative.y);
-        assert_eq!(l.narrative_top(true), l.narrative_top(false), "a crumb costs the title no room");
+        assert_eq!(l.narrative_top(), l.narrative.y);
+        assert_eq!(l.narrative_flow(true, 50.0).title.y, l.narrative_flow(false, 50.0).title.y,
+            "a crumb costs the title no room");
         let crumb = l.narrative_flow(true, 50.0).crumb.expect("crumb");
         assert_eq!(crumb.y + CRUMB_RISE, l.narrative.y, "the band and one rung of air end on the guide");
         assert!(crumb.y >= SAFE.y, "…and the band stays inside the safe area");
         assert_eq!(l.narrative_flow(true, 50.0).copy_top, l.narrative_flow(false, 50.0).copy_top);
         assert!((l.narrative_flow(false, 50.0).copy_top - (l.narrative.y + 50.0 + theme::space::MD)).abs() < 0.01);
-        assert!(l.document(true).y >= l.narrative.y);
+        assert!(l.document().y >= l.narrative.y);
     }
 
     /// The title is the board's CSS box: tracked `-.02em` and set its half-leading plus ascent under

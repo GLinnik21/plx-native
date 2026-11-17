@@ -435,7 +435,7 @@ impl DocumentPage {
     }
 
     fn document_frame(&self) -> Rect {
-        self.layout.document(true)
+        self.layout.document()
     }
 
     fn guide(&self) -> Option<plx_ui::qr::QrLink<'_>> {
@@ -1161,7 +1161,7 @@ mod tests {
     #[test]
     fn a_click_on_a_document_parks_nothing_and_the_screen_declines_the_activation() {
         let mut doc = DocumentPage::legal(EntryId(13), 2);
-        let frame = RouteLayout::screen().document(true);
+        let frame = RouteLayout::screen().document();
 
         let mut map: HitMap<u32> = HitMap::new();
         map.fill(vec![Stop {
@@ -1303,7 +1303,7 @@ mod tests {
         }
         assert!(two_line > 0, "the board's case (a title on two lines) is exercised");
         assert!(out.is_empty(), "{}", out.join("\n"));
-        assert_eq!(layout.document(true).y, layout.narrative.y, "the reader hangs from the title's anchor");
+        assert_eq!(layout.document().y, layout.narrative.y, "the reader hangs from the title's anchor");
     }
 
     fn layout_copy_size() -> std::os::raw::c_int { plx_ui::route_screen::COPY_SIZE }
