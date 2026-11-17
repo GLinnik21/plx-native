@@ -40,17 +40,19 @@
  * `SKIP_PRINT` debug switch (drawing and swapping are never skipped) and means the driver's other
  * debug switches cannot be turned on by creating these files while the app runs.
  *
- * The match is by whole-string equality, never by prefix or case: `/tmp/API_PRINT/`, `/tmp/api_print`
- * and `/tmp/API_PRINT_x` all reach the kernel. The table is the only place the paths are written; a
- * firmware sweep that finds another probe path adds one line to it (and one to the same list in
- * `ci/access-interpose-test.c`).
+ * Past the `/tmp/` directory the match is on the whole name, never on a prefix of it or a case-folded
+ * one: `/tmp/API_PRINT/`, `/tmp/api_print` and `/tmp/API_PRINT_x` all reach the kernel. The table is the only place the paths are written; a
+ * firmware sweep that finds another probe path under `/tmp/` adds one line to it (and one to the list
+ * in `ci/access-interpose-test.c`, which grades the list it holds). Every entry must start with
+ * `/tmp/`, because that prefix is checked before the table is looked at; a probe elsewhere needs
+ * that check generalised first.
  *
  * **The interposer must be async-signal-safe**, because `access` is on POSIX's list of functions a
  * signal handler may call and a driver's own handler can reach it on any thread. It allocates
- * nothing, takes no lock and touches no stdio: the path is compared with a small hand-written loop
- * (not `strcmp`, which is a libc call of its own) that leaves at the first differing byte, so an
- * ordinary path costs a few byte compares, and the only libc entries it reaches are `syscall` and
- * the `errno` accessor. `syscall` is already bound before any signal can matter: `plx_crash_install`
+ * nothing, takes no lock and touches no stdio: the path is compared with small hand-written loops
+ * (not `strcmp`, which is a libc call of its own), the `/tmp/` prefix first, so an ordinary path
+ * costs a few byte compares and never reaches the table, and the only libc entries it reaches are
+ * `syscall` and the `errno` accessor. `syscall` is already bound before any signal can matter: `plx_crash_install`
  * (`src/crashtrace.c`) calls `syscall(SYS_gettid)` once in `main`, before SDL is initialised and so
  * before any GL call, so the lazy-binding resolver has already run for it. The `errno` write is a
  * call to `__errno_location` through the executable's PLT, and `plx_crash_install` does not bind
@@ -79,8 +81,12 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+/* The directory every probe path is in, checked before the table is. */
+#define PROBE_DIR "/tmp/"
+#define PROBE_DIR_LEN (sizeof PROBE_DIR - 1)
+
 /* The paths the driver probes on every GL call and that are therefore answered "absent" without a
- * system call. Whole paths, compared exactly. */
+ * system call. Whole paths, compared exactly; each starts with PROBE_DIR. */
 static const char *const probe_paths[] = {
     "/tmp/API_PRINT",
     "/tmp/SKIP_PRINT",
@@ -88,8 +94,16 @@ static const char *const probe_paths[] = {
     "/tmp/GM_FPS_PRINT",
 };
 
+/* Whether `path` begins with PROBE_DIR. A path shorter than that differs at its terminator, which
+ * the loop never reads past. */
+static int in_probe_dir(const char *path) {
+    for (unsigned i = 0; i < PROBE_DIR_LEN; i++)
+        if (path[i] != PROBE_DIR[i]) return 0;
+    return 1;
+}
+
 /* Equal as NUL-terminated strings. It stops at the first differing byte, and neither string is
- * read past its terminator, so a path outside `/tmp/` costs one or two compares per entry. */
+ * read past its terminator. */
 static int same_path(const char *a, const char *b) {
     while (*a == *b) {
         if (*a == '\0') return 1;
@@ -104,9 +118,9 @@ int access(const char *path, int mode) {
      * check. The kernel answers a null path with EFAULT, as glibc's `access` does, and so does this:
      * the empty asm hides the promise from the optimizer. */
     __asm__("" : "+r"(path));
-    if (path != NULL) {
+    if (path != NULL && in_probe_dir(path)) {
         for (unsigned i = 0; i < sizeof probe_paths / sizeof probe_paths[0]; i++) {
-            if (same_path(path, probe_paths[i])) {
+            if (same_path(path + PROBE_DIR_LEN, probe_paths[i] + PROBE_DIR_LEN)) {
                 errno = ENOENT;
                 return -1;
             }

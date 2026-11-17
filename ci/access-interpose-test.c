@@ -17,8 +17,9 @@
  * would prove nothing about the library's binding; the test makes none.
  *
  * Built twice by the Makefile. The four probe paths are real files for the duration of the run
- * (created here, removed at exit and on a fatal signal; a file that was already there is left
- * alone, and is not removed).
+ * (created here, removed at exit and on any signal that ends the run, the program's own faults
+ * included; a file that was already there is left alone, and is not removed). Runs take turns: the
+ * paths are fixed, so a lock on `/tmp` keeps two runs at once from removing each other's files.
  *
  *   `interposed` (src/access.c linked, the link's own ACCESS_INTERPOSER_LDFLAG): the library's
  *   `access` of each probe path, with the file existing, is -1 with `ENOENT`, for `F_OK` and for
@@ -38,10 +39,9 @@
  * # What it cannot see
  *
  * Whether the shipped ARM binary exports `access` is `ci/check-elf.sh`'s question, asked of the
- * artifact; whether the real `libmali` binds through its PLT is only a television's. The probe
- * paths are fixed by the driver, so the test has to use them: two runs at once on one machine (two
- * checkouts' `make check`) can race on those files. A path added to the table in `src/access.c`
- * needs a line in `probes` below. Linux only: Darwin's two-level namespace binds a dylib's `access` to
+ * artifact; whether the real `libmali` binds through its PLT is only a television's. A path added
+ * to the table in `src/access.c` needs a line in `probes` below, which is the only list this test
+ * has (it grades what it lists). Linux only: Darwin's two-level namespace binds a dylib's `access` to
  * libSystem whatever the executable defines, so the Makefile skips this test there.
  */
 #include <dlfcn.h>
@@ -51,6 +51,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
@@ -84,6 +85,18 @@ static void cleanup(void) {
     unlink(path_noperm);
     unlink(path_basename);
     rmdir(dir);
+}
+
+/* Runs take turns. The probe paths are fixed (they are the driver's), so two runs at once, which
+ * `ci/test_check_collisions.py` makes on purpose and two checkouts' `make check` can, would delete
+ * each other's probe files under a leg that needs them. The lock is on `/tmp` itself, the directory
+ * the probe files are in: it needs no file of its own to leave behind, and the kernel drops it when
+ * the process ends. Best effort: a filesystem that cannot lock a directory leaves the runs
+ * unserialised, with a warning. */
+static void take_turn(void) {
+    int fd = open("/tmp", O_RDONLY | O_DIRECTORY);
+    if (fd < 0 || flock(fd, LOCK_EX) != 0)
+        fprintf(stderr, "access-interpose: warning: cannot lock /tmp; a concurrent run may remove the probe files\n");
 }
 
 static void on_signal(int sig) {
@@ -141,10 +154,11 @@ int main(int argc, char **argv) {
     int interposed = strcmp(argv[2], "interposed") == 0;
     alarm(30); /* a hang fails the test instead of the build */
     atexit(cleanup);
-    signal(SIGINT, on_signal);
-    signal(SIGTERM, on_signal);
-    signal(SIGHUP, on_signal);
-    signal(SIGALRM, on_signal);
+    /* Every signal that would end the run, the program's own faults included: the probe files are
+     * removed whatever the way out is (SIGKILL aside, which nothing can catch). */
+    static const int fatal[] = {SIGINT, SIGTERM, SIGHUP, SIGALRM, SIGSEGV, SIGBUS, SIGABRT, SIGFPE, SIGILL};
+    for (unsigned i = 0; i < sizeof fatal / sizeof fatal[0]; i++) signal(fatal[i], on_signal);
+    take_turn();
 
     void *handle = dlopen(argv[1], RTLD_NOW);
     if (!handle) {

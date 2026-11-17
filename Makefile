@@ -1100,8 +1100,8 @@ EXIT_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=exit
 # time on the webOS 5.6.2 TV, so src/access.c answers those four paths "absent" in user space and
 # hands every other path to the kernel's own `access`. The export is what makes the definition
 # preemptible; `ci/check-elf.sh` asserts it on the shipped binary, and `check-c-unit` links its
-# host copy of the interposer with this same variable. Do not add a second source of truth for the
-# paths: they are the table in src/access.c.
+# host copy of the interposer with this same variable. The paths themselves are the table in
+# src/access.c (ci/access-interpose-test.c lists them again, to grade the table against).
 ACCESS_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=access
 # --gc-sections: this link is gcc's, not rustc's. rustc passes --gc-sections itself when IT links an
 # executable (which is why pkg/plxnative-storage above never needed the flag), but here the Rust
@@ -2032,7 +2032,9 @@ check-python-harness:
 #    (compared with the raw system call: an existing file, permission modes, a missing path, a null
 #    path, a probe's base name in another directory, a probe path plus a slash). Without src/access.c
 #    the same library's `access` of an existing probe file must be 0, which is what proves the test can
-#    fail. The probe paths are the driver's, so two runs at once on one machine can race on them.
+#    fail. The probe paths are the driver's and so fixed: the test takes a flock on /tmp so that two
+#    runs at once (ci/test_check_collisions.py makes some on purpose) take turns instead of deleting
+#    each other's probe files.
 .PHONY: check-c-unit
 check-c-unit:
 	@set -e; d=$$(mktemp -d "$${TMPDIR:-/tmp}/plx-c-unit.XXXXXX"); trap 'rm -rf "'"$$d"'"' EXIT; \
