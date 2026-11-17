@@ -2062,7 +2062,7 @@ fn cold_source_preflight_uses_the_playback_identity_and_does_not_close_it() {
     let url = client
         .direct_play_url("/library/parts/1/file.mkv", "cold-logical")
         .to_url();
-    let sample = measure_remote_original(&url, 320).expect("completed cold sample");
+    let sample = measure_remote_original(&url, 320).sample().expect("completed cold sample");
     assert!(sample.completed);
 
     let requests = rx.recv().expect("captured cold requests");

@@ -447,10 +447,6 @@ pub fn accepts_direct_play(direct_play: bool, part_nonempty: bool, adaptive: boo
 ///    [`PreviewRefusal::Adaptive`];
 /// 4. anything else, a late demotion such as an enhancement's remux: [`PreviewRefusal::NotDirect`].
 ///
-/// Since #1425 the planner plans an Auto preview as Original (`route::plan::build_stream`'s
-/// `auto_preview`), so it always passes `adaptive` = false and reason 3 is no longer reached from a
-/// play. [`PreviewRefusal::Adaptive`] stays: earlier builds reported it, and this table pins it.
-///
 /// `direct_play_offered` is the route's direct-play answer BEFORE Auto's override, not the
 /// `direct_play` the gate sees: Auto sets that false whenever it picks HLS, so reading the reason
 /// off the gate's own inputs would call every Auto-quality refusal `adaptive`, including a preview
