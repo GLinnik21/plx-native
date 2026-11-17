@@ -86,8 +86,8 @@ use plx_ui::screen::{At, Dir, DrawFrame, Focusable, GroupSpec, Part, Placed, Ste
 use plx_ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use crate::player_hud::command::HudCommand;
 use plx_ui::page_stack::{
-    self, popover_group_of, popover_groups, popover_neighbour, popover_place,
-    popover_register_stops, popover_seat, PageStack, PopoverPanel,
+    self, popover_a11y, popover_a11y_elems, popover_group_of, popover_groups, popover_neighbour,
+    popover_place, popover_register_stops, popover_seat, PageStack, PopoverPanel,
 };
 use plx_ui::panel_motion::PanelMotion;
 use plx_ui::table::Row;
@@ -901,46 +901,6 @@ impl PopoverPanel for MoreMenuState {
     }
 }
 
-/// **The accessibility projection of one popover row** (`a11y`): the id `name` gives the row's
-/// identity, and the role its [`RowKind`] says (a drill-in or a choice is a `Row`, a switch a
-/// `Toggle`, a command a `Button`). The title band's pointer-only key is not a row and projects
-/// nothing. The one implementation both popovers share (this module's `MoreMenuPart` and
-/// `track_menu::TrackMenuPart`); each names its own rows. It belongs beside `popover_group_of` in
-/// `plx_ui::page_stack`, which is where it moves when that file can take it.
-pub(crate) fn popover_a11y<S: PopoverPanel, E: IndexElem>(
-    s: &S,
-    key: &E,
-    name: impl FnOnce(&S::Id) -> A11yPath,
-) -> Option<A11y<'static>> {
-    let form = s.form();
-    let binding = form.binding_at(form.index_of_key(RowKey(key.index()?))?)?;
-    let role = match binding.kind {
-        RowKind::Nav(_) | RowKind::Choice => Role::Row,
-        RowKind::Toggle => Role::Toggle,
-        RowKind::Button => Role::Button,
-    };
-    Some(A11y::new(name(&binding.id), role))
-}
-
-/// **Every row of the popover's one group**, in row order, for `a11y_elems`: the keys the form
-/// binds (separators and notes have none), nothing for a group that is not `group`.
-pub(crate) fn popover_a11y_elems<S: PopoverPanel, E: IndexElem>(
-    s: &S,
-    g: GroupId,
-    group: GroupId,
-    out: &mut Vec<E>,
-) {
-    if g != group {
-        return;
-    }
-    let form = s.form();
-    out.extend(
-        (0..form.table.n_rows())
-            .filter_map(|i| form.key_at(i as usize))
-            .map(|k| E::of_index(k.0)),
-    );
-}
-
 impl<H: Host> Focusable<H> for MoreMenuPart<'_>
 where
     H::Elem: IndexElem,
@@ -977,10 +937,10 @@ where
     /// this part places the menu under its own namespace). The inverse is the default walk: a page
     /// of a popover is a handful of rows.
     fn a11y(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
-        popover_a11y(self.state, key, MoreRow::a11y_path)
+        popover_a11y(&self.state.form, key, MoreRow::a11y_path)
     }
     fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
-        popover_a11y_elems(self.state, g, self.group, out)
+        popover_a11y_elems(&self.state.form, g, self.group, out)
     }
 }
 

@@ -36,7 +36,9 @@ pub(super) enum Coverage {
     /// Mounted and run through `plx_ui::a11y::conformance` by this function; the name is the arm's.
     Covered(&'static str, fn() -> Namespaces),
     /// Cannot be run through it yet: the arm's name, then the reason, which says what is missing and
-    /// is TRUE of this commit.
+    /// is TRUE of this commit. No arm is pending now (the table only shrinks); the variant stays for
+    /// the next screen that cannot be mounted on the host the day it is added.
+    #[allow(dead_code)]
     Pending(&'static str, &'static str),
 }
 
@@ -48,9 +50,9 @@ fn surface(page: SettingsPage) -> Namespaces {
 /// The table: every screen the application can mount, and where it stands. A [`Coverage::Covered`]
 /// arm names its mount function; a new arm is a compile error until it is tabled here.
 pub(super) fn coverage(arg: &AppArg) -> Coverage {
-    use Coverage::{Covered, Pending};
+    use Coverage::Covered;
     match arg {
-        AppArg::LibraryMenu(_) => Pending("LibraryMenu", LIBRARYMENU_PENDING),
+        AppArg::LibraryMenu(_) => Covered("LibraryMenu", crate::library::menu::tests::library_menu_conforms),
         AppArg::AccountMenu => Covered("AccountMenu", crate::account_menu::tests::account_menu_conforms),
         AppArg::ItemMenu(_) => Covered("ItemMenu", crate::item_menu::tests::item_menu_conforms),
         AppArg::WatchlistMenu(_) => Covered("WatchlistMenu", crate::watchlist::page_tests::watchlist_menu_conforms),
@@ -109,14 +111,6 @@ pub(super) fn coverage(arg: &AppArg) -> Coverage {
         AppArg::FirstRunConsent(_) => Covered("FirstRunConsent", crate::settings::root_navigation_tests::first_run_consent_conforms),
     }
 }
-
-/// `LibraryMenu` (`library/menu.rs`) implements `Focusable::groups` (one `Column` group over its form's
-/// rows) and none of `a11y`, `a11y_elems` or `a11y_find`, so `plx_ui::a11y::conformance` fails it on
-/// "a11y_elems lists no element although GroupSpec.len > 0"; making it answer them is product code (its
-/// `FormId` impl names no row, as `account_menu.rs`'s does), which this table's lane does not change.
-const LIBRARYMENU_PENDING: &str = "answers none of a11y, a11y_elems or a11y_find (library/menu.rs's \
-     Focusable impl declares its row group and no ids); conformance needs product code: row names on its \
-     FormId and the three hooks";
 
 /// How many leaf arms the table has: 21 flat `AppArg` arms, 5 `ContentArg`, 22 `SettingsPage` and
 /// `FirstRunConsent`. A new arm fails [`coverage`] to compile, and then this to pass until the census

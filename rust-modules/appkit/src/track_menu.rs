@@ -122,15 +122,14 @@ use plx_ui::popover::Popover;
 use plx_ui::screen::{At, Dir, DrawFrame, Focusable, GroupSpec, Part, Placed, Step};
 use plx_ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use plx_ui::page_stack::{
-    self, popover_group_of, popover_groups, popover_neighbour, popover_place,
-    popover_register_stops, popover_seat, PageStack, PopoverPanel,
+    self, popover_a11y, popover_a11y_elems, popover_group_of, popover_groups, popover_neighbour,
+    popover_place, popover_register_stops, popover_seat, PageStack, PopoverPanel,
 };
 use plx_ui::panel_motion::PanelMotion;
 use plx_ui::table::{Badge, Row, Section, TableView};
 use plx_ui::table_screen::BAND_BASE;
 use plx_ui::theme;
 use plx_ui::{Painter, Rect};
-use crate::more_menu::{popover_a11y, popover_a11y_elems};
 use std::os::raw::c_int;
 
 
@@ -2447,10 +2446,10 @@ where
     /// this part places the menu under its own namespace). The inverse is the default walk: a page
     /// of a popover is a list a viewer reads, not a library.
     fn a11y(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
-        popover_a11y(self.state, key, TrackRow::a11y_path)
+        popover_a11y(&self.state.form, key, TrackRow::a11y_path)
     }
     fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
-        popover_a11y_elems(self.state, g, self.group, out)
+        popover_a11y_elems(&self.state.form, g, self.group, out)
     }
 }
 
