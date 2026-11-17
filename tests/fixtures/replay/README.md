@@ -54,8 +54,10 @@ Controlled replay supplies Home/Browse results through the production dispatcher
 Flow 12 Detail/Person results at their original store consumers. It binds the recorded Client
 explicitly and denies resource execution and data transport. Account, playback, and every other
 unlisted domain remain unsupported and fail closed before IO. Product replay has two explicit
-modes: Targets substitutes each recorded Focus/Hit resolution before dependent effects, while
-Resolve runs the current engine/map and grades every resolution pointwise before continuing.
+modes: Targets substitutes each recorded Focus, Hit (pointer) or Id (by-id) resolution before
+dependent effects, while Resolve runs the current engine/map and grades every resolution pointwise
+before continuing. `focus_diffs` counts the Focus family; `hit_diffs` counts Hit AND Id (the
+`resolution=focus|hit|id` word of the `replay: input diverge` line tells them apart).
 
 Person's provider requests use the captured authority throughout controlled recording and replay.
 Ambient session-cache recovery cannot retire those requests or introduce unrecorded retries.
@@ -106,11 +108,12 @@ library-matched credit opened in Detail, and both BACK steps). Phase 7 rerecorde
 after an observed loader refusal and added the content-return anchor. **Phase 11 rerecorded all
 three onto schema 2**, which carries the landing schedule above. **The product Resolve milestone
 rerecorded them onto schema 3**, adding a typed, bit-exact Width/Cap/Line measurement table, one
-final `fo` after all drains in each product frame, and ordered `rs` Focus/Hit observations.
+final `fo` after all drains in each product frame, and ordered `rs` Focus/Hit observations (the Id
+family, a by-id `focus:`/`press:` input's resolution, joined them with the by-id fixture).
 A key missing from that table refuses the replay, with one exception: the text-prewarm walks
 (`rec::speculative`), which lay out a page no frame is drawing yet so its glyphs are resident.
 Their answers are recorded like any other. A key an older recording lacks inside such a walk
-answers 0.0, and state, presents, effects and Focus/Hit are still graded on every frame. The
+answers 0.0, and state, presents, effects and Focus/Hit/Id are still graded on every frame. The
 held-page walk measures Flow 12's focused cast caption, which that anchor never drew, because the
 Person page is pushed before Detail's replacement capture.
 
