@@ -102,6 +102,15 @@ on:
           pairing assertion and `sentry-cli debug-files check` still run either way.
         type: boolean
         default: true
+      sentry-release:
+        description: >
+          Create this build's Sentry release and attach its commits (the step "Create the Sentry
+          release and attach its commits"). Only a run that will PUBLISH the package passes true: a
+          dry run builds the same name as the real one (a nightly's is its date), so its commits
+          would replace a shipped release's, and a re-publish of an old tag would rewrite that
+          release's history. False skips it and leaves `sentry-release` empty.
+        type: boolean
+        default: false
     secrets:
       SENTRY_AUTH_TOKEN:
         required: true
@@ -109,6 +118,21 @@ on:
       ipk:
         description: Path to the built .ipk inside the runner's workspace (pkg/*.ipk).
         value: ${{ jobs.build.outputs.ipk }}
+      sentry-release:
+        description: >
+          The Sentry release this build created, `plxnative@<reported version>`; empty when it made
+          none (a debug build, a dry run, or a Sentry failure). With the three below, the inputs of
+          .github/actions/sentry-deploy, which the publishing job runs once the package is out.
+        value: ${{ jobs.build.outputs.sentry-release }}
+      sentry-org:
+        description: The Sentry organization of `sentry-release`.
+        value: ${{ jobs.build.outputs.sentry-org }}
+      sentry-project:
+        description: The Sentry project of `sentry-release`.
+        value: ${{ jobs.build.outputs.sentry-project }}
+      sentry-environment:
+        description: The environment the build reports (its `telemetry` input).
+        value: ${{ jobs.build.outputs.sentry-environment }}
 
 jobs:
   build:
@@ -118,6 +142,10 @@ jobs:
     timeout-minutes: 35
     outputs:
       ipk: ${{ steps.name.outputs.ipk }}
+      sentry-release: ${{ steps.sentry.outputs.release }}
+      sentry-org: ${{ steps.sentry.outputs.org }}
+      sentry-project: ${{ steps.sentry.outputs.project }}
+      sentry-environment: ${{ steps.sentry.outputs.environment }}
     steps:
       - name: Validate flavor and telemetry inputs
         env:
@@ -412,6 +440,75 @@ jobs:
           { echo "| \`ci/check-elf.sh\` — ELF identity, CP15 barriers, DT_NEEDED | pass |"
             echo "| \`ci/check-package.py\` — versions, ar layout, descriptors, payload, notes | pass |"
           } >> pkg/gates.md
+
+      - name: Create the Sentry release and attach its commits
+        id: sentry
+        # Sentry learns a release's NAME from the first event that reports it, but not what went
+        # into it. This attaches the commits: with them an issue names its suspect commit and pull
+        # request, "resolve in the next release" works, and an issue that comes back in a later
+        # release is reopened as a regression. The range runs from this build's commit back to the
+        # previous release's (Sentry keeps that per project) and is read from GitHub through the
+        # plxnative integration, so the shallow checkout here is enough. The publishing job
+        # finalizes the release and records the deploy (.github/actions/sentry-deploy) once the
+        # package is out.
+        #
+        # The name is the version the binary REPORTS, derived the way the source-bundle step below
+        # derives its label and then looked for in the binary's own bytes: a release filed under a
+        # name no event carries would gather commits for nothing.
+        #
+        # Not fatal: an outage at Sentry or GitHub costs the commit list, never the release. The
+        # debug-file upload above stays fatal, because without it no crash symbolicates. Runs only
+        # when the caller will publish (`sentry-release`), and never for a debug build.
+        if: inputs.sentry-release && inputs.upload-debug-files && inputs.flavor != 'debug'
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG || 'gleb-linnik' }}
+          SENTRY_PROJECT: ${{ inputs.telemetry == 'production' && (vars.SENTRY_PROJECT || 'plx-native') || (vars.SENTRY_PROJECT_DEV || 'plx-native-dev') }}
+          TELEMETRY: ${{ inputs.telemetry }}
+        run: |
+          set -euo pipefail
+          nightly_label=$(python3 ci/check-package.py --print-nightly-label pkg/.build-config)
+          rc=$(python3 ci/check-package.py --print-rc pkg/.build-config)
+          version=$(python3 ci/bump-version.py --current)
+          release="plxnative@${nightly_label:-$version${rc:+-rc.$rc}}"
+          [[ "$release" =~ ^plxnative@[0-9]+\.[0-9]+\.[0-9]+(-nightly-[0-9]{8}|-rc\.[1-9][0-9]*)?$ ]] \
+            || { echo "::error::cannot name the Sentry release: got '$release'"; exit 1; }
+          grep -qaF "$release" pkg/plxnative \
+            || { echo "::error::pkg/plxnative does not carry $release, so no event would name that release"; exit 1; }
+          cli=tools/node_modules/.bin/sentry-cli
+          # Idempotent: the release may already exist (an event, or a re-run of this build).
+          "$cli" releases new "$release"
+          {
+            echo "release=$release"
+            echo "org=$SENTRY_ORG"
+            echo "project=$SENTRY_PROJECT"
+            echo "environment=$TELEMETRY"
+          } >> "$GITHUB_OUTPUT"
+          # An explicit range, from the last FINAL release below this version to the built commit.
+          # Sentry's own default starts at the previous release it knows, and that is wrong here
+          # twice over: a candidate (`X.Y.Z-rc.N`, finalized in the same project) would leave the
+          # final `X.Y.Z` built after it with one commit, and a patch of an older line would be
+          # measured from a newer line's release. `ci/rc.py`'s `last_release` is the rule the
+          # candidate's notes already use. A nightly gets everything since the last stable.
+          head=$(git rev-parse HEAD)
+          base=$(git ls-remote --tags --refs origin 'v*' | sed 's|.*refs/tags/||' \
+            | python3 -c 'import sys; sys.path.insert(0, "ci"); import rc; print(rc.last_release(sys.stdin.read().split(), below=sys.argv[1]) or "")' \
+              "$(echo "${release#plxnative@}" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')")
+          range="$head"
+          if [ -n "$base" ]; then
+            # The commit an annotated tag points at is listed as `<tag>^{}`; a lightweight tag has
+            # no such line and is the commit itself.
+            base_sha=$(git ls-remote origin "refs/tags/$base^{}" | cut -f1)
+            base_sha=${base_sha:-$(git ls-remote origin "refs/tags/$base" | cut -f1)}
+            range="$base_sha..$head"
+          fi
+          echo "Commits of $release: $base..$head"
+          # `--ignore-missing`: when the base commit is unknown to GitHub (a rewritten history),
+          # take Sentry's default range instead of failing.
+          "$cli" releases set-commits "$release" --commit "$GITHUB_REPOSITORY@$range" --ignore-missing
+          echo "Sentry: $release created in $SENTRY_PROJECT with its commits." >> "$GITHUB_STEP_SUMMARY"
 
       - name: webosbrew tooling
         # Step-level bound: the ci/deps.py downloads and the apt install of the local .debs (which pulls

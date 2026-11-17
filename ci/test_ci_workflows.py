@@ -6,6 +6,9 @@
   or runs pull request code and holds nothing but `actions: write`;
 * the nightly's and the release candidate's Sentry debug-file upload is skipped on a pull
   request's dry run and nowhere else (a release, the schedule and a dispatched dry run keep it);
+* every shipped build creates its Sentry release with its commits, under the name the binary
+  reports, without ever failing the build, and each publishing workflow finalizes it and records
+  the deploy only once the package is really out (`SentryReleases`);
 * the tests against the bundled FFmpeg and libass run in a job of their own, beside the replays,
   and still run;
 * the host FFmpeg and libass builds in the simulator jobs are CACHED where the build scripts really
@@ -104,6 +107,78 @@ class SentryUpload(unittest.TestCase):
         self.assertIn("ci/check-debug-files.py", step)
         self.assertLess(step.index("ci/check-debug-files.py"), step.index('"$UPLOAD" != true'))
         self.assertLess(step.index('"$UPLOAD" != true'), step.index("debug-files upload"))
+
+
+class SentryReleases(unittest.TestCase):
+    """Commits, finalize and deploy all fail silently when they are skipped: Sentry still groups
+    the crashes, and only the suspect commits, "resolve in next release" and the regression check
+    quietly stop working."""
+
+    PUBLISHERS = {"release.yml": None,
+                  "rc.yml": "needs.prepare.outputs.dry != 'true'",
+                  "nightly.yml": "${{ needs.plan.outputs.dry != 'true' }}"}
+
+    def step(self):
+        build = code("build-package.yml")
+        return build[build.index("Create the Sentry release and attach its commits"):build.index("webosbrew tooling")]
+
+    def test_the_release_is_created_after_the_package_is_graded_and_never_fails_the_build(self):
+        build = code("build-package.yml")
+        self.assertLess(build.index("Upload debug files to Sentry"), build.index("ELF + packaging assertions"))
+        self.assertLess(build.index("ELF + packaging assertions"),
+                        build.index("Create the Sentry release and attach its commits"))
+        step = self.step()
+        self.assertIn("if: inputs.sentry-release && inputs.upload-debug-files && inputs.flavor != 'debug'", step)
+        self.assertIn("continue-on-error: true", step)
+        self.assertRegex(build, r"sentry-release:\n(?:        .*\n)*?        type: boolean\n        default: false\n")
+
+    def test_only_a_run_that_publishes_creates_the_release(self):
+        self.assertEqual(re.findall(r"sentry-release: (\$\{\{.*)", code("release.yml")),
+                         ["${{ !inputs.rebuild_tag }}"])
+        self.assertIn("sentry-release: ${{ needs.prepare.outputs.dry != 'true' }}", code("rc.yml"))
+        self.assertIn("sentry-release: ${{ needs.plan.outputs.dry != 'true' }}", code("nightly.yml"))
+
+    def test_the_name_is_the_reported_version_and_the_binary_must_carry_it(self):
+        step = self.step()
+        self.assertIn("--print-nightly-label pkg/.build-config", step)
+        self.assertIn("--print-rc pkg/.build-config", step)
+        self.assertIn('release="plxnative@${nightly_label:-$version${rc:+-rc.$rc}}"', step)
+        self.assertLess(step.index('grep -qaF "$release" pkg/plxnative'), step.index("releases new"))
+
+    def test_the_commits_come_from_this_repository_at_the_built_commit(self):
+        step = self.step()
+        self.assertIn('releases set-commits "$release" --commit "$GITHUB_REPOSITORY@$range"', step)
+        # The range starts at the last final release below this version, never at a candidate.
+        self.assertIn("rc.last_release(", step)
+        self.assertIn('range="$base_sha..$head"', step)
+        # The outputs are written once the release exists, so the deploy still runs if only the
+        # commit lookup failed.
+        self.assertLess(step.index('releases new "$release"'), step.index('echo "release=$release"'))
+        self.assertLess(step.index('echo "release=$release"'), step.index("releases set-commits"))
+        build = code("build-package.yml")
+        for out in ("release", "org", "project", "environment"):
+            self.assertIn(f"sentry-{out}: ${{{{ steps.sentry.outputs.{out} }}}}", build)
+            self.assertIn(f"value: ${{{{ jobs.build.outputs.sentry-{out} }}}}", build)
+
+    def test_each_publisher_marks_the_release_shipped_after_publishing(self):
+        for name, cond in self.PUBLISHERS.items():
+            publish = job_body(name, "publish")
+            self.assertEqual(publish.count("uses: ./.github/actions/sentry-deploy"), 1, name)
+            deploy = publish[publish.index("Mark the Sentry release as shipped"):]
+            self.assertLess(publish.index("gh release create") if "gh release create" in publish
+                            else publish.index("Verify what the public downloads"),
+                            publish.index("Mark the Sentry release as shipped"), name)
+            self.assertIn("continue-on-error: true", deploy.split("\n      - ")[0], name)
+            self.assertIn("release: ${{ needs.build.outputs.sentry-release }}", deploy, name)
+            if cond:
+                self.assertIn(f"if: {cond}", deploy.split("\n      - ")[0], name)
+
+    def test_the_action_skips_an_empty_release_and_runs_the_pinned_cli(self):
+        action = (ROOT / ".github/actions/sentry-deploy/action.yml").read_text()
+        self.assertIn("if: inputs.release != ''", action)
+        self.assertIn("npm ci --prefix tools", action)
+        self.assertIn('"$cli" releases finalize "$RELEASE"', action)
+        self.assertIn('"$cli" deploys new --release "$RELEASE" -e "$ENVIRONMENT"', action)
 
 
 class BundledLibrarySymbols(unittest.TestCase):

@@ -1,6 +1,9 @@
 use super::*;
+use plx_data::metadata::Dovi;
 use plx_data::pms::MediaVersion;
+use plx_platform::devcaps::dv::DvCapability;
 use plx_platform::devcaps::{Caps, Facet};
+use plx_plex::plex::session::DolbyVisionMode;
 use plx_plex::plex::MediaId;
 
 fn version(id: i64, resolution: &str, width: i64, height: i64, vcodec: &str) -> MediaVersion {
@@ -31,7 +34,54 @@ fn full_hd_set() -> Caps {
 }
 
 fn picked(versions: &[MediaVersion], caps: &Caps) -> Option<i64> {
-    decodable_version(versions, caps).map(|v| v.id.0)
+    picked_with_dolby_vision(versions, caps, DolbyVisionMode::Auto, DvCapability::Unknown)
+}
+
+fn picked_with_dolby_vision(
+    versions: &[MediaVersion],
+    caps: &Caps,
+    dv_mode: DolbyVisionMode,
+    dv_probed: DvCapability,
+) -> Option<i64> {
+    decodable_version(versions, caps, dv_mode, dv_probed).map(|v| v.id.0)
+}
+
+fn uhd_with(id: i64, dovi: Dovi) -> MediaVersion {
+    MediaVersion { dovi, ..version(id, "4k", 3840, 2160, "hevc") }
+}
+
+fn profile_5() -> Dovi {
+    Dovi { present: true, profile: 5, bl_compat: 0, ..Dovi::NONE }
+}
+
+fn profile_8() -> Dovi {
+    Dovi { present: true, profile: 8, bl_compat: 1, ..Dovi::NONE }
+}
+
+#[test]
+fn a_set_without_dolby_vision_plays_the_hdr10_version_listed_after_a_profile_5() {
+    let versions = [uhd_with(17, profile_5()), uhd_with(18, Dovi::NONE)];
+    for probed in [DvCapability::Unsupported, DvCapability::Unknown] {
+        assert_eq!(picked_with_dolby_vision(&versions, &Caps::assumed(), DolbyVisionMode::Auto, probed), Some(18), "{probed:?}");
+    }
+}
+
+#[test]
+fn a_set_that_shows_dolby_vision_keeps_the_profile_5_listed_first() {
+    let versions = [uhd_with(17, profile_5()), uhd_with(18, Dovi::NONE)];
+    assert_eq!(picked_with_dolby_vision(&versions, &Caps::assumed(), DolbyVisionMode::Auto, DvCapability::Supported), None);
+}
+
+#[test]
+fn dolby_vision_off_passes_over_a_profile_5_even_on_a_set_that_shows_it() {
+    let versions = [uhd_with(17, profile_5()), uhd_with(18, Dovi::NONE)];
+    assert_eq!(picked_with_dolby_vision(&versions, &Caps::assumed(), DolbyVisionMode::Off, DvCapability::Supported), Some(18));
+}
+
+#[test]
+fn a_profile_8_listed_first_plays_its_base_layer_on_a_set_without_dolby_vision() {
+    let versions = [uhd_with(19, profile_8()), uhd_with(20, Dovi::NONE)];
+    assert_eq!(picked_with_dolby_vision(&versions, &Caps::assumed(), DolbyVisionMode::Auto, DvCapability::Unsupported), None);
 }
 
 #[test]
