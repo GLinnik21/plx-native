@@ -1336,3 +1336,31 @@ fn the_options_menu_rows_answer_their_names() {
     let sort_title = A11yPath::parse_relative("sort_title").unwrap();
     assert_eq!(Focusable::<WatchHost>::a11y_find(&menu, &sort_title, &cx), Some(4), "Title is the fifth row");
 }
+
+/// **The page's accessibility ids:** the header's one stop is `header.sort`, each title (the loaded
+/// ones and an off-screen one alike) is `grid.card.<i>` with its copy's ratingKey as the subject,
+/// the unreachable read-out's Try again is `status.retry` once it is up, and the view conforms.
+#[test]
+fn the_page_answers_its_ids_and_conforms() {
+    use super::cards_harness::WatchHost;
+    use plx_ui::a11y::{conformance, A11yPath, Role};
+    use plx_ui::screen::Focusable;
+    let h = Harness::new(tiles(60));
+    let cx = h.cx();
+    conformance::<WatchHost, _>(&h.screen, &cx);
+    let rel = |id: &str| A11yPath::parse_relative(id).expect("a well-formed id");
+    let find = |id: &str| Focusable::<WatchHost>::a11y_find(&h.screen, &rel(id), &cx);
+    assert_eq!(find("header.sort"), Some(PILL_ELEM));
+    let sort = Focusable::<WatchHost>::a11y(&h.screen, &PILL_ELEM, &cx).expect("the pill projects");
+    assert_eq!((sort.path, sort.role), (rel("header.sort"), Role::Button));
+    for i in [0, 1, 17, 59] {
+        let elem = find(&format!("grid.card.{i}")).unwrap_or_else(|| panic!("card {i} resolves, on screen or not"));
+        let a = Focusable::<WatchHost>::a11y(&h.screen, &elem, &cx).expect("a card projects");
+        assert_eq!((a.path, a.role), (rel(&format!("grid.card.{i}")), Role::Card));
+        assert_eq!(a.subject.as_deref(), Some((100 + i).to_string().as_str()), "the subject is the copy's ratingKey");
+        assert!(a.loaded);
+    }
+    assert_eq!(find("grid.card.60"), None, "one past the end");
+    assert_eq!(find("status.retry"), None, "the read-out is not up");
+    assert_eq!(find("grid.0"), None, "a card is `grid.card.<i>`");
+}

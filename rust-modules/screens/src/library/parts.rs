@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::registry::{merged_ranges, row_neighbourhood, tile_facts, LibraryIdentity, LibraryLike, LibrarySectionIdentity};
+use plx_ui::a11y::{A11y, A11yPath, Role as A11yRole, Seg};
 use plx_ui::caption_policy::CaptionPolicy;
 use plx_ui::cards as ui_cards;
 use plx_ui::cards::{CardSource, Grid, GridSpec, Tile};
@@ -653,6 +654,11 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
     fn progress(&self, i: usize) -> Option<f32> {
         self.view.item(i).filter(|item| item.kind != 3).and_then(|item| item.resume_frac())
     }
+    /// The item's ratingKey (a collection's, on the Collections page): what a by-id press names to stay
+    /// on the title it read. A slot whose page has not landed has none.
+    fn subject(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
+        self.view.item(i).filter(|item| !item.rk.is_empty()).map(|item| std::borrow::Cow::Borrowed(item.rk.as_str()))
+    }
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
         #[cfg(test)] OVERLAID.with(|seen| seen.borrow_mut().push((i, tile.scale)));
         if let Some(item) = self.view.item(i).filter(|item| item.kind == 3) {
@@ -769,6 +775,47 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
             .unwrap_or(0);
         let index = (row * cols + col).min(self.total.saturating_sub(1));
         FocusKey { entry: self.entry, elem: self.elem_at(index).unwrap_or(0) }
+    }
+
+    /// **`grid.card.<i>`**, `i` the card's place in the listing (the shared cards' `card.<i>` under the
+    /// grid's name). The title is its label and the ratingKey ([`CardSource::subject`]) its subject; a
+    /// slot whose page has not landed is a card with `loaded` false. Only a slot that holds a key
+    /// (the visible rows, the look-ahead, the focus and the remembered seat: `windows`) has an id, as
+    /// only it can be focused: `GroupSpec::len` is the whole listing.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let i = self.index_of(*key)?;
+        let src = self.source(cx);
+        let item = src.view.item(i);
+        let path = A11yPath::new().name("grid").name("card").index(i);
+        let mut a = A11y::new(path, A11yRole::Card).with_loaded(item.is_some());
+        if let Some(item) = item {
+            // owned: the listing is the page's view, which this projection outlives
+            if !item.title.is_empty() {
+                a = a.with_label(item.title.clone());
+            }
+            if let Some(subject) = <GridSrc<'_, '_> as CardSource<H>>::subject(&src, i) {
+                a = a.with_subject(subject.into_owned());
+            }
+        }
+        Some(a)
+    }
+
+    /// Every card that holds a key, in listing order.
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == self.group {
+            out.extend(self.windows.iter().flat_map(|w| w.elems.iter().copied()));
+        }
+    }
+
+    /// The inverse of [`Self::a11y`]: the slot a path names by its index, when it holds a key.
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        let mut segs = path.segs();
+        let i = match (segs.next(), segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("grid")), Some(Seg::Name("card")), Some(Seg::Index(i)), None) => i,
+            _ => return None,
+        };
+        let elem = self.elem_at(i)?;
+        Focusable::<H>::a11y(self, &elem, cx).filter(|a| a.path == *path).map(|_| elem)
     }
 }
 

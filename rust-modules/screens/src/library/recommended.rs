@@ -33,6 +33,7 @@ use plx_machine::machine::{
     InstanceId, Key, LogicalState, Machine, MachineId,
 };
 use plx_machine::present::Provenance;
+use plx_ui::a11y::{A11y, A11yPath, Role as A11yRole, Seg};
 use plx_ui::cards::{self as ui_cards, CardSource, RowStyle, SectionFrame, Tile};
 use plx_ui::consts::{CARD_DY, K_SCROLL, MARGIN_X, MARGIN_Y, SCR_H, SCR_W, TITLE_DY};
 use plx_ui::frame::Budget;
@@ -1256,6 +1257,52 @@ impl<H: LibraryLike> Focusable<H> for RecommendedScreen {
             .unwrap_or(plx_ui::dispatch::STRIP_BASE);
         self.key(elem)
     }
+
+    /// **The ids** (`recommended.<path>`): the crumb's root `header.crumb`, a hub's card
+    /// `shelf.<row>.card.<col>` and a promoted collection's linked heading `shelf.<row>.heading`.
+    /// `<row>` is the hub's position on the page and `<col>` the card's in the row, which is place
+    /// semantics by design: the card's `subject` (its ratingKey) is what a press names to stay safe
+    /// when a publication moves them. A card whose item the hub has not published is `loaded` false.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        if *key == CRUMB_ELEM { return self.header(cx).a11y(*key).map(A11y::into_owned); }
+        let shelf = |row: usize| A11yPath::new().name("shelf").index(row);
+        if let Some((row, col)) = self.cell_of(*key) {
+            let src = self.hub_src(row, cx);
+            let mut a = A11y::new(shelf(row).name("card").index(col), A11yRole::Card)
+                .with_loaded(<HubSrc<'_> as CardSource<H>>::loaded(&src, col));
+            if let Some(item) = src.item(col) {
+                // owned: the hub is the page's view, which this projection outlives
+                if !item.title.is_empty() { a = a.with_label(item.title.clone()); }
+                if let Some(subject) = <HubSrc<'_> as CardSource<H>>::subject(&src, col) { a = a.with_subject(subject.into_owned()); }
+            }
+            return Some(a);
+        }
+        let row = self.shelves.iter().position(|row| row.heading_elem() == Some(*key))?;
+        Some(self.heading_widget(row, cx)?.a11y(shelf(row).name("heading")).into_owned())
+    }
+
+    /// Every element of group `g` in focus order: the crumb, a hub's cards (placeholders included) or
+    /// a heading's one element, as `row_elems` answers the page's own focus travel.
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        out.extend(self.row_elems(Some(g)));
+    }
+
+    /// The inverse of [`Self::a11y`]: the path names its candidate by position, and the projection of
+    /// that candidate must answer the same path, so the two cannot disagree about what exists.
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        let mut segs = path.segs();
+        let candidate = match (segs.next(), segs.next(), segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("header")), Some(Seg::Name("crumb")), None, ..) => CRUMB_ELEM,
+            (Some(Seg::Name("shelf")), Some(Seg::Index(row)), Some(Seg::Name("card")), Some(Seg::Index(col)), None) => {
+                *self.shelves.get(row)?.elems.get(col)?
+            }
+            (Some(Seg::Name("shelf")), Some(Seg::Index(row)), Some(Seg::Name("heading")), None, ..) => {
+                self.shelves.get(row)?.heading_elem()?
+            }
+            _ => return None,
+        };
+        self.a11y(&candidate, cx).filter(|a| a.path == *path).map(|_| candidate)
+    }
 }
 
 // ---- draw -------------------------------------------------------------------------------------
@@ -1504,6 +1551,11 @@ impl<H: plx_machine::machine::Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
     fn index_of(&self, e: &u32) -> Option<usize> { self.elems.iter().position(|elem| elem == e) }
     /// A card whose item the hub has not published draws nothing (its stop still registers).
     fn loaded(&self, i: usize) -> bool { self.item(i).is_some() }
+    /// The item's ratingKey: what a by-id press names to stay on the title it read. A card whose
+    /// item the hub has not published has none.
+    fn subject(&self, i: usize) -> Option<Cow<'_, str>> {
+        self.item(i).filter(|item| !item.rk.is_empty()).map(|item| Cow::Borrowed(item.rk.as_str()))
+    }
     fn more(&self) -> bool { self.paging && self.shelf.is_some_and(|shelf| shelf.more) }
     fn page_epoch(&self) -> u32 { self.shelf.map_or(0, |shelf| shelf.epoch) }
     fn more_after(&self) -> bool { self.shelf.is_some_and(|shelf| shelf.more) }
