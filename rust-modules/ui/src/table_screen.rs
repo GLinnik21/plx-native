@@ -28,20 +28,25 @@
 //!
 //! **Focus elements are row indices, except for a form-backed table.** `TablePart::keys` (a
 //! `ui::form::RowKeys`, i.e. a `FormTable`) makes the element a row's `RowKey`, and all five hooks
-//! plus the pointer stops translate key <-> index; without it the element is the index.
+//! plus the pointer stops translate key <-> index; without it the element is the index. The
+//! accessibility ids (`a11y`) follow the same map: a row is `row.<index>`, or the name its
+//! [`FormId::a11y`](super::form::FormId::a11y) declares, and a separator or note (no key) is no
+//! element, so a form-backed group's `len` counts only its keyed rows. The band is `band.<i>`.
 
 use crate::View;
 use std::ffi::CStr;
 
+use super::a11y::{A11y, A11yPath, Role};
 use super::document_reader::DocumentReader;
 use super::form::{RowKey, RowKeys};
 use super::frame::Budget;
-use super::geom::{Document, IndexElem, Table};
+use super::geom::{indexed, sole_name, table_a11y, Document, IndexElem, Table};
 use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId, Host, Measure, NavOpKind, PartId};
 use super::route_screen::RouteLayout;
 use super::screen::{
-    composed_draw, composed_group_of, composed_groups, composed_neighbour, composed_place,
-    composed_prepare, composed_reconcile, composed_seat, Activate, At, AxisMask, Composed, Dir,
+    composed_a11y, composed_a11y_elems, composed_a11y_find, composed_draw, composed_group_of,
+    composed_groups, composed_neighbour, composed_place, composed_prepare, composed_reconcile,
+    composed_seat, Activate, At, AxisMask, Composed, Dir,
     DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Hover, Part, Placed, Seat,
     Step, Stop,
 };
@@ -264,6 +269,13 @@ where
             g.edge[3] = EdgeRule::Screen;
             // a row commits on the DOWN edge, as every row in the app does (no press dip)
             g.elem = ElemKind::Bare;
+            // A form-backed table's elements are its KEYED rows: a separator or a note has no key,
+            // so no element, and `len` (a count of elements) must not count it (the id contract:
+            // `a11y_elems` lists exactly `len`). Only an emptiness test reads `len`, so this
+            // changes nothing for a table with a keyed row.
+            if let Some(k) = self.keys {
+                g.len = (0..g.len).filter(|&i| k.key_at(i).is_some()).count();
+            }
         }
     }
     fn group_of(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<GroupId> {
@@ -300,6 +312,46 @@ where
     fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         let got = Focusable::<H>::seat(&self.view(), g, from, cx);
         FocusKey { entry: got.entry, elem: self.to_key(got.elem) }
+    }
+    /// `row.<index>` (`geom::Table`'s), or the row's own name when its form id declares one
+    /// ([`FormId::a11y`](super::form::FormId::a11y)). In a form-backed table the element is the
+    /// row's key; a separator or note has none, so it is no element.
+    fn a11y(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let index = self.to_index(*key)?.index()? as usize;
+        let name = match self.keys {
+            None => None,
+            Some(k) => {
+                k.key_at(index)?;
+                k.a11y_name(index)
+            }
+        };
+        table_a11y(self.table, index, name)
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        let mut rows = Vec::new();
+        Focusable::<H>::a11y_elems(&self.view(), g, cx, &mut rows);
+        match self.keys {
+            None => out.extend(rows),
+            Some(k) => out.extend(
+                rows.into_iter()
+                    .filter(|e| e.index().is_some_and(|i| k.key_at(i as usize).is_some()))
+                    .map(|e| self.to_key(e)),
+            ),
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<H::Elem> {
+        let Some(k) = self.keys else {
+            return Focusable::<H>::a11y_find(&self.view(), path, cx);
+        };
+        let n = self.table.n_rows().max(0) as usize;
+        let index = match (indexed(path, "row", n), sole_name(path)) {
+            // a row with a name answers only to it, so one element has one spelling
+            (Some(i), _) => k.a11y_name(i).is_none().then_some(i)?,
+            (None, Some(name)) => (0..n).find(|&i| k.a11y_name(i) == Some(name))?,
+            (None, None) => return None,
+        };
+        k.key_at(index)?;
+        Some(self.to_key(H::Elem::of_index(index as u32)))
     }
 }
 
@@ -494,6 +546,24 @@ where
     fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         self.key::<H>(0)
     }
+    /// `band.<i>`: the action band's pills, in order, each a `Button` labelled with its words.
+    fn a11y(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let i = key.index()?.checked_sub(BAND_BASE)? as usize;
+        let label = self.labels.get(i)?;
+        let a = A11y::new(A11yPath::new().name("band").index(i), Role::Button);
+        Some(match label.to_str() {
+            Ok(text) if !text.is_empty() => a.with_label(text),
+            _ => a,
+        })
+    }
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        if g == self.group {
+            out.extend((0..self.labels.len()).map(|i| self.key::<H>(i).elem));
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, _cx: &Cx<'_, H>) -> Option<H::Elem> {
+        indexed(path, "band", self.labels.len()).map(|i| self.key::<H>(i).elem)
+    }
 }
 
 impl<H: Host> Part<H> for BandPart<'_>
@@ -647,6 +717,16 @@ where
     fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         composed_seat(self, g, from, cx)
     }
+    // The parts' ids do not meet (`row.<i>` / a row's name, `band.<i>`), so no prefix is added.
+    fn a11y(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        composed_a11y(self, key, cx)
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        composed_a11y_elems(self, g, cx, out)
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<H::Elem> {
+        composed_a11y_find(self, path, cx)
+    }
 }
 
 impl<H: Host> Part<H> for TableScreen<'_>
@@ -717,6 +797,17 @@ where
     fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         Focusable::<H>::seat(&self.view(), g, from, cx)
     }
+    // `geom::Document`'s `document`; the view is a temporary, so the projection (which carries no
+    // text) is handed back owning.
+    fn a11y(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        Focusable::<H>::a11y(&self.view(), key, cx).map(A11y::into_owned)
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        Focusable::<H>::a11y_elems(&self.view(), g, cx, out)
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<H::Elem> {
+        Focusable::<H>::a11y_find(&self.view(), path, cx)
+    }
 }
 
 impl DocumentPart<'_> {
@@ -755,6 +846,15 @@ where
     }
     fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         Focusable::<H>::seat(&self.focus(), g, from, cx)
+    }
+    fn a11y(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        Focusable::<H>::a11y(&self.focus(), key, cx).map(A11y::into_owned)
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        Focusable::<H>::a11y_elems(&self.focus(), g, cx, out)
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<H::Elem> {
+        Focusable::<H>::a11y_find(&self.focus(), path, cx)
     }
 }
 
@@ -856,6 +956,15 @@ where
     }
     fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         composed_seat(self, g, from, cx)
+    }
+    fn a11y(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        composed_a11y(self, key, cx)
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        composed_a11y_elems(self, g, cx, out)
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<H::Elem> {
+        composed_a11y_find(self, path, cx)
     }
 }
 
@@ -1084,4 +1193,120 @@ mod tests {
         }
     }
 
+    /// **A form-backed table names its rows and has no element for an inert one.** The elements are
+    /// the rows' keys (30, 10, 20 down the page); a row whose `FormId::a11y` names it is that name
+    /// and ONLY that name, an unnamed one is `row.<layout index>`; the separator and the note, which
+    /// have no key, are no elements and `GroupSpec::len` does not count them (so `a11y_elems` lists
+    /// exactly `len`). A toggle row is a `Toggle`.
+    #[test]
+    fn a_form_backed_table_names_its_rows_and_has_no_element_for_an_inert_one() {
+        use crate::a11y::conformance;
+        use crate::form::{Form, FormId, FormSection, FormTable, RowKind};
+        #[derive(Clone, PartialEq)]
+        struct Id(u32, Option<&'static str>);
+        impl FormId for Id {
+            fn key(&self) -> RowKey {
+                RowKey(self.0)
+            }
+            fn a11y(&self) -> Option<&'static str> {
+                self.1
+            }
+        }
+        type H = FixtureHost;
+        let mut form = FormTable::<Id, (), ()>::new(100);
+        let sec = FormSection::new("Section")
+            .item(Id(30, Some("alpha")), RowKind::Button, (), Row::new("Alpha"))
+            .separator()
+            .item(Id(10, None), RowKind::Toggle, (), Row::new("Beta").toggle(true))
+            .note("careful")
+            .item(Id(20, Some("gamma")), RowKind::Button, (), Row::new("Gamma"));
+        form.set(Form::new().section(sec), None);
+        let (m, v) = (FixtureMeasure, FixtureView::default());
+        let cx = cx(&m, &v);
+        let frame = RouteLayout::screen().sectioned_table();
+        let keyed = TablePart {
+            table: &form.table, frame, group: G, entry: E,
+            uncommitted: false, has_band: false, keys: Some(&form),
+        };
+
+        let mut groups = Vec::new();
+        Focusable::<H>::groups(&keyed, &cx, &mut groups);
+        assert_eq!(groups[0].len, 3, "the keyed rows: not the separator, not the note");
+        conformance(&keyed, &cx);
+
+        let rel = |s: &str| A11yPath::parse_relative(s).unwrap();
+        let at = |k: u32| {
+            Focusable::<H>::a11y(&keyed, &k, &cx).map(|a| (a.path, a.role, a.label.map(|l| l.into_owned())))
+        };
+        assert_eq!(at(30), Some((rel("alpha"), Role::Row, Some("Alpha".to_owned()))));
+        assert_eq!(at(10), Some((rel("row.2"), Role::Toggle, Some("Beta".to_owned()))));
+        assert_eq!(at(20), Some((rel("gamma"), Role::Row, Some("Gamma".to_owned()))));
+        assert_eq!(at(0), None, "an index is not a key here");
+        assert_eq!(at(99), None);
+
+        let find = |s: &str| Focusable::<H>::a11y_find(&keyed, &rel(s), &cx);
+        assert_eq!((find("alpha"), find("row.2"), find("gamma")), (Some(30), Some(10), Some(20)));
+        for gone in ["row.0", "row.4", "row.1", "row.3", "row.5", "beta"] {
+            assert_eq!(find(gone), None, "{gone}: a named row has one spelling, an inert row none");
+        }
+        let mut elems = Vec::new();
+        Focusable::<H>::a11y_elems(&keyed, G, &cx, &mut elems);
+        assert_eq!(elems, [30, 10, 20], "the keys, in row order");
+        elems.clear();
+        Focusable::<H>::a11y_elems(&keyed, GroupId(77), &cx, &mut elems);
+        assert!(elems.is_empty(), "a foreign group lists nothing");
+    }
+
+    /// **The plain table part, the action band and the document answer the id contract**, and the
+    /// ids of the table and the band (`row.<i>`, `band.<i>`) do not meet, which is why the composed
+    /// `TableScreen` adds no prefix. (The parts are asked directly: see the note above the tests.)
+    #[test]
+    fn the_table_the_band_and_the_document_answer_the_id_contract() {
+        use crate::a11y::conformance;
+        type H = FixtureHost;
+        let (m, v) = (FixtureMeasure, FixtureView::default());
+        let cx = cx(&m, &v);
+        let layout = RouteLayout::screen();
+        let rel = |s: &str| A11yPath::parse_relative(s).unwrap();
+
+        let t = table(3);
+        let ts = TableScreen::new(Header::new(layout, Some("Settings"), "Legal notices", "copy"), &t, G, E);
+        conformance(&ts.table, &cx);
+        let labels = [c"Done", c"Cancel"];
+        let band_group = GroupId(10);
+        let band = BandPart {
+            layout, labels: &labels, group: band_group, entry: E,
+            uncommitted: false, scales: [1.0; 2], palette: ControlPalette::default(), danger: None, note: None,
+        };
+        conformance(&band, &cx);
+
+        let first = band.key::<H>(0).elem;
+        let a = Focusable::<H>::a11y(&band, &first, &cx).unwrap();
+        assert_eq!((a.path, a.role, a.label.as_deref()), (rel("band.0"), Role::Button, Some("Done")));
+        assert_eq!(Focusable::<H>::a11y_find(&band, &rel("band.1"), &cx), Some(band.key::<H>(1).elem));
+        assert_eq!(Focusable::<H>::a11y_find(&band, &rel("band.2"), &cx), None);
+        assert_eq!(Focusable::<H>::a11y_find(&ts.table, &rel("row.2"), &cx), Some(2));
+        assert_eq!(Focusable::<H>::a11y_find(&ts.table, &rel("band.0"), &cx), None);
+        assert!(Focusable::<H>::a11y(&ts.table, &first, &cx).is_none(), "a band key is not a row");
+        assert!(Focusable::<H>::a11y(&band, &0, &cx).is_none(), "a row index is not a band key");
+
+        let (mut rows, mut pills) = (Vec::new(), Vec::new());
+        Focusable::<H>::a11y_elems(&ts.table, G, &cx, &mut rows);
+        Focusable::<H>::a11y_elems(&band, band_group, &cx, &mut pills);
+        let mut paths: Vec<A11yPath> = rows.iter().map(|k| Focusable::<H>::a11y(&ts.table, k, &cx).unwrap().path).collect();
+        paths.extend(pills.iter().map(|k| Focusable::<H>::a11y(&band, k, &cx).unwrap().path));
+        let distinct: std::collections::HashSet<_> = paths.iter().cloned().collect();
+        assert_eq!((paths.len(), distinct.len()), (5, 5), "the table's ids and the band's never meet");
+
+        let mut r = DocumentReader::new();
+        r.set_extent_for_test(400.0);
+        let focus = DocumentFocus { reader: &r, frame: layout.document(true), group: G, entry: E };
+        conformance(&focus, &cx);
+        let a = Focusable::<H>::a11y(&focus, &0, &cx).unwrap();
+        assert_eq!((a.path, a.role), (rel("document"), Role::Text));
+        assert_eq!(Focusable::<H>::a11y_find(&focus, &rel("document"), &cx), Some(0));
+        let ds = DocumentScreen::new(Header::new(layout, Some("Legal notices"), "Privacy", "copy"), &mut r, "body", G, E);
+        conformance(&ds.doc, &cx);
+        assert_eq!(Focusable::<H>::a11y_find(&ds.doc, &rel("document"), &cx), Some(0));
+    }
 }

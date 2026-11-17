@@ -536,7 +536,7 @@ fn the_sort_control_is_a_value_only_stop_that_ends_at_the_text_edge() {
     let sort = HeaderItem::sort_control("Sort & Filter".to_owned(), "Date added");
     assert_eq!(sort, HeaderItem {
         label: "Sort & Filter".into(), value: Some("Date added".into()), glyph: Some(Icon::Sort), value_only: true,
-        fold_glyph: true, fold_quiet: true, focusable: true, ..Default::default()
+        fold_glyph: true, fold_quiet: true, focusable: true, a11y: Some("sort"), ..Default::default()
     });
     assert!(sort.value_slot.is_none() && !sort.place && !sort.readout && !sort.title && !sort.divider);
     let page = PageHeader::new(PageHeaderSpec { right: vec![sort], ..Default::default() }, &[], &Fixed);
@@ -1632,4 +1632,68 @@ fn the_slide_wakes_the_gate_while_it_runs_and_goes_quiet_at_rest() {
         swap.step(DT);
         assert!(!plx_machine::motion::report::page_moving() && !swap.is_active(), "frame {frame} after landing: a settled swap asks for nothing");
     }
+}
+
+/// **A header row names its stops** (the a11y ids, `<page>.header.<...>`): an item that declares a
+/// name is that name (`header.sort`, whatever a read-out does to the positions), an unnamed one is
+/// its position in its family (`header.left.<n>`, `header.right.<n>`), the "+N" is `header.more`
+/// and a crumb's root `header.crumb`. A read-out, a divider and a crumb's page name are no stops, so
+/// no ids. `a11y_find` inverts `a11y`, `a11y_elems` lists the stops in focus order, and a name has
+/// one spelling.
+#[test]
+fn a_header_row_names_its_stops_and_finds_them_by_id() {
+    use crate::a11y::{A11yPath, Role};
+    let id = |s: &str| A11yPath::parse_relative(s).unwrap();
+    let stops_of = |layout: &HeaderLayout| -> Vec<(u32, usize)> {
+        layout.items.iter().enumerate().filter(|(_, r)| r.focusable).enumerate().map(|(n, (i, _))| (100 + n as u32, i)).collect()
+    };
+    let facts = |row: &HeaderRow, slot: Slot| {
+        let index = row.layout.items.iter().position(|r| r.slot == slot).unwrap();
+        let elem = row.stops.iter().find(|(_, i)| *i == index).map(|(e, _)| *e).unwrap();
+        row.a11y(elem).map(|a| (a.path, a.role, a.label.map(|l| l.into_owned())))
+    };
+
+    let right = vec![
+        HeaderItem { focusable: false, readout: true, ..item("24 of 27", None) },
+        HeaderItem { a11y: Some("collections"), ..item("Collections", Some("12")) },
+        HeaderItem::sort_control("Sort & Filter", "Title"),
+    ];
+    let spec = PageHeaderSpec { left: vec![item("Films", None), item("Shows", None)], overflow: 2, right: right.clone(), ..Default::default() };
+    let page = PageHeader::new(spec, &right, &Fixed);
+    let layout = page.layout(1920.0, &Fixed);
+    let stops = stops_of(&layout);
+    let row = row_of(page, layout, &stops);
+    assert_eq!(facts(&row, Slot::Left(1)), Some((id("header.left.1"), Role::Tab, Some("Shows".to_owned()))));
+    assert_eq!(facts(&row, Slot::Overflow), Some((id("header.more"), Role::Button, None)));
+    assert_eq!(facts(&row, Slot::Right(1)), Some((id("header.collections"), Role::Button, Some("Collections".to_owned()))));
+    assert_eq!(facts(&row, Slot::Right(2)), Some((id("header.sort"), Role::Button, Some("Sort & Filter".to_owned()))));
+    assert!(row.a11y(999).is_none(), "a key that is no stop of the row");
+
+    let mut elems = Vec::new();
+    row.a11y_elems(&mut elems);
+    assert_eq!(elems, stops.iter().map(|(e, _)| *e).collect::<Vec<_>>(), "the stops, in focus order");
+    let mut paths = Vec::new();
+    for e in &elems {
+        let path = row.a11y(*e).expect("every stop projects").path;
+        assert_eq!(row.a11y_find(&path), Some(*e), "{path}");
+        paths.push(path);
+    }
+    let distinct: std::collections::HashSet<_> = paths.iter().cloned().collect();
+    assert_eq!(distinct.len(), paths.len(), "unique in the row: {paths:?}");
+    for not_a_stop in ["header.right.0", "header.right.1", "header.right.2", "header.left.5", "header.crumb", "sort", "header"] {
+        let path = A11yPath::parse_relative(not_a_stop).unwrap();
+        assert_eq!(row.a11y_find(&path), None, "{not_a_stop}: the read-out has no stop, a named control has one spelling");
+    }
+    assert_eq!(row.a11y_find(&A11yPath::parse_id("library.header.sort").unwrap()), None, "the page strips its namespace");
+
+    // a breadcrumb: the root is the one stop on the left, the page name is a title
+    let sort = HeaderItem::sort_control("Sort & Filter", "Title");
+    let spec = PageHeaderSpec { crumb: Some(Crumb::new("Films", "Collections")), right: vec![sort.clone()], ..Default::default() };
+    let page = PageHeader::new(spec, std::slice::from_ref(&sort), &Fixed);
+    let layout = page.layout(1920.0, &Fixed);
+    let stops = stops_of(&layout);
+    let row = row_of(page, layout, &stops);
+    assert_eq!(facts(&row, Slot::CrumbRoot), Some((id("header.crumb"), Role::Button, Some("Films".to_owned()))));
+    assert_eq!(facts(&row, Slot::Right(0)).map(|f| f.0), Some(id("header.sort")));
+    assert_eq!(row.stops.len(), 2, "the page name is no stop");
 }
