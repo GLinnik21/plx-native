@@ -1041,7 +1041,10 @@ pub mod host {
         let key = modal.cache_key();
         let (changed, began_closing) = CACHE_OWNER.with_borrow(|old| match old {
             None => (true, false),
-            Some(old) => (!old.same_snapshot(&key), old.only_began_closing(&key)),
+            Some(old) => (
+                !old.same_snapshot(&key),
+                old.began_closing(&key).is_some_and(|ids| ids.into_iter().all(|id| modal.kept_host_live(id))),
+            ),
         });
         if changed {
             // **A layer that only STARTED closing drops a GROUND-stage snapshot and keeps the
