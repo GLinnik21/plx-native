@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use plx_data::pms::{HeroRef, HubIdentity, HubRef, HubsView, PmsMovie};
+use plx_ui::a11y::{A11y, A11yPath, Role as A11yRole, Seg};
 use plx_data::stores::hubs::HubsCmd;
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
 use plx_ui::cards::{self as ui_cards, RowStyle};
@@ -3224,6 +3225,114 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
             elem: row.elems.get(col).copied().unwrap_or(HERO_PLAY_ELEM),
         }
     }
+
+    /// **The ids** (`home.<path>`): the hero `hero.play|info|watchlist` (the failure read-out's lone
+    /// action is `hero.action`), each shelf `shelf.<row>.card.<col>`, the Continue Watching deck
+    /// `continue.card.<col>`, a linked heading `shelf.<row>.heading`, and the plaintext question's
+    /// answers `alert.cancel|connect`. `<row>` is the row's position in the page and `<col>` the
+    /// card's in the row's window, which is place semantics by design: the card's `subject`
+    /// (its ratingKey) is what a press names to stay safe when a publication moves them.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        if self.plaintext_alert.is_open() {
+            let name = match *key {
+                PLAINTEXT_CANCEL_ELEM => "cancel",
+                PLAINTEXT_CONNECT_ELEM => "connect",
+                _ => return None,
+            };
+            return Some(A11y::new(A11yPath::new().name("alert").name(name), A11yRole::Button));
+        }
+        let view = H::hubs(cx);
+        match self.locate(*key)? {
+            Located::Hero(slot) => {
+                if !self.hero_has(view, slot) {
+                    return None;
+                }
+                let name = match slot {
+                    _ if status_read(view).is_some() => "action",
+                    0 => "play",
+                    1 => "info",
+                    _ => "watchlist",
+                };
+                Some(A11y::new(A11yPath::new().name("hero").name(name), A11yRole::Button))
+            }
+            Located::Heading(row) => {
+                let title = self.rows.get(row)?.title.as_str();
+                Some(A11y::new(shelf_path(self.rows.get(row)?, row).name("heading"), A11yRole::Button).with_label(title))
+            }
+            Located::Item(row, col) => {
+                let projection = self.rows.get(row)?;
+                let path = shelf_path(projection, row).name("card").index(col);
+                Some(match self.item_at(view, row, col) {
+                    Some(item) => A11y::new(path, A11yRole::Card)
+                        .with_label(item.title.clone())
+                        .with_subject(item.rk.clone()),
+                    // a slot whose card has not landed: it exists and can be focused, not pressed
+                    None => A11y::new(path, A11yRole::Card).with_loaded(false),
+                })
+            }
+        }
+    }
+
+    /// Every element of group `g` in index order: the hero's controls in ROW order, a shelf's cards
+    /// (the window, placeholders included), a linked heading's one element, the alert's answers.
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if self.plaintext_alert.is_open() {
+            if g == PLAINTEXT_GROUP {
+                out.extend([PLAINTEXT_CANCEL_ELEM, PLAINTEXT_CONNECT_ELEM]);
+            }
+            return;
+        }
+        if g == HERO_GROUP {
+            let (slots, n) = self.hero_slots(H::hubs(cx));
+            out.extend(slots[..n].iter().map(|&slot| hero_elem(slot)));
+        } else if let Some(row) = self.rows.iter().find(|r| heading_group(r.group) == g && r.link.is_some()) {
+            out.push(heading_elem(row.group));
+        } else if let Some(row) = self.rows.iter().find(|r| r.group == g) {
+            out.extend(row.elems.iter().copied());
+        }
+    }
+
+    /// The inverse of [`Self::a11y`]: the path names its candidate (a hero slot, a row's card, a
+    /// heading), and the projection of that candidate must answer the same path, so the two cannot
+    /// disagree about what exists.
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        let mut segs = path.segs();
+        let candidate = match (segs.next(), segs.next(), segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("hero")), Some(Seg::Name(name)), None, ..) => match name {
+                "play" | "action" => Some(hero_elem(0)),
+                "info" => Some(hero_elem(1)),
+                "watchlist" => Some(hero_elem(2)),
+                _ => None,
+            },
+            (Some(Seg::Name("alert")), Some(Seg::Name(name)), None, ..) => match name {
+                "cancel" => Some(PLAINTEXT_CANCEL_ELEM),
+                "connect" => Some(PLAINTEXT_CONNECT_ELEM),
+                _ => None,
+            },
+            (Some(Seg::Name("continue")), Some(Seg::Name("card")), Some(Seg::Index(col)), None, ..) => self
+                .rows
+                .iter()
+                .find(|r| r.identity == HomeHubIdentity::ContinueWatching)
+                .and_then(|r| r.elems.get(col).copied()),
+            (Some(Seg::Name("shelf")), Some(Seg::Index(row)), Some(Seg::Name("card")), Some(Seg::Index(col)), None) => {
+                self.rows.get(row).and_then(|r| r.elems.get(col).copied())
+            }
+            (Some(Seg::Name("shelf")), Some(Seg::Index(row)), Some(Seg::Name("heading")), None, ..) => {
+                self.rows.get(row).map(|r| heading_elem(r.group))
+            }
+            _ => None,
+        }?;
+        self.a11y(&candidate, cx).filter(|a| a.path == *path).map(|_| candidate)
+    }
+}
+
+/// A row's id prefix: `continue` for the Continue Watching deck, else `shelf.<row>`.
+fn shelf_path(projection: &HubProjection, row: usize) -> A11yPath {
+    if projection.identity == HomeHubIdentity::ContinueWatching {
+        A11yPath::new().name("continue")
+    } else {
+        A11yPath::new().name("shelf").index(row)
+    }
 }
 
 /// What a host test outside this crate may read of the Continue Watching row: its elements in
@@ -3530,13 +3639,13 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                     }
                     self.layout_grid();
                 }
-                if to.elem >= plx_ui::dispatch::STRIP_BASE && matches!(by, By::Dir | By::Pointer)
+                if to.elem >= plx_ui::dispatch::STRIP_BASE && matches!(by, By::Dir | By::Pointer | By::Script)
                 {
                     self.strip_chosen = true;
                 } else if to_loc.is_some() {
                     self.strip_chosen = false;
                 }
-                if matches!(by, By::Dir | By::Pointer) {
+                if matches!(by, By::Dir | By::Pointer | By::Script) {
                     self.hero_auto = HERO_AUTO_S;
                 }
                 fx.invalidate(Provenance::Input);
@@ -4427,6 +4536,11 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
 
     fn index_of(&self, e: &u32) -> Option<usize> {
         self.home.item_col(self.row, *e)
+    }
+
+    /// The card's ratingKey: what a by-id press names to stay on the title it read.
+    fn subject(&self, i: usize) -> Option<Cow<'_, str>> {
+        self.item(i).map(|m| Cow::Borrowed(m.rk.as_str()))
     }
 
     /// The card the PICTURE shows focused: none until the dive has made the shelves the picture,
