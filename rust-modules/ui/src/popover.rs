@@ -602,7 +602,7 @@ impl Popover {
     /// bar's blur and re-latches the dim field: 131% of a 60 Hz frame's GPU budget on the TV.
     /// Real page damage and page motion during the fade still re-take through
     /// [`host::begin_frame`]; the host cache's owner key treats the container's own dismissal the
-    /// same way (`host::bind_owner`: a layer that starts closing drops only a ground stage), so the
+    /// same way (`host::bind_owner`: a live-host layer, `Style::Compact`, that starts closing drops only a ground stage), so the
     /// close's first frame is not the frame that re-takes the page either.
     fn release(&mut self) {
         self.open = false;
@@ -1051,6 +1051,10 @@ pub mod host {
             // [`begin_frame`] below. A full `invalidate()` here made the close's first frame the one
             // that redraws the page into the snapshot, re-sources the tab bar's blur and re-latches the
             // dim field: 131% of a 60 Hz frame's GPU budget on the TV, measured on a glass menu's BACK.
+            // **Only for a surface that kept the host LIVE while it was open** (`Style::Compact`): a
+            // Sheet, an Alert or an `Opaque` snapshot surface froze the host, which got no Tick, so
+            // the page snapshot it leaves is as old as the surface (Settings' Under posters change
+            // would show the old captions through the exit fade) and this flip is the one retake.
             // A layer that came or went, another stack, or a snapshot a navigation transition owns is
             // not a dismissal: all of those drop everything.
             if began_closing && !TRANSITION_OWNS.load(Relaxed) { ground_invalidate(); } else { invalidate(); }

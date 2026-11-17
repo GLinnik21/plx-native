@@ -119,8 +119,8 @@ fn same_thread_owner_switch_never_reuses_another_hosts_frozen_pixels() {
     assert_eq!(a.modal_presentation().read, a_open.read, "render cache switches cannot mutate modal authority");
 }
 
-/// **The container's own dismissal of a surface keeps the page's snapshot.** A caching surface
-/// starting to close changes the owner's cache key (its layer is `Closing` now), and `bind_owner`
+/// **The container's own dismissal of a LIVE-host surface keeps the page's snapshot.** A caching
+/// surface (`Style::Compact`; the frozen styles below retake it) starting to close changes the owner's cache key (its layer is `Closing` now), and `bind_owner`
 /// answered with a full `invalidate()`: the close's first frame then redrew the page into the
 /// snapshot, re-sourced the tab bar's blur and re-latched the dim field, the 131% of a 60 Hz
 /// frame's GPU budget that `Popover::release` no longer costs a glass menu. A closing flip drops

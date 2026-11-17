@@ -324,20 +324,39 @@ pub struct ModalPresentation {
 #[derive(Clone, Debug)]
 pub struct ModalCacheKey {
     owner: std::sync::Arc<()>,
-    layers: Vec<(EntryId, bool)>,
+    layers: Vec<CacheLayer>,
 }
+
+/// One caching layer of a [`ModalCacheKey`]: which surface, whether it is closing, and whether its
+/// style kept the host LIVE while it was open.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CacheLayer {
+    id: EntryId,
+    closing: bool,
+    /// `surface_policy(style, Open, _).0 == Live`: the host kept ticking under this layer, so the
+    /// page snapshot it leaves is as current as the page. A Sheet, an Alert or an `Opaque` snapshot
+    /// surface freezes the host, which then gets no Tick; what it leaves is as old as the surface.
+    live_while_open: bool,
+}
+
 impl ModalCacheKey {
     pub fn same_snapshot(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.owner, &other.owner) && self.layers == other.layers
     }
-    /// Is `other` this key's stack with the same layers, some of which STARTED closing and none of
-    /// which came or went (a layer is `(entry, closing)`; true when the keys are equal)? What a
-    /// dismissal changes and nothing else: the host cache then keeps the page's snapshot and drops
-    /// only a ground-stage one (`popover::host::bind_owner`).
+    /// Is `other` this key's stack with the same layers, some of which STARTED closing, none of which
+    /// came or went, and EVERY one that started closing kept the host live while it was open? What a
+    /// dismissal of a live-host surface changes and nothing else: the host cache then keeps the
+    /// page's snapshot and drops only a ground-stage one (`popover::host::bind_owner`). A frozen
+    /// host's page snapshot may be stale (it got no Tick while the surface was up), so the close of
+    /// a Sheet, an Alert or an `Opaque` snapshot surface is not this: the full `invalidate()` at its
+    /// Open -> Closing flip is the one retake after the frozen stretch.
     pub fn only_began_closing(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.owner, &other.owner)
             && self.layers.len() == other.layers.len()
-            && self.layers.iter().zip(&other.layers).all(|(a, b)| a.0 == b.0 && (a.1 == b.1 || (!a.1 && b.1)))
+            && self.layers.iter().zip(&other.layers).all(|(a, b)| {
+                a.id == b.id
+                    && (a.closing == b.closing || (!a.closing && b.closing && a.live_while_open))
+            })
     }
 }
 impl ModalPresentation {
@@ -669,7 +688,11 @@ impl<H: Host> ModalStack<H> {
             reflow: false,
             key: ModalCacheKey { owner: self.presentation_owner.clone(),
                 layers: self.surfaces.iter().filter(|s| holders.contains(&s.entry.id))
-                    .map(|s| (s.entry.id, s.phase == Phase::Closing)).collect() },
+                    .map(|s| CacheLayer {
+                        id: s.entry.id,
+                        closing: s.phase == Phase::Closing,
+                        live_while_open: surface_policy(s.style, Phase::Open, false).0 == HostUpdate::Live,
+                    }).collect() },
         }
     }
 
