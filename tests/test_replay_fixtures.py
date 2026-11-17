@@ -48,7 +48,7 @@ class ExpectedRefusalTests(unittest.TestCase):
                               [(266, 266), (621, 621), (2287, 2287), (457, 457)])
         for fixture in current:
             counts = replay.expected_counts(fixture)
-            self.assertEqual(counts, (1216, 1216))
+            self.assertEqual(counts, (1172, 1172))  # v13 anchor re-recorded 2026-11-17 (docs/ui-replay-v13-anchor.md)
             manifest = json.loads((fixture / 'manifest.json').read_text())
             self.assertIs(manifest.get('anchor'), True)
             self.assertNotIn((manifest['schema'], manifest['state_fp']),

@@ -2776,6 +2776,19 @@ where
         }
     }
 
+    /// **Who holds input once the dismissals already parked this drain have committed.** A surface
+    /// that closes on a pick pushes its own `Nav(Dismiss)` and then reports the pick to the page
+    /// that opened it. The dismissal stays PARKED until NAV COMMIT (step 7), so the page's command
+    /// for that report reaches the FIFO head while [`Navigation::input_owner`] still names the
+    /// closing surface. A runner that gates a page's command on "the sender holds input" asks this
+    /// instead: a surface whose `Dismiss` is parked no longer counts. Read-only; only a parked
+    /// `Dismiss` is read, never a page op, so a page under a surface that stays up is still not
+    /// the owner.
+    pub fn input_owner_after_dismissals(&self) -> Option<InputOwner> {
+        self.nav.input_owner_unless(|id| self.parked.iter()
+            .any(|(item, _)| matches!(&item.fx, Fx::Nav(NavOp::Dismiss(target)) if *target == id)))
+    }
+
     /// Revalidate immediately before IO if a runner invokes lifecycle operations after take.
     /// Admission/execution is synchronous on the main thread, never held until async completion.
     pub fn app_command_sender_is_live(&self, id: AppCommandId) -> bool {

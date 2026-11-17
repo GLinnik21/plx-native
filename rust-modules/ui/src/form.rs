@@ -380,6 +380,18 @@ impl<Id: PartialEq + Clone, A: Clone, Dest: Clone> FormTable<Id, A, Dest> {
         }
     }
 
+    /// [`Self::new`] over a route page's table ([`TableView::page`]): how every page drawn in a
+    /// `RouteLayout` builds its form, so the page look is the design system's, never the screen's.
+    pub const fn page(key_ceiling: u32) -> Self {
+        Self {
+            table: TableView::page(),
+            bindings: Vec::new(),
+            key_ceiling,
+            engine_key: None,
+            reseat: None,
+        }
+    }
+
     /// Replace the table's sections AND the bindings in one step.
     ///
     /// Selection: `keep` present in the new form keeps its row. A `keep` that vanished lands on the

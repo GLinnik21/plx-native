@@ -1,5 +1,6 @@
 //! Sparse window-lifecycle breadcrumbs attached to native crash events. No standalone usage
-//! events and no per-frame trace: only lifecycle edges, WM queries, the native teardown and
+//! events and no per-frame trace: only lifecycle edges, WM queries, a replaced window surface
+//! (`surface_changed`, a label only: the addresses are not recorded), the native teardown and
 //! exported-window steps a background/foreground cycle runs, and the first resumed frame.
 //! Collection uses the existing crash-report consent. Values are closed labels and booleans,
 //! plus SDL's three version bytes; no pointers, content, account data or runtime strings.
@@ -19,6 +20,11 @@ pub enum Stage {
     WmFailed,
     WmWrongBackend,
     WmNoSurface,
+    /// SDL's `wl_surface` for the window is not the one last published: the EGLSurface the
+    /// swap presents through may still hold the old one (PLX-NATIVE-K). The check compares
+    /// addresses, so this crumb proves a replacement but its absence does not prove the surface
+    /// was kept: a freed proxy's address can be reused by its successor.
+    SurfaceChanged,
     FirstFrame,
     FirstSwapComplete,
     WaylandReleased,
@@ -33,7 +39,7 @@ pub enum Stage {
 }
 
 impl Stage {
-    const ALL: [Self; 20] = [
+    const ALL: [Self; 21] = [
         Self::WillBackground,
         Self::DidBackground,
         Self::WillForeground,
@@ -43,6 +49,7 @@ impl Stage {
         Self::WmFailed,
         Self::WmWrongBackend,
         Self::WmNoSurface,
+        Self::SurfaceChanged,
         Self::FirstFrame,
         Self::FirstSwapComplete,
         Self::WaylandReleased,
@@ -67,6 +74,7 @@ impl Stage {
             Self::WmFailed => "wm_failed",
             Self::WmWrongBackend => "wm_wrong_backend",
             Self::WmNoSurface => "wm_no_surface",
+            Self::SurfaceChanged => "surface_changed",
             Self::FirstFrame => "first_frame",
             Self::FirstSwapComplete => "first_swap_complete",
             Self::WaylandReleased => "wayland_released",
@@ -380,7 +388,7 @@ mod tests {
     /// silently vanish from a crash report, and the count is pinned so the set grows on purpose.
     #[test]
     fn every_stage_round_trips_the_sanitiser() {
-        assert_eq!(Stage::ALL.len(), 20, "the closed label set changed: update PRIVACY.md too");
+        assert_eq!(Stage::ALL.len(), 21, "the closed label set changed: update PRIVACY.md too");
         let mut seen = std::collections::HashSet::new();
         for stage in Stage::ALL {
             assert!(seen.insert(stage.code()), "duplicate wire label {}", stage.code());
@@ -391,6 +399,17 @@ mod tests {
             assert_eq!(values.len(), 1, "{} was dropped by the sanitiser", stage.code());
             assert_eq!(values[0]["message"], stage.code());
         }
+    }
+
+    /// PLX-NATIVE-K: the surface-replacement crumb is a wire label of its own, so a replaced
+    /// `wl_surface` shows in the crash report's ring and is not dropped as an unknown message.
+    #[test]
+    fn surface_changed_is_a_wire_label_the_sanitiser_keeps() {
+        assert_eq!(Stage::SurfaceChanged.code(), "surface_changed");
+        assert!(Stage::ALL.iter().any(|stage| stage.code() == "surface_changed"));
+        let crumb = serde_json::json!({"category":"window", "message":"surface_changed", "data":{}});
+        let out = sanitise(&Value::Array(vec![crumb]));
+        assert_eq!(out["values"][0]["message"], "surface_changed");
     }
 
     /// The labels one simulated session leaves in the 16-slot ring: every step goes through the

@@ -56,7 +56,7 @@ use plx_ui::route_screen::RouteLayout;
 use plx_ui::screen::{At, Dir, DrawFrame, Enter, Focusable, FocusSource, FocusTarget, GroupSpec, HitSource, Placed, RenderStrategy, Screen, ScreenEvent, Step};
 use plx_ui::table::Row;
 use plx_ui::table_screen::{Header, TableScreen};
-use plx_ui::{consts, theme, Rect};
+use plx_ui::{consts, Rect};
 
 use super::family::{form_activate, form_focus, form_right_target, InnerHost, SettingsPage, ALERT_GROUP};
 use plx_ui::decision_alert::AlertAnswers;
@@ -457,7 +457,7 @@ impl HudPage {
             page: SettingsPage::PlayerHud,
             title: String::new(),
             parent: String::new(),
-            form: { let mut form = FormTable::new(BAND); form.table.set_empty_text(Some("")); form },
+            form: { let mut form = FormTable::page(BAND); form.table.set_empty_text(Some("")); form },
             state: State { end_time: None, saving_end_time: false, selected: 0, rows: 0, notice: 0, confirming: false, affirmative: false, alert_scroll: 0, editing: false, fetching: false, kind: 0, scene: 0, visible: false, suspended: false, pending_select_focus: false, registry_request: false, provisional: true },
             list: HudList::default(),
             copy: String::new(),
@@ -712,7 +712,7 @@ impl HudPage {
     }
 
     fn view(&self) -> TableScreen<'_> {
-        let header = Header::new(RouteLayout::settings_page(), Some(&self.parent), &self.title, &self.copy);
+        let header = Header::new(RouteLayout::screen(), Some(&self.parent), &self.title, &self.copy);
         // The gallery's loading read-out is the page's own copy, counted and sentinel-painted as one; any other
         // sentence follows focus.
         let header = if matches!(self.page, SettingsPage::HudGallery) && self.list.catalog.fetching && self.form.table.n_rows() == 0 {
@@ -755,9 +755,6 @@ impl HudPage {
         self.says = says;
         self.title = title;
         self.parent = parent;
-        self.form.table.compact = false;
-        self.form.table.board_metrics(true);
-        self.form.table.header_ink = theme::TEXT_READING;
         self.form.table.list_focused = true;
         self.form.set(form, keep.as_ref());
         self.state.fetching = self.list.fetching;
@@ -1101,7 +1098,7 @@ impl Machine<InnerHost> for HudPage {
                 }
                 cycle.tick(*t, self.preview_active(), &mut fx.present());
                 self.preview_cycle = cycle;
-                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 self.follow.update(t.dt());
                 Handled::Yes
             }
@@ -1300,7 +1297,7 @@ impl Screen<InnerHost> for HudPage {
 /// The `(focus key, id)` of every row `list` shows, for a test: the page's own builder.
 #[cfg(test)]
 fn rows_for_test(list: &HudList) -> Vec<(u32, HudId)> {
-    let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
+    let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::page(BAND);
     form.set(hud_form(list, None, false).0, None);
     (0..form.table.n_rows() as usize).filter_map(|i| Some((form.key_at(i)?.0, form.binding_at(i)?.id.clone()))).collect()
 }

@@ -1798,7 +1798,6 @@ impl LoginScreen {
             None,
             plx_platform::i18n::msg::browse_login_title(),
             plx_platform::i18n::msg::browse_login_instructions(),
-            theme::size::LABEL,
             f.measure,
         );
         let status = self.waiting_label();
