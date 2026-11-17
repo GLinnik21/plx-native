@@ -43,7 +43,9 @@ Command line (a manual smoke: boot the simulator on the mock, then):
     python3 tools/a11y.py expect <runtime-dir> <id> [--timeout SECONDS]
 
 `<runtime-dir>` is the app's runtime directory (`PLXNATIVE_RUNTIME_DIR` under the simulator); the
-token goes into its `plxnative-remote` FIFO. On the television use `tools/tv-session.sh focus|press|state`.
+token goes into its `plxnative-remote` FIFO. Exit 0 is done; 1 is a focus that is not the expected one,
+an app that never answered or a FIFO that is not there; 2 is an id, subject or token the grammar refuses
+(nothing was sent). Each failure is one line on stderr, never a traceback. On the television use `tools/tv-session.sh focus|press|state`.
 """
 import argparse
 import json
@@ -277,21 +279,27 @@ def main(argv=None):
     p_expect.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
     args = parser.parse_args(argv)
     fifo = pathlib.Path(args.runtime, FIFO_NAME)
-    if args.command == "state":
-        json.dump(state(args.runtime, args.timeout), sys.stdout, indent=1)
-        print()
-    elif args.command == "focus":
-        focus(fifo, args.id)
-    elif args.command == "press":
-        press(fifo, args.id, args.subject)
-    elif args.command == "expect":
-        try:
+    try:
+        if args.command == "state":
+            json.dump(state(args.runtime, args.timeout), sys.stdout, indent=1)
+            print()
+        elif args.command == "focus":
+            focus(fifo, args.id)
+        elif args.command == "press":
+            press(fifo, args.id, args.subject)
+        elif args.command == "expect":
             expect_focus(args.runtime, args.id, args.timeout)
-        except FocusMismatch as e:
-            print(e, file=sys.stderr)
-            return 1
-    else:
-        send(fifo, args.token)
+        else:
+            send(fifo, args.token)
+    except FocusMismatch as e:
+        print(e, file=sys.stderr)
+        return 1
+    except ValueError as e:  # a malformed id, subject or token: nothing was sent
+        print(f"a11y: {e}", file=sys.stderr)
+        return 2
+    except (TimeoutError, OSError) as e:  # the app never answered, or there is no FIFO to write to
+        print(f"a11y: {e}", file=sys.stderr)
+        return 1
     return 0
 
 

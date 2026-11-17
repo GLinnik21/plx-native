@@ -277,6 +277,7 @@ def capture(sim, spec, scenario, out_dir):
                 if (runtime / name).is_file():
                     shutil.copy(runtime / name, out_dir / (stem + ext))
         srv.shutdown()
+        srv.server_close()  # the listening socket too: a run of 25 captures leaves none behind
         shutil.rmtree(runtime, ignore_errors=True)
 
 

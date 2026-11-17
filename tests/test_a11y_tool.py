@@ -314,6 +314,65 @@ class Fifo(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_FIFO, "needs os.mkfifo")
+class CommandLine(unittest.TestCase):
+    """`python3 tools/a11y.py <verb>`: a bad argument or a missing app is one line on stderr and an exit
+    code, never a traceback (found by running it against the simulator: `focus Bad.Id` printed one)."""
+
+    def setUp(self):
+        self.runtime = tempfile.mkdtemp(prefix="a11y-tool-")
+        self.addCleanup(shutil.rmtree, self.runtime, ignore_errors=True)
+        self.fifo = pathlib.Path(self.runtime, a11y.FIFO_NAME)
+        os.mkfifo(self.fifo)
+        self.reader = os.open(self.fifo, os.O_RDONLY | os.O_NONBLOCK)
+        self.addCleanup(os.close, self.reader)
+
+    def run_main(self, *argv):
+        import contextlib
+        import io
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = a11y.main(list(argv))
+        return code, err.getvalue()
+
+    def written(self):
+        try:
+            return os.read(self.reader, 4096).decode().split()
+        except BlockingIOError:
+            return []
+
+    def test_a_malformed_id_or_subject_is_one_line_and_exit_2_and_sends_nothing(self):
+        for argv in (("focus", self.runtime, "Bad.Id"), ("press", self.runtime, "nav.x", "--subject", "a b"),
+                     ("expect", self.runtime, "nav")):
+            code, err = self.run_main(*argv)
+            self.assertEqual(code, 2, argv)
+            self.assertTrue(err.startswith("a11y: ") and err.count("\n") == 1, f"{argv}: {err!r}")
+        self.assertEqual(self.written(), [])
+
+    def test_the_verbs_write_their_tokens_and_exit_0(self):
+        self.assertEqual(self.run_main("focus", self.runtime, "nav.watchlist"), (0, ""))
+        self.assertEqual(self.run_main("press", self.runtime, "watchlist.grid.card.2", "--subject", "77"), (0, ""))
+        self.assertEqual(self.run_main("send", self.runtime, "back"), (0, ""))
+        self.assertEqual(self.written(), ["focus:nav.watchlist", "press:watchlist.grid.card.2@77", "back"])
+
+    def test_no_fifo_or_no_answer_is_one_line_and_exit_1(self):
+        gone = pathlib.Path(self.runtime, "nowhere")
+        code, err = self.run_main("focus", str(gone), "nav.watchlist")
+        self.assertEqual(code, 1)
+        self.assertTrue(err.startswith("a11y: ") and err.count("\n") == 1, err)
+        with mock.patch.object(a11y, "expect_focus", side_effect=TimeoutError("no snapshot named state:x")):
+            code, err = self.run_main("expect", self.runtime, "nav.watchlist")
+        self.assertEqual((code, err), (1, "a11y: no snapshot named state:x\n"))
+
+    def test_a_focus_mismatch_names_both_ids_and_exits_1(self):
+        err = a11y.FocusMismatch("nav.watchlist", "nav.home", {"route": "home", "owner": "page"})
+        with mock.patch.object(a11y, "expect_focus", side_effect=err):
+            code, text = self.run_main("expect", self.runtime, "nav.watchlist")
+        self.assertEqual(code, 1)
+        self.assertIn("nav.watchlist", text)
+        self.assertIn("nav.home", text)
+
+
+@unittest.skipUnless(HAS_FIFO, "needs os.mkfifo")
 class ExpectFocus(unittest.TestCase):
     """`expect_focus` asks `state` again until the focused id is the one wanted; the fake app answers each
     request (by its nonce) with the next focus of a script."""
