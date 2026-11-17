@@ -133,14 +133,19 @@ Recorded **2026-08-21**: a lane was branched from an unrelated `backdrop-blur` c
 integration branch, so the symbol its task depended on did not exist.
 
 ```sh
-MAIN=/Users/gleblinnik/Developer/plex/plex-native-poc
+MAIN=/Users/gleblinnik/Developer/plx-native
+FLEET=${PLX_FLEET_DIR:-$MAIN/.claude/worktrees}          # the external fleet volume when one is configured
 git -C "$MAIN" fetch origin                              # `git log --all` reads only refs you HOLD
 BASE=$(git -C "$MAIN" rev-parse origin/main)             # or the integration branch
-git -C "$MAIN" worktree add -b fleet/<lane> "$MAIN/.claude/worktrees/<lane>" "$BASE"
+git -C "$MAIN" worktree add -b fleet/<lane> "$FLEET/<lane>" "$BASE"
 ```
 
 `.claude/worktrees/` is gitignored (`.gitignore:31`) and is where this project's agent worktrees
-already live — three of them on 2026-08-23, beside the main checkout. Verify **from inside the
+already live — three of them on 2026-08-23, beside the main checkout. A machine with
+`$PLX_FLEET_DIR` set to a second volume instead places the WHOLE lane there: the invariant is
+not the directory, it is that a lane's build trees live inside its own checkout (see below), and
+`make disk`, `tools/build-gc.sh --orphans` and the disk-budget planner all read
+`$PLX_FLEET_DIR`, so external lanes are visible to the same reclaims. Verify **from inside the
 lane**, before any work; the worker prompt makes this the first command:
 
 ```sh
@@ -254,7 +259,7 @@ Only two are worth copying, and the list is shorter than it looks because the to
 reaches back to the main checkout:
 
 ```sh
-WT=$MAIN/.claude/worktrees/<lane>
+WT=$FLEET/<lane>
 cp "$MAIN/src/config.local.h"        "$WT/src/"          # PMS host + token
 cp "$MAIN/tests/manifest.local.json" "$WT/tests/"        # only for ./tests/run.py --server
 ```
