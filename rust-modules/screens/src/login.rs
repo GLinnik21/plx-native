@@ -51,6 +51,7 @@ use std::os::raw::c_int;
 use std::sync::Arc;
 
 use plx_session::auth::{self, Phase};
+use plx_ui::a11y::{A11y, A11yPath, Role, Seg};
 use plx_ui::frame::Budget;
 use plx_ui::label::HAlign;
 use plx_machine::machine::{
@@ -1361,6 +1362,17 @@ impl LoginScreen {
         Self::enter_group(fx, ALERT_GROUP);
     }
 
+    /// The words on the control, for the state file: the QR screen's escape sentence while the
+    /// code is up, the read-out's primary otherwise (`None` when there is no control).
+    fn control_label(&self) -> Option<&'static str> {
+        let text = if self.phase == Phase::Waiting && self.persistence_warning.is_none() {
+            self.waiting_label()
+        } else {
+            label_for(self.control_kind()?)
+        };
+        text.to_str().ok()
+    }
+
     /// The QR screen's *Details* pill, at the head of the route's bottom action band.
     fn waiting_details(&self, measure: &dyn Measure) -> Option<Rect> {
         if !self.details_offered() {
@@ -2120,6 +2132,48 @@ impl<H: AppLike> Focusable<H> for LoginScreen {
         }
         let row = self.row();
         self.key(if row.n > 0 { row.elems[0] } else { CONTROL })
+    }
+    /// **The ids** (relative; the host qualifies them with `login`): `control` (the read-out's
+    /// primary, or the QR screen's escape sentence), `details`, and the open alert's two answers
+    /// `alert.cancel` / `alert.send`. An element that is not in the current group has no id.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        self.group_of(key, cx)?;
+        let path = A11yPath::new();
+        let (path, label) = match *key {
+            CONTROL => (path.name("control"), self.control_label()),
+            DETAILS => (
+                path.name("details"),
+                plx_platform::i18n::msg::settings_login_details_c().to_str().ok(),
+            ),
+            ALERT_CANCEL => (path.name("alert").name("cancel"), None),
+            ALERT_SEND => (path.name("alert").name("send"), None),
+            _ => return None,
+        };
+        let a = A11y::new(path, Role::Button);
+        Some(match label {
+            Some(text) => a.with_label(text),
+            None => a,
+        })
+    }
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if self.report.alert.is_open() {
+            if g == ALERT_GROUP {
+                out.extend_from_slice(self.alert_elems());
+            }
+        } else if g == CONTROL_GROUP {
+            out.extend_from_slice(self.row().as_slice());
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        let mut segs = path.segs();
+        let elem = match (segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("control")), None, _) => CONTROL,
+            (Some(Seg::Name("details")), None, _) => DETAILS,
+            (Some(Seg::Name("alert")), Some(Seg::Name("cancel")), None) => ALERT_CANCEL,
+            (Some(Seg::Name("alert")), Some(Seg::Name("send")), None) => ALERT_SEND,
+            _ => return None,
+        };
+        self.group_of(&elem, cx).map(|_| elem)
     }
 }
 
@@ -3637,6 +3691,55 @@ impl AuthLike for SessionHost {
         assert!(s.state.report.details_open);
         assert!(enters_group(&fx, ALERT_GROUP), "focus goes to the card's answers");
         assert_eq!(s.row().as_slice(), [CONTROL, DETAILS]);
+    }
+
+    /// **Every element the screen has answers an id, in each state it has one**: nothing while the
+    /// QR code is fresh, `control` on the stalled wait and the failed read-out, `details` beside it,
+    /// and `alert.cancel` / `alert.send` alone while the Details card traps the screen. Each
+    /// conforms (listed, unique, inverted by `a11y_find`), and an element the state hides has no id.
+    #[test]
+    fn the_login_screen_answers_ids_for_the_elements_of_each_state() {
+        use plx_ui::a11y::conformance;
+        let _serial = plx_base::testlock::serial();
+        let m = plx_ui::fixture::FixtureMeasure;
+        fn id(text: &str) -> A11yPath {
+            A11yPath::parse_relative(text).unwrap()
+        }
+        fn find(s: &LoginScreen, text: &str, cx: &Cx<'_, SessionHost>) -> Option<u32> {
+            Focusable::<SessionHost>::a11y_find(s, &id(text), cx)
+        }
+
+        let cx = test_cx(&m);
+        let quiet = bare_screen(Phase::Waiting, 0.0);
+        conformance(&quiet, &cx);
+        assert_eq!(find(&quiet, "control", &cx), None, "nothing to press while the code is fresh");
+
+        let stuck = bare_screen(Phase::Waiting, QR_ESCAPE_AFTER_MS);
+        conformance(&stuck, &cx);
+        assert_eq!(find(&stuck, "control", &cx), Some(CONTROL));
+        assert_eq!(find(&stuck, "details", &cx), None);
+        let control = Focusable::<SessionHost>::a11y(&stuck, &CONTROL, &cx).unwrap();
+        assert_eq!((control.path, control.role), (id("control"), Role::Button));
+        assert_eq!(control.label.as_deref(), stuck.waiting_label().to_str().ok());
+
+        let failed = failed_with(auth::owner::IncidentState::NotNow);
+        let mut s = LoginScreen::new(EntryId(0), failed.read());
+        step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
+        let cx = cx_with(&m, &failed);
+        conformance(&s, &cx);
+        assert_eq!(find(&s, "control", &cx), Some(CONTROL));
+        assert_eq!(find(&s, "details", &cx), Some(DETAILS));
+        assert_eq!(find(&s, "alert.send", &cx), None, "the alert is closed");
+        let control = Focusable::<SessionHost>::a11y(&s, &CONTROL, &cx).unwrap();
+        assert_eq!(control.label.as_deref(), plx_platform::i18n::msg::browse_action_retry_c().to_str().ok());
+
+        step_ev_with(&mut s, &ScreenEvent::Activate(DETAILS), &failed, InstanceId(0), &m);
+        let cx = cx_with(&m, &failed);
+        conformance(&s, &cx);
+        assert_eq!(find(&s, "alert.cancel", &cx), Some(ALERT_CANCEL));
+        assert_eq!(find(&s, "alert.send", &cx), Some(ALERT_SEND));
+        assert_eq!(find(&s, "control", &cx), None, "the card traps everything under it");
+        assert_eq!(find(&s, "details", &cx), None);
     }
 
     #[test]

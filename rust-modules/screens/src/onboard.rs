@@ -9,6 +9,7 @@ use std::ffi::CStr;
 
 use plx_data::stores::browse::{BrowseCmd, DirectoryView, SecFetch, SrcRow};
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
+use plx_ui::a11y::{A11y, A11yPath};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, Fx, GroupId, Handled, InputEvent, InputKind, Key, LogicalState, Machine, NavOp,
@@ -509,6 +510,18 @@ impl<H: DirectoryLike> plx_ui::screen::Focusable<H> for OnboardView<'_> {
     fn seat(&self, g: GroupId, from: plx_ui::screen::Placed, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
         plx_ui::screen::Focusable::<H>::seat(&self.screen(cx.press), g, from, cx)
     }
+    // The ids are the shared table screen's (`ui/table_screen.rs`: the rows by their form ids, the
+    // band's one control). The `TableScreen` is a temporary built for this query, so the projection
+    // is handed back owning its text, the shape `focusable_via_view!` gives.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        plx_ui::screen::Focusable::<H>::a11y(&self.screen(cx.press), key, cx).map(A11y::into_owned)
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        plx_ui::screen::Focusable::<H>::a11y_elems(&self.screen(cx.press), g, cx, out)
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        plx_ui::screen::Focusable::<H>::a11y_find(&self.screen(cx.press), path, cx)
+    }
 }
 
 impl<H: DirectoryLike> plx_ui::screen::Focusable<H> for OnboardScreen {
@@ -529,6 +542,18 @@ impl<H: DirectoryLike> plx_ui::screen::Focusable<H> for OnboardScreen {
     }
     fn seat(&self, g: GroupId, from: plx_ui::screen::Placed, cx: &Cx<'_, H>) -> plx_machine::machine::FocusKey<u32> {
         plx_ui::screen::Focusable::<H>::seat(&self.view(H::directory(cx)), g, from, cx)
+    }
+    // **Both mountings of this one screen (first run, and the Settings family's inner stack) answer
+    // the one namespace `onboard`**: `Screen::a11y_ns` defaults to `name()`, which is `word::ONBOARD`
+    // in both (see `Screen::name`), so the ids do not depend on where the page is mounted.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        plx_ui::screen::Focusable::<H>::a11y(&self.view(H::directory(cx)), key, cx).map(A11y::into_owned)
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        plx_ui::screen::Focusable::<H>::a11y_elems(&self.view(H::directory(cx)), g, cx, out)
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        plx_ui::screen::Focusable::<H>::a11y_find(&self.view(H::directory(cx)), path, cx)
     }
 }
 
@@ -842,6 +867,34 @@ mod tests {
         assert_eq!(Screen::<InnerHost>::name(&first), super::word::ONBOARD);
         assert_eq!(Screen::<InnerHost>::name(&inside), super::word::ONBOARD);
         assert_ne!(Screen::<InnerHost>::name(&inside), super::word::SETTINGS);
+    }
+
+    /// **Every mounting (first run, the Settings editor, the Library's contextual one) answers ids in
+    /// the one namespace `onboard`, and each conforms**: the table's
+    /// rows and the band's one control are the shared table screen's, so what this screen adds is
+    /// only that the view it hands them from is the one the engine reasons about. A first run with
+    /// nothing discovered still has its band's `Try again`, and a Settings editor over two sources
+    /// has its rows.
+    #[test]
+    fn every_mounting_answers_ids_under_one_namespace_and_conforms() {
+        use plx_ui::screen::Screen;
+        let _g = plx_base::testlock::serial();
+        let _t = TempSession::new("onboard-a11y");
+        let m = plx_ui::fixture::FixtureMeasure;
+        let mut browse = BrowseFixture::new();
+        browse.seed_two_sources();
+        let settings = OnboardScreen::settings(EntryId(0), browse.capture());
+        let first = OnboardScreen::first_run(EntryId(0), browse.capture());
+        let library = OnboardScreen::library(EntryId(0), browse.capture());
+        for (what, screen) in [("settings", &settings), ("first run", &first), ("library", &library)] {
+            assert_eq!(Screen::<InnerHost>::a11y_ns(screen), "onboard", "{what}");
+            let cx = test_cx(&m, None, browse.capture());
+            plx_ui::a11y::conformance(screen, &cx);
+        }
+
+        let nothing = OnboardScreen::first_run(EntryId(0), DirectoryView::empty_for_test());
+        let cx = test_cx(&m, None, DirectoryView::empty_for_test());
+        plx_ui::a11y::conformance(&nothing, &cx);
     }
 
     /// **First run sits on the authored default ambient, never on a hero's light.** A persisted
