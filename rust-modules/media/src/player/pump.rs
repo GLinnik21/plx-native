@@ -6426,8 +6426,19 @@ mod end_of_film_tests {
         }
 
         /// Stamp every later step's position callback with a virtual wall (see [`Rig::wall_ms`]).
+        /// Also [`hushed`](Rig::hushed): a real-time callback from the host's own position thread
+        /// would stamp the wall backwards.
         pub(super) fn with_virtual_wall(mut self) -> Rig {
             self.wall_ms = Some(plx_base::clock::vclock_ms().wrapping_add(1_000_000));
+            self.hushed()
+        }
+
+        /// Silence the host's own position thread, which reports on REAL time whenever the clock
+        /// plays: from here the only position callbacks are the ones `step` takes, so a test owns
+        /// every callback and its stamp. With no `step` the pipeline reports nothing while the app
+        /// still believes it plays, which is a link that died under it (`step_without_sink`).
+        pub(super) fn hushed(self) -> Rig {
+            ffi_host::hush_ticker_for_test(true);
             self
         }
 

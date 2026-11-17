@@ -212,60 +212,157 @@ fn a_link_slower_than_the_file_is_held_once_and_the_hold_stands() {
     assert!(!text.contains("progressive rebuffer hold n=2"), "a second hold began under the first: {text}");
 }
 
+/// A stamp `ago_ms` before `now_ms` on the millisecond clock the silence observation reads. A stamp
+/// of 0 means "no callback yet", so it is never produced.
+fn stamp_ago(now_ms: u32, ago_ms: u32) -> u32 {
+    now_ms.wrapping_sub(ago_ms).max(1)
+}
+
+/// Age the silence observation without waiting for it: the clock last reported `callback_ago_ms`
+/// ago and the watch was last restarted `restart_ago_ms` ago (the silence runs from the later of
+/// the two). The pump reads the same real clock, which only moves forward by the microseconds a
+/// step takes, so a test that ages by 1100 ms and expects 1005 ms of silence cannot be early, and
+/// one that ages by 800 ms cannot be late. No test here sleeps.
+fn age_observation(callback_ago_ms: u32, restart_ago_ms: u32) {
+    let now = plx_base::clock::vclock_ms();
+    FEED_SHARED.dg_vpres_at.store(stamp_ago(now, callback_ago_ms), Relaxed);
+    plx_play_feed::feed_pump::CLOCK_WATCH_SINCE_MS.store(stamp_ago(now, restart_ago_ms), Relaxed);
+}
+
+/// A direct-play stream with six seconds in both lanes and its position callbacks owned by the test
+/// (`Rig::hushed`), played to within 700 ms of the tail it will starve at, with nothing held yet.
+fn a_stream_about_to_run_dry() -> Rig {
+    let mut rig = Rig::with_media(6 * S, 6 * S).hushed();
+    ffi_host::reset_volume_probe_for_test();
+    let tail = last_pts(6 * S, V_STEP_NS).max(last_pts(6 * S, A_STEP_NS));
+    assert!(
+        rig.run_until(|_| {
+            let p = FEED_SHARED.pres_fed.load(Relaxed);
+            p != PRES_NONE && tail - p <= HEALTHY_NS
+        }),
+        "PRECONDITION FAILED, not the defect: the clock never came within 700 ms of the tail: {}",
+        rig.facts()
+    );
+    assert_eq!(pauses(), 0, "PRECONDITION FAILED, not the defect: held before the link died: {}", rig.facts());
+    rig
+}
+
 /// **A dead link is held through the silence arm.** Nothing arrives and the native clock stops
 /// reporting: the callbacks the debt watches are gone, so the dead-link arm (the silence observation,
-/// 1005 ms with a reserve the stopped clock has already outlasted) must take the hold. The clock is
-/// played to within 700 ms of the tail, the sink then stops ticking (no callbacks), and the pump keeps
-/// running on the REAL clock, which is the one the silence observation reads: no hold in the first
-/// 800 ms of silence, a hold by two seconds, and the hold line names the silence arm.
+/// 1005 ms, over a reserve the stopped clock has already outlasted) must take the hold. The last
+/// callback is aged to 800 ms ago, which is a clock that is merely late and must not hold, and then
+/// to 1100 ms ago, which must: one Pause, Buffering, and a hold line that names the silence arm.
 #[test]
 fn a_dead_link_is_held_through_the_silence_arm() {
     let _serial = plx_base::testlock::serial();
-    // The monotonic clock's origin is fixed at its first read, and a stamp of 0 means "no callback
-    // yet" to the silence observation: on a process whose first read is this test's own callback,
-    // every stamp of the first milliseconds would read as absent. Fix the origin, then let it move.
-    let _ = plx_base::clock::vclock_ms();
-    std::thread::sleep(std::time::Duration::from_millis(5));
     let ((), text) = logged(|| {
-        let mut rig = Rig::with_media(6 * S, 6 * S);
-        ffi_host::reset_volume_probe_for_test();
-        let tail = last_pts(6 * S, V_STEP_NS).max(last_pts(6 * S, A_STEP_NS));
-        assert!(
-            rig.run_until(|_| {
-                let p = FEED_SHARED.pres_fed.load(Relaxed);
-                p != PRES_NONE && tail - p <= HEALTHY_NS
-            }),
-            "PRECONDITION FAILED, not the defect: the clock never came within 700 ms of the tail: {}",
-            rig.facts()
-        );
-        assert_eq!(pauses(), 0, "PRECONDITION FAILED, not the defect: held before the link died: {}", rig.facts());
-
-        // The clock stops from here: the host's own position thread (it reports at the device's
-        // cadence whenever the clock plays, whatever the rig does) reports nothing, and the last
-        // callback was the last `step`'s.
-        ffi_host::silence_clock_for_test();
-        let last_callback = std::time::Instant::now();
-        let deadline = last_callback + std::time::Duration::from_secs(2);
-        let mut held_after: Option<std::time::Duration> = None;
-        while std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(40));
-            rig.step_without_sink();
-            if pauses() > 0 {
-                held_after = Some(last_callback.elapsed());
-                break;
-            }
-        }
-        let held_after = held_after
-            .unwrap_or_else(|| panic!("a dead link was not held through the silence arm in 2 s: {}", rig.facts()));
-        assert!(
-            held_after >= std::time::Duration::from_millis(800),
-            "held {held_after:?} after the last callback: a clock that is merely late was held"
-        );
-        assert_eq!(pauses(), 1, "exactly one Pause: {}", rig.facts());
+        let mut rig = a_stream_about_to_run_dry();
+        age_observation(800, 900);
+        rig.step_without_sink();
+        assert_eq!(pauses(), 0, "a clock that is 800 ms late was held: {}", rig.facts());
+        age_observation(1_100, 1_200);
+        rig.step_without_sink();
+        assert_eq!(pauses(), 1, "a clock silent for 1100 ms over a spent reserve was not held: {}", rig.facts());
         assert!(FEED_SHARED.hls_rebuffering.load(Relaxed), "the hold did not raise Buffering");
         assert_eq!(crate::player::rebuffering(&rig.ps), Some(true), "the readout does not say Buffering");
     });
     assert!(text.contains("progressive rebuffer hold n=1 arm=silence"), "no silence-arm hold line: {text}");
+}
+
+/// **The last callback and the watch's restart can share a millisecond.** The silence then runs from
+/// that millisecond. (An observation that needed a callback STRICTLY after the restart never armed
+/// here, and on a fast runner a whole run fits in one millisecond: the link was dead and nothing
+/// held, which is how CI saw `a_dead_link_...` fail while a slower machine passed it.)
+#[test]
+fn a_dead_link_in_the_millisecond_of_the_watch_restart_is_held() {
+    let _serial = plx_base::testlock::serial();
+    let ((), text) = logged(|| {
+        let mut rig = a_stream_about_to_run_dry();
+        age_observation(1_100, 1_100);
+        rig.step_without_sink();
+        assert_eq!(pauses(), 1, "a link dead since the millisecond of the restart was not held: {}", rig.facts());
+        assert_eq!(crate::player::rebuffering(&rig.ps), Some(true), "the readout does not say Buffering");
+    });
+    assert!(text.contains("progressive rebuffer hold n=1 arm=silence"), "no silence-arm hold line: {text}");
+}
+
+/// **A link that dies before the first callback after a Resume is held.** The viewer's Pause
+/// restarts the watch on every pump the clock stands, so after the Resume the last callback is OLDER
+/// than the restart. The silence runs from the restart; a rule that wanted a callback after it never
+/// held a link that died in that gap: a frozen picture and no Buffering. The same gap follows the
+/// Play that ends a hold.
+#[test]
+fn a_link_that_dies_before_the_first_callback_after_a_resume_is_held() {
+    let _serial = plx_base::testlock::serial();
+    let ((), text) = logged(|| {
+        let mut rig = a_stream_about_to_run_dry();
+        assert!(crate::player::pause(&mut rig.ps, &mut rig.pa), "the viewer's Pause is accepted");
+        let at_pause = pauses();
+        for _ in 0..3 {
+            rig.step_without_sink();
+        }
+        assert!(crate::player::resume(&mut rig.ps, &mut rig.pa), "the viewer's Resume is accepted");
+        rig.step_without_sink();
+        assert_eq!(pauses(), at_pause, "PRECONDITION FAILED, not the defect: the Resume itself was held: {}", rig.facts());
+        // The link died with the Resume: the last callback is from before the pause, the watch was
+        // restarted 1100 ms ago and nothing has reported since.
+        age_observation(1_500, 1_100);
+        rig.step_without_sink();
+        assert_eq!(pauses(), at_pause + 1, "a link dead since the Resume was not held: {}", rig.facts());
+        assert!(FEED_SHARED.hls_rebuffering.load(Relaxed), "the hold did not raise Buffering");
+    });
+    assert!(text.contains("progressive rebuffer hold n=1 arm=silence"), "no silence-arm hold line: {text}");
+}
+
+/// **A hold whose own release is already true is not begun.** The audio queue is at its byte cap and
+/// the sink takes no more audio, so the demuxer is parked on it: the full queue that releases a hold
+/// is already there. Beginning one anyway would Pause and then Play in the same tick, and again on
+/// the next. The video clock plays out and parks at the tail, which owes the debt arm a hold; none
+/// may begin.
+#[test]
+fn a_hold_is_not_begun_when_its_own_release_is_already_true() {
+    let _serial = plx_base::testlock::serial();
+    let ((), text) = logged(|| {
+        let mut rig = Rig::with_media(6 * S, 6 * S).with_virtual_wall();
+        ffi_host::reset_volume_probe_for_test();
+        for _ in 0..8 {
+            rig.step();
+        }
+        ffi_host::refuse_feed_lane_for_test(Some(2));
+        let qa = plx_play_feed::aq::queue_ptr(&mut rig.eng().aq_audio);
+        let big = vec![0u8; plx_play_feed::aq::aq_cap(qa) as usize + 1];
+        plx_play_feed::aq::aq_push(qa, big.as_ptr(), big.len() as std::os::raw::c_int, 6 * S, 1, 2);
+        assert!(
+            plx_play_feed::aq::aq_would_park(qa),
+            "PRECONDITION FAILED, not the defect: the audio queue is not at its cap"
+        );
+        let plays = ffi_host::play_calls_for_test();
+        let tail = last_pts(6 * S, V_STEP_NS).max(last_pts(6 * S, A_STEP_NS));
+        let mut parked_steps = 0;
+        for _ in 0..STEP_BUDGET {
+            rig.step();
+            let position = FEED_SHARED.pres_fed.load(Relaxed);
+            if position != PRES_NONE && tail - position <= CLAMPED_NS {
+                parked_steps += 1;
+            }
+            if parked_steps >= 3 * DEBT_PERIODS {
+                break;
+            }
+        }
+        assert!(
+            parked_steps >= 3 * DEBT_PERIODS,
+            "PRECONDITION FAILED, not the defect: the clock never parked at the tail, so no hold was owed: {}",
+            rig.facts()
+        );
+        assert!(
+            plx_play_feed::aq::aq_would_park(plx_play_feed::aq::queue_ptr(&mut rig.eng().aq_audio)),
+            "PRECONDITION FAILED, not the defect: the audio queue drained, so its release was not true"
+        );
+        assert_eq!(pauses(), 0, "a hold was begun over a queue that already releases it: {}", rig.facts());
+        assert_eq!(ffi_host::play_calls_for_test(), plays, "a Play followed a Pause that should never have been sent");
+        assert!(!FEED_SHARED.hls_rebuffering.load(Relaxed), "Buffering was raised for a hold that released at once");
+    });
+    assert!(!text.contains("progressive rebuffer hold"), "a hold line was written: {text}");
 }
 
 /// **The hold's way out.** A progressive hold has no HLS segment to credit, so a certificate borrowed

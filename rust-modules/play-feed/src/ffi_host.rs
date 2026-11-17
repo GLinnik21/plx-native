@@ -165,6 +165,10 @@ fn frames() -> Option<&'static dyn FrameSink> {
 const FEED_ERROR: c_char = b'e' as c_char;
 /// `sf_feed`'s acceptance code.
 const FEED_OK: c_char = b'O' as c_char;
+/// `sf_feed`'s backpressure code. Only a test makes the sink answer it, for one lane
+/// ([`refuse_feed_lane_for_test`]); the pump keeps the AU and retries on its next pass.
+#[cfg(any(test, feature = "test-support"))]
+const FEED_BUFFER_FULL: c_char = b'B' as c_char;
 
 /// How often the sink reports a position, milliseconds.
 ///
@@ -193,6 +197,12 @@ static FORCE_PLAY_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
 static PLAY_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(any(test, feature = "test-support"))]
 static FORCE_PAUSE_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
+/// The `clocksink` thread skips its ticks ([`hush_ticker_for_test`]).
+#[cfg(any(test, feature = "test-support"))]
+static TICKER_HUSHED: AtomicBool = AtomicBool::new(false);
+/// The lane `sf_feed` answers `BufferFull` for ([`refuse_feed_lane_for_test`]); `i32::MIN` is none.
+#[cfg(any(test, feature = "test-support"))]
+static FEED_REFUSED_LANE: AtomicI32 = AtomicI32::new(i32::MIN);
 /// The host pipeline's volume (`setVolume`); a fresh pipeline starts at `PIPELINE_DEFAULT_VOLUME`.
 #[cfg(any(test, feature = "test-support"))]
 static HOST_VOLUME: AtomicI32 = AtomicI32::new(plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME);
@@ -734,6 +744,8 @@ pub fn reset_native_lifecycle_for_test() {
     OBJECT_READY.store(false, Relaxed);
     LOADED.store(false, Relaxed);
     LOAD_IN_FLIGHT.store(false, Relaxed);
+    TICKER_HUSHED.store(false, Relaxed);
+    FEED_REFUSED_LANE.store(i32::MIN, Relaxed);
     IN_FLIGHT_CALLS.store(0, Relaxed);
     *IN_FLIGHT_VERB.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *HOLD_LOAD.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
@@ -754,12 +766,21 @@ pub fn clock_run_for_test(base_ns: i64) {
     RESUMED_AT_MS.store(now_ms(), Relaxed);
     PLAYING.store(true, Relaxed);
 }
-/// Stop the sink clock without a Pause verb: the position thread reports nothing from here, as a
-/// pipeline whose link died under it. The application never sent a Pause, so it still believes the
-/// clock runs and only the silence of the callbacks tells it otherwise. Test-only.
+/// Silence the host's own `clocksink` position thread (it reports at the device's cadence whenever
+/// the clock plays, on real time, whatever a test does): from here only [`tick_for_test`] makes a
+/// position callback, so a test owns every callback and its stamp. With it hushed and no
+/// `tick_for_test`, the pipeline reports nothing while the application still believes it plays,
+/// as when a link dies under it. Cleared by [`reset_native_lifecycle_for_test`]. Test-only.
 #[cfg(any(test, feature = "test-support"))]
-pub fn silence_clock_for_test() {
-    PLAYING.store(false, Relaxed);
+pub fn hush_ticker_for_test(on: bool) {
+    TICKER_HUSHED.store(on, Relaxed);
+}
+/// Make the host sink answer `BufferFull` to every AU of one lane (`es_data`: 1 video, 2 audio), as
+/// a pipeline that has stopped taking that lane does, so its AU queue is not drained. `None`
+/// restores the sink. Cleared by [`reset_native_lifecycle_for_test`]. Test-only.
+#[cfg(any(test, feature = "test-support"))]
+pub fn refuse_feed_lane_for_test(es_data: Option<c_int>) {
+    FEED_REFUSED_LANE.store(es_data.unwrap_or(i32::MIN), Relaxed);
 }
 /// The sink clock's position and whether it is running. Test-only.
 #[cfg(any(test, feature = "test-support"))]
@@ -888,6 +909,10 @@ impl Clock {
             .name("clocksink".into())
             .spawn(|| loop {
                 std::thread::sleep(std::time::Duration::from_millis(TICK_MS));
+                #[cfg(any(test, feature = "test-support"))]
+                if TICKER_HUSHED.load(Relaxed) {
+                    continue;
+                }
                 Clock::tick();
             });
         if spawned.is_err() {
@@ -1146,6 +1171,9 @@ unsafe fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_cha
         let mut feeds = FEED_LOG.lock().unwrap_or_else(|e| e.into_inner());
         if feeds.len() < FEED_LOG_ROOM {
             feeds.push((es_data, pts));
+        }
+        if FEED_REFUSED_LANE.load(Relaxed) == es_data {
+            return FEED_BUFFER_FULL;
         }
     }
     if es_data == 1 {
