@@ -1779,6 +1779,26 @@ mod tests {
         );
     }
 
+    /// Favorite libraries draws the Settings table in first run, in Settings and over the
+    /// Library: board measures, full rows and reading-ink headers (the onboarding pages follow the
+    /// Settings design). First run drew the pre-board table, and so did the Settings editor.
+    #[test]
+    fn every_mounting_draws_the_settings_table() {
+        let _g = plx_base::testlock::serial();
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        for (what, s) in [
+            ("first run", OnboardScreen::first_run(EntryId(0), browse.capture())),
+            ("settings", OnboardScreen::settings(EntryId(0), browse.capture())),
+            ("library", OnboardScreen::library(EntryId(0), browse.capture())),
+        ] {
+            assert!(s.form.table.n_rows() > 0, "{what}: the fixture puts rows in the table");
+            assert!(s.form.table.is_board(), "{what}: board measures");
+            assert!(!s.form.table.compact, "{what}: full-height rows");
+            assert_eq!(s.form.table.header_ink, theme::TEXT_READING, "{what}: reading-ink headers");
+        }
+    }
+
     /// **DOWN off the last library reaches the action pill.** Reported: "on screens containing a
     /// table plus a bottom action such as Done, pressing Down while focused on the last table row
     /// should move focus to the bottom button. Currently the button is generally reachable only
@@ -1810,26 +1830,6 @@ mod tests {
     /// fixture. Driving the shared `geometric()` function directly, over this screen's own real
     /// `groups()`, proves the exact same claim — the table and the band find each other — without
     /// a live Tick pump in the loop to fight with a fixture never built to survive one.
-    /// Favorite libraries draws the Settings table in first run, in Settings and over the
-    /// Library: board measures, full rows and reading-ink headers (the onboarding pages follow the
-    /// Settings design). First run drew the pre-board table, and so did the Settings editor.
-    #[test]
-    fn every_mounting_draws_the_settings_table() {
-        let _g = plx_base::testlock::serial();
-        let mut browse = BrowseFixture::new();
-        browse.seed_pins(&[true, true]);
-        for (what, s) in [
-            ("first run", OnboardScreen::first_run(EntryId(0), browse.capture())),
-            ("settings", OnboardScreen::settings(EntryId(0), browse.capture())),
-            ("library", OnboardScreen::library(EntryId(0), browse.capture())),
-        ] {
-            assert!(s.form.table.n_rows() > 0, "{what}: the fixture puts rows in the table");
-            assert!(s.form.table.is_board(), "{what}: board measures");
-            assert!(!s.form.table.compact, "{what}: full-height rows");
-            assert_eq!(s.form.table.header_ink, theme::TEXT_READING, "{what}: reading-ink headers");
-        }
-    }
-
     #[test]
     fn down_off_the_last_row_reaches_the_bottom_action() {
         let _g = plx_base::testlock::serial();
