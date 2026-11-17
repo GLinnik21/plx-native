@@ -59,7 +59,7 @@ use plx_ui::table_screen::{Header, TableScreen};
 use plx_ui::{consts, theme, Rect};
 
 use super::family::{form_activate, form_focus, form_right_target, InnerHost, SettingsPage, ALERT_GROUP};
-use super::plaintext_question::AlertAnswers;
+use plx_ui::decision_alert::AlertAnswers;
 use super::registry::{word, AppFx, HudCmd, ALERT, BAND};
 
 /// The install prompt's two answers as an accessibility id names them: `alert.cancel` and `alert.install`.

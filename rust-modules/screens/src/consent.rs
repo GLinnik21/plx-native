@@ -41,7 +41,7 @@ use plx_ui::widgets::CtlPop;
 use plx_ui::{theme, Rect};
 
 use super::family::{form_activate, form_focus, form_right_target, palette, InnerHost, SettingsPage, ALERT_GROUP, BAND_GROUP, TABLE_GROUP};
-use super::plaintext_question::AlertAnswers;
+use plx_ui::decision_alert::AlertAnswers;
 use super::registry::{alert_index, band_index, word, AppFx, ConsentCmd, LoopReq, ALERT};
 
 // ---- the words -------------------------------------------------------------------------------

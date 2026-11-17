@@ -1253,6 +1253,14 @@ impl PlayerScreen {
         if confirm { Self::ask(fx, PlayerReq::RepairSandbox); }
         Self::repair_focus(fx, GROUP_FAILURE);
     }
+    /// The confirmation's answers as an accessibility id names them: `repair.cancel`, and
+    /// `repair.confirm` while the alert offers two.
+    fn repair_answers(&self) -> plx_ui::decision_alert::AlertAnswers {
+        plx_ui::decision_alert::AlertAnswers::new(GROUP_REPAIR, REPAIR_CANCEL, REPAIR_CONFIRM, "cancel", "confirm")
+            .under("repair")
+            .counted(self.repair_alert.answers())
+    }
+
     fn repair_rect(&self, confirm: bool, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let (cancel, repair) = self.repair_alert.frames(measure);
         if confirm { repair } else { cancel }
@@ -2760,12 +2768,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
         use player_hud::{ELEM_CHAPTER_BASE, ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_SCRUB, ELEM_SECTION_BASE, ELEM_SECTION_END, ELEM_TAB_BASE};
         let key = *key;
         if self.repair_alert.visible() {
-            let word = match key {
-                REPAIR_CANCEL => "cancel",
-                REPAIR_CONFIRM if self.repair_alert.answers() == plx_ui::decision_alert::Answers::Two => "confirm",
-                _ => return None,
-            };
-            return Some(A11y::new(A11yPath::new().name("repair").name(word), Role::Button));
+            return self.repair_answers().a11y(key);
         }
         let chapters = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
         if key == ELEM_SCRUB {
@@ -2821,7 +2824,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
         self.groups_in(&geo, cx, &mut declared);
         let Some(len) = declared.iter().find(|spec| spec.id == g).map(|spec| spec.len) else { return };
         match g {
-            GROUP_REPAIR => out.extend([REPAIR_CANCEL, REPAIR_CONFIRM].into_iter().take(len)),
+            GROUP_REPAIR => self.repair_answers().elems(g, out),
             GROUP_SCRUB => out.push(player_hud::ELEM_SCRUB),
             GROUP_ROW => out.extend((0..len as i32).filter(|&i| self.row_enabled(i)).map(player_hud::control_elem)),
             GROUP_TABS => out.extend(

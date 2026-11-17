@@ -22,7 +22,7 @@ use plx_ui::decision_prompt::{DecisionPrompt, PromptStep};
 use plx_ui::screen::{At, Dir, Focusable, GroupSpec, Placed, Step};
 use plx_ui::a11y::{A11y, A11yPath};
 use super::super::family::ALERT_GROUP;
-use super::super::plaintext_question::AlertAnswers;
+use plx_ui::decision_alert::AlertAnswers;
 use super::super::registry::ALERT;
 
 /// The Direct Play *Forced* question's two answers as an accessibility id names them:
