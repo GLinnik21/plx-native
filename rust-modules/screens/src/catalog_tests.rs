@@ -539,3 +539,29 @@ fn a_loaded_page_lays_the_shade_over_its_art_and_a_bare_page_lays_none() {
         assert_eq!(layers(load.clone()), 0, "{load:?} draws no copy on the art, so no shade");
     }
 }
+
+/// **The accessibility ids:** a loaded record answers `catalog.primary` (the pill, with its face's
+/// words and the record's hex as its subject); a page with no record answers nothing, which is
+/// what its (absent) group says.
+#[test]
+fn the_pill_answers_catalog_primary_only_when_loaded() {
+    let _g = language_on_this_thread_for_test(Preference::En);
+    let s = page(loaded(Status::None, None), Membership::Off);
+    plx_ui::a11y::conformance::<CatHost, _>(&s, &cx(None));
+    let a = Focusable::<CatHost>::a11y(&s, &PILL_ELEM, &cx(None)).expect("a loaded page projects its pill");
+    assert_eq!(a.path.to_string(), "primary");
+    assert_eq!(a.role, plx_ui::a11y::Role::Button);
+    assert_eq!(a.label.as_deref(), Some("Add to Watchlist"));
+    assert_eq!(a.subject.as_deref(), Some("070707070707070707070707"));
+    let primary = plx_ui::a11y::A11yPath::parse_relative("primary").unwrap();
+    assert_eq!(Focusable::<CatHost>::a11y_find(&s, &primary, &cx(None)), Some(PILL_ELEM));
+    let on = page(loaded(Status::None, None), Membership::On);
+    let a = Focusable::<CatHost>::a11y(&on, &PILL_ELEM, &cx(None)).unwrap();
+    assert_eq!(a.label.as_deref(), Some("On Watchlist"));
+
+    for load in [Load::Loading, Load::NotFound, Load::Unreachable] {
+        let s = page(load, Membership::Off);
+        plx_ui::a11y::conformance::<CatHost, _>(&s, &cx(None));
+        assert!(Focusable::<CatHost>::a11y(&s, &PILL_ELEM, &cx(None)).is_none());
+    }
+}

@@ -1306,3 +1306,33 @@ fn the_header_row_is_built_once_per_key_not_once_per_question() {
     h.draw();
     assert_eq!(h.screen.probe_header_builds(), built + 1, "and the frames after it build none");
 }
+
+/// **The Sort & Filter menu's accessibility ids:** each of its ten rows is named by what it
+/// chooses (`watchlist_menu.sort_title`), not by its draw position, and the view conforms.
+#[test]
+fn the_options_menu_rows_answer_their_names() {
+    use super::cards_harness::{WatchHost, ENTRY};
+    use super::menu::WatchlistMenuScreen;
+    use super::options::OptionsRow;
+    use plx_machine::machine::EntryId;
+    use plx_ui::a11y::{conformance, A11yPath, Role};
+    use plx_ui::screen::Focusable;
+    let h = Harness::new(tiles(3));
+    let arg = crate::registry::WatchlistMenuArg {
+        host: ENTRY,
+        options: WatchlistOptionsState::default(),
+        anchor: [100.0f32, 100.0, 300.0, 60.0].map(f32::to_bits),
+    };
+    let menu = WatchlistMenuScreen::new(EntryId(ENTRY.0 + 1), arg);
+    let cx = h.cx();
+    conformance::<WatchHost, _>(&menu, &cx);
+    for (i, row) in OptionsRow::ALL.iter().enumerate() {
+        let id = A11yPath::parse_relative(row.a11y_name()).expect("a plain row name");
+        assert_eq!(Focusable::<WatchHost>::a11y_find(&menu, &id, &cx), Some(i as u32), "{}", row.a11y_name());
+        let a = Focusable::<WatchHost>::a11y(&menu, &(i as u32), &cx).expect("every row projects");
+        assert_eq!(a.role, Role::Row);
+        assert_eq!(a.label.as_deref(), Some(row.label()));
+    }
+    let sort_title = A11yPath::parse_relative("sort_title").unwrap();
+    assert_eq!(Focusable::<WatchHost>::a11y_find(&menu, &sort_title, &cx), Some(4), "Title is the fifth row");
+}
