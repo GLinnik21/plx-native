@@ -1057,7 +1057,7 @@ fn apply_paused_seek_step(ps: &mut crate::route::PlaybackSession, pa: &mut super
 /// (`readout::Presentation::nothing_in_flight`), so a seek the feed itself just re-posted in this
 /// tick counts. "Buffering…" over a player in that state is a spinner for nothing; the ladder
 /// reports `PlaybackState::Paused` (the normal paused transport) instead. A Load still opening
-/// (`Stage::Loading` -> Connecting) and an HLS rebuffer are real work and are decided before this
+/// (`Stage::Loading` -> Connecting) and a rebuffer hold are real work and are decided before this
 /// is asked.
 fn nothing_in_flight() -> bool {
     !super::claim_hold::active() && !crate::route::flight_outstanding()

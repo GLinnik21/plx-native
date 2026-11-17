@@ -540,7 +540,8 @@ the model to resume on media that did not exist.
 A direct-play (progressive) stream has no rungs and no segments, so none of the above can credit
 it, but a link slower than the file starves it the same way: once its queues are empty the picture
 plays in slow motion at the delivered rate, and when the link recovers Starfish catches up by
-dropping frames. At Quality=Original (the default) it takes the same internal hold (one Pause, the
+dropping frames. At Quality=Original (chosen explicitly, or inherited by a profile saved before Auto
+existed; a fresh install starts on Auto) it takes the same internal hold (one Pause, the
 Buffering read-out, the same `try_prime` Play) with a certificate of its own. The hold begins when
 the clock debt fires (the native position callback has fallen behind the wall by more than 100 ms,
 net of a 5 % drift allowance, counted only while the app's video queue holds under 1 MiB) or the
@@ -550,9 +551,10 @@ with when healthy. On a link that cannot carry the file at all the hold cycles f
 link stays short (it is held for `1 - delivered/required` of the time), because Original offers no
 other answer; that replaces slow motion and catch-up drops, it is not smooth 1x play. A trailer
 preview, the looped sample, a viewer Pause, a seek and a progressive re-encode under a fixed quality
-ceiling are never held. **A playback under Quality=Auto is not held at all**: Auto's Original
-supervisor (section 6) switches such a stream to HLS when its reserve runs low, and a hold standing
-in front of that exit could hold it off, so Auto keeps exactly its own exits.
+ceiling are never held. **An Auto playback that is running Original is not held**: Auto's Original
+supervisor (section 7) switches such a stream to HLS when its reserve runs low, and a hold standing
+in front of that exit could hold it off, so Auto keeps exactly its own exits (its HLS route is held
+as above).
 
 ## 6. Original is a mode, not the top HLS rung
 

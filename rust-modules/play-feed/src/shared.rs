@@ -92,8 +92,10 @@ enum ClockHold {
     Rebuffer,
     /// A PROGRESSIVE (direct play) stream ran out of media and the pump stopped the clock at
     /// `since_ms` ([`vclock_ms`]). Its own hold, not a flavour of `Rebuffer`: it owns no recovery
-    /// epoch (a progressive stream completes no HLS segment to credit), so its certificate is the
-    /// runway of media that arrives while it waits, and a seek may take the clock from it at once.
+    /// epoch (a progressive stream completes no HLS segment to credit), so its certificate is not
+    /// a runway: it releases when a video or audio queue is at its byte cap or the demuxer is done
+    /// (media that merely arrives while it waits does not release it), and a seek may take the
+    /// clock from it at once.
     ///
     /// Every site that decides what a `Rebuffer` hold is must decide this one too, and the
     /// compiler cannot make it: most are `matches!` / `==`. The decisions are: it clears the
@@ -1443,7 +1445,8 @@ impl Shared {
     /// would be fed through the preroll's open gate and never be allowed to present. When the pump
     /// opens a preroll for such a Pause it hands the hold back to the seek prime exactly as
     /// [`Self::prepare_seek_pause`] does for a seek dispatched from a user hold. `false` when the
-    /// clock is not held (transitioning, running, rebuffering): the caller tries again next tick.
+    /// clock is not held (transitioning, running) or is held by an HLS rebuffer (it owns a recovery
+    /// epoch; a progressive stall hold is handed over): the caller tries again next tick.
     pub fn hand_hold_to_seek_prime(&self) -> bool {
         let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
         // An HLS `Rebuffer` hold is not handed over (it owns a recovery epoch): the caller waits.

@@ -1333,8 +1333,8 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
     // rebuffer or ResumePrime) reads the full pipeline high-water. Initial Load/seek remains
     // accepted-only because it is a fresh clock boundary whose old queued tail is not proof about
     // the newly loaded/landed timeline.
-    // A progressive stall hold measures its own runway below (the queues, not the demux-published
-    // tails), so it does not take the HLS pipeline high-water.
+    // A progressive stall hold reads the queues below (a full one or the end of the stream, not the
+    // demux-published tails), so it does not take the HLS pipeline high-water.
     let queued_runway = matches!(prime_kind, HlsPrimeKind::Rebuffer | HlsPrimeKind::Resume);
     let shift = shared.pts_shift.load(Ordering::Relaxed);
     let queued_video = shared.hls_video_tail_ns.load(Ordering::Acquire);
@@ -1399,7 +1399,7 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
         // close its own pause-local recovery epoch above.
         HlsPrimeKind::Resume => true,
         // Nothing to credit: a progressive stream completes no segment. Its certificate is
-        // `progressive_release` below, measured from the presented position the hold began at.
+        // `progressive_release` below: a queue at its byte cap, or the end of the stream.
         HlsPrimeKind::ProgressiveRebuffer { .. } => true,
     };
     // A PROGRESSIVE stall hold (the `ProgressiveRebuffer` hold `maybe_begin_rebuffer` takes on a

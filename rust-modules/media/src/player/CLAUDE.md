@@ -448,9 +448,11 @@ something.
   remnant it will never spend (`native_clock_stopped`, 1005 ms of silence over `progressive_reserve_ns`,
   the FURTHER lane) is the dead-link arm: the callbacks stop when the clock stops, so the debt step
   sees nothing there. There is no reserve floor, no arming latch and no headroom grant (the AU queue
-  sizes are unchanged). The detector is disarmed (`ProgressiveStall`) while a prime owns the clock,
-  during a seek or a Dolby Vision landing, before the first picture, under the viewer's Pause, at a
-  non-1x rate and once the demuxer is done. It releases on the first of the end of the stream
+  sizes are unchanged). Both arms are disarmed (`ProgressiveStall`) while a prime owns the clock,
+  during a seek or a Dolby Vision landing, before the first picture, under the viewer's Pause and
+  once the demuxer is done; a non-1x rate disarms only the clock-debt arm (the position then
+  advances at the rate, not at the wall), because a stopped clock is a stopped clock at any rate.
+  It releases on the first of the end of the stream
   (`reason=eof`; `pushEOS` follows once the video lane drains) or a video OR audio queue at its byte
   cap (`reason=full`: the capped queue is the reserve the stream played with when healthy, and the
   demuxer is parked on it). The hold line is `feed: progressive rebuffer hold n= arm= S= debt= ...`

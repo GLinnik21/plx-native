@@ -69,8 +69,8 @@ pub enum ClockDebt {
     Ineligible,
     /// Watching: the previous sample, the CUSUM `S` and the debt since the last reset, microseconds.
     Watching { wall_ms: u32, pos_ns: i64, s_us: i64, debt_since_reset_us: i64 },
-    /// `S` reached the threshold. Latched until the step resets (an ineligible sample, a gap, or a
-    /// queue over the gate): the runner begins its hold from this state.
+    /// `S` reached the threshold. Latched until the step resets (an ineligible sample or a queue
+    /// over the gate): the runner begins its hold from this state.
     Fired { s_us: i64, debt_since_reset_us: i64 },
 }
 
