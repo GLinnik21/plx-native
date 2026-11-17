@@ -869,33 +869,34 @@ impl<H: LibraryLike> Focusable<H> for LibraryMenu {
 /// identities of those lists carry a server's text (a sort key, a genre id, a library's address), which
 /// an id never holds, so their place is their name. An identity this does not know is `row.<n>`.
 fn row_path(form: &MenuTable, id: &String) -> A11yPath {
-    let path = A11yPath::new();
-    let list = match id.split_once(':') {
-        None => {
-            return path.name(match id.as_str() {
-                "recheck" => "recheck",
-                "favourites" => "favourites",
-                "unwatched" => "unwatched",
-                "genre" => "genre",
-                _ => return path.name("row").index(form.index_of(id).unwrap_or(0)),
-            })
-        }
-        Some(("genre", "all")) => return path.name("genre").name("all"),
-        Some((prefix, _)) => prefix,
+    let here = form.index_of(id).unwrap_or(0);
+    let unknown = || A11yPath::new().name("row").index(here);
+    let word = |word: &'static str| A11yPath::new().name(word);
+    let Some((list, rest)) = id.split_once(':') else {
+        return match id.as_str() {
+            "recheck" => word("recheck"),
+            "favourites" => word("favourites"),
+            "unwatched" => word("unwatched"),
+            "genre" => word("genre"),
+            _ => unknown(),
+        };
     };
-    let (word, ours) = match list {
+    if (list, rest) == ("genre", "all") {
+        return word("genre").name("all");
+    }
+    let (name, ours) = match list {
         "section" => ("library", "section:"),
         "sort" => ("sort", "sort:"),
         "type" => ("type", "type:"),
         "genre" => ("genre", "genre:"),
-        _ => return path.name("row").index(form.index_of(id).unwrap_or(0)),
+        _ => return unknown(),
     };
     // the rows of this list above this one (the Genre page's *All genres* row is named, not counted)
-    let before = (0..form.index_of(id).unwrap_or(0))
+    let before = (0..here)
         .filter_map(|i| form.id_at(i))
         .filter(|other| other.starts_with(ours) && other.as_str() != "genre:all")
         .count();
-    path.name(word).index(before)
+    word(name).index(before)
 }
 impl<H: LibraryLike> Screen<H> for LibraryMenu {
     fn pointer_held(&self) -> bool {
