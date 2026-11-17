@@ -466,7 +466,10 @@ presentation in a design pass.
    opener, the profile chip included, is the lift pass's, and the morph starts and ends on the opener's LIVE drawn rect (`Screen::opener_rect` -> `Popover::track_opener`, so the chip follows the bar's tuck). The morph is not
    faded by the container's appear: the surface begins and ends as the opener. A held surface is ticked with no time, so a morph starts on the first
    frame anyone sees. The item hold menu keeps lift+appear. A new morph constant is named in
-   `popover_morph.rs`.
+   `popover_morph.rs`. A menu whose opener is a flat focused pill names that fill
+   (`Popover::opener_fill(page_header::OPENER_FILL)`, the colour `PageHeader::draw_opener` paints) so
+   the close's re-forming blob whitens toward it and the hand-back to the real pill does not pop; an
+   opener that is itself glass (the profile chip) names none.
 
 2. **Clickable text marks are ALL CAPS.** `MORE` and every other pressable text mark is
    capitalised, overriding the design system's sentence-case rule for app-written text: the mark is

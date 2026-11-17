@@ -55,12 +55,19 @@
 //! 3. (to about 235 ms) the fold ([`K_FOLD`], released once A is within [`FOLD_AT`] of the drain):
 //!    B grows to the opener's full rect while A shrinks to nothing toward its own top-centre,
 //!    draining UP into B through the smooth-minimum neck, and the opener's own face fades back in
-//!    over the last of it ([`OPENER_BACK_FROM`]). When A is gone ([`A_GONE_AT`]) the frame IS the
-//!    closed frame, the opener at rest, exactly.
+//!    over the last of it ([`OPENER_BACK_FROM`]). **B whitens as it re-forms**: its face blends
+//!    from the glass toward the opener's FOCUSED fill ([`Merge::tint`], [`blob_tint`]: 0 when it
+//!    is born, [`REFORM_TINT`] when the slab arrives, all of it when A is gone), so the pill the host's lift
+//!    paints when A is gone ([`A_GONE_AT`]) is the colour B already wore and nothing pops; the
+//!    opener's face (its label) never leads that tint ([`Frame::opener_alpha`] is at most the
+//!    tint on every frame). When A is gone the frame IS the closed frame, the opener at rest,
+//!    exactly; it draws no glass.
 //!
 //! The open is NOT the close either: the opener's rect grows into the panel's (the panel now
 //! COVERS its opener, `popover::cover_opener`), height leading, clear then frosted, the opener's
-//! face consumed.
+//! face consumed. Its merge shape is never whitened: frame 0 draws no glass (the face alone), and
+//! the face's fall and the glass's rise run on one progress, a cross-fade with no frame at which
+//! white is swapped for dark.
 //!
 //! **No measured opener, no morph.** [`Frame`] with `from == None` is the fade+scale FALLBACK:
 //! the panel scales about its centre from [`FALLBACK_SCALE_FROM`] to 1 and its glass fades in on
@@ -113,6 +120,10 @@ pub const REFORM_FROM: f32 = 0.7;
 /// slab, and grows UP from it ([`Frame::merge`]), so the gap between B's bottom and the slab's top
 /// never exceeds [`DRAIN_GAP`], inside the neck's reach (half of [`MERGE_K`]).
 pub const BLOB_BORN: f32 = 0.3;
+/// The share of the opener's focused fill B wears once the slab has arrived at the drain, before
+/// the fold begins ([`blob_tint`]): B is part-whitened over the re-form (it was dark glass on every
+/// frame of it) and takes the rest as A drains into it.
+pub const REFORM_TINT: f32 = 0.4;
 /// The fold at which the opener's own face starts to fade back in ([`Frame::opener_alpha`]): the
 /// face returns over the last of the drain, on the blob.
 pub const OPENER_BACK_FROM: f32 = 0.55;
@@ -189,7 +200,8 @@ pub struct Frame {
     /// `1 - smoothstep(0, MERGE_END_AT, progress)`. On a close: the opener's re-formed blob B, the
     /// same rect scaled about the centre of its BOTTOM edge (the edge nearest the slab, so it is
     /// joined to the slab from its first frame) from [`BLOB_BORN`] to [`REFORM_FROM`] as the slab
-    /// arrives and by the fold up to 1 as it drains in.
+    /// arrives and by the fold up to 1 as it drains in, wearing more of the opener's fill as it
+    /// grows ([`Merge::tint`]).
     pub merge: Option<Merge>,
     /// How CLEAR the glass is, 0 = the frosted material the settled panel wears, 1 = clear glass
     /// (the sharp page refracted through the whole face). A close is clear from its first frames
@@ -200,9 +212,19 @@ pub struct Frame {
 impl Frame {
     /// What the glass wears at this instant: the join and the clarity, as the gfx layer draws them
     /// (`Popover::ground` hands it to `popover_glass::draw_shadowed`).
-    pub fn glass_morph(&self) -> plx_gfx::gfx::GlassMorph {
+    ///
+    /// `opener_fill` is the colour the opener's own focused face is drawn with (the caller knows
+    /// its opener; [`crate::popover::Popover::opener_fill`]): the join whitens toward it by
+    /// [`Merge::tint`]. `None` (an opener that is itself glass, like the profile chip) leaves the
+    /// join's face as the glass's own.
+    pub fn glass_morph(&self, opener_fill: Option<[f32; 4]>) -> plx_gfx::gfx::GlassMorph {
         plx_gfx::gfx::GlassMorph {
-            merge: self.merge.map(|m| plx_gfx::gfx::GlassMerge { rect: m.rect, radius: m.radius, k: m.k }),
+            merge: self.merge.map(|m| plx_gfx::gfx::GlassMerge {
+                rect: m.rect,
+                radius: m.radius,
+                k: m.k,
+                tint: opener_fill.map_or([0.0; 4], |c| [c[0], c[1], c[2], m.tint * c[3]]),
+            }),
             clear: self.clear,
         }
     }
@@ -217,6 +239,11 @@ pub struct Merge {
     pub radius: f32,
     /// The smooth-minimum reach in px ([`MERGE_K`]).
     pub k: f32,
+    /// How much of the OPENER'S FOCUSED FILL the shape's face wears, 0 = the glass's own face, 1 =
+    /// the flat fill (the colour is the caller's: [`Frame::glass_morph`]). 0 on an open. On a close
+    /// it is [`blob_tint`]: 0 when B is born, rising over the re-form and the fold, so it arrives
+    /// whole on the pill the host's lift then paints.
+    pub tint: f32,
 }
 
 /// `x` mapped from `[a, b]` to `[0, 1]`, clamped.
@@ -249,6 +276,22 @@ pub fn merge_scale_at(t: f32) -> f32 {
 /// FROST_TO, t)`.
 pub fn clear_at(t: f32) -> f32 {
     1.0 - smooth(t, FROST_FROM, FROST_TO)
+}
+
+/// **How much of the opener's focused fill the re-formed blob B wears** on a close, from the
+/// re-form's `reform` (0 when B is born, 1 once the slab has arrived at the drain, the open's merge
+/// curve [`merge_scale_at`]) and the `fold` (0 = the slab whole under the opener, 1 = drained in):
+/// [`REFORM_TINT`] of it over the re-form, then the rest over the fold, the whole of it exactly when
+/// A is gone ([`A_GONE_AT`], the frame the close hands back). B is born as glass, whitens as it
+/// re-forms and arrives whole, so the pill the host's lift paints in its place is the colour B
+/// already wears (owner film, 2026-11-17: B was dark glass on every frame and popped white on the
+/// hand-back). It rides the same two clocks as B's size, which are eased already (a smoothstep and
+/// a critically damped spring), so it needs no curve of its own, and the re-form's whitening is
+/// kept to a share so the fast arrival of the slab (four frames) cannot make it step by more than
+/// about a fifth of the range.
+pub fn blob_tint(reform: f32, fold: f32) -> f32 {
+    let gone = (fold / (1.0 - A_GONE_AT)).clamp(0.0, 1.0);
+    REFORM_TINT * reform.clamp(0.0, 1.0) * (1.0 - gone) + gone
 }
 
 /// **The drain rect** a close's slab travels to ([`Morph::frame`]): centred on the `opener`
@@ -458,7 +501,9 @@ impl Morph {
             let (w, h) = (f.w * sb, f.h * sb);
             // the centre-anchored top on an open, the bottom-anchored top on a close (bit-exact at c = 0)
             let top = lerp(f.cy() - h * 0.5, f.y + f.h - h, c);
-            Merge { rect: Rect::new(f.cx() - w * 0.5, top, w, h), radius: pill_radius * sb, k: MERGE_K }
+            // whitened only on a close: an open's shape sits INSIDE the growing glass and is gone by
+            // `MERGE_END_AT`, and its face fades as the opener's does (a cross-fade, no hand-over)
+            Merge { rect: Rect::new(f.cx() - w * 0.5, top, w, h), radius: pill_radius * sb, k: MERGE_K, tint: blob_tint(reform, fold) * c }
         });
         Frame {
             rect: shrink_to_top_centre(travelled, sa),
@@ -931,6 +976,88 @@ mod tests {
                 first.rect.w, first.rect.h
             );
         }
+    }
+
+    /// The B tint of a frame: how much of the opener's focused fill the blob wears (0 with no blob).
+    fn tint_of(f: &Frame) -> f32 {
+        f.merge.map_or(0.0, |m| m.tint)
+    }
+
+    /// CLOSE, the colour of B (owner film, 2026-11-17: B was dark glass on every frame of its
+    /// re-forming and popped to the white focused pill on the hand-back frame): B's face blends
+    /// from the glass toward the opener's focused fill, 0 when it is born, rising over the re-form
+    /// and the fold, and the last frame that draws glass wears all of it (the hand-back frame
+    /// itself, the closed one, draws NO glass: the host's lift paints the pill). No frame steps by
+    /// more than a third of the range at 60 fps, at every opener.
+    #[test]
+    fn a_close_whitens_the_blob_toward_the_openers_fill_without_a_step() {
+        let mut worst = 0.0_f32;
+        for pill in OPENERS {
+            let close = close_frames_for(pill);
+            let (hand_back, drawn) = close.split_last().expect("frames");
+            assert_eq!(hand_back.ground_alpha, 0.0, "the closed frame draws no glass, so its tint is not a pixel: {hand_back:?}");
+            let born = drawn.iter().position(|f| f.merge.is_some_and(|b| b.rect.w > 0.0)).expect("B is born");
+            assert!(drawn[..born].iter().all(|f| tint_of(f) == 0.0), "no blob, no tint");
+            let tints: Vec<f32> = drawn[born..].iter().map(tint_of).collect();
+            assert!(tints[0] < 0.05, "opener {pill:?}: B is born as glass, not as the pill ({})", tints[0]);
+            for w in tints.windows(2) {
+                assert!(w[1] >= w[0] - 1e-6, "opener {pill:?}: the tint only rises: {tints:?}");
+                worst = worst.max(w[1] - w[0]);
+            }
+            let last = *tints.last().unwrap();
+            assert!(last >= 0.97, "opener {pill:?}: the last glass frame wears the opener's fill ({last}): {tints:?}");
+            assert!(tints.len() >= 6, "opener {pill:?}: it takes several frames, not a switch: {tints:?}");
+        }
+        assert!(worst <= 1.0 / 3.0, "no per-frame step past a third of the range at 60 fps ({worst})");
+    }
+
+    /// CLOSE: the opener's own face (the host's lift, [`Frame::opener_alpha`]) never leads the
+    /// tint: a face at some alpha over a dark blob is a grey pill, over a white one it only brings
+    /// its label in. Both are whole on the closed frame.
+    #[test]
+    fn the_openers_face_never_outruns_the_blobs_tint_on_a_close() {
+        for pill in OPENERS {
+            let close = close_frames_for(pill);
+            let (hand_back, drawn) = close.split_last().expect("frames");
+            for (n, f) in drawn.iter().enumerate() {
+                assert!(
+                    f.opener_alpha <= tint_of(f) + 1e-3,
+                    "opener {pill:?}, close frame {n}: a grey half-alpha pill over dark glass (face {} over tint {})",
+                    f.opener_alpha, tint_of(f)
+                );
+            }
+            assert_eq!(hand_back.opener_alpha, 1.0, "the face is whole when the glass is gone");
+        }
+    }
+
+    /// OPEN: the opener's face and the glass CROSS-FADE on one progress (frame 0 draws no glass
+    /// at all; from then the face falls as the glass rises) and the merge shape wears no tint: the
+    /// open has no hand-over frame at which white is replaced by dark, so the merge is left as it was.
+    #[test]
+    fn the_open_cross_fades_the_face_into_the_glass_and_wears_no_tint() {
+        let (open, _) = open_then_close(Some(PILL));
+        assert_eq!((open[0].ground_alpha, open[0].opener_alpha), (0.0, 1.0), "frame 0 draws no glass: the face alone");
+        let pairs: Vec<(f32, f32)> = open.iter().take(4).map(|f| (f.opener_alpha, f.ground_alpha)).collect();
+        assert!(
+            pairs.iter().any(|&(face, glass)| face > 0.0 && face < 1.0 && glass > 0.0),
+            "the face and the glass are both there on an in-between frame: {pairs:?}"
+        );
+        assert!(open.iter().all(|f| tint_of(f) == 0.0), "an open's merge shape is never whitened");
+    }
+
+    /// The fill the caller names reaches the glass as a colour with the frame's tint as its alpha:
+    /// the colour is the caller's (never a literal here), the alpha is `Merge::tint`; with no fill
+    /// the join is not whitened at all.
+    #[test]
+    fn the_glass_morph_carries_the_callers_fill_and_the_frames_tint() {
+        let close = close_frames_for(PILL);
+        let f = close[close.len() - 2];
+        let fill = crate::theme::ACCENT;
+        let tint = f.glass_morph(Some(fill)).merge.expect("B joins").tint;
+        assert_eq!((tint[0], tint[1], tint[2]), (fill[0], fill[1], fill[2]), "the caller's colour");
+        assert!((tint[3] - tint_of(&f) * fill[3]).abs() < 1e-6 && tint[3] > 0.9, "the frame's amount: {tint:?}");
+        assert_eq!(f.glass_morph(None).merge.expect("B joins").tint[3], 0.0, "no fill, no whitening");
+        assert_eq!(Morph::new().frame(None, PANEL, RAD).glass_morph(Some(fill)), plx_gfx::gfx::GlassMorph::NONE);
     }
 
     /// OPEN: now that the panel covers its opener, the first frame IS the opener's live rect (and its

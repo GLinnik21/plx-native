@@ -52,6 +52,12 @@ use super::widgets::{focus_pill_popped, paint_inked, CtlPop, PillInk, SelMark, T
 use super::xfade::Xfade;
 use super::{icons::{self, Icon}, theme, Painter, Rect, Spring};
 
+/// **The flat fill of a header control that is focused** — the pill [`PageHeader::draw_opener`]
+/// paints under the control a menu opened from (and the focus capsule the row draws is the same
+/// accent). The menus those controls open pass it to `Popover::opener_fill` so the close's
+/// re-forming blob whitens toward exactly this colour, and the pill the lift then paints is the
+/// one the blob already wears.
+pub const OPENER_FILL: [f32; 4] = crate::ACCENT;
 /// Left text edge of the first library name.
 pub const TEXT_X0: f32 = 96.0;
 /// Right text edge of the last right-cluster item.
@@ -506,7 +512,7 @@ impl PageHeader {
         let face = self.face_in(r, swap);
         let lead = face.fade.map_or(0.0, |fade| fade.lead);
         let pill = focus_pill_popped(Rect::new(r.plate.x + lead, r.plate.y, r.plate.w - lead, r.plate.h), pop);
-        face.fade.map_or(p, |fade| p.alpha(fade.face)).rrect(pill, pill.h * 0.5, pill.h * 0.5, crate::ACCENT);
+        face.fade.map_or(p, |fade| p.alpha(fade.face)).rrect(pill, pill.h * 0.5, pill.h * 0.5, OPENER_FILL);
         self.draw_face_at(p, r.text, &face, (0.0, 0.0), (1.0, 0.0));
     }
 

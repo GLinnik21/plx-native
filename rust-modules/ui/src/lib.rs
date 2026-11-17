@@ -2044,12 +2044,15 @@ impl Painter {
             let j = morph.merge.map_or([0.0; 4], |j| [j.rect.x, j.rect.y, j.rect.w, j.rect.h]);
             j.record(data);
             [morph.merge.map_or(0.0, |j| j.radius), morph.merge.map_or(0.0, |j| j.k), morph.clear, 0.0].record(data);
+            // the join's colour and amount: an amount, not an opacity, so it is recorded as it is and
+            // not through the painter's cascade (a different tint is a different draw)
+            morph.merge.map_or([0.0; 4], |j| j.tint).record(data);
         }) { return ground != 0; }
         if self.records() { return false; }
         let t = self.c(tint);
         let m = self.place(r);
         let morph = plx_gfx::gfx::GlassMorph {
-            merge: morph.merge.map(|j| plx_gfx::gfx::GlassMerge { rect: self.place(j.rect), radius: self.px(j.radius), k: self.px(j.k) }),
+            merge: morph.merge.map(|j| plx_gfx::gfx::GlassMerge { rect: self.place(j.rect), radius: self.px(j.radius), k: self.px(j.k), tint: j.tint }),
             ..morph
         };
         plx_gfx::gfx::draw_glass_frozen(m.x, m.y, m.w, m.h, self.px(rad), ground, sharp, dim, t.as_ptr(), rim, face, morph)

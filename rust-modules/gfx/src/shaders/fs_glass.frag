@@ -194,10 +194,22 @@ uniform vec4 u_rimlit;       // colour + weight of the edge facing the light (al
 // `u_mrg_rk.y = 0` is NO join, and then `u_boff` is 0 and this shader is the plain one, bit for bit.
 // `u_clear` 0 is the frosted material (the scrim and the interior's single fetch, untouched);
 // above 0 the sharp source shows through the whole face and the scrim fades with it. Every draw
-// through this program sets all four (they are the program's state, not the draw's).
+// through this program sets all five (they are the program's state, not the draw's).
+//
+// `u_mrg_tint` is the COLOUR THE JOINED SHAPE WEARS: rgb is a colour, alpha is how much of it (0
+// disables it: the join's face is the glass's own, bit for bit). The weight per fragment is the
+// smooth minimum's own blend factor for the joined shape, `1 - hb`, so a close's re-forming opener
+// (the joined shape) can whiten toward the opener's focused fill while the slab it drains from
+// stays glass, and the neck shades from one face to the other. It is mixed into the FINISHED straight
+// colour (after the dim, the scrim, the lit edge and the rim) and before the dither, on both exits,
+// so at amount 1 the joined shape is that flat colour, which is what the host's lift then paints
+// there. `1 - hb` is the joined shape's share only where it stands OUTSIDE the panel (a close);
+// inside the panel (an open's shape, consumed by the growing glass) the factor is at most a half
+// and the pre-test below never evaluates the join, so an open is never tinted (`Merge::tint`).
 uniform highp vec2 u_boff;
 uniform highp vec4 u_mrg;
 uniform highp vec2 u_mrg_rk;
+uniform vec4 u_mrg_tint;
 uniform float u_clear;
 
 // The composite-time modal dim over `c`, sampled at snapshot UV `uv` (see `u_dim`); `g` is the
@@ -301,6 +313,7 @@ void main(){
     // the edge and `rimShape` below is zero this far in, which is what makes skipping it exact.
     vec4 fsc = mix(u_scrim_top, u_scrim_bot, clamp(pb.y / u_ch.y * 0.5 + 0.5, 0.0, 1.0));
     flat_rgb = mix(flat_rgb, fsc.rgb, fsc.a * (1.0 - u_clear));
+    if (u_mrg_tint.a > 0.0) flat_rgb = mix(flat_rgb, u_mrg_tint.rgb, u_mrg_tint.a * (1.0 - hb));
     gl_FragColor = vec4(plx_dither(flat_rgb), u_tint.a);
     return;
   }
@@ -376,6 +389,8 @@ void main(){
   float litw = clamp(rimShape * u_rimlit.a * max(-nrm.y, 0.0), 0.0, 1.0);
   rgb = mix(rgb, u_rimlit.rgb, litw);
   rimw = max(rimw, litw);
+  // The joined shape's colour, over everything above and under the coverage (see `u_mrg_tint`).
+  if (u_mrg_tint.a > 0.0) rgb = mix(rgb, u_mrg_tint.rgb, u_mrg_tint.a * (1.0 - hb));
   // Coverage in the alpha only — see the note in fs_src.frag. The interior early-out above already
   // emits `flat_rgb` unpremultiplied, so this is also what makes the two exits of this shader agree:
   // they disagreed by a factor of `cov` for every fragment in the bevel band.

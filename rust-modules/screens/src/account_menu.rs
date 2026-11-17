@@ -279,6 +279,8 @@ impl AccountMenuScreen {
             built: false,
             session_watch: Default::default(),
             switch_refused: false,
+            // no `opener_fill`: the profile chip is itself a glass capsule (`widgets::glass_capsule`
+            // at every focus), with no flat focused fill for the close's blob to whiten toward
             popover: Popover::new().morphing(),
         }
     }

@@ -569,6 +569,9 @@ pub struct Popover {
     /// The opener's rect the morph grows from ([`open_from`](Self::open_from)); `None` = the
     /// fade+scale fallback.
     from: Option<Rect>,
+    /// The colour the opener's own focused face is drawn with, when it has a flat one
+    /// ([`opener_fill`](Self::opener_fill)); a close's re-forming blob whitens toward it.
+    opener_fill: Option<[f32; 4]>,
 }
 impl Popover {
     pub const fn new() -> Self {
@@ -576,6 +579,7 @@ impl Popover {
             style: OpenStyle::Appear,
             morph: crate::popover_morph::Morph::new(),
             from: None,
+            opener_fill: None,
             open: false,
             closing: false,
             appear: Spring::at(0.0),
@@ -602,6 +606,17 @@ impl Popover {
     /// appear spring, and every popover that does not call this is unchanged.
     pub const fn morphing(mut self) -> Self {
         self.style = OpenStyle::Morph;
+        self
+    }
+    /// **The flat colour this MORPHING popover's opener wears when it is focused**, so the close's
+    /// re-forming blob can whiten toward it ([`Frame::glass_morph`](crate::popover_morph::Frame::glass_morph),
+    /// [`Merge::tint`](crate::popover_morph::Merge::tint)) and the hand-back to the opener's real
+    /// face has no pop. The caller names it because it is the one that knows its opener: a header
+    /// pill passes [`page_header::OPENER_FILL`](crate::page_header::OPENER_FILL), the very constant
+    /// the lift paints the pill with. An opener with no flat fill of its own (the profile chip is a
+    /// glass capsule) passes nothing, and the blob stays glass.
+    pub const fn opener_fill(mut self, fill: [f32; 4]) -> Self {
+        self.opener_fill = Some(fill);
         self
     }
     /// This popover's open style.
@@ -1004,7 +1019,7 @@ impl Popover {
         // over the first 18%) rather than an opaque slab. A close's slab is the droplet's, whole
         // glass until it is drained (`popover_morph`).
         let (alpha, shadow) = if self.from.is_some() { (f.ground_alpha, f.ground_alpha) } else { (f.ground_alpha, 1.0) };
-        Some(MorphGround { rect: f.rect, radius: f.radius, alpha, shadow, morph: f.glass_morph() })
+        Some(MorphGround { rect: f.rect, radius: f.radius, alpha, shadow, morph: f.glass_morph(self.opener_fill) })
     }
 
     /// The boundary between this popover's GROUND and its FOREGROUND, reported to [`host`].

@@ -5145,12 +5145,14 @@ static mut GL_SHARP_RECT: c_int = 0;
 static mut GL_SHARP_PX: c_int = 0;
 static mut GL_SHARPW: c_int = 0;
 static mut GL_RIMCLEAR: c_int = 0;
-/// `u_boff`, `u_mrg`, `u_mrg_rk`, `u_clear`: a morphing menu glass's join and clarity
-/// ([`GlassMorph`]). Uniforms are per-program state, so EVERY draw of `GPROG` sets them: the
-/// ones at their off values (no offset, `k` 0, clear 0) are today's glass.
+/// `u_boff`, `u_mrg`, `u_mrg_rk`, `u_mrg_tint`, `u_clear`: a morphing menu glass's join, the colour
+/// the joined shape wears and its clarity ([`GlassMorph`]). Uniforms are per-program state, so EVERY
+/// draw of `GPROG` sets them: the ones at their off values (no offset, `k` 0, tint amount 0, clear 0)
+/// are today's glass.
 static mut GL_BOFF: c_int = 0;
 static mut GL_MRG: c_int = 0;
 static mut GL_MRG_RK: c_int = 0;
+static mut GL_MRG_TINT: c_int = 0;
 static mut GL_CLEAR: c_int = 0;
 static mut GL_DEEP: c_int = 0;
 static mut GL_SOURCE_ALPHA: c_int = 0;
@@ -5497,6 +5499,7 @@ fn blur_lazy_init() -> bool {
         GL_BOFF = glGetUniformLocation(GPROG, c"u_boff".as_ptr());
         GL_MRG = glGetUniformLocation(GPROG, c"u_mrg".as_ptr());
         GL_MRG_RK = glGetUniformLocation(GPROG, c"u_mrg_rk".as_ptr());
+        GL_MRG_TINT = glGetUniformLocation(GPROG, c"u_mrg_tint".as_ptr());
         GL_CLEAR = glGetUniformLocation(GPROG, c"u_clear".as_ptr());
         GL_DEEP = glGetUniformLocation(GPROG, c"u_deep".as_ptr());
         GL_SOURCE_ALPHA = glGetUniformLocation(GPROG, c"u_source_alpha".as_ptr());
@@ -7295,6 +7298,12 @@ pub struct GlassMerge {
     pub rect: Rect,
     pub radius: f32,
     pub k: f32,
+    /// The colour the joined shape's face blends toward, straight RGB, and HOW MUCH of it in the
+    /// alpha (0 = the glass's own face, the join as it always was; 1 = this flat colour). The
+    /// shader weighs it per pixel by how much of the pixel is the joined shape rather than the
+    /// panel (the smooth minimum's own blend factor, `1 - hb`), so the neck shades from one face
+    /// into the other. It is an amount, not an opacity: the painter's alpha does not scale it.
+    pub tint: [f32; 4],
 }
 
 /// **What a menu glass does while its morph runs** (`ui::popover_morph::Frame`): optionally JOINED
@@ -7502,6 +7511,7 @@ pub fn draw_blur_backdrop(
         // frozen menu's last draw (the uniforms are the program's) cannot reach this surface.
         glUniform2f(GL_BOFF, 0.0, 0.0);
         glUniform2f(GL_MRG_RK, 0.0, 0.0);
+        glUniform4f(GL_MRG_TINT, 0.0, 0.0, 0.0, 0.0);
         glUniform1f(GL_CLEAR, 0.0);
         // A BLUR is the slowest field the app produces, so the policy is the area test, per draw
         // — moving or not: a panel's glass is a fraction of the screen and the tile is one fetch,
@@ -7771,17 +7781,20 @@ pub fn draw_glass_frozen(
         glUniform2f(GL_CH, w * 0.5, h * 0.5);
         // The join and the clarity, set on EVERY draw (the program's state): the panel's centre in
         // the quad's own frame, the joined shape's centre, half-size, radius and reach (`k` 0 = no
-        // join), and the clarity, which needs a sharp source to show.
+        // join), the colour the joined shape wears (amount 0 = none), and the clarity, which needs
+        // a sharp source to show.
         let (qcx, qcy) = (q.x + q.w * 0.5, q.y + q.h * 0.5);
         glUniform2f(GL_BOFF, x + w * 0.5 - qcx, y + h * 0.5 - qcy);
         match merge {
             Some(m) => {
                 glUniform4f(GL_MRG, m.rect.x + m.rect.w * 0.5 - qcx, m.rect.y + m.rect.h * 0.5 - qcy, m.rect.w * 0.5, m.rect.h * 0.5);
                 glUniform2f(GL_MRG_RK, m.radius, m.k);
+                glUniform4f(GL_MRG_TINT, m.tint[0], m.tint[1], m.tint[2], m.tint[3].clamp(0.0, 1.0));
             }
             None => {
                 glUniform4f(GL_MRG, 0.0, 0.0, 0.0, 0.0);
                 glUniform2f(GL_MRG_RK, 0.0, 0.0);
+                glUniform4f(GL_MRG_TINT, 0.0, 0.0, 0.0, 0.0);
             }
         }
         glUniform1f(GL_CLEAR, if sharp != 0 { morph.clear.clamp(0.0, 1.0) } else { 0.0 });

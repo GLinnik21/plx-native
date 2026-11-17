@@ -487,7 +487,8 @@ impl LibraryMenu {
             selected_library: None,
             pages: PageStack::new(),
             motion: PanelMotion::new().spring_all_edges(),
-            popover: Popover::new().morphing(),
+            // a header pill opens it: the close's blob whitens toward the pill's own focused fill
+            popover: Popover::new().morphing().opener_fill(plx_ui::page_header::OPENER_FILL),
             #[cfg(test)] draft_rebuilds: 0,
         }
     }

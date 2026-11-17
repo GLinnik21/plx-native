@@ -323,6 +323,59 @@ fn the_glass_leaves_every_header_opener_as_a_ramp_and_drains_back_on_close() {
     }
 }
 
+/// **The opener fill a caller names reaches the glass the close draws**: the last frame of a
+/// header menu's close that draws glass wears the opener's focused fill (`Popover::opener_fill`,
+/// the colour [`crate::page_header::OPENER_FILL`] the lift paints the pill with) as the join's
+/// tint, the glass it DECLARES says so (a different draw from the same frame with no fill), and a
+/// popover that names none (the profile chip's menu) joins the glass as it always did.
+#[test]
+fn the_close_whitens_the_blob_toward_the_fill_its_caller_names() {
+    use crate::popover_glass::{face_at, tests::{declared_glass, expected_morphing, latched, unlatch}};
+    let _g = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
+    let tex = 9_752;
+    let field = latched(tex);
+    let sharp = page_tex().unwrap_or(0);
+    let (pill, panel) = (crate::Rect::new(1589.0, 146.0, 204.0, 60.0), crate::Rect::new(1380.0, 146.0, 316.0, 400.0));
+    let fill = crate::page_header::OPENER_FILL;
+    let root = crate::Painter::root();
+    // the last close frame that draws glass, as declared and as the morph says it is
+    let last_glass = |fill: Option<[f32; 4]>| {
+        let mut pop = crate::popover::Popover::new().morphing();
+        if let Some(c) = fill {
+            pop = pop.opener_fill(c);
+        }
+        pop.open_from(Some(pill));
+        for _ in 0..120 {
+            pop.update(1.0 / 60.0);
+        }
+        pop.dismiss();
+        let mut last = None;
+        for _ in 0..240 {
+            pop.update(1.0 / 60.0);
+            if !pop.visible() {
+                break;
+            }
+            let Some(g) = pop.ground(panel, RAD) else { continue };
+            let declared = declared_glass(|| pop.panel(root, panel, RAD, Some(&field), crate::widgets::Ground::Menu));
+            last = Some((g, pop.morph_frame(Some(pill), panel, RAD).unwrap(), declared));
+        }
+        pop.close();
+        last.expect("the close draws glass")
+    };
+    let (g, f, declared) = last_glass(Some(fill));
+    let tint = g.morph.merge.expect("B is joined on the last glass frame").tint;
+    assert_eq!((tint[0], tint[1], tint[2]), (fill[0], fill[1], fill[2]), "the colour is the caller's, the one the lift paints");
+    assert!(tint[3] >= 0.97, "the last glass frame wears the fill: {tint:?}");
+    let a = f.ground_alpha;
+    let want = expected_morphing(root.alpha(a), f.rect, f.radius, tex, sharp, face_at(a), f.glass_morph(Some(fill)));
+    assert!(declared[0] == want[0], "the glass declares the join's tint: {f:?}");
+    let (g_plain, _, plain) = last_glass(None);
+    assert_eq!(g_plain.morph.merge.expect("B is joined").tint[3], 0.0, "no fill named, no whitening");
+    assert!(declared[0] != plain[0], "the tint is part of the declared draw");
+    unlatch(tex);
+}
+
 /// **NV1: a panel's near edge is its opener's outer edge**, one rule for every header menu: a control
 /// in the right half hangs the panel from its right edge, one in the left half from its left, and
 /// the safe frame only ever pulls a panel back, never off the opener's edge otherwise.
@@ -422,7 +475,7 @@ fn a_morphing_panel_grows_from_the_pill_and_its_glass_is_whole_once_it_is_down()
         let a = f.ground_alpha;
         // ... wearing the droplet's join and clarity (`Frame::glass_morph`): a morph is clear and joined
         // to the opener's shrinking shape until it has grown, and the declared box is the one around both.
-        let ramped = expected_morphing(root.alpha(a), f.rect, f.radius, tex, sharp, face_at(a), f.glass_morph());
+        let ramped = expected_morphing(root.alpha(a), f.rect, f.radius, tex, sharp, face_at(a), f.glass_morph(None));
         assert!(declared[0] == ramped[0], "mid-open: the morph rect and radius on the fill ramp {a}: {f:?}");
         grew = true;
         assert!(f.rect.w <= panel.w + 1e-3 && f.rect.h <= panel.h + 1e-3 && f.rect.w >= pill.w - 1e-3);

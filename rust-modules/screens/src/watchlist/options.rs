@@ -251,7 +251,8 @@ impl OptionsMenu {
         let mut table = TableView::new();
         // A menu of one-word choices: BODY regular labels (the Library's sort menu does the same).
         table.compact = true;
-        Self { popover: Popover::new().morphing(), table, pill: Rect::default() }
+        // the header pill opens it: the close's blob whitens toward the pill's own focused fill
+        Self { popover: Popover::new().morphing().opener_fill(plx_ui::page_header::OPENER_FILL), table, pill: Rect::default() }
     }
 
     /// The open table as it reads: each section's heading and its rows' `(label, value)`.
