@@ -41,7 +41,7 @@ use super::a11y::{A11y, A11yPath, Role};
 use super::document_reader::DocumentReader;
 use super::form::{RowKey, RowKeys};
 use super::frame::Budget;
-use super::geom::{indexed, sole_name, table_a11y, Document, IndexElem, Table};
+use super::geom::{indexed, table_a11y, table_a11y_find, table_elems, Document, IndexElem, Table};
 use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId, Host, Measure, NavOpKind, PartId};
 use super::route_screen::RouteLayout;
 use super::screen::{
@@ -307,44 +307,21 @@ where
         let got = Focusable::<H>::seat(&self.view(), g, from, cx);
         FocusKey { entry: got.entry, elem: self.to_key(got.elem) }
     }
-    /// `row.<index>` (`geom::Table`'s), or the row's own name when its form id declares one
-    /// ([`FormId::a11y`](super::form::FormId::a11y)). In a form-backed table the element is the
-    /// row's key; a separator or note has none, so it is no element.
+    /// `row.<n>`, `n` the row's ordinal among the table's element rows, or the row's own name when
+    /// its form id declares one ([`FormId::a11y`](super::form::FormId::a11y)): the convention is
+    /// [`table_a11y`]'s, one for every table. In a form-backed table the element is the row's key; a
+    /// separator or note has none, so it is no element.
     fn a11y(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         let index = self.to_index(*key)?.index()? as usize;
-        let name = match self.keys {
-            None => None,
-            Some(k) => {
-                k.key_at(index)?;
-                k.a11y_name(index)
-            }
-        };
-        table_a11y(self.table, index, name)
+        table_a11y(self.table, self.keys, index)
     }
-    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
-        let mut rows = Vec::new();
-        Focusable::<H>::a11y_elems(&self.view(), g, cx, &mut rows);
-        match self.keys {
-            None => out.extend(rows),
-            Some(k) => out.extend(
-                rows.into_iter()
-                    .filter(|e| e.index().is_some_and(|i| k.key_at(i as usize).is_some()))
-                    .map(|e| self.to_key(e)),
-            ),
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        if g == self.group {
+            out.extend(table_elems(self.table, self.keys).map(|i| self.to_key(H::Elem::of_index(i as u32))));
         }
     }
-    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<H::Elem> {
-        let Some(k) = self.keys else {
-            return Focusable::<H>::a11y_find(&self.view(), path, cx);
-        };
-        let n = self.table.n_rows().max(0) as usize;
-        let index = match (indexed(path, "row", n), sole_name(path)) {
-            // a row with a name answers only to it, so one element has one spelling
-            (Some(i), _) => k.a11y_name(i).is_none().then_some(i)?,
-            (None, Some(name)) => (0..n).find(|&i| k.a11y_name(i) == Some(name))?,
-            (None, None) => return None,
-        };
-        k.key_at(index)?;
+    fn a11y_find(&self, path: &A11yPath, _cx: &Cx<'_, H>) -> Option<H::Elem> {
+        let index = table_a11y_find(self.table, self.keys, path)?;
         Some(self.to_key(H::Elem::of_index(index as u32)))
     }
 }
@@ -1189,7 +1166,8 @@ mod tests {
 
     /// **A form-backed table names its rows and has no element for an inert one.** The elements are
     /// the rows' keys (30, 10, 20 down the page); a row whose `FormId::a11y` names it is that name
-    /// and ONLY that name, an unnamed one is `row.<layout index>`; the separator and the note, which
+    /// and ONLY that name, an unnamed one is `row.<n>`, `n` its ordinal among the keyed rows (named
+    /// ones count: the convention is one for every table); the separator and the note, which
     /// have no key, are no elements, yet `GroupSpec::len` still counts them (it is the layout's row
     /// count, which seating reads), so `a11y_elems` lists fewer than `len`. A toggle row is a
     /// `Toggle`.
@@ -1239,15 +1217,15 @@ mod tests {
             Focusable::<H>::a11y(&keyed, &k, &cx).map(|a| (a.path, a.role, a.label.map(|l| l.into_owned())))
         };
         assert_eq!(at(30), Some((rel("alpha"), Role::Row, Some("Alpha".to_owned()))));
-        assert_eq!(at(10), Some((rel("row.2"), Role::Toggle, Some("Beta".to_owned()))));
+        assert_eq!(at(10), Some((rel("row.1"), Role::Toggle, Some("Beta".to_owned()))));
         assert_eq!(at(20), Some((rel("gamma"), Role::Row, Some("Gamma".to_owned()))));
         assert_eq!(at(0), None, "an index is not a key here");
         assert_eq!(at(99), None);
 
         let find = |s: &str| Focusable::<H>::a11y_find(&keyed, &rel(s), &cx);
-        assert_eq!((find("alpha"), find("row.2"), find("gamma")), (Some(30), Some(10), Some(20)));
-        for gone in ["row.0", "row.4", "row.1", "row.3", "row.5", "beta"] {
-            assert_eq!(find(gone), None, "{gone}: a named row has one spelling, an inert row none");
+        assert_eq!((find("alpha"), find("row.1"), find("gamma")), (Some(30), Some(10), Some(20)));
+        for gone in ["row.0", "row.2", "row.3", "row.4", "beta"] {
+            assert_eq!(find(gone), None, "{gone}: a named row has one spelling, an ordinal past the last none");
         }
         let mut elems = Vec::new();
         Focusable::<H>::a11y_elems(&keyed, G, &cx, &mut elems);

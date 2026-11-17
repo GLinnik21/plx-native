@@ -770,17 +770,6 @@ impl ItemMenuScreen {
         (0..self.form.table.n_rows() as usize).filter_map(|i| self.form.key_at(i).map(|k| k.0))
     }
 
-    /// The words drawn on the row at table `index` (the accessibility label).
-    fn row_label(&self, index: usize) -> Option<&str> {
-        self.form
-            .table
-            .sections
-            .iter()
-            .flat_map(|s| s.rows.iter())
-            .nth(index)
-            .map(|r| r.label.as_str())
-    }
-
     fn step_focus(&self, from: u32, delta: i32) -> Option<u32> {
         self.form.step_key(RowKey(from), delta).map(|k| k.0)
     }
@@ -990,8 +979,8 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
             row => A11yPath::new().name(row.a11y_name()),
         };
         let a = A11y::new(path, Role::Row);
-        Some(match self.row_label(index) {
-            Some(label) => a.with_label(label),
+        Some(match plx_ui::geom::table_row(&self.form.table, index) {
+            Some(row) => a.with_label(row.label.as_str()),
             None => a,
         })
     }

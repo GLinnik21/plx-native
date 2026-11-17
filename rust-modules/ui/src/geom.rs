@@ -119,36 +119,68 @@ pub(crate) fn sole_name(path: &A11yPath) -> Option<&str> {
 }
 
 /// Row `index` of `t` in layout order (section headers are not rows), as `TableView::n_rows` counts.
-fn table_row(t: &super::table::TableView, index: usize) -> Option<&super::table::Row> {
+pub fn table_row(t: &super::table::TableView, index: usize) -> Option<&super::table::Row> {
     t.sections.iter().flat_map(|s| s.rows.iter()).nth(index)
 }
 
-/// The indices of the rows of `t` an element stands for, in layout order: every row but a
+/// The LAYOUT indices of the rows of `t` an element stands for, in layout order: every row but a
 /// separator or a note (`Row::separator`, `Row::note`, both `sep`), which `TableView::n_rows` and so
-/// `GroupSpec::len` count but no key can land on and `TableView::row_frame` never places.
-fn table_elems(t: &super::table::TableView) -> impl Iterator<Item = usize> + '_ {
-    t.sections.iter().flat_map(|s| s.rows.iter()).enumerate().filter(|(_, r)| !r.sep).map(|(i, _)| i)
+/// `GroupSpec::len` count but no key can land on and `TableView::row_frame` never places. With a
+/// row-key map (`keys`, a form-backed table) a row is an element only when the form binds a key to
+/// it.
+pub fn table_elems<'a>(
+    t: &'a super::table::TableView,
+    keys: Option<&'a dyn super::form::RowKeys>,
+) -> impl Iterator<Item = usize> + 'a {
+    t.sections
+        .iter()
+        .flat_map(|s| s.rows.iter())
+        .enumerate()
+        .filter(move |(i, r)| !r.sep && keys.map_or(true, |k| k.key_at(*i).is_some()))
+        .map(|(i, _)| i)
 }
 
-/// **The projection of a table's row `index`**, shared by [`Table`] and `table_screen::TablePart`
-/// (which supplies `name` from its form's binding). `row.<index>`, or the single segment `name`
-/// when the row has one. A toggle row is a `Toggle`, every other row a `Row`, and the label is the
-/// row's own text, borrowed from the table. A separator or note is no element (`None`, as for an
-/// index past the end): it is counted by `GroupSpec::len` but is not [`table_elems`], places
-/// nowhere and no key can land on it.
-pub(crate) fn table_a11y<'t>(
+/// **The one convention for the id of a table row**, shared by [`Table`], `table_screen::TablePart`
+/// and every screen that answers the hooks over a `FormTable` itself (the card menu's and the
+/// Source and Version pickers' panels): a row is `row.<n>`, where `n` is the row's ORDINAL among the
+/// table's element rows ([`table_elems`]), so a separator or a note never leaves a gap
+/// (`row.0`, `row.1`, `row.2`) and an id never depends on how many dividers the layout carries. A
+/// row whose form id names itself ([`FormId::a11y`](super::form::FormId::a11y), read through
+/// `keys`) is that single name instead, and then answers only to it.
+///
+/// A toggle row is a `Toggle`, every other row a `Row`, and the label is the row's own text,
+/// borrowed from the table. `index` is the LAYOUT index; a separator or note, or an index past the
+/// end, is no element (`None`).
+pub fn table_a11y<'t>(
     t: &'t super::table::TableView,
+    keys: Option<&'t dyn super::form::RowKeys>,
     index: usize,
-    name: Option<&'static str>,
 ) -> Option<A11y<'t>> {
     let row = table_row(t, index).filter(|r| !r.sep)?;
-    let path = match name {
-        Some(n) => A11yPath::new().name(n),
-        None => A11yPath::new().name("row").index(index),
+    let path = match keys.and_then(|k| k.a11y_name(index)) {
+        Some(name) => A11yPath::new().name(name),
+        None => A11yPath::new().name("row").index(table_elems(t, keys).position(|i| i == index)?),
     };
     let role = if row.toggle.is_some() { Role::Toggle } else { Role::Row };
     let a = A11y::new(path, role);
     Some(if row.label.is_empty() { a } else { a.with_label(row.label.as_str()) })
+}
+
+/// The inverse of [`table_a11y`]: the LAYOUT index the relative `path` names, `row.<n>` for the
+/// `n`th element row that has no name of its own, or the name of the one that has. A path that
+/// names no element (an ordinal past the last, a name no row declares) is `None`.
+pub fn table_a11y_find(
+    t: &super::table::TableView,
+    keys: Option<&dyn super::form::RowKeys>,
+    path: &A11yPath,
+) -> Option<usize> {
+    let named = |i: usize| keys.and_then(|k| k.a11y_name(i));
+    match (indexed(path, "row", usize::MAX), sole_name(path)) {
+        // a row with a name answers only to it, so one element has one spelling
+        (Some(n), _) => table_elems(t, keys).nth(n).filter(|&i| named(i).is_none()),
+        (None, Some(name)) => table_elems(t, keys).find(|&i| named(i) == Some(name)),
+        (None, None) => None,
+    }
 }
 
 /// One shelf (`CardRow`) as the draw sees it this frame: the same arguments the tile draw takes,
@@ -309,20 +341,20 @@ where
         }
         key(self.entry, best.1.max(0) as usize)
     }
-    /// `row.<i>` for each row a key can land on (see [`table_a11y`]): a separator or note is a
-    /// cell `GroupSpec::len` counts (`n_rows`) but no element, so the listing is shorter than it
-    /// by exactly those, and `place` (`TableView::row_frame`) places every row that is listed.
+    /// `row.<n>` for each row a key can land on, `n` its ordinal among them (see [`table_a11y`]): a
+    /// separator or note is a cell `GroupSpec::len` counts (`n_rows`) but no element, so the
+    /// listing is shorter than it by exactly those, and `place` (`TableView::row_frame`) places
+    /// every row that is listed.
     fn a11y(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
-        table_a11y(self.table, key.index()? as usize, None)
+        table_a11y(self.table, None, key.index()? as usize)
     }
     fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
         if g == self.group {
-            out.extend(table_elems(self.table).map(|i| H::Elem::of_index(i as u32)));
+            out.extend(table_elems(self.table, None).map(|i| H::Elem::of_index(i as u32)));
         }
     }
     fn a11y_find(&self, path: &A11yPath, _cx: &Cx<'_, H>) -> Option<H::Elem> {
-        let i = indexed(path, "row", self.table.n_rows().max(0) as usize)?;
-        table_row(self.table, i).filter(|r| !r.sep).map(|_| H::Elem::of_index(i as u32))
+        table_a11y_find(self.table, None, path).map(|i| H::Elem::of_index(i as u32))
     }
 }
 
@@ -824,12 +856,13 @@ mod tests {
         assert_eq!(Focusable::<H>::a11y_find(&doc, &rel("document.0"), &c), None);
     }
 
-    /// **A table projects every row a key can land on, and says what each is.** `row.<i>`, the index
-    /// counting every row; a toggle row is a `Toggle`; the label of a row is its own text. A
-    /// separator and a note are cells `GroupSpec::len` counts but no elements: they are not listed,
-    /// not found and not projected, which is also what keeps every listed row placed
-    /// (`TableView::row_frame` places neither). Rows below the viewport are found as well as the
-    /// ones on screen.
+    /// **A table projects every row a key can land on, and says what each is.** `row.<n>`, `n` the
+    /// row's ordinal among the rows a key can land on (the layout index counts the separator and the
+    /// note, the id does not, so the ids have no gaps); a toggle row is a `Toggle`; the label of a
+    /// row is its own text. A separator and a note are cells `GroupSpec::len` counts but no
+    /// elements: they are not listed, not found and not projected, which is also what keeps every
+    /// listed row placed (`TableView::row_frame` places neither). Rows below the viewport are found
+    /// as well as the ones on screen.
     #[test]
     fn a_table_names_its_rows_and_says_which_are_not_controls() {
         use crate::a11y::conformance;
@@ -862,17 +895,23 @@ mod tests {
             facts,
             [
                 (rel("row.0"), Role::Row, Some("a".to_owned())),
-                (rel("row.2"), Role::Toggle, Some("b".to_owned())),
-                (rel("row.4"), Role::Row, Some("c".to_owned())),
-            ]
+                (rel("row.1"), Role::Toggle, Some("b".to_owned())),
+                (rel("row.2"), Role::Row, Some("c".to_owned())),
+            ],
+            "the ordinal among the rows a key can land on: no gap where the separator and the note sit"
         );
         for sep in [1u32, 3] {
-            assert!(Focusable::<H>::a11y(&table, &sep, &c).is_none(), "row {sep} is not an element");
+            assert!(Focusable::<H>::a11y(&table, &sep, &c).is_none(), "layout row {sep} is not an element");
             assert!(Focusable::<H>::place(&table, &sep, &c, At::SpringTarget).is_none(), "and it places nowhere");
-            assert_eq!(Focusable::<H>::a11y_find(&table, &rel(&format!("row.{sep}")), &c), None, "nor is it found");
         }
-        assert_eq!(Focusable::<H>::a11y_find(&table, &rel("row.4"), &c), Some(4), "a row below the viewport");
-        assert_eq!(Focusable::<H>::a11y_find(&table, &rel("row.5"), &c), None);
+        for (ordinal, layout) in [(0, 0), (1, 2), (2, 4)] {
+            assert_eq!(
+                Focusable::<H>::a11y_find(&table, &rel(&format!("row.{ordinal}")), &c),
+                Some(layout),
+                "row.{ordinal} finds layout row {layout}, and a row below the viewport is found too"
+            );
+        }
+        assert_eq!(Focusable::<H>::a11y_find(&table, &rel("row.3"), &c), None, "past the last element");
         assert!(Focusable::<H>::a11y(&table, &5, &c).is_none());
         let mut foreign = Vec::new();
         Focusable::<H>::a11y_elems(&table, GroupId(6), &c, &mut foreign);
