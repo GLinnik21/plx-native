@@ -249,6 +249,8 @@ pub struct Frame {
     /// How much of the modal dim has come in, 0..1 ([`dim_at`] of the progress): the share of the
     /// surface's peak dim (`Popover::dim` hands it to the container as `Scrim::following`).
     pub dim: f32,
+    /// The rectangle the rows are clipped to (see the lens notes): stub.
+    pub rows_clip: Rect,
 }
 
 impl Frame {
@@ -561,6 +563,7 @@ impl Morph {
                 merge: None,
                 clear: 0.0,
                 dim,
+                rows_clip: rect_at_xy(None, panel, pw, ph),
             };
         };
         // The slab is gone: the close is over and the frame is the closed one, exactly (the same
@@ -612,6 +615,7 @@ impl Morph {
             merge,
             clear: clear_at(progress).max(out),
             dim,
+            rows_clip: rect,
         }
     }
 }
@@ -1337,5 +1341,108 @@ mod tests {
         let plain = crate::popover::Popover::new();
         let scrim = plain.dim(0.30);
         assert_eq!((scrim.alpha, scrim.ramp), (0.30, None), "a popover that does not morph keeps the container's spring");
+    }
+
+    /// iOS 26's glass menu CLOSE, measured frame by frame (the owner's recording, 2026-11-17, 60 fps,
+    /// per-pixel diff against the static page, t = 0 the press frame; `series.md`, "Iteration 2"):
+    /// the slab's normalized width and height, 0 = the button, 1 = the panel at rest, as
+    /// `(frame, width, height)` for 17 ms .. 250 ms. The width reaches the button's by ~133 ms (the
+    /// table's flat 0.00 after it is the bbox floor, the button's own width: the slab keeps narrowing
+    /// under it), the height BULGES ~7% at 33 ms and drains over ~250 ms.
+    const IOS_CLOSE: [(usize, f32, f32); 15] = [
+        (1, 0.98, 1.027), (2, 0.88, 1.07), (3, 0.68, 1.05), (4, 0.54, 0.97), (5, 0.40, 0.87), (6, 0.26, 0.74),
+        (7, 0.12, 0.61), (8, 0.0, 0.50), (9, 0.0, 0.39), (10, 0.0, 0.29), (11, 0.0, 0.20), (12, 0.0, 0.13),
+        (13, 0.0, 0.08), (14, 0.0, 0.04), (15, 0.0, 0.01),
+    ];
+
+    /// The close follows the iOS recording: the slab's TRAVEL (its rect before the fold shrinks it, from
+    /// the springs) normalized against the opener, per frame within 0.08, width and height on their own
+    /// clocks. Ours was about twice as fast (at the drain by ~60 ms).
+    #[test]
+    fn the_close_follows_the_ios_reference_curve() {
+        let mut m = Morph::new();
+        for _ in 0..120 {
+            m.step(true, DT);
+        }
+        let drain = drain_rect(PILL);
+        for &(n, want_w, want_h) in &IOS_CLOSE {
+            m.step(false, DT);
+            let t = rect_at_xy(Some(drain), PANEL, m.w.pos.max(0.0), m.h.pos.max(0.0));
+            let (w, h) = (((t.w - PILL.w) / (PANEL.w - PILL.w)).max(0.0), (t.h - PILL.h) / (PANEL.h - PILL.h));
+            assert!((w - want_w).abs() <= 0.08, "close frame {n}: width {w} vs {want_w}");
+            assert!((h - want_h).abs() <= 0.08, "close frame {n}: height {h} vs {want_h}");
+        }
+    }
+
+    /// The rows' lens magnification, measured (same recording; `series.md` "ROWS", t = 0 the first glass
+    /// frame): content scale as `(ms, scale)`. Not the glass's height ratio: smaller inside a small lens,
+    /// overshooting more (12% against the height's 9%), settled by ~360 ms.
+    const IOS_ROWS: [(f32, f32); 11] = [
+        (67.0, 0.65), (150.0, 1.11), (167.0, 1.12), (183.0, 1.117), (200.0, 1.10), (217.0, 1.073), (233.0, 1.054),
+        (267.0, 1.036), (300.0, 1.016), (333.0, 1.007), (367.0, 1.0),
+    ];
+
+    #[test]
+    fn the_rows_follow_the_ios_lens_magnification() {
+        let mut m = Morph::new();
+        let mut frames = vec![m.frame(Some(PILL), PANEL, RAD)];
+        for _ in 0..40 {
+            m.step(true, DT);
+            frames.push(m.frame(Some(PILL), PANEL, RAD));
+        }
+        let at = |ms: f32| frames[(ms / (DT * 1000.0)).round() as usize + 1];
+        for &(ms, want) in IOS_ROWS.iter().filter(|(ms, _)| *ms >= 150.0) {
+            assert!((at(ms).rows_scale - want).abs() <= 0.06, "{ms} ms: {} vs {want}", at(ms).rows_scale);
+        }
+        let first = frames.iter().find(|f| f.content_alpha > 0.0).expect("the rows show");
+        assert!(first.rows_scale < 1.0, "small inside a small lens when they first show: {first:?}");
+        assert!(frames.iter().map(|f| f.rows_scale).fold(0.0_f32, f32::max) > 1.09, "the rows overshoot more than the glass");
+    }
+
+    /// While small (and while it drains) the glass is a round lens: its corner radius is half its smaller
+    /// side; it lands on the panel's radius exactly. A per-frame bound that is not the literal 15% of
+    /// the panel radius: the lens side itself moves by up to 67 px a frame, so the radius may follow
+    /// half of that, plus the ease back to the panel radius (<= 30% of what is left of it per frame).
+    #[test]
+    fn the_glass_is_a_round_lens_while_small_and_lands_on_the_panel_radius() {
+        let (open, close) = open_then_close(Some(PILL));
+        for ms in [50.0, 100.0] {
+            let f = open[(ms / (DT * 1000.0)).round() as usize + 1];
+            let lens = f.rect.w.min(f.rect.h) * 0.5;
+            assert!((f.radius - lens).abs() <= 0.1 * lens, "{ms} ms: radius {} vs half the smaller side {lens}", f.radius);
+        }
+        assert_eq!(open.last().unwrap().radius, RAD, "exactly the panel radius once settled");
+        let side = |f: &Frame| f.rect.w.min(f.rect.h) * 0.5;
+        let all: Vec<Frame> = open.iter().chain(close.iter()).copied().collect();
+        for (n, w) in all.windows(2).enumerate() {
+            let jump = (w[1].radius - w[0].radius).abs();
+            let allowed = 0.15 * RAD + 0.5 * (side(&w[1]) - side(&w[0])).abs() + 0.3 * (side(&w[0]) - RAD).abs();
+            assert!(jump <= allowed, "frame {n}: radius {} -> {} (allowed {allowed})", w[0].radius, w[1].radius);
+        }
+        let last_drawn = close[close.len() - 2];
+        assert!(last_drawn.radius <= side(&last_drawn) + 1e-3, "a close ends round: {last_drawn:?}");
+    }
+
+    /// No row is visible outside the rounded shape on any frame: the rows' box (the panel inset by a
+    /// typical row margin, zoomed as the rows are) clipped to [`Frame::rows_clip`] stays inside the
+    /// rect's rounded corners at every frame whose rows draw.
+    #[test]
+    fn no_row_is_visible_outside_the_rounded_shape() {
+        const ROW_MARGIN: f32 = 12.0;
+        let (open, close) = open_then_close(Some(PILL));
+        let mut drawn = 0;
+        for f in open.iter().chain(&close) {
+            if f.content_alpha <= 0.0 {
+                continue;
+            }
+            drawn += 1;
+            let z = rows_zoom(Some(PILL), PANEL, f.rows_scale);
+            let b = PANEL.inset(ROW_MARGIN);
+            let placed = Rect::new(z.ox + (b.x - z.ox) * z.s, z.oy + (b.y - z.oy) * z.s, b.w * z.s, b.h * z.s).intersect(f.rows_clip);
+            for c in [(placed.x, placed.y), (placed.x + placed.w, placed.y), (placed.x, placed.y + placed.h), (placed.x + placed.w, placed.y + placed.h)] {
+                assert!(sd_box(c, f.rect, f.radius) <= 0.5, "a row corner {c:?} outside the rounded shape: {f:?}");
+            }
+        }
+        assert!(drawn > 10, "rows were drawn on {drawn} frames");
     }
 }
