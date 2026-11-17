@@ -72,6 +72,10 @@ fn a_starved_progressive_stream_pauses_the_sink_and_reads_buffering() {
     // instrument. The route is direct play; the furthest lane's tail is within one period of the
     // tail the clock will clamp at (otherwise the hold could never begin in this plant).
     assert!(!crate::route::is_segmented_hls(&rig.ps), "PRECONDITION FAILED, not the defect: the route is HLS");
+    assert!(
+        crate::route::is_progressive_original(&rig.ps),
+        "PRECONDITION FAILED, not the defect: the rig is not a Quality=Original stream"
+    );
     let video_tail = last_pts(6 * S, V_STEP_NS);
     let audio_tail = last_pts(6 * S, A_STEP_NS);
     assert!(
@@ -217,6 +221,11 @@ fn a_link_slower_than_the_file_is_held_once_and_the_hold_stands() {
 #[test]
 fn a_dead_link_is_held_through_the_silence_arm() {
     let _serial = plx_base::testlock::serial();
+    // The monotonic clock's origin is fixed at its first read, and a stamp of 0 means "no callback
+    // yet" to the silence observation: on a process whose first read is this test's own callback,
+    // every stamp of the first milliseconds would read as absent. Fix the origin, then let it move.
+    let _ = plx_base::clock::vclock_ms();
+    std::thread::sleep(std::time::Duration::from_millis(5));
     let ((), text) = logged(|| {
         let mut rig = Rig::with_media(6 * S, 6 * S);
         ffi_host::reset_volume_probe_for_test();
@@ -231,7 +240,10 @@ fn a_dead_link_is_held_through_the_silence_arm() {
         );
         assert_eq!(pauses(), 0, "PRECONDITION FAILED, not the defect: held before the link died: {}", rig.facts());
 
-        // The sink stops ticking from here: the last callback was the last `step`.
+        // The clock stops from here: the host's own position thread (it reports at the device's
+        // cadence whenever the clock plays, whatever the rig does) reports nothing, and the last
+        // callback was the last `step`'s.
+        ffi_host::silence_clock_for_test();
         let last_callback = std::time::Instant::now();
         let deadline = last_callback + std::time::Duration::from_secs(2);
         let mut held_after: Option<std::time::Duration> = None;
@@ -476,6 +488,23 @@ mod never_held {
             rig.facts()
         );
         assert!(!FEED_SHARED.hls_rebuffering.load(Relaxed), "an Auto-watched stream reads Buffering");
+    }
+
+    /// A progressive re-encode under a fixed quality ceiling is not Quality=Original: it is never held.
+    #[test]
+    fn a_progressive_re_encode_under_a_fixed_quality_is_never_held() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::with_media(6 * S, 6 * S).with_virtual_wall();
+        crate::route::mark_fixed_quality_ceiling_for_test(&mut rig.ps);
+        assert!(!crate::route::is_progressive_original(&rig.ps), "PRECONDITION FAILED, not the defect");
+        ffi_host::reset_volume_probe_for_test();
+        assert_eq!(pauses_over(&mut rig, 60), 0, "a fixed-quality re-encode was held");
+        assert!(
+            ffi_host::clock_state_for_test().0 >= 5 * S,
+            "PRECONDITION FAILED, not the defect: the clock never reached the tail: {}",
+            rig.facts()
+        );
+        assert!(!FEED_SHARED.hls_rebuffering.load(Relaxed), "a fixed-quality re-encode reads Buffering");
     }
 
     /// The viewer's own Pause is the only Pause a paused clock gets: running dry under it is not a

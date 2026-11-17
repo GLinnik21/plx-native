@@ -486,6 +486,7 @@ pub fn launch_native_open(
         seek_retries: 0,
         flushed: false,
         presentation_rearm_pending: false,
+        progressive_hold: crate::feed_state::ProgressiveHoldWatch::default(),
         max_fed_video_pts: 0,
         max_fed_audio_pts: 0,
         audio_start_fp: None,
@@ -888,6 +889,91 @@ pub const PRIME_NS: i64 = 700_000_000;
 // so a genuinely audioless region can't hang.
 pub const PRIME_AUDIO_NS: i64 = 300_000_000;
 pub use crate::feed_state::PRIME_VIDEO_MAX_NS;
+
+/// One lane's media tail in the fed-pts coordinate: what Starfish has accepted, and what the app's
+/// AU queue still holds behind it (the span of the queued AUs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LaneTail {
+    pub fed_ns: i64,
+    pub queued_ns: i64,
+}
+
+impl LaneTail {
+    /// The pts the demuxer has read this lane to: what Starfish accepted plus what is queued behind it.
+    pub fn tail_ns(self) -> i64 {
+        self.fed_ns.saturating_add(self.queued_ns.max(0))
+    }
+}
+
+/// **The playable reserve of a progressive stream, in the fed-pts coordinate.** How much media
+/// lies between the presented `position_ns` (`FEED_SHARED.pres_fed`) and the point the demuxer has
+/// read to: each lane's tail is what Starfish accepted plus what the app's AU queue still holds
+/// behind it, and the FURTHER lane counts. A lane that has not opened has a tail near zero and so
+/// never counts (callers may pass `None` for it). `None` when the position is unknown
+/// ([`crate::feed_state::PRES_NONE`]).
+///
+/// **Furthest, not shortest, on purpose.** One demuxer feeds both lanes, so a starved link stops
+/// both tails together and the clock overtakes both: the reserve reaches zero. A lane that simply
+/// ENDS early (a film whose audio outlasts its video, or the reverse) stops advancing while the
+/// stream is perfectly healthy, and a shortest-lane reserve would read that as starvation and hold
+/// a healthy film at the end of its shorter track. Whether both decoder lanes are primed is the
+/// resume's separate `decoder_ready` condition, not this measure's.
+///
+/// This is `hls_buffered_ms` for a stream with no demux-published tails. Working in fed pts on
+/// both sides keeps `pts_shift` and `disp_base` out of it: they cancel.
+pub fn progressive_reserve_ns(position_ns: i64, video: LaneTail, audio: Option<LaneTail>) -> Option<i64> {
+    if position_ns == crate::feed_state::PRES_NONE {
+        return None;
+    }
+    let furthest = audio.map_or(video.tail_ns(), |a| video.tail_ns().max(a.tail_ns()));
+    Some(furthest.saturating_sub(position_ns).max(0))
+}
+
+/// Which clause let a progressive stall hold release the clock, as the resume line names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProgressiveRelease {
+    /// A queue is at its byte cap: the stream is back to the state it played with when healthy (a
+    /// capped queue), and the demuxer is parked, so nothing more can be buffered ahead of Play. One
+    /// reader feeds both lanes: whichever lane fills first parks it.
+    Full,
+    /// The demuxer finished: nothing more will arrive.
+    Eof,
+}
+
+impl ProgressiveRelease {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Eof => "eof",
+        }
+    }
+}
+
+/// Whether a progressive stall hold may release the clock, and by which clause (no runway
+/// constant). The reserve a stream played with when it was healthy IS its capped queue, so
+/// releasing at the cap restores the healthy state:
+///
+/// * `Full`: the video OR the audio queue is at its byte cap (`queue_full`, the queue's own
+///   producer-park predicate `queued_bytes > max_bytes`, so granted headroom counts): the demuxer
+///   is parked on it, so nothing more can be buffered ahead of Play, and holding on would deadlock
+///   with the sink also full. Audio counts because one sequential reader feeds both lanes and its
+///   queue is the smaller (1 MiB): a lossless track fills it before the video queue's cap, and the
+///   video queue then never reaches its own;
+/// * `Eof`: the demuxer finished (`producer_done`): nothing more will ever arrive, and the last
+///   seconds of a film do not hold 700 ms of fresh media past the playhead.
+///
+/// Both play what there is, so neither waits for `decoder_ready`. The end of the stream is named
+/// first when both hold.
+pub fn progressive_hold_releases(queue_full: bool, producer_done: bool) -> Option<ProgressiveRelease> {
+    if producer_done {
+        Some(ProgressiveRelease::Eof)
+    } else if queue_full {
+        Some(ProgressiveRelease::Full)
+    } else {
+        None
+    }
+}
+
 // Feed-ahead throttle (Kodi-parity): keep the VIDEO lane at most this far ahead of the presented
 // position (FEED_SHARED.pres_fed) instead of feeding greedily to BufferFull. Bounding the buffer to
 // ~1.6s (was ~10-20s: aq 6MB + the pipeline's own ~8MB) makes seeks flush far less, keeps the
@@ -1247,6 +1333,8 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
     // rebuffer or ResumePrime) reads the full pipeline high-water. Initial Load/seek remains
     // accepted-only because it is a fresh clock boundary whose old queued tail is not proof about
     // the newly loaded/landed timeline.
+    // A progressive stall hold measures its own runway below (the queues, not the demux-published
+    // tails), so it does not take the HLS pipeline high-water.
     let queued_runway = matches!(prime_kind, HlsPrimeKind::Rebuffer | HlsPrimeKind::Resume);
     let shift = shared.pts_shift.load(Ordering::Relaxed);
     let queued_video = shared.hls_video_tail_ns.load(Ordering::Acquire);
@@ -1310,8 +1398,28 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
         // An automatic rebuffer remains Rebuffer even across user Pause/Resume and must still
         // close its own pause-local recovery epoch above.
         HlsPrimeKind::Resume => true,
+        // Nothing to credit: a progressive stream completes no segment. Its certificate is
+        // `progressive_release` below, measured from the presented position the hold began at.
+        HlsPrimeKind::ProgressiveRebuffer { .. } => true,
     };
-    if decoder_ready && boundary_ready && transport.feed_allowed() {
+    // A PROGRESSIVE stall hold (the `ProgressiveRebuffer` hold `maybe_begin_rebuffer` takes on a
+    // direct-play stream that ran out of media) has no segments to credit, so `recovery` never
+    // becomes ready for it: its certificate is a queue that cannot grow (the reserve the stream
+    // played with when healthy), or the end of the stream. Everything else about the Play (the
+    // token, the refusal and the stale paths) is the HLS hold's, unchanged.
+    let vq = aq::queue_ptr(&mut eng.aq_video);
+    let progressive_release = match prime_kind {
+        HlsPrimeKind::ProgressiveRebuffer { .. } => {
+            let parked = aq::aq_would_park(vq) || aq::aq_would_park(aq::queue_ptr(&mut eng.aq_audio));
+            progressive_hold_releases(parked, aq::aq_producer_done(vq))
+        }
+        _ => None,
+    };
+    let ready = match prime_kind {
+        HlsPrimeKind::ProgressiveRebuffer { .. } => progressive_release.is_some(),
+        _ => decoder_ready && boundary_ready,
+    };
+    if ready && transport.feed_allowed() {
         let Some((play_token, recovery)) =
             shared.reserve_hls_prime_play(prime_kind, candidate_generation, recovery)
         else {
@@ -1345,7 +1453,16 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine, transport: &Transport, hooks
                 } else if eng.segment_landing.is_none() {
                     shared.seek_landed_epoch.store(shared.seek_epoch.load(Ordering::Relaxed), Ordering::Release);
                 }
-                if prime_kind == HlsPrimeKind::Rebuffer {
+                if let (HlsPrimeKind::ProgressiveRebuffer { since_ms }, Some(release)) =
+                    (prime_kind, progressive_release)
+                {
+                    plx_base::eventlog::log(&format!(
+                        "feed: progressive rebuffer resume n={} reason={} held={}ms",
+                        eng.progressive_hold.holds,
+                        release.name(),
+                        crate::shared::vclock_ms().wrapping_sub(since_ms),
+                    ));
+                } else if prime_kind == HlsPrimeKind::Rebuffer {
                     plx_base::eventlog::log(&format!(
                         "primed: v={}ms a={}ms recovery_n={} debt={}ms runway={}ms -> Play",
                         playable_vbuf / 1_000_000,
@@ -2380,5 +2497,61 @@ mod native_lifecycle_host_seam_tests {
         assert_eq!(unsafe { test_sink().ready(&mt) }, 0);
         assert_eq!(release_native_object_timed(&mt, epoch, &mut TeardownSpans::new(), &FEED_SHARED, &release_hooks()),
             plx_playback_contract::ReleaseStatus::Quarantined);
+    }
+}
+
+#[cfg(test)]
+mod progressive_stall_tests {
+    use super::*;
+
+    const S: i64 = 1_000_000_000;
+
+    fn lane(fed_s: i64, queued_s: i64) -> LaneTail {
+        LaneTail { fed_ns: fed_s * S, queued_ns: queued_s * S }
+    }
+
+    #[test]
+    fn the_reserve_is_the_furthest_lane_tail_past_the_presented_position() {
+        // video fed to 12 s with 2 s queued behind it (tail 14 s); audio fed to 12 s, nothing queued.
+        assert_eq!(progressive_reserve_ns(10 * S, lane(12, 2), Some(lane(12, 0))), Some(4 * S));
+        // without an opened audio lane only video counts
+        assert_eq!(progressive_reserve_ns(10 * S, lane(12, 2), None), Some(4 * S));
+    }
+
+    /// A film whose audio outlasts its video (or the reverse) has one lane that ends early while the
+    /// stream is healthy: that lane stopping is not starvation.
+    #[test]
+    fn a_lane_that_ends_early_is_not_starvation() {
+        // video ended at 20 s, audio runs to 23 s: at 20.0 s there are 3 s left, not none
+        assert_eq!(progressive_reserve_ns(20 * S, lane(20, 0), Some(lane(23, 0))), Some(3 * S));
+        // audio ended first
+        assert_eq!(progressive_reserve_ns(20 * S, lane(23, 0), Some(lane(20, 0))), Some(3 * S));
+        // both lanes spent: the real zero
+        assert_eq!(progressive_reserve_ns(23 * S, lane(20, 0), Some(lane(23, 0))), Some(0));
+    }
+
+    #[test]
+    fn a_tail_the_clock_has_passed_is_zero_and_an_unknown_position_is_unknown() {
+        assert_eq!(progressive_reserve_ns(13 * S, lane(12, 0), None), Some(0));
+        assert_eq!(progressive_reserve_ns(crate::feed_state::PRES_NONE, lane(12, 2), None), None);
+    }
+
+    /// The viewer-visible rule, one case per clause; the clause is what the resume line names.
+    #[test]
+    fn the_hold_releases_on_a_full_queue_or_the_end_of_the_stream() {
+        use ProgressiveRelease::{Eof, Full};
+        assert_eq!(progressive_hold_releases(false, false), None, "a queue with room keeps holding");
+        assert_eq!(
+            progressive_hold_releases(true, false),
+            Some(Full),
+            "a queue at its byte cap cannot grow: that is the reserve the stream played with"
+        );
+        assert_eq!(progressive_hold_releases(false, true), Some(Eof), "the stream ended: nothing more will arrive");
+        assert_eq!(progressive_hold_releases(true, true), Some(Eof), "the stronger fact is named");
+        assert_eq!(
+            [Full.name(), Eof.name()],
+            ["full", "eof"],
+            "the names the resume line prints and the field checks grep for"
+        );
     }
 }

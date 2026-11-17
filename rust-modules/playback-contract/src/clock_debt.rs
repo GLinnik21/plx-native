@@ -76,9 +76,36 @@ pub enum ClockDebt {
 
 impl ClockDebt {
     /// The next state after one sample.
-    pub fn step(self, _p: &DebtParams, _s: DebtSample) -> ClockDebt {
-        // TESTS-FIRST STUB: inert. The detector lands in the next commit.
-        ClockDebt::Ineligible
+    pub fn step(self, p: &DebtParams, s: DebtSample) -> ClockDebt {
+        if !s.eligible || s.pos_ns <= DEBT_MIN_POS_NS {
+            return ClockDebt::Ineligible;
+        }
+        let start = ClockDebt::Watching { wall_ms: s.wall_ms, pos_ns: s.pos_ns, s_us: 0, debt_since_reset_us: 0 };
+        if s.video_queue_bytes > p.gate_bytes {
+            return start;
+        }
+        match self {
+            ClockDebt::Ineligible => start,
+            ClockDebt::Fired { .. } => self,
+            ClockDebt::Watching { wall_ms, pos_ns, s_us, debt_since_reset_us } => {
+                let dt_ms = s.wall_ms.wrapping_sub(wall_ms) as i32;
+                if dt_ms == 0 {
+                    return self; // the same callback seen twice: nothing elapsed
+                }
+                if dt_ms < 0 || dt_ms as u32 > DEBT_STALE_GAP_MS {
+                    return start;
+                }
+                let dt_ms = i64::from(dt_ms);
+                let debt_us = dt_ms * 1_000 - (s.pos_ns - pos_ns) / 1_000;
+                let s_us = (s_us + debt_us - p.k_permille * dt_ms).max(0);
+                let debt_since_reset_us = debt_since_reset_us + debt_us;
+                if s_us >= p.h_us {
+                    ClockDebt::Fired { s_us, debt_since_reset_us }
+                } else {
+                    ClockDebt::Watching { wall_ms: s.wall_ms, pos_ns: s.pos_ns, s_us, debt_since_reset_us }
+                }
+            }
+        }
     }
 
     /// Has the debt crossed the threshold?

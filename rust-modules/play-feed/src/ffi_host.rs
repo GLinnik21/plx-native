@@ -754,6 +754,13 @@ pub fn clock_run_for_test(base_ns: i64) {
     RESUMED_AT_MS.store(now_ms(), Relaxed);
     PLAYING.store(true, Relaxed);
 }
+/// Stop the sink clock without a Pause verb: the position thread reports nothing from here, as a
+/// pipeline whose link died under it. The application never sent a Pause, so it still believes the
+/// clock runs and only the silence of the callbacks tells it otherwise. Test-only.
+#[cfg(any(test, feature = "test-support"))]
+pub fn silence_clock_for_test() {
+    PLAYING.store(false, Relaxed);
+}
 /// The sink clock's position and whether it is running. Test-only.
 #[cfg(any(test, feature = "test-support"))]
 pub fn clock_state_for_test() -> (i64, bool) {

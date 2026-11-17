@@ -1744,7 +1744,12 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
 
     // Load and speed policy are settled. Borrow the physical feed for ACB, feeding and EOS.
     let physical = pa.tick_feed_presentation(
-        crate::route::is_segmented_hls(ps), crate::route::stream_immersive(ps),
+        plx_playback_contract::feed::HoldRoute::of(
+            crate::route::is_segmented_hls(ps),
+            crate::route::is_preview(ps),
+            crate::route::is_progressive_original(ps),
+        ),
+        crate::route::stream_immersive(ps),
     );
 
     // ---------- the derived UI state and the end of stream ----------
@@ -6334,7 +6339,8 @@ mod end_of_film_tests {
         /// on which a step takes microseconds; a detector that differences the wall against the
         /// position needs the two to move together. The stamps sit far in the FUTURE of the real
         /// clock, so the silence observation (`vclock_ms - stamp`, saturating) reads 0 and the
-        /// dead-link arm stays off, as it always was in this plant.
+        /// dead-link arm stays off. A test of that arm leaves the wall alone instead (it ages the
+        /// real clock by not ticking the sink: [`Rig::step_without_sink`]).
         pub(super) wall_ms: Option<u32>,
     }
 
@@ -6409,8 +6415,10 @@ mod end_of_film_tests {
             pump(&mut self.ps, &mut self.pa, self.now);
         }
 
-        /// One pump period in which the sink does not tick: the clock stands still and no position
-        /// callback arrives, as on a link that died under a stream with nothing left to present.
+        /// One pump period in which the rig does not tick the sink. The host's own position thread
+        /// still reports while the clock plays, so a dead link also needs
+        /// `ffi_host::silence_clock_for_test`: then no position callback arrives, as on a link
+        /// that died under a stream with nothing left to present.
         pub(super) fn step_without_sink(&mut self) {
             let _frame = plx_base::task::FrameScope::enter();
             self.now += TICK_MS as u32;
