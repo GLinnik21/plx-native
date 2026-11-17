@@ -636,13 +636,11 @@ class CaptureDriver(unittest.TestCase):
 class CommittedScenario(unittest.TestCase):
     """The committed tests/scenarios/watchlist_captures.json, held to the grammar without a simulator."""
 
-    # A capture that still walks with direction keys, because the target it reaches cannot be named from the
-    # code without running the app: `w6/hold-menu.png` presses Down four times from the Home hero to a shelf
-    # card whose position depends on the mock's hubs; `w6/detail-offline.png` clicks (`ck:`), which is a pointer.
-    KEPT_WALKS = {"w6/hold-menu.png"}
-    # Captures with no `expect_focus`: a trigger decides what is focused (an account or item menu opens on a
-    # row that depends on the session and the card), or a pointer click does (`ck:`).
-    NO_EXPECT = {"account-menu-new.png", "item-menu-new.png", "w6/detail-offline.png", "w6/hold-menu.png"}
+    # Captures with no `expect_focus`: a boot trigger decides what is focused (an account or item menu opens on
+    # a row that depends on the session and the card), or a pointer click does (`ck:`, the one capture that
+    # navigates by pointer: `w6/detail-offline.png`).
+    NO_EXPECT = {"account-menu-new.png", "item-menu-new.png", "w6/detail-offline.png"}
+    POINTER_WALKS = {"w6/detail-offline.png"}
     DIRECTIONS = {"up", "down", "left", "right"}
 
     @classmethod
@@ -662,10 +660,28 @@ class CommittedScenario(unittest.TestCase):
     def test_no_capture_walks_with_direction_keys_to_reach_its_target(self):
         for file, spec in self.captures.items():
             walked = [k for k in spec["keys"] if k.partition("@")[0] in self.DIRECTIONS]
-            if file in self.KEPT_WALKS:
-                self.assertTrue(walked, f"{file} no longer walks: drop it from KEPT_WALKS")
-            else:
-                self.assertEqual(walked, [], f"{file} walks with {walked}: name the target by id (focus:/press:)")
+            self.assertEqual(walked, [], f"{file} walks with {walked}: name the target by id (focus:/press:)")
+
+    def test_the_only_capture_that_navigates_by_pointer_is_the_named_one(self):
+        clicking = {file for file, spec in self.captures.items() if any(k.startswith("ck:") for k in spec["keys"])}
+        self.assertEqual(clicking, self.POINTER_WALKS)
+
+    def test_the_texts_that_say_no_direction_key_stands_between_boot_and_target_say_the_exception(self):
+        """tools/watchlist_captures.py's docstring, the scenario's comment and tests/README.md all state it."""
+        for name, text in (("the scenario comment", self.doc["comment"]),
+                           ("tools/watchlist_captures.py", (ROOT / "tools" / "watchlist_captures.py").read_text())):
+            self.assertIn("w6/detail-offline.png", text, name)
+            self.assertIn("ck:", text, name)
+            self.assertNotIn("whose target no id is read for", text, name)
+        readme = (ROOT / "tests" / "README.md").read_text()
+        self.assertIn("w6/detail-offline.png", readme)
+
+    def test_a_subject_bearing_press_in_the_scenario_is_the_named_coming_soon_card(self):
+        """The driver writes a token raw (the library path, unguarded), so a title's press with no `@<subject>`
+        is a decision: the one here is `watchlist.grid.card.7`, a coming-soon card whose subject is null."""
+        bare = {k for spec in self.captures.values() for k in spec["keys"]
+                if k.startswith("press:") and "@" not in k and a11y.subject_bearing(k[len("press:"):])}
+        self.assertEqual(bare, {"press:watchlist.grid.card.7"})
 
     def test_a_capture_without_expect_focus_is_a_named_exception(self):
         missing = {file for file, spec in self.captures.items() if "expect_focus" not in spec}
@@ -683,7 +699,8 @@ class CommittedScenario(unittest.TestCase):
             self.assertEqual(len(keys), 2, file)
             self.assertEqual((captures.step_kind(keys[0]), keys[1]), ("byid", "ok@0.12"), file)
             self.assertEqual(captures.expect_position(keys), 1, file)
-        for file in ["hold-menu.png", "after-removal.png", "w6/watchlist-hold.png", "w6/watchlist-hold-unplayable.png"]:
+        for file in ["hold-menu.png", "w6/hold-menu.png", "after-removal.png", "w6/watchlist-hold.png",
+                     "w6/watchlist-hold-unplayable.png"]:
             self.assertIn("hold", self.captures[file]["keys"], file)
         self.assertEqual(self.captures["filtered.png"]["keys"][-1], "back")
 
@@ -694,7 +711,7 @@ class CommittedScenario(unittest.TestCase):
         self.assertNotIn("sends each key as a FIFO token", comment, "the old recipe sentence is gone")
 
     def test_a_hold_that_opens_a_menu_expects_the_menus_namespace(self):
-        for file in ["hold-menu.png", "w6/watchlist-hold.png", "w6/watchlist-hold-unplayable.png"]:
+        for file in ["hold-menu.png", "w6/hold-menu.png", "w6/watchlist-hold.png", "w6/watchlist-hold-unplayable.png"]:
             self.assertTrue(self.captures[file]["expect_focus"].startswith("itemmenu."), file)
         self.assertTrue(self.captures["sort-filter-open.png"]["expect_focus"].startswith("watchlist_menu."))
 

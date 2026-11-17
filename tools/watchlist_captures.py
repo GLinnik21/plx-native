@@ -10,11 +10,13 @@ The ONE capture recipe (the scenario's `comment` repeats it):
      session is the account; no `token` trigger is armed);
   3. arm the capture's `triggers`, boot, wait `boot_wait_s`, send each `keys` entry through
      `plxnative-remote` (`hold` is okdown, 1.2 s, okup), check `expect_focus`, then `shot`;
-     A walk that only REACHES a target is an accessibility-id token (tools/a11y.py, the app's
-     devtriggers tokens): `focus:<id>` moves focus to the element the id names (`nav.watchlist`,
-     `watchlist.grid.card.7`) and `press:<id>` focuses it and presses OK, so no direction key stands
-     between the boot and the target. What stays a key is a key whose subject is the key itself: `hold`,
-     a timing (`ok@0.12`), `back`. An id is checked against the grammar before anything boots.
+     A capture REACHES its target by an accessibility-id token (tools/a11y.py, the app's devtriggers
+     tokens) or by a boot trigger: `focus:<id>` moves focus to the element the id names (`nav.watchlist`,
+     `watchlist.grid.card.7`, `home.shelf.2.card.0`) and `press:<id>` focuses it and presses OK, so no
+     direction key stands between the boot and the target in any capture. What stays a key is a key whose
+     subject is the key itself: `hold`, a timing (`ok@0.12`), `back`; and `ck:<x>,<y>` pointer clicks,
+     which `w6/detail-offline.png` alone uses as its walk. An id is checked against the grammar before
+     anything boots.
      A key `mock:<json>` POSTs <json> to /_mock/discover mid-walk (`{"pms":"fail"}` makes the PMS side
      answer 503: once a library read fails and the list is read again, a title matched there reads
      ServerOffline); `lib:<json>` POSTs <json> to /_mock/library (a TEST-ONLY library add/remove plus the
@@ -24,7 +26,7 @@ The ONE capture recipe (the scenario's `comment` repeats it):
      for a `state` snapshot (`a11y.expect_focus`) and fails the capture, naming both ids, when it
      differs; a walk that ends in a TIMED key is checked before that key (its shot must follow it within
      the wait, and a `state` round trip is longer). A capture whose boot trigger decides what is focused
-     (an opener row, a pointer click) may leave it out. A refused id (`a11y: refused ...` in the event
+     (an opener row, `w6/detail-offline.png`'s pointer clicks) may leave it out. A refused id (`a11y: refused ...` in the event
      log) fails the capture whatever the focus;
      A capture with `unreachable` aims the plex.tv and Discover triggers at a closed loopback port
      AFTER the sign-in, so the stored mock session is the account but the service cannot answer
@@ -168,7 +170,7 @@ def capture(sim, spec, scenario, out_dir):
     srv, pms = mock_pms.serve(0, authorize_after=2)
     port = srv.server_address[1]
     runtime = pathlib.Path(tempfile.mkdtemp(prefix="plxnative-wl-"))
-    proc = None
+    proc = log = None
     try:
         post(port, "/_mock/discover", dict({"list": spec["mock"]}, **spec.get("mock_extra", {})))
         for name in ("plextv", "discover"):
@@ -267,6 +269,9 @@ def capture(sim, spec, scenario, out_dir):
         if proc is not None:
             proc.kill()
             proc.wait()
+        if log is not None:
+            log.close()  # the console file the sim wrote to: a leaked handle is a ResourceWarning in a later test
+        if proc is not None:
             # The run's event log (a panic, a frame guard's catch) and console are kept beside the
             # capture as <file stem>.log / .out. A failed capture (a focus mismatch, a missing shot) gets here
             # BEFORE the shot's own mkdir, so a `w6/x.png` capture makes its directory first: without it the

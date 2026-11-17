@@ -172,9 +172,10 @@ the television's form). An id is a place-based dot path in the namespace of whoe
 `plxnative-a11y.json` (route, owner, the focused id, every element) and echoes the nonce, so a script
 can assert where focus is before it takes a screenshot. **A script that only needs to REACH a screen
 element uses these**, as `tests/scenarios/watchlist_captures.json` does (`keys` entries, plus an
-`expect_focus` checked before `shot`) and `tests/player_shots.sh` does (`press:player.control.*`). A key
-walk stays where the walk is the subject: the fps scenes, the focus fingerprints (`tests/focusfp.sh`),
-`hold` and timed keys.
+`expect_focus` checked before `shot`; no capture there walks with a direction key, and the one that
+navigates by pointer clicks, `w6/detail-offline.png`, is the only exception to "by id") and
+`tests/player_shots.sh` does (`press:player.control.*`). A key walk stays where the walk is the subject:
+the fps scenes, the focus fingerprints (`tests/focusfp.sh`), `hold` and timed keys.
 
 ## Which install it drives (`--flavor`)
 
