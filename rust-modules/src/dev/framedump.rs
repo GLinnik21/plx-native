@@ -638,7 +638,7 @@ impl Dump {
         placeholder::arm();
         // The takes never sleep: a take whose answer is out holds the iteration, and the hold
         // timeout is the bound on how long (the module doc's "Landings").
-        app.bridge.landgate().arm_dump_paced(cfg.land_lag);
+        app.runtime.landgate().arm_dump_paced(cfg.land_lag);
         app.t0 = ORIGIN_MS;
         app.prev = ORIGIN_MS;
         ACTIVE.store(true, Ordering::Relaxed);
@@ -714,7 +714,7 @@ fn install_panic_hook() {
 /// iteration: their request is out on purpose, and holding the picture for it would stop the
 /// virtual frames the lag counts.
 fn open_claims_but(app: &App, lagged: &[String]) -> Vec<&'static str> {
-    let mut claims = app.bridge.open_claims();
+    let mut claims = app.runtime.open_claims();
     claims.retain(|c| !lagged.iter().any(|l| l == c));
     claims
 }
@@ -732,7 +732,7 @@ pub(crate) fn iteration_begin(app: &mut App) {
         if d.last_progress.elapsed() > d.cfg.max_hold {
             let why = format!(
                 "no virtual frame completed in {} ms; last hold reasons [{}]; open claims {:?}",
-                d.cfg.max_hold.as_millis(), d.last_why, app.bridge.open_claims()
+                d.cfg.max_hold.as_millis(), d.last_why, app.runtime.open_claims()
             );
             d.fail(why);
         }
@@ -740,7 +740,7 @@ pub(crate) fn iteration_begin(app: &mut App) {
         plx_gfx::dump::set_held_repeat(d.holds_run > 0);
         crate::app::clock::set_replay(ORIGIN_MS + virtual_ms(d.v));
         // The landing clock: a landing is due on a virtual frame, never on a count of iterations.
-        app.bridge.landgate().dump_frame(d.v);
+        app.runtime.landgate().dump_frame(d.v);
         // The storyboard's compiled key schedule (`site_video.py compile_storyboard`): a key goes down at the FIRST iteration of its virtual frame, so a
         // repeat never presses it twice, and comes up [`KEY_UP_AFTER`] virtual frames later, as a
         // finger leaves a remote. Both edges at one instant would make the press machine's commit
@@ -793,7 +793,7 @@ pub(crate) fn pre_draw(app: &App) {
         plx_ui::panel_motion::PanelMotion::drain_queued_text(|| 0);
         // The takes ran before this: which of them held an answer back for the lag, and which are
         // still waiting on a worker.
-        d.lagged = app.bridge.landgate().take_lagged();
+        d.lagged = app.runtime.landgate().take_lagged();
         d.pre = Sample {
             placeholders: 0,
             tex_pending: plx_ui::tex::has_pending(),
@@ -801,7 +801,7 @@ pub(crate) fn pre_draw(app: &App) {
             page_image: false,
             claims: open_claims_but(app, &d.lagged),
             carried: false,
-            starved: app.bridge.landgate().take_starved(),
+            starved: app.runtime.landgate().take_starved(),
         };
     });
 }
@@ -824,7 +824,7 @@ pub(crate) fn after_draw(app: &App, vx: c_int, vy: c_int, vw: c_int, vh: c_int) 
             page_image: app.pages.held_page_image().is_some(),
             claims: open_claims_but(app, &d.lagged),
             carried: app.pages.work_carried(),
-            starved: app.bridge.landgate().take_starved(),
+            starved: app.runtime.landgate().take_starved(),
         };
         let post = d.pre.with_draw(after, &frame, &d.lagged);
         if !d.cfg.allow_absent && !frame.absent.is_empty() {
@@ -923,7 +923,7 @@ pub(crate) fn after_draw(app: &App, vx: c_int, vy: c_int, vw: c_int, vh: c_int) 
         d.last_progress = Instant::now();
         if d.written >= d.cfg.frames {
             let unconverted: Vec<(u32, u64)> =
-                app.bridge.landgate().unconverted_takes().into_iter().map(|(o, n)| (o.0, n)).collect();
+                app.runtime.landgate().unconverted_takes().into_iter().map(|(o, n)| (o.0, n)).collect();
             if !unconverted.is_empty() {
                 d.fail(format!("plain (unconverted) landing takes under dump mode: {unconverted:?}"));
             }

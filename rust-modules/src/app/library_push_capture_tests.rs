@@ -21,7 +21,7 @@ fn push_trace(case: Case) -> Vec<Row> {
     struct Cleanup;
     impl Drop for Cleanup { fn drop(&mut self) { plx_plex::plex::reset_servers_for_test(); } }
     let _cleanup = Cleanup;
-    let _held = ImageHeld;
+
     let session = plx_plex::plex::session::TempSession::new("library-push-capture");
     session.watching("u-library-push-capture");
     plx_plex::plex::reset_servers_for_test();
@@ -29,7 +29,8 @@ fn push_trace(case: Case) -> Vec<Row> {
     let shared = plx_plex::plex::register_for_test("push-shared", "127.0.0.1", 10, "synthetic", "fixture");
     plx_plex::plex::set_current(sid);
     let mut d = Dispatcher::<AppHost>::with_transition(Box::new(plx_ui::containers::transition::PageDip::new()));
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     // WARM: the section table, the listing and its shelves are all in the store before the press.
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
@@ -119,14 +120,15 @@ fn aimed(current: usize, kind: plx_data::browse::SecKind) -> i64 {
     let sid = plx_plex::plex::register_for_test("aim-own", "127.0.0.1", 9, "synthetic", "fixture");
     let shared = plx_plex::plex::register_for_test("aim-shared", "127.0.0.1", 10, "synthetic", "fixture");
     plx_plex::plex::set_current(sid);
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
     rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(current));
     rig.refresh_browse_directory();
     rig.aim_library(kind);
     rig.refresh_browse_directory();
-    let directory = rig.directory.view();
+    let directory = rig.retained.directory.view();
     directory.sections()[directory.current().expect("the store points at a library")].key
 }
 
@@ -137,7 +139,7 @@ fn oracle_library_present_50s() {
     use plx_machine::motion::report;
     use plx_ui::frame::backdrop;
     let mut w = World::new("oracle-library-present");
-    w.bridge.stores.browse.borrow_mut().seed_items_for_test(48);
+    w.bridge.bridge().stores.browse.borrow_mut().seed_items_for_test(48);
     super::show_page(&mut w.d, AppArg::Home);
     w.frames(90);
     w.present_bar();
@@ -150,7 +152,7 @@ fn oracle_library_present_50s() {
     let mut late = 0;
     for i in 0..3300u32 {
         w.step(vec![]);
-        w.bridge.update_home_chrome(&mut w.d, &mut glass, 0.016);
+        w.bridge.bridge().update_home_chrome(&mut w.d, &mut glass, 0.016);
         let now = w.frame * 16;
         report::collect_into(&mut w.d.present, now);
         if w.d.present.take(now) {
@@ -160,7 +162,7 @@ fn oracle_library_present_50s() {
             sources.borrow_mut().begin(w.d.backdrop_layers(1.0));
             {
                 let _guard = backdrop::discover(sources.clone());
-                w.d.draw_with_glass_below(&mut w.bridge, &mut glass, true, backdrop::Z::ALL);
+                w.d.draw_with_glass_below(&mut w.bridge.bridge(), &mut glass, true, backdrop::Z::ALL);
             }
             sources.borrow_mut().resolve();
             backdrop::commit(&sources);

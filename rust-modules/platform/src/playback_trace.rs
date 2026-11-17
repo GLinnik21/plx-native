@@ -181,12 +181,27 @@ pub fn execute(command: Command) -> Status {
         }
         return state.status;
     }
-    if !available() {
+    start_stored(available(), &path())
+}
+
+fn start_stored(gst_available: bool, trace_path: &std::path::Path) -> Status {
+    let status = start(gst_available, trace_path);
+    if status != Status::Recording {
+        // Failure exits must replace the stale Saved/Exported that stop() and set_len(0) left.
+        STATE.lock().unwrap_or_else(|e| e.into_inner()).status = status;
+    }
+    status
+}
+
+/// Start a capture. `gst_available` and `trace_path` are arguments so a host test can reach the
+/// failing exits without GStreamer. Callers must store the returned status (see `start_stored`).
+fn start(gst_available: bool, trace_path: &std::path::Path) -> Status {
+    if !gst_available {
         return Status::Unavailable;
     }
     // Stop the previous capture before touching its file or installing logging callbacks.
     stop();
-    let file = plx_base::eventlog::open_log_append(&path()).and_then(|file| {
+    let file = plx_base::eventlog::open_log_append(trace_path).and_then(|file| {
         file.set_len(0)?;
         Ok(file)
     });
@@ -495,6 +510,25 @@ mod tests {
             assert_eq!(save_failure_line(&private),
                 "playback diagnostics: save failed stage=open-output errno=0 kind=Other");
         });
+    }
+    #[test]
+    fn a_failed_start_stores_its_failure_status_not_the_stale_saved_one() {
+        let _io = EXPORT_IO.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("plx-trace-start-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let missing = dir.join("no-such-dir").join("trace");
+        for (avail, trace, want) in [
+            (false, dir.join("trace"), Status::Unavailable),
+            (true, missing, Status::Failed),
+        ] {
+            STATE.lock().unwrap_or_else(|e| e.into_inner()).status = Status::Saved;
+            let returned = start_stored(avail, &trace);
+            let stored = STATE.lock().unwrap_or_else(|e| e.into_inner()).status;
+            assert_eq!(returned, want);
+            assert_eq!(stored, want, "Settings re-reads STATE.status, which stayed stale after a failed Start");
+        }
+        STATE.lock().unwrap_or_else(|e| e.into_inner()).status = Status::Off;
+        let _ = std::fs::remove_dir_all(&dir);
     }
     #[test]
     fn failed_worker_retires_saving_but_a_late_failure_cannot_override_deletion() {

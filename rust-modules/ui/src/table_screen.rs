@@ -58,7 +58,6 @@ pub struct Header<'a> {
     pub crumb: Option<&'a str>,
     pub title: &'a str,
     pub copy: &'a str,
-    pub copy_size: std::os::raw::c_int,
     /// One key-cap line stacked under the copy's measured height (the Language page's "Hold
     /// [BACK] to close PlxNative"). Never elided: a screen that sets one owns a fit test for it
     /// against [`RouteLayout`]'s narrative width.
@@ -83,7 +82,6 @@ impl<'a> Header<'a> {
             crumb,
             title,
             copy,
-            copy_size: theme::size::LABEL,
             hint: None,
             pending_copy: None,
             follow: None,
@@ -113,24 +111,16 @@ impl<'a> Header<'a> {
         self
     }
 
-    pub fn with_copy_size(mut self, sz: std::os::raw::c_int) -> Self {
-        self.copy_size = sz;
-        self
-    }
-
     /// The one drawing routine, for both loops.
     pub fn paint(&self, p: Painter, measure: &dyn Measure) {
         let copy_end = if let Some(follow) = self.follow {
             // the title (and crumb) alone, then the followed sentence in the fixed frame under it
-            self.layout.draw_narrative_pending(p, self.crumb, self.title, "", self.copy_size, measure, None);
-            let mut frame = self.layout.narrative_copy_frame(self.crumb.is_some(), self.title, self.layout.action.y, measure);
-            let drop = self.layout.copy_cap_drop(self.copy_size, measure);
-            frame.y += drop;
-            frame.h = (frame.h - drop).max(0.0);
-            follow.draw(p, frame, self.copy_size);
+            self.layout.draw_narrative_pending(p, self.crumb, self.title, "", measure, None);
+            let frame = self.layout.copy_text_frame(self.crumb.is_some(), self.title, self.layout.action.y, measure);
+            follow.draw(p, frame);
             frame.y
         } else {
-            self.layout.draw_narrative_pending(p, self.crumb, self.title, self.copy, self.copy_size, measure, self.pending_copy)
+            self.layout.draw_narrative_pending(p, self.crumb, self.title, self.copy, measure, self.pending_copy)
         };
         if let Some(picture) = self.picture {
             picture.draw(p, self.layout.picture_slot(), measure);
@@ -795,7 +785,7 @@ pub struct DocumentScreen<'a> {
 impl<'a> DocumentScreen<'a> {
     /// Over a route's own layout: the document hangs from the TITLE's anchor (`RouteLayout::document`).
     pub fn new(header: Header<'a>, reader: &'a mut DocumentReader, body: &'a str, group: GroupId, entry: EntryId) -> Self {
-        let frame = header.layout.document(header.crumb.is_some());
+        let frame = header.layout.document();
         Self {
             header,
             doc: DocumentPart {
@@ -891,6 +881,7 @@ mod tests {
             press: PressRead::default(),
             focus: FocusRead::default(),
             owner: InputOwner::Entry(EntryId(0)),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         }
     }
 
@@ -1038,11 +1029,11 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert!(matches!(groups[0].kind, GroupKind::Document));
         assert_eq!(groups[0].edge[2], EdgeRule::Nav(NavOpKind::Back));
-        assert!(same(groups[0].extent, layout.document(true)));
+        assert!(same(groups[0].extent, layout.document()));
         let k = FocusKey { entry: E, elem: 0u32 };
         assert!(matches!(Focusable::<FixtureHost>::neighbour(&ds.doc, k, Dir::Up, &cx), Step::Edge), "at the top, UP leaves");
         assert!(matches!(Focusable::<FixtureHost>::neighbour(&ds.doc, k, Dir::Down, &cx), Step::Move(_)), "not at the end: DOWN scrolls inside");
-        assert!(same(Focusable::<FixtureHost>::place(&ds.doc, &0, &cx, At::Drawn).unwrap().rect, layout.document(true)));
+        assert!(same(Focusable::<FixtureHost>::place(&ds.doc, &0, &cx, At::Drawn).unwrap().rect, layout.document()));
     }
     /// The real Belarusian consent labels overflowed the horizontal band's width and aborted
     /// the simulator. Use Unicode-scalar measurement so UTF-8 byte length cannot create this

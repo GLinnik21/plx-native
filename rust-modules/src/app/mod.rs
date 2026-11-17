@@ -135,6 +135,7 @@ pub(crate) mod playback;
 mod preferences;
 pub(crate) mod input;
 pub(crate) mod bridge;
+mod runtime_owners;
 pub(crate) mod chrome;
 mod collections_probe;
 pub(crate) mod content;
@@ -384,9 +385,10 @@ pub(crate) struct App {
     pub(crate) pages: plx_ui::dispatch::Dispatcher<bridge::AppHost>,
     /// Inputs collected for the dispatcher this iteration (`bridge` module doc).
     pub(crate) inputs: Vec<plx_machine::machine::InputEvent<u32>>,
-    /// What that dispatcher borrows: the mounter, the real `TtfMeasure`, the store deliveries,
-    /// the consent machine and the queue of requests an owned screen makes of this loop.
-    pub(crate) bridge: bridge::Bridge,
+    /// Physical logical children. Native playback resources remain in `adapters` above.
+    pub(crate) runtime: runtime_owners::RuntimeOwners,
+    /// Retained publications and IO bookkeeping; each turn borrows these alongside `runtime`.
+    pub(crate) bridge: bridge::BridgeRetained,
 }
 
 impl App {
@@ -406,7 +408,7 @@ impl App {
 impl App {
     pub(crate) fn snapshot_init(&self) -> Option<bootstrap::Initial> {
         let mut initial = self.boot_initial.clone()?;
-        initial.session = self.bridge.snapshot_session_init();
+        initial.session = self.runtime.session.machine.snapshot_init();
         Some(initial)
     }
     /// `instr`'s own narrow read — see [`plx_base::diag::heartbeat::Instruments::last_frame_ms`]. A
@@ -555,8 +557,9 @@ unsafe fn run_and_shutdown(app: &mut App) -> ! {
     plx_base::task::watchdog::set_crash_phase(plx_base::task::watchdog::CrashPhase::Shutdown);
     // Quit: the last screen's visit has not been reported, and no route change will.
     run::end_route_visit(app, false);
-    let failed = finish_recording(&mut app.rec, app.bridge.landgate())
-        || app.bridge.controlled_failure().is_some();
+    let bridge = app.runtime.bridge(&mut app.bridge);
+    let failed = finish_recording(&mut app.rec, bridge.landgate())
+        || bridge.controlled_failure().is_some();
     app.glass.sources.borrow_mut().clear();
     let code = i32::from(failed);
     run::shutdown(&mut app.player.session, &mut app.adapters.player);

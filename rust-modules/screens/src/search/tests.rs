@@ -67,6 +67,7 @@ struct Fixture {
     store: plx_data::stores::search::SearchStore,
     search: plx_data::stores::search::SearchSnapshot,
     measure: FixtureMeasure,
+    hold_hint: std::cell::Cell<plx_machine::machine::HoldHintRead>,
 }
 
 impl Fixture {
@@ -74,7 +75,7 @@ impl Fixture {
     fn new() -> Self {
         let store = plx_data::stores::search::SearchStore::default();
         let search = store.snapshot();
-        Self { store, search, measure: FixtureMeasure }
+        Self { store, search, measure: FixtureMeasure, hold_hint: Default::default() }
     }
     fn query(&mut self, q: &str) -> &mut Self {
         self.store.run(SearchCmd::SetQuery(q.into()));
@@ -91,7 +92,7 @@ impl Fixture {
     fn cx(&self, focus: Option<FocusKey<u32>>) -> Cx<'_, HostFixture> {
         Cx { views: self.search.view(), tick: Tick::default(), measure: &self.measure,
             focus: FocusRead { current: focus, ..Default::default() },
-            press: PressRead::default(), owner: OWNER }
+            press: PressRead::default(), owner: OWNER, modal: Default::default(), page_image: Default::default(), hold_hint: self.hold_hint.get() }
     }
     /// A mounted screen, its content fade already run out so a settled-motion assertion is about
     /// the springs rather than about the page arriving.
@@ -119,6 +120,11 @@ fn deliver(screen: &mut SearchScreen, fixture: &Fixture, focus: Option<FocusKey<
         let mut fx = Effects::new(&mut out, MachineId::Instance(INSTANCE), &mut present);
         Machine::<HostFixture>::step(screen, &event, &cx, &mut fx)
     };
+    let mut read = fixture.hold_hint.get();
+    for effect in &out {
+        if let Fx::HoldHint(event) = &effect.fx { read.apply(*event); }
+    }
+    fixture.hold_hint.set(read);
     let asked = present.take(1);
     if asked { present.acknowledge(1); }
     (handled, out, asked)
@@ -1335,8 +1341,7 @@ mod characterization {
 #[test]
 fn the_hold_hint_does_not_stand_on_a_collection_hit() {
     let _serial = plx_base::testlock::serial();
-    plx_ui::hold_hint::reset_learned_for_test();
-    plx_ui::hold_hint::reset_shown_for_test();
+
     let mut fixture = Fixture::new();
     let hits = (0..5).map(|i| Item::Collection(plx_data::search::CollectionHit {
         item: plx_data::pms::PmsMovie { rk: format!("c-{i}"), title: format!("Collection {i}"),
@@ -1351,7 +1356,7 @@ fn the_hold_hint_does_not_stand_on_a_collection_hit() {
         deliver(&mut screen, &fixture, card, ScreenEvent::Tick(tick(at)));
     }
     assert!(!screen.stack.hint_visible(), "a hold on a collection hit opens its page, not a menu");
-    assert!(!plx_ui::hold_hint::shown_this_run(), "and nothing is spent");
+    assert!(!fixture.hold_hint.get().card, "and nothing is spent");
 }
 
 /// The hold hint (`ui::hold_hint`) on a result card: it stands after the dwell on a settled card,
@@ -1359,8 +1364,7 @@ fn the_hold_hint_does_not_stand_on_a_collection_hit() {
 #[test]
 fn the_hold_hint_stands_on_a_resting_result_card_once_per_install() {
     let _serial = plx_base::testlock::serial();
-    plx_ui::hold_hint::reset_learned_for_test();
-    plx_ui::hold_hint::reset_shown_for_test();
+
     let mut fixture = Fixture::new();
     fixture.query("hint").shelves(vec![shelf(Kind::Movie, "m", 8)]);
     let mut screen = fixture.screen();
@@ -1377,10 +1381,10 @@ fn the_hold_hint_stands_on_a_resting_result_card_once_per_install() {
     assert!(!screen.stack.hint_visible(), "not before the dwell");
     // negatives first: a stand spends the run's latch and would make them vacuous
     rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 4.0);
-    assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(), "never while a menu owns focus");
+    assert!(!screen.stack.hint_visible() && !fixture.hold_hint.get().card, "never while a menu owns focus");
     let field = Some(screen.key(FIELD));
     rest(&mut screen, field, 4.0);
-    assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(), "never on the field");
+    assert!(!screen.stack.hint_visible() && !fixture.hold_hint.get().card, "never on the field");
     rest(&mut screen, card, 3.6);
     assert!(screen.stack.hint_visible(), "after the dwell, on a settled card");
     rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 1.0);

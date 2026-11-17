@@ -1165,7 +1165,16 @@ impl<A: UrlAuthorizer> CurlSource<A> {
             let mut act = lock_active();
             *act = Some(Arc::clone(&self.abort));
         }
-        self.start_range_until(0, None, deadline, checkpoint)
+        self.start_range_until(0, None, deadline, checkpoint)?;
+        // The new transfer answers the old body failure, as a successful `seek` does (that one clears
+        // only `heal_pending` and leaves `failure` masked behind it; `body_failure` reads `None`
+        // after either): HLS
+        // reuses one source across segments, and a failure left pinned here would be named by
+        // `body_failure` for every later, unrelated stop. Cleared only after the request succeeded,
+        // so a refused reopen still reports the cause it was answering.
+        self.failure = None;
+        self.heal_pending = false;
+        Ok(())
     }
 
     /// Attach a fresh easy handle at byte `at` and pump until its headers are complete.
@@ -3674,6 +3683,28 @@ mod tests {
                     "{}",
                     reopen[0]
                 );
+            });
+        });
+    }
+
+    /// HLS reuses one source across segments through `reopen_until`: a successful one answers an
+    /// earlier mid-body failure, so a LATER stop is not pinned on the stale code.
+    #[test]
+    fn a_successful_reopen_until_clears_the_stale_body_failure() {
+        let Some(_gate) = curl_gate() else { return };
+        plx_base::eventlog::with_private_log(|| {
+            with_server(RangeMode::TruncateFirst, |port, _, _| {
+                let url = format!("http://127.0.0.1:{port}/f.mkv");
+                let mut src = CurlSource::open(&url, 0).expect("open");
+                let _ = read_all(&mut src);
+                assert!(src.body_failure().is_some(), "the cut is recorded");
+                src.reopen_until(&url, None, &mut NoCheckpoint).expect("reopen");
+                assert_eq!(
+                    src.body_failure(),
+                    None,
+                    "a successful reopen_until answers the failure"
+                );
+                assert!(!src.heal_pending, "and no heal is pending");
             });
         });
     }

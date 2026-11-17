@@ -43,8 +43,10 @@ mod tests {
             let mut init = plx_session::auth::SessionInit::captured(saved);
             init.epoch = u64::from(u32::MAX) + 81;
             let epoch = init.epoch;
-            let mut rig = Bridge::for_session_test(init);
-            rig.session_adapter = crate::app::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
+            let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+            let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+            let mut rig = harness.bridge();
+            *rig.session_adapter = crate::app::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
             if scenario != 0 {
                 rig.session_adapter.inject_fixture_work(1, move |output, input| {
                     std::thread::spawn(move || {

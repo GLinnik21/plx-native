@@ -51,7 +51,6 @@ pub struct OnboardScreen {
     form: FormTable<SrcTarget, SrcTarget, std::convert::Infallible>,
     table_gen: u32,
     table_epoch: u32,
-    entry_pins: Vec<(usize, bool)>,
     draft: Vec<(usize, bool)>,
     /// **The sections this editing session PRESSED** — the provenance itself, recorded by
     /// [`toggle_row`](Self::toggle_row) rather than derived from any comparison.
@@ -66,7 +65,7 @@ pub struct OnboardScreen {
     /// back to the drifted default.
     ///
     /// Section ids and not row indices, because a landing re-orders rows and this must survive
-    /// one; cleared with `draft`/`entry_pins` whenever the table's identity changes
+    /// one; cleared with `draft` whenever the table's identity changes
     /// ([`reseed_if_table_identity_changed`](Self::reseed_if_table_identity_changed)).
     touched: Vec<usize>,
     /// The empty-roster spinner clock, in ms — cached each tick from
@@ -95,30 +94,33 @@ pub struct OnboardScreen {
     /// the first-run question on a `Try again` tap. See
     /// `an_action_that_changes_verb_under_an_armed_press_refuses_to_commit` below.
     armed_kind: Option<ActionKind>,
-    /// **`has_band()`'s answer, cached rather than read live.** Whether the band holds a control
-    /// depends on the retained directory's section count, which a roster landing can change
-    /// between two calls this screen never sees as one event. `Focusable::groups` reaches
-    /// `has_band()` through `view()`/`labels()` on every focus query the engine makes, which can
-    /// happen at any point between two of this screen's own `step`s — so a live read there means
-    /// the group SET the engine is reasoning about can change mid-query, the same class of race
-    /// `armed_kind`'s own doc describes on the press side (and closes the same way: record the
-    /// answer at a point this screen controls, rather than re-deriving it from a changing retained
-    /// view whenever asked). `rebuild` is that point — it already reacts to every input that could move this
-    /// answer (a fresh mount, a toggle, and the `Tick`/`StoreChanged` arms that watch
-    /// `source_list_gen`) — so caching it there costs nothing and buys two things a live read
-    /// cannot: a STABLE group set for the whole gap between two `rebuild`s, and a state the
-    /// recorder (`OnboardState::write`, below) can actually see and replay a frame against.
-    band: bool,
-    /// **First run found nothing to choose and has already left** ([`nothing_to_choose`]). Latched
-    /// because the route flip is drained after the frame that asked for it, so a second `Tick` can
-    /// arrive first — and the commit it would repeat is an `ApplyPins` plus a second `OnboardDone`.
-    self_answered: bool,
+    /// **Where this screen is in its one lifecycle** ([`Exit`]). Every input and the first-run
+    /// auto-answer act only while [`Exit::Editing`]: the route change a leave asks for is drained
+    /// after the frame that asked, and a page fade follows it, so the screen keeps receiving
+    /// events after it has left — a second exit then (BACK after Start, Start after BACK, the
+    /// auto-answer after either) used to replace the first in the newest-wins navigation request.
+    exit: Exit,
+}
+
+/// **The editor's lifecycle, one field with one writer per transition** (implicit-state audit
+/// 2026-11-17, findings 1 and 3). It replaced `self_answered`, a latch only the auto-answer set,
+/// while Start and BACK set nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Exit {
+    /// Taking input.
+    Editing,
+    /// First run sent its answer (`ApplyPins`) when the Browse publication's pin commit count was
+    /// `after`; it asks for Home on the first frame the publication shows a later commit, the
+    /// outcome of its own ([`plx_data::stores::browse::PinCommit`]), recorded or refused.
+    Committing { after: u32 },
+    /// It asked to leave (Home, the picker, or the Settings surface's pop). Nothing acts any more.
+    Left,
 }
 
 struct OnboardState {
     settings: bool,
     parent: Option<String>,
-    band: bool,
+    exit: Exit,
     draft: Vec<(usize, bool)>,
 }
 
@@ -126,7 +128,11 @@ impl LogicalState for OnboardState {
     fn write(&self, w: &mut Canon) {
         w.bool(self.settings).bool(self.parent.is_some());
         if let Some(parent) = &self.parent { w.str(parent); }
-        w.bool(self.band);
+        match self.exit {
+            Exit::Editing => { w.u32(0); }
+            Exit::Committing { after } => { w.u32(1).u32(after); }
+            Exit::Left => { w.u32(2); }
+        }
         w.seq(self.draft.len());
         for (s, on) in &self.draft {
             w.u32(*s as u32).bool(*on);
@@ -134,8 +140,8 @@ impl LogicalState for OnboardState {
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
-            "onboard settings={} band={} draft={:?}",
-            self.settings, self.band, self.draft
+            "onboard settings={} exit={:?} draft={:?}",
+            self.settings, self.exit, self.draft
         ));
     }
 }
@@ -184,15 +190,13 @@ impl OnboardScreen {
     }
 
     fn new(entry: EntryId, settings: bool, directory: DirectoryView<'_>, ground: RouteGround) -> Self {
-        let base = snapshot_pins(directory);
         let mut s = Self {
             entry,
             settings,
-            form: FormTable::new(super::registry::BAND),
+            form: FormTable::page(super::registry::BAND),
             table_gen: u32::MAX,
             table_epoch: directory.epoch().unwrap_or(0),
-            entry_pins: base.clone(),
-            draft: base,
+            draft: snapshot_pins(directory),
             touched: Vec::new(),
             phase_ms: 0.0,
             phase_clock: plx_machine::motion::Phase::default(),
@@ -201,12 +205,11 @@ impl OnboardScreen {
             state: OnboardState {
                 settings,
                 parent: None,
-                band: false, // overwritten by `rebuild` below, before anything reads it
+                exit: Exit::Editing,
                 draft: Vec::new(),
             },
             armed_kind: None,
-            band: false, // ditto
-            self_answered: false,
+            exit: Exit::Editing,
         };
         s.rebuild(false, directory);
         s.form.table.list_focused = settings;
@@ -239,33 +242,13 @@ impl OnboardScreen {
     /// layer in: see [`touched`](Self::touched).
     ///
     /// A row pressed twice back onto the value it opened with is therefore an answer, and
-    /// deliberately: somebody chose it, so freezing it is the honest record. [`dirty`](Self::dirty)
-    /// stays on the net difference instead, so *Done* still goes away when an edit is undone.
+    /// deliberately: somebody chose it, so freezing it is the honest record.
     fn answered(&self) -> Vec<(usize, bool)> {
         self.draft
             .iter()
             .filter(|(section, _)| self.touched.contains(section))
             .copied()
             .collect()
-    }
-
-    /// Whether the staged choices differ from their entry values. First run stages until its
-    /// forward action; Settings saves switches immediately and always retains its Done action.
-    fn dirty(&self) -> bool {
-        !self.settings
-            || self.draft.iter().any(|(section, now)| {
-                self.entry_pins
-                    .iter()
-                    .find(|(s, _)| s == section)
-                    .is_some_and(|(_, was)| was != now)
-            })
-    }
-
-    /// Settings always offers Done; first run offers its forward/retry action. Reads the CACHED
-    /// answer (`band`'s own doc has the reason) rather than re-deriving it from the retained
-    /// directory on every call — `rebuild` is what keeps the cache honest.
-    fn has_band(&self) -> bool {
-        self.band
     }
 
     fn rebuild(&mut self, keep: bool, directory: DirectoryView<'_>) {
@@ -275,7 +258,6 @@ impl OnboardScreen {
         let rows = self.draft_rows(directory);
         let form = source_list::form(Level::OnHome, &groups, &rows, Tail::None);
         self.table_gen = gen;
-        self.form.table.compact = false;
         if keep {
             // a rebuild under the cursor (a press, a roster landing) holds the focused library by
             // identity and lets the pill glide rather than snap
@@ -285,12 +267,12 @@ impl OnboardScreen {
             self.form.set(form, None);
         }
         self.state.draft = self.draft.clone();
-        // `draft_rows()` just resynced `self.draft`/`self.entry_pins` against whatever the roster
-        // looks like now, so `dirty()` below reads the SAME state `has_band()` would have read
-        // live — recomputing it here, once, is what lets `has_band()` become a field read instead
-        // of three global/derived reads on every focus query the engine makes (`band`'s own doc).
-        self.band = self.settings || directory.section_count() == 0 || self.dirty();
-        self.state.band = self.band;
+    }
+
+    /// Move to `exit`, mirrored into the logical state a replay hashes.
+    fn set_exit(&mut self, exit: Exit) {
+        self.exit = exit;
+        self.state.exit = exit;
     }
 
     fn reseed_if_table_identity_changed(&mut self, directory: DirectoryView<'_>) {
@@ -299,15 +281,10 @@ impl OnboardScreen {
             return;
         }
         self.table_epoch = epoch;
-        let fresh = snapshot_pins(directory);
-        self.draft = fresh.clone();
+        self.draft = snapshot_pins(directory);
         // Every press this session made was about section ids from the OLD table; a reset is what
         // makes them mean a different library, or none.
         self.touched.clear();
-        // Both mounts, for `draft_rows`' reason: `entry_pins` is the "what did this row read when
-        // the editor opened" baseline `dirty` compares against, and a first-run editor needs one as
-        // much as the Settings editor does. Which rows were PRESSED is `touched`'s, not this.
-        self.entry_pins = fresh;
     }
 
     /// The retained directory's rows with this editor's draft laid over them.
@@ -315,7 +292,7 @@ impl OnboardScreen {
     /// **A row the viewer has not touched follows the live pin; a row they have does not.**
     /// [`touched`](Self::touched) says which is which, and it says so because the press recorded
     /// it: an untouched row's value is still being re-derived underneath the draft and rides that
-    /// drift into `entry_pins` too, while a pressed row is an answer and nothing may move it but
+    /// drift, while a pressed row is an answer and nothing may move it but
     /// another press. This asked `entry == draft` until 2026-09-20 — which reads a row pressed
     /// back onto the value it opened with as untouched, and then quietly overwrites that press
     /// with whatever the live default has since drifted to.
@@ -332,16 +309,10 @@ impl OnboardScreen {
         let mut rows: Vec<_> = directory.sections().iter().map(|section| section.row.clone()).collect();
         for r in &rows {
             match self.draft.iter().position(|(s, _)| *s == r.section) {
-                None => {
-                    self.draft.push((r.section, r.pinned));
-                    self.entry_pins.push((r.section, r.pinned));
-                }
+                None => self.draft.push((r.section, r.pinned)),
                 Some(di) => {
-                    if let Some(ei) = self.entry_pins.iter().position(|(s, _)| *s == r.section) {
-                        if !self.touched.contains(&r.section) {
-                            self.entry_pins[ei].1 = r.pinned;
-                            self.draft[di].1 = r.pinned;
-                        }
+                    if !self.touched.contains(&r.section) {
+                        self.draft[di].1 = r.pinned;
                     }
                 }
             }
@@ -404,6 +375,9 @@ impl OnboardScreen {
             self.leave(fx);
             return;
         }
+        // The count the commit is sent after: the screen leaves when the publication shows a later
+        // one ([`Exit::Committing`]), so Home is asked for once the store has taken the answer.
+        let after = directory.pin_commit().seq;
         // The count logged below is read off `self.draft`, not back from the Browse owner —
         // `ApplyPins` is an effect here, not a call that has already run by the time this line
         // executes, so the retained directory still reflects whatever was true BEFORE this commit.
@@ -419,7 +393,26 @@ impl OnboardScreen {
             StoreId::Browse,
             StoreCmd::Browse(BrowseCmd::ApplyPins(self.answered())),
         )));
-        plx_base::eventlog::log(&format!("onboard: Home selection recorded — {on} of {total} libraries on"));
+        plx_base::eventlog::log(&format!("onboard: Home selection sent — {on} of {total} libraries on"));
+        self.set_exit(Exit::Committing { after });
+    }
+
+    /// First run, committing: leave once the Browse publication shows the store has run the
+    /// commit, saying whether it produced a record. A refused record still leaves — the store keeps
+    /// the selection for this run ([`plx_data::stores::browse::PinCommit`]) and the question is put
+    /// again next time, which is the truth about an answer nothing wrote down.
+    fn finish_commit<H: DirectoryLike>(&mut self, directory: DirectoryView<'_>, fx: &mut Effects<'_, H>) {
+        let Exit::Committing { after } = self.exit else { return };
+        let commit = directory.pin_commit();
+        if commit.seq == after {
+            return;
+        }
+        plx_base::eventlog::log(if commit.recorded {
+            "onboard: Home selection recorded — entering Home"
+        } else {
+            "onboard: Home selection was not recorded (no session identity, or the write queue refused it) — \
+             it stands for this run and will be asked again; entering Home"
+        });
         self.leave(fx);
     }
 
@@ -431,14 +424,12 @@ impl OnboardScreen {
         } else {
             fx.push(Fx::App(AppFx::Loop(LoopReq::OnboardDone)));
         }
+        self.set_exit(Exit::Left);
     }
 
+    /// The band's one control: every mounting always offers its action (Retry, Start or Done).
     fn labels(&self, directory: DirectoryView<'_>) -> Vec<&'static CStr> {
-        if self.has_band() {
-            vec![self.action_kind(directory).label()]
-        } else {
-            Vec::new()
-        }
+        vec![self.action_kind(directory).label()]
     }
 
     fn view(&self, directory: DirectoryView<'_>) -> OnboardView<'_> {
@@ -544,11 +535,11 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
                     self.rebuild(true, directory);
                     fx.invalidate(plx_machine::present::Provenance::Landing(fx.from()));
                 }
+                self.finish_commit(directory, fx);
                 // First run with no decision in it answers itself: the question is recorded as put
                 // (an empty `ApplyPins`) and Home opens, rather than a one-row screen whose only
-                // row cannot be turned off.
-                if !self.settings && !self.self_answered && nothing_to_choose(directory) {
-                    self.self_answered = true;
+                // row cannot be turned off. Only while editing: after a leave it would be a second exit.
+                if !self.settings && self.exit == Exit::Editing && nothing_to_choose(directory) {
                     plx_base::eventlog::log("onboard: one library on one server — nothing to choose, entering Home");
                     self.commit(directory, fx);
                     return Handled::Yes;
@@ -566,12 +557,18 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
                 if self.table_gen != directory.source_list_gen() {
                     self.rebuild(true, directory);
                 }
+                self.finish_commit(directory, fx);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {
                 form_focus(&mut self.form, to.elem);
                 Handled::Yes
             }
+            // Nothing below acts once the screen is leaving ([`Exit`]): a press, a commit or BACK
+            // after a leave would be a second exit.
+            ScreenEvent::Activate(_) | ScreenEvent::PressCommit(_) if self.exit != Exit::Editing => Handled::Yes,
+            ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: Key::Back, edge: Edge::Down, .. }, .. })
+                if self.exit != Exit::Editing && !self.settings => Handled::Yes,
             ScreenEvent::Activate(e) => {
                 if band_index(*e).is_none() {
                     let target = self.form.index_of_key(RowKey(*e)).and_then(|i| self.form.id_at(i)).copied();
@@ -649,9 +646,11 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
                 // BACK is navigation, never an answer: Cancel in Settings (the surface pops),
                 // the picker on first run
                 if self.settings {
+                    self.set_exit(Exit::Left);
                     Handled::No
                 } else {
                     fx.push(Fx::App(AppFx::Loop(LoopReq::OnboardBack)));
+                    self.set_exit(Exit::Left);
                     Handled::Yes
                 }
             }
@@ -939,6 +938,7 @@ mod tests {
             tick: plx_machine::machine::Tick::default(),
             measure: m,
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             focus: FocusRead {
                 current: focus.map(|elem| FocusKey { entry: EntryId(0), elem }),
             ..Default::default() },
@@ -1073,35 +1073,22 @@ mod tests {
         assert!(!copy.contains("More than one server"));
     }
 
-    /// The band's four states (`ui::onboard`'s `bottom_actions`, moved onto `has_band`): first run
-    /// always offers its commit; a clean Settings editor has nothing to; a dirty one does; and a
-    /// pristine editor over an empty roster still offers `Try again`, which is a real action even
-    /// though nothing has been touched.
+    /// The band always holds one action, and which one is the mounting and the roster's: first
+    /// run with nothing discovered retries, first run with libraries starts, Settings is Done.
     #[test]
-    fn the_band_expresses_forward_back_and_commit_as_distinct_states() {
+    fn the_band_holds_one_action_for_every_mounting() {
         let _g = plx_base::testlock::serial();
         let mut browse = BrowseFixture::new();
-        assert!(
-            OnboardScreen::first_run(EntryId(0), browse.capture()).has_band(),
-            "first run always offers its commit"
-        );
+        let s = OnboardScreen::first_run(EntryId(0), browse.capture());
+        assert_eq!(s.labels(browse.capture()), vec![ActionKind::Retry.label()], "nothing discovered: retry");
 
         browse.seed_pins(&[true, true]);
-        assert!(
-            OnboardScreen::settings(EntryId(0), browse.capture()).has_band(),
-            "Settings always offers Done as an explicit return action"
-        );
-
-        browse.seed_pins(&[true, true]);
+        let s = OnboardScreen::first_run(EntryId(0), browse.capture());
+        assert_eq!(s.labels(browse.capture()), vec![ActionKind::Start.label()], "first run commits");
         let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
+        assert_eq!(s.labels(browse.capture()), vec![ActionKind::Done.label()], "Settings always offers Done");
         s.toggle_row(SrcTarget::Library(0), browse.capture());
-        assert!(s.has_band(), "Done appears after an edit");
-
-        browse.stores.browse_run_for_test(BrowseCmd::Reset);
-        assert!(
-            OnboardScreen::settings(EntryId(0), browse.capture()).has_band(),
-            "Retry is a real action even on a pristine editor"
-        );
+        assert_eq!(s.labels(browse.capture()), vec![ActionKind::Done.label()], "…before and after an edit");
     }
 
     /// **Issue 9 reproduction, first run.** Before the draft model, a toggle wrote through to the
@@ -1188,29 +1175,22 @@ mod tests {
     }
 
 
+    /// An untouched row follows the live default as it drifts, and is not an answer.
     #[test]
-    fn an_untouched_rows_live_drift_is_absorbed_into_entry_not_read_as_an_edit() {
+    fn an_untouched_rows_live_drift_is_followed_not_read_as_an_edit() {
         let _g = plx_base::testlock::serial();
         let _t = TempSession::new("entry-drift");
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
         let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
-        assert_eq!(s.entry_pins, vec![(0, true), (1, true)]);
 
         // Nobody touched anything — this is `resolve_pins` re-deriving an unrecorded default as a
         // second source lands, not a user press.
         browse.set_pinned(1, false);
         s.rebuild(true, browse.capture());
 
-        assert_eq!(
-            s.entry_pins,
-            vec![(0, true), (1, false)],
-            "entry_pins rode the untouched row's drift, so dirty() reads no difference from draft"
-        );
-        assert!(
-            !s.dirty(),
-            "an untouched row's drift is not something Done should offer to commit either"
-        );
+        assert!(!s.draft_rows(browse.capture())[1].pinned, "the untouched row shows the live default");
+        assert!(s.answered().is_empty(), "…and drift is nobody's answer");
     }
 
     /// **A row pressed TWICE, with the default drifting in between, is still an answer.**
@@ -1223,8 +1203,7 @@ mod tests {
     /// the row twice, left it On, and it came back Off.
     ///
     /// The fix is the same one the store took: the touched set is RECORDED by the press
-    /// (`toggle_row`), never re-derived from a comparison. `dirty()` stays on the net difference,
-    /// so Done still disappears when an edit is undone.
+    /// (`toggle_row`), never re-derived from a comparison.
     #[test]
     fn a_row_toggled_back_after_its_default_drifted_is_still_an_answer() {
         let _g = plx_base::testlock::serial();
@@ -1263,7 +1242,7 @@ mod tests {
 
     /// **Codex review finding, 2026-09-04.** Browse's `BrowseCmd::Reset` (a profile switch, or ordinary
     /// `sync_roster` maintenance while this screen is open) makes every section INDEX mean a
-    /// different library, or none — so a `draft`/`entry_pins` built from the old indices would
+    /// different library, or none — so a `draft` built from the old indices would
     /// misapply. Historically red: removing `reseed_if_table_identity_changed`'s call from
     /// `rebuild` fails the assertions below.
     #[test]
@@ -1274,7 +1253,7 @@ mod tests {
         browse.seed_pins(&[true, true]);
         let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
         s.toggle_row(SrcTarget::Library(0), browse.capture()); // draft: section 0 off — a real, in-progress user edit
-        assert!(s.dirty());
+        assert_eq!(s.answered(), vec![(0, false)]);
 
         // What `sync_roster`'s `reset()` does mid-session: the table's IDENTITY changes out from
         // under the open editor. Re-seed with a DIFFERENT shape, so a surviving stale index would
@@ -1300,30 +1279,24 @@ mod tests {
         );
     }
 
-    /// **Codex review finding, 2026-09-04.** A freshly-landed row used to be seeded into `draft`
-    /// alone, never `entry_pins`, so `dirty`'s comparison had no entry to compare a toggle on that
-    /// row against — `Done` would never appear for an edit made on a library that landed after
-    /// this screen opened.
+    /// **Codex review finding, 2026-09-04.** A library that lands after the screen opened can be
+    /// answered like any other: landing alone is no answer, a press on it is.
     #[test]
-    fn a_freshly_landed_row_can_independently_make_settings_dirty() {
+    fn a_freshly_landed_row_can_be_answered() {
         let _g = plx_base::testlock::serial();
         let _t = TempSession::new("late-row");
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true]);
         let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
-        assert!(!s.dirty());
 
         // A second library lands mid-edit — an ADDITIVE append, exactly like a real second source
         // answering, never a reset.
         browse.land_pin(true);
         s.rebuild(true, browse.capture());
-        assert!(!s.dirty(), "landing alone is not an edit");
+        assert!(s.answered().is_empty(), "landing alone is not an edit");
 
         s.toggle_row(SrcTarget::Library(1), browse.capture());
-        assert!(
-            s.dirty(),
-            "a toggle on a freshly-landed row must make Done appear, or it can never be committed"
-        );
+        assert_eq!(s.answered(), vec![(1, false)], "a toggle on a freshly-landed row is an answer");
     }
 
     /// The never-empty floor: the LAST pinned library on the draft refuses to turn off, judged
@@ -1451,9 +1424,98 @@ mod tests {
             Some(band),
             browse.capture(),
         );
-        assert!(effs
-            .iter()
-            .any(|st| matches!(st.fx, Fx::App(AppFx::Loop(LoopReq::OnboardDone)))));
+        assert!(effs.iter().any(|st| matches!(&st.fx,
+            Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(_)))))),
+            "the unchanged verb commits (Home follows once the store has taken the answer)");
+    }
+
+    /// Run `ApplyPins(answers)` through the real Browse store, the way the dispatcher does in the
+    /// drain that follows a commit, with a session that does (`cid`) or does not (empty) carry the
+    /// `client_id` a record needs.
+    fn run_commit(browse: &mut BrowseFixture, answers: Vec<(usize, bool)>, client_id: &str) {
+        let session = plx_plex::plex::session::Session { client_id: client_id.into(), ..Default::default() };
+        browse.stores.browse_run(BrowseCmd::ApplyPins(answers), &plx_data::stores::browse::BrowseRosterInput {
+            tenure: 0, keys: &Default::default(), session: &session, visible_generation: 0, settled: true, profile_key: "",
+        });
+    }
+
+    fn tick_ev() -> ScreenEvent<InnerHost> {
+        ScreenEvent::Tick(plx_machine::machine::Tick { ms: 16, dt_us: 16_000 })
+    }
+
+    fn emits(effs: &[Stamped<InnerHost>], req: LoopReq) -> bool {
+        effs.iter().any(|st| matches!(&st.fx, Fx::App(AppFx::Loop(r)) if *r == req))
+    }
+
+    /// Start, arming and committing on the band.
+    fn press_start(s: &mut OnboardScreen, browse: &mut BrowseFixture) -> Vec<Stamped<InnerHost>> {
+        let band = band_elem(0);
+        step_ev(s, &key_ok_down(), Some(band), browse.capture());
+        step_ev(s, &ScreenEvent::PressCommit(PressId(1)), Some(band), browse.capture()).1
+    }
+
+    /// **First run leaves once its answer has been taken, not when it was sent** (implicit-state
+    /// audit 2026-11-17, finding 3). The commit queues `ApplyPins` and waits; the screen asks for
+    /// Home on the first frame the Browse publication shows that commit's outcome, recorded or not,
+    /// and only once.
+    #[test]
+    fn first_run_leaves_after_the_store_has_taken_its_answer() {
+        let _g = plx_base::testlock::serial();
+        let _t = TempSession::new("leave-after-record");
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
+        let effs = press_start(&mut s, &mut browse);
+        assert!(effs.iter().any(|st| matches!(&st.fx,
+            Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(_)))))), "the answer is sent");
+        assert!(!emits(&effs, LoopReq::OnboardDone), "…but Home waits for the store to take it");
+        assert!(!emits(&step_ev(&mut s, &tick_ev(), None, browse.capture()).1, LoopReq::OnboardDone),
+            "a frame before the store has run the commit does not leave either");
+        run_commit(&mut browse, Vec::new(), "");
+        assert!(emits(&step_ev(&mut s, &tick_ev(), None, browse.capture()).1, LoopReq::OnboardDone),
+            "the publication shows the commit's outcome: leave");
+        assert!(!emits(&step_ev(&mut s, &tick_ev(), None, browse.capture()).1, LoopReq::OnboardDone),
+            "…once");
+    }
+
+    /// **Leaving is one state** (implicit-state audit 2026-11-17, finding 1). Once first run has
+    /// committed or gone BACK, no second exit can follow inside the route's fade: BACK after Start,
+    /// a second BACK, a row press, and the nothing-to-choose auto-answer are all inert.
+    #[test]
+    fn once_first_run_is_leaving_no_second_exit_follows() {
+        let _g = plx_base::testlock::serial();
+        let _t = TempSession::new("one-exit");
+        // Start, then BACK inside the fade: BACK must not send the viewer to the picker.
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
+        press_start(&mut s, &mut browse);
+        let (_, effs) = step_ev(&mut s, &key_back_down(), None, browse.capture());
+        assert!(!emits(&effs, LoopReq::OnboardBack), "BACK after Start does not leave a second way");
+        let (_, effs) = step_ev(&mut s, &ScreenEvent::Activate(0), Some(0), browse.capture());
+        assert!(effs.is_empty(), "nor does a row press edit an answer already sent");
+
+        // BACK, then a second BACK or a Start press: one exit only.
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
+        assert!(emits(&step_ev(&mut s, &key_back_down(), None, browse.capture()).1, LoopReq::OnboardBack));
+        assert!(!emits(&step_ev(&mut s, &key_back_down(), None, browse.capture()).1, LoopReq::OnboardBack),
+            "a second BACK does not ask again");
+        let effs = press_start(&mut s, &mut browse);
+        assert!(!effs.iter().any(|st| matches!(&st.fx, Fx::App(AppFx::Store(..)) | Fx::App(AppFx::Loop(_)))),
+            "Start after BACK neither answers nor leaves");
+
+        // BACK, then the roster turns out to hold nothing to choose: the auto-answer must not run.
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
+        step_ev(&mut s, &key_back_down(), None, browse.capture());
+        browse.seed_pins(&[true]);
+        let effs = step_ev(&mut s, &tick_ev(), None, browse.capture()).1;
+        assert!(!emits(&effs, LoopReq::OnboardDone), "the auto-answer does not run after BACK");
+        assert!(!effs.iter().any(|st| matches!(&st.fx, Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(_)))))),
+            "…and records nothing");
     }
 
     /// **First run corrects a mismatched default seat to the band, whichever `FocusTarget` shape
@@ -1605,14 +1667,17 @@ mod tests {
         browse.seed_pins(&[true]);
         let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
         let effs = tick(&mut s, browse.capture());
-        assert!(leaves(&effs), "one server, one library: nothing to choose, so the screen leaves");
         assert!(
             effs.iter().any(|st| matches!(
                 &st.fx,
                 Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(a)))) if a.is_empty()
             )),
-            "…having recorded that the question was put, with no answer nobody gave"
+            "one server, one library: nothing to choose, so the screen records that the question \
+             was put, with no answer nobody gave"
         );
+        assert!(!leaves(&effs), "…and leaves once the store has taken it, not before");
+        run_commit(&mut browse, Vec::new(), "");
+        assert!(leaves(&tick(&mut s, browse.capture())), "the store took it: leave");
         assert!(!leaves(&tick(&mut s, browse.capture())), "and only once, however many frames the leave takes");
 
         let mut browse = BrowseFixture::new();
@@ -1690,12 +1755,12 @@ mod tests {
     }
 
     /// **Codex review finding, round 2 (2026-09-04, `ui/onboard.rs`).** The narrower race the
-    /// sibling test above (`an_untouched_rows_live_drift_is_absorbed_into_entry_not_read_as_an_
-    /// edit`) leaves open: a row the user HAS toggled (so `entry_pins` and `draft` genuinely
+    /// sibling test above (`an_untouched_rows_live_drift_is_followed_not_read_as_an_edit`) leaves
+    /// open: a row the user HAS toggled (so its draft and the value it opened with genuinely
     /// disagree) that ALSO drifts independently, live, to a value nobody chose through this screen
     /// at all — `resolve_pins` re-deriving an unrecorded default is not gated on whether the user
     /// has touched that particular row. (A `bool` has only two states, so the drift necessarily
-    /// lands on either `entry_pins`'s original value or `draft`'s edited one; this test picks the
+    /// lands on either the row's original value or `draft`'s edited one; this test picks the
     /// latter — the SAME direction the user's own toggle went — deliberately, because that is the
     /// coincidence that made the OLD `back_action`'s "restore" look plausible instead of obviously
     /// wrong: it walked a `BASE` snapshot against the live table and called `browse::toggle_pin`
@@ -1706,7 +1771,7 @@ mod tests {
     /// still gated on the press set (`touched`) and still skips a pressed row for exactly that reason —
     /// so under the new architecture BACK/Cancel has nothing to restore in the first place: nothing
     /// is ever written before `commit`. This is what keeps it that way: the drifted value (`false`)
-    /// is chosen to differ from the row's `entry_pins` snapshot (`true`), the one choice under
+    /// is chosen to differ from the value the row opened with (`true`), the one choice under
     /// which a restore loop would misfire.
     #[test]
     fn a_toggled_rows_independent_drift_is_never_restored_or_recorded_by_cancel() {
@@ -1715,7 +1780,7 @@ mod tests {
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
         let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
-        s.toggle_row(SrcTarget::Library(0), browse.capture()); // a real user edit: draft[0] = false, entry_pins[0] stays true
+        s.toggle_row(SrcTarget::Library(0), browse.capture()); // a real user edit: draft[0] = false, the row opened true
 
         // A second source answers mid-edit and `resolve_pins` re-derives section 0's own
         // still-unrecorded default independently of the user's press, landing on `false` — the
@@ -1776,6 +1841,26 @@ mod tests {
             Some(vec![(0, false)]),
             "the commit carries the answered row — and only it — however the live pin has moved"
         );
+    }
+
+    /// Favorite libraries draws the Settings table in first run, in Settings and over the
+    /// Library: the route page table (`FormTable::page`), the one the Settings pages build. First
+    /// run drew the pre-board table, and so did the Settings editor.
+    #[test]
+    fn every_mounting_draws_the_settings_table() {
+        let _g = plx_base::testlock::serial();
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        for (what, s) in [
+            ("first run", OnboardScreen::first_run(EntryId(0), browse.capture())),
+            ("settings", OnboardScreen::settings(EntryId(0), browse.capture())),
+            ("library", OnboardScreen::library(EntryId(0), browse.capture())),
+        ] {
+            assert!(s.form.table.n_rows() > 0, "{what}: the fixture puts rows in the table");
+            assert!(s.form.table.is_board(), "{what}: board measures");
+            assert!(!s.form.table.compact, "{what}: full-height rows");
+            assert_eq!(s.form.table.header_ink, theme::TEXT_READING, "{what}: reading-ink headers");
+        }
     }
 
     /// **DOWN off the last library reaches the action pill.** Reported: "on screens containing a

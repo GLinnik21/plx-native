@@ -175,6 +175,27 @@ fn back_closes_the_pad_and_clears_the_verdict() {
     );
 }
 
+/// The PUBLISHED state, not just the field: `retire_pad` used to sync before clearing
+/// `pin_denied`, so the receiver saw `pad_open = false, pin_denied = true` until the next Tick.
+#[test]
+fn back_on_a_denied_pad_publishes_a_closed_pad_with_no_verdict() {
+    let mut s = bare(Pad {
+        open: true,
+        target: 2,
+        error_s: PIN_ERR_S,
+        ..Pad::new()
+    });
+    s.pin_denied = true;
+    s.sync_pin_state();
+    assert!(s.state.pad_open && s.state.pin_denied, "precondition");
+    step_ev(&mut s, &key_down(Key::Back, 0, 0), None);
+    assert!(!s.state.pad_open, "the published state shows the pad closed");
+    assert!(
+        !s.state.pin_denied,
+        "…and must not carry a verdict about a pad that is gone"
+    );
+}
+
 /// **The shared mechanism, tested directly.** All three doors out of the pad — BACK, a
 /// pointer miss (both above/below), and `tick`'s own non-PIN-failure branch (`ProfilesScreen`'s
 /// module doc, `close_pad`'s doc) — call this one function, so a fix or a regression in it

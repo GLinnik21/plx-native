@@ -5540,6 +5540,7 @@ mod focus_tests {
             focus: FocusRead::default(),
             press: PressRead::default(),
             owner: InputOwner::Entry(entry),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         })
     }
 

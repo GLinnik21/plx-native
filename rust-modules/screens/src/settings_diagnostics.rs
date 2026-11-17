@@ -93,7 +93,7 @@ impl DiagnosticsPage {
     pub(super) fn at(entry: EntryId, status: Status) -> Self {
         let mut page = Self {
             entry,
-            form: FormTable::new(super::super::registry::BAND),
+            form: FormTable::page(super::super::registry::BAND),
             state: DiagState { sel: DiagId::Trace.key(), status },
         };
         page.rebuild();
@@ -102,8 +102,6 @@ impl DiagnosticsPage {
 
     fn rebuild(&mut self) {
         let keep = self.form.selected_id().cloned().unwrap_or(DiagId::Trace);
-        self.form.table.compact = false;
-        self.form.table.board_metrics(true);
         self.form.set(diagnostics_form(self.state.status), Some(&keep));
         self.form.table.list_focused = true;
     }
@@ -111,7 +109,7 @@ impl DiagnosticsPage {
     fn view(&self) -> TableScreen<'_> {
         use plx_platform::i18n::msg;
         TableScreen::new(
-            Header::new(RouteLayout::settings_page(), Some(msg::settings_title()), msg::settings_trace_section(), msg::settings_trace_export_detail()),
+            Header::new(RouteLayout::screen(), Some(msg::settings_title()), msg::settings_trace_section(), msg::settings_trace_export_detail()),
             &self.form.table, GroupId(0), self.entry,
         )
         .keyed(&self.form)
@@ -157,7 +155,7 @@ impl Machine<InnerHost> for DiagnosticsPage {
                 if matches!(self.state.status, Status::Recording | Status::Saving) {
                     fx.push(Fx::App(AppFx::PlaybackTrace(Command::Status)));
                 }
-                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {

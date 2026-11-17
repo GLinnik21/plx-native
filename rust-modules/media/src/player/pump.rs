@@ -5145,6 +5145,135 @@ mod native_seek_pump_tests {
         assert_eq!(reloads(), vec![target], "reopen succeeded, but the seek needs one fresh Load");
     }
 
+    /// A Segment seek driven to the Play it accepts: returns the native epoch the sink's callbacks
+    /// address. `before_play` runs after the seek is armed and before the keyframe lands, so a
+    /// callback it delivers is one the landing's baseline (taken at Play) excludes.
+    fn segment_seek_through_play(rig: &mut Rig, keyframe: i64, before_play: impl FnOnce(u32)) -> u32 {
+        plx_play_feed::seek::set_seek_mode(SeekMode::Segment);
+        FEED_SHARED.playpos_ns.store(2_220_000_000_000, Relaxed);
+        rig.arm(keyframe);
+        let epoch = rig.eng().native_epoch;
+        before_play(epoch);
+        rig.land_keyframe_aus(keyframe, 80);
+        for _ in 0..20 {
+            rig.frame();
+            if !rig.eng().prime_play {
+                break;
+            }
+        }
+        assert!(!rig.eng().prime_play, "the in-place seek reached Play");
+        assert!(ffi_host::segment_calls_for_test() > 0, "the new segment was sent");
+        epoch
+    }
+
+    /// The event-log lines the Segment presentation deadline wrote while `run` drove the rig.
+    fn deadline_lines(run: impl FnOnce()) -> Vec<String> {
+        plx_base::eventlog::with_private_log(|| {
+            run();
+            std::fs::read_to_string(plx_base::eventlog::events_log())
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| l.contains("Segment presentation deadline"))
+                .map(str::to_owned)
+                .collect()
+        })
+    }
+
+    /// #1436: a set that never sends the displayed-frame counter (an OLED C8 on webOS 4.4.3 sends
+    /// no callback numbered 46-49) proves a Segment seek by the clock and the runway alone. Before
+    /// the fix every in-place seek on it ran out the presentation deadline and reloaded.
+    #[test]
+    fn a_segment_seek_with_no_displayed_counter_in_the_session_lands_on_the_clock_alone() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        let keyframe = 2_112_110_000_000;
+        let epoch = segment_seek_through_play(&mut rig, keyframe, |_| {});
+        assert_eq!(FEED_SHARED.dg_sink_displayed_cb.load(Relaxed), 0, "PRECONDITION FAILED, not the defect");
+        let lines = deadline_lines(|| {
+            // One clock tick on the accepted video, and no counter callback.
+            plx_play_feed::sf_event::sf_on_event(epoch, 0, keyframe, std::ptr::null());
+            rig.frame();
+            assert!(!rig.ps.readout().seeking(), "the seek landed on the clock and the runway");
+            rig.now += 10_000;
+            for _ in 0..5 {
+                rig.frame();
+            }
+        });
+        assert!(reloads().is_empty(), "a landed seek is not reloaded at the deadline: {:?}", reloads());
+        assert!(lines.is_empty(), "no deadline fired: {lines:?}");
+    }
+
+    /// #1313 unchanged: a session that has sent the counter keeps requiring a fresh positive count
+    /// after Play. The clock ticks on the accepted video here and the sink has counted frames, but
+    /// none since Play.
+    #[test]
+    fn a_segment_seek_whose_session_sends_the_counter_still_needs_a_fresh_count() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        let keyframe = 2_112_110_000_000;
+        let epoch = segment_seek_through_play(&mut rig, keyframe, |epoch| {
+            // Counted before Play: the landing's baseline excludes it.
+            plx_play_feed::sf_event::sf_on_event(epoch, 47, 3, std::ptr::null());
+        });
+        assert!(FEED_SHARED.dg_sink_displayed_cb.load(Relaxed) > 0, "PRECONDITION FAILED, not the defect");
+        plx_play_feed::sf_event::sf_on_event(epoch, 0, keyframe, std::ptr::null());
+        rig.frame();
+        assert!(rig.ps.readout().seeking(), "the clock alone does not land a seek on a counting set");
+        assert!(reloads().is_empty(), "the presentation gets its time");
+        rig.now += 10_000;
+        for _ in 0..5 {
+            rig.frame();
+        }
+        assert_eq!(reloads(), vec![keyframe], "no fresh count: one fresh Load");
+    }
+
+    /// The counter is read when the landing is polled, not once at Play: a session whose counter
+    /// first speaks after Play (here a zero count, which is not a displayed frame) goes back to
+    /// needing a fresh positive count, and one arrives to land the seek.
+    #[test]
+    fn a_counter_that_first_speaks_after_play_makes_the_segment_seek_need_a_fresh_count() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        let keyframe = 2_112_110_000_000;
+        let epoch = segment_seek_through_play(&mut rig, keyframe, |_| {});
+        assert_eq!(FEED_SHARED.dg_sink_displayed_cb.load(Relaxed), 0, "PRECONDITION FAILED, not the defect: silent at Play");
+        plx_play_feed::sf_event::sf_on_event(epoch, 47, 0, std::ptr::null());
+        plx_play_feed::sf_event::sf_on_event(epoch, 0, keyframe, std::ptr::null());
+        rig.frame();
+        assert!(rig.ps.readout().seeking(), "the counter spoke after Play, so the clock alone no longer lands it");
+        assert!(reloads().is_empty(), "the presentation gets its time");
+        plx_play_feed::sf_event::sf_on_event(epoch, 47, 1, std::ptr::null());
+        rig.frame();
+        assert!(!rig.ps.readout().seeking(), "a fresh positive count lands it");
+        assert!(reloads().is_empty());
+    }
+
+    /// The deadline's one event-log line names the evidence the landing was missing, and it is
+    /// written once for the stuck seek, not on every frame that follows.
+    #[test]
+    fn the_segment_presentation_deadline_names_the_missing_check_once() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        let keyframe = 2_112_110_000_000;
+        let epoch = segment_seek_through_play(&mut rig, keyframe, |epoch| {
+            plx_play_feed::sf_event::sf_on_event(epoch, 47, 3, std::ptr::null());
+        });
+        plx_play_feed::sf_event::sf_on_event(epoch, 0, keyframe, std::ptr::null());
+        rig.frame();
+        let lines = deadline_lines(|| {
+            rig.now += 10_000;
+            for _ in 0..20 {
+                rig.frame();
+            }
+        });
+        assert_eq!(lines.len(), 1, "one line for one stuck seek: {lines:?}");
+        let line = &lines[0];
+        assert!(line.contains("clock_advanced=true"), "{line}");
+        assert!(line.contains("in_runway=true"), "{line}");
+        assert!(line.contains("displayed=false"), "{line}");
+        assert!(line.contains("counter_present=true"), "{line}");
+    }
+
     #[test]
     fn an_old_segment_deadline_does_not_reload_a_newer_seek() {
         let _serial = plx_base::testlock::serial();

@@ -134,7 +134,8 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
         plx_plex::plex::register_for_test("bookmark-shared", "127.0.0.1", 10, "synthetic", "fixture");
     plx_plex::plex::set_current(sid);
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
     rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
@@ -154,7 +155,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     let (item, opener) = rig.library_selection(&d, old_entry, d.focus()).unwrap();
     let before = opener.rect.unwrap();
     let select = |d: &mut Dispatcher<AppHost>, rig: &Bridge, index: usize| {
-        let view = rig.directory.view();
+        let view = rig.retained.directory.view();
         let section = &view.sections()[index];
         let target = plx_data::stores::browse::SectionAddress {
             epoch: view.epoch().unwrap(),
@@ -172,7 +173,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     };
     // Menu selection addresses a covered host: its Cx must read that host entry's
     // engine memory, never the menu's current row or its unrelated remembered groups.
-    let listing_id = rig.listing.view().id().unwrap();
+    let listing_id = rig.retained.listing.view().id().unwrap();
     d.nav.next_style = plx_ui::containers::modal::Style::Compact;
     d.request(
         MachineId::Nav,
@@ -212,7 +213,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
         && matches!(&cursor.at, plx_data::stores::browse::CursorAt::ItemKey { sid, rk, slot: 52 } if *sid == item.sid && rk == &item.rk)),
         "section switching must emit the outgoing A snapshot through the StoreCmd drain");
     assert_eq!(
-        rig.directory.view().current(),
+        rig.retained.directory.view().current(),
         Some(2),
         "the actual deferred transaction enters section B"
     );
@@ -269,7 +270,7 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
     for i in 290..370 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
-    assert_eq!(rig.directory.view().current(), Some(0));
+    assert_eq!(rig.retained.directory.view().current(), Some(0));
     // A switch leaves focus on the library name and the page at the top (the header stays on
     // screen); the Down that enters the grid lands on the tile this library was left at.
     frame(&mut d, &mut rig, AppArg::Library, tick(370), script_key(Key::Down, tick(370)));

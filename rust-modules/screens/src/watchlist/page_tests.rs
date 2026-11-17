@@ -427,6 +427,7 @@ fn the_menu_surface_is_glass_and_rows_and_draws_no_pill_of_its_own() {
             tick: Tick { ms, dt_us: 16_667 },
             measure: &plx_ui::fixture::FixtureMeasure,
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             focus: FocusRead::default(),
             owner: InputOwner::Entry(entry),
         };
@@ -441,6 +442,7 @@ fn the_menu_surface_is_glass_and_rows_and_draws_no_pill_of_its_own() {
             tick: Tick { ms: 0, dt_us: 16_667 },
             measure: &plx_ui::fixture::FixtureMeasure,
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             focus: FocusRead { current: Some(FocusKey { entry, elem: 0 }), ..Default::default() },
             owner: InputOwner::Entry(entry),
         };
@@ -689,18 +691,18 @@ fn the_count_is_all_or_shown_of_total_and_absent_off_the_landed_list() {
 #[test]
 fn a_remove_lowers_the_count_when_the_landing_starts() {
     use plx_ui::cards::conformance::{CardHarness, Landing};
-    use plx_ui::containers::modal::{set_veil, CLOSING_GONE};
+    use plx_ui::containers::modal::CLOSING_GONE;
     let mut h = Harness::new(tiles(12));
     h.focus_index(2);
     assert_eq!(h.screen.count(), Some(Count::All(12)));
-    set_veil(1.0);
+    h.modal.veil = 1.0;
     h.landing(Landing::RemoveFocused).unwrap();
     assert_eq!(h.screen.tiles().len(), 11, "premise: committed");
     for frame in 0..30 {
         h.run(1);
         assert_eq!(h.screen.count(), Some(Count::All(12)), "frame {frame}: the menu is still up");
     }
-    set_veil(CLOSING_GONE * 0.5);
+    h.modal.veil = CLOSING_GONE * 0.5;
     let mut lowered_at_start = false;
     for frame in 0..40 {
         h.run(1);
@@ -713,7 +715,7 @@ fn a_remove_lowers_the_count_when_the_landing_starts() {
         }
     }
     assert!(lowered_at_start, "the landing began and the count followed");
-    set_veil(0.0);
+    h.modal.veil = 0.0;
 }
 
 /// **A Remove holds the colour wash until the grid's landing ends.** The wash eases one 8-bit step
@@ -723,8 +725,7 @@ fn a_remove_lowers_the_count_when_the_landing_starts() {
 #[test]
 fn a_remove_holds_the_wash_target_until_the_landing_ends() {
     use plx_ui::cards::conformance::{CardHarness, Landing};
-    use plx_ui::containers::modal::set_veil;
-    set_veil(0.0);
+    // This harness owns an explicit unveiled ModalRead from construction.
     let mut rows = tiles(12);
     for (i, t) in rows.iter_mut().enumerate() {
         let c = 20 + 15 * i as u8;
@@ -761,9 +762,7 @@ fn a_remove_holds_the_wash_target_until_the_landing_ends() {
 #[test]
 fn the_ease_after_a_remove_is_about_half_the_ordinary_one() {
     use plx_ui::cards::conformance::{CardHarness, Landing};
-    use plx_ui::containers::modal::set_veil;
     use plx_ui::widgets::PageGround;
-    set_veil(0.0);
     let mut rows = tiles(12);
     for (i, t) in rows.iter_mut().enumerate() {
         let c = if i % 2 == 0 { 10 } else { 245 };
@@ -827,8 +826,7 @@ fn the_ease_after_a_remove_is_about_half_the_ordinary_one() {
 #[test]
 fn an_unveiled_remove_lowers_the_count_with_its_first_step() {
     use plx_ui::cards::conformance::{CardHarness, Landing};
-    use plx_ui::containers::modal::set_veil;
-    set_veil(0.0);
+    // This harness owns an explicit unveiled ModalRead from construction.
     let mut h = Harness::new(tiles(12));
     h.focus_index(2);
     h.landing(Landing::RemoveFocused).unwrap();
@@ -852,7 +850,7 @@ fn the_shape_follows_the_write_order() {
 #[test]
 fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
     use plx_ui::cards::conformance::CardHarness;
-    use plx_ui::containers::modal::{set_veil, CLOSING_GONE};
+    use plx_ui::containers::modal::CLOSING_GONE;
     let mut h = Harness::new(tiles(14));
     h.focus_index(2);
     h.run(60);
@@ -862,7 +860,7 @@ fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
     // every word the frame draws and where: the focus caption (title and year line) among them
     let words_before = h.draw_texts();
     assert!(words_before.iter().any(|(w, _)| w == "2002"), "premise: the removed title's caption is drawn: {words_before:?}");
-    set_veil(1.0);
+    h.modal.veil = 1.0;
     let guid = h.screen.tiles()[h.screen.index_of(removed).unwrap()].row.guid.clone();
     h.screen.input(WatchlistIn::Removed(guid));
     for frame in 0..30 {
@@ -892,7 +890,7 @@ fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
             assert!((s - want).abs() < 1e-3, "frame {frame}: card {e} rescaled under the menu: {want} -> {s}");
         }
     }
-    set_veil(CLOSING_GONE * 0.5);
+    h.modal.veil = CLOSING_GONE * 0.5;
     let now = h.focused().unwrap();
     let mut last = 1.0f32;
     let mut rose = false;
@@ -907,7 +905,7 @@ fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
     }
     assert!(rose && (last - h.focus_scale()).abs() < 1e-3, "the new focus rose once to the pop and rests there");
     assert!(moved, "the landing's start moved the caption to the new focus");
-    set_veil(0.0);
+    h.modal.veil = 0.0;
 }
 
 /// **A mounted harness does not follow the process-wide Under posters cell.** The grid sizes the
@@ -994,8 +992,7 @@ fn coloured(n: usize, bare: &[usize]) -> Vec<super::page::WatchTile> {
 #[test]
 fn a_remove_never_passes_the_wash_through_neutral() {
     use plx_ui::cards::conformance::{CardHarness, Landing};
-    use plx_ui::containers::modal::set_veil;
-    set_veil(0.0);
+    // This harness owns an explicit unveiled ModalRead from construction.
     let flat = [theme::SURFACE_APP; 4];
     let mut h = Harness::new(coloured(12, &[3]));
     h.focus_index(2);
@@ -1024,8 +1021,7 @@ fn a_remove_never_passes_the_wash_through_neutral() {
 #[test]
 fn a_filter_never_passes_the_wash_through_neutral_or_another_title() {
     use plx_machine::machine::{EntryId, FocusKey};
-    use plx_ui::containers::modal::set_veil;
-    set_veil(0.0);
+    // This harness owns an explicit unveiled ModalRead from construction.
     let flat = [theme::SURFACE_APP; 4];
     let mut h = Harness::new(coloured(9, &[]));
     h.focus_index(2);

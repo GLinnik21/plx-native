@@ -31,6 +31,7 @@ fn step(owner: &mut SessionMachine, event: SessionEvent) -> Vec<SessionFx> {
         tick: Tick::default(),
         measure: &plx_machine::machine::BareMeasure,
         press: Default::default(),
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         focus: Default::default(),
         owner: InputOwner::Entry(EntryId(0)),
     };
@@ -42,7 +43,7 @@ fn step(owner: &mut SessionMachine, event: SessionEvent) -> Vec<SessionFx> {
         .map(|effect| match effect.fx {
             Fx::App(effect) => effect,
             Fx::Nav(_) | Fx::Mount(_) | Fx::Unmount(_) | Fx::Deliver(..) | Fx::Timer { .. }
-            | Fx::CancelTimer(_) | Fx::Press(_) | Fx::Remember { .. } | Fx::Log(_) => panic!("Session emitted a non-domain effect"),
+            | Fx::CancelTimer(_) | Fx::Press(_) | Fx::Remember { .. } | Fx::HoldHint(_) | Fx::Log(_) => panic!("Session emitted a non-domain effect"),
         })
         .collect()
 }

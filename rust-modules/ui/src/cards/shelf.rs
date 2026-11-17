@@ -208,7 +208,7 @@ impl Shelf {
     /// view (Home's shelves while its dive has not reached them, the Recommended page's while its
     /// shelves dissolve in) the springs EASE to rest like an unfocused shelf's and park once they
     /// settle. While the page is a held transition image
-    /// ([`page_image_held`](crate::containers::transition::page_image_held): a dip's Out and In
+    /// (`Cx::page_image`: a dip's Out and In
     /// halves and the hold after it) nothing on screen can show the ease, and stepping it would hold
     /// the image past its dissolve (a page that is covered freezes its shelves mid-ease and resumes
     /// them under the BACK dip's image), so the springs and the caption band jump to rest on the
@@ -300,7 +300,7 @@ impl Shelf {
                 self.retry.tick(t.ms);
                 self.observe_landing(src);
                 self.tick(t.dt(), cx, src, held);
-                if self.landing.held() {
+                if self.landing.held(cx.page_image) {
                     // a landing waits under a held page image: a frame must follow its release
                     fx.invalidate(Provenance::Lifecycle);
                 }
@@ -391,7 +391,7 @@ impl Shelf {
             self.anchor = None;
             self.landing.snap(src);
             if !self.row.at_exact_rest() {
-                if crate::containers::transition::page_image_held() {
+                if cx.page_image.is_held() {
                     // an image hides the page: nothing may step under it (it would hold the image
                     // past its dissolve), so what was lifted is at rest now
                     self.row.snap_to_rest();
@@ -475,7 +475,7 @@ impl Shelf {
             self.landing.snap(src);
         } else {
             self.landing.observe(src, &Scene { shift: (scroll - sx0, 0.0), slot: &slot, was: &slot, on: &on, lifted });
-            self.landing.step(dt, (self.style.k_scroll, self.style.k_scale), None);
+            self.landing.step(dt, (self.style.k_scroll, self.style.k_scale), None, cx.modal, cx.page_image);
         }
         if focus.is_some() || !self.row.at_exact_rest() {
             self.row.update(src.len(), focus, &self.style, dt);

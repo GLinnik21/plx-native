@@ -6,7 +6,9 @@
 //! appears only once the draft differs from the stored answer, with one line beside it saying
 //! what BACK does; [`ConsentPage::first_run`] is one
 //! STAGE of the sign-in's question — a full disclosure, the reading list and two equal answers
-//! in one row. Exceptional overflow scrolls at BODY size while the selected answer retains focus;
+//! in one row. The disclosure is set at the route's `COPY_SIZE` (the 26 of every Settings page's
+//! sentence, not a first-run size of its own), and exceptional overflow scrolls while the selected
+//! answer retains focus;
 //! the second
 //! stage is a push of the same type carrying the first answer in its argument, so BACK from the
 //! second is the surface's ordinary pop.
@@ -305,19 +307,15 @@ impl ConsentPage {
         Self {
             entry,
             mode,
-            form: FormTable::new(super::registry::BAND),
+            form: FormTable::page(super::registry::BAND),
             draft: base,
             base,
             alert: DecisionAlert::new(),
             alert_frames: std::cell::Cell::new(None),
             pop: CtlPop::new(),
-            disclosure: DocumentReader::new().with_size(theme::size::BODY),
-            layout: match mode {
-                // Privacy & data wears the Settings page anatomy; the first-run question keeps
-                // the hero title (the board does not move it)
-                Mode::Settings => RouteLayout::settings_page(),
-                Mode::FirstRun { .. } => RouteLayout::screen(),
-            },
+            disclosure: DocumentReader::new().with_size(plx_ui::route_screen::COPY_SIZE),
+            // first run re-measures its reading width ([`Self::first_run_layout`]); same anatomy
+            layout: RouteLayout::screen(),
             follow: FollowCopy::new(""),
             state: ConsentState {
                 mode: match mode {
@@ -337,11 +335,6 @@ impl ConsentPage {
     /// on the row that was flipped, and the pill and scroll slide from where they are); `None`
     /// opens afresh on the first row.
     fn rebuild(&mut self, keep: Option<RowId>) {
-        self.form.table.header_ink = theme::TEXT_READING;
-        if matches!(self.mode, Mode::Settings) {
-            self.form.table.compact = false;
-            self.form.table.board_metrics(true);
-        }
         let form = consent_form(self.mode, self.draft);
         match keep {
             Some(id) if self.form.table.n_rows() > 0 => self.form.set_sliding(form, Some(&id)),
@@ -380,13 +373,6 @@ impl ConsentPage {
             Mode::FirstRun { product: true, .. } => Some(plx_platform::i18n::msg::settings_consent_crash_title()),
         }
     }
-    fn copy_size(&self) -> std::os::raw::c_int {
-        match self.mode {
-            Mode::Settings => theme::size::LABEL,
-            Mode::FirstRun { .. } => theme::size::BODY,
-        }
-    }
-
     /// The band's labels this frame: Settings' Done only once the draft differs; first run's two
     /// equal answers.
     fn band_labels(&self) -> Vec<&'static std::ffi::CStr> {
@@ -422,9 +408,12 @@ impl ConsentPage {
             unreachable!("a first-run consent has exactly two actions, got {}", labels.len())
         };
         let action_w = RouteLayout::action_pair_w(pill(lead), pill(trail)).ceil();
-        let reader = DocumentReader::new().with_size(theme::size::BODY);
+        let reader = DocumentReader::new().with_size(plx_ui::route_screen::COPY_SIZE);
+        // The route's own title and copy (the design system's, as every Settings page): the
+        // disclosure is a fixed paragraph at the copy size, not a followed sentence, because it is
+        // what the answer agrees to and must not change as focus moves.
         RouteLayout::screen_for_reading(action_w, table.measured_width(measure), |layout| {
-            let frame = layout.narrative_copy_frame(has_crumb, title, layout.action.y, measure);
+            let frame = layout.copy_text_frame(has_crumb, title, layout.action.y, measure);
             !RouteLayout::narrative_title(title).with_measure(measure).truncates(layout.narrative.w)
                 && reader.measured_height(body, frame.w, measure) <= frame.h
         })
@@ -618,7 +607,7 @@ impl<'a> ConsentView<'a> {
     }
     fn disclosure_frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let top = self.screen().band.as_ref().map(|b| b.extent(measure).y).unwrap_or(self.layout.action.y);
-        self.layout.narrative_copy_frame(self.has_crumb, self.title, top, measure)
+        self.layout.copy_text_frame(self.has_crumb, self.title, top, measure)
     }
     fn alert_key(&self, i: usize) -> FocusKey<u32> {
         FocusKey {
@@ -956,7 +945,6 @@ impl Screen<InnerHost> for ConsentPage {
             self.disclosure.draw(p, frame, None, body);
         } else {
             Header::new(layout, self.crumb(), self.title(), self.body())
-                .with_copy_size(self.copy_size())
                 .with_follow(&self.follow)
                 .paint(p, f.measure);
         }
@@ -1141,7 +1129,7 @@ impl PreviewPage {
     fn view(&self) -> DocumentFocus<'_> {
         DocumentFocus {
             reader: &self.reader,
-            frame: RouteLayout::screen().document(true),
+            frame: RouteLayout::screen().document(),
             group: TABLE_GROUP,
             entry: self.entry,
         }
@@ -1526,7 +1514,7 @@ fn errors_id_document() -> String {
 #[cfg(test)]
 pub fn nav_items_for_test(first_run: Option<bool>) -> Vec<(u32, SettingsPage)> {
     let mode = first_run.map_or(Mode::Settings, |product| Mode::FirstRun { product, errors: false });
-    let mut form: FormTable<RowId, Act, SettingsPage> = FormTable::new(super::registry::BAND);
+    let mut form: FormTable<RowId, Act, SettingsPage> = FormTable::page(super::registry::BAND);
     form.set(consent_form(mode, (false, false)), None);
     (0..form.table.n_rows() as usize)
         .filter_map(|i| match form.binding_at(i)?.kind.clone() {

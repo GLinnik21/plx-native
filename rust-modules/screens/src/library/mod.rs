@@ -908,7 +908,7 @@ impl LibraryScreen {
     /// has arrived (the page scroll, the fade and the card's own glide).
     fn hint_input<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> plx_ui::hold_hint::HintInput {
         let none = plx_ui::hold_hint::HintInput::default();
-        if !self.hold_hint.wants_input(cx.press.held_ms.is_some()) {
+        if !self.hold_hint.wants_input(cx.press.held_ms.is_some(), cx.hold_hint) {
             return none;
         }
         let Some(key) = cx.focus.current.filter(|key| key.entry == self.entry) else { return none };
@@ -1521,7 +1521,7 @@ impl LibraryScreen {
                     // dissolve's last frame, where it can be seen, instead of playing out under the
                     // fade or the held image of a route dip (the page arrives in its first poster).
                     // A page that returns is not put to sleep (`Grid::dormant`).
-                    self.pair.detail.dormant(self.page_fade.is_arriving() || plx_ui::containers::transition::page_image_held());
+                    self.pair.detail.dormant(self.page_fade.is_arriving() || cx.page_image.is_held());
                     self.handoff.step(dt, self.scroll.pos, self.scroll_target, self.layout.grid_pitch(), self.capsule_wanted());
                     // The grid steps its pop and bands. A content landing that moved the focused
                     // element's row (`Landed`) comes back as the document shift that keeps the
@@ -1540,7 +1540,9 @@ impl LibraryScreen {
                     // frame (its window moved with the step) must hold keys before it draws.
                     if self.owns_listing() { self.project_grid(cx); }
                     let hint = self.hint_input(cx);
-                    self.hold_hint.step(hint, tick.ms, dt, &mut |ev| fx.note(ev));
+                    if let Some(event) = self.hold_hint.step(hint, tick.ms, dt, &mut |ev| fx.note(ev), cx.hold_hint) {
+                        fx.push(Fx::HoldHint(event));
+                    }
                     let arrival = if self.initial && self.layout.first().is_some() { self.arrival_group() } else { None };
                     if let Some(group) = arrival.filter(|_| self.seed_cursor(cx, fx)) {
                         self.initial = false;

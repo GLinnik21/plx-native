@@ -7,7 +7,6 @@ use super::test_support::*;
 use plx_base::fontcov::advances::ShippedMeasure;
 use plx_machine::machine::Measure;
 use plx_platform::i18n::{language_on_this_thread_for_test, msg, SHIPPED};
-use plx_ui::route_screen::TitleStyle;
 
 fn settings_page(m: &FixtureMeasure) -> ConsentPage {
     let c = test_cx(m);
@@ -93,17 +92,21 @@ fn flipping_a_switch_does_not_restart_the_sentence() {
     assert_eq!(page.follow.arrival(), 1.0);
 }
 
-/// Privacy & data wears the Settings page title; the first-run question keeps the hero (the board
-/// does not move it).
+/// The first-run question's table is the Settings table: board measures, full rows and reading-ink
+/// headers, the same look Privacy & data draws (the onboarding pages follow the Settings design).
 #[test]
-fn only_privacy_moves_to_the_page_title_and_first_run_keeps_the_hero() {
+fn first_run_consent_draws_the_settings_table() {
     let _guard = plx_base::testlock::serial();
     let m = FixtureMeasure;
-    assert_eq!(settings_page(&m).layout.title_style, TitleStyle::Page);
+    let settings = settings_page(&m);
     let c = test_cx(&m);
     let (mut out, mut present) = sink();
     let first = ConsentPage::first_run(EntryId(1), 0, &c, &mut mk_fx(&mut out, &mut present));
-    assert_eq!(first.layout.title_style, TitleStyle::Hero);
+    for (what, table) in [("settings", &settings.form.table), ("first run", &first.form.table)] {
+        assert!(table.is_board(), "{what}: board measures");
+        assert!(!table.compact, "{what}: full-height rows");
+        assert_eq!(table.header_ink, plx_ui::theme::TEXT_READING, "{what}: reading-ink headers");
+    }
 }
 
 /// Done stays the only band control and appears with a pending draft; the line beside it says
@@ -151,7 +154,7 @@ fn done_carries_one_line_beside_it_only_while_a_draft_is_pending() {
 fn the_note_and_every_sentence_fit_in_every_language() {
     use plx_ui::text_view::TextView;
     let _guard = plx_base::testlock::serial();
-    let layout = RouteLayout::settings_page();
+    let layout = RouteLayout::screen();
     let ids = [RowId::Errors, RowId::Usage, RowId::PreviewCrash, RowId::PreviewUsage, RowId::Policy,
         RowId::ErrorsId, RowId::AnalyticsId, RowId::Delete];
     let mut out = Vec::new();

@@ -16,7 +16,7 @@
 //!   grid reflows under the open menu. The feed runs at the head of the frame, ahead of the page's
 //!   tick (`bridge::frame_ingest`), so a landing begins from the slots the old cards stood in.
 //! * **Open.** A page that mounts opens the store (`WatchlistCmd::Open`): the Bridge reads the
-//!   account's identity (`Bridge::watchlist_input`) and the store takes it, the list read starts, a populated list is never blanked.
+//!   account's identity (`Bridge::watchlist_input`) and the store takes it, the list read starts, a list that has landed is never blanked.
 //! * **Window.** The titles near the focus are the store's hold window: the matched copies whose
 //!   watch state the application owes a read-back (`Bridge::held_keys`). A window, not a cap: the
 //!   focus moves it over every row.
@@ -116,8 +116,8 @@ fn list_state(view: &plx_data::stores::watchlist::WatchlistView<'_>) -> ListStat
         // The whole list, the pages still to arrive included, so the count beside the title does
         // not climb as they land.
         Status::Ready => ListState::Ready { total: view.list_len() + view.unloaded() },
-        // The first read failed and no list had landed (a populated list is never replaced by
-        // this): the page-placed read-out with Try again.
+        // The first read failed and no list had landed (a list that has landed, populated or
+        // empty, is never replaced by this): the page-placed read-out with Try again.
         Status::Failed(_) => ListState::Failed,
         // A first read that has not landed.
         Status::Idle | Status::Loading => ListState::Loading,
@@ -135,7 +135,7 @@ fn matched_facts(facts: plx_data::stores::watchlist::TileFacts, listing: plx_ple
     }
 }
 
-impl Bridge {
+impl Bridge<'_> {
     /// The page mounted on the stack, if any: its instance and the screen itself.
     fn watchlist_page<'a>(d: &'a mut Dispatcher<AppHost>) -> Option<(InstanceId, &'a mut WatchlistScreen)> {
         let id = d.nav.tabs.stack.entries.iter().find(|e| e.arg == AppArg::Watchlist)?.id;
@@ -149,7 +149,7 @@ impl Bridge {
     /// page what changed, keep the hold window on the focus, and spend an owed re-read.
     pub(crate) fn watchlist_feed(&mut self, d: &mut Dispatcher<AppHost>) {
         let store = &mut self.stores.watchlist;
-        let feed = &mut self.watchlist;
+        let feed = &mut self.retained.watchlist;
         let now = crate::app::clock::now();
         // The app's logical clock (ms, wrapping), not a wall-clock read: due once `now` passes `at`.
         if feed.reread_at.is_some_and(|at| now.wrapping_sub(at) as i32 >= 0) {
@@ -159,6 +159,7 @@ impl Bridge {
         if store.take_reread_owed() {
             feed.reread_at = Some(now.wrapping_add(REREAD_DELAY_MS));
         }
+        let page_veiled = d.modal_presentation().read.page_veiled();
         let Some((instance, screen)) = Self::watchlist_page(d) else {
             // Popped: the next page starts from nothing, and the store's hold window is empty.
             if feed.instance.take().is_some() {
@@ -184,7 +185,7 @@ impl Bridge {
         // included, waits here: the screen is told once the menu is gone, so the grid's commit and
         // its landing start on the same frame and nothing under the menu is redrawn. Sort & Filter
         // casts no veil and is fed at once.
-        if plx_ui::containers::modal::page_veiled() {
+        if page_veiled {
             return;
         }
         let generation = store.gen();
@@ -260,7 +261,7 @@ impl Bridge {
     /// has nothing to fly to the tab.
     pub(crate) fn watchlist_add(&mut self, hex: [u8; 12]) {
         self.watchlist_press(hex, Intent::Add);
-        self.chrome.pulse(plx_ui::widgets::TAB_KEY_WATCHLIST);
+        self.retained.chrome.pulse(plx_ui::widgets::TAB_KEY_WATCHLIST);
     }
 
     /// What the catalog page's pill asked for (`AppFx::Catalog`): the same write the item menu's rows
@@ -300,7 +301,7 @@ impl Bridge {
         let Some(hex) = hex_of_guid(guid) else { return false };
         self.watchlist_press(hex, Intent::Remove);
         if from_page {
-            self.watchlist.removed = Some(guid.to_owned());
+            self.retained.watchlist.removed = Some(guid.to_owned());
         }
         true
     }
@@ -325,7 +326,7 @@ impl Bridge {
         let view = self.stores.watchlist.view();
         let options = WatchlistOptionsState::from_specs(view.sort(), view.filter());
         let (_, screen) = Self::watchlist_page(d)?;
-        let pill = screen.pill_rect(&self.measure);
+        let pill = screen.pill_rect(&self.retained.measure);
         Some(WatchlistMenuArg { host, options, anchor: [pill.x, pill.y, pill.w, pill.h].map(f32::to_bits) })
     }
 
@@ -338,10 +339,10 @@ impl Bridge {
     ) -> Option<plx_screens::registry::ItemMenuArg> {
         let rect = focus.filter(|key| key.entry == entry).and_then(|key| {
             let screen = &d.nav.entry(entry).filter(|e| e.arg == AppArg::Watchlist)?.inst.as_ref()?.screen;
-            let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
+            let parts = CxParts { modal: d.modal_presentation().read, page_image: d.page_image_read(), hold_hint: d.input.hold_hint, tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
                 focus: plx_machine::machine::FocusRead { current: Some(key), ..Default::default() },
                 owner: InputOwner::Entry(entry) };
-            let cx = parts.cx::<AppHost>(self.views(), &self.measure);
+            let cx = parts.cx::<AppHost>(self.views(), &self.retained.measure);
             screen.focused_card_rect(&cx, Some(key), At::Drawn)
         });
         let (_, screen) = Self::watchlist_page(d)?;
@@ -474,7 +475,7 @@ impl Bridge {
         use plx_screens::registry::ContentArg;
         self.catalog_pump();
         // Pumping is route-unconditional; publication to a veiled host is not.
-        if plx_ui::containers::modal::page_veiled() { return; }
+        if d.modal_presentation().read.page_veiled() { return; }
         let mut catalog: Option<(EntryId, [u8; 12])> = None;
         let mut details: Vec<EntryId> = Vec::new();
         let mut homes: Vec<EntryId> = Vec::new();
@@ -507,7 +508,7 @@ impl Bridge {
             self.watchlist_open_if_idle();
         }
         let Some((id, hex)) = catalog else {
-            if self.catalog_seat.take().is_some() {
+            if self.retained.catalog_seat.take().is_some() {
                 self.catalog_reset();
             }
             return;
@@ -516,8 +517,8 @@ impl Bridge {
         let instance = inst.id;
         let Some(screen) = inst.screen.as_any_mut().and_then(|a| a.downcast_mut::<plx_screens::catalog::CatalogScreen>())
             else { return };
-        if self.catalog_seat != Some(instance) {
-            self.catalog_seat = Some(instance);
+        if self.retained.catalog_seat != Some(instance) {
+            self.retained.catalog_seat = Some(instance);
             self.catalog_open(hex);
             // The page's membership needs the list: read it again on every mount, like the tab does.
             self.stores.watchlist.run_with_input(WatchlistCmd::Open, &Self::watchlist_input());
@@ -568,13 +569,13 @@ impl Bridge {
     /// The removal landing the Watchlist page is owed, by guid.
     #[cfg(test)]
     pub(crate) fn removal_owed_for_test(&self) -> Option<&str> {
-        self.watchlist.removed.as_deref()
+        self.retained.watchlist.removed.as_deref()
     }
 
     /// The hold window the feed last sent the store.
     #[cfg(test)]
     pub(crate) fn watchlist_window_for_test(&self) -> Option<std::ops::Range<usize>> {
-        self.watchlist.window.clone()
+        self.retained.watchlist.window.clone()
     }
 }
 

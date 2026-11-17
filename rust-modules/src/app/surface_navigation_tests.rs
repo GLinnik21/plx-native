@@ -56,7 +56,8 @@ fn every_route_mounts_a_screen_that_names_the_heartbeat_word() {
     let _g = plx_base::testlock::serial();
     for r in every_route() {
         let mut d = Dispatcher::<AppHost>::new();
-        let mut rig = Bridge::for_test(|| 0);
+        let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = owner.bridge();
         let (word, _) = frame(&mut d, &mut rig, r.clone(), tick(0), vec![]);
         assert_eq!(
             word,
@@ -72,7 +73,8 @@ fn every_route_mounts_a_screen_that_names_the_heartbeat_word() {
 fn a_store_command_through_the_dispatcher_steps_the_store_and_notifies_the_page() {
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     let _ = rig.stores.take_notices();
     // **This used to also assert the retired route-word page's generic notice COUNTER, and
     // cannot any more.** Search left that population with the phase 7 cutover
@@ -137,7 +139,8 @@ fn switching_profile_leaves_the_container_holding_nothing_of_the_previous_profil
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::with_transition(
         Box::new(plx_ui::containers::transition::PageDip::new()));
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     for i in 1..20u32 { super::frame(&mut d, &mut rig, tick(i * 16), vec![]); }
     frame(&mut d, &mut rig, detail_arg("1001"), tick(320), vec![]);
@@ -196,7 +199,8 @@ fn each_settings_fps_scene_boot_target_prints_the_overlay_word_the_scene_selects
         let page = crate::dev::scenarios::settings_boot_page(target)
             .unwrap_or_else(|| panic!("scene {name}: no such boot target {target:?}"));
         let mut d = Dispatcher::<AppHost>::new();
-        let mut rig = Bridge::for_test(|| 0);
+        let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = owner.bridge();
         frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
         open_settings_at(&mut d, page);
         for ms in 1..=40 {
@@ -224,7 +228,8 @@ fn each_settings_fps_scene_boot_target_prints_the_overlay_word_the_scene_selects
 fn a_profile_switch_dismisses_an_open_settings_surface() {
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     open_settings_at(&mut d, SettingsPage::Playback);
     frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
@@ -260,7 +265,8 @@ fn a_profile_switch_dismisses_an_open_settings_surface() {
 fn an_app_switch_parks_the_page_stack_and_gives_the_same_entries_back() {
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     frame(&mut d, &mut rig, detail_arg("1001"), tick(1), vec![]);
     let origin = d.nav.top_page().map(|e| e.id).expect("the page the session is launched from");
@@ -305,7 +311,8 @@ fn an_app_switch_parks_the_page_stack_and_gives_the_same_entries_back() {
 fn route_flips_preserve_content_and_player_origin_entries() {
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     assert_eq!(frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]).0, "home");
     assert_eq!(d.nav.tabs.stack.depth(), 1);
     let home = d.nav.top_page().map(|e| e.id);
@@ -345,7 +352,8 @@ fn route_flips_preserve_content_and_player_origin_entries() {
 fn player_exit_with_a_gone_origin_returns_to_the_existing_home_entry() {
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     let home = d.nav.top_page().map(|e| e.id).expect("Home mounted");
     frame(&mut d, &mut rig, detail_arg("1001"), tick(1), vec![]);
@@ -394,7 +402,8 @@ fn leaving_the_player_with_a_panel_up_returns_the_page_in_the_route_s_own_frame(
     use plx_screens::player::overlay::OverlayKind;
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     let home = d.nav.top_page().map(|e| e.id);
     assert_eq!(frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]).0, "player");
@@ -420,7 +429,8 @@ fn player_diagnostics_hide_behind_any_open_player_overlay() {
     use plx_screens::player::overlay::OverlayKind;
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     let mut t = 0u32;
     let mut next = |d: &mut Dispatcher<AppHost>| {
         t += 1;
@@ -474,7 +484,8 @@ fn player_diagnostics_hide_behind_an_open_hud_section() {
     use plx_appkit::player_hud::command::Section;
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     let mut t = 0u32;
     let mut next = |d: &mut Dispatcher<AppHost>| {
         t += 1;
@@ -508,7 +519,8 @@ fn player_diagnostics_hide_behind_an_open_hud_section() {
 fn the_settings_surface_owns_input_and_walks_its_own_stack() {
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     assert!(d.owns_input(), "Home is an owned page too");
     let home_owner = d.nav.input_owner();
@@ -553,19 +565,19 @@ fn the_finish_time_switch_follows_whether_the_hud_in_use_declares_the_lane() {
     let mut world = World::new("hud-end-time-capability");
     world.step(vec![]);
     let (tx, rx) = std::sync::mpsc::channel();
-    world.bridge.huds_watch(tx);
-    world.bridge.huds_profile_seated = true;
+    world.bridge.bridge().huds_watch(tx);
+    world.bridge.bridge().retained.huds_profile_seated = true;
     let latest = |rx: &std::sync::mpsc::Receiver<plx_screens::hud_settings::HudList>| rx.try_iter().last().map(|list| list.end_time.is_some());
     let classic = plx_appkit::player_hud::loaded::classic_for_test();
     assert!(classic.declares_end_time(), "the built-in declares the lane");
-    world.bridge.seed_player_compiled(classic.clone());
+    world.bridge.bridge().seed_player_compiled(classic.clone());
     assert_eq!(latest(&rx), Some(true), "offered over the built-in");
-    world.bridge.seed_player_compiled(plx_appkit::player_hud::loaded::reference_for_test());
+    world.bridge.bridge().seed_player_compiled(plx_appkit::player_hud::loaded::reference_for_test());
     assert_eq!(latest(&rx), Some(false), "withdrawn over a package with no lane, the page told at once");
-    world.bridge.seed_player_compiled(classic);
+    world.bridge.bridge().seed_player_compiled(classic);
     assert_eq!(latest(&rx), Some(true), "and back");
-    world.bridge.huds_profile_seated = false;
-    world.bridge.huds_publish();
+    world.bridge.bridge().retained.huds_profile_seated = false;
+    world.bridge.bridge().huds_publish();
     assert_eq!(latest(&rx), Some(false), "no profile, no switch");
 }
 
@@ -584,14 +596,14 @@ fn opening_the_player_hud_settings_asks_the_registry_in_the_stable_install_too()
     let _cleanup = Cleanup(dir.clone());
     let mut world = World::new("hud-gallery-opens");
     world.step(vec![]);
-    let classic = plx_appkit::player_hud::loaded::load_classic("0.10.0", plx_platform::i18n::current(), world.bridge.measure());
-    world.bridge.huds = crate::app::adapters::huds::HudDriver::started_in(dir, classic, "0.10.0");
-    assert!(!world.bridge.huds.store().catalog().refresh_failed);
+    let classic = plx_appkit::player_hud::loaded::load_classic("0.10.0", plx_platform::i18n::current(), &world.bridge.retained().measure);
+    *world.bridge.bridge().huds = crate::app::adapters::huds::HudDriver::started_in(dir, classic, "0.10.0");
+    assert!(!world.bridge.huds().store().catalog().refresh_failed);
     open_settings_at(&mut world.d, SettingsPage::PlayerHud);
     world.settle(40);
-    for _ in 0..8 { world.bridge.huds_tick(false); }
+    for _ in 0..8 { world.bridge.bridge().huds_tick(false); }
     // The runner is offline, so a request that was made is a refresh that failed; none made is none failed.
-    assert!(world.bridge.huds.store().catalog().refresh_failed, "the Open command reached the catalog and dialled");
+    assert!(world.bridge.huds().store().catalog().refresh_failed, "the Open command reached the catalog and dialled");
 }
 
 fn hud_preview_world(name: &str) -> World {
@@ -612,13 +624,13 @@ fn hud_preview_world(name: &str) -> World {
         language_tag: "en".into(),
         ..Default::default()
     };
-    assert_eq!(world.bridge.huds_pages.len(), 1);
-    world.bridge.huds_pages[0].0.send(list.clone()).unwrap();
+    assert_eq!(world.bridge.retained().huds_pages.len(), 1);
+    world.bridge.retained().huds_pages[0].0.send(list.clone()).unwrap();
     world.frames(2);
     assert_eq!(overlay_word(&world.d), Some("hud-detail"));
     world.press(Key::Ok);
-    assert_eq!(world.bridge.huds_pages.len(), 2);
-    for (page, ..) in &world.bridge.huds_pages { page.send(list.clone()).unwrap(); }
+    assert_eq!(world.bridge.retained().huds_pages.len(), 2);
+    for (page, ..) in &world.bridge.retained().huds_pages { page.send(list.clone()).unwrap(); }
     // Let the shared route spring settle: during a push both pages register drawn stops.
     world.settle(60);
     assert_eq!(overlay_word(&world.d), Some("hud-preview"));
@@ -636,6 +648,7 @@ fn hud_preview_scene(world: &World) -> u32 {
 fn hud_preview_stops(world: &mut World) -> Vec<plx_ui::screen::Stop<u32>> {
     let owner = world.d.nav.modals.top().unwrap().entry.id;
     let parts = CxParts {
+        modal: world.d.modal_presentation().read, page_image: world.d.page_image_read(), hold_hint: world.d.input.hold_hint,
         tick: tick(world.frame),
         press: Default::default(),
         focus: plx_machine::machine::FocusRead {
@@ -644,7 +657,7 @@ fn hud_preview_stops(world: &mut World) -> Vec<plx_ui::screen::Stop<u32>> {
         },
         owner: InputOwner::Entry(owner),
     };
-    let cx = parts.cx::<AppHost>(world.bridge.views(), world.bridge.measure());
+    let cx = parts.cx::<AppHost>(world.bridge.views(), &world.bridge.retained().measure);
     let mut draw = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
     let surface = world.d.nav.modals.surface_mut(owner).unwrap().entry.inst.as_mut().unwrap();
     plx_ui::record_walk(|| plx_ui::screen::record_stops_while_recording(|| {
@@ -714,7 +727,8 @@ fn the_profile_menu_is_a_surface_over_the_page_whose_chip_was_pressed() {
         (AppArg::Search, "search"),
     ] {
         let mut d = Dispatcher::<AppHost>::new();
-        let mut rig = Bridge::for_test(|| 0);
+        let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = owner.bridge();
         frame(&mut d, &mut rig, route.clone(), tick(0), vec![]);
         let host = d.nav.top_page().expect("a host page").id;
         let host_owner = d.nav.input_owner();
@@ -775,7 +789,8 @@ fn the_card_menu_is_a_surface_over_the_page_the_hold_happened_on() {
         (person_arg("9"), "person"),
     ] {
         let mut d = Dispatcher::<AppHost>::new();
-        let mut rig = Bridge::for_test(|| 0);
+        let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = owner.bridge();
         frame(&mut d, &mut rig, route.clone(), tick(0), vec![]);
         let host = d.nav.top_page().expect("a host page").id;
         let host_owner = d.nav.input_owner();
@@ -837,7 +852,8 @@ fn the_card_menu_is_a_surface_over_the_page_the_hold_happened_on() {
 fn opening_the_item_menu_leaves_the_press_springing_and_the_opener_lift_follows_it() {
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     let host = d.nav.top_page().unwrap().id;
     let mut row = plx_data::pms::PmsMovie::default();
@@ -905,7 +921,8 @@ fn opening_the_item_menu_leaves_the_press_springing_and_the_opener_lift_follows_
 #[cfg(feature = "hostsim")]
 fn page_damage_frames_across_a_taken_holds_spring(lift_owns_the_card: bool) -> (usize, usize) {
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     let mut t = 0u32;
     let run = |d: &mut Dispatcher<AppHost>, rig: &mut Bridge, t: &mut u32| {
         *t += 1;
@@ -949,7 +966,16 @@ fn page_damage_frames_across_a_taken_holds_spring(lift_owns_the_card: bool) -> (
     run(&mut d, &mut rig, &mut t);
     assert!(item_menu_up(&d), "the menu mounted");
     assert_eq!(d.lifted_opener(), Some((host, Some(key))));
-    plx_ui::popover::set_lift_owns(lift_owns_the_card);
+    if lift_owns_the_card {
+        let parts = d.parts(tick(t));
+        let split = plx_ui::dispatch::Rig::<AppHost>::split(&mut rig);
+        let cx = parts.cx::<AppHost>(split.views, split.measure);
+        let mut draw = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::root());
+        draw.lifted = Some(key);
+        draw.lift_owner = Some(instance);
+        assert!(draw.leaves_out(key.entry, key.elem));
+        d.input.accept_lift(draw.lift_receipt().expect("actual local page omission"));
+    }
     let (mut moving, mut damaged) = (0, 0);
     for _ in 0..40 {
         let damage = run(&mut d, &mut rig, &mut t);
@@ -959,8 +985,7 @@ fn page_damage_frames_across_a_taken_holds_spring(lift_owns_the_card: bool) -> (
             if damage { damaged += 1; }
         }
     }
-    // The flag is per thread and a later test on this thread must not inherit it.
-    plx_ui::popover::set_lift_owns(false);
+    assert!(d.input.lift_receipt.is_none(), "settling retires the gesture's receipt");
     (moving, damaged)
 }
 
@@ -993,7 +1018,8 @@ fn the_page_damage_counter_sees_a_spring_the_lift_does_not_own() {
 fn a_card_menus_commit_reports_one_request_carrying_the_row_it_captured() {
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     let host = d.nav.top_page().unwrap().id;
     let mut row = plx_data::pms::PmsMovie::default();
@@ -1076,7 +1102,8 @@ fn account_to_settings_never_unfreezes_the_host() {
     // signed out (a client id, no account) before the first frame, whatever ran before this test.
     let _session = plx_plex::plex::session::TempSession::new("account-to-settings");
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     let host = d.nav.top_page().unwrap().id;
     open_account_menu(&mut d);
@@ -1147,7 +1174,8 @@ fn a_player_panel_is_a_surface_on_the_players_own_page_and_leaves_the_instance_a
     let ps = plx_media::route::PlaybackSession::IDLE;
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Player, tick(0), vec![]);
     let page = d.nav.top_page().expect("the player is a page").id;
     let instance = d.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| i.id);
@@ -1193,7 +1221,8 @@ fn a_seeded_menu_anchor_is_mounted_into_the_next_menu_and_only_that_one() {
     let meta = || plx_data::stores::metadata::MetadataStore::default();
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Player, tick(0), vec![]);
     let anchor_of = |d: &mut Dispatcher<AppHost>| match player_overlay_mut(d).expect("a panel is up").panel() {
         Panel::Tracks(p) => p.anchor(),
@@ -1235,7 +1264,8 @@ fn seeded_folded_rows_are_mounted_into_the_next_more_menu_and_only_that_one() {
     let meta = || plx_data::stores::metadata::MetadataStore::default();
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Player, tick(0), vec![]);
     let seeded = || vec![FoldedRow { command: HudCommand::FromBeginning, label: "From Beginning" }];
     let folded_key = MoreRow::Act(Action::Hud(HudCommand::FromBeginning)).key().0;
@@ -1317,7 +1347,8 @@ fn tracks_to_timing_hands_off_without_stacking_a_second_surface() {
     let ps = plx_media::route::PlaybackSession::IDLE;
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Player, tick(0), vec![]);
 
     open_player_overlay(&ps, plx_data::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Tracks { tab: 1 });
@@ -1381,7 +1412,8 @@ fn the_hud_state_helper_reads_every_phase_of_every_surface() {
     let ps = plx_media::route::PlaybackSession::IDLE;
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Player, tick(0), vec![]);
     open_player_overlay(&ps, plx_data::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Tracks { tab: 1 });
     frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]);
@@ -1435,9 +1467,10 @@ fn the_hud_state_helper_reads_every_phase_of_every_surface() {
 fn back_at_the_first_consent_stage_is_the_root_press_and_leaves_the_question_up() {
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Profiles, tick(0), vec![]);
-    open_first_run_consent(&mut d);
+    open_first_run_consent_at(&mut d, 0);
     frame(&mut d, &mut rig, AppArg::Profiles, tick(1), vec![]);
     assert!(consent_up(&d));
     assert_eq!(overlay_word(&d), Some("consent"));
@@ -1488,7 +1521,8 @@ fn a_replaced_host_draws_surfaces_only_whoever_owns_the_page() {
 fn the_first_run_favourites_page_is_owned_because_the_container_holds_it() {
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     assert!(page_owned(&d), "Home now draws through its owned instance");
     assert_eq!(frame(&mut d, &mut rig, AppArg::Onboard, tick(1), vec![]).0, "onboard");
@@ -1510,7 +1544,8 @@ fn the_first_run_favourites_page_is_owned_because_the_container_holds_it() {
 fn dismiss_surfaces_now_settles_the_surface_in_the_same_call_unlike_the_ordinary_path() {
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     open_settings(&mut d);
     frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
@@ -1579,7 +1614,8 @@ fn dismiss_surfaces_now_settles_the_surface_in_the_same_call_unlike_the_ordinary
 fn search_route_steps_the_shared_strip_so_its_published_rects_do_not_go_stale() {
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     rig.stores.browse.borrow_mut().seed_two_source_table_for_test();
     rig.refresh_browse_directory();
 
@@ -1590,7 +1626,7 @@ fn search_route_steps_the_shared_strip_so_its_published_rects_do_not_go_stale() 
     let wide: Vec<plx_ui::widgets::TabFace> = (0..8)
         .map(|i| plx_ui::widgets::TabFace::Label(format!("Wide Destination Label Number {i}")))
         .collect();
-    rig.strip.reveal(
+    rig.retained.strip.reveal(
         plx_ui::widgets::TabLabels { generation: 1, faces: &wide },
         wide.len() - 1,
     );
@@ -1632,7 +1668,8 @@ fn a_second_open_of_the_pending_detail_page_leaves_no_seed_behind() {
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::with_transition(
         Box::new(plx_ui::containers::transition::PageDip::new()));
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     for i in 1..20u32 { super::frame(&mut d, &mut rig, tick(i * 16), vec![]); }
     let sid = plx_plex::plex::ServerId::UNSET;
@@ -1659,7 +1696,8 @@ fn a_second_open_of_the_pending_detail_page_leaves_no_seed_behind() {
 fn a_closing_item_menus_opener_lift_stands_down_when_focus_moves_off_the_opener() {
     let _g = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     let host = d.nav.top_page().unwrap().id;
     let mut row = plx_data::pms::PmsMovie::default();
@@ -1725,7 +1763,8 @@ fn activating_a_deck_episode_seeds_the_show_page_on_its_season_and_a_discovery_o
 
     for (from_deck, rk, season) in [(true, "show-7", Some(3)), (false, "ep-55", None)] {
         let mut d = Dispatcher::<AppHost>::new();
-        let mut rig = Bridge::for_test(|| 0);
+        let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = owner.bridge();
         frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
         unsafe {
             crate::app::input::activate_deck_card(&mut ps, &mut pa, &episode, from_deck, false, 0, None,

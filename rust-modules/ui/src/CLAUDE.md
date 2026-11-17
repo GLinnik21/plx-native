@@ -66,8 +66,8 @@ arguments, and its time is the `dt` it is handed.
    `text::text_cap_band`. See `label.rs`'s module docs for the rule.
    Tracking (DS8): a string that needs letter-spacing goes through `Label::tracking` /
    `TextView::tracking` (they wrap and measure by the tracked width and reach `Painter::text_tracked`),
-   never a hand-spaced draw. Screens use it today: the Settings page title (`TitleStyle::Page`,
-   -.02em) and the board section headers (`TableView::board_metrics`, .06em). A fixed pixel
+   never a hand-spaced draw. The route family uses it: every route's title (`route_screen::TITLE_SIZE`,
+   -.02em) and a page table's section headers (`TableView::page`, .06em). A fixed pixel
    tracking has a named constant (`theme::TRACKING_TITLE_TIGHT`, -0.5 px, the DS8 title case); at
    `0.0` it is exactly `text`. The gaps are n-1 between characters (CSS adds one after the last
    too, a sub-pixel difference shipped code keeps).
@@ -152,7 +152,7 @@ of the strip even it can move on screen. There is no cap on the cards diffed (a 
 on-axis at either end get a spring, a fade or a ghost, the rest cut. A slide of the window the source holds
 (`global` / `page_epoch` moved) is adopted whole. These springs are layout motion, so a landing seen while the page
 is a held transition image starts at once (the first live frame shows the start state) and steps once the
-image is released (`containers::transition::page_image_held`). Off by default. A `Grid` built from a `GridSpec` with `.animate_landings(true)` plays the same landing over 2-D slots (`Scene::slot` is index -> (x, y), the scroll shift is an (x, y) pair): a removed card is a ghost (`ghost_keys()`, `paint_ghosts`) that fades in its cell on `style.k_scale`, easing from its lifted scale when it was the focused card; every card that keeps its row slides to its new cell on `style.k_scroll`, ALL on one frame (no stagger); a card that crosses a line break never flies over the row between: it crossfades on `style.k_scale`, a leaving copy (`Landing::leaving`, painted by `Grid::draw` under the sliding cards; a new card or a row-changer fading in is drawn after the still cards and before every mover, `DrawRole::Arriving`, and a new card begins to fade once the cards in flight cover less than half its cell: `Occupancy`) fading out where it stood while the card fades in at its new cell, `out = 1 - in` (a card that only moves with the scroll shift keeps the 2-D spring); the card focus reconciles to after the focused card left rises from rest (`GridPop::rise`) as the ghost sinks, so two lifted tiles never stand side by side (the app reconciles a frame late: until it does the pop belongs to no card, `GridPop::vacate`); the focused card's ghost keeps `Tile::focused`, and when a hold menu removed it the opener lift carries it above the dim while the menu fades (`Screen::opener_departing`, `DrawFrame::lifting`; the page pass leaves it out), so it never drops into the dim on the OK frame; and nothing of a landing steps while a menu veils the page (`containers::modal::page_veiled`: a surface opening, open, or closing above `CLOSING_GONE`, i.e. still holding the host, stated by the dispatcher before the pages tick; the springs start on the first frame after, no beat), and the app's Watchlist feed hands the page nothing either (the Remove's tile commits on that same frame), and while veiled it reports no motion, so the menu's fade-out stays on its cached host, and until the landing steps NOTHING on the grid changes (slots, scales, the new focus card's rest, the caption band under the focused row, the title the focus caption reads (the removed card's ghost keeps it, and it reads the next card's on the landing's first moving frame, the frame the owner's count follows), the owner's count: the vacated pop draws the reconciled card at rest, `Grid::landing_waiting` is the owner's cue); the takeover rising from rest into the focus pop as the ghost sinks is the INTENDED look (design Motion board "takeover" spring), not a departure from the board; a card with neither end on screen snaps (no cap: a map, not a scan); focus lands on the card that took the removed card's index, the next card (the engine's reconcile; `conformance::removal_focuses_next`). Slots are measured under the caption bands as they stand NOW, but where a card stood is measured under the bands the last frame drew (`Scene::was`; a focus the reader did not move settles the caption band on its new row at once, and the layout that moves with it plays on the landing's springs, the caption with its card: `Landing::rebase` does the same for a band that settles while a landing plays), and the page shift a landing needs (`landed_shift`) is carried into the ghost, which stays where it stood on screen. The owner must keep the removed card for the ghost, as Home does for the shelf.
+image is released (`Cx::page_image`, derived from that Dispatcher's captured page and current entry/instance). Off by default. A `Grid` built from a `GridSpec` with `.animate_landings(true)` plays the same landing over 2-D slots (`Scene::slot` is index -> (x, y), the scroll shift is an (x, y) pair): a removed card is a ghost (`ghost_keys()`, `paint_ghosts`) that fades in its cell on `style.k_scale`, easing from its lifted scale when it was the focused card; every card that keeps its row slides to its new cell on `style.k_scroll`, ALL on one frame (no stagger); a card that crosses a line break never flies over the row between: it crossfades on `style.k_scale`, a leaving copy (`Landing::leaving`, painted by `Grid::draw` under the sliding cards; a new card or a row-changer fading in is drawn after the still cards and before every mover, `DrawRole::Arriving`, and a new card begins to fade once the cards in flight cover less than half its cell: `Occupancy`) fading out where it stood while the card fades in at its new cell, `out = 1 - in` (a card that only moves with the scroll shift keeps the 2-D spring); the card focus reconciles to after the focused card left rises from rest (`GridPop::rise`) as the ghost sinks, so two lifted tiles never stand side by side (the app reconciles a frame late: until it does the pop belongs to no card, `GridPop::vacate`); the focused card's ghost keeps `Tile::focused`, and when a hold menu removed it the opener lift carries it above the dim while the menu fades (`Screen::opener_departing`, `DrawFrame::lifting`; the page pass leaves it out), so it never drops into the dim on the OK frame; and nothing of a landing steps while a menu veils the page (`cx.modal.page_veiled()`: a surface opening, open, or closing above `CLOSING_GONE`, i.e. still holding the host, stated by the dispatcher before the pages tick; the springs start on the first frame after, no beat), and the app's Watchlist feed hands the page nothing either (the Remove's tile commits on that same frame), and while veiled it reports no motion, so the menu's fade-out stays on its cached host, and until the landing steps NOTHING on the grid changes (slots, scales, the new focus card's rest, the caption band under the focused row, the title the focus caption reads (the removed card's ghost keeps it, and it reads the next card's on the landing's first moving frame, the frame the owner's count follows), the owner's count: the vacated pop draws the reconciled card at rest, `Grid::landing_waiting` is the owner's cue); the takeover rising from rest into the focus pop as the ghost sinks is the INTENDED look (design Motion board "takeover" spring), not a departure from the board; a card with neither end on screen snaps (no cap: a map, not a scan); focus lands on the card that took the removed card's index, the next card (the engine's reconcile; `conformance::removal_focuses_next`). Slots are measured under the caption bands as they stand NOW, but where a card stood is measured under the bands the last frame drew (`Scene::was`; a focus the reader did not move settles the caption band on its new row at once, and the layout that moves with it plays on the landing's springs, the caption with its card: `Landing::rebase` does the same for a band that settles while a landing plays), and the page shift a landing needs (`landed_shift`) is carried into the ghost, which stays where it stood on screen. The owner must keep the removed card for the ghost, as Home does for the shelf.
 
 A row that goes on past an edge (`CardSource::more_after`, `more()` unless the source overrides it, / `more_before`, `false`
 unless the source says its window slid off the start: Home, Library and Search do) paints the skeleton of an unloaded poster in the cells past that edge, a screenful at
@@ -290,7 +290,8 @@ Do not read their absence from a test as a pass.
 The owner's goal, verbatim from the spec: *"the application's behaviour is described by several
 linked, DETERMINISTIC state machines — session, navigation, screen instances, playback — each with
 an explicit owner, interacting only through typed events, never by writing another machine's
-state."* Phases 0–12 have landed. The full design record is
+state."* Phases 0–12 denote landed source milestones, not completion of that goal; logical
+ownership and runtime acceptance still have open work. The full design record is
 [`docs/ui-restructure-spec-v4.md`](../../../docs/ui-restructure-spec-v4.md); `lib.rs` cites it by
 section number on nearly every `mod` line, so `// RESTRUCTURE (spec §6.2)` is a live reference you
 can follow.
@@ -672,7 +673,7 @@ tried first. None of it is reconstructable from the code without repeating the m
   not moving"): nothing on the page animates, reflows or lands under it. A layout motion a menu's
   choice starts (the Watchlist's Remove) and the data that would change the page (the app's
   `watchlist_feed`) wait until the menu is gone and start on the first frame after
-  (`containers::modal::page_veiled`). **The one exception is a surface whose body answers
+  (the owning stack's captured `cx.modal.page_veiled()`). **The one exception is a surface whose body answers
   `Screen::lets_host_reflow` (the Watchlist's Sort & Filter menu):** it casts no veil, the grid
   reflows under it, the host is drawn live while the cards move (`popover::host::set_reflow`: no
   per-frame capture, `page_epoch` does not move) and is retaken ONCE when they stop, the old look
@@ -731,6 +732,26 @@ tried first. None of it is reconstructable from the code without repeating the m
   (`gfx::culled`), not a skipped call tree: the page's draw still runs, so layout, hit rects and
   texture uploads are untouched and only the fill goes away. An owned surface asks for it through
   its `Style` instead.
+
+- **A page ground that is not moving is served as ONE quad, and the glass over it never knows.** Home
+  parked at the hero paints its backdrop (wash, photograph and the shared side and shelf shade) once into the region texture
+  (`Painter::cached_ground`, over `gfx::region_paint`) and serves it from there until an input changes:
+  a Continue Watching focus move redraws the shelf over a ground that did not, and the live ground
+  was 2.6M of a 9.5M-cycle frame. The name (`Backdrop::ground_key`) is every input the SCREEN owns by
+  value (the shade included, `WashScrim::paint_bits`: the shelf ramp rides the first shelf's live
+  top); the renderer's own state is folded in below the screen, never read by it: `cached_ground` is
+  handed the texture ids the picture samples and `gfx::region_ground_key` mixes in each one's
+  revision (a texture re-specified under the same name is another picture) and the two program
+  switches the ground's paths read. The picture has NO name while any spring easing it is unlanded
+  (`AmbientWash::at_rest`; a resident art layer's reveal spring at exactly 1.0 with no velocity, not
+  merely no velocity, because `bind` leaves one at 0 where it `jump`s or where art arrives; the
+  dive, which `update` lands on its target: a bare `step` parks it one ulp off and never reaches 0),
+  because a name that moved every frame would fill the
+  texture every frame, which is the live shading plus a full-screen write. The glass is untouched by
+  construction: its discovery walk and every source pass are `backdrop::discovering()` /
+  `blur_source_pass()` frames, where `region_paint` declines, so the ground still declares and draws
+  its primitives there exactly as before and `GLASSDIFF` keys on the same arguments. A ground takes
+  no cascade as a group (`Painter::is_plain`): through a dip, a gain or a translate it is live.
 
 - **Every slow FIELD takes ONE dither whenever it is drawn, and it is not a per-shader decision.**
   An 8-bit framebuffer quantises: Settings over Home measured a 700-row column spanning luma 55.7
@@ -836,7 +857,7 @@ each blur source job, the visible pass) and each walk ticks. **A page shown as a
 recorded (`placeholder::since`) and re-noted on every frame the image is painted; the pixel oracle
 cannot see a placeholder inside a blended image, so the counter alone vouches for those frames
 (`Dispatcher::held_page_image`). A picture drawn once into the region texture and then served as one
-quad (`Painter::cached_region`, the Settings Under posters preview) keeps the same books itself: it records
+quad (`Painter::cached_region`, the Settings Under posters preview; `Painter::cached_ground`, Home's parked backdrop) keeps the same books itself: it records
 the fill's debt with the key and re-notes it on every frame the texture is served, so its caller books nothing. A frame dump holds no image (every dip frame re-captures the page
 live, `PageImage::step_filmed`), so there the capture's own draw is the debt.
 

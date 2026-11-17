@@ -101,12 +101,8 @@ fn table_frame(measure: &dyn Measure) -> Rect {
 /// The artwork follows the measured route narrative. A wrapped translated title must not
 /// collide with a fixed poster origin; artwork may scale to fit, while the text keeps its roles.
 fn preview_frame(layout: RouteLayout, title: &str, copy: &str, measure: &dyn Measure) -> Rect {
-    let text = layout.narrative_copy_frame(true, title, layout.action.y, measure);
-    let copy_h = plx_ui::text_view::TextView::new(copy, theme::size::LABEL, theme::TEXT_READING)
-        .with_measure(measure)
-        .leading(theme::size::LABEL as f32 + theme::space::XS)
-        .max_lines(12)
-        .measure_h(text.w);
+    let text = layout.copy_text_frame(true, title, layout.action.y, measure);
+    let copy_h = RouteLayout::copy_view(copy, theme::TEXT_READING).with_measure(measure).measure_h(text.w);
     // The preview hangs one LG under the copy's block (never above its own slot): a single
     // `bottom + gap`, not a stack.
     let top = PV.y.max(text.y + copy_h + theme::space::LG);
@@ -246,7 +242,7 @@ impl FilmographyScreen {
             tabs: TabStrip::new(),
             tab_hscroll: Spring::at(0.0),
             pop: widgets::CtlPop::new(),
-            table: TableView::new(),
+            table: TableView::page(),
             model: Vec::new(),
             dirty: true,
             tab_c: Vec::new(),
@@ -696,7 +692,6 @@ impl FilmographyScreen {
             Some(&self.name),
             title,
             &copy,
-            theme::size::LABEL,
             f.measure,
         );
 
@@ -1207,6 +1202,7 @@ mod tests {
             tick: Tick::default(),
             measure,
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             focus: FocusRead { current: focus , ..Default::default() },
             owner: InputOwner::Entry(focus.map_or(EntryId(0), |k| k.entry)),
         }
@@ -1274,13 +1270,13 @@ mod tests {
     #[test]
     fn a_wrapped_filmography_heading_keeps_the_preview_below_its_copy_and_inside_safe_bounds() {
         let measure = FixtureMeasure;
-        let title = "ExpandedFilmographyTitle ExpandedFilmographyTitle";
+        // long enough to wrap at the route title's rung and push the preview off its fixed origin
+        let title = "ExpandedFilmographyTitle ExpandedFilmographyTitle ExpandedFilmographyTitle ExpandedFilmographyTitle";
         let copy = "12 credits";
         let layout = RouteLayout::screen_for_title(COPY_W, RouteLayout::screen().content.w, title, &measure);
         let frame = preview_frame(layout, title, copy, &measure);
-        let text = layout.narrative_copy_frame(true, title, layout.action.y, &measure);
-        let copy_h = plx_ui::text_view::TextView::new(copy, theme::size::LABEL, theme::TEXT_READING)
-            .with_measure(&measure).leading(theme::size::LABEL as f32 + theme::space::XS).measure_h(text.w);
+        let text = layout.copy_text_frame(true, title, layout.action.y, &measure);
+        let copy_h = RouteLayout::copy_view(copy, theme::TEXT_READING).with_measure(&measure).measure_h(text.w);
         assert!(frame.y >= text.y + copy_h + theme::space::LG);
         assert!(frame.y > PV.y, "the old fixed origin overlaps this expanded title");
         assert!(plx_ui::consts::inside_safe(frame));
@@ -1807,7 +1803,7 @@ mod tests {
             let _guard = language_on_this_thread_for_test(language);
             let mut section = Section::new("");
             section.rows = credits.iter().map(|c| credit_row(c, c.local.as_ref().map(|_| "home-server".to_string()))).collect();
-            let mut table = TableView::new();
+            let mut table = TableView::page();
             table.tall_rows(true);
             table.set_sections(vec![section], 0, false);
             out.extend(table.app_fit_failures(w, language.tag()));
@@ -1829,22 +1825,15 @@ mod preview_gap_tests {
         let layout = RouteLayout::screen();
         let measure = FixtureMeasure;
         let title = "A Title";
-        let text = layout.narrative_copy_frame(true, title, layout.action.y, &measure);
+        // the copy's drawn text frame (`draw_narrative` lowers it by the copy's cap drop)
+        let text = layout.copy_text_frame(true, title, layout.action.y, &measure);
         let long = "word ".repeat(400);
-        let long_h = plx_ui::text_view::TextView::new(&long, theme::size::LABEL, theme::TEXT_READING)
-            .with_measure(&measure)
-            .leading(theme::size::LABEL as f32 + theme::space::XS)
-            .max_lines(12)
-            .measure_h(text.w);
+        let long_h = RouteLayout::copy_view(&long, theme::TEXT_READING).with_measure(&measure).measure_h(text.w);
         let long_top = preview_frame(layout, title, &long, &measure).y;
         assert!(long_top > PV.y, "a tall copy pushes the preview below its slot");
         assert!((long_top - (text.y + long_h + theme::space::LG)).abs() < 1e-3);
         // A short copy hangs the same LG under its own (shorter) block, and never above the slot.
-        let short_h = plx_ui::text_view::TextView::new("x", theme::size::LABEL, theme::TEXT_READING)
-            .with_measure(&measure)
-            .leading(theme::size::LABEL as f32 + theme::space::XS)
-            .max_lines(12)
-            .measure_h(text.w);
+        let short_h = RouteLayout::copy_view("x", theme::TEXT_READING).with_measure(&measure).measure_h(text.w);
         let short_top = preview_frame(layout, title, "x", &measure).y;
         assert!(short_top >= PV.y && short_top < long_top);
         assert_eq!(short_top, PV.y.max(text.y + short_h + theme::space::LG));

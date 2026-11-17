@@ -215,6 +215,9 @@ jobs:
       # exists to prove the whole pipeline, upload included). The event name, not `plan`'s `dry`
       # output, is the discriminator: `dry` is also true for that dispatch.
       upload-debug-files: ${{ github.event_name != 'pull_request' }}
+      # Any dry run, dispatched ones too: it builds today's name, and would replace the commits of
+      # the nightly already published under it.
+      sentry-release: ${{ needs.plan.outputs.dry != 'true' }}
       # Release deliberately builds uncached for reproducibility; nightly runs once a day rather
       # than on every push, so the cache's turnaround benefit is smaller and not worth the same
       # trade here either.
@@ -358,6 +361,20 @@ jobs:
           # television checks on install.
           gh release download "$TAG" --repo "$release_repo" --pattern com.beb.plxnative.nightly.manifest.json --dir verify
           test "$(python3 -c "import json;print(json.load(open('verify/com.beb.plxnative.nightly.manifest.json'))['ipkHash']['sha256'])")" = "$(cut -d' ' -f1 dist/nightly.sha256)"
+
+      - name: Mark the Sentry release as shipped
+        if: ${{ needs.plan.outputs.dry != 'true' }}
+        # Finalizes the release build-package.yml created and records its deploy; never fails
+        # the publish, which has already happened (.github/actions/sentry-deploy says why).
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: ./.github/actions/sentry-deploy
+        with:
+          release: ${{ needs.build.outputs.sentry-release }}
+          org: ${{ needs.build.outputs.sentry-org }}
+          project: ${{ needs.build.outputs.sentry-project }}
+          environment: ${{ needs.build.outputs.sentry-environment }}
+          auth-token: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
   pages:
     name: refresh site latest-nightly pointer

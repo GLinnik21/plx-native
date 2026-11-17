@@ -64,9 +64,8 @@ Neither successful execution nor a worker wake alone grants page damage. The lan
 boundary applies damage to the actual Page/Surface owner when visible content changes;
 refusal, cancellation, stale ownership and failure must not fabricate a successful payload.
 
-The current registry-derived scenario inventory and its per-scenario evidence status are
-in `.empryo/reviews/project-ui-architecture-audit-2026-11-13.md`, section Step-7.
-Source inventory completeness is not runtime acceptance. Keyboard, pointer, long hold,
+The [public evidence summary](ui-review-evidence.md) distinguishes source inventory from
+runtime acceptance and records the scope of available historical evidence. Keyboard, pointer, long hold,
 back/restore, profile replacement, async arrival, failed/refused results, settled idle
 and reopening require separate observations, including surfaces over their real host.
 A screenshot request itself requests a frame; that image cannot prove settled idle.
@@ -88,16 +87,15 @@ Step-8's isolated replacement compiler/source results do not upgrade any scenari
 Feature checks pass, but full default/hostsim runs retain a media timing failure and supported-Python
 source gates retain proof/shape/selftest failures. The replacement leaves original HEAD, staged
 entries and tracked bytes unchanged; raw index hashes differ and are reported, not reset.
-See `.empryo/reviews/step8-recovery-result-2026-11-14.md`; the earlier isolation incident remains
-historical evidence. Missing simulator/idle/native evidence remains missing, not a passing skip.
+These are historical results, not current gate results. Missing simulator/idle/native evidence
+remains missing, not a passing skip.
 Step-7's single user-authorized WSL restart briefly restored `use_gfxredir=1` and
 D3D12 acceleration, but transport subsequently reverted to `0`. Twenty opened
 postrestart captures lack a per-capture transport timeline and remain diagnostic,
 not accepted evidence. The retained CURRENT Filmography tape proves typed navigation
-and focus restoration offline; its targets/resolve roundtrip is still outstanding.
-Exact tape/profile hashes, raw legacy nonzero results and separate reason-specific
-compatibility checks: `.empryo/reviews/step7-final-evidence-2026-11-13.json`.
-Full registry/runtime/idle/native acceptance remains open; see the recovery-result report.
+and focus restoration offline. A later private local replay reported SAME in targets and
+resolve modes; it is not evidence for the current tree or a published fixture. Full
+registry/runtime/idle/native acceptance remains open; see the public evidence summary.
 
 ## Regression coverage
 

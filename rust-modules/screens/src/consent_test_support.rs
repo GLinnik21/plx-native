@@ -18,6 +18,7 @@ pub fn test_cx(m: &FixtureMeasure) -> Cx<'_, InnerHost> {
         tick: Tick::default(),
         measure: m,
         press: PressRead::default(),
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         focus: FocusRead::default(),
         owner: InputOwner::Entry(EntryId(0)),
     }

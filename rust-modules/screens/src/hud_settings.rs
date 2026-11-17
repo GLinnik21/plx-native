@@ -55,7 +55,7 @@ use plx_ui::route_screen::RouteLayout;
 use plx_ui::screen::{At, Dir, DrawFrame, Enter, Focusable, FocusSource, FocusTarget, GroupSpec, HitSource, Placed, RenderStrategy, Screen, ScreenEvent, Step};
 use plx_ui::table::Row;
 use plx_ui::table_screen::{Header, TableScreen};
-use plx_ui::{consts, theme, Rect};
+use plx_ui::{consts, Rect};
 
 use super::family::{form_activate, form_focus, form_right_target, InnerHost, SettingsPage, ALERT_GROUP};
 use super::registry::{word, AppFx, HudCmd, ALERT, BAND};
@@ -399,7 +399,10 @@ fn hud_form(list: &HudList, draft: Option<&TextBuffer>, saving_end_time: bool) -
                 }));
             }
         }
-        folder = folder.item_keyed(id, RowKey(DROP_KEY + i as u32), RowKind::Button, action, row).disabled(file.status.is_err());
+        // The store installs a drop file only when it is idle, and refuses in silence: while a fetch, a held offer or
+        // any other package work runs, the row takes no OK, as the removal rows and the address row do not.
+        folder = folder.item_keyed(id, RowKey(DROP_KEY + i as u32), RowKind::Button, action, row)
+            .disabled(file.status.is_err() || list.fetching || list.package_busy);
     }
     let gallery = FormSection::new("").item_keyed(HudId::Browse, RowKey(0x4000), RowKind::Nav(SettingsPage::HudGallery), HudAction::Inert,
         Row::new(msg::settings_hud_browse()));
@@ -449,7 +452,7 @@ impl HudPage {
             page: SettingsPage::PlayerHud,
             title: String::new(),
             parent: String::new(),
-            form: { let mut form = FormTable::new(BAND); form.table.set_empty_text(Some("")); form },
+            form: { let mut form = FormTable::page(BAND); form.table.set_empty_text(Some("")); form },
             state: State { end_time: None, saving_end_time: false, selected: 0, rows: 0, notice: 0, confirming: false, affirmative: false, alert_scroll: 0, editing: false, fetching: false, kind: 0, scene: 0, visible: false, suspended: false, pending_select_focus: false, registry_request: false, provisional: true },
             list: HudList::default(),
             copy: String::new(),
@@ -689,7 +692,7 @@ impl HudPage {
     }
 
     fn view(&self) -> TableScreen<'_> {
-        let header = Header::new(RouteLayout::settings_page(), Some(&self.parent), &self.title, &self.copy);
+        let header = Header::new(RouteLayout::screen(), Some(&self.parent), &self.title, &self.copy);
         // The gallery's loading read-out is the page's own copy, counted and sentinel-painted as one; any other
         // sentence follows focus.
         let header = if matches!(self.page, SettingsPage::HudGallery) && self.list.catalog.fetching && self.form.table.n_rows() == 0 {
@@ -732,9 +735,6 @@ impl HudPage {
         self.says = says;
         self.title = title;
         self.parent = parent;
-        self.form.table.compact = false;
-        self.form.table.board_metrics(true);
-        self.form.table.header_ink = theme::TEXT_READING;
         self.form.table.list_focused = true;
         self.form.set(form, keep.as_ref());
         self.state.fetching = self.list.fetching;
@@ -761,18 +761,36 @@ impl HudPage {
         }
     }
 
-    /// Open the two-answer prompt about `asking`: `paragraphs` under `question`, Cancel focused.
-    fn ask(&mut self, asking: Asking, question: &'static std::ffi::CStr, paragraphs: Vec<Cow<'static, str>>, fx: &mut Effects<'_, InnerHost>) {
+    /// The viewer opened the question on screen themselves (OK on a drop file), so it is theirs to answer.
+    fn holds_own_question(&self) -> bool {
+        matches!(self.asking, Some(Asking::Drop(_)))
+    }
+
+    /// Open the two-answer prompt about `asking`: `paragraphs` under `question`, Cancel focused. False when it did
+    /// not open.
+    ///
+    /// **Every question opens here, so what happens to one already open is decided here**: the viewer's own is never
+    /// replaced, and an offer's is (the store holds one offer, so the newer one is the only one an answer can name).
+    /// It used to assign `asking` whatever was open: an offer landing on a later tick took over a drop-file question
+    /// under the same title, and the viewer's answer installed or declined a package they had not been asked about.
+    /// A drop row is inert while the store is busy (`hud_form`), so that needs a listing a tick behind the store now.
+    fn ask(&mut self, asking: Asking, question: &'static std::ffi::CStr, paragraphs: Vec<Cow<'static, str>>, fx: &mut Effects<'_, InnerHost>) -> bool {
+        if self.holds_own_question() {
+            return false;
+        }
         self.asking = Some(asking);
         self.prompt.open_paragraphs(question, paragraphs);
         self.state.confirming = true;
         self.state.affirmative = false;
         self.state.alert_scroll = self.prompt.scroll_target_bits();
         self.focus(fx, ALERT_GROUP);
+        true
     }
 
     /// Ask about the package the store holds from an address when the listing brings a new one: its name and version,
     /// where it came from (and that a plain `http://` source is a development one), *Unreviewed*, and what installing does.
+    /// An offer that arrives behind the viewer's own question waits for its answer: it is not latched as asked until
+    /// its prompt has opened, so the first tick after the answer asks it.
     fn sync_offer(&mut self, fx: &mut Effects<'_, InnerHost>) {
         if !self.state.visible { return }
         let Some(offer) = self.list.offer.clone() else {
@@ -783,13 +801,14 @@ impl HudPage {
             matches!(self.page, SettingsPage::HudDetail(sha) if sha == offer.sha)
         } else { self.page == SettingsPage::PlayerHud };
         if !owns { return }
-        if self.offered == Some(offer.sha) {
+        if self.offered == Some(offer.sha) || self.holds_own_question() {
             return;
         }
-        self.offered = Some(offer.sha);
         if offer.source == plx_data::hudpacks::Source::Registry {
-            self.ask(Asking::Offer(offer.sha), plx_platform::i18n::msg::settings_hud_gallery_install_question_c(),
-                vec![Cow::Borrowed(plx_platform::i18n::msg::settings_hud_gallery_install_body())], fx);
+            if self.ask(Asking::Offer(offer.sha), plx_platform::i18n::msg::settings_hud_gallery_install_question_c(),
+                vec![Cow::Borrowed(plx_platform::i18n::msg::settings_hud_gallery_install_body())], fx) {
+                self.offered = Some(offer.sha);
+            }
             return;
         }
         let mut facts = Vec::new();
@@ -805,7 +824,9 @@ impl HudPage {
             Cow::Owned(join(&facts)),
             Cow::Borrowed(plx_platform::i18n::msg::settings_hud_offer_body()),
         ];
-        self.ask(Asking::Offer(offer.sha), plx_platform::i18n::msg::settings_hud_install_question_c(), paragraphs, fx);
+        if self.ask(Asking::Offer(offer.sha), plx_platform::i18n::msg::settings_hud_install_question_c(), paragraphs, fx) {
+            self.offered = Some(offer.sha);
+        }
     }
 
     /// Put the keyboard down (its text stays in the draft) and show the row as it is without it.
@@ -1057,7 +1078,7 @@ impl Machine<InnerHost> for HudPage {
                 }
                 cycle.tick(*t, self.preview_active(), &mut fx.present());
                 self.preview_cycle = cycle;
-                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 self.follow.update(t.dt());
                 Handled::Yes
             }
@@ -1216,7 +1237,7 @@ impl Screen<InnerHost> for HudPage {
 /// The `(focus key, id)` of every row `list` shows, for a test: the page's own builder.
 #[cfg(test)]
 fn rows_for_test(list: &HudList) -> Vec<(u32, HudId)> {
-    let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
+    let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::page(BAND);
     form.set(hud_form(list, None, false).0, None);
     (0..form.table.n_rows() as usize).filter_map(|i| Some((form.key_at(i)?.0, form.binding_at(i)?.id.clone()))).collect()
 }

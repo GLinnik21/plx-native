@@ -123,6 +123,7 @@ impl Fixture {
                 ..Default::default()
             },
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             owner: OWNER,
         }
     }

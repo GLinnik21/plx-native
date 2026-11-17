@@ -123,9 +123,10 @@ mod tests {
                 ..Default::default()
             }];
             let epoch = init.epoch + 1;
-            let mut rig = Bridge::for_session_test(init);
-            rig.session_adapter =
-                crate::app::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
+            let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+            let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+            let mut rig = harness.bridge();
+            *rig.session_adapter = crate::app::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
             rig.session_adapter
                 .inject_fixture_work(1, move |output, input| {
                     std::thread::spawn(move || {
@@ -353,7 +354,9 @@ mod tests {
             ..Default::default()
         }];
         let epoch = init.epoch + 1;
-        let mut rig = Bridge::for_session_test(init);
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
         rig.session_adapter
             .inject_fixture_work(1, move |output, input| {
                 let SessionWork::ProfileSwitch { session, .. } = input else {
@@ -418,9 +421,10 @@ mod tests {
                 ..Default::default()
             }];
             let epoch = init.epoch + 1;
-            let mut rig = Bridge::for_session_test(init);
-            rig.session_adapter =
-                crate::app::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
+            let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+            let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+            let mut rig = harness.bridge();
+            *rig.session_adapter = crate::app::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
             rig.session_adapter
                 .inject_fixture_work(1, move |output, input| {
                     std::thread::spawn(move || {
@@ -582,12 +586,13 @@ mod tests {
         use super::*;
         const EPOCH: u64 = u32::MAX as u64 + 120;
 
-        fn live(saved: Session, mt: &plx_base::task::MainThread) -> Bridge {
+        fn live(saved: Session, mt: &plx_base::task::MainThread) -> crate::app::runtime_owners::Harness {
             let mut init = plx_session::auth::SessionInit::captured(saved);
             init.epoch = EPOCH;
-            let mut rig = Bridge::for_session_test(init);
-            rig.session_adapter = crate::app::adapters::session::SessionAdapter::live_resources_for_test(mt, false);
-            rig
+            let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+            let mut owner = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+            *owner.bridge().session_adapter = crate::app::adapters::session::SessionAdapter::live_resources_for_test(mt, false);
+            owner
         }
 
         fn assert_receipt(rig: &Bridge, record: &SessionEnvelope, req: u32) {
@@ -610,7 +615,8 @@ mod tests {
             let before = std::fs::read(tmp.path()).unwrap();
             let origin = plx_plex::plex::Origin::parse("https://192-0-2-10.h.plex.direct:32400").unwrap();
             let pin = plx_plex::plex::ResolvePin::for_origin(&origin, "192.0.2.10").unwrap();
-            let mut rig = live(stored_admin(), &mt);
+            let mut harness = live(stored_admin(), &mt);
+            let mut rig = harness.bridge();
             let candidate_origin = origin.base();
             rig.session_adapter.inject_fixture_work(1, move |output, input| {
                 let SessionWork::ServerRoster { session, .. } = input else { panic!("expected roster work") };
@@ -662,7 +668,8 @@ mod tests {
             let mt = unsafe { plx_base::task::MainThread::assume() };
             let _cleanup = ResourceCleanup(&mt);
             plx_plex::plex::reset_servers_for_test();
-            let mut rig = live(stored(), &mt);
+            let mut harness = live(stored(), &mt);
+            let mut rig = harness.bridge();
             rig.session_adapter.inject_fixture_work(1, |output, input| {
                 let SessionWork::ServerRoster { session, .. } = input else {
                     panic!("expected roster work")
@@ -700,7 +707,8 @@ mod tests {
             let old_client = plx_plex::plex::client_for(id).unwrap();
             let old_instance = old_client.instance_gen();
             let old_token = old_client.token_gen();
-            let mut rig = live(saved.clone(), &mt);
+            let mut harness = live(saved.clone(), &mt);
+            let mut rig = harness.bridge();
             rig.session_adapter.inject_fixture_work(1, move |output, input| {
                 let SessionWork::Endpoint { session, expected, lifecycle, machine_id } = input
                     else { panic!("expected actual endpoint capture") };
@@ -835,7 +843,9 @@ mod tests {
             init.epoch = u64::from(u32::MAX) + 160;
             init.users = vec![plx_session::auth::UserTile { uuid: "admin".into(), protected: false,
                 ..Default::default() }];
-            let mut rig = Bridge::for_session_test(init);
+            let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+            let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+            let mut rig = harness.bridge();
             let mut d = Dispatcher::<AppHost>::new();
             let primary = SourceRef { address: "127.0.0.42".into(),
                 origin_url: "http://127.0.0.42:32400".into(), token: "new-primary-token".into(),
@@ -893,7 +903,9 @@ mod tests {
             let mut init = plx_session::auth::SessionInit::captured(stored());
             init.phase = Phase::Profiles;
             init.epoch = u64::from(u32::MAX) + 161;
-            let mut rig = Bridge::for_session_test(init);
+            let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+            let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+            let mut rig = harness.bridge();
             let mut d = Dispatcher::<AppHost>::new();
             let before = data(&mut rig);
             let account = SourceRef {

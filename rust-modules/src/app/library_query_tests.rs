@@ -29,7 +29,8 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
     );
     plx_plex::plex::set_current(sid);
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
     rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
@@ -45,7 +46,7 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let entry = d.nav.top_page().unwrap().id;
-    let id = rig.listing.view().id().unwrap();
+    let id = rig.retained.listing.view().id().unwrap();
     d.emit(
         MachineId::Nav,
         Fx::App(AppFx::Store(
@@ -71,7 +72,7 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
     assert_ne!(owned_id.query, id.query,
         "the accepted command mutates the explicit owner in the same dispatcher turn");
     rig.capture_views(&mut d);
-    let snapshot = rig.listing.clone();
+    let snapshot = rig.retained.listing.clone();
     assert_eq!(snapshot.view().id(), Some(owned_id));
     assert_eq!(snapshot.view().total(), -1, "no new page has arrived");
     assert!(snapshot.view().cursor().is_none_or(|cursor| matches!(cursor.at, plx_data::stores::browse::CursorAt::SlotIndex(0))),
@@ -140,7 +141,8 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         plx_plex::plex::register_for_test("query-shared", "127.0.0.1", 10, "synthetic", "fixture");
     plx_plex::plex::set_current(sid);
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, shared]);
     rig.refresh_browse_directory();
     rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
@@ -252,7 +254,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
     }
     let menu_focus = d.focus().unwrap();
     assert_ne!(menu_focus.entry, entry);
-    let query = rig.listing.view().id().unwrap().query;
+    let query = rig.retained.listing.view().id().unwrap().query;
     frame(
         &mut d,
         &mut rig,
@@ -263,7 +265,7 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
     let mut landed_at = None;
     for i in 141..190 {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
-        if rig.listing.view().id().unwrap().query != query {
+        if rig.retained.listing.view().id().unwrap().query != query {
             landed_at = Some(i);
             break;
         }

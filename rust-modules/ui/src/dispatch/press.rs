@@ -179,10 +179,14 @@ impl Press {
 
     /// OK-up: record the release. The bounce starts (respecting [`MIN_DIP_MS`]) and the activation commits
     /// a [`COMMIT_MS`] beat later — poll [`take_commit`].
+    ///
+    /// `release_at == 0` means "still held", so a key-up on the tick the `u32` clock wraps to 0 must
+    /// not store 0: it was dropped, the press latched long and delivered a hold instead of the tap.
+    /// `.max(1)` matches [`commit_at`](Self) and `HeldKey::release`.
     pub fn release(&mut self, now: u32) {
         let s = &mut *self;
         if s.phase == Phase::Down && s.release_at == 0 {
-            s.release_at = now;
+            s.release_at = now.max(1);
         }
 
     }
@@ -284,7 +288,7 @@ impl Press {
     ///
     /// So the card is not in the snapshot at all while a menu lifts it: the card sections skip the
     /// lifted element (`DrawFrame::lifted`) and say so through
-    /// [`popover::set_lift_owns`](crate::popover::set_lift_owns), and the opener lift
+    /// a local receipt validated by Input, and the opener lift
     /// (the dispatcher's lift pass, `Screen::redraw_focused`) draws the ONE copy live above the
     /// snapshot at the press's own scale.
     /// While that holds, the press reports nothing as page damage, not even the landing on rest
@@ -298,15 +302,20 @@ impl Press {
     /// surface (a Library chip, the account menu) springs back under it too but is not a long
     /// hold: a tap stays motion-only.
     pub fn tick(&mut self, now: u32, dt: f32) -> bool {
+        self.tick_owned(now, dt, false)
+    }
+
+    /// Input supplies its validated, gesture-addressed lift evidence explicitly.
+    pub fn tick_owned(&mut self, now: u32, dt: f32, lift_owns: bool) -> bool {
         let phase = self.phase;
-        self.step(now, dt);
+        self.step(now, dt, lift_owns);
         let target = if self.phase == Phase::Down { DIP } else { REST };
         // A typed result for the input owner's Present, never ambient damage.
-        self.long && !crate::popover::lift_owns()
+        self.long && !lift_owns
             && (self.phase != phase || !plx_machine::motion::report::settled(self.sp.pos, target, self.sp.vel))
     }
 
-    fn step(&mut self, now: u32, dt: f32) {
+    fn step(&mut self, now: u32, dt: f32, lift_owns: bool) {
         let s = &mut *self;
         match s.phase {
             Phase::Idle => {}
@@ -343,7 +352,7 @@ impl Press {
                 if (s.sp.pos - REST).abs() < 0.002 && s.sp.vel.abs() < 0.01 {
                     // The closing jump is damage (`idle::note_jump`); with the lift owning the
                     // card there is no copy in the snapshot to re-take for, so land it silently.
-                    if crate::popover::lift_owns() {
+                    if lift_owns {
                         s.sp.pos = REST;
                         s.sp.vel = 0.0;
                     } else {
@@ -668,13 +677,17 @@ mod tests {
     /// Apply its explicit result to a local Present, matching InputMachine and Dispatcher:
     /// another input owner or worker cannot steal or publish this press's page damage.
     fn spring_back_frames(p: &mut Press, now: &mut u32) -> Vec<(bool, bool)> {
+        spring_back_frames_owned(p, now, false)
+    }
+
+    fn spring_back_frames_owned(p: &mut Press, now: &mut u32, lift_owns: bool) -> Vec<(bool, bool)> {
         let mut out = Vec::new();
         let _ = plx_machine::motion::report::take_local_motion();
         while p.is_active() && out.len() < 120 {
             let phase = p.phase;
             *now = now.wrapping_add(16);
             let mut present = plx_machine::present::Present::new();
-            if p.tick(*now, 0.016) {
+            if p.tick_owned(*now, 0.016, lift_owns) {
                 present.note_in_scope(plx_machine::present::Scope::Page,
                     plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
             }
@@ -733,9 +746,7 @@ mod tests {
         run(&mut p, &mut now, LONG_MS + 100);
         assert!(p.was_long());
         p.cancel();
-        crate::popover::set_lift_owns(true);
-        let frames = spring_back_frames(&mut p, &mut now);
-        crate::popover::set_lift_owns(false);
+        let frames = spring_back_frames_owned(&mut p, &mut now, true);
         assert!(frames.iter().filter(|f| f.1).count() > 5, "the spring really moved the card");
         // The local Present observes only this press's explicit page-damage effects;
         // global worker scheduling and another press cannot affect the readout.
@@ -773,5 +784,19 @@ mod tests {
         p.cancel();
         let frames = spring_back_frames(&mut p, &mut now);
         assert!(frames.iter().filter(|f| f.0).count() <= 1, "an abandoned short press is motion-only");
+    }
+
+    /// A key-up exactly on the clock wrap (tick 0) is a real release: the card press commits as a
+    /// tap and never latches into a hold.
+    #[test]
+    fn a_release_at_the_clock_wrap_tick_is_a_tap_not_a_hold() {
+        let _serial = plx_base::testlock::serial();
+        let mut p = Press::new();
+        p.begin(u32::MAX - 15);
+        p.release(0);
+        let mut now = 0;
+        let committed = run(&mut p, &mut now, 2000);
+        assert!(committed, "the tap committed");
+        assert!(!p.was_long(), "the release at ms 0 was not lost into a hold");
     }
 }

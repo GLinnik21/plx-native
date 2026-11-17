@@ -580,7 +580,9 @@ mod tests {
         let _guard = plx_base::testlock::serial();
         let key: Key = (u16::MAX, u32::MAX, -7);
         lock().push((key, Entry { answer: None, at: None, settled: false, probing: true }));
-        let mut bridge = crate::app::bridge::Bridge::for_visual_inputs_test();
+        let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = owner.bridge();
+        bridge.observe_live_visual_inputs_for_test();
         let mut gate = Present::new();
         let mut unrelated = Present::new();
         bridge.observe_plex_visual_inputs(&mut gate);

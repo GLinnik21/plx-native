@@ -1786,7 +1786,6 @@ impl LoginScreen {
             None,
             plx_platform::i18n::msg::browse_login_title(),
             plx_platform::i18n::msg::browse_login_instructions(),
-            theme::size::LABEL,
             f.measure,
         );
         let status = self.waiting_label();
@@ -2865,6 +2864,7 @@ impl AuthLike for SessionHost {
             tick: plx_machine::machine::Tick::default(),
             measure: m,
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             focus: FocusRead {
                 current: None,
                 ..Default::default()
