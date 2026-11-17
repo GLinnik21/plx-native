@@ -454,6 +454,19 @@ impl Dovi {
         rpu_present: false,
     };
 
+    pub fn of_stream(s: &plx_plex::plex::Stream) -> Option<Dovi> {
+        (s.dovi_present != 0).then(|| Dovi {
+            present: true,
+            profile: s.dovi_profile,
+            bl_compat: s.dovi_bl_compat_id,
+            el_present: s.dovi_el_present != 0,
+            level: s.dovi_level,
+            version: Dovi::parse_version(&s.dovi_version),
+            bl_present: s.dovi_bl_present != 0,
+            rpu_present: s.dovi_rpu_present != 0,
+        })
+    }
+
     /// [`Self::version`] back as the dotted string the server sent (`"1.0"`), or `None` when it
     /// sent none. `None` and `Some("0.0")` are different answers and the panel draws only the
     /// former's absence — a server that really reported version 0 would still get a row.
@@ -2527,17 +2540,8 @@ fn convert_streams(streams: &[plx_plex::plex::Stream]) -> Streams {
                 // so this costs nothing and is not a change to any measured behaviour — it is the
                 // one assignment here whose failure is silent and wrong rather than silent and
                 // cosmetic.
-                if s.dovi_present != 0 {
-                    dovi = Dovi {
-                        present: true,
-                        profile: s.dovi_profile,
-                        bl_compat: s.dovi_bl_compat_id,
-                        el_present: s.dovi_el_present != 0,
-                        level: s.dovi_level,
-                        version: Dovi::parse_version(&s.dovi_version),
-                        bl_present: s.dovi_bl_present != 0,
-                        rpu_present: s.dovi_rpu_present != 0,
-                    };
+                if let Some(record) = Dovi::of_stream(s) {
+                    dovi = record;
                 }
                 // The video track ITSELF, kept rather than reduced to `fps`/`hdr`/`dovi`. It is the
                 // only place the stream's own bitrate, profile, bit depth and chroma survive, and

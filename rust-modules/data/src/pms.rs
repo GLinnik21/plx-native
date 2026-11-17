@@ -268,7 +268,11 @@ pub struct MediaVersion {
     /// A video stream is HDR or Dolby Vision. Only a response that carries streams can say so (a
     /// listing usually does not), so `false` is "not known to be".
     pub hdr: bool,
+    #[serde(default, skip_serializing_if = "no_dolby_vision")]
+    pub dovi: crate::metadata::Dovi,
 }
+
+fn no_dolby_vision(dovi: &crate::metadata::Dovi) -> bool { !dovi.present }
 
 /// The versions worth a picker: every `Media[]` entry with an id when there are at least two,
 /// else none.
@@ -292,6 +296,11 @@ pub fn versions_of(it: &plx_plex::plex::Metadata) -> Vec<MediaVersion> {
                 container: clean(part.map_or(&m.container, |p| if p.container.is_empty() { &m.container } else { &p.container })),
                 size: part.map_or(0, |p| p.size),
                 hdr: part.is_some_and(|p| p.stream.iter().any(|s| s.stream_type == 1 && s.is_hdr())),
+                dovi: part
+                    .and_then(|p| {
+                        p.stream.iter().filter(|s| s.stream_type == 1).filter_map(crate::metadata::Dovi::of_stream).last()
+                    })
+                    .unwrap_or_default(),
             }
         })
         .collect()
