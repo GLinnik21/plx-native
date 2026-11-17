@@ -1323,8 +1323,17 @@ fn the_options_menu_rows_answer_their_names() {
         options: WatchlistOptionsState::default(),
         anchor: [100.0f32, 100.0, 300.0, 60.0].map(f32::to_bits),
     };
-    let menu = WatchlistMenuScreen::new(EntryId(ENTRY.0 + 1), arg);
+    let mut menu = WatchlistMenuScreen::new(EntryId(ENTRY.0 + 1), arg);
     let cx = h.cx();
+    // the rows are laid out once the menu has opened, which its Mount does: a row that is not in
+    // the panel yet has no place
+    {
+        use plx_machine::machine::{Effects, InstanceId, Machine, MachineId, ScreenEvent};
+        let mut present = plx_machine::present::Present::new();
+        let mut out = Vec::new();
+        let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(10)), &mut present);
+        Machine::<WatchHost>::step(&mut menu, &ScreenEvent::Mount, &cx, &mut fx);
+    }
     conformance::<WatchHost, _>(&menu, &cx);
     for (i, row) in OptionsRow::ALL.iter().enumerate() {
         let id = A11yPath::parse_relative(row.a11y_name()).expect("a plain row name");

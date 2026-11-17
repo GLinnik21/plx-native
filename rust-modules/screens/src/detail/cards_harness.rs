@@ -407,7 +407,10 @@ fn the_page_answers_its_ids_and_conforms() {
         ..Default::default()
     };
     plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d));
-    let screen = bare_held(sid, "page");
+    let mut screen = bare_held(sid, "page");
+    // the season tabs have a place once their strip is measured, which a landing does in the app
+    // (`season_metrics.update`): the held screen has had none
+    screen.season_metrics.update(test_store().view().current().expect("the page's detail is mounted"), &FixtureMeasure);
     let cx = cx_of(0, 1.0, None);
     conformance::<TestHost, _>(&screen, &cx);
 
