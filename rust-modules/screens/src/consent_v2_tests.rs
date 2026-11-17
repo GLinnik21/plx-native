@@ -195,3 +195,19 @@ fn the_note_and_every_sentence_fit_in_every_language() {
     }
     assert!(out.is_empty(), "{}", out.join("\n"));
 }
+
+// ---- accessibility ids -----------------------------------------------------------------------
+
+/// **Every Privacy & data row names itself** with a segment the id grammar accepts, and no two share a name.
+#[test]
+fn the_privacy_rows_name_themselves_with_distinct_ids() {
+    let mut names: Vec<&str> = [
+        RowId::Errors, RowId::Usage, RowId::PreviewCrash, RowId::PreviewUsage, RowId::Policy,
+        RowId::ErrorsId, RowId::AnalyticsId, RowId::Delete,
+    ].iter().map(|id| id.a11y().expect("a row names itself")).collect();
+    assert!(names.iter().all(|n| plx_ui::a11y::is_name(n)), "a name outside the id grammar: {names:?}");
+    let before = names.len();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), before, "two rows share a name");
+}

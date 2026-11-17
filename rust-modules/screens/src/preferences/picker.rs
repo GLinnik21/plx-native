@@ -20,8 +20,14 @@
 use super::*;
 use plx_ui::decision_prompt::{DecisionPrompt, PromptStep};
 use plx_ui::screen::{At, Dir, Focusable, GroupSpec, Placed, Step};
+use plx_ui::a11y::{A11y, A11yPath};
 use super::super::family::ALERT_GROUP;
+use super::super::plaintext_question::AlertAnswers;
 use super::super::registry::ALERT;
+
+/// The Direct Play *Forced* question's two answers as an accessibility id names them:
+/// `alert.cancel` and `alert.enable`.
+const FORCE_ANSWERS: AlertAnswers = AlertAnswers::new(ALERT_GROUP, ALERT, ALERT + 1, "cancel", "enable");
 
 /// The Retry row's focus key: above any option position (the language list is a few hundred rows).
 const RETRY_KEY: u32 = 1 << 20;
@@ -348,6 +354,26 @@ impl Focusable<InnerHost> for PickerPage {
                 FocusKey { entry: self.entry, elem: self.state.selected },
             None => Focusable::<InnerHost>::seat(&self.view(), g, from, cx),
         }
+    }
+    // While the question is open its two answers are the page's only elements, as `groups` lists them.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, InnerHost>) -> Option<A11y<'_>> {
+        if self.alert.is_open() {
+            return FORCE_ANSWERS.a11y(*key);
+        }
+        Focusable::<InnerHost>::a11y(&self.view(), key, cx).map(A11y::into_owned)
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, InnerHost>, out: &mut Vec<u32>) {
+        if self.alert.is_open() {
+            FORCE_ANSWERS.elems(g, out);
+            return;
+        }
+        Focusable::<InnerHost>::a11y_elems(&self.view(), g, cx, out)
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, InnerHost>) -> Option<u32> {
+        if self.alert.is_open() {
+            return FORCE_ANSWERS.find(path);
+        }
+        Focusable::<InnerHost>::a11y_find(&self.view(), path, cx)
     }
 }
 
