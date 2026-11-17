@@ -1,4 +1,4 @@
-{"updated":"2026-11-17T15:55:35Z",
+{"updated":"2026-11-17T16:14:36Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5292,7 +5292,8 @@
 {"id":44107955041,"at":"2026-11-17T14:52:49Z","sha":"e0825d1d6","title":"test: type as each door delivers text","pr":1428,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":225,"Windows launcher syntax":21,"macOS simulator build + launch":200,"Linux simulator build + launch":365}},
 {"id":44108454324,"at":"2026-11-17T14:55:30Z","sha":"6c8526f52","title":"Merge remote-tracking branch 'origin/main' into codex/server-security-warning","pr":1422,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Linux simulator build + launch":370,"Windows launcher syntax":20,"macOS tests against bundled FFmpeg and ASS":246}},
 {"id":44111138037,"at":"2026-11-17T15:09:48Z","sha":"2f46df9e6","title":"Crash breadcrumbs: say a missing surface_changed is not a negative","pr":1429,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":213,"macOS tests against bundled FFmpeg and ASS":229,"Windows launcher syntax":22,"Linux simulator build + launch":357}},
-{"id":44117002070,"at":"2026-11-17T15:40:21Z","sha":"d09414e18","title":"Preview: narrow the fix to a preflight that got no response","pr":1430,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Linux simulator build + launch":289,"Windows launcher syntax":21}}
+{"id":44117002070,"at":"2026-11-17T15:40:21Z","sha":"d09414e18","title":"Preview: narrow the fix to a preflight that got no response","pr":1430,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Linux simulator build + launch":289,"Windows launcher syntax":21}},
+{"id":44122336517,"at":"2026-11-17T16:08:31Z","sha":"da2cbf421","title":"a11y runtime: review machine.rs's by-id input into the generated-enum proof","pr":1432,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":137,"Linux simulator build + launch":353},"failed":["macOS simulator build + launch"]}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
