@@ -487,9 +487,11 @@ pub unsafe extern "C" fn plx_runtime_path(
     1
 }
 
-/// Create-only runtime logs. Rust producers and the privacy erasure sweep share these names; the
-/// test below extracts the C boot shim's sinks too, so adding one cannot leave Delete all local
-/// data with a stale second list.
+/// Create-only runtime logs, and the one rewritten snapshot ([`A11Y_STATE`], which a dev build
+/// REPLACES on each `state:<nonce>` request through the fixed temp name [`A11Y_STATE_TMP`]; it holds
+/// titles and rating keys, so the erasure sweep removes both names). Rust producers and the privacy
+/// erasure sweep share these names; the test below extracts the C boot shim's sinks too, so adding
+/// one cannot leave Delete all local data with a stale second list.
 pub mod runtime_file {
     pub const EVENTS: &str = "plxnative-events.log";
     pub const CRASH: &str = "plxnative-crash.log";
@@ -500,8 +502,14 @@ pub mod runtime_file {
     pub const PLAYBACK_DIAGNOSTICS: &str = "plxnative-playback.log";
     pub const GPU_TIME: &str = "plxnative-gputime.jsonl";
     pub const HARDWARE_COUNTERS: &str = "plxnative-hwcnt.jsonl";
+    /// The accessibility state a `state:<nonce>` request writes (`app/a11y_state.rs`): rewritten
+    /// atomically, never appended to.
+    pub const A11Y_STATE: &str = "plxnative-a11y.json";
+    /// The fixed temp name that write goes through before the rename. Fixed, so a temp a crash left
+    /// behind is a name `dev.rs`'s `DIAG` can list and the erasure sweep can remove.
+    pub const A11Y_STATE_TMP: &str = "plxnative-a11y.json.tmp";
 
-    pub const LOGS: [&str; 9] = [
+    pub const LOGS: [&str; 11] = [
         EVENTS,
         CRASH,
         STDERR,
@@ -511,6 +519,8 @@ pub mod runtime_file {
         PLAYBACK_DIAGNOSTICS,
         GPU_TIME,
         HARDWARE_COUNTERS,
+        A11Y_STATE,
+        A11Y_STATE_TMP,
     ];
 }
 

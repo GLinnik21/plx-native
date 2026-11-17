@@ -1497,14 +1497,15 @@ pub(crate) fn hud_preview_conforms() -> plx_ui::a11y::Namespaces {
     namespaces
 }
 
-/// **A pointer's arrival on a row is as deliberate as a key's**: it ends the provisional focus the page
-/// opened on, as a key (`By::Dir`) does, and a restore or a reconcile does not.
+/// **A pointer's or a script's (by-id, `By::Script`) arrival on a row is as deliberate as a key's**: it
+/// ends the provisional focus the page opened on, as a key (`By::Dir`) does; a restore or a reconcile
+/// does not.
 #[test]
-fn a_pointer_arrival_ends_the_provisional_focus_as_a_key_does() {
+fn a_scripted_or_pointer_arrival_ends_the_provisional_focus_as_a_key_does() {
     use plx_machine::machine::By;
     let mut page = gallery_page(SettingsPage::PlayerHud);
     let to = FocusKey { entry: EntryId(0), elem: 0 };
-    for (by, ends) in [(By::Dir, true), (By::Pointer, true), (By::Restore, false), (By::Reconcile, false)] {
+    for (by, ends) in [(By::Dir, true), (By::Pointer, true), (By::Script, true), (By::Restore, false), (By::Reconcile, false)] {
         page.state.provisional = true;
         drive(&mut page, ScreenEvent::FocusMoved { from: None, to, by }, 0);
         assert_eq!(!page.state.provisional, ends, "{by:?}");

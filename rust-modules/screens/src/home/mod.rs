@@ -3635,13 +3635,13 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                     }
                     self.layout_grid();
                 }
-                if to.elem >= plx_ui::dispatch::STRIP_BASE && matches!(by, By::Dir | By::Pointer)
+                if to.elem >= plx_ui::dispatch::STRIP_BASE && matches!(by, By::Dir | By::Pointer | By::Script)
                 {
                     self.strip_chosen = true;
                 } else if to_loc.is_some() {
                     self.strip_chosen = false;
                 }
-                if matches!(by, By::Dir | By::Pointer) {
+                if matches!(by, By::Dir | By::Pointer | By::Script) {
                     self.hero_auto = HERO_AUTO_S;
                 }
                 fx.invalidate(Provenance::Input);

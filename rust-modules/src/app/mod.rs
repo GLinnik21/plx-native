@@ -8,6 +8,8 @@
 #![allow(non_upper_case_globals)]
 pub(crate) mod hud_source;
 #[cfg(feature = "devtriggers")]
+mod a11y_state;
+#[cfg(feature = "devtriggers")]
 mod anim_diagnostics;
 mod card_motion_policy;
 mod player_presentation;
@@ -385,6 +387,11 @@ pub(crate) struct App {
     pub(crate) pages: plx_ui::dispatch::Dispatcher<bridge::AppHost>,
     /// Inputs collected for the dispatcher this iteration (`bridge` module doc).
     pub(crate) inputs: Vec<plx_machine::machine::InputEvent<u32>>,
+    /// The latest `state:<nonce>` accessibility request not yet answered: `run::ingress_token` parks
+    /// it here and the frame tail (`run::report`) serves it, on the presented and the skipped path
+    /// alike (`a11y_state`). The app keeps it, not a thread-local, so one owner holds the slot.
+    #[cfg(feature = "devtriggers")]
+    a11y_pending: a11y_state::Pending,
     /// Physical logical children. Native playback resources remain in `adapters` above.
     pub(crate) runtime: runtime_owners::RuntimeOwners,
     /// Retained publications and IO bookkeeping; each turn borrows these alongside `runtime`.

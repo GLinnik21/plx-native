@@ -12,6 +12,7 @@
 use std::borrow::Cow;
 use std::ffi::CStr;
 
+use super::a11y::{A11y, A11yPath, Role, Seg};
 use super::dispatch::{CxParts, Dispatcher, NoTap, Rig, Split};
 use super::frame::{Budget, RenderReport};
 use plx_machine::machine::{
@@ -198,6 +199,9 @@ pub struct FixtureRow {
     /// What the row's elements are for the press: `Page(5xx)` rows are `Bare`, `Page(6xx)`
     /// rows `Control`, everything else `Card`.
     pub kind: ElemKind,
+    /// The first element whose data has not landed (an unloaded paged slot, for the by-id
+    /// `Unloaded` refusal). `usize::MAX` is a row every element of which has landed.
+    pub unloaded_from: usize,
 }
 
 impl Focusable<FixtureHost> for FixtureRow {
@@ -254,6 +258,34 @@ impl Focusable<FixtureHost> for FixtureRow {
         FocusKey {
             entry: self.entry,
             elem: col.min(self.len.saturating_sub(1) as u32),
+        }
+    }
+    /// `row.<i>`: the row's role follows what its elements are for the press. The subject is
+    /// `rk<i>` (a catalog key's stand-in) and the label is a word, never a title.
+    fn a11y(&self, key: &u32, _cx: &Cx<'_, FixtureHost>) -> Option<A11y<'_>> {
+        let i = *key as usize;
+        (i < self.len).then(|| {
+            let role = match self.kind {
+                ElemKind::Card => Role::Card,
+                ElemKind::Bare => Role::Row,
+                _ => Role::Button,
+            };
+            A11y::new(A11yPath::new().name("row").index(i), role)
+                .with_label("row item")
+                .with_subject(format!("rk{i}"))
+                .with_loaded(i < self.unloaded_from)
+        })
+    }
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, FixtureHost>, out: &mut Vec<u32>) {
+        if g == self.group {
+            out.extend(0..self.len as u32);
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, _cx: &Cx<'_, FixtureHost>) -> Option<u32> {
+        let mut segs = path.segs();
+        match (segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("row")), Some(Seg::Index(i)), None) if i < self.len => Some(i as u32),
+            _ => None,
         }
     }
 }
@@ -363,6 +395,18 @@ pub struct FixtureScreen {
 
 crate::focusable_via_composed!(FixtureScreen, FixtureHost);
 
+#[cfg(test)]
+impl FixtureScreen {
+    /// The row's element count, as a store landing would set it (a row longer than the canvas).
+    pub(crate) fn set_row_len(&mut self, len: usize) {
+        self.row.len = len;
+    }
+    /// The row's first element whose data has not landed (an unloaded paged slot).
+    pub(crate) fn set_unloaded_from(&mut self, from: usize) {
+        self.row.unloaded_from = from;
+    }
+}
+
 impl Composed<FixtureHost> for FixtureScreen {
     fn layout(&self, _cx: &Cx<'_, FixtureHost>) -> Vec<(PartId, Rect)> {
         vec![(PartId(0), Rect::new(0.0, 100.0, 1920.0, 200.0))]
@@ -392,6 +436,7 @@ impl Machine<FixtureHost> for FixtureScreen {
                 super::screen::By::Pointer => "by_pointer",
                 super::screen::By::Restore => "by_restore",
                 super::screen::By::Reconcile => "by_reconcile",
+                super::screen::By::Script => "by_script",
             });
         }
         // Page 801 observes the context of each delivered input, without consuming directions.
@@ -706,6 +751,7 @@ impl FixtureModal {
                                     prepared: 0,
                                     drawn: 0,
                                     kind: ElemKind::Card,
+                                    unloaded_from: usize::MAX,
                                 },
                                 draw_at: 0,
                                 recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None,
@@ -773,6 +819,15 @@ impl Focusable<FixtureHost> for FixtureModal {
         FocusKey {
             entry: self.entry,
             elem: 0,
+        }
+    }
+    /// The surface's one control: `close`.
+    fn a11y(&self, key: &u32, _cx: &Cx<'_, FixtureHost>) -> Option<A11y<'_>> {
+        (*key == 0).then(|| A11y::new(A11yPath::new().name("close"), Role::Button))
+    }
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, FixtureHost>, out: &mut Vec<u32>) {
+        if g == GroupId(9) {
+            out.push(0);
         }
     }
 }
@@ -1009,6 +1064,7 @@ impl Mounter<FixtureHost> for FixtureMounter {
                 prepared: 0,
                 drawn: 0,
                 kind,
+                unloaded_from: usize::MAX,
             },
             draw_at: 0,
             recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None,
@@ -1476,6 +1532,8 @@ impl Tap<FixtureHost> for RecTap {
         let input = match &ev.kind {
             InputKind::Key { key, .. } => json!({"kind": "key", "key": key_name(*key), "ms": ev.at.ms}),
             InputKind::SystemKeyboard(up) => json!({"kind": "keyboard", "up": up, "ms": ev.at.ms}),
+            InputKind::ById { id, press, expect } => json!({"kind": "by_id", "id": &**id,
+                "press": press.map(|tap| json!([tap.sym, tap.wcode])), "expect": expect.as_deref(), "ms": ev.at.ms}),
             InputKind::Text(edit) => {
                 let (op, text) = match edit {
                     TextEdit::Commit(text) => ("commit", text.as_ref()),
@@ -1539,6 +1597,20 @@ impl Codec<FixtureHost> for FixtureCodec {
         let at = tick(v["ms"].as_u64()?.try_into().ok()?);
         let kind = match v["kind"].as_str()? {
             "keyboard" => Some(InputKind::SystemKeyboard(v["up"].as_bool()?)),
+            "by_id" => Some(InputKind::ById {
+                id: v["id"].as_str()?.into(),
+                press: match &v["press"] {
+                    Value::Null => None,
+                    pair => Some(plx_machine::machine::OkTap {
+                        sym: pair[0].as_u64()?.try_into().ok()?,
+                        wcode: pair[1].as_u64()?.try_into().ok()?,
+                    }),
+                },
+                expect: match &v["expect"] {
+                    Value::Null => None,
+                    subject => Some(subject.as_str()?.into()),
+                },
+            }),
             "text" => Some(InputKind::Text(match v["op"].as_str()? {
                 "commit" => TextEdit::Commit(v["text"].as_str()?.into()),
                 "backspace" => TextEdit::Backspace, "clear" => TextEdit::Clear,
@@ -1612,6 +1684,39 @@ fn drive(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, tap: &mut dyn Ta
 }
 
 fn record() -> Recording {
+    record_with(drive)
+}
+
+/// The scenario with accessibility-id inputs: boot, a `focus:` of the Home row's third element, then
+/// in one batch a `focus:` of its first and a `press:` of an id that names nothing (a refusal is part
+/// of the stream too), then a `press:` of its second, which opens a page, and BACK.
+fn drive_by_id(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, tap: &mut dyn Tap<FixtureHost>) {
+    use plx_machine::machine::{OkTap, Source};
+    let by_id = |id: &str, press: bool, at: Tick| InputEvent {
+        at,
+        source: Source::Script,
+        kind: InputKind::ById {
+            id: id.into(),
+            press: press.then_some(OkTap { sym: 0x0d, wcode: 0 }),
+            expect: None,
+        },
+    };
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+    frame_and_swap(d, rig, tick(0), vec![], vec![], tap);
+    // the same two requests `drive` and `replay_mode` register on Home after the first frame
+    let home = d.nav.top_page().and_then(|e| e.inst.as_ref()).unwrap().id;
+    d.track_inflight(home, RequestId(1));
+    d.track_inflight(home, RequestId(0));
+    frame_and_swap(d, rig, tick(16), vec![by_id("home.row.2", false, tick(16))], vec![], tap);
+    frame_and_swap(d, rig, tick(32),
+        vec![by_id("home.row.0", false, tick(32)), by_id("home.row.9", true, tick(32))], vec![], tap);
+    frame_and_swap(d, rig, tick(48), vec![by_id("home.row.1", true, tick(48))], vec![], tap);
+    frame_and_swap(d, rig, tick(64), vec![], vec![], tap);
+    let r = frame_and_swap(d, rig, tick(80), vec![key(Key::Back, tick(80))], vec![], tap);
+    d.prune(&r.unmounted);
+}
+
+fn record_with(scenario: fn(&mut Dispatcher<FixtureHost>, &mut FixtureRig, &mut dyn Tap<FixtureHost>)) -> Recording {
     let sink = MemSink::default();
     let segs = sink.segments.clone();
     let header = Header::new(fixture_state_fp(), &FixtureInit { seed: 1 });
@@ -1619,7 +1724,7 @@ fn record() -> Recording {
     let mut tap = RecTap { w };
     let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
     let mut rig = FixtureRig::new();
-    drive(&mut d, &mut rig, &mut tap);
+    scenario(&mut d, &mut rig, &mut tap);
     tap.w.finish().unwrap();
     let manifest = serde_json::to_string(&json!({
         "schema": super::rec::SCHEMA, "state_fp": fixture_state_fp(),
@@ -1669,6 +1774,52 @@ fn replay_mode(rec: &Recording, codec: &dyn Codec<FixtureHost>, mode: super::rep
     r.present_diffs.splice(0..0, r0.present_diffs);
     r.focus_diffs.splice(0..0, r0.focus_diffs);
     r
+}
+
+/// **A by-id input records and replays to the same state hash in both modes.** It is recorded once,
+/// at its tap in the ingest pre-pass; the `FocusMoved` and the OK edges it expands to are never
+/// recorded as inputs, and replay re-expands them from the replayed by-id input.
+#[test]
+fn a_by_id_input_records_and_replays_to_the_same_state_hash_in_both_modes() {
+    let rec = record_with(drive_by_id);
+    assert!(rec.state_stream().len() >= 4, "every event frame carries an st record");
+    let recorded: Vec<_> = rec.frames.iter().flat_map(|f| f.inputs.iter()).filter(|v| v["kind"] == "by_id").collect();
+    assert_eq!(recorded.len(), 4, "one input per by-id token, and none for the keys it expanded to");
+    assert!(recorded.iter().any(|v| v["press"].is_array() && v["expect"].is_null()), "{recorded:?}");
+    for mode in [super::replay::Mode::Targets, super::replay::Mode::Resolve] {
+        let report = replay_mode(&rec, &FixtureCodec, mode);
+        assert!(report.is_clean(), "{:?}: {:?}", mode, report.safe_lines());
+        assert_eq!(report.graded as usize, rec.state_stream().len());
+    }
+}
+
+/// **The fixture's own focusables answer the accessibility-id contract** (every element projects, ids
+/// are unique, `a11y_find` inverts `a11y`, `a11y_elems` matches the group's length), including an
+/// unloaded slot.
+#[test]
+fn the_fixture_focusables_conform_to_the_accessibility_id_contract() {
+    use plx_machine::machine::{EntryId, FocusRead, InputOwner, PressRead};
+    let (view, measure) = (FixtureView::default(), FixtureMeasure);
+    let cx: Cx<'_, FixtureHost> = Cx {
+        views: FixtureViews { store: &view },
+        tick: Tick::default(),
+        measure: &measure,
+        press: PressRead::default(),
+        focus: FocusRead::default(),
+        owner: InputOwner::Entry(EntryId(1)),
+        modal: Default::default(),
+        page_image: Default::default(),
+        hold_hint: Default::default(),
+    };
+    for (kind, role) in [(ElemKind::Card, Role::Card), (ElemKind::Bare, Role::Row), (ElemKind::Control, Role::Button)] {
+        let row = FixtureRow { len: 5, group: GroupId(1), entry: EntryId(1), prepared: 0, drawn: 0, kind, unloaded_from: 3 };
+        super::a11y::conformance(&row, &cx);
+        let third = row.a11y(&2, &cx).unwrap();
+        assert_eq!(third.role, role);
+        assert_eq!(third.path.to_string(), "row.2");
+        assert!(third.loaded && !row.a11y(&3, &cx).unwrap().loaded, "the slots from `unloaded_from` have not landed");
+    }
+    super::a11y::conformance(&FixtureModal::new(EntryId(2)), &cx);
 }
 
 #[test]
@@ -1855,7 +2006,9 @@ fn the_fixture_bundles_state_shape_is_pinned() {
     // The fixture bundle now versions the input machine and queued whole-input payloads too.
     // Owned HoldHintRead and gesture/key/page-instance LiftReceipt join Input Canon (V12).
     // This pins the current producer only; no historical recording is rewritten or admitted.
-    assert_eq!(fixture_state_fp(), 0xb00b_44a5_806d_d3b4);
+    // The queued whole-input census gained `Pan` (a queued input it had left out) and the by-id
+    // input `ById{id,press,expect}` (accessibility ids, plan a11y-ids D3).
+    assert_eq!(fixture_state_fp(), 0x2147_c8eb_9623_ae70);
 }
 
 pub fn booted() -> (Dispatcher<FixtureHost>, FixtureRig, plx_machine::machine::InstanceId) {

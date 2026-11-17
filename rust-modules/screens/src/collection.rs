@@ -1009,8 +1009,8 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
                 fx.invalidate(Provenance::Nav); Handled::Yes
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
-                if matches!(by, By::Dir | By::Pointer) { self.page.return_pending = false; }
-                if self.collection(cx).is_some() && to.elem == HEADER_ELEM && matches!(by, By::Dir | By::Pointer) {
+                if matches!(by, By::Dir | By::Pointer | By::Script) { self.page.return_pending = false; }
+                if self.collection(cx).is_some() && to.elem == HEADER_ELEM && matches!(by, By::Dir | By::Pointer | By::Script) {
                     self.page.header_marked = true;
                 }
                 fx.invalidate(Provenance::Input); Handled::Yes

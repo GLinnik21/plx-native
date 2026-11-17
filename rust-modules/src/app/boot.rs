@@ -2525,6 +2525,8 @@ pub(crate) unsafe fn construct(
         // at THAT floor; `PageDip` is the same schedule in the container that owns the op.
         pages,
         inputs: Vec::new(),
+        #[cfg(feature = "devtriggers")]
+        a11y_pending: Default::default(),
         runtime,
         bridge: retained,
         // Every dev-trigger arm's own state (spec: `dev/scenarios.rs`'s module doc).

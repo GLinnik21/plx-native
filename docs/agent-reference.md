@@ -2539,9 +2539,11 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   one recorded landing sat on frame 1 and every replay observed it on frame 0, which — a spring
   started a frame early never re-converging bit for bit — diverged 927 of 928 frames. The current
   schema writes exactly one final `fo` focus record after all drains in every product frame and
-  ordered `rs` records for each Focus/Hit resolution point. Product replay has two modes: Targets
-  feeds recorded answers; Resolve computes and compares the real engine/hit-map answers pointwise,
-  increments `focus_diffs`/`hit_diffs`, and then continues from recorded answers. A typed,
+  ordered `rs` records for each resolution point, of three families: Focus (the engine's focus),
+  Hit (a pointer's hit map) and Id (a by-id `focus:`/`press:` token). Product replay has two modes:
+  Targets feeds recorded answers; Resolve computes and compares the real engine/hit-map/id answers
+  pointwise, increments `focus_diffs` (Focus) or `hit_diffs` (Hit and Id; the `resolution=focus|hit|id`
+  word of the `replay: input diverge` line says which), and then continues from recorded answers. A typed,
   bit-exact Width/Cap/Line table prevents replay from consulting a live font. Both names are `dev::DIAG`, so
   neither moves the boot screen; both armed at once is
   refused), `/tmp/plxnative-softfloat` (the host↔ARM soft-float differential table, spec §4.2:
