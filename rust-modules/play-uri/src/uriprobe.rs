@@ -1885,7 +1885,7 @@ mod tests {
     fn hostile_event() -> String {
         format!(
             r#"{{"mediaId":"_m1","sourceInfo":{{"uri":"{URL}","container":"matroska"}},"streamingInfo":{{"host":"192.168.1.5"}},
-            "videoInfo":{{"codec":"{URL}","width":1920,"height":1080,"frameRate":"192.168.1.5","hdr":"abc.plex.direct"}},
+            "videoInfo":{{"codec":"{URL}","width":1920,"height":1080,"frameRate":"192.168.1.5","hdrType":"abc.plex.direct"}},
             "audioInfo":{{"codec":"aac","channels":2,"sampleRate":48000}},
             "error":{{"errorCode":-3,"errorText":"cannot open {URL} on 192.168.1.5:32400 via abc.plex.direct:32400 token SECRETTOKEN123 (host nas.local)."}}}}"#
         )

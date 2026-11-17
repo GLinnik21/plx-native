@@ -2457,6 +2457,48 @@ fn dolby_vision_off_stops_the_preview_promising_a_profile_5_direct_play() {
 }
 
 #[test]
+fn a_set_without_dolby_vision_previews_the_version_it_plays_instead_of_a_profile_5() {
+    use plx_platform::devcaps::dv::DvCapability;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Original);
+    const FIRST: &str = "/library/parts/1/1/p5.mkv";
+    const SECOND: &str = "/library/parts/2/1/hdr10.mkv";
+    let version = |id: i64, dovi: plx_data::metadata::Dovi| plx_data::pms::MediaVersion {
+        id: plx_plex::plex::MediaId(id),
+        resolution: "4k".into(),
+        width: 3840,
+        height: 2160,
+        vcodec: "hevc".into(),
+        dovi,
+        ..Default::default()
+    };
+    let part = |id: i64, key: &str, acodec: &str| plx_data::metadata::VersionPart {
+        id: plx_plex::plex::MediaId(id),
+        part: key.into(),
+        audio: vec![plx_data::metadata::Stream { codec: acodec.into(), ..Default::default() }],
+        subs: Vec::new(),
+    };
+    let movie = plx_data::metadata::Detail {
+        part: FIRST.into(),
+        vcodec: "hevc".into(),
+        width: 3840,
+        height: 2160,
+        dovi: p5(),
+        audio: vec![plx_data::metadata::Stream { codec: "aac".into(), ..Default::default() }],
+        versions: vec![version(1, p5()), version(2, plx_data::metadata::Dovi::NONE)],
+        version_parts: vec![part(1, FIRST, "aac"), part(2, SECOND, "truehd")],
+        ..Default::default()
+    };
+    assert_eq!(playback_preview_with_capability_for_test(&movie, DvCapability::Supported), Some(Preview::DirectPlay));
+    assert_eq!(
+        playback_preview_with_capability_for_test(&movie, DvCapability::Unsupported),
+        Some(Preview::OriginalAudioConverted),
+        "the HDR10 version plays, and the page describes its TrueHD",
+    );
+}
+
+#[test]
 fn restored_sidecar_is_part_of_the_route_contract() {
     let mut ps = PlaybackSession::IDLE;
     let _guard = fresh_registry(&mut ps);

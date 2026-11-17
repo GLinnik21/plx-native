@@ -4290,30 +4290,34 @@ pub(super) fn automatic_version<'a>(
     versions: &'a [plx_data::pms::MediaVersion],
     env: &ResolveEnv,
 ) -> Option<&'a plx_data::pms::MediaVersion> {
-    version_play_starts(versions, env.direct_play_mode, &env.caps)
+    version_play_starts(versions, env.direct_play_mode, &env.caps, env.dolby_vision_mode, env.dv_capability)
 }
 
 pub fn version_play_starts<'a>(
     versions: &'a [plx_data::pms::MediaVersion],
     mode: DirectPlayMode,
     caps: &plx_platform::devcaps::Caps,
+    dv_mode: plx_plex::plex::session::DolbyVisionMode,
+    dv_probed: plx_platform::devcaps::dv::DvCapability,
 ) -> Option<&'a plx_data::pms::MediaVersion> {
     match mode {
         DirectPlayMode::Forced => None,
-        DirectPlayMode::Auto | DirectPlayMode::Disabled => decodable_version(versions, caps),
+        DirectPlayMode::Auto | DirectPlayMode::Disabled => decodable_version(versions, caps, dv_mode, dv_probed),
     }
 }
 
 pub(super) fn decodable_version<'a>(
     versions: &'a [plx_data::pms::MediaVersion],
     caps: &plx_platform::devcaps::Caps,
+    dv_mode: plx_plex::plex::session::DolbyVisionMode,
+    dv_probed: plx_platform::devcaps::dv::DvCapability,
 ) -> Option<&'a plx_data::pms::MediaVersion> {
     let direct = |v: &plx_data::pms::MediaVersion| {
         video_direct_plays(
             &v.vcodec,
             v.width,
             v.height,
-            plx_data::metadata::DvPresentation::NotDv,
+            frozen_dv_decision(dv_mode, dv_probed, v.dovi, &v.vcodec).presentation,
             caps,
         )
     };
