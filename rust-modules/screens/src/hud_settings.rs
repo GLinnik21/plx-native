@@ -126,7 +126,8 @@ enum HudAction {
 /// Row keys: a package's position, then the removals and the drop files in their own ranges.
 const REMOVE_KEY: u32 = 0x1000;
 const DROP_KEY: u32 = 0x2000;
-const ADDRESS_KEY: u32 = 0x3000;
+/// The *Install from address* row's focus key (`FocusKey::elem`).
+pub const ADDRESS_KEY: u32 = 0x3000;
 const END_TIME_KEY: u32 = 0x5000;
 
 /// What the open prompt asks about.

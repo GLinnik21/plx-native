@@ -1082,6 +1082,10 @@ unsafe fn ingress_token(app: &mut App, fr: &mut Frame, token: &str) -> bool {
     if drained { drain_sdl(app, fr); }
     if let Some(text) = token.strip_prefix("txt:") {
         // Any field with the keyboard (`text_owner`), not only Search's: the same order rule, keys first.
+        // The gate is read at ingest, and a page's keyboard goes up only when a frame delivers the OK that
+        // raised it: a `txt:` in the same FIFO batch (or LAB long-poll) as that OK still finds no owner and
+        // goes to `textinput`'s queue. Send the text in a later batch; the television's own keyboard always
+        // commits frames after it opened.
         if !drained && super::bridge::text_owner(&app.pages) { drain_sdl(app, fr); }
         if super::bridge::text_owner(&app.pages) {
             ingest_text(app, &text.replace('+', " "), crate::textinput::available(),
@@ -3758,6 +3762,11 @@ unsafe fn replay_inject(app: &mut App, fr: &mut Frame, v: &serde_json::Value) {
     let u = |k: &str| v[k].as_u64().unwrap_or(0) as u32;
     match kind {
         "text" => {
+            // Live ingress drains SDL before text for any field with the keyboard, not only Search's
+            // (`ingress_token`); replay keeps the same order.
+            if !super::bridge::search_owns_input(&app.pages) && super::bridge::text_owner(&app.pages) {
+                drain_sdl(app, fr);
+            }
             if !super::bridge::text_owner(&app.pages) {
                 log("replay: text has no owned recipient");
             } else if let Some(events) = super::recorder::dec_text(v) {
@@ -4535,12 +4544,12 @@ mod lifecycle_regression_tests {
             let mut now = 0;
             frames(&mut app, &mut now, 60);
             let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
-            // Focus the Install from address row (its key is the form's `ADDRESS_KEY`), then OK raises the keyboard.
+            // Focus the Install from address row (`hud_settings::ADDRESS_KEY`), then OK raises the keyboard.
             for _ in 0..8 {
-                if app.pages.focus().is_some_and(|key| key.elem == 0x3000) { break; }
+                if app.pages.focus().is_some_and(|key| key.elem == plx_screens::hud_settings::ADDRESS_KEY) { break; }
                 keys(&mut app, &mut fr, &mut now, "down");
             }
-            assert_eq!(app.pages.focus().map(|key| key.elem), Some(0x3000), "premise: the address row has focus");
+            assert_eq!(app.pages.focus().map(|key| key.elem), Some(plx_screens::hud_settings::ADDRESS_KEY), "premise: the address row has focus");
             keys(&mut app, &mut fr, &mut now, "ok");
             assert!(app.pages.system_keyboard_up(), "premise: OK on the row raised the television keyboard");
             assert!(editing(&app), "premise: the field is editing");
