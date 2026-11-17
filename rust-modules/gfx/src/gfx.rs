@@ -3261,6 +3261,17 @@ fn plain_program_for_clip<P>(plain: Option<P>, masked: Option<P>, clipped: bool)
     if clipped { masked.or(plain) } else { plain }
 }
 
+/// The plain texture program a split card's INTERIOR piece draws with: `unmasked` (never the
+/// clip's variant, [`plain_program_for_clip`]) when the card carries no `overridden` program. The
+/// ring pieces stay on the draw's image program, which has no rounded-clip slot, so a card is
+/// either wholly bounded by its scissor or wholly masked: its middle is not cut by a lens's round
+/// edge while its ring is cut by the scissor's rectangle. The interior has radius 0, so it always
+/// takes the plain exit ([`plain_texture_program`]).
+#[inline]
+fn interior_plain_program<P>(unmasked: Option<P>, overridden: bool) -> Option<P> {
+    plain_texture_program(unmasked, overridden, 0.0)
+}
+
 /// Bind the plain texture program for one quad and send it everything it reads that changes from
 /// draw to draw: the quad, the source window and the tint (its screen size and sampler unit were
 /// set at link time). Uniforms persist per program, so all three go on every call.
@@ -3385,8 +3396,8 @@ fn draw_tex_core_in(
         // card's interior piece below. It is chosen here, after `gate` has booked the quad and
         // before the card-path ledger below books the card, and neither depends on it: the
         // ledger counts the same draws with either program behind them.
-        let plain = std::ptr::addr_of!(PLAIN_IMAGE).read();
-        let plain = plain_program_for_clip(plain, std::ptr::addr_of!(PLAIN_IMAGE_RC).read(), rclip().is_some());
+        let plain_unmasked = std::ptr::addr_of!(PLAIN_IMAGE).read();
+        let plain = plain_program_for_clip(plain_unmasked, std::ptr::addr_of!(PLAIN_IMAGE_RC).read(), rclip().is_some());
         if let Some((program, loc)) = plain_texture_program(plain, image.is_some(), radius) {
             bind_plain_image(program, loc, tint, uv, quad);
         } else {
@@ -3443,8 +3454,10 @@ fn draw_tex_core_in(
             // else through the image program with a `u_card.z` of 0, the shader's own plain exit.
             // A still-fused card's interior is neither: its override keeps it on the still program
             // (`plain_texture_program` refuses it), whose `u_card.z` of 0 exits through `stillOver`.
+            // The UNMASKED plain program, never the clip's variant: the ring is on the image program,
+            // which has no clip slot, and a card is masked wholly or bounded by its scissor wholly.
             if piece.interior {
-                match plain_texture_program(plain, image.is_some(), 0.0) {
+                match interior_plain_program(plain_unmasked, image.is_some()) {
                     Some((program, loc)) => bind_plain_image(program, loc, tint, uv, quad),
                     None => glUniform4fv(loc.card, 1, image_card_geometry(chw, chh, 0.0).as_ptr()),
                 }
@@ -10010,7 +10023,7 @@ mod tests {
         let (gate, whole, interior) = (
             draw.find("gate(class, qx, qy, qw, qh)").expect("the ledger's gate"),
             draw.find("plain_texture_program(plain, image.is_some(), radius)").expect("the whole-draw choice"),
-            draw.find("plain_texture_program(plain, image.is_some(), 0.0)").expect("the interior piece's choice"),
+            draw.find("interior_plain_program(plain_unmasked, image.is_some())").expect("the interior piece's choice"),
         );
         let plan = draw.find("card_plan(&boxes").expect("the piece plan");
         assert!(gate < whole && whole < plan && plan < interior, "gate {gate}, whole {whole}, plan {plan}, interior {interior}");
@@ -11370,6 +11383,16 @@ mod tests {
     /// ([`plain_program_for_clip`] doc: "a rounded card under a clip still keeps the image program").
     #[test]
     fn a_split_cards_interior_never_takes_the_rounded_clips_masked_program() {
+        // the pure choice: under a live rounded clip with its masked program linked, a rounded card's
+        // whole draw is refused the plain program (it stays on the image program) and its interior
+        // piece takes the UNMASKED one, never the clip's variant
+        let (unmasked, masked) = (Some(7u32), Some(9u32));
+        let under_clip = plain_program_for_clip(unmasked, masked, true);
+        assert_eq!(under_clip, masked, "premise: the clip picks the masked variant for a square draw");
+        assert_eq!(plain_texture_program(under_clip, false, 12.0), None, "a rounded card is not the plain program");
+        assert_eq!(interior_plain_program(unmasked, false), Some(7), "its interior is the unmasked plain program");
+        assert_eq!(interior_plain_program(unmasked, true), None, "an overridden card's interior keeps its own program");
+        assert_eq!(interior_plain_program(None::<u32>, false), None, "an unlinked program leaves the image program");
         let src = include_str!("gfx.rs");
         let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the unit tests")];
         let from = prod.find("fn draw_tex_core_in(").expect("draw_tex_core_in");
@@ -11377,7 +11400,7 @@ mod tests {
         let branch = draw.find("if piece.interior {").expect("the interior branch of the piece loop");
         let interior = &draw[branch..branch + draw[branch..].find("glScissor").expect("the piece's scissor")];
         assert!(
-            interior.contains("plain_texture_program(plain_unmasked, image.is_some(), 0.0)"),
+            interior.contains("interior_plain_program(plain_unmasked, image.is_some())"),
             "the interior piece takes the unmasked plain program, not the clip's variant: {interior}"
         );
         assert!(draw.contains("let plain_unmasked = std::ptr::addr_of!(PLAIN_IMAGE).read();"),
