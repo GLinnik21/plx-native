@@ -13,8 +13,8 @@
 //! The sign-in screen hosts the question on its own alert (it shares that sheet with the report
 //! question and the Details card). Every other surface holds a [`PlaintextAlert`] — the question
 //! with its own [`DecisionAlert`] and the focus group its two answers form, which traps focus
-//! while it is open, as every decision alert does — and delegates its focus, pointer and draw
-//! hooks to it.
+//! while it is open, as every decision alert does — and delegates its focus, pointer, draw and
+//! accessibility-id hooks to it ([`AlertAnswers`] names the answers `alert.<verb>`).
 //!
 //! Not a screen: shared plumbing, named through `super::` like `family`, so no screen reaches a
 //! sibling to ask it.
