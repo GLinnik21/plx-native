@@ -10036,20 +10036,22 @@ pub fn playback_preview(d: &plx_data::metadata::Detail) -> Option<Preview> {
 
 pub fn detail_play_version(d: &plx_data::metadata::Detail) -> Option<&plx_data::pms::MediaVersion> {
     let caps = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
-    detail_version_with(d, direct_play_mode(), &caps)
+    detail_version_with(d, direct_play_mode(), &caps, dolby_vision_mode(), plx_platform::devcaps::dv::capability())
 }
 
 fn detail_version_with<'a>(
     d: &'a plx_data::metadata::Detail,
     mode: DirectPlayMode,
     caps: &plx_platform::devcaps::Caps,
+    dv_mode: plx_plex::plex::session::DolbyVisionMode,
+    dv_probed: plx_platform::devcaps::dv::DvCapability,
 ) -> Option<&'a plx_data::pms::MediaVersion> {
     let versions = match d.on_deck.as_ref().filter(|_| d.part.is_empty()) {
         Some(ep) => &ep.versions,
         None if d.part.is_empty() => return None,
         None => &d.versions,
     };
-    version_play_starts(versions, mode, caps)
+    version_play_starts(versions, mode, caps, dv_mode, dv_probed)
 }
 
 struct PreviewFile<'a> {
@@ -10061,13 +10063,15 @@ struct PreviewFile<'a> {
     acodec: &'a str,
     audio: &'a [plx_data::metadata::Stream],
     subs: &'a [plx_data::metadata::Stream],
-    substituted: bool,
+    dovi: plx_data::metadata::Dovi,
 }
 
 fn preview_file<'a>(
     d: &'a plx_data::metadata::Detail,
     mode: DirectPlayMode,
     caps: &plx_platform::devcaps::Caps,
+    dv_mode: plx_plex::plex::session::DolbyVisionMode,
+    dv_probed: plx_platform::devcaps::dv::DvCapability,
 ) -> Option<PreviewFile<'a>> {
     let own = |part: &'a str, vcodec: &'a str| PreviewFile {
         part,
@@ -10078,7 +10082,7 @@ fn preview_file<'a>(
         acodec: &d.acodec,
         audio: &d.audio,
         subs: &d.subs,
-        substituted: false,
+        dovi: d.dovi,
     };
     // A SHOW's container carries no file of its own, so the page answers for the episode its Play
     // button would start — the one the hero is already about. Its frame size and audio list are
@@ -10087,7 +10091,7 @@ fn preview_file<'a>(
         Some(ep) => (ep.part.as_str(), ep.vcodec.as_str()),
         None => (d.part.as_str(), d.vcodec.as_str()),
     };
-    let Some(v) = detail_version_with(d, mode, caps) else {
+    let Some(v) = detail_version_with(d, mode, caps, dv_mode, dv_probed) else {
         return Some(own(part, vcodec));
     };
     let file = d.version_parts.iter().find(|p| p.id == v.id)?;
@@ -10100,7 +10104,7 @@ fn preview_file<'a>(
         acodec: &v.acodec,
         audio: &file.audio,
         subs: &file.subs,
-        substituted: true,
+        dovi: v.dovi,
     })
 }
 
@@ -10114,20 +10118,12 @@ fn playback_preview_with_capability(
     // snapshot less the install's stored refusals), read once here and passed down to every gate it
     // asks. With no stored row in force it is the boot `Arc` itself: one `peek()`, no clone.
     let caps = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
-    let file = preview_file(d, mode, &caps)?;
+    let dv_mode = dolby_vision_mode();
+    let dv_probed = capability.unwrap_or_else(plx_platform::devcaps::dv::capability);
+    let file = preview_file(d, mode, &caps, dv_mode, dv_probed)?;
     // The page answers for the play a press would start, so it plans from the same gated
     // capability `ResolveEnv::dolby_vision_mode` hands the resolve.
-    let capability = dolby_vision_mode()
-        .gate(capability.unwrap_or_else(plx_platform::devcaps::dv::capability));
-    let presentation = if file.substituted {
-        plx_data::metadata::DvPresentation::NotDv
-    } else {
-        d.dovi.presentation(
-            !plx_data::metadata::dv_withheld(),
-            capability,
-            plx_data::metadata::dv_video_codec(file.vcodec),
-        )
-    };
+    let presentation = frozen_dv_decision(dv_mode, dv_probed, file.dovi, file.vcodec).presentation;
     if mode == DirectPlayMode::Forced {
         return (!file.part.is_empty() && part_is_streamable(file.part)
             && video_feed_supported(file.vcodec, presentation, &caps)
