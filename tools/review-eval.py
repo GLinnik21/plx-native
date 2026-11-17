@@ -37,9 +37,9 @@ per case; it exits 1 when a case of the chosen split has no verdict, since a par
 The reviewer under test is the working tree's `.agents/agents/pr-reviewer.md` with the working tree's
 rule files, so the task tells it to read its rules HERE and the code in DIR.
 
-`check` validates cases.json: the fields, unique ids, both kinds in both splits, a one-sentence key,
-and, for every commit this clone has (a shallow CI checkout has few), that it is a one-parent commit
-and that a bug's fix came after it. Add a case when a fix names the pull request that caused the bug
+`check` validates cases.json: the fields, unique ids (`pr-N`), both kinds in both splits, a one-sentence
+key, and, for every commit this clone has (a shallow CI checkout has few), that it is a one-parent commit
+whose subject ends `(#N)` and that a bug's fix came after it. Add a case when a fix names the pull request that caused the bug
 and the cause is readable in that pull request's diff; never edit a key to fit a report.
 """
 import argparse
@@ -98,6 +98,9 @@ def problems(cases, repo=None):
             if not isinstance(key, str) or len(key) < 40 or '\n' in key or not key.endswith('.'):
                 found.append('%s: the key is one sentence that names the defect' % name)
         if repo is not None and is_sha(case['commit']) and has(repo, case['commit']):
+            subject = git(repo, 'log', '-1', '--format=%s', case['commit']).stdout.strip()
+            if not subject.endswith('(#%s)' % name[3:]):    # a fix's BODY names the PR it fixes, too
+                found.append('%s: the commit is not that pull request\'s squash (its subject is %r)' % (name, subject))
             if len(git(repo, 'rev-list', '--parents', '-n', '1', case['commit']).stdout.split()) != 2:
                 found.append('%s: the commit is not a one-parent (squash) commit' % name)
             fix = case.get('fixed_by')
@@ -154,6 +157,8 @@ def task(into, rules=ROOT):
             'Read your RULES (AGENTS.md, the module guides, docs/) from the working tree at %(rules)s, which '
             'is the reviewer under test; this replaces "the rules come from the base" for this run. Open no '
             'file under %(rules)s that is not a rule or guide, and no `tools/review-eval` path anywhere.\n'
+            'Your own prompt is the file %(rules)s/.agents/agents/pr-reviewer.md as it is on disk NOW, which may be '
+            'newer than the copy you were started with: read it first and follow it where the two differ.\n'
             'Report as your prompt says.' % {'dir': into, 'rules': rules})
 
 

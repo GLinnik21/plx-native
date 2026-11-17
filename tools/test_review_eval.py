@@ -32,7 +32,7 @@ def make_repo(base):
     repo.mkdir()
     git(repo, "init", "-q", "-b", "main")
     shas = []
-    for name, text in (("start", "a\n"), ("bug", "b\n"), ("fix", "the fix\n")):
+    for name, text in (("start (#1)", "a\n"), ("bug (#2)", "b\n"), ("fix\n\nFixes what landed in (#2)", "the fix\n")):  # noqa: E501
         (repo / "f.txt").write_text(text)
         git(repo, "add", "f.txt")
         git(repo, "commit", "-q", "-m", name)
@@ -42,12 +42,13 @@ def make_repo(base):
     return repo, shas
 
 
-def cases(bug="1" * 40, fix="2" * 40, control="3" * 40):
-    out = []
-    for split in review_eval.SPLITS:
-        out.append({"id": "bug-" + split, "kind": "bug", "split": split, "commit": bug, "fixed_by": fix, "key": KEY})
-        out.append({"id": "ctl-" + split, "kind": "control", "split": split, "commit": control})
-    return out
+def cases(bug="1" * 40, fix="2" * 40):
+    """Four cases, a bug and a control per split. Only `pr-2` (the tune bug) names a commit a test repo
+    may hold; the other three name commits no repository has, which `problems` skips."""
+    return [{"id": "pr-2", "kind": "bug", "split": "tune", "commit": bug, "fixed_by": fix, "key": KEY},
+            {"id": "pr-7", "kind": "control", "split": "tune", "commit": "7" * 40},
+            {"id": "pr-8", "kind": "bug", "split": "test", "commit": "8" * 40, "fixed_by": "a" * 40, "key": KEY},
+            {"id": "pr-9", "kind": "control", "split": "test", "commit": "9" * 40}]
 
 
 class Problems(unittest.TestCase):
@@ -60,7 +61,7 @@ class Problems(unittest.TestCase):
         return "\n".join(review_eval.problems(got))
 
     def test_each_malformed_case_is_named(self):
-        self.assertIn("used twice", self.broken(lambda c: c[1].update(id="bug-tune")))
+        self.assertIn("used twice", self.broken(lambda c: c[1].update(id="pr-2")))
         self.assertIn("kind is", self.broken(lambda c: c[0].update(kind="revert")))
         self.assertIn("exactly the fields", self.broken(lambda c: c[1].update(key=KEY)))
         self.assertIn("exactly the fields", self.broken(lambda c: c[0].pop("fixed_by")))
@@ -75,11 +76,13 @@ class Problems(unittest.TestCase):
     def test_commits_the_clone_has_are_checked_and_missing_ones_are_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, (start, bug, fix) = make_repo(Path(tmp))
-            self.assertEqual(review_eval.problems(cases(bug, fix, bug), repo), [])
+            self.assertEqual(review_eval.problems(cases(bug, fix), repo), [])
             self.assertEqual(review_eval.problems(cases(), repo), [])       # none of these exist here
-            said = "\n".join(review_eval.problems(cases(fix, bug, bug), repo))
+            said = "\n".join(review_eval.problems(cases(fix, bug), repo))
             self.assertIn("fixed_by does not come after the commit", said)
-            self.assertIn("not a one-parent", "\n".join(review_eval.problems(cases(start, fix, bug), repo)))
+            # the fix's BODY says (#2) too: a lookup by message finds it, and it is not that pull request
+            self.assertIn("not that pull request's squash", said)
+            self.assertIn("not a one-parent", "\n".join(review_eval.problems(cases(start, fix), repo)))
 
 
 class Replay(unittest.TestCase):
@@ -119,10 +122,10 @@ class Tasks(unittest.TestCase):
 
 class Score(unittest.TestCase):
     def verdicts(self):
-        return {"bug-tune": {"caught": True, "blockers": 0, "majors": 1, "minors": 1},
-                "bug-test": {"caught": False, "blockers": 0, "majors": 0, "minors": 0},
-                "ctl-tune": {"blockers": 0, "majors": 0, "minors": 3},
-                "ctl-test": {"blockers": 1, "majors": 0, "minors": 0}}
+        return {"pr-2": {"caught": True, "blockers": 0, "majors": 1, "minors": 1},
+                "pr-8": {"caught": False, "blockers": 0, "majors": 0, "minors": 0},
+                "pr-7": {"blockers": 0, "majors": 0, "minors": 3},
+                "pr-9": {"blockers": 1, "majors": 0, "minors": 0}}
 
     def test_recall_and_the_flagged_controls(self):
         lines, complete = review_eval.score(cases(), self.verdicts())
@@ -134,11 +137,11 @@ class Score(unittest.TestCase):
     def test_a_minor_on_a_control_is_not_a_flag(self):
         lines, _ = review_eval.score(cases(), self.verdicts(), "tune")
         self.assertIn("controls flagged BLOCKER/MAJOR: 0/1 = 0%", "\n".join(lines))
-        self.assertNotIn("bug-test", "\n".join(lines))
+        self.assertNotIn("pr-8", "\n".join(lines))
 
     def test_a_missing_or_malformed_verdict_makes_the_run_incomplete(self):
-        for spoil in (lambda v: v.pop("ctl-test"), lambda v: v["bug-tune"].pop("caught"),
-                      lambda v: v["bug-tune"].update(caught="yes"), lambda v: v["ctl-tune"].update(minors=-1)):
+        for spoil in (lambda v: v.pop("pr-9"), lambda v: v["pr-2"].pop("caught"),
+                      lambda v: v["pr-2"].update(caught="yes"), lambda v: v["pr-7"].update(minors=-1)):
             verdicts = self.verdicts()
             spoil(verdicts)
             lines, complete = review_eval.score(cases(), verdicts)
