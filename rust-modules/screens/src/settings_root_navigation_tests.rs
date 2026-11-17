@@ -1066,8 +1066,7 @@ fn adjacent_root_pending_install_pick_refreshes_with_unchanged_cache_and_profile
 /// page it was read on, though a Legal document, the Legal index and About share one heartbeat word.
 #[test]
 fn every_page_the_surface_mounts_conforms_and_answers_a_namespace_of_its_own() {
-    let _g = plx_base::testlock::serial();
-    let _sess = scratch_session("a11y-pages");
+    // `settings_page_conforms` takes the serial lock and the scratch session for each mount itself
     let pages = [
         SettingsPage::Root,
         SettingsPage::Language,
