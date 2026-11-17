@@ -1,0 +1,76 @@
+{
+  "cases": [
+    {
+      "id": "pr-1281",
+      "kind": "bug",
+      "split": "tune",
+      "commit": "11d4ef04db0b54c5b34176bae06fbd661380dd93",
+      "fixed_by": "038e8e992774baf336a16b89d417753c770baf28",
+      "key": "A second ACB handle (player type 0, for the URI engine) is created at every boot whatever the viewer's playback engine, instead of only when the Experimental engine is first offered a play; on webOS 4.4 every Feed Load then times out."
+    },
+    {
+      "id": "pr-578",
+      "kind": "bug",
+      "split": "tune",
+      "commit": "331a0a5ab38c199a79e56a7654bf213cdafeaa79",
+      "fixed_by": "63fb1fe5717f79e9be00b0169e86890a5c4a0692",
+      "key": "SDL_webOSCursorVisibility is now looked up at runtime and is absent on webOS 3.x's SDL 2.0.4, so hide_cursor() silently does nothing there and the pointer stays on screen, over video too."
+    },
+    {
+      "id": "pr-1230",
+      "kind": "bug",
+      "split": "tune",
+      "commit": "e1ea6e2ec6481a90912a9e34b6b5155c27d67863",
+      "fixed_by": "c01b5136a3ef3656485879e99908666c153c1424",
+      "key": "Catalan is added as a shipped language without its entry in tools/hud_preview.py's LONG_TITLES corpus, so the HUD preview matrix refuses to plan."
+    },
+    {
+      "id": "pr-973",
+      "kind": "bug",
+      "split": "test",
+      "commit": "088f6f7644574342bce6e8e4482bbd0447e9c3a1",
+      "fixed_by": "774b611c37d96848c5ce961b5c93280c7f51f347",
+      "key": "The session owner's cache refill now runs on any app frame, and under Resources::Fixture SessionAdapter::begin_cache_refresh still submits a real storage-worker job, so fixture Bridge tests receive a CacheRefreshed on a timing-dependent frame and can read a developer's real auth.json."
+    },
+    {
+      "id": "pr-484",
+      "kind": "bug",
+      "split": "test",
+      "commit": "00b7c742015ea687fcd032d9beb2715336faa12d",
+      "fixed_by": "ad36c56a81113267d4c64cbf2aa1db8e150b3e29",
+      "key": "The release spring of a card whose hold the app took is reported by Press::tick as page damage, so under an open item menu the frozen host snapshot is re-captured on every frame of the spring."
+    },
+    {
+      "id": "pr-816",
+      "kind": "bug",
+      "split": "test",
+      "commit": "e351f56e083499e8f3e7b7e5576c984e1ca557fb",
+      "fixed_by": "d36e86301841ddd5fed686c0354ef20ba5656445",
+      "key": "The pull request removes the nightly toolchain but leaves .claude/settings.json's permission allowlist naming `cargo +nightly check`, so the documented release check no longer matches it and prompts."
+    },
+    {
+      "id": "pr-944",
+      "kind": "control",
+      "split": "tune",
+      "commit": "6ca6fbfd6a0ae8eb312f9cc497828825578f8f1d"
+    },
+    {
+      "id": "pr-898",
+      "kind": "control",
+      "split": "tune",
+      "commit": "4ed33e537813098c070033d30b891b1a07053586"
+    },
+    {
+      "id": "pr-839",
+      "kind": "control",
+      "split": "test",
+      "commit": "046f3058d7a95890dd874e6ba11a94619e57b30d"
+    },
+    {
+      "id": "pr-799",
+      "kind": "control",
+      "split": "test",
+      "commit": "81d930be2d30df6207fe56d3a195750f370939c7"
+    }
+  ]
+}
