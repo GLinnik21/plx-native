@@ -745,10 +745,16 @@ impl<H: Host> ModalStack<H> {
 
     /// The topmost Opening|Open surface owns input.
     pub fn input_owner(&self) -> Option<InputOwner> {
+        self.input_owner_unless(|_| false)
+    }
+
+    /// [`input_owner`](Self::input_owner) with every surface `dismissed` names counted as already
+    /// closed: the owner a parked `Dismiss` is about to leave behind.
+    pub fn input_owner_unless(&self, dismissed: impl Fn(EntryId) -> bool) -> Option<InputOwner> {
         self.surfaces
             .iter()
             .rev()
-            .find(|s| matches!(s.phase, Phase::Opening | Phase::Open))
+            .find(|s| matches!(s.phase, Phase::Opening | Phase::Open) && !dismissed(s.entry.id))
             .map(|s| InputOwner::Entry(s.entry.id))
     }
 
