@@ -99,6 +99,14 @@ enum Piece {
     Index(usize),
 }
 
+/// The most segments an id may carry after its namespace. The deepest id the application builds is
+/// four (`detail.shelf.1.card.2`: a shelf, its index, a card, its index), so this leaves two spare for a
+/// composite that nests one more container. [`conformance_report`] complains of a longer id, and the
+/// replay alphabet's id pattern (`tests/fixtures/replay/ALPHABET.json`) repeats this number as its
+/// repeat bound: a test in `plx_screens`' registry keeps the two equal, so an id that grew past it
+/// would fail a build, not a recording at the moment somebody tried to commit it.
+pub const MAX_ID_SEGS: usize = 6;
+
 /// The path of one element: an optional namespace and the segments after it.
 ///
 /// A widget's [`Focusable::a11y`] answers a RELATIVE path (no namespace); the owner view that
@@ -482,6 +490,12 @@ pub fn conformance_report<H: Host, F: Focusable<H> + ?Sized>(view: &F, cx: &Cx<'
                 continue;
             };
             let id = a.path.to_string();
+            if a.path.len() > MAX_ID_SEGS {
+                complaints.push(format!(
+                    "group {} element {i}: {id:?} has {} segments, more than MAX_ID_SEGS {MAX_ID_SEGS}",
+                    g.id.0, a.path.len()
+                ));
+            }
             let reparsed = if a.path.ns().is_some() {
                 A11yPath::parse_id(&id)
             } else {
