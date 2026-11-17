@@ -710,7 +710,7 @@ fn modal_mut(d: &mut Dispatcher<FixtureHost>, id: EntryId) -> &mut crate::fixtur
 }
 
 /// **The dispatcher carries the opener's lifted element into the page pass, and re-takes the host
-/// snapshot exactly when it changes** (`Dispatcher::lifted_opener`, `draw_with`'s `lifted_last`,
+/// snapshot exactly when it changes** (`Dispatcher::lifted_opener`, `Dispatcher::settle_lift`'s `lifted_last`,
 /// `DrawFrame::lifted`). The card sections' half is graded in `cards`, the press's in `press`; this
 /// is the wiring between them, which nothing else names: delete the `f.lifted = lifted` hand-off
 /// and the page never leaves the card out; delete the change detection and the "card section took
@@ -804,6 +804,77 @@ fn the_lifted_element_reaches_the_page_pass_and_every_change_of_it_retakes_the_s
     }
 }
 
+
+/// **A change of the lifted element is decided BEFORE the page pass, never inside the draw**
+/// (`Dispatcher::settle_lift`, which the application calls at the head of the frame, before the host
+/// cache's page pass). The draw runs after that pass has served the held snapshot, so a flip decided
+/// there re-took the snapshot one frame late and the flip frame showed the old one: with focus moving
+/// off a closing menu's opener, the lift stood down on a frame whose snapshot still lacked the opener,
+/// so for that frame NOBODY drew it. The decision is a function of dispatcher state alone, so the
+/// pre-pass call makes it and the draw finds it made.
+///
+/// Red while the decision was `draw_with`'s: the pre-pass call re-took nothing, the draw did.
+#[test]
+fn a_change_of_the_lifted_element_retakes_the_snapshot_before_the_page_pass_not_inside_the_draw() {
+    use crate::popover::{host, lift_owns, set_lift_owns};
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    let opener = FocusKey { entry: home, elem: 0 };
+    let mut ms = 16;
+    // One frame in the production order up to the page pass: the steps WITHOUT the draw (the legacy
+    // loop's `frame_with(.., false)`), then the pre-pass decision, returning how often the snapshot
+    // was thrown away across it. The draw is `drawn` after.
+    let mut pre_pass = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, keys: Vec<_>| {
+        ms += 16;
+        let r = d.frame_with(rig, tick(ms), keys, vec![], &mut NoTap, false);
+        let before = host::invalidations();
+        d.settle_lift();
+        (host::invalidations() - before, r)
+    };
+    let drawn = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig| {
+        let before = host::invalidations();
+        d.draw(rig, true);
+        host::invalidations() - before
+    };
+
+    d.set_focus(Some(opener));
+    d.nav.next_style = Style::Compact;
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    pre_pass(&mut d, &mut rig, vec![]);
+    drawn(&mut d, &mut rig);
+    let id = d.nav.modals.top().expect("presented").entry.id;
+    modal_mut(&mut d, id).opener = Some((home, Some(opener)));
+
+    // mount: None -> Some
+    set_lift_owns(true);
+    let (retakes, _) = pre_pass(&mut d, &mut rig, vec![]);
+    assert_eq!(retakes, 1, "the mount re-takes the snapshot in the pre-pass call");
+    assert!(!lift_owns(), "…and clears the card sections' flag there");
+    set_lift_owns(true);
+    assert_eq!(drawn(&mut d, &mut rig), 0, "the draw, after the page pass, decides nothing");
+    assert!(lift_owns(), "…and clears nothing");
+    set_lift_owns(true);
+    assert_eq!(pre_pass(&mut d, &mut rig, vec![]).0, 0, "an unchanged lifted element re-takes nothing");
+
+    // Back: the menu closes and the lift still holds the opener, the page's focus being on it
+    pre_pass(&mut d, &mut rig, vec![key(Key::Back, tick(0))]);
+    drawn(&mut d, &mut rig);
+    assert_eq!(d.nav.modals.top().unwrap().phase, Phase::Closing);
+    assert_eq!(d.lifted_opener(), Some((home, Some(opener))));
+
+    // stand-down: focus left the opener while the menu fades, Some -> None, decided in the pre-pass
+    d.set_focus(Some(FocusKey { entry: home, elem: 6 }));
+    set_lift_owns(true);
+    let (retakes, _) = pre_pass(&mut d, &mut rig, vec![]);
+    assert_eq!(d.lifted_opener(), None, "premise: the lift stood down");
+    assert_eq!(retakes, 1, "the stand-down re-takes the snapshot in the pre-pass call, before any page pass");
+    assert!(!lift_owns());
+    set_lift_owns(true);
+    assert_eq!(drawn(&mut d, &mut rig), 0, "the draw decides nothing");
+    assert!(lift_owns());
+    set_lift_owns(false);
+}
 
 /// **The BACK that dismisses a glass menu throws no host snapshot away.** A menu's own `Closing`
 /// handling is `Popover::dismiss`, which used to invalidate the snapshot unconditionally

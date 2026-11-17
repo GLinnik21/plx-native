@@ -481,7 +481,7 @@ pub struct Dispatcher<H: Host> {
     /// The tick of the last `frame_with`, for a `draw` the caller runs later in its own frame.
     last_tick: Tick,
     /// The page element or bar member the surface pass lifted out of the dim on the previous drawn
-    /// frame ([`Self::lifted_opener`]); a change re-takes the host snapshot (`draw_with`).
+    /// frame ([`Self::lifted_opener`]); a change re-takes the host snapshot ([`Self::settle_lift`]).
     lifted_last: Option<FocusKey<H::Elem>>,
     /// This frame's prepare pass ran (a `draw` after a non-presenting frame runs it itself).
     prepared: bool,
@@ -1608,6 +1608,30 @@ where
         plx_machine::motion::report::collect_into(&mut self.present, tick.ms);
     }
 
+    /// **Settle who owns the lift before the page pass** — the application calls this at the head of
+    /// the frame, after the steps and the popover host's `begin_frame` and before anything that reads
+    /// the host snapshot (`backdrop_layers`, the page pass). What the opener lift owns ([`Self::lift_target`],
+    /// a page element or a bar member alike) is left out of the page's own pass and so out of the host
+    /// snapshot; when it changes the snapshot is thrown away and the card sections say again whether
+    /// they left a card out (`popover::set_lift_owns`). That has to happen BEFORE the page pass: the
+    /// pass serves the held snapshot or takes a new one, and a flip decided inside [`Self::draw_with`]
+    /// (after it) re-took the snapshot a frame late and showed the old one on the flip frame (a closing
+    /// menu's opener, once focus left it, was drawn by nobody for that frame). Source and discovery
+    /// walks neither decide nor re-take: they redraw the page the visible pass is about to show.
+    ///
+    /// The decision is a function of dispatcher state alone, and idempotent: `draw_with` calls it too,
+    /// for the callers with no pre-pass (a host test, the plain [`Self::draw`]), where it finds the
+    /// application's call already made and does nothing.
+    pub fn settle_lift(&mut self) {
+        if super::frame::backdrop::source_walk() || plx_gfx::gfx::blur_source_pass() { return; }
+        let owned = self.lift_target().and_then(|t| t.1);
+        if owned != self.lifted_last {
+            self.lifted_last = owned;
+            super::popover::set_lift_owns(false);
+            super::popover::host::invalidate();
+        }
+    }
+
     fn draw_with(&mut self, rig: &mut dyn Rig<H>, tick: Tick, report: &mut FrameReport, pages: bool,
         mut glass: Option<&mut super::frame::glass::GlassPlan>, ceiling: super::frame::backdrop::Z) {
         use super::frame::backdrop::{self, Z};
@@ -1640,19 +1664,14 @@ where
             }
         }
         let lifted = page_lift.and_then(|(_, key)| key);
-        // What the lift owns, a page element or a bar member alike: when it changes the host
-        // snapshot is re-taken, so the one that was drawn into it (or left out) is not kept. A bar
-        // member is owned from the frame its menu mounts: the chrome pass leaves it out of the
-        // snapshot from that frame, and the lift paints it on every frame of the open and the close
+        // What the lift owns is settled before the page pass (`settle_lift`: the application calls it
+        // at the head of the frame); a caller with no such call has it made here, late. A bar member
+        // is owned from the frame its menu mounts: the chrome pass leaves it out of the snapshot from
+        // that frame, and the lift paints it on every frame of the open and the close
         // (`widgets::lift_profile_chip` stands on the field once that has latched and on the host
         // snapshot before), so nothing about it changes while the menu is up.
-        let owned = target.and_then(|t| t.1);
+        self.settle_lift();
         let lift_parts = page_lift.map(|(entry, focus)| self.opener_parts(entry, focus));
-        if !backdrop::source_walk() && !plx_gfx::gfx::blur_source_pass() && owned != self.lifted_last {
-            self.lifted_last = owned;
-            super::popover::set_lift_owns(false);
-            super::popover::host::invalidate();
-        }
         let (_, host_render) = self.nav.modals.host_policy();
         // §9: armed for the LENGTH OF THE DRAW, and restored rather than cleared, exactly as the
         // page freeze is. Every framebuffer-sampling door is refused while it is up.

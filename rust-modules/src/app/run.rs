@@ -3179,6 +3179,11 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             plx_base::diag::spans::span("host", || plx_ui::popover::host::begin_frame(
                                 fr.underlay_moving, app.pages.present.page_damaged()));
                         }
+                        // Who owns the opener lift is settled HERE, before anything reads the host
+                        // snapshot: `backdrop_layers` and the page pass below serve or retake it,
+                        // and a flip decided inside the draw (after that pass) retook it a frame
+                        // late. See `Dispatcher::settle_lift`.
+                        app.pages.settle_lift();
                         use plx_ui::frame::backdrop::Z;
                         let layers = app.pages.backdrop_layers(app.bridge.navigation_presentation(&app.pages.nav).page_alpha);
                         app.glass.sources.borrow_mut().begin(layers);
