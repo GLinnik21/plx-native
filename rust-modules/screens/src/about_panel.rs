@@ -1088,6 +1088,16 @@ mod tests {
         );
     }
 
+    /// The panel declares no group, so it has no element to name: the id conformance holds because
+    /// there is nothing to project (the default `a11y_elems` is the right answer).
+    #[test]
+    fn the_panel_has_no_element_to_name() {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let cx = cx(&measure);
+        let panel = AboutPanelScreen::new(ENTRY);
+        plx_ui::a11y::conformance::<TestHost, _>(&panel, &cx);
+    }
+
     // ---- the synopsis is READABLE to its last line (a cap on reachable text is a bug) -------------
 
     use plx_ui::consts::{SDLK_DOWN, SDLK_UP};

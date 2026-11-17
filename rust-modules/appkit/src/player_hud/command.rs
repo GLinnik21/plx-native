@@ -146,6 +146,33 @@ pub enum HudCommand {
 }
 
 impl HudCommand {
+    /// **The word that names a control with this command in an accessibility id**
+    /// (`player.control.next`): static text, a name in the id grammar (`[a-z][a-z0-9_]*`), one per
+    /// closed value of the command's parameters (a seek is `seek_back` or `seek_forward`, the
+    /// More menu's three pages are `more`, `quality` and `speed`). Two controls of one package can
+    /// carry the same command, so the word is not unique by itself: the screen makes the id unique.
+    pub fn a11y_word(self) -> &'static str {
+        match self {
+            HudCommand::TogglePlay => "play_pause",
+            HudCommand::Seek(SeekBy::Secs(n)) if n.get() < 0 => "seek_back",
+            HudCommand::Seek(SeekBy::Secs(_)) => "seek_forward",
+            HudCommand::Seek(SeekBy::Setting(SeekDir::Back)) => "seek_back",
+            HudCommand::Seek(SeekBy::Setting(SeekDir::Forward)) => "seek_forward",
+            HudCommand::Previous => "previous",
+            HudCommand::Next => "next",
+            HudCommand::OpenTracks(TrackTab::Audio) => "audio",
+            HudCommand::OpenTracks(TrackTab::Subtitles) => "subtitles",
+            HudCommand::OpenMore(MorePage::Root) => "more",
+            HudCommand::OpenMore(MorePage::Quality) => "quality",
+            HudCommand::OpenMore(MorePage::Speed) => "speed",
+            HudCommand::ToggleSection(Section::Chapters) => "chapters",
+            HudCommand::ToggleSection(Section::Info) => "info",
+            HudCommand::FromBeginning => "from_beginning",
+            HudCommand::GoToDetail => "go_to_detail",
+            HudCommand::ToggleStats => "stats",
+        }
+    }
+
     /// **Is a press of this command meaningful now?** The table's "Enabled" column, from the
     /// frame's [`HudModel`] alone.
     pub fn enabled(self, model: &HudModel) -> bool {
@@ -292,6 +319,44 @@ mod tests {
         // Subtitles opens tab 1 and Audio tab 0, as `OverlayKind::Tracks { tab }` always was
         assert_eq!(TrackTab::Subtitles.index(), 1);
         assert_eq!(TrackTab::Audio.index(), 0);
+    }
+
+    /// **A control's id word is a name in the id grammar for every command**, classic's five are
+    /// five different words, and the closed parameters (a seek's direction, More's page) do not
+    /// share one. The `match` that names them has no wildcard, so a new command fails to compile
+    /// there until it has a word.
+    #[test]
+    fn every_command_has_a_word_in_the_id_grammar() {
+        let every = [
+            HudCommand::TogglePlay,
+            HudCommand::Seek(secs(-10)),
+            HudCommand::Seek(secs(30)),
+            HudCommand::Seek(SeekBy::Setting(SeekDir::Back)),
+            HudCommand::Seek(SeekBy::Setting(SeekDir::Forward)),
+            HudCommand::Previous,
+            HudCommand::Next,
+            HudCommand::OpenTracks(TrackTab::Audio),
+            HudCommand::OpenTracks(TrackTab::Subtitles),
+            HudCommand::OpenMore(MorePage::Root),
+            HudCommand::OpenMore(MorePage::Quality),
+            HudCommand::OpenMore(MorePage::Speed),
+            HudCommand::ToggleSection(Section::Chapters),
+            HudCommand::ToggleSection(Section::Info),
+            HudCommand::FromBeginning,
+            HudCommand::GoToDetail,
+            HudCommand::ToggleStats,
+        ];
+        for command in every {
+            assert!(plx_ui::a11y::is_name(command.a11y_word()), "{command:?}: {:?}", command.a11y_word());
+        }
+        let classic: Vec<&str> = CLASSIC_COMMANDS.iter().map(|c| c.a11y_word()).collect();
+        assert_eq!(classic, ["previous", "next", "subtitles", "audio", "more"]);
+        assert_ne!(HudCommand::Seek(secs(-10)).a11y_word(), HudCommand::Seek(secs(30)).a11y_word());
+        assert_eq!(
+            HudCommand::Seek(secs(-10)).a11y_word(),
+            HudCommand::Seek(SeekBy::Setting(SeekDir::Back)).a11y_word(),
+            "a seek back is a seek back however the package sized it"
+        );
     }
 
     /// `command` and `action` are two spellings of one answer, whatever the row holds: the same

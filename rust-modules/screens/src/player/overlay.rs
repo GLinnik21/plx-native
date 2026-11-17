@@ -978,6 +978,25 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Focusable<H
             Panel::Timing(_) => FocusKey { entry: self.entry, elem: 0 },
         }
     }
+    /// **The ids are the active panel's own** (`TrackMenuPart`, `MoreMenuPart`), which answer for
+    /// their rows; the host qualifies them with this screen's namespace (`a11y_ns`, the panel's
+    /// word: `tracks`, `more`). The part is built fresh for the query, so the projection is
+    /// handed back owning its text. Timing declares no group and so names nothing; `a11y_find`
+    /// stays the default walk over these two, which cannot disagree with them.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<plx_ui::a11y::A11y<'_>> {
+        match &self.panel {
+            Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.a11y(key, cx).map(plx_ui::a11y::A11y::into_owned),
+            Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.a11y(key, cx).map(plx_ui::a11y::A11y::into_owned),
+            Panel::Timing(_) => None,
+        }
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        match &self.panel {
+            Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.a11y_elems(g, cx, out),
+            Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.a11y_elems(g, cx, out),
+            Panel::Timing(_) => {}
+        }
+    }
 }
 
 impl LogicalState for PlayerOverlayScreen {
