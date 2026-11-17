@@ -484,7 +484,9 @@ pub struct Shared {
     // `FeedRaw::abr`; the handled-error snapshot's `dg_cb_err_num` is still a direct mailbox load.
     //
     // STRICTLY ONE-WAY: written by the pump and seam, read only for observation. Nothing in the
-    // playback state machine may ever branch on one, or a diagnostic becomes load-bearing.
+    // playback state machine may ever branch on one, or a diagnostic becomes load-bearing. The one
+    // exception is the Segment seek landing (`feed_pump::stuck_seek_due`), which reads the position
+    // ticks `dg_pos_ticks` and the displayed-callback census `dg_sink_displayed_cb` (#1313, #1436).
     /// `Stage` as u8 — where the bind/play sequence has got to. Unlike the expensive queue
     /// mirrors below, this scalar is always current enough for a terminal error report even when
     /// Stats for Nerds is closed.
