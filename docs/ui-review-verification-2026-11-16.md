@@ -7,7 +7,7 @@ See [review dispositions and historical evidence](ui-review-evidence.md) and the
 
 ## Exact source and environment
 
-The final gate uses pinned Rust `1.100.0`, existing Python `3.12.16`, WSL Ubuntu 22.04,
+The final gate uses the repository-pinned toolchain at the tested revision, existing Python `3.12.16`, WSL Ubuntu 22.04,
 and an `env -i` environment without inherited `GIT_DIR`, `GIT_COMMON_DIR`, `GIT_WORK_TREE`
 or `GIT_INDEX_FILE`. No guard is disabled. The isolated worktree's `.git` pointer is a
 portable relative path so child tests can create genuinely independent repositories.

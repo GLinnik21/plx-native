@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Actual AppHost new-screen compiler oracle; never edits the product or Git metadata.
 
-Run with Python3.12/Rust1.100 in a clean environment. --output must be ignored/private.
+Run with Python3.12 and the repository-pinned Rust toolchain in a clean environment.
+--output must be ignored/private.
 The product overlay changes exactly three Rust files. Separate private-crate harness
 roots only add acceptance tests; no feature, replacement Home, fixture Host or IO gate.
 --baseline-app supplies the frozen pre-repair words.rs/run.rs for the compiler RED.
@@ -15,6 +16,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import time
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION = ('rust-modules/screens/src/review_static.rs',
@@ -235,7 +237,8 @@ def main():
     env['CARGO_TARGET_DIR'] = str(target)
     env['PLXNATIVE_RUNTIME_DIR'] = str(output / 'runtime')
     Path(env['PLXNATIVE_RUNTIME_DIR']).mkdir(exist_ok=args.resume)
-    command = ['cargo', '+1.100.0', 'test', '--lib', '-p', 'plxnative-modules',
+    channel = tomllib.loads((ROOT / 'rust-modules/rust-toolchain.toml').read_text())['toolchain']['channel']
+    command = ['cargo', f'+{channel}', 'test', '--lib', '-p', 'plxnative-modules',
                'app::private_extension_acceptance::fresh_static_screen_uses_product_registration_only', '--', '--exact', '--test-threads=1']
     if args.public_scenario:
         command = command[:command.index('app::private_extension_acceptance::fresh_static_screen_uses_product_registration_only')] + ['--',

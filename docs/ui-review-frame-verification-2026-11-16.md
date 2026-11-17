@@ -12,11 +12,11 @@ sorted relative UTF-8 path, NUL, binary SHA-256 of file bytes (symlink target by
 This generated receipt and build/log outputs are excluded. Changed Rust, Python and Markdown
 sources are LF; the full tracked-text scan found no CRLF in those extensions.
 
-Rust: `rustc 1.100.0 (0ef1bc386 2026-11-09)`; Python: `3.12.16`. WSL commands use
+Rust: repository-pinned toolchain at the tested revision (`0ef1bc386 2026-11-09`); Python: `3.12.16`. WSL commands use
 `env -i`, explicit HOME/PATH/toolchain and no inherited `GIT_*` overrides. The existing Python
 3.12 shim is `/tmp/plx-pr1133-python`. Earlier failed command 319 printed shell-default Rust
-1.98.1 before make, but make's compiler is explicitly `cargo +1.100.0`; subsequent commands
-pin `RUSTUP_TOOLCHAIN=1.100.0` as well. One early focused guard run used shell-default Python
+1.98.1 before make, but make's compiler explicitly uses the repository-pinned toolchain at the tested revision; subsequent commands
+pin `RUSTUP_TOOLCHAIN` to that channel as well. One early focused guard run used shell-default Python
 3.10.4; all final Python checks used the actual 3.12.16 executable.
 
 HEAD stayed at 990d. Final recovered index SHA-256:

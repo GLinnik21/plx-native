@@ -45,7 +45,7 @@ Full tracked/untracked Rust/Python/Markdown scan: no CRLF.
 
 ## Environment and limits
 
-WSL `env -i`, HOME `/home/glinnik`, explicit Python 3.12.16 shim and Rust 1.100.0 PATH/toolchain;
+WSL `env -i`, HOME `/home/glinnik`, explicit Python 3.12.16 shim and the repository-pinned toolchain at the tested revision;
 no inherited Git overrides. Existing per-checkout `target-fast` / `target-hostsim` / shipping target.
 No commit, push, device operation or parent-checkout source edit. Whole `make check` remains deferred.
 The initial dependency gate failed on the repository's obsolete page `Route::` substring pin and its

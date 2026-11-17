@@ -5,7 +5,7 @@ Summary: The actual default production library now compiles with physically sepa
 ## Verified gate
 
 - Clean WSL environment: `env -i HOME=/home/glinnik PATH=/home/glinnik/.cargo/bin:/usr/local/bin:/usr/bin:/bin`.
-- From `rust-modules`: `cargo +1.100.0 check -p plxnative-modules --lib --message-format=short` exits **0**, `Finished dev profile` in 14.97s.
+- From `rust-modules`: `cargo +<repository-pinned-channel> check -p plxnative-modules --lib --message-format=short` (repository-pinned toolchain at the tested revision) exits **0**, `Finished dev profile` in 14.97s.
 - Log: `.empryo/reviews/ui-owner-default-green.log`. Existing `plx_net` incremental-directory permission note remains nonfatal; it is not a source error.
 - Compiler progression: 525 → 175 → 30 → 2 fixture-only dead-code helpers → **0**.
 - WSL `git diff --check` passes for changed production files, including helper-owned `run.rs`.

@@ -46,7 +46,7 @@ failures (`2165 passed; 10 failed`): the newly external fixture runner acknowled
 as Completed. Fixture runners now preserve the taken envelope's terminal error, rather than bypassing
 the dispatcher's sender/outcome fence. No production retirement check was weakened.
 
-Verification commands use WSL `env -i`, explicit HOME/PATH, Python 3.12.16 and Rust 1.100.0, no
+Verification commands use WSL `env -i`, explicit HOME/PATH, Python 3.12.16 and the repository-pinned toolchain at the tested revision, no
 inherited Git overrides. Final results are recorded in the handoff; the earlier frame receipt's hash
 is historical and does not certify these edits. Whole `make check`, ARM and device acceptance remain
 deferred. No commit, push, publication, device or parent-checkout source operation occurred.
