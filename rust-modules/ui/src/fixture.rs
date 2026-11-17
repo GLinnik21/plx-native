@@ -584,6 +584,9 @@ pub struct FixtureModal {
     /// last handed it ([`Screen::opener_rect`]).
     pub bar_opener: Option<u32>,
     pub opener_seen: Vec<super::Rect>,
+    /// How much of its opener this surface leaves ([`Screen::opener_alpha`]): a morphing menu's
+    /// `opener_alpha`, 1.0 (whole) by default.
+    pub opener_alpha: f32,
     /// The [`draw_order`] tick at which the container ASKED for that dim, and the one at which
     /// this surface's own `draw` ran. The two together are how a host test observes that the
     /// scrim landed inside the PAGE PASS rather than with the panel — see
@@ -653,6 +656,7 @@ impl FixtureModal {
             scrim_over_video: false,
             bar_opener: None,
             opener_seen: Vec::new(),
+            opener_alpha: 1.0,
             scrim_at: std::cell::Cell::new(0),
             draw_at: 0,
             render: RenderReport::NONE,
@@ -853,6 +857,9 @@ impl Screen<FixtureHost> for FixtureModal {
     }
     fn bar_opener(&self) -> Option<u32> {
         self.bar_opener
+    }
+    fn opener_alpha(&self) -> f32 {
+        self.opener_alpha
     }
     fn opener_rect(&mut self, drawn: super::Rect) {
         self.opener_seen.push(drawn);
@@ -1080,6 +1087,9 @@ pub struct FixtureRig {
     /// Every bar member the lift pass was asked to redraw (`Rig::lift_bar_member`), with the
     /// presentation it was asked under.
     pub bar_lifts: Vec<(u32, super::screen::NavPresentation)>,
+    /// The bar member the opener lift owned on each chrome pass (`Rig::draw_chrome`'s `lifted`):
+    /// the one the chrome pass left out.
+    pub chrome_lifted: Vec<Option<u32>>,
     us: u64,
 }
 
@@ -1104,6 +1114,7 @@ impl FixtureRig {
             opaque_route_calls: Vec::new(),
             clears: 0,
             bar_lifts: Vec::new(),
+            chrome_lifted: Vec::new(),
             us: 0,
         }
     }
@@ -1118,8 +1129,10 @@ impl Rig<FixtureHost> for FixtureRig {
         }
     }
     fn draw_chrome(&mut self, _arg: &FixtureArg, _parts: &CxParts<u32>,
-        nav: super::screen::NavPresentation, _glass: Option<&mut super::frame::glass::GlassPlan>) {
+        nav: super::screen::NavPresentation, _glass: Option<&mut super::frame::glass::GlassPlan>,
+        lifted: Option<u32>) {
         self.chrome_draws += 1;
+        self.chrome_lifted.push(lifted);
         if self.chrome_glass {
             let track = super::Rect::new(
                 600.0,

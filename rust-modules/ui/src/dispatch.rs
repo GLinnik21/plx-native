@@ -276,8 +276,15 @@ pub trait Rig<H: Host> {
         }
     }
     /// Shared chrome draws after its page and before surfaces, using a captured vocabulary.
+    ///
+    /// `lifted` is **the bar member the opener lift owns this frame** ([`Screen::bar_opener`], the
+    /// profile chip while its menu is up), `None` otherwise. The chrome pass LEAVES IT OUT, as a page
+    /// leaves its lifted element out of its own pass ([`DrawFrame::lifted`]): the lift
+    /// ([`Self::lift_bar_member`]) is its only copy, painted at the morph's `opener_alpha`, so a
+    /// consumed chip is not under the dim, and the host snapshot the glass refracts does not hold it.
     fn draw_chrome(&mut self, _arg: &H::Arg, _parts: &CxParts<H::Elem>,
-        _nav: super::screen::NavPresentation, _glass: Option<&mut super::frame::glass::GlassPlan>) {}
+        _nav: super::screen::NavPresentation, _glass: Option<&mut super::frame::glass::GlassPlan>,
+        _lifted: Option<H::Elem>) {}
     /// **Where the shared bar's member `elem` is DRAWN this frame**, under `presented` (the host page's
     /// tuck, [`chrome_presented`]): its resting rect through the tuck, the rect the lit copy of an
     /// opener is drawn at and a surface's morph starts and ends on. `None` for a rig with no such
@@ -470,8 +477,8 @@ pub struct Dispatcher<H: Host> {
     pending_back: bool,
     /// The tick of the last `frame_with`, for a `draw` the caller runs later in its own frame.
     last_tick: Tick,
-    /// The page element the surface pass lifted out of the dim on the previous drawn frame
-    /// ([`Self::lifted_opener`]); a change re-takes the host snapshot (`draw_with`).
+    /// The page element or bar member the surface pass lifted out of the dim on the previous drawn
+    /// frame ([`Self::lifted_opener`]); a change re-takes the host snapshot (`draw_with`).
     lifted_last: Option<FocusKey<H::Elem>>,
     /// This frame's prepare pass ran (a `draw` after a non-presenting frame runs it itself).
     prepared: bool,
@@ -1630,9 +1637,12 @@ where
             }
         }
         let lifted = page_lift.and_then(|(_, key)| key);
+        // What the lift owns, a page element or a bar member alike: when it changes the host
+        // snapshot is re-taken, so the one that was drawn into it (or left out) is not kept.
+        let owned = target.and_then(|t| t.1);
         let lift_parts = page_lift.map(|(entry, focus)| self.opener_parts(entry, focus));
-        if !backdrop::source_walk() && !plx_gfx::gfx::blur_source_pass() && lifted != self.lifted_last {
-            self.lifted_last = lifted;
+        if !backdrop::source_walk() && !plx_gfx::gfx::blur_source_pass() && owned != self.lifted_last {
+            self.lifted_last = owned;
             super::popover::set_lift_owns(false);
             super::popover::host::invalidate();
         }
@@ -1833,7 +1843,8 @@ where
                         // (`chrome_presented`), and a skipped frame publishes no material, so the
                         // band's goes back to Flat rather than staying on the last drawn frame's face.
                         if let Some(navigation) = chrome_presented::<H>(navigation, &*inst.screen) {
-                            backdrop::draw_span("chrome", || rig.draw_chrome(&e.arg, &chrome_parts, navigation, glass.as_deref_mut()));
+                            let bar_lifted = bar_lift.map(|(elem, _, _)| elem);
+                            backdrop::draw_span("chrome", || rig.draw_chrome(&e.arg, &chrome_parts, navigation, glass.as_deref_mut(), bar_lifted));
                         } else if let Some(glass) = glass.as_deref_mut() {
                             glass.tab_band_mut().reset_material();
                         }

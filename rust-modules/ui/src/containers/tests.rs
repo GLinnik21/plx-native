@@ -166,6 +166,44 @@ fn a_bar_opener_is_lifted_once_per_frame_by_the_opener_pass_on_the_live_presenta
         "the surface is handed the live drawn rect of the opener");
 }
 
+/// **A bar member a surface hangs from is left OUT of the chrome pass, as a page leaves its opener
+/// out of its own** (owner, 2026-11-17: the profile chip is CONSUMED by its morph). The lift pass is
+/// the member's only copy, at the morph's alpha, so a chip the menu has consumed is not drawn by the
+/// bar under the dim, and not into the host snapshot the panel's rim refracts (the chrome pass is
+/// part of the snapshot's page pass; the snapshot is re-taken when the lifted member changes). Red
+/// while the chrome pass drew the chip whatever its menu did: it stayed visible under the dim for
+/// the whole open, and its label was refracted into the panel's top rim.
+#[test]
+fn a_bar_opener_is_left_out_of_the_chrome_pass_while_the_lift_owns_it() {
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig, _) = booted();
+    let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    rig.chrome_lifted.clear();
+    d.draw(&mut rig, true);
+    assert!(!rig.chrome_lifted.is_empty(), "premise: the chrome pass ran");
+    assert!(rig.chrome_lifted.iter().all(|l| l.is_none()), "no surface hangs from a bar member: the chrome draws the bar whole");
+
+    modal_mut(&mut d, id).bar_opener = Some(7);
+    d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
+    rig.chrome_lifted.clear();
+    d.draw(&mut rig, true);
+    assert!(!rig.chrome_lifted.is_empty() && rig.chrome_lifted.iter().all(|l| *l == Some(7)),
+        "the chip is the lift's alone while its menu is up, whatever alpha it is lifted at: {:?}", rig.chrome_lifted);
+    // a consumed chip (the morph's opener alpha 0) is lifted at 0, so it is nowhere: the chrome pass
+    // still leaves it out, never draws it back
+    modal_mut(&mut d, id).opener_alpha = 0.0;
+    rig.chrome_lifted.clear();
+    d.draw(&mut rig, true);
+    assert!(rig.chrome_lifted.iter().all(|l| *l == Some(7)), "consumed: still the lift's: {:?}", rig.chrome_lifted);
+
+    // the surface stands down: the bar draws its chip again
+    modal_mut(&mut d, id).bar_opener = None;
+    rig.chrome_lifted.clear();
+    d.draw(&mut rig, true);
+    assert!(rig.chrome_lifted.iter().all(|l| l.is_none()), "no opener: the bar draws it: {:?}", rig.chrome_lifted);
+}
+
 #[test]
 fn a_bar_opener_does_not_draw_over_an_opaque_surface_that_is_arriving() {
     use super::modal::{EntryMotion, PopoverMotion};
