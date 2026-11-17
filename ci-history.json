@@ -1,4 +1,4 @@
-{"updated":"2026-11-17T02:10:35Z",
+{"updated":"2026-11-17T02:27:43Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5270,7 +5270,8 @@
 {"id":43992954159,"at":"2026-11-17T01:06:17Z","sha":"967dbe6ef","title":"URI: log the service's hdrType on videoInfo","pr":1398,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":271,"macOS tests against bundled FFmpeg and ASS":256,"Windows launcher syntax":19,"macOS simulator build + launch":152}},
 {"id":43993793994,"at":"2026-11-17T01:12:38Z","sha":"a0568175d","title":"Version choice: judge each version's Dolby Vision as the direct-play gate does","pr":1421,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":302,"macOS tests against bundled FFmpeg and ASS":153,"Windows launcher syntax":25,"macOS simulator build + launch":215}},
 {"id":43995664561,"at":"2026-11-17T01:27:00Z","sha":"393c96e9b","title":"fix(ci): integrate main and register the V13 replay anchor","pr":1420,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":248,"macOS simulator build + launch":147,"Linux simulator build + launch":394,"Windows launcher syntax":19}},
-{"id":44000099095,"at":"2026-11-17T02:03:02Z","sha":"f130b9d05","title":"fix(ci): drain timeout assertion output under pipefail","pr":1420,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":22,"macOS tests against bundled FFmpeg and ASS":229,"macOS simulator build + launch":219,"Linux simulator build + launch":314}}
+{"id":44000099095,"at":"2026-11-17T02:03:02Z","sha":"f130b9d05","title":"fix(ci): drain timeout assertion output under pipefail","pr":1420,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":22,"macOS tests against bundled FFmpeg and ASS":229,"macOS simulator build + launch":219,"Linux simulator build + launch":314}},
+{"id":44002533710,"at":"2026-11-17T02:22:48Z","sha":"117deed4c","title":"test(ci): make disk ancestor assertion deterministic","pr":1420,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":161,"Linux simulator build + launch":285,"Windows launcher syntax":18,"macOS tests against bundled FFmpeg and ASS":233}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
