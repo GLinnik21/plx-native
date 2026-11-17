@@ -2706,7 +2706,9 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   drive a press-and-**hold** — `okdown`, sleep past `press::LONG_MS` (500 ms), `okup` opens the
   item context menu; a debug build also takes `focus:<id>`, `press:<id>[@<ratingKey>]` and
   `state:<nonce>` (the structured readback `plxnative-a11y.json`, beside `focusprobe`'s fingerprint),
-  via `tools/tv-session.sh focus|press|state` or `tools/a11y.py`. Prefer them over a key walk to a
+  via `tools/tv-session.sh focus|press|state` or `tools/a11y.py`, both of which refuse to press an
+  element whose subject is a title (a card, a Detail episode or season tab, a Filmography credit, the
+  catalog pill) unless the press names it (`--rk` / `--subject`). Prefer them over a key walk to a
   target; walks remain for tests whose subject is travel (fps walks, focus fingerprints);
   With `devtriggers`, `hang:<ms>` stalls the frame thread under the `dev hang probe` guard and
   `hang-raw:<ms>` sleeps without a label; both accept unsigned decimal u64 milliseconds capped at
