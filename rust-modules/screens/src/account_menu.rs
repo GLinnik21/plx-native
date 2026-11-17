@@ -706,9 +706,16 @@ impl AuthLike for MenuHost {
             ms += 16;
             step(&mut menu, &read, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
         }
+        // (the measured iOS close: the width leads, the height holds its bulge to ~50 ms)
+        let closing = glass(&mut menu, &read);
+        assert!(closing.w < settled.w - 20.0, "three frames into the close the panel is narrowing into the chip ({closing:?})");
+        for _ in 0..2 {
+            ms += 16;
+            step(&mut menu, &read, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+        }
         let closing = glass(&mut menu, &read);
         assert!(closing.w < settled.w - 20.0 && closing.h < settled.h - 20.0,
-            "three frames into the close the panel is shrinking into the chip ({closing:?})");
+            "five frames into the close the panel is shrinking into the chip ({closing:?})");
     }
 
     /// **Owner, 2026-11-17: the profile menu opens OVER its chip, as on iOS.** The settled panel
