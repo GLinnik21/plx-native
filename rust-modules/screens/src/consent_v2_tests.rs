@@ -93,17 +93,19 @@ fn flipping_a_switch_does_not_restart_the_sentence() {
     assert_eq!(page.follow.arrival(), 1.0);
 }
 
-/// Privacy & data wears the Settings page title; the first-run question keeps the hero (the board
-/// does not move it).
+/// Privacy & data and both first-run questions wear the Settings page title: the onboarding pages
+/// follow the Settings design (the hero title was kept for first run until its stage).
 #[test]
-fn only_privacy_moves_to_the_page_title_and_first_run_keeps_the_hero() {
+fn privacy_and_both_first_run_questions_wear_the_page_title() {
     let _guard = plx_base::testlock::serial();
     let m = FixtureMeasure;
     assert_eq!(settings_page(&m).layout.title_style, TitleStyle::Page);
     let c = test_cx(&m);
-    let (mut out, mut present) = sink();
-    let first = ConsentPage::first_run(EntryId(1), 0, &c, &mut mk_fx(&mut out, &mut present));
-    assert_eq!(first.layout.title_style, TitleStyle::Hero);
+    for stage in [0, 1] {
+        let (mut out, mut present) = sink();
+        let first = ConsentPage::first_run(EntryId(1), stage, &c, &mut mk_fx(&mut out, &mut present));
+        assert_eq!(first.layout.title_style, TitleStyle::Page, "stage {stage}");
+    }
 }
 
 /// The first-run question's table is the Settings table: board measures, full rows and reading-ink

@@ -204,7 +204,7 @@ pub const PICTURE_TOP: f32 = 440.0;
 /// **The Settings page title rung** (Settings v2, `Sv2-6-Spec`: "48 bold on every Settings page"):
 /// the design system's `--size-display`. Read by [`TitleStyle::Page`] only, which the pages moved
 /// to the v2 board use ([`RouteLayout::settings_page`]); every other route keeps
-/// [`TitleStyle::Hero`] until its stage (first-run consent, the Privacy & data documents' readers).
+/// [`TitleStyle::Hero`] until its stage (the Privacy & data documents' readers).
 pub const PAGE_TITLE_SIZE: std::os::raw::c_int = theme::size::DISPLAY;
 const PAGE_TITLE_LEADING: f32 = PAGE_TITLE_SIZE as f32 * 1.05;
 /// The Page title's letter-spacing, the board's `-.02em`.
@@ -1051,9 +1051,11 @@ impl RouteLayout {
 
     /// The layout of the Settings pages moved to the v2 board so far: [`Self::screen`] with
     /// [`TitleStyle::Page`] (the root, Language, the preferences and pickers, Under posters,
-    /// Diagnostics, Privacy & data, the Legal index and its documents, About, HUD settings). The
-    /// Favorite libraries onboarding, first-run consent, the Privacy & data document readers and
-    /// the Language page's Contribute page still use [`Self::screen`] (Hero).
+    /// Diagnostics, Privacy & data, the Legal index and its documents, About, HUD settings, and the
+    /// onboarding pages that share the family's screens: Favorite libraries in every mounting and
+    /// the first-run consent questions, which reach it through `page_titled` on their measured
+    /// reading layout). The Privacy & data document readers and the Language page's Contribute page
+    /// still use [`Self::screen`] (Hero).
     pub fn settings_page() -> Self {
         Self::screen().page_titled()
     }

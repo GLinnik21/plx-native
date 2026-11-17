@@ -420,11 +420,16 @@ impl ConsentPage {
         };
         let action_w = RouteLayout::action_pair_w(pill(lead), pill(trail)).ceil();
         let reader = DocumentReader::new().with_size(theme::size::BODY);
+        // The Settings page title (48, crumb above), as Privacy & data wears it: first run is the
+        // same family. The disclosure stays a fixed paragraph under it, not a followed sentence: it
+        // is what the answer agrees to, so it must not change as focus moves.
         RouteLayout::screen_for_reading(action_w, table.measured_width(measure), |layout| {
+            let layout = layout.page_titled();
             let frame = layout.narrative_copy_frame(has_crumb, title, layout.action.y, measure);
-            !RouteLayout::narrative_title(title).with_measure(measure).truncates(layout.narrative.w)
+            !layout.title_view(title).with_measure(measure).truncates(layout.narrative.w)
                 && reader.measured_height(body, frame.w, measure) <= frame.h
         })
+        .page_titled()
     }
 
     fn list_frame(&self) -> Rect {
