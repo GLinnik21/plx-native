@@ -9151,25 +9151,25 @@ mod tests {
     /// shader.
     #[test]
     fn a_square_unfocused_rect_is_flat_or_ramp_and_anything_else_is_the_sdf_fill() {
-        assert_eq!(rect_fill(0.0, 0.0, true), RectFill::Flat, "one colour: the scrim");
-        assert_eq!(rect_fill(0.0, 0.0, false), RectFill::Ramp, "two colours: the hero's ramp band");
+        assert_eq!(rect_fill(0.0, 0.0, true, false), RectFill::Flat, "one colour: the scrim");
+        assert_eq!(rect_fill(0.0, 0.0, false, false), RectFill::Ramp, "two colours: the hero's ramp band");
         for one_colour in [true, false] {
-            assert_eq!(rect_fill(14.0, 0.0, one_colour), RectFill::Sdf, "rounded");
-            assert_eq!(rect_fill(0.0, 1.0, one_colour), RectFill::Sdf, "focused");
-            assert_eq!(rect_fill(14.0, 1.0, one_colour), RectFill::Sdf, "rounded and focused");
-            assert_eq!(rect_fill(0.5, 0.0, one_colour), RectFill::Sdf, "radius 0.5 is the first rounded");
-            assert_eq!(rect_fill(0.001, 0.001, one_colour), RectFill::Sdf, "focus 0.001 is the first focused");
-            assert_eq!(rect_fill(f32::NAN, 0.0, one_colour), RectFill::Sdf, "NaN radius");
-            assert_eq!(rect_fill(0.0, f32::NAN, one_colour), RectFill::Sdf, "NaN focus");
+            assert_eq!(rect_fill(14.0, 0.0, one_colour, false), RectFill::Sdf, "rounded");
+            assert_eq!(rect_fill(0.0, 1.0, one_colour, false), RectFill::Sdf, "focused");
+            assert_eq!(rect_fill(14.0, 1.0, one_colour, false), RectFill::Sdf, "rounded and focused");
+            assert_eq!(rect_fill(0.5, 0.0, one_colour, false), RectFill::Sdf, "radius 0.5 is the first rounded");
+            assert_eq!(rect_fill(0.001, 0.001, one_colour, false), RectFill::Sdf, "focus 0.001 is the first focused");
+            assert_eq!(rect_fill(f32::NAN, 0.0, one_colour, false), RectFill::Sdf, "NaN radius");
+            assert_eq!(rect_fill(0.0, f32::NAN, one_colour, false), RectFill::Sdf, "NaN focus");
         }
-        assert_eq!(rect_fill(0.499, 0.0, false), RectFill::Ramp, "just under the radius threshold");
-        assert_eq!(rect_fill(0.0, 0.000_999, false), RectFill::Ramp, "just under the focus threshold");
-        assert_eq!(rect_fill(0.0, 0.000_999, true), RectFill::Flat);
+        assert_eq!(rect_fill(0.499, 0.0, false, false), RectFill::Ramp, "just under the radius threshold");
+        assert_eq!(rect_fill(0.0, 0.000_999, false, false), RectFill::Ramp, "just under the focus threshold");
+        assert_eq!(rect_fill(0.0, 0.000_999, true, false), RectFill::Flat);
         // The same pair test feeds it, so the common call (one array passed twice) is a scrim.
         let a = [0.0f32, 0.0, 0.0, 0.5];
         let b = [0.0f32, 0.0, 0.0, 0.0];
-        assert_eq!(rect_fill(0.0, 0.0, same_colour(a.as_ptr(), a.as_ptr())), RectFill::Flat);
-        assert_eq!(rect_fill(0.0, 0.0, same_colour(a.as_ptr(), b.as_ptr())), RectFill::Ramp);
+        assert_eq!(rect_fill(0.0, 0.0, same_colour(a.as_ptr(), a.as_ptr()), false), RectFill::Flat);
+        assert_eq!(rect_fill(0.0, 0.0, same_colour(a.as_ptr(), b.as_ptr()), false), RectFill::Ramp);
     }
 
     /// **The ramp program is `fs_src.frag`'s flat path and nothing else.** The picture only stays
@@ -9208,11 +9208,11 @@ mod tests {
         };
         let ramp_draw = body("unsafe fn draw_ramp(");
         assert!(ramp_draw.contains("set_rect(RP_RECT, x, y, w, h);"), "exactly the rect's bounds");
-        assert!(ramp_draw.contains("if RPROG == 0 {") && ramp_draw.contains("use_prog(PROG);"), "the fallback");
+        assert!(ramp_draw.contains("if RPROG == 0 || rect_masked() {") && ramp_draw.contains("rect_program()"), "the fallback");
         let rect_draw = body("pub fn draw_rect(");
         let (gated, routed) = (
             rect_draw.find("gate(Class::Rect, x, y, w, h)").expect("the ledger gate"),
-            rect_draw.find("rect_fill(radius, focus, same_colour(top, bot))").expect("the routing"),
+            rect_draw.find("rect_fill(radius, focus, same_colour(top, bot), rect_masked())").expect("the routing"),
         );
         assert!(gated < routed, "the draw is booked in the ledger before a program is chosen");
         // Each arm is cut out of the routing `match` (up to the next arm) and must call its own
@@ -9372,7 +9372,7 @@ mod tests {
         for d in draws {
             let at = src.find(d).expect(d);
             let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
-            assert!(body.contains("glUniform1f(LOC_RGB_CAP,"), "{d} must set the cap");
+            assert!(body.contains("glUniform1f(u.rgb_cap,"), "{d} must set the cap");
         }
     }
 
@@ -9764,7 +9764,7 @@ mod tests {
             "link_optional_program(VS_IMG.as_ptr(), FS_TEX.as_ptr())",
             "glUniform2f(loc(c\"u_tscreen\"), SCR_W, SCR_H);",
             "glUniform1i(loc(c\"u_tex\"), 0);",
-            "(program, PlainUniforms { rect: loc(c\"u_trect\"), tint: loc(c\"u_tint\"), uvrect: loc(c\"u_uvrect\") })",
+            "(program, PlainUniforms { rect: loc(c\"u_trect\"), tint: loc(c\"u_tint\"), uvrect: loc(c\"u_uvrect\"), rc: -1, rr: -1 })",
         ] {
             assert!(link.contains(needle), "`{needle}` is gone from the plain program's link block:\n{link}");
         }
@@ -11747,5 +11747,265 @@ mod card_split_tests {
             );
             assert!(of_quad > 0.60 && of_card > 0.70, "{name}: {of_quad} {of_card}");
         }
+    }
+
+    // ---- THE ROUNDED CLIP (`RClip`, `shaders/rclip.glsl`) ------------------------------------------
+
+    fn rclip_box(x0: f32, y0: f32, x1: f32, y1: f32, radius: f32) -> RClip {
+        RClip { x0, y0, x1, y1, radius }
+    }
+
+    /// The folded form the shader takes: centre, half extent minus radius, and the radius held to
+    /// the half extents (a capsule at most), which is `text::bind_ink`'s clamp. A zero radius is a
+    /// plain box: the fold's `zw` is then the whole half extent.
+    #[test]
+    fn the_rounded_clip_folds_to_centre_half_extent_less_radius_and_a_clamped_radius() {
+        let (k, r) = rclip_fold(rclip_box(100.0, 200.0, 300.0, 260.0, 22.0));
+        assert_eq!((k, r), ([200.0, 230.0, 78.0, 8.0], 22.0));
+        let (k, r) = rclip_fold(rclip_box(100.0, 200.0, 300.0, 260.0, 500.0));
+        assert_eq!((k, r), ([200.0, 230.0, 70.0, 0.0], 30.0), "a radius past the half height is the capsule");
+        let (k, r) = rclip_fold(rclip_box(100.0, 200.0, 300.0, 260.0, 0.0));
+        assert_eq!((k, r), ([200.0, 230.0, 100.0, 30.0], 0.0));
+        let (k, r) = rclip_fold(rclip_box(100.0, 200.0, 300.0, 260.0, -4.0));
+        assert_eq!((k, r), ([200.0, 230.0, 100.0, 30.0], 0.0), "a negative radius is none");
+        let (k, r) = rclip_fold(rclip_box(300.0, 260.0, 100.0, 200.0, 9.0));
+        assert_eq!((k[2], k[3], r), (0.0, 0.0, 0.0), "an inverted box has no extent to round");
+    }
+
+    /// The CPU mirror of the mask: 1 well inside, 0.5 exactly on the edge (a straight one and the
+    /// arc), 0 from half a pixel outside, and the same half-pixel ramp `fs_text_ink.frag`'s
+    /// `shape_cover` has, which is what keeps the rows' edge on the glass's own (`fs_glass.frag`'s
+    /// `cov` is 0.5 on the edge too).
+    #[test]
+    fn the_rounded_clip_covers_one_inside_half_on_the_edge_and_nothing_past_half_a_pixel() {
+        let c = rclip_box(0.0, 0.0, 200.0, 100.0, 20.0);
+        let near = |a: f32, b: f32, what: &str| assert!((a - b).abs() < 1e-4, "{what}: {a} != {b}");
+        near(rclip_cover([100.0, 50.0], c), 1.0, "the centre");
+        near(rclip_cover([200.0, 50.0], c), 0.5, "on the right edge");
+        near(rclip_cover([100.0, 0.0], c), 0.5, "on the top edge");
+        near(rclip_cover([199.5, 50.0], c), 1.0, "half a pixel in");
+        near(rclip_cover([200.5, 50.0], c), 0.0, "half a pixel out");
+        near(rclip_cover([230.0, 50.0], c), 0.0, "far out");
+        // the arc: the point at distance `r` from the corner's circle centre, along the diagonal
+        let k = 20.0 - 20.0 / 2.0_f32.sqrt();
+        near(rclip_cover([k, k], c), 0.5, "on the top-left arc");
+        near(rclip_cover([200.0 - k, 100.0 - k], c), 0.5, "on the bottom-right arc");
+        // the square corner a rectangular scissor would have kept is OUTSIDE the arc
+        near(rclip_cover([1.0, 1.0], c), 0.0, "the corner a scissor keeps");
+        // a capsule: the end is a half circle
+        let cap = rclip_box(0.0, 0.0, 100.0, 40.0, 1.0e6);
+        near(rclip_cover([50.0, 20.0], cap), 1.0, "capsule centre");
+        near(rclip_cover([0.0, 20.0], cap), 0.5, "capsule tip");
+        near(rclip_cover([2.0, 2.0], cap), 0.0, "capsule corner");
+    }
+
+    /// **One SDF, three spellings.** The glass-edge coverage in the prelude, in the ink program's
+    /// `shape_cover`, and the CPU mirror all read the same `length(max(q, 0)) + min(max(q.x, q.y), 0)
+    /// - r` box distance and the same half-pixel `clamp(0.5 - d, 0, 1)`; the two shaders are pinned as
+    /// text (the mirror by [`the_rounded_clip_covers_one_inside_half_on_the_edge_and_nothing_past_half_a_pixel`]),
+    /// so editing one without the other fails here. The prelude takes its coordinate from the
+    /// authored-px varying: no `gl_FragCoord` (cost rule 4, `dither.glsl`) and no derivative (nothing in
+    /// this renderer links `OES_standard_derivatives`).
+    #[test]
+    fn the_rounded_clip_sdf_is_one_expression_in_the_prelude_and_the_ink_shape() {
+        let code_of = |s: &str| s.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        let prelude = code_of(include_str!("shaders/rclip.glsl"));
+        let ink = code_of(include_str!("shaders/fs_text_ink.frag"));
+        for line in [
+            "min(max(q.x, q.y), 0.0)",
+            "length(max(q, 0.0))",
+            "return clamp(0.5 - d, 0.0, 1.0);",
+        ] {
+            assert!(prelude.contains(line), "rclip.glsl lost `{line}`");
+            assert!(ink.contains(line), "fs_text_ink.frag's shape_cover lost `{line}`");
+        }
+        for line in [
+            "varying highp vec2 v_px;",
+            "uniform highp vec4 u_rc;",
+            "uniform highp float u_rr;",
+            "rclip_cover(v_px)",
+        ] {
+            assert!(prelude.contains(line), "rclip.glsl lost `{line}`");
+        }
+        for banned in ["gl_FragCoord", "dFdx", "dFdy", "fwidth", "discard"] {
+            assert!(!prelude.contains(banned), "the prelude must not use {banned}");
+        }
+        assert!(
+            ink.contains("uniform highp vec4 u_mc;") && ink.contains("uniform highp vec2 u_mq;")
+                && ink.contains("if (u_mq.y != 0.0) a *= shape_cover(u_mc, u_mq.x);"),
+            "the ink program's third slot is the rounded clip, in A's and B's form"
+        );
+    }
+
+    /// **The plain programs are byte-identical to what shipped.** The masked variants are the same
+    /// files behind `#define PLX_RCLIP`; preprocessed WITHOUT it, nothing of the mask is left in any
+    /// of the four sources (no varying, no uniform, no helper), which is what makes "zero cost off the
+    /// rounded clip" a property of the source and not of a measurement.
+    #[test]
+    fn the_plain_rect_and_texture_programs_carry_nothing_of_the_rounded_clip() {
+        for (name, src) in [
+            ("fs_src.frag", FS_SRC),
+            ("fs_tex.frag", FS_TEX),
+            ("vs_src.vert", VS_SRC),
+            ("vs_img.vert", VS_IMG),
+        ] {
+            let plain = preprocess(src.to_str().unwrap(), &[]);
+            for needle in ["v_px", "u_rc", "u_rr", "rclip"] {
+                assert!(!plain.contains(needle), "{name} (plain) names `{needle}`:\n{plain}");
+            }
+            assert!(!shader_code(src).contains("rclip.glsl"), "{name}: the prelude is a prefix of the variant only");
+        }
+        for (name, src) in [("fs_src.frag", FS_SRC_RC), ("fs_tex.frag", FS_TEX_RC)] {
+            let code = shader_code(src);
+            assert!(code.starts_with("#define PLX_RCLIP"), "{name}: the masked variant defines the macro first");
+            assert!(code.contains("float rclip_cover(") && code.contains("uniform highp vec4 u_rc;"), "{name}: the prelude");
+        }
+        for (name, src) in [("vs_src.vert", VS_SRC_RC), ("vs_img.vert", VS_IMG_RC)] {
+            assert!(shader_code(src).starts_with("#define PLX_RCLIP"), "{name}: the masked vertex variant");
+        }
+    }
+
+    /// Every fragment write of a masked variant goes through `rclip_out` (coverage into the ALPHA,
+    /// the colour straight, never a read-back of `gl_FragColor`), and the plain line survives in the
+    /// `#else` so the raw-text pins on it hold. The vertex variants hand the fragment the authored px
+    /// they already computed.
+    #[test]
+    fn the_masked_variants_write_every_fragment_through_rclip_out_and_hand_over_the_authored_px() {
+        for (name, file, writes) in [
+            ("fs_src.frag", include_str!("shaders/fs_src.frag"), 3),
+            ("fs_tex.frag", include_str!("shaders/fs_tex.frag"), 1),
+        ] {
+            let masked = preprocess(file, &["PLX_RCLIP"]);
+            let plain = preprocess(file, &[]);
+            assert_eq!(masked.matches("gl_FragColor =").count(), writes, "{name}: writes");
+            assert_eq!(masked.matches("gl_FragColor = rclip_out(").count(), writes, "{name}: every write is masked");
+            assert_eq!(plain.matches("gl_FragColor =").count(), writes, "{name}: the plain writes");
+            assert!(!plain.contains("rclip_out"), "{name}: the plain program has no mask");
+            assert!(!masked.contains("gl_FragColor.a") && !masked.contains("= gl_FragColor"), "{name}: no read-back of gl_FragColor");
+        }
+        for (name, file) in [("vs_src.vert", include_str!("shaders/vs_src.vert")), ("vs_img.vert", include_str!("shaders/vs_img.vert"))] {
+            let masked = preprocess(file, &["PLX_RCLIP"]);
+            assert!(masked.contains("varying highp vec2 v_px;") && masked.contains("v_px = px;"), "{name}: authored px");
+            assert!(!preprocess(file, &[]).contains("v_px"), "{name}: the plain vertex shader has no varying for it");
+        }
+    }
+
+    /// The wiring no host test can drive, pinned in the source. Both masked programs are OPTIONAL
+    /// links at boot (a driver that refuses one leaves the plain program and a log line, never an
+    /// exit, and linking at boot avoids a compile hitch the first time a menu opens), the live
+    /// record has ONE writer that counts the generation, and the two guards that switch the target
+    /// out from under a page clear it, so a rounded clip never masks an FBO pass.
+    #[test]
+    fn the_rounded_clip_has_one_writer_optional_programs_and_is_cleared_by_the_target_guards() {
+        let src = include_str!("gfx.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the unit tests")];
+        let code = |needle: &str| {
+            prod.lines().filter(|l| !l.trim_start().starts_with("//") && l.contains(needle)).count()
+        };
+        let body = |head: &str| {
+            let from = prod.find(head).unwrap_or_else(|| panic!("`{head}` is gone"));
+            let rest = &prod[from..];
+            &rest[..rest.find("\n}\n").expect("the end of the function")]
+        };
+        assert!(
+            prod.contains("RECT_RC = link_optional_program(VS_SRC_RC.as_ptr(), FS_SRC_RC.as_ptr())"),
+            "the masked rect program is vs_src.vert + fs_src.frag behind PLX_RCLIP, an optional link"
+        );
+        assert!(
+            prod.contains("PLAIN_IMAGE_RC = link_optional_program(VS_IMG_RC.as_ptr(), FS_TEX_RC.as_ptr())"),
+            "the masked plain texture program is vs_img.vert + fs_tex.frag behind PLX_RCLIP, an optional link"
+        );
+        assert_eq!(code("LIVE_RCLIP = "), 1, "a second writer of the live rounded clip");
+        assert_eq!(code("RCLIP_GEN = "), 1, "a second writer of the generation");
+        let set = body("pub fn rclip_set(");
+        assert!(set.contains("LIVE_RCLIP = ") && set.contains("RCLIP_GEN = "), "the one writer counts the generation");
+        assert!(set.contains("!="), "the generation moves only on a real change");
+        assert!(!body("pub fn clip_set(").contains("rclip") && !body("pub fn clip_clear(").contains("rclip"),
+            "the scissor pair stays scissor-only: a nested rect scope must not drop the rounding");
+        let region = body("impl Drop for RegionTarget {");
+        assert!(region.contains("rclip_set(self.rclip)"), "a region fill puts the clip back");
+        assert!(body("pub fn render_region(").contains("rclip_set(None)") || prod.contains("rclip: rclip()"), "and starts with none");
+        assert!(body("impl Drop for DirectPass {").contains("rclip_set(None)"), "the direct pass leaves with none");
+    }
+
+    /// Under a live rounded clip a flat or ramp rect is the rect program's SDF fill (its flat fast
+    /// path is the same expression), because the dedicated `fs_flat` / `fs_ramp` stay branch-free
+    /// and unmasked; every other rect keeps its program, and nothing changes while no clip is live.
+    #[test]
+    fn a_live_rounded_clip_routes_flat_and_ramp_rects_to_the_masked_sdf_program() {
+        let a = [0.2f32, 0.3, 0.4, 0.5];
+        let b = [0.0f32, 0.0, 0.0, 0.0];
+        for (radius, focus) in [(0.0, 0.0), (0.4, 0.0), (0.0, 0.0005)] {
+            for one in [true, false] {
+                assert_eq!(rect_fill(radius, focus, one, true), RectFill::Sdf, "radius {radius}, one colour {one}");
+            }
+        }
+        assert_eq!(rect_fill(0.0, 0.0, same_colour(a.as_ptr(), a.as_ptr()), false), RectFill::Flat);
+        assert_eq!(rect_fill(0.0, 0.0, same_colour(a.as_ptr(), b.as_ptr()), false), RectFill::Ramp);
+        assert_eq!(rect_fill(12.0, 0.0, true, false), RectFill::Sdf);
+        let src = include_str!("gfx.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the unit tests")];
+        let body = |head: &str| {
+            let from = prod.find(head).unwrap_or_else(|| panic!("`{head}` is gone"));
+            let rest = &prod[from..];
+            &rest[..rest.find("\n}\n").expect("the end of the function")]
+        };
+        // the two dedicated programs' direct callers (`draw_rrect`'s flat arm) route under a clip too
+        assert!(body("unsafe fn draw_flat(").contains("rect_masked()"), "draw_flat under a clip");
+        assert!(body("unsafe fn draw_ramp(").contains("rect_masked()"), "draw_ramp under a clip");
+        assert!(body("pub fn draw_rect(").contains("rect_masked()"), "draw_rect's routing reads the clip");
+        // every draw of the rect program binds it through `rect_program()`, so the masked variant's
+        // own uniform locations are the ones written: no `use_prog(PROG)` is left in a draw
+        for head in ["unsafe fn draw_flat(", "unsafe fn draw_ramp(", "pub fn draw_rect(", "pub fn draw_rect_shaped(", "pub fn draw_rrect(", "pub fn draw_rrect_sheened("] {
+            let b = body(head);
+            assert!(b.contains("rect_program()"), "{head} binds the rect program through rect_program()");
+            assert!(!b.contains("use_prog(PROG)"), "{head} still binds the plain rect program directly");
+            assert!(!b.contains("LOC_"), "{head} writes the plain program's locations");
+        }
+    }
+
+    /// Under a live rounded clip the plain texture draw takes the masked program; without one (or
+    /// with a masked program that did not link) it keeps the program it had. It is picked once per
+    /// draw, before the whole-draw and interior-piece choices, which then refuse it for an overridden
+    /// or rounded draw as before.
+    #[test]
+    fn the_plain_texture_program_pick_follows_the_rounded_clip() {
+        assert_eq!(plain_program_for_clip(Some(7u32), Some(9), true), Some(9));
+        assert_eq!(plain_program_for_clip(Some(7u32), Some(9), false), Some(7));
+        assert_eq!(plain_program_for_clip(Some(7u32), None, true), Some(7), "unlinked: the plain one, bounded by its scissor");
+        assert_eq!(plain_program_for_clip(None::<u32>, Some(9), true), Some(9));
+        assert_eq!(plain_program_for_clip(None::<u32>, Some(9), false), None);
+        let src = include_str!("gfx.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the unit tests")];
+        let from = prod.find("fn draw_tex_core_in(").expect("draw_tex_core_in");
+        let draw = &prod[from..from + prod[from..].find("\n}\n").unwrap()];
+        let (pick, whole) = (
+            draw.find("plain_program_for_clip(").expect("the clip's pick"),
+            draw.find("plain_texture_program(plain, image.is_some(), radius)").expect("the whole-draw choice"),
+        );
+        assert!(pick < whole, "the clip picks the program the draw's own rule then admits or refuses");
+    }
+
+    /// Text: the ink program carries the rounded clip's slot, so `draw_text` widens its gate to a
+    /// live rounded clip, while `draw_mask_inked` keeps `ink_clip()` alone (a radius-0 colour
+    /// picture is not a mask; under the rounded clip an icon takes the masked texture program, and
+    /// inside `paint_inked` it takes the ink program, which carries the slot too). `bind_ink` uploads
+    /// the slot from the one live record, or zeros.
+    #[test]
+    fn text_wears_the_rounded_clip_through_the_ink_program_and_a_mask_only_under_an_ink_clip() {
+        let src = include_str!("text.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").unwrap_or(src.len())];
+        let body = |head: &str| {
+            let from = prod.find(head).unwrap_or_else(|| panic!("`{head}` is gone"));
+            let rest = &prod[from..];
+            &rest[..rest.find("\n}\n").expect("the end of the function")]
+        };
+        let draw = body("pub fn draw_text(");
+        assert!(draw.contains("rclip().is_some()"), "draw_text's gate reads the rounded clip");
+        assert!(draw.contains("InkClip::default()"), "with only the rounded clip live the ink clip is empty");
+        let mask = body("pub fn draw_mask_inked(");
+        assert!(!mask.contains("rclip"), "draw_mask_inked's gate stays on the ink clip alone");
+        let bind = body("unsafe fn bind_ink(");
+        assert!(bind.contains("rclip()") && bind.contains("TLI_C") && bind.contains("TLI_Q"), "the slot is uploaded from the live record");
     }
 }

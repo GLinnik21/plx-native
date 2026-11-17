@@ -1407,6 +1407,68 @@ mod draw_frame_tests {
         assert!(ClipScope::current().is_none());
     }
 
+    /// **The rounded scope**: the shared painter's rounded clip. It carries the lens (`p.place(r)`, the
+    /// radius in screen px) next to the scissor, which is the bounding box intersected with the scope
+    /// already open; a nested rect scope narrows the scissor and keeps the arc; closing restores both.
+    #[test]
+    fn a_rounded_scope_carries_the_lens_narrows_the_scissor_and_restores_both() {
+        let _g = plx_base::testlock::serial();
+        let p = Painter::root().translate(30.0, 10.0);
+        let r = Rect::new(100.0, 50.0, 300.0, 200.0);
+        let rect = |r: Rect| (r.x, r.y, r.w, r.h);
+        assert_eq!(ClipScope::current_round(), None);
+        let outer = ClipScope::open_in(Painter::root(), Rect::new(0.0, 0.0, 330.0, 120.0));
+        let outer_box = ClipScope::current().unwrap();
+        {
+            let _round = ClipScope::open_rounded_in(p, r, 40.0);
+            let placed = p.place(r);
+            assert_eq!(ClipScope::current_round(), Some(RoundClip { rect: placed, radius: 40.0 }), "the lens");
+            let want = outer_box.intersect(p.clipped(r).clip_rect());
+            assert_eq!(rect(ClipScope::current().unwrap()), rect(want), "the scissor is the lens's bounding box ∩ the outer scope");
+            {
+                let _inner = ClipScope::open_in(Painter::root(), Rect::new(150.0, 70.0, 100.0, 400.0));
+                assert_eq!(ClipScope::current_round(), Some(RoundClip { rect: placed, radius: 40.0 }), "a rect scope keeps the arc");
+                let narrowed = want.intersect(Rect::new(150.0, 70.0, 100.0, 400.0));
+                assert_eq!(rect(ClipScope::current().unwrap()), rect(narrowed), "and narrows the scissor");
+            }
+            assert_eq!(ClipScope::current_round(), Some(RoundClip { rect: placed, radius: 40.0 }));
+            assert_eq!(rect(ClipScope::current().unwrap()), rect(want), "the inner scope restored the rounded one's box");
+        }
+        assert_eq!(ClipScope::current_round(), None, "closed: no rounding left");
+        assert_eq!(rect(ClipScope::current().unwrap()), rect(outer_box), "closed: the outer scope is back");
+        drop(outer);
+        assert!(ClipScope::current().is_none() && ClipScope::current_round().is_none());
+    }
+
+    /// A radius under half a pixel has no arc to cut: the scope is `open_in` exactly. A recording
+    /// painter (outside discovery) opens nothing, rounded or not.
+    #[test]
+    fn a_rounded_scope_with_no_radius_is_a_rect_scope_and_a_recording_painter_opens_nothing() {
+        let _g = plx_base::testlock::serial();
+        let r = Rect::new(100.0, 50.0, 300.0, 200.0);
+        {
+            let _s = ClipScope::open_rounded_in(Painter::root(), r, 0.25);
+            assert_eq!(ClipScope::current_round(), None);
+            let c = ClipScope::current().unwrap();
+            assert_eq!((c.x, c.y, c.w, c.h), (100.0, 50.0, 300.0, 200.0), "the scissor is the rect's");
+        }
+        {
+            let _s = ClipScope::open_rounded_in(Painter::recording(), r, 30.0);
+            assert_eq!((ClipScope::current(), ClipScope::current_round()), (None, None), "a recording painter is inert");
+        }
+        assert!(ClipScope::current().is_none());
+    }
+
+    /// Rounded inside rounded is a bug, like zoom inside zoom: there is one lens at a time.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "rounded clips do not nest")]
+    fn a_rounded_scope_inside_a_rounded_one_is_refused() {
+        let _g = plx_base::testlock::serial();
+        let _a = ClipScope::open_rounded_in(Painter::root(), Rect::new(0.0, 0.0, 300.0, 200.0), 20.0);
+        let _b = ClipScope::open_rounded_in(Painter::root(), Rect::new(10.0, 10.0, 100.0, 100.0), 20.0);
+    }
+
     /// Spec §14 phase 8: `nav_page_alpha` is the ROUTE-level nav dip's page alpha this frame was
     /// built with, and it must survive a container overwriting `page_alpha` with its own local
     /// motion — exactly what `dispatch.rs`'s surface branch does (`f.page_alpha = s.motion.appear`)

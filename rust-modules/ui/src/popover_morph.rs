@@ -1563,27 +1563,32 @@ mod tests {
         assert!(last_drawn.radius <= side(&last_drawn) + 1e-3, "a close ends round: {last_drawn:?}");
     }
 
-    /// No row is visible outside the rounded shape on any frame: the rows' box (the panel inset by a
-    /// typical row margin, zoomed as the rows are) clipped to [`Frame::rows_clip`] stays inside the
-    /// rect's rounded corners at every frame whose rows draw.
+    /// **The settle hands over without a pop.** The rows are cut by the lens (its rect and radius)
+    /// while the morph runs and by nothing once it has settled, so on the last frames before the
+    /// settle the rows' own box (the panel inset by a typical row margin, zoomed as the rows are)
+    /// must already lie inside the lens's rounded corners: dropping the cut then crops nothing. A
+    /// corner that was outside would be a row corner appearing at the settle.
     #[test]
-    fn no_row_is_visible_outside_the_rounded_shape() {
+    fn the_rows_lie_inside_the_lens_on_the_last_frames_before_the_settle() {
         const ROW_MARGIN: f32 = 12.0;
-        let (open, close) = open_then_close(Some(PILL));
-        let mut drawn = 0;
-        for f in open.iter().chain(&close) {
-            if f.content_alpha <= 0.0 {
-                continue;
+        let mut m = Morph::new();
+        let mut unsettled = Vec::new();
+        for _ in 0..240 {
+            m.step(true, DT);
+            if m.settled() {
+                break;
             }
-            drawn += 1;
+            unsettled.push(m.frame(Some(PILL), PANEL, RAD));
+        }
+        assert!(unsettled.len() > 20, "the open ran {} unsettled frames", unsettled.len());
+        for f in &unsettled[unsettled.len() - 4..] {
             let z = rows_zoom(Some(PILL), PANEL, f.rows_scale);
             let b = PANEL.inset(ROW_MARGIN);
-            let placed = Rect::new(z.ox + (b.x - z.ox) * z.s, z.oy + (b.y - z.oy) * z.s, b.w * z.s, b.h * z.s).intersect(f.rows_clip);
+            let placed = Rect::new(z.ox + (b.x - z.ox) * z.s, z.oy + (b.y - z.oy) * z.s, b.w * z.s, b.h * z.s);
             for c in [(placed.x, placed.y), (placed.x + placed.w, placed.y), (placed.x, placed.y + placed.h), (placed.x + placed.w, placed.y + placed.h)] {
-                assert!(sd_box(c, f.rect, f.radius) <= 0.5, "a row corner {c:?} outside the rounded shape: {f:?}");
+                assert!(sd_box(c, f.rect, f.radius) <= -0.5, "a row corner {c:?} is cut at the settle: {f:?}");
             }
         }
-        assert!(drawn > 10, "rows were drawn on {drawn} frames");
     }
 
     /// The glass the painter receives on a close frame: the slab A (`Frame::rect`) joined to the opener's

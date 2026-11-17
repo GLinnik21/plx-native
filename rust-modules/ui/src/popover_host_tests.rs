@@ -613,14 +613,15 @@ fn the_ground_radius_does_not_snap_at_settle_or_at_the_start_of_a_close() {
     pop.close();
 }
 
-/// Spec (c): the rows of an unsettled morph are clipped to the surface's INSCRIBED rect (the largest rectangle in its round corners) on every frame
+/// Spec (c): the rows of an unsettled morph are clipped to the surface's ROUND LENS (its rect and radius, through the shared
+/// painter's rounded clip, so a letter is cut by the arc and not by a straight edge) on every frame
 /// they draw, scaled about the panel anchor by the row spring, at the content alpha, and not drawn
 /// at all before the glass has taken over (but still walked by the text recorder, so their text is
 /// resident in time); settled (and the fade+slide) they draw through `p` untouched. Red on the
 /// build whose rows led the glass: rows drew at progress 0.05, on a surface that was still pill.
 #[test]
 fn morph_rows_are_clipped_to_the_surface_and_wait_for_the_glass() {
-    use crate::{popover_morph::rows_anchor, screen::ClipScope, Painter, Rect};
+    use crate::{popover_morph::rows_anchor, screen::{ClipScope, RoundClip}, Painter, Rect};
     let _g = plx_base::testlock::serial();
     let (pill, panel) = (Rect::new(1500.0, 40.0, 196.0, 38.0), Rect::new(1380.0, 40.0, 316.0, 400.0));
     let row = Rect::new(panel.x + 10.0, panel.y + 100.0, panel.w - 20.0, 60.0);
@@ -640,6 +641,7 @@ fn morph_rows_are_clipped_to_the_surface_and_wait_for_the_glass() {
                 // The morph has settled (a visual-arrival test, within 0.1% of rest): untouched rows.
                 assert!((f.rect.w - panel.w).abs() < 1.0 && (f.rows_scale - 1.0).abs() < 0.01, "only a settled morph is unclipped: {f:?}");
                 assert_eq!(ClipScope::current(), None);
+                assert_eq!(ClipScope::current_round(), None, "settled: the handover crops nothing");
                 assert_eq!(p.place(row), row, "settled: rows at their final layout");
                 return;
             }
@@ -647,8 +649,11 @@ fn morph_rows_are_clipped_to_the_surface_and_wait_for_the_glass() {
             assert!(f.content_alpha > 0.0 && f.ground_alpha == 1.0, "rows drawn on a surface that is not yet glass: {f:?}");
             assert!((p.opacity() - f.content_alpha).abs() < 1e-6, "at the content alpha");
             let same = |a: Rect, b: Rect| (a.x - b.x).abs() + (a.y - b.y).abs() + (a.w - b.w).abs() + (a.h - b.h).abs() < 1e-2;
-            assert!(same(p.clip_rect(), f.rows_clip), "the cascade clip is the surface's inscribed rect");
-            assert!(same(ClipScope::current().unwrap(), f.rows_clip), "the scissor is the inscribed rect");
+            assert!(same(p.clip_rect(), f.rect), "the cascade clip is the surface's rect");
+            assert!(same(ClipScope::current().unwrap(), f.rect), "the scissor is the lens's bounding box");
+            let round = ClipScope::current_round().expect("a morph frame's rows are cut by the lens");
+            assert!(same(round.rect, f.rect) && (round.radius - f.radius).abs() < 1e-2, "the lens, rect and radius: {round:?} vs {f:?}");
+            assert_eq!(round, RoundClip { rect: round.rect, radius: round.radius });
             let placed = p.place(row);
             assert!((placed.w - row.w * f.rows_scale).abs() < 1e-3 && (placed.h - row.h * f.rows_scale).abs() < 1e-3, "scaled by the lens spring");
             let (ax, ay) = rows_anchor(Some(pill), panel);
@@ -660,6 +665,7 @@ fn morph_rows_are_clipped_to_the_surface_and_wait_for_the_glass() {
             waited += 1;
         }
         assert_eq!(ClipScope::current(), None, "the scissor is released");
+        assert_eq!(ClipScope::current_round(), None, "the rounding is released");
     };
     for _ in 0..240 {
         pop.update(1.0 / 60.0);
