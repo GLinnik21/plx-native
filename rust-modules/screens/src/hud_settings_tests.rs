@@ -1,6 +1,7 @@
 //! The Player HUD page: its rows from a published list, the prompt before an unreviewed install, the
 //! commands each row sends, and that every row fits its column in every shipped language.
 use super::*;
+use plx_ui::theme;
 use plx_base::fontcov::advances::ShippedMeasure;
 use plx_data::hudpacks::{Meta, Source};
 use plx_machine::machine::{FocusRead, PressId, PressRead, Stamped, Tick};

@@ -102,8 +102,7 @@ impl DiagnosticsPage {
 
     fn rebuild(&mut self) {
         let keep = self.form.selected_id().cloned().unwrap_or(DiagId::Trace);
-        self.form.table.compact = false;
-        self.form.table.board_metrics(true);
+        crate::family::settings_table(&mut self.form.table);
         self.form.set(diagnostics_form(self.state.status), Some(&keep));
         self.form.table.list_focused = true;
     }

@@ -31,7 +31,7 @@ use plx_ui::screen::{DrawFrame, Enter, FocusSource, FocusTarget, HitSource, Rend
 use plx_ui::table::Row;
 use plx_ui::table_screen::{Header, TableScreen};
 use plx_ui::route_screen::RouteLayout;
-use plx_ui::{theme, Rect};
+use plx_ui::Rect;
 use super::family::{form_activate, form_focus, form_right_target, InnerHost, PickerKind, SettingsPage};
 use super::registry::{word, AccountPreferenceReply, AppFx, PreferenceCmd, BAND};
 
@@ -484,7 +484,7 @@ impl PreferencesPage {
         };
         self.state.values = fields_of(&inputs).iter()
             .map(|&f| field_readout_with_marker(f, inputs.quality, inputs.direct_play, inputs.prefs, inputs.marker_prefs, inputs.local)).collect();
-        self.form.table.compact = false; self.form.table.board_metrics(true); self.form.table.header_ink = theme::TEXT_READING; self.form.table.list_focused = true;
+        super::family::settings_table(&mut self.form.table); self.form.table.list_focused = true;
         self.form.set(field_form(&inputs), keep.as_ref());
         self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
         let sentence = self.sentence().into_owned();

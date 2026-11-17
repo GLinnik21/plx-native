@@ -337,11 +337,8 @@ impl ConsentPage {
     /// on the row that was flipped, and the pill and scroll slide from where they are); `None`
     /// opens afresh on the first row.
     fn rebuild(&mut self, keep: Option<RowId>) {
-        self.form.table.header_ink = theme::TEXT_READING;
-        if matches!(self.mode, Mode::Settings) {
-            self.form.table.compact = false;
-            self.form.table.board_metrics(true);
-        }
+        // first run and Settings draw one table: the family's look ([`family::settings_table`])
+        super::family::settings_table(&mut self.form.table);
         let form = consent_form(self.mode, self.draft);
         match keep {
             Some(id) if self.form.table.n_rows() > 0 => self.form.set_sliding(form, Some(&id)),

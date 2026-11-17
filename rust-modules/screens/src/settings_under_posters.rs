@@ -290,8 +290,7 @@ impl UnderPostersPage {
     /// Re-derive the rows from the shown value, keeping the cursor on its row by identity.
     fn rebuild(&mut self) {
         let keep = self.form.selected_id().cloned().unwrap_or(UpId::Title);
-        self.form.table.compact = false;
-        self.form.table.board_metrics(true);
+        crate::family::settings_table(&mut self.form.table);
         self.form.set(under_posters_form(self.state.value), Some(&keep));
         self.form.table.list_focused = true;
         self.follow.follow(sentence_for(self.form.selected_id()));
@@ -788,8 +787,7 @@ impl DetailsPage {
 
     fn rebuild(&mut self) {
         let keep = self.form.selected_id().cloned().unwrap_or(PartId(self.state.focused()));
-        self.form.table.compact = false;
-        self.form.table.board_metrics(true);
+        crate::family::settings_table(&mut self.form.table);
         self.form.set(details_form(self.kind, self.kind.parts(self.state.value), &self.facts), Some(&keep));
         self.form.table.list_focused = true;
         let sentence = self.sentence();

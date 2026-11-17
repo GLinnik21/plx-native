@@ -730,7 +730,8 @@ impl TableView {
         self.tall = v;
     }
     /// **The Settings family's table, set to the design system's `TableView` to the pixel.**
-    /// Opt-in per table (the Settings screens set it where they set `compact`), because the same
+    /// Opt-in per table (the Settings family and the first-run pages that share its screens take
+    /// it through `screens::family::settings_table`), because the same
     /// widget is every popover menu, picker and track menu, which keep the measures they have
     /// always drawn. A board table differs in four things, all read off `TableView.jsx`:
     ///
@@ -742,6 +743,10 @@ impl TableView {
     ///   ink, ends on the content edge ([`trailing_items`]).
     pub fn board_metrics(&mut self, v: bool) {
         self.board = v;
+    }
+    /// Whether [`Self::board_metrics`] is on: a page proving it wears the Settings family's table.
+    pub fn is_board(&self) -> bool {
+        self.board
     }
     /// The gap between two sections: [`DIV_H`], or the board's.
     fn div_h(&self) -> f32 {

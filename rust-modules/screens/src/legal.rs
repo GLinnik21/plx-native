@@ -17,7 +17,7 @@ use plx_ui::route_screen::RouteLayout;
 use plx_ui::screen::{DrawFrame, FocusSource, HitSource, Part, RenderStrategy, Screen, ScreenEvent};
 use plx_ui::table::Row;
 use plx_ui::table_screen::{DocumentFocus, DocumentScreen, Header, TableScreen};
-use plx_ui::{theme, Rect};
+use plx_ui::Rect;
 
 use super::family::{form_activate, form_focus, form_right_target, InnerHost, SettingsPage};
 use super::registry::word;
@@ -230,9 +230,7 @@ impl LogicalState for IndexState {
 impl LegalIndex {
     pub fn new(entry: EntryId) -> Self {
         let mut form = FormTable::new(super::registry::BAND);
-        form.table.compact = false;
-        form.table.board_metrics(true);
-        form.table.header_ink = theme::TEXT_READING;
+        super::family::settings_table(&mut form.table);
         form.set(legal_form(), None);
         form.table.list_focused = true;
         let sel = form.key_at(form.table.sel.max(0) as usize).unwrap_or(RowKey(0));

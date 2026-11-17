@@ -106,6 +106,23 @@ fn only_privacy_moves_to_the_page_title_and_first_run_keeps_the_hero() {
     assert_eq!(first.layout.title_style, TitleStyle::Hero);
 }
 
+/// The first-run question's table is the Settings table: board measures, full rows and reading-ink
+/// headers, the same look Privacy & data draws (the onboarding pages follow the Settings design).
+#[test]
+fn first_run_consent_draws_the_settings_table() {
+    let _guard = plx_base::testlock::serial();
+    let m = FixtureMeasure;
+    let settings = settings_page(&m);
+    let c = test_cx(&m);
+    let (mut out, mut present) = sink();
+    let first = ConsentPage::first_run(EntryId(1), 0, &c, &mut mk_fx(&mut out, &mut present));
+    for (what, table) in [("settings", &settings.form.table), ("first run", &first.form.table)] {
+        assert!(table.is_board(), "{what}: board measures");
+        assert!(!table.compact, "{what}: full-height rows");
+        assert_eq!(table.header_ink, plx_ui::theme::TEXT_READING, "{what}: reading-ink headers");
+    }
+}
+
 /// Done stays the only band control and appears with a pending draft; the line beside it says
 /// what BACK does, sits to Done's right inside the slot, and is gone with Done. BACK still
 /// discards (the surface pops) and Done still applies it.

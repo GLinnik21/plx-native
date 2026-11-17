@@ -14,6 +14,7 @@ use plx_machine::machine::{
     Canon, Chrome, Cx, Effects, Fx, GroupId, Host, LogicalState, NavOp, ScreenId,
 };
 use plx_ui::screen::ScreenArg;
+use plx_ui::table::TableView;
 use plx_ui::widgets::ControlPalette;
 
 use super::registry::{AppFx, AppMsg, DirectoryLike};
@@ -355,6 +356,18 @@ pub fn inner_cx<'o, 'a: 'o, H: DirectoryLike>(cx: &Cx<'a, H>) -> Cx<'o, InnerHos
         focus: cx.focus.clone(),
         owner: cx.owner,
     }
+}
+
+/// **The Settings family's table look, in one place**: the design system's board measures
+/// ([`TableView::board_metrics`]: section break, tracked caps headers, trailing run), full-height
+/// rows (not `compact`) and section headers in the reading ink. Every table the family draws takes
+/// it, and so do the first-run pages that share the family's screens (the consent question and
+/// Favorite libraries), so onboarding reads as the same design as Settings. Focus lighting
+/// (`list_focused`) is not part of the look: each page seats it from the engine.
+pub fn settings_table(table: &mut TableView) {
+    table.compact = false;
+    table.board_metrics(true);
+    table.header_ink = plx_ui::theme::TEXT_READING;
 }
 
 /// Seat a form-backed page's table on the engine's focus: a row key parks the selection on that row

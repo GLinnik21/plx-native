@@ -1473,9 +1473,7 @@ impl RootPage {
             under_posters: self.state.under_posters, plaintext,
         });
         let keep = self.form.selected_id().cloned();
-        self.form.table.compact = false;
-        self.form.table.board_metrics(true);
-        self.form.table.header_ink = theme::TEXT_READING;
+        super::family::settings_table(&mut self.form.table);
         self.form.set(form, keep.as_ref());
         self.form.table.list_focused = true;
         if let Some(key) = self.form.key_at(self.form.table.sel.max(0) as usize) {
@@ -2019,8 +2017,7 @@ impl LanguagePage {
     /// first build).
     fn rebuild(&mut self) {
         let keep = self.form.selected_id().cloned().unwrap_or(LangId::Choice(self.state.selected));
-        self.form.table.compact = false;
-        self.form.table.board_metrics(true);
+        super::family::settings_table(&mut self.form.table);
         self.form.set(language_form(self.state.selected, self.state.busy), Some(&keep));
         self.form.table.list_focused = true;
     }
