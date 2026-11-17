@@ -1158,7 +1158,7 @@ impl LibraryLike for HostFixture {
         page(
             LibraryMenuKind::Sources,
             source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>(), false),
-            &[("library.0", Role::Row), ("library.1", Role::Row), ("recheck", Role::Row)],
+            &[("library.0", Role::Row), ("library.1", Role::Row), ("recheck", Role::Row), ("favourites", Role::Row)],
         );
         let sorts: Vec<_> = (0..3)
             .map(|i| SortEntry { key: format!("sort{i}"), desc_key: String::new(), title: format!("Sort {i}"), default_desc: false })
