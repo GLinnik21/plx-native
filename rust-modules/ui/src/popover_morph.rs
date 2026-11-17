@@ -560,14 +560,71 @@ mod tests {
         assert!((last.rows_scale - 1.0).abs() < 0.002);
     }
 
+    /// iOS 26's glass menu, measured frame by frame (the owner's screen recording of the Claude iOS
+    /// app's "..." menu, 2026-11-17, 60 fps, per-pixel diff against the static page; t = 0 is the
+    /// first frame any glass shows). Normalized progress of the glass's HEIGHT and WIDTH, 0 = the
+    /// button, 1 = the settled panel, > 1 = overshoot, as `(frame, height, width)`.
+    const IOS_OPEN: [(usize, f32, f32); 20] = [
+        (0, 0.08, 0.0), (1, 0.37, -0.02), (2, 0.59, 0.07), (3, 0.76, 0.25), (4, 0.86, 0.44), (5, 0.95, 0.58),
+        (6, 1.015, 0.70), (7, 1.06, 0.78), (8, 1.085, 0.88), (9, 1.09, 0.95), (10, 1.085, 0.997), (11, 1.07, 1.023),
+        (12, 1.06, 1.033), (13, 1.05, 1.04), (14, 1.04, 1.04), (16, 1.023, 1.037), (18, 1.009, 1.027),
+        (20, 1.002, 1.017), (23, 1.0, 1.003), (25, 1.0, 1.0),
+    ];
+
+    /// The open follows the iOS recording's curve: height and width progress per frame, from the
+    /// first frame the glass DRAWS (`ground_alpha > 0`, which is the table's frame 0) through frame
+    /// 25, within 0.06 of the table. A critically damped pair (the old k 620 / k 950) is finished
+    /// by 150 ms and has no overshoot: the owner's "your animations are too fast".
     #[test]
-    fn width_and_height_grow_monotonically_without_overshoot() {
-        let f = open_frames();
-        for pair in f.windows(2) {
-            assert!(pair[1].1.rect.w >= pair[0].1.rect.w - 1e-3, "width never shrinks on open");
-            assert!(pair[1].1.rect.h >= pair[0].1.rect.h - 1e-3, "height never shrinks on open");
+    fn the_open_follows_the_ios_reference_curve() {
+        let mut m = Morph::new();
+        let mut frames = Vec::new();
+        for _ in 0..40 {
+            m.step(true, DT);
+            frames.push(m.frame(Some(PILL), PANEL, RAD));
         }
-        assert!(f.iter().all(|(_, fr)| fr.rect.w <= PANEL.w + 1e-3 && fr.rect.h <= PANEL.h + 1e-3));
+        let first = frames.iter().position(|f| f.ground_alpha > 0.0).expect("the glass draws");
+        assert_eq!(first, 0, "the glass draws on the first step: the height leads");
+        let mut worst = 0.0_f32;
+        for &(n, want_h, want_w) in &IOS_OPEN {
+            let r = frames[first + n].rect;
+            let (h, w) = ((r.h - PILL.h) / (PANEL.h - PILL.h), (r.w - PILL.w) / (PANEL.w - PILL.w));
+            assert!((h - want_h).abs() <= 0.06, "frame {n}: height {h} vs {want_h}");
+            assert!((w - want_w).abs() <= 0.06, "frame {n}: width {w} vs {want_w}");
+            worst = worst.max((h - want_h).abs()).max((w - want_w).abs());
+        }
+        assert!(worst > 0.0);
+        let peak = |f: fn(&Rect) -> f32, lo: f32, hi: f32| frames.iter().map(|fr| (f(&fr.rect) - lo) / hi).fold(0.0_f32, f32::max);
+        assert!(peak(|r| r.h, PILL.h, PANEL.h - PILL.h) > 1.04, "the height overshoots (iOS: ~9% of the travel)");
+        assert!(peak(|r| r.w, PILL.w, PANEL.w - PILL.w) > 1.02, "the width overshoots (iOS: ~4%)");
+    }
+
+    /// An underdamped open still LANDS: it ends exactly on the panel with no velocity, and reports
+    /// settled only then, not at the first crossing of 1 while it rings.
+    #[test]
+    fn the_open_ends_exactly_at_rest_and_is_not_settled_while_it_rings() {
+        let mut m = Morph::new();
+        let mut crossed = None;
+        let mut settled_at = None;
+        for n in 1..=90 {
+            m.step(true, DT);
+            let r = m.frame(Some(PILL), PANEL, RAD).rect;
+            if crossed.is_none() && r.h >= PANEL.h {
+                crossed = Some(n);
+                assert!(!m.settled(), "the first crossing of the panel's height is not rest");
+            }
+            if settled_at.is_none() && m.settled() {
+                settled_at = Some(n);
+            }
+        }
+        let (crossed, settled_at) = (crossed.expect("crosses"), settled_at.expect("lands"));
+        assert!(settled_at >= crossed + 6, "it rings before it lands ({crossed} -> {settled_at})");
+        assert!(settled_at as f32 * DT <= 0.6, "and lands within 0.6 s ({settled_at} frames)");
+        let r = m.frame(Some(PILL), PANEL, RAD).rect;
+        assert_eq!(r, PANEL, "exactly the panel at rest, not within a tolerance");
+        let before = m.frame(Some(PILL), PANEL, RAD);
+        m.step(true, DT);
+        assert_eq!(m.frame(Some(PILL), PANEL, RAD), before, "no motion once landed");
     }
 
     #[test]
@@ -582,25 +639,26 @@ mod tests {
     }
 
     #[test]
-    fn open_and_close_durations_follow_from_the_stiffnesses() {
+    fn open_and_close_durations_follow_from_the_springs() {
         let mut m = Morph::new();
-        for _ in 0..(0.19 / DT).round() as usize {
+        for _ in 0..(0.25 / DT).round() as usize {
             m.step(true, DT);
         }
+        assert!(!m.settled(), "the open is still ringing at 250 ms");
         let fr = m.frame(Some(PILL), PANEL, RAD);
-        assert!((fr.rect.w - PANEL.w).abs() < 0.07 * (PANEL.w - PILL.w), "open lands by ~190 ms");
-        // A close leads with its content phase (two frames to `OUT_GATE`, then the rect springs to
-        // the drain and the fold takes over), so ~150 ms after the gate the slab has arrived at the
-        // drain and is all but drained into the opener.
-        for _ in 0..((0.15 + 3.0 * DT) / DT).round() as usize {
-            m.step(false, DT);
+        assert!((fr.rect.w - PANEL.w).abs() < 0.07 * (PANEL.w - PILL.w), "but within 7% of the panel's width: {fr:?}");
+        for _ in 0..60 {
+            m.step(true, DT);
         }
-        let fr = m.frame(Some(PILL), PANEL, RAD);
-        assert!(fr.rect.w < 0.3 * drain_rect(PILL).w, "the slab is drained ~150 ms after the gate: {fr:?}");
-        for _ in 0..120 {
+        assert!(m.settled());
+        // A close is the slab's travel to the drain and the fold into the opener: at most 250 ms.
+        let mut frames = 0;
+        while !m.closed() {
             m.step(false, DT);
+            frames += 1;
+            assert!(frames <= 15, "the closed frame by 250 ms");
         }
-        assert!(m.closed());
+        assert!(frames >= 10, "and not a snap: {frames} frames");
     }
 
     #[test]
@@ -637,18 +695,45 @@ mod tests {
         assert!((at_rest - RAD).abs() < 0.05, "the close starts on the caller's radius ({at_rest})");
     }
 
+    /// The rows are laid out IN the glass and ride its overshoot (iOS: the content spans 1.075x the
+    /// rest at 200 ms, 1.044x at 233, 1.0 by ~320): their scale is the glass's current height over
+    /// the settled panel's, above 1 while the glass rings past it and exactly 1 at rest, and they
+    /// are not visible before ~100 ms (iOS: from frame 6) and opaque by ~150 ms.
     #[test]
-    fn rows_scale_from_start_to_one_with_overshoot_bounded_by_zeta() {
-        let f = open_frames();
-        assert_eq!(f[0].1.rows_scale, ROWS_FROM);
-        let max = f.iter().map(|(_, fr)| fr.rows_scale).fold(0.0_f32, f32::max);
-        // The underdamped overshoot bound, 1 + (1 - from) * e^(-pi z / sqrt(1 - z^2)), at z = 0.6 and
-        // from = 0.82: e^-2.3562 = 0.09479. Written as a number because the transcendental
-        // surface is gated outside machine/src/motion.rs (ci/check-deps.sh libm).
-        assert_eq!(ZETA_ROWS, 0.6);
-        let bound = 1.0 + (1.0 - ROWS_FROM) * 0.09479;
-        assert!(max > 1.0 && max <= bound + 1e-3, "overshoot {max} within the ζ bound {bound}");
-        assert!((f.last().unwrap().1.rows_scale - 1.0).abs() < 0.002);
+    fn the_rows_ride_the_glass_and_show_from_about_100_ms() {
+        let mut m = Morph::new();
+        let mut frames = vec![m.frame(Some(PILL), PANEL, RAD)];
+        for _ in 0..60 {
+            m.step(true, DT);
+            frames.push(m.frame(Some(PILL), PANEL, RAD));
+        }
+        for fr in &frames {
+            assert!((fr.rows_scale - fr.rect.h / PANEL.h).abs() < 1e-4, "the rows follow the glass's height: {fr:?}");
+        }
+        // `frames[0]` is the unstepped pill: the first glass frame is `frames[1]`, the table's frame 0
+        let at = |ms: f32| frames[(ms / (DT * 1000.0)).round() as usize + 1];
+        assert!(at(133.0).rows_scale > 1.03 && at(133.0).rows_scale < 1.09, "above 1 in the overshoot: {:?}", at(133.0));
+        assert!(at(200.0).rows_scale > 1.0 && at(200.0).rows_scale < 1.09, "{:?}", at(200.0));
+        assert!((frames.last().unwrap().rows_scale - 1.0).abs() < 1e-3, "1 at rest");
+        assert_eq!(at(100.0).content_alpha, 0.0, "no rows before ~100 ms");
+        assert!(at(133.0).content_alpha > 0.4 && at(133.0).content_alpha < 1.0, "still arriving at 133 ms: {:?}", at(133.0));
+        assert!(at(150.0).content_alpha > 0.95, "opaque by ~150 ms: {:?}", at(150.0));
+        assert!(frames.iter().all(|f| f.progress < 0.7 || f.ground_alpha == 1.0));
+    }
+
+    /// The glass is clear while it is small and frosted by the time it first reaches its size
+    /// (iOS: the first peak, ~150 ms), not after the settle.
+    #[test]
+    fn the_frost_completes_around_the_first_peak() {
+        let mut m = Morph::new();
+        let mut frames = Vec::new();
+        for _ in 0..30 {
+            m.step(true, DT);
+            frames.push(m.frame(Some(PILL), PANEL, RAD));
+        }
+        assert_eq!(frames[0].clear, 1.0, "clear while small");
+        assert!(frames[5].clear > 0.5, "still mostly clear at 83 ms: {:?}", frames[5]);
+        assert!(frames[10].clear < 0.02, "frosted by ~150 ms: {:?}", frames[10]);
     }
 
     /// An open and the close after it, every frame.
@@ -693,10 +778,10 @@ mod tests {
             }
         }
         assert!(open.iter().take_while(|fr| fr.progress < ROWS_FROM_AT).count() >= 2, "the rows wait for the glass");
-        // The rows leave FIRST on a close (the `out` spring), while the rect is still the panel's.
-        let gone = close.iter().find(|fr| fr.content_alpha < 0.05).expect("the rows leave");
-        let drain = drain_rect(PILL);
-        assert!(gone.rect.w > drain.w + 0.4 * (PANEL.w - drain.w), "the rows are gone while the rect is still large: {gone:?}");
+        // The rows leave over ~50 ms on a close, shrinking with the slab (their scale is the glass's
+        // height over the panel's), and are gone by ~67 ms (four frames).
+        assert!(close[3].content_alpha < 0.05, "gone by ~67 ms: {:?}", close[3]);
+        assert!(close[3].rows_scale < close[0].rows_scale, "and shrinking with the slab: {:?}", close[3]);
         assert_eq!(open.last().unwrap().content_alpha, 1.0);
     }
 
@@ -776,21 +861,23 @@ mod tests {
         assert!(open.iter().all(|f| f.progress < OPENER_OUT_AT || f.opener_alpha == 0.0), "consumed by {OPENER_OUT_AT}");
     }
 
-    /// CLOSE, phase 1: the rows and the frost leave in a couple of frames while the rect HOLDS.
+    /// CLOSE, phase 1: the slab BULGES outward on the first frame (iOS: the bottom edge +17 px of
+    /// ~750, about 2% of the height) before it shrinks, with the rows and the frost leaving over
+    /// ~50 ms WITH it, not over a rect that holds.
     #[test]
-    fn a_close_leads_with_the_content_and_the_frost_and_holds_the_rect_until_the_gate() {
+    fn a_close_bulges_first_and_the_rows_and_frost_leave_with_the_slab() {
         let (open, close) = open_then_close(Some(PILL));
         let rest = open.last().unwrap().rect;
         let c1 = close[0];
-        assert_eq!(c1.rect, rest, "the rect has not moved on the first close frame");
-        assert!(c1.content_alpha < 0.6 && c1.clear > 0.4, "the content and the frost are already leaving: {c1:?}");
-        let moved = close.iter().position(|f| f.rect != rest).expect("the rect leaves");
-        assert!((1..=3).contains(&moved), "the gate opens within a few frames ({moved})");
-        let at = close[moved];
-        assert!(at.content_alpha <= 1.0 - OUT_GATE + 0.01 && at.clear >= OUT_GATE - 0.01, "gated on out: {at:?}");
-        assert!(close.iter().take(moved).all(|f| f.rect == rest), "held, not drifting");
+        assert!(c1.rect.h > rest.h + 0.01 * rest.h && c1.rect.h < rest.h + 0.04 * rest.h, "the first frame bulges ~2%: {c1:?}");
+        assert!(c1.content_alpha > 0.3 && c1.clear < 0.7, "the content and the frost are leaving, not gone: {c1:?}");
+        assert!(close[1].rect.h < rest.h, "the slab is shrinking by the second frame (33 ms): {:?}", close[1]);
+        assert!(close[3].content_alpha < 0.05 && close[3].clear > 0.95, "rows and frost gone by ~67 ms: {:?}", close[3]);
         assert!(close.iter().skip(4).all(|f| f.clear >= 0.97), "the slab is clear for the rest of the close");
         assert!(close.iter().skip(5).all(|f| f.content_alpha < 0.02), "no rows on the way back");
+        for pair in close.windows(2).take(6) {
+            assert!(pair[1].content_alpha <= pair[0].content_alpha + 1e-4 && pair[1].clear >= pair[0].clear - 1e-4);
+        }
     }
 
     /// The close, stepped at 60 fps until the morph says it is closed (the frames the droplet draws).
@@ -1070,7 +1157,8 @@ mod tests {
         let first = m.frame(Some(PILL), panel, RAD);
         assert_eq!((first.rect, first.radius), (PILL, PILL.h * 0.5), "the first frame is the opener's rect and corner");
         let mut prev = first.rect;
-        for _ in 0..60 {
+        // until the width's first peak (~215 ms): then it rings back
+        for _ in 0..12 {
             m.step(true, DT);
             let r = m.frame(Some(PILL), panel, RAD).rect;
             assert!(r.y == PILL.y && r.x <= prev.x + 1e-3 && r.x + r.w >= prev.x + prev.w - 1e-3, "grows out of itself, never jumping: {prev:?} -> {r:?}");
