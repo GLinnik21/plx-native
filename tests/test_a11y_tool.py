@@ -465,6 +465,23 @@ class CaptureDriver(unittest.TestCase):
                 captures.check_focus(pathlib.Path("/nonexistent"), {"file": "a.png", "expect_focus": "nav.x"})
         self.assertIn("RELEASE=1", str(caught.exception))
 
+    def test_a_capture_that_fails_before_its_shot_reports_the_failure_and_keeps_its_logs(self):
+        """A `w6/x.png` capture that fails before its shot (here: the app never opens the FIFO) leaves its
+        logs where the shot would have gone. The directory does not exist yet (the shot makes it), so the
+        driver makes it in its `finally`: without it the copy raised FileNotFoundError, which hid the
+        Failure and ended the whole run instead of printing `FAIL` and going on to the next capture."""
+        out = pathlib.Path(tempfile.mkdtemp(prefix="a11y-tool-"))
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        spec = {"file": "w6/x.png", "mock": "default", "triggers": {}, "keys": []}
+        with mock.patch.object(captures, "sign_in"), mock.patch.object(captures, "post"), \
+                mock.patch.object(captures, "require_stand_in"), \
+                mock.patch.object(captures.subprocess, "Popen", return_value=mock.Mock()), \
+                mock.patch.object(captures.time, "sleep"):
+            with self.assertRaises(captures.Failure) as caught:
+                captures.capture(pathlib.Path("plxnative-sim"), spec, {"boot_wait_s": 0, "key_wait_s": 0}, out)
+        self.assertIn("plxnative-remote", str(caught.exception))
+        self.assertTrue((out / "w6" / "x.out").is_file(), "the console log is kept beside the missing shot")
+
     def test_the_wait_is_passed_to_the_read_back(self):
         with mock.patch.object(a11y, "expect_focus", return_value={}) as asked:
             captures.check_focus(pathlib.Path("/nonexistent"), {"file": "a.png", "expect_focus": "nav.watchlist"})

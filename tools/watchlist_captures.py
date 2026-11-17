@@ -268,7 +268,10 @@ def capture(sim, spec, scenario, out_dir):
             proc.kill()
             proc.wait()
             # The run's event log (a panic, a frame guard's catch) and console are kept beside the
-            # capture as <file stem>.log / .out.
+            # capture as <file stem>.log / .out. A failed capture (a focus mismatch, a missing shot) gets here
+            # BEFORE the shot's own mkdir, so a `w6/x.png` capture makes its directory first: without it the
+            # copy raises FileNotFoundError, which hides the Failure and ends the whole run.
+            (out_dir / spec["file"]).parent.mkdir(parents=True, exist_ok=True)
             stem = spec["file"][:-len(".png")]
             for name, ext in (("plxnative-events.log", ".log"), ("sim.out", ".out")):
                 if (runtime / name).is_file():
