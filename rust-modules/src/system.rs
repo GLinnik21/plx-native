@@ -44,6 +44,12 @@ static mut G_WL_DISPLAY: *mut c_void = std::ptr::null_mut();
 /// against and never dereferenced or marshalled through. Unlike `G_WL_SURFACE` it survives
 /// [`sys_release_wayland`], so the DID-foreground grab can tell a replaced surface (PLX-NATIVE-K:
 /// SDL recreating the window's `wl_surface` under a live EGLSurface) from the first one.
+///
+/// The comparison is by address only. If SDL frees the old `wl_surface` proxy before it allocates
+/// its replacement, the allocator can hand back the same chunk at the same address, and then the
+/// crumb does not fire. So a `surface_changed` crumb proves a replacement, but a missing crumb
+/// does not prove the surface was kept. Comparing `wl_proxy_get_id` would not help, because
+/// Wayland recycles object ids through a free list.
 #[cfg(any(not(feature = "hostsim"), test))]
 static G_WL_SURFACE_SEEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 

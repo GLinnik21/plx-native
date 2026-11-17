@@ -21,7 +21,9 @@ pub enum Stage {
     WmWrongBackend,
     WmNoSurface,
     /// SDL's `wl_surface` for the window is not the one last published: the EGLSurface the
-    /// swap presents through may still hold the old one (PLX-NATIVE-K).
+    /// swap presents through may still hold the old one (PLX-NATIVE-K). The check compares
+    /// addresses, so this crumb proves a replacement but its absence does not prove the surface
+    /// was kept: a freed proxy's address can be reused by its successor.
     SurfaceChanged,
     FirstFrame,
     FirstSwapComplete,
