@@ -15,7 +15,10 @@
 //! receives no `Tick`, a Cached or Replaced host does not prepare, a Replaced host does not draw.
 #![allow(dead_code)] // since 5b screens run through most of this; suspend/resume/set_focus_source_override/viewport/frame_index still have no caller anywhere (grep-checked, not 3b's stale "screens from 5b")
 
+mod by_id;
 pub mod press;
+
+pub use by_id::{by_id_subject_ok, IdAnswer, IdRefusal};
 
 use std::collections::VecDeque;
 
@@ -170,6 +173,11 @@ pub trait ReplayAuthority<H: Host> {
         actual: Option<FocusAnswer<H::Elem>>) -> Option<FocusAnswer<H::Elem>> { actual }
     fn resolve_hit(&mut self, _f: u64, _kind: PointerKind, _entry: Option<EntryId>,
         actual: Option<super::hit::Resolution<H::Elem>>) -> Option<super::hit::Resolution<H::Elem>> { actual }
+    /// Where one `focus:`/`press:` landed (or why it was refused): the by-id analogue of
+    /// [`Self::resolve_hit`], asked once per `InputKind::ById` at its ORDERED delivery position.
+    /// `entry` is the entry the delivery was addressed to (`EntryId(0)` when none was).
+    fn resolve_id(&mut self, _f: u64, _entry: EntryId,
+        actual: Option<IdAnswer<H::Elem>>) -> Option<IdAnswer<H::Elem>> { actual }
     /// A final observation, including None; the optional outer value requests continuation.
     fn focus_continuation(&mut self, _f: u64, _engine: bool,
         _actual: Option<(u32, u32, Option<u32>)>) -> Option<Option<(u32, u32, Option<u32>)>> { None }
@@ -1378,16 +1386,19 @@ where
                 }
                 _ => {}
             }
-            if let Some(eid) = self.owner_entry() {
-                if let Some(inst) = self.nav.instance_of(eid) {
-                    head.push(Stamped {
-                        from: MachineId::Input,
-                        fx: Fx::Deliver(
-                            MachineId::Instance(inst),
-                            Delivery::Screen(ScreenEvent::Input(ev)),
-                        ),
-                    });
-                }
+            let addressed = self.owner_entry().and_then(|eid| self.nav.instance_of(eid));
+            if let Some(inst) = addressed {
+                head.push(Stamped {
+                    from: MachineId::Input,
+                    fx: Fx::Deliver(
+                        MachineId::Instance(inst),
+                        Delivery::Screen(ScreenEvent::Input(ev)),
+                    ),
+                });
+            } else if matches!(ev.kind, InputKind::ById { .. }) {
+                // No page to deliver to: the by-id input still answers (a `NoOwner` refusal and its
+                // resolution row), so a recording pairs one row with every input.
+                self.refuse_unaddressed_by_id(rig, f, &ev, &mut head);
             }
         }
         // 3. adapter results, in the caller's composite-key order (the recorder's order)
@@ -2717,6 +2728,15 @@ where
                         self.input.keyboard = *up;
                         self.input.keyboard_owner = owner;
                         self.cancel_keyboard_gestures(report);
+                    }
+                }
+                // An accessibility-id focus/press acts HERE, at its ordered delivery position (every
+                // earlier input of the batch has already acted), and no screen is stepped with it:
+                // the dispatcher resolves it, moves focus and queues the OK key's edges itself.
+                if let ScreenEvent::Input(input) = &ev {
+                    if matches!(input.kind, InputKind::ById { .. }) {
+                        self.deliver_by_id(rig, parts, id, input, out);
+                        return;
                     }
                 }
                 // A carried event can outlive its input owner. Reject it before the handler
