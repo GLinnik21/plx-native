@@ -45,9 +45,9 @@ default alone.**
 
 ## Current renderer replay anchor (host, no television)
 
-`tests/replay_fixtures.py` discovers four recording directories by default and executes each in
-Targets and Resolve. `make check-replay` and Simulator CI use that same discovery, not a private
-fixture list. Expected outcomes: **SAME=6, REFUSED_EXPECTED=2, unexpected=0**.
+`tests/replay_fixtures.py` discovers six recording directories by default (twelve replays) and
+executes each in Targets and Resolve. `make check-replay` and Simulator CI use that same discovery,
+not a private fixture list. Expected outcomes: **SAME=4, REFUSED_EXPECTED=8, unexpected=0**.
 
 - Home: the re-recorded `1-boot-home-chip-grid`, a current AppFrameV5 anchor graded in full in each
   mode (its frame count is pinned by `tests/test_replay_fixtures.py`'s census and

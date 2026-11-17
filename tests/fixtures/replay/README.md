@@ -109,7 +109,7 @@ after an observed loader refusal and added the content-return anchor. **Phase 11
 three onto schema 2**, which carries the landing schedule above. **The product Resolve milestone
 rerecorded them onto schema 3**, adding a typed, bit-exact Width/Cap/Line measurement table, one
 final `fo` after all drains in each product frame, and ordered `rs` Focus/Hit observations (the Id
-family, a by-id `focus:`/`press:` input's resolution, joined them with the by-id fixture).
+family, a by-id `focus:`/`press:` input's resolution, joined them with `13-by-id-filmography`).
 A key missing from that table refuses the replay, with one exception: the text-prewarm walks
 (`rec::speculative`), which lay out a page no frame is drawing yet so its glyphs are resident.
 Their answers are recorded like any other. A key an older recording lacks inside such a walk
@@ -122,6 +122,17 @@ controlled-replay coverage. Flow 12 has typed initial state, exact synchronous a
 recorded content results, and denied resource execution. This bounded support does not imply
 all-domain acceptance. Editing manifest fingerprints or state hashes is never a replacement for
 rerecording. The D1 results below describe that earlier build, not current all-domain acceptance.
+
+**The by-id anchor.** `13-by-id-filmography` (`tests/focusfp.sh` flow 13) is Flow 12's controlled
+domain driven by the harness's by-id tokens: `focus:nav.watchlist` (refused, the Filmography page has
+no strip), `focus:filmography.row.3` and `press:filmography.row.0` (no `@subject`; a press that opens
+Detail like Flow 12's `down ok`), then the two BACK keys. It carries the only `by_id` input rows and
+`Id` resolution rows in the directory, and `ALPHABET.json` admits its one refusal log line as a literal.
+A recording of a `press:<id>@<subject>` token holds the subject (a ratingKey) in its `in` row and no
+pattern admits it, so such a recording cannot become a fixture. The fixture lives on Flow 12's page
+because that is the only controlled domain whose manifest shape the closed gates admit and where a
+press records: a `press:` on a navigating Home card aborts the controlled boot with
+`unsupported Home application effect`.
 
 **Historical Phase 12 (D1) rerecorded all three again**, and it is the cleanest example of what `rerecord` is
 for: `enum Route` was folded into `AppArg`, so `ARG_SHAPE` lost its nested `Legacy:Route{…}` and
