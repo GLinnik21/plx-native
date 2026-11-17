@@ -101,8 +101,9 @@ ok "exit exported GLOBAL/DEFAULT and not imported"
 
 echo "== libc access interposer =="
 # src/access.c defines libc's `access` in the executable so that the `access()` the GPU driver makes
-# at the top of every GL call (four debug-switch paths under /tmp, ~8.5 us of kernel time each on the
-# webOS 5.6.2 TV, where they fail) binds to the user-space answer instead of the kernel's. Same rule as
+# on four debug-switch paths under /tmp (API_PRINT at the top of every GL call, the other three per
+# draw, swap or glUseProgram; ~8.5 us of kernel time each on the webOS 5.6.2 TV, where they fail)
+# binds to the user-space answer instead of the kernel's. Same rule as
 # `exit` above: it only binds when the executable's .dynsym defines it, exactly one `access` row,
 # FUNC GLOBAL DEFAULT, and no `access@...` import row (readelf prints a definition bare and an import
 # with its version). `faccessat` is a different symbol and is not counted.

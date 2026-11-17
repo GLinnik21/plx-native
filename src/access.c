@@ -100,8 +100,9 @@
 #define PROBE_DIR "/tmp/"
 #define PROBE_DIR_LEN (sizeof PROBE_DIR - 1)
 
-/* The paths the driver probes on every GL call and that are therefore answered "absent" without a
- * system call. Whole paths, compared exactly; each starts with PROBE_DIR. */
+/* The paths the driver probes (`API_PRINT` on every GL call, the other three less often) and that
+ * are therefore answered "absent" without a system call. Whole paths, compared exactly; each starts
+ * with PROBE_DIR. */
 static const char *const probe_paths[] = {
     "/tmp/API_PRINT",
     "/tmp/SKIP_PRINT",

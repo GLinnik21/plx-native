@@ -1096,10 +1096,11 @@ SMP_INTERPOSER_LDFLAG = $(if $(PLAYBACK_HAS_FEED),-Wl$(PLAYBACK_COMMA)--export-d
 EXIT_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=exit
 # The third symbol the executable exports: src/access.c defines libc's `access`, and this export makes
 # the `access` of every shared library bind to it. The GPU driver (libmali) calls access() on four
-# debug-switch paths at the top of every GL call, and each failing lookup costs ~8.5 us of kernel
-# time on the webOS 5.6.2 TV, so src/access.c answers those four paths "absent" in user space and
-# hands every other path to the kernel's own `access`. The export is what makes the definition
-# preemptible; `ci/check-elf.sh` asserts it on the shipped binary, and `check-c-unit` links its
+# debug-switch paths (/tmp/API_PRINT at the top of every GL call, the other three per draw, swap or
+# glUseProgram), and each failing lookup costs ~8.5 us of kernel time on the webOS 5.6.2 TV, so
+# src/access.c answers those four paths "absent" in user space and hands every other path to the
+# kernel's own `access`. The export is what makes the definition preemptible; `ci/check-elf.sh`
+# asserts it on the shipped binary, and `check-c-unit` links its
 # host copy of the interposer with this same variable. The paths themselves are the table in
 # src/access.c (ci/access-interpose-test.c lists them again, to grade the table against).
 ACCESS_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=access
@@ -1959,7 +1960,8 @@ build-bench build-bench-quick:
 # and the CI job. A gate is added to the manifest and nowhere else: this recipe never names one, CI
 # runs this target, and ci/test_ci_split.py fails on a test file no gate runs. Steps run beside each
 # other, so they must not share a scratch path, a port or the checkout (the manifest's header, and
-# ci/test_check_collisions.py).
+# ci/test_check_collisions.py); the one exception is check-c-unit's access leg, whose probe paths are
+# the GPU driver's and so fixed, which takes a flock on /tmp.
 check-python:
 	@python3 tools/check-parallel.py \
 	  rest='$(MAKE) --no-print-directory check-python-rest' \
