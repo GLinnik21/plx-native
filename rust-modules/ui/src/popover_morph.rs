@@ -805,6 +805,56 @@ mod tests {
         assert_eq!(m.frame(Some(PILL), PANEL, RAD), before, "no motion once landed");
     }
 
+    /// One step as the frame loop reads it: the motion its springs report by the rest test, and a landing
+    /// (a jump, which presents a frame of its own).
+    fn judged_step(m: &mut Morph, open: bool, dt: f32) -> plx_machine::motion::report::FrameReport {
+        plx_machine::motion::report::frame_begin(dt);
+        m.step(open, dt);
+        plx_machine::motion::report::read()
+    }
+
+    /// Step at 16 ms until the frame loop's own test calls the morph quiet (no spring moving, nothing landed this
+    /// frame), then hand it ONE step at `idle_dt` as an idle wake does: the loop sleeps once it is quiet, and a
+    /// wake after a long sleep steps by up to [`FRAME_DT_CLAMP`], so that step must report nothing and draw nothing.
+    fn assert_quiet_stays_quiet_across_an_idle_wake(open: bool, idle_dt: f32) {
+        let mut m = Morph::new();
+        if !open {
+            for _ in 0..120 {
+                m.step(true, DT);
+            }
+        }
+        let quiet_at = (1..=400).find(|_| {
+            let r = judged_step(&mut m, open, DT);
+            !r.moving && !r.jumped
+        });
+        assert!(quiet_at.is_some(), "the {} goes quiet", if open { "open" } else { "close" });
+        let before = m.frame(Some(PILL), PANEL, RAD);
+        let r = judged_step(&mut m, open, idle_dt);
+        assert!(
+            !r.moving && !r.jumped,
+            "{} quiet at 16 ms (frame {quiet_at:?}) still reports motion when an idle wake steps it by {idle_dt} s: {r:?}",
+            if open { "open" } else { "close" },
+        );
+        assert_eq!(m.frame(Some(PILL), PANEL, RAD), before, "and the frame it draws does not change");
+    }
+
+    /// The open's two late frames on the TV (~55 and ~110 ms after the run ends): `rows` rang on and `lens` landed
+    /// only within 6e-5, so a spring the 16 ms rest test called still reported motion when the idle wake handed it
+    /// 50 ms, and one sub-pixel frame presented before the loop slept again.
+    #[test]
+    fn an_open_that_is_quiet_does_not_wake_the_loop_when_an_idle_step_comes_late() {
+        for idle_dt in [0.02, 0.033, plx_machine::motion::FRAME_DT_CLAMP] {
+            assert_quiet_stays_quiet_across_an_idle_wake(true, idle_dt);
+        }
+    }
+
+    #[test]
+    fn a_close_that_is_quiet_does_not_wake_the_loop_when_an_idle_step_comes_late() {
+        for idle_dt in [0.02, 0.033, plx_machine::motion::FRAME_DT_CLAMP] {
+            assert_quiet_stays_quiet_across_an_idle_wake(false, idle_dt);
+        }
+    }
+
     #[test]
     fn height_leads_width_by_the_stiffness_ratio() {
         let mut m = Morph::new();

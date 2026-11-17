@@ -356,8 +356,8 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
         } else {
             0.016
         };
-        if d > 0.05 {
-            d = 0.05;
+        if d > plx_machine::motion::FRAME_DT_CLAMP {
+            d = plx_machine::motion::FRAME_DT_CLAMP;
         }
         d
     };
