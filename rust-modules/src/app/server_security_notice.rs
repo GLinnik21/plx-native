@@ -1,8 +1,9 @@
 //! Warn about the Plex Media Server builds affected by Plex's 2026 security advisory.
 //!
 //! A version is only a reason to advise an update, never proof that a server is clean. Unknown or
-//! incomplete versions stay unknown. Each registered server is warned at most once per app run;
-//! separate notices are spaced so simultaneous discoveries do not overwrite one another.
+//! incomplete versions stay unknown. Only servers the current account owns are eligible; shared,
+//! managed Home, and undescribed servers stay silent. Each eligible server is warned at most once
+//! per app run; separate notices are spaced so simultaneous discoveries do not overwrite one another.
 
 use std::collections::BTreeSet;
 use plx_plex::plex;
@@ -33,12 +34,7 @@ pub(crate) struct ServerSecurityNotice {
 
 impl ServerSecurityNotice {
     pub(crate) fn poll(&mut self, now: u32, playing: bool) {
-        let notice = self.poll_with(now, playing, || {
-            plex::server_ids().map(|id| {
-                let name = plex::server_facts(id).map(|f| f.name.clone()).unwrap_or_default();
-                (id.raw(), name, plex::serverinfo::version_of(id))
-            }).collect()
-        });
+        let notice = self.poll_with(now, playing, snapshot);
         if let Some(message) = notice {
             plx_base::task::spawn_small("server security notice", move || {
                 let outcome = plx_platform::tv::toast::toast(&message);
@@ -64,6 +60,14 @@ impl ServerSecurityNotice {
     }
 }
 
+fn snapshot() -> Vec<(u16, String, String)> {
+    plex::server_ids().filter_map(|id| {
+        let facts = plex::server_facts(id)?;
+        if !facts.owned { return None; }
+        Some((id.raw(), facts.name.clone(), plex::serverinfo::version_of(id)))
+    }).collect()
+}
+
 fn message(name: &str) -> String {
     let name: String = name.chars().filter(|c| !c.is_control()).take(24).collect();
     let name = if name.trim().is_empty() { "Plex" } else { name.trim() };
@@ -73,6 +77,28 @@ fn message(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_owned_described_servers_are_warned() {
+        let _serial = plx_base::testlock::serial();
+        let _en = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        plex::reset_servers_for_test();
+        let unknown = plex::register_for_test("unknown", "127.0.0.1", 32400, "tok", "fixture");
+        let shared = plex::register_for_test("shared", "127.0.0.1", 32401, "tok", "fixture");
+        let home = plex::register_for_test("home", "127.0.0.1", 32402, "tok", "fixture");
+        for id in [unknown, shared, home] {
+            plex::serverinfo::store_for_test(id, plex::serverinfo::Subscription::Unknown, "1.43.2.1-old");
+        }
+        plex::describe_server(shared, "Shared", "friend", plex::GrantEvidence::outside());
+        plex::describe_server(home, "Household", "", plex::GrantEvidence { owned: false, home: true, owner_id: 1 });
+        let mut notice = ServerSecurityNotice::default();
+        assert!(notice.poll_with(0, false, snapshot).is_none(),
+            "undescribed, shared and managed Home servers must stay silent");
+        plex::describe_server(unknown, "Owned", "", plex::GrantEvidence::ours());
+        assert!(notice.poll_with(2000, false, snapshot).unwrap().contains("Owned"),
+            "a later ownership description admits the server");
+        assert!(notice.poll_with(17000, false, snapshot).is_none(), "other servers stay silent");
+        plex::reset_servers_for_test();
+    }
     #[test]
     fn compares_full_build_and_treats_unparseable_versions_as_unknown() {
         for version in ["1.43.2.99999-abc", "1.43.3.10860-abc", "1.42.9.99999-x"] {
