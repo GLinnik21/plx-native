@@ -21,8 +21,10 @@
 //! Both fixed names are in `DIAG` and in `paths::runtime_file::LOGS` (the file holds titles and
 //! rating keys, so Delete all local data removes it).
 //!
-//! **Privacy.** An element's label and subject are runtime text. They live in the snapshot and the
-//! state file only: the one function that logs takes a closed [`Note`], never snapshot text.
+//! **Privacy.** An element's label and subject are runtime text. This module keeps them in the snapshot
+//! and the state file only: the one function that logs takes a closed [`Note`], never snapshot text.
+//! (A `press:<id>@<subject>` token is the harness's own text, and a recording keeps it: see
+//! `plx_ui::a11y`.)
 //!
 //! **Builds.** The whole module is `devtriggers`: a `RELEASE=1` build does not parse the token and
 //! never writes the file; `run.rs` names the module only behind the same cfg. Over Lab Control the

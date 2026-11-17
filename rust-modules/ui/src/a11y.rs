@@ -14,8 +14,11 @@
 //! ([`Focusable::a11y_find`]); it is never logged and never kept.
 //!
 //! An element's [`A11y::label`] and [`A11y::subject`] (the ratingKey of a catalog card) are runtime
-//! text. They appear ONLY in the state file a test reads back, never in a `LogLine`, a recording or a
-//! heartbeat.
+//! text. They never reach a `LogLine` or a heartbeat; the state file a test reads back is where they
+//! are written. A `press:<id>@<subject>` token records its `@<subject>` text in the recording's `in`
+//! row, which on a press that resolves equals the element's subject, so a recording of a
+//! subject-guarded press carries a ratingKey and is private like any other recording (and the closed
+//! replay `ALPHABET.json` has no pattern for it, so such a recording cannot be committed as a fixture).
 //!
 //! The three hooks live on [`Focusable`] (defaulted, so nothing changes until a widget answers):
 //! `a11y` projects a key to its [`A11y`], `a11y_elems` lists a group's keys in index order (what
@@ -272,7 +275,9 @@ pub enum Role {
 
 /// One element's projection: its id and what a test reads about it.
 ///
-/// `label` and `subject` are runtime text (a card's title, its ratingKey): the state file only.
+/// `label` and `subject` are runtime text (a card's title, its ratingKey): they go to the state file,
+/// never to a log line or heartbeat (a press's `@<subject>` guard is kept by a recording, see the
+/// module doc).
 /// `loaded` is false for a placeholder whose item has not arrived. The borrow is of the view the
 /// projection was asked of; a view built per query returns [`A11y::into_owned`].
 #[derive(Clone, Debug, PartialEq, Eq)]
