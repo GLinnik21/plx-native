@@ -412,20 +412,31 @@ pub fn user_resume(feed: &mut FeedResources, mt: &MainThread) -> UserResumeOutco
             // Resume, never the runner's Operation::Play, so startup_play_commanded stays
             // false and try_prime's startup gate would block the post-Load retry forever
             // (observed live: BufferFull at the native cap, pos_ms=0).
-            // prepare_hls_user_resume just cleared user_held and set resume_acb_pending; this
-            // Resume IS the session's startup play command — mark it as commanded, then fire
-            // the initial prime. If the physical Play lands before the Load worker has called
+            // prepare_hls_user_resume just cleared user_held and set resume_acb_pending. When
+            // startup_play_commanded is still false (that landing), this Resume IS the
+            // session's startup play command — mark it as commanded, then fire the initial
+            // prime. If the physical Play lands before the Load worker has called
             // Starfish's Load it is Refused and the prime stays armed (Held{Initial});
             // try_prime is now un-gated and issues the Play once loadCompleted has passed
             // and both lanes are primed. Only the Fresh-kind holds (Initial, Seek) accept
-            // play_initial_now; Rebuffer/ResumePrime falls through to Fenced.
+            // play_initial_now; Rebuffer/ResumePrime falls through to Fenced, and so does a
+            // Resume that finds startup_play_commanded already set (a claim landing's
+            // ResumeInitial, or a viewer Play undoing a Pause held on the prime): the physical
+            // Play is then left to note_transport_result (startup_immediate_play) or to the
+            // prime's own try_prime.
             let hooks = feed.hooks();
             let fired = feed.engine().is_some_and(|eng| {
+                // Only a Resume that IS the first Play fires it. When the runner's Play was
+                // already commanded, the prime owns the physical Play and its own media proof
+                // releases it: a viewer Play that undoes a Pause held on an Initial or Seek
+                // prime must not start the clock on empty lanes.
+                let first_play = !eng.startup_play_commanded;
                 eng.startup_play_commanded = true;
-                matches!(
-                    crate::native_executor::play_initial_now(mt, eng, &hooks.feed),
-                    Some(true)
-                )
+                first_play
+                    && matches!(
+                        crate::native_executor::play_initial_now(mt, eng, &hooks.feed),
+                        Some(true)
+                    )
             });
             close_preroll_and_commit();
             if fired {
