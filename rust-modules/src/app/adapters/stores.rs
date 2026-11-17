@@ -2097,7 +2097,8 @@ mod tests {
         let _rig = CollectionRig;
         plx_plex::plex::reset_servers_for_test();
         let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", 9, "t", "cid");
-        let mut bridge = Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = harness.bridge();
 
         assert!(bridge.subsearch_run(SubSearchCmd::Open { sid, rk: "506548".into(), lang: "nl".into() }));
         bridge.assert_no_store_jobs_left_for_test();
@@ -2267,7 +2268,8 @@ mod tests {
         let _rig = CollectionRig;
         plx_plex::plex::reset_servers_for_test();
         plx_plex::plex::register_for_test("runner", "127.0.0.1", 9, "t", "cid");
-        let mut bridge = Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = harness.bridge();
 
         bridge.search_pump(0.0); // the first pump observes the roster
         assert!(bridge.search_run(SearchCmd::SetQuery("wallace".into())));
@@ -2346,7 +2348,8 @@ mod tests {
         let _rig = CollectionRig;
         let session = plx_plex::plex::session::TempSession::new("runner-recents-bridge");
         session.watching("runner-recents-bridge");
-        let mut bridge = Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = harness.bridge();
         let generation = plx_data::search::recents::snapshot().generation();
 
         assert!(bridge.search_run(SearchCmd::RememberRecent { profile_generation: generation, term: "alpha".into() }));
@@ -2486,7 +2489,8 @@ mod tests {
         let _rig = CollectionRig;
         plx_plex::plex::reset_servers_for_test();
         let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", 9, "t", "cid");
-        let mut bridge = Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = harness.bridge();
 
         bridge.owe_read_back(vec![(sid, "1".to_string())]);
         let _ = bridge.reconcile_pump();
@@ -2724,7 +2728,8 @@ mod tests {
     #[test]
     fn a_sender_that_drains_its_own_job_leaves_nothing_for_the_backstop() {
         let _serial = plx_base::testlock::serial();
-        let mut bridge = Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = harness.bridge();
 
         assert!(bridge.metadata_run(MetadataCmd::RequestDetail { sid: ServerId::UNSET, rk: "42".into() }));
         run_the_detail_pump(&mut bridge);
@@ -2741,7 +2746,8 @@ mod tests {
     #[should_panic(expected = "sits on an outbox")]
     fn a_job_left_on_an_outbox_fails_the_frame_check() {
         let _serial = plx_base::testlock::serial();
-        let mut bridge = Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = harness.bridge();
         run_on_the_bare_store(&mut bridge);
         bridge.assert_no_store_jobs_left_for_test();
     }
@@ -2753,7 +2759,8 @@ mod tests {
     #[should_panic(expected = "backstop had to start")]
     fn a_job_the_pump_had_to_start_late_fails_the_frame_check_though_the_outbox_is_empty() {
         let _serial = plx_base::testlock::serial();
-        let mut bridge = Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = harness.bridge();
         run_on_the_bare_store(&mut bridge);
         run_the_detail_pump(&mut bridge);
         assert!(!bridge.metadata_mut().has_jobs(), "the backstop started it: the outbox is empty");
@@ -2997,7 +3004,8 @@ mod tests {
     fn the_bridge_catalog_entry_points_start_the_read_they_emitted_in_the_same_call() {
         let _serial = plx_base::testlock::serial();
         let io = Scripted::new();
-        let mut bridge = Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = harness.bridge();
         *bridge.catalog_for_test() = CatalogStore::with_io(io.clone());
         bridge.seat_watchlist_account_for_test(true);
 
@@ -4484,7 +4492,8 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
         let (sid, _) = show_store();
-        let mut bridge = Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = harness.bridge();
         show_on(bridge.metadata_mut(), sid);
         assert!(bridge.metadata_mut().run(MetadataCmd::LoadSeason(1)));
         assert!(bridge.metadata_mut().has_jobs());
@@ -4501,7 +4510,8 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
         let (sid, _) = show_store();
-        let mut bridge = Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = harness.bridge();
         show_on(bridge.metadata_mut(), sid);
 
         assert!(bridge.metadata_run(MetadataCmd::WantEpisodes { lo: EPISODE_PAGE, hi: EPISODE_PAGE + 10, focus: None, restore: None }));
@@ -4841,7 +4851,8 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
         let (sid, _) = related_store_at(9);
-        let mut bridge = Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = harness.bridge();
         related_on(bridge.metadata_mut(), sid);
 
         assert!(bridge.metadata_run(MetadataCmd::WantRelated { before: false, seen: (0, 24) }));

@@ -742,19 +742,16 @@ mod activate_card_tests {
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut pa = plx_media::player::adapter::PlayerAdapter::new(mt);
         let mut pages = plx_ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
-        let mut bridge = super::bridge::Bridge::for_test(|| 0);
-        let mut menu_play_await = None;
-
-        struct Cleanup(*mut super::bridge::Bridge);
+        struct Cleanup(crate::app::runtime_owners::Harness);
         impl Drop for Cleanup {
             fn drop(&mut self) {
-                // SAFETY: captured from `bridge` just above, which outlives this guard for the
-                // whole test body.
-                unsafe { &mut *self.0 }.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+                self.0.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
                 plx_plex::plex::reset_servers_for_test();
             }
         }
-        let _cleanup = Cleanup(&mut bridge as *mut _);
+        let mut cleanup = Cleanup(crate::app::runtime_owners::Harness::new(|| 0));
+        let mut bridge = cleanup.0.bridge();
+        let mut menu_play_await = None;
         plx_plex::plex::reset_servers_for_test();
         let sid = plx_plex::plex::register_for_test("press-frame", "127.0.0.1", 1, "t", "c-press-frame");
         let mm = plx_data::pms::PmsMovie { sid, rk: "show-1".into(), kind: 1, ..Default::default() };
@@ -804,17 +801,17 @@ mod activate_card_tests {
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut pa = plx_media::player::adapter::PlayerAdapter::new(mt);
         let mut pages = plx_ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
-        let mut bridge = super::bridge::Bridge::for_test(|| 0);
+        let harness = crate::app::runtime_owners::Harness::new(|| 0);
 
-        struct Cleanup(*mut super::bridge::Bridge);
+        struct Cleanup(crate::app::runtime_owners::Harness);
         impl Drop for Cleanup {
             fn drop(&mut self) {
-                // SAFETY: captured from `bridge` just below, which outlives this guard.
-                unsafe { &mut *self.0 }.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
+                self.0.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
                 plx_plex::plex::reset_servers_for_test();
             }
         }
-        let _cleanup = Cleanup(&mut bridge as *mut _);
+        let mut cleanup = Cleanup(harness);
+        let mut bridge = cleanup.0.bridge();
         plx_plex::plex::reset_servers_for_test();
         let sid = plx_plex::plex::register_for_test("menu-play", "127.0.0.1", 1, "t", "c-menu-play");
 
@@ -849,7 +846,8 @@ mod activate_card_tests {
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut pa = plx_media::player::adapter::PlayerAdapter::new(mt);
         let mut pages = plx_ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
-        let mut bridge = super::bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = harness.bridge();
         let mut menu_play_await = None;
         let collection = plx_data::pms::PmsMovie { rk: "50001".into(),
             kind: plx_data::pms::KIND_COLLECTION, ..Default::default() };

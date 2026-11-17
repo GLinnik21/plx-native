@@ -2062,7 +2062,7 @@ fn cold_source_preflight_uses_the_playback_identity_and_does_not_close_it() {
     let url = client
         .direct_play_url("/library/parts/1/file.mkv", "cold-logical")
         .to_url();
-    let sample = measure_remote_original(&url, 320).expect("completed cold sample");
+    let sample = measure_remote_original(&url, 320).sample().expect("completed cold sample");
     assert!(sample.completed);
 
     let requests = rx.recv().expect("captured cold requests");
@@ -2265,6 +2265,64 @@ fn the_preview_describes_the_version_play_starts() {
     assert_eq!(forced, None, "Forced plays the first version, which the feed cannot take");
 }
 
+#[test]
+fn the_preview_judges_a_quality_rung_on_the_video_bitrate_play_judges() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    struct Back;
+    impl Drop for Back {
+        fn drop(&mut self) { restore_quality(Quality::Original); }
+    }
+    let _back = Back;
+    restore_quality(Quality::P1080);
+    const FIRST: &str = "/library/parts/1/1/uhd.mkv";
+    const SECOND: &str = "/library/parts/2/1/fhd.mkv";
+    let video = |bitrate: i64| Some(plx_data::metadata::Stream { bitrate, ..Default::default() });
+    let aac = || vec![plx_data::metadata::Stream { codec: "aac".into(), ..Default::default() }];
+    let movie = plx_data::metadata::Detail {
+        part: SECOND.into(),
+        vcodec: "h264".into(),
+        width: 1920,
+        height: 800,
+        bitrate: 8540,
+        video: video(7900),
+        audio: aac(),
+        ..Default::default()
+    };
+    assert_eq!(playback_preview(&movie), Some(Preview::DirectPlay), "7900 kbps of video fits the 8 Mbps rung");
+    let version = |id: i64, resolution: &str, width: i64, height: i64, vcodec: &str, kbps: i64, video_kbps: i64| {
+        plx_data::pms::MediaVersion {
+            id: plx_plex::plex::MediaId(id),
+            kbps,
+            video_kbps,
+            resolution: resolution.into(),
+            width,
+            height,
+            vcodec: vcodec.into(),
+            ..Default::default()
+        }
+    };
+    let part = |id: i64, key: &str| plx_data::metadata::VersionPart {
+        id: plx_plex::plex::MediaId(id),
+        part: key.into(),
+        audio: aac(),
+        subs: Vec::new(),
+    };
+    let substituted = plx_data::metadata::Detail {
+        part: FIRST.into(),
+        vcodec: "vp9".into(),
+        width: 3840,
+        height: 2160,
+        bitrate: 20000,
+        video: video(19000),
+        audio: aac(),
+        versions: vec![version(1, "4k", 3840, 2160, "vp9", 20000, 19000), version(2, "1080", 1920, 800, "h264", 8540, 7900)],
+        version_parts: vec![part(1, FIRST), part(2, SECOND)],
+        ..Default::default()
+    };
+    assert_eq!(playback_preview(&substituted), Some(Preview::DirectPlay), "the 1080p version Play starts, on its own video");
+}
+
 /// **The detail page says "audio converted" exactly when the planner would convert the audio of
 /// the track it means to play** — the planner's own pick (`audio_intent_needs_conversion`), not
 /// "is any track playable". An undecodable default with a same-language playable sibling plays the
@@ -2454,6 +2512,48 @@ fn dolby_vision_off_stops_the_preview_promising_a_profile_5_direct_play() {
     assert_eq!(playback_preview_with_capability_for_test(&movie, supported), Some(Preview::DirectPlay));
     restore_dolby_vision_mode(DolbyVisionMode::Off);
     assert_eq!(playback_preview_with_capability_for_test(&movie, supported), Some(Preview::Converts));
+}
+
+#[test]
+fn a_set_without_dolby_vision_previews_the_version_it_plays_instead_of_a_profile_5() {
+    use plx_platform::devcaps::dv::DvCapability;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Original);
+    const FIRST: &str = "/library/parts/1/1/p5.mkv";
+    const SECOND: &str = "/library/parts/2/1/hdr10.mkv";
+    let version = |id: i64, dovi: plx_data::metadata::Dovi| plx_data::pms::MediaVersion {
+        id: plx_plex::plex::MediaId(id),
+        resolution: "4k".into(),
+        width: 3840,
+        height: 2160,
+        vcodec: "hevc".into(),
+        dovi,
+        ..Default::default()
+    };
+    let part = |id: i64, key: &str, acodec: &str| plx_data::metadata::VersionPart {
+        id: plx_plex::plex::MediaId(id),
+        part: key.into(),
+        audio: vec![plx_data::metadata::Stream { codec: acodec.into(), ..Default::default() }],
+        subs: Vec::new(),
+    };
+    let movie = plx_data::metadata::Detail {
+        part: FIRST.into(),
+        vcodec: "hevc".into(),
+        width: 3840,
+        height: 2160,
+        dovi: p5(),
+        audio: vec![plx_data::metadata::Stream { codec: "aac".into(), ..Default::default() }],
+        versions: vec![version(1, p5()), version(2, plx_data::metadata::Dovi::NONE)],
+        version_parts: vec![part(1, FIRST, "aac"), part(2, SECOND, "truehd")],
+        ..Default::default()
+    };
+    assert_eq!(playback_preview_with_capability_for_test(&movie, DvCapability::Supported), Some(Preview::DirectPlay));
+    assert_eq!(
+        playback_preview_with_capability_for_test(&movie, DvCapability::Unsupported),
+        Some(Preview::OriginalAudioConverted),
+        "the HDR10 version plays, and the page describes its TrueHD",
+    );
 }
 
 #[test]

@@ -174,17 +174,17 @@ pub(crate) struct Scene {
 impl Scene {
     fn plan(&self) -> &[Stage] { &self.plan }
     /// What the catalog on screen lets this scene address, once it has arrived.
-    fn content(app: &App, mode: Mode) -> Option<Content> {
+    fn content(app: &mut App, mode: Mode) -> Option<Content> {
         match mode {
             Mode::Settle | Mode::Eviction => Bridge::library_grid_extent(&app.pages)
                 .map(|(rows, per_screen)| Content::Grid { rows, per_screen }),
-            Mode::Dive => app.bridge.home_shelf_len(&app.pages, 0).filter(|&cards| cards > 0)
+            Mode::Dive => app.runtime.bridge(&mut app.bridge).home_shelf_len(&app.pages, 0).filter(|&cards| cards > 0)
                 .map(|cards| Content::Shelf { cards }),
         }
     }
     /// Size the plan to the catalog, or refuse by name a catalog too small to prove anything.
     /// Returns false while the plan cannot run (content not arrived yet, or refused).
-    fn derive(&mut self, app: &App, mode: Mode) -> bool {
+    fn derive(&mut self, app: &mut App, mode: Mode) -> bool {
         if !self.plan.is_empty() { return true; }
         let Some(content) = Self::content(app, mode) else { return false };
         match plan_for(mode, content) {
@@ -222,12 +222,12 @@ impl Scene {
             plx_base::eventlog::log(&format!("poster-gate: kind={} phase=armed budget_mib={}", mode.word(), if mode == Mode::Settle { plx_ui::tex::TEX_RESIDENT_BYTES_MAX >> 20 } else { PRESSURE_MIB }));
         }
     }
-    fn positioned(app: &App, target: Target) -> bool {
+    fn positioned(app: &mut App, target: Target) -> bool {
         match target {
             Target::Library(row) => Bridge::library_grid_position(&app.pages).is_some_and(|(r, _)| r == row),
-            Target::GridSeed(col) => app.bridge.home_grid_position(&app.pages) == Some((0, col)),
-            Target::Grid => app.bridge.home_grid_position(&app.pages).is_some_and(|(row, _)| row == 0),
-            Target::Hero => !app.bridge.home_grid_focused(&app.pages) && app.bridge.home_snap_target(&app.pages) == 0.0,
+            Target::GridSeed(col) => app.runtime.bridge(&mut app.bridge).home_grid_position(&app.pages) == Some((0, col)),
+            Target::Grid => app.runtime.bridge(&mut app.bridge).home_grid_position(&app.pages).is_some_and(|(row, _)| row == 0),
+            Target::Hero => !app.runtime.bridge(&mut app.bridge).home_grid_focused(&app.pages) && app.runtime.bridge(&mut app.bridge).home_snap_target(&app.pages) == 0.0,
         }
     }
     fn drive(app: &mut App, target: Target, seed: bool, now: u32) {
@@ -235,10 +235,10 @@ impl Scene {
         if seed {
             match target {
                 Target::Library(row) => Bridge::library_command(&mut app.pages, LibraryCmd::FocusGrid { row, col: 0 }),
-                Target::GridSeed(col) => { app.bridge.home_command(HomeCmd::FocusGrid { row: 0, col }); }
+                Target::GridSeed(col) => { app.runtime.bridge(&mut app.bridge).home_command(HomeCmd::FocusGrid { row: 0, col }); }
                 // A plan never seeds its settling grid target; the dive reaches it by key.
                 Target::Grid => {}
-                Target::Hero => { app.bridge.home_command(HomeCmd::Hero); }
+                Target::Hero => { app.runtime.bridge(&mut app.bridge).home_command(HomeCmd::Hero); }
             }
             return;
         }
@@ -246,19 +246,19 @@ impl Scene {
         let key = match target {
             Target::Library(row) => Bridge::library_grid_position(&app.pages)
                 .map(|(current, _)| if current < row { Key::Down } else { Key::Up }),
-            Target::Grid | Target::GridSeed(_) => (!app.bridge.home_grid_focused(&app.pages)).then_some(Key::Down),
-            Target::Hero => app.bridge.home_grid_focused(&app.pages).then_some(Key::Up),
+            Target::Grid | Target::GridSeed(_) => (!app.runtime.bridge(&mut app.bridge).home_grid_focused(&app.pages)).then_some(Key::Down),
+            Target::Hero => app.runtime.bridge(&mut app.bridge).home_grid_focused(&app.pages).then_some(Key::Up),
         };
         if let Some(key) = key {
             app.inputs.extend(crate::app::bridge::script_key(key, Tick { ms: now, dt_us: 0 }));
         }
     }
-    fn reached(app: &App, target: Target) -> bool {
+    fn reached(app: &mut App, target: Target) -> bool {
         Self::positioned(app, target) && match target {
             Target::Library(_) => true,
-            Target::GridSeed(_) | Target::Grid => app.bridge.home_motion_witness(&app.pages)
+            Target::GridSeed(_) | Target::Grid => app.runtime.bridge(&mut app.bridge).home_motion_witness(&app.pages)
                 .is_some_and(|[snap, _, v]| snap >= 0.99 && v.abs() <= 1.0),
-            Target::Hero => app.bridge.home_motion_witness(&app.pages).is_some_and(|[snap, _, _]| snap <= 0.01),
+            Target::Hero => app.runtime.bridge(&mut app.bridge).home_motion_witness(&app.pages).is_some_and(|[snap, _, _]| snap <= 0.01),
         }
     }
     fn start_stage(&mut self, now: u32) -> u32 {
@@ -294,7 +294,7 @@ impl Scene {
         let start = self.start_stage(now);
         let elapsed = now.wrapping_sub(start);
         if mode == Mode::Dive {
-            if let Some(sample) = app.bridge.home_motion_witness(&app.pages) {
+            if let Some(sample) = app.runtime.bridge(&mut app.bridge).home_motion_witness(&app.pages) {
                 self.witness.get_or_insert_with(|| Witness::new(sample)).observe(sample);
             }
         }
@@ -303,9 +303,10 @@ impl Scene {
         // settle follow the same key path as a remote; reseating would jump scroll.
         Self::drive(app, target, stage.seed, now);
         let stats = metrics::snapshot();
-        let reached = stage.handoff_snap.map_or_else(|| Self::reached(app, target), |threshold|
-            Self::positioned(app, target) && app.bridge.home_motion_witness(&app.pages)
-                .is_some_and(|[snap, _, _]| snap >= threshold));
+        let reached = if let Some(threshold) = stage.handoff_snap {
+            Self::positioned(app, target) && app.runtime.bridge(&mut app.bridge).home_motion_witness(&app.pages)
+                .is_some_and(|[snap, _, _]| snap >= threshold)
+        } else { Self::reached(app, target) };
         let Some(ready) = stage.completion(elapsed, reached, stats.full()) else { return };
         let window = self.drawn_bytes / plx_ui::tex::render_area();
         report(mode.word(), stage.name, elapsed, stats, ready, self.witness, window);

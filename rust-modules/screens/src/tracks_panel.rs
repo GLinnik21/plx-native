@@ -1973,6 +1973,7 @@ mod tests {
             measure: &plx_ui::fixture::FixtureMeasure,
             focus: FocusRead { current: focus, ..Default::default() },
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             owner: InputOwner::Entry(EntryId(9)),
         }
     }

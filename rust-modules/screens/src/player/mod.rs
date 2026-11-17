@@ -51,7 +51,7 @@ use plx_ui::screen::{
 use plx_appkit::up_next::{self, Countdown};
 use plx_ui::Rect;
 
-use input::{HudState, Scrub, Sections};
+use input::{HudNav, HudState, Scrub, Sections};
 
 /// The player's heartbeat word — byte-identical to `app::words::route_word(&AppArg::Player)`, and
 /// what `tests/run.py` selects fps samples by (`tests/manifest.json`'s `route` field).
@@ -353,8 +353,8 @@ impl PlayerScreen {
         plx_appkit::player_hud::draw_subtitle_bitmap(&mut self.render.subs, hud_up, band, &self.model);
     }
 
-    /// The transport, with this instance's own springs, memo and countdown. Records whether Watch
-    /// was actually painted for the next Tick. Pointer hits are registered by [`Self::record_stops`],
+    /// The transport, with this instance's own springs, memo and countdown. Reports frame-local
+    /// Watch paint evidence; only an owned step after final swap applies it. Pointer hits are registered by [`Self::record_stops`],
     /// from this screen's `Focusable`.
     ///
     /// It draws the compiled package ([`Self::compiled`]: `builtin:classic` unless the seated profile chose an
@@ -362,7 +362,7 @@ impl PlayerScreen {
     /// frame `builtin:classic` is never in, `classic_answers_every_frame_the_player_can_be_in`), and says so
     /// ONCE in the event log rather than every frame; its geometry is the same empty report
     /// (`player_hud::geometry::geometry`), so what is drawn and what is hit stay one statement.
-    pub fn draw_hud<H: Host>(
+    pub fn draw_hud<H: Host<Msg = AppMsg>>(
         &mut self,
         ps: &plx_media::route::PlaybackSession,
         now: u32,
@@ -398,12 +398,14 @@ impl PlayerScreen {
             meta,
         };
         let receipt = plx_appkit::player_hud::render::draw_with_receipt(&self.compiled, &frame, df, &mut self.row, plx_ui::Painter::root());
-        self.drawn_watch = if receipt.offer_drawn && self.watch_visible() {
-            self.auto_skip.presented();
+        let watch = if receipt.offer_drawn && self.watch_visible() {
             self.draw_slot().marker().map(|marker| plx_appkit::skip_policy::OfferId {
                 scope: self.model.marker_prefs.scope, entry: self.entry.0,
                 playback: self.model.playback_id, marker })
         } else { None };
+        df.report_presentation(AppMsg::PlayerPresented {
+            watch, paired: self.draw_slot().is_up_next_pair(),
+        });
         if !receipt.state_exists && !self.render.no_state_logged {
             self.render.no_state_logged = true;
             plx_base::eventlog::log("hud: the package has no state for this frame; nothing is drawn or placed for it");
@@ -762,8 +764,114 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
         let strip_ev = if matches!(ev, ScreenEvent::Tick(_)) { None } else { self.step_strip(ev, cx, fx) };
         match ev {
             // The app performed a `toggle_section` command (a tab's OK or click, a package's disc).
+            ScreenEvent::Presented(receipt) => {
+                let AppMsg::PlayerPresented { watch, paired } = receipt.message() else { return Handled::No; };
+                // Only the addressed, successfully swapped frame can reach this event. The
+                // player still validates the exact current offer: a late paint is not a new grant.
+                let current = self.draw_slot().automatic_marker().map(|marker| plx_appkit::skip_policy::OfferId {
+                    scope: self.model.marker_prefs.scope, entry: self.entry.0,
+                    playback: self.model.playback_id, marker,
+                });
+                if *paired == self.draw_slot().is_up_next_pair()
+                    && (watch.is_none() || (*watch == current && self.watch_visible())) {
+                    self.drawn_watch = *watch;
+                    if watch.is_some() { self.auto_skip.presented(); }
+                }
+                Handled::Yes
+            }
             ScreenEvent::App(AppMsg::AutoSkipResolved { id, outcome }) => {
                 self.auto_skip.resolve(*id, *outcome);
+                Handled::Yes
+            }
+            ScreenEvent::App(AppMsg::PlayerStart { now, hud_ms }) => {
+                self.hud = HudState::IDLE;
+                self.scrub = Scrub::IDLE;
+                self.up_next.reset();
+                self.row.drop_strip();
+                self.hud.extend(*now, *hud_ms);
+                Self::repair_focus(fx, GROUP_SCRUB);
+                self.publish();
+                Handled::Yes
+            }
+            ScreenEvent::App(AppMsg::PlayerPinHud { now, duration_ms, tab }) => {
+                self.hud.extend(*now, *duration_ms);
+                if let Some(tab) = tab {
+                    self.hud.nav.focus = GROUP_TABS;
+                    self.hud.nav.tab = *tab;
+                    Self::repair_focus(fx, GROUP_TABS);
+                }
+                self.publish();
+                Handled::Yes
+            }
+            ScreenEvent::App(AppMsg::PlayerSlot { slot, primary }) => {
+                self.slot = *slot;
+                if *primary {
+                    self.hud.nav.btn = self.row_primary();
+                    Self::repair_focus(fx, GROUP_ROW);
+                }
+                Handled::Yes
+            }
+            ScreenEvent::App(AppMsg::PlayerFollowRow { slot, now }) => {
+                let offer = slot.offer();
+                let fresh = offer.is_some() && offer != self.hud.last_offer;
+                if offer.is_some() { self.hud.last_offer = offer; }
+                if fresh {
+                    if let Some((kind, start)) = offer {
+                        plx_base::eventlog::log(&format!("marker offer: {kind:?} at {}s", start / 1000));
+                    }
+                    self.raise_for_offer(*now, slot.primary_btn());
+                    Self::repair_focus(fx, self.hud.nav.focus);
+                } else if player_hud::standin_left_the_ring(self.hud.was_standin, *slot,
+                    self.hud.nav.focus == GROUP_ROW) {
+                    self.hud.nav = HudNav::HOME;
+                    Self::repair_focus(fx, GROUP_SCRUB);
+                }
+                self.hud.was_standin = !slot.is_discs();
+                self.publish();
+                Handled::Yes
+            }
+            ScreenEvent::App(AppMsg::PlayerCancelNext { decline }) => {
+                if *decline { self.decline_pair(); } else { self.up_next.cancel(); }
+                Handled::Yes
+            }
+            ScreenEvent::App(AppMsg::PlayerHudCommand { command, now }) => {
+                match command {
+                    player_hud::command::HudCommand::TogglePlay => {
+                        let request = self.toggle_play(None, *now);
+                        Self::ask(fx, request);
+                    }
+                    player_hud::command::HudCommand::Seek(by) => {
+                        let interval = H::screen_inputs(cx).preference::<plx_plex::plex::session::SkipIntervalPref>();
+                        let step = by.step_ns(player_hud::scrub_step_ns(interval));
+                        if let Some(target) = self.jump_by(H::session(cx), step, true, *now) {
+                            Self::ask(fx, PlayerReq::CommitSeek(target));
+                        }
+                    }
+                    _ => {}
+                }
+                self.hud.extend(*now, input::HUD_LINGER_MS);
+                self.publish();
+                Handled::Yes
+            }
+            ScreenEvent::App(AppMsg::PlayerModel(model)) => {
+                self.set_model(model.clone());
+                Handled::Yes
+            }
+            ScreenEvent::App(AppMsg::PlayerCompiled(compiled)) => {
+                self.compiled = std::sync::Arc::clone(compiled);
+                Handled::Yes
+            }
+            ScreenEvent::App(AppMsg::PlayerHudPolicy(policy)) => {
+                self.set_hud_policy(*policy);
+                Handled::Yes
+            }
+            ScreenEvent::App(AppMsg::PlayerTransportReset { for_reload }) => {
+                self.transport_reset(*for_reload);
+                Handled::Yes
+            }
+            ScreenEvent::App(AppMsg::PlayerExtendHud { now, duration_ms }) => {
+                self.hud.extend(*now, *duration_ms);
+                self.publish();
                 Handled::Yes
             }
             ScreenEvent::App(AppMsg::HudSection(section)) => {
@@ -879,6 +987,19 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 // running whichever panel is up (`up_next::tick`).
                 self.up_next.tick(self.slot, tick.ms);
                 if self.pair_declined() { self.up_next.cancel(); }
+                if self.up_next.armed() {
+                    if plx_appkit::up_next::countdown_may_run(!self.model.covered && !self.hud.sections.any(),
+                        self.hud.nav.focus == GROUP_ROW,
+                        self.hud.nav.btn == plx_appkit::up_next::BTN_NEXT) {
+                        self.hud.dismissed = false;
+                        self.hud.extend(tick.ms, input::HUD_LINGER_MS);
+                    } else { self.decline_pair(); }
+                }
+                if !self.hud.visible(H::session(cx), tick.ms, self.model.paused)
+                    && self.hud.nav.focus != HudNav::HOME.focus {
+                    self.hud.nav = HudNav::HOME;
+                    Self::repair_focus(fx, GROUP_SCRUB);
+                }
                 if self.model.marker_prefs.needs_refresh {
                     fx.push(Fx::App(AppFx::Preferences(crate::registry::PreferenceCmd::EnsureMarkerAccess)));
                 }
@@ -3026,6 +3147,7 @@ mod travel_rig {
                 measure: &FixtureMeasure,
                 focus: self.engine.read(self.owner()),
                 press: Default::default(),
+                modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
                 owner: self.owner(),
             }
         }
@@ -3184,6 +3306,7 @@ mod step_ladder_tests {
             measure: &FixtureMeasure,
             focus: Default::default(),
             press: Default::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             owner: InputOwner::Entry(ENTRY),
         }
     }
@@ -4224,6 +4347,7 @@ mod scrub_ownership_tests {
             measure: &FixtureMeasure,
             focus: Default::default(),
             press: Default::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             owner: InputOwner::Entry(ENTRY),
         }
     }
@@ -5357,6 +5481,7 @@ mod repair_confirmation_tests {
     }
     fn context(ps: &plx_media::route::PlaybackSession, elem: Option<u32>) -> Cx<'_, TestHost> {
         let mut cx = Cx { views: ps, tick: Tick::default(), measure: &plx_ui::fixture::FixtureMeasure,
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             focus: Default::default(), press: Default::default(), owner: InputOwner::Entry(EntryId(1)) };
         cx.focus.current = elem.map(|elem| FocusKey { entry: EntryId(1), elem });
         cx
@@ -5497,6 +5622,7 @@ mod caption_order_tests {
             measure: &FixtureMeasure,
             focus: Default::default(),
             press: Default::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             owner: InputOwner::Entry(ENTRY),
         }
     }
@@ -5571,6 +5697,78 @@ mod automatic_marker_tests {
     use plx_appkit::skip_policy::{MarkerPrefsView, OfferId};
     use plx_machine::machine::{InputEvent, MachineId, Source, Tick};
     use plx_plex::plex::session::MarkerSkipMode::Automatic;
+
+    fn presented(message: AppMsg) -> ScreenEvent<TestHost> {
+        ScreenEvent::Presented(plx_machine::machine::PresentationAuthority::default()
+            .receipt(1, EntryId(42), InstanceId(3), message))
+    }
+
+    #[test]
+    fn actual_player_draw_does_not_mutate_logical_watch_or_timer() {
+        let _guard = plx_base::testlock::serial();
+        let (mut page, _, _) = page();
+        page.drawn_watch = None;
+        let session = super::overlay_tests::playback_session(10_000_000_000, 120_000_000_000);
+        let rig = Rig::on_session(&page, EntryId(42), &session);
+        let cx = rig.cx();
+        let mut frame = DrawFrame::new(&cx, plx_ui::Painter::recording());
+        let hash = |page: &PlayerScreen| { let mut c = Canon::new(); page.write(&mut c); c.finish() };
+        let before = hash(&page);
+        plx_ui::record_walk(|| Screen::<TestHost>::draw(&mut page, &mut frame));
+        assert_eq!(hash(&page), before, "actual PlayerScreen draw changed canonical Watch/timer state before any swap or owned delivery");
+    }
+
+    #[test]
+    fn actual_visible_player_paint_reports_typed_watch_without_mutating_it() {
+        let _guard = plx_base::testlock::serial();
+        let (mut page, meta, id) = page();
+        page.drawn_watch = None;
+        let session = super::overlay_tests::playback_session(10_000_000_000, 120_000_000_000);
+        let mut rig = Rig::on_session(&page, EntryId(42), &session);
+        let cx = rig.cx();
+        let mut frame = DrawFrame::new(&cx, plx_ui::Painter::root());
+        let before = { let mut c = Canon::new(); page.write(&mut c); c.finish() };
+        plx_ui::draw_census::capture(|| Screen::<TestHost>::draw(&mut page, &mut frame));
+        let after = { let mut c = Canon::new(); page.write(&mut c); c.finish() };
+        assert_eq!(after, before, "even the actual visible paint changes only render evidence");
+        assert_eq!(page.drawn_watch, None);
+        assert!(!page.auto_skip.snapshot().3);
+        let message = frame.take_presentation_for_test().expect("actual visible paint has evidence");
+        assert!(matches!(message, AppMsg::PlayerPresented { watch:Some(got), paired:false } if got == id));
+        assert!(frame.take_presentation_for_test().is_none(), "bounded one-shot render evidence");
+        rig.deliver(&mut page, presented(message));
+        assert_eq!(page.drawn_watch, Some(id));
+        assert!(page.auto_skip.snapshot().3);
+        assert!(step(&mut page, &meta, 1_000_000).is_empty());
+        assert_eq!(page.auto_skip.snapshot().1, 1_000_000);
+        assert!(step(&mut page, &meta, 1_000_000).is_empty());
+        assert_eq!(page.auto_skip.snapshot().1, 1_000_000, "one receipt counts only once");
+    }
+
+    #[test]
+    fn late_or_wrong_offer_presentations_do_not_rearm_or_reinterpret_watch() {
+        let _guard = plx_base::testlock::serial();
+        let (mut page, meta, id) = page();
+        page.drawn_watch = None;
+        let mut rig = Rig::on(&page, EntryId(42));
+        for stale in [OfferId { playback: id.playback + 1, ..id },
+            OfferId { scope: id.scope + 1, ..id }, OfferId { entry: id.entry + 1, ..id },
+            OfferId { marker: plx_data::metadata::Marker { end_ms: id.marker.end_ms + 1, ..id.marker }, ..id }] {
+            rig.deliver(&mut page, presented(AppMsg::PlayerPresented { watch:Some(stale), paired:false }));
+            assert_eq!(page.drawn_watch, None);
+            assert!(!page.auto_skip.snapshot().3);
+        }
+        rig.deliver(&mut page, ScreenEvent::App(AppMsg::PlayerPresented { watch:Some(id), paired:false }));
+        assert_eq!(page.drawn_watch, None, "ordinary App input has no presentation capability");
+        rig.deliver(&mut page, presented(AppMsg::PlayerPresented { watch:Some(id), paired:false }));
+        assert_eq!(page.auto_skip.progress(), 0.0, "presentation zero retains cancellation provenance");
+        rig.deliver(&mut page, presented(AppMsg::PlayerPresented { watch:Some(id), paired:true }));
+        assert_eq!(page.drawn_watch, Some(id), "different slot cannot erase the last real opportunity");
+        page.auto_skip.cancel();
+        rig.deliver(&mut page, presented(AppMsg::PlayerPresented { watch:Some(id), paired:false }));
+        assert!(!page.auto_skip.pending(), "a later presented fact cannot undo cancellation");
+        assert!(step(&mut page, &meta, 10_000_000).is_empty());
+    }
 
     fn page() -> (PlayerScreen, plx_data::stores::metadata::MetadataStore, OfferId) {
         let mut page = PlayerScreen::new(EntryId(42), plx_appkit::player_hud::loaded::classic_for_test());

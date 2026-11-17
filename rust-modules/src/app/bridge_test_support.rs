@@ -3,7 +3,8 @@
 //! key-driven route-test [`World`] (the one harness the route lanes share).
 
 use super::*;
-use plx_ui::containers::transition::{PageImage, PagePaint};
+use crate::app::runtime_owners::Harness;
+use plx_ui::containers::transition::PagePaint;
 
 /// **Put `route` on top, then run one frame** — the TEST driver that replaced `sync_page`.
 ///
@@ -127,7 +128,7 @@ fn pump_requests(_d: &mut Dispatcher<AppHost>, rig: &mut Bridge, _item: Option<(
     // Every screen command already executed through CommandRig during the product frame.
     // These passive terminal labels cannot cause a second navigation or store mutation.
     rig.assert_no_store_jobs_left_for_test();
-    std::mem::take(&mut rig.completed_screen_commands)
+    std::mem::take(&mut rig.retained.completed_screen_commands)
 }
 
 
@@ -156,7 +157,7 @@ pub(super) const FILM_CLUB: usize = 2;
 /// mid-test and made the header name one library again.
 pub(super) struct World {
     pub(super) d: Dispatcher<AppHost>,
-    pub(super) bridge: Bridge,
+    pub(super) bridge: Harness,
     pub(super) frame: u32,
     pump: Pump,
     performed: Vec<String>,
@@ -177,44 +178,20 @@ impl Drop for World {
     }
 }
 
-/// **The page-image half of a route dip, as the dispatcher plans it.** `Dispatcher::draw_with` plans
-/// the top page with `PageImage::plan` from the transition and the page's quiescence, records what
-/// it captured, and states `page_image_held` for the screens' NEXT tick; a host has no GL to run the
-/// draw, so a test steps this after every frame (`World::step_dip` for a [`World`]) and every
-/// screen reads the same answer the product gives it. The stated fact is a thread-local: hold an
-/// [`ImageHeld`] for as long as a test drives a dip, so it does not outlive the test.
+/// Headless snapshot readiness for the dispatcher's actual owned page-image planner.
+/// Screens read that Dispatcher's PageImageRead next tick; there is no test/global publisher.
 #[derive(Default)]
 pub(super) struct DipImage {
-    image: PageImage,
     valid: bool,
 }
 
 impl DipImage {
-    /// The paint the frame `d` just ran (at `ms`) gets, and `page_image_held` for the next tick.
-    /// `None` when no page is on top.
-    pub(super) fn plan(&mut self, d: &Dispatcher<AppHost>, ms: u32) -> Option<PagePaint> {
+    pub(super) fn plan(&mut self, d: &mut Dispatcher<AppHost>, ms: u32) -> Option<PagePaint> {
         let quiescent = !plx_machine::motion::report::page_layout_moving();
-        let transition = &d.nav.tabs.stack.transition;
-        let (alpha, flight) = (transition.page_alpha(), transition.in_flight());
-        let entry = d.nav.top_page().map(|e| e.id)?;
-        let paint = self.image.plan(entry, flight, alpha, ms, self.valid, quiescent);
-        match paint {
-            PagePaint::Capture => { self.image.captured(entry); self.valid = true; }
-            PagePaint::ReplacementCapture => { self.image.replacement_captured(entry); self.valid = true; }
-            PagePaint::Live => { self.image = PageImage::default(); self.valid = false; }
-            PagePaint::Held(_) => {}
-        }
-        plx_ui::containers::transition::set_page_image_held(!matches!(paint, PagePaint::Live));
+        let paint = d.plan_page_image_for_test(ms, self.valid, quiescent)?;
+        self.valid = !matches!(paint, PagePaint::Live);
         Some(paint)
     }
-}
-
-/// The page image a test leaves behind must not be the next test's (`PAGE_IMAGE_HELD` is a
-/// thread-local the dispatcher sets and the screens read on their next tick).
-pub(super) struct ImageHeld;
-
-impl Drop for ImageHeld {
-    fn drop(&mut self) { plx_ui::containers::transition::set_page_image_held(false); }
 }
 
 /// Puts a preview back to Idle when the test ends, however it ends (the machine is process-wide,
@@ -232,13 +209,13 @@ impl Drop for PreviewReset {
 /// has no network to ask): enough that the Library header's Collections control is on the row.
 pub(crate) const RIG_COLLECTIONS: u32 = 4;
 
-impl Bridge {
+impl Bridge<'_> {
     /// Seed the Collections probe's `answer` for every section of the directory captured now (the
     /// probe never reaches a server under test, `collections_probe::seed_for_test`), replacing the
     /// rig's earlier seeds: `Count(n)` puts the control on the Library header, `Count(0)` or
     /// `Forbidden` takes it off, `Unknown` is a probe that has not answered.
     pub(crate) fn seed_collections_for_test(&self, answer: plx_plex::plex::collections::CollectionsCount) {
-        for section in self.directory.view().sections() {
+        for section in self.retained.directory.view().sections() {
             if let Some(sid) = section.sid { crate::app::collections_probe::seed_for_test(sid, section.key, answer); }
         }
     }
@@ -275,7 +252,8 @@ impl World {
         let shared = plx_plex::plex::register_for_test("route-shared", "127.0.0.1", 10, "synthetic", "fixture");
         plx_plex::plex::set_current(own);
         let d = Dispatcher::<AppHost>::new();
-        let mut bridge = Bridge::for_test(|| 0);
+        let mut owner = Harness::new(|| 0);
+        let mut bridge = owner.bridge();
         bridge.stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
         // "Film Club" beside "Movies": the header then names two libraries (one library draws no
         // names, no plate and no scroll capsule).
@@ -293,7 +271,8 @@ impl World {
                 browse.seed_landscape_for_test(0, "Synthetic show");
             }
         }
-        World { d, bridge, frame: 0, pump: Pump::new(), performed: Vec::new(), feed: None, own, script: None,
+        drop(bridge);
+        World { d, bridge: owner, frame: 0, pump: Pump::new(), performed: Vec::new(), feed: None, own, script: None,
             _session: session, _serial: serial }
     }
 
@@ -310,7 +289,7 @@ impl World {
     /// that answer.
     pub(super) fn movies_library_answering(name: &str, answer: plx_plex::plex::collections::CollectionsCount) -> World {
         let mut w = Self::build(name, false);
-        w.bridge.seed_collections_for_test(answer);
+        w.bridge.bridge().seed_collections_for_test(answer);
         w.open_library();
         w
     }
@@ -318,7 +297,7 @@ impl World {
     /// The Movies library showing its section's EPISODES listing (the landscape stills), settled.
     pub(super) fn episodes_library(name: &str) -> World {
         let mut w = Self::movies_library(name, false);
-        w.bridge.stores.browse.borrow_mut().seed_episodes_for_test(60);
+        w.bridge.bridge().stores.browse.borrow_mut().seed_episodes_for_test(60);
         w.frames(60);
         w
     }
@@ -343,7 +322,7 @@ impl World {
     /// listing held LOADING (the Library under it is answered, and the rig's probe is seeded with a count, so the control is there to press).
     pub(super) fn collections_loading(name: &str) -> World {
         let mut w = Self::movies_library(name, false);
-        w.bridge.stores.browse.borrow_mut().hold_listing_for_test();
+        w.bridge.bridge().stores.browse.borrow_mut().hold_listing_for_test();
         w.open_from_header(8, AppArg::LibraryCollections { section: 0 });
         w
     }
@@ -353,7 +332,7 @@ impl World {
         let mut w = Self::movies_library(name, two_libraries);
         w.open_from_header(8, AppArg::LibraryCollections { section: 0 });
         // The page asked the store for its own listing; its answer is what it shows.
-        w.bridge.stores.browse.borrow_mut().seed_items_for_test(120);
+        w.bridge.bridge().stores.browse.borrow_mut().seed_items_for_test(120);
         w.frames(60);
         w
     }
@@ -369,7 +348,8 @@ impl World {
     /// The first hubs of the section the Recommended page waits for: the six shelves and the
     /// landscape hero `build_shelves` seeds for a shelved world.
     pub(super) fn land_shelves(&mut self) {
-        let mut browse = self.bridge.stores.browse.borrow_mut();
+        let bridge = self.bridge.bridge();
+        let mut browse = bridge.stores.browse.borrow_mut();
         browse.seed_shelves_for_test(0, &["One", "Two", "Three", "Four", "Five", "Six"], 3);
         browse.seed_landscape_for_test(0, "Synthetic show");
     }
@@ -400,19 +380,19 @@ impl World {
 
     /// The held read of [`Self::watchlist_loading`] answers.
     pub(super) fn land_watchlist(&mut self) {
-        super::watchlist_press_tests::release_reads(&mut self.bridge);
+        super::watchlist_press_tests::release_reads(&mut self.bridge.bridge());
     }
 
     fn watchlist_built(name: &str, script: std::sync::Arc<super::watchlist_press_tests::Script>, held: bool) -> World {
         let (serial, session) = Self::lock(name);
         let (d, mut bridge) = super::watchlist_press_tests::rig_over(&script);
-        if held { super::watchlist_press_tests::hold_reads(&mut bridge); }
+        if held { super::watchlist_press_tests::hold_reads(&mut bridge.bridge()); }
         let mut w = World { d, bridge, frame: 1, pump: Pump::new(), performed: Vec::new(), own: plx_plex::plex::ServerId::UNSET,
             script: Some(script), _session: session, _serial: serial, feed: Some(|d, bridge| {
                 bridge.watchlist_pump();
                 bridge.watchlist_feed(d);
             }) };
-        super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Watchlist, None, None);
+        super::nav_tab(&mut w.d, &mut w.bridge.bridge(), HomeTab::Watchlist, None, None);
         w.frames(120);
         assert!(w.on(&AppArg::Watchlist), "premise: the Watchlist is on top");
         w
@@ -423,8 +403,8 @@ impl World {
     /// settled. The Home and Detail discs are fed as the loop feeds them (`catalog_feed`).
     pub(super) fn home_with_disc(name: &str, hero: [u8; 12]) -> World {
         let mut w = Self::scripted(name);
-        w.bridge.stores.hubs.seed_for_test(1, plx_data::pms::HubState::Ready);
-        plx_data::pms::edit_test_item(w.bridge.stores.hubs.state_mut(), "1", &|m| { m.kind = 0; m.guid = Some(hero); });
+        w.bridge.bridge().stores.hubs.seed_for_test(1, plx_data::pms::HubState::Ready);
+        plx_data::pms::edit_test_item(w.bridge.bridge().stores.hubs.state_mut(), "1", &|m| { m.kind = 0; m.guid = Some(hero); });
         w.mount_home()
     }
 
@@ -432,7 +412,7 @@ impl World {
     /// world is the Home-disc one (a scripted plex.tv), the one Home mount the rig has with no library registry.
     pub(super) fn home_grid(name: &str, rows: usize, cols: usize) -> World {
         let mut w = Self::scripted(name);
-        w.bridge.stores.hubs.seed_grid_for_test(rows, cols);
+        w.bridge.bridge().stores.hubs.seed_grid_for_test(rows, cols);
         w.mount_home()
     }
 
@@ -493,7 +473,7 @@ impl World {
         super::show_page(&mut w.d, AppArg::Home);
         w.frames(20);
         // Installed BEFORE the mount: the page keys its element identities from the item it finds current.
-        plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(), Some(detail));
+        plx_data::metadata::set_current_for_test(w.bridge.bridge().stores.metadata.state_mut(), Some(detail));
         super::nav_push_with_return(&mut w.d, arg.clone(), Default::default());
         w.frames(60);
         assert!(w.on(&arg), "premise: the Detail page is on top");
@@ -505,9 +485,12 @@ impl World {
     pub(super) fn search_results(name: &str, shelves: impl FnOnce(plx_plex::plex::ServerId) -> Vec<plx_data::search::Shelf>) -> World {
         let mut w = Self::new(name);
         super::show_page(&mut w.d, AppArg::Search);
-        w.bridge.search_run(plx_data::stores::search::SearchCmd::SetQuery("synthetic".into()));
+        w.bridge.bridge().search_run(plx_data::stores::search::SearchCmd::SetQuery("synthetic".into()));
         let shelves = shelves(w.own);
-        w.bridge.stores.search.publish_shelves_over_directory_for_test(shelves, w.bridge.directory.view());
+        {
+            let bridge = w.bridge.bridge();
+            bridge.stores.search.publish_shelves_over_directory_for_test(shelves, bridge.retained.directory.view());
+        }
         w.frames(60);
         assert!(w.on(&AppArg::Search), "premise: Search is on top");
         w
@@ -519,8 +502,8 @@ impl World {
         let mut w = Self::new(name);
         super::show_page(&mut w.d, person_arg("actor-a"));
         w.frames(30);
-        w.bridge.stores.person.install_for_test(movies, shows);
-        w.bridge.stores.person.install_roles_for_test(0, movie_roles.iter().map(|r| (*r).to_owned()).collect());
+        w.bridge.bridge().stores.person.install_for_test(movies, shows);
+        w.bridge.bridge().stores.person.install_roles_for_test(0, movie_roles.iter().map(|r| (*r).to_owned()).collect());
         w.frames(60);
         w
     }
@@ -547,12 +530,13 @@ impl World {
     /// for [`Self::press`] to return.
     pub(super) fn step(&mut self, inputs: Vec<InputEvent<u32>>) {
         self.frame += 1;
-        if let Some(feed) = self.feed { feed(&mut self.d, &mut self.bridge); }
-        if self.script.is_some() { self.bridge.store_runner.run_held_watchlist_writes(); }
+        let mut bridge = self.bridge.bridge();
+        if let Some(feed) = self.feed { feed(&mut self.d, &mut bridge); }
+        if self.script.is_some() { bridge.store_runner.run_held_watchlist_writes(); }
         plx_machine::motion::report::frame_begin(0.016);
-        super::frame(&mut self.d, &mut self.bridge, tick(self.frame), inputs);
+        super::frame(&mut self.d, &mut bridge, tick(self.frame), inputs);
         let now = self.frame * 16;
-        self.performed.extend(self.pump.run(&mut self.d, &mut self.bridge, now));
+        self.performed.extend(self.pump.run(&mut self.d, &mut bridge, now));
     }
 
     pub(super) fn frames(&mut self, n: u32) {
@@ -564,7 +548,7 @@ impl World {
     /// page is on top.
     pub(super) fn step_dip(&mut self, dip: &mut DipImage, inputs: Vec<InputEvent<u32>>) -> Option<PagePaint> {
         self.step(inputs);
-        dip.plan(&self.d, self.frame * 16)
+        dip.plan(&mut self.d, self.frame * 16)
     }
 
     /// `n` idle frames, after the store workers the press started have finished; returns what the
@@ -615,7 +599,7 @@ impl World {
         let runs = plx_ui::draw_census::capture_runs(|| {
             let _declarations = backdrop::discover(sources.clone());
             words = plx_ui::draw_census::capture_text(|| {
-                self.d.draw_with_glass_below(&mut self.bridge, &mut glass, true, backdrop::Z::ALL);
+                self.d.draw_with_glass_below(&mut self.bridge.bridge(), &mut glass, true, backdrop::Z::ALL);
             });
         });
         sources.borrow_mut().resolve();
@@ -628,7 +612,7 @@ impl World {
     /// the page's own stops are not in this map; the bar's are, and they are the ones `Dispatcher::draw`
     /// registers, from the page's real `chrome_tuck` and the application's real strip members.
     pub(super) fn present_bar(&mut self) {
-        self.d.present_bar_stops(&self.bridge);
+        self.d.present_bar_stops(&self.bridge.bridge());
     }
 
     /// A pointer click at `(x, y)`, then enough frames for the press and what it opens to play out.
@@ -662,7 +646,7 @@ impl World {
     pub(super) fn open_library(&mut self) {
         super::show_page(&mut self.d, AppArg::Home);
         self.frames(40);
-        super::nav_tab(&mut self.d, &mut self.bridge, HomeTab::Movies, None, None);
+        super::nav_tab(&mut self.d, &mut self.bridge.bridge(), HomeTab::Movies, None, None);
         self.frames(90);
         assert!(self.on(&AppArg::Library), "premise: the library is on top");
     }
@@ -708,14 +692,26 @@ impl World {
     }
 
     /// The server and ratingKey of the Home card holding focus (`None` while focus is elsewhere).
+    pub(super) fn with_home<R>(&self, f: impl for<'a> FnOnce(&plx_screens::home::HomeScreen,
+        &'a Cx<'a, AppHost>, Option<FocusKey<u32>>) -> R) -> Option<R> {
+        let entry = self.d.nav.top_page()?;
+        let home = entry.inst.as_ref()?.screen.as_any()?.downcast_ref::<plx_screens::home::HomeScreen>()?;
+        let focus = Bridge::home_focus(&self.d);
+        let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
+            focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry.id),
+            ..self.d.parts(Tick::default()) };
+        let cx = parts.cx::<AppHost>(self.bridge.views(), &self.bridge.retained().measure);
+        Some(f(home, &cx, focus))
+    }
+
     pub(super) fn home_focused_item(&self) -> Option<(plx_plex::plex::ServerId, String)> {
-        self.bridge.with_home(&self.d, |home, cx, focus| home.focused_item::<super::AppHost>(focus, cx)
+        self.with_home(|home, cx, focus| home.focused_item::<super::AppHost>(focus, cx)
             .map(|item| (item.sid, item.rk.clone()))).expect("Home is the top page")
     }
 
     /// The Home card holding focus: its `(row, col)` in the grid and its ratingKey (`None` while focus is elsewhere).
     pub(super) fn home_card(&self) -> (Option<(usize, usize)>, Option<String>) {
-        self.bridge.with_home(&self.d, |home, cx, focus| (home.grid_position::<super::AppHost>(focus, cx),
+        self.with_home(|home, cx, focus| (home.grid_position::<super::AppHost>(focus, cx),
             home.focused_item::<super::AppHost>(focus, cx).map(|item| item.rk.clone()))).expect("Home is the top page")
     }
 
@@ -913,7 +909,7 @@ impl Drop for Pms {
     }
 }
 
-impl Bridge {
+impl Bridge<'_> {
     /// Seat the plex.tv account a Watchlist rig scripts: the Bridge reads the registry for the identity
     /// it hands the stores (`Bridge::watchlist_input`), so the rig publishes a profile (with the
     /// plex.tv credential when `credential`) and, where the test holds no scratch session of its own,
@@ -921,7 +917,7 @@ impl Bridge {
     pub(crate) fn seat_watchlist_account_for_test(&mut self, credential: bool) {
         use plx_plex::plex::session;
         if session::peek().client_id.is_empty() {
-            self.watchlist_session = Some(session::TempSession::new("watchlist-account"));
+            self.retained.watchlist_session = Some(session::TempSession::new("watchlist-account"));
         }
         let user = session::UserRef {
             plex_tv_token: credential.then(|| "synthetic-credential".to_owned()),

@@ -61,7 +61,8 @@ fn every_back_reachable_owned_page_is_retained_and_restored_by_identity() {
 
     for host in ["home", "library", "detail", "person"] {
         let mut d = Dispatcher::<AppHost>::new();
-        let mut rig = Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         let mut ms = 0;
         super::nav_root(&mut d, AppArg::Home);
         super::frame(&mut d, &mut rig, tick(ms), vec![]);
@@ -152,7 +153,8 @@ fn owned_search_is_covered_for_a_result_then_unmounted_for_good_at_home() {
     session.watching("synthetic-search-leave-contract");
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
 
     super::nav_root(&mut d, AppArg::Home);
     super::frame(&mut d, &mut rig, tick(0), vec![]);
@@ -169,7 +171,7 @@ fn owned_search_is_covered_for_a_result_then_unmounted_for_good_at_home() {
 
     super::frame(&mut d, &mut rig, tick(2), script_key(Key::Ok, tick(2)));
     assert!(d.input.keyboard);
-    assert_eq!(rig.keyboard_calls, [true]);
+    assert_eq!(rig.retained.keyboard_calls, [true]);
 
     let mut covered = OwnedLeaveTrace::default();
     super::nav_push(&mut d, detail_arg("search-result"));
@@ -177,7 +179,7 @@ fn owned_search_is_covered_for_a_result_then_unmounted_for_good_at_home() {
     assert_eq!(covered.for_instance(search_instance), ["will-leave-deeper", "cover"]);
     assert_eq!(d.nav.instance_of(search_entry), Some(search_instance));
     assert!(!d.input.keyboard, "Cover must lower Search's keyboard while its instance is retained");
-    assert_eq!(rig.keyboard_calls, [true, false]);
+    assert_eq!(rig.retained.keyboard_calls, [true, false]);
 
     let result_instance = d.nav.instance_of(d.nav.top_page().unwrap().id).unwrap();
     let mut return_to_search = OwnedLeaveTrace::default();
@@ -190,7 +192,7 @@ fn owned_search_is_covered_for_a_result_then_unmounted_for_good_at_home() {
 
     super::frame(&mut d, &mut rig, tick(5), script_key(Key::Ok, tick(5)));
     assert!(d.input.keyboard);
-    assert_eq!(rig.keyboard_calls, [true, false, true]);
+    assert_eq!(rig.retained.keyboard_calls, [true, false, true]);
     let mut left = OwnedLeaveTrace::default();
     // Re-pressing the Home pill: `NavOp::SelectTab(Home)` is a `PopTo(root)` because Home is
     // already the root underneath Search — it is what retires Search for good and restores the
@@ -206,7 +208,7 @@ fn owned_search_is_covered_for_a_result_then_unmounted_for_good_at_home() {
     assert_eq!(d.nav.instance_of(home_entry), Some(home_instance),
         "Home is the retained root instance");
     assert!(!d.input.keyboard);
-    assert_eq!(rig.keyboard_calls, [true, false, true, false]);
+    assert_eq!(rig.retained.keyboard_calls, [true, false, true, false]);
 
     plx_plex::plex::reset_servers_for_test();
 }
@@ -216,10 +218,11 @@ fn owned_search_external_departure_never_submits_the_draft() {
     let _serial = plx_base::testlock::serial();
     let session = plx_plex::plex::session::TempSession::new("owned-search-external-leave");
     session.watching("synthetic-external-leave");
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("unfinished draft".into()));
-    rig.search = { let household = rig.views().inputs.session.household_ids(); rig.stores.search_snapshot_for_test(rig.directory.view(), &household) };
-    let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
+    rig.retained.search = { let household = rig.views().inputs.session.household_ids(); rig.stores.search_snapshot_for_test(rig.retained.directory.view(), &household) };
+    let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: tick(0), press: Default::default(), focus: Default::default(),
         owner: InputOwner::Entry(EntryId(1)) };
     let split = rig.split();
     let cx = parts.cx::<AppHost>(split.views, split.measure);
@@ -247,8 +250,9 @@ fn owned_search_external_departure_never_submits_the_draft() {
 #[test]
 fn owned_search_ticks_request_search_work_once_after_step() {
     let _serial = plx_base::testlock::serial();
-    let mut rig = Bridge::for_test(|| 0);
-    let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
+    let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: tick(0), press: Default::default(), focus: Default::default(),
         owner: InputOwner::Entry(EntryId(1)) };
     let split = rig.split();
     let cx = parts.cx::<AppHost>(split.views, split.measure);
@@ -274,7 +278,8 @@ fn owned_search_wheel_scrolls_without_moving_focus_and_dpad_reveals_again() {
     session.watching("synthetic-wheel");
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("wheel".into()));
     rig.stores.search.publish_shelves_for_test([plx_data::search::Kind::Movie, plx_data::search::Kind::Show,
         plx_data::search::Kind::Episode].into_iter().map(|kind| plx_data::search::Shelf { epoch: 0, window: Default::default(), kind,
@@ -284,9 +289,9 @@ fn owned_search_wheel_scrolls_without_moving_focus_and_dpad_reveals_again() {
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     let field = d.focus().unwrap();
     let field_y = |d: &Dispatcher<AppHost>, rig: &Bridge| {
-        let parts = CxParts { tick: tick(0), press: Default::default(),
+        let parts = CxParts { modal: d.modal_presentation().read, page_image: d.page_image_read(), hold_hint: d.input.hold_hint, tick: tick(0), press: Default::default(),
             focus: d.input.engine.read(InputOwner::Entry(field.entry)), owner: InputOwner::Entry(field.entry) };
-        let cx = parts.cx::<AppHost>(rig.views_with(plx_media::route::idle_session_for_test()), &rig.measure);
+        let cx = parts.cx::<AppHost>(rig.views_with(plx_media::route::idle_session_for_test()), &rig.retained.measure);
         d.top_screen().unwrap().place(&field.elem, &cx, At::Drawn).unwrap().rest_rect.y
     };
     let before = field_y(&d, &rig);
@@ -296,7 +301,7 @@ fn owned_search_wheel_scrolls_without_moving_focus_and_dpad_reveals_again() {
     assert_eq!(d.focus(), Some(field));
     assert!(field_y(&d, &rig) < before - 10.0, "wheel motion persists after the next Tick");
     {
-        let parts = CxParts { tick: tick(79), press: Default::default(), focus: Default::default(),
+        let parts = CxParts { modal: d.modal_presentation().read, page_image: d.page_image_read(), hold_hint: d.input.hold_hint, tick: tick(79), press: Default::default(), focus: Default::default(),
             owner: InputOwner::Entry(field.entry) };
         let split = rig.split();
         let cx = parts.cx::<AppHost>(split.views, split.measure);
@@ -323,7 +328,8 @@ fn owned_search_dispatch_advances_debounce_once_and_only_while_page_updates() {
     session.watching("synthetic-debounce");
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("not sent to any server".into()));
     let step = |ms| Tick { ms, dt_us: 100_000 };
     frame(&mut d, &mut rig, AppArg::Search, Tick { ms: 0, dt_us: 0 }, vec![]);
@@ -348,7 +354,8 @@ fn owned_search_carried_work_keeps_the_originating_tick_delta() {
     session.watching("synthetic-carried-pump");
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("carried search".into()));
     frame(&mut d, &mut rig, AppArg::Search, Tick { ms: 0, dt_us: 0 }, vec![]);
     for ms in [100, 200] { frame(&mut d, &mut rig, AppArg::Search, Tick { ms, dt_us: 100_000 }, vec![]); }
@@ -374,16 +381,17 @@ fn owned_search_observed_keyboard_dismissal_releases_native_latch_and_reopens() 
     session.watching("synthetic-observed-dismissal");
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     let mut events = script_key(Key::Ok, tick(1));
     events.push(InputEvent { at: tick(1), source: Source::Sdl, kind: InputKind::SystemKeyboard(false) });
     frame(&mut d, &mut rig, AppArg::Search, tick(1), events);
     assert!(!d.input.keyboard);
-    assert_eq!(rig.keyboard_calls, [true, false], "the native STARTED latch must also be released");
+    assert_eq!(rig.retained.keyboard_calls, [true, false], "the native STARTED latch must also be released");
     frame(&mut d, &mut rig, AppArg::Search, tick(2), script_key(Key::Ok, tick(2)));
     assert!(d.input.keyboard);
-    assert_eq!(rig.keyboard_calls, [true, false, true]);
+    assert_eq!(rig.retained.keyboard_calls, [true, false, true]);
 }
 
 #[test]
@@ -393,7 +401,8 @@ fn owned_search_adopts_panel_text_without_restarting_or_losing_the_commit() {
     session.watching("synthetic-adopt-profile");
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("ab".into()));
     rig.stores.search.publish_shelves_for_test(vec![plx_data::search::Shelf { epoch: 0, window: Default::default(), kind: plx_data::search::Kind::Movie,
         items: vec![plx_data::search::Item::Media(plx_data::pms::PmsMovie {
@@ -410,15 +419,15 @@ fn owned_search_adopts_panel_text_without_restarting_or_losing_the_commit() {
         crate::app::events::text_inputs("X", true, tick(3), Source::Sdl));
     assert_eq!(rig.stores.search.query(), "abX");
     assert!(owned_search_probe(&d).contains("editing=true"));
-    assert_eq!(rig.keyboard_adoptions, 1);
+    assert_eq!(rig.retained.keyboard_adoptions, 1);
     assert_eq!(d.focus(), field, "adoption returns focus from results to the editing field");
-    assert!(rig.keyboard_calls.is_empty(), "adoption must not call start, which clears pending text");
+    assert!(rig.retained.keyboard_calls.is_empty(), "adoption must not call start, which clears pending text");
     let mut events = script_key(Key::Left, tick(4));
     events.extend(crate::app::events::text_inputs("Y", true, tick(4), Source::Sdl));
     frame(&mut d, &mut rig, AppArg::Search, tick(4), events);
     assert_eq!(rig.stores.search.query(), "abYX", "an already-editing field keeps its chosen caret");
-    assert_eq!(rig.keyboard_adoptions, 2);
-    assert!(rig.keyboard_calls.is_empty());
+    assert_eq!(rig.retained.keyboard_adoptions, 2);
+    assert!(rig.retained.keyboard_calls.is_empty());
 }
 
 #[test]
@@ -428,7 +437,8 @@ fn owned_search_opens_edits_and_closes_in_one_input_batch_in_order() {
     session.watching("synthetic-ingress-order");
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     let text = |s: &str, at| InputEvent { at, source: Source::Script,
         kind: InputKind::Text(plx_machine::machine::TextEdit::Commit(s.into())) };
@@ -438,12 +448,12 @@ fn owned_search_opens_edits_and_closes_in_one_input_batch_in_order() {
     events.push(text("b", tick(1)));
     frame(&mut d, &mut rig, AppArg::Search, tick(1), events);
     assert_eq!(rig.stores.search.query(), "ba");
-    assert_eq!(rig.keyboard_calls, [true]);
+    assert_eq!(rig.retained.keyboard_calls, [true]);
     let mut events = script_key(Key::Back, tick(2));
     events.push(text("x", tick(2)));
     frame(&mut d, &mut rig, AppArg::Search, tick(2), events);
     assert_eq!(rig.stores.search.query(), "ba", "desktop text after dismissal is not a new edit");
-    assert_eq!(rig.keyboard_calls, [true, false]);
+    assert_eq!(rig.retained.keyboard_calls, [true, false]);
 }
 
 #[test]
@@ -453,7 +463,8 @@ fn an_old_search_keyboard_request_cannot_close_the_new_instances_keyboard() {
     session.watching("synthetic-keyboard-owner");
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     let old = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     frame(&mut d, &mut rig, AppArg::Search, tick(1), script_key(Key::Ok, tick(1)));
@@ -463,7 +474,7 @@ fn an_old_search_keyboard_request_cannot_close_the_new_instances_keyboard() {
     let current = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
     assert_ne!(current, old);
     assert!(!d.input.keyboard, "the departing owner can release its keyboard after navigation commits");
-    assert_eq!(rig.keyboard_calls, [true, false]);
+    assert_eq!(rig.retained.keyboard_calls, [true, false]);
     frame(&mut d, &mut rig, AppArg::Search, tick(3), script_key(Key::Ok, tick(3)));
     assert!(d.input.keyboard);
     assert_eq!(d.input.keyboard_owner, Some(current));
@@ -473,10 +484,10 @@ fn an_old_search_keyboard_request_cannot_close_the_new_instances_keyboard() {
     d.emit(MachineId::Instance(old), Fx::Deliver(MachineId::Instance(old), Delivery::Keyboard { up: true }));
     frame(&mut d, &mut rig, AppArg::Search, tick(5), vec![]);
     assert_eq!(d.input.keyboard_owner, Some(current));
-    assert_eq!(rig.keyboard_calls, [true, false, true], "rejected requests must not reach the native adapter");
+    assert_eq!(rig.retained.keyboard_calls, [true, false, true], "rejected requests must not reach the native adapter");
     frame(&mut d, &mut rig, AppArg::Search, tick(6), script_key(Key::Back, tick(6)));
     assert!(!d.input.keyboard, "the current instance can still dismiss its own keyboard");
-    assert_eq!(rig.keyboard_calls, [true, false, true, false]);
+    assert_eq!(rig.retained.keyboard_calls, [true, false, true, false]);
 }
 
 #[test]
@@ -486,15 +497,16 @@ fn covering_owned_search_releases_its_native_keyboard() {
     session.watching("synthetic-covered-search");
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     frame(&mut d, &mut rig, AppArg::Search, tick(1), script_key(Key::Ok, tick(1)));
-    assert_eq!(rig.keyboard_calls, [true]);
+    assert_eq!(rig.retained.keyboard_calls, [true]);
     d.request(MachineId::Nav, NavOp::Present(AppArg::Settings(plx_screens::family::SettingsPage::Root)));
     frame(&mut d, &mut rig, AppArg::Search, tick(2), vec![]);
     assert!(!d.input.keyboard, "the system keyboard cannot trap input above a new application modal");
     assert!(d.input.keyboard_owner.is_none());
-    assert_eq!(rig.keyboard_calls, [true, false]);
+    assert_eq!(rig.retained.keyboard_calls, [true, false]);
 }
 
 #[test]
@@ -504,7 +516,8 @@ fn owned_search_unrelated_store_notice_cannot_ack_a_net_zero_edit_batch() {
     session.watching("synthetic-ack-profile");
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     let target = MachineId::Instance(d.nav.top_page().unwrap().inst.as_ref().unwrap().id);
     for kind in [InputKind::SystemKeyboard(true),
@@ -531,10 +544,11 @@ fn owned_search_keeps_several_commits_while_the_frame_view_is_frozen() {
     session.watching("synthetic-search-profile");
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     assert!(owned_search_probe(&d).contains("pending=false"));
-    let retained = rig.search.clone();
+    let retained = rig.retained.search.clone();
     let mut input = vec![InputEvent { at: tick(1), source: Source::Script, kind: InputKind::SystemKeyboard(true) }];
     input.extend(["s", "u", "m", "summer "].map(|text| InputEvent {
         at: tick(1), source: Source::Script, kind: InputKind::Text(plx_machine::machine::TextEdit::Commit(text.into())),
@@ -542,10 +556,10 @@ fn owned_search_keeps_several_commits_while_the_frame_view_is_frozen() {
     frame(&mut d, &mut rig, AppArg::Search, tick(1), input);
     assert_eq!(rig.stores.search.query(), "summer ", "the real store received every committed edit");
     assert_eq!(retained.view().query(), "");
-    assert_eq!(rig.search.view().query(), "", "this frame still has its original immutable view");
+    assert_eq!(rig.retained.search.view().query(), "", "this frame still has its original immutable view");
     assert!(owned_search_probe(&d).contains("pending=true"));
     frame(&mut d, &mut rig, AppArg::Search, tick(2), vec![]);
-    assert_eq!(rig.search.view().query(), "summer ");
+    assert_eq!(rig.retained.search.view().query(), "summer ");
     assert!(owned_search_probe(&d).contains("pending=false"));
     assert!(owned_search_probe(&d).contains("caret=7"));
 }
@@ -557,7 +571,8 @@ fn owned_search_opens_system_ownership_and_empty_down_keeps_editing() {
     session.watching("synthetic-empty-search-profile");
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     frame(&mut d, &mut rig, AppArg::Search, tick(1), script_key(Key::Ok, tick(1)));
     assert!(d.input.keyboard);
@@ -594,7 +609,8 @@ fn owned_search_result_keys_are_server_scoped_and_survive_same_query_reordering(
         sid, rk: "same-local-key".into(), title: "Synthetic movie".into(), ..Default::default()
     });
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("synthetic".into()));
     rig.stores.search.publish_shelves_for_test(vec![plx_data::search::Shelf { epoch: 0, window: Default::default(), kind: plx_data::search::Kind::Movie,
         items: vec![item(a), item(b)] }]);
@@ -613,16 +629,16 @@ fn owned_search_result_keys_are_server_scoped_and_survive_same_query_reordering(
     for i in 5..35 { super::frame(&mut d, &mut rig, tick(i), vec![]); }
     assert!(matches!(d.top_arg(), Some(AppArg::Content(ContentArg::Detail { sid, rk }))
         if *sid == b && rk == "same-local-key"), "the selected server's detail actually opens");
-    assert_eq!(rig.completed_screen_commands.iter().filter(|label| label.starts_with("search:Detail")).count(),
+    assert_eq!(rig.retained.completed_screen_commands.iter().filter(|label| label.starts_with("search:Detail")).count(),
         1, "the command executes once across later frames");
     let ret = &d.nav.entry(entry).expect("Search retained below Detail").ret;
     let (selected, opener) = rig.search_selection(&d, entry, ret.focus).unwrap();
     assert!(matches!(selected, plx_data::search::Item::Media(item) if item.sid == b));
     let page = d.nav.entry(entry).unwrap().inst.as_ref().unwrap().screen.as_any().unwrap()
         .downcast_ref::<plx_screens::search::SearchScreen>().unwrap();
-    let parts = CxParts { tick: Tick::default(), press: Default::default(),
+    let parts = CxParts { modal: d.modal_presentation().read, page_image: d.page_image_read(), hold_hint: d.input.hold_hint, tick: Tick::default(), press: Default::default(),
         focus: plx_machine::machine::FocusRead { current: ret.focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
-    let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
+    let cx = parts.cx::<AppHost>(rig.views(), &rig.retained.measure);
     let placed = page.place(&ret.focus.unwrap().elem, &cx, At::Drawn).unwrap();
     assert_eq!(opener.rect, Some(placed.rest_rect), "the anchor is the settled rect `place` answers, as the downcast path read it");
     let mut foreign = ret.focus.unwrap();
@@ -633,7 +649,7 @@ fn owned_search_result_keys_are_server_scoped_and_survive_same_query_reordering(
     assert_eq!(d.nav.top_page().unwrap().id, entry, "BACK restores the original Search owner");
     super::frame(&mut d, &mut rig, tick(65), script_key(Key::Back, tick(65)));
     for i in 66..96 { super::frame(&mut d, &mut rig, tick(i), vec![]); }
-    assert!(rig.completed_screen_commands.iter().any(|label| label == "search:Back"),
+    assert!(rig.retained.completed_screen_commands.iter().any(|label| label == "search:Back"),
         "BACK differs from selecting the Home pill");
     assert!(d.top_arg() == Some(&AppArg::Home));
     plx_plex::plex::reset_servers_for_test();
@@ -647,7 +663,8 @@ fn owned_search_rejects_a_queued_query_from_the_departing_profile() {
     plx_plex::plex::reset_servers_for_test();
     let old_generation = plx_plex::plex::session::current_gen();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     d.emit(MachineId::Input, Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(
         plx_data::stores::search::SearchCmd::SetQueryScoped { profile_generation: old_generation, query: "departing text".into() }))));
@@ -676,7 +693,8 @@ fn owned_search_return_memory_reconstructs_positions_with_a_query_guard() {
             rk: format!("item-{i}"), title: format!("Synthetic {i}"), ..Default::default()
         })).collect() }];
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("memory".into()));
     rig.stores.search.publish_shelves_for_test(catalog());
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
@@ -686,9 +704,9 @@ fn owned_search_return_memory_reconstructs_positions_with_a_query_guard() {
     let ret = d.return_state();
     let key = ret.focus.unwrap();
     let memory = match &ret.memory { PageMemory::Search(memory) => memory, _ => panic!("Search must supply entry memory") };
-    let parts = CxParts { tick: tick(100), press: Default::default(), focus: d.input.engine.read(InputOwner::Entry(key.entry)), owner: InputOwner::Entry(key.entry) };
+    let parts = CxParts { modal: d.modal_presentation().read, page_image: d.page_image_read(), hold_hint: d.input.hold_hint, tick: tick(100), press: Default::default(), focus: d.input.engine.read(InputOwner::Entry(key.entry)), owner: InputOwner::Entry(key.entry) };
     let old_rect = {
-        let cx = parts.cx::<AppHost>(rig.views_with(plx_media::route::idle_session_for_test()), &rig.measure);
+        let cx = parts.cx::<AppHost>(rig.views_with(plx_media::route::idle_session_for_test()), &rig.retained.measure);
         d.top_screen().unwrap().place(&key.elem, &cx, At::Drawn).unwrap().rest_rect
     };
     assert!(old_rect.x < 1800.0, "the last card must have scrolled into view: {old_rect:?}");
@@ -696,9 +714,9 @@ fn owned_search_return_memory_reconstructs_positions_with_a_query_guard() {
         if changed {
             rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("replacement".into()));
             rig.stores.search.publish_shelves_for_test(catalog());
-            rig.search = { let household = rig.views().inputs.session.household_ids(); rig.stores.search_snapshot_for_test(rig.directory.view(), &household) };
+            rig.retained.search = { let household = rig.views().inputs.session.household_ids(); rig.stores.search_snapshot_for_test(rig.retained.directory.view(), &household) };
         }
-        let cx = parts.cx::<AppHost>(rig.views_with(plx_media::route::idle_session_for_test()), &rig.measure);
+        let cx = parts.cx::<AppHost>(rig.views_with(plx_media::route::idle_session_for_test()), &rig.retained.measure);
         let mut restored = plx_screens::search::SearchScreen::new(key.entry, InstanceId(900));
         restored.restore(memory);
         let mut present = plx_machine::present::Present::new();
@@ -730,7 +748,8 @@ fn owned_search_walks_the_shared_strip_to_the_chip_and_back_to_the_field() {
     session.watching("synthetic-strip");
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     let field = d.focus().unwrap();
     let base = plx_ui::dispatch::STRIP_BASE;
@@ -780,7 +799,8 @@ fn a_seeded_boot_query_survives_the_freshly_mounted_screens_first_sync() {
     session.watching("synthetic-boot-seed");
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     crate::dev::scenarios::apply_search_boot_trigger("dune", &mut d, &mut rig);
     rig.stores.search.publish_shelves_for_test([plx_data::search::Kind::Movie].into_iter()
         .map(|kind| plx_data::search::Shelf { epoch: 0, window: Default::default(), kind, items: vec![plx_data::search::Item::Media(
@@ -823,18 +843,19 @@ fn leaving_owned_search_through_a_real_route_change_releases_its_keyboard() {
     session.watching("synthetic-real-nav-teardown");
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     frame(&mut d, &mut rig, AppArg::Search, tick(1), script_key(Key::Ok, tick(1)));
     assert!(d.input.keyboard, "OK on the field opens the television's keyboard");
-    assert_eq!(rig.keyboard_calls, [true]);
+    assert_eq!(rig.retained.keyboard_calls, [true]);
     // The real navigation: nothing here names a teardown table or the retired legacy screen's own
     // `leave()` — the test driver asks the CONTAINER for the page (`goto` → `show_page`) and
     // everything after that is production's own frame.
     frame(&mut d, &mut rig, AppArg::Home, tick(2), vec![]);
     assert!(!d.input.keyboard,
         "the generic Unmount lifecycle must dismiss Search's keyboard with no bespoke teardown");
-    assert_eq!(rig.keyboard_calls, [true, false]);
+    assert_eq!(rig.retained.keyboard_calls, [true, false]);
 }
 
 /// **Regression: Search wears the shared top bar but `Bridge::draw_chrome` used to return before
@@ -1013,7 +1034,8 @@ fn owned_search_content_probe_reports_zone_row_col_pill_and_card_as_focus_moves(
     session.watching("synthetic-fingerprint");
     plx_plex::plex::reset_servers_for_test();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("fingerprint".into()));
     rig.stores.search.publish_shelves_for_test(vec![plx_data::search::Shelf { epoch: 0, window: Default::default(), kind: plx_data::search::Kind::Movie,
         items: vec![plx_data::search::Item::Media(plx_data::pms::PmsMovie {
@@ -1078,7 +1100,8 @@ fn owned_search_ok_on_a_collection_requests_its_collection_page() {
             kind: plx_data::pms::KIND_COLLECTION, ..Default::default() },
         tag: 7 });
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("synthetic".into()));
     rig.stores.search.publish_shelves_for_test(vec![plx_data::search::Shelf { epoch: 0, window: Default::default(),
         kind: plx_data::search::Kind::Collection, items: vec![hit] }]);
@@ -1089,8 +1112,8 @@ fn owned_search_ok_on_a_collection_requests_its_collection_page() {
     for i in 3..33 { super::frame(&mut d, &mut rig, tick(i), vec![]); }
     assert!(matches!(d.top_arg(), Some(AppArg::Content(ContentArg::Collection(c)))
         if c.sid == a && c.rk == "50007" && c.tag == 7), "OK actually opens the collection, never item detail");
-    assert_eq!(rig.completed_screen_commands.iter().filter(|label| label.starts_with("search:Collection")).count(), 1);
-    assert!(!rig.completed_screen_commands.iter().any(|label| label.starts_with("search:Detail")));
+    assert_eq!(rig.retained.completed_screen_commands.iter().filter(|label| label.starts_with("search:Collection")).count(), 1);
+    assert!(!rig.retained.completed_screen_commands.iter().any(|label| label.starts_with("search:Detail")));
     let ret = &d.nav.entry(entry).expect("Search retained below Collection").ret;
     let (selected, _) = rig.search_selection(&d, entry, ret.focus).unwrap();
     assert!(matches!(selected, plx_data::search::Item::Collection(c) if c.item.rk == "50007"));

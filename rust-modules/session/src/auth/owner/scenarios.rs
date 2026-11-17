@@ -32,6 +32,7 @@ pub fn step_at(owner: &mut SessionMachine, event: SessionEvent, ms: u32) -> Vec<
     let publication = owner.publication();
     let cx = Cx::<OwnerHost> { views: publication.read(), tick: Tick { ms, ..Tick::default() },
         measure: &plx_machine::machine::BareMeasure, press: Default::default(),
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
     let mut present = plx_machine::present::Present::new();
     let mut effects = Vec::new();
@@ -39,7 +40,7 @@ pub fn step_at(owner: &mut SessionMachine, event: SessionEvent, ms: u32) -> Vec<
     effects.into_iter().map(|effect| match effect.fx {
         Fx::App(effect) => effect,
         Fx::Nav(_) | Fx::Mount(_) | Fx::Unmount(_) | Fx::Deliver(..) | Fx::Timer { .. }
-        | Fx::CancelTimer(_) | Fx::Press(_) | Fx::Remember { .. } | Fx::Log(_) =>
+        | Fx::CancelTimer(_) | Fx::Press(_) | Fx::Remember { .. } | Fx::HoldHint(_) | Fx::Log(_) =>
             panic!("Session emitted a non-domain effect"),
     }).collect()
 }

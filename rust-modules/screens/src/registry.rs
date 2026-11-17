@@ -84,11 +84,96 @@ pub enum AppFx {
     Huds(HudCmd),
 }
 
+/// Operations executed while the dispatcher holds only logical owner borrows.
+pub enum InlineAppFx {
+    Session(plx_session::auth::SessionCmd),
+    PlaybackTrace(plx_platform::playback_trace::Command),
+    Store(StoreId, StoreCmd),
+    StoreWork(StoreWork),
+    Consent(ConsentCmd),
+    Huds(HudCmd),
+}
+
+/// Commands borrowing the navigation/player resource bundle, never inline effects.
+pub enum ResourceAppFx {
+    Library(LibraryReq),
+    Home(HomeReq),
+    Content(ContentReq),
+    ItemMenu(ItemMenuReq),
+}
+
+/// Operations admitted outside machine borrows, at the retained FIFO head.
+/// Inline store work cannot be placed in a yielded envelope:
+/// ```compile_fail
+/// use plx_screens::registry::{ExternalAppFx, InlineAppFx};
+/// let inline = InlineAppFx::StoreWork(plx_data::stores::StoreWork::Browse);
+/// let _: ExternalAppFx = inline;
+/// ```
+/// External commands cannot be passed to the logical executor:
+/// ```compile_fail
+/// use plx_screens::registry::{ExternalAppFx, InlineAppFx, ContentReq};
+/// fn logical(_: InlineAppFx) {}
+/// logical(ExternalAppFx::Content(ContentReq::Back));
+/// ```
+pub enum ExternalAppFx {
+    SessionEffect(plx_session::auth::owner::SessionFx),
+    Preferences(PreferenceCmd),
+    Loop(LoopReq),
+    Content(ContentReq),
+    Home(HomeReq),
+    Library(LibraryReq),
+    Search(SearchReq),
+    Watchlist(crate::watchlist::page::WatchlistOut),
+    Catalog(crate::catalog::CatalogOut),
+    Player(PlayerReq),
+    ItemMenu(ItemMenuReq),
+}
+
+impl plx_machine::machine::AppEffect for AppFx {
+    type Inline = InlineAppFx;
+    type ExternalFx = ExternalAppFx;
+    fn route(self) -> plx_machine::machine::EffectDisposition<InlineAppFx, ExternalAppFx> {
+        use plx_machine::machine::EffectDisposition::{Inline, External};
+        match self {
+            Self::Session(v) => Inline(InlineAppFx::Session(v)),
+            Self::PlaybackTrace(v) => Inline(InlineAppFx::PlaybackTrace(v)),
+            Self::Store(id, v) => Inline(InlineAppFx::Store(id, v)),
+            Self::StoreWork(v) => Inline(InlineAppFx::StoreWork(v)),
+            Self::Consent(v) => Inline(InlineAppFx::Consent(v)),
+            Self::Huds(v) => Inline(InlineAppFx::Huds(v)),
+            Self::SessionEffect(v) => External(ExternalAppFx::SessionEffect(v)),
+            Self::Preferences(v) => External(ExternalAppFx::Preferences(v)),
+            Self::Loop(v) => External(ExternalAppFx::Loop(v)),
+            Self::Content(v) => External(ExternalAppFx::Content(v)),
+            Self::Home(v) => External(ExternalAppFx::Home(v)),
+            Self::Library(v) => External(ExternalAppFx::Library(v)),
+            Self::Search(v) => External(ExternalAppFx::Search(v)),
+            Self::Watchlist(v) => External(ExternalAppFx::Watchlist(v)),
+            Self::Catalog(v) => External(ExternalAppFx::Catalog(v)),
+            Self::Player(v) => External(ExternalAppFx::Player(v)),
+            Self::ItemMenu(v) => External(ExternalAppFx::ItemMenu(v)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod effect_routing_contract {
+    #[test]
+    fn resource_and_store_effects_have_disjoint_execution_types() {
+        use super::*;
+        use plx_machine::machine::{AppEffect, EffectDisposition};
+        assert!(matches!(AppFx::Content(ContentReq::Back).route(),
+            EffectDisposition::External(ExternalAppFx::Content(ContentReq::Back))));
+        assert!(matches!(AppFx::StoreWork(StoreWork::Browse).route(),
+            EffectDisposition::Inline(InlineAppFx::StoreWork(StoreWork::Browse))));
+    }
+}
+
 /// Owned external-runner envelope: the original sender (including mounted lifetime), frozen
 /// navigation bookmark, FIFO sequence, and unmodified command/request identity. The dispatcher
 /// retains the head until a terminal receipt; this type is NOT another request queue.
 /// Family handler migration uses this contract without changing the screen's `Fx::App` spelling.
-pub type AppCommand = plx_machine::machine::AppCommand<AppFx, ReturnState<u32, PageMemory>>;
+pub type AppCommand = plx_machine::machine::AppCommand<ExternalAppFx, ReturnState<u32, PageMemory>>;
 
 /// The package-store view delivered through the HUD command channels.
 pub use crate::hud_settings::HudList;
@@ -130,6 +215,10 @@ pub struct AccountPreferenceReply {
 
 pub enum PreferenceCmd {
     AutoSignIn { on: bool, reply: std::sync::mpsc::Sender<bool> },
+    /// Install lesson write, fenced by the requesting runtime/profile lifetime.
+    HoldHint { taught: plx_plex::plex::session::HoldHintTaught,
+        live: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        reply: std::sync::mpsc::Sender<bool> },
     /// Demand viewer features; the app coalesces this profile-scoped read.
     EnsureMarkerAccess,
     ChooseMarker { kind: plx_data::metadata::MarkerKind, mode: plx_plex::plex::session::MarkerSkipMode,
@@ -1463,6 +1552,9 @@ pub(crate) fn run_person_fixture(store: &mut plx_data::stores::person::PersonSto
 
 /// The application's messages (spec §3.1).
 pub enum AppMsg {
+    /// Pure observation of the actual visible Watch opportunity after a successful final swap.
+    /// Frame/entry/instance addressing and one-shot admission belong to Dispatcher.
+    PlayerPresented { watch: Option<plx_appkit::skip_policy::OfferId>, paired: bool },
     AutoSkipResolved { id: plx_appkit::skip_policy::OfferId, outcome: plx_appkit::skip_policy::OfferOutcome },
     PlaybackTrace(plx_platform::playback_trace::Status),
     Session(plx_session::auth::owner::SessionEvent),
@@ -1513,6 +1605,23 @@ pub enum AppMsg {
     /// press on its opener does. Idempotent, which a toggle is not: two of these in one frame (the app's WILL and
     /// DID both park) leave the page closed, where two toggles would close it and reopen it.
     HudSectionsClose,
+    /// Reset the mounted player's transport in its own event order.
+    PlayerTransportReset { for_reload: bool },
+    /// Extend the player's HUD from the observation time, not delivery time.
+    PlayerExtendHud { now: u32, duration_ms: u32 },
+    PlayerStart { now: u32, hud_ms: u32 },
+    PlayerPinHud { now: u32, duration_ms: u32, tab: Option<i32> },
+    PlayerSlot { slot: plx_appkit::player_hud::ControlSlot, primary: bool },
+    PlayerFollowRow { slot: plx_appkit::player_hud::ControlSlot, now: u32 },
+    PlayerCancelNext { decline: bool },
+    PlayerHudCommand { command: plx_appkit::player_hud::command::HudCommand, now: u32 },
+    PlayerModel(plx_appkit::player_hud::model::HudModel),
+    PlayerCompiled(std::sync::Arc<plx_appkit::hud_format::compile::Compiled>),
+    PlayerHudPolicy(crate::player::HudPolicy),
+    PlayerOverlayRetarget(crate::player::overlay::OverlayKind),
+    PlayerOverlayTrackRow(plx_appkit::track_menu::TrackRow),
+    PlayerOverlayQuality,
+    PlayerOverlayPick(String),
 }
 
 /// What the consent machine is told (§2.3): a person's answer to both questions at once.
@@ -2025,7 +2134,45 @@ pub enum AppArg {
     FirstRunConsent(u8),
 }
 
+/// Data-only frame probe policy. A new ordinary screen selects `Generic` here; it does not
+/// extend an application-layer route ladder. Legacy schemas remain explicit for recorded bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeKind { Generic, Content, Login, Profiles, Onboard, Player, Surface }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RouteProbe {
+    pub word: &'static str,
+    pub kind: ProbeKind,
+}
+
 impl AppArg {
+    /// The heartbeat and probe share this registration-owned declaration. No wildcard: every
+    /// argument must choose its word and schema, including non-page surfaces.
+    pub fn route_probe(&self) -> RouteProbe {
+        use ProbeKind::*;
+        let (word, kind) = match self {
+            Self::Login => ("login", Login),
+            Self::Profiles => ("profiles", Profiles),
+            Self::Onboard => ("onboard", Onboard),
+            Self::Home => ("home", Content),
+            Self::Library | Self::LibraryCollections { .. } | Self::LibraryRecommended { .. } => ("library", Content),
+            Self::Search => ("search", Content),
+            Self::Watchlist => ("watchlist", Content),
+            Self::Player => ("player", Player),
+            Self::Content(ContentArg::Detail { .. }) => ("detail", Content),
+            Self::Content(ContentArg::Person { .. } | ContentArg::Filmography { .. }) => ("person", Content),
+            Self::Content(ContentArg::Collection(_)) => ("collection", Content),
+            Self::Content(ContentArg::Catalog { .. }) => ("catalog", Content),
+            Self::Settings(_) | Self::FirstRunConsent(_) | Self::LibraryMenu(_)
+            | Self::AccountMenu | Self::WatchlistMenu(_) | Self::ItemMenu(_)
+            | Self::PlayerOverlay(_) | Self::AltSources(_) | Self::VersionsPanel(_)
+            | Self::TracksPanel(_) | Self::AboutPanel | Self::PersonBio | Self::CollectionAbout => ("", Surface),
+        };
+        RouteProbe { word, kind }
+    }
+
+    pub fn route_word(&self) -> &'static str { self.route_probe().word }
+
     /// Is this one of the library screen's three routes: the full grid and the two pages its header
     /// pushes over it (Collections, Recommended)? They are all the one `LibraryScreen` family, so a
     /// request or a command addressed to "the library" is answered on any of them.
@@ -2042,6 +2189,24 @@ pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryC
      ItemMenu{sid:u32,rk:str,kind:{Card{from_deck:bool,type:u32},Episode{mark:u32},Season{mark:u32},Catalog{state:u32}},\
      host:u32,focus:Option<{entry:u32,elem:u32}>,anchor:[u32;4],loaded_episode:bool,from_home:bool,catalog:Option<{guid:str}>},\
      WatchlistMenu{host:u32,options:{type:u32,sort:u32,descending:bool,show:u32},anchor:[u32;4]}}";
+
+/// Append-only page samples for heartbeat/scenario validation. Adding an ordinary screen
+/// extends this registration census here, never a central application test table.
+#[cfg(any(test, feature = "test-support"))]
+pub fn every_page_arg() -> Vec<AppArg> {
+    let sid = plx_plex::plex::ServerId::UNSET;
+    vec![
+        AppArg::Login, AppArg::Profiles, AppArg::Onboard, AppArg::Home, AppArg::Library,
+        AppArg::LibraryCollections { section: 0 }, AppArg::LibraryRecommended { section: 0 },
+        AppArg::Content(ContentArg::Detail { sid, rk: String::new() }),
+        AppArg::Content(ContentArg::Person {
+            sid, key: String::new(), guid: String::new(), name: String::new(), thumb: String::new(),
+        }),
+        AppArg::Content(ContentArg::Collection(plx_plex::plex::collections::CollectionRef::by_tag(sid, 0, 1, ""))),
+        AppArg::Content(ContentArg::Catalog { hex: [0; 12] }),
+        AppArg::Search, AppArg::Watchlist, AppArg::Player,
+    ]
+}
 
 impl LogicalState for AppArg {
     fn write(&self, c: &mut Canon) {

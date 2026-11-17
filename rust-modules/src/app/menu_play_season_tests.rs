@@ -24,7 +24,7 @@ struct Rig {
     ps: plx_media::route::PlaybackSession,
     pa: plx_media::player::adapter::PlayerAdapter,
     pages: plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
-    bridge: super::bridge::Bridge,
+    bridge: crate::app::runtime_owners::Harness,
     wait: Option<MenuPlayAwait>,
     sid: ServerId,
     _guard: plx_base::testlock::Serial,
@@ -39,7 +39,8 @@ impl Rig {
         // test threads at once.
         assert!(plx_net::net::global_init() && plx_net::net::available() && plx_net::net::threaded_tls_ready());
         let mt = unsafe { plx_base::task::MainThread::assume() };
-        let mut bridge = super::bridge::Bridge::for_test(|| 0);
+        let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = owner.bridge();
         plx_plex::plex::reset_servers_for_test();
         let sid = plx_plex::plex::register_for_test("menu-season", "127.0.0.1", port, "t", "c-menu-season");
         plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
@@ -59,7 +60,7 @@ impl Rig {
             ps: plx_media::route::PlaybackSession::default(),
             pa: plx_media::player::adapter::PlayerAdapter::new(mt),
             pages: plx_ui::dispatch::Dispatcher::<super::bridge::AppHost>::new(),
-            bridge,
+            bridge: owner,
             wait: Some(MenuPlayAwait::new(sid, SHOW.into(), Some(2), 1000, 0)),
             sid,
             _guard: guard,
@@ -71,7 +72,7 @@ impl Rig {
     fn tick(&mut self, now: u32) {
         let _frame = plx_base::task::FrameScope::enter();
         unsafe {
-            menu_play_tick(&mut self.ps, &mut self.pa, &mut self.pages, &mut self.bridge, &mut self.wait, now);
+            menu_play_tick(&mut self.ps, &mut self.pa, &mut self.pages, &mut self.bridge.bridge(), &mut self.wait, now);
         }
     }
 
@@ -79,7 +80,7 @@ impl Rig {
     /// `wall` gate keeps clock reads out of `app/`, so the bound is a count of 2 ms naps).
     fn pump_until_landed(&mut self) -> bool {
         for _ in 0..2500 {
-            if self.bridge.metadata_pump_season() {
+            if self.bridge.bridge().metadata_pump_season() {
                 return true;
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -93,7 +94,7 @@ impl Rig {
             if !self.bridge.metadata_view().season_loading() {
                 return;
             }
-            self.bridge.metadata_pump_season();
+            self.bridge.bridge().metadata_pump_season();
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
@@ -140,7 +141,7 @@ fn an_unloaded_season_is_fetched_off_the_frame_and_its_first_episode_plays_on_la
     assert!(rig.wait.is_some(), "the wait must outlive the frame that issued the season fetch");
     // The press ran on the bare store, which leaves its job on the outbox: the frame that issued
     // it started it, rather than leaving it for a pump to find.
-    rig.bridge.assert_no_store_jobs_left_for_test();
+    rig.bridge.bridge().assert_no_store_jobs_left_for_test();
     assert!(rig.bridge.metadata_view().season_loading(), "the season is in flight on a worker");
     assert_eq!(rig.episodes(), ["stale"], "nothing was fetched on the frame");
     assert_eq!(rig.played(), None, "nothing plays before the season lands");
@@ -162,7 +163,7 @@ fn a_superseded_season_landing_plays_nothing() {
 
     rig.tick(0);
     // the user's own tab press, as the dispatcher runs it: the store's job starts in this call
-    rig.bridge.metadata_run(MetadataCmd::LoadSeason(0));
+    rig.bridge.bridge().metadata_run(MetadataCmd::LoadSeason(0));
     assert!(rig.pump_until_landed());
     rig.tick(16);
 

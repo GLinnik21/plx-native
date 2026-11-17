@@ -32,6 +32,7 @@ condition itself rather than trusting the caller: it reads both headers and refu
 did NOT move — which is exactly the case a rebaseline is for. The anchor flag is preserved across
 the replacement, so a re-recorded anchor is still an anchor.
 """
+import hashlib
 import json
 import os
 import re
@@ -104,6 +105,30 @@ POSTER_PARTS = {
 }
 
 
+# Shape of the actual producer's permanent V13 anchor: keys, scalar types and array
+# arities only, never values. This closes new initial-state domains without granting
+# arbitrary strings permission. The raw anchor hash is pinned independently in tests.
+CURRENT_FP = 16894190109976774341
+CURRENT_MANIFEST_SHAPE = '59120bd99cf7687b732343385c8623508aa21f86e3268fae175987a3f6a773fc'
+
+
+def manifest_shape(node):
+    if isinstance(node, dict):
+        return {key: manifest_shape(value) for key, value in node.items()}
+    if isinstance(node, list):
+        return [manifest_shape(value) for value in node]
+    return type(node).__name__
+
+
+def current_manifest_valid(doc):
+    shape = json.dumps(manifest_shape(dict(doc, anchor=doc.get('anchor', True))),
+                       sort_keys=True, separators=(',', ':'))
+    return (type(doc.get('schema')) is int and doc['schema'] == 3
+            and type(doc.get('state_fp')) is int and doc['state_fp'] == CURRENT_FP
+            and doc.get('anchor', True) is True
+            and hashlib.sha256(shape.encode()).hexdigest() == CURRENT_MANIFEST_SHAPE)
+
+
 def structural_enum_paths(doc):
     """Validate only manifest.init.data's typed enum slots; return exact admitted paths.
 
@@ -111,10 +136,16 @@ def structural_enum_paths(doc):
     Everything outside these slots is still scanned, including unknown initial-state domains.
     Historical initial states without these optional domains keep their existing alphabet gate.
     """
+    if isinstance(doc, dict) and doc.get('state_fp') == CURRENT_FP and not current_manifest_valid(doc):
+        return False, set()
     if not isinstance(doc, dict) or not isinstance(doc.get('init'), dict):
         return True, set()
     initial = doc['init']
     data = initial.get('data')
+    if (doc.get('state_fp') == CURRENT_FP
+            or isinstance(data, dict) and 'install_hold_hint' in data):
+        if not current_manifest_valid(doc):
+            return False, set()
     if not isinstance(data, dict):
         return True, set()
     languages = {'install_language', 'running_language'}

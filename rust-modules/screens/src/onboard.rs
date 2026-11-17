@@ -938,6 +938,7 @@ mod tests {
             tick: plx_machine::machine::Tick::default(),
             measure: m,
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             focus: FocusRead {
                 current: focus.map(|elem| FocusKey { entry: EntryId(0), elem }),
             ..Default::default() },

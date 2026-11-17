@@ -2864,6 +2864,7 @@ impl AuthLike for SessionHost {
             tick: plx_machine::machine::Tick::default(),
             measure: m,
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             focus: FocusRead {
                 current: None,
                 ..Default::default()

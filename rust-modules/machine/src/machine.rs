@@ -14,7 +14,7 @@ pub trait Host: 'static {
     /// The app's screen argument enum (what an entry is mounted from).
     type Arg: ScreenArg;
     /// App effects: Store / Net / Disk / Sys / Player / Poster / Emit — executed by `app/effects.rs`.
-    type Fx: 'static;
+    type Fx: AppEffect;
     /// App payloads: async results, store notices, deliveries — parsed by the REQUESTER.
     type Msg: 'static;
     /// `ElemKey`: interned, never a String.
@@ -57,6 +57,27 @@ pub trait Host: 'static {
     /// `Vec` as the one being stepped. The default drops it: a host with no page that names its
     /// parent pays nothing.
     fn views_over<'a>(views: Self::Views<'a>, _beneath: Option<ScreenId>) -> Self::Views<'a> { views }
+}
+
+/// An owned, exhaustive execution partition. Routing consumes the effect exactly once;
+/// the yielded envelope can never contain an inline-only operation.
+pub enum EffectDisposition<I, E> { Inline(I), External(E) }
+
+/// Application-neutral effect contract associated with `Host::Fx`.
+/// No application vocabulary or runner capability crosses into the library.
+pub trait AppEffect: 'static {
+    type Inline: 'static;
+    type ExternalFx: 'static;
+    fn route(self) -> EffectDisposition<Self::Inline, Self::ExternalFx>;
+}
+
+pub type InlineFx<H> = <<H as Host>::Fx as AppEffect>::Inline;
+pub type ExternalFx<H> = <<H as Host>::Fx as AppEffect>::ExternalFx;
+
+impl AppEffect for () {
+    type Inline = ();
+    type ExternalFx = std::convert::Infallible;
+    fn route(self) -> EffectDisposition<(), Self::ExternalFx> { EffectDisposition::Inline(self) }
 }
 
 macro_rules! newtype {
@@ -388,6 +409,66 @@ pub struct FocusKey<K> {
     pub elem: K,
 }
 
+/// Lessons captured from one input/runtime owner. Install facts are seeded explicitly;
+/// opening a menu retires physical feedback only for this owner's current profile tenure.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HoldHintRead {
+    pub learned: bool,
+    pub card: bool,
+    pub pill: bool,
+    /// Profile-tenure identity; equal lesson bits must not retain an old page's claim.
+    pub context: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoldHintEvent { Learned, ReadCard, ReadPill }
+
+impl HoldHintRead {
+    pub fn apply(&mut self, event: HoldHintEvent) {
+        match event {
+            HoldHintEvent::Learned => { self.learned = true; self.card = true; self.pill = true; }
+            HoldHintEvent::ReadCard => self.card = true,
+            HoldHintEvent::ReadPill => self.pill = true,
+        }
+    }
+}
+
+/// Visible modal veil threshold shared by the container and its captured readout.
+pub const MODAL_CLOSING_GONE: f32 = 0.02;
+
+/// Immutable modal facts captured from the owning container before a step or render walk.
+/// This is a projection, not another phase machine or a process-wide publication.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ModalRead {
+    pub input_covered: bool,
+    pub host_cached: bool,
+    pub closing_only: bool,
+    pub veil: f32,
+}
+impl ModalRead {
+    pub fn page_veiled(self) -> bool { self.veil >= MODAL_CLOSING_GONE }
+}
+
+/// Immutable projection of an owner's captured page image, sampled anew for each context.
+/// Empty is live. Both identities are checked against the current navigation tree before use;
+/// this value is never published by input, a GL cache, or a speculative render walk.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PageImageRead {
+    owner: Option<(EntryId, InstanceId)>,
+}
+impl PageImageRead {
+    pub const fn held(entry: EntryId, instance: InstanceId) -> Self {
+        Self { owner: Some((entry, instance)) }
+    }
+    pub fn is_held(self) -> bool { self.owner.is_some() }
+    pub fn for_entry(self, entry: EntryId) -> Self {
+        if self.owner.is_some_and(|owner| owner.0 == entry) { self } else { Self::default() }
+    }
+    pub fn for_owner(self, entry: EntryId, instance: InstanceId) -> Self {
+        if self.owner == Some((entry, instance)) { self } else { Self::default() }
+    }
+}
+
 /// The read-only context a step receives (§3.1).
 pub struct Cx<'a, H: Host> {
     pub views: H::Views<'a>,
@@ -396,6 +477,9 @@ pub struct Cx<'a, H: Host> {
     pub press: PressRead<H::Elem>,
     pub focus: FocusRead<H::Elem>,
     pub owner: InputOwner,
+    pub modal: ModalRead,
+    pub page_image: PageImageRead,
+    pub hold_hint: HoldHintRead,
 }
 
 /// The dispatcher's reborrow of `App.present` for one step (§3.1, §4.4): `note` is its one method.
@@ -517,10 +601,41 @@ pub enum Fx<H: Host> {
     },
     CancelTimer(TimerId),
     Press(PressArm<H::Elem>),
+    /// An owned input lesson; never an ambient publisher or a storage operation.
+    HoldHint(HoldHintEvent),
     Remember { group: GroupId, elem: H::Elem },
     Log(LogLine),
     /// Handed to the application's adapters.
     App(H::Fx),
+}
+
+/// Runtime identity for admitting environmental paint observations. Numeric frame/entry/
+/// instance counters alone do not distinguish two dispatchers in the same process.
+#[derive(Default)]
+pub struct PresentationAuthority(std::sync::Arc<()>);
+impl PresentationAuthority {
+    pub fn receipt<M>(&self, frame: u64, entry: EntryId, instance: InstanceId, message: M) -> PresentationReceipt<M> {
+        PresentationReceipt { authority:self.0.clone(), frame, entry, instance, message }
+    }
+    pub fn owns<M>(&self, receipt: &PresentationReceipt<M>) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &receipt.authority)
+    }
+}
+
+/// Opaque owner seal plus exact captured facts. Creating another authority cannot forge
+/// this runtime's seal; only its dispatcher holds the authority used at admission.
+pub struct PresentationReceipt<M> {
+    authority: std::sync::Arc<()>,
+    frame: u64,
+    entry: EntryId,
+    instance: InstanceId,
+    message: M,
+}
+impl<M> PresentationReceipt<M> {
+    pub fn frame(&self) -> u64 { self.frame }
+    pub fn entry(&self) -> EntryId { self.entry }
+    pub fn instance(&self) -> InstanceId { self.instance }
+    pub fn message(&self) -> &M { &self.message }
 }
 
 /// Everything a mounted screen can be told (§6.1).
@@ -559,6 +674,7 @@ pub enum ScreenEvent<H: Host> {
         by: By,
     },
     App(H::Msg),
+    Presented(PresentationReceipt<H::Msg>),
 }
 
 impl<H: Host> ScreenEvent<H> {
@@ -585,6 +701,7 @@ impl<H: Host> ScreenEvent<H> {
             ScreenEvent::StoreChanged(..) => "store_changed",
             ScreenEvent::FocusMoved { .. } => "focus_moved",
             ScreenEvent::App(_) => "app",
+            ScreenEvent::Presented(_) => "presented",
         }
     }
 }

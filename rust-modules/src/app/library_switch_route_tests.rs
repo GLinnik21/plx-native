@@ -9,7 +9,7 @@ use super::test_support::tick;
 /// later.
 fn store_current(r: &World) -> Option<usize> {
     let mut snapshot = plx_data::stores::browse::DirectorySnapshot::default();
-    r.bridge.stores.browse.borrow().observe_pin_write();
+    r.bridge.stores().browse.borrow().observe_pin_write();
     let mut keys = plx_plex::plex::ClientKeys::default();
     crate::app::adapters::stores::refill_client_keys(&mut keys);
     let input = plx_data::browse::BrowseRosterInput { tenure: 0,
@@ -18,7 +18,7 @@ fn store_current(r: &World) -> Option<usize> {
         settled: plx_plex::plex::session::peek_settled().is_some(),
         profile_key: &plx_plex::plex::session::current_profile_key(),
     };
-    r.bridge.stores.browse.borrow_mut().capture_directory(&mut snapshot, &input);
+    r.bridge.stores().browse.borrow_mut().capture_directory(&mut snapshot, &input);
     snapshot.view().current()
 }
 
@@ -49,7 +49,7 @@ fn the_header_plate_stays_under_the_library_that_was_switched_to_once_the_switch
     r.step(script_key(Key::Ok, tick(r.frame + 1)));
     let mut landed_at = None;
     for frame in 0..90 {
-        let (plate, store, published) = (r.library().probe_plate_section(), store_current(&r), r.bridge.browse_directory().current());
+        let (plate, store, published) = (r.library().probe_plate_section(), store_current(&r), r.bridge.retained().directory.view().current());
         if landed_at.is_none() && plate == Some(FILM_CLUB) { landed_at = Some(frame); }
         if landed_at.is_some() {
             assert_eq!(plate, Some(FILM_CLUB), "frame {frame}: the plate went back to {plate:?} after landing under Film Club (store {store:?}, published {published:?})");
@@ -58,6 +58,6 @@ fn the_header_plate_stays_under_the_library_that_was_switched_to_once_the_switch
     }
     assert!(landed_at.is_some(), "the OK switched the plate");
     assert_eq!(store_current(&r), Some(FILM_CLUB), "premise: the switch settled, `flush` consumed `pending` and the store followed");
-    assert_eq!(r.bridge.browse_directory().current(), Some(FILM_CLUB), "the page's snapshot followed the store");
+    assert_eq!(r.bridge.retained().directory.view().current(), Some(FILM_CLUB), "the page's snapshot followed the store");
     assert_eq!(r.library().probe_plate_section(), Some(FILM_CLUB), "the plate rests under the library that was switched to");
 }

@@ -62,7 +62,7 @@
 
 use super::{test_store, TestHost, ENTRY};
 use crate::player::PlayerScreen;
-use crate::registry::{AppFx, AppMsg, PageMemory, PlayerReq};
+use crate::registry::{AppMsg, PageMemory, PlayerReq};
 use plx_appkit::player_hud::command::{HudCommand, Section};
 use plx_appkit::player_hud::{overscan_rects, slot_for, Busy, ControlSlot, Controls};
 use plx_machine::machine::{
@@ -198,13 +198,24 @@ impl Rig<TestHost> for PinRig {
         Handled::No
     }
     fn timer(&mut self, _: MachineId, _: TimerId, _: &CxParts<u32>, _: &mut Effects<'_, TestHost>) {}
-    fn app_fx(&mut self, from: MachineId, effect: AppFx, _: &CxParts<u32>, fx: &mut Effects<'_, TestHost>) {
-        if let AppFx::Player(req) = effect {
+    fn app_fx(&mut self, _: MachineId, _: crate::registry::InlineAppFx, _: &CxParts<u32>, _: &mut Effects<'_, TestHost>) {}
+    fn run_yielded_app_command(&mut self, d: &mut Dispatcher<TestHost>,
+        report: &mut plx_ui::dispatch::FrameReport, tap: &mut dyn plx_ui::dispatch::Tap<TestHost>) -> Option<u32> {
+        let command = d.take_app_command()?;
+        let outcome = match &command.effect {
+            Ok(_) => plx_machine::machine::AppCommandOutcome::Completed,
+            Err(outcome) => *outcome,
+        };
+        let mut out = vec![];
+        if let Ok(crate::registry::ExternalAppFx::Player(req)) = command.effect {
             if let (true, PlayerReq::Command(HudCommand::ToggleSection(section))) = (self.perform, &req) {
-                fx.push(Fx::Deliver(from, Delivery::Screen(ScreenEvent::App(AppMsg::HudSection(*section)))));
+                out.push(plx_machine::machine::Stamped { from: command.from,
+                    fx: Fx::Deliver(command.from, Delivery::Screen(ScreenEvent::App(AppMsg::HudSection(*section)))) });
             }
             self.reqs.push(req);
         }
+        Some(d.resume_app_command(self, command.id, outcome,
+            out, report, tap).unwrap())
     }
     fn log(&mut self, _: &str) {}
     fn prepare(&mut self, _: &mut Budget, _: &mut Present) {}
@@ -471,6 +482,7 @@ impl Chaptered {
                 width: 0,
                 height: 0,
                 bitrate: 0,
+                video_kbps: 0,
                 dovi: Default::default(),
                 markers: Vec::new(),
                 chapters: (1..=count).map(chapter).collect(),

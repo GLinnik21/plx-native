@@ -835,8 +835,8 @@ impl<H: AppLike + crate::registry::MetadataLike + crate::registry::ScreenInputsL
             ScreenEvent::Mount => {
                 self.build_rows(H::metadata(cx), H::screen_inputs(cx).preference::<plx_plex::plex::session::DeckPressPref>());
                 // The menu is the thing the Home hold hint teaches; once ANY card screen has
-                // opened one the lesson is learned and the hint retires (`ui::hold_hint::learned`).
-                plx_ui::hold_hint::mark_learned();
+                // opened one the lesson retires for this input owner, through its typed effect.
+                fx.push(Fx::HoldHint(plx_machine::machine::HoldHintEvent::Learned));
             }
             ScreenEvent::Tick(tick) => {
                 self.form.table.sel = cx
@@ -2009,6 +2009,7 @@ mod tests {
                 ..Default::default()
             },
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             owner: InputOwner::Entry(EntryId(7)),
         })
     }
@@ -2120,7 +2121,8 @@ mod tests {
             };
             with_cx(|cx| {
                 let cx = Cx { views: &inputs, tick: cx.tick, measure: cx.measure,
-                    focus: Default::default(), press: Default::default(), owner: cx.owner };
+                    focus: Default::default(), press: Default::default(), owner: cx.owner,
+                    modal: cx.modal, page_image: cx.page_image, hold_hint: cx.hold_hint };
                 let mut out = Vec::new();
                 let mut present = plx_machine::present::Present::new();
                 let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(8)), &mut present);
@@ -2146,12 +2148,27 @@ mod tests {
     /// mount is the one door every presenter goes through, so the lesson is marked there.
     #[test]
     fn mounting_the_menu_retires_the_hold_hint() {
-        plx_ui::hold_hint::reset_learned_for_test();
+        let mut read = plx_machine::machine::HoldHintRead::default();
         let mut screen = ItemMenuScreen::new(EntryId(7), card_arg(&item(0, PosterMark::None), false));
-        assert!(!plx_ui::hold_hint::learned());
-        step_ev(&mut screen, &ScreenEvent::Mount);
-        assert!(plx_ui::hold_hint::learned());
-        plx_ui::hold_hint::reset_learned_for_test();
+        assert!(!read.learned);
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        let mut fx = Effects::new(&mut out,
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(8)), &mut present);
+        with_cx(|cx| {
+            let context = Cx { views: cx.views, tick: cx.tick, measure: cx.measure,
+                focus: Default::default(), press: Default::default(), owner: cx.owner,
+                modal: cx.modal, page_image: cx.page_image, hold_hint: read };
+            <ItemMenuScreen as Machine<HostFixture>>::step(&mut screen, &ScreenEvent::Mount, &context, &mut fx);
+        });
+        drop(fx);
+        let events: Vec<_> = out.iter().filter_map(|effect| match &effect.fx {
+            plx_machine::machine::Fx::HoldHint(event) => Some(*event),
+            _ => None,
+        }).collect();
+        assert_eq!(events, vec![plx_machine::machine::HoldHintEvent::Learned]);
+        for event in events { read.apply(event); }
+        assert!(read.learned);
     }
 
     fn extra() -> plx_data::metadata::Extra {

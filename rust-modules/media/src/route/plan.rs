@@ -1443,10 +1443,11 @@ pub struct ResolveEnv {
     pub feed_original_eligible: bool,
     pub requested_rate_permille: i32,
     pub resume_ns: i64,
-    /// The SOURCE's whole-stream bitrate in **kbps**, or `0` when nobody has measured it — the
-    /// other half of what [`quality_policy`] needs, beside the frame size the playing-item store
-    /// already carries. It measures the first version: when the worker plays another one instead,
-    /// [`build_stream`] measures that version's own `PlayingItem::bitrate`.
+    /// The SOURCE's rate for the quality ceiling in **kbps**, the video stream's own else the whole
+    /// file's (`ceiling_kbps`), or `0` when nobody has measured it — the other half of what
+    /// [`quality_policy`] needs, beside the frame size the playing-item store already carries. It
+    /// measures the first version: when the worker plays another one instead, [`build_stream`]
+    /// measures that version's own `PlayingItem::video_kbps`, else its `PlayingItem::bitrate`.
     ///
     /// It comes off the LOADED DETAIL (`metadata::current().bitrate`, `Media[0]`) when that detail
     /// is this item, which is the ordinary path: a card's OK opens the detail page and Play is
@@ -1565,10 +1566,11 @@ pub(super) fn detail_describes(d: &plx_data::metadata::Detail, sid: ServerId, rk
 /// enough that the whole-file fallback has to stay. Falling back is the conservative direction,
 /// which is the right one here — see [`plx_plex::plex::Ceiling::admits`].
 pub(super) fn source_kbps(d: &plx_data::metadata::Detail) -> i64 {
-    match d.video.as_ref().map(|v| v.bitrate) {
-        Some(b) if b > 0 => b,
-        _ => d.bitrate,
-    }
+    ceiling_kbps(d.video.as_ref().map_or(0, |v| v.bitrate), d.bitrate)
+}
+
+pub(super) fn ceiling_kbps(video_kbps: i64, whole_kbps: i64) -> i64 {
+    if video_kbps > 0 { video_kbps } else { whole_kbps }
 }
 
 /// Rate the quality ceiling judges for this play. A trailer extra is a different file from the
@@ -1894,7 +1896,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             plan.playing_fresh = env.cached_item.is_none() && plan.playing.is_some();
             let src_kbps = match (env.version, played.as_ref()) {
                 (None, None) => env.src_kbps,
-                _ => plan.playing.as_ref().map_or(0, |p| p.bitrate),
+                _ => plan.playing.as_ref().map_or(0, |p| ceiling_kbps(p.video_kbps, p.bitrate)),
             };
             let reselected = env.with_selection_for_part(plan.part_id);
             let env = reselected.as_ref().unwrap_or(env);
@@ -2057,8 +2059,12 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             if let Some(port) = env.uri_preflight_port.as_ref().filter(|_| plan.uri_decline.is_none()) {
                 let source_kbps = plan.playing.as_ref().map_or(src_kbps, |p|
                     if p.bitrate > 0 { p.bitrate } else { src_kbps });
+                let ceiling_source_kbps = plan.playing.as_ref()
+                    .map(|p| ceiling_kbps(p.video_kbps, p.bitrate))
+                    .filter(|&kbps| kbps > 0)
+                    .unwrap_or(src_kbps);
                 let (width, height) = plan.playing.as_ref().map_or((0, 0), |p| (p.width, p.height));
-                let quality = if forced { Quality::Original } else { env.quality };
+                let quality = playback_quality;
                 // What Standard would decide about this original, from the same rules and the same
                 // frozen inputs it plans from below (the caps, the frozen Dolby Vision decision, the
                 // audio predicate, the container test); the qualifier reads the verdicts and derives
@@ -2110,7 +2116,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                         .filter(|(w, h)| *w > 0 && *h > 0),
                     requested_rate_permille: env.requested_rate_permille,
                     resume_ns: env.resume_ns,
-                    quality_allows_original: quality_policy(quality, true, source_kbps, width, height).direct_play
+                    quality_allows_original: quality_policy(quality, true, ceiling_source_kbps, width, height).direct_play
                         && env.direct_play_mode != DirectPlayMode::Disabled,
                     link_allows_original: client.link() != Some(plx_plex::plex::probe::Location::Relay),
                     auto_allows_original: quality != Quality::Auto
@@ -2136,7 +2142,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     plan.fps = plan.src_fps;
                     plan.audio = plan_track(tracks, source_selection.audio_sid, -1, true);
                     plan.sub_sid = source_selection.subtitle_sid;
-                    plan.src_measure = (source_kbps, width, height);
+                    plan.src_measure = (ceiling_source_kbps, width, height);
                     plan.transport_kbps = source_kbps;
                     plan.uri_original = Some(known);
                     plan.uri_source_ready = true;
@@ -2374,7 +2380,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     show_prefs.subtitle_mode
                 ));
             }
-            // The SOURCE's whole-stream bitrate in kbps: the playing item's own, else the caller's.
+            // The SOURCE's whole-stream bitrate in kbps: the playing item's own, else `src_kbps`.
             let source_transport_kbps = plan
                 .playing
                 .as_ref()
@@ -2670,6 +2676,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             // guarding: it is the one place this function does live network I/O before that refusal
             // check, and a preview is exactly the request most likely to hit a non-direct-playable item.
             let preview_already_refused = env.preview && (!directplay || part.is_empty());
+            // The one preflight outcome a preview acts on: the open got no response at all, so nothing
+            // was measured (`RemoteProbe::NoResponse`). See `preview_unmeasured` below.
+            let mut probe_no_response = false;
             let decision = match (playback_quality, link_kind) {
                 (Quality::Auto, Some(link)) => {
                     // The probe is the only expensive input, so it is only taken where it can change the
@@ -2680,10 +2689,12 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                         && !preview_already_refused)
                         .then(|| {
                             if directplay {
-                                measure_remote_original(
+                                let probed = measure_remote_original(
                                     &client.direct_play_url(part, &session).to_url(),
                                     source_transport_kbps,
-                                )
+                                );
+                                probe_no_response = matches!(probed, super::decision::RemoteProbe::NoResponse);
+                                probed.sample()
                             } else {
                                 // Part GET 503s after a transcode MDE. Sample the remux we would actually play.
                                 remux_probed = true;
@@ -2729,7 +2740,18 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 plan.auto_prior_kbps = decision.prior.map(|prior| prior.slow_kbps).unwrap_or(0);
                 plan.auto_bootstrap_rung = Some(decision.rung);
             }
-            let auto_original = decision.as_ref().is_some_and(|d| d.original);
+            // **A preview whose preflight got no response plays the Original.** A preview is direct play
+            // or nothing, so Auto's HLS fallback can never serve it: it only turns the preview into a
+            // refusal. When the preflight measured NOTHING (its open failed in the network, #1425: a
+            // trailer reached through two cross-origin redirects; `RemoteProbe::NoResponse`), the refusal
+            // would rest on no evidence about the link, and the preview takes the direct play, as it does
+            // under quality Original. A sample of any kind (`Ok`, even an incomplete one) is the link's own
+            // answer and still decides as it does for a play: a link too slow for the file refuses the
+            // preview, because nothing rescues a direct play that stalls (`auto_original_watched` is false
+            // for a preview, and a Load that fails before a picture arms the preview breaker). A server's
+            // own refusal of the Part is not "no response" either (`RemoteProbe::of_failure`).
+            let preview_unmeasured = env.preview && probe_no_response;
+            let auto_original = decision.as_ref().is_some_and(|d| d.original) || preview_unmeasured;
             let adaptive = auto_uses_hls(playback_quality, auto_original);
             // Whether a direct play was on offer BEFORE the override just below sets `directplay` false
             // for HLS. The preview gate's reason needs it: after the override `directplay` is false for
@@ -2757,7 +2779,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 ));
             } else {
                 plan.contract.ceiling = playback_quality.ceiling();
-                if playback_quality == Quality::Auto {
+                if preview_unmeasured {
+                    crate::player::log(&format!(
+                        "route: Auto preview — the remote Original preflight got no response, so it measured nothing; planned as Original (a preview is direct play or nothing); source {source_transport_kbps}kbps {src_w}x{src_h}"
+                    ));
+                } else if playback_quality == Quality::Auto {
                     crate::player::log(&format!(
                         "route: Auto Original — source {source_transport_kbps}kbps {src_w}x{src_h}; no video encode"
                     ));
@@ -4290,30 +4316,34 @@ pub(super) fn automatic_version<'a>(
     versions: &'a [plx_data::pms::MediaVersion],
     env: &ResolveEnv,
 ) -> Option<&'a plx_data::pms::MediaVersion> {
-    version_play_starts(versions, env.direct_play_mode, &env.caps)
+    version_play_starts(versions, env.direct_play_mode, &env.caps, env.dolby_vision_mode, env.dv_capability)
 }
 
 pub fn version_play_starts<'a>(
     versions: &'a [plx_data::pms::MediaVersion],
     mode: DirectPlayMode,
     caps: &plx_platform::devcaps::Caps,
+    dv_mode: plx_plex::plex::session::DolbyVisionMode,
+    dv_probed: plx_platform::devcaps::dv::DvCapability,
 ) -> Option<&'a plx_data::pms::MediaVersion> {
     match mode {
         DirectPlayMode::Forced => None,
-        DirectPlayMode::Auto | DirectPlayMode::Disabled => decodable_version(versions, caps),
+        DirectPlayMode::Auto | DirectPlayMode::Disabled => decodable_version(versions, caps, dv_mode, dv_probed),
     }
 }
 
 pub(super) fn decodable_version<'a>(
     versions: &'a [plx_data::pms::MediaVersion],
     caps: &plx_platform::devcaps::Caps,
+    dv_mode: plx_plex::plex::session::DolbyVisionMode,
+    dv_probed: plx_platform::devcaps::dv::DvCapability,
 ) -> Option<&'a plx_data::pms::MediaVersion> {
     let direct = |v: &plx_data::pms::MediaVersion| {
         video_direct_plays(
             &v.vcodec,
             v.width,
             v.height,
-            plx_data::metadata::DvPresentation::NotDv,
+            frozen_dv_decision(dv_mode, dv_probed, v.dovi, &v.vcodec).presentation,
             caps,
         )
     };

@@ -28,6 +28,16 @@ const FOUR_K_FIRST: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-
      {"id":31341,"streamType":1,"codec":"h264","index":0},
      {"id":31342,"streamType":2,"codec":"aac","channels":2,"index":1,"languageCode":"eng","default":true,"selected":true}]}]}]}]}}"#;
 
+const FOUR_K_THEN_A_RUNG_SIZED_1080P: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-rung","type":"movie","Media":[
+  {"id":3082,"bitrate":14663,"width":3840,"height":2160,"videoResolution":"4k","videoCodec":"hevc","audioCodec":"eac3","container":"mkv",
+   "Part":[{"id":3130,"key":"/library/parts/3130/1/file.mkv","container":"mkv","Stream":[
+     {"id":31301,"streamType":1,"codec":"hevc","index":0,"bitrate":13900},
+     {"id":31302,"streamType":2,"codec":"eac3","channels":6,"index":1,"languageCode":"eng","default":true,"selected":true}]}]},
+  {"id":3087,"bitrate":8540,"width":1920,"height":800,"videoResolution":"1080","videoCodec":"h264","audioCodec":"aac","container":"mkv",
+   "Part":[{"id":3135,"key":"/library/parts/3135/1/file.mkv","container":"mkv","Stream":[
+     {"id":31351,"streamType":1,"codec":"h264","index":0,"bitrate":7900},
+     {"id":31352,"streamType":2,"codec":"aac","channels":2,"index":1,"languageCode":"eng","default":true,"selected":true,"bitrate":640}]}]}]}]}}"#;
+
 /// A loopback PMS that serves [`TWO_VERSIONS`] for the item, `mde` for every `/decision`, a
 /// bounded body for `start.mkv`, and records every request line until it is told to stop.
 fn versions_pms_observed_with_master(body: &'static [u8], mde: &'static [u8],
@@ -47,6 +57,8 @@ fn versions_pms_observed_with_master(body: &'static [u8], mde: &'static [u8],
                         body
                     } else if line.starts_with("GET /library/metadata/rk-4k") {
                         FOUR_K_FIRST
+                    } else if line.starts_with("GET /library/metadata/rk-rung") {
+                        FOUR_K_THEN_A_RUNG_SIZED_1080P
                     } else if line.contains("/decision?") {
                         mde
                     } else if line.starts_with("GET /video/:/transcode/universal/start.m3u8?") {
@@ -197,6 +209,29 @@ fn a_picked_version_that_is_gone_is_measured_from_the_default_that_plays() {
         env.version = Some(plx_plex::plex::MediaId(9999));
     });
     assert_eq!(plan.src_measure.0, 14663);
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_fixed_quality_judges_the_substituted_version_on_its_video_bitrate() {
+    let (plan, requests) = resolve_with("rk-rung", FOUR_K_DEFAULT, MDE_DIRECTPLAY, |env| {
+        env.caps = std::sync::Arc::new(full_hd_set());
+        env.quality = Quality::P1080;
+    });
+    assert_eq!(plan.src_measure, (7900, 1920, 800));
+    assert!(plan.url.contains("/library/parts/3135/"), "{}", plan.url);
+    assert!(!requests.iter().any(|l| l.contains("/transcode/universal/start")), "{requests:?}");
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_version_picked_by_hand_is_judged_on_its_video_bitrate() {
+    let (plan, requests) = resolve_with("rk-rung", FOUR_K_DEFAULT, MDE_DIRECTPLAY, |env| {
+        env.quality = Quality::P1080;
+        env.version = Some(plx_plex::plex::MediaId(3087));
+    });
+    assert_eq!(plan.src_measure, (7900, 1920, 800));
+    assert!(!requests.iter().any(|l| l.contains("/transcode/universal/start")), "{requests:?}");
 }
 
 fn retry_holding(part_id: i64, audio_sid: i64, sub_sid: i64) -> RetryContext {
@@ -368,6 +403,12 @@ const URI_DTS_SELECTED_SUBTITLE: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ra
      {"id":31341,"streamType":1,"codec":"h264","index":0},
      {"id":31342,"streamType":2,"codec":"dca","channels":6,"index":1,"languageCode":"eng","default":true,"selected":true},
      {"id":31343,"streamType":3,"codec":"srt","index":2,"languageCode":"eng","selected":true}]}]}]}]}}"#;
+
+const URI_RUNG_SIZED: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"movie","duration":600000,"Media":[
+  {"id":3086,"duration":450000,"bitrate":8540,"width":1920,"height":1080,"videoCodec":"h264","audioCodec":"dca","container":"mkv",
+   "Part":[{"id":3134,"duration":450000,"key":"/library/parts/3134/1/file.mkv","container":"mkv","Stream":[
+     {"id":31341,"streamType":1,"codec":"h264","index":0,"bitrate":7900},
+     {"id":31342,"streamType":2,"codec":"dca","channels":6,"index":1,"languageCode":"eng","default":true,"selected":true,"bitrate":640}]}]}]}]}}"#;
 
 const URI_DTS_EXTERNAL_SUBTITLE: &[u8] = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"rk-v","type":"movie","duration":600000,"Media":[
   {"id":3086,"duration":450000,"bitrate":2372,"width":1920,"height":1080,"videoCodec":"h264","audioCodec":"dca","container":"mkv",
@@ -676,6 +717,36 @@ fn selected_external_subtitle_remains_common_source_intent_across_resolve() {
     assert_eq!(explicit.source_selection.expect("explicit source intent").subtitle_sid, 31343,
         "a viewer reconfiguration must retain the selected external source SID");
     plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_fixed_quality_qualifies_a_uri_original_on_its_video_bitrate() {
+    use plx_playback_contract::uri::Binding;
+    use plx_playback_contract::Capabilities;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    assert!(plx_net::net::global_init());
+    let all = Capabilities { progressive_uri: true, hls_uri: false, packet_feed: false,
+        pause: true, seek: true, audio_track: true, subtitle_track: true,
+        audio_off: false, subtitle_off: false };
+    ps.install_uri_preflight_port(crate::route::uri_preflight::ResolvePort::new(
+        crate::route::uri_preflight::ProductEvidence { display_exported: true,
+            binding: Binding::Exported { canvas: (1920, 1080) },
+            callable: all, certified: all, preview_rectangle: false },
+        std::sync::Arc::new(QualifiedOriginal { video: "h264", audio: "dca" })));
+    let (port, done, server) = versions_pms_with(URI_RUNG_SIZED, MDE_TRANSCODE_VIDEO);
+    let sid = plx_plex::plex::register_for_test("uri-rung", "127.0.0.1", port, "token", "uri-rung-client");
+    let mut env = ResolveEnv::snapshot(&ps,
+        plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-v");
+    env.quality = Quality::P1080;
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-v",
+        "/library/parts/3134/1/file.mkv", "h264", "dca", &env);
+    done.send(()).unwrap();
+    let _ = server.join().unwrap();
+    plx_plex::plex::reset_servers_for_test();
+    assert!(plan.uri_original.is_some(), "{:?}", plan.uri_decline);
+    assert_eq!((plan.src_measure, plan.transport_kbps), ((7900, 1920, 1080), 8540));
 }
 
 #[cfg(feature = "devtriggers")]

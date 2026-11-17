@@ -32,15 +32,15 @@ pub(crate) struct CommandResources<'a> {
     pub(crate) boot_initial: &'a mut Option<super::bootstrap::Initial>,
 }
 
-struct ScreenCommandApp<'a> {
+struct ScreenCommandApp<'a, 'owners> {
     pages: &'a mut plx_ui::dispatch::Dispatcher<bridge::AppHost>,
-    bridge: &'a mut bridge::Bridge,
+    bridge: &'a mut bridge::Bridge<'owners>,
     player: &'a mut plx_media::player::machine::Player,
     adapters: &'a mut Adapters,
     menu_play_await: &'a mut Option<super::input::MenuPlayAwait>,
 }
 
-impl ScreenCommandApp<'_> {
+impl ScreenCommandApp<'_, '_> {
     fn route(&self) -> AppArg { self.pages.top_arg().cloned().unwrap_or(AppArg::Home) }
 }
 
@@ -88,18 +88,18 @@ impl super::playback::PlaybackResources for CommandPlayback<'_> {
 /// The resource-backed half of the same FIFO runner used by Search and Watchlist.
 pub(crate) fn execute_resource_command(
     pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>, bridge: &mut bridge::Bridge,
-    resources: &mut CommandResources<'_>, source: MachineId, effect: plx_screens::registry::AppFx,
+    resources: &mut CommandResources<'_>, source: MachineId, effect: plx_screens::registry::ResourceAppFx,
     ret: ReturnState<u32, PageMemory>, now: u32,
 ) -> plx_machine::machine::AppCommandOutcome {
     use plx_machine::machine::AppCommandOutcome;
-    use plx_screens::registry::AppFx;
+    use plx_screens::registry::ResourceAppFx;
     let mut app = ScreenCommandApp { pages, bridge, player: resources.player,
         adapters: resources.adapters, menu_play_await: resources.menu_play_await };
     match effect {
-        AppFx::Library(request) => library_command(&mut app, source, request, ret, now),
-        AppFx::Home(request) => home_command(&mut app, source, request, ret, now),
-        AppFx::Content(request) => content_command(&mut app, source, request, ret, now),
-        AppFx::ItemMenu(request) => {
+        ResourceAppFx::Library(request) => library_command(&mut app, source, request, ret, now),
+        ResourceAppFx::Home(request) => home_command(&mut app, source, request, ret, now),
+        ResourceAppFx::Content(request) => content_command(&mut app, source, request, ret, now),
+        ResourceAppFx::ItemMenu(request) => {
             let MachineId::Instance(instance) = source else { return AppCommandOutcome::Refused };
             let Some(entry) = app.pages.nav.entry_of_instance(instance) else { return AppCommandOutcome::RetiredSender };
             let closing_menu = app.pages.nav.modals.surfaces.iter().any(|surface|
@@ -113,7 +113,7 @@ pub(crate) fn execute_resource_command(
                 request, app.pages, app.bridge, &mut playback, app.menu_play_await, now); }
             if playback.refused { AppCommandOutcome::Refused } else { AppCommandOutcome::Completed }
         }
-        _ => AppCommandOutcome::Refused,
+
     }
 }
 
@@ -317,7 +317,8 @@ fn drain_held_feature(app: &mut App) {
     }
     let held = HELD_FEATURE.with(|slot| slot.borrow_mut().take());
     let Some(held) = held else { return };
-    if !request_play_intent(&mut app.player.session, app.bridge.metadata_mut(), &held.play) {
+    let mut bridge = app.runtime.bridge(&mut app.bridge);
+    if !request_play_intent(&mut app.player.session, bridge.metadata_mut(), &held.play) {
         return;
     }
     start_playback(
@@ -328,7 +329,7 @@ fn drain_held_feature(app: &mut App) {
         held.hud_ms,
         held.ret,
         &mut app.pages,
-        &mut app.bridge,
+        &mut bridge,
     );
 }
 
@@ -572,15 +573,16 @@ mod held_feature_tests {
 pub(crate) fn content_requests(app: &mut App, fr: &mut Frame) {
     halt_preview_off_its_page(app);
     drain_held_feature(app);
+    let bridge = app.runtime.bridge(&mut app.bridge);
     fr.ctrl = plx_appkit::player_hud::slot_with_preferences(&app.player.session,
-        app.bridge.metadata_view(), app.bridge.marker_preferences());
+        bridge.metadata_view(), bridge.marker_preferences());
 }
 
-fn halt_screen_preview(app: &mut ScreenCommandApp<'_>) {
+fn halt_screen_preview(app: &mut ScreenCommandApp<'_, '_>) {
     halt_preview_now(&mut app.player.session, &mut app.adapters.player);
 }
 
-fn content_command(app: &mut ScreenCommandApp<'_>, source: MachineId, request: ContentReq,
+fn content_command(app: &mut ScreenCommandApp<'_, '_>, source: MachineId, request: ContentReq,
     ret: ReturnState<u32, PageMemory>, now: u32,
 ) -> plx_machine::machine::AppCommandOutcome {
     use plx_machine::machine::AppCommandOutcome;
@@ -734,7 +736,7 @@ pub(crate) fn fold_to_hero(pages: &mut plx_ui::dispatch::Dispatcher<super::bridg
 
 /// Home chooses an action and a stable item; only the application performs navigation,
 /// playback or legacy-modal work. Recheck the emitting entry before every queued action.
-fn home_command(app: &mut ScreenCommandApp<'_>, source: MachineId, request: HomeReq,
+fn home_command(app: &mut ScreenCommandApp<'_, '_>, source: MachineId, request: HomeReq,
     ret: ReturnState<u32, PageMemory>, now: u32,
 ) -> plx_machine::machine::AppCommandOutcome {
     use plx_machine::machine::AppCommandOutcome;
@@ -974,7 +976,7 @@ mod search_action_tests {
     }
 }
 
-fn library_command(app: &mut ScreenCommandApp<'_>, source: MachineId,
+fn library_command(app: &mut ScreenCommandApp<'_, '_>, source: MachineId,
     request: plx_screens::registry::LibraryReq, ret: ReturnState<u32, PageMemory>, now: u32,
 ) -> plx_machine::machine::AppCommandOutcome {
     use plx_machine::machine::AppCommandOutcome;
@@ -1181,20 +1183,21 @@ fn library_publication_command(
 /// is the page on top and the dip is not holding it dark. The store decides in data
 /// ([`plx_data::stores::hubs::HubsCmd::Publish`]); the press check and the command are adjacent,
 /// like [`library_publication_command`].
-fn home_publication_command(app: &App) -> plx_data::stores::hubs::HubsCmd {
+fn home_publication_command(app: &mut App) -> plx_data::stores::hubs::HubsCmd {
     let visible = app.route() == AppArg::Home && !app.pages.nav.tabs.stack.transition.floor_held();
+    let bridge = app.runtime.bridge(&mut app.bridge);
     plx_data::stores::hubs::HubsCmd::Publish {
         home_top_visible: visible,
-        focused_hub: app.bridge.home_focused_hub(&app.pages),
+        focused_hub: bridge.home_focused_hub(&app.pages),
         press_live: app.pages.input.press.is_live(),
     }
 }
 
 /// Once a frame, beside the other Home store work.
 pub(super) fn publish_staged_hubs(app: &mut App) {
-    if !app.bridge.hubs_have_staged() { return; }
+    if !app.runtime.bridge(&mut app.bridge).hubs_have_staged() { return; }
     let command = home_publication_command(app);
-    let _ = app.bridge.hubs_run(command);
+    let _ = app.runtime.bridge(&mut app.bridge).hubs_run(command);
 }
 
 #[cfg(test)]
@@ -1477,7 +1480,8 @@ mod library_publication_tests {
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "origin".into() });
         let b = AppArg::Content(ContentArg::Detail { sid, rk: "later".into() });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         let mut frame_no = 0;
         bridge::show_page(&mut pages, a);
         frame(&mut pages, &mut rig, &mut frame_no);
@@ -1519,7 +1523,8 @@ mod library_publication_tests {
         let sid = plx_plex::plex::ServerId::UNSET;
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         let mut frame_no = 0;
 
         let before = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
@@ -1556,7 +1561,8 @@ mod library_publication_tests {
         let sid = plx_plex::plex::ServerId::UNSET;
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         let mut frame_no = 0;
 
         // Home never touches the metadata store's detail slot, so it is the underlying page the
@@ -1632,7 +1638,8 @@ mod library_publication_tests {
         let a = AppArg::Content(ContentArg::Detail { sid: sa, rk: "42".into() });
         let b = AppArg::Content(ContentArg::Detail { sid: sb, rk: "42".into() });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         let mut frame_no = 0;
         let full = |sid, title: &str| plx_data::metadata::Detail {
             sid, rk: "42".into(), title: title.into(), summary: "synopsis".into(), ..Default::default()
@@ -1679,7 +1686,8 @@ mod library_publication_tests {
         let a = AppArg::Content(ContentArg::Detail { sid: sa, rk: "42".into() });
         let b = AppArg::Content(ContentArg::Detail { sid: sb, rk: "42".into() });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         let mut frame_no = 0;
         let full = |sid, title: &str| plx_data::metadata::Detail {
             sid, rk: "42".into(), title: title.into(), summary: "synopsis".into(), ..Default::default()
@@ -1757,7 +1765,8 @@ mod library_publication_tests {
         let a = AppArg::Content(ContentArg::Detail { sid: sa, rk: "42".into() });
         let b = AppArg::Content(ContentArg::Detail { sid: sb, rk: "42".into() });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         let mut frame_no = 0;
         let full = |sid, title: &str| plx_data::metadata::Detail {
             sid, rk: "42".into(), title: title.into(), summary: "synopsis".into(), ..Default::default()
@@ -1806,7 +1815,8 @@ mod library_publication_tests {
         let a = AppArg::Content(ContentArg::Detail { sid: sa, rk: "42".into() });
         let b = AppArg::Content(ContentArg::Detail { sid: sb, rk: "42".into() });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         let mut frame_no = 0;
         let full = |sid, title: &str| plx_data::metadata::Detail {
             sid, rk: "42".into(), title: title.into(), summary: "synopsis".into(), ..Default::default()
@@ -1865,7 +1875,8 @@ mod library_publication_tests {
         let _servers = Servers;
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "movie-a".into() });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         let mut ps = plx_media::route::PlaybackSession::default();
         let mt = unsafe { plx_base::task::MainThread::assume() };
         let mut pa = plx_media::player::adapter::PlayerAdapter::new(mt);
@@ -1973,7 +1984,8 @@ mod library_publication_tests {
         let a = AppArg::Content(ContentArg::Detail { sid: sa, rk: "42".into() });
         let b = AppArg::Content(ContentArg::Detail { sid: sb, rk: "42".into() });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         let mut frame_no = 0;
         let full = |sid, title: &str| plx_data::metadata::Detail {
             sid, rk: "42".into(), title: title.into(), summary: "synopsis".into(), ..Default::default()
@@ -2022,7 +2034,8 @@ mod library_publication_tests {
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
         let b = AppArg::Content(ContentArg::Detail { sid, rk: "detail-b".into() });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         let mut frame_no = 0;
 
         bridge::show_page(&mut pages, a.clone());
@@ -2115,7 +2128,8 @@ mod library_publication_tests {
             thumb: String::new(),
         });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         let mut frame_no = 0;
 
         bridge::show_page(&mut pages, a.clone());
@@ -2217,7 +2231,8 @@ mod library_publication_tests {
         let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
         let b = AppArg::Content(ContentArg::Detail { sid, rk: "detail-b".into() });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         let mut frame_no = 0;
 
         bridge::show_page(&mut pages, a.clone());
@@ -2358,7 +2373,7 @@ mod library_publication_tests {
             detail_key(&mut pages, &mut rig, &mut frame_no, plx_machine::machine::Key::Ok,
                 plx_machine::machine::Edge::Up);
             for _ in 0..20 { frame(&mut pages, &mut rig, &mut frame_no); }
-            assert_eq!(rig.completed_screen_commands.iter().filter(|label| *label == "content:Push").count(),
+            assert_eq!(rig.retained.completed_screen_commands.iter().filter(|label| *label == "content:Push").count(),
                 1, "the Related press executes exactly one activation");
             assert!(pages.top_arg() == Some(&b), "the product runner opens Detail B");
         } else {
@@ -2374,7 +2389,7 @@ mod library_publication_tests {
         if navigate {
             detail_key(&mut pages, &mut rig, &mut frame_no, plx_machine::machine::Key::Back,
                 plx_machine::machine::Edge::Down);
-            assert_eq!(rig.completed_screen_commands.iter().filter(|label| *label == "content:Back").count(),
+            assert_eq!(rig.retained.completed_screen_commands.iter().filter(|label| *label == "content:Back").count(),
                 1, "the product runner executes Back once");
         } else {
             let ret = pages.return_state();
@@ -2477,7 +2492,8 @@ mod library_publication_tests {
             thumb: String::new(),
         });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         let mut frame_no = 0;
 
         bridge::show_page(&mut pages, a.clone());
@@ -2566,7 +2582,8 @@ mod library_publication_tests {
             thumb: String::new(),
         });
         let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         let mut frame_no = 0;
 
         bridge::show_page(&mut pages, a.clone());
@@ -2656,7 +2673,7 @@ fn home_menu_from_deck(ret: &ReturnState<u32, PageMemory>) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn activate_home_item(app: &mut ScreenCommandApp<'_>, source: MachineId, entry: EntryId,
+fn activate_home_item(app: &mut ScreenCommandApp<'_, '_>, source: MachineId, entry: EntryId,
     sid: plx_plex::plex::ServerId, rk: &str, resume_ns: Option<i64>, ret: ReturnState<u32, PageMemory>, now: u32,
 ) -> plx_machine::machine::AppCommandOutcome {
     let snapshot = app.bridge.hubs_snapshot();
@@ -2699,7 +2716,7 @@ pub(crate) fn restore_played_entry(app: &mut App) {
     let Some(instance) = entry.inst.as_ref().map(|i| i.id) else { return };
     let PageMemory::Detail(memory) = &entry.ret.memory else { return };
     let mut spot = memory.spot.clone();
-    let meta = app.bridge.metadata_view();
+    let meta = app.runtime.stores.machines.metadata_view();
     let episode = meta.playing().filter(|p| p.sid == *sid)
         .and_then(|_| meta.now_playing())
         .filter(|n| n.is_episode && n.detail_rk == *rk)

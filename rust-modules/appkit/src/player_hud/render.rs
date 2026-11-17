@@ -1008,6 +1008,7 @@ mod tests {
             focus,
             press: PressRead::default(),
             owner: InputOwner::Entry(EntryId(0)),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         };
         f(&DrawFrame::new(&cx, Painter::root()))
     }

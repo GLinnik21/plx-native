@@ -23,7 +23,7 @@ use plx_plex::plex::{GrantEvidence, ServerId};
 
 /// Joins a frame's effects and parts, as the dispatcher hands them to `Bridge::deliver`.
 fn deliver_browse_work(rig: &mut Bridge) {
-    let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
+    let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: tick(0), press: Default::default(), focus: Default::default(),
         owner: InputOwner::Entry(EntryId(0)) };
     let mut present = Present::new();
     let mut effects = Vec::new();
@@ -35,7 +35,7 @@ fn deliver_browse_work(rig: &mut Bridge) {
 
 /// The armed section, its first read refused by the system: nothing is out, nothing is on an outbox.
 struct Rig {
-    bridge: Bridge,
+    bridge: crate::app::runtime_owners::Harness,
     target: SectionAddress,
     own: ServerId,
     _cleanup: DirectoryPolicyCleanup,
@@ -47,7 +47,8 @@ fn armed_rig() -> Rig {
     let shared = plx_plex::plex::register_for_test("hubs-drain-shared", "127.0.0.1", 10, "synthetic", "fixture");
     assert!(plx_plex::plex::set_current(own));
     let cleanup = DirectoryPolicyCleanup;
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = owner.bridge();
     bridge.park_page_reads_for_test();
     bridge.seed_registered_browse_for_test([own, shared]);
     bridge.browse_run(BrowseCmd::SetCur(0));
@@ -56,29 +57,30 @@ fn armed_rig() -> Rig {
     crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
         bridge.browse_run(BrowseCmd::Addressed { target, work: LibraryWork::Hubs { may_publish: true } });
     });
-    let rig = Rig { bridge, target, own, _cleanup: cleanup };
+    let mut rig = Rig { bridge: owner, target, own, _cleanup: cleanup };
     rig.assert_down();
     rig
 }
 
 impl Rig {
     /// Nothing is out and nothing waits on an outbox.
-    fn assert_down(&self) {
-        assert!(!self.bridge.stores.browse.borrow().hubs_read_out_for_test(), "no claim is up");
-        self.bridge.assert_no_store_jobs_left_for_test();
+    fn assert_down(&mut self) {
+        assert!(!self.bridge.bridge().stores.browse.borrow().hubs_read_out_for_test(), "no claim is up");
+        self.bridge.bridge().assert_no_store_jobs_left_for_test();
     }
 
     /// The entry started exactly the reads of these kinds, in the order its step asked: Browse's
     /// outbox is empty (the entry drained it) and the runner holds them.
     fn assert_started(&mut self, kinds: &[&str]) {
-        self.bridge.assert_no_store_jobs_left_for_test();
-        let started: Vec<&str> = self.bridge.take_held_store_jobs_for_test().iter().map(kind).collect();
+        self.bridge.bridge().assert_no_store_jobs_left_for_test();
+        let jobs = self.bridge.bridge().take_held_store_jobs_for_test();
+        let started: Vec<&str> = jobs.iter().map(kind).collect();
         assert_eq!(started, kinds, "the entry started the reads its step asked for, in the call that emitted them");
     }
 
     /// The entry started exactly one section-hubs read, and its claim is up.
     fn assert_one_read_started(&mut self) {
-        assert!(self.bridge.stores.browse.borrow().hubs_read_out_for_test(), "the entry's step asked");
+        assert!(self.bridge.bridge().stores.browse.borrow().hubs_read_out_for_test(), "the entry's step asked");
         self.assert_started(&["BrowseHubs"]);
     }
 }
@@ -100,7 +102,7 @@ fn browse_run_starts_the_read_its_step_emitted_in_the_same_call() {
     let _guard = plx_base::testlock::serial();
     let mut rig = armed_rig();
     let target = rig.target;
-    rig.bridge.browse_run(BrowseCmd::Addressed { target, work: LibraryWork::Hubs { may_publish: true } });
+    rig.bridge.bridge().browse_run(BrowseCmd::Addressed { target, work: LibraryWork::Hubs { may_publish: true } });
     rig.assert_one_read_started();
 }
 
@@ -110,8 +112,8 @@ fn browse_run_starts_the_read_its_step_emitted_in_the_same_call() {
 fn the_browse_pump_arm_starts_the_reads_it_asked_for_again_after_a_refusal() {
     let _guard = plx_base::testlock::serial();
     let mut rig = armed_rig();
-    deliver_browse_work(&mut rig.bridge);
-    assert!(rig.bridge.stores.browse.borrow().hubs_read_out_for_test(), "the entry's step asked for the shelves");
+    deliver_browse_work(&mut rig.bridge.bridge());
+    assert!(rig.bridge.bridge().stores.browse.borrow().hubs_read_out_for_test(), "the entry's step asked for the shelves");
     rig.assert_started(&["BrowseHubs", "BrowsePage"]);
 }
 
@@ -123,10 +125,10 @@ fn browse_run_starts_a_directory_read_its_step_emitted_in_the_same_call() {
     let _guard = plx_base::testlock::serial();
     for work in [LibraryWork::Genres, LibraryWork::Letters { today: None }] {
         let mut rig = armed_rig();
-        rig.bridge.stores.browse.borrow_mut().owe_letters_for_test();
+        rig.bridge.bridge().stores.browse.borrow_mut().owe_letters_for_test();
         let target = rig.target;
-        rig.bridge.browse_run(BrowseCmd::Addressed { target, work: work.clone() });
-        rig.bridge.browse_run(BrowseCmd::Addressed { target, work: work.clone() });
+        rig.bridge.bridge().browse_run(BrowseCmd::Addressed { target, work: work.clone() });
+        rig.bridge.bridge().browse_run(BrowseCmd::Addressed { target, work: work.clone() });
         rig.assert_started(&["BrowseDirectory"]);
     }
 }
@@ -137,8 +139,8 @@ fn browse_run_starts_a_directory_read_its_step_emitted_in_the_same_call() {
 fn the_viewstate_pump_starts_the_read_its_burst_end_invalidation_asked_for() {
     let _guard = plx_base::testlock::serial();
     let mut rig = armed_rig();
-    rig.bridge.stores.viewstate.borrow_mut().owe_hubs_refresh_for_test();
-    let _ = rig.bridge.viewstate_pump();
+    rig.bridge.bridge().stores.viewstate.borrow_mut().owe_hubs_refresh_for_test();
+    let _ = rig.bridge.bridge().viewstate_pump();
     rig.assert_one_read_started();
 }
 
@@ -152,16 +154,19 @@ fn the_notify_pump_starts_the_read_a_library_change_asked_for() {
     let mut rig = armed_rig();
     plx_plex::plex::describe_server(rig.own, "Server A", "", GrantEvidence::ours());
     // Browse's armed shelves do not establish a Home source for quiet invalidation.
-    assert!(rig.bridge.stores.hubs.source_ids().is_empty());
-    rig.bridge.stores.hubs.seed_for_directory_test(
-        rig.own, 1, plx_data::pms::HubState::Ready, rig.bridge.directory.view());
-    assert_eq!(rig.bridge.stores.hubs.source_ids(), vec![rig.own]);
-    assert_eq!(rig.bridge.stores.hubs.snapshot().view().state, plx_data::pms::HubState::Ready);
-    if let crate::app::adapters::stores::StoreRunner::Held { live, .. } = &mut rig.bridge.store_runner {
+    assert!(rig.bridge.bridge().stores.hubs.source_ids().is_empty());
+    {
+        let bridge = rig.bridge.bridge();
+        bridge.stores.hubs.seed_for_directory_test(
+            rig.own, 1, plx_data::pms::HubState::Ready, bridge.retained.directory.view());
+    }
+    assert_eq!(rig.bridge.bridge().stores.hubs.source_ids(), vec![rig.own]);
+    assert_eq!(rig.bridge.bridge().stores.hubs.snapshot().view().state, plx_data::pms::HubState::Ready);
+    if let crate::app::adapters::stores::StoreRunner::Held { live, .. } = &mut *rig.bridge.bridge().store_runner {
         // Keep Notify's finite script immediate, park BOTH map fan-out kinds.
         *live = &[crate::app::adapters::stores::LiveKind::NotifyStream];
     }
-    rig.bridge.store_runner.set_notify_transport(NotifyTransport::Script {
+    rig.bridge.bridge().store_runner.set_notify_transport(NotifyTransport::Script {
         eligible: |req: &NotifyStreamReq| plx_plex::plex::client_for(req.sid)
             .filter(|c| plx_plex::plex::ClientKey::of(c) == req.key),
         run: |port, addr, _, _| {
@@ -171,14 +176,14 @@ fn the_notify_pump_starts_the_read_a_library_change_asked_for() {
         },
     });
     // Scripted eligible input is explicit, not an ambient credential-policy override.
-    rig.bridge.client_keys.refill_roster_with_stream_policy(rig.own, 1, 1, [rig.own],
+    rig.bridge.bridge().retained.client_keys.refill_roster_with_stream_policy(rig.own, 1, 1, [rig.own],
         plx_plex::plex::client_for, plx_plex::plex::server_facts, |_| None, |_| true);
-    let (_, endpoints) = rig.bridge.notify_pump_captured(&[], Shown::ALL);
+    let (_, endpoints) = rig.bridge.bridge().notify_pump_captured(&[], Shown::ALL);
     assert!(endpoints.is_empty());
 
-    assert!(rig.bridge.stores.browse.borrow().hubs_read_out_for_test());
+    assert!(rig.bridge.bridge().stores.browse.borrow().hubs_read_out_for_test());
     rig.assert_started(&["BrowseHubs", "Hubs"]);
-    assert_eq!(rig.bridge.late_store_jobs, 0);
+    assert_eq!(rig.bridge.bridge().retained.late_store_jobs, 0);
 }
 
 /// The membership re-query a page pushed over the Library page owes is pumped by
@@ -189,18 +194,18 @@ fn the_reconcile_pump_starts_the_read_its_browse_pump_asked_for() {
     let _guard = plx_base::testlock::serial();
     let mut rig = armed_rig();
     let (target, own) = (rig.target, rig.own);
-    rig.bridge.browse_run(BrowseCmd::Addressed { target, work: LibraryWork::Commit {
+    rig.bridge.bridge().browse_run(BrowseCmd::Addressed { target, work: LibraryWork::Commit {
         select: false, choice: false, query: Some(plx_data::stores::browse::QueryEdit::Unwatched(true)) } });
-    rig.bridge.stores.browse.borrow_mut().seed_items_for_test(3);
-    rig.bridge.browse_run(BrowseCmd::ApplyView { at: plx_data::viewstate::ViewAt::leaf(own, "1"),
+    rig.bridge.bridge().stores.browse.borrow_mut().seed_items_for_test(3);
+    rig.bridge.bridge().browse_run(BrowseCmd::ApplyView { at: plx_data::viewstate::ViewAt::leaf(own, "1"),
         edit: plx_data::viewstate::ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: None } });
-    rig.bridge.browse_run(BrowseCmd::Addressed { target, work: LibraryWork::Requery });
-    assert!(rig.bridge.stores.browse.borrow().requery_owed(), "premise: a membership re-query is owed");
+    rig.bridge.bridge().browse_run(BrowseCmd::Addressed { target, work: LibraryWork::Requery });
+    assert!(rig.bridge.bridge().stores.browse.borrow().requery_owed(), "premise: a membership re-query is owed");
     rig.assert_down();
 
-    let _ = rig.bridge.reconcile_pump();
+    let _ = rig.bridge.bridge().reconcile_pump();
 
-    assert!(rig.bridge.stores.browse.borrow().hubs_read_out_for_test(), "the pump's step asked for the shelves");
+    assert!(rig.bridge.bridge().stores.browse.borrow().hubs_read_out_for_test(), "the pump's step asked for the shelves");
     rig.assert_started(&["BrowseHubs", "BrowsePage"]);
     plx_base::task::drain_workers_for_test();
 }

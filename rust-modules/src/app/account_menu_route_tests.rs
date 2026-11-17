@@ -56,14 +56,14 @@ fn the_profile_chip_opens_the_account_menu_by_keys_and_back_returns_focus_to_it(
 fn the_chips_drawn_rect_follows_the_bars_unfurl_and_tuck() {
     use plx_ui::dispatch::Rig;
     use plx_ui::screen::NavPresentation;
-    let w = World::watchlist("route-account-chip-rect");
-    let rest = w.bridge.bar_member_rect(TAB_KEY_CHIP, NavPresentation::default()).expect("the chip is a bar member");
+    let mut w = World::watchlist("route-account-chip-rect");
+    let rest = w.bridge.bridge().bar_member_rect(TAB_KEY_CHIP, NavPresentation::default()).expect("the chip is a bar member");
     assert_eq!(rest.x, plx_ui::widgets::CHIP_FRAME.x - plx_ui::widgets::TAB_TRACK_PAD, "the capsule outsets the avatar");
     assert_eq!(rest.y, plx_ui::widgets::CHIP_FRAME.y - plx_ui::widgets::TAB_TRACK_PAD);
     let tucked = NavPresentation::default().tucked(0.5);
-    let moved = w.bridge.bar_member_rect(TAB_KEY_CHIP, tucked).expect("tucked, still the chip");
+    let moved = w.bridge.bridge().bar_member_rect(TAB_KEY_CHIP, tucked).expect("tucked, still the chip");
     assert_eq!(moved, plx_ui::Rect { y: rest.y - plx_ui::screen::chrome_lift(0.5), ..rest }, "the tuck moves the rect the bar draws");
-    assert_eq!(w.bridge.bar_member_rect(plx_ui::widgets::TAB_KEY_HOME, NavPresentation::default()), None, "only the chip is a lifted bar member");
+    assert_eq!(w.bridge.bridge().bar_member_rect(plx_ui::widgets::TAB_KEY_HOME, NavPresentation::default()), None, "only the chip is a lifted bar member");
 }
 
 /// The overlay's two readings this frame: the modal dim's alpha (`ModalStack::scrims`, the appear
@@ -134,9 +134,10 @@ fn the_morph_begins_and_ends_on_the_chip_as_the_bar_draws_it() {
     let mut w = World::watchlist("route-account-morph-rect");
     w.land_watchlist();
     w.settle(30);
-    let drawn = |w: &World| {
-        let presented = w.bridge.navigation_presentation(&w.d.nav).tucked(w.d.top_screen().expect("a page").chrome_tuck());
-        w.bridge.bar_member_rect(TAB_KEY_CHIP, presented).expect("the chip is a bar member")
+    let drawn = |d: &Dispatcher<AppHost>, owner: &mut crate::app::runtime_owners::Harness| {
+        let bridge = owner.bridge();
+        let presented = bridge.navigation_presentation(&d.nav).tucked(d.top_screen().expect("a page").chrome_tuck());
+        bridge.bar_member_rect(TAB_KEY_CHIP, presented).expect("the chip is a bar member")
     };
     crate::app::bridge::open_account_menu(&mut w.d);
     let mut seen = [0, 0];
@@ -144,7 +145,7 @@ fn the_morph_begins_and_ends_on_the_chip_as_the_bar_draws_it() {
         w.drawn(); // the dispatcher hands the surface the rect in its draw
         let Some(menu) = crate::app::bridge::account_menu(&w.d) else { return };
         let Some(from) = menu.popover().opener() else { return };
-        let rect = drawn(w);
+        let rect = drawn(&w.d, &mut w.bridge);
         assert_eq!(from, rect, "frame {}: the morph's opener is the chip as drawn", w.frame);
         let f = menu.popover().morph_frame(Some(from), plx_ui::Rect::new(from.x, from.y + from.h + 14.0, 316.0, 400.0), 26.0).unwrap();
         if f.progress == 0.0 {

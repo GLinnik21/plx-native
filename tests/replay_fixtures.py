@@ -21,6 +21,7 @@ only means fewer pixels for a software-GL runner to fill (the macOS CI job uses 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import functools
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -48,11 +49,9 @@ DIFFS = ('diverged', 'present_diffs', 'input_diffs', 'result_diffs', 'land_diffs
          'effect_diffs', 'focus_diffs', 'hit_diffs')
 
 
-# Compatibility identities, NOT fixture identities. Current/unknown profiles never opt in.
-# Frozen recorder FP_PRIOR; additional historical profiles require explicit review.
-HISTORICAL_CONTENT_PROFILES = frozenset({(3, 4239819007634745513)})
-HISTORICAL_CONTENT_REFUSAL = ('incompatible historical content scheduler: '
-                              'requires post-dispatch admission')
+# Reviewed historical raw artifacts, never current/unknown shape or directory-name exemptions.
+HISTORICAL_PROFILES = json.loads(Path(__file__).with_name('replay-historical-profiles.json').read_text())
+HISTORICAL_OWNER_REFUSAL = 'incompatible owner-input/presentation state; requires V13 capture'
 POLICY_MAX_BYTES = 64 * 1024 * 1024
 POLICY_MAX_LINE_BYTES = 1024 * 1024
 SIM_BANNER = ('sim: THIS IS THE DESKTOP SIMULATOR, not a television. No video pipeline; '
@@ -90,18 +89,21 @@ def expected_refusal(fixture):
         return value
 
     with (fixture / 'manifest.json').open('rb') as stream:
-        header = parse(stream.read(POLICY_MAX_LINE_BYTES + 1))
+        raw = stream.read(POLICY_MAX_LINE_BYTES + 1)
+        header = parse(raw)
+    hashes = {'manifest.json': hashlib.sha256(raw).hexdigest()}
     profile = (header.get('schema'), header.get('state_fp'))
-    historical = all(type(value) is int for value in profile) and profile in HISTORICAL_CONTENT_PROFILES
-    content = False
     for segment in sorted(fixture.glob('rec-*.jsonl')):
+        digest = hashlib.sha256()
         with segment.open('rb') as stream:
             while raw := stream.readline(POLICY_MAX_LINE_BYTES + 1):
-                row = parse(raw)
-                payload = row.get('payload')
-                content |= (row.get('t') == 'eff' and row.get('e') == 'App'
-                            and isinstance(payload, dict) and 'content' in payload)
-    return HISTORICAL_CONTENT_REFUSAL if historical and content else None
+                parse(raw)
+                digest.update(raw)
+        hashes[segment.name] = digest.hexdigest()
+    known = all(type(value) is int for value in profile) and any(
+        (item['schema'], item['state_fp']) == profile and item['sha256'] == hashes
+        for item in HISTORICAL_PROFILES)
+    return HISTORICAL_OWNER_REFUSAL if known else None
 
 
 class ReplayReport(str):
@@ -150,7 +152,7 @@ def expected_counts(fixture):
 def verdict(log, returncode, counts, refusal=None):
     lines = [line for line in log.splitlines() if line]
     if refusal is not None:
-        if refusal != HISTORICAL_CONTENT_REFUSAL:
+        if refusal != HISTORICAL_OWNER_REFUSAL:
             raise ValueError('unapproved expected refusal')
         # Positive allowlist: no frame/summary/renderer/bootstrap/provider output can hide here.
         meaningful = [line for line in lines if line != SIM_BANNER]

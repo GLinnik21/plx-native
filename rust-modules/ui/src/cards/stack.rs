@@ -729,13 +729,15 @@ impl<K: Copy + Eq> Stack<K> {
             ScreenEvent::Tick(t) => {
                 self.tick(t.dt(), p, cx, fx);
                 if let Some(h) = &self.hint {
-                    let input = if h.wants_input(cx.press.held_ms.is_some()) {
+                    let input = if h.wants_input(cx.press.held_ms.is_some(), cx.hold_hint) {
                         self.hint_input(p, cx)
                     } else {
                         crate::hold_hint::HintInput::default()
                     };
                     if let Some(h) = &mut self.hint {
-                        h.step(input, t.ms, t.dt(), &mut |ev| fx.note(ev));
+                        if let Some(event) = h.step(input, t.ms, t.dt(), &mut |ev| fx.note(ev), cx.hold_hint) {
+                            fx.push(plx_machine::machine::Fx::HoldHint(event));
+                        }
                     }
                 }
                 if reported.is_none() && !self.queue.is_empty() {
