@@ -246,7 +246,7 @@ impl FilmographyScreen {
             tabs: TabStrip::new(),
             tab_hscroll: Spring::at(0.0),
             pop: widgets::CtlPop::new(),
-            table: TableView::new(),
+            table: TableView::page(),
             model: Vec::new(),
             dirty: true,
             tab_c: Vec::new(),
@@ -696,7 +696,6 @@ impl FilmographyScreen {
             Some(&self.name),
             title,
             &copy,
-            theme::size::LABEL,
             f.measure,
         );
 
@@ -1274,7 +1273,8 @@ mod tests {
     #[test]
     fn a_wrapped_filmography_heading_keeps_the_preview_below_its_copy_and_inside_safe_bounds() {
         let measure = FixtureMeasure;
-        let title = "ExpandedFilmographyTitle ExpandedFilmographyTitle";
+        // long enough to wrap at the route title's rung and push the preview off its fixed origin
+        let title = "ExpandedFilmographyTitle ExpandedFilmographyTitle ExpandedFilmographyTitle ExpandedFilmographyTitle";
         let copy = "12 credits";
         let layout = RouteLayout::screen_for_title(COPY_W, RouteLayout::screen().content.w, title, &measure);
         let frame = preview_frame(layout, title, copy, &measure);
@@ -1807,7 +1807,7 @@ mod tests {
             let _guard = language_on_this_thread_for_test(language);
             let mut section = Section::new("");
             section.rows = credits.iter().map(|c| credit_row(c, c.local.as_ref().map(|_| "home-server".to_string()))).collect();
-            let mut table = TableView::new();
+            let mut table = TableView::page();
             table.tall_rows(true);
             table.set_sections(vec![section], 0, false);
             out.extend(table.app_fit_failures(w, language.tag()));

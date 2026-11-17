@@ -1412,7 +1412,7 @@ impl RootPage {
     fn new(entry: EntryId, directory: plx_data::stores::browse::DirectoryView<'_>, inputs: &crate::registry::ScreenInputs) -> Self {
         let mut s = Self {
             entry,
-            form: FormTable::new(super::registry::BAND),
+            form: FormTable::page(super::registry::BAND),
             session_watch: Default::default(),
             inputs: inputs.clone(),
             session_snapshot: Default::default(),
@@ -1473,7 +1473,6 @@ impl RootPage {
             under_posters: self.state.under_posters, plaintext,
         });
         let keep = self.form.selected_id().cloned();
-        super::family::settings_table(&mut self.form.table);
         self.form.set(form, keep.as_ref());
         self.form.table.list_focused = true;
         if let Some(key) = self.form.key_at(self.form.table.sel.max(0) as usize) {
@@ -1539,7 +1538,7 @@ impl RootPage {
     fn view(&self) -> TableScreen<'_> {
         TableScreen::new(
             Header::new(
-                RouteLayout::settings_page(),
+                RouteLayout::screen(),
                 None,
                 plx_platform::i18n::msg::settings_title(),
                 plx_platform::i18n::msg::settings_root_copy(),
@@ -1729,7 +1728,7 @@ impl Machine<InnerHost> for RootPage {
                 if landed { fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session)); }
 
                 self.form.table
-                    .update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                    .update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 self.follow.update(t.dt());
                 Handled::Yes
             }
@@ -2004,7 +2003,7 @@ impl LanguagePage {
     fn new(entry: EntryId, inputs: &crate::registry::ScreenInputs) -> Self {
         let selected = inputs.install_language;
         let sel = LangId::Choice(selected).key();
-        let mut page = Self { entry, form: FormTable::new(super::registry::BAND), state: LanguageState { selected, sel, failed: false, busy: false }, save: None, running_language: inputs.running_language };
+        let mut page = Self { entry, form: FormTable::page(super::registry::BAND), state: LanguageState { selected, sel, failed: false, busy: false }, save: None, running_language: inputs.running_language };
         page.rebuild();
         page
     }
@@ -2017,7 +2016,6 @@ impl LanguagePage {
     /// first build).
     fn rebuild(&mut self) {
         let keep = self.form.selected_id().cloned().unwrap_or(LangId::Choice(self.state.selected));
-        super::family::settings_table(&mut self.form.table);
         self.form.set(language_form(self.state.selected, self.state.busy), Some(&keep));
         self.form.table.list_focused = true;
     }
@@ -2032,7 +2030,7 @@ impl LanguagePage {
         } else {
             plx_platform::i18n::msg::settings_language_copy()
         };
-        TableScreen::new(Header::new(RouteLayout::settings_page(), Some(plx_platform::i18n::msg::settings_title()),
+        TableScreen::new(Header::new(RouteLayout::screen(), Some(plx_platform::i18n::msg::settings_title()),
             plx_platform::i18n::msg::settings_language_title(), copy).with_hint(restart_hint()),
             &self.form.table, GroupId(0), self.entry).keyed(&self.form)
     }
@@ -2089,7 +2087,7 @@ impl Machine<InnerHost> for LanguagePage {
             }
             ScreenEvent::Tick(t) => {
                 if self.poll_save() { fx.invalidate(plx_machine::present::Provenance::Input); }
-                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {

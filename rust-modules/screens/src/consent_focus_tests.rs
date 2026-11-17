@@ -651,7 +651,7 @@ fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
     let _guard = plx_base::testlock::serial();
     let _no_live_font = plx_ui::text_view::ForbidLive::enter();
     let measure = ReadingMeasure;
-    let reader = DocumentReader::new().with_size(theme::size::BODY);
+    let reader = DocumentReader::new().with_size(plx_ui::route_screen::COPY_SIZE);
     for (name, locale) in plx_platform::i18n::SHIPPED
         .into_iter()
         .map(|p| (p.tag(), LocaleContext::resolve(p, None, None, None, None)))
@@ -671,12 +671,12 @@ fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
             };
             let labels = [positive, msg::settings_consent_do_not_share_c_in(&locale)];
             let layout = ConsentPage::first_run_layout(title, body, product, &table, &labels, &measure);
-            let frame = layout.narrative_copy_frame(product, title, layout.action.y, &measure);
+            let frame = layout.copy_text_frame(product, title, layout.action.y, &measure);
             assert!(!RouteLayout::narrative_title(title).with_measure(&measure).truncates(layout.narrative.w),
                 "{name} product={product}: the complete question remains visible");
             if name != "pseudo" {
                 assert!(reader.measured_height(body, frame.w, &measure) <= frame.h,
-                    "{name} product={product}: complete real disclosure must fit at BODY size");
+                    "{name} product={product}: complete real disclosure must fit at the route copy size");
             }
             assert!((frame.y + frame.h + theme::space::MD - layout.action.y).abs() < 0.01);
             // `measured_width` budgets the device's headroom on top of every run; this page only
@@ -703,12 +703,12 @@ fn overflowing_disclosure_scrolls_before_draw_with_visible_choice_focus_and_repl
     use plx_machine::machine::Measure;
     use plx_ui::rec::{Measurements, TableMeasure};
     use plx_ui::screen::By;
-    // Expand only BODY text: titles and links remain normal, while a future long disclosure
-    // cannot fit even after its column has used all available width.
+    // Expand only the copy size (the disclosure's): titles and links remain normal, while a future
+    // long disclosure cannot fit even after its column has used all available width.
     struct ExpandedBody;
     impl Measure for ExpandedBody {
         fn width(&self, text: &core::ffi::CStr, size: i32, _bold: bool) -> f32 {
-            let factor = if size == theme::size::BODY { 1.5 } else { 0.5 };
+            let factor = if size == plx_ui::route_screen::COPY_SIZE { 1.5 } else { 0.5 };
             text.to_string_lossy().chars().count() as f32 * size as f32 * factor
         }
         fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }

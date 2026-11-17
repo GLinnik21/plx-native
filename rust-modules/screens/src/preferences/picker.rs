@@ -79,7 +79,7 @@ fn option_form(options: Vec<(String, Value)>, current: &Value, busy: bool, retry
 
 impl PickerPage {
     pub fn new(entry: EntryId, field: PickerKind, inputs: &crate::registry::ScreenInputs) -> Self {
-        let mut s = Self { inputs: inputs.clone(), marker_prefs: Default::default(), entry, form: FormTable::new(BAND),
+        let mut s = Self { inputs: inputs.clone(), marker_prefs: Default::default(), entry, form: FormTable::page(BAND),
             state: PickerState { shown_marker_scope: 0, marker_prefs: Default::default(), field, selected: 0, io: Io { busy: false, status: String::new() },
                 quality: inputs.preference::<QualityPref>(), direct_play: inputs.preference::<DirectPlayModePref>(),
                 checked: u32::MAX, confirming: false, affirmative: false, alert_scroll: 0 },
@@ -117,7 +117,7 @@ impl PickerPage {
             .iter().position(|(_, v)| *v == current).map_or(u32::MAX, |i| i as u32)
     }
     fn view(&self) -> TableScreen<'_> {
-        TableScreen::new(Header::new(RouteLayout::settings_page(), Some(self.state.field.parent_title()),
+        TableScreen::new(Header::new(RouteLayout::screen(), Some(self.state.field.parent_title()),
             self.state.field.title(), &self.copy), &self.form.table, GroupId(0), self.entry).keyed(&self.form)
     }
     fn focus(&self, fx: &mut Effects<'_, InnerHost>, group: GroupId) {
@@ -149,7 +149,7 @@ impl PickerPage {
         let keep = if seat_current { OptionId::Choice(current.clone()) } else {
             self.form.selected_id().cloned().unwrap_or_else(|| OptionId::Choice(current.clone())) };
         let show_retry = self.account() && !self.state.io.busy && !self.state.io.status.is_empty();
-        super::super::family::settings_table(&mut self.form.table); self.form.table.list_focused = true;
+        self.form.table.list_focused = true;
         self.form.set(option_form(options, &current, self.state.io.busy, show_retry), Some(&keep));
         self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
     }
@@ -290,7 +290,7 @@ impl Machine<InnerHost> for PickerPage {
                     Landed::Nothing if started => { self.rebuild(true); fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session)); }
                     Landed::Nothing => {}
                 }
-                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {

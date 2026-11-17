@@ -188,7 +188,7 @@ impl OnboardScreen {
         let mut s = Self {
             entry,
             settings,
-            form: FormTable::new(super::registry::BAND),
+            form: FormTable::page(super::registry::BAND),
             table_gen: u32::MAX,
             table_epoch: directory.epoch().unwrap_or(0),
             entry_pins: base.clone(),
@@ -275,8 +275,6 @@ impl OnboardScreen {
         let rows = self.draft_rows(directory);
         let form = source_list::form(Level::OnHome, &groups, &rows, Tail::None);
         self.table_gen = gen;
-        // first run and Settings draw one table: the family's look ([`super::family::settings_table`])
-        super::family::settings_table(&mut self.form.table);
         if keep {
             // a rebuild under the cursor (a press, a roster landing) holds the focused library by
             // identity and lets the pill glide rather than snap
@@ -450,12 +448,6 @@ impl OnboardScreen {
     }
 }
 
-/// The page's columns in every mounting (first run, Settings, over the Library): a Settings page's,
-/// 48 title with the crumb above it, so first run follows the Settings design too.
-fn page_layout() -> RouteLayout {
-    RouteLayout::settings_page()
-}
-
 fn body_copy_for(who: &[String]) -> String {
     match join_names(who) {
         None => plx_platform::i18n::msg::settings_onboard_copy().to_string(),
@@ -479,7 +471,7 @@ struct OnboardView<'a> {
 
 impl<'a> OnboardView<'a> {
     fn screen<K: Copy>(&'a self, press: plx_machine::machine::PressRead<K>) -> TableScreen<'a> {
-        let layout = page_layout();
+        let layout = RouteLayout::screen();
         TableScreen::new(Header::new(layout, None, "", ""), &self.screen.form.table, TABLE_GROUP, self.screen.entry)
             .keyed(&self.screen.form)
             .uncommitted(false)
@@ -562,7 +554,7 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
                 }
                 let band = cx.focus.current.and_then(|k| band_index(k.elem));
                 self.pop.step(band, dt);
-                self.form.table.update(dt, page_layout().sectioned_table().h);
+                self.form.table.update(dt, RouteLayout::screen().sectioned_table().h);
                 if self.form.table.n_rows() == 0 {
                     self.phase_ms = self.phase_clock.advance(*t, &mut fx.present()); // the spinner
                 }
@@ -771,7 +763,7 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
             // a first-run route is not a sheet, but it belongs to the same visual family
             self.ground.draw_home(Painter::root());
         }
-        let layout = page_layout();
+        let layout = RouteLayout::screen();
         let directory = H::directory(f.cx);
         let body = self.body_copy(directory);
         Header::new(
@@ -1786,9 +1778,8 @@ mod tests {
     }
 
     /// Favorite libraries draws the Settings table in first run, in Settings and over the
-    /// Library: board measures, full rows, reading-ink headers and the 48 page title (the
-    /// onboarding pages follow the Settings design). First run drew the pre-board table and the
-    /// hero title, and so did the Settings editor.
+    /// Library: the route page table (`FormTable::page`), the one the Settings pages build. First
+    /// run drew the pre-board table, and so did the Settings editor.
     #[test]
     fn every_mounting_draws_the_settings_table() {
         let _g = plx_base::testlock::serial();
@@ -1804,8 +1795,6 @@ mod tests {
             assert!(!s.form.table.compact, "{what}: full-height rows");
             assert_eq!(s.form.table.header_ink, theme::TEXT_READING, "{what}: reading-ink headers");
         }
-        assert_eq!(page_layout().title_style, plx_ui::route_screen::TitleStyle::Page,
-            "the page title is a Settings page's in every mounting");
     }
 
     /// **DOWN off the last library reaches the action pill.** Reported: "on screens containing a
@@ -1959,7 +1948,7 @@ mod tests {
     fn every_favourites_row_fits_its_column_in_every_language() {
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let _g = plx_base::testlock::serial();
-        let frame_w = page_layout().sectioned_table().w;
+        let frame_w = RouteLayout::screen().sectioned_table().w;
         let mut out = Vec::new();
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);

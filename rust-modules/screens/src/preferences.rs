@@ -429,7 +429,7 @@ pub struct PreferencesPage {
 }
 impl PreferencesPage {
     pub fn new(entry: EntryId, kind: Kind, inputs: &crate::registry::ScreenInputs) -> Self {
-        let mut s = Self { inputs: inputs.clone(), marker_prefs: Default::default(), entry, form: FormTable::new(BAND),
+        let mut s = Self { inputs: inputs.clone(), marker_prefs: Default::default(), entry, form: FormTable::page(BAND),
             state: State { marker_prefs: Default::default(), kind, selected: 0, io: Io { busy: false, status: String::new() },
                 quality: inputs.preference::<QualityPref>(), direct_play: inputs.preference::<DirectPlayModePref>(), values: Vec::new() },
             copy: String::new(), follow: plx_ui::follow_copy::FollowCopy::new(""), txn: Txn::new(false, &inputs.profile),
@@ -444,7 +444,7 @@ impl PreferencesPage {
         s
     }
     fn view(&self) -> TableScreen<'_> {
-        TableScreen::new(Header::new(RouteLayout::settings_page(), Some(plx_platform::i18n::msg::settings_title()),
+        TableScreen::new(Header::new(RouteLayout::screen(), Some(plx_platform::i18n::msg::settings_title()),
             self.state.kind.title(), &self.copy).with_follow(&self.follow), &self.form.table, GroupId(0), self.entry).keyed(&self.form)
     }
     /// The sentence the focused row states beside the table ([`row_sentence`]).
@@ -484,7 +484,7 @@ impl PreferencesPage {
         };
         self.state.values = fields_of(&inputs).iter()
             .map(|&f| field_readout_with_marker(f, inputs.quality, inputs.direct_play, inputs.prefs, inputs.marker_prefs, inputs.local)).collect();
-        super::family::settings_table(&mut self.form.table); self.form.table.list_focused = true;
+        self.form.table.list_focused = true;
         self.form.set(field_form(&inputs), keep.as_ref());
         self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
         let sentence = self.sentence().into_owned();
@@ -848,7 +848,7 @@ impl Machine<InnerHost> for PreferencesPage {
                     }
                     fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
                 }
-                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 self.follow.update(t.dt());
                 Handled::Yes
             }
@@ -900,7 +900,7 @@ impl Screen<InnerHost> for PreferencesPage {
 /// navigation test's expectation, built by the page's own form builder.
 #[cfg(test)]
 pub fn nav_items_for_test(kind: Kind, prefs: Option<&AudioPreferences>) -> Vec<(u32, SettingsPage)> {
-    let mut form: FormTable<RowId, Action, SettingsPage> = FormTable::new(BAND);
+    let mut form: FormTable<RowId, Action, SettingsPage> = FormTable::page(BAND);
     form.set(field_form(&FieldListInputs { local: crate::registry::empty_fixture(), kind, quality: Quality::Original, direct_play: DirectPlayMode::Auto,
         prefs, busy: false, show_retry: false, marker_prefs: Default::default(), read_only: false }), None);
     (0..form.table.n_rows() as usize).filter_map(|i| match form.binding_at(i)?.kind.clone() {

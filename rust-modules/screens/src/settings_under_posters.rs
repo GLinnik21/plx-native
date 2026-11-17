@@ -273,7 +273,7 @@ impl UnderPostersPage {
         let sel = UpId::Title.key();
         let mut page = Self {
             entry,
-            form: FormTable::new(super::super::registry::BAND),
+            form: FormTable::page(super::super::registry::BAND),
             state: UpState { value, sel, busy: false },
             follow: FollowCopy::new(""),
             dims: ColumnDims::at([false, false]),
@@ -290,7 +290,6 @@ impl UnderPostersPage {
     /// Re-derive the rows from the shown value, keeping the cursor on its row by identity.
     fn rebuild(&mut self) {
         let keep = self.form.selected_id().cloned().unwrap_or(UpId::Title);
-        super::super::family::settings_table(&mut self.form.table);
         self.form.set(under_posters_form(self.state.value), Some(&keep));
         self.form.table.list_focused = true;
         self.follow.follow(sentence_for(self.form.selected_id()));
@@ -299,7 +298,7 @@ impl UnderPostersPage {
     fn view(&self) -> TableScreen<'_> {
         use plx_platform::i18n::msg;
         TableScreen::new(
-            Header::new(RouteLayout::settings_page(), Some(msg::settings_title()), msg::under_posters_title(), msg::under_posters_copy())
+            Header::new(RouteLayout::screen(), Some(msg::settings_title()), msg::under_posters_title(), msg::under_posters_copy())
                 .with_follow(&self.follow),
             &self.form.table, GroupId(0), self.entry,
         ).keyed(&self.form)
@@ -593,7 +592,7 @@ impl Machine<InnerHost> for UnderPostersPage {
                 if self.poll() {
                     fx.invalidate(Provenance::Input);
                 }
-                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 self.follow.update(t.dt());
                 self.dims.update(t.dt());
                 Handled::Yes
@@ -757,7 +756,7 @@ impl DetailsPage {
         let mut page = Self {
             entry,
             kind,
-            form: FormTable::new(super::super::registry::BAND),
+            form: FormTable::page(super::super::registry::BAND),
             state: DetailsState { kind, value, sel: PartId(kind.offered()[0]).key(), busy: false },
             follow: FollowCopy::new(""),
             facts: picture_facts(kind, None),
@@ -787,7 +786,6 @@ impl DetailsPage {
 
     fn rebuild(&mut self) {
         let keep = self.form.selected_id().cloned().unwrap_or(PartId(self.state.focused()));
-        super::super::family::settings_table(&mut self.form.table);
         self.form.set(details_form(self.kind, self.kind.parts(self.state.value), &self.facts), Some(&keep));
         self.form.table.list_focused = true;
         let sentence = self.sentence();
@@ -796,7 +794,7 @@ impl DetailsPage {
 
     fn view(&self) -> TableScreen<'_> {
         TableScreen::new(
-            Header::new(RouteLayout::settings_page(), Some(plx_platform::i18n::msg::under_posters_title()), self.kind.row_label(), self.follow.text())
+            Header::new(RouteLayout::screen(), Some(plx_platform::i18n::msg::under_posters_title()), self.kind.row_label(), self.follow.text())
                 .with_follow(&self.follow),
             &self.form.table, GroupId(0), self.entry,
         ).keyed(&self.form)
@@ -857,7 +855,7 @@ impl Machine<InnerHost> for DetailsPage {
                 if settled || moved {
                     fx.invalidate(Provenance::Input);
                 }
-                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 self.follow.update(t.dt());
                 Handled::Yes
             }
@@ -923,7 +921,7 @@ impl DetailsPage {
 /// test's expectation, built by the page's own form builder.
 #[cfg(test)]
 pub(super) fn nav_items_for_test() -> Vec<(u32, SettingsPage)> {
-    let mut form: FormTable<UpId, UpAction, SettingsPage> = FormTable::new(super::super::registry::BAND);
+    let mut form: FormTable<UpId, UpAction, SettingsPage> = FormTable::page(super::super::registry::BAND);
     form.set(under_posters_form(UnderPosters::DEFAULT), None);
     (0..form.table.n_rows() as usize)
         .filter_map(|i| match form.binding_at(i)?.kind.clone() {

@@ -58,7 +58,6 @@ pub struct Header<'a> {
     pub crumb: Option<&'a str>,
     pub title: &'a str,
     pub copy: &'a str,
-    pub copy_size: std::os::raw::c_int,
     /// One key-cap line stacked under the copy's measured height (the Language page's "Hold
     /// [BACK] to close PlxNative"). Never elided: a screen that sets one owns a fit test for it
     /// against [`RouteLayout`]'s narrative width.
@@ -83,7 +82,6 @@ impl<'a> Header<'a> {
             crumb,
             title,
             copy,
-            copy_size: theme::size::LABEL,
             hint: None,
             pending_copy: None,
             follow: None,
@@ -113,24 +111,16 @@ impl<'a> Header<'a> {
         self
     }
 
-    pub fn with_copy_size(mut self, sz: std::os::raw::c_int) -> Self {
-        self.copy_size = sz;
-        self
-    }
-
     /// The one drawing routine, for both loops.
     pub fn paint(&self, p: Painter, measure: &dyn Measure) {
         let copy_end = if let Some(follow) = self.follow {
             // the title (and crumb) alone, then the followed sentence in the fixed frame under it
-            self.layout.draw_narrative_pending(p, self.crumb, self.title, "", self.copy_size, measure, None);
-            let mut frame = self.layout.narrative_copy_frame(self.crumb.is_some(), self.title, self.layout.action.y, measure);
-            let drop = self.layout.copy_cap_drop(self.copy_size, measure);
-            frame.y += drop;
-            frame.h = (frame.h - drop).max(0.0);
-            follow.draw(p, frame, self.copy_size);
+            self.layout.draw_narrative_pending(p, self.crumb, self.title, "", measure, None);
+            let frame = self.layout.copy_text_frame(self.crumb.is_some(), self.title, self.layout.action.y, measure);
+            follow.draw(p, frame);
             frame.y
         } else {
-            self.layout.draw_narrative_pending(p, self.crumb, self.title, self.copy, self.copy_size, measure, self.pending_copy)
+            self.layout.draw_narrative_pending(p, self.crumb, self.title, self.copy, measure, self.pending_copy)
         };
         if let Some(picture) = self.picture {
             picture.draw(p, self.layout.picture_slot(), measure);
