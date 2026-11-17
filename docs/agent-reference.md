@@ -18,7 +18,7 @@ the streaming/demux pipeline, and the Plex data layer), compiled to a static lib
 handle, stderr capture, process bring-up) that then calls the Rust `plex_run()` — and
 `src/starfish.c`, the **buffer-feed StarfishMediaAPIs C++ seam**, and `src/video_plane.c`, the shared
 **ACB/exported-window display binding**, beside `src/svg.c` (the nanosvg rasterizer),
-`src/sentry_context.c`, `src/exit.c` (the key-files list below says what each does) and, since
+`src/sentry_context.c`, `src/exit.c`, `src/access.c` (the key-files list below says what each does) and, since
 2026-08-29, `src/crashtrace.c` — the async-signal-safe **crash tracer**, lifted out of `main.c` into
 its own translation unit for one reason, that `ci/crashtrace-test.c` links it ALONE and can therefore
 fault a process on purpose and check how it died. Doing that immediately found a seven-week-old bug no
@@ -1216,8 +1216,14 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   process through `plx_exit_record` in `src/crashtrace.c` (an async-signal-safe record, in the event
   log and the crash log, naming the thread and the calling library, then the `exit_group` syscall,
   or a park while a fatal signal's handler is running, which lets that crash end the process; not
-  through Rust's `exit_now`, which flushes under locks); `ci/exit-interpose-test.c` grades it on Linux. These seven are the
-  entire normal C side (`gpdebug.c` is an opt-in allocator instrument). Reach for
+  through Rust's `exit_now`, which flushes under locks); `ci/exit-interpose-test.c` grades it on Linux.
+  `src/access.c` — libc `access` defined the same way (exported by the link, so a shared library's
+  `access` binds to it): the GPU driver probes four `/tmp` debug-switch paths (`API_PRINT` at the top
+  of every GL call, `SKIP_PRINT` in each draw and swap, `GM_FPS_PRINT` once per swap, `SHADER_PRINT`
+  from `glUseProgram`), each failing lookup costs ~8.5 us of kernel time on the webOS 5.6.2 TV, so
+  those paths are answered "absent" in user space and every other path gets the kernel's own
+  answer; `ci/access-interpose-test.c` grades it on Linux. These
+  eight are the entire normal C side (`gpdebug.c` is an opt-in allocator instrument). Reach for
   `/tmp/plxnative-crashtest=<segv|abrt|bus|ill|trap|panic|unwind>` to fault the app deliberately
   ON the television — `segv` is a real null write, `abrt`/`bus`/`ill`/`trap` are `raise`, `panic`
   panics inside an `extern "C"` callback, and `unwind` panics straight in `crash_on_purpose` so the
