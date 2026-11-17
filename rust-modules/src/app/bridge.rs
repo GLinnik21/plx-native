@@ -5300,6 +5300,16 @@ pub(crate) fn search_owns_input(d: &Dispatcher<AppHost>) -> bool {
             .is_some_and(|screen| screen.is::<plx_screens::search::SearchScreen>())
 }
 
+/// **Typed text has a recipient now**: the one question every text ingress asks (the FIFO's `txt:`, the
+/// television's own keyboard through `SDL_TEXTINPUT`, a replayed text input). True while the system keyboard is
+/// up for whichever page or surface raised it (`Dispatcher::system_keyboard_up`: Settings > Player HUD's address
+/// field, and Search's), and while Search is on top, whose field takes text even when the dispatcher's record of
+/// the panel disagrees with the OS (the `SDL_TEXTINPUT` branch of `run::ingest_sdl_event` says why). Text that
+/// arrives while this is false goes to `textinput`'s bounded queue, which nothing reads.
+pub(crate) fn text_owner(d: &Dispatcher<AppHost>) -> bool {
+    d.system_keyboard_up() || search_owns_input(d)
+}
+
 /// **Does the page under the pointer glide at the screen's edges?** No surface is up and the top
 /// page scrolls itself by a wheel (`Screen::glides`): the pointer's edge glide is offered to it.
 pub(crate) fn page_glides(d: &Dispatcher<AppHost>) -> bool {

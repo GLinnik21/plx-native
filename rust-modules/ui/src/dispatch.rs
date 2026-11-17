@@ -677,6 +677,13 @@ where
         self.engine_page()
     }
 
+    /// The television keyboard is up for a page that asked for it (`Delivery::Keyboard`) or that the OS
+    /// handed it to (`InputKind::SystemKeyboard`): the input owner is `InputOwner::System(Keyboard)`, and
+    /// typed text has a recipient whichever page or surface raised it.
+    pub fn system_keyboard_up(&self) -> bool {
+        self.input.keyboard
+    }
+
     /// A surface is up (any phase but Hidden): the legacy loop draws the tree at its surface slot.
     pub fn surface_up(&self) -> bool {
         self.nav

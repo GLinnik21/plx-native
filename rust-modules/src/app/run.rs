@@ -1078,9 +1078,12 @@ unsafe fn ingress_token(app: &mut App, fr: &mut Frame, token: &str) -> bool {
     }
     // Keys and clicks use SDL's existing synthesis while coexistence lasts. Consume those
     // before a following direct text token, rather than moving all text ahead of all keys.
-    if super::bridge::search_owns_input(&app.pages) { drain_sdl(app, fr); }
-    if super::bridge::search_owns_input(&app.pages) {
-        if let Some(text) = token.strip_prefix("txt:") {
+    let drained = super::bridge::search_owns_input(&app.pages);
+    if drained { drain_sdl(app, fr); }
+    if let Some(text) = token.strip_prefix("txt:") {
+        // Any field with the keyboard (`text_owner`), not only Search's: the same order rule, keys first.
+        if !drained && super::bridge::text_owner(&app.pages) { drain_sdl(app, fr); }
+        if super::bridge::text_owner(&app.pages) {
             ingest_text(app, &text.replace('+', " "), crate::textinput::available(),
                 plx_machine::machine::Source::RemoteFifo);
             return true;
@@ -1885,8 +1888,9 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // before the field opened can arrive in it, and `MAX_PENDING` bounds a queue
         // nobody drains. Gating here would also be a second, weaker copy of a rule
         // that lives in one place — and it would flip a frame away from the field's
-        // own edit state, because the route changes at the fade floor.
-        if super::bridge::search_owns_input(&app.pages) {
+        // own edit state, because the route changes at the fade floor. The recipient is
+        // `text_owner`: Search on top as before, or any page whose keyboard is up.
+        if super::bridge::text_owner(&app.pages) {
             let text = crate::textinput::decode(&app.ev);
             ingest_text(app, &text, crate::textinput::available(), plx_machine::machine::Source::Sdl);
         } else {
@@ -3754,8 +3758,8 @@ unsafe fn replay_inject(app: &mut App, fr: &mut Frame, v: &serde_json::Value) {
     let u = |k: &str| v[k].as_u64().unwrap_or(0) as u32;
     match kind {
         "text" => {
-            if !super::bridge::search_owns_input(&app.pages) {
-                log("replay: text has no owned Search recipient");
+            if !super::bridge::text_owner(&app.pages) {
+                log("replay: text has no owned recipient");
             } else if let Some(events) = super::recorder::dec_text(v) {
                 app.inputs.extend(events);
                 app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle);
@@ -4471,6 +4475,99 @@ mod lifecycle_regression_tests {
             assert!(message.contains("main-thread block: dev hang probe"), "{message}");
             assert_eq!(app.inputs.len(), 2,
                 "both earlier key edges must be handled before the probe (fifo={fifo})");
+        }
+    }
+
+    /// **Typed text reaches a field that is not Search's: Settings > Player HUD > Install from address.** Every text
+    /// ingress was gated on `search_owns_input`, a downcast to `SearchScreen`, since Search was the only field (UI
+    /// restructure phase 8). The HUD page raised the keyboard, the television committed text, and the text went to
+    /// `textinput`'s queue, which nothing reads: on the set, `txt:` chunks left `pending=1, 2, 3` and an empty row, and
+    /// OK submitted an empty address (#1417's second TV pass). Both doors are graded, the FIFO's `txt:` and the
+    /// television keyboard's `SDL_TEXTINPUT`, through the real ingress, dispatcher, page, Bridge and HUD driver: the
+    /// address the driver dials is the address that was typed.
+    #[test]
+    fn typed_text_reaches_the_player_hud_address_field_and_its_fetch() {
+        use plx_machine::machine::{InputKind, TextEdit, Tick};
+        static DIALLED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        fn record(url: &str, _: usize) -> Result<plx_net::net::Resp, plx_net::net::RequestFailure> {
+            DIALLED.lock().unwrap().push(url.to_owned());
+            Err(plx_net::net::RequestError::Transport.into())
+        }
+        const ADDRESS: &str = "https://example.com/hud.plxhud";
+        let _serial = plx_base::testlock::serial();
+        // SDL's event subsystem only: no window, renderer, native playback or device.
+        assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
+        struct Events;
+        impl Drop for Events {
+            fn drop(&mut self) { unsafe { SDL_Quit(); } }
+        }
+        let _events = Events;
+        let editing = |app: &App| {
+            let mut probe = String::new();
+            app.pages.nav.modals.top().expect("Settings is up").entry.inst.as_ref().unwrap().screen.state().probe(&mut probe);
+            probe.rsplit_once("player-hud ").expect("the Player HUD page is the top page").1.contains("editing=true")
+        };
+        fn frames(app: &mut App, now: &mut u32, n: u32) {
+            for _ in 0..n { *now += 16; frame(app, *now); }
+        }
+        // One remote token through the real ingress, its SDL edges drained, and the frame that delivers them.
+        fn keys(app: &mut App, fr: &mut Frame, now: &mut u32, token: &str) {
+            assert!(unsafe { ingress_token(app, fr, token) }, "{token}");
+            unsafe { drain_sdl(app, fr); }
+            let inputs = std::mem::take(&mut app.inputs);
+            *now += 16;
+            super::super::bridge::app_frame(app, Tick { ms: *now, dt_us: 16_000 }, inputs);
+        }
+        for fifo in [true, false] {
+            DIALLED.lock().unwrap().clear();
+            let dir = std::env::temp_dir().join(format!("plx-hud-typed-{}-{fifo}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            struct Cleanup(std::path::PathBuf);
+            impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+            let _cleanup = Cleanup(dir.clone());
+            let mut app = app();
+            let classic = plx_appkit::player_hud::loaded::load_classic("0.10.0", plx_platform::i18n::english(),
+                &plx_base::fontcov::advances::ShippedMeasure);
+            app.runtime.hud.driver = super::super::adapters::huds::HudDriver::started_on_network(dir.clone(), classic,
+                "0.10.0", super::super::adapters::huds::HudRunner::inline("0.10.0").on_network(record));
+            super::super::bridge::open_settings_at(&mut app.pages, plx_screens::family::SettingsPage::PlayerHud);
+            let mut now = 0;
+            frames(&mut app, &mut now, 60);
+            let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+            // Focus the Install from address row (its key is the form's `ADDRESS_KEY`), then OK raises the keyboard.
+            for _ in 0..8 {
+                if app.pages.focus().is_some_and(|key| key.elem == 0x3000) { break; }
+                keys(&mut app, &mut fr, &mut now, "down");
+            }
+            assert_eq!(app.pages.focus().map(|key| key.elem), Some(0x3000), "premise: the address row has focus");
+            keys(&mut app, &mut fr, &mut now, "ok");
+            assert!(app.pages.system_keyboard_up(), "premise: OK on the row raised the television keyboard");
+            assert!(editing(&app), "premise: the field is editing");
+            assert!(!super::super::bridge::search_owns_input(&app.pages), "premise: Search is not the recipient");
+
+            // Type it as each door delivers it: the FIFO in one token, the television's keyboard in commits short
+            // enough for SDL's `text[32]`.
+            let pending = crate::textinput::pending();
+            for chunk in [&ADDRESS[..20], &ADDRESS[20..]] {
+                if fifo {
+                    assert!(unsafe { ingress_token(&mut app, &mut fr, &format!("txt:{chunk}")) });
+                } else {
+                    app.ev = crate::textinput::encode_event(chunk);
+                    event(&mut app, &mut fr, SDL_TEXTINPUT);
+                }
+                assert!(matches!(app.inputs.last().map(|input| &input.kind),
+                    Some(InputKind::Text(TextEdit::Commit(text))) if text == chunk),
+                    "the text reaches the app's input queue (fifo={fifo}), not textinput's");
+                let inputs = std::mem::take(&mut app.inputs);
+                now += 16;
+                super::super::bridge::app_frame(&mut app, Tick { ms: now, dt_us: 16_000 }, inputs);
+            }
+            assert_eq!(crate::textinput::pending(), pending, "nothing went to the unread queue (fifo={fifo})");
+            assert!(editing(&app), "typing keeps the field open");
+            keys(&mut app, &mut fr, &mut now, "ok");
+            frames(&mut app, &mut now, 8);
+            assert_eq!(*DIALLED.lock().unwrap(), vec![ADDRESS.to_owned()], "the typed address is the one fetched (fifo={fifo})");
         }
     }
 
