@@ -395,6 +395,18 @@ pub struct FixtureScreen {
 
 crate::focusable_via_composed!(FixtureScreen, FixtureHost);
 
+#[cfg(test)]
+impl FixtureScreen {
+    /// The row's element count, as a store landing would set it (a row longer than the canvas).
+    pub(crate) fn set_row_len(&mut self, len: usize) {
+        self.row.len = len;
+    }
+    /// The row's first element whose data has not landed (an unloaded paged slot).
+    pub(crate) fn set_unloaded_from(&mut self, from: usize) {
+        self.row.unloaded_from = from;
+    }
+}
+
 impl Composed<FixtureHost> for FixtureScreen {
     fn layout(&self, _cx: &Cx<'_, FixtureHost>) -> Vec<(PartId, Rect)> {
         vec![(PartId(0), Rect::new(0.0, 100.0, 1920.0, 200.0))]

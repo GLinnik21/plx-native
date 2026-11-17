@@ -3832,6 +3832,14 @@ unsafe fn controlled_key_input(app: &mut App, event: plx_machine::machine::Input
         app.inputs.push(event);
         return;
     }
+    // A recorded `focus:`/`press:` input: the dispatcher resolves it at its delivery position and
+    // expands the press itself, so it needs no key bookkeeping here (plan a11y-ids D5/D6).
+    if matches!(event.kind, InputKind::ById { .. }) {
+        app.last_input = event.at.ms;
+        app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle);
+        app.inputs.push(event);
+        return;
+    }
     if matches!(event.kind,InputKind::Key { key:Key::Ok,sym:0,wcode:0,edge:Edge::Up,at_edge:false })
         && event.source==plx_machine::machine::Source::Sdl {
         app.last_input=event.at.ms;
