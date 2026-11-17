@@ -523,7 +523,8 @@ impl Screen<InnerHost> for DocumentPage {
     /// a namespace of its own and an id names the page it was read on.
     fn a11y_ns(&self) -> &'static str {
         match self.state.which {
-            WHICH_ABOUT => "about",
+            // not `about`: the content panel (`about_panel`) answers that word
+            WHICH_ABOUT => "settings-about",
             WHICH_CONTRIBUTE => self.word,
             _ => "legal-document",
         }
