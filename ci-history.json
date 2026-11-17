@@ -1,4 +1,4 @@
-{"updated":"2026-11-17T21:37:43Z",
+{"updated":"2026-11-17T21:39:37Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5345,7 +5345,8 @@
 {"id":44166649908,"at":"2026-11-17T20:11:31Z","sha":"a3f1c06f7","title":"Player: a Play pressed while a held prime waits now resumes playback","pr":1439,"conclusion":"failure","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":288,"Windows launcher syntax":18,"Linux simulator build + launch":254}},
 {"id":44167045650,"at":"2026-11-17T20:13:41Z","sha":"9ba031c76","title":"a11y ids: comments say what the ids layer does (doc-claim audit)","pr":1431,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":20,"macOS tests against bundled FFmpeg and ASS":230,"Linux simulator build + launch":361,"macOS simulator build + launch":227}},
 {"id":44169628563,"at":"2026-11-17T20:28:15Z","sha":"9de9836ee","title":"Accessibility ids: every focusable element answers a stable, place-based id","pr":1431,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":173,"Linux simulator build + launch":297,"macOS simulator build + launch":227,"Windows launcher syntax":21}},
-{"id":44177563776,"at":"2026-11-17T21:13:38Z","sha":"d325c28fc","title":"a11y runtime: the provisional-focus test names the scripted arrival it checks","pr":1432,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":253,"macOS simulator build + launch":259,"macOS tests against bundled FFmpeg and ASS":194,"Windows launcher syntax":20}}
+{"id":44177563776,"at":"2026-11-17T21:13:38Z","sha":"d325c28fc","title":"a11y runtime: the provisional-focus test names the scripted arrival it checks","pr":1432,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":253,"macOS simulator build + launch":259,"macOS tests against bundled FFmpeg and ASS":194,"Windows launcher syntax":20}},
+{"id":44180505861,"at":"2026-11-17T21:30:25Z","sha":"45eb9adc4","title":"Docs: correct the prose the progressive hold made false (doc-claim audit)","pr":1441,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS simulator build + launch":230,"macOS tests against bundled FFmpeg and ASS":269,"Linux simulator build + launch":395}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
