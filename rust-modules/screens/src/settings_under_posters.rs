@@ -179,6 +179,15 @@ impl FormId for UpId {
             UpId::Reset => 30,
         })
     }
+    fn a11y(&self) -> Option<&'static str> {
+        Some(match self {
+            UpId::Title => "title",
+            UpId::MovieDetails => "movie_details",
+            UpId::ShowDetails => "show_details",
+            UpId::SortValue => "sort_value",
+            UpId::Reset => "reset",
+        })
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -657,6 +666,17 @@ struct PartId(DetailPart);
 impl FormId for PartId {
     fn key(&self) -> RowKey {
         RowKey(10 + self.0 as u32)
+    }
+    fn a11y(&self) -> Option<&'static str> {
+        Some(match self.0 {
+            DetailPart::Year => "year",
+            DetailPart::Length => "length",
+            DetailPart::Seasons => "seasons",
+            DetailPart::Genre => "genre",
+            DetailPart::VideoQuality => "video_quality",
+            DetailPart::AgeRating => "age_rating",
+            DetailPart::Score => "score",
+        })
     }
 }
 

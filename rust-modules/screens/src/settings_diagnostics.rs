@@ -28,6 +28,13 @@ impl FormId for DiagId {
             DiagId::Delete => 3,
         })
     }
+    fn a11y(&self) -> Option<&'static str> {
+        Some(match self {
+            DiagId::Trace => "trace",
+            DiagId::Export => "export",
+            DiagId::Delete => "delete",
+        })
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]

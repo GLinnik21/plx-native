@@ -378,6 +378,31 @@ impl FormId for RowId {
             Self::Retry => 6,
         })
     }
+    fn a11y(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Field(PickerKind::Quality) => "quality",
+            Self::Field(PickerKind::DirectPlay) => "direct_play",
+            Self::Field(PickerKind::SubtitleSize) => "subtitle_size",
+            Self::Field(PickerKind::SubtitlePosition) => "subtitle_position",
+            Self::Field(PickerKind::SubtitleColor) => "subtitle_color",
+            Self::Field(PickerKind::HdrOverlay) => "hdr_overlay",
+            Self::Field(PickerKind::NextEpisode) => "next_episode",
+            Self::Field(PickerKind::SkipInterval) => "skip_interval",
+            Self::Field(PickerKind::DeckPress) => "deck_press",
+            Self::Field(PickerKind::AudioLanguage) => "audio_language",
+            Self::Field(PickerKind::SubtitleMode) => "subtitle_mode",
+            Self::Field(PickerKind::SubtitleLanguage) => "subtitle_language",
+            Self::Field(PickerKind::ForcedSubtitles) => "forced_subtitles",
+            Self::Field(PickerKind::UiResolution) => "ui_resolution",
+            Self::Field(PickerKind::InstantDpadSeeking) => "instant_dpad_seeking",
+            Self::Field(PickerKind::UriEngine) => "uri_engine",
+            Self::Field(PickerKind::DolbyVision) => "dolby_vision",
+            Self::Field(PickerKind::IntroSkip) => "intro_skip",
+            Self::Field(PickerKind::CreditsSkip) => "credits_skip",
+            Self::PlayerHud => "player_hud",
+            Self::Retry => "retry",
+        })
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action { Open, Retry }

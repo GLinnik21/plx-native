@@ -174,6 +174,16 @@ impl FormId for Page {
             Page::Contact => 5,
         })
     }
+    fn a11y(&self) -> Option<&'static str> {
+        Some(match self {
+            Page::Privacy => "privacy",
+            Page::OpenSource => "open_source",
+            Page::Ffmpeg => "ffmpeg",
+            Page::Source => "source",
+            Page::Trademarks => "trademarks",
+            Page::Contact => "contact",
+        })
+    }
 }
 
 impl Page {

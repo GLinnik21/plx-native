@@ -107,6 +107,18 @@ impl FormId for RowId {
             RowId::Delete => 7,
         })
     }
+    fn a11y(&self) -> Option<&'static str> {
+        Some(match self {
+            RowId::Errors => "errors",
+            RowId::Usage => "usage",
+            RowId::PreviewCrash => "preview_crash",
+            RowId::PreviewUsage => "preview_usage",
+            RowId::Policy => "policy",
+            RowId::ErrorsId => "errors_id",
+            RowId::AnalyticsId => "analytics_id",
+            RowId::Delete => "delete",
+        })
+    }
 }
 
 /// What a consent row does beyond opening a preview (a `Nav` row never reaches it — see

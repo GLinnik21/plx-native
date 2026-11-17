@@ -81,6 +81,15 @@ impl FormId for Action {
             Action::SendDiagnostics => 5,
         })
     }
+    fn a11y(&self) -> Option<&'static str> {
+        Some(match self {
+            Action::ChangeProfile => "change_profile",
+            Action::SignIn => "sign_in",
+            Action::SignOut => "sign_out",
+            Action::Settings => "settings",
+            Action::SendDiagnostics => "send_diagnostics",
+        })
+    }
 }
 
 impl Action {

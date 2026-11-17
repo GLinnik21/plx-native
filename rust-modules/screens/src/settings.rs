@@ -1104,6 +1104,24 @@ impl FormId for RootId {
             RootId::Plaintext(_) => PLAINTEXT_KEY_BASE,
         })
     }
+    fn a11y(&self) -> Option<&'static str> {
+        Some(match self {
+            RootId::Favourites => "favourites",
+            RootId::UnderPosters => "under_posters",
+            RootId::Playback => "playback",
+            RootId::AudioSubtitles => "audio_subtitles",
+            RootId::Language => "language",
+            RootId::AutoSignIn => "auto_sign_in",
+            RootId::TrailerAutoplay => "trailer_autoplay",
+            RootId::Resolution => "resolution",
+            // one row per server, so no one name fits them all: the position names each (`row.<i>`)
+            RootId::Plaintext(_) => return None,
+            RootId::Privacy => "privacy",
+            RootId::Diagnostics => "diagnostics",
+            RootId::Legal => "legal",
+            RootId::About => "about",
+        })
+    }
 }
 
 /// What a root row does beyond opening a page (a `Nav` row never reaches it — see
@@ -1936,6 +1954,13 @@ impl FormId for LangId {
             LangId::Choice(p) => p.settings_row(),
             LangId::Contribute => 1000,
         })
+    }
+    fn a11y(&self) -> Option<&'static str> {
+        match self {
+            // one row per language, so the position names each (`row.<i>`)
+            LangId::Choice(_) => None,
+            LangId::Contribute => Some("contribute"),
+        }
     }
 }
 
