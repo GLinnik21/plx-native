@@ -2154,7 +2154,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
                 self.related.reset_page_requests();
-                if matches!(by, By::Dir | By::Pointer) {
+                if matches!(by, By::Dir | By::Pointer | By::Script) {
                     self.return_pending = false;
                     self.restore_intent = None;
                 }
@@ -2169,7 +2169,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                 }
                 if let Some(located) = self.locate(to.elem, meta) {
                     if let Located::Season(i) = located {
-                        if matches!(by, By::Dir | By::Pointer) {
+                        if matches!(by, By::Dir | By::Pointer | By::Script) {
                             self.pending_season = Some(i);
                             self.season_settle = 0.0;
                         }
