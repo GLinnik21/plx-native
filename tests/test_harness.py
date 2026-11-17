@@ -25,6 +25,7 @@ tomorrow that breaks one of them should fail here rather than on the television.
 import array
 import concurrent.futures
 import functools
+import hashlib
 import http.client
 import importlib.util
 import inspect
@@ -449,15 +450,84 @@ class ReplayFixtures(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, name)
                 for fn in os.listdir(target):
                     if fn == "manifest.json" or fn.endswith(".jsonl"):
-                        # A current-format header (the `-current` fixture and the re-recorded
-                        # 1-boot-home-chip-grid) uses closed structural enums, not
-                        # globally admitted strings. The independent outbound guard remains
-                        # stricter and denies its publication; do not widen it in a fixture task.
+                        # Historical typed headers retain the alphabet-only refusal.
+                        # The producer-verified V13 profile has independent closed slots.
                         expected = 2 if (name in ('12-filmography-detail-return-current',
                                                   '1-boot-home-chip-grid')
                                          and fn == 'manifest.json') else 0
                         self.assertEqual(guard("tests/fixtures/replay/" + name + "/" + fn).returncode,
                                          expected, name + "/" + fn)
+
+    def test_current_producer_anchor_has_closed_independent_public_boundaries(self):
+        """Actual CLI and actual guard, without executing any outbound operation."""
+        source = os.path.join(self.FIXTURES, 'v13-owned-input-content')
+        expected = {
+            'manifest.json': '38195ea404c823c6a85764457a9ef531b07d5685cfb08e876a7334e66dc0aa26',
+            'rec-0000.jsonl': '0090ab24ab23afb6e3165aaeb34d748ee6769b069ea55c736ad962834343516e',
+        }
+        for name, digest in expected.items():
+            with open(os.path.join(source, name), 'rb') as f:
+                self.assertEqual(hashlib.sha256(f.read()).hexdigest(), digest)
+        with open(os.path.join(source, 'manifest.json'), encoding='utf-8') as f:
+            original = json.load(f)
+        self.assertEqual((original['schema'], original['state_fp']), (3, 16894190109976774341))
+        with tempfile.TemporaryDirectory() as root:
+            subprocess.run(['git', 'init', '-q', root], check=True)
+            fixtures = os.path.join(root, 'tests', 'fixtures', 'replay')
+            os.makedirs(fixtures)
+            shutil.copy(os.path.join(self.FIXTURES, 'ALPHABET.json'), fixtures)
+            # No name/suffix permission: the producer's exact shape is what matters.
+            target = os.path.join(fixtures, 'neutral')
+            shutil.copytree(source, target)
+            manifest_path = os.path.join(target, 'manifest.json')
+            hook = os.path.join(REPO_ROOT, '.claude', 'hooks', 'outbound-guard.py')
+            private = 'UnlistedHouseholdName'
+            cases = [('producer', (), None, True),
+                     ('raw-producer', ('anchor',), 'DELETE', True),
+                     ('legal-enum', ('init', 'data', 'ui_preferences', 'subtitle_size'), 'large', True),
+                     ('unknown-fp', ('state_fp',), 16894190109976774342, False),
+                     ('old-fp', ('state_fp',), 4239819007634745513, False),
+                     ('other-old-fp', ('state_fp',), 13512213413816145485, False),
+                     ('schema', ('schema',), 4, False),
+                     ('extra', ('init', 'data', 'unexpected'), False, False),
+                     ('hold-extra', ('init', 'data', 'install_hold_hint', 'unexpected'), False, False),
+                     ('hold-type', ('init', 'data', 'install_hold_hint', 'card'), 0, False),
+                     ('truncated-domain', ('init', 'data', 'install_hold_hint'), 'DELETE', False),
+                     ('truncated-init', ('init',), 'DELETE', False),
+                     ('unknown-enum', ('init', 'data', 'ui_preferences', 'subtitle_size'), private, False),
+                     ('wrong-enum-type', ('init', 'data', 'ui_preferences', 'subtitle_size'), ['large'], False),
+                     ('enum-outside-slot', ('build',), 'large', False),
+                     ('token', ('init', 'data', 'session', 'boot', 'authority', 'DevPms', 'primary', 'token'), private, False),
+                     ('raw-private', ('init', 'data', 'session', 'boot', 'error'), private, False),
+                     ('unknown-language', ('init', 'data', 'running_language'), private, False),
+                     ('truncated-json', (), None, False),
+                     ('duplicate-json', (), None, False)]
+            for name, path, value, accepted in cases:
+                with self.subTest(case=name):
+                    doc = json.loads(json.dumps(original))
+                    if path:
+                        parent = doc
+                        for key in path[:-1]:
+                            parent = parent[key]
+                        if value == 'DELETE':
+                            del parent[path[-1]]
+                        else:
+                            parent[path[-1]] = value
+                    text = json.dumps(doc)
+                    if name == 'truncated-json':
+                        text = text[:-1]
+                    elif name == 'duplicate-json':
+                        text = text[:-1] + ', "schema": 3}'
+                    with open(manifest_path, 'w', encoding='utf-8') as f:
+                        f.write(text)
+                    cli = self._tool('check', target)
+                    outbound = subprocess.run([sys.executable, hook], input=json.dumps({
+                        'tool_name': 'Bash', 'cwd': root, 'tool_input': {
+                            'command': 'gh pr create --body-file tests/fixtures/replay/neutral/manifest.json'}}),
+                        capture_output=True, text=True, cwd=root)
+                    self.assertEqual(cli.returncode, 0 if accepted else 1, cli.stdout + cli.stderr)
+                    self.assertEqual(outbound.returncode, 0 if accepted else 2, outbound.stdout + outbound.stderr)
+                    self.assertNotIn(private, cli.stdout + cli.stderr + outbound.stdout + outbound.stderr)
 
     def test_metric_text_bytes_are_checked_at_both_public_fixture_boundaries(self):
         """MetricKey::Width is byte-valued on disk, but public fixtures are UTF-8 synthetic text.
@@ -624,12 +694,13 @@ class ReplayFixtures(unittest.TestCase):
                               "(tools/plxnative-rec rerecord it)"
                               % (name, manifest.get("schema"), schema))
             fps[name] = manifest.get("state_fp")
-        self.assertEqual(checked, 4)
+        self.assertEqual(checked, 5)
         self.assertEqual(fps, {
             '1-boot-home-chip-grid': 13512213413816145485,
             '6-settings-family': 4239819007634745513,
             '12-filmography-detail-return': 4239819007634745513,
             '12-filmography-detail-return-current': 13512213413816145485,
+            'v13-owned-input-content': 16894190109976774341,
         })
 
     def _tool(self, *args):

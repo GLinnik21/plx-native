@@ -4290,9 +4290,17 @@ pub(super) fn automatic_version<'a>(
     versions: &'a [plx_data::pms::MediaVersion],
     env: &ResolveEnv,
 ) -> Option<&'a plx_data::pms::MediaVersion> {
-    match env.direct_play_mode {
+    version_play_starts(versions, env.direct_play_mode, &env.caps)
+}
+
+pub fn version_play_starts<'a>(
+    versions: &'a [plx_data::pms::MediaVersion],
+    mode: DirectPlayMode,
+    caps: &plx_platform::devcaps::Caps,
+) -> Option<&'a plx_data::pms::MediaVersion> {
+    match mode {
         DirectPlayMode::Forced => None,
-        DirectPlayMode::Auto | DirectPlayMode::Disabled => decodable_version(versions, &env.caps),
+        DirectPlayMode::Auto | DirectPlayMode::Disabled => decodable_version(versions, caps),
     }
 }
 

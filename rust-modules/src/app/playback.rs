@@ -1582,8 +1582,7 @@ pub(crate) unsafe fn key_play(
     }
     if was_off_player && !ptr.dpad_mode {
         hide_cursor();
-        ptr.dpad_mode = true;
-        ptr.cur_hidden = true;
+        ptr.enter_dpad();
     }
     super::bridge::send_player_message(pages,
         plx_screens::registry::AppMsg::PlayerExtendHud { now, duration_ms: HUD_LINGER_MS });

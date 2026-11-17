@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) const CONTENT_SHAPE: &str = "ContentInitialV1{detail:str,detailsec:u32,detailok:bool,filmography:bool,personcredits:u32,nowan:bool};ContentResourcesV2{admission:Metadata(sid,rk,gen,client)|MetadataCancel(boundary,retired:DetailBatch)|Person(slot,gen,arg,guid,local?,client?,sid?),admitted:bool;result:DetailBatch(seq,req,terminal,Data(key,Option<Detail>)|Dropped(req)|Refused(req))|Person(slot,Mail(gen,Resolve|Media|Profile|Credits|Roles));PersonTerminal:slot+gen+kind-bound;DetailFloats:bits;ContentEffectsV1:complete_nav_store_request_return_memory}";
 pub(crate) mod effects;
 pub(crate) mod presentation;
+mod historical;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -460,7 +461,7 @@ impl Preflight {
                 let (mode, path) = super::recorder::ReplayMode::parse(&path)?;
                 let path = std::path::Path::new(path);
                 let recording = Recording::load(path, super::recorder::state_fp())
-                    .map_err(|_| "invalid or incompatible recording")?;
+                    .map_err(|error| historical::refusal(path, error))?;
                 let initial = Initial::decode_profile(recording.header.init_data.clone(), recording.header.init_hash,
                     recording.header.state_fp)?;
                 super::recorder::validate_controlled(&recording, &initial)?;

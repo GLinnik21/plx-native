@@ -179,10 +179,14 @@ impl Press {
 
     /// OK-up: record the release. The bounce starts (respecting [`MIN_DIP_MS`]) and the activation commits
     /// a [`COMMIT_MS`] beat later — poll [`take_commit`].
+    ///
+    /// `release_at == 0` means "still held", so a key-up on the tick the `u32` clock wraps to 0 must
+    /// not store 0: it was dropped, the press latched long and delivered a hold instead of the tap.
+    /// `.max(1)` matches [`commit_at`](Self) and `HeldKey::release`.
     pub fn release(&mut self, now: u32) {
         let s = &mut *self;
         if s.phase == Phase::Down && s.release_at == 0 {
-            s.release_at = now;
+            s.release_at = now.max(1);
         }
 
     }
@@ -780,5 +784,19 @@ mod tests {
         p.cancel();
         let frames = spring_back_frames(&mut p, &mut now);
         assert!(frames.iter().filter(|f| f.0).count() <= 1, "an abandoned short press is motion-only");
+    }
+
+    /// A key-up exactly on the clock wrap (tick 0) is a real release: the card press commits as a
+    /// tap and never latches into a hold.
+    #[test]
+    fn a_release_at_the_clock_wrap_tick_is_a_tap_not_a_hold() {
+        let _serial = plx_base::testlock::serial();
+        let mut p = Press::new();
+        p.begin(u32::MAX - 15);
+        p.release(0);
+        let mut now = 0;
+        let committed = run(&mut p, &mut now, 2000);
+        assert!(committed, "the tap committed");
+        assert!(!p.was_long(), "the release at ms 0 was not lost into a hold");
     }
 }
