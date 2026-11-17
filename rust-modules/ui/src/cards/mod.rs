@@ -39,12 +39,13 @@
 //!   shelves never animate; the springs are frame-time and count as layout motion. See `landing.rs`.
 //!   [`Grid`] plays them too when its [`GridSpec`] says `.animate_landings(true)`: slots are (x, y),
 //!   ghosts fade on K_SCALE, survivors spring home on K_SCROLL.
-//! - **The pop rule.** A tile the engine reports focused that no deliberate move (`By::Dir` /
-//!   `By::Pointer`) announced draws at FULL focus scale at once — a restore or reconcile is adopted
-//!   whole, a page returns as it was left (a dormant page's own seat, below, is the one thing that may
-//!   regrow from rest instead). An unfocused tile draws at rest (or the live
-//!   let-go of one that lost focus and has not landed). A deliberate move grows from rest (or from
-//!   where its own let-go is, when focus comes back to a tile still letting go).
+//! - **The pop rule.** A tile the engine reports focused that no deliberate move announced (a key, a
+//!   hover or a by-id jump: `By::Dir`, `By::Pointer`, `By::Script`; see `Seen::of`) draws at FULL
+//!   focus scale at once — a restore or reconcile is adopted whole, a page returns as it was left (a
+//!   dormant page's own seat, below, is the one thing that may regrow from rest instead). An
+//!   unfocused tile draws at rest (or the live let-go of one that lost focus and has not landed). A
+//!   deliberate move grows from rest (or from where its own let-go is, when focus comes back to a
+//!   tile still letting go).
 //!   A shelf or grid whose page is still dissolving in, or is shown as a held transition image, is
 //!   [`dormant`](Shelf::dormant) / [`Grid::dormant`]: nothing is lifted under the fade or the image
 //!   (a shelf on a page in view eases what was lifted to rest; under a held image it, like a grid
@@ -469,7 +470,8 @@ pub(crate) enum Seen {
     /// None arrived: a focused card that is not where the section last had it is the SAME element
     /// moved by a content landing.
     Nothing,
-    /// A deliberate move (`By::Dir` / `By::Pointer`) handed focus to this card: it grows from rest.
+    /// A deliberate move (a key, a hover or a by-id jump: `By::Dir`, `By::Pointer`, `By::Script`; see
+    /// [`Seen::of`]) handed focus to this card: it grows from rest.
     Deliberate(usize),
     /// A restore, a reconcile or a seat: adopted whole.
     Other,
