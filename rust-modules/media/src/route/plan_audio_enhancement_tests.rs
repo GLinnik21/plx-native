@@ -1051,33 +1051,110 @@ fn a_preview_the_server_would_transcode_is_refused_as_not_direct() {
     plx_plex::plex::reset_servers_for_test();
 }
 
-/// **The hypothesis this tag exists to test.** The server would direct-play the item, but Auto
-/// quality's Remote bandwidth probe came back empty (the loopback PMS serves no media bytes), so
-/// Auto chose HLS: a direct play was on offer and the bandwidth decision refused it.
-#[test]
+/// A preview of the 4K item the server would direct play, on a Remote link, picked at `quality`,
+/// against a PMS that serves no media bytes: what the trailer's CDN answers Auto's remote
+/// preflight (#1425, `Open(Transport(28))`), no capacity sample. Returns the resolve and the event
+/// log it wrote.
 #[cfg(feature = "devtriggers")]
-fn a_direct_playable_preview_that_auto_sends_to_hls_is_refused_as_adaptive() {
-    use plx_telemetry::telemetry::classes::PreviewRefusal;
+fn remote_preview_at(quality: Quality) -> (Resolve, String) {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3", ac3_item, |env, client| {
-        client.set_link(plx_plex::plex::probe::Location::Remote);
-        env.quality = Quality::Auto;
-        env.set_preview(true);
+    let out = plx_base::eventlog::with_private_log(|| {
+        let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3", ac3_item, |env, client| {
+            client.set_link(plx_plex::plex::probe::Location::Remote);
+            env.quality = quality;
+            env.set_preview(true);
+        });
+        (r, std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default())
     });
-    assert!(r.plan.url.is_empty());
-    assert_eq!(preview_refusal_of(&r), Some(PreviewRefusal::Adaptive), "{:?}", r.plan.verdict);
+    plx_plex::plex::reset_servers_for_test();
+    out
+}
+
+/// The raw Part GETs a resolve made: Auto's remote Original preflight is one.
+fn part_gets(requests: &[String]) -> usize {
+    requests.iter().filter(|r| r.starts_with("GET /library/parts/")).count()
+}
+
+/// **#1425.** A preview is direct play or nothing, so Auto's remote Original preflight can only
+/// turn a playable trailer into a refusal. On Auto with a remote server the preview plans the
+/// Original directly, the way quality Original does, and the wire shows no Part GET at all (a
+/// fix that still probed and then ignored the answer would pass a URL-only check). The route says
+/// why in the event log, beside the `route:` lines.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_preview_on_auto_with_a_remote_server_direct_plays_without_the_preflight() {
+    let (r, log) = remote_preview_at(Quality::Auto);
+    assert!(r.plan.verdict.is_none(), "not refused: {:?}", r.plan.verdict);
+    assert!(r.plan.url.contains("/library/parts/") && !r.plan.url.contains("start."), "direct play: {}", r.plan.url);
+    assert_eq!(part_gets(&r.requests), 0, "no preflight GET rides: {:?}", r.requests);
+    assert!(
+        !matches!(r.plan.contract.delivery, plx_plex::plex::TranscodeDelivery::FixedHls { .. }),
+        "not an adaptive HLS plan: {:?}", r.plan.contract,
+    );
+    assert!(!r.plan.auto_original_watched, "a preview's Original is never watched");
+    assert_eq!(
+        log.matches("route: Auto preview — planned as Original, no remote Original preflight").count(), 1,
+        "one line says why: {log}",
+    );
+    assert!(!log.contains("auto: remote Original preflight"), "nothing was measured: {log}");
+    assert!(!log.contains("route: Auto adaptive"), "Auto did not decide: {log}");
+    // It is the plan quality Original makes: the same Part and the same contract.
+    let (original, _) = remote_preview_at(Quality::Original);
+    assert_eq!(r.plan.contract, original.plan.contract);
+    // (Each resolve has its own loopback server, so only the Part's path can agree.)
+    let part_of = |url: &str| url.split('?').next().and_then(|u| u.split_once("/library/parts/")).map(|(_, part)| part.to_owned());
+    assert_eq!(part_of(&r.plan.url), part_of(&original.plan.url), "the same Part");
+    assert!(part_of(&r.plan.url).is_some(), "a Part url: {}", r.plan.url);
+}
+
+/// **The control: only a preview skips it.** The same item, link and (empty) PMS played in full on
+/// Auto still takes the preflight, and still falls to HLS when it yields no sample. The positive
+/// assertion on the Part GET is what keeps the preview test's absence meaningful: the rig really
+/// does issue one when the route asks.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn the_same_item_played_in_full_on_auto_still_takes_the_preflight() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (r, log) = plx_base::eventlog::with_private_log(|| {
+        let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3", ac3_item, |env, client| {
+            client.set_link(plx_plex::plex::probe::Location::Remote);
+            env.quality = Quality::Auto;
+        });
+        (r, std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default())
+    });
+    assert!(part_gets(&r.requests) >= 1, "the preflight samples the Part: {:?}", r.requests);
+    assert!(log.contains("auto: remote Original preflight produced no capacity sample"), "{log}");
+    assert!(log.contains("route: Auto adaptive"), "{log}");
+    assert!(!log.contains("route: Auto preview"), "{log}");
+    assert!(
+        matches!(r.plan.contract.delivery, plx_plex::plex::TranscodeDelivery::FixedHls { .. }),
+        "an inconclusive sample starts HLS: {:?}", r.plan.contract,
+    );
     plx_plex::plex::reset_servers_for_test();
 }
 
-/// **The order is part of the contract.** Auto's override sets `directplay` false whenever it picks
-/// HLS, so a preview the server would transcode ALSO ends on an adaptive plan under Auto. The first
-/// failing condition is the one that was true BEFORE Auto chose: no direct play was on offer, so
-/// `not_direct`, not `adaptive`. (Reading the refusal off the values the gate sees would report
-/// every Auto-quality refusal as `adaptive` and make the hypothesis above unfalsifiable.)
+/// A preview under quality Original is unchanged by #1425: a direct play of the Part, no Part GET,
+/// no refusal and no `Auto` line of any kind. (It passes on the code before the fix too.)
 #[test]
 #[cfg(feature = "devtriggers")]
-fn a_transcoded_preview_under_auto_is_not_direct_even_though_auto_also_chose_hls() {
+fn a_preview_under_original_is_unchanged() {
+    let (r, log) = remote_preview_at(Quality::Original);
+    assert!(r.plan.verdict.is_none(), "{:?}", r.plan.verdict);
+    assert!(r.plan.url.contains("/library/parts/") && !r.plan.url.contains("start."), "{}", r.plan.url);
+    assert_eq!(part_gets(&r.requests), 0, "{:?}", r.requests);
+    assert_eq!(r.plan.contract.delivery, plx_plex::plex::TranscodeDelivery::ProgressiveMkv);
+    assert_eq!(r.plan.contract.ceiling, None);
+    assert!(!log.contains("route: Auto"), "Original names no Auto route: {log}");
+}
+
+/// A preview the server would transcode is refused as `not_direct` under Auto too, and no Part is
+/// sampled for it: an Auto preview plans as Original (#1425), so Auto's override never runs and
+/// `adaptive` is not a reason a preview can be refused for.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_transcoded_preview_under_auto_is_not_direct() {
     use plx_telemetry::telemetry::classes::PreviewRefusal;
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);

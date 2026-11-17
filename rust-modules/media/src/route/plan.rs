@@ -1467,6 +1467,8 @@ pub struct ResolveEnv {
     /// An explicit queue-item handoff reuses the existing queue instead of POSTing a new tail.
     pub queue_continuation: Option<super::queue_navigation::QueueContinuation>,
     /// Hero preview. Skip the PlayQueue entirely, and refuse anything that is not a direct play.
+    /// Under Auto it is planned as Original (`build_stream`'s `auto_preview`): Auto's remote
+    /// preflight could only refuse it.
     pub preview: bool,
     /// The viewer's Plex Pass audio-DSP preference (`player::audio_enhancements`), captured at the
     /// request like the quality: the worker must not read the atomic the main thread moves. Only
@@ -1823,7 +1825,14 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         }
         let Some(client) = plx_plex::plex::client_for(env.sid) else { return base_plan() };
         let forced = env.direct_play_mode == DirectPlayMode::Forced;
-        let playback_quality = if forced { Quality::Original } else { env.quality };
+        // **A preview never asks Auto's question.** It is direct play or nothing (`preview::refusal`
+        // below): Auto's remote preflight can only answer "play it" or "refuse it", never "play
+        // something else", so for a trailer it could only turn a playable file into a refusal (#1425: the
+        // preflight timed out on the trailer's two cross-origin CDN redirects and Auto fell to HLS). A
+        // preview under Auto is therefore planned exactly as under Original. A fixed rung stays what the
+        // viewer picked: its ceiling may still deny the direct play.
+        let auto_preview = env.preview && !forced && env.quality == Quality::Auto;
+        let playback_quality = if forced || auto_preview { Quality::Original } else { env.quality };
         let session = new_sess(rk);
         let new_plan = || Plan { sess: session.clone(), ..base_plan() };
         let queue = if !rk.is_empty() && !env.preview {
@@ -2668,22 +2677,12 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             let mut remux_probed = false;
             // Issue #266: the remote remux probe asked the enhancement first and the server said no.
             let mut probe_refused_enhancement = false;
-            // A preview that is already not direct-playable (MDE denied Original, or the extra carries
-            // no Part) is refused unconditionally below by `preview::accepts_direct_play` regardless of
-            // what Auto's bandwidth probe would decide — `adaptive` cannot rescue a `directplay=false`
-            // preview. Skipping the probe here (and, on the remux leg, the `put_selection` PUT that
-            // would otherwise register a transcode this preview can never play) is the only branch worth
-            // guarding: it is the one place this function does live network I/O before that refusal
-            // check, and a preview is exactly the request most likely to hit a non-direct-playable item.
-            let preview_already_refused = env.preview && (!directplay || part.is_empty());
             let decision = match (playback_quality, link_kind) {
                 (Quality::Auto, Some(link)) => {
                     // The probe is the only expensive input, so it is only taken where it can change the
                     // answer: a direct Remote with a feasible Original. Local needs no proof and Relay
                     // cannot be talked into carrying a remux.
-                    let probe = (link == crate::abr::LinkKind::Remote
-                        && original_feasible
-                        && !preview_already_refused)
+                    let probe = (link == crate::abr::LinkKind::Remote && original_feasible)
                         .then(|| {
                             if directplay {
                                 measure_remote_original(
@@ -2738,9 +2737,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             let auto_original = decision.as_ref().is_some_and(|d| d.original);
             let adaptive = auto_uses_hls(playback_quality, auto_original);
             // Whether a direct play was on offer BEFORE the override just below sets `directplay` false
-            // for HLS. The preview gate's reason needs it: after the override `directplay` is false for
-            // every Auto-quality HLS pick, so the gate's own inputs cannot tell a preview Auto sent to
-            // HLS from one the server would have transcoded anyway.
+            // for HLS: the preview gate's reason reads it beside `adaptive`. A preview never takes that
+            // override (it plans as Original under Auto, `auto_preview`), so for one `adaptive` is false
+            // and the reason is `no_part` or `not_direct` (`preview::refusal` keeps its `adaptive` arm).
             let direct_play_offered = directplay;
             if adaptive {
                 allowed = flavors_allowed(
@@ -2766,6 +2765,10 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 if playback_quality == Quality::Auto {
                     crate::player::log(&format!(
                         "route: Auto Original — source {source_transport_kbps}kbps {src_w}x{src_h}; no video encode"
+                    ));
+                } else if auto_preview {
+                    crate::player::log(&format!(
+                        "route: Auto preview — planned as Original, no remote Original preflight (a preview is direct play or nothing); source {source_transport_kbps}kbps {src_w}x{src_h}"
                     ));
                 }
             }
