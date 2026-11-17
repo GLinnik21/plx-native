@@ -475,9 +475,10 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
         None
     }
     /// The CHIP is this menu's opener, like a header pill is the Library menu's: the dispatcher's one
-    /// lift pass (`Z::OPENER`, `Dispatcher::lifted_opener`) draws it lit above the dim and the panel,
-    /// so the glass grows out from under it. The chip is chrome the bar draws, so it is named as a
-    /// bar member rather than a page element.
+    /// lift pass (`Z::OPENER`, `Dispatcher::lifted_opener`) draws it lit above the dim and the panel
+    /// at the morph's `opener_alpha` (gone while the menu stands, back as the droplet drains into
+    /// it). The chip is chrome the bar draws, so it is named as a bar member rather than a page
+    /// element.
     fn bar_opener(&self) -> Option<u32> {
         Some(plx_ui::widgets::TAB_KEY_CHIP)
     }
@@ -493,7 +494,8 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
         self.popover.opener_alpha()
     }
     /// The modal dim: the COMPACT role, as every menu hung off a chip: how dark the page goes behind
-    /// this menu, the peak the container ramps with the appear spring (`ModalStack::draw_scrims`).
+    /// this menu. The role sets only the PEAK; the morph ramps it (`Popover::dim` ->
+    /// `Scrim::following`): in as the glass grows, out with the slab.
     fn scrim(&self) -> Scrim {
         self.popover.dim(plx_ui::theme::underlay::DIM_COMPACT)
     }

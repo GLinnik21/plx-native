@@ -229,10 +229,11 @@ pub const PANEL_RAD: f32 = 24.0;
 /// table: it holds the open/morph state, the row cursor and the geometry, and answers `draw`.
 ///
 /// The panel grows out of the pill (`popover_morph`): [`draw`](Self::draw) lays the glass at the
-/// morphing rect, then the rows. It draws NO pill: the pill is the control's own, kept lit above the
-/// panel by the host's opener lift (the host surface names it as its `opener`, the page leaves it
-/// out of its pass, `WatchlistScreen::redraw_focused` paints it) like every header opener, so the
-/// panel opens under the control it is about (design review S12).
+/// morphing rect, then the rows. It draws NO pill: the pill is the control's own, painted by the
+/// host's opener lift (the host surface names it as its `opener`, the page leaves it out of its
+/// pass, `WatchlistScreen::redraw_focused` paints it) like every header opener, above the scrim and
+/// the panel at the morph's `opener_alpha`: lit as the glass grows out, gone while the menu stands,
+/// back as the droplet drains into it.
 pub struct OptionsMenu {
     popover: Popover,
     table: TableView,

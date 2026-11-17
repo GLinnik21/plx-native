@@ -649,7 +649,9 @@ impl Popover {
     /// the role's peak `weight` (a `theme::underlay::DIM_*` row): the container's appear spring ramps
     /// it for every popover but a [`morphing`](Self::morphing) one, whose dim FOLLOWS the morph
     /// ([`Scrim::following`](crate::screen::Scrim::following), [`popover_morph::dim_at`](crate::popover_morph::dim_at)):
-    /// in as the glass grows (by ~150 ms) and out as the slab drains (gone by ~110 ms), not in
+    /// in as the glass grows (by ~150 ms) and out as the slab drains (gone with the slab on the
+    /// hand-back frame,
+    /// `the_dim_follows_the_morph_for_a_morphing_menu_and_is_the_containers_for_any_other`), not in
     /// ~2 frames on the container's k 300 spring that is 73% at 150 ms and 14% at 200 ms on the way out.
     pub fn dim(&self, weight: f32) -> crate::screen::Scrim {
         let scrim = crate::screen::Scrim::dim(weight);

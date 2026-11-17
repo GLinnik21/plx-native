@@ -757,7 +757,8 @@ impl HeaderRow {
     /// paint of an opener for every header menu (Sort & Filter, `+N`): the page's pass leaves the
     /// control out of the row ([`Self::draw`]'s `lifted`) and `Screen::redraw_focused` calls this
     /// from the dispatcher's lift pass, which runs after the last surface on every plan (above the
-    /// dim AND the menu's panel; `Z::OPENER`), so the panel never covers it. `pop` is the
+    /// dim AND the menu's panel; `Z::OPENER`), at the alpha `p` carries: a morphing menu's
+    /// `opener_alpha`, 0 while the panel stands over the opener. `pop` is the
     /// row's [`CtlPop`] factor, so the pill follows the press spring as the menu opens.
     pub fn draw_opener(&self, p: Painter, scroll: f32, pop: f32, elem: u32) {
         self.draw_opener_with(p, scroll, pop, elem, &HeaderSwap::new());

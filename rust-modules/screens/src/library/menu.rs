@@ -852,8 +852,8 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
 
     /// The header control the panel grew out of, for every kind of menu ("+N" included): the page
     /// leaves it out of its pass (`DrawFrame::lifted`) and the opener lift draws it focused above
-    /// the scrim (`LibraryScreen::draw_header_opener`), so the control the panel is about stays
-    /// lit while it is open (design review S12).
+    /// the scrim and the panel (`LibraryScreen::draw_header_opener`) at the morph's `opener_alpha`:
+    /// gone while the menu stands, back as the droplet drains into it.
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<u32>>)> {
         self.arg.opener.map(|(entry, control)| (entry, Some(FocusKey { entry, elem: control })))
     }

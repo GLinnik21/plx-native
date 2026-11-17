@@ -268,7 +268,7 @@ static mut TLF_LEAD: c_int = 0;
 /// than the text dissolving.
 static mut TLF_VTOP: c_int = 0;
 static mut TLF_VBOT: c_int = 0;
-// the ink program (bound only while an [`InkClip`] is set) + its own uniform locations
+// the ink program (bound while an [`InkClip`] is set or the painter's rounded clip is live; its third slot carries the rounded clip) + its own uniform locations
 static mut TPROGI: c_uint = 0;
 static mut TLI_RECT: c_int = 0;
 static mut TLI_SCREEN: c_int = 0;

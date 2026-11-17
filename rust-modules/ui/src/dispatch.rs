@@ -1986,18 +1986,21 @@ where
             }
         }
         // **The lift pass: ONE place, ONE layer, ONE order, on every plan** (`Z::OPENER`, after the
-        // last surface). The element a surface was opened from is lit above the dim AND the panels,
-        // so a morphing panel grows out from under it and a close shrinks back into it. Two kinds
-        // are drawn here, bottom to top:
+        // last surface). The element a surface was opened from is lit above the dim AND the panels:
+        // a morphing menu CONSUMES it (painted at the morph's `opener_alpha`: gone while the menu
+        // stands, back as the droplet drains into it), the item hold menu's lifted card stays whole.
+        // Two kinds are drawn here, bottom to top:
         // - the host PAGE's opener (`lifted_opener`: a header pill, an item hold menu's card) by
         //   the page that drew it (`Screen::redraw_focused`). Not gated on `pages`: the loop's
         //   surfaces-only second call (`bridge::PagePlan::LegacyThenSurfaces`) owes it too, and a
         //   replaced host owes none (`SurfacesOnly`). It stands down by `lifted_opener`'s rule once
         //   focus leaves the opener while the menu fades.
         // - the shared BAR's member the surface hangs from (`Screen::bar_opener`: the profile chip),
-        //   by the rig (`Rig::lift_bar_member`) on the stack's latched ground, at the position and
-        //   alpha the chrome pass drew it with. Chrome the page does not own, so not a
-        //   `redraw_focused`; the same pass, the same layer, the same stand-down rule.
+        //   by the rig (`Rig::lift_bar_member`) on the stack's field once it has latched, and before
+        //   that on the host snapshot drawn clear (`widgets::lift_ground`); it paints on every frame
+        //   the menu owns the chip at a non-zero `opener_alpha`, at the position and alpha the
+        //   chrome pass drew it with. Chrome the page does not own, so not a `redraw_focused`; the
+        //   same pass, the same layer, the same stand-down rule.
         if Z::OPENER < ceiling {
             let _lift_layer = backdrop::layer(Z::OPENER, false);
             let _scope = rig.surface_scope();

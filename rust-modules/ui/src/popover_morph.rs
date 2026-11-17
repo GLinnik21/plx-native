@@ -210,7 +210,8 @@ pub const K_LENS: f32 = 395.0;
 /// The lens spring's damping ratio ([`K_LENS`]).
 pub const ZETA_LENS: f32 = 0.57;
 /// The rows' scale spring stiffness (brief: k ~ 720). Only the fade+scale FALLBACK uses the rows'
-/// own spring now; with an opener the rows ride the glass ([`Frame::rows_scale`]).
+/// own spring now; with an opener an open's rows are scaled by the lens spring ([`K_LENS`]) and a
+/// close's by the shrinking slab ([`Frame::rows_scale`]).
 pub const K_ROWS: f32 = 720.0;
 /// The rows' damping ratio (brief and board: 0.6 — underdamped, one small overshoot).
 pub const ZETA_ROWS: f32 = 0.6;
@@ -350,8 +351,10 @@ pub fn opener_alpha_at(t: f32) -> f32 {
 
 /// **The modal dim's share at progress `t`**: a smoothstep over the whole progress, so the page dims
 /// as the panel grows (in by ~150 ms, when the glass first reaches its size) and clears as the slab
-/// shrinks to the drain on a close (gone by ~110 ms), the container's own appear spring (k 300:
-/// 73% at 150 ms, still 14% at 200 ms on the way out) no longer deciding it for a morphing menu.
+/// shrinks to the drain on a close (gone with the slab on the hand-back frame,
+/// `the_dim_follows_the_morph_for_a_morphing_menu_and_is_the_containers_for_any_other`), the
+/// container's own appear spring (k 300: 73% at 150 ms, still 14% at 200 ms on the way out) no
+/// longer deciding it for a morphing menu.
 pub fn dim_at(t: f32) -> f32 {
     smooth(t, 0.0, 1.0)
 }
@@ -479,7 +482,9 @@ pub fn rows_zoom(from: Option<Rect>, panel: Rect, scale: f32) -> Zoom {
 pub struct Morph {
     w: Spring,
     h: Spring,
-    /// The fade+scale fallback's rows spring (0.82 -> 1); an opener's rows ride the glass instead.
+    /// The fade+scale fallback's rows spring (0.82 -> 1); an opener's rows use `lens` instead
+    /// (`rows_scale = lerp(lens, rect.h / panel.h, out)`: the lens spring on an open, the slab's
+    /// height on a close).
     rows: Spring,
     /// A close's content-and-frost phase: 0 = in, 1 = out ([`K_OUT`]).
     out: Spring,

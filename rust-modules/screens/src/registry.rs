@@ -397,8 +397,8 @@ pub struct LibraryMenuArg {
     /// hid behind "+N". Empty for every other menu.
     pub folded: Vec<u32>,
     /// The page's entry and the control the menu grew out of. Every header menu names it, "+N"
-    /// included: the page leaves the control out of its pass and the opener lift draws it lit
-    /// above the panel's scrim (design review S12).
+    /// included: the page leaves the control out of its pass and the opener lift draws it above the
+    /// panel's scrim at the morph's `opener_alpha`.
     pub opener: Option<(plx_machine::machine::EntryId, u32)>,
 }
 

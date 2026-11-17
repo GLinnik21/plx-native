@@ -927,8 +927,8 @@ fn the_back_that_dismisses_a_menu_retakes_no_host_snapshot() {
 
 /// **The top page's opener lift is the dispatcher's, drawn in the ONE lift pass after the last
 /// surface, on BOTH plans** (`Dispatcher::draw_with`, review R1/R3). The element a menu was opened
-/// from (a header pill, a card) is lit above the dim AND the panel so a panel grows out from under
-/// it; it was drawn by the application's page closure instead, so its place against the surfaces
+/// from (a header pill, a card) is lit above the dim AND the panel (a card whole, a morphing menu's
+/// opener at the morph's `opener_alpha`); it was drawn by the application's page closure instead, so its place against the surfaces
 /// depended on the plan: after them on `Owned` (`draw(.., true)`), BEFORE them on
 /// `LegacyThenSurfaces` (the closure ran, then `draw(.., false)` drew the panel on top of it). Red
 /// while the dispatcher never called `Screen::redraw_focused`.

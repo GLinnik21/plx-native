@@ -53,7 +53,7 @@
 // mediump lens would ripple along a straight edge instead of bending evenly.
 precision mediump float;
 varying highp vec2 v_cuv; // where this fragment sits in the snapshot
-varying highp vec2 v_p;   // panel-local pixel coords, for the SDF
+varying highp vec2 v_p;   // quad-local pixel coords; the panel's are `v_p - u_boff` (`u_boff` is 0 unless a morph joins a second shape)
 uniform sampler2D u_tex;   // the blurred snapshot
 uniform vec4 u_tint;
 uniform highp float u_iradius;

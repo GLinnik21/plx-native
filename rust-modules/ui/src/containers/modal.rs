@@ -898,7 +898,8 @@ impl<H: Host> ModalStack<H> {
     /// `popover::host::live()` scope or a frozen page will refuse every fill.
     ///
     /// The dims only: a surface's LIFT (the element it was opened from) is drawn after every
-    /// surface, by the dispatcher's lift pass, so the panel's glass grows out from under it.
+    /// surface, by the dispatcher's lift pass, above the panel: whole for the item hold menu's
+    /// card, at the morph's `opener_alpha` for a morphing menu's opener (which the glass consumes).
     pub fn draw_scrims(&mut self, nav_page_alpha: f32, present: &mut plx_machine::present::Present) {
         let mut sink = GlDims::new(present);
         // Nothing is up: no dim to paint, and the field is not this frame's to touch.

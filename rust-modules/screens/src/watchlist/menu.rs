@@ -189,8 +189,8 @@ impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
     }
     /// The pill the panel grew out of: the page leaves it out of its pass (`DrawFrame::lifted`) and
     /// the host's opener lift (`WatchlistScreen::redraw_focused`) is its only copy, lit above the
-    /// scrim and the panel for as long as the menu is up (design review S12). Left on the page it
-    /// sat dimmed under the scrim; drawn by this surface it vanished once the panel settled.
+    /// scrim and the panel at the morph's `opener_alpha` (gone while the menu stands, back as the
+    /// droplet drains into it). Left on the page it sat dimmed under the scrim.
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<u32>>)> {
         Some((self.arg.host, Some(FocusKey { entry: self.arg.host, elem: super::page::PILL_ELEM })))
     }

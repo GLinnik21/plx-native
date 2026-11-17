@@ -462,18 +462,23 @@ presentation in a design pass.
    and frost leaving over ~50 ms and drains into the opener (hand-back at ~233 ms; the drawn series is what the close test fits). The modal dim of a
    morphing menu FOLLOWS the morph (`Popover::dim` -> `Scrim::following`: in by ~150 ms, out with
    the slab), not the container's appear spring; a screen's `scrim()` returns `self.popover.dim(DIM_*)`.
-   **The header menus morph the glass ONLY (design review S11/S12):** Library Sort & Filter, the
-   Library's `+N` list and the Watchlist's Sort & Filter all open this way, and their opener is
-   never part of the morph. A morphing surface names its opener (`Screen::opener`), the page
+   **The header menus' glass CONSUMES its opener (owner decision 2026-11-17, reversing design
+   review S11/S12):** Library Sort & Filter, the Library's `+N` list and the Watchlist's Sort &
+   Filter all open this way: the opener fades out over the first 15% of the open
+   (`Frame::opener_alpha`, `OPENER_OUT_AT`), is not drawn while the menu stands (the panel covers
+   it, `popover::cover_opener`) and fades back in as the droplet drains into it on a close. Only
+   the item hold menu's lifted card stays whole. A morphing surface names its opener
+   (`Screen::opener`), the page
    leaves it out of its pass (`DrawFrame::lifted`: a pill left on the page sits under the menu's
    glass, and the rim's lens refracts its label into the panel's edge), and the dispatcher's lift
    pass (`Dispatcher::draw_with`, `Z::OPENER`: ONE place, after the last surface, on every page
    plan; the account chip, a `Screen::bar_opener`, is lifted by the same pass through `Rig::lift_bar_member`) calls `Screen::redraw_focused`
-   -> `PageHeader::draw_opener`, the ONE paint of a header opener, which draws it focused above the
-   scrim AND the panel, so the glass grows out from under a pill that does not change and a close
-   shrinks back into it (`the_page_openers_lift_is_drawn_after_the_surfaces_on_both_plans`). The shared painters are
+   -> `PageHeader::draw_opener`, the ONE paint of a header opener, which paints it focused above the
+   scrim AND the panel at the morph's `opener_alpha`, so the glass detaches from the pill as it
+   fades and a close drains back into it (`the_page_openers_lift_is_drawn_after_the_surfaces_on_both_plans`). The shared painters are
    `Popover::panel` (the glass at the morphing rect) and `Popover::morph_rows` (the rows, scaled
-   about the panel anchor by the glass's size). The morph draws no opener face: every header
+   about the panel anchor by their own lens spring (`K_LENS`) on an open, and by the shrinking
+   slab's height on a close). The morph draws no opener face: every header
    opener, the profile chip included, is the lift pass's, and the morph starts and ends on the opener's LIVE drawn rect (`Screen::opener_rect` -> `Popover::track_opener`, so the chip follows the bar's tuck). The morph is not
    faded by the container's appear: the surface begins and ends as the opener. A held surface is ticked with no time, so a morph starts on the first
    frame anyone sees. The item hold menu keeps lift+appear. A new morph constant is named in
