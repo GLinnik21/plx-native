@@ -1268,7 +1268,7 @@ mod tests {
 
         let mut r = DocumentReader::new();
         r.set_extent_for_test(400.0);
-        let focus = DocumentFocus { reader: &r, frame: layout.document(true), group: G, entry: E };
+        let focus = DocumentFocus { reader: &r, frame: layout.document(), group: G, entry: E };
         conformance(&focus, &cx);
         let a = Focusable::<H>::a11y(&focus, &0, &cx).unwrap();
         assert_eq!((a.path, a.role), (rel("document"), Role::Text));
