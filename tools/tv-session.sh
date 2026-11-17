@@ -8,7 +8,9 @@
 #   tv-session.sh click <x> <y>  click at authored 1920x1080 coords
 #   tv-session.sh focus <id>     move focus to the element an accessibility id names (`nav.watchlist`)
 #   tv-session.sh press <id> [--rk <ratingKey>]
-#                                focus that element and press OK; a card id (`...card.N`) needs --rk
+#                                focus that element and press OK; an element whose subject is a title
+#                                (a card, a Detail episode or season tab, a Filmography credit, the catalog
+#                                pill) needs --rk: see "BY ID" below
 #   tv-session.sh state [--out FILE]
 #                                what is on screen, by id: the focused id, the groups, every element
 #   tv-session.sh shot [out.png] grab the panel (video plane included) via the capture service
@@ -126,9 +128,11 @@
 # BY ID, NOT BY WALK: `focus`, `press` and `state` are the FIFO's accessibility-id tokens (`focus:<id>`,
 # `press:<id>[@<ratingKey>]`, `state:<nonce>`; debug builds only, `devtriggers`). Ids are place-based dot paths
 # (`nav.watchlist`, `home.hero.play`, `detail.hero.play`, `watchlist.grid.card.3`); `state` lists the real ones.
-# Prefer them to `key` walks, which are for tests whose subject is travel. Never press OK on a card whose
-# ratingKey you have not read: `press` refuses a card id without `--rk`, and the app refuses the press when
-# the card now there carries another one (`a11y: refused press <id> subject_mismatch ...` in the event log).
+# Prefer them to `key` walks, which are for tests whose subject is travel. Never press OK on a title whose
+# ratingKey you have not read: `press` refuses, without `--rk`, any id whose element's subject is a title (a
+# card `*.card.*`, a Detail episode `detail.episodes.*` (OK on a still PLAYS it) or season tab, a Filmography
+# credit, the catalog pill: `a11y_subject_bearing`), and the app refuses the press when the element now there
+# carries another subject (`a11y: refused press <id> subject_mismatch ...` in the event log).
 # A `state` snapshot holds titles and rating keys: it is for you, not for an issue or a recording.
 #
 # THE TV LOCK: every subcommand that DRIVES the set (up, key, click, focus, press, state, shot, down) requires the
@@ -1015,6 +1019,36 @@ cmd_up() {
   echo "== session up"
 }
 
+# `fifo_write` / `fifo_send`: any one-line word reaches the remote shell as ONE quoted word, a newline is
+# refused, and nothing is sent for a refusal. Round trip through `sh -c`, the way the set's shell reads it.
+selftest_fifo() {
+  local REMOTE_FIFO probe word stmt got sent_to_tv=0 sent_arg="" _real_tv
+  probe=$(mktemp "${TMPDIR:-/tmp}/plx-fifo-selftest.XXXXXX") || { bad "no scratch file for the FIFO quoting check"; return 1; }
+  REMOTE_FIFO=$probe
+  for word in "txt:it's" "txt:'; echo pwned >&2; '" "'" "''" 'a"b' 'a$HOME`id`b;&|()<>' 'x\y\n' "txt:a b" "txt:*" "back" "ck:10,20"; do
+    stmt=$(fifo_write "$word") || { bad "fifo_write refused a one-line word: $word"; rm -f "$probe"; return 1; }
+    : > "$probe"
+    sh -c "$stmt" 2>/dev/null
+    got=$(cat "$probe")
+    [ "$got" = "$word" ] || { bad "the FIFO got '$got' for the word '$word'"; rm -f "$probe"; return 1; }
+  done
+  rm -f "$probe"
+  if fifo_write $'back\nok' >/dev/null 2>&1; then bad "fifo_write accepted a word with a newline"; return 1; fi
+  # fifo_send: a refusal sends nothing, a word is sent as one ssh command carrying the escaped quote.
+  _real_tv=$(declare -f tv)
+  tv() { sent_to_tv=1; sent_arg=$1; }
+  fifo_send $'back\nok' >/dev/null 2>&1; got=$?
+  [ "$got" = 2 ] && [ "$sent_to_tv" = 0 ] || { eval "$_real_tv"; bad "a newline word was sent (status $got)"; return 1; }
+  fifo_send "txt:it's" >/dev/null 2>&1; got=$?
+  eval "$_real_tv"
+  [ "$got" = 0 ] && [ "$sent_to_tv" = 1 ] || { bad "an ordinary word was not sent (status $got)"; return 1; }
+  case "$sent_arg" in
+    *"'txt:it'\\''s'"*) ;;
+    *) bad "the apostrophe was not escaped for the remote shell: $sent_arg"; return 1 ;;
+  esac
+  ok "tv-session FIFO quoting (any one-line word is sent as one remote word; a newline is not sent)"
+}
+
 # Host-only regression for the command contract above. It deliberately performs no TV I/O and is
 # run by `make check`; keeping it in this script proves the same Bash-3 code cmd_up calls rather
 # than a Python reimplementation of the option semantics.
@@ -1077,9 +1111,21 @@ nav.home"; do
   [ "$(a11y_token focus nav.watchlist)" = "focus:nav.watchlist" ] || { bad "focus token"; return 1; }
   [ "$(a11y_token press detail.hero.play)" = "press:detail.hero.play" ] || { bad "press token"; return 1; }
   [ "$(a11y_token press home.shelf.2.card.5 1234)" = "press:home.shelf.2.card.5@1234" ] || { bad "press-with-subject token"; return 1; }
-  [ "$(a11y_token press catalog.primary 5d7768ab)" = "press:catalog.primary@5d7768ab" ] || { bad "press subject on a non-card"; return 1; }
-  if a11y_token press home.shelf.2.card.5 >/dev/null 2>&1; then bad "a card press without --rk was accepted"; return 1; fi
-  if a11y_token press home.continue.card.0 >/dev/null 2>&1; then bad "a Continue Watching card press without --rk was accepted"; return 1; fi
+  [ "$(a11y_token press catalog.primary 5d7768ab)" = "press:catalog.primary@5d7768ab" ] || { bad "press subject on the catalog pill"; return 1; }
+  # Every id whose element's subject is a title is pressed by name: a card, a Detail episode (OK on a still
+  # PLAYS it), a season tab, a Filmography credit, the catalog pill. Without --rk each is refused; with it,
+  # each is sent as press:<id>@<rk>.
+  for aid in home.shelf.2.card.5 home.continue.card.0 watchlist.grid.card.3 detail.episodes.still.0 \
+             detail.episodes.text.0 detail.episodes.still.3 detail.season.1 filmography.row.2 catalog.primary; do
+    if a11y_token press "$aid" >/dev/null 2>&1; then bad "a press of $aid without --rk was accepted"; return 1; fi
+    [ "$(a11y_token press "$aid" 4321)" = "press:$aid@4321" ] || { bad "press of $aid with --rk was not sent as press:<id>@<rk>"; return 1; }
+    [ "$(a11y_token focus "$aid")" = "focus:$aid" ] || { bad "focus of $aid was refused"; return 1; }
+  done
+  # ... and the ones that carry no title still press with none (nothing is named by `--rk` there).
+  for aid in detail.about.card detail.about.languages detail.hero.play under-posters.row.3 filmography.tab.2 \
+             itemmenu.watchlist_remove home.hero.watchlist nav.watchlist; do
+    [ "$(a11y_token press "$aid")" = "press:$aid" ] || { bad "press of $aid needlessly wanted --rk"; return 1; }
+  done
   for aid in "1 2" "12'34" '12@3' '12$x' "12;x" ""; do
     if a11y_token press watchlist.grid.card.3 "$aid" >/dev/null 2>&1; then bad "an unsafe --rk was accepted: $aid"; return 1; fi
   done
@@ -1091,7 +1137,8 @@ nav.home"; do
   if a11y_answers abc '{"label":"abc"}'; then bad "a11y_answers matched a value that is not the nonce"; return 1; fi
   aid=$(a11y_nonce)
   [ "${#aid}" -eq 16 ] || { bad "a11y_nonce is not 16 characters"; return 1; }
-  ok "tv-session by-id contract (grammar, card needs --rk, nonce match)"
+  ok "tv-session by-id contract (grammar, a title's element needs --rk, nonce match)"
+  selftest_fifo || return 1
 
   # ---- identity: `--guest` must resolve the real managed-user token or REFUSE, and must never
   # fall through to the owner's — the 2026-09-10 TV session 5 defect (a warning printed, then the
@@ -1201,17 +1248,33 @@ cmd_status() {
 }
 
 # One token into the remote FIFO. The app drains it each frame; the write is time-boxed so a FIFO
-# with no reader (app not running) cannot wedge this shell. The token sits inside single quotes in
-# the remote command, so a caller passes only what it has validated (`a11y_id_ok`, `a11y_subject_ok`).
+# with no reader (app not running) cannot wedge this shell. `fifo_write` single-quotes the token for the
+# remote shell the POSIX way (`'` becomes `'\''`) and refuses a newline, so ANY one-line word is safe here: an
+# apostrophe in a `txt:` token included. `focus`, `press` and `state` additionally validate their ids,
+# subjects and nonce against the app's grammar (`a11y_id_ok`, `a11y_subject_ok`) before they get here.
+fifo_write() {  # $1 = one token; prints the one remote statement that writes it to the FIFO, or returns 2
+  local sq="'" esc
+  case "$1" in
+    *$'\n'*) echo "tv-session: a FIFO token is one line; refusing a word with a newline in it" >&2; return 2 ;;
+  esac
+  esc=${1//$sq/$sq\\$sq$sq}
+  printf '%s' "printf '%s\n' '$esc' > $REMOTE_FIFO"
+}
+
+# Returns 2 (and sends nothing) for a word `fifo_write` refuses, else 0: the remote `kill` that ends the
+# time box exits non-zero whenever the write finished, so its status says nothing about the send.
 fifo_send() {  # $1 = one token
-  tv "(printf '%s\n' '$1' > $REMOTE_FIFO) & P=\$!; sleep 2; kill \$P 2>/dev/null" 2>/dev/null
+  local stmt
+  stmt=$(fifo_write "$1") || return 2
+  tv "($stmt) & P=\$!; sleep 2; kill \$P 2>/dev/null" 2>/dev/null
+  return 0
 }
 
 cmd_key() {
   [ $# -gt 0 ] || { echo "usage: tv-session.sh key <token>..." >&2; exit 2; }
   require_lock "tv-session key"
   for t in "$@"; do
-    fifo_send "$t"
+    fifo_send "$t" || exit 2
     info "sent $t"
   done
 }
@@ -1224,8 +1287,8 @@ cmd_click() {
 # ----------------------------------------------------- by accessibility id ----
 # `focus:<id>`, `press:<id>[@<subject>]` and `state:<nonce>` are FIFO tokens of a `devtriggers` build
 # (rust-modules/ui/src/a11y.rs, dispatch/by_id.rs, src/app/a11y_state.rs). The checks below are the
-# grammar's own, so a malformed id stops HERE rather than as a refusal line on the set, and so nothing
-# but a validated word ever reaches the quoted remote command in `fifo_send`.
+# grammar's own, so a malformed id stops HERE rather than as a refusal line on the set. (Quoting for the
+# remote shell is `fifo_write`'s, for every word `key` and `click` send as well.)
 #
 #   id       <ns>.<path>: ns [a-z][a-z0-9_-]*, then one or more segments, each a name [a-z][a-z0-9_]*
 #            or a canonical decimal index (0, or digits with no leading zero)
@@ -1247,9 +1310,27 @@ a11y_subject_ok() {  # $1 = a ratingKey / subject
 # The token for focusing or pressing an id; says why not (stderr) and returns 2 when it must not be sent.
 #   a11y_token focus <id>            -> focus:<id>
 #   a11y_token press <id> [<rk>]     -> press:<id> or press:<id>@<rk>
-# A card id (any id with a `.card.` segment) is a poster: pressing one opens or plays a title, so the
-# press names the title it means (`--rk`), the real-account rule's own guard (never press OK on a card
-# whose ratingKey you have not read). The app compares it against the card it finds there.
+# An element whose subject is a title is pressed BY NAME (`--rk`): the real-account rule's own guard (never
+# press OK on a title whose ratingKey you have not read), and the app compares it against the subject of the
+# element it finds there. `press` refuses without it; `focus` moves nothing that is account-affecting, so it
+# takes none. Which ids those are is `a11y_subject_bearing`.
+#
+# THE LIST IS READ OFF THE CODE (`git grep -n with_subject rust-modules`), one entry per production
+# `A11y::with_subject` call, and is the same list as `SUBJECT_BEARING` in tools/a11y.py (a test holds the two
+# equal; another holds the call sites equal to the sites this list was derived from):
+#   *.card.*            ui/src/cards/mod.rs `card_a11y`: <section>.card.<n>, a poster, still or headshot
+#   detail.episodes.*   screens/src/detail/mod.rs: `episodes.still.<i>` (OK PLAYS it) and `episodes.text.<i>`
+#   detail.season.*     the same file: `season.<i>`, a season tab
+#   filmography.row.*   screens/src/filmography.rs: `row.<i>`, a credit
+#   catalog.primary     screens/src/catalog.rs: the Add to / On Watchlist pill (the subject is a hex id)
+# A bare `*.row.*` would also catch `under-posters.row.3`, so the namespaced ones are spelled out.
+a11y_subject_bearing() {  # $1 = a full accessibility id
+  case "$1" in
+    *.card.*|detail.episodes.*|detail.season.*|filmography.row.*|catalog.primary) return 0 ;;
+  esac
+  return 1
+}
+
 a11y_token() {
   local act="$1" id="${2:-}" rk="${3:-}"
   a11y_id_ok "$id" || { echo "tv-session: not an accessibility id: '$id' (want <ns>.<segment>..., e.g. nav.watchlist)" >&2; return 2; }
@@ -1258,10 +1339,11 @@ a11y_token() {
       [ -z "$rk" ] || { echo "tv-session: focus takes no ratingKey" >&2; return 2; }
       printf 'focus:%s\n' "$id" ;;
     press)
-      case "$id" in
-        *.card.*) [ -n "$rk" ] || {
-          echo "tv-session: press $id: a card needs --rk <ratingKey> (read it from \`state\` or the log first)" >&2; return 2; } ;;
-      esac
+      if a11y_subject_bearing "$id"; then
+        [ -n "$rk" ] || {
+          echo "tv-session: press $id: this element is a title's (a card, a Detail episode or season tab, a Filmography credit, the catalog pill), so name the title with --rk <ratingKey> (read it from \`state\` or the log first)" >&2
+          return 2; }
+      fi
       if [ -n "$rk" ]; then
         a11y_subject_ok "$rk" || { echo "tv-session: --rk wants a ratingKey of letters, digits, _ and -" >&2; return 2; }
         printf 'press:%s@%s\n' "$id" "$rk"
@@ -1279,7 +1361,7 @@ cmd_focus() {
 }
 
 cmd_press() {
-  local id="" rk="" usage="usage: tv-session.sh press <id> [--rk <ratingKey>]"
+  local id="" rk="" usage="usage: tv-session.sh press <id> [--rk <ratingKey>]   (a title's element needs --rk)"
   while [ $# -gt 0 ]; do
     case "$1" in
       --rk)   [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }

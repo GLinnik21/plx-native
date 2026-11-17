@@ -283,6 +283,67 @@ class Tokens(unittest.TestCase):
         self.assertEqual(a11y.refusals("nothing here\n"), [])
 
 
+class SubjectBearing(unittest.TestCase):
+    """An element whose subject is a title (a card, a Detail episode or season tab, a Filmography credit, the
+    catalog page's pill) is pressed by NAMING that title: the real-account rule is never to press OK on a title
+    whose ratingKey you have not read, and OK on a Detail episode's still PLAYS it at once. ONE list of those
+    id shapes lives in `a11y.SUBJECT_BEARING`; tools/tv-session.sh's `a11y_subject_bearing` is the same list."""
+
+    SUBJECT_IDS = ["home.shelf.2.card.5", "home.continue.card.0", "watchlist.grid.card.7", "library.grid.card.3",
+                   "collection.card.1", "detail.related.card.0", "detail.episodes.still.3", "detail.episodes.text.3",
+                   "detail.season.2", "filmography.row.4", "catalog.primary"]
+    PLAIN_IDS = ["nav.watchlist", "detail.hero.play", "detail.about.card", "detail.about.languages",
+                 "detail.collection.heading", "under-posters.row.3", "itemmenu.watchlist_remove", "filmography.tab.2",
+                 "home.hero.watchlist", "watchlist.header.sort", "player.control.play", "catalog.back"]
+
+    def test_the_subject_bearing_shapes_are_matched_and_nothing_else(self):
+        for id_ in self.SUBJECT_IDS:
+            self.assertTrue(a11y.subject_bearing(id_), id_)
+        for id_ in self.PLAIN_IDS:
+            self.assertFalse(a11y.subject_bearing(id_), id_)
+
+    def test_the_guarded_builder_wants_a_subject_for_each_and_the_library_builder_does_not(self):
+        for id_ in self.SUBJECT_IDS:
+            with self.assertRaises(ValueError, msg=id_) as e:
+                a11y.guarded_press_token(id_)
+            self.assertIn("--subject", str(e.exception))
+            self.assertEqual(a11y.guarded_press_token(id_, "77"), f"press:{id_}@77")
+            self.assertEqual(a11y.press_token(id_), f"press:{id_}")  # the library stays unguarded
+        for id_ in self.PLAIN_IDS:
+            self.assertEqual(a11y.guarded_press_token(id_), f"press:{id_}")
+
+    def test_the_shell_guard_is_the_same_list(self):
+        """tools/tv-session.sh cannot import this module, so its `case` line is read back and compared."""
+        text = (ROOT / "tools" / "tv-session.sh").read_text()
+        found = re.search(r"^a11y_subject_bearing\(\) \{.*?^\s*((?:[^\s|)]+\|)*[^\s|)]+)\) return 0 ;;", text,
+                          re.S | re.M)
+        self.assertIsNotNone(found, "tv-session.sh no longer has a11y_subject_bearing's case line")
+        self.assertEqual(tuple(found.group(1).split("|")), a11y.SUBJECT_BEARING)
+
+    def test_every_production_with_subject_call_is_a_site_the_list_was_derived_from(self):
+        """`SUBJECT_BEARING` was read off the code (`git grep with_subject rust-modules`). A new call site is a new
+        id shape: it fails here until the list above, tv-session.sh's copy and this table say what it presses."""
+        sites = {}
+        for root, dirs, files in os.walk(ROOT / "rust-modules"):
+            dirs[:] = [d for d in dirs if not d.startswith("target")]
+            for name in files:
+                path = pathlib.Path(root, name)
+                if path.suffix == ".rs" and ".with_subject(" in path.read_text(errors="replace"):
+                    sites[path.relative_to(ROOT / "rust-modules").as_posix()] = True
+        derived_from = {
+            "ui/src/cards/mod.rs": "card_a11y: <section>.card.<n>",
+            "screens/src/detail/mod.rs": "detail.season.<i>, detail.episodes.still|text.<i>",
+            "screens/src/filmography.rs": "filmography.row.<i>",
+            "screens/src/catalog.rs": "catalog.primary",
+        }
+        not_a_production_site = {
+            "ui/src/a11y.rs": "the builder itself and its tests",
+            "ui/src/dispatch/snapshot.rs": "its own #[cfg(test)] fixture",
+            "ui/src/fixture.rs": "FixtureHost, test-only",
+        }
+        self.assertEqual(set(sites), set(derived_from) | set(not_a_production_site))
+
+
 @unittest.skipUnless(HAS_FIFO, "needs os.mkfifo")
 class Fifo(unittest.TestCase):
     def setUp(self):
@@ -347,6 +408,31 @@ class CommandLine(unittest.TestCase):
             self.assertEqual(code, 2, argv)
             self.assertTrue(err.startswith("a11y: ") and err.count("\n") == 1, f"{argv}: {err!r}")
         self.assertEqual(self.written(), [])
+
+    def test_a_subject_bearing_press_without_a_subject_is_refused_and_sends_nothing(self):
+        for id_ in ("home.shelf.2.card.5", "detail.episodes.still.3", "detail.episodes.text.3", "detail.season.1",
+                    "filmography.row.0", "catalog.primary"):
+            code, err = self.run_main("press", self.runtime, id_)
+            self.assertEqual(code, 2, id_)
+            self.assertTrue(err.startswith("a11y: ") and err.count("\n") == 1 and "--subject" in err, f"{id_}: {err!r}")
+            code, err = self.run_main("send", self.runtime, f"press:{id_}")  # the raw writer is no way round it
+            self.assertEqual(code, 2, id_)
+            self.assertTrue("--subject" in err or "subject" in err, err)
+        self.assertEqual(self.written(), [])
+
+    def test_a_subject_bearing_press_that_names_its_title_is_sent(self):
+        self.assertEqual(self.run_main("press", self.runtime, "detail.episodes.still.3", "--subject", "77"), (0, ""))
+        self.assertEqual(self.run_main("send", self.runtime, "press:detail.episodes.text.0@78"), (0, ""))
+        self.assertEqual(self.run_main("press", self.runtime, "detail.hero.play"), (0, ""))   # no subject to name
+        self.assertEqual(self.run_main("send", self.runtime, "ok"), (0, ""))
+        self.assertEqual(self.written(), ["press:detail.episodes.still.3@77", "press:detail.episodes.text.0@78",
+                                          "press:detail.hero.play", "ok"])
+
+    def test_the_library_press_stays_unguarded_for_a_card_with_no_subject(self):
+        """The mock scenario presses `watchlist.grid.card.7`, a coming-soon card whose subject is null."""
+        fifo = pathlib.Path(self.runtime, a11y.FIFO_NAME)
+        a11y.press(fifo, "watchlist.grid.card.7")
+        self.assertEqual(self.written(), ["press:watchlist.grid.card.7"])
 
     def test_the_verbs_write_their_tokens_and_exit_0(self):
         self.assertEqual(self.run_main("focus", self.runtime, "nav.watchlist"), (0, ""))

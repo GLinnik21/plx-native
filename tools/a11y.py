@@ -39,15 +39,24 @@ Command line (a manual smoke: boot the simulator on the mock, then):
     python3 tools/a11y.py state  <runtime-dir> [--timeout SECONDS]
     python3 tools/a11y.py send   <runtime-dir> <token>
     python3 tools/a11y.py focus  <runtime-dir> <id>
-    python3 tools/a11y.py press  <runtime-dir> <id> [--subject RATINGKEY]
+    python3 tools/a11y.py press  <runtime-dir> <id> [--subject RATINGKEY]    (a title's id REQUIRES --subject)
     python3 tools/a11y.py expect <runtime-dir> <id> [--timeout SECONDS]
 
 `<runtime-dir>` is the app's runtime directory (`PLXNATIVE_RUNTIME_DIR` under the simulator); the
 token goes into its `plxnative-remote` FIFO. Exit 0 is done; 1 is a focus that is not the expected one,
 an app that never answered or a FIFO that is not there; 2 is an id, subject or token the grammar refuses
-(nothing was sent). Each failure is one line on stderr, never a traceback. On the television use `tools/tv-session.sh focus|press|state`.
+(nothing was sent). Each failure is one line on stderr, never a traceback.
+
+A title is pressed by NAME. A `press` (or a `send press:<id>`) of an element whose subject is a title (a
+card, a Detail episode or season tab, a Filmography credit, the catalog page's pill: `SUBJECT_BEARING`)
+needs `--subject <ratingKey>` and exits 2 without it, because the simulator boots against the owner's
+real server unless it is aimed at a mock, and OK on a title can play it. The library function `press`
+(`press_token`) stays unguarded for a script that means an element with no subject.
+
+On the television use `tools/tv-session.sh focus|press|state`.
 """
 import argparse
+import fnmatch
 import json
 import os
 import pathlib
@@ -83,6 +92,31 @@ def valid_subject(text):
     return isinstance(text, str) and SUBJECT_RE.fullmatch(text) is not None
 
 
+# The id shapes whose element carries a SUBJECT, a title's ratingKey (a catalog page's hex id): pressing one
+# acts on a title (a card opens or plays it; a Detail episode's still PLAYS at once, its text block opens the
+# episode; the catalog pill adds it to a Watchlist). The real-account rule is never to press OK on a title whose
+# ratingKey you have not read, so the COMMAND LINE and `tools/tv-session.sh press` make the press name it
+# (`--subject` / `--rk`) and the app refuses a mismatch. The list is read off the code, not guessed: each
+# production `A11y::with_subject` call is one entry (`git grep -n with_subject rust-modules`; a test here holds
+# the call sites equal to the table below).
+#
+#   *.card.*             ui/src/cards/mod.rs `card_a11y`: <section>.card.<n>, every poster, still and headshot
+#   detail.episodes.*    screens/src/detail/mod.rs: `episodes.still.<i>` (OK plays) and `episodes.text.<i>`
+#   detail.season.*      the same file: `season.<i>`, a season tab
+#   filmography.row.*    screens/src/filmography.rs: `row.<i>`, a credit (its subject is the local copy's key)
+#   catalog.primary      screens/src/catalog.rs: the Add to / On Watchlist pill (its subject is the hex id)
+#
+# fnmatch globs, which are spelled exactly like the `case` patterns of `a11y_subject_bearing` in
+# tools/tv-session.sh (tests/test_a11y_tool.py reads both and holds them equal). Not subject-bearing, so never
+# in the list: `detail.about.card`, `under-posters.row.3` and every other `*.row.*` outside Filmography.
+SUBJECT_BEARING = ("*.card.*", "detail.episodes.*", "detail.season.*", "filmography.row.*", "catalog.primary")
+
+
+def subject_bearing(id_):
+    """Does the element `id_` names carry a title's subject (see SUBJECT_BEARING)?"""
+    return any(fnmatch.fnmatchcase(id_, shape) for shape in SUBJECT_BEARING)
+
+
 def focus_token(id_):
     """`focus:<id>`. Raises ValueError for an id the app would refuse as malformed."""
     if not valid_id(id_):
@@ -99,6 +133,17 @@ def press_token(id_, subject=None):
     if not valid_subject(subject):
         raise ValueError(f"a press subject is printable ASCII with no space and no '@': {subject!r}")
     return f"press:{id_}@{subject}"
+
+
+def guarded_press_token(id_, subject=None):
+    """`press_token`, for a caller that is a person's or an agent's command: a subject-bearing id (see
+    SUBJECT_BEARING) must name the title it means, or this raises ValueError and nothing is sent.
+    `press_token` itself stays unguarded, because a library caller may mean an element whose subject is
+    null (the mock scenario's coming-soon card `watchlist.grid.card.7`)."""
+    if subject is None and valid_id(id_) and subject_bearing(id_):
+        raise ValueError(f"press {id_}: this element is a title's, so the press must name the title with "
+                         f"--subject <ratingKey> (read it from `state` first); nothing was sent")
+    return press_token(id_, subject)
 
 
 def parse_token(token):
@@ -286,10 +331,13 @@ def main(argv=None):
         elif args.command == "focus":
             focus(fifo, args.id)
         elif args.command == "press":
-            press(fifo, args.id, args.subject)
+            send(fifo, guarded_press_token(args.id, args.subject))
         elif args.command == "expect":
             expect_focus(args.runtime, args.id, args.timeout)
         else:
+            act, id_, subject = parse_token(args.token) if args.token.startswith("press:") else (None, None, None)
+            if act:  # the raw writer is no way round the guard: a `press:` token is held to it too
+                guarded_press_token(id_, subject)
             send(fifo, args.token)
     except FocusMismatch as e:
         print(e, file=sys.stderr)
