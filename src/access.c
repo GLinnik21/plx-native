@@ -17,11 +17,23 @@
  * On that kernel a failing `access` of such a path costs about 8.5 us (a syscall that takes no path
  * costs about 0.3 us), and scrolling Home makes roughly 850-950 GL calls per frame, so some 7-8 ms
  * of every frame is kernel time spent answering "does this debug file exist" for files that never
- * do. A causal A/B on the same binary, with an `LD_PRELOAD` shim that answered exactly these paths
- * with `ENOENT` and made no syscall, took the Home scroll from a median of 38 fps with a 95th
- * percentile frame time of 32 ms to 58 fps and 18 ms. Whether other firmware images and SoCs probe
- * the same paths is not determined; where a driver does not, this definition is never reached for
- * them and costs nothing.
+ * do. The cause was found with an `LD_PRELOAD` shim that answered exactly these paths with `ENOENT`
+ * and made no syscall.
+ *
+ * Measured with this change on that set (2026-11-17; debug flavour, release profile, launcher
+ * start, the Home grid scroll scene against the mock server, 55 s per run, runs interleaved control,
+ * fix, control with an extra fix run; the control is `origin/main` without this file): frames slower
+ * than 18 ms per run, 1638 and 1608 (control) against 54 and 57 (fix); the median per-second frame
+ * 95th percentile, 31 ms against 18 ms; frames rendered in 55 s, 1644 and 1615 against 2268 and
+ * 2440. Under `strace` the unfixed build made 63,553 `access("/tmp/API_PRINT")` calls in 25 s of
+ * Home; the fixed build made none of the four probe paths while rendering the same scene.
+ *
+ * Other firmware: a sweep of 21 LG firmware images (webOS 3.4 to 11.2) found the per-GL-call probe
+ * only in the Realtek k6lp webOS 5 driver (the set above runs a byte-identical `libmali`). The
+ * Realtek k5lp webOS 4.5 driver probes `/tmp/GM_FPS_PRINT` once per swap, which this table also
+ * answers. The GPU drivers of the other images (LG's own SoCs, MStar/MediaTek, and Realtek k2l, k8lp
+ * and k24n) make no such probe, so there this definition is never reached with one of these paths
+ * and costs a few byte compares per `access` call.
  *
  * # How
  *
@@ -39,6 +51,8 @@
  * a file that really exists at one of them is ignored too, which includes the driver's own
  * `SKIP_PRINT` debug switch (drawing and swapping are never skipped) and means the driver's other
  * debug switches cannot be turned on by creating these files while the app runs.
+ * A non-NULL invalid pointer now faults in user space (the `/tmp/` prefix compare reads it), where
+ * glibc's `access` would return `EFAULT`; NULL still reaches the kernel and gets `EFAULT`.
  *
  * Past the `/tmp/` directory the match is on the whole name, never on a prefix of it or a case-folded
  * one: `/tmp/API_PRINT/`, `/tmp/api_print` and `/tmp/API_PRINT_x` all reach the kernel. The table is the only place the paths are written; a
@@ -52,12 +66,13 @@
  * nothing, takes no lock and touches no stdio: the path is compared with small hand-written loops
  * (not `strcmp`, which is a libc call of its own), the `/tmp/` prefix first, so an ordinary path
  * costs a few byte compares and never reaches the table, and the only libc entries it reaches are
- * `syscall` and the `errno` accessor. `syscall` is already bound before any signal can matter: `plx_crash_install`
- * (`src/crashtrace.c`) calls `syscall(SYS_gettid)` once in `main`, before SDL is initialised and so
- * before any GL call, so the lazy-binding resolver has already run for it. The `errno` write is a
- * call to `__errno_location` through the executable's PLT, and `plx_crash_install` does not bind
- * that one: whichever call first reads or sets `errno` does, and this file does not guarantee that
- * one comes before a signal.
+ * `syscall` and the `errno` accessor. Both are already bound before any signal can matter:
+ * `plx_crash_install` (`src/crashtrace.c`) calls `syscall(SYS_gettid)` once in `main`, before SDL is
+ * initialised and so before any GL call, so the lazy-binding resolver has already run for it. The
+ * `errno` write is a call to `__errno_location` through the executable's PLT, and
+ * `plx_crash_install` binds that slot too, with a store through `errno`, so neither this write nor
+ * the crash handlers' reads of `errno` can be the first call and run the resolver inside a signal
+ * handler.
  *
  * It is Linux's only: the system call numbers are Linux's, and a Darwin executable's two-level
  * namespace would not bind a dylib's `access` here anyway, so on any other platform this file
