@@ -835,7 +835,7 @@ fn a_reset_hides_the_menu_at_once_while_back_fades_it() {
 // observable behaviour they pin (row navigation order, which copy a commit opens, BACK closes
 // the panel) is exactly what the removed raw-input tests pinned before the rewrite, verified by
 // hand against both trees during the conversion.
-mod focus_and_hit {
+pub(crate) mod focus_and_hit {
     use super::*;
     use crate::registry::{AppFx, AppMsg, PageMemory};
     use plx_machine::machine::{
@@ -948,13 +948,20 @@ mod focus_and_hit {
         assert!(g.edge.iter().all(|e| matches!(e, plx_ui::screen::EdgeRule::Stop)));
     }
 
+    /// The *Also available* panel over two servers' rows, run through the id conformance
+    /// (`AppArg::AltSources`; the coverage table calls this, and so does the ids test below).
+    pub(crate) fn alt_sources_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+        let (p, ..) = two_row_panel();
+        vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<HostFixture, _>(&p, &fixture_cx(None))]
+    }
+
     /// **Every row has an id, `row.<n>` in table order, and the id finds the row again**; the label
     /// is the row's own text.
     #[test]
     fn every_row_answers_an_id_in_table_order() {
         let (p, ..) = two_row_panel();
         let cx = fixture_cx(None);
-        plx_ui::a11y::conformance::<HostFixture, _>(&p, &cx);
+        crate::cards_conformance_tests::a11y_coverage_tests::conform::<HostFixture, _>(&p, &cx);
         for n in 0..2u32 {
             let path = plx_ui::a11y::A11yPath::parse_relative(&format!("row.{n}")).expect("a well-formed path");
             assert_eq!(Focusable::<HostFixture>::a11y_find(&p, &path, &cx), Some(n), "row.{n} is table row {n}");

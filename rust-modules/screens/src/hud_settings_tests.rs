@@ -1447,17 +1447,45 @@ fn the_pill_under_a_withdrawn_hud_is_the_ghost_and_under_the_built_in_the_solid(
 
 // ---- accessibility ids -----------------------------------------------------------------------
 
+/// The gallery's first package's page for `page` (its sha is the page's argument), ticked once and run
+/// through the id conformance.
+fn gallery_package_page_conforms(page: impl FnOnce(plx_data::hudpacks::Sha) -> SettingsPage) -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    let list = gallery_list();
+    let sha = list.catalog.index.as_ref().unwrap().entries[0].sha();
+    let mut page = gallery_page(page(sha));
+    drive(&mut page, tick(), 1);
+    vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<InnerHost, _>(&page, &context(1))]
+}
+
+/// A HUD package's detail page (`SettingsPage::HudDetail`; the coverage table calls this).
+pub(crate) fn hud_detail_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    gallery_package_page_conforms(SettingsPage::HudDetail)
+}
+
+/// A HUD package's About page (`SettingsPage::HudAbout`; the coverage table calls this).
+pub(crate) fn hud_about_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    gallery_package_page_conforms(SettingsPage::HudAbout)
+}
+
 /// **The full-screen preview answers its controls**: `back` first, then one `scene.<i>` tab per scene
 /// (the elements are the controls' own keys, 0 for Back and `i + 1` for scene `i`), and the page conforms.
 #[test]
 fn the_preview_answers_back_and_one_tab_per_scene() {
+    assert!(!hud_preview_conforms().is_empty());
+}
+
+/// The full-screen HUD preview over the Reference package (`SettingsPage::HudPreview`; the coverage
+/// table calls this, and so does the test above).
+pub(crate) fn hud_preview_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+    let mut namespaces = Vec::new();
     use plx_ui::a11y::{A11yPath, Role};
     let list = gallery_list();
     let package = list.catalog.index.as_ref().unwrap().entries.iter().find(|p| p.name == "Reference").unwrap();
     let mut page = gallery_page(SettingsPage::HudPreview(package.sha()));
     drive(&mut page, tick(), 1);
     let cx = context(1);
-    plx_ui::a11y::conformance::<InnerHost, _>(&page, &cx);
+    namespaces.push(conform::<InnerHost, _>(&page, &cx));
     let mut keys = Vec::new();
     Focusable::<InnerHost>::a11y_elems(&page, GroupId(0), &cx, &mut keys);
     assert_eq!(keys, [0, 1, 2, 3]);
@@ -1469,6 +1497,7 @@ fn the_preview_answers_back_and_one_tab_per_scene() {
     }
     let past = A11yPath::parse_relative("scene.3").unwrap();
     assert_eq!(Focusable::<InnerHost>::a11y_find(&page, &past, &cx), None, "a scene the page lacks has no control");
+    namespaces
 }
 
 /// **A script's arrival on a row is as deliberate as a key's or a pointer's**: it ends the provisional focus

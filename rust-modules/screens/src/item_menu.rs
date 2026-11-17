@@ -1093,7 +1093,7 @@ impl LogicalState for ItemMenuScreen {
 /// no longer take `testlock::serial()` either: nothing here drives a live `Spring`, so there is no
 /// process-global dirty flag to contend for.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A catalog row of `kind` in a given watch state, with the flags a real `pms::parse_item`
@@ -2542,27 +2542,18 @@ mod tests {
         plx_ui::table::assert_no_fit_failures(&out);
     }
 
-    /// **The accessibility ids:** every row a menu can show is named by its `ItemRow` (the menu is
-    /// `itemmenu.<row>`), the Play Version page's rows by position (`itemmenu.version.<n>`), and
-    /// the whole view conforms: every row projects, the ids are unique, and each id finds its row.
-    #[test]
-    fn rows_are_named_by_their_item_row_and_conform() {
-        use plx_ui::a11y::{conformance, A11yPath};
+    /// A leaf with three versions, its card menu built (so Play Version is a row).
+    fn leaf_menu_with_versions() -> ItemMenuScreen {
         let m = versioned(3);
         let mut s = ItemMenuScreen::new(EntryId(7), card_arg(&m, false));
         s.built = true;
         s.form.set(build_card(&m, false, DeckPress::Play, None, None, None), None);
-        with_cx(|cx| {
-            conformance::<HostFixture, _>(&s, cx);
-            let play = A11yPath::parse_relative("play_version").expect("a plain row name");
-            let key = Focusable::<HostFixture>::a11y_find(&s, &play, cx).expect("a leaf with two versions offers Play Version");
-            assert_eq!(key, ItemRow::PlayVersion.focus_key());
-            let a = Focusable::<HostFixture>::a11y(&s, &key, cx).unwrap();
-            assert_eq!(a.role, plx_ui::a11y::Role::Row);
-            assert!(a.label.is_some_and(|l| !l.is_empty()), "the row's drawn words");
-        });
+        s
+    }
 
-        let choose = first_action(&s, |a| matches!(a, Action::ChooseVersion(_)));
+    /// Press Play Version: the menu's second page, one row per version.
+    fn open_play_version_page(s: &mut ItemMenuScreen) {
+        let choose = first_action(s, |a| matches!(a, Action::ChooseVersion(_)));
         let mut out = Vec::new();
         let mut present = plx_machine::present::Present::new();
         let mut fx = Effects::new(
@@ -2571,8 +2562,39 @@ mod tests {
             &mut present,
         );
         s.activate::<HostFixture>(choose, &mut fx);
+    }
+
+    /// The item menu on a leaf with versions, both pages (the rows, then Play Version's), run
+    /// through the id conformance (`AppArg::ItemMenu`; the coverage table calls this).
+    pub(crate) fn item_menu_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+        let mut s = leaf_menu_with_versions();
+        let mut namespaces = vec![with_cx(|cx| crate::cards_conformance_tests::a11y_coverage_tests::conform::<HostFixture, _>(&s, cx))];
+        open_play_version_page(&mut s);
+        namespaces.push(with_cx(|cx| crate::cards_conformance_tests::a11y_coverage_tests::conform::<HostFixture, _>(&s, cx)));
+        namespaces
+    }
+
+    /// **The accessibility ids:** every row a menu can show is named by its `ItemRow` (the menu is
+    /// `itemmenu.<row>`), the Play Version page's rows by position (`itemmenu.version.<n>`), and
+    /// the whole view conforms: every row projects, the ids are unique, and each id finds its row.
+    #[test]
+    fn rows_are_named_by_their_item_row_and_conform() {
+        use plx_ui::a11y::A11yPath;
+        use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+        let mut s = leaf_menu_with_versions();
         with_cx(|cx| {
-            conformance::<HostFixture, _>(&s, cx);
+            conform::<HostFixture, _>(&s, cx);
+            let play = A11yPath::parse_relative("play_version").expect("a plain row name");
+            let key = Focusable::<HostFixture>::a11y_find(&s, &play, cx).expect("a leaf with two versions offers Play Version");
+            assert_eq!(key, ItemRow::PlayVersion.focus_key());
+            let a = Focusable::<HostFixture>::a11y(&s, &key, cx).unwrap();
+            assert_eq!(a.role, plx_ui::a11y::Role::Row);
+            assert!(a.label.is_some_and(|l| !l.is_empty()), "the row's drawn words");
+        });
+
+        open_play_version_page(&mut s);
+        with_cx(|cx| {
+            conform::<HostFixture, _>(&s, cx);
             for n in 0..2u16 {
                 let id = A11yPath::parse_relative(&format!("version.{n}")).unwrap();
                 let key = Focusable::<HostFixture>::a11y_find(&s, &id, cx).expect("one row per version");

@@ -710,4 +710,4 @@ impl<H: AppLike<Memory = PageMemory> + crate::registry::MetadataLike> Screen<H> 
 
 #[cfg(test)]
 #[path = "alt_sources_tests.rs"]
-mod tests;
+pub(crate) mod tests;

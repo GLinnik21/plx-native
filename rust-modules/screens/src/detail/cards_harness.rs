@@ -379,7 +379,15 @@ mod reach {
 /// ratingKey as their subject, and the heading and the About stops answer their names.
 #[test]
 fn the_page_answers_its_ids_and_conforms() {
-    use plx_ui::a11y::{conformance, A11yPath, Role};
+    assert!(!detail_conforms().is_empty());
+}
+
+/// A show page with every section on it, run through the id conformance with the id asserts above
+/// (`ContentArg::Detail`; the coverage table calls this, and so does the test above).
+pub(crate) fn detail_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+    let mut namespaces = Vec::new();
+    use plx_ui::a11y::{A11yPath, Role};
     let _guard = plx_base::testlock::serial();
     let _policy = crate::registry::captions::PolicyPin::default_setting();
     let sid = ServerId::UNSET;
@@ -412,7 +420,7 @@ fn the_page_answers_its_ids_and_conforms() {
     // (`season_metrics.update`): the held screen has had none
     screen.season_metrics.update(test_store().view().current().expect("the page's detail is mounted"), &FixtureMeasure);
     let cx = cx_of(0, 1.0, None);
-    conformance::<TestHost, _>(&screen, &cx);
+    namespaces.push(conform::<TestHost, _>(&screen, &cx));
 
     let rel = |text: &str| A11yPath::parse_relative(text).expect("a well-formed id");
     let find = |text: &str| Focusable::<TestHost>::a11y_find(&screen, &rel(text), &cx);
@@ -448,4 +456,5 @@ fn the_page_answers_its_ids_and_conforms() {
     assert_eq!((heading.role, heading.label.as_deref()), (Role::Button, Some("Saga")));
     assert_eq!(find("about.card"), Some(about::CARD_ELEM));
     assert_eq!(find("related.0"), None, "a card is `related.card.<i>`");
+    namespaces
 }

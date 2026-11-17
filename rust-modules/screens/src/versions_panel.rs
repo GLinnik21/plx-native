@@ -304,7 +304,7 @@ impl<H: AppLike<Memory = PageMemory>> Screen<H> for VersionsPanelScreen {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use plx_machine::machine::Host;
     use plx_ui::screen::ScreenArg;
@@ -362,13 +362,19 @@ mod tests {
         }
     }
 
+    /// The *Play Version* list over the sample versions, run through the id conformance
+    /// (`AppArg::VersionsPanel`; the coverage table calls this).
+    pub(crate) fn versions_panel_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+        vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<HostFixture, _>(&panel(), &cx())]
+    }
+
     /// Every version is a row with an id, `row.<n>` in the server's order, and the id finds it
     /// again.
     #[test]
     fn every_version_answers_an_id_in_the_servers_order() {
         let p = panel();
         let cx = cx();
-        plx_ui::a11y::conformance::<HostFixture, _>(&p, &cx);
+        crate::cards_conformance_tests::a11y_coverage_tests::conform::<HostFixture, _>(&p, &cx);
         let n = plx_appkit::version_list::sample().len();
         assert!(n >= 2, "the sample has several versions");
         for i in 0..n {

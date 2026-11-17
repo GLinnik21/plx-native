@@ -19,7 +19,7 @@ mod toolbar;
 mod status;
 pub mod menu;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 #[cfg(test)]
 pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
 #[cfg(test)]

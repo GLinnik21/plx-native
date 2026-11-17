@@ -1297,6 +1297,14 @@ fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
 /// declares no group, names nothing.
 #[test]
 fn every_panel_answers_accessibility_ids() {
+    assert!(!player_overlay_conforms().is_empty());
+}
+
+/// Every player panel (Tracks on both tabs, More at its root and on Quality, Timing), run through the
+/// id conformance (`AppArg::PlayerOverlay`; the coverage table calls this, and so does the test above).
+pub(crate) fn player_overlay_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+    let mut namespaces = Vec::new();
     let _g = plx_base::testlock::serial();
     let ps = plx_media::route::PlaybackSession::IDLE;
     for kind in [
@@ -1308,8 +1316,9 @@ fn every_panel_answers_accessibility_ids() {
     ] {
         let page = PlayerOverlayScreen::new(&ps, plx_data::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
         let cx = cx();
-        plx_ui::a11y::conformance::<TestHost, _>(&page, &cx);
+        namespaces.push(conform::<TestHost, _>(&page, &cx));
     }
+    namespaces
 }
 
 /// **`OverlayKind::ALL` lists every kind exactly once**, and the census derived from it cannot

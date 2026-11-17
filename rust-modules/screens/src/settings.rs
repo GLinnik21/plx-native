@@ -1942,7 +1942,7 @@ mod text_fit_tests;
 
 #[cfg(test)]
 #[path = "settings_root_navigation_tests.rs"]
-mod root_navigation_tests;
+pub(crate) mod root_navigation_tests;
 
 #[cfg(test)]
 #[path = "settings_pop_and_remember_tests.rs"]

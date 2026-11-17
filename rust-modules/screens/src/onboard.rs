@@ -852,7 +852,7 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     /// **Both mountings of this one screen name the same word**, which is what lets the
     /// `fps:settings-home` scene select samples that `fps:settings-root` cannot also match. The
     /// pairing this pins is stated at `Screen::name` and graded from the other side by
@@ -877,24 +877,50 @@ mod tests {
     /// has its rows.
     #[test]
     fn every_mounting_answers_ids_under_one_namespace_and_conforms() {
-        use plx_ui::screen::Screen;
+        for (what, namespaces) in [
+            ("settings", onboard_settings_conforms()),
+            ("first run", onboard_first_run_conforms()),
+            ("library", onboard_library_conforms()),
+        ] {
+            assert!(!namespaces.is_empty(), "{what}");
+            assert!(namespaces.iter().all(|ns| *ns == "onboard"), "{what}: {namespaces:?}");
+        }
+    }
+
+    /// One mounting over a catalogue with two sources, run through the id conformance.
+    fn onboard_over_two_sources(build: impl Fn(DirectoryView<'_>) -> OnboardScreen) -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
         let _g = plx_base::testlock::serial();
         let _t = TempSession::new("onboard-a11y");
         let m = plx_ui::fixture::FixtureMeasure;
         let mut browse = BrowseFixture::new();
         browse.seed_two_sources();
-        let settings = OnboardScreen::settings(EntryId(0), browse.capture());
-        let first = OnboardScreen::first_run(EntryId(0), browse.capture());
-        let library = OnboardScreen::library(EntryId(0), browse.capture());
-        for (what, screen) in [("settings", &settings), ("first run", &first), ("library", &library)] {
-            assert_eq!(Screen::<InnerHost>::a11y_ns(screen), "onboard", "{what}");
-            let cx = test_cx(&m, None, browse.capture());
-            plx_ui::a11y::conformance(screen, &cx);
-        }
+        let screen = build(browse.capture());
+        let cx = test_cx(&m, None, browse.capture());
+        vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<InnerHost, _>(&screen, &cx)]
+    }
 
+    /// The first-run screen (`AppArg::Onboard`): over two sources, and with nothing discovered, where
+    /// its band's `Try again` is still the one control (the coverage table calls this).
+    pub(crate) fn onboard_first_run_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+        let mut namespaces = onboard_over_two_sources(|directory| OnboardScreen::first_run(EntryId(0), directory));
+        let _g = plx_base::testlock::serial();
+        let _t = TempSession::new("onboard-a11y");
+        let m = plx_ui::fixture::FixtureMeasure;
         let nothing = OnboardScreen::first_run(EntryId(0), DirectoryView::empty_for_test());
         let cx = test_cx(&m, None, DirectoryView::empty_for_test());
-        plx_ui::a11y::conformance(&nothing, &cx);
+        namespaces.push(crate::cards_conformance_tests::a11y_coverage_tests::conform::<InnerHost, _>(&nothing, &cx));
+        namespaces
+    }
+
+    /// The Settings editor's mounting (`SettingsPage::Favourites`; the coverage table calls this).
+    pub(crate) fn onboard_settings_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+        onboard_over_two_sources(|directory| OnboardScreen::settings(EntryId(0), directory))
+    }
+
+    /// The Library's contextual mounting (`SettingsPage::LibraryFavourites`; the coverage table
+    /// calls this).
+    pub(crate) fn onboard_library_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+        onboard_over_two_sources(|directory| OnboardScreen::library(EntryId(0), directory))
     }
 
     /// **First run sits on the authored default ambient, never on a hero's light.** A persisted

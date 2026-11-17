@@ -25,7 +25,7 @@ mod seek_jump;
 pub mod input;
 pub mod overlay;
 #[cfg(test)]
-mod overlay_tests;
+pub(crate) mod overlay_tests;
 #[cfg(test)]
 mod compiled_geometry_tests;
 
@@ -3399,7 +3399,7 @@ mod travel_rig {
 /// so it can no longer reach another case; `player::state` still reads other crate globals
 /// (`seeking`, the resolve window), which is what the lock is for.
 #[cfg(test)]
-mod step_ladder_tests {
+pub(crate) mod step_ladder_tests {
     use super::*;
     use crate::player::overlay_tests::{derive_state, TestHost};
     use crate::registry::AppFx;
@@ -4407,10 +4407,18 @@ mod step_ladder_tests {
     /// element: it has no id, by its command or by its position.
     #[test]
     fn every_hud_element_answers_an_id() {
+        assert!(!player_conforms().is_empty());
+    }
+
+        /// The player page on a film (the classic HUD), run through the id conformance with the id asserts
+    /// above (`AppArg::Player`; the coverage table calls this, and so does the test above).
+    pub(crate) fn player_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+        use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+        let mut namespaces = Vec::new();
         let _g = plx_base::testlock::serial();
         let page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
         let cx = cx();
-        plx_ui::a11y::conformance::<TestHost, _>(&page, &cx);
+        namespaces.push(conform::<TestHost, _>(&page, &cx));
         let by_id = |text: &str| {
             let path = plx_ui::a11y::A11yPath::parse_relative(text).expect("a well-formed path");
             Focusable::<TestHost>::a11y_find(&page, &path, &cx)
@@ -4434,6 +4442,8 @@ mod step_ladder_tests {
             .expect("Subtitles projects");
         assert!(subtitles.loaded);
         assert_eq!(subtitles.role, plx_ui::a11y::Role::Button);
+    
+        namespaces
     }
 
     /// **A pair with one live button names that one**: on the first episode Previous is disabled and
@@ -4463,6 +4473,45 @@ mod step_ladder_tests {
         Focusable::<TestHost>::a11y_elems(&page, GROUP_ROW, &cx, &mut elems);
         assert_eq!(elems.len(), 4, "Next, Subtitles, Audio and More");
         assert!(row.len > elems.len(), "the group counts the disabled Previous too: {} cells", row.len);
+    }
+
+    /// **A middle episode names BOTH Previous and Next**: `every_hud_element_answers_an_id` reads a film,
+    /// where the pair is absent, and the test above reads the first episode, where Previous is not live.
+    /// With both live, `control.previous` and `control.next` each project, place and resolve, and the
+    /// id an element projects finds that same element again.
+    #[test]
+    fn a_middle_episode_names_both_previous_and_next() {
+        let _g = plx_base::testlock::serial();
+        let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+        let controls = player_hud::Controls::for_item(true, true, true);
+        assert!(controls.previous && controls.next, "rig: both neighbours are live");
+        page.slot = ControlSlot::Discs(controls);
+        page.model.controls = controls;
+        page.model.is_episode = true;
+        let cx = cx();
+        plx_ui::a11y::conformance::<TestHost, _>(&page, &cx);
+        let mut elems = Vec::new();
+        Focusable::<TestHost>::a11y_elems(&page, GROUP_ROW, &cx, &mut elems);
+        for (id, ordinal) in [("control.previous", player_hud::BTN_PREVIOUS), ("control.next", player_hud::BTN_NEXT)] {
+            let key = player_hud::control_elem(ordinal);
+            let named = plx_ui::a11y::A11yPath::parse_relative(id).expect("a well-formed path");
+            assert!(elems.contains(&key), "{id} is listed by the row's group");
+            assert!(Focusable::<TestHost>::place(&page, &key, &cx, At::Drawn).is_some(), "{id} places");
+            let projected = Focusable::<TestHost>::a11y(&page, &key, &cx).unwrap_or_else(|| panic!("{id} projects"));
+            assert_eq!(projected.path, named, "the element projects the id it is found by");
+            assert_eq!(projected.role, plx_ui::a11y::Role::Button, "{id}");
+            assert_eq!(Focusable::<TestHost>::a11y_find(&page, &named, &cx), Some(key), "{id} resolves");
+            assert_eq!(
+                Focusable::<TestHost>::a11y_find(&page, &projected.path, &cx),
+                Some(key),
+                "{id}: a11y_find(a11y(k).path) == Some(k)"
+            );
+        }
+        assert_eq!(elems.len(), 5, "Previous, Next, Subtitles, Audio and More");
+        let mut groups = Vec::new();
+        Focusable::<TestHost>::groups(&page, &cx, &mut groups);
+        let row = groups.iter().find(|g| g.id == GROUP_ROW).expect("the row is declared");
+        assert_eq!(row.len, elems.len(), "with both live no cell of the row is a hole");
     }
 
     /// Every group this screen declares resolves back through `group_of` to the group it came

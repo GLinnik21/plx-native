@@ -6,7 +6,7 @@
 use plx_ui::cards::conformance::{check_expected, run_all, Mount, Outcome};
 
 #[path = "a11y_coverage_tests.rs"]
-mod a11y_coverage_tests; // the accessibility-id coverage table: every `AppArg` arm tabled, none yet covered
+pub(crate) mod a11y_coverage_tests; // the accessibility-id coverage table: every `AppArg` arm tabled, none yet covered
 
 const EXPECTED: &str = include_str!("../../../ci/allow/cards-conformance.txt");
 

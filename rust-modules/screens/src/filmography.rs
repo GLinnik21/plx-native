@@ -1130,7 +1130,7 @@ impl<H: ContentLike + PersonLike> Screen<H> for FilmographyScreen {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use plx_ui::fixture::FixtureMeasure;
     use plx_machine::machine::{
@@ -1864,13 +1864,21 @@ mod tests {
     /// view conforms.
     #[test]
     fn tabs_and_rows_answer_their_ids_and_conform() {
-        use plx_ui::a11y::{conformance, A11yPath, Role};
+        assert!(!filmography_conforms().is_empty());
+    }
+
+    /// The Filmography page over two departments, run through the id conformance with the id asserts
+    /// above (`ContentArg::Filmography`; the coverage table calls this, and so does the test above).
+    pub(crate) fn filmography_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+        use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+        let mut namespaces = Vec::new();
+        use plx_ui::a11y::{A11yPath, Role};
         let serial = plx_base::testlock::serial();
         let mut s = screen(7, &serial);
         let measure = FixtureMeasure;
         let c = cx(&measure, None);
         assert_eq!(Screen::<FilmographyHost>::a11y_ns(&s), "filmography");
-        conformance::<FilmographyHost, _>(&s, &c);
+        namespaces.push(conform::<FilmographyHost, _>(&s, &c));
 
         let find = |text: &str| Focusable::<FilmographyHost>::a11y_find(&s, &A11yPath::parse_relative(text).unwrap(), &c);
         assert_eq!(find("tab.0"), s.elem_for_tab(0));
@@ -1886,10 +1894,12 @@ mod tests {
         s.department = "Writer".to_string();
         s.sync_keys(); // re-indexes the open department's credits
         s.sync_rows(0, false);
-        conformance::<FilmographyHost, _>(&s, &c);
+        namespaces.push(conform::<FilmographyHost, _>(&s, &c));
         let first = Focusable::<FilmographyHost>::a11y_find(&s, &A11yPath::parse_relative("row.0").unwrap(), &c).unwrap();
         let written = Focusable::<FilmographyHost>::a11y(&s, &first, &c).unwrap();
         assert_eq!(written.subject.as_deref(), Some("77"), "the held copy's ratingKey");
+    
+        namespaces
     }
 }
 

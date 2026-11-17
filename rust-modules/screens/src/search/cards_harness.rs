@@ -113,10 +113,19 @@ impl Harness {
 /// adds no group of its own beyond the sections it hands the stack.
 #[test]
 fn the_page_answers_accessibility_ids() {
+    assert!(!search_conforms().is_empty());
+}
+
+/// The Search page over a real query's Movies row, run through the id conformance (`AppArg::Search`;
+/// the coverage table calls this, and so does the test above).
+pub(crate) fn search_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+    let mut namespaces = Vec::new();
     let _guard = plx_base::testlock::serial();
     let _policy = crate::registry::captions::PolicyPin::default_setting();
     let h = Harness::new((0..8).map(|i| format!("m{i}")).collect());
-    plx_ui::a11y::conformance::<SearchHost, _>(&h.screen, &h.cx());
+    namespaces.push(conform::<SearchHost, _>(&h.screen, &h.cx()));
+    namespaces
 }
 
 /// **The sections are named for what they ARE, and a hit's id carries its ratingKey**: the field is

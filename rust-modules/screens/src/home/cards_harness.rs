@@ -213,13 +213,21 @@ impl CardHarness for Harness {
 /// ratingKey as their subject.
 #[test]
 fn the_page_answers_its_ids_and_conforms() {
-    use plx_ui::a11y::{conformance, A11yPath, Role};
+    assert!(!home_conforms().is_empty());
+}
+
+/// The Home page over five seeded shelves, run through the id conformance with the id asserts above
+/// (`AppArg::Home`; the coverage table calls this, and so does the test above).
+pub(crate) fn home_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+    let mut namespaces = Vec::new();
+    use plx_ui::a11y::{A11yPath, Role};
     let _guard = plx_base::testlock::serial();
     let _policy = crate::registry::captions::PolicyPin::default_setting();
     let h = Harness::new(5);
     let cx = h.cx();
     let screen = h.screen.borrow();
-    conformance::<HomeHost, _>(&*screen, &cx);
+    namespaces.push(conform::<HomeHost, _>(&*screen, &cx));
 
     let rel = |text: &str| A11yPath::parse_relative(text).expect("a well-formed id");
     let find = |text: &str| Focusable::<HomeHost>::a11y_find(&*screen, &rel(text), &cx);
@@ -240,4 +248,5 @@ fn the_page_answers_its_ids_and_conforms() {
         assert!(a.loaded);
     }
     assert_eq!(find(&format!("{prefix}.card.{}", row.elems.len())), None, "one past the end");
+    namespaces
 }

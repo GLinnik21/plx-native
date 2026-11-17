@@ -1307,4 +1307,4 @@ fn rows_for_test(list: &HudList) -> Vec<(u32, HudId)> {
 
 #[cfg(test)]
 #[path = "hud_settings_tests.rs"]
-mod tests;
+pub(crate) mod tests;

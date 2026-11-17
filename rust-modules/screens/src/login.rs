@@ -2398,7 +2398,7 @@ mod incident_icon_tests {
 mod text_fit_tests;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -3699,7 +3699,14 @@ impl AuthLike for SessionHost {
     /// conforms (listed, unique, inverted by `a11y_find`), and an element the state hides has no id.
     #[test]
     fn the_login_screen_answers_ids_for_the_elements_of_each_state() {
-        use plx_ui::a11y::conformance;
+        assert!(!login_conforms().is_empty());
+    }
+
+    /// The sign-in screen in each state, run through the id conformance with the id asserts above
+    /// (`AppArg::Login`; the coverage table calls this, and so does the test above).
+    pub(crate) fn login_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+        use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+        let mut namespaces = Vec::new();
         let _serial = plx_base::testlock::serial();
         let m = plx_ui::fixture::FixtureMeasure;
         fn id(text: &str) -> A11yPath {
@@ -3711,11 +3718,11 @@ impl AuthLike for SessionHost {
 
         let cx = test_cx(&m);
         let quiet = bare_screen(Phase::Waiting, 0.0);
-        conformance(&quiet, &cx);
+        namespaces.push(conform::<SessionHost, _>(&quiet, &cx));
         assert_eq!(find(&quiet, "control", &cx), None, "nothing to press while the code is fresh");
 
         let stuck = bare_screen(Phase::Waiting, QR_ESCAPE_AFTER_MS);
-        conformance(&stuck, &cx);
+        namespaces.push(conform::<SessionHost, _>(&stuck, &cx));
         assert_eq!(find(&stuck, "control", &cx), Some(CONTROL));
         assert_eq!(find(&stuck, "details", &cx), None);
         let control = Focusable::<SessionHost>::a11y(&stuck, &CONTROL, &cx).unwrap();
@@ -3726,7 +3733,7 @@ impl AuthLike for SessionHost {
         let mut s = LoginScreen::new(EntryId(0), failed.read());
         step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
         let cx = cx_with(&m, &failed);
-        conformance(&s, &cx);
+        namespaces.push(conform::<SessionHost, _>(&s, &cx));
         assert_eq!(find(&s, "control", &cx), Some(CONTROL));
         assert_eq!(find(&s, "details", &cx), Some(DETAILS));
         assert_eq!(find(&s, "alert.send", &cx), None, "the alert is closed");
@@ -3735,11 +3742,12 @@ impl AuthLike for SessionHost {
 
         step_ev_with(&mut s, &ScreenEvent::Activate(DETAILS), &failed, InstanceId(0), &m);
         let cx = cx_with(&m, &failed);
-        conformance(&s, &cx);
+        namespaces.push(conform::<SessionHost, _>(&s, &cx));
         assert_eq!(find(&s, "alert.cancel", &cx), Some(ALERT_CANCEL));
         assert_eq!(find(&s, "alert.send", &cx), Some(ALERT_SEND));
         assert_eq!(find(&s, "control", &cx), None, "the card traps everything under it");
         assert_eq!(find(&s, "details", &cx), None);
+        namespaces
     }
 
     #[test]

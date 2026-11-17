@@ -684,7 +684,7 @@ fn sheet_painter(appear: f32) -> Painter {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The ladder in the mock's own order, with every block present: each block sits below the one
@@ -1088,14 +1088,28 @@ mod tests {
         );
     }
 
+    /// The Detail About sheet mounted as the registry mounts it and run through the id conformance
+    /// (`AppArg::AboutPanel`; the coverage table calls this).
+    pub(crate) fn about_panel_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let cx = cx(&measure);
+        vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<TestHost, _>(&AboutPanelScreen::new(ENTRY), &cx)]
+    }
+
+    /// The Collection summary sheet, the same panel over `collection::current()`
+    /// (`AppArg::CollectionAbout`; the coverage table calls this).
+    pub(crate) fn collection_about_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let cx = cx(&measure);
+        vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<TestHost, _>(&AboutPanelScreen::collection(ENTRY), &cx)]
+    }
+
     /// The panel declares no group, so it has no element to name: the id conformance holds because
     /// there is nothing to project (the default `a11y_elems` is the right answer).
     #[test]
     fn the_panel_has_no_element_to_name() {
-        let measure = plx_ui::fixture::FixtureMeasure;
-        let cx = cx(&measure);
-        let panel = AboutPanelScreen::new(ENTRY);
-        plx_ui::a11y::conformance::<TestHost, _>(&panel, &cx);
+        assert!(!about_panel_conforms().is_empty());
+        assert!(!collection_about_conforms().is_empty());
     }
 
     // ---- the synopsis is READABLE to its last line (a cap on reachable text is a bug) -------------

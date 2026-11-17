@@ -89,10 +89,19 @@ impl Harness {
 /// stack's own; this page adds no group of its own beyond the sections it hands the stack.
 #[test]
 fn the_page_answers_accessibility_ids() {
+    assert!(!collection_conforms().is_empty());
+}
+
+/// The Collection page over eight members, run through the id conformance (`ContentArg::Collection`;
+/// the coverage table calls this, and so does the test above).
+pub(crate) fn collection_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
+    use crate::cards_conformance_tests::a11y_coverage_tests::conform;
+    let mut namespaces = Vec::new();
     let _guard = plx_base::testlock::serial();
     let _policy = crate::registry::captions::PolicyPin::default_setting();
     let h = Harness::new(8);
-    plx_ui::a11y::conformance::<CollectionHost, _>(&h.screen, &h.cx());
+    namespaces.push(conform::<CollectionHost, _>(&h.screen, &h.cx()));
+    namespaces
 }
 
 /// **The sections are named, and a member's id carries its ratingKey as the subject**: the member

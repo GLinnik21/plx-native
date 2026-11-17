@@ -589,7 +589,7 @@ fn draw_foot(p: Painter, person: &Person, c: Rect, measure: &dyn plx_machine::ma
 
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use plx_ui::prose_scroll::scroll_at;
     use plx_ui::consts::{SDLK_DOWN, SDLK_UP};
@@ -885,10 +885,15 @@ mod tests {
     /// because there is nothing to project (the default `a11y_elems` is the right answer).
     #[test]
     fn the_bio_sheet_has_no_element_to_name() {
+        assert!(!person_bio_conforms().is_empty());
+    }
+
+    /// The biography sheet mounted as the registry mounts it and run through the id conformance
+    /// (`AppArg::PersonBio`; the coverage table calls this).
+    pub(crate) fn person_bio_conforms() -> crate::cards_conformance_tests::a11y_coverage_tests::Namespaces {
         let measure = plx_ui::fixture::FixtureMeasure;
         let cx = cx(&measure);
-        let panel = PersonBioScreen::new(ENTRY);
-        plx_ui::a11y::conformance::<TestHost, _>(&panel, &cx);
+        vec![crate::cards_conformance_tests::a11y_coverage_tests::conform::<TestHost, _>(&PersonBioScreen::new(ENTRY), &cx)]
     }
 
     fn dismissed(out: &[Stamped<TestHost>]) -> bool {
