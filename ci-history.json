@@ -1,4 +1,4 @@
-{"updated":"2026-11-17T18:16:25Z",
+{"updated":"2026-11-17T18:19:39Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5313,7 +5313,8 @@
 {"id":44125466133,"at":"2026-11-17T17:13:37Z","sha":"006e53590","title":"Play Version and Also available act on a pick again: a closing surface no longer blocks its page's command","pr":1433,"event":"pull_request","conclusion":"success","attempt":4,"jobs":{"macOS simulator build + launch":157,"Linux simulator build + launch":302,"macOS tests against bundled FFmpeg and ASS":217,"Windows launcher syntax":23},"wall":3393},
 {"id":44136139775,"at":"2026-11-17T17:21:47Z","sha":"5e8a9d8f8","title":"Play Version and Also available act on a pick again: a closing surface no longer blocks its page's command","pr":1433,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":259,"Windows launcher syntax":23,"macOS tests against bundled FFmpeg and ASS":217,"Linux simulator build + launch":358}},
 {"id":44137972459,"at":"2026-11-17T17:31:44Z","sha":"fa2218e1f","title":"Replay census: the re-recorded v13 anchor has 1,172 frames","pr":1434,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":312,"Windows launcher syntax":22,"macOS tests against bundled FFmpeg and ASS":319,"macOS simulator build + launch":205}},
-{"id":44143290237,"at":"2026-11-17T18:01:13Z","sha":"ef199c229","title":"a11y ids: the Detail and Watchlist-menu id tests lay their fixtures out first","pr":1431,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":20,"Linux simulator build + launch":320}}
+{"id":44143290237,"at":"2026-11-17T18:01:13Z","sha":"ef199c229","title":"a11y ids: the Detail and Watchlist-menu id tests lay their fixtures out first","pr":1431,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":20,"Linux simulator build + launch":320}},
+{"id":44143871106,"at":"2026-11-17T18:04:25Z","sha":"75537665d","title":"Onboarding follows the Settings design; first-run lifecycles become explicit state","pr":1434,"conclusion":"failure","attempt":1,"jobs":{"macOS simulator build + launch":260,"Windows launcher syntax":22,"Linux simulator build + launch":369}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
