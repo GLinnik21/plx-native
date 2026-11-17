@@ -353,6 +353,9 @@ jobs:
       # plxnative-storage too (its DT_NEEDED list is ci/expected-dt-needed-storage.txt), so it owes the same
       # gate webosbrew-ipk-verify's per-package verdict does not replace.
       fwcompat: true
+      # Not for a `rebuild_tag` re-publish: that release already has its commits and its date, and
+      # setting them again would make an old version sort as the newest.
+      sentry-release: ${{ !inputs.rebuild_tag }}
     secrets:
       SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
@@ -532,6 +535,19 @@ jobs:
           ci/verify-published.sh "${{ needs.guard.outputs.tag || github.ref_name }}" 2>&1 \
             | tee /tmp/published.txt
           sed -i 's/\x1b\[[0-9;]*m//g' /tmp/published.txt
+
+      - name: Mark the Sentry release as shipped
+        # Finalizes the release build-package.yml created and records its deploy; never fails
+        # the publish, which has already happened (.github/actions/sentry-deploy says why).
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: ./.github/actions/sentry-deploy
+        with:
+          release: ${{ needs.build.outputs.sentry-release }}
+          org: ${{ needs.build.outputs.sentry-org }}
+          project: ${{ needs.build.outputs.sentry-project }}
+          environment: ${{ needs.build.outputs.sentry-environment }}
+          auth-token: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
       # The completed audit goes to the LINE the release was cut from — main for an ordinary
       # trunk release, or the same `release/vX.Y` branch `prepare` bumped and tagged for a
