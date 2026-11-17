@@ -606,7 +606,9 @@ impl Morph {
             content_alpha,
             // the rows are laid out in the glass: they are as big as it is, over the settled panel's
             rows_scale: if panel.h > 0.0 { rect.h / panel.h } else { 1.0 },
-            opener_alpha: lerp(opener_alpha_at(progress), smooth(fold, OPENER_BACK_FROM, 1.0), c),
+            // the open's fade hands over to the close's return by `out`, steeply: the blend's residual
+            // while `out` is still closing on 1 must not read as the face flickering back
+            opener_alpha: lerp(opener_alpha_at(progress), smooth(fold, OPENER_BACK_FROM, 1.0), smooth(c, 0.0, 0.9)),
             merge,
             clear: clear_at(progress).max(out),
             dim,

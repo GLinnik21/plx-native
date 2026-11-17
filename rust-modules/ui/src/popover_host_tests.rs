@@ -228,7 +228,8 @@ fn a_morphing_popover_is_one_surface_and_settles_both_ways() {
     let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
     assert!((f.radius - RAD).abs() < 0.05 && (f.rect.h - panel.h).abs() < 0.5, "the morph ends on the caller's radius");
     pop.dismiss();
-    let mut last = f.rect.h;
+    // a close BULGES ~2% on its first frame (`popover_morph::BULGE_KICK`) and only shrinks from there
+    let mut last = f.rect.h * 1.04;
     for _ in 0..240 {
         pop.update(1.0 / 60.0);
         if !pop.visible() {
@@ -479,7 +480,8 @@ fn a_morphing_panel_grows_from_the_pill_and_its_glass_is_whole_once_it_is_down()
         let ramped = expected_morphing(root.alpha(a), f.rect, f.radius, tex, sharp, face_at(a), f.glass_morph(None));
         assert!(declared[0] == ramped[0], "mid-open: the morph rect and radius on the fill ramp {a}: {f:?}");
         grew = true;
-        assert!(f.rect.w <= panel.w + 1e-3 && f.rect.h <= panel.h + 1e-3 && f.rect.w >= pill.w - 1e-3);
+        // the open rings past the panel (height ~6%, width ~4.6% of the travel) before it rests
+        assert!(f.rect.w <= panel.w + 0.1 * (panel.w - pill.w) && f.rect.h <= panel.h + 0.1 * (panel.h - pill.h) && f.rect.w >= pill.w - 1e-3);
     }
     assert!(painted > 0 && grew, "mid-open the ground is the morphing rect, not the settled one");
     let settled = declared_glass(|| pop.panel(root, panel, RAD, Some(&field), crate::widgets::Ground::Menu));
