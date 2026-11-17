@@ -32,12 +32,19 @@ bytes. No frame hash was edited by hand.
 
 `tests/fixtures/replay/13-by-id-filmography` is the one fixture that drives the by-id tokens
 (`tests/focusfp.sh` flow 13: Flow 12's Filmography page, then `focus:nav.watchlist`,
-`focus:filmography.row.3` and `press:filmography.row.0`, no `@subject`, then the two BACK keys). It is
-an anchor and replays SAME in both modes, 980 frames. The press is the ordinary OK Down/Up on the
-first credit row and opens Detail exactly as Flow 12's `down ok` does; two of the three ids resolve
-(the `Id` resolution rows, `refusal` 0). `focus:nav.watchlist` is REFUSED on purpose: the Filmography
-page owns input and has no tab strip, so the log line `a11y: refused focus nav.watchlist unknown
-owner=filmography` is recorded, and it is the one by-id refusal `ALPHABET.json` lists, literally.
+`focus:filmography.row.3` and `press:filmography.row.0`, no `@subject`, four BACK keys down to Home,
+and `focus:nav.watchlist` again). It is an anchor and replays SAME in both modes, 1,209 frames, on
+three consecutive runs. The first `focus:nav.watchlist` is REFUSED on purpose: the Filmography page
+owns input and has no tab strip, so `a11y: refused focus nav.watchlist unknown owner=filmography` is
+recorded, and it is the one by-id refusal `ALPHABET.json` lists, literally (`refusal` 1 on its `Id`
+row). `focus:filmography.row.3` and the press resolve (`refusal` 0; the press is the ordinary OK
+Down/Up on the first credit row and opens Detail exactly as Flow 12's `down ok` does), and the last
+`focus:nav.watchlist` resolves on Home to the strip's Watchlist tab. The unwinding to Home records the
+Person store's `close`, which `ALPHABET.json` lists as the `PersonCmd::Close` encoding.
+
 Pressing a Home element (`press:nav.profile`, `press:nav.movies`, `press:home.hero.info`) aborts the
-controlled recording with `replay: REFUSED -- unsupported Home application effect`, so the by-id
-fixture lives on Flow 12's page and not on Home, where `focus:nav.watchlist` would resolve.
+controlled recording with `replay: REFUSED -- unsupported Home application effect`, so no press is
+recorded on Home. The recording is also kept short, one second between the BACKs: the loader's
+decoded-recording budget (`rec/strict_json.rs`, `Budget`) refused a 1.5 MB take at load
+(`record JSON/budget`, line 13918 of 15444 -- the replay's generic `invalid or incompatible
+recording`), because Home frames cost about 100 KB per 100 frames.

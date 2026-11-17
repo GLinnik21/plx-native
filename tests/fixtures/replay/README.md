@@ -124,15 +124,18 @@ all-domain acceptance. Editing manifest fingerprints or state hashes is never a 
 rerecording. The D1 results below describe that earlier build, not current all-domain acceptance.
 
 **The by-id anchor.** `13-by-id-filmography` (`tests/focusfp.sh` flow 13) is Flow 12's controlled
-domain driven by the harness's by-id tokens: `focus:nav.watchlist` (refused, the Filmography page has
+domain driven by the harness's by-id tokens: `focus:nav.watchlist` (refused: the Filmography page has
 no strip), `focus:filmography.row.3` and `press:filmography.row.0` (no `@subject`; a press that opens
-Detail like Flow 12's `down ok`), then the two BACK keys. It carries the only `by_id` input rows and
-`Id` resolution rows in the directory, and `ALPHABET.json` admits its one refusal log line as a literal.
+Detail like Flow 12's `down ok`), four BACK keys down to Home, and `focus:nav.watchlist` again (it
+resolves there). It carries the only `by_id` input rows and `Id` resolution rows in the directory, and
+`ALPHABET.json` admits its one refusal log line, and the Person store's `close`, as literals.
 A recording of a `press:<id>@<subject>` token holds the subject (a ratingKey) in its `in` row and no
 pattern admits it, so such a recording cannot become a fixture. The fixture lives on Flow 12's page
 because that is the only controlled domain whose manifest shape the closed gates admit and where a
 press records: `press:nav.profile`, `press:nav.movies` and `press:home.hero.info` on the controlled
-Home abort the recording with `replay: REFUSED -- unsupported Home application effect`.
+Home abort the recording with `replay: REFUSED -- unsupported Home application effect`. It is kept
+short because the loader refuses a recording past its decoded budget (about 1.3 MB here) as
+`invalid or incompatible recording`.
 
 **Historical Phase 12 (D1) rerecorded all three again**, and it is the cleanest example of what `rerecord` is
 for: `enum Route` was folded into `AppArg`, so `ARG_SHAPE` lost its nested `Legacy:Route{…}` and
