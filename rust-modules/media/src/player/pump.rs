@@ -5227,6 +5227,27 @@ mod native_seek_pump_tests {
         assert_eq!(reloads(), vec![keyframe], "no fresh count: one fresh Load");
     }
 
+    /// The counter is read when the landing is polled, not once at Play: a session whose counter
+    /// first speaks after Play (here a zero count, which is not a displayed frame) goes back to
+    /// needing a fresh positive count, and one arrives to land the seek.
+    #[test]
+    fn a_counter_that_first_speaks_after_play_makes_the_segment_seek_need_a_fresh_count() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        let keyframe = 2_112_110_000_000;
+        let epoch = segment_seek_through_play(&mut rig, keyframe, |_| {});
+        assert_eq!(FEED_SHARED.dg_sink_displayed_cb.load(Relaxed), 0, "PRECONDITION FAILED, not the defect: silent at Play");
+        plx_play_feed::sf_event::sf_on_event(epoch, 47, 0, std::ptr::null());
+        plx_play_feed::sf_event::sf_on_event(epoch, 0, keyframe, std::ptr::null());
+        rig.frame();
+        assert!(rig.ps.readout().seeking(), "the counter spoke after Play, so the clock alone no longer lands it");
+        assert!(reloads().is_empty(), "the presentation gets its time");
+        plx_play_feed::sf_event::sf_on_event(epoch, 47, 1, std::ptr::null());
+        rig.frame();
+        assert!(!rig.ps.readout().seeking(), "a fresh positive count lands it");
+        assert!(reloads().is_empty());
+    }
+
     /// The deadline's one event-log line names the evidence the landing was missing, and it is
     /// written once for the stuck seek, not on every frame that follows.
     #[test]

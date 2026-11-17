@@ -124,8 +124,8 @@ struct LandingFacts {
     /// A positive displayed-frame count arrived since Play.
     displayed: bool,
     /// This session has received a displayed-frame callback, a zero count included
-    /// (`dg_sink_displayed_cb`, the same census the era watch reads). A set that never sends the
-    /// counter cannot show a fresh count, so waiting for one would reload every seek (#1436).
+    /// (`Shared::sink_counter_seen`). A set that never sends the counter cannot
+    /// show a fresh count, so waiting for one would reload every seek (#1436).
     counter_present: bool,
 }
 
@@ -136,7 +136,7 @@ impl LandingFacts {
             position: FEED_SHARED.pres_fed.load(Relaxed),
             runway,
             displayed: FEED_SHARED.sink_displayed_sequence.load(Acquire) != play.displayed,
-            counter_present: FEED_SHARED.dg_sink_displayed_cb.load(Relaxed) > 0,
+            counter_present: FEED_SHARED.sink_counter_seen.load(Relaxed),
         }
     }
 
@@ -666,7 +666,7 @@ pub fn native_audio_stall_fired(feed: &mut FeedResources, now: u32) -> bool {
 
 /// The one event-log line for an era-chosen sink counter that never arrived in a played session
 /// ([`crate::era_callbacks`]). It only reads counters and logs; nothing branches on it (the Segment
-/// landing reads the same displayed-callback census itself, [`LandingFacts`]).
+/// landing reads its own flag for the same fact, [`LandingFacts`]).
 pub fn note_missing_era_callback(feed: &mut FeedResources) {
     let Some(eng) = feed.engine() else { return; };
     if eng.preview_abandon { return; }
