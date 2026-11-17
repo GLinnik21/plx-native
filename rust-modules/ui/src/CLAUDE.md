@@ -455,8 +455,9 @@ presentation in a design pass.
    fallback (with its own 0.82 -> 1 rows spring) when the opener has no rect. The glass is laid whole at the
    morphing rect, clear then frosted by ~150 ms, and the rows are laid out IN the glass: they are
    magnified by the lens (their own spring: 0.65 when they first show, ~1.12 at ~167 ms, 1 by ~360 ms),
-   appear at ~75 ms and are opaque by ~150 ms, clipped to the rect's INSCRIBED rectangle (the shared
-   scissor; a true rounded clip is the shared-layer follow-up). A close bulges ~7% by ~33 ms (width and
+   appear at ~75 ms and are opaque by ~150 ms, cut by the lens itself (its rect and radius, through
+   the shared painter's ROUNDED clip, `ClipScope::open_rounded_in`: a letter the round edge crosses is cut
+   by the arc, not a straight edge). A close bulges ~7% by ~33 ms (width and
    height on their own springs, fitted to the recording's close), then the slab shrinks with its rows
    and frost leaving over ~50 ms and drains into the opener (hand-back at ~233 ms; the drawn series is what the close test fits). The modal dim of a
    morphing menu FOLLOWS the morph (`Popover::dim` -> `Scrim::following`: in by ~150 ms, out with
@@ -936,7 +937,13 @@ Its docstring states what it cannot see.
   the document reader, the glass cut in `home`/`library`/`filmography`, the card underline are its
   users). A screen drawing through a `DrawFrame` uses `f.clip(p, rect)` instead: an RAII scope that
   restores the previous scissor when dropped AND narrows the painter's `clip` cascade value, so a
-  `stop` registered inside it is intersected with the visible part (spec §7.6). Do NOT reach for either in
+  `stop` registered inside it is intersected with the visible part (spec §7.6). **A ROUNDED edge is a
+  third spelling: `ClipScope::open_rounded_in(p, rect, radius)`.** The scissor is the rect's bounding box
+  as above, and the rect, text and icon draws inside it are also cut by the arc (a coverage mask, `gfx::
+  rclip_set`, `shaders/rclip.glsl`), so a label is cut by the curve and not by an inscribed rectangle. Open it on the
+  un-zoomed painter, one at a time (a debug build asserts on a rounded scope inside another); a `TableView`
+  or panel scope opened inside it narrows the scissor and keeps the arc. Images, shadows, glass, blur and
+  fade text are bounded by the scissor box only (the debug log names the first such bind). Do NOT reach for either in
   the big scroll flow: `ScrollColumn`/the shelves deliberately **cull** off-frame children by index
   (`on_axis`) instead, which avoids per-frame scissor churn and needs no clean-up. So: bounded list/panel
   → `clip`; long scrolling document → cull. (The old edge-fade-mask trick is gone — a linear fade can't

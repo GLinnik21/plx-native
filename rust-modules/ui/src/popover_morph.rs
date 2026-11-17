@@ -38,11 +38,10 @@
 //! caller's radius by ~250 ms, landing on it exactly ([`Frame::radius`]; a close rounds it back as it
 //! shrinks). The ROWS have their own underdamped spring, [`K_LENS`]/[`ZETA_LENS`] (0.65 when they first
 //! show, a 12% overshoot at ~167 ms, 1 by ~360, within 0.02 of the table), not the glass's height ratio
-//! ([`Frame::rows_scale`]); on a close they shrink with the slab. The shared painter has only a
-//! rectangular scissor, so no row draws outside the round shape because the rows are clipped to the
-//! rect's INSCRIBED rectangle ([`Frame::rows_clip`], inset by [`INSCRIBED`] of the radius per side,
-//! relaxing to the full rect as the radius lands on the panel's); a true rounded clip is the shared-layer
-//! follow-up. A stiff spring ([`K_OUT`]) carries the CLOSE's first phase, the content and the frost
+//! ([`Frame::rows_scale`]); on a close they shrink with the slab. The rows are cut by the
+//! lens itself, its rect and radius, through the shared painter's rounded clip
+//! (`ClipScope::open_rounded_in`: a coverage mask on the rect, text and icon programs), so a letter
+//! the round edge crosses is cut by the arc as on iOS 26; settled, nothing is cut. A stiff spring ([`K_OUT`]) carries the CLOSE's first phase, the content and the frost
 //! leaving. The old rows spring ([`K_ROWS`]) remains for the fade+scale fallback only.
 //!
 //! **One surface, two clocks.** The pill and the panel are ONE surface whose rect, radius and fill
@@ -62,8 +61,8 @@
 //!   ~150 ms, not after the settle);
 //! - the ROWS ([`Frame::content_alpha`]) start at [`ROWS_FROM_AT`] (~75 ms, iOS shows them at
 //!   67-100), and are opaque by [`ROWS_OPAQUE_AT`] (~150 ms). They are scaled by the lens spring
-//!   ([`Frame::rows_scale`]) and clipped to the surface's inscribed rect (`Popover::morph_rows`),
-//!   so no row ever draws outside the rounded glass;
+//!   ([`Frame::rows_scale`]) and cut by the surface's round lens (`Popover::morph_rows`), so no
+//!   row ever draws outside the rounded glass;
 //! - the modal DIM ([`Frame::dim`], [`dim_at`]) follows the progress too (in by ~150 ms), through
 //!   `Popover::dim` and `Scrim::following`, instead of the container's own appear spring.
 //!
@@ -119,8 +118,6 @@ pub const SHAPE_AT: f32 = 0.94;
 /// approach rest in two frames (a clock read off them cannot carry a 100 ms ease), and it lands
 /// exactly ([`Spring::land`]) so the radius IS the panel's when the open settles.
 pub const K_SHAPE: f32 = 1200.0;
-/// The inset, in radii, of the largest rectangle that fits in a rounded corner: `1 - 1/sqrt(2)`.
-pub const INSCRIBED: f32 = 0.292_893_2;
 /// Width spring stiffness while opening: the underdamped fit to the iOS 26 recording (2026-11-17,
 /// see the module doc), `ZETA_WIDTH` 0.7 after [`WIDTH_LAG`]. Largest error against the measured
 /// table 0.035 (frame 3), width overshoot 4.6% at ~220 ms against the measured ~4% at ~220.
@@ -291,12 +288,6 @@ pub struct Frame {
     /// How much of the modal dim has come in, 0..1 ([`dim_at`] of the progress): the share of the
     /// surface's peak dim (`Popover::dim` hands it to the container as `Scrim::following`).
     pub dim: f32,
-    /// The rectangle the rows are clipped to: the rect inset to the largest rectangle that fits inside
-    /// the rounded corners ([`INSCRIBED`] of the radius per side), so no row is visible outside the
-    /// round lens with only the shared scissor ([`Popover::morph_rows`](crate::popover::Popover::morph_rows));
-    /// the inset eases to 0 as the radius lands on the panel's (the rows are laid out inside the
-    /// panel's own corners), so the settled handover crops nothing. The rect itself for the fallback.
-    pub rows_clip: Rect,
 }
 
 impl Frame {
@@ -646,7 +637,6 @@ impl Morph {
                 merge: None,
                 clear: 0.0,
                 dim,
-                rows_clip: rect_at_xy(None, panel, pw, ph),
             };
         };
         // The slab is gone: the close is over and the frame is the closed one, exactly (the same
@@ -689,9 +679,6 @@ impl Morph {
         let settle = self.shape.pos.clamp(0.0, 1.0);
         let lens = rect.w.min(rect.h) * 0.5;
         let radius = radius_at(lens, panel_radius, settle);
-        // the inset is held until the radius is all but the panel's (the rows are laid out inside the
-        // panel's own corners: the settled handover crops nothing)
-        let clip_inset = (INSCRIBED * radius * (1.0 - smooth(settle, 0.98, 1.0))).min(lens);
         Frame {
             rect,
             radius,
@@ -707,7 +694,6 @@ impl Morph {
             merge,
             clear: clear_at(progress).max(out),
             dim,
-            rows_clip: rect.inset(clip_inset),
         }
     }
 }

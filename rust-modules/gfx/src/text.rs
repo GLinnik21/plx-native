@@ -277,6 +277,9 @@ static mut TLI_TEX: c_int = 0;
 static mut TLI_A: c_int = 0;
 static mut TLI_B: c_int = 0;
 static mut TLI_P: c_int = 0;
+/// The ink program's third slot: the painter's ROUNDED CLIP ([`crate::gfx::rclip`]), as a rect and (radius, on).
+static mut TLI_C: c_int = 0;
+static mut TLI_Q: c_int = 0;
 
 /// Which side of an [`InkShape`] a draw is kept on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -320,8 +323,9 @@ pub fn ink_clip() -> Option<InkClip> {
     INK_CLIP.with(|c| c.get())
 }
 
-/// Bind the ink program with `clip`'s shapes as uniforms. `false` when the program did not link
-/// (the caller then draws plain).
+/// Bind the ink program with `clip`'s shapes as uniforms, and the painter's rounded clip
+/// ([`crate::gfx::rclip`]) in the third slot (off when none is live). `false` when the program did
+/// not link (the caller then draws plain).
 unsafe fn bind_ink(clip: &InkClip) -> bool {
     if TPROGI == 0 {
         return false;
@@ -339,6 +343,18 @@ unsafe fn bind_ink(clip: &InkClip) -> bool {
     glUniform4f(TLI_A, a[0], a[1], a[2], a[3]);
     glUniform4f(TLI_B, b[0], b[1], b[2], b[3]);
     glUniform4f(TLI_P, ra, ka, rb, kb);
+    // The rounded clip, always INSIDE: the same fold as an ink shape's (`rad` held to the half extents).
+    match crate::gfx::rclip() {
+        Some(c) => {
+            let rad = c.radius.min((c.x1 - c.x0) * 0.5).min((c.y1 - c.y0) * 0.5).max(0.0);
+            glUniform4f(TLI_C, c.x0, c.y0, c.x1, c.y1);
+            glUniform2f(TLI_Q, rad, 1.0);
+        }
+        None => {
+            glUniform4f(TLI_C, 0.0, 0.0, 0.0, 0.0);
+            glUniform2f(TLI_Q, 0.0, 0.0);
+        }
+    }
     true
 }
 
@@ -1683,6 +1699,9 @@ pub fn init_text() {
             TLI_A = glGetUniformLocation(TPROGI, c"u_ma".as_ptr());
             TLI_B = glGetUniformLocation(TPROGI, c"u_mb".as_ptr());
             TLI_P = glGetUniformLocation(TPROGI, c"u_mp".as_ptr());
+            TLI_C = glGetUniformLocation(TPROGI, c"u_mc".as_ptr());
+            TLI_Q = glGetUniformLocation(TPROGI, c"u_mq".as_ptr());
+            crate::gfx::rclip_masked_program(TPROGI);
         }
         // Constant uniforms, set once per program (per-program state): the fixed 1920x1080
         // screen and sampler unit 0. draw_text/_fade no longer re-send them per string.
@@ -2871,8 +2890,11 @@ pub fn draw_text(
         };
         let (ox, oy) = p.origin(zoom);
         // Inside an ink clip the glyphs take the ink program: each fragment's coverage is cut by
-        // the clip's rounded shapes, so ONE label can wear two inks along a capsule's arc.
-        if let Some(clip) = ink_clip().filter(|_| TPROGI != 0) {
+        // the clip's rounded shapes, so ONE label can wear two inks along a capsule's arc. So do they
+        // inside the painter's rounded clip, whose slot the same program carries (the glass menu's
+        // labels are cut by the lens's arc); with no ink clip then, the ink clip is empty.
+        let inked = ink_clip().or_else(|| crate::gfx::rclip().is_some().then(InkClip::default));
+        if let Some(clip) = inked.filter(|_| TPROGI != 0) {
             if bind_ink(&clip) {
                 glUniform4fv(TLI_COL, 1, col);
                 glBindTexture(GL_TEXTURE_2D, p.tex);

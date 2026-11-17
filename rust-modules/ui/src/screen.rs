@@ -1127,20 +1127,40 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
     }
 }
 
+/// The ROUNDED part of a clip, in screen px: the rounded rect a coverage mask cuts the draws by (the
+/// lens of a morphing glass menu), on top of the scissor box. See [`ClipScope::open_rounded_in`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RoundClip {
+    pub rect: Rect,
+    pub radius: f32,
+}
+
+/// What a [`ClipScope`] holds: the scissor box, and the rounded clip if one is open. The box is the
+/// bounding cut every draw gets; the rounding is what the masked programs add (`plx_gfx::gfx::RClip`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Clip {
+    pub scissor: Rect,
+    pub round: Option<RoundClip>,
+}
+
 /// A live GL scissor, restored on drop to what was set before it. Scopes NEST by intersection: an
 /// inner scope can only narrow the enclosing one, never widen past it, so a widget that clips its
 /// own viewport (`TableView::draw`) composes inside an outer panel clip with no knowledge of it.
 /// This is the ONE scissor stack — the painter's carried clip (`Painter::clipped`, what the hit
 /// map reads) is the same rectangle by construction, so painting and hit-testing cannot drift.
 /// Pure bookkeeping on the host test binary (no GL is linked): what is graded is the stack.
+///
+/// A scope can also carry a ROUNDED clip ([`open_rounded_in`](Self::open_rounded_in)): the scissor
+/// is then its bounding box, and the draws that wear a coverage mask (rects, labels, icons) are cut
+/// by the arc too. A rect scope opened inside it narrows the box and KEEPS the rounding.
 pub struct ClipScope {
-    prev: Option<Rect>,
+    prev: Option<Clip>,
     active: bool,
 }
 
 thread_local! {
-    /// The scissor currently set by a `ClipScope`, if any — what a nested scope restores to.
-    static CLIP_STACK: std::cell::Cell<Option<Rect>> = const { std::cell::Cell::new(None) };
+    /// The clip currently set by a `ClipScope`, if any — what a nested scope restores to.
+    static CLIP_STACK: std::cell::Cell<Option<Clip>> = const { std::cell::Cell::new(None) };
 }
 
 impl ClipScope {
@@ -1148,6 +1168,7 @@ impl ClipScope {
     /// that holds only a [`Painter`] (every `TableView`-style widget draw; [`DrawFrame::clip`]
     /// delegates here). The box is `r` placed by the cascade, intersected with the cascade's own
     /// carried clip AND with the scope already open, if any; a recording painter opens nothing.
+    /// The rounded clip of an enclosing scope, if any, stays in force.
     pub fn open_in(p: Painter, r: Rect) -> Self {
         // Backdrop DISCOVERY first, as `Painter::clip` does: a discovery painter records, and the
         // backdrop walk keeps its own clip that culls what a scissor would hide. Without the
@@ -1155,14 +1176,37 @@ impl ClipScope {
         if !crate::frame::backdrop::discovering() && p.is_recording() {
             return Self::inert();
         }
-        Self::open(p.clipped(r).clip_rect())
+        Self::open(p.clipped(r).clip_rect(), None)
     }
 
-    fn open(screen: Rect) -> Self {
+    /// [`open_in`](Self::open_in) with a ROUNDED clip: `r` (in `p`'s space) with corner `radius`. The
+    /// scissor is `r`'s bounding box as `open_in` makes it; the rounding is `r` as `p` PLACES it
+    /// (the cascade translate and zoom, NOT intersected with the cascade's clip, which would move the
+    /// arc) and the radius under the zoom. Open it on the painter the rect is in, before zooming what
+    /// is drawn under it: a zoomed painter then maps its own vertices into the same screen px.
+    ///
+    /// A radius under half a pixel has no arc to cut and is `open_in` exactly. Rounded clips do not
+    /// nest (one lens at a time): a debug build asserts, a release build lets the inner one win while
+    /// the scissor still intersects.
+    pub fn open_rounded_in(p: Painter, r: Rect, radius: f32) -> Self {
+        if !crate::frame::backdrop::discovering() && p.is_recording() {
+            return Self::inert();
+        }
+        let radius = p.px(radius);
+        let round = (radius >= 0.5).then(|| RoundClip { rect: p.place(r), radius });
+        Self::open(p.clipped(r).clip_rect(), round)
+    }
+
+    fn open(screen: Rect, round: Option<RoundClip>) -> Self {
         let prev = CLIP_STACK.with(|c| c.get());
-        let narrowed = prev.map_or(screen, |outer| outer.intersect(screen));
-        CLIP_STACK.with(|c| c.set(Some(narrowed)));
-        apply_scissor(Some(narrowed));
+        debug_assert!(
+            round.is_none() || prev.is_none_or(|c| c.round.is_none()),
+            "rounded clips do not nest: one lens at a time"
+        );
+        let scissor = prev.map_or(screen, |outer| outer.scissor.intersect(screen));
+        let clip = Clip { scissor, round: round.or(prev.and_then(|c| c.round)) };
+        CLIP_STACK.with(|c| c.set(Some(clip)));
+        apply_scissor(Some(clip));
         Self { prev, active: true }
     }
 
@@ -1172,7 +1216,12 @@ impl ClipScope {
 
     /// The scissor in force (the innermost open scope), for tests and instruments.
     pub fn current() -> Option<Rect> {
-        CLIP_STACK.with(|c| c.get())
+        CLIP_STACK.with(|c| c.get()).map(|c| c.scissor)
+    }
+
+    /// The rounded clip in force, if a scope opened one ([`open_rounded_in`](Self::open_rounded_in)).
+    pub fn current_round() -> Option<RoundClip> {
+        CLIP_STACK.with(|c| c.get()).and_then(|c| c.round)
     }
 }
 
@@ -1186,26 +1235,39 @@ impl Drop for ClipScope {
     }
 }
 
-/// Set (or clear) the scissor for the current pass: the backdrop walk's own clip while discovery
-/// runs (mirroring `Painter::clip`/`clip_clear`), GL otherwise.
-fn apply_scissor(r: Option<Rect>) {
+/// Set (or clear) the clip for the current pass: the backdrop walk's own clip while discovery
+/// runs (the bounding box only; the walk culls by rectangle, mirroring `Painter::clip`/`clip_clear`),
+/// GL otherwise.
+fn apply_scissor(c: Option<Clip>) {
     if crate::frame::backdrop::discovering() {
-        crate::frame::backdrop::clip(r);
+        crate::frame::backdrop::clip(c.map(|c| c.scissor));
     } else {
-        gl_scissor(r);
+        gl_scissor(c);
     }
 }
 
 #[cfg(not(any(test, feature = "test-support")))]
-fn gl_scissor(r: Option<Rect>) {
-    match r {
-        Some(r) => plx_gfx::gfx::clip_set(r.x, r.y, r.w, r.h),
-        None => plx_gfx::gfx::clip_clear(),
+fn gl_scissor(c: Option<Clip>) {
+    match c {
+        Some(c) => {
+            plx_gfx::gfx::clip_set(c.scissor.x, c.scissor.y, c.scissor.w, c.scissor.h);
+            plx_gfx::gfx::rclip_set(c.round.map(|r| plx_gfx::gfx::RClip {
+                x0: r.rect.x,
+                y0: r.rect.y,
+                x1: r.rect.x + r.rect.w,
+                y1: r.rect.y + r.rect.h,
+                radius: r.radius,
+            }));
+        }
+        None => {
+            plx_gfx::gfx::clip_clear();
+            plx_gfx::gfx::rclip_set(None);
+        }
     }
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn gl_scissor(_r: Option<Rect>) {}
+fn gl_scissor(_c: Option<Clip>) {}
 
 impl<'a, 'views, H: Host> Deref for DrawFrame<'a, 'views, H> {
     type Target = Cx<'views, H>;

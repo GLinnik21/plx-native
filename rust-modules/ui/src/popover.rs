@@ -999,11 +999,12 @@ impl Popover {
 
     /// Draw a MORPHING popover's rows through `draw`, in the shared choreography the board states:
     ///
-    /// - the rows are **clipped to the surface's inscribed rect** ([`Frame::rows_clip`](crate::popover_morph::Frame::rows_clip):
-    ///   the current rect inset to the largest rectangle that fits inside its ROUND lens corners, through
-    ///   the shared [`ClipScope`](crate::screen::ClipScope), which nests with a table's own clip), so
-    ///   nothing draws outside the rounded glass. A true rounded clip would crop the rows exactly to
-    ///   the shape; the shared painter has only the scissor, so that is the follow-up in the shared layer;
+    /// - the rows are **cut by the surface's round lens** ([`Frame::rect`](crate::popover_morph::Frame::rect)
+    ///   and [`Frame::radius`](crate::popover_morph::Frame::radius), the glass's own shape, through the
+    ///   shared [`ClipScope::open_rounded_in`](crate::screen::ClipScope::open_rounded_in)), so a label
+    ///   the arc crosses is cut by the arc, as on iOS 26, and not by a straight edge. The scope nests
+    ///   with a table's own rect clip: the table narrows the scissor and keeps the arc. Settled, no
+    ///   scope is open and the rows are not cut at all (they are laid out inside the panel's corners);
     /// - they are **scaled about the panel anchor** ([`popover_morph::rows_anchor`](crate::popover_morph::rows_anchor))
     ///   by the rows' lens spring ([`popover_morph::K_LENS`](crate::popover_morph::K_LENS)), which
     ///   overshoots to ~1.12 (the shrinking slab's height ratio on a close);
@@ -1024,9 +1025,11 @@ impl Popover {
             return;
         }
         let p = p.alpha(f.content_alpha);
-        let _clip = crate::screen::ClipScope::open_in(p, f.rows_clip);
+        // opened on the UN-zoomed painter, in the glass's own screen px; the zoomed painter below maps
+        // its own vertices into the same px, so the lens stays where the glass is
+        let _clip = crate::screen::ClipScope::open_rounded_in(p, f.rect, f.radius);
         let zoom = crate::popover_morph::rows_zoom(self.from, panel, f.rows_scale);
-        draw(p.clipped(f.rows_clip).zoomed(zoom));
+        draw(p.clipped(f.rect).zoomed(zoom));
     }
 
     /// What [`panel`](Self::panel) draws as the ground this frame, or `None` for nothing yet.
