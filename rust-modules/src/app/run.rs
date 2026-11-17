@@ -4566,7 +4566,7 @@ mod lifecycle_regression_tests {
                     event(&mut app, &mut fr, SDL_TEXTINPUT);
                 }
                 assert!(matches!(app.inputs.last().map(|input| &input.kind),
-                    Some(InputKind::Text(TextEdit::Commit(text))) if text == chunk),
+                    Some(InputKind::Text(TextEdit::Commit(text))) if &**text == chunk),
                     "the text reaches the app's input queue (fifo={fifo}), not textinput's");
                 let inputs = std::mem::take(&mut app.inputs);
                 now += 16;
