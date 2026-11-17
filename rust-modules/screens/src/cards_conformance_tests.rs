@@ -5,6 +5,9 @@
 //! `CardHarness` in a child module of its own file (it reads that screen's private geometry).
 use plx_ui::cards::conformance::{check_expected, run_all, Mount, Outcome};
 
+#[path = "a11y_coverage_tests.rs"]
+mod a11y_coverage_tests; // the accessibility-id coverage table: every `AppArg` arm tabled, none yet covered
+
 const EXPECTED: &str = include_str!("../../../ci/allow/cards-conformance.txt");
 
 /// Every in-scope card screen with a harness. Collection, Person, Search, Library (grid and
