@@ -3279,10 +3279,10 @@ mod compaction_tests {
 /// and `SettingsPage` it wraps, with NO wildcard: a new screen does not compile until it is tabled
 /// here. An arm is [`Coverage::Covered`] by a function that MOUNTS that screen and runs
 /// `plx_ui::a11y::conformance` over it; the function is the screen's own test body, exposed from its
-/// test module (`<screen>_conforms`) and called by that module's test too, so the table cannot say
-/// "covered" about a mount the screen's tests no longer run. An arm that cannot be mounted on the
-/// host is [`Coverage::Pending`] with the true reason, and the table's tests print it. The table only
-/// shrinks; precedent: `cards_conformance_tests.rs`'s `table()`.
+/// test module (`<screen>_conforms`). Where that module's ids test shares the mounting helper, a
+/// change to the mount reaches both; otherwise the table is the function's only caller. An arm that
+/// cannot be mounted on the host is [`Coverage::Pending`] with the true reason, and the table's
+/// tests print it. The table only shrinks; precedent: `cards_conformance_tests.rs`'s `table()`.
 ///
 /// A covered function returns the namespace of every mounting it exercised (`Screen::a11y_ns`), and
 /// `plx_ui::a11y::conform` is the one way a test module produces one: it runs conformance and reads the

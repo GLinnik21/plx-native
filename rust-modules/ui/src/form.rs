@@ -61,7 +61,7 @@ pub trait RowKeys {
 pub trait FormId {
     fn key(&self) -> RowKey;
     /// **The row's accessibility name** (`a11y`): one lowercase word (`[a-z][a-z0-9_]*`, unique in
-    /// its form) a UI test reaches the row by (`playback.audio_boost`). `None`, the default, leaves
+    /// its form) a UI test reaches the row by (`playback.direct_play`). `None`, the default, leaves
     /// the row to its ordinal among the element rows (`row.<n>`): right for a position-keyed list, wrong for a
     /// page whose rows move, which should name them.
     fn a11y(&self) -> Option<&'static str> {

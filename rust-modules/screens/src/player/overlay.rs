@@ -979,8 +979,11 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Focusable<H
         }
     }
     /// **The ids are the active panel's own** (`TrackMenuPart`, `MoreMenuPart`), which answer for
-    /// their rows; the host qualifies them with this screen's namespace (`a11y_ns`, the panel's
-    /// word: `tracks`, `more`). The part is built fresh for the query, so the projection is
+    /// their rows; the host qualifies them with this screen's namespace, which is the default
+    /// `Screen::a11y_ns` (there is no override): `name()`, the active panel's `OverlayKind::word()`
+    /// — `menu` for the track menu, `more` for the More panel, `timing` for Timing. A `tracks.…`
+    /// selector therefore finds nothing here; `tracks` is the standalone tracks panel's namespace
+    /// (`tracks_panel.rs`). The part is built fresh for the query, so the projection is
     /// handed back owning its text. Timing declares no group and so names nothing; `a11y_find`
     /// stays the default walk over these two, which cannot disagree with them.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<plx_ui::a11y::A11y<'_>> {

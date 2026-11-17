@@ -5645,8 +5645,8 @@ mod focus_tests {
     }
 
     /// **The rows of the Audio tab are `audio.<i>`** and the menu conforms (every row projects,
-    /// ids are unique, the inverse finds each row, the group lists as many rows as it declares);
-    /// the title band's pointer-only key and a key of no row project nothing.
+    /// ids are unique, the inverse finds each row, the group lists no more rows than it declares, and
+    /// some when it declares any); the title band's pointer-only key and a key of no row project nothing.
     #[test]
     fn audio_rows_are_named_by_their_track_index_and_conform() {
         let e = EntryId(5);
