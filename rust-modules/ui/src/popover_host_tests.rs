@@ -172,6 +172,71 @@ fn a_surface_that_starts_closing_keeps_the_page_snapshot_and_drops_only_a_ground
     assert!(held() == Held::Nothing, "a closing surface keeps no ground snapshot");
 }
 
+/// **Only a surface that kept the host LIVE while it was open may keep the page's snapshot when it
+/// starts closing.** `surface_policy` freezes the host under a Sheet, an Alert and an
+/// `Opaque { snapshot: true }` surface, and a frozen page gets no Tick: the page's snapshot is as
+/// old as the surface. The full `invalidate()` at the Open -> Closing flip is the one retake after
+/// that stretch: keeping the snapshot there showed the Library's OLD captions through Settings'
+/// exit fade (an `Opaque` snapshot surface; Under posters changed inside it) and the page jumped
+/// when the layer was pruned. Presents `styles` bottom to top (a frame each, the page
+/// drawn and held in between), dismisses the TOP one and answers whether the close's first frame
+/// redrew the page (the snapshot was thrown away) rather than served it.
+fn the_close_retakes_the_page(styles: &[crate::containers::modal::Style]) -> bool {
+    use crate::dispatch::NoTap;
+    use crate::fixture::{booted, tick, FixtureArg};
+    use plx_machine::machine::{MachineId, NavOp};
+    let _serial = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
+    let (mut d, mut rig, _) = booted();
+    let draw = |modal: &crate::containers::modal::ModalPresentation, page| {
+        super::begin_frame(modal, 0.0, false, false);
+        PIXELS.with(|p| p.borrow_mut().clear());
+        { let _page = page_pass(modal); ink(page); }
+        PIXELS.with(|p| p.borrow().clone())
+    };
+    let mut ms = 0;
+    for style in styles {
+        d.nav.next_style = *style;
+        d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+        ms += 16;
+        d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        assert_eq!(draw(&d.modal_presentation(), "page").len(), 1, "premise: the page is drawn under {style:?}");
+    }
+    assert!(held() == Held::Page, "premise: the stack froze the page");
+    let top = d.nav.modals.top().expect("presented").entry.id;
+    let open = d.modal_presentation();
+    d.request(MachineId::Nav, NavOp::Dismiss(top));
+    ms += 16;
+    d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    let closing = d.modal_presentation();
+    assert!(!open.cache_key().same_snapshot(&closing.cache_key()), "premise: the close changed the cache key");
+    draw(&closing, "retaken") == ["retaken"]
+}
+
+#[test]
+fn a_frozen_host_surface_that_starts_closing_retakes_the_page() {
+    use crate::containers::modal::Style;
+    let kept: Vec<Style> = [Style::Sheet, Style::Alert, Style::Opaque { snapshot: true }]
+        .into_iter().filter(|style| !the_close_retakes_the_page(&[*style])).collect();
+    assert!(kept.is_empty(),
+        "{kept:?} froze the host while open, so the page each kept is as old as the surface: \
+         the close's first frame must retake it");
+}
+
+#[test]
+fn a_live_host_surface_that_starts_closing_still_keeps_the_page() {
+    use crate::containers::modal::Style;
+    assert!(!the_close_retakes_the_page(&[Style::Compact]),
+        "a Compact surface kept the host live while open: the page's snapshot is current");
+}
+
+#[test]
+fn a_mixed_stack_whose_frozen_host_layer_starts_closing_retakes_the_page() {
+    use crate::containers::modal::Style;
+    assert!(the_close_retakes_the_page(&[Style::Compact, Style::Sheet]),
+        "the Sheet above a Compact menu froze the host: its close retakes the page");
+}
+
 struct Reset {
     modal: crate::containers::modal::ModalPresentation,
     frozen: bool,
