@@ -84,6 +84,17 @@ impl Harness {
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: ENTRY, elem } }
 }
 
+/// **The page's elements have ids**: the head, the member grid and the status read-outs it composes on
+/// the stack all project, are unique, and are found again (`plx_ui::a11y::conformance`). The ids are the
+/// stack's own; this page adds no group of its own beyond the sections it hands the stack.
+#[test]
+fn the_page_answers_accessibility_ids() {
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let h = Harness::new(8);
+    plx_ui::a11y::conformance::<CollectionHost, _>(&h.screen, &h.cx());
+}
+
 impl CardHarness for Harness {
     fn cards(&self) -> Vec<u32> {
         let c = self.store.view().current().unwrap();

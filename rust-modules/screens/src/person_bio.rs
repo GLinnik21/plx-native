@@ -881,6 +881,16 @@ mod tests {
         }
     }
 
+    /// The sheet declares no group, so it has no element to name: the id conformance holds, and holds
+    /// because there is nothing to project (the default `a11y_elems` is the right answer).
+    #[test]
+    fn the_bio_sheet_has_no_element_to_name() {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let cx = cx(&measure);
+        let panel = PersonBioScreen::new(ENTRY);
+        plx_ui::a11y::conformance::<TestHost, _>(&panel, &cx);
+    }
+
     fn dismissed(out: &[Stamped<TestHost>]) -> bool {
         out.iter()
             .any(|s| matches!(&s.fx, Fx::Nav(NavOp::Dismiss(id)) if *id == ENTRY))

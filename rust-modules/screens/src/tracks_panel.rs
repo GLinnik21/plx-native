@@ -1264,6 +1264,15 @@ impl<H: crate::registry::AppLike> plx_ui::screen::Focusable<H> for TracksPanelSc
             elem: 0,
         }
     }
+    /// The one element is the sheet's paged body: `body`.
+    fn a11y(&self, key: &u32, _cx: &plx_machine::machine::Cx<'_, H>) -> Option<plx_ui::a11y::A11y<'_>> {
+        (*key == 0).then(|| plx_ui::a11y::A11y::new(plx_ui::a11y::A11yPath::new().name("body"), plx_ui::a11y::Role::Text))
+    }
+    fn a11y_elems(&self, g: plx_machine::machine::GroupId, _cx: &plx_machine::machine::Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == plx_machine::machine::GroupId(0) {
+            out.push(0);
+        }
+    }
 }
 
 impl plx_machine::machine::LogicalState for TracksPanelScreen {
@@ -1999,6 +2008,19 @@ mod tests {
             <TracksPanelScreen as plx_ui::screen::Screen<HostFixture>>::hit_source(&p),
             plx_ui::screen::HitSource::Engine
         );
+    }
+
+    /// The one element has an id, and the id finds it again: `tracks.body` (the namespace is the
+    /// host's; the screen answers `body`).
+    #[test]
+    fn the_one_element_answers_an_id() {
+        let p = panel(EntryId(3));
+        let cx = fixture_cx(None);
+        plx_ui::a11y::conformance::<HostFixture, _>(&p, &cx);
+        let body = plx_ui::a11y::A11yPath::parse_relative("body").expect("a well-formed path");
+        assert_eq!(Focusable::<HostFixture>::a11y_find(&p, &body, &cx), Some(0));
+        let elsewhere = plx_ui::a11y::A11yPath::parse_relative("page.1").expect("a well-formed path");
+        assert_eq!(Focusable::<HostFixture>::a11y_find(&p, &elsewhere, &cx), None);
     }
 
     /// **The Focusable contract is exactly one stationary element.** `groups` answers a single

@@ -103,6 +103,17 @@ impl Harness {
     }
 }
 
+/// **The page's elements have ids**: the header, the Filmography pill and the credit shelves it composes
+/// on the stack all project, are unique, and are found again (`plx_ui::a11y::conformance`). The ids are
+/// the stack's own; this page adds no group of its own beyond the sections it hands the stack.
+#[test]
+fn the_page_answers_accessibility_ids() {
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let h = Harness::new((0..8).map(|i| format!("m{i}")).collect());
+    plx_ui::a11y::conformance::<PersonHost, _>(&h.screen, &h.cx());
+}
+
 impl CardHarness for Harness {
     fn cards(&self) -> Vec<u32> {
         let p = self.store.view().current().unwrap();

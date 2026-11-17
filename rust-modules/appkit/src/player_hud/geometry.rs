@@ -225,13 +225,37 @@ fn package_row<'c>(compiled: &'c Compiled, open: u8, slot: ControlSlot, model: &
 /// test next to this fn pins it).
 pub fn row_command(compiled: &Compiled, open: u8, slot: ControlSlot, model: &HudModel, i: i32) -> Option<HudCommand> {
     match slot {
-        ControlSlot::Discs(controls) => {
+        ControlSlot::Discs(controls) => row_declared(compiled, open, slot, model, i)
+            .filter(|act| act.enabled(&HudModel { controls, ..*model })),
+        _ => slot.command(i),
+    }
+}
+
+/// **The command of the control the package placed at the discs' item `i`, enabled or not**: what
+/// [`row_command`] answers before the app's own predicate ([`HudCommand::enabled`]) has its say, so a
+/// disabled Previous is still the Previous control (it is the one thing a name for it needs). `None`
+/// for an index the package placed no control at, for a control with no command, and for a stand-in's
+/// row (which has none: the slot's own [`ControlSlot::command`] answers there).
+pub fn row_declared(compiled: &Compiled, open: u8, slot: ControlSlot, model: &HudModel, i: i32) -> Option<HudCommand> {
+    match slot {
+        ControlSlot::Discs(_) => {
             let (state, _) = frame_state_content(compiled, open, slot, model.chapters, model.is_episode, model.paused)?;
             let id = state.row_ids.get(usize::try_from(i).ok()?)?.as_deref()?;
-            let act = state.control(id)?.act?;
-            act.enabled(&HudModel { controls, ..*model }).then_some(act)
+            state.control(id)?.act
         }
         _ => slot.command(i),
+    }
+}
+
+/// **The word that names item `i` of the row in an accessibility id** (`player.control.next`): the
+/// command's own for the discs ([`HudCommand::a11y_word`], whether the control is enabled or not), the
+/// slot's for a stand-in ([`ControlSlot::a11y_word`]). `None` where the package placed no control, so
+/// the id falls back to the item's position. A word is static text, never content; the caller makes
+/// the id unique when a package places two controls with one word.
+pub fn row_word(compiled: &Compiled, open: u8, slot: ControlSlot, model: &HudModel, i: i32) -> Option<&'static str> {
+    match slot {
+        ControlSlot::Discs(_) => row_declared(compiled, open, slot, model, i).map(HudCommand::a11y_word),
+        _ => slot.a11y_word(i),
     }
 }
 
