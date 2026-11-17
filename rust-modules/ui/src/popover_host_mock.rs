@@ -76,6 +76,22 @@ impl FrameCache {
             PREV_RELEASES.with(|c| c.set(c.get() + 1));
         }
     }
+    // The frost is a GL texture: a host test has none, and `frost_possible` says so, so the glass
+    // takes its field ground exactly as before.
+    pub(super) fn frost_want(&mut self, _panel: [f32; 4]) {}
+    pub(super) fn frost_read(&self) -> Option<(std::ffi::c_uint, [f32; 4], u32)> {
+        None
+    }
+    pub(super) fn frost_possible(&self) -> bool {
+        false
+    }
+    pub(super) fn frost_fresh(&self, _key: u32) -> bool {
+        false
+    }
+    pub(super) fn frost_build_owed(&mut self, _key: u32) -> bool {
+        false
+    }
+    pub(super) fn release_frost(&mut self) {}
     pub(super) fn has_prev(&self) -> bool {
         self.prev.is_some()
     }

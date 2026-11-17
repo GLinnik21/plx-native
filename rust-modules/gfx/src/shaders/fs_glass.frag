@@ -211,6 +211,15 @@ uniform highp vec4 u_mrg;
 uniform highp vec2 u_mrg_rk;
 uniform vec4 u_mrg_tint;
 uniform float u_clear;
+// THE FROSTED BODY'S CEILING (`gfx::GlassFrost`), applied to what the body shows AFTER the modal dim:
+// `(knee, headroom, scale)`, headroom 0 = no cap (the field ground and every live glass, bit for
+// bit). The blurred page under a thin face can be as bright as the page, which a white poster
+// makes unreadable under light ink; the brightest CHANNEL of the body is held to `knee + headroom`
+// (a hard ceiling `ui::theme::FROST_BODY_CEILING` derives from the ink floors and the face's
+// thinnest alpha), through a rational soft knee that never reaches it. The whole texel is scaled
+// by the capped/uncapped ratio of that channel, so hue survives, and a grey is the worst case the
+// ceiling was derived for. `scale` makes a body of exactly 1.0 land ON the ceiling.
+uniform vec3 u_frost_cap;
 
 // The composite-time modal dim over `c`, sampled at snapshot UV `uv` (see `u_dim`); `g` is the
 // `u_tex` texel already read at `uv`, the ink in mode 2.
@@ -251,7 +260,14 @@ vec3 srcRGB(highp vec2 uv, out vec4 g){
        * mix(u_wash_w.x, u_wash_w.y, w.y);
   }
   c = mix(u_source_ground, c, u_source_alpha);
-  return dimRGB(c, uv, g);
+  c = dimRGB(c, uv, g);
+  if (u_frost_cap.y > 0.0) {
+    float m = max(c.r, max(c.g, c.b));
+    float o = max(m - u_frost_cap.x, 0.0);
+    float y = min(m, u_frost_cap.x) + u_frost_cap.y * (o / (o + u_frost_cap.y)) * u_frost_cap.z;
+    c *= y / max(m, 0.0001);
+  }
+  return c;
 }
 
 highp float sdBox(highp vec2 p, highp vec2 b, highp float r){

@@ -534,14 +534,36 @@ pub const SURFACE_PANEL: [f32; 4] = NEUTRAL_650;
 pub const PANEL_TOP: [f32; 4] = with_a(NEUTRAL_650, 0.985);
 /// Near-opaque sheet gradient — bottom stop (kept distinct; the gradient is deliberate).
 pub const PANEL_BOT: [f32; 4] = with_a(NEUTRAL_750, 0.985);
-/// The glass menu face's gradient, top stop (design board `WatchlistOptions`: `rgba(58,58,64,.78)`).
-/// A neutral a touch cooler and lighter than the opaque [`PANEL_TOP`] (no existing palette stop is
-/// near it: `NEUTRAL_650` is `#222224`), because it sits over the menu's frozen ground (the latched
-/// underlay field, `popover_glass`) rather than being its own ground. The primitive is private to this role; `popover_glass` names the role.
-pub const MENU_GLASS_TOP: [f32; 4] = with_a(rgb8(58, 58, 64), 0.78);
-/// The glass menu face's gradient, bottom stop: the board's `rgba(40,40,46,.86)`; see
+/// The glass menu face's gradient, top stop, over a real FROST (owner decision, 2026-11-17: "blur +
+/// thin face .36/.44"): `rgb(58,58,64)` at .36, down from the board's .78, because the body under it
+/// is a blur of the page behind the menu (`popover_glass`, `gfx::GlassFrost`) and no longer a colour
+/// wash. A neutral a touch cooler and lighter than the opaque [`PANEL_TOP`] (no existing palette stop
+/// is near it: `NEUTRAL_650` is `#222224`). The primitive is private to this role; `popover_glass` names the role.
+pub const MENU_GLASS_TOP: [f32; 4] = with_a(rgb8(58, 58, 64), 0.36);
+/// The glass menu face's gradient, bottom stop, over a frost: `rgb(40,40,46)` at .44 (was .86); see
 /// [`MENU_GLASS_TOP`].
-pub const MENU_GLASS_BOT: [f32; 4] = with_a(rgb8(40, 40, 46), 0.86);
+pub const MENU_GLASS_BOT: [f32; 4] = with_a(rgb8(40, 40, 46), 0.44);
+/// The face's density where there is NO frost to stand on (a stacked menu, a menu whose page was not
+/// snapshotted, before the frost exists): the board's `rgba(58,58,64,.78)` over the latched underlay
+/// field, which is a colour wash with no shapes and so needs the heavier face. Same hue as
+/// [`MENU_GLASS_TOP`].
+pub const MENU_GLASS_FIELD_TOP: [f32; 4] = with_a(rgb8(58, 58, 64), 0.78);
+/// The field-ground face's bottom stop: the board's `rgba(40,40,46,.86)`; see [`MENU_GLASS_FIELD_TOP`].
+pub const MENU_GLASS_FIELD_BOT: [f32; 4] = with_a(rgb8(40, 40, 46), 0.86);
+/// **The brightest a menu's frosted body may be, per channel**, in display codes. The frost is a blur
+/// of the page, so under the thin face a white poster would put white ink on a near-white ground.
+/// The ceiling is DERIVED, not chosen: the largest grey body `g` for which the shipped inks keep
+/// their floors (primary and secondary 4.5:1, tertiary 3:1, as `underlay_tests`' contrast test
+/// states them) over the composite `g * (1 - a) + face * a` at the face's THINNEST stop (the top,
+/// `a` = [`MENU_GLASS_TOP`]'s .36, `face` rgb(58,58,64)). Grey is the worst case of a per-channel
+/// cap (relative luminance is largest at equal channels), and the tertiary ink is the one that
+/// binds: `g` = 0.3372 gives it exactly 3.00:1 (secondary 4.64, primary 8.18). 1/255 comes off for
+/// the dither, 0.3372 - 0.0039 = 0.333. The cap is applied after the modal dim, so the dim only adds
+/// to the margin. `popover_glass`'s test re-derives this number from the tokens.
+pub const FROST_BODY_CEILING: f32 = 0.333;
+/// Where the body's soft knee starts, as a share of [`FROST_BODY_CEILING`]: below it the frost is
+/// untouched, above it a rational curve bends towards the ceiling without reaching it.
+pub const FROST_BODY_KNEE_AT: f32 = 0.6;
 /// The glass menu's drop shadow ink: the board's `0 24px 60px rgba(0,0,0,.45)` weight over
 /// [`CARD_SHADOW`]'s black.
 pub const MENU_SHADOW: [f32; 4] = with_a(CARD_SHADOW, 0.45);

@@ -3900,6 +3900,18 @@ pub struct FrameCache {
     /// where it was drawn, and the pixels are PREMULTIPLIED (the frame is drawn onto a transparent
     /// clear, so what the blend leaves is `(rgb * a, a)`).
     region: [c_int; 4],
+    /// **The retained FROST** (a glass menu's body): a blur of the page snapshot's `frost_rect`, its
+    /// own texture and FBO, at 1/8 of that rect. Built ONCE per snapshot ([`frost_build_owed`](Self::frost_build_owed)
+    /// at the head of a later frame), never per frame, and given back by [`release_frost`](Self::release_frost).
+    /// `frost_key` is the snapshot's epoch it was built from, `frost_want` the region the standing
+    /// menu asked for, `frost_off` the latch after a failed build.
+    frost: c_uint,
+    frost_fbo: c_uint,
+    frost_dim: (c_int, c_int),
+    frost_rect: [c_int; 4],
+    frost_key: u32,
+    frost_want: Option<[c_int; 4]>,
+    frost_off: bool,
 }
 
 #[cfg_attr(test, allow(dead_code))]
@@ -3918,7 +3930,130 @@ impl FrameCache {
             prev: 0,
             prev_w: 0,
             prev_h: 0,
+            frost: 0,
+            frost_fbo: 0,
+            frost_dim: (0, 0),
+            frost_rect: [0; 4],
+            frost_key: 0,
+            frost_want: None,
+            frost_off: false,
         }
+    }
+
+    /// The standing menu's settled panel, `[x, y, w, h]` authored px: the region the frost is owed over.
+    pub fn frost_want(&mut self, panel: [f32; 4]) {
+        self.frost_want = Some(frost_region(panel));
+    }
+
+    /// The frost as the glass reads it: its texture and canvas rect, whatever snapshot it was built
+    /// from (a stale one is kept until its replacement lands). `None`: none yet, or it failed.
+    pub fn frost_read(&self) -> Option<(c_uint, [f32; 4], u32)> {
+        (self.frost != 0 && self.frost_rect[2] > 0).then(|| {
+            let r = self.frost_rect;
+            (self.frost, [r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32], self.frost_key)
+        })
+    }
+
+    /// Could a frost be built at all (no latched failure, an FBO backend)? Host tests' stand-in says no.
+    pub fn frost_possible(&self) -> bool {
+        !self.off && !self.fbo_off && !self.frost_off
+    }
+
+    /// Is the frost the one for snapshot `key` over the region the menu wants?
+    pub fn frost_fresh(&self, key: u32) -> bool {
+        self.frost != 0 && self.frost_key == key && self.frost_want == Some(self.frost_rect)
+    }
+
+    /// Give the frost's texture back: it goes with its host.
+    pub fn release_frost(&mut self) {
+        if self.frost_fbo != 0 {
+            // SAFETY: render thread, current context, like every GL resource here.
+            unsafe { glDeleteFramebuffers(1, &self.frost_fbo) };
+            self.frost_fbo = 0;
+        }
+        delete_tex(self.frost);
+        self.frost = 0;
+        self.frost_rect = [0; 4];
+        self.frost_want = None;
+    }
+
+    /// **Build the frost a standing menu is owed**, if the page snapshot (epoch `key`) holds and none
+    /// is fresh for it. Called at the HEAD of a frame (before any draw reaches the frame's
+    /// framebuffer, so there is no mid-frame render-target switch to resolve), which is also always
+    /// a LATER frame than the capture it reads. `true` once a build ran.
+    pub fn frost_build_owed(&mut self, key: u32) -> bool {
+        let Some(want) = self.frost_want else { return false };
+        if self.frost_fresh(key) || self.frost_off || !self.valid || self.tex == 0 || self.region != [0; 4] {
+            return false;
+        }
+        if blur_source_pass() || backdrop::discovering() || unsafe { LIVE_SCISSOR }.is_some() {
+            return false;
+        }
+        if video_plane_refuses("FrameCache::frost_build_owed") || !blur_lazy_init() {
+            return false;
+        }
+        let ok = profile::phase("glass.frost", || unsafe { self.frost_passes(want) });
+        if ok {
+            self.frost_rect = want;
+            self.frost_key = key;
+        } else {
+            self.frost_off = true;
+            log("frost: build failed — menus keep the field ground");
+        }
+        ok
+    }
+
+    /// The chain: the snapshot's window to 1/4 (four taps one authored px out: the exact 4x4 box),
+    /// to 1/8 (one bilinear tap on the shared corner: the 2x2 box), then [`FROST_TAPS`] at 1/8. The
+    /// last pass lands in the retained texture; the scratch targets are given back. See
+    /// [`FROST_TAPS`] for sigma. Every pass is a full quad into an exactly-sized target with BPROG, the
+    /// live chain's own shader, so the orientation rule is [`blur_bottom_up`] of [`FROST_PASSES`].
+    unsafe fn frost_passes(&mut self, want: [c_int; 4]) -> bool {
+        let [rx, ry, rw, rh] = want;
+        if rw < 8 || rh < 8 || rw % 8 != 0 || rh % 8 != 0 {
+            return false;
+        }
+        let ((w4, h4), (w8, h8)) = ((rw / 4, rh / 4), (rw / 8, rh / 8));
+        while glGetError() != GL_NO_ERROR {}
+        if self.frost == 0 || self.frost_dim != (w8, h8) {
+            self.release_frost();
+            let Some((t, f)) = fbo_target(w8, h8, "frost") else { return false };
+            (self.frost, self.frost_fbo, self.frost_dim) = (t, f, (w8, h8));
+        }
+        let Some((t4, f4)) = fbo_target(w4, h4, "frost") else { return false };
+        let Some((ts, fs)) = fbo_target(w8, h8, "frost") else {
+            glDeleteFramebuffers(1, &f4);
+            delete_tex(t4);
+            return false;
+        };
+        glDisable(GL_BLEND);
+        use_prog(BPROG);
+        let pass = |fbo: c_uint, src: c_uint, w: c_int, h: c_int, uv: [f32; 4], texel: [f32; 2]| {
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glViewport(0, 0, w, h);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glUniform4f(BL_UVRECT, uv[0], uv[1], uv[2], uv[3]);
+            glUniform2f(BL_TEXEL, texel[0], texel[1]);
+            note_px(Class::Blur, (w as f64) * (h as f64));
+            glBindTexture(GL_TEXTURE_2D, src);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, straighten::Extent::Target);
+        };
+        // The snapshot is bottom-up: the region's bottom edge sits at v = 1 - (y + h) / H.
+        let win = [rx as f32 / SCR_W, 1.0 - (ry + rh) as f32 / SCR_H, rw as f32 / SCR_W, rh as f32 / SCR_H];
+        pass(f4, self.tex, w4, h4, win, [1.0 / SCR_W, 1.0 / SCR_H]);
+        pass(self.frost_fbo, t4, w8, h8, [0.0, 0.0, 1.0, 1.0], [0.0, 0.0]);
+        let (d1, d2) = (FROST_TAPS[0], FROST_TAPS[1]);
+        pass(fs, self.frost, w8, h8, [0.0, 0.0, 1.0, 1.0], [d1 / w8 as f32, d1 / h8 as f32]);
+        pass(self.frost_fbo, ts, w8, h8, [0.0, 0.0, 1.0, 1.0], [d2 / w8 as f32, d2 / h8 as f32]);
+        glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
+        let (vx, vy, vw, vh) = plx_base::surface::viewport();
+        glViewport(vx, vy, vw, vh);
+        glEnable(GL_BLEND);
+        glDeleteFramebuffers(1, &f4);
+        glDeleteFramebuffers(1, &fs);
+        delete_tex(t4);
+        delete_tex(ts);
+        glGetError() == GL_NO_ERROR
     }
 
     /// Copy the framebuffer into the retained second slot. `false` (nothing retained) in a blur
@@ -3972,6 +4107,7 @@ impl FrameCache {
         self.valid = false;
         self.checked = false;
         self.region = [0; 4];
+        self.release_frost();
     }
 
     /// Draw the second slot across the canvas at `alpha`, over what is drawn so far.
@@ -4237,7 +4373,7 @@ impl FrameCache {
 
     pub fn resident_bytes(&self) -> usize {
         let one = |t: c_uint, w: c_int, h: c_int| if t == 0 { 0 } else { w as usize * h as usize * 4 };
-        one(self.tex, self.w, self.h) + one(self.prev, self.prev_w, self.prev_h)
+        one(self.tex, self.w, self.h) + one(self.prev, self.prev_w, self.prev_h) + one(self.frost, self.frost_dim.0, self.frost_dim.1)
     }
 
     /// Draw the cached viewport across the authored canvas. A framebuffer copy is bottom-up;
@@ -5452,6 +5588,7 @@ static mut GL_MRG: c_int = 0;
 static mut GL_MRG_RK: c_int = 0;
 static mut GL_MRG_TINT: c_int = 0;
 static mut GL_CLEAR: c_int = 0;
+static mut GL_FROST_CAP: c_int = 0;
 static mut GL_DEEP: c_int = 0;
 static mut GL_SOURCE_ALPHA: c_int = 0;
 static mut GL_SOURCE_GROUND: c_int = 0;
@@ -5799,6 +5936,7 @@ fn blur_lazy_init() -> bool {
         GL_MRG_RK = glGetUniformLocation(GPROG, c"u_mrg_rk".as_ptr());
         GL_MRG_TINT = glGetUniformLocation(GPROG, c"u_mrg_tint".as_ptr());
         GL_CLEAR = glGetUniformLocation(GPROG, c"u_clear".as_ptr());
+        GL_FROST_CAP = glGetUniformLocation(GPROG, c"u_frost_cap".as_ptr());
         GL_DEEP = glGetUniformLocation(GPROG, c"u_deep".as_ptr());
         GL_SOURCE_ALPHA = glGetUniformLocation(GPROG, c"u_source_alpha".as_ptr());
         GL_SOURCE_GROUND = glGetUniformLocation(GPROG, c"u_source_ground".as_ptr());
@@ -7635,6 +7773,68 @@ impl GlassMorph {
     }
 }
 
+/// **A menu's FROST** (`ui::popover::host`'s retained blur of its frozen page, [`FrameCache::frost_read`]):
+/// the texture the glass body shows INSTEAD of the latched field ground, the canvas rect it holds,
+/// and the body's brightness ceiling. [`GlassFrost::NONE`] (`tex` 0) is the field ground, bit for bit.
+///
+/// The texture is the region's own, [`FROST_PASSES`] flips from the bottom-up snapshot it was drawn from
+/// ([`FROST_BOTTOM_UP`]); the glass samples it through a UV window ([`blur_uv_rect`]) and
+/// `CLAMP_TO_EDGE` is what a fragment of the (rare) overshoot past the region reads, which is the
+/// region's edge texel, so the body never goes black or wraps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlassFrost {
+    pub tex: c_uint,
+    /// The canvas rect `tex` holds, authored px `[x, y, w, h]`, top-down.
+    pub rect: [f32; 4],
+    /// The body's soft knee: the brightest channel below this is untouched.
+    pub knee: f32,
+    /// The hard ceiling no body channel reaches (`ui::theme::FROST_BODY_CEILING`); 0 = no cap.
+    pub ceiling: f32,
+    /// The snapshot epoch the frost was built from: a rebuild into the same texture is a different draw.
+    pub rev: u32,
+}
+impl GlassFrost {
+    pub const NONE: Self = Self { tex: 0, rect: [0.0; 4], knee: 0.0, ceiling: 0.0, rev: 0 };
+    /// `(knee, headroom, scale)` of `fs_glass.frag`'s `u_frost_cap`: `scale` makes a body of exactly
+    /// 1.0 land on the ceiling (`y = knee + headroom * o / (o + headroom) * scale`, `o = 1 - knee`).
+    fn cap_uniform(&self) -> [f32; 3] {
+        let d = self.ceiling - self.knee;
+        if self.tex == 0 || self.ceiling <= 0.0 || d <= 0.0 || self.knee >= 1.0 {
+            return [0.0, 0.0, 1.0];
+        }
+        [self.knee, d, (1.0 - self.knee + d) / (1.0 - self.knee)]
+    }
+    /// The same cap on one body channel, for host tests (the shader's rule on its brightest channel).
+    pub fn cap(&self, m: f32) -> f32 {
+        let [k, d, scale] = self.cap_uniform();
+        if d <= 0.0 { return m; }
+        let o = (m - k).max(0.0);
+        m.min(k) + d * (o / (o + d)) * scale
+    }
+}
+
+/// Passes the frost's chain runs from the bottom-up page snapshot: 1/4, 1/8, then two Kawase taps.
+const FROST_PASSES: usize = 4;
+/// Is the retained frost stored bottom-up? The parity of [`FROST_PASSES`], as the live chain reads its own.
+const FROST_BOTTOM_UP: bool = blur_bottom_up(FROST_PASSES);
+/// The two Kawase offsets at the frost's 1/8 resolution, in texels. Per axis a pass at offset `d`
+/// has variance `d^2 + 1/4` (four bilinear taps on the diagonals), so `[1.5, 2.5]` give
+/// `2.5 + 6.5 = 9` texel^2: sigma 3 texels = 24 px at 1/8, the Gaussian the owner approved.
+const FROST_TAPS: [f32; 2] = [1.5, 2.5];
+/// How far past a menu's settled panel the frost's region reaches, authored px (a multiple of 8):
+/// 72 (3 sigma, where the clamped region edge stops mattering) plus the lens' push and a morph's overshoot.
+pub const FROST_MARGIN: f32 = 120.0;
+
+/// The frost's region for a settled panel `[x, y, w, h]`: grown by [`FROST_MARGIN`], clamped to the
+/// canvas and aligned OUT to multiples of 8, so every 1/8 texel is whole authored pixels. Pure.
+pub fn frost_region(panel: [f32; 4]) -> [c_int; 4] {
+    let lo = |v: f32, max: f32| ((v - FROST_MARGIN).max(0.0).min(max) / 8.0).floor() as c_int * 8;
+    let hi = |v: f32, max: f32| (((v + FROST_MARGIN).min(max).max(0.0)) / 8.0).ceil() as c_int * 8;
+    let (x0, y0) = (lo(panel[0], SCR_W), lo(panel[1], SCR_H));
+    let (x1, y1) = (hi(panel[0] + panel[2], SCR_W), hi(panel[1] + panel[3], SCR_H));
+    [x0, y0, (x1 - x0).max(0), (y1 - y0).max(0)]
+}
+
 /// **Snapshot UV back to the screen**: `(su, sv, ou, ov)` with `screen_uv = uv * (su, sv) + (ou, ov)`
 /// over the whole canvas, top-down — `blur_uv_rect` inverted, for the region `reg` the snapshot holds
 /// in a window of `span` of its texture. Both composite-time terms that live on the page (the dim's
@@ -7814,6 +8014,8 @@ pub fn draw_blur_backdrop(
         glUniform2f(GL_MRG_RK, 0.0, 0.0);
         glUniform4f(GL_MRG_TINT, 0.0, 0.0, 0.0, 0.0);
         glUniform1f(GL_CLEAR, 0.0);
+        // …and wears no frost ceiling (a menu's frozen draw sets one; the uniform is the program's).
+        glUniform3f(GL_FROST_CAP, 0.0, 0.0, 1.0);
         // A BLUR is the slowest field the app produces, so the policy is the area test, per draw
         // — moving or not: a panel's glass is a fraction of the screen and the tile is one fetch,
         // and gating it on motion (one day, 2026-09-04) flickered the bands in and out on every
@@ -8006,6 +8208,7 @@ pub fn draw_glass_frozen(
     rim: GlassRim,
     face: GlassFace,
     morph: GlassMorph,
+    frost: GlassFrost,
 ) -> bool {
     if ground == 0 || unsafe { GPROG } == 0 || unsafe { BLUR_OFF } {
         return false;
@@ -8027,6 +8230,13 @@ pub fn draw_glass_frozen(
     }
     unsafe {
         use_prog(GPROG);
+        // The body's picture: the menu's FROST (a retained blur of its page, drawn through a UV
+        // window of its region) or the latched field. Unit 0 is whichever, so the dim's field is its
+        // own texture (mode 1) over a frost and the body's own texel (mode 2) over the field.
+        let framed = frost.tex != 0 && frost.rect[2] > 0.0 && frost.rect[3] > 0.0;
+        let body = if framed { frost.tex } else { ground };
+        let cap = if framed { frost.cap_uniform() } else { [0.0, 0.0, 1.0] };
+        glUniform3f(GL_FROST_CAP, cap[0], cap[1], cap[2]);
         glUniform1f(GL_SOURCE_ALPHA, 1.0);
         let g = tokens::CLEAR_RGB;
         glUniform3f(GL_SOURCE_GROUND, g.0, g.1, g.2);
@@ -8035,10 +8245,11 @@ pub fn draw_glass_frozen(
         match dim {
             Some(d) if d.tint[3] > 0.0 => {
                 glUniform4f(GL_DIM, d.tint[0], d.tint[1], d.tint[2], d.tint[3]);
-                let mode = frozen_dim_field(ground, d.tex);
+                let mode = frozen_dim_field(body, d.tex);
                 glUniform1f(GL_DIM_FIELD, mode);
                 if mode == 1.0 {
-                    glUniform4f(GL_DIM_UV, 1.0, 1.0, 0.0, 0.0);
+                    let u = if framed { snapshot_to_screen(frost.rect, [1.0, 1.0], FROST_BOTTOM_UP) } else { [1.0, 1.0, 0.0, 0.0] };
+                    glUniform4f(GL_DIM_UV, u[0], u[1], u[2], u[3]);
                     glActiveTexture(GL_TEXTURE3);
                     glBindTexture(GL_TEXTURE_2D, d.tex);
                     glActiveTexture(GL_TEXTURE0);
@@ -8051,8 +8262,13 @@ pub fn draw_glass_frozen(
         glUniform1f(GL_WASH_ON, 0.0);
         glUniform1f(GL_DIM_SHARP, if sharp != 0 { 1.0 } else { 0.0 });
         glUniform1f(GL_DITHER_AMT, dither_for_field(q.w, q.h));
-        glBindTexture(GL_TEXTURE_2D, ground);
-        glUniform2f(GL_UVPX, 1.0 / SCR_W, 1.0 / SCR_H);
+        glBindTexture(GL_TEXTURE_2D, body);
+        if framed {
+            let sy = if FROST_BOTTOM_UP { -1.0 } else { 1.0 };
+            glUniform2f(GL_UVPX, 1.0 / frost.rect[2], sy / frost.rect[3]);
+        } else {
+            glUniform2f(GL_UVPX, 1.0 / SCR_W, 1.0 / SCR_H);
+        }
         let sharpw = if sharp != 0 { rim.sharp() } else { 0.0 };
         // The snapshot is the whole drawable, bottom-up: its window is the screen rect over the
         // screen, with the row order flipped (`frame_cache_uv`).
@@ -8077,7 +8293,12 @@ pub fn draw_glass_frozen(
         glUniform4fv(GL_RIMCOL_G, 1, face.rim.as_ptr());
         glUniform4fv(GL_RIMLIT_G, 1, face.rim_lit.as_ptr());
         glUniform1f(GL_RIMW_G, face.rim_w);
-        glUniform4f(GL_UVRECT, q.x / SCR_W, q.y / SCR_H, q.w / SCR_W, q.h / SCR_H);
+        if framed {
+            let uv = blur_uv_rect(q.x, q.y, q.w, q.h, frost.rect, [1.0, 1.0], FROST_BOTTOM_UP);
+            glUniform4f(GL_UVRECT, uv[0], uv[1], uv[2], uv[3]);
+        } else {
+            glUniform4f(GL_UVRECT, q.x / SCR_W, q.y / SCR_H, q.w / SCR_W, q.h / SCR_H);
+        }
         glUniform1f(GL_RADIUS, radius);
         glUniform2f(GL_CH, w * 0.5, h * 0.5);
         // The join and the clarity, set on EVERY draw (the program's state): the panel's centre in
@@ -12340,5 +12561,46 @@ mod card_split_tests {
             );
             assert!(of_quad > 0.60 && of_card > 0.70, "{name}: {of_quad} {of_card}");
         }
+    }
+}
+
+#[cfg(test)]
+mod frost_tests {
+    use super::*;
+
+    /// The region is the panel grown by the reach, aligned OUT to whole 1/8 texels and clamped to the canvas.
+    #[test]
+    fn the_frost_region_is_the_panel_plus_its_reach_aligned_to_eighths() {
+        let r = frost_region([630.0, 270.0, 660.0, 540.0]);
+        assert_eq!(r, [504, 144, 912, 792], "{r:?}");
+        let r = frost_region([13.0, 7.0, 101.0, 55.0]);
+        assert_eq!((r[0], r[1]), (0, 0), "clamped at the canvas origin: {r:?}");
+        for r in [r, frost_region([1800.0, 1000.0, 120.0, 80.0]), frost_region([0.0, 0.0, SCR_W, SCR_H])] {
+            assert!(r.iter().all(|v| v % 8 == 0), "whole 1/8 texels: {r:?}");
+            assert!(r[0] + r[2] <= SCR_W as c_int && r[1] + r[3] <= SCR_H as c_int, "inside the canvas: {r:?}");
+        }
+    }
+
+    /// The ceiling is HARD (nothing reaches it), the knee is the identity below it, a full white body
+    /// lands on the ceiling and the curve never goes down.
+    #[test]
+    fn the_frost_cap_is_a_soft_knee_under_a_hard_ceiling() {
+        let f = GlassFrost { tex: 1, rect: [0.0, 0.0, 8.0, 8.0], knee: 0.2, ceiling: 0.333, rev: 0 };
+        assert_eq!(f.cap(0.1), 0.1);
+        assert!((f.cap(1.0) - 0.333).abs() < 1e-5, "white lands on the ceiling: {}", f.cap(1.0));
+        let mut last = 0.0;
+        for i in 0..=100 {
+            let y = f.cap(i as f32 / 100.0);
+            assert!(y >= last && y <= 0.333 + 1e-5, "monotone and under the ceiling at {i}: {y}");
+            last = y;
+        }
+        assert_eq!(GlassFrost::NONE.cap(0.9), 0.9, "no frost, no cap");
+    }
+
+    /// The retained frost is stored the way the passes leave it: four flips from the bottom-up snapshot.
+    #[test]
+    fn the_frost_is_stored_bottom_up_after_four_flips() {
+        assert!(FROST_BOTTOM_UP);
+        assert_eq!(FROST_TAPS.iter().map(|d| d * d + 0.25).sum::<f32>(), 9.0, "sigma 3 texels = 24 px at 1/8");
     }
 }

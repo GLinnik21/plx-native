@@ -39,10 +39,11 @@ use crate::frame::backdrop::Dim;
 use crate::{theme, Painter, Rect};
 use plx_gfx::gfx::{GlassFace, GlassRim};
 
-/// The face gradient's top stop: [`theme::MENU_GLASS_TOP`], the board's `rgba(58,58,64,.78)`.
-pub const FACE_TOP: [f32; 4] = theme::MENU_GLASS_TOP;
-/// The face gradient's bottom stop: [`theme::MENU_GLASS_BOT`], the board's `rgba(40,40,46,.86)`.
-pub const FACE_BOT: [f32; 4] = theme::MENU_GLASS_BOT;
+/// The face gradient's top stop over the FIELD ground (no frost to stand on):
+/// [`theme::MENU_GLASS_FIELD_TOP`], the board's `rgba(58,58,64,.78)`.
+pub const FACE_TOP: [f32; 4] = theme::MENU_GLASS_FIELD_TOP;
+/// The face gradient's bottom stop over the field ground: [`theme::MENU_GLASS_FIELD_BOT`], `rgba(40,40,46,.86)`.
+pub const FACE_BOT: [f32; 4] = theme::MENU_GLASS_FIELD_BOT;
 
 /// What the glass wears over its backdrop at full strength: the gradient face, the 1 px perimeter
 /// and the lit top edge — the board's `inset 0 0 0 1px` and `inset 0 1px 0`, as the shader draws
@@ -55,7 +56,22 @@ pub const FACE: GlassFace = GlassFace {
     rim_w: theme::CARD_SHEEN_W,
 };
 
-/// The face at opacity `a`. Only the tint rides the painter's alpha cascade; a [`GlassFace`] does
+/// The same, over a real FROST (owner decision, 2026-11-17: "blur + thin face .36/.44"):
+/// [`theme::MENU_GLASS_TOP`] / [`theme::MENU_GLASS_BOT`].
+pub const FROST_FACE: GlassFace = GlassFace {
+    scrim_top: theme::MENU_GLASS_TOP,
+    scrim_bot: theme::MENU_GLASS_BOT,
+    rim: theme::GLASS_RIM,
+    rim_lit: theme::GLASS_RIM_LIGHT,
+    rim_w: theme::CARD_SHEEN_W,
+};
+
+/// [`FROST_FACE`] at opacity `a` (see [`face_at`]).
+pub(crate) fn frost_face_at(a: f32) -> GlassFace {
+    crate::widgets::chip_face(FROST_FACE, a.clamp(0.0, 1.0))
+}
+
+/// The face at opacity `a` over the FIELD ground. Only the tint rides the painter's alpha cascade; a [`GlassFace`] does
 /// not, so a panel that fades (appear, close, a route change's page dip) fades its face by hand
 /// the way the hold hint does — otherwise a ~.8-opaque gradient and a full rim stand over rows
 /// that are still near 0, which is the empty glass frame the morph forbids.
@@ -122,17 +138,26 @@ fn dims_under_surface() -> (usize, Option<Dim>) {
 /// `false` = nothing frozen to stand on, nothing drawn.
 #[must_use]
 pub fn draw(p: Painter, r: Rect, radius: f32, field: Option<&crate::underlay::UnderlayField>) -> bool {
-    draw_shadowed(p, r, radius, field, 1.0, plx_gfx::gfx::GlassMorph::NONE)
+    draw_shadowed(p, r, r, radius, field, 1.0, plx_gfx::gfx::GlassMorph::NONE)
 }
 
 /// [`draw`] with the drop shadow at `shadow` of the painter's opacity: a morph hands the glass and
 /// its shadow the same fill ramp (`Popover::ground`), a fallback open keeps its shadow whole.
 /// `morph` is the morph's join and clarity ([`plx_gfx::gfx::GlassMorph`], `NONE` at rest): a joined
 /// glass is drawn on the box around both shapes, and its shadow goes UNDER it (below).
+///
+/// **The body is a FROST where the host holds one** (`popover::host::frost`, a retained blur of the
+/// frozen page over `settled`'s region, built once per snapshot at a later frame's head): the face is
+/// then [`FROST_FACE`] and the body is capped at [`theme::FROST_BODY_CEILING`]. With none (a stacked
+/// menu, no page snapshot, a failed build) it is the field ground under [`FACE`], as it always was.
+/// While a frost is OWED the ground stage is held back (so a stale or missing frost is never baked
+/// into it) and a clear glass stays clear, so no frame shows the field body as frost.
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn draw_shadowed(
     p: Painter,
     r: Rect,
+    settled: Rect,
     radius: f32,
     field: Option<&crate::underlay::UnderlayField>,
     shadow: f32,
@@ -150,7 +175,23 @@ pub fn draw_shadowed(
         return false;
     }
     let sharp = crate::popover::host::page_tex().unwrap_or(0);
-    let face = face_at(p.opacity());
+    let (read, owed) = crate::popover::host::frost([settled.x, settled.y, settled.w, settled.h]);
+    if owed {
+        crate::popover::host::defer_ground(true);
+    }
+    let frost = read.map_or(plx_gfx::gfx::GlassFrost::NONE, |(tex, rect, rev)| plx_gfx::gfx::GlassFrost {
+        tex,
+        rect,
+        knee: theme::FROST_BODY_CEILING * theme::FROST_BODY_KNEE_AT,
+        ceiling: theme::FROST_BODY_CEILING,
+        rev,
+    });
+    let morph = if owed && frost.tex == 0 && morph.clear > 0.0 {
+        plx_gfx::gfx::GlassMorph { clear: 1.0, ..morph }
+    } else {
+        morph
+    };
+    let face = if frost.tex != 0 { frost_face_at(p.opacity()) } else { face_at(p.opacity()) };
     // A JOINED glass takes its shadow first: `shadow_outside` cuts only the PANEL's shape out of
     // the penumbra, so drawn after the glass it would darken the joined shape and the neck; drawn
     // before, the (opaque) glass covers it there.
@@ -158,7 +199,7 @@ pub fn draw_shadowed(
     if joined && shadow > 0.0 {
         p.alpha(shadow).shadow_outside(r, radius, theme::MENU_SHADOW_BLUR, theme::MENU_SHADOW_DY, theme::MENU_SHADOW);
     }
-    if !p.glass_frozen(r, radius, ground, sharp, dim, [1.0; 4], GlassRim::Menu, face, morph) {
+    if !p.glass_frosted(r, radius, ground, sharp, dim, [1.0; 4], GlassRim::Menu, face, morph, frost) {
         return false;
     }
     // After the glass, not before: `shadow_outside` cuts the panel's own rounded shape out of the
@@ -529,6 +570,39 @@ pub(crate) mod tests {
     }
 
     /// The compact-menu dim is the board's 30% scrim.
+    /// **The frost body's ceiling is the largest body the inks' floors allow.** Re-derived from the tokens:
+    /// over the face's thinnest stop (the top, .36) a grey body at the ceiling keeps primary and secondary
+    /// ink at 4.5:1 and tertiary at 3:1, and a body 2/255 brighter does not. The cap runs after the modal
+    /// dim, so a white and a black page are graded here with the dim out of the sum (it only adds margin).
+    #[test]
+    fn the_frost_body_ceiling_keeps_the_ink_floors_at_the_thinnest_face() {
+        use plx_gfx::gfx::{lin, GlassFrost};
+        let rel = |c: [f32; 3]| 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
+        let ratio = |a: [f32; 3], b: [f32; 3]| {
+            let (x, y) = (rel(a), rel(b));
+            (x.max(y) + 0.05) / (x.min(y) + 0.05)
+        };
+        let ink = |c: [f32; 4]| [c[0], c[1], c[2]];
+        let floors = [(theme::TEXT_PRIMARY, 4.5), (theme::TEXT_SECONDARY, 4.5), (theme::TEXT_TERTIARY, 3.0)];
+        let face = |stop: [f32; 4], body: [f32; 3]| [0, 1, 2].map(|i| body[i] * (1.0 - stop[3]) + stop[i] * stop[3]);
+        let holds = |stop: [f32; 4], g: f32| floors.iter().all(|(c, f)| ratio(ink(*c), face(stop, [g; 3])) >= *f);
+        let ceiling = theme::FROST_BODY_CEILING;
+        assert!(holds(theme::MENU_GLASS_TOP, ceiling), "the ceiling holds at the thinnest stop");
+        assert!(holds(theme::MENU_GLASS_BOT, ceiling), "and at the bottom stop");
+        assert!(!holds(theme::MENU_GLASS_TOP, ceiling + 2.0 / 255.0), "and it is the derived number, not a safe one");
+        let cap = GlassFrost {
+            tex: 1,
+            rect: [0.0, 0.0, 8.0, 8.0],
+            knee: ceiling * theme::FROST_BODY_KNEE_AT,
+            ceiling,
+            rev: 0,
+        };
+        for page in [1.0f32, 0.0] {
+            let body = cap.cap(page);
+            assert!(holds(theme::MENU_GLASS_TOP, body), "a {page} page's frost reads {body} and keeps the floors");
+        }
+    }
+
     #[test]
     fn the_menu_scrim_is_thirty_percent() {
         assert_eq!(theme::underlay::DIM_COMPACT, 0.30);

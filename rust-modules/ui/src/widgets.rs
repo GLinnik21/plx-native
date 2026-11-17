@@ -185,15 +185,17 @@ pub fn panel_ground(
     field: Option<&crate::underlay::UnderlayField>,
     ground: Ground,
 ) {
-    panel_ground_shadowed(p, r, radius, field, ground, 1.0, plx_gfx::gfx::GlassMorph::NONE);
+    panel_ground_shadowed(p, r, r, radius, field, ground, 1.0, plx_gfx::gfx::GlassMorph::NONE);
 }
 
 /// [`panel_ground`] with a menu glass's drop shadow at `shadow` of the painter's opacity
 /// ([`crate::popover_glass::draw_shadowed`]) and a morph's join and clarity (`morph`, which only the
 /// glass wears: the field ground casts no shadow and has neither, so it is unchanged).
+#[allow(clippy::too_many_arguments)]
 pub fn panel_ground_shadowed(
     p: Painter,
     r: Rect,
+    settled: Rect,
     radius: f32,
     field: Option<&crate::underlay::UnderlayField>,
     ground: Ground,
@@ -203,7 +205,7 @@ pub fn panel_ground_shadowed(
     // DS6: a menu is glass on the frozen ground (`popover_glass`); the field ground below is the
     // fallback when there is nothing frozen to stand on. A sheet never takes this branch.
     if ground == Ground::Menu
-        && crate::profile::phase("panel.glass", || crate::popover_glass::draw_shadowed(p, r, radius, field, shadow, morph))
+        && crate::profile::phase("panel.glass", || crate::popover_glass::draw_shadowed(p, r, settled, radius, field, shadow, morph))
     {
         return;
     }

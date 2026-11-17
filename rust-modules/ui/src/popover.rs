@@ -816,7 +816,7 @@ impl Popover {
         ground: crate::widgets::Ground,
     ) {
         if let Some(g) = self.ground(r, rad) {
-            crate::widgets::panel_ground_shadowed(p.alpha(g.alpha), g.rect, g.radius, field, ground, g.shadow, g.morph);
+            crate::widgets::panel_ground_shadowed(p.alpha(g.alpha), g.rect, r, g.radius, field, ground, g.shadow, g.morph);
         }
         self.ground_done();
     }
@@ -1060,7 +1060,12 @@ pub mod host {
             // would show the old captions through the exit fade) and this flip is the one retake.
             // A layer that came or went, another stack, or a snapshot a navigation transition owns is
             // not a dismissal: all of those drop everything.
-            if began_closing && !TRANSITION_OWNS.load(Relaxed) { ground_invalidate(); } else { invalidate(); }
+            if began_closing && !TRANSITION_OWNS.load(Relaxed) {
+                ground_invalidate();
+            } else {
+                invalidate();
+                cache(|c| c.release_frost());
+            }
             reset_reflow();
             TRANSITION_OWNS.store(false, Relaxed);
             CACHE_OWNER.set(Some(key));
@@ -1145,6 +1150,23 @@ pub mod host {
             return None;
         }
         cache(|c| c.tex())
+    }
+
+    /// **A glass menu's FROST**: a retained blur of this page snapshot over the region of `panel` (the
+    /// settled rect, authored px), as `(texture, region rect, epoch it was built from)`, and whether a
+    /// (re)build is OWED. The texture lives in [`CACHE`] (`FrameCache::frost_read`), is built ONCE
+    /// per snapshot at the head of a LATER frame ([`begin_frame`] -> `FrameCache::frost_build_owed`) and
+    /// is given back with the host. A stale one is served until its replacement lands (the
+    /// Watchlist reflow's retake), so the face never changes density between two looks.
+    pub fn frost(panel: [f32; 4]) -> (Option<(std::ffi::c_uint, [f32; 4], u32)>, bool) {
+        let page = held() == Held::Page;
+        let epoch = page_epoch();
+        cache(|c| {
+            if page {
+                c.frost_want(panel);
+            }
+            (c.frost_read(), page && c.frost_possible() && !c.frost_fresh(epoch))
+        })
     }
 
     /// Hold off the GROUND stage for this frame. Set by `containers::modal::ModalUnderlay` while its
@@ -1386,6 +1408,7 @@ pub mod host {
         GROUND_DEFERRED.store(false, Relaxed);
         if !modal.read.host_cached {
             reset_reflow();
+            cache(|c| c.release_frost());
             if !TRANSITION_OWNS.load(Relaxed) { invalidate(); }
             return;
         }
@@ -1414,6 +1437,12 @@ pub mod host {
         }
         if super::host_refresh(modal.read.closing_only, page_dirty, moving) {
             invalidate();
+        }
+        // The frost a standing glass menu is owed, once per snapshot: at the head of this frame, a
+        // later one than the capture, with the page held and not moving under the menu.
+        if held() == Held::Page && !reflow_draws() {
+            let epoch = page_epoch();
+            cache(|c| c.frost_build_owed(epoch));
         }
     }
 
