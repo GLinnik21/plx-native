@@ -37,6 +37,9 @@ side. Its Rust entry points are `plex_run`, `plx_crash_write_image_marker`,
   also writes the `*** EXIT` record of a library's `exit()` (`plx_exit_record`) and the freeze record.
 - **`src/exit.c`** — libc `exit` defined in the executable, so a library's `exit()` ends the process
   through `plx_exit_record` without running the exit handlers.
+- **`src/access.c`** — libc `access` defined in the executable, so the GPU driver's per-GL-call probes
+  of its four `/tmp` debug-switch paths are answered "absent" without a kernel path lookup; every other
+  path gets the kernel's own answer.
 - **`src/sentry_context.c`** — a narrow string-only wrapper around Sentry's opaque, by-value
   `sentry_value_t`; Rust calls it without having to reproduce that ARM32 ABI.
 - **`src/svg.c`** — the nanosvg rasterizer (header-only C, fetched at the pinned commit by `ci/deps.py`).
