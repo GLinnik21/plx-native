@@ -14,8 +14,8 @@
 //! differs from the last one. What a key press did is then the diff between the fingerprint before
 //! it and the fingerprint after.
 //!
-//! The fingerprint is the readback for travel: it says THAT focus moved, in indices, never WHICH
-//! element holds it. The structured readback by name is `state:<nonce>` (`app/a11y_state.rs`): the app
+//! The fingerprint is the readback for travel: it says THAT focus moved, by index and rating key,
+//! not by an element's name. The structured readback by id is `state:<nonce>` (`app/a11y_state.rs`): the app
 //! writes `plxnative-a11y.json` with the route, the input owner, the focused full id and every
 //! element's id, role, rect and subject, and a test reaches a target with `focus:<id>` /
 //! `press:<id>` (`tools/a11y.py`, `tools/tv-session.sh focus|press|state`) instead of walking keys.

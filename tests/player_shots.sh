@@ -75,7 +75,10 @@ shot() { printf 'shot ' >&3; sleep 2; mv "$D"/shot-*.png "$OUT/$1.png" 2>/dev/nu
 # player's ids are `player.control.<command>`, `player.tab.info|chapters` and `player.scrub`, and an id
 # names the disc or tab whatever the row holds. A refusal (`a11y: refused press ...` in the event log:
 # the HUD is not up, the id names nothing on this clip) presses nothing, so `press` says so and returns
-# 1: the shot that would follow is of a state the script did not reach.
+# 1: the shot that would follow is of a state the script did not reach. The HUD must be UP to be
+# pressed, and it lingers HUD_LINGER_MS (4.5 s, plx_appkit::player_hud::LINGER_MS) after the input
+# that raised it: the shot-then-press gap here (STEP + 2 s = 2.9 s) fits, so a slower STEP can make
+# the first press refuse.
 refusals() { local n; n=$(grep -c 'a11y: refused' "$LOG" 2>/dev/null || true); echo "${n:-0}"; }
 press() {
   local before after; before=$(refusals)
