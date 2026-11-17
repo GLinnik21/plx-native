@@ -2563,6 +2563,7 @@ mod stack {
             if self.named { TileLabel::title(&format!("Title {}", self.elems[i])) } else { TileLabel::default() }
         }
         fn more(&self) -> bool { self.more }
+        fn global(&self, i: usize) -> usize { self.first + i }
         fn loaded(&self, i: usize) -> bool { !self.unloaded.contains(&i) }
         fn subject(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
             self.named.then(|| format!("rk{}", self.elems[i]).into())

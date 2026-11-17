@@ -50,7 +50,7 @@ pub trait RowKeys {
     /// [`FormTable::note_engine_key`]).
     fn reseat(&self) -> Option<RowKey>;
     /// The accessibility name of the row at `index` ([`FormId::a11y`]), when its id declares one:
-    /// what `TablePart` projects as the row's id instead of `row.<index>`. A map with no names (the
+    /// what `TablePart` projects as the row's id instead of `row.<n>`. A map with no names (the
     /// default) leaves every row to its position.
     fn a11y_name(&self, _index: usize) -> Option<&'static str> {
         None
@@ -62,7 +62,7 @@ pub trait FormId {
     fn key(&self) -> RowKey;
     /// **The row's accessibility name** (`a11y`): one lowercase word (`[a-z][a-z0-9_]*`, unique in
     /// its form) a UI test reaches the row by (`playback.audio_boost`). `None`, the default, leaves
-    /// the row to its layout position (`row.<index>`): right for a position-keyed list, wrong for a
+    /// the row to its ordinal among the element rows (`row.<n>`): right for a position-keyed list, wrong for a
     /// page whose rows move, which should name them.
     fn a11y(&self) -> Option<&'static str> {
         None
@@ -139,7 +139,7 @@ impl<Id, A, Dest> FormSection<Id, A, Dest> {
         self
     }
     /// A focusable row with an explicit key (dynamic rows: per-page base + position). It has no
-    /// accessibility name, so it is `row.<index>`.
+    /// accessibility name, so it is `row.<n>`.
     pub fn item_keyed(self, id: Id, key: RowKey, kind: RowKind<Dest>, action: A, row: Row) -> Self {
         self.push_item(id, key, kind, action, row, None)
     }

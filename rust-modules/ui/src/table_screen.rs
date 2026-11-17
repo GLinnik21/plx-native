@@ -29,7 +29,7 @@
 //! **Focus elements are row indices, except for a form-backed table.** `TablePart::keys` (a
 //! `ui::form::RowKeys`, i.e. a `FormTable`) makes the element a row's `RowKey`, and all five hooks
 //! plus the pointer stops translate key <-> index; without it the element is the index. The
-//! accessibility ids (`a11y`) follow the same map: a row is `row.<index>`, or the name its
+//! accessibility ids (`a11y`) follow the same map: a row is `row.<n>` (its ordinal among the element rows, `geom::table_a11y`), or the name its
 //! [`FormId::a11y`](super::form::FormId::a11y) declares, and a separator or note (no key) is no
 //! element (the group's `len` still counts it: it is the layout's row count, which seating reads,
 //! so the ids' conformance rule is "at most `len`"). The band is `band.<i>`.

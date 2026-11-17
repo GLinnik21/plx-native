@@ -78,7 +78,7 @@
 //! the picture already satisfies does nothing at all. That is a user-initiated switch and not an
 //! adaptive one — nothing measures a link or moves a rung on its own.
 #![allow(non_upper_case_globals)]
-use plx_ui::a11y::{A11y, A11yPath, Role};
+use plx_ui::a11y::{A11y, A11yPath};
 use plx_ui::frame::Budget;
 use plx_ui::geom::IndexElem;
 use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId, Host, Measure};
@@ -1734,6 +1734,7 @@ mod tests {
 #[cfg(test)]
 mod focus_tests {
     use super::*;
+    use plx_ui::a11y::Role;
     use plx_machine::machine::{FocusRead, InputOwner, PressRead, Tick};
 
     struct HostFixture;
