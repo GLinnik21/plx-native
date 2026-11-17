@@ -809,7 +809,7 @@ impl Popover {
         if self.style == OpenStyle::Morph {
             // The morph owns the panel's arrival, part by part: the ground (`panel`) and the rows
             // (`morph_rows`) each take their own alpha from the one morph clock (the header menus'
-            // openers are the host's lift, not part of the morph). Nothing slides; `rise` is the appear style's. The CONTAINER's
+            // openers are the host's lift, which the morph CONSUMES: painted at `opener_alpha`). Nothing slides; `rise` is the appear style's. The CONTAINER's
             // appear is not on this painter either: the surface begins and ends as the opener,
             // which is not faded in or out.
             return base;
@@ -967,7 +967,9 @@ impl Popover {
     /// What [`panel`](Self::panel) draws as the ground this frame, or `None` for nothing yet.
     /// Appear style, and a settled morph: the caller's `r`/`rad`, at full strength. A morph with
     /// an opener: the morphing rect and radius, the glass AND its shadow on the fill's
-    /// share (one ramp, over the lit opener the host keeps). The fallback: the glass fades in on the fill's share, its shadow whole.
+    /// share (one ramp, under the opener the host lifts, which fades as the glass detaches), joined to
+    /// the opener's shrinking shape and clear while the morph says so ([`MorphGround::morph`]). The
+    /// fallback: the glass fades in on the fill's share, its shadow whole.
     pub(crate) fn ground(&self, r: Rect, rad: f32) -> Option<MorphGround> {
         if self.style != OpenStyle::Morph || self.morph.settled() {
             return Some(MorphGround { rect: r, radius: rad, alpha: 1.0, shadow: 1.0, morph: plx_gfx::gfx::GlassMorph::NONE });
@@ -978,7 +980,8 @@ impl Popover {
         }
         // ONE ramp for the glass and its shadow, the fill's share of the morph's progress: a rect
         // that has left the opener is never at full strength, so the first and last glass frame
-        // are a soft edge under the lit opener rather than an opaque slab hanging below it.
+        // are a soft edge under the opener (still lit there: it fades over the first 15% of the
+        // progress, the glass over the first 18%) rather than an opaque slab hanging below it.
         let (alpha, shadow) = if self.from.is_some() { (f.ground_alpha, f.ground_alpha) } else { (f.ground_alpha, 1.0) };
         let merge = f.merge.map(|m| plx_gfx::gfx::GlassMerge { rect: m.rect, radius: m.radius, k: m.k });
         Some(MorphGround { rect: f.rect, radius: f.radius, alpha, shadow, morph: plx_gfx::gfx::GlassMorph { merge, clear: f.clear } })
