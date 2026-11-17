@@ -1086,6 +1086,30 @@ unsafe fn ingress_token(app: &mut App, fr: &mut Frame, token: &str) -> bool {
             return true;
         }
     }
+    // `focus:<id>` / `press:<id>[@<subject>]`: an ordered input like a key, resolved by the
+    // dispatcher at its delivery position (so it is recorded once, by the tap, and never as a token).
+    // Earlier keys are still in SDL and must act first, as with the `txt:` block above.
+    #[cfg(feature = "devtriggers")]
+    if let Some(parsed) = super::events::by_id_token(token) {
+        drain_sdl(app, fr);
+        return match parsed {
+            Ok(kind) => {
+                let at = plx_machine::machine::Tick { ms: clock::now(), dt_us: 0 };
+                app.inputs.push(plx_machine::machine::InputEvent {
+                    at,
+                    source: plx_machine::machine::Source::RemoteFifo,
+                    kind,
+                });
+                app.last_input = at.ms;
+                app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle);
+                true
+            }
+            Err(why) => {
+                plx_base::eventlog::log(&format!("remote: {why}"));
+                false
+            }
+        };
+    }
     // `state:<nonce>`: the accessibility read-back request (`app/a11y_state.rs`). Parsed before
     // `dispatch_remote_token`, which notes input damage for every token it sees, so a read-back
     // wakes nothing; it is no key or click, so it is not recorded either. It only leaves the latest

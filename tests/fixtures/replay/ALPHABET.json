@@ -1,6 +1,7 @@
 {
   "_comment": "The CLOSED ALPHABET every string value in a committed replay fixture must belong to (restructure spec §5.6 rule 2). Match literals exactly or patterns with fullmatch. Synthetic construction against tests/mock_pms.py remains required: membership is a vocabulary check, not proof of data provenance, and cannot distinguish private values coincidentally equal to allowed words/numbers. CLI, outbound guard and host tests share this policy. Add new protocol constants by source-backed name, never by harvesting an unchecked recording.",
   "_sources": {
+    "accessibility_ids": "ui/src/a11y.rs grammar (an id is <ns>.<path>: ns [a-z][a-z0-9_-]*, then one or more segments, each [a-z][a-z0-9_]* or a canonical decimal index); app/bootstrap/effects.rs encodes InputKind::ById as {\"by_id\":{\"id\",\"press\",\"expect\"}} and By::Script as the FocusMoved word \"script\"; app/recorder.rs ResolutionWire::Id rows are kind \"Id\".",
     "hero_proposal": "screens/src/home/mod.rs and detail/hero.rs format Movie/TV Show identity with locales/en/browse.json browse.kind.movie and browse.kind.tv_show; appkit/src/hero_layout.rs formats, remaining minutes through browse.detail.minutes_left, and episode dates through ui/src/fmt.rs hero_date and LocaleContext::date_medium (controlled en-US, tests/mock_pms.py synthetic dates).",
     "playback_diagnostics": "locales/en/settings.json settings.trace.* labels and uppercase section; app/bootstrap/effects.rs deterministic playback_trace status/off codec.",
     "quiet_refetch": "app/bootstrap/effects.rs encodes HubsCmd::RefetchSourceQuiet as {\"hubs\":{\"refetch_source_quiet\":<server>}}: the quiet Home refetch of app/reread.rs.",
@@ -68,7 +69,8 @@
     "pat:(checker|lines|hbars|hue|rainbow)(:[0-9]+(\\.[0-9]+)?)?",
     "pat:solid:[0-9]+(\\.[0-9]+)?(:[0-9]+(\\.[0-9]+)?)?",
     "txt:s[0-9a-f]{8}(\\+s[0-9a-f]{8})*",
-    "press phase=(idle|down|up) live=[01] active=[01] long=[01]"
+    "press phase=(idle|down|up) live=[01] active=[01] long=[01]",
+    "[a-z][a-z0-9_-]*(\\.([a-z][a-z0-9_]*|0|[1-9][0-9]*))+"
   ],
   "literals": [
     "32m",
@@ -146,7 +148,7 @@
     "ActivateDevBootstrap", "AlreadyInstalled", "Request", "discovery", "reset", "refetch", "refetch_source_quiet", "retry",
     "Routine", "Background", "RegistryOnly",
     "owned", "Sdl", "RemoteFifo", "Script", "Replay", "Up", "Down", "Left", "Right", "Ok", "Back", "Repeat", "activate",
-    "input", "focus_moved", "store_changed", "restored", "for_good", "deeper", "dir", "restore", "reconcile",
+    "input", "focus_moved", "store_changed", "restored", "for_good", "deeper", "dir", "restore", "reconcile", "script", "by_id",
     "fold", "hero", "movies", "shows", "movie", "show",
     "PG-13",
     "TV-14",
@@ -168,7 +170,7 @@
     "land",
     "life",
     "timer",
-    "metrics", "fo", "rs", "Focus", "Hit", "Width", "Cap", "Line",
+    "metrics", "fo", "rs", "Focus", "Hit", "Id", "Width", "Cap", "Line",
     "st",
     "stopped",
     "cap",
