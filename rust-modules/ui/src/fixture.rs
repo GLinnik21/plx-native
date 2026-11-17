@@ -1676,8 +1676,8 @@ fn record() -> Recording {
 }
 
 /// The scenario with accessibility-id inputs: boot, a `focus:` of the Home row's third element, then
-/// a `press:` of its second in one batch with a `focus:` of an id that names nothing (a refusal is
-/// part of the stream too), and a `press:` that opens a page.
+/// in one batch a `focus:` of its first and a `press:` of an id that names nothing (a refusal is part
+/// of the stream too), then a `press:` of its second, which opens a page, and BACK.
 fn drive_by_id(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, tap: &mut dyn Tap<FixtureHost>) {
     use plx_machine::machine::{OkTap, Source};
     let by_id = |id: &str, press: bool, at: Tick| InputEvent {
@@ -1691,6 +1691,10 @@ fn drive_by_id(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, tap: &mut 
     };
     d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
     frame_and_swap(d, rig, tick(0), vec![], vec![], tap);
+    // the same two requests `drive` and `replay_mode` register on Home after the first frame
+    let home = d.nav.top_page().and_then(|e| e.inst.as_ref()).unwrap().id;
+    d.track_inflight(home, RequestId(1));
+    d.track_inflight(home, RequestId(0));
     frame_and_swap(d, rig, tick(16), vec![by_id("home.row.2", false, tick(16))], vec![], tap);
     frame_and_swap(d, rig, tick(32),
         vec![by_id("home.row.0", false, tick(32)), by_id("home.row.9", true, tick(32))], vec![], tap);
