@@ -394,7 +394,7 @@
   "settings.playback.marker.manual": "Ručno",
   "settings.playback.marker.automatic": "Automatski",
   "settings.playback.intro_skip.copy": "„Isključeno” skriva gumb za preskakanje. „Ručno” prikazuje gumb „Preskoči uvod”. „Automatski” preskače nakon pet sekundi, osim ako odaberete „Gledaj uvod”. Sprema se za ovaj profil.",
-  "settings.playback.credits_skip.copy": "„Isključeno” skriva gumb „Preskoči odjavnu špicu”. „Ručno” zadržava postojeće kontrole odjavne špice. „Automatski” preskače nakon pet sekundi, osim ako odaberete „Gledaj odjavnu špicu”. Postavke sljedeće epizode i dalje određuju što će se reproducirati; njihovo odbrojavanje do sljedeće epizode je neovisno.",
+  "settings.playback.credits_skip.copy": "„Isključeno” skriva „Preskoči odjavnu špicu”. „Ručno” zadržava kontrole. „Automatski” preskače nakon pet sekundi, osim ako odaberete „Gledaj odjavnu špicu”. Sljedeća epizoda i odbrojavanje podešavaju se zasebno.",
   "settings.support.section": "Podrška",
   "settings.diagnostics.detail": "Zabilježite dijagnostiku reprodukcije i spremite zapisnik za podršku.",
   "settings.libraries.more": "Biblioteke koje izostavite ostaju na vašem Plex poslužitelju i drugim uređajima.",
