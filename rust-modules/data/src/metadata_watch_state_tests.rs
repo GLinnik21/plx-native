@@ -403,6 +403,40 @@ fn versions_are_listed_only_when_there_is_a_choice() {
     assert!(crate::pms::versions_of(&one).is_empty());
 }
 
+#[test]
+fn each_version_carries_the_dolby_vision_of_its_own_video_stream() {
+    let it: plx_plex::plex::Metadata = serde_json::from_value(serde_json::json!({ "Media": [
+        { "id": 1, "Part": [{ "key": "/p/1", "Stream": [
+            { "id": 1, "streamType": 1, "DOVIPresent": true, "DOVIProfile": 5, "DOVIBLCompatID": 0 },
+            { "id": 2, "streamType": 1 }] }] },
+        { "id": 2, "Part": [{ "key": "/p/2", "Stream": [{ "id": 3, "streamType": 1, "colorTrc": "smpte2084" }] }] }
+    ] })).unwrap();
+    let v = crate::pms::versions_of(&it);
+    assert_eq!(
+        (v[0].dovi.present, v[0].dovi.profile, v[0].dovi.bl_compat),
+        (true, 5, 0),
+        "a later video stream without DOVI fields keeps the record",
+    );
+    assert_eq!(v[1].dovi, crate::metadata::Dovi::NONE);
+    assert!(serde_json::to_value(&v[1]).unwrap().get("dovi").is_none(), "a version without Dolby Vision records nothing new");
+}
+
+#[test]
+fn each_version_and_the_playing_item_carry_their_own_video_bitrate() {
+    let it: plx_plex::plex::Metadata = serde_json::from_value(serde_json::json!({ "Media": [
+        { "id": 1, "bitrate": 20000, "Part": [{ "key": "/p/1", "Stream": [
+            { "id": 1, "streamType": 1, "bitrate": 19000 }, { "id": 2, "streamType": 2, "bitrate": 640 }] }] },
+        { "id": 2, "bitrate": 8540, "Part": [{ "key": "/p/2", "Stream": [
+            { "id": 3, "streamType": 2, "bitrate": 640 }, { "id": 4, "streamType": 1, "bitrate": 7900 }] }] }
+    ] })).unwrap();
+    let v = crate::pms::versions_of(&it);
+    assert_eq!(v.iter().map(|v| (v.kbps, v.video_kbps)).collect::<Vec<_>>(), [(20000, 19000), (8540, 7900)]);
+    let (item, _) = playing_version_from(SRV_A, "42", Some(&it), Some(plx_plex::plex::MediaId(2)));
+    assert_eq!((item.bitrate, item.video_kbps), (8540, 7900));
+    let unmeasured = crate::pms::MediaVersion { video_kbps: 0, ..v[1].clone() };
+    assert!(serde_json::to_value(&unmeasured).unwrap().get("video_kbps").is_none(), "an unmeasured video records nothing new");
+}
+
 /// `PlayingItem.hdr` is the played leaf's video HDR flag (PQ or HLG transfer), the fact the
 /// player's HDR overlay dim reads; an SDR leaf and an absent item are not HDR.
 #[test]

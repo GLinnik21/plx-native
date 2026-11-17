@@ -44,15 +44,15 @@ impl PlexVisualInputs {
     }
 }
 
-impl super::Bridge {
+impl super::Bridge<'_> {
     /// Called after result/input landings and before shot preparation/admission. These facts can
     /// change the host underneath a surface, so their observation always belongs to Page scope.
     pub(crate) fn observe_plex_visual_inputs(&mut self, present: &mut Present) {
-        if self.home_io.is_some() { return; } // controlled inputs must not poll ambient Plex state
+        if self.retained.home_io.is_some() { return; } // controlled inputs must not poll ambient Plex state
         let next = PlexVisualInputs::capture();
-        if self.plex_visual_inputs.as_ref() != Some(&next) {
+        if self.retained.plex_visual_inputs.as_ref() != Some(&next) {
             present.note_in_scope(Scope::Page, PresentEvent::Damage(Provenance::Lifecycle));
-            self.plex_visual_inputs = Some(next);
+            self.retained.plex_visual_inputs = Some(next);
         }
     }
 }
@@ -65,7 +65,9 @@ mod tests {
     fn addressed_probe_arrivals_damage_only_the_observing_owned_gate() {
         let _g = plx_base::testlock::serial();
         plex::reset_servers_for_test();
-        let mut bridge = super::super::Bridge::for_visual_inputs_test();
+        let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = owner.bridge();
+        bridge.observe_live_visual_inputs_for_test();
         let mut gate = Present::new();
         bridge.observe_plex_visual_inputs(&mut gate);
         gate.take(0);

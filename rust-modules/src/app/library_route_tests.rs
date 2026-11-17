@@ -194,13 +194,13 @@ fn run(rows: Vec<Row>) {
 
 /// The Collections page's own listing answered: `n` collections.
 fn collections_answered(w: &mut World) {
-    w.bridge.stores.browse.borrow_mut().seed_collections_for_test(12);
+    w.bridge.bridge().stores.browse.borrow_mut().seed_collections_for_test(12);
     w.frames(40);
 }
 
 /// The Collections page's listing answered, with the first-letter counts the rail is made of.
 fn collections_lettered(w: &mut World) {
-    w.bridge.stores.browse.borrow_mut().seed_letter_counts_for_test(&[("A", 6), ("M", 6)]);
+    w.bridge.bridge().stores.browse.borrow_mut().seed_letter_counts_for_test(&[("A", 6), ("M", 6)]);
     collections_answered(w);
 }
 
@@ -208,13 +208,13 @@ fn collections_lettered(w: &mut World) {
 fn members_answered(w: &mut World) {
     let sid = w.own;
     let items: Vec<_> = (0..9).map(|i| plx_data::pms::PmsMovie { sid, rk: format!("m{i}"), title: format!("Movie {i}"), ..Default::default() }).collect();
-    w.bridge.stores.collection.install_for_test(items, plx_data::collection::CollectionStatus::Ready);
+    w.bridge.bridge().stores.collection.install_for_test(items, plx_data::collection::CollectionStatus::Ready);
     w.frames(40);
 }
 
 /// The server's answer to a filter: `n` of the library's films remain.
 fn films_answered<const N: usize>(w: &mut World) {
-    w.bridge.stores.browse.borrow_mut().seed_items_for_test(N);
+    w.bridge.bridge().stores.browse.borrow_mut().seed_items_for_test(N);
     w.frames(30);
 }
 
@@ -331,12 +331,12 @@ fn the_crumb_root_pops_to_the_library_and_up_from_it_is_the_movies_pill() {
 /// Eleven Movie libraries: the header names the first two and folds the rest behind "+N".
 fn many_libraries(w: &mut World) {
     {
-        let mut browse = w.bridge.stores.browse.borrow_mut();
+        let mut browse = w.bridge.stores().browse.borrow_mut();
         for k in 0..9 {
             browse.append_section_for_test(k % 2, 10 + k as i64, &format!("Extra library number {k} of the household"), SecKind::Movie);
         }
     }
-    w.bridge.refresh_browse_directory();
+    w.bridge.bridge().refresh_browse_directory();
     w.open_library();
     w.climb_into_header();
     let (names, folded) = w.library().probe_names();
@@ -352,7 +352,7 @@ fn the_pick_kept_the_favorite_shortcuts(w: &mut World) -> Vec<String> {
     if visible != [0, 4, 2] || folded != [6, 8, 10, 12] {
         fails.push(format!("temporary selection moved the favorite prefix: {visible:?}, folded {folded:?}"));
     }
-    if w.bridge.stores.browse.borrow().current_for_test() != 2 { fails.push("the selected non-favorite is not on view".into()); }
+    if w.bridge.bridge().stores.browse.borrow().current_for_test() != 2 { fails.push("the selected non-favorite is not on view".into()); }
     if here(w) != "header:name2" { fails.push(format!("focus missed the selected pill: {}", here(w))); }
     if w.d.surface_up() { fails.push("the menu is still up".into()); }
     fails
@@ -363,7 +363,7 @@ fn nothing_was_picked(w: &mut World) -> Vec<String> {
     let visible: Vec<usize> = names.iter().map(|(_, section)| *section).collect();
     let mut fails = Vec::new();
     if visible != [0, 4] || folded != [6, 8, 10, 12] { fails.push(format!("the fold changed: names {visible:?}, list {folded:?}")); }
-    let current = w.bridge.stores.browse.borrow().current_for_test();
+    let current = w.bridge.bridge().stores.browse.borrow().current_for_test();
     if current != 0 { fails.push(format!("the store left library 0 for {current}")); }
     fails
 }
@@ -580,7 +580,7 @@ fn with_genres(w: &mut World) {
     w.climb_into_header();
     header_stop(w, "collections");
     let genre = |id: &str, title: &str| GenreEntry { id: id.into(), title: title.into() };
-    w.bridge.stores.browse.borrow_mut().seed_query_choices_for_test(Vec::new(), vec![genre("g1", "Drama"), genre("g2", "Comedy")]);
+    w.bridge.bridge().stores.browse.borrow_mut().seed_query_choices_for_test(Vec::new(), vec![genre("g1", "Drama"), genre("g2", "Comedy")]);
     w.frames(30);
 }
 
@@ -637,7 +637,7 @@ fn a_filter_shows_n_of_m_beside_the_control_and_clears_when_reset() {
 
 /// 120 films in four letters of thirty: A, C, M and Z. The other twenty-two letters have no title.
 fn lettered(w: &mut World) {
-    w.bridge.stores.browse.borrow_mut().seed_letter_counts_for_test(&[("A", 30), ("C", 30), ("M", 30), ("Z", 30)]);
+    w.bridge.bridge().stores.browse.borrow_mut().seed_letter_counts_for_test(&[("A", 30), ("C", 30), ("M", 30), ("Z", 30)]);
     w.open_library();
     w.climb_into_header();
     header_stop(w, "collections");
@@ -837,13 +837,13 @@ fn the_recommended_pages_first_hubs_land_while_the_press_that_opened_it_still_sp
         assert!(frames < 90, "premise: OK on the Recommended control opened the page, the top page is {}", top(&w));
     }
     assert!(w.d.input.press.is_live(), "premise: the press that opened the page is still springing back");
-    assert_ne!(w.bridge.section_hubs.view().publication(), plx_data::stores::browse::Publication::Committed,
+    assert_ne!(w.bridge.retained().section_hubs.view().publication(), plx_data::stores::browse::Publication::Committed,
         "premise: nothing is committed for the page yet");
     // The worker's answer arrives, staged behind the gate.
-    w.bridge.stores.browse.borrow_mut().stage_shelves_for_test(0);
+    w.bridge.bridge().stores.browse.borrow_mut().stage_shelves_for_test(0);
     w.frames(2);
     assert!(w.d.input.press.is_live(), "premise: the press has not rested yet");
-    assert_eq!(w.bridge.section_hubs.view().publication(), plx_data::stores::browse::Publication::Committed,
+    assert_eq!(w.bridge.retained().section_hubs.view().publication(), plx_data::stores::browse::Publication::Committed,
         "the first hubs are committed while the press springs, so the page leaves its spinner");
 }
 
@@ -855,17 +855,17 @@ fn the_recommended_pages_first_hubs_land_while_the_press_that_opened_it_still_sp
 #[test]
 fn the_recommended_page_prints_the_librarys_fingerprint_on_a_shelf_card() {
     let mut w = World::recommended("rec-fingerprint");
-    let probe = |w: &World| content_probe(&w.d, &w.bridge);
-    let on_a_card = probe(&w);
+    let probe = |w: &mut World| content_probe(&w.d, &w.bridge.bridge());
+    let on_a_card = probe(&mut w);
     assert!(on_a_card.contains(" region=shelf row=0 col=0 "), "the page seats its first shelf card: {on_a_card}");
     assert!(on_a_card.contains(" card=1 menu=0 "), "a published card is focused: {on_a_card}");
     assert!(on_a_card.contains(" sid=") && !on_a_card.contains(" rk=-"), "it names the card's server and ratingKey: {on_a_card}");
     w.press(Key::Down);
-    let lower = probe(&w);
+    let lower = probe(&mut w);
     assert!(lower.contains(" region=shelf row=1 col="), "Down moves the fingerprint to the next shelf: {lower}");
     w.press(Key::Up);
     w.press(Key::Up);
-    let crumb = probe(&w);
+    let crumb = probe(&mut w);
     assert!(crumb.contains(" region=crumb row=-1 col=-1 ") && crumb.contains(" card=0 "),
         "the crumb row is a region of its own: {crumb}");
 }
@@ -881,22 +881,22 @@ fn a_non_favorite_visit_survives_child_returns_and_ends_when_leaving_library() {
         assert!(here(&w).starts_with("menu:section:1:1"));
         w.press(Key::Ok);
         w.frames(90);
-        assert_eq!(w.bridge.stores.browse.borrow().current_for_test(), 2);
+        assert_eq!(w.bridge.stores().browse.borrow().current_for_test(), 2);
         super::open_settings_at(&mut w.d, plx_screens::family::SettingsPage::LibraryFavourites);
         w.frames(60);
         w.press(Key::Back);
         w.frames(90);
-        assert_eq!(w.bridge.stores.browse.borrow().current_for_test(), 2, "Back from Settings preserves the visit");
+        assert_eq!(w.bridge.stores().browse.borrow().current_for_test(), 2, "Back from Settings preserves the visit");
         header_stop(&mut w, "collections");
         w.press(Key::Ok);
         w.frames(40);
         w.press(Key::Back);
         w.frames(90);
-        assert_eq!(w.bridge.stores.browse.borrow().current_for_test(), 2, "Back from a child preserves the visit");
-        super::nav_tab(&mut w.d, &mut w.bridge, destination, None, None);
+        assert_eq!(w.bridge.stores().browse.borrow().current_for_test(), 2, "Back from a child preserves the visit");
+        super::nav_tab(&mut w.d, &mut w.bridge.bridge(), destination, None, None);
         w.frames(90);
-        super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Movies, None, None);
+        super::nav_tab(&mut w.d, &mut w.bridge.bridge(), HomeTab::Movies, None, None);
         w.frames(90);
-        assert_eq!(w.bridge.stores.browse.borrow().current_for_test(), 0, "a new visit restores the favorite");
+        assert_eq!(w.bridge.stores().browse.borrow().current_for_test(), 0, "a new visit restores the favorite");
     }
 }

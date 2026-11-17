@@ -416,6 +416,12 @@ python3 ci/test_readonly_generated.py
 # (one darwin-only test drives the real one); touches no real cache, config or volume.
 python3 ci/test_cold_store.py
 python3 ci/test_verdict_data_captured_inputs_source_oracle.py
+# Current owned hold-hint codec source controls; runtime oracles also execute in the Rust suite.
+python3 tests/test_owned_hold_hint_codec.py
+# Actual App owner declarations and fixture-constructor retirement; negative source controls.
+python3 ci/test_runtime_ownership_contract.py
+# Rust lifetime probes compile extracted production declarations (no cargo or shared artifacts).
+python3 ci/test_runtime_ownership_borrows.py
 # The disk-low hook (.claude/hooks/disk-low-notify.py, PostToolUse + PostToolUseFailure on Bash): its thresholds equal tools/disk-budget.py's
 # constants, the level / throttle / reclaim-dedupe logic on a fake free-space reading and a recording launcher, the text (facts, one line of
 # systemMessage, under the 10,000 character cap), the settings.json registrations, and a real process with a stub standing in for

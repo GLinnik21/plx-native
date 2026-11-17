@@ -438,7 +438,7 @@ pub(crate) fn focused_index<H: Host, S: CardSource<H>>(
 /// **Is card `i` the element a surface lifts out of the dim this frame?** Then the page pass leaves
 /// it out (`DrawFrame::lifted`): the opener lift draws the one live copy above the host snapshot,
 /// so the snapshot never holds the card and the press spring moving it is not page damage
-/// ([`crate::popover::set_lift_owns`]). Said by both card sections' `draw_card`; the lift's own frame
+/// (an Input-owned lift receipt). Said by both card sections' `draw_card`; the lift's own frame
 /// carries no `lifted`, so it draws.
 pub(crate) fn lifted_out<H: Host, S: CardSource<H>>(
     f: &DrawFrame<'_, '_, H>,

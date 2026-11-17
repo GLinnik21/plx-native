@@ -349,11 +349,21 @@ mod tests {
     #[test]
     fn the_loop_collects_current_frame_changes_before_testing_the_settled_shot() {
         let source = include_str!("app/run.rs").replace("\r\n", "\n");
-        let window = source.split("fn prepare_window(").nth(1).expect("prepare window exists");
+        let window = source.split("fn publish_resources(").nth(1).expect("publication port exists")
+            .split("fn admit_frame(").next().unwrap();
         let collect = window.find("plx_machine::motion::report::collect_into(").expect("current frame capture");
         let shot = window.find("crate::shot::tick(").expect("settled screenshot decision");
-        let admission = window.find("app.pages.present.take(").expect("present admission");
-        assert!(collect < shot && shot < admission, "capture must use fresh change state and schedule before admission");
+        assert!(collect < shot, "settled capture uses this frame's collected changes");
+        let dispatch = include_str!("../ui/src/dispatch.rs");
+        let owner = dispatch.split("pub fn product_frame(").nth(1).expect("product protocol exists")
+            .split("pub fn begin_product_turn(").next().unwrap();
+        let ordered = |text: &str| match (text.find("runtime.publish();"), text.find("owner.present.take(now)")) {
+            (Some(publish), Some(admit)) => publish < admit,
+            _ => false,
+        };
+        assert!(ordered(owner), "publication and screenshot wake precede owner admission");
+        assert!(!ordered(&owner.replace("runtime.publish();", "")), "missing publication must fail");
+        assert!(!ordered("owner.present.take(now); runtime.publish();"), "stale admission must fail");
     }
 
     #[test]

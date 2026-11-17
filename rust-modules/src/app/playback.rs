@@ -27,7 +27,7 @@ mod queue_transport;
 // `screens::player` alone now, so re-exporting them here would be this module claiming a
 // vocabulary it no longer uses.
 pub(crate) use plx_screens::player::input::{
-    HudNav, HudState, Scrub, HUD_HEADLESS_MS, HUD_LINGER_MS,
+    HudNav, HudState, HUD_HEADLESS_MS, HUD_LINGER_MS,
 };
 // The modal repeat cadence is `screens::registry`'s (phase 10 merge): the item context menu is a
 // surface of its own family and needs the same gate, so it is shared vocabulary rather than the
@@ -476,19 +476,8 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
     bridge.seed_player_hud(hud_ms);
     // An open section goes with the old film; the engine is on one of its stops, so it is told where the reset put
     // the cursor (`reseat_player_focus`, the write-then-reseat rule every app-side `hud.nav` write follows).
-    let mut sections_were_open = false;
-    if let Some(player) = super::bridge::player_mut(pages) {
-        sections_were_open = player.hud.sections.any();
-        player.hud = HudState::IDLE;
-        player.scrub = Scrub::IDLE;
-        player.up_next.reset();
-        player.row.drop_strip();
-        player.hud.extend(clock::now(), hud_ms);
-        player.publish();
-    }
-    if sections_were_open {
-        super::bridge::reseat_player_focus(pages);
-    }
+    super::bridge::send_player_message(pages,
+        plx_screens::registry::AppMsg::PlayerStart { now: clock::now(), hud_ms });
     #[cfg(feature = "play-feed")]
     plx_media::player::commit_paused(ps, pa, false);
     entering
@@ -756,12 +745,10 @@ pub(crate) fn execute_player_command(request: plx_screens::registry::PlayerReq,
         resources.ptr.sync_back_cursor(target, outcome.back_cursor);
     }
     if outcome.slot_refresh {
-        if let Some(screen) = super::bridge::player_mut(pages) {
-            screen.slot = plx_appkit::player_hud::slot_with_preferences(&resources.player.session,
-                bridge.metadata_view(), bridge.marker_preferences());
-            screen.hud.nav.btn = screen.row_primary();
-        }
-        super::bridge::reseat_player_focus_on_primary(pages);
+        let slot = plx_appkit::player_hud::slot_with_preferences(&resources.player.session,
+            bridge.metadata_view(), bridge.marker_preferences());
+        super::bridge::send_player_message(pages,
+            plx_screens::registry::AppMsg::PlayerSlot { slot, primary: true });
     }
     AppCommandOutcome::Completed
 }
@@ -858,10 +845,8 @@ pub(crate) fn player_requests(
                 }
             }
             PlayerReq::ExtendHud(ms) => {
-                if let Some(player) = super::bridge::player_mut(pages) {
-                    player.hud.extend(now, ms);
-                    player.publish();
-                }
+                super::bridge::send_player_message(pages,
+                    plx_screens::registry::AppMsg::PlayerExtendHud { now, duration_ms: ms });
             }
             // The fall-through a surface cannot perform (`screens::player::overlay`'s module doc):
             // the same toggle the bare transport reaches, with the panel left untouched.
@@ -1094,9 +1079,10 @@ pub(crate) fn return_hold_inputs(app: &mut super::App, now: u32) {
 /// its own, that was the bound.
 pub(crate) fn return_hold_settle(app: &mut super::App, now: u32) {
     if app.pages.nav.tabs.stack.transition.floor_held() {
+        let bridge = app.runtime.bridge(&mut app.bridge);
         let read_in = match app.return_hold.played {
-            Some(sid) if sid != plx_plex::plex::ServerId::UNSET => app.bridge.hub_source_settled(sid),
-            _ => !app.bridge.hubs_owed(),
+            Some(sid) if sid != plx_plex::plex::ServerId::UNSET => bridge.hub_source_settled(sid),
+            _ => !bridge.hubs_owed(),
         };
         if !app.refresh_hubs && read_in {
             app.pages.nav.tabs.stack.transition.release_floor();
@@ -1177,9 +1163,8 @@ pub(crate) fn activate_ctrl_row(
             if btn == plx_appkit::up_next::BTN_NEXT {
                 play_up_next(&mut player.session, pa, HUD_LINGER_MS, pages, bridge)
             } else {
-                if let Some(player) = super::bridge::player_mut(pages) {
-                    player.decline_pair();
-                }
+                super::bridge::send_player_message(pages,
+                    plx_screens::registry::AppMsg::PlayerCancelNext { decline: true });
                 false
             }
         }
@@ -1217,9 +1202,10 @@ pub(crate) fn play_up_next(
         return false;
     }
     // clone off the `&'static` store BEFORE anything can replace it (see `Countdown::take`)
-    let Some(u) = super::bridge::player_mut(pages).and_then(|player| player.up_next.take(ps)) else {
-        return false;
-    };
+    if super::bridge::player(pages).is_none() { return false; }
+    super::bridge::send_player_message(pages,
+        plx_screens::registry::AppMsg::PlayerCancelNext { decline: false });
+    let Some(u) = plx_media::route::up_next(ps).cloned() else { return false };
     // The ratingKey, not the episode title: `rk` is the handle every other line and every harness
     // assertion already uses, and the title is LG's "Content Viewing Information" — the one
     // category this app's Data Safety declaration answers "Not collected" to. `eventlog::scrub` is a
@@ -1443,23 +1429,10 @@ pub(crate) fn perform_hud_command(
     use plx_appkit::player_hud::command::HudCommand;
     use plx_media::route::QueueStep;
     use plx_screens::player::overlay::OverlayKind;
-    use plx_screens::registry::PlayerReq;
     match command {
-        HudCommand::TogglePlay => {
-            match super::bridge::player_mut(pages).map(|screen| screen.toggle_play(None, now)) {
-                Some(PlayerReq::SeekTo(ns)) => apply_seek_to(&mut player.session, pa, ns),
-                Some(PlayerReq::Transport(play)) => apply_transport(&mut player.session, pa, play, now, pages),
-                _ => {}
-            }
-        }
-        HudCommand::Seek(by) => {
-            let interval = bridge.views().inputs.preference::<plx_plex::plex::session::SkipIntervalPref>();
-            let step = by.step_ns(plx_appkit::player_hud::scrub_step_ns(interval));
-            let target = super::bridge::player_mut(pages)
-                .and_then(|screen| screen.jump_by(&player.session, step, true, now));
-            if let Some(target) = target {
-                commit_seek(&mut player.session, pa, target);
-            }
+        HudCommand::TogglePlay | HudCommand::Seek(_) => {
+            super::bridge::send_player_message(pages,
+                plx_screens::registry::AppMsg::PlayerHudCommand { command, now });
         }
         HudCommand::Previous => {
             queue_transport::step(&mut player.session, pa, QueueStep::Previous, pages, bridge);
@@ -1490,10 +1463,8 @@ pub(crate) fn perform_hud_command(
         }
         HudCommand::ToggleStats => crate::app::diagnostics::toggle(),
     }
-    if let Some(player) = super::bridge::player_mut(pages) {
-        player.hud.extend(now, HUD_LINGER_MS);
-        player.publish();
-    }
+    super::bridge::send_player_message(pages,
+        plx_screens::registry::AppMsg::PlayerExtendHud { now, duration_ms: HUD_LINGER_MS });
 }
 
 /// Perform a [`PlayerReq::Transport`](plx_screens::registry::PlayerReq::Transport): the play/pause toggle (or a one-way PLAY or PAUSE), then keep the
@@ -1508,10 +1479,8 @@ fn apply_transport(
 ) {
     let target = super::lifecycle::transport_target(play, super::lifecycle::viewer_paused_for(ps, pa));
     set_transport_paused(ps, pa, target);
-    if let Some(player) = super::bridge::player_mut(pages) {
-        player.hud.extend(now, HUD_LINGER_MS);
-        player.publish();
-    }
+    super::bridge::send_player_message(pages,
+        plx_screens::registry::AppMsg::PlayerExtendHud { now, duration_ms: HUD_LINGER_MS });
 }
 
 /// Perform a [`PlayerReq::SeekTo`](plx_screens::registry::PlayerReq::SeekTo): seek, and resume a paused film.
@@ -1542,10 +1511,8 @@ fn activate_stand_in(
 ) {
     let btn = super::bridge::player(pages).map_or(0, |screen| screen.hud.nav.btn);
     activate_ctrl_row(player, pa, repause_at, ctrl, refresh_hubs, btn, pages, bridge);
-    if let Some(player) = super::bridge::player_mut(pages) {
-        player.hud.extend(now, HUD_LINGER_MS);
-        player.publish();
-    }
+    super::bridge::send_player_message(pages,
+        plx_screens::registry::AppMsg::PlayerExtendHud { now, duration_ms: HUD_LINGER_MS });
 }
 
 /// PAUSE — the dedicated transport key, which only ever pauses (PLAY is its other half).
@@ -1562,10 +1529,8 @@ pub(crate) fn key_pause(
             });
         }
     }
-    if let Some(player) = super::bridge::player_mut(pages) {
-        player.hud.extend(now, HUD_LINGER_MS);
-        player.publish();
-    }
+    super::bridge::send_player_message(pages,
+        plx_screens::registry::AppMsg::PlayerExtendHud { now, duration_ms: HUD_LINGER_MS });
 }
 
 /// PLAY — off the player route it starts the buffer-feed and enters the player; on it, it un-pauses.
@@ -1619,10 +1584,8 @@ pub(crate) unsafe fn key_play(
         hide_cursor();
         ptr.enter_dpad();
     }
-    if let Some(player) = super::bridge::player_mut(pages) {
-        player.hud.extend(now, HUD_LINGER_MS);
-        player.publish();
-    }
+    super::bridge::send_player_message(pages,
+        plx_screens::registry::AppMsg::PlayerExtendHud { now, duration_ms: HUD_LINGER_MS });
 }
 
 // (`key_scrub` and `seed_scrub` stood here — the LEFT/RIGHT ladder for the player route and the
@@ -1768,7 +1731,7 @@ mod delete_local_data_tests {
 /// that is no longer on the stack is a real container state rather than an `unwrap_or`.
 #[cfg(test)]
 mod player_return_tests {
-    use super::super::bridge::{self, AppHost, Bridge};
+    use super::super::bridge::{self, AppHost};
     use super::{enter_player, return_from_player, Origin};
     use plx_plex::plex::ServerId;
     use plx_screens::registry::{AppArg, ContentArg, PageMemory};
@@ -1795,7 +1758,7 @@ mod player_return_tests {
     /// The container, driven by the app's own frame — no `App`, no SDL, no engine.
     struct Pages {
         d: Dispatcher<AppHost>,
-        rig: Bridge,
+        rig: crate::app::runtime_owners::Harness,
         t: u32,
     }
 
@@ -1804,7 +1767,7 @@ mod player_return_tests {
             plx_plex::plex::reset_servers_for_test();
             Self {
                 d: Dispatcher::<AppHost>::new(),
-                rig: Bridge::for_test(|| 0),
+                rig: crate::app::runtime_owners::Harness::new(|| 0),
                 t: 0,
             }
         }
@@ -1813,7 +1776,7 @@ mod player_return_tests {
         fn settle(&mut self) {
             for _ in 0..24 {
                 self.t += 16;
-                bridge::frame(&mut self.d, &mut self.rig, tick(self.t), vec![]);
+                bridge::frame(&mut self.d, &mut self.rig.bridge(), tick(self.t), vec![]);
             }
         }
 
@@ -1836,7 +1799,7 @@ mod player_return_tests {
         /// both exactly this call. Nothing is re-typed here, which is what lets the auto-advance
         /// case below grade the real reuse rule rather than a copy of it.
         fn play(&mut self, from: Origin) {
-            enter_player(&mut self.d, &mut self.rig, from, None);
+            enter_player(&mut self.d, &mut self.rig.bridge(), from, None);
             self.settle();
         }
 
@@ -1844,7 +1807,7 @@ mod player_return_tests {
         fn press(&mut self, key: plx_machine::machine::Key) {
             self.t += 16;
             let at = tick(self.t);
-            bridge::frame(&mut self.d, &mut self.rig, at, vec![plx_ui::fixture::key(key, at)]);
+            bridge::frame(&mut self.d, &mut self.rig.bridge(), at, vec![plx_ui::fixture::key(key, at)]);
             self.settle();
         }
 
@@ -2022,9 +1985,9 @@ mod player_return_tests {
         p.stand_on(AppArg::Home);
         p.stand_on(detail(A, "7"));
         let page = p.top_entry();
-        enter_player(&mut p.d, &mut p.rig, Origin::Here, None);
+        enter_player(&mut p.d, &mut p.rig.bridge(), Origin::Here, None);
         p.t += 16;
-        bridge::frame(&mut p.d, &mut p.rig, tick(p.t), vec![]);
+        bridge::frame(&mut p.d, &mut p.rig.bridge(), tick(p.t), vec![]);
         assert!(
             p.d.nav.tabs.stack.pending_target_mut().is_some_and(|e| e.inst.is_some()),
             "premise: the dip-out has prepared the player",
@@ -2072,7 +2035,7 @@ mod player_return_tests {
         assert!(p.d.nav.entry(stale.entry).is_none(), "the origin entry is gone");
 
         // A session that survived it re-enters the player still holding that id.
-        p.rig.seed_player_origin(stale);
+        p.rig.bridge().seed_player_origin(stale);
         bridge::nav_push(&mut p.d, AppArg::Player);
         p.settle();
         assert_eq!(

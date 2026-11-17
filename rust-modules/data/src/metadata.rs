@@ -454,6 +454,19 @@ impl Dovi {
         rpu_present: false,
     };
 
+    pub fn of_stream(s: &plx_plex::plex::Stream) -> Option<Dovi> {
+        (s.dovi_present != 0).then(|| Dovi {
+            present: true,
+            profile: s.dovi_profile,
+            bl_compat: s.dovi_bl_compat_id,
+            el_present: s.dovi_el_present != 0,
+            level: s.dovi_level,
+            version: Dovi::parse_version(&s.dovi_version),
+            bl_present: s.dovi_bl_present != 0,
+            rpu_present: s.dovi_rpu_present != 0,
+        })
+    }
+
     /// [`Self::version`] back as the dotted string the server sent (`"1.0"`), or `None` when it
     /// sent none. `None` and `Some("0.0")` are different answers and the panel draws only the
     /// former's absence — a server that really reported version 0 would still get a row.
@@ -871,7 +884,7 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-fn is_zero(n: &i64) -> bool {
+pub(crate) fn is_zero(n: &i64) -> bool {
     *n == 0
 }
 
@@ -2527,17 +2540,8 @@ fn convert_streams(streams: &[plx_plex::plex::Stream]) -> Streams {
                 // so this costs nothing and is not a change to any measured behaviour — it is the
                 // one assignment here whose failure is silent and wrong rather than silent and
                 // cosmetic.
-                if s.dovi_present != 0 {
-                    dovi = Dovi {
-                        present: true,
-                        profile: s.dovi_profile,
-                        bl_compat: s.dovi_bl_compat_id,
-                        el_present: s.dovi_el_present != 0,
-                        level: s.dovi_level,
-                        version: Dovi::parse_version(&s.dovi_version),
-                        bl_present: s.dovi_bl_present != 0,
-                        rpu_present: s.dovi_rpu_present != 0,
-                    };
+                if let Some(record) = Dovi::of_stream(s) {
+                    dovi = record;
                 }
                 // The video track ITSELF, kept rather than reduced to `fps`/`hdr`/`dovi`. It is the
                 // only place the stream's own bitrate, profile, bit depth and chroma survive, and
@@ -2723,6 +2727,7 @@ pub struct PlayingItem {
     /// stream's rate—when deciding whether a remote connection has enough headroom to carry the
     /// original file, because the transport also has to carry audio and container overhead.
     pub bitrate: i64,
+    pub video_kbps: i64,
     /// The played leaf's Dolby Vision layering — the direct-play gate's other refusal, beside the
     /// frame size above and for the same reason: the local fallback never asks PMS, so a file
     /// whose base layer we cannot display correctly (Profile 5, or a dual layer the feed path does
@@ -2754,6 +2759,7 @@ impl PlayingItem {
             width: 0,
             height: 0,
             bitrate: 0,
+            video_kbps: 0,
             dovi: Default::default(),
             markers: Vec::new(),
             chapters: Vec::new(),
@@ -2803,6 +2809,7 @@ fn cached_playing(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str
             width: d.width,
             height: d.height,
             bitrate: d.bitrate,
+            video_kbps: d.video.as_ref().map_or(0, |v| v.bitrate),
             dovi: d.dovi,
             markers: d.markers.clone(),
             chapters: d.chapters.clone(),
@@ -2919,6 +2926,7 @@ fn playing_item_of(
     let st = media
         .and_then(|m| m.part.first().map(|p| convert_streams(&p.stream)))
         .unwrap_or_default();
+    let video_kbps = st.video.as_ref().map_or(0, |v| v.bitrate);
     let (audio, subs, video_fps, dovi, hdr) = (st.audio, st.subs, st.fps, st.dovi, st.hdr);
     let show_rk = it
         .as_ref()
@@ -2942,6 +2950,7 @@ fn playing_item_of(
         width,
         height,
         bitrate,
+        video_kbps,
         dovi,
         markers,
         chapters,
@@ -3864,6 +3873,9 @@ pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::
                 Some(on_deck) => {
                     if let Some(it) = on_deck.finish() {
                         parse_streams(&it, &mut d);
+                        if let Some(ep) = d.on_deck.as_mut() {
+                            ep.versions = crate::pms::versions_of(&it);
+                        }
                     }
                 }
                 None => {

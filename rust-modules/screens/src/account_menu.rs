@@ -632,6 +632,7 @@ impl AuthLike for MenuHost {
             views: (read.read(), crate::registry::publication_fixture()),
             tick: Tick::default(), measure: &plx_ui::fixture::FixtureMeasure,
             press: Default::default(), focus: Default::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             owner: InputOwner::Entry(EntryId(0)),
         }
     }

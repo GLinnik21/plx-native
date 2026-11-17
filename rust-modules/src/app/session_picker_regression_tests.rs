@@ -42,10 +42,11 @@ fn stored(protected: bool) -> Session {
     }
 }
 
-fn rig(session: Session) -> Bridge {
+fn rig(session: Session) -> crate::app::runtime_owners::Harness {
     let mut init = SessionInit::captured(session);
     init.epoch = u64::from(u32::MAX) + 91;
-    Bridge::for_session_test(init)
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+    crate::app::runtime_owners::Harness::from_parts(runtime, retained)
 }
 
 fn command(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, cmd: SessionCmd) {
@@ -114,7 +115,8 @@ fn back_out_of_the_boot_picker_refuses_a_pin_protected_profile_and_nothing_else(
     // these are actual owner commands and resource handoffs, not evidence about log output.
     for protected in [true, false] {
         let saved = stored(protected);
-        let mut rig = rig(saved.clone());
+        let mut harness = rig(saved.clone());
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         command(&mut rig, &mut d, SessionCmd::StartSwitch(Picker::Boot));
         assert_eq!(rig.auth_read().0.phase, Phase::Profiles);
@@ -159,7 +161,9 @@ fn back_out_of_the_boot_picker_refuses_a_pin_protected_profile_and_nothing_else(
     let mut init = SessionInit::captured(Session::default());
     init.phase = Phase::Profiles;
     init.picker = Picker::ChangeProfile;
-    let mut empty = Bridge::for_session_test(init);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut empty = harness.bridge();
     refused_back(&mut empty, &mut Dispatcher::<AppHost>::new());
 
     for picker in [Picker::Boot, Picker::SignedIn] {
@@ -169,7 +173,8 @@ fn back_out_of_the_boot_picker_refuses_a_pin_protected_profile_and_nothing_else(
             !unchosen.pms_token().is_empty(),
             "abandoned sign-in still holds owner credentials"
         );
-        let mut rig = rig(unchosen);
+        let mut harness = rig(unchosen);
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         command(&mut rig, &mut d, SessionCmd::StartSwitch(picker));
         refused_back(&mut rig, &mut d);
@@ -195,9 +200,9 @@ fn live_detachment() {
     let saved = stored(true);
     session::save(&saved);
     let disk = std::fs::read(tmp.path()).unwrap();
-    let mut rig = rig(saved);
-    rig.session_adapter =
-        super::super::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
+    let mut harness = rig(saved);
+    let mut rig = harness.bridge();
+    *rig.session_adapter = super::super::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
     let mut d = Dispatcher::<AppHost>::new();
     command(&mut rig, &mut d, SessionCmd::ResumeStored);
     assert_eq!(rig.auth_read().0.phase, Phase::Ready);
@@ -242,7 +247,8 @@ fn change_profile_then_back_cannot_restore_the_protected_profile_it_left() {
     for protected in [true, false] {
         let saved = stored(protected);
         assert_eq!(saved.active_profile_is_protected(), protected);
-        let mut rig = rig(saved.clone());
+        let mut harness = rig(saved.clone());
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         command(&mut rig, &mut d, SessionCmd::ResumeStored);
         assert_eq!(rig.auth_read().0.phase, Phase::Ready);
@@ -340,7 +346,8 @@ fn first_run_consent_over_the_picker_does_not_flip_mounts_every_frame() {
         .iter()
         .map(|u| HomeUserRef { uuid: (*u).into(), ..Default::default() })
         .collect();
-    let mut rig = rig(account);
+    let mut harness = rig(account);
+    let mut rig = harness.bridge();
     // Production's dispatcher (`app/boot.rs`): the PageDip route transition, not the tests' cut.
     let mut d = Dispatcher::<AppHost>::with_transition(Box::new(
         plx_ui::containers::transition::PageDip::new(),
@@ -397,6 +404,62 @@ fn first_run_consent_over_the_picker_does_not_flip_mounts_every_frame() {
     assert_eq!(d.nav.tabs.stack.page_alpha(), 1.0, "the page transition actually settled");
 }
 
+/// **The dev consent override presents the question ONCE on the picker path** (implicit-state
+/// audit 2026-11-17, finding 2). `follow_auth_landing` asks every frame once Profiles is the
+/// settled top; the override used to bypass every state, so the frame after the question went away
+/// (an override answer records nothing) presented it again, forever, and the picker was
+/// unreachable — what the simulator recording showed. Drives the production follower over the real
+/// `Bridge` + `Dispatcher` with the override's own trigger file armed in this test's private
+/// runtime root (`hostsim`, for the reason the test above gives), takes the question away, and
+/// counts presentations.
+#[cfg(feature = "hostsim")]
+#[test]
+fn the_dev_consent_override_presents_the_question_once_over_the_picker() {
+    use super::test_support::tick;
+    struct Trigger(std::path::PathBuf);
+    impl Drop for Trigger {
+        fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+    }
+    let _g = plx_base::testlock::serial();
+    let _trigger = {
+        let path = plx_base::paths::runtime_dir().join("plxnative-consent");
+        std::fs::write(&path, "crash").expect("arm the override in the private runtime root");
+        Trigger(path)
+    };
+    assert!(crate::dev::scenarios::consent_override().is_some(), "the override is armed");
+
+    let mut account = stored(true);
+    account.user = UserRef::default();
+    account.home_users = ["owner", "adult"].iter()
+        .map(|u| HomeUserRef { uuid: (*u).into(), ..Default::default() }).collect();
+    let mut harness = rig(account);
+    let mut rig = harness.bridge();
+    let mut d = Dispatcher::<AppHost>::with_transition(Box::new(
+        plx_ui::containers::transition::PageDip::new(),
+    ));
+    super::nav_root(&mut d, AppArg::Login);
+    for i in 0..20 { super::frame(&mut d, &mut rig, tick(i), vec![]); }
+    execute_session_command(&mut d, SessionCmd::StartSwitch(Picker::SignedIn));
+    super::frame(&mut d, &mut rig, tick(20), vec![]);
+    assert_eq!(rig.auth_read().0.phase, Phase::Profiles);
+
+    let mut consent_mounts = 0usize;
+    for i in 21..=200u32 {
+        let (_, report) = super::frame(&mut d, &mut rig, tick(i), vec![]);
+        consent_mounts += report.mounted.iter().filter(|(_, name)| *name == "settings").count();
+        // The question goes away (an override answer records nothing) once it has been up a while.
+        if i == 100 {
+            assert!(super::first_run_consent_up(&d), "the override presented the question");
+            super::dismiss_surfaces(&mut d);
+        }
+        if matches!(d.top_arg(), Some(AppArg::Login | AppArg::Profiles)) {
+            super::follow_auth_landing(&mut d, &mut rig);
+        }
+    }
+    assert_eq!(consent_mounts, 1, "presented once, never again after it went away");
+    assert!(!super::first_run_consent_up(&d), "and the picker is reachable");
+}
+
 /// **Login-phase twin: the same per-frame follower over the QR screen never re-mints it either.**
 ///
 /// The picker test above exercises `bridge::follow_auth_landing`'s `Phase::Profiles |
@@ -416,7 +479,9 @@ fn login_phase_follower_settles_and_does_not_recycle_the_qr_screen() {
 
     let mut init = SessionInit::captured(Session::default());
     init.phase = Phase::Waiting;
-    let mut rig = Bridge::for_session_test(init);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     // Production's dispatcher (`app/boot.rs`): the PageDip route transition, not the tests' cut.
     let mut d = Dispatcher::<AppHost>::with_transition(Box::new(
         plx_ui::containers::transition::PageDip::new(),
@@ -468,7 +533,8 @@ fn a_cold_start_picker_seats_focus_on_the_first_profile() {
             .map(|i| HomeUserRef { uuid: format!("u{i}").into(), protected: false, ..Default::default() })
             .collect();
         saved.user.uuid = "u0".into();
-        let mut rig = rig(saved);
+        let mut harness = rig(saved);
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         execute_session_command(&mut d, SessionCmd::StartSwitch(Picker::Boot));
         for i in 0..40 {
@@ -500,7 +566,9 @@ fn a_player_pushed_over_the_qr_screen_is_not_re_rooted_by_the_follower() {
 
     let mut init = SessionInit::captured(Session::default());
     init.phase = Phase::Waiting;
-    let mut rig = Bridge::for_session_test(init);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     let mut d = Dispatcher::<AppHost>::with_transition(Box::new(
         plx_ui::containers::transition::PageDip::new(),
     ));

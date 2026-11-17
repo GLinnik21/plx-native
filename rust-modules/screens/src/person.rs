@@ -1486,6 +1486,7 @@ mod tests {
             tick: Tick::default(),
             measure: m,
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             focus: FocusRead::default(),
             owner: InputOwner::Entry(EntryId(0)),
         }
@@ -1589,24 +1590,35 @@ mod tests {
     #[test]
     fn the_hold_hint_stands_on_a_resting_shelf_card_once_per_install() {
         let _g = plx_base::testlock::serial();
-        plx_ui::hold_hint::reset_learned_for_test();
-        plx_ui::hold_hint::reset_shown_for_test();
+        let hint = std::cell::Cell::new(plx_machine::machine::HoldHintRead::default());
         let (store, mut s) = seed(6, 0);
         let card = focus_of(&s, &store, 0, 1);
         let mut ms = 100;
         let mut rest = |s: &mut PersonScreen, focus: plx_machine::machine::FocusKey<u32>, secs: f32| {
             for _ in 0..(secs * 60.0) as u32 {
                 ms += 17;
-                feed(s, &store, &FixtureMeasure, Some(focus), ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+                let context = Cx { focus: FocusRead { current: Some(focus), ..Default::default() },
+                    hold_hint: hint.get(), ..cx(&FixtureMeasure, store.view()) };
+                let mut present = plx_machine::present::Present::new();
+                let mut out = Vec::new();
+                let mut fx = Effects::new(&mut out,
+                    plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)), &mut present);
+                Machine::<PersonHost>::step(s, &ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }), &context, &mut fx);
+                drop(fx);
+                let mut read = hint.get();
+                for effect in out {
+                    if let plx_machine::machine::Fx::HoldHint(event) = effect.fx { read.apply(event); }
+                }
+                hint.set(read);
             }
         };
         rest(&mut s, card, 1.2);
         assert!(!s.stack.hint_visible(), "not before the dwell");
         // negatives first: a stand spends the run's latch and would make them vacuous
         rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(900), elem: 0 }, 4.0);
-        assert!(!s.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(), "never while a menu owns focus");
+        assert!(!s.stack.hint_visible() && !hint.get().card, "never while a menu owns focus");
         rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(0), elem: ENTRY_ELEM }, 4.0);
-        assert!(!s.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(), "never on the Filmography pill");
+        assert!(!s.stack.hint_visible() && !hint.get().card, "never on the Filmography pill");
         rest(&mut s, card, 3.6);
         assert!(s.stack.hint_visible(), "after the dwell, on a settled card");
         rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(900), elem: 0 }, 1.0);
@@ -2209,6 +2221,7 @@ mod tests {
             tick: Tick::default(),
             measure: &m,
             press: PressRead::default(),
+            modal: cxv.modal, page_image: cxv.page_image, hold_hint: cxv.hold_hint,
             focus: FocusRead {
                 current: Some(focus_of(&s, &store, 0, 0)),
             ..Default::default() },
@@ -2912,6 +2925,7 @@ mod tests {
                 tick: Tick::default(),
                 measure: &measure,
                 press: PressRead::default(),
+                modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
                 focus: FocusRead { current: focus , ..Default::default() },
                 owner: InputOwner::Entry(screen.page.entry),
             };

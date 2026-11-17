@@ -34,6 +34,7 @@ fn source_cx<'a>(
         measure,
         focus: FocusRead { current: None, ..Default::default() },
         press: PressRead::default(),
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         owner: InputOwner::Entry(EntryId(7)),
     }
 }

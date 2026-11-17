@@ -41,7 +41,9 @@ fn consent_decides_from_its_owned_state_and_not_the_published_snapshot() {
     let published = decision("published-id");
     consent::install(published.clone());
     let owned = decision("owned-id");
-    let mut rig = Bridge::for_consent_test(owned.clone());
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_consent_test(owned.clone());
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
 
     drive(
         &mut rig,
@@ -67,14 +69,16 @@ fn consent_decides_from_its_owned_state_and_not_the_published_snapshot() {
 #[test]
 fn consent_effect_is_an_addressed_delivery_before_the_owner_steps() {
     let initial = decision("owned-id");
-    let mut rig = Bridge::for_consent_test(initial.clone());
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_consent_test(initial.clone());
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     let mut out = Vec::new();
     let mut present = Present::new();
     let mut effects = Effects::new(&mut out, MachineId::Nav, &mut present);
 
     rig.app_effect(
         MachineId::Instance(InstanceId(7)),
-        AppFx::Consent(ConsentCmd::Record {
+        plx_screens::registry::InlineAppFx::Consent(ConsentCmd::Record {
             errors: false,
             usage: false,
         }),
@@ -100,7 +104,9 @@ fn consent_effect_is_an_addressed_delivery_before_the_owner_steps() {
 #[test]
 fn session_close_telemetry_is_executed_by_the_consent_owner() {
     let initial = decision("owned-id");
-    let mut rig = Bridge::for_consent_test(initial.clone());
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_consent_test(initial.clone());
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
 
     drive(
         &mut rig,
@@ -171,7 +177,9 @@ fn signing_out_through_consent_owner_leaves_nothing_for_the_next_account() {
         consent::migrate_loaded(enabled.clone()),
         "the decision is durably persisted before sign-out"
     );
-    let mut rig = Bridge::for_consent_resource_test(enabled);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_consent_resource_test(enabled);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
 
     drive(
         &mut rig,
@@ -194,7 +202,9 @@ fn signing_out_through_consent_owner_leaves_nothing_for_the_next_account() {
 #[test]
 fn consent_changes_its_own_canonical_subhash() {
     let initial = decision("owned-id");
-    let mut rig = Bridge::for_consent_test(initial);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_consent_test(initial);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     let before = rig.consent_subhash();
 
     drive(

@@ -18,7 +18,8 @@ use super::test_support::{detail_arg, person_arg, tick};
 fn reopening_an_evicted_same_identity_person_leaves_the_store_holding_it() {
     let _guard = plx_base::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     let mut frame_no = 0u32;
     let person = person_arg("actor-a");
 

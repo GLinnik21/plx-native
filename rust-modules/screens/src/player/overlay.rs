@@ -744,6 +744,28 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
         // machine's decisions here and asks for a change through an effect, never by writing them.
         let ps = H::session(cx);
         match ev {
+            ScreenEvent::App(crate::registry::AppMsg::PlayerOverlayTrackRow(row)) => {
+                if !self.seat_track_row(*row) { plx_base::eventlog::log("submenuosc: requested row is absent"); }
+                Handled::Yes
+            }
+            ScreenEvent::App(crate::registry::AppMsg::PlayerOverlayQuality) => {
+                if !self.seat_more_quality() { plx_base::eventlog::log("moreosc: no Quality row"); }
+                Handled::Yes
+            }
+            ScreenEvent::App(crate::registry::AppMsg::PlayerOverlayPick(target)) => {
+                let commit = if let Some(i) = self.resolve_menupick_track(target) {
+                    self.pick_sub_track(H::metadata(cx), i)
+                } else if let Some(row) = self.resolve_menupick_row(target) {
+                    self.pick_track_row(H::metadata(cx), row)
+                } else { None };
+                if let Some(commit) = commit { Self::ask(fx, PlayerReq::CommitTrack(commit)); }
+                else { plx_base::eventlog::log("menupick: target absent or already active — no commit"); }
+                Handled::Yes
+            }
+            ScreenEvent::App(crate::registry::AppMsg::PlayerOverlayRetarget(kind)) => {
+                self.retarget(ps, H::metadata(cx), *kind);
+                Handled::Yes
+            }
             ScreenEvent::Input(input) => {
                 // The dispatcher's `machine::Key` is the four directions plus OK/BACK; the
                 // transport alphabet this ladder turns on lives in `consts::Key`. Preserve the

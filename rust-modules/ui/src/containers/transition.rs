@@ -410,6 +410,8 @@ impl Transition for RoutePush {
 #[derive(Clone, Copy, Default)]
 pub struct PageImage {
     entry: Option<plx_machine::machine::EntryId>,
+    /// The body whose pixels were captured. A remount of the same entry cannot inherit them.
+    instance: Option<plx_machine::machine::InstanceId>,
     settle_since: Option<u32>,
     replacement_ready: bool,
     /// The paint the last [`PageImage::plan`] step returned: what a frame dump's held repeat of
@@ -417,25 +419,6 @@ pub struct PageImage {
     /// have a held repeat (the dev instruments and tests); a shipping struct does not carry it.
     #[cfg(any(feature = "devtriggers", feature = "test-support", test))]
     last: Option<PagePaint>,
-}
-
-thread_local! {
-    /// The page was shown as a held image on the last frame the dispatcher painted.
-    static PAGE_IMAGE_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// The dispatcher's statement about the page it painted this frame: `held` is whether it was shown
-/// as a captured image rather than drawn live (a dip's Out and In halves and the hold after it). A
-/// screen reads it through [`page_image_held`] on its NEXT tick, so a layout animation it started
-/// is not stepped under an image that hides it and then stretches the hold (`cards::Shelf`'s
-/// animated landings).
-pub fn set_page_image_held(held: bool) {
-    PAGE_IMAGE_HELD.with(|h| h.set(held));
-}
-
-/// Was the page a held image on the last frame the dispatcher painted ([`set_page_image_held`])?
-pub fn page_image_held() -> bool {
-    PAGE_IMAGE_HELD.with(|h| h.get())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -457,11 +440,13 @@ impl PagePaint {
 impl PageImage {
     pub fn captured(&mut self, entry: plx_machine::machine::EntryId) {
         self.entry = Some(entry);
+        self.instance = None;
         self.settle_since = None;
         self.replacement_ready = false;
     }
     pub fn replacement_captured(&mut self, entry: plx_machine::machine::EntryId) {
         self.entry = Some(entry);
+        self.instance = None;
         self.replacement_ready = true;
     }
     /// One planning step per FRAME. In a frame dump ([`plx_gfx::dump::held_repeat`]) an iteration
@@ -554,6 +539,30 @@ impl PageImage {
         }
         *self = Self::default();
         PagePaint::Live
+    }
+
+    /// Bind only after a successful visible capture (or the owned headless snapshot port).
+    pub fn bind_instance(&mut self, instance: plx_machine::machine::InstanceId) {
+        self.instance = Some(instance);
+    }
+
+    /// Derive policy from this owner's captured image and the CURRENT mounted body, not GPU TLS.
+    pub fn read(&self, entry: plx_machine::machine::EntryId, instance: plx_machine::machine::InstanceId)
+        -> plx_machine::machine::PageImageRead {
+        if self.entry == Some(entry) && self.instance == Some(instance) {
+            plx_machine::machine::PageImageRead::held(entry, instance)
+        } else { Default::default() }
+    }
+
+    /// At the dip floor the incoming page hears Enter/Tick BEFORE its capture draw. The same
+    /// owner's outgoing image still hides it during that interval, so project the live destination
+    /// identity from navigation. This does NOT validate outgoing pixels for drawing the new page.
+    /// A remount at the SAME entry is different: its old body's image is rejected until recaptured.
+    pub fn transition_read(&self, entry: plx_machine::machine::EntryId,
+        instance: plx_machine::machine::InstanceId, active: bool) -> plx_machine::machine::PageImageRead {
+        if active && self.instance.is_some() && self.entry.is_some_and(|old| old != entry) {
+            plx_machine::machine::PageImageRead::held(entry, instance)
+        } else { self.read(entry, instance) }
     }
 
     pub fn held_entry(&self) -> Option<plx_machine::machine::EntryId> {

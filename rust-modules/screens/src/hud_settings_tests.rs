@@ -1,6 +1,7 @@
 //! The Player HUD page: its rows from a published list, the prompt before an unreviewed install, the
 //! commands each row sends, and that every row fits its column in every shipped language.
 use super::*;
+use plx_ui::theme;
 use plx_base::fontcov::advances::ShippedMeasure;
 use plx_data::hudpacks::{Meta, Source};
 use plx_machine::machine::{FocusRead, PressId, PressRead, Stamped, Tick};
@@ -15,6 +16,7 @@ fn context(focus: u32) -> Cx<'static, InnerHost> {
         tick: Tick::default(),
         measure: &MEASURE,
         press: PressRead::default(),
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         focus: FocusRead { current: Some(FocusKey { entry: EntryId(0), elem: focus }), ..Default::default() },
         owner: InputOwner::Entry(EntryId(0)),
     }
@@ -402,11 +404,9 @@ fn every_row_fits_its_column_in_every_language() {
         every.language = SHIPPED.iter().map(|l| plx_platform::i18n::Preference::SHIPPED.into_iter().find(|p| p.tag() == l.tag()).map_or("", |p| p.native_name())).max_by_key(|n| n.chars().count()).unwrap_or("").to_owned();
         every.drops = every_refusal().iter().enumerate().map(|(i, r)| drop_file(&format!("f{i}.plxhud"), 20 + i as u8, Err(*r))).collect();
         every.drops.push(drop_file("ok.plxhud", 40, Ok(())));
-        let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
-        form.table.compact = false;
-        form.table.board_metrics(true); // as `hud_settings.rs` draws it
+        let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::page(BAND);
         form.set(hud_form(&every, None, false).0, None);
-        for e in form.table.app_fit_failures(RouteLayout::settings_page().sectioned_table().w, language.tag()) {
+        for e in form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()) {
             out.push(e);
         }
         // The address row in each state it has: waiting, with a long address typed (the author's text, and the
@@ -414,12 +414,10 @@ fn every_row_fits_its_column_in_every_language() {
         for (fetching, draft) in [(false, None), (false, Some("https://example.com/a/very/long/path/hud.plxhud")), (true, None)] {
             let mut busy = list();
             busy.fetching = fetching;
-            let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
-            form.table.compact = false;
-            form.table.board_metrics(true);
+            let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::page(BAND);
             let draft = draft.map(|text| TextBuffer::new(text.to_owned(), text.len()));
             form.set(hud_form(&busy, draft.as_ref(), false).0, None);
-            out.extend(form.table.app_fit_failures(RouteLayout::settings_page().sectioned_table().w, language.tag()));
+            out.extend(form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w, language.tag()));
         }
     }
     plx_ui::table::assert_no_fit_failures(&out);
@@ -432,7 +430,7 @@ fn every_row_fits_its_column_in_every_language() {
 fn the_line_under_the_title_fits_the_column_in_every_language() {
     use plx_platform::i18n::msg;
     const MAX_COPY_LINES: usize = 5;
-    let layout = RouteLayout::settings_page();
+    let layout = RouteLayout::screen();
     let mut out = Vec::new();
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
@@ -928,7 +926,7 @@ fn gallery_forms_and_preview_controls_fit_every_shipped_language() {
         let list=gallery_list();let sha=list.catalog.index.as_ref().unwrap().entries[1].sha();
         for dest in [SettingsPage::PlayerHud,SettingsPage::HudGallery,SettingsPage::HudDetail(sha),SettingsPage::HudAbout(sha)] {
             let page=gallery_page(dest);
-            failures.extend(page.form.table.app_fit_failures(RouteLayout::settings_page().sectioned_table().w,language.tag()));
+            failures.extend(page.form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w,language.tag()));
         }
         // a delisted package and one already installed: their disabled Install rows' values fit the column
         let mut delisted=gallery_page(SettingsPage::HudDetail(sha));
@@ -940,7 +938,7 @@ fn gallery_forms_and_preview_controls_fit_every_shipped_language() {
         installed.meta.as_mut().unwrap().version=package.version.clone();
         same.list.entries.push(installed);same.rebuild(None);
         for page in [&delisted,&same] {
-            failures.extend(page.form.table.app_fit_failures(RouteLayout::settings_page().sectioned_table().w,language.tag()));
+            failures.extend(page.form.table.app_fit_failures(RouteLayout::screen().sectioned_table().w,language.tag()));
         }
         let page=gallery_page(SettingsPage::HudPreview(sha));
         let controls=plx_ui::preview_controls::PreviewControls::new(page.scenes().iter().map(|(label,_)|(*label).into()),&ShippedMeasure);
@@ -1372,7 +1370,7 @@ fn an_offline_gallery_says_the_saved_catalog_with_its_date_and_keeps_the_picture
 /// (empty, loading, offline with the date), the notices. The language name is the longest native one.
 #[test]
 fn every_sentence_beside_the_table_fits_five_lines_in_every_language() {
-    let layout = RouteLayout::settings_page();
+    let layout = RouteLayout::screen();
     let mut out = Vec::new();
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);

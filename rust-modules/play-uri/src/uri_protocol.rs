@@ -365,7 +365,9 @@ fn scalar(value: &Value) -> Option<String> {
         Value::Bool(b) => Some(b.to_string()),
         Value::String(s) => match s.as_str() {
             "aac" | "ac3" | "eac3" | "dts" | "H264" | "H265" | "h264" | "hevc" | "AV1" | "VP9"
-            | "sdr" | "hdr10" | "dolbyVision" => Some(s.clone()),
+            // `videoInfo.hdrType`: the firmware's whole HDR table (`getHdrTypeString`,
+            // docs/measurements/uri-acb-envelope-2026-11-05.md)
+            | "none" | "HDR10" | "DolbyVision" | "HLG" | "Prime" => Some(s.clone()),
             _ => None,
         },
         Value::Object(o) => {
@@ -542,7 +544,7 @@ pub fn parse_event(payload: &str) -> Message {
         let detail = match ev {
             Ev::VideoInfo => details(
                 value,
-                &["width", "height", "codec", "frameRate", "hdr", "currentBitrate", "contentBitrate"],
+                &["width", "height", "codec", "frameRate", "hdrType", "currentBitrate", "contentBitrate"],
             ),
             Ev::AudioInfo => details(value, &["codec", "channels", "sampleRate", "track"]),
             Ev::BufferRange => details(value, &["beginTime", "endTime", "remainingTime", "percent"]),

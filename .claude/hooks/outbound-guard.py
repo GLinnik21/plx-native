@@ -206,6 +206,7 @@ FAIL-OPEN ON ITS OWN BUGS, fail-closed on the answer: a crash in this file must 
 Bash call in the session, but a match is a refusal. Contract: exit 0 allows, exit 2 blocks and
 feeds stderr back to the model.
 """
+import hashlib
 import json
 import os
 import re
@@ -886,16 +887,88 @@ def load_alphabet(root):
         return frozenset(), [SYNTHETIC_ID]
 
 
-def synthetic_strings(node, out):
-    """Every string VALUE in a JSON document (keys are the format's, not data)."""
+# Independent public boundary, not an import of the source-only mutator/check tool.
+# Only the producer-verified V13 profile gets typed slots; historical artifacts keep
+# the existing alphabet-only rule. Tests pin the exact producer anchor's raw hash.
+CURRENT_FP = 16894190109976774341
+CURRENT_MANIFEST_SHAPE = '59120bd99cf7687b732343385c8623508aa21f86e3268fae175987a3f6a773fc'
+CURRENT_ENUMS = {
+    'playback_quality': ('auto', 'original', '1080p_20_mbps', '1080p_8_mbps', '720p_4_mbps', '720p_2_mbps', '480p_720_kbps'),
+    'direct_play_mode': ('auto', 'forced', 'disabled'),
+    'subtitle_tone': ('white', 'yellow', 'grey_85', 'grey_70', 'grey_55', 'grey_40', 'grey_28'),
+    'subtitle_size': ('small', 'medium', 'large', 'extra_large', 'huge'),
+    'subtitle_position': ('low', 'middle', 'high'),
+    'hdr_overlay_brightness': ('full', 'three_quarters', 'half'),
+    'next_episode_mode': ('countdown', 'after_credits', 'off'),
+    'skip_interval': ('5s', '10s', '15s', '30s', '60s'),
+    'instant_dpad_seeking': ('off', 'on'), 'uri_engine': ('off', 'on'),
+    'dolby_vision_mode': ('auto', 'off'), 'deck_press': ('details', 'play'),
+}
+
+
+def current_manifest_paths(doc):
+    """Closed producer shape and enum domains; every other value stays alphabet-scanned."""
+    if not isinstance(doc, dict):
+        return True, set()
+    initial = doc.get('init')
+    data = initial.get('data') if isinstance(initial, dict) else None
+    typed = isinstance(data, dict) and set(data) & {'ui_preferences', 'install_language', 'running_language', 'install_hold_hint'}
+    if doc.get('state_fp') != CURRENT_FP and not typed:
+        return True, set()
+
+    def shape(node):
+        if isinstance(node, dict):
+            return {key: shape(value) for key, value in node.items()}
+        if isinstance(node, list):
+            return [shape(value) for value in node]
+        return type(node).__name__
+
+    encoded = json.dumps(shape(dict(doc, anchor=doc.get('anchor', True))), sort_keys=True, separators=(',', ':'))
+    if (type(doc.get('schema')) is not int or doc['schema'] != 3
+            or type(doc.get('state_fp')) is not int or doc['state_fp'] != CURRENT_FP
+            or doc.get('anchor', True) is not True
+            or hashlib.sha256(encoded.encode()).hexdigest() != CURRENT_MANIFEST_SHAPE
+            or doc['init']['probe'] != 'controlled=home version=1'
+            or not _canonical_int(doc['init']['hash'], 0, U64_MAX)
+            or data['version'] != 1):
+        return False, set()
+    base = ('init', 'data')
+    paths = set()
+    languages = ('system', 'en', 'es', 'be', 'ca', 'fr', 'it', 'pt', 'de', 'hu', 'ru', 'pl', 'nl')
+    for key in ('install_language', 'running_language'):
+        if data[key] not in languages:
+            return False, set()
+        paths.add(base + (key,))
+    prefs = data['ui_preferences']
+    for key, variants in CURRENT_ENUMS.items():
+        if prefs[key] not in variants:
+            return False, set()
+        paths.add(base + ('ui_preferences', key))
+    poster = prefs['under_posters']
+    for key in ('details', 'show_details'):
+        if poster[key] not in ('year_length', 'genre', 'video', 'age_rating_score', 'none'):
+            return False, set()
+        paths.add(base + ('ui_preferences', 'under_posters', key))
+    for key, variants in {'detail_parts': ('year', 'length', 'genre', 'video_quality', 'age_rating', 'score'),
+                          'show_detail_parts': ('year', 'seasons', 'genre', 'age_rating', 'score')}.items():
+        parts = poster[key]
+        if any(value not in variants for value in parts) or parts != [value for value in variants if value in parts]:
+            return False, set()
+        paths.update(base + ('ui_preferences', 'under_posters', key, i) for i in range(len(parts)))
+    return True, paths
+
+
+def synthetic_strings(node, out, path=(), structural=frozenset()):
+    """Every string VALUE except independently validated, exact path-typed enum slots."""
     if isinstance(node, str):
-        out.append(node)
+        if path not in structural:
+            out.append(node)
     elif isinstance(node, dict):
-        for v in node.values():
-            synthetic_strings(v, out)
+        for key, value in node.items():
+            synthetic_strings(value, out, path + (key,), structural)
     elif isinstance(node, list):
-        for v in node:
-            synthetic_strings(v, out)
+        for index, value in enumerate(node):
+            synthetic_strings(value, out, path + (index,), structural)
 
 
 def _canonical_int(value, low, high):
@@ -956,7 +1029,7 @@ def metric_strings(doc):
     return False, []
 
 
-def offending_strings(text, alphabet):
+def offending_strings(text, alphabet, manifest=False):
     """The string values of a JSON / JSONL text that are outside the alphabet (never printed)."""
     literals, pats = alphabet
     bad = []
@@ -974,7 +1047,10 @@ def offending_strings(text, alphabet):
                 bad.append(line)
     for d in docs:
         vals = []
-        synthetic_strings(d, vals)
+        structural_ok, paths = current_manifest_paths(d) if manifest else (True, set())
+        if not structural_ok:
+            bad.append(None)
+        synthetic_strings(d, vals, structural=paths)
         metric_ok, metric_vals = metric_strings(d)
         vals.extend(metric_vals)
         if not metric_ok:
@@ -1043,7 +1119,7 @@ def named_private_paths(seg, root, cwd):
                 try:
                     if os.path.getsize(rp) <= MAX_READ:
                         text = open(rp, encoding="utf-8", errors="replace").read()
-                        if offending_strings(text, load_alphabet(root)):
+                        if offending_strings(text, load_alphabet(root), manifest=os.path.basename(rp) == 'manifest.json'):
                             hits.append(("a replay fixture with a string outside the synthetic "
                                          "alphabet (tests/fixtures/replay/ALPHABET.json)", how))
                 except OSError:
@@ -1216,7 +1292,8 @@ def verdict(cmd, root, cwd=None, secrets=None, published=None):
                 path = where if os.path.isabs(where) else os.path.join(cwd, where)
                 exempt = (where != "the command line" and where != "the heredoc body"
                           and os.path.isfile(path) and under_fixture_dir(path, root)
-                          and not offending_strings(text, load_alphabet(root)))
+                          and not offending_strings(text, load_alphabet(root),
+                                                    manifest=os.path.basename(path) == 'manifest.json'))
                 if not exempt:
                     hits.append(("the recording envelope grammar ({\"f\":…, \"t\":\"st\") — "
                                  "a recording, unless it is a synthetic fixture under "

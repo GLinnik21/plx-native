@@ -38,16 +38,17 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
             std::fs::write(root.join("plxnative-rec"), b"").unwrap();
         }
 
-        let mut bridge = Bridge::for_session_test(plx_session::auth::SessionInit::captured(Session {
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(plx_session::auth::SessionInit::captured(Session {
             client_id: "synthetic-erasure".into(),
             ..Default::default()
         }));
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut bridge = harness.bridge();
         rec.arm_landgate(bridge.landgate());
-        bridge.session_adapter =
-            super::super::adapters::session::SessionAdapter::live_recording_resources_for_test(
-                &mt,
-                root.clone(),
-            );
+        *bridge.session_adapter = super::super::adapters::session::SessionAdapter::live_recording_resources_for_test(
+            &mt,
+            root.clone(),
+        );
         let mut pages = Dispatcher::<AppHost>::new();
         assert!(run::request_local_erasure(
             &mut rec,
@@ -129,11 +130,13 @@ fn ordered_erasure_retires_the_single_owned_recorder_before_session_io() {
     let mut rec = recorder::Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
     rec.tick(0, 0.0);
     let mut boot_initial = Some(initial);
-    let mut bridge = Bridge::for_session_test(plx_session::auth::SessionInit::captured(Session {
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(plx_session::auth::SessionInit::captured(Session {
         client_id: "synthetic-ordered-erasure".into(), ..Default::default()
     }));
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut bridge = harness.bridge();
     rec.arm_landgate(bridge.landgate());
-    bridge.session_adapter = super::super::adapters::session::SessionAdapter::live_recording_resources_for_test(&mt, root);
+    *bridge.session_adapter = super::super::adapters::session::SessionAdapter::live_recording_resources_for_test(&mt, root);
     let mut pages = Dispatcher::<AppHost>::new();
     pages.emit(MachineId::Nav, Fx::App(AppFx::Loop(LoopReq::DeleteAllLocalData)));
     let mut owned = super::test_support::TestCommandResources::new();
@@ -143,7 +146,7 @@ fn ordered_erasure_retires_the_single_owned_recorder_before_session_io() {
     super::frame_with_commands(&mut pages, &mut bridge, &mut resources, Tick::default(), vec![], &mut plx_ui::dispatch::NoTap);
     assert!(matches!(rec, recorder::Recplay::Off));
     assert!(boot_initial.is_none());
-    assert_eq!(bridge.screen_command_receipts[0].2, plx_machine::machine::AppCommandOutcome::Completed);
+    assert_eq!(bridge.retained.screen_command_receipts[0].2, plx_machine::machine::AppCommandOutcome::Completed);
     bridge.settle_session_io_for_test(&mut pages);
     assert_eq!(bridge.auth_read().0.phase, plx_session::auth::Phase::Deleted);
     assert!(!recording.exists());
@@ -161,7 +164,9 @@ fn replay_cannot_authorize_erasure_of_a_recording_target() {
     temp.assert_only_target();
     let before = std::fs::read(temp.path()).unwrap();
     let initial = bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-    let mut bridge = Bridge::controlled_home(|| 0, &initial, &mt, true);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, true);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut bridge = harness.bridge();
     let mut pages = Dispatcher::<AppHost>::new();
     let mut rec = recorder::Recplay::Off;
     assert!(!run::request_local_erasure(

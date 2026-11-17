@@ -59,6 +59,7 @@ pub(crate) struct Harness {
     focus: Option<FocusKey<u32>>,
     press: f32,
     ms: u32,
+    page_image: plx_machine::machine::PageImageRead,
 }
 
 pub(crate) fn mount_grid(n: usize) -> Box<dyn CardHarness> { Box::new(Harness::new(Set::Grid, n)) }
@@ -104,7 +105,7 @@ impl Harness {
         };
         let mut h = Self { set, n, rks, listing, directory, hubs, _stores: stores,
             screen: LibraryScreen::new(ENTRY, INSTANCE, SecKind::Movie),
-            rec: RecommendedScreen::new(ENTRY, INSTANCE, SecKind::Movie), focus: None, press: 1.0, ms: 0 };
+            rec: RecommendedScreen::new(ENTRY, INSTANCE, SecKind::Movie), focus: None, press: 1.0, ms: 0, page_image: Default::default() };
         h.sync();
         h.screen.initial = false;
         h.rec.initial = false;
@@ -114,6 +115,7 @@ impl Harness {
     fn cx(&self) -> Cx<'_, LibHost> {
         Cx { views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
             tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
+            modal: Default::default(), page_image: self.page_image, hold_hint: Default::default(),
             press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
             focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) }
     }
@@ -122,6 +124,7 @@ impl Harness {
         let cx: Cx<'_, LibHost> = Cx {
             views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
             tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
+            modal: Default::default(), page_image: self.page_image, hold_hint: Default::default(),
             press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
             focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
         match self.set {
@@ -137,6 +140,7 @@ impl Harness {
             let cx: Cx<'_, LibHost> = Cx {
                 views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
                 tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
+                modal: Default::default(), page_image: self.page_image, hold_hint: Default::default(),
                 press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
                 focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
             let mut fx = Effects::new(&mut out, MachineId::Instance(INSTANCE), &mut present);
@@ -412,6 +416,7 @@ mod pop_tests {
             let cx: Cx<'_, LibHost> = Cx {
                 views: Views { listing: h.listing.view(), directory: h.directory.view(), hubs: h.hubs.view() },
                 tick: Tick { ms: h.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
+                modal: Default::default(), page_image: h.page_image, hold_hint: Default::default(),
                 press: PressRead { scale: h.press, owner: h.focus, ..Default::default() },
                 focus: FocusRead { current: h.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
             let _discovery = plx_ui::frame::backdrop::discover(std::rc::Rc::new(std::cell::RefCell::new(Default::default())));
@@ -443,15 +448,9 @@ mod return_tests {
     use super::*;
     use plx_machine::machine::Enter;
 
-    /// The page image a test sets must not outlive it.
-    struct ImageHeld;
-    impl Drop for ImageHeld {
-        fn drop(&mut self) { plx_ui::containers::transition::set_page_image_held(false); }
-    }
-
     #[test]
     fn a_rebuilt_library_page_returns_lifted_under_the_dips_image() {
-        let _held = ImageHeld;
+
         let full = RowStyle::HOME.focus_scale;
         let mut left = Harness::new(Set::Grid, 40);
         let first = left.cards()[0];
@@ -465,7 +464,7 @@ mod return_tests {
         fresh.screen.restore(&memory);
         fresh.sync();
         fresh.screen.initial = false;
-        plx_ui::containers::transition::set_page_image_held(true);
+        fresh.page_image = plx_machine::machine::PageImageRead::held(ENTRY, INSTANCE);
         fresh.step(ScreenEvent::Enter(Enter::Restored));
         fresh.focus(first, By::Restore);
         assert_eq!(fresh.scale(first), Some(full), "whole on the first frame, before any tick");
@@ -473,7 +472,7 @@ mod return_tests {
             fresh.tick(1);
             assert_eq!(fresh.scale(first), Some(full), "lifted under the held image, frame {frame}");
         }
-        plx_ui::containers::transition::set_page_image_held(false);
+        fresh.page_image = Default::default();
         for frame in 0..20 {
             fresh.tick(1);
             assert_eq!(fresh.scale(first), Some(full), "still lifted once the image is let go, frame {frame}");

@@ -180,8 +180,7 @@ fn ok_on_a_collection_card_requests_its_page() {
 #[test]
 fn the_hold_hint_does_not_stand_on_a_collection_card() {
     let _guard = plx_base::testlock::serial();
-    plx_ui::hold_hint::reset_learned_for_test();
-    plx_ui::hold_hint::reset_shown_for_test();
+    let mut hint = plx_machine::machine::HoldHintRead::default();
     let fixture = collections_fixture(36);
     let mut page = fixture.screen();
     page.initial = false;
@@ -194,12 +193,16 @@ fn the_hold_hint_does_not_stand_on_a_collection_card() {
         let mut out = Vec::new();
         let mut present = plx_machine::present::Present::new();
         let mut cx = fixture.cx(Some(key));
+        cx.hold_hint = hint;
         cx.tick = Tick { ms, dt_us: 16_667 };
         page.step(&ScreenEvent::Tick(cx.tick), &cx,
             &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+        for effect in out {
+            if let Fx::HoldHint(event) = effect.fx { hint.apply(event); }
+        }
     }
     assert!(!page.hold_hint.visible(), "a hold on a collection opens no menu, so no hint");
-    assert!(!plx_ui::hold_hint::shown_this_run(), "and nothing is spent");
+    assert!(!hint.card, "and nothing is spent");
 }
 
 /// The dev/scenario path to a listing type: `SetType` is the menu row's own edit, addressed to the

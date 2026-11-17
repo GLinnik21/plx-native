@@ -54,7 +54,7 @@ mod carry_matrix {
                 plx_plex::plex::session::HomeUserRef { uuid: uuid.into(), title: uuid.into(), ..Default::default() }
             ).collect(), ..Default::default() }
     }
-    fn rig(ops: &[(u32, SessionOp)]) -> Bridge {
+    fn rig(ops: &[(u32, SessionOp)]) -> crate::app::runtime_owners::Harness {
         let mut init = plx_session::auth::SessionInit::captured(stored());
         init.epoch = EPOCH;
         init.phase = if ops[0].1 == SessionOp::ProfileSwitch { plx_session::auth::Phase::Switching }
@@ -66,7 +66,8 @@ mod carry_matrix {
                 expected: Identity::of(&init.persisted), lifecycle: None, last_arrival: None,
                 phase: StreamPhase::Running, capture: None, admission: AdmissionState::Awaiting(AdmissionId(req)) });
         }
-        Bridge::for_session_test(init)
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+        crate::app::runtime_owners::Harness::from_parts(runtime, retained)
     }
     fn pad(d: &mut Dispatcher<AppHost>, count: usize) {
         for _ in 0..count { execute_session_command(d, SessionCmd::DismissPinError); }
@@ -96,7 +97,8 @@ mod carry_matrix {
 
     #[test]
     fn active_inbox_and_carried_records_keep_unique_credits_through_cancel_and_duplicates() {
-        let mut rig = rig(&[(1, SessionOp::Login)]);
+        let mut harness = rig(&[(1, SessionOp::Login)]);
+        let mut rig = harness.bridge();
         let records = registry_stream(&mut rig);
         let (a, b, c) = (records[0].clone(), records[1].clone(), records[2].clone());
         let mut d = Dispatcher::<AppHost>::new();
@@ -149,7 +151,8 @@ mod carry_matrix {
     #[test]
     fn one_pump_survives_cancellation_in_both_carried_representations() {
         for event_form in [false, true] {
-            let mut rig = rig(&[(1, SessionOp::Login)]);
+            let mut harness = rig(&[(1, SessionOp::Login)]);
+            let mut rig = harness.bridge();
             let records = registry_stream(&mut rig);
             let mut d = Dispatcher::<AppHost>::new();
             let mut trace = Trace::default();
@@ -211,7 +214,8 @@ mod carry_matrix {
                 if let Some(worker) = self.worker.take() { let _ = worker.join(); }
             }
         }
-        let mut rig = rig(&[(1, SessionOp::ProfileSwitch), (2, SessionOp::ServerRoster), (3, SessionOp::ServerRoster)]);
+        let mut harness = rig(&[(1, SessionOp::ProfileSwitch), (2, SessionOp::ServerRoster), (3, SessionOp::ServerRoster)]);
+        let mut rig = harness.bridge();
         let old = stored();
         let mut seated = old.clone();
         seated.user.uuid = "profile-b".into();
@@ -329,7 +333,9 @@ fn home_roster_failure_history(cached: bool, failure: u8) {
             uuid: "cached-user".into(), title: "Cached".into(), ..Default::default()
         });
     }
-    let mut rig = Bridge::for_session_test(plx_session::auth::SessionInit::captured(stored));
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(plx_session::auth::SessionInit::captured(stored));
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     let mut delayed = Vec::new();
     if failure == 4 {
         for req in 100..100 + SESSION_TOTAL_RESERVATIONS {
@@ -394,7 +400,7 @@ mod qr_exhaustion_guard {
     use std::time::Duration;
 
     struct Jobs {
-        rig: Bridge,
+        rig: crate::app::runtime_owners::Harness,
         finish: SyncSender<()>,
         running: Option<std::thread::JoinHandle<()>>,
         delayed: Vec<Box<dyn FnOnce() + Send>>,
@@ -402,13 +408,13 @@ mod qr_exhaustion_guard {
     impl Jobs {
         fn defer(&mut self, req: u32, key: SessionWorkKey) -> Result<(), AdmissionError> {
             let delayed = &mut self.delayed;
-            self.rig.session_adapter.launch(RequestId(req), key, true,
+            self.rig.bridge().session_adapter.launch(RequestId(req), key, true,
                 |job| { delayed.push(job); true }, |_| {})
         }
     }
     impl Drop for Jobs {
         fn drop(&mut self) {
-            self.rig.session_adapter.cancel_all();
+            self.rig.bridge().session_adapter.cancel_all();
             let _ = self.finish.try_send(());
             if let Some(worker) = self.running.take() { let _ = worker.join(); }
             for job in self.delayed.drain(..) {
@@ -447,11 +453,12 @@ mod qr_exhaustion_guard {
             admission: AdmissionState::Awaiting(AdmissionId(1)) });
         let (entered_tx, entered) = sync_channel(1);
         let (finish, finish_rx) = sync_channel(1);
-        let mut jobs = Jobs { rig: Bridge::for_session_test(init), finish,
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+        let mut jobs = Jobs { rig: crate::app::runtime_owners::Harness::from_parts(runtime, retained), finish,
             running: None, delayed: Vec::new() };
         let running = &mut jobs.running;
         let main_thread = std::thread::current().id();
-        jobs.rig.session_adapter.launch(RequestId(1), key, true,
+        jobs.rig.bridge().session_adapter.launch(RequestId(1), key, true,
             |job| { *running = Some(std::thread::spawn(job)); true }, move |output| {
                 assert_ne!(std::thread::current().id(), main_thread);
                 output.progress(plx_session::auth::LoginProgress::CodeReady {
@@ -464,28 +471,28 @@ mod qr_exhaustion_guard {
             }).unwrap();
         entered.recv_timeout(Duration::from_secs(10)).expect("producer must actually enter");
         for req in 2..=SESSION_TOTAL_RESERVATIONS { jobs.defer(req, key).unwrap(); }
-        let records = jobs.rig.session_adapter.take_results();
+        let records = jobs.rig.bridge().session_adapter.take_results();
         assert_eq!(records.len(), 1);
-        assert!(!records[0].terminal && jobs.rig.session_adapter.admitted(&records[0]));
+        assert!(!records[0].terminal && jobs.rig.bridge().session_adapter.admitted(&records[0]));
         let mut d = Dispatcher::<AppHost>::new();
         let mut tap = Cancellation::default();
         let results = records.iter().cloned().map(|r|
             (r.addr, AppMsg::Session(SessionEvent::Result(r)))).collect();
-        d.frame_with(&mut jobs.rig, Tick::default(), Vec::new(), results, &mut tap, false);
+        d.frame_with(&mut jobs.rig.bridge(), Tick::default(), Vec::new(), results, &mut tap, false);
         assert_eq!(tap.cancelled, [1]);
         assert_eq!(tap.retired, [1]);
         assert_eq!(jobs.rig.auth_read().0.phase, plx_session::auth::Phase::Error);
         assert_eq!(jobs.rig.auth_read().0.qr_generation, 0);
-        assert_eq!(jobs.rig.session.snapshot_init().next_qr, u64::MAX);
-        assert!(jobs.rig.session.snapshot_init().pending.is_empty());
-        assert!(!jobs.rig.session_adapter.admitted(&records[0]), "processed CodeReady receipt returned");
-        assert!(jobs.rig.session_adapter.take_results().is_empty());
+        assert_eq!(jobs.rig.bridge().session.snapshot_init().next_qr, u64::MAX);
+        assert!(jobs.rig.bridge().session.snapshot_init().pending.is_empty());
+        assert!(!jobs.rig.bridge().session_adapter.admitted(&records[0]), "processed CodeReady receipt returned");
+        assert!(jobs.rig.bridge().session_adapter.take_results().is_empty());
         assert!(matches!(jobs.defer(100, key), Err(AdmissionError::Capacity)),
             "logical Cancel+Retire and receipt ACK cannot release this still-running producer");
         jobs.finish.send(()).unwrap();
         jobs.running.take().unwrap().join().unwrap();
         assert!(matches!(jobs.defer(101, key), Err(AdmissionError::Capacity)), "guard terminal still needs main drain");
-        assert!(jobs.rig.session_adapter.take_results().is_empty());
+        assert!(jobs.rig.bridge().session_adapter.take_results().is_empty());
         jobs.defer(102, key).expect("completed guard plus main drain releases exactly one reservation");
         assert!(matches!(jobs.defer(103, key), Err(AdmissionError::Capacity)));
     }
@@ -511,9 +518,11 @@ fn admission_refusal_correlation_survives_carried_acceptance_and_transferred_ter
         init.pending.insert(req, Pending { key, expected: Identity::of(&init.persisted),
             lifecycle: None, last_arrival: None, phase: StreamPhase::Running, capture: None,
             admission: AdmissionState::Awaiting(AdmissionId(req)) });
-        Bridge::for_session_test(init)
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+        crate::app::runtime_owners::Harness::from_parts(runtime, retained)
     };
-    let mut rig = fixture(1);
+    let mut harness = fixture(1);
+    let mut rig = harness.bridge();
     let mut delayed = Vec::new();
     rig.session_adapter.launch(RequestId(1), key, true,
         |job| { delayed.push(job); true }, |_| {}).unwrap();
@@ -550,7 +559,8 @@ fn admission_refusal_correlation_survives_carried_acceptance_and_transferred_ter
 
     // Independent history: producer already completed/transferred, but neither acceptance nor
     // an observation has reached the owner. Only the adapter's retained receipt can protect it.
-    let mut rig = fixture(1);
+    let mut harness = fixture(1);
+    let mut rig = harness.bridge();
     let mut d = Dispatcher::<AppHost>::new();
     rig.session_adapter.launch(RequestId(1), key, true, |job| { job(); true }, |_| {}).unwrap();
     let terminal = rig.session_adapter.take_results();
@@ -567,7 +577,8 @@ fn admission_refusal_correlation_survives_carried_acceptance_and_transferred_ter
     // Contrast with a genuinely capacity-refused request: only its exact negative correlation
     // retires it. All fillers stay in private adapter resources and are cancelled on teardown.
     let req = SESSION_TOTAL_RESERVATIONS + 1;
-    let mut rig = fixture(req);
+    let mut harness = fixture(req);
+    let mut rig = harness.bridge();
     for id in 1..=SESSION_TOTAL_RESERVATIONS {
         rig.session_adapter.launch(RequestId(id), key, true,
             |job| { delayed.push(job); true }, |_| {}).unwrap();
@@ -593,8 +604,12 @@ fn bridge_cached_session_hash_distinguishes_logical_state_without_ui_damage() {
     let init = plx_session::auth::SessionInit::captured(Default::default());
     let mut other = init.clone();
     other.next_req = 1;
-    let mut a = Bridge::for_session_test(init);
-    let b = Bridge::for_session_test(other);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut a = harness.bridge();
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(other);
+    let mut other_owner = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let b = other_owner.bridge();
     assert_eq!(a.auth_read().0.phase, b.auth_read().0.phase);
     assert_ne!(a.session_subhash(), b.session_subhash());
     assert_eq!(a.session_subhash(), a.session.subhash());
@@ -615,7 +630,9 @@ fn dismissing_the_keypad_clears_the_pin_verdict() {
     init.phase = plx_session::auth::Phase::Profiles;
     init.pin_denied = true;
     init.error = "Couldn't switch profile — check the connection.".into();
-    let mut rig = Bridge::for_session_test(init);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     let retained = rig.session.publication();
     let mut d = Dispatcher::<AppHost>::new();
     execute_session_command(&mut d, plx_session::auth::SessionCmd::DismissPinError);
@@ -651,7 +668,9 @@ fn refused_restart_preserves_the_exact_owner_state_through_dispatch() {
         init.next_req = next_req;
         init.signin_active = true;
         init.apply_pending = true;
-        let mut rig = Bridge::for_session_test(init);
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
         let retained = rig.session.publication();
         let before = rig.session.subhash();
         let mut d = Dispatcher::<AppHost>::new();
@@ -689,7 +708,9 @@ fn mounted_profiles_selection_crosses_owner_and_live_ack_with_constructor_and_co
     init.pin_denied = true;
     init.users = vec![plx_session::auth::UserTile { uuid: "synthetic-user".into(),
         title: "Synthetic user".into(), ..Default::default() }];
-    let mut rig = Bridge::for_session_test(init);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     let mut d = Dispatcher::<AppHost>::new();
     let probe = |d: &Dispatcher<AppHost>| {
         let mut text = String::new();
@@ -775,7 +796,9 @@ fn erased_publication_waits_for_carried_resource_completion() {
     init.phase = plx_session::auth::Phase::Profiles;
     init.pin_code = "old-code".into();
     init.signin_active = true;
-    let mut rig = Bridge::for_session_test(init);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     rig.session_adapter.fixture_resources().sweep_leftovers = 2;
     let mut d = Dispatcher::<AppHost>::new();
     for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - 1 {
@@ -846,7 +869,9 @@ fn selection_acceptance_uses_exact_instance_correlation_and_full_epoch_through_c
             init.users = vec![plx_session::auth::UserTile { uuid: "synthetic-user".into(),
                 title: "Synthetic user".into(), protected: case == 1, ..Default::default() }];
             if case == 3 { init.next_req = u32::MAX; }
-            let mut rig = Bridge::for_session_test(init);
+            let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+            let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+            let mut rig = harness.bridge();
             let old = rig.session.publication();
             let old_hash = rig.session.subhash();
             let mut d = Dispatcher::<AppHost>::new();
@@ -908,7 +933,9 @@ fn full_transfer_and_refilled_landing_use_production_ingest_and_carried_owner_ac
             admission: AdmissionState::Awaiting(AdmissionId(req)) });
     }
     let expected = plx_session::auth::SessionIdentity::of(&init.persisted);
-    let mut rig = Bridge::for_session_test(init);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     let fill = |rig: &mut Bridge, first: u32| {
         for offset in 0..SESSION_TOTAL_RESERVATIONS {
             let expected = expected.clone();
@@ -1022,7 +1049,9 @@ fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
         let expected_origin = fresh.origin().unwrap();
         let expected_pin = fresh.resolve_pin().unwrap();
         assert!(expected_origin.is_tls());
-        let mut rig = Bridge::for_session_test(plx_session::auth::SessionInit::captured(stored));
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(plx_session::auth::SessionInit::captured(stored));
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
         rig.session_adapter.fixture_resources().native_endpoints.insert(sid.raw(), client);
         rig.session_adapter.inject_fixture_work(1, move |output, input| {
             let SessionWork::Endpoint { expected, lifecycle, machine_id, .. } = input

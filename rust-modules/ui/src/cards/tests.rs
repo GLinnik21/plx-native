@@ -40,6 +40,7 @@ fn cx9_pressed(view: &FixtureView, ms: u32, press: f32, focus: Option<FocusKey<u
         press: PressRead { scale: press, owner: pressed, ..Default::default() },
         focus: FocusRead { current: focus, ..Default::default() },
         owner: InputOwner::Entry(ENTRY),
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
     }
 }
 
@@ -318,6 +319,8 @@ struct Rig<S: Section> {
     /// The card the press dip belongs to when that is not the focused one (an abandoned press).
     pressed: Option<FocusKey<u32>>,
     ms: u32,
+    modal: plx_machine::machine::ModalRead,
+    page_image: plx_machine::machine::PageImageRead,
 }
 
 impl<S: Section> Rig<S> {
@@ -330,6 +333,8 @@ impl<S: Section> Rig<S> {
             press: 1.0,
             pressed: None,
             ms: 0,
+            modal: Default::default(),
+            page_image: Default::default(),
         }
     }
 
@@ -338,7 +343,10 @@ impl<S: Section> Rig<S> {
     }
 
     fn cx_with(&self, press: f32) -> Cx9<'_> {
-        cx9_pressed(&self.view, self.ms, press, self.focus, self.pressed.or(self.focus))
+        let mut cx = cx9_pressed(&self.view, self.ms, press, self.focus, self.pressed.or(self.focus));
+        cx.modal = self.modal;
+        cx.page_image = self.page_image;
+        cx
     }
 
     /// Step one event through the section: the event it reported and whether the step moved.
@@ -347,7 +355,9 @@ impl<S: Section> Rig<S> {
         let mut out = Vec::new();
         let mut reported = None;
         let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
-            let cx = cx9_pressed(&self.view, self.ms, self.press, self.focus, self.pressed.or(self.focus));
+            let mut cx = cx9_pressed(&self.view, self.ms, self.press, self.focus, self.pressed.or(self.focus));
+            cx.modal = self.modal;
+            cx.page_image = self.page_image;
             let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
             reported = self.sect.on(&ev, &cx, &self.src, &mut fx);
         });
@@ -990,27 +1000,28 @@ fn the_lifted_card_is_left_out_of_the_page_pass_and_drawn_by_the_lift() {
         let cx = r.cx();
         let ids = |drawn: Vec<(u32, Rect)>| drawn.into_iter().map(|(e, _)| e).collect::<Vec<_>>();
 
-        crate::popover::set_lift_owns(false);
+        // Each draw reports only its own local omission.
         let mut page = DrawFrame::new(&cx, Painter::recording());
         page.lifted = Some(r.key(101));
+        page.lift_owner = Some(plx_machine::machine::InstanceId(1));
         let p = page.painter;
         r.src.drawn.borrow_mut().clear();
         r.sect.draw(&mut page, p, &r.src);
         let page_cards = ids(r.src.drawn.take());
         assert!(page_cards.len() >= 3 && !page_cards.contains(&101), "page pass left the lifted card out: {page_cards:?}");
-        assert!(crate::popover::lift_owns(), "…and said so");
+        assert_eq!(page.lift_receipt().unwrap().key, r.key(101), "…and said so locally");
 
         let mut lift = DrawFrame::new(&cx, Painter::recording());
         r.sect.redraw(&mut lift, &r.src, Some(r.key(101)));
         assert_eq!(ids(r.src.drawn.take()), vec![101], "the lift is the card's only copy");
 
         // A frame with nothing lifted (every other moment) draws it as ever, and claims nothing.
-        crate::popover::set_lift_owns(false);
+        assert!(lift.lift_receipt().is_none(), "the lift cannot publish page evidence");
         let mut plain = DrawFrame::new(&cx, Painter::recording());
         let p = plain.painter;
         r.sect.draw(&mut plain, p, &r.src);
         assert!(ids(r.src.drawn.take()).contains(&101));
-        assert!(!crate::popover::lift_owns());
+        assert!(plain.lift_receipt().is_none());
     }
     run::<Shelf>();
     run::<Grid>();
@@ -2038,19 +2049,9 @@ fn a_shelf_that_goes_dormant_lets_its_lifted_card_go() {
     assert!(!r.run(1));
 }
 
-/// The page image a test sets must not outlive it (`PAGE_IMAGE_HELD` is a thread-local the
-/// dispatcher sets and a section reads on its next tick).
-struct ImageHeld;
-impl ImageHeld {
-    fn set() -> Self {
-        crate::containers::transition::set_page_image_held(true);
-        ImageHeld
-    }
-}
-impl Drop for ImageHeld {
-    fn drop(&mut self) {
-        crate::containers::transition::set_page_image_held(false);
-    }
+/// A standalone section fixture owns its immutable page-image input explicitly.
+fn held_image() -> plx_machine::machine::PageImageRead {
+    plx_machine::machine::PageImageRead::held(ENTRY, InstanceId(9))
 }
 
 /// **Nothing steps under an image that hides it.** A shelf that is dormant while the page is a held
@@ -2066,7 +2067,7 @@ fn a_dormant_shelf_under_a_held_page_image_parks_on_its_first_tick() {
     let full = RowStyle::HOME.focus_scale;
     assert!(r.scale(101).unwrap() > full - 0.002, "premise: the card is whole in its lift");
     assert!(r.sect.under_band() > crate::card_row::under_band(0.0) + 1.0, "premise: the focused card's caption band is open");
-    let _held = ImageHeld::set();
+    r.page_image = held_image();
     r.sect.dormant(true);
     r.run(1);
     assert_eq!(r.scale(101), Some(1.0), "the lifted card is at rest on the first tick under the image");
@@ -2090,7 +2091,7 @@ fn a_dormant_shelf_mid_ease_jumps_to_rest_when_the_page_image_goes_up() {
     r.run(3);
     let eased = r.scale(101).unwrap();
     assert!(eased > 1.0 + 1e-3 && eased < RowStyle::HOME.focus_scale - 1e-3, "premise: mid-ease on a visible page: {eased}");
-    let _held = ImageHeld::set();
+    r.page_image = held_image();
     r.run(1);
     assert_eq!(r.scale(101), Some(1.0), "the ease is finished under the image");
     assert!(r.sect.at_rest());
@@ -2146,7 +2147,7 @@ fn a_shelf_that_returns_under_a_held_image_keeps_its_seat_lifted_and_its_band_op
         let mut r = if covered {
             // the page slept under the image of the push that covered it, then went unticked
             let mut r = shelf_left_lifted();
-            let _push = ImageHeld::set();
+            r.page_image = held_image();
             r.sect.dormant(true);
             r.run(3);
             assert_eq!(r.scale(101), Some(1.0), "premise: it slept");
@@ -2155,7 +2156,7 @@ fn a_shelf_that_returns_under_a_held_image_keeps_its_seat_lifted_and_its_band_op
         } else {
             settled::<Shelf>(8)
         };
-        let held = ImageHeld::set();
+        r.page_image = held_image();
         r.sect.dormant(true);
         r.feed(ScreenEvent::Enter(Enter::Restored));
         r.land_focus(101, By::Restore);
@@ -2167,7 +2168,7 @@ fn a_shelf_that_returns_under_a_held_image_keeps_its_seat_lifted_and_its_band_op
         }
         assert!(band_open(&r), "covered={covered}: its caption band is open and its heading raised under the image");
         assert!(!r.run(1), "covered={covered}: a seat already where it goes reports no motion to hold the image");
-        drop(held);
+        r.page_image = Default::default();
         r.sect.dormant(false);
         for frame in 0..30 {
             r.run(1);
@@ -2198,14 +2199,14 @@ fn a_shelf_that_returns_with_a_scroll_glide_unfinished_ends_the_glide_before_the
     r.run(5);
     let frozen = r.scroll().unwrap();
     assert!(frozen > 1.0 && frozen < end - 20.0, "premise: the push froze the glide half played: {frozen} of {end}");
-    let push = ImageHeld::set();
+    r.page_image = held_image();
     r.sect.dormant(true);
     r.run(3);
     assert_eq!(r.scroll(), Some(frozen), "premise: the covered page keeps its scroll");
     r.focus = None;
-    drop(push);
+    r.page_image = Default::default();
 
-    let _held = ImageHeld::set();
+    r.page_image = held_image();
     r.sect.dormant(true);
     r.feed(ScreenEvent::Enter(Enter::Restored));
     r.land_focus(seat, By::Restore);
@@ -2252,7 +2253,7 @@ fn a_deliberate_move_ends_a_shelfs_return_and_is_slept_through() {
     let full = RowStyle::HOME.focus_scale;
     let mut r = shelf_left_lifted();
     r.focus = None;
-    let held = ImageHeld::set();
+    r.page_image = held_image();
     r.sect.dormant(true);
     r.feed(ScreenEvent::Enter(Enter::Restored));
     r.land_focus(101, By::Restore);
@@ -2264,7 +2265,7 @@ fn a_deliberate_move_ends_a_shelfs_return_and_is_slept_through() {
     assert_eq!(r.scale(102), Some(1.0), "the seat it moved to is at rest");
     assert!(!band_open(&r) && r.sect.at_rest(), "nothing is left open or moving under the image");
     assert!(!r.run(1), "nothing moves under the image");
-    drop(held);
+    r.page_image = Default::default();
     r.sect.dormant(false);
     r.run(1);
     let first = r.scale(102).unwrap();
@@ -2283,7 +2284,7 @@ fn a_shelf_that_returned_sleeps_through_focus_leaving_it() {
     for by in [By::Dir, By::Pointer, By::Restore] {
         let mut r = shelf_left_lifted();
         r.focus = None;
-        let _held = ImageHeld::set();
+        r.page_image = held_image();
         r.sect.dormant(true);
         r.feed(ScreenEvent::Enter(Enter::Restored));
         r.land_focus(101, By::Restore);
@@ -2312,7 +2313,7 @@ fn a_shelf_that_returned_sleeps_through_focus_leaving_it() {
 fn a_shelf_that_returns_with_no_restoring_move_wakes_at_its_lift_and_not_from_rest() {
     let full = RowStyle::HOME.focus_scale;
     let mut r = shelf_left_lifted();
-    let _held = ImageHeld::set();
+    r.page_image = held_image();
     r.sect.dormant(true);
     r.run(3);
     assert_eq!(r.scale(101), Some(1.0), "premise: it slept, with focus still on the card");
@@ -2335,7 +2336,7 @@ fn a_returning_shelf_that_holds_no_seat_is_still_put_to_rest_under_the_image() {
     let eased = r.scale(101).unwrap();
     assert!(eased > 1.0 + 1e-3 && eased < RowStyle::HOME.focus_scale - 1e-3, "premise: mid-ease on a visible page: {eased}");
     r.focus = None;
-    let _held = ImageHeld::set();
+    r.page_image = held_image();
     r.feed(ScreenEvent::Enter(Enter::Restored));
     r.run(1);
     assert_eq!(r.scale(101), Some(1.0), "the ease is finished under the image");
@@ -2351,7 +2352,7 @@ fn a_returning_shelf_that_holds_no_seat_is_still_put_to_rest_under_the_image() {
 fn a_shelf_that_returned_adopts_a_landing_whole_under_the_image() {
     let mut r = landing_rig();
     r.focus = None;
-    let held = ImageHeld::set();
+    r.page_image = held_image();
     r.sect.dormant(true);
     r.run(2);
     r.src.elems.remove(11);
@@ -2363,7 +2364,7 @@ fn a_shelf_that_returned_adopts_a_landing_whole_under_the_image() {
         assert!(r.sect.ghost_probe().0.is_empty(), "a ghost plays under the image, frame {frame}");
         assert_eq!(r.scale(112), Some(RowStyle::HOME.focus_scale), "the seat stays lifted through the landing, frame {frame}");
     }
-    drop(held);
+    r.page_image = Default::default();
     r.sect.dormant(false);
     r.run(2);
     let n = r.src.elems.len();
@@ -3946,7 +3947,7 @@ struct AbandonRow {
 /// dip stays with the card that was pressed while it springs back, so the pressed card is the
 /// press's owner after focus has left it. Real `Press`, real section, one 16 ms frame at a time.
 fn abandoned_press_trace<S: Section + 'static>() -> Vec<AbandonRow> {
-    crate::popover::set_lift_owns(false);
+    // No ambient lift policy is shared by card harnesses.
     let mut r = Rig::<S>::new(6);
     r.land_focus(100, By::Dir);
     r.run(120);
@@ -4086,7 +4087,7 @@ fn landing_rig() -> Rig<Shelf> {
 
 /// [`landing_rig`] with focus on `elem` instead.
 fn landing_rig_at(elem: u32) -> Rig<Shelf> {
-    crate::containers::transition::set_page_image_held(false);
+
     let mut r = Rig::<Shelf>::new(40);
     r.sect = Shelf::new(ENTRY, RowStyle::HOME).animate_landings(true);
     r.run(2);
@@ -4217,7 +4218,7 @@ fn a_sliding_card_starts_where_it_stood_and_its_stop_follows() {
 /// becoming cards: nothing is there to change.
 #[test]
 fn nothing_animates_on_the_first_load() {
-    crate::containers::transition::set_page_image_held(false);
+
     let mut r = Rig::<Shelf>::new(0);
     r.sect = Shelf::new(ENTRY, RowStyle::HOME).animate_landings(true);
     r.run(2);
@@ -4277,7 +4278,7 @@ fn a_dormant_shelf_snaps_a_landing() {
 #[test]
 fn a_landing_under_a_held_page_image_shows_its_start_state_on_release() {
     let mut r = landing_rig();
-    crate::containers::transition::set_page_image_held(true);
+    r.page_image = held_image();
     r.src.elems.remove(11);
     r.run(6);
     let n = r.src.elems.len();
@@ -4285,7 +4286,7 @@ fn a_landing_under_a_held_page_image_shows_its_start_state_on_release() {
     let slid = r.sect.landing_probe(n, 10).0;
     assert!((slid + pitch()).abs() < 0.5, "the card left of the gap still stands at its old slot: {slid}");
     // the frame painted between the release and the next tick
-    crate::containers::transition::set_page_image_held(false);
+    r.page_image = Default::default();
     assert_eq!(r.sect.ghost_probe(), (vec![11], 1.0));
     assert_eq!(r.sect.landing_probe(n, 10).0, slid);
     let ghost = ghost_paint(&r, &[111]);
@@ -4294,6 +4295,41 @@ fn a_landing_under_a_held_page_image_shows_its_start_state_on_release() {
     assert!(r.sect.ghost_probe().1 < 1.0 && r.sect.landing_probe(n, 10).0 > slid, "and it plays from the first live tick");
     r.run(600);
     assert!(!r.sect.landing_pending() && !r.run(1), "and the shelf is quiet");
+}
+
+/// Two real dispatcher draw plans on one thread must not share landing policy.
+#[test]
+fn another_dispatchers_live_draw_cannot_step_a_held_owners_landing() {
+    use crate::containers::transition::{PageDip, PageSnapshot};
+    let _serial = plx_base::testlock::serial();
+    #[derive(Default)]
+    struct Snapshot(bool);
+    impl PageSnapshot for Snapshot {
+        fn available(&self) -> bool { true }
+        fn valid(&self) -> bool { self.0 }
+        fn begin(&mut self) -> bool { true }
+        fn finish(&mut self) { self.0 = true; }
+        fn release(&mut self) { self.0 = false; }
+    }
+    let mut r = landing_rig();
+    let (mut a, mut ar, _) = crate::fixture::booted();
+    let (mut b, mut br, _) = crate::fixture::booted();
+    a.nav.tabs.stack.top_mut().unwrap().id = ENTRY; // the standalone landing belongs to A's page
+    a.page_snapshot = Box::<Snapshot>::default();
+    a.nav.tabs.stack.transition = Box::new(PageDip::new());
+    a.nav.tabs.stack.transition.request(true);
+    a.draw(&mut ar, true);
+    a.draw(&mut ar, true);
+    assert!(a.page_snapshot.valid(), "A actually captured its page");
+    r.page_image = a.page_image_read();
+    assert!(r.page_image.is_held());
+    r.src.elems.remove(11);
+    r.run(1);
+    assert_eq!(r.sect.ghost_probe(), (vec![11], 1.0));
+    b.draw(&mut br, true);
+    r.run(6);
+    assert_eq!(r.sect.ghost_probe(), (vec![11], 1.0),
+        "B's live draw must not advance A's landing hidden by A's held image");
 }
 
 /// When the focused card is the one removed its ghost starts at the scale it was drawn at (no
@@ -4454,7 +4490,7 @@ fn critical(x0: f32, k: f32, frames: u32) -> f32 {
 }
 
 fn animated_grid(n: usize, focus: u32, spec: GridSpec) -> Rig<Grid> {
-    crate::containers::transition::set_page_image_held(false);
+
     let mut r = Rig::<Grid>::new(n);
     r.sect = Grid::new(ENTRY, spec.animate_landings(true));
     r.run(2);
@@ -4524,10 +4560,10 @@ fn a_grid_ghost_fades_in_its_cell_on_k_scale() {
 /// stood, lifted and opaque.
 #[test]
 fn a_lifted_ghost_is_left_out_of_the_page_pass_and_drawn_by_the_lift() {
-    use crate::containers::modal::set_veil;
-    use crate::popover::{lift_owns, set_lift_owns};
+
+    use plx_machine::machine::InstanceId;
     let mut r = animated_grid(40, 108, GRID);
-    set_veil(1.0);
+    r.modal.veil = 1.0;
     let was = <Rig<Grid> as CardHarness>::place(&r, 108, At::Drawn).unwrap().rect;
     r.src.elems.remove(10);
     remove_focused_grid(&mut r, 8);
@@ -4538,13 +4574,14 @@ fn a_lifted_ghost_is_left_out_of_the_page_pass_and_drawn_by_the_lift() {
     assert!(!r.sect.departing::<FixtureHost>(r.key(109)), "a card on the page is not");
     let cx = r.cx();
     let ghosts = Cards::new(order, false);
-    set_lift_owns(false);
+    // The ghost omission belongs to this page walk alone.
     let mut page = DrawFrame::new(&cx, Painter::recording());
     page.lifted = Some(r.key(108));
+    page.lift_owner = Some(InstanceId(1));
     r.sect.paint_ghosts(&page, page.painter, &ghosts);
     let drawn: Vec<u32> = ghosts.drawn.take().into_iter().map(|(e, _)| e).collect();
     assert_eq!(drawn, vec![110], "the page pass leaves the lifted ghost out, and only it");
-    assert!(lift_owns(), "…and says the lift owns it");
+    assert_eq!(page.lift_receipt().unwrap().key, r.key(108), "…and says so locally");
     let mut lift = DrawFrame::new(&cx, Painter::recording());
     lift.lifting = Some(r.key(108));
     ghosts.painted.borrow_mut().clear();
@@ -4562,8 +4599,8 @@ fn a_lifted_ghost_is_left_out_of_the_page_pass_and_drawn_by_the_lift() {
     let mut marks = ghosts.focused.take();
     marks.sort();
     assert_eq!(marks, vec![(108, true), (110, false)], "each ghost keeps the focus it had");
-    set_veil(0.0);
-    set_lift_owns(false);
+    assert!(plain.lift_receipt().is_none());
+    r.modal.veil = 0.0;
     r.run(600);
     assert!(!r.sect.departing::<FixtureHost>(r.key(108)), "gone once faded");
 }
@@ -4690,10 +4727,10 @@ fn a_focused_card_that_changes_row_crossfades_on_top() {
 /// first frame after the menu has let go every spring starts on one frame: no beat.
 #[test]
 fn a_landing_waits_for_the_menu_to_leave_then_moves_at_once_on_the_first_frame_after() {
-    use crate::containers::modal::{set_veil, CLOSING_GONE};
+    use crate::containers::modal::CLOSING_GONE;
     let mut r = animated_grid(40, 108, GRID);
     let stood = settled_rect(&r, 109);
-    set_veil(1.0);
+    r.modal.veil = 1.0;
     remove_focused_grid(&mut r, 8);
     assert!(!r.run(1), "the landing's first frame under the menu reports no motion");
     let n = r.src.elems.len();
@@ -4704,7 +4741,7 @@ fn a_landing_waits_for_the_menu_to_leave_then_moves_at_once_on_the_first_frame_a
         // the menu's fade-out, down to just above the veil's edge
         if frame >= 10 {
             fade = (fade * 0.9).max(CLOSING_GONE + 1e-3);
-            set_veil(fade);
+            r.modal.veil = fade;
         }
         let moved = r.run(1);
         assert!(!moved, "frame {frame}: the waiting landing reported motion under the menu");
@@ -4714,14 +4751,14 @@ fn a_landing_waits_for_the_menu_to_leave_then_moves_at_once_on_the_first_frame_a
         let drawn = <Rig<Grid> as CardHarness>::place(&r, 109, At::Drawn).unwrap().rect;
         assert!(rect_close(drawn, stood), "frame {frame}: 109 is not where it stood: {drawn:?} {stood:?}");
     }
-    set_veil(CLOSING_GONE * 0.5);
+    r.modal.veil = CLOSING_GONE * 0.5;
     r.run(1);
     let ((x, _), _) = r.sect.landing_probe(n, 8);
     assert!(x < start.0 .0, "the slide starts on the first frame after the menu let go");
     assert!(r.sect.ghost_probe().1 < 1.0, "the ghost fades on the same frame");
     let s = r.scale(109).unwrap();
     assert!(s > 1.0, "and the takeover rises on it: {s}");
-    set_veil(0.0);
+    r.modal.veil = 0.0;
     r.run(600);
     assert!((r.scale(109).unwrap() - poster_grid::STYLE.focus_scale).abs() < 1e-4);
     assert!(!r.sect.landing_pending() && !r.run(1));
@@ -4732,9 +4769,9 @@ fn a_landing_waits_for_the_menu_to_leave_then_moves_at_once_on_the_first_frame_a
 /// to full the frame focus comes back (`--trigger watchlist=` Remove render, 2026-10-16).
 #[test]
 fn a_takeover_reconciled_a_frame_late_still_rises_from_rest_with_the_landing() {
-    use crate::containers::modal::set_veil;
+
     let mut r = animated_grid(40, 108, GRID);
-    set_veil(1.0);
+    r.modal.veil = 1.0;
     r.src.elems.remove(8);
     r.run(1);
     assert!(r.scale(109).unwrap() < 1.0 + 1e-4, "the frame before focus is reconciled: 109 is not lifted");
@@ -4746,7 +4783,7 @@ fn a_takeover_reconciled_a_frame_late_still_rises_from_rest_with_the_landing() {
         assert_eq!(r.scale(109), Some(1.0), "frame {frame}: the late-reconciled takeover is lifted under the menu");
         assert!(lifted(&r) <= 1, "frame {frame}: more than one tile lifted");
     }
-    set_veil(0.0);
+    r.modal.veil = 0.0;
     r.run(600);
     assert!((r.scale(109).unwrap() - poster_grid::STYLE.focus_scale).abs() < 1e-4, "and it ends lifted");
 }
@@ -4755,7 +4792,7 @@ fn a_takeover_reconciled_a_frame_late_still_rises_from_rest_with_the_landing() {
 /// next one moves, with no beat between.
 #[test]
 fn a_landing_with_no_menu_starts_at_once() {
-    crate::containers::modal::set_veil(0.0);
+
     let mut r = animated_grid(40, 108, GRID);
     let n0 = r.src.elems.len();
     let before = r.sect.landing_probe(n0, 9);
@@ -4875,13 +4912,13 @@ where
 }
 #[test]
 fn a_grid_ghost_stays_in_its_row_when_the_page_shifts() {
-    crate::containers::transition::set_page_image_held(false);
+
     let r = animated_grid(40, 112, GRID);
     a_ghost_holds_its_screen_place_when_the_landing_shifts_the_page(r, |r| &r.sect);
 }
 #[test]
 fn an_external_grid_ghost_stays_in_its_row_when_the_page_shifts() {
-    crate::containers::transition::set_page_image_held(false);
+
     let mut r = Rig::<ExtGrid>::new(40);
     r.sect = ExtGrid { grid: Grid::new(ENTRY, EXT.animate_landings(true)), page: 0.0 };
     r.run(2);
@@ -5713,6 +5750,8 @@ fn focusing_a_tile_moves_no_other_tile_at_any_pop_progress() {
             press: 1.0,
             pressed: None,
             ms: 0,
+            modal: Default::default(),
+            page_image: Default::default(),
         };
         r.run(2);
         let rest: Vec<Rect> = (100..108u32).map(|e| Section::place(&r.sect, &r.cx(), &r.src, e, At::Drawn).expect("a card").rect).collect();

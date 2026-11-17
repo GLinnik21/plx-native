@@ -17,8 +17,8 @@
 //!    constructor does that.
 //! 3. Call [`HoldHint::draw`] LAST in the page draw, over everything the page paints. It is
 //!    non-interactive: record no focus stop and no hit rect for it.
-//! 4. Nothing else. The item menu's `Mount` already calls [`mark_learned`], so opening a menu from
-//!    any card screen retires the hint everywhere; [`step`](HoldHint::step) reads that itself.
+//! 4. Emit the returned [`HoldHintEvent`] through `Fx::HoldHint`. The item menu's `Mount` emits
+//!    `Learned`; the dispatcher owns the lesson and supplies the next `Cx::hold_hint` readout.
 //!
 //! **Cadence.** The self-appearing hint stands ONCE PER INSTALL per [`Surface`], app-wide: the
 //! [`Surface::Card`] hint on whichever card screen (Home included) the viewer first rests on a card
@@ -71,7 +71,7 @@
 //! so the hint stands the frame the surface becomes ready, and until then it shows nothing, spends
 //! nothing and shows no fill for a hold (the hold opens nothing yet). Cards are always ready.
 //! `focus == None` shows nothing, and once the viewer has opened a context menu it RETIRES for good
-//! ([`learned`]; the design's "until first use" mode — "always" and "off" were design-time toggles
+//! (`HoldHintRead::learned`; the design's "until first use" mode — "always" and "off" were design-time toggles
 //! and have no setting here).
 //!
 //! **Motion.** It fades in over ~.36 s and rises [`RISE_PX`] on a slower spring, both critically
@@ -104,12 +104,11 @@
 //! track solves its density from a readback of its band's backdrop image (twice a second), and a
 //! standing hint does not take one.
 //!
-//! **Where "learned" and "read" live.** Frame-thread `thread_local`s, backed by the install's
-//! session preference record without this crate naming it: the application seeds the per-surface
-//! "read" latches at boot ([`seed_taught`], from the stored `hold_hint_taught` preference) and
-//! persists each transition it drains from the frame tick ([`take_newly_taught`]). "Learned" (an
-//! item menu was opened) is per run, but opening one also teaches every surface, which is stored,
-//! so the self-appearing hint does not come back after a relaunch either.
+//! **Where "learned" and "read" live.** The dispatcher's owned input state, supplied explicitly as
+//! [`HoldHintRead`]. This widget emits a typed lesson, never mutates an ambient publisher. Boot
+//! supplies the install's stored card/pill facts; the application runner persists new lessons with
+//! lifetime-fenced durable receipts. Opening an item menu retires hold feedback for that profile
+//! tenure and teaches both install surfaces. Independent dispatchers never share lessons.
 
 use std::ffi::CString;
 
@@ -162,28 +161,8 @@ const FULL: f32 = 0.98;
 /// showing counts as read and is spent (a viewer who moves a beat after it lands has not read it).
 pub const READ_MS: u32 = 1000;
 
-// ---- "has the viewer learned it", and "has this install been taught" -----------------------------
-//
-// Two frame-thread `thread_local`s (the same shape as `idle`'s and `press`'s published snapshots):
-// every writer (the item-menu surface mounting, a card screen's tick) and every reader runs there,
-// and a host test gets a fresh answer per test thread with no lock to forget.
-//
-// `LEARNED` is the within-a-run fact: the viewer has opened a context menu, so the self-appearing
-// hint retires everywhere for the rest of the run, and a held OK no longer shows the capsule either.
-// It is NOT stored. What is stored, once per INSTALL, is `SHOWN`: one bit per [`Surface`], set when a
-// read showing happened on that surface (or a menu was opened, which teaches every surface). This
-// crate cannot name the session record (`plx_ui` may not name Plex types), so the application seeds
-// the bits at boot ([`seed_taught`]) and persists the transitions it polls ([`take_newly_taught`]),
-// the way `plx_platform::i18n` is handed its saved preference. After a relaunch on a taught install
-// `LEARNED` is false again, so a held OK shows the capsule's fill (progress feedback) but nothing
-// self-appears.
-thread_local! {
-    static LEARNED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Which surfaces have had their one showing read (bit per [`Surface`]) on this install.
-    static SHOWN: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
-    /// A bit of `SHOWN` was set since the application last drained it.
-    static CHANGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
+// Logical lessons are owned by InputMachine; only render caches below remain frame-local.
+pub use plx_machine::machine::{HoldHintEvent, HoldHintRead};
 
 /// Where the hint stands. Each surface has its own cadence and its own once-per-install latch, so
 /// teaching one leaves the other unspent.
@@ -197,13 +176,6 @@ pub enum Surface {
 }
 
 impl Surface {
-    fn bit(self) -> u8 {
-        match self {
-            Surface::Card => 1,
-            Surface::SeasonPill => 2,
-        }
-    }
-
     /// How long focus must rest on this surface before the hint appears.
     fn dwell_ms(self) -> u32 {
         match self {
@@ -220,79 +192,9 @@ pub struct Taught {
     pub pill: bool,
 }
 
-/// The viewer has opened a context menu, so the hint has done its job and never shows again.
-pub fn learned() -> bool {
-    LEARNED.with(|l| l.get())
-}
-
-/// Record that a context menu was opened: the self-appearing hint retires for the run and every
-/// surface counts as taught, which [`take_newly_taught`] reports so the install remembers it.
-/// Idempotent.
-pub fn mark_learned() {
-    LEARNED.with(|l| l.set(true));
-    mark_shown(Surface::Card);
-    mark_shown(Surface::SeasonPill);
-}
-
-/// Forget it — a test's start state, and nothing else.
-#[cfg(any(test, feature = "test-support"))]
-pub fn reset_learned_for_test() {
-    LEARNED.with(|l| l.set(false));
-}
-
-/// Whether `surface`'s one showing has been read on this install (seeded or this run).
-pub fn shown(surface: Surface) -> bool {
-    SHOWN.with(|s| s.get()) & surface.bit() != 0
-}
-
-/// Whether the self-appearing hint has been read on ANY surface.
-pub fn shown_this_run() -> bool {
-    SHOWN.with(|s| s.get()) != 0
-}
-
-fn mark_shown(surface: Surface) {
-    SHOWN.with(|s| {
-        if s.get() & surface.bit() == 0 {
-            s.set(s.get() | surface.bit());
-            CHANGED.with(|c| c.set(true));
-        }
-    });
-}
-
-/// Seed the latches from what the install stored. Raises no signal: it is the stored fact, not news.
-/// Only ever turns a surface on.
-pub fn seed_taught(card: bool, pill: bool) {
-    let bits = u8::from(card) * Surface::Card.bit() | u8::from(pill) * Surface::SeasonPill.bit();
-    SHOWN.with(|s| s.set(s.get() | bits));
-}
-
-/// The surfaces taught since the last call, or `None` when nothing changed: the application polls
-/// this from its frame tick and persists what it returns. The value is the whole current state, so a
-/// lost or repeated poll can never un-teach a surface.
-pub fn take_newly_taught() -> Option<Taught> {
-    CHANGED.with(|c| c.replace(false)).then(|| {
-        let bits = SHOWN.with(|s| s.get());
-        Taught { card: bits & Surface::Card.bit() != 0, pill: bits & Surface::SeasonPill.bit() != 0 }
-    })
-}
-
-/// Forget every showing and any pending news — a test's start state, and nothing else.
-#[cfg(any(test, feature = "test-support"))]
-pub fn reset_shown_for_test() {
-    SHOWN.with(|s| s.set(0));
-    CHANGED.with(|c| c.set(false));
-}
-
-/// Mark the hint as taught for this run: the viewer-has-opened-a-menu state and every surface's one
-/// showing already spent. Called once at boot by the dev trigger `plxnative-hintoff`
-/// (`app::boot`), so the site demo film, which is shot headless with no viewer to teach, is not the
-/// one place a one-time teaching overlay appears. It changes no timing and no rest clock, and it is
-/// a seed: nothing is reported for storage. Compiled only with `devtriggers`, so no shipping build
-/// carries it.
-#[cfg(feature = "devtriggers")]
-pub fn teach_all_for_dev() {
-    LEARNED.with(|l| l.set(true));
-    seed_taught(true, true);
+/// Whether this owner's captured install fact has spent a surface's lesson.
+fn shown(read: HoldHintRead, surface: Surface) -> bool {
+    match surface { Surface::Card => read.card, Surface::SeasonPill => read.pill }
 }
 
 /// What the owner tells the hint each frame. Build it with [`HintInput::new`].
@@ -381,6 +283,8 @@ pub struct HoldHint {
     /// The tick clock of the previous step. A page that is covered gets no `Tick`, so a step that
     /// finds the clock more than [`GAP_MS`] past this one starts over: the gap was not rest.
     last_ms: Option<u32>,
+    /// The input owner's profile tenure that owns this schedule and claim.
+    context: u32,
     /// This resting place has had its [`LIFE_MS`]; it does not come back until focus moves.
     spent: bool,
     /// This instance is standing for the run's single showing, for the resting place it is on
@@ -408,18 +312,24 @@ impl HoldHint {
     /// A hint with the install-wide cadence (module doc, "Cadence"): the self-appearing hint stands
     /// at most once per install per [`Surface`], on any screen. The first time a hint has stood in
     /// full for [`READ_MS`] it takes its surface's latch, and no hint stands on its own on that
-    /// surface again, this run or after a relaunch. An opened item menu ([`learned`]) retires it as
+    /// surface again, this run or after a relaunch. An opened item menu (`HoldHintRead::learned`) retires it as
     /// well. A hint that never stood, or whose showing was cut short by a focus move before it had
     /// been readable, spends nothing and is offered again after the dwell; a physical hold shows it
     /// regardless, with its fill.
     pub const fn new() -> Self {
-        Self { key: None, surface: Surface::Card, rest_at: None, last_ms: None, spent: false, claimed: false, full_at: None, fade: Spring::at(0.0), rise: Spring::at(0.0), fill: 0.0 }
+        Self { key: None, surface: Surface::Card, rest_at: None, last_ms: None, context: 0, spent: false, claimed: false, full_at: None, fade: Spring::at(0.0), rise: Spring::at(0.0), fill: 0.0 }
     }
 
     /// Advance one frame — the owner's whole per-`Tick` job. `note` receives [`PresentEvent::Motion`]
     /// on every frame the fill is moving — the fill is steered by a clock the springs cannot see, and an idle gate that never
     /// heard it would freeze the progress mid-hold.
-    pub fn step(&mut self, input: HintInput, now_ms: u32, dt: f32, note: &mut dyn FnMut(PresentEvent)) {
+    pub fn step(&mut self, input: HintInput, now_ms: u32, dt: f32, note: &mut dyn FnMut(PresentEvent), read: HoldHintRead) -> Option<HoldHintEvent> {
+        if self.context != read.context {
+            if self.visible() || self.fill > 0.0 { note(PresentEvent::Motion); }
+            *self = Self::new();
+            self.context = read.context;
+        }
+        let mut taught = None;
         // A step after a long silence (the page was covered and got no `Tick`) finds the clock far
         // ahead of the last one: the silence was not rest, so the dwell and the read begin again.
         let gap = self.last_ms.is_some_and(|last| now_ms.wrapping_sub(last) > GAP_MS);
@@ -429,7 +339,7 @@ impl HoldHint {
             self.claimed = false;
             self.full_at = None;
         }
-        let focus = input.focus.filter(|_| !learned());
+        let focus = input.focus.filter(|_| !read.learned);
         if focus != self.key || input.surface != self.surface {
             self.key = focus;
             self.surface = input.surface;
@@ -464,7 +374,7 @@ impl HoldHint {
                 self.spent = true;
             }
         }
-        let may = self.claimed || !shown(input.surface);
+        let may = self.claimed || !shown(read, input.surface);
         let standing = may && input.ready && focus.is_some() && !self.spent && self.rest_at.is_some() && rested_ms >= dwell;
         if standing {
             self.claimed = true;
@@ -487,7 +397,9 @@ impl HoldHint {
         if self.claimed && self.fade.pos >= FULL {
             let at = *self.full_at.get_or_insert(now_ms);
             if now_ms.wrapping_sub(at) >= READ_MS {
-                mark_shown(input.surface);
+                if !shown(read, input.surface) {
+                    taught = Some(match input.surface { Surface::Card => HoldHintEvent::ReadCard, Surface::SeasonPill => HoldHintEvent::ReadPill });
+                }
             }
         } else {
             self.full_at = None;
@@ -510,26 +422,27 @@ impl HoldHint {
             }
             None => {}
         }
+        taught
     }
 
     /// Whether this frame's [`HintInput`] could change anything — the one question every adopter
     /// asks before it pays to build the input (a card lookup and a placement). `false` means the
     /// owner may pass `HintInput::default()` to [`step`](Self::step) instead, with the identical
-    /// result: the hint is retired ([`learned`]), or the run has had its one showing and this
+    /// result: the hint is retired (`HoldHintRead::learned`), or the run has had its one showing and this
     /// instance holds no claim, nothing is on screen or draining, and OK is not held (a physical
     /// hold shows a spent hint with its fill, so it always needs the card). `ok_held` is
     /// `cx.press.held_ms.is_some()`.
-    pub fn wants_input(&self, ok_held: bool) -> bool {
-        self.wants_input_on(Surface::Card, ok_held)
+    pub fn wants_input(&self, ok_held: bool, read: HoldHintRead) -> bool {
+        self.wants_input_on(Surface::Card, ok_held, read)
     }
 
     /// [`wants_input`](Self::wants_input) for a hint that stands on `surface`. A page with both
     /// surfaces asks for each: the input is worth building if either could matter.
-    pub fn wants_input_on(&self, surface: Surface, ok_held: bool) -> bool {
-        if learned() {
+    pub fn wants_input_on(&self, surface: Surface, ok_held: bool, read: HoldHintRead) -> bool {
+        if read.learned {
             return false;
         }
-        ok_held || self.claimed || self.visible() || self.fill > 0.0 || !shown(surface)
+        ok_held || self.claimed || self.visible() || self.fill > 0.0 || !shown(read, surface)
     }
 
     /// Whether any of it is on screen.
@@ -728,18 +641,26 @@ mod tests {
 
     const DT: f32 = 1.0 / 60.0;
 
-    thread_local! {
-        /// The tests' tick clock: frames stepped on this thread so far (one test, one thread).
-        static FRAME: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    #[derive(Default)]
+    struct Owner {
+        read: HoldHintRead,
+        events: Vec<HoldHintEvent>,
+        frame: u32,
+    }
+
+    impl Owner {
+        fn apply(&mut self, event: HoldHintEvent) {
+            self.read.apply(event);
+            self.events.push(event);
+        }
     }
 
     /// `HoldHint::step` at the next 60 Hz frame's `Tick.ms`.
-    fn tstep(h: &mut HoldHint, input: HintInput, note: &mut dyn FnMut(PresentEvent)) {
-        let n = FRAME.with(|f| {
-            f.set(f.get() + 1);
-            f.get()
-        });
-        h.step(input, (n as u64 * 1000 / 60) as u32, DT, note);
+    fn tstep(owner: &mut Owner, h: &mut HoldHint, input: HintInput, note: &mut dyn FnMut(PresentEvent)) {
+        owner.frame += 1;
+        if let Some(event) = h.step(input, (owner.frame as u64 * 1000 / 60) as u32, DT, note, owner.read) {
+            owner.apply(event);
+        }
     }
 
     fn rested(focus: u32) -> HintInput {
@@ -753,12 +674,12 @@ mod tests {
     /// Step `n` frames of `input` through the present gate, counting the `Motion` notes. Going
     /// through the gate every frame matters: its settle frame and sticky damage flag are consumed
     /// by the frames that raise them, as they are in the loop.
-    fn run(h: &mut HoldHint, input: HintInput, n: usize) -> usize {
+    fn run(owner: &mut Owner, h: &mut HoldHint, input: HintInput, n: usize) -> usize {
         let mut notes = 0;
         let mut present = plx_machine::present::Present::new();
         for _ in 0..n {
             plx_machine::motion::report::frame_begin(DT);
-            tstep(h, input, &mut |ev| {
+            tstep(owner, h, input, &mut |ev| {
                 notes += 1;
                 present.note(ev)
             });
@@ -772,25 +693,23 @@ mod tests {
         (s * 60.0).round() as usize
     }
 
-    fn fresh() -> (plx_base::testlock::Serial, HoldHint) {
+    fn fresh() -> (plx_base::testlock::Serial, HoldHint, Owner) {
         let g = plx_base::testlock::serial();
-        reset_learned_for_test();
-        reset_shown_for_test();
-        let _ = take_newly_taught();
-        // drain whatever the previous test left on the gate's process-wide damage flag
-        frame_asks(&mut HoldHint::new(), HintInput::default());
-        (g, HoldHint::new())
+        let mut owner = Owner::default();
+        // Drain only the motion gate's process-wide damage flag, never another owner's lesson.
+        frame_asks(&mut owner, &mut HoldHint::new(), HintInput::default());
+        (g, HoldHint::new(), owner)
     }
 
     /// One presented-or-not frame of `input`: did the gate ask to present it? The springs report
     /// into the flag `frame_begin` clears, so the tick has to happen BETWEEN the two calls, with a
     /// present just behind us so the 2 s keepalive cannot answer in the hint's place.
-    fn frame_asks(h: &mut HoldHint, input: HintInput) -> bool {
+    fn frame_asks(owner: &mut Owner, h: &mut HoldHint, input: HintInput) -> bool {
         let mut present = plx_machine::present::Present::new();
         present.take(10_000);
         present.acknowledge(10_000);
         plx_machine::motion::report::frame_begin(DT);
-        tstep(h, input, &mut |ev| present.note(ev));
+        tstep(owner, h, input, &mut |ev| present.note(ev));
         plx_machine::motion::report::collect_into(&mut present, 10_016);
         present.take(10_016)
     }
@@ -802,21 +721,21 @@ mod tests {
     /// held the dip's image four frames past its dissolve (`idle::decorative`).
     #[test]
     fn its_fade_wakes_the_gate_but_moves_no_layout() {
-        let (_g, mut h) = fresh();
-        run(&mut h, rested(7), secs(2.5));
+        let (_g, mut h, mut owner) = fresh();
+        run(&mut owner, &mut h, rested(7), secs(2.5));
         assert!(h.visible(), "premise: the hint stands");
         // a focus move starts its fade out
         plx_machine::motion::report::frame_begin(DT);
         let mut present = plx_machine::present::Present::new();
-        tstep(&mut h, rested(8), &mut |ev| present.note(ev));
+        tstep(&mut owner, &mut h, rested(8), &mut |ev| present.note(ev));
         assert!(h.visible() && h.opacity() < 1.0, "premise: the fade out is under way");
         assert!(plx_machine::motion::report::page_moving(), "the fade is page motion (the gate presents it)");
         assert!(!plx_machine::motion::report::page_layout_moving(), "but no layout moves, so it cannot hold a page image");
         // and the fade in
         let mut h = HoldHint::new();
-        run(&mut h, rested(7), secs(1.6));
+        run(&mut owner, &mut h, rested(7), secs(1.6));
         plx_machine::motion::report::frame_begin(DT);
-        tstep(&mut h, rested(7), &mut |ev| present.note(ev));
+        tstep(&mut owner, &mut h, rested(7), &mut |ev| present.note(ev));
         assert!(h.visible() && h.opacity() < 1.0, "premise: the fade in is under way");
         assert!(plx_machine::motion::report::page_moving());
         assert!(!plx_machine::motion::report::page_layout_moving());
@@ -824,329 +743,325 @@ mod tests {
 
     #[test]
     fn it_waits_out_the_dwell_then_appears() {
-        let (_g, mut h) = fresh();
-        run(&mut h, rested(7), secs(1.4));
+        let (_g, mut h, mut owner) = fresh();
+        run(&mut owner, &mut h, rested(7), secs(1.4));
         assert!(!h.visible(), "not before the dwell");
-        run(&mut h, rested(7), secs(0.2) + secs(0.6));
+        run(&mut owner, &mut h, rested(7), secs(0.2) + secs(0.6));
         assert!(h.visible(), "after the dwell the fade is under way");
         assert!(h.opacity() > 0.9, "and settled well within a second");
     }
 
     #[test]
     fn it_leaves_on_its_own_after_its_life_and_stays_gone() {
-        let (_g, mut h) = fresh();
-        run(&mut h, rested(7), secs(1.5 + 3.0));
+        let (_g, mut h, mut owner) = fresh();
+        run(&mut owner, &mut h, rested(7), secs(1.5 + 3.0));
         assert!(h.visible());
-        run(&mut h, rested(7), secs(3.0 + 1.5));
+        run(&mut owner, &mut h, rested(7), secs(3.0 + 1.5));
         assert!(!h.visible(), "6 s after it appeared it is gone");
-        run(&mut h, rested(7), secs(20.0));
+        run(&mut owner, &mut h, rested(7), secs(20.0));
         assert!(!h.visible(), "and it does not come back on the same tile");
     }
 
     #[test]
     fn a_focus_move_hides_it_and_rearms_the_dwell_from_zero() {
-        let (_g, mut h) = fresh();
-        run(&mut h, rested(7), secs(2.5));
+        let (_g, mut h, mut owner) = fresh();
+        run(&mut owner, &mut h, rested(7), secs(2.5));
         assert!(h.visible());
-        run(&mut h, rested(8), secs(1.0));
+        run(&mut owner, &mut h, rested(8), secs(1.0));
         assert!(h.opacity() < 0.2, "the move hides it");
-        run(&mut h, rested(8), secs(0.4));
+        run(&mut owner, &mut h, rested(8), secs(0.4));
         assert!(h.opacity() < 0.2, "1.4 s after the move it is still waiting out the dwell");
-        run(&mut h, rested(8), secs(1.0));
+        run(&mut owner, &mut h, rested(8), secs(1.0));
         assert!(h.opacity() > 0.9, "after the full dwell it is back");
         // the showing that was cut short spent nothing; the one that is read and has left is final
-        run(&mut h, rested(8), secs(9.0));
-        assert!(!h.visible() && shown_this_run());
-        run(&mut h, rested(9), secs(2.5));
+        run(&mut owner, &mut h, rested(8), secs(9.0));
+        assert!(!h.visible() && owner.read.card);
+        run(&mut owner, &mut h, rested(9), secs(2.5));
         assert!(!h.visible(), "read once this run: a new tile does not bring it back");
     }
 
     #[test]
     fn scrolling_holds_the_dwell_at_zero() {
-        let (_g, mut h) = fresh();
+        let (_g, mut h, mut owner) = fresh();
         let moving = HintInput { settled: false, ..rested(7) };
-        run(&mut h, moving, secs(5.0));
+        run(&mut owner, &mut h, moving, secs(5.0));
         assert!(!h.visible(), "never while scrolling");
-        run(&mut h, rested(7), secs(1.4));
+        run(&mut owner, &mut h, rested(7), secs(1.4));
         assert!(!h.visible(), "the rest begins when the scroll ends");
     }
 
     #[test]
     fn no_focus_on_a_shelf_tile_shows_nothing() {
-        let (_g, mut h) = fresh();
-        run(&mut h, HintInput { focus: None, settled: true, ..HintInput::default() }, secs(10.0));
+        let (_g, mut h, mut owner) = fresh();
+        run(&mut owner, &mut h, HintInput { focus: None, settled: true, ..HintInput::default() }, secs(10.0));
         assert!(!h.visible(), "the tab strip, a menu or a covered page has no shelf focus");
-        run(&mut h, rested(7), secs(2.5));
+        run(&mut owner, &mut h, rested(7), secs(2.5));
         assert!(h.visible());
-        run(&mut h, HintInput { focus: None, settled: true, ..HintInput::default() }, secs(1.0));
+        run(&mut owner, &mut h, HintInput { focus: None, settled: true, ..HintInput::default() }, secs(1.0));
         assert!(!h.visible(), "a menu opening over it takes it away");
     }
 
     #[test]
     fn a_held_ok_shows_it_before_the_dwell_and_fills_the_cap() {
-        let (_g, mut h) = fresh();
+        let (_g, mut h, mut owner) = fresh();
         let held = |f| HintInput { hold: Some(f), ..rested(7) };
         let mut last = 0.0;
         for i in 0..20 {
-            tstep(&mut h, held(i as f32 / 30.0), &mut |_| {});
+            tstep(&mut owner, &mut h, held(i as f32 / 30.0), &mut |_| {});
             assert!(h.fill() >= last, "the fill only grows while held");
             last = h.fill();
         }
         assert!(h.visible(), "shown by the hold alone, well inside the dwell");
         assert!((h.fill() - 19.0 / 30.0).abs() < 1e-6, "the fill IS the hold fraction");
-        tstep(&mut h, held(2.0), &mut |_| {});
+        tstep(&mut owner, &mut h, held(2.0), &mut |_| {});
         assert_eq!(h.fill(), 1.0, "clamped");
     }
 
     #[test]
     fn an_early_release_drains_the_fill_in_about_a_fifth_of_a_second() {
-        let (_g, mut h) = fresh();
-        tstep(&mut h, HintInput { hold: Some(0.8), ..rested(7) }, &mut |_| {});
+        let (_g, mut h, mut owner) = fresh();
+        tstep(&mut owner, &mut h, HintInput { hold: Some(0.8), ..rested(7) }, &mut |_| {});
         assert!(h.fill() > 0.7);
-        run(&mut h, rested(7), secs(0.1));
+        run(&mut owner, &mut h, rested(7), secs(0.1));
         assert!(h.fill() > 0.0 && h.fill() < 0.8, "draining");
-        run(&mut h, rested(7), secs(0.15));
+        run(&mut owner, &mut h, rested(7), secs(0.15));
         assert_eq!(h.fill(), 0.0, "empty again");
     }
 
     #[test]
     fn a_hold_is_ignored_once_the_hint_has_retired() {
-        let (_g, mut h) = fresh();
-        mark_learned();
-        tstep(&mut h, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
+        let (_g, mut h, mut owner) = fresh();
+        owner.apply(HoldHintEvent::Learned);
+        tstep(&mut owner, &mut h, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
         assert!(!h.visible());
         assert_eq!(h.fill(), 0.0);
-        run(&mut h, rested(7), secs(5.0));
+        run(&mut owner, &mut h, rested(7), secs(5.0));
         assert!(!h.visible(), "retired for good");
     }
 
     #[cfg(feature = "devtriggers")]
     #[test]
     fn teaching_the_hint_for_dev_leaves_nothing_offering_it() {
-        let (_g, mut h) = fresh();
-        teach_all_for_dev();
-        assert!(learned() && shown_this_run());
+        let (_g, mut h, mut owner) = fresh();
+        owner.apply(HoldHintEvent::Learned);
+        assert!(owner.read.learned && owner.read.card && owner.read.pill);
         // a long rest, then an OK held on the card: neither the dwell nor the fill may show it
-        run(&mut h, rested(7), secs(2.5));
+        run(&mut owner, &mut h, rested(7), secs(2.5));
         assert!(!h.visible(), "the dwell shows nothing once taught");
-        tstep(&mut h, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
+        tstep(&mut owner, &mut h, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
         assert!(!h.visible() && h.fill() == 0.0, "a held OK shows nothing once taught");
-        reset_learned_for_test();
-        reset_shown_for_test();
+
     }
 
     #[test]
     fn opening_a_menu_retires_a_standing_hint() {
-        let (_g, mut h) = fresh();
-        run(&mut h, rested(7), secs(2.5));
+        let (_g, mut h, mut owner) = fresh();
+        run(&mut owner, &mut h, rested(7), secs(2.5));
         assert!(h.visible());
-        mark_learned();
-        run(&mut h, rested(7), secs(1.0));
+        owner.apply(HoldHintEvent::Learned);
+        run(&mut owner, &mut h, rested(7), secs(1.0));
         assert!(!h.visible());
-        reset_learned_for_test();
+
     }
 
     // ---- the run-wide cadence of every card screen, Home included ----------------------------------------
 
     #[test]
     fn the_hint_stands_once_then_never_again_this_run() {
-        let (_g, _) = fresh();
+        let (_g, _, mut owner) = fresh();
         let mut h = HoldHint::new();
-        run(&mut h, rested(7), secs(3.5));
+        run(&mut owner, &mut h, rested(7), secs(3.5));
         assert!(h.visible(), "the first time on a card it teaches");
-        assert!(shown_this_run());
-        run(&mut h, rested(7), secs(9.0));
+        assert!(owner.read.card);
+        run(&mut owner, &mut h, rested(7), secs(9.0));
         assert!(!h.visible(), "and leaves on its own");
         // another card of the same page: a new resting place starts no new life
-        run(&mut h, rested(8), secs(5.0));
+        run(&mut owner, &mut h, rested(8), secs(5.0));
         assert!(!h.visible(), "a new card on the same page does not bring it back");
         // leaving and re-entering: a new page instance
         let mut again = HoldHint::new();
-        run(&mut again, rested(7), secs(5.0));
+        run(&mut owner, &mut again, rested(7), secs(5.0));
         assert!(!again.visible(), "nor does a second page");
     }
 
     #[test]
     fn a_fade_in_cut_short_leaves_the_showing_unspent_and_the_hint_comes_back() {
-        let (_g, _) = fresh();
+        let (_g, _, mut owner) = fresh();
         let mut h = HoldHint::new();
         // just past the dwell: the capsule is part-way through its fade-in
-        run(&mut h, rested(7), secs(1.5) + 6);
+        run(&mut owner, &mut h, rested(7), secs(1.5) + 6);
         assert!(h.visible() && h.opacity() < 0.9, "control: it is mid-fade, opacity {}", h.opacity());
         // focus moves before it ever reached full opacity
-        run(&mut h, rested(8), secs(1.0));
+        run(&mut owner, &mut h, rested(8), secs(1.0));
         assert!(!h.visible());
-        assert!(!shown_this_run(), "a showing nobody could read is not spent");
+        assert!(!owner.read.card, "a showing nobody could read is not spent");
         // rested again for the same settle delay: offered again, and now fully
-        run(&mut h, rested(8), secs(0.4));
+        run(&mut owner, &mut h, rested(8), secs(0.4));
         assert!(!h.visible(), "1.4 s into the new rest it is still waiting out the dwell");
-        run(&mut h, rested(8), secs(2.0));
+        run(&mut owner, &mut h, rested(8), secs(2.0));
         assert!(h.opacity() > 0.9, "and stands in full");
-        assert!(shown_this_run(), "a complete showing is spent");
+        assert!(owner.read.card, "a complete showing is spent");
     }
 
     #[test]
     fn a_move_a_beat_after_full_opacity_leaves_the_showing_unspent() {
-        let (_g, _) = fresh();
+        let (_g, _, mut owner) = fresh();
         let mut h = HoldHint::new();
         // step to full opacity, then keep it there for 0.3 s only
-        run(&mut h, rested(7), secs(1.5));
+        run(&mut owner, &mut h, rested(7), secs(1.5));
         let mut n = 0;
         while h.opacity() < FULL && n < secs(3.0) {
-            run(&mut h, rested(7), 1);
+            run(&mut owner, &mut h, rested(7), 1);
             n += 1;
         }
         assert!(h.opacity() >= FULL, "control: it reached full opacity");
-        run(&mut h, rested(7), secs(0.3));
-        assert!(!shown_this_run(), "0.3 s at full is a glimpse, not a reading");
-        run(&mut h, rested(8), secs(1.0));
+        run(&mut owner, &mut h, rested(7), secs(0.3));
+        assert!(!owner.read.card, "0.3 s at full is a glimpse, not a reading");
+        run(&mut owner, &mut h, rested(8), secs(1.0));
         assert!(!h.visible());
-        run(&mut h, rested(8), secs(3.0));
+        run(&mut owner, &mut h, rested(8), secs(3.0));
         assert!(h.opacity() > 0.9, "it is offered again");
-        assert!(shown_this_run(), "and a full reading spends the run's showing");
+        assert!(owner.read.card, "and a full reading spends the run's showing");
     }
 
     #[test]
     fn a_complete_showing_is_not_offered_again_after_a_move() {
-        let (_g, _) = fresh();
+        let (_g, _, mut owner) = fresh();
         let mut h = HoldHint::new();
-        run(&mut h, rested(7), secs(3.5));
-        assert!(h.opacity() > 0.9 && shown_this_run());
-        run(&mut h, rested(8), secs(1.0));
+        run(&mut owner, &mut h, rested(7), secs(3.5));
+        assert!(h.opacity() > 0.9 && owner.read.card);
+        run(&mut owner, &mut h, rested(8), secs(1.0));
         assert!(!h.visible());
-        run(&mut h, rested(8), secs(5.0));
+        run(&mut owner, &mut h, rested(8), secs(5.0));
         assert!(!h.visible(), "one full showing is the run's one");
     }
 
     #[test]
     fn a_read_showing_on_one_screen_spends_every_screen() {
-        let (_g, _) = fresh();
+        let (_g, _, mut owner) = fresh();
         let mut a = HoldHint::new();
-        run(&mut a, rested(7), secs(3.5));
-        assert!(a.opacity() > 0.9 && shown_this_run(), "control: read on one screen");
+        run(&mut owner, &mut a, rested(7), secs(3.5));
+        assert!(a.opacity() > 0.9 && owner.read.card, "control: read on one screen");
         let mut b = HoldHint::new();
-        run(&mut b, rested(7), secs(5.0));
+        run(&mut owner, &mut b, rested(7), secs(5.0));
         assert!(!b.visible(), "a different screen never self-appears once the hint has been read");
     }
 
     #[test]
     fn a_claiming_hint_keeps_its_life_through_the_frames_it_stands() {
-        let (_g, _) = fresh();
+        let (_g, _, mut owner) = fresh();
         let mut h = HoldHint::new();
-        run(&mut h, rested(7), secs(1.5 + 4.0));
+        run(&mut owner, &mut h, rested(7), secs(1.5 + 4.0));
         assert!(h.visible(), "claiming the showing on the first standing frame does not hide it");
     }
 
     #[test]
     fn the_hint_never_stands_after_a_menu_was_opened() {
-        let (_g, _) = fresh();
-        mark_learned();
+        let (_g, _, mut owner) = fresh();
+        owner.apply(HoldHintEvent::Learned);
         let mut h = HoldHint::new();
-        run(&mut h, rested(7), secs(5.0));
+        run(&mut owner, &mut h, rested(7), secs(5.0));
         assert!(!h.visible());
-        assert!(shown(Surface::Card) && shown(Surface::SeasonPill), "the menu taught every surface; the hint itself never stood");
-        reset_learned_for_test();
+        assert!(owner.read.card && owner.read.pill, "the menu taught every surface; the hint itself never stood");
     }
 
     #[test]
     fn a_pause_in_rest_on_the_same_card_does_not_give_the_run_a_second_showing() {
-        let (_g, _) = fresh();
+        let (_g, _, mut owner) = fresh();
         let mut h = HoldHint::new();
-        run(&mut h, rested(7), secs(3.5));
+        run(&mut owner, &mut h, rested(7), secs(3.5));
         assert!(h.visible(), "control: the first showing");
         // the page moves under the same focus (wheel scroll, relayout), then rests again
-        run(&mut h, HintInput { settled: false, ..rested(7) }, secs(1.0));
+        run(&mut owner, &mut h, HintInput { settled: false, ..rested(7) }, secs(1.0));
         assert!(!h.visible());
-        run(&mut h, rested(7), secs(5.0));
+        run(&mut owner, &mut h, rested(7), secs(5.0));
         assert!(!h.visible(), "the claim ends with the rest: once per run is once");
     }
 
     /// Skip the tests' tick clock ahead by `s` seconds with no step at all: a page covered by a
     /// menu or a pushed screen gets no `Tick`, and the owner's clock runs on without it.
-    fn skip_clock(s: f32) {
-        FRAME.with(|f| f.set(f.get() + secs(s) as u32));
+    fn skip_clock(owner: &mut Owner, s: f32) {
+        owner.frame += secs(s) as u32;
     }
 
     #[test]
     fn time_under_a_covered_page_is_not_rest() {
-        let (_g, _) = fresh();
+        let (_g, _, mut owner) = fresh();
         let mut h = HoldHint::new();
-        run(&mut h, rested(7), secs(1.0));
-        skip_clock(5.0);
-        run(&mut h, rested(7), 1);
+        run(&mut owner, &mut h, rested(7), secs(1.0));
+        skip_clock(&mut owner, 5.0);
+        run(&mut owner, &mut h, rested(7), 1);
         assert!(!h.visible(), "the gap is not rest: the dwell has not been served");
-        assert!(!shown_this_run(), "and nothing was spent unseen");
-        run(&mut h, rested(7), secs(1.5) + secs(0.8));
+        assert!(!owner.read.card, "and nothing was spent unseen");
+        run(&mut owner, &mut h, rested(7), secs(1.5) + secs(0.8));
         assert!(h.opacity() > 0.9, "after a further full dwell it appears");
     }
 
     #[test]
     fn a_gap_longer_than_the_whole_life_neither_spends_nor_hides_the_offer() {
-        let (_g, _) = fresh();
+        let (_g, _, mut owner) = fresh();
         let mut h = HoldHint::new();
-        run(&mut h, rested(7), secs(1.0));
-        skip_clock(10.0);
-        run(&mut h, rested(7), 1);
-        assert!(!h.visible() && !shown_this_run(), "the gap spent neither life nor the run's showing");
-        run(&mut h, rested(7), secs(1.5) + secs(0.8));
+        run(&mut owner, &mut h, rested(7), secs(1.0));
+        skip_clock(&mut owner, 10.0);
+        run(&mut owner, &mut h, rested(7), 1);
+        assert!(!h.visible() && !owner.read.card, "the gap spent neither life nor the run's showing");
+        run(&mut owner, &mut h, rested(7), secs(1.5) + secs(0.8));
         assert!(h.opacity() > 0.9, "it is offered once the dwell has been served");
     }
 
     #[test]
     fn time_under_a_covered_page_does_not_count_toward_the_read() {
-        let (_g, _) = fresh();
+        let (_g, _, mut owner) = fresh();
         let mut h = HoldHint::new();
-        run(&mut h, rested(7), secs(1.5));
+        run(&mut owner, &mut h, rested(7), secs(1.5));
         let mut n = 0;
         while h.opacity() < FULL && n < secs(3.0) {
-            run(&mut h, rested(7), 1);
+            run(&mut owner, &mut h, rested(7), 1);
             n += 1;
         }
         assert!(h.opacity() >= FULL, "control: it reached full opacity");
-        skip_clock(5.0);
-        run(&mut h, rested(7), 1);
-        assert!(!shown_this_run(), "a covered page read nothing");
+        skip_clock(&mut owner, 5.0);
+        run(&mut owner, &mut h, rested(7), 1);
+        assert!(!owner.read.card, "a covered page read nothing");
     }
 
     #[test]
     fn what_the_hint_needs_input_for_is_a_truth_table() {
-        let (_g, _) = fresh();
+        let (_g, _, mut owner) = fresh();
         let unread = HoldHint::new();
-        assert!(unread.wants_input(false), "the run's showing is not spent yet: it may need to stand");
+        assert!(unread.wants_input(false, owner.read), "the run's showing is not spent yet: it may need to stand");
         // The run's showing has been read, held by nobody.
         let mut spent = HoldHint::new();
-        run(&mut spent, rested(7), secs(3.5));
-        assert!(spent.wants_input(false), "it holds the claim and is standing");
-        run(&mut spent, HintInput::default(), secs(2.0));
+        run(&mut owner, &mut spent, rested(7), secs(3.5));
+        assert!(spent.wants_input(false, owner.read), "it holds the claim and is standing");
+        run(&mut owner, &mut spent, HintInput::default(), secs(2.0));
         assert!(!spent.visible() && spent.fill() == 0.0);
-        assert!(!spent.wants_input(false), "claim ended with focus, nothing visible: no input can matter");
+        assert!(!spent.wants_input(false, owner.read), "claim ended with focus, nothing visible: no input can matter");
         let other = HoldHint::new();
-        assert!(!other.wants_input(false), "another instance holds no claim once the run's showing is spent");
-        assert!(other.wants_input(true), "a held OK shows a spent hint with its fill");
+        assert!(!other.wants_input(false, owner.read), "another instance holds no claim once the run's showing is spent");
+        assert!(other.wants_input(true, owner.read), "a held OK shows a spent hint with its fill");
         // a claim keeps it asking (the run's showing, spent above, is offered afresh)
-        reset_shown_for_test();
+        let mut owner = Owner::default(); // A separate, untaught install owns the remaining cases.
         let mut claimed = HoldHint::new();
-        run(&mut claimed, rested(7), secs(2.5));
-        assert!(claimed.wants_input(false));
+        run(&mut owner, &mut claimed, rested(7), secs(2.5));
+        assert!(claimed.wants_input(false, owner.read));
         // visible or draining keeps it asking
         let mut holding = HoldHint::new();
-        run(&mut holding, rested(7), secs(10.0));
+        run(&mut owner, &mut holding, rested(7), secs(10.0));
         let mut other = HoldHint::new();
-        tstep(&mut other, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
-        assert!(other.wants_input(false), "visible: the fade out must be driven");
-        tstep(&mut other, HintInput::default(), &mut |_| {});
-        assert!(other.wants_input(false), "still draining or fading");
+        tstep(&mut owner, &mut other, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
+        assert!(other.wants_input(false, owner.read), "visible: the fade out must be driven");
+        tstep(&mut owner, &mut other, HintInput::default(), &mut |_| {});
+        assert!(other.wants_input(false, owner.read), "still draining or fading");
         // a retired hint needs nothing
-        mark_learned();
-        assert!(!HoldHint::new().wants_input(true));
-        reset_learned_for_test();
-        reset_shown_for_test();
+        owner.apply(HoldHintEvent::Learned);
+        assert!(!HoldHint::new().wants_input(true, owner.read));
     }
 
     #[cfg(feature = "devtriggers")]
     #[test]
     fn pinned_animation_clocks_never_settle_but_a_real_hold_still_passes_through() {
-        let (_g, _) = fresh();
+        let (_g, _, _) = fresh();
         let r = Rect::new(10.0, 10.0, 100.0, 100.0);
         let placed = crate::screen::Placed { rect: r, rest_rect: r, clip: r, index: None };
         assert!(HintInput::for_placed(7, placed, true, None).settled, "control: a card at rest");
@@ -1159,24 +1074,23 @@ mod tests {
 
     #[test]
     fn a_short_ok_click_never_flashes_the_hint() {
-        let (_g, _) = fresh();
+        let (_g, _, _) = fresh();
         for taught in [false, true] {
-            reset_shown_for_test();
-            seed_taught(taught, taught);
+            let mut owner = Owner { read: HoldHintRead { card: taught, pill: taught, ..HoldHintRead::default() }, ..Owner::default() };
             for surface in [Surface::Card, Surface::SeasonPill] {
                 let mut h = HoldHint::new();
                 let mut press = crate::dispatch::press::Press::new();
                 press.begin(1000);
                 for ms in (0..200).step_by(16) {
                     let input = HintInput::new(Some(7), false, press.held_ms(1000 + ms)).surface(surface);
-                    assert!(!frame_asks(&mut h, input), "a tap must not animate the hint: {surface:?}, {ms} ms");
+                    assert!(!frame_asks(&mut owner, &mut h, input), "a tap must not animate the hint: {surface:?}, {ms} ms");
                     assert!(!h.visible(), "a short OK click must stay hidden: {surface:?}, {ms} ms");
                     assert_eq!(h.fill(), 0.0, "a hidden tap has no fill to drain");
                 }
                 press.release(1199);
                 for _ in 0..30 {
                     let input = HintInput::new(Some(7), false, press.held_ms(1200)).surface(surface);
-                    assert!(!frame_asks(&mut h, input), "releasing a tap must leave no hint animation");
+                    assert!(!frame_asks(&mut owner, &mut h, input), "releasing a tap must leave no hint animation");
                     assert!(!h.visible());
                 }
             }
@@ -1185,69 +1099,69 @@ mod tests {
 
     #[test]
     fn a_deliberate_hold_reveals_before_the_menu_and_drains_on_release() {
-        let (_g, mut h) = fresh();
-        seed_taught(true, true);
-        assert!(!frame_asks(&mut h, HintInput::new(Some(7), false, Some(199))));
-        assert!(frame_asks(&mut h, HintInput::new(Some(7), false, Some(200))));
+        let (_g, mut h, mut owner) = fresh();
+        owner.read = HoldHintRead { card: true, pill: true, ..HoldHintRead::default() };
+        assert!(!frame_asks(&mut owner, &mut h, HintInput::new(Some(7), false, Some(199))));
+        assert!(frame_asks(&mut owner, &mut h, HintInput::new(Some(7), false, Some(200))));
         assert!(h.visible(), "feedback starts before the 500 ms menu threshold");
         assert!((h.fill() - 0.4).abs() < 1e-6, "progress keeps the original press clock");
-        run(&mut h, HintInput::new(Some(7), false, Some(400)), 10);
+        run(&mut owner, &mut h, HintInput::new(Some(7), false, Some(400)), 10);
         assert!(h.opacity() > 0.5 && (h.fill() - 0.8).abs() < 1e-6);
-        assert!(frame_asks(&mut h, HintInput::new(Some(7), false, None)), "release animates the drain");
-        run(&mut h, HintInput::new(Some(7), false, None), secs(2.0));
+        assert!(frame_asks(&mut owner, &mut h, HintInput::new(Some(7), false, None)), "release animates the drain");
+        run(&mut owner, &mut h, HintInput::new(Some(7), false, None), secs(2.0));
         assert!(!h.visible() && h.fill() == 0.0);
-        assert!(!frame_asks(&mut h, HintInput::new(Some(7), false, None)), "quiet after release");
+        assert!(!frame_asks(&mut owner, &mut h, HintInput::new(Some(7), false, None)), "quiet after release");
     }
 
     #[test]
     fn a_physical_hold_still_shows_a_spent_hint_with_its_fill() {
-        let (_g, _) = fresh();
+        let (_g, _, mut owner) = fresh();
         let mut first = HoldHint::new();
-        run(&mut first, rested(7), secs(10.0));
+        run(&mut owner, &mut first, rested(7), secs(10.0));
         let mut h = HoldHint::new();
-        run(&mut h, rested(7), secs(5.0));
+        run(&mut owner, &mut h, rested(7), secs(5.0));
         assert!(!h.visible(), "control: the self-appearing hint is spent");
-        tstep(&mut h, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
+        tstep(&mut owner, &mut h, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
         assert!(h.visible() && (h.fill() - 0.5).abs() < 1e-6, "the during-hold behaviour is kept");
     }
 
     #[test]
     fn a_hold_alone_does_not_spend_the_showing() {
-        let (_g, _) = fresh();
+        let (_g, _, mut owner) = fresh();
         let mut h = HoldHint::new();
-        tstep(&mut h, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
-        assert!(!shown_this_run());
+        tstep(&mut owner, &mut h, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
+        assert!(!owner.read.card);
     }
 
     /// Host half of the animator's two tests (`ui/CLAUDE.md`): it reports while it runs...
     #[test]
     fn a_fading_hint_asks_for_every_frame_of_itself() {
-        let (_g, mut h) = fresh();
-        run(&mut h, rested(7), secs(1.5) + 1);
+        let (_g, mut h, mut owner) = fresh();
+        run(&mut owner, &mut h, rested(7), secs(1.5) + 1);
         for f in 0..6 {
-            assert!(frame_asks(&mut h, rested(7)), "frame {f} of the fade-in must repaint");
+            assert!(frame_asks(&mut owner, &mut h, rested(7)), "frame {f} of the fade-in must repaint");
         }
         // ...and so does a hold filling the cap, though no spring is moving then
         let mut h = HoldHint::new();
         for f in 0..4 {
-            assert!(frame_asks(&mut h, HintInput { hold: Some(0.5 + f as f32 / 30.0), ..rested(7) }));
+            assert!(frame_asks(&mut owner, &mut h, HintInput { hold: Some(0.5 + f as f32 / 30.0), ..rested(7) }));
         }
     }
 
     /// ...and goes quiet at rest, shown or hidden — the failure that costs the whole saving.
     #[test]
     fn a_hint_at_rest_asks_for_nothing() {
-        let (_g, mut h) = fresh();
-        run(&mut h, rested(7), secs(1.4));
-        assert!(!frame_asks(&mut h, rested(7)), "hidden and counting the dwell: nothing to repaint");
-        run(&mut h, rested(7), secs(2.0));
-        assert!(!frame_asks(&mut h, rested(7)), "shown and settled: nothing to repaint");
-        run(&mut h, rested(7), secs(5.0));
-        run(&mut h, rested(7), secs(2.0));
-        assert!(!frame_asks(&mut h, rested(7)), "expired and hidden: nothing to repaint");
+        let (_g, mut h, mut owner) = fresh();
+        run(&mut owner, &mut h, rested(7), secs(1.4));
+        assert!(!frame_asks(&mut owner, &mut h, rested(7)), "hidden and counting the dwell: nothing to repaint");
+        run(&mut owner, &mut h, rested(7), secs(2.0));
+        assert!(!frame_asks(&mut owner, &mut h, rested(7)), "shown and settled: nothing to repaint");
+        run(&mut owner, &mut h, rested(7), secs(5.0));
+        run(&mut owner, &mut h, rested(7), secs(2.0));
+        assert!(!frame_asks(&mut owner, &mut h, rested(7)), "expired and hidden: nothing to repaint");
         let mut h = HoldHint::new();
-        run(&mut h, HintInput::default(), 5);
-        assert!(!frame_asks(&mut h, HintInput::default()), "never armed: nothing to repaint");
+        run(&mut owner, &mut h, HintInput::default(), 5);
+        assert!(!frame_asks(&mut owner, &mut h, HintInput::default()), "never armed: nothing to repaint");
     }
 
     /// **Reusability without Home.** A fake owner with no screen, no press machine and no engine
@@ -1258,6 +1172,7 @@ mod tests {
     fn a_screenless_owner_drives_dwell_show_hold_fill_and_retire() {
         struct FakeOwner {
             hint: HoldHint,
+            owner: Owner,
             focus: Option<u32>,
             settled: bool,
             held_ms: Option<u32>,
@@ -1266,14 +1181,12 @@ mod tests {
             fn frames(&mut self, n: usize) {
                 for _ in 0..n {
                     let input = HintInput::new(self.focus, self.settled, self.held_ms);
-                    tstep(&mut self.hint, input, &mut |_| {});
+                    tstep(&mut self.owner, &mut self.hint, input, &mut |_| {});
                 }
             }
         }
         let _g = plx_base::testlock::serial();
-        reset_learned_for_test();
-        reset_shown_for_test();
-        let mut o = FakeOwner { hint: HoldHint::new(), focus: Some(42), settled: true, held_ms: None };
+        let mut o = FakeOwner { hint: HoldHint::new(), owner: Owner::default(), focus: Some(42), settled: true, held_ms: None };
 
         // dwell, then show
         o.frames(secs(1.4));
@@ -1298,64 +1211,63 @@ mod tests {
         assert!(!o.hint.visible());
 
         // retire: opening any menu marks the lesson learned, and nothing brings it back
-        reset_shown_for_test();
-        o.focus = Some(42);
+        // An independent untaught install supplies the menu-retirement scenario.
+        let mut o = FakeOwner { hint: HoldHint::new(), owner: Owner::default(), focus: Some(42), settled: true, held_ms: None };
         o.frames(secs(3.0));
         assert!(o.hint.visible(), "control: it is showing before the menu opens");
-        mark_learned();
+        o.owner.apply(HoldHintEvent::Learned);
         o.frames(secs(1.0));
         assert!(!o.hint.visible());
         o.held_ms = Some(100);
         o.frames(secs(10.0));
         assert!(!o.hint.visible() && o.hint.fill() == 0.0, "retired for good, even under a hold");
-        reset_learned_for_test();
+
     }
 
     // ---- once per INSTALL, and one latch per surface ------------------------------------------------------
 
     #[test]
     fn a_seeded_taught_card_surface_never_self_appears() {
-        let (_g, mut h) = fresh();
-        seed_taught(true, false);
-        run(&mut h, rested(7), secs(6.0));
+        let (_g, mut h, mut owner) = fresh();
+        owner.read = HoldHintRead { card: true, pill: false, ..HoldHintRead::default() };
+        run(&mut owner, &mut h, rested(7), secs(6.0));
         assert!(!h.visible(), "an install that was taught the card hint is not offered it again");
-        assert_eq!(take_newly_taught(), None, "a seed is the stored fact, not news");
-        tstep(&mut h, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
+        assert!(owner.events.is_empty(), "a seed is the stored fact, not news");
+        tstep(&mut owner, &mut h, HintInput { hold: Some(0.5), ..rested(7) }, &mut |_| {});
         assert!(h.visible() && (h.fill() - 0.5).abs() < 1e-6, "a physical hold still shows the capsule with its fill");
         let mut pill = HoldHint::new();
-        run(&mut pill, rested_pill(7), secs(1.5));
+        run(&mut owner, &mut pill, rested_pill(7), secs(1.5));
         assert!(pill.visible(), "the season pill was never taught: the card seed leaves it unspent");
     }
 
     #[test]
     fn a_read_on_one_surface_leaves_the_other_unspent() {
-        let (_g, _) = fresh();
+        let (_g, _, mut owner) = fresh();
         let mut card = HoldHint::new();
-        run(&mut card, rested(7), secs(3.5));
-        assert!(shown(Surface::Card) && !shown(Surface::SeasonPill));
+        run(&mut owner, &mut card, rested(7), secs(3.5));
+        assert!(owner.read.card && !owner.read.pill);
         let mut pill = HoldHint::new();
-        run(&mut pill, rested_pill(7), secs(2.0));
+        run(&mut owner, &mut pill, rested_pill(7), secs(2.0));
         assert!(pill.visible(), "the pill still teaches after the card did");
 
-        reset_shown_for_test();
+        let mut owner = Owner::default(); // Reverse order on an independent untaught install.
         let mut pill = HoldHint::new();
-        run(&mut pill, rested_pill(7), secs(2.5));
-        assert!(shown(Surface::SeasonPill) && !shown(Surface::Card));
+        run(&mut owner, &mut pill, rested_pill(7), secs(2.5));
+        assert!(owner.read.pill && !owner.read.card);
         let mut card = HoldHint::new();
-        run(&mut card, rested(7), secs(3.5));
+        run(&mut owner, &mut card, rested(7), secs(3.5));
         assert!(card.visible(), "the card still teaches after the pill did");
     }
 
     #[test]
     fn the_season_pill_dwells_for_half_a_second_and_the_card_for_one_and_a_half() {
-        let (_g, mut pill) = fresh();
-        run(&mut pill, rested_pill(7), secs(0.4));
+        let (_g, mut pill, mut owner) = fresh();
+        run(&mut owner, &mut pill, rested_pill(7), secs(0.4));
         assert!(!pill.visible(), "not before DWELL_PILL_MS");
-        run(&mut pill, rested_pill(7), secs(0.2));
+        run(&mut owner, &mut pill, rested_pill(7), secs(0.2));
         assert!(pill.visible(), "the fade is under way just past it");
         let mut card = HoldHint::new();
-        reset_shown_for_test();
-        run(&mut card, rested(7), secs(0.8));
+        run(&mut owner, &mut card, rested(7), secs(0.8));
         assert!(!card.visible(), "the card dwell is unchanged");
         assert_eq!((DWELL_MS, DWELL_PILL_MS), (1500, 500));
     }
@@ -1364,60 +1276,97 @@ mod tests {
     /// dwell: resting counts, and the hint stands the frame it becomes ready.
     #[test]
     fn a_pill_that_becomes_ready_stands_at_once_not_a_dwell_later() {
-        let (_g, mut h) = fresh();
-        run(&mut h, rested_pill(7).ready(false), secs(0.8));
+        let (_g, mut h, mut owner) = fresh();
+        run(&mut owner, &mut h, rested_pill(7).ready(false), secs(0.8));
         assert!(!h.visible(), "not ready: nothing shows");
-        assert!(!shown_this_run() && !shown(Surface::SeasonPill), "and nothing is spent");
-        run(&mut h, rested_pill(7), 2);
+        assert!(!owner.read.card && !owner.read.pill, "and nothing is spent");
+        run(&mut owner, &mut h, rested_pill(7), 2);
         assert!(h.visible(), "ready after 0.8 s of rest: fading in within two frames, not 0.5 s later");
-        run(&mut h, rested_pill(7), secs(2.5));
-        assert!(shown(Surface::SeasonPill), "and a full showing is read, its life undiminished by the wait");
+        run(&mut owner, &mut h, rested_pill(7), secs(2.5));
+        assert!(owner.read.pill, "and a full showing is read, its life undiminished by the wait");
     }
 
     #[test]
     fn a_surface_that_is_never_ready_never_shows_and_a_hold_there_shows_nothing() {
-        let (_g, mut h) = fresh();
-        run(&mut h, rested_pill(7).ready(false), secs(10.0));
-        assert!(!h.visible() && !shown(Surface::SeasonPill), "never ready, never shown, never spent");
+        let (_g, mut h, mut owner) = fresh();
+        run(&mut owner, &mut h, rested_pill(7).ready(false), secs(10.0));
+        assert!(!h.visible() && !owner.read.pill, "never ready, never shown, never spent");
         let held = HintInput { hold: Some(0.5), ..rested_pill(7).ready(false) };
-        run(&mut h, held, secs(0.5));
+        run(&mut owner, &mut h, held, secs(0.5));
         assert!(!h.visible() && h.fill() == 0.0, "a hold that opens nothing shows no capsule and no fill");
-        run(&mut h, HintInput { hold: Some(0.5), ..rested_pill(7) }, secs(0.5));
+        run(&mut owner, &mut h, HintInput { hold: Some(0.5), ..rested_pill(7) }, secs(0.5));
         assert!(h.visible(), "ready: the same hold shows");
     }
 
     #[test]
     fn a_focus_move_still_restarts_the_dwell_while_not_ready() {
-        let (_g, mut h) = fresh();
-        run(&mut h, rested_pill(7).ready(false), secs(0.8));
-        run(&mut h, rested_pill(8), secs(0.3));
+        let (_g, mut h, mut owner) = fresh();
+        run(&mut owner, &mut h, rested_pill(7).ready(false), secs(0.8));
+        run(&mut owner, &mut h, rested_pill(8), secs(0.3));
         assert!(!h.visible(), "a new place starts its own dwell even though the last was long met");
     }
 
     #[test]
     fn a_read_showing_raises_the_newly_taught_signal_exactly_once() {
-        let (_g, mut h) = fresh();
-        run(&mut h, rested(7), secs(1.9));
-        assert_eq!(take_newly_taught(), None, "a showing that has not been read is not a lesson");
-        run(&mut h, rested(7), secs(2.0));
-        assert_eq!(take_newly_taught(), Some(Taught { card: true, pill: false }));
-        assert_eq!(take_newly_taught(), None, "drained");
-        run(&mut h, rested(7), secs(2.0));
-        assert_eq!(take_newly_taught(), None, "nothing new on a later frame");
+        let (_g, mut h, mut owner) = fresh();
+        run(&mut owner, &mut h, rested(7), secs(1.9));
+        assert!(owner.events.is_empty(), "a showing that has not been read is not a lesson");
+        run(&mut owner, &mut h, rested(7), secs(2.0));
+        assert_eq!(std::mem::take(&mut owner.events), vec![HoldHintEvent::ReadCard]);
+        assert!(owner.events.is_empty(), "drained");
+        run(&mut owner, &mut h, rested(7), secs(2.0));
+        assert!(owner.events.is_empty(), "nothing new on a later frame");
         let mut pill = HoldHint::new();
-        run(&mut pill, rested_pill(7), secs(2.5));
-        assert_eq!(take_newly_taught(), Some(Taught { card: true, pill: true }), "the second surface reports both");
+        run(&mut owner, &mut pill, rested_pill(7), secs(2.5));
+        assert_eq!(owner.events, vec![HoldHintEvent::ReadPill]);
+        assert!(owner.read.card && owner.read.pill, "the second surface reports both");
     }
 
     #[test]
     fn an_opened_menu_teaches_every_surface_and_says_so_once() {
-        let (_g, _) = fresh();
-        mark_learned();
-        assert!(shown(Surface::Card) && shown(Surface::SeasonPill));
-        assert_eq!(take_newly_taught(), Some(Taught { card: true, pill: true }));
-        mark_learned();
-        assert_eq!(take_newly_taught(), None, "idempotent");
-        reset_learned_for_test();
+        let (_g, _, mut owner) = fresh();
+        owner.apply(HoldHintEvent::Learned);
+        assert!(owner.read.card && owner.read.pill);
+        assert_eq!(owner.events, vec![HoldHintEvent::Learned]);
+        let taught = owner.read;
+        owner.read.apply(HoldHintEvent::Learned);
+        assert_eq!(owner.read, taught, "idempotent");
+    }
+
+    #[test]
+    fn independent_owners_on_one_thread_neither_teach_nor_spend_each_other() {
+        let (_g, mut a, mut first) = fresh();
+        let mut second = Owner::default();
+        let mut b = HoldHint::new();
+        run(&mut first, &mut a, rested(7), secs(3.5));
+        assert!(first.read.card && !first.read.pill);
+        assert_eq!(second.read, HoldHintRead::default(), "a read in the first fixture cannot leak");
+        run(&mut second, &mut b, rested_pill(7), secs(2.5));
+        assert!(b.visible() && second.read.pill && !second.read.card);
+        assert!(!first.read.pill, "the second fixture's pill cannot spend the first fixture's pill");
+        first.apply(HoldHintEvent::Learned);
+        assert!(first.read.learned && first.read.card && first.read.pill);
+        assert!(!second.read.learned && !second.read.card, "a learned menu cannot retire the other fixture");
+        let mut card = HoldHint::new();
+        run(&mut second, &mut card, rested(7), secs(3.5));
+        assert!(card.visible() && second.read.card, "the independent card still teaches");
+        assert_eq!(second.events, vec![HoldHintEvent::ReadPill, HoldHintEvent::ReadCard]);
+    }
+
+    #[test]
+    fn a_reused_widget_serves_a_new_owner_context_after_its_first_life_expired() {
+        let (_g, mut hint, mut first) = fresh();
+        first.read.context = 1;
+        run(&mut first, &mut hint, rested(7), secs(10.0));
+        assert!(first.read.card && !hint.visible(), "the first install's lesson and lifetime are spent");
+        // Independent fixture/install, not a profile clearing an install-wide persistence fact.
+        let mut second = Owner { read: HoldHintRead { context: 2, ..Default::default() }, ..Owner::default() };
+        run(&mut second, &mut hint, rested(7), secs(1.4));
+        assert!(!hint.visible() && !second.read.card, "a new context starts a fresh dwell");
+        run(&mut second, &mut hint, rested(7), secs(2.0));
+        assert!(hint.visible() && second.read.card, "the reused widget teaches the independent untaught owner");
+        assert_eq!(second.events, vec![HoldHintEvent::ReadCard]);
+        assert!(first.read.card, "the original install remains taught");
     }
 
     #[test]
@@ -1465,7 +1414,7 @@ mod tests {
     #[test]
     fn the_layout_is_reused_across_frames_and_rebuilt_on_a_language_change() {
         use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
-        let (_g, _) = fresh();
+        let (_g, _, _) = fresh();
         let resolves = || RESOLVES.with(|r| r.get());
         let en = HoldHint::width(&FixtureMeasure);
         let base = resolves();
@@ -1565,7 +1514,7 @@ mod tests {
     fn a_hidden_hint_declares_no_surface_and_a_visible_one_declares_one() {
         use crate::frame::backdrop::{self, Sources, Z};
         use std::{cell::RefCell, rc::Rc};
-        let (_g, mut h) = fresh();
+        let (_g, mut h, mut owner) = fresh();
         // A fresh source table per frame: entries outlive the frame that declared them until the
         // planner prunes them, so "declared nothing" is read off an empty table.
         let declared = |hint: &HoldHint| {
@@ -1578,10 +1527,10 @@ mod tests {
             n
         };
         assert_eq!(declared(&h), 0, "hidden: no surface");
-        run(&mut h, rested(7), secs(2.5));
+        run(&mut owner, &mut h, rested(7), secs(2.5));
         assert!(h.visible());
         assert_eq!(declared(&h), 1, "visible: one surface");
-        run(&mut h, HintInput::default(), secs(1.5));
+        run(&mut owner, &mut h, HintInput::default(), secs(1.5));
         assert!(!h.visible());
         assert_eq!(declared(&h), 0, "hidden again: none");
     }

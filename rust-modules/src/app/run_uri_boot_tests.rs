@@ -221,7 +221,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("qualified URI resolve did not land", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         let offer = resolved.unwrap().uri_offer.expect("the worker kept its owned URI source");
@@ -285,7 +285,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("the override's URI resolve did not land", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         let offer = resolved.unwrap().uri_offer.expect("an exported display bound by the override offers the original");
@@ -322,7 +322,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("the unarmed URI resolve did not land", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         assert!(resolved.unwrap().uri_offer.is_none(), "an unbound display offers nothing");
@@ -349,7 +349,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("unqualified URI resolve did not land", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         assert!(resolved.unwrap().uri_offer.is_none());
@@ -388,7 +388,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("qualified URI source did not resolve", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
@@ -397,7 +397,7 @@ mod uri_boot_tests {
             &mut rig.app.player.session, &mut rig.app.adapters.player),
             plx_media::player::BufferfeedStartOutcome::Launched(_)));
         let frame = |rig: &mut Rig| {
-            let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
             unsafe { playback_tick(&mut rig.app, &mut fr); }
         };
         frame(&mut rig);
@@ -447,7 +447,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("qualified URI source did not resolve", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
@@ -456,7 +456,7 @@ mod uri_boot_tests {
             &mut rig.app.player.session, &mut rig.app.adapters.player),
             plx_media::player::BufferfeedStartOutcome::Launched(_)));
         let frame = |rig: &mut Rig| {
-            let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
             unsafe { playback_tick(&mut rig.app, &mut fr); }
         };
         frame(&mut rig);
@@ -515,7 +515,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("ACB URI resolve did not land", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         (bus, resolved.unwrap())
@@ -655,7 +655,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("qualified URI source did not resolve", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         let offer = resolved.unwrap().uri_offer.expect("qualified original source");
@@ -665,7 +665,7 @@ mod uri_boot_tests {
             &mut rig.app.player.session, &mut rig.app.adapters.player),
             plx_media::player::BufferfeedStartOutcome::Launched(_)));
         let frame = |rig: &mut Rig| {
-            let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
             unsafe { playback_tick(&mut rig.app, &mut fr); }
         };
         frame(&mut rig); // register opens the actual native Load
@@ -738,7 +738,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("qualified URI source did not resolve", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         let offer = resolved.unwrap().uri_offer.expect("qualified original source");
@@ -748,7 +748,7 @@ mod uri_boot_tests {
             &mut rig.app.player.session, &mut rig.app.adapters.player),
             plx_media::player::BufferfeedStartOutcome::Launched(_)));
         let frame = |rig: &mut Rig| {
-            let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
             unsafe { playback_tick(&mut rig.app, &mut fr); }
         };
         frame(&mut rig); // the named client's registration is refused: released quietly, no Load
@@ -805,7 +805,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("qualified URI source did not resolve", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
@@ -814,7 +814,7 @@ mod uri_boot_tests {
             &mut rig.app.player.session, &mut rig.app.adapters.player),
             plx_media::player::BufferfeedStartOutcome::Launched(_)));
         let frame = |rig: &mut Rig| {
-            let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
             unsafe { playback_tick(&mut rig.app, &mut fr); }
         };
         frame(&mut rig);
@@ -857,7 +857,7 @@ mod uri_boot_tests {
         let mut replacement = None;
         poll_until("automatic Feed rescue did not resolve", || {
             replacement = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             replacement.is_some()
         });
         let replacement = replacement.unwrap();
@@ -915,7 +915,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("qualified URI source did not resolve", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         let offer = resolved.unwrap().uri_offer.expect("the original source was certified");
@@ -953,7 +953,7 @@ mod uri_boot_tests {
         assert!(plx_media::route::source_decodable(&rig.app.player.session));
         assert!(plx_media::player::speed_offer(&rig.app.player.session).contains(&1500));
         crate::app::playback::apply_more_action(&mut rig.app.player.session,
-            &mut rig.app.adapters.player, &mut rig.app.bridge,
+            &mut rig.app.adapters.player, &mut rig.app.runtime.bridge(&mut rig.app.bridge),
             plx_appkit::more_menu::Action::SetSpeed(1500), &mut rig.app.pages.present);
         assert_eq!(rig.app.player.session.requested_rate_permille(), 1500);
         assert_eq!(rig.app.player.session.reconfigure_pause_goal(), Some(true));
@@ -963,13 +963,13 @@ mod uri_boot_tests {
             .expect("accepted viewer edit has its own request identity");
         assert_ne!(revised_request, uri_request);
         assert!(!plx_media::route::request_viewer_reconfigure(&mut rig.app.player.session,
-            rig.app.bridge.metadata_mut(), plx_media::route::ViewerReconfigure::Speed(1500),
+            rig.app.runtime.metadata_mut(), plx_media::route::ViewerReconfigure::Speed(1500),
             Some(12_000_000_000), Some(true)), "the same viewer choice is a no-op");
 
         let mut revised = None;
         poll_until("viewer speed edit did not re-resolve", || {
             revised = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             revised.is_some()
         });
         let revised = revised.unwrap();
@@ -1042,7 +1042,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("qualified URI source did not resolve", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
@@ -1125,7 +1125,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("qualified URI source did not resolve", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
@@ -1183,7 +1183,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("qualified URI source did not resolve", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
@@ -1244,7 +1244,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("qualified URI source did not resolve", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
@@ -1271,7 +1271,7 @@ mod uri_boot_tests {
         let (refreshed, _) = plx_data::metadata::fetch_playing_item(client, rig.sid, "1", None)
             .expect("the refreshed item lists the newly available sidecar");
         assert_eq!(refreshed.subs.first().map(|sub| sub.id), Some(3));
-        rig.app.bridge.metadata_mut().run(
+        rig.app.runtime.metadata_mut().run(
             plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(refreshed)));
         let before = rig.app.player.session.metric_request();
         rig.pick_subtitle(3);
@@ -1283,7 +1283,7 @@ mod uri_boot_tests {
         let mut replacement = None;
         poll_until("external subtitle resolve did not land", || {
             replacement = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             replacement.is_some()
         });
         assert!(replacement.unwrap().uri_offer.is_none(),
@@ -1319,7 +1319,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("qualified URI source did not resolve", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
@@ -1346,7 +1346,7 @@ mod uri_boot_tests {
         let mut replacement = None;
         poll_until("Force selected source did not resolve", || {
             replacement = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             replacement.is_some()
         });
         let replacement = replacement.unwrap();
@@ -1384,7 +1384,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("qualified URI source did not resolve", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
@@ -1525,7 +1525,7 @@ mod uri_boot_tests {
 
     /// One frame of the app loop's playback half, as the other URI fixtures run it.
     fn window_frame(rig: &mut Rig) {
-        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.runtime.metadata_view());
         unsafe { playback_tick(&mut rig.app, &mut fr); }
     }
 
@@ -1535,7 +1535,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("qualified URI source did not resolve", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         assert!(rig.app.adapters.player.offer_qualified_uri(&mut rig.app.player.session,
@@ -1584,7 +1584,7 @@ mod uri_boot_tests {
         let mut replacement = None;
         poll_until("automatic Feed rescue did not resolve", || {
             replacement = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             replacement.is_some()
         });
         assert!(replacement.unwrap().uri_offer.is_none(), "automatic rescue cannot loop back to URI");
@@ -1625,12 +1625,12 @@ mod uri_boot_tests {
         assert_eq!(windows(), held, "premise: the quarantined driver still holds its window");
         // The viewer asks for the title again.
         assert!(plx_media::route::request_play(&mut rig.app.player.session,
-            rig.app.bridge.metadata_mut(), plx_platform::devcaps::caps(), rig.sid, "1",
+            rig.app.runtime.metadata_mut(), plx_platform::devcaps::caps(), rig.sid, "1",
             "/library/parts/1/file.mkv", "h264", "aac", "First", "", None, ""));
         let mut resolved = None;
         poll_until("the new request did not resolve", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         if let Some(offer) = resolved.unwrap().uri_offer {
@@ -1675,7 +1675,7 @@ mod uri_boot_tests {
         let mut resolved = None;
         poll_until("the request did not resolve", || {
             resolved = plx_media::route::pump_play(&mut rig.app.player.session,
-                rig.app.bridge.metadata_mut());
+                rig.app.runtime.metadata_mut());
             resolved.is_some()
         });
         resolved.unwrap()
@@ -1698,7 +1698,7 @@ mod uri_boot_tests {
         let (offered, log) = offer_with_log(rig, offer);
         assert!(offered.is_err(), "the offer is declined");
         assert!(plx_media::route::retry_declined_uri_source(&mut rig.app.player.session,
-            rig.app.bridge.metadata_mut(), resolved.route_start.expect("route start"), offer_id));
+            rig.app.runtime.metadata_mut(), resolved.route_start.expect("route start"), offer_id));
         let feed = resolve_pending(rig);
         assert!(feed.uri_offer.is_none(), "a declined original is not offered twice");
         assert!(matches!(rig.app.player.session.backend_offer(),
@@ -1774,7 +1774,7 @@ mod uri_boot_tests {
         plx_media::player::stop_playback(&mut rig.app.player.session, &mut rig.app.adapters.player);
         assert_eq!(display.created_player_types(), [0]);
         assert!(plx_media::route::request_play(&mut rig.app.player.session,
-            rig.app.bridge.metadata_mut(), plx_platform::devcaps::caps(), rig.sid, "1",
+            rig.app.runtime.metadata_mut(), plx_platform::devcaps::caps(), rig.sid, "1",
             "/library/parts/1/file.mkv", "h264", "aac", "First", "", None, ""));
         let resolved = resolve_pending(&mut rig);
         let (log, _) = decline_and_resolve_feed(&mut rig, resolved);

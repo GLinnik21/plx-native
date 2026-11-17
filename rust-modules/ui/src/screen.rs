@@ -933,6 +933,11 @@ pub struct DrawFrame<'a, 'views, H: Host> {
     /// a stale (dipped) copy under the growing one and the release spring of a taken hold is not
     /// page damage. `None` on every frame the lift does not run, and on the lift's own frame.
     pub lifted: Option<FocusKey<H::Elem>>,
+    /// Page instance addressed by this walk; assigned only by its dispatcher.
+    pub lift_owner: Option<InstanceId>,
+    lift_receipt: std::cell::Cell<Option<crate::input::LiftReceipt<H::Elem>>>,
+    // Render evidence only; the dispatcher owns final-swap admission and logical delivery.
+    presentation: std::cell::RefCell<Option<H::Msg>>,
     /// **The lift's own frame for an opener that left the page** ([`Screen::opener_departing`]):
     /// the element whose landing ghost the lift carries above the dim. A grid's
     /// `paint_ghosts` paints that ghost alone on such a frame (and the page pass, whose `lifted`
@@ -1011,6 +1016,9 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
             press: cx.press,
             underlay: None,
             lifted: None,
+            lift_owner: None,
+            lift_receipt: std::cell::Cell::new(None),
+            presentation: std::cell::RefCell::new(None),
             lifting: None,
             push: None,
             entry_floor: 0.0,
@@ -1037,14 +1045,52 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
     /// ([`Screen::redraw_focused`]) draws the only copy above the host snapshot, so the page draws
     /// NOTHING of it - not its art and not its label plate - and the snapshot never holds a stale
     /// (dipped) copy under the lift's. It also says so to the press machine
-    /// ([`crate::popover::set_lift_owns`]), whose spring then is no page damage. The lift's own
+    /// through a local receipt, whose spring then is no page damage. The lift's own
     /// frame carries no `lifted`, so it draws.
     pub fn leaves_out(&self, entry: EntryId, elem: H::Elem) -> bool {
         let out = self.lifted.is_some_and(|k| k.entry == entry && k.elem == elem);
         if out {
-            crate::popover::set_lift_owns(true);
+            if let Some(owner) = self.lift_owner {
+                self.lift_receipt.set(Some(crate::input::LiftReceipt {
+                    press: plx_machine::machine::PressId(self.press.identity),
+                    key: FocusKey { entry, elem }, owner,
+                }));
+            }
         }
         out
+    }
+
+    /// Local draw evidence. Only Dispatcher may admit it as logical input policy.
+    pub fn lift_receipt(&self) -> Option<crate::input::LiftReceipt<H::Elem>> {
+        self.lift_receipt.get()
+    }
+
+    /// Speculative, blur, discovery and text-recording walks cannot publish logical policy.
+    pub fn visible_lift_receipt(&self) -> Option<crate::input::LiftReceipt<H::Elem>> {
+        if self.painter.is_recording() || crate::frame::backdrop::source_walk()
+            || plx_gfx::gfx::blur_source_pass() {
+            None
+        } else {
+            self.lift_receipt()
+        }
+    }
+
+    /// Report one typed paint observation, never a logical mutation. Offscreen walks cannot
+    /// manufacture evidence, even when their geometry describes an otherwise visible control.
+    pub fn report_presentation(&self, message: H::Msg) {
+        if !self.painter.is_recording() && !crate::rec::speculating()
+            && !crate::frame::backdrop::source_walk() && !plx_gfx::gfx::blur_source_pass() {
+            *self.presentation.borrow_mut() = Some(message);
+        }
+    }
+
+    pub(crate) fn take_presentation(&self) -> Option<H::Msg> {
+        self.presentation.borrow_mut().take()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn take_presentation_for_test(&self) -> Option<H::Msg> {
+        self.take_presentation()
     }
 
     /// Carry this frame's presentation into a nested frame, including any container alpha.
@@ -1291,6 +1337,7 @@ mod draw_frame_tests {
             press: PressRead::default(),
             focus: FocusRead::default(),
             owner: InputOwner::Entry(EntryId(0)),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         }
     }
 
@@ -1625,7 +1672,8 @@ mod composed_owner_tests {
     fn repaired(pair: &Pair, elem: u32) -> u32 {
         let (measure, store) = (FixtureMeasure, FixtureView::default());
         let cx = Cx { views: FixtureViews { store: &store }, tick: Tick::default(), measure: &measure,
-            press: PressRead::default(), focus: FocusRead::default(), owner: InputOwner::Entry(EntryId(1)) };
+            press: PressRead::default(), focus: FocusRead::default(), owner: InputOwner::Entry(EntryId(1)),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default() };
         composed_reconcile(pair, FocusKey { entry: EntryId(1), elem }, &cx).elem
     }
     fn pair(owned: Vec<u32>, placed: Vec<u32>, repair: u32) -> Pair {

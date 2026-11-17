@@ -95,8 +95,26 @@ impl LogicalState for FixtureArg {
 pub enum FixtureFx {
     StoreAdd(u32),
     Net(Addr),
+    /// Explicit yielded request; ordinary Net remains synchronous for existing fixtures.
+    ExternalNet(Addr),
     Poster(PosterKey),
 }
+
+impl plx_machine::machine::AppEffect for FixtureFx {
+    type Inline = Self;
+    type ExternalFx = Self;
+    fn route(self) -> plx_machine::machine::EffectDisposition<Self, Self> {
+        match self {
+            effect @ Self::ExternalNet(_) => plx_machine::machine::EffectDisposition::External(effect),
+            effect @ (Self::StoreAdd(_) | Self::Net(_) | Self::Poster(_)) =>
+                plx_machine::machine::EffectDisposition::Inline(effect),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "extension_screen_tests.rs"]
+mod extension_screen_tests;
 
 /// The app's messages.
 pub enum FixtureMsg {
@@ -426,10 +444,12 @@ impl Machine<FixtureHost> for FixtureScreen {
             ScreenEvent::Input(_) => Handled::No,
             ScreenEvent::Mount => {
                 // a request emitted from mount is addressable: the id arrived first
-                fx.push(Fx::App(FixtureFx::Net(Addr {
-                    to: fx.from(),
-                    req: RequestId(1),
-                })));
+                let address = Addr { to: fx.from(), req: RequestId(1) };
+                // Page 974 explicitly exercises a yielded POST-mount request. Ordinary pages
+                // keep their synchronous Net effect; no rig may override its routing authority.
+                fx.push(Fx::App(if self.arg == FixtureArg::Page(974) {
+                    FixtureFx::ExternalNet(address)
+                } else { FixtureFx::Net(address) }));
                 fx.push(Fx::Log(LogLine(format!("fixture: mounted {:?}", self.arg))));
                 Handled::Yes
             }
@@ -533,6 +553,9 @@ impl Screen<FixtureHost> for FixtureScreen {
             self.lifted = f.lifted;
         }
         composed_draw(self, f);
+        if self.arg == FixtureArg::Page(975) {
+            f.report_presentation(FixtureMsg::Store(StoreOrd(0), 1));
+        }
         if matches!(self.arg, FixtureArg::Page(_)) {
             // a page that always shows a placeholder, for the held-image debt test
             crate::placeholder::note(f.painter, crate::placeholder::Reason::DetailSpinner, "fixture");
@@ -1300,7 +1323,7 @@ impl super::adapters::Adapters<FixtureHost> for FixtureRig {
                     Delivery::Machine(FixtureMsg::Store(StoreOrd(0), v)),
                 ));
             }
-            FixtureFx::Net(addr) => self.net_requests.push(addr),
+            FixtureFx::Net(addr) | FixtureFx::ExternalNet(addr) => self.net_requests.push(addr),
             FixtureFx::Poster(key) => self.cache.accept(PosterReady {
                 key,
                 result: Ok(Decoded {
@@ -1535,6 +1558,7 @@ impl Tap<FixtureHost> for RecTap {
             Fx::Timer { .. } => "timer",
             Fx::CancelTimer(_) => "cancel_timer",
             Fx::Press(_) => "press",
+            Fx::HoldHint(_) => "hold_hint",
             Fx::Remember { .. } => "remember",
             Fx::Log(_) => "log",
             Fx::App(_) => "app",
@@ -1878,7 +1902,9 @@ fn the_present_bit_is_recorded_and_replayed() {
 fn the_fixture_bundles_state_shape_is_pinned() {
     // Re-pin only with a named reason: a shape change invalidates every fixture of this bundle.
     // The fixture bundle now versions the input machine and queued whole-input payloads too.
-    assert_eq!(fixture_state_fp(), 0x23c4_4e83_a90a_8644);
+    // Owned HoldHintRead and gesture/key/page-instance LiftReceipt join Input Canon (V12).
+    // This pins the current producer only; no historical recording is rewritten or admitted.
+    assert_eq!(fixture_state_fp(), 0xb00b_44a5_806d_d3b4);
 }
 
 pub fn booted() -> (Dispatcher<FixtureHost>, FixtureRig, plx_machine::machine::InstanceId) {

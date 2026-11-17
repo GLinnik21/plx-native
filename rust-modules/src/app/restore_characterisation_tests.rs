@@ -251,13 +251,15 @@ fn drain(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, records: Vec<SessionEnve
 
 /// **The stored-session boot, up to the handoff `follow_auth_landing` consumes.** `ResumeStored`
 /// (boot.rs) seats the stored profile and emits `Ready`.
-fn resume(stored: &Session) -> (Bridge, Dispatcher<AppHost>) {
-    let mut rig = Bridge::for_session_test(SessionInit::captured(stored.clone()));
+fn resume(stored: &Session) -> (crate::app::runtime_owners::Harness, Dispatcher<AppHost>) {
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(SessionInit::captured(stored.clone()));
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     let mut d = Dispatcher::<AppHost>::new();
     execute_session_command(&mut d, SessionCmd::ResumeStored);
     drain(&mut rig, &mut d, Vec::new(), 1);
     assert_eq!(rig.auth_read().0.phase, Phase::Ready);
-    (rig, d)
+    (harness, d)
 }
 
 /// The offline profile switch: the real worker policy with a plex.tv that cannot be reached, so the
@@ -340,7 +342,8 @@ fn boot_and_the_auth_landing_set_the_same_nine_cells_for_a_managed_profile_and_f
 
             // The landing: the stored-resume `Ready`, then the restore `follow_auth_landing` runs.
             put(SCRAMBLED);
-            let (mut rig, mut d) = resume(&stored);
+            let (mut harness, mut d) = resume(&stored);
+            let mut rig = harness.bridge();
             follow_auth_landing(&mut d, &mut rig);
             let at_landing = cells();
 
@@ -369,7 +372,9 @@ fn stored_boot_restores_the_seated_profiles_own_values() {
     crate::app::boot::restore_player_preferences(&session::load(), false);
     assert_eq!(cells(), DEFAULTS, "process start is unseated: the fallback, here the defaults");
 
-    let mut rig = Bridge::for_session_test(SessionInit::captured(stored.clone()));
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(SessionInit::captured(stored.clone()));
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     let mut d = Dispatcher::<AppHost>::new();
     let ready = crate::app::boot::resume_stored(&mut d, &mut rig, &mut NoTap);
     assert!(ready.is_some(), "ResumeStored ended in the Ready handoff");
@@ -396,7 +401,8 @@ fn boot_sets_the_fallback_and_the_landing_sets_the_seated_profiles_own_values() 
         let at_boot = cells();
 
         put(SCRAMBLED);
-        let (mut rig, mut d) = resume(&stored);
+        let (mut harness, mut d) = resume(&stored);
+        let mut rig = harness.bridge();
         follow_auth_landing(&mut d, &mut rig);
         let at_landing = cells();
 
@@ -432,7 +438,8 @@ fn profile_switch_restores_the_new_profiles_values() {
         "profile-b", OTHER);
     let _fixture = Fixture::new("a0c-switch", &stored);
 
-    let (mut rig, mut d) = resume(&stored);
+    let (mut harness, mut d) = resume(&stored);
+    let mut rig = harness.bridge();
     assert_eq!(cells(), STORED, "A seated: the seat change restored A's own values, before any landing");
     follow_auth_landing(&mut d, &mut rig);
     settle(&mut rig, &mut d, 100);
@@ -479,7 +486,8 @@ fn profile_picks_are_each_profiles_own_and_play_automatically_on_b_leaves_a_alon
         assert!(session::update(move |s| Some(Session { user: user(&uuid), ..s.clone() })));
     };
 
-    let (mut rig, mut d) = resume(&stored);
+    let (mut harness, mut d) = resume(&stored);
+    let mut rig = harness.bridge();
     follow_auth_landing(&mut d, &mut rig);
     settle(&mut rig, &mut d, 100);
     seat_globally("profile-a");
@@ -542,7 +550,8 @@ fn play_automatically_publishes_direct_play_auto_once() {
     let stored = record("profile-a", &[]);
     let _fixture = Fixture::new("a0c-play-auto-once", &stored);
 
-    let (mut rig, mut d) = resume(&stored);
+    let (mut harness, mut d) = resume(&stored);
+    let mut rig = harness.bridge();
     follow_auth_landing(&mut d, &mut rig);
     settle(&mut rig, &mut d, 100);
     seat_globally("profile-a");
@@ -592,10 +601,12 @@ fn boot_auto_sign_in_restores_the_seated_profile() {
 
     crate::app::boot::restore_player_preferences(&session::load(), false);
     assert_eq!(cells(), DEFAULTS, "process start: nobody is seated");
-    let mut rig = Bridge::for_session_test(SessionInit::captured(stored.clone()));
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(SessionInit::captured(stored.clone()));
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     let mut d = Dispatcher::<AppHost>::new();
     assert!(crate::app::boot::resume_stored(&mut d, &mut rig, &mut NoTap).is_some());
-    assert_eq!(rig.seat_watch.restored, seat_of("profile-b"));
+    assert_eq!(rig.retained.seat_watch.restored, seat_of("profile-b"));
     assert_eq!(cells(), OTHER, "the stored profile's own values, before Home mounts");
 }
 
@@ -623,20 +634,22 @@ fn boot_picker_restores_only_after_the_pick() {
 
     crate::app::boot::restore_player_preferences(&session::load(), false);
     assert_eq!(cells(), DEFAULTS, "process start: nobody is seated");
-    let mut rig = Bridge::for_session_test(SessionInit::captured(stored.clone()));
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(SessionInit::captured(stored.clone()));
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     let mut d = Dispatcher::<AppHost>::new();
     execute_session_command(&mut d, SessionCmd::StartSwitch(Picker::Boot));
     drain(&mut rig, &mut d, Vec::new(), 1);
     assert_eq!(rig.auth_read().0.phase, Phase::Profiles, "Who's watching? is up");
-    assert!(rig.session_ready.is_none(), "and no handoff was released: Home has not mounted");
+    assert!(rig.retained.session_ready.is_none(), "and no handoff was released: Home has not mounted");
     let published = rig.session_adapter.fixture_resources().profile.as_ref()
         .and_then(|p| p.profile.as_ref().map(|u| u.uuid.clone()));
     assert_eq!(published.as_deref(), Some("profile-a"), "the owner seats the stored profile behind the picker");
-    assert_eq!(rig.seat_watch.restored, seat_of("profile-a"));
+    assert_eq!(rig.retained.seat_watch.restored, seat_of("profile-a"));
     assert_eq!(cells(), STORED, "...and its own values are in the cells, which nothing reads yet");
 
     pick(&mut rig, &mut d, 1, 3000);
-    assert_eq!(rig.seat_watch.restored, seat_of("profile-b"));
+    assert_eq!(rig.retained.seat_watch.restored, seat_of("profile-b"));
     assert_eq!(cells(), OTHER, "the pick seated profile-b: its own values, restored before Ready is consumed");
 }
 
@@ -653,13 +666,15 @@ fn first_login_single_user_seats_the_owner() {
 
     crate::app::boot::restore_player_preferences(&session::load(), false);
     put(SCRAMBLED); // so only the seat can put the owner's fallback in the cells
-    let mut rig = Bridge::for_session_test(SessionInit::captured(stored.clone()));
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(SessionInit::captured(stored.clone()));
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut rig = harness.bridge();
     let mut d = Dispatcher::<AppHost>::new();
     assert!(crate::app::boot::resume_stored(&mut d, &mut rig, &mut NoTap).is_some());
     let publication = rig.session_adapter.fixture_resources().profile.clone().expect("the owner was published");
     assert_eq!(publication.profile.as_ref().map(|u| u.uuid.as_str()), Some(""), "as a user, not as nobody");
     assert_eq!(publication.stamp, stamp_of("a0c-account"), "under the stamp of the account token");
-    assert_eq!(rig.seat_watch.restored, seat_of(""), "so the owner is seated");
+    assert_eq!(rig.retained.seat_watch.restored, seat_of(""), "so the owner is seated");
     assert_eq!(cells(), DEFAULTS, "a new install's owner reads the fallback");
 
     // Its own pick lands in ITS record, under that stamp.
@@ -684,15 +699,17 @@ fn dev_token_boot_is_unseated_and_reads_the_fallback() {
         std::fs::write(plx_base::devtrig::path("audioenh"), "loudness").unwrap();
         crate::app::boot::restore_player_preferences(&session::load(), false);
         crate::dev::scenarios::arm_audio_enhancements();
-        let mut rig = Bridge::for_session_test(crate::app::boot::captured_session_for_boot(
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(crate::app::boot::captured_session_for_boot(
             stored.clone(), Some(server("dev-token")), Vec::new()));
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
         rig.session_adapter.fixture_resources().disk = stored.clone();
         let mut d = Dispatcher::<AppHost>::new();
         execute_session_command(&mut d, SessionCmd::ActivateDevBootstrap);
         drain(&mut rig, &mut d, Vec::new(), 1);
         assert_eq!(rig.auth_read().0.phase, Phase::Ready, "the dev token reached Ready");
 
-        assert_eq!(rig.seat_watch.restored, plx_plex::plex::session::Seat::Unseated, "and nobody was seated");
+        assert_eq!(rig.retained.seat_watch.restored, plx_plex::plex::session::Seat::Unseated, "and nobody was seated");
         assert_eq!(cells(), Cells { enhancements: loudness, ..STORED },
             "the legacy keys, not the owner's own values; only the armed enhancement differs");
         plx_base::storage_worker::drain_for_test();
@@ -728,8 +745,9 @@ fn audioenh_arm_writes_the_seated_profile() {
         // The stored boot seats the guest. The fixture adapter keeps its publication to itself, so the
         // process global the write door captures is seated as the live publisher would.
         seat_globally("guest");
-        let (mut rig, mut d) = resume(&stored);
-        assert_eq!(rig.seat_watch.restored, seat_of("guest"));
+        let (mut harness, mut d) = resume(&stored);
+        let mut rig = harness.bridge();
+        assert_eq!(rig.retained.seat_watch.restored, seat_of("guest"));
         assert_eq!(plx_media::player::audio_enhancements(), loudness);
         plx_base::storage_worker::drain_for_test();
         assert_eq!(stored_value::<AudioEnhancementsPref>("guest"), Some(loudness),
@@ -743,7 +761,7 @@ fn audioenh_arm_writes_the_seated_profile() {
         open_picker(&mut rig, &mut d, 2000);
         seat_globally("profile-b");
         pick(&mut rig, &mut d, 1, 3000);
-        assert_eq!(rig.seat_watch.restored, seat_of("profile-b"));
+        assert_eq!(rig.retained.seat_watch.restored, seat_of("profile-b"));
         assert_eq!(plx_media::player::audio_enhancements(), STORED.enhancements, "profile-b reads its own");
         plx_base::storage_worker::drain_for_test();
         assert_eq!(stored_value::<AudioEnhancementsPref>("profile-b"), Some(STORED.enhancements), "the arm ran once");
@@ -775,8 +793,9 @@ fn trackmemory_arm_forgets_the_first_seated_profiles_shows() {
             move |_| Some(entry.clone())));
         assert_eq!(held("guest"), 1, "setup: the guest remembered a show");
 
-        let (rig, _d) = resume(&stored);
-        assert_eq!(rig.seat_watch.restored, seat_of("guest"), "the stored boot seated the guest");
+        let (mut harness, _d) = resume(&stored);
+        let rig = harness.bridge();
+        assert_eq!(rig.retained.seat_watch.restored, seat_of("guest"), "the stored boot seated the guest");
         assert_eq!(held("guest"), 0, "and the seat trigger ran the clear for the profile it seated");
         plx_base::storage_worker::drain_for_test();
         assert!(session::load().prefs.track_memory.iter().all(|list| list.items.is_empty()),
@@ -795,20 +814,21 @@ fn same_seat_republication_restores_nothing() {
     let stored = with_own_values(with_own_values(record("profile-a", &["profile-b"]), "profile-a", STORED),
         "profile-b", OTHER);
     let _fixture = Fixture::new("a0c-same-seat", &stored);
-    let (mut rig, mut d) = resume(&stored);
+    let (mut harness, mut d) = resume(&stored);
+    let mut rig = harness.bridge();
     follow_auth_landing(&mut d, &mut rig);
     settle(&mut rig, &mut d, 100);
     seat_globally("profile-a");
-    assert_eq!(rig.seat_watch.restored, seat_of("profile-a"));
+    assert_eq!(rig.retained.seat_watch.restored, seat_of("profile-a"));
 
     // A picks a size; before the write comes back, the same seat is published again.
     plx_media::route::select_subtitle_size(SubtitleSize::Small, None);
     let before = size_publishes();
-    assert!(!rig.seat_watch.arrive(seat_of("profile-a")), "the same seat again is not a change");
+    assert!(!rig.retained.seat_watch.arrive(seat_of("profile-a")), "the same seat again is not a change");
     assert_eq!(size_publishes(), before, "so nothing was published");
     assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::Small, "and the pick stands");
 
-    assert!(rig.seat_watch.arrive(seat_of("profile-b")), "another seat is a change");
+    assert!(rig.retained.seat_watch.arrive(seat_of("profile-b")), "another seat is a change");
     assert_eq!(size_publishes(), before + 1, "and restores once");
     assert_eq!(cells(), OTHER);
 }
@@ -825,7 +845,8 @@ fn seat_change_on_switch_restores_once() {
     let start = size_publishes();
     let since = || size_publishes() - start;
 
-    let (mut rig, mut d) = resume(&stored);
+    let (mut harness, mut d) = resume(&stored);
+    let mut rig = harness.bridge();
     assert_eq!((since(), cells()), (1, STORED), "ResumeStored seats A");
     follow_auth_landing(&mut d, &mut rig);
     settle(&mut rig, &mut d, 100);
@@ -854,7 +875,8 @@ fn size_picked_by_profile_a_is_not_seen_by_profile_b() {
     let _serial = plx_base::testlock::serial();
     let stored = record("profile-a", &["profile-b"]);
     let _fixture = Fixture::new("a0c-size-a-not-b", &stored);
-    let (mut rig, mut d) = resume(&stored);
+    let (mut harness, mut d) = resume(&stored);
+    let mut rig = harness.bridge();
     follow_auth_landing(&mut d, &mut rig);
     settle(&mut rig, &mut d, 100);
     seat_globally("profile-a");
@@ -887,7 +909,8 @@ fn play_automatically_resets_the_active_profiles_direct_play_only() {
     put_own::<DirectPlayModePref>(&mut stored.prefs.profile_prefs, "profile-b", &stamp, DirectPlayMode::Disabled);
     let _fixture = Fixture::new("a0c-play-auto-active", &stored);
 
-    let (mut rig, mut d) = resume(&stored);
+    let (mut harness, mut d) = resume(&stored);
+    let mut rig = harness.bridge();
     follow_auth_landing(&mut d, &mut rig);
     settle(&mut rig, &mut d, 100);
     seat_globally("profile-a");
@@ -916,7 +939,8 @@ fn forced_mode_does_not_follow_a_profile_switch() {
         DirectPlayMode::Forced);
     let _fixture = Fixture::new("a0c-forced-no-follow", &stored);
 
-    let (mut rig, mut d) = resume(&stored);
+    let (mut harness, mut d) = resume(&stored);
+    let mut rig = harness.bridge();
     follow_auth_landing(&mut d, &mut rig);
     settle(&mut rig, &mut d, 100);
     assert_eq!(plx_media::route::direct_play_mode(), DirectPlayMode::Forced);
@@ -984,10 +1008,12 @@ fn trailer_decision_follows_the_seat() {
         let _fixture = Fixture::new("p1c-boot-auto", &stored);
         crate::app::boot::restore_player_preferences(&session::load(), false);
         assert!(hero_may_autoplay(), "process start: nobody is seated, the TV's key says on");
-        let mut rig = Bridge::for_session_test(SessionInit::captured(stored.clone()));
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(SessionInit::captured(stored.clone()));
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         assert!(crate::app::boot::resume_stored(&mut d, &mut rig, &mut NoTap).is_some());
-        assert_eq!(rig.seat_watch.restored, seat_of("profile-b"));
+        assert_eq!(rig.retained.seat_watch.restored, seat_of("profile-b"));
         assert!(!hero_may_autoplay(), "case 1: the stored profile's own off, before Home mounts");
     }
 
@@ -998,15 +1024,17 @@ fn trailer_decision_follows_the_seat() {
         let _fixture = Fixture::new("p1c-boot-picker", &stored);
         crate::app::boot::restore_player_preferences(&session::load(), false);
         assert!(hero_may_autoplay(), "process start: the TV's on");
-        let mut rig = Bridge::for_session_test(SessionInit::captured(stored.clone()));
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(SessionInit::captured(stored.clone()));
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         execute_session_command(&mut d, SessionCmd::StartSwitch(Picker::Boot));
         drain(&mut rig, &mut d, Vec::new(), 1);
         assert_eq!(rig.auth_read().0.phase, Phase::Profiles, "Who's watching? is up");
-        assert!(rig.session_ready.is_none(), "and no handoff was released: Home has not mounted");
+        assert!(rig.retained.session_ready.is_none(), "and no handoff was released: Home has not mounted");
         assert!(hero_may_autoplay(), "the stored profile behind the picker has no value of its own: on");
         pick(&mut rig, &mut d, 1, 3000);
-        assert_eq!(rig.seat_watch.restored, seat_of("profile-b"));
+        assert_eq!(rig.retained.seat_watch.restored, seat_of("profile-b"));
         assert!(!hero_may_autoplay(), "case 2: the chosen profile's own off, restored before Ready is consumed");
     }
 
@@ -1018,10 +1046,12 @@ fn trailer_decision_follows_the_seat() {
         crate::app::boot::restore_player_preferences(&session::load(), false);
         assert!(!hero_may_autoplay(), "process start: the TV's off");
         plx_media::player::preview::restore_trailer_autoplay(true); // so only the seat can put it back
-        let mut rig = Bridge::for_session_test(SessionInit::captured(stored.clone()));
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(SessionInit::captured(stored.clone()));
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         assert!(crate::app::boot::resume_stored(&mut d, &mut rig, &mut NoTap).is_some());
-        assert_eq!(rig.seat_watch.restored, seat_of(""), "the owner is seated");
+        assert_eq!(rig.retained.seat_watch.restored, seat_of(""), "the owner is seated");
         assert!(!hero_may_autoplay(), "case 3: the owner has no value of its own: the TV's off, restored by the seat");
     }
 
@@ -1030,14 +1060,16 @@ fn trailer_decision_follows_the_seat() {
         let stored = with_own_trailer(record("", &[]), "", true, false);
         let _fixture = Fixture::new("p1c-dev-token", &stored);
         crate::app::boot::restore_player_preferences(&session::load(), false);
-        let mut rig = Bridge::for_session_test(crate::app::boot::captured_session_for_boot(
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(crate::app::boot::captured_session_for_boot(
             stored.clone(), Some(server("dev-token")), Vec::new()));
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
         rig.session_adapter.fixture_resources().disk = stored.clone();
         let mut d = Dispatcher::<AppHost>::new();
         execute_session_command(&mut d, SessionCmd::ActivateDevBootstrap);
         drain(&mut rig, &mut d, Vec::new(), 1);
         assert_eq!(rig.auth_read().0.phase, Phase::Ready, "the dev token reached Ready");
-        assert_eq!(rig.seat_watch.restored, plx_plex::plex::session::Seat::Unseated, "and nobody was seated");
+        assert_eq!(rig.retained.seat_watch.restored, plx_plex::plex::session::Seat::Unseated, "and nobody was seated");
         assert!(!hero_may_autoplay(), "case 4: the TV's off, not the owner's own on");
     }
 }
@@ -1052,7 +1084,8 @@ fn trailer_off_on_profile_a_is_not_seen_by_b() {
     let mut stored = record("profile-a", &["profile-b"]);
     stored.prefs.trailer_autoplay = true;
     let _fixture = Fixture::new("p1c-trailer-a-not-b", &stored);
-    let (mut rig, mut d) = resume(&stored);
+    let (mut harness, mut d) = resume(&stored);
+    let mut rig = harness.bridge();
     follow_auth_landing(&mut d, &mut rig);
     settle(&mut rig, &mut d, 100);
     seat_globally("profile-a");

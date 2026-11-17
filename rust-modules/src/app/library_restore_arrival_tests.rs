@@ -12,7 +12,7 @@
 //!   `library_collections_arrival_tests`).
 
 use super::*;
-use super::test_support::{World, DipImage, ImageHeld};
+use super::test_support::{World, DipImage};
 use plx_plex::plex::session::LibraryPage;
 use plx_screens::registry::HomeTab;
 use plx_ui::containers::transition::PageDip;
@@ -27,12 +27,12 @@ fn restore_from_home(name: &str) -> World { restore_page_from_home(name, Library
 fn restore_page_from_home(name: &str, remembered: LibraryPage) -> World {
     let mut w = World::movies_library(name, false);
     w.d.nav.tabs.stack.transition = Box::new(PageDip::new());
-    let key = w.bridge.directory.view().sections()[0].key;
-    w.bridge.remember_library_page("route-own", key, remembered);
-    super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Home, None, None);
+    let key = w.bridge.retained().directory.view().sections()[0].key;
+    w.bridge.bridge().remember_library_page("route-own", key, remembered);
+    super::nav_tab(&mut w.d, &mut w.bridge.bridge(), HomeTab::Home, None, None);
     w.frames(60);
     assert!(w.on(&AppArg::Home), "premise: Home is on top");
-    super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Movies, None, None);
+    super::nav_tab(&mut w.d, &mut w.bridge.bridge(), HomeTab::Movies, None, None);
     w
 }
 
@@ -42,11 +42,11 @@ fn restore_page_from_home(name: &str, remembered: LibraryPage) -> World {
 #[test]
 fn a_restored_collections_page_seats_its_first_tile() {
     let mut w = restore_from_home("restore-seats-first-tile");
-    let _held = ImageHeld;
+
     let mut dip = DipImage::default();
     for i in 0..90 {
         // the section's collections, as the page's own request answers
-        if i == 12 { w.bridge.stores.browse.borrow_mut().seed_items_for_test(5); }
+        if i == 12 { w.bridge.bridge().stores.browse.borrow_mut().seed_items_for_test(5); }
         w.step_dip(&mut dip, vec![]);
     }
     assert!(matches!(w.d.top_arg(), Some(AppArg::LibraryCollections { .. })), "premise: the Collections page is on top");
@@ -58,7 +58,7 @@ fn a_restored_collections_page_seats_its_first_tile() {
 #[test]
 fn a_restored_recommended_page_seats_its_first_card() {
     let mut w = restore_page_from_home("restore-recommended-seats", LibraryPage::Recommended);
-    let _held = ImageHeld;
+
     let mut dip = DipImage::default();
     for _ in 0..90 { w.step_dip(&mut dip, vec![]); }
     assert!(matches!(w.d.top_arg(), Some(AppArg::LibraryRecommended { .. })), "premise: the Recommended page is on top");
@@ -73,9 +73,9 @@ fn a_restored_recommended_page_seats_its_first_card() {
 #[test]
 fn the_grid_uncovered_by_back_draws_none_of_the_collections() {
     let mut w = World::collections("back-draws-no-loan", false);
-    let _held = ImageHeld;
+
     let mut dip = DipImage::default();
-    w.bridge.stores.browse.borrow_mut().seed_items_for_test(5);
+    w.bridge.bridge().stores.browse.borrow_mut().seed_items_for_test(5);
     w.frames(30);
     assert!(matches!(w.d.top_arg(), Some(AppArg::LibraryCollections { .. })), "premise: the Collections page is on top");
     assert_eq!(page(&w).probe_content().4, 5, "premise: the page lists its five collections");
@@ -84,7 +84,7 @@ fn the_grid_uncovered_by_back_draws_none_of_the_collections() {
     let mut shown = Vec::new();
     for i in 0..40 {
         // the films answer a few frames after the repaying request
-        if i == 20 { w.bridge.stores.browse.borrow_mut().seed_items_for_test(120); }
+        if i == 20 { w.bridge.bridge().stores.browse.borrow_mut().seed_items_for_test(120); }
         w.step_dip(&mut dip, vec![]);
         if !w.on(&AppArg::Library) { continue; }
         let (page_alpha, grid_alpha, _, _, tiles) = page(&w).probe_content();
