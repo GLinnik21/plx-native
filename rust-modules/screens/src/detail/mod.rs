@@ -2080,13 +2080,18 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
             (Some(Seg::Name("episodes")), Some(Seg::Name("text")), Some(Seg::Index(i)), None) => {
                 Located::Episode(i, episodes::Row::Text)
             }
-            (Some(Seg::Name(shelf)), Some(Seg::Name("card")), Some(Seg::Index(i)), None) => match shelf {
-                "related" => Located::Related(i),
-                "extras" => Located::Extras(i),
-                "collection" => Located::Collection(i),
-                "cast" => Located::Cast(i),
-                _ => return None,
-            },
+            (Some(Seg::Name(shelf)), Some(Seg::Name("card")), Some(Seg::Index(n)), None) => {
+                // `n` is the card's place in the shelf's listing; the window index is what locates it
+                let (which, at): (cards::Which, fn(usize) -> Located) = match shelf {
+                    "related" => (cards::Which::Related, Located::Related),
+                    "extras" => (cards::Which::Extras, Located::Extras),
+                    "collection" => (cards::Which::Collection, Located::Collection),
+                    "cast" => (cards::Which::Cast, Located::Cast),
+                    _ => return None,
+                };
+                let d = self.detail(H::metadata(cx))?;
+                at(self.cards(which, d).window_index::<H>(n)?)
+            }
             (Some(Seg::Name("collection")), Some(Seg::Name("heading")), None, _) => Located::CollectionHeading,
             (Some(Seg::Name("about")), Some(Seg::Name("card")), None, _) => Located::About(0),
             (Some(Seg::Name("about")), Some(Seg::Name("languages")), None, _) => Located::About(1),

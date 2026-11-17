@@ -55,7 +55,7 @@ pub struct Shelf {
     style: RowStyle,
     row: CardRow,
     /// What the `FocusMoved`s since the last tick said: a deliberate move (`By::Dir` /
-    /// `By::Script` / `By::Pointer`) grows its cell from rest, any other arrival is adopted at full pop, and none
+    /// `By::Pointer`) grows its cell from rest, any other arrival is adopted at full pop, and none
     /// at all means a changed focused index is a content landing. Cleared by the tick.
     seen: Seen,
     /// The landing the last tick carried the focused pop through, if there was one.
@@ -317,8 +317,7 @@ impl Shelf {
                 }
                 if let Some(a) = arrived {
                     self.seen = Seen::of(by, a);
-                    // a key's move along the row brings it back to its focus; a hover does not (a by-id
-                    // jump, `By::Script`, is a deliberate arrival like a key)
+                    // a key's move along the row brings it back to its focus; a hover does not
                     if *by != By::Pointer {
                         self.row.unfree();
                     }

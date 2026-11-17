@@ -1259,15 +1259,17 @@ impl<H: LibraryLike> Focusable<H> for RecommendedScreen {
     }
 
     /// **The ids** (`recommended.<path>`): the crumb's root `header.crumb`, a hub's card
-    /// `shelf.<row>.card.<col>` and a promoted collection's linked heading `shelf.<row>.heading`.
-    /// `<row>` is the hub's position on the page and `<col>` the card's in the row, which is place
-    /// semantics by design: the card's `subject` (its ratingKey) is what a press names to stay safe
-    /// when a publication moves them. A card whose item the hub has not published is `loaded` false.
+    /// `shelf.<row>.card.<n>` and a promoted collection's linked heading `shelf.<row>.heading`.
+    /// `<row>` is the hub's position on the page and `<n>` the card's place in the hub's LISTING
+    /// (`CardSource::global`: the window's offset or its `positions`), so a window that pages never
+    /// gives one id to another title; the card's `subject` (its ratingKey) is what a press names to
+    /// stay safe when a publication moves them. A listing position the window does not hold is no
+    /// element. A card whose item the hub has not published is `loaded` false.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         if *key == CRUMB_ELEM { return self.header(cx).a11y(*key).map(A11y::into_owned); }
         let shelf = |row: usize| A11yPath::new().name("shelf").index(row);
         if let Some((row, col)) = self.cell_of(*key) {
-            return Some(ui_cards::card_a11y::<H, _>(shelf(row).name("card").index(col), &self.hub_src(row, cx), col));
+            return Some(ui_cards::card_a11y::<H, _>(shelf(row), &self.hub_src(row, cx), col));
         }
         let row = self.shelves.iter().position(|row| row.heading_elem() == Some(*key))?;
         Some(self.heading_widget(row, cx)?.a11y(shelf(row).name("heading")).into_owned())
@@ -1285,8 +1287,10 @@ impl<H: LibraryLike> Focusable<H> for RecommendedScreen {
         let mut segs = path.segs();
         let candidate = match (segs.next(), segs.next(), segs.next(), segs.next(), segs.next()) {
             (Some(Seg::Name("header")), Some(Seg::Name("crumb")), None, ..) => CRUMB_ELEM,
-            (Some(Seg::Name("shelf")), Some(Seg::Index(row)), Some(Seg::Name("card")), Some(Seg::Index(col)), None) => {
-                *self.shelves.get(row)?.elems.get(col)?
+            (Some(Seg::Name("shelf")), Some(Seg::Index(row)), Some(Seg::Name("card")), Some(Seg::Index(n)), None) => {
+                let shelf = self.shelves.get(row)?;
+                let at = ui_cards::card_window_index::<H, _>(&self.hub_src(row, cx), n)?;
+                *shelf.elems.get(at)?
             }
             (Some(Seg::Name("shelf")), Some(Seg::Index(row)), Some(Seg::Name("heading")), None, ..) => {
                 self.shelves.get(row)?.heading_elem()?

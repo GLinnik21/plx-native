@@ -791,8 +791,7 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
     /// only it can be focused: `GroupSpec::len` is the whole listing.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         let i = self.index_of(*key)?;
-        let path = A11yPath::new().name("grid").name("card").index(i);
-        Some(ui_cards::card_a11y::<H, _>(path, &self.source(cx), i))
+        Some(ui_cards::card_a11y::<H, _>(A11yPath::new().name("grid"), &self.source(cx), i))
     }
 
     /// Every card that holds a key, in listing order.

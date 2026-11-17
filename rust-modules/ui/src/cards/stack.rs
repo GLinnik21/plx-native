@@ -786,8 +786,7 @@ impl<K: Copy + Eq> Stack<K> {
                 }
             }
             // A hover moves focus, never the page: the pointer scrolls by the screen's edges (and
-            // a click by what it clicked, below). Every other move brings the page to the focus (a by-id
-            // jump, `By::Script`, is a deliberate arrival like a key: it takes the arms below).
+            // a click by what it clicked, below). Every other move brings the page to the focus.
             ScreenEvent::FocusMoved { by: plx_machine::machine::By::Pointer, .. } => self.wheeled = true,
             ScreenEvent::FocusMoved { to, .. } if self.on_move => self.reveal_on(p, cx, *to),
             ScreenEvent::FocusMoved { .. } => self.wheeled = false,
@@ -1278,8 +1277,9 @@ impl<K: Copy + Eq, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Focusable<H> f
             .unwrap_or(FocusKey { entry: s.entry, elem: s.last_elem })
     }
 
-    /// **The accessibility projection** (`a11y`): a card is `<section>.card.<i>` ([`Role::Card`]),
-    /// given its label, subject and `loaded` by [`card_a11y`](super::card_a11y); an element of a
+    /// **The accessibility projection** (`a11y`): a card is `<section>.card.<n>` ([`Role::Card`]),
+    /// `n` its place in its listing, given its label, subject and `loaded` by
+    /// [`card_a11y`](super::card_a11y); an element of a
     /// focusable `Custom` / `Overlay` section is `<section>.<leaf>` or `<section>.<n>`
     /// ([`StackPage::plain_name`], [`Role::Button`]). The section is [`SectionSpec::named`], else
     /// `section.<position>`.
@@ -1292,7 +1292,7 @@ impl<K: Copy + Eq, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Focusable<H> f
             Kind::Shelf { .. } | Kind::Grid { .. } => {
                 let cards = p.cards(cx, k)?;
                 let j = cards.index_of(key)?;
-                Some(super::card_a11y::<H, _>(section.name("card").index(j), &cards, j))
+                Some(super::card_a11y::<H, _>(section, &cards, j))
             }
             Kind::Custom { .. } | Kind::Overlay { .. } => {
                 let n = s.plain_index(p, i, key)?;
@@ -1326,8 +1326,10 @@ impl<K: Copy + Eq, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Focusable<H> f
         }
     }
 
-    /// The inverse of [`Self::a11y`]. A card is found by the index in its path, bounds-checked,
-    /// without a scan: `<section>.card.<j>` is `cards.elem(j)`. An element of a `Custom` / `Overlay`
+    /// The inverse of [`Self::a11y`]. A card is found by the index in its path, without a scan:
+    /// `<section>.card.<n>` is `cards.elem(j)` for the window index `j` holding listing position `n`
+    /// ([`card_window_index`](super::card_window_index)), and a position outside the window is no
+    /// element. An element of a `Custom` / `Overlay`
     /// section is found by its [`StackPage::plain_name`] (a scan of that one section's few elements),
     /// or by its position when it has no name. A path that carries a namespace is not relative to
     /// this view and finds nothing.
@@ -1347,9 +1349,9 @@ impl<K: Copy + Eq, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Focusable<H> f
             let (a, b, c) = (rest.next(), rest.next(), rest.next());
             let k = s.specs[i].key;
             match (s.specs[i].kind, a, b, c) {
-                (Kind::Shelf { .. } | Kind::Grid { .. }, Some(Seg::Name("card")), Some(Seg::Index(j)), None) => {
+                (Kind::Shelf { .. } | Kind::Grid { .. }, Some(Seg::Name("card")), Some(Seg::Index(n)), None) => {
                     let cards = p.cards(cx, k)?;
-                    (j < cards.len()).then(|| cards.elem(j))
+                    super::card_window_index::<H, _>(&cards, n).map(|j| cards.elem(j))
                 }
                 (
                     Kind::Custom { focusable: true, .. } | Kind::Overlay { focusable: true, .. },

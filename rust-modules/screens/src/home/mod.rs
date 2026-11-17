@@ -2657,6 +2657,13 @@ impl HomeScreen {
         HomeCards { paging: false, home: self, view, row, hover: Hover::Focus }
     }
 
+    /// The card of row `row` at listing position `listing` (the `<n>` of its id), when the row's
+    /// window holds it: the element of the window index that `CardSource::global` maps to it.
+    fn card_in_listing<H: HomeLike>(&self, view: HubsView<'_>, row: usize, listing: usize) -> Option<u32> {
+        let at = ui_cards::card_window_index::<H, _>(&self.cards(view, row), listing)?;
+        self.rows.get(row)?.elems.get(at).copied()
+    }
+
     fn draw_status(&self, view: HubsView<'_>, env: &Env, p: Painter, focus: Option<Located>) {
         let Some(overlay) = status_overlay(view, &self.plaintext, &self.clock) else {
             return;
@@ -3227,13 +3234,14 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 
     /// **The ids** (`home.<path>`): the hero `hero.play|info|watchlist` (the failure read-out's lone
-    /// action is `hero.action`), each shelf `shelf.<row>.card.<col>`, the Continue Watching deck
-    /// `continue.card.<col>`, a linked heading `shelf.<row>.heading`, and the plaintext question's
+    /// action is `hero.action`), each shelf `shelf.<row>.card.<n>`, the Continue Watching deck
+    /// `continue.card.<n>`, a linked heading `shelf.<row>.heading`, and the plaintext question's
     /// answers, which are [`PlaintextAlert`]'s own (`alert.not_now|connect`: the alert names its
     /// answers, so the one question has one id set wherever it opens). `<row>` is the row's
-    /// position in the page and `<col>` the card's in the row's window, which is place semantics
-    /// by design: the card's `subject` (its ratingKey) is what a press names to stay safe when a
-    /// publication moves them.
+    /// position in the page and `<n>` the card's place in the row's LISTING (the hub's window offset
+    /// plus its place in the window, `CardSource::global`), so a window that pages never gives one id
+    /// to another title; the card's `subject` (its ratingKey) is what a press names to stay safe
+    /// when a publication moves them. A listing position the window does not hold is no element.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         // while the question is open its answers are the page's only elements
         if let Some(answer) = self.plaintext_alert.a11y(*key) {
@@ -3259,10 +3267,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
             }
             Located::Item(row, col) => {
                 let projection = self.rows.get(row)?;
-                let path = shelf_path(projection, row).name("card").index(col);
                 // a slot whose card has not landed exists and can be focused, not pressed: it is
                 // not loaded, which `card_a11y` says by the same rule the shelf's draw skips it by
-                Some(ui_cards::card_a11y::<H, _>(path, &self.cards(view, row), col))
+                Some(ui_cards::card_a11y::<H, _>(shelf_path(projection, row), &self.cards(view, row), col))
             }
         }
     }
@@ -3298,13 +3305,13 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                 "watchlist" => Some(hero_elem(2)),
                 _ => None,
             },
-            (Some(Seg::Name("continue")), Some(Seg::Name("card")), Some(Seg::Index(col)), None, ..) => self
+            (Some(Seg::Name("continue")), Some(Seg::Name("card")), Some(Seg::Index(n)), None, ..) => self
                 .rows
                 .iter()
-                .find(|r| r.identity == HomeHubIdentity::ContinueWatching)
-                .and_then(|r| r.elems.get(col).copied()),
-            (Some(Seg::Name("shelf")), Some(Seg::Index(row)), Some(Seg::Name("card")), Some(Seg::Index(col)), None) => {
-                self.rows.get(row).and_then(|r| r.elems.get(col).copied())
+                .position(|r| r.identity == HomeHubIdentity::ContinueWatching)
+                .and_then(|row| self.card_in_listing::<H>(H::hubs(cx), row, n)),
+            (Some(Seg::Name("shelf")), Some(Seg::Index(row)), Some(Seg::Name("card")), Some(Seg::Index(n)), None) => {
+                self.card_in_listing::<H>(H::hubs(cx), row, n)
             }
             (Some(Seg::Name("shelf")), Some(Seg::Index(row)), Some(Seg::Name("heading")), None, ..) => {
                 self.rows.get(row).map(|r| heading_elem(r.group))
