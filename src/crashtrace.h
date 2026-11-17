@@ -60,10 +60,10 @@ void plx_crash_scan_maps_file(const char *path, unsigned long pc, unsigned long 
  * `open`/`read`/`write`/`close`, `errno` (read only after a failed `read` or `write`, to retry an
  * interrupted one), `pause`, `syscall(SYS_exit_group)` (`_exit` itself is only the unreachable
  * fallback behind it, and the way out off Linux) and static buffers, and nothing that takes a lock
- * or allocates. Every one of them but `pause` and that `errno` read is bound by
- * `plx_crash_install` ahead of time, so the exit itself runs no lazy PLT resolution. Only the
- * first caller writes a record. A second one (another thread's exit, or this one re-entered from a
- * signal handler) ends the process at once and never waits.
+ * or allocates. Every one of them but `pause` is bound by `plx_crash_install` ahead of time (the
+ * `errno` accessor included, via its `errno = 0`), so the exit itself runs no lazy PLT resolution.
+ * Only the first caller writes a record. A second one (another thread's exit, or this one
+ * re-entered from a signal handler) ends the process at once and never waits.
  *
  * **While a fatal signal's handler is running, none of this ends the process:** the caller parks
  * in `pause` and the handler's re-raise ends it, so the crash record is not cut short and SAM sees

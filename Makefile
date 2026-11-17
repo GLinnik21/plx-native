@@ -1094,6 +1094,16 @@ SMP_INTERPOSER_LDFLAG = $(if $(PLAYBACK_HAS_FEED),-Wl$(PLAYBACK_COMMA)--export-d
 # `ci/check-elf.sh` asserts it on the shipped binary.
 # `check-c-unit` links its host copy of the interposer with this same variable.
 EXIT_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=exit
+# The third symbol the executable exports: src/access.c defines libc's `access`, and this export makes
+# the `access` of every shared library bind to it. The GPU driver (libmali) calls access() on four
+# debug-switch paths (/tmp/API_PRINT at the top of every GL call, the other three per draw, swap or
+# glUseProgram), and each failing lookup costs ~8.5 us of kernel time on the webOS 5.6.2 TV, so
+# src/access.c answers those four paths "absent" in user space and hands every other path to the
+# kernel's own `access`. The export is what makes the definition preemptible; `ci/check-elf.sh`
+# asserts it on the shipped binary, and `check-c-unit` links its
+# host copy of the interposer with this same variable. The paths themselves are the table in
+# src/access.c (ci/access-interpose-test.c lists them again, to grade the table against).
+ACCESS_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=access
 # --gc-sections: this link is gcc's, not rustc's. rustc passes --gc-sections itself when IT links an
 # executable (which is why pkg/plxnative-storage above never needed the flag), but here the Rust
 # code arrives as a finished staticlib, so without the flag every section of every archive member
@@ -1103,16 +1113,16 @@ EXIT_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=exit
 # it DOES use is kept) and 13.2 MB .text, and 62 libc/libm imports (posix_spawn, chroot, splice,
 # sinf, ...) that only dead code used.
 # Roots needed no extra KEEP/--undefined: the entry point and the .init_array/.fini_array
-# constructors are roots by construction, the Starfish interposer (Feed builds only) and `exit` are
+# constructors are roots by construction, the Starfish interposer (Feed builds only), `exit` and `access` are
 # roots because --export-dynamic-symbol exports them, and everything else the app needs is reached by a relocation
 # (the ffmpeg/curl/ACB/Starfish entry points are dlsym'd out of OTHER libraries, never out of this
-# executable, whose .dynsym defines only _init, _fini, the Starfish interposer and `exit`; a
+# executable, whose .dynsym defines only _init, _fini, the Starfish interposer, `exit` and `access`; a
 # `PLAYBACK_BACKENDS=uri` binary has no interposer and no Starfish import, and `ci/check-elf.sh` uri
 # mode asserts the interposer is absent).
 # Nothing here uses `#[used]`/`link_section`/`__attribute__((constructor))`. If a future feature
 # needs a symbol that only `dlsym(RTLD_DEFAULT, ...)` reaches inside this binary, it must be
-# exported or KEEP()ed explicitly. `ci/check-elf.sh` only asserts that the Starfish interposer (a Feed build's) and
-# `exit` are exported (and that Load-with-context is not a loader dependency); it does not assert
+# exported or KEEP()ed explicitly. `ci/check-elf.sh` only asserts that the Starfish interposer (a Feed build's),
+# `exit` and `access` are exported (and that Load-with-context is not a loader dependency); it does not assert
 # that nothing else is defined.
 GC_SECTIONS_LDFLAG = -Wl,--gc-sections
 # `-lm` AHEAD of $(RUST_LIB) as well as at the end: the prebuilt armv7 std's compiler_builtins
@@ -1121,7 +1131,7 @@ GC_SECTIONS_LDFLAG = -Wl,--gc-sections
 # scanned and the members are never extracted, so every call (Rust's and svg.c's) binds to glibc's
 # VFP libm. `ci/check-elf.sh` fails if a local definition of one of them comes back.
 pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(SENTRY_NATIVE_STAMP) Makefile ci/arm-cc.py ci/check-link-evidence.py
-	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(GC_SECTIONS_LDFLAG) $(SMP_INTERPOSER_LDFLAG) $(EXIT_INTERPOSER_LDFLAG) \
+	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(GC_SECTIONS_LDFLAG) $(SMP_INTERPOSER_LDFLAG) $(EXIT_INTERPOSER_LDFLAG) $(ACCESS_INTERPOSER_LDFLAG) \
 	  $(OBJS) -lm $(RUST_LIB) $(SENTRY_NATIVE_LIB) \
 	  $(SENTRY_UNWIND_LIB) $(LIBS_REAL) -ldl -lrt -lpthread -lm -o $@
 
@@ -1950,7 +1960,8 @@ build-bench build-bench-quick:
 # and the CI job. A gate is added to the manifest and nowhere else: this recipe never names one, CI
 # runs this target, and ci/test_ci_split.py fails on a test file no gate runs. Steps run beside each
 # other, so they must not share a scratch path, a port or the checkout (the manifest's header, and
-# ci/test_check_collisions.py).
+# ci/test_check_collisions.py); the one exception is check-c-unit's access leg, whose probe paths are
+# the GPU driver's and so fixed, which takes a flock on /tmp.
 check-python:
 	@python3 tools/check-parallel.py \
 	  rest='$(MAKE) --no-print-directory check-python-rest' \
@@ -2012,6 +2023,20 @@ check-python-harness:
 #    path, never linked: a shared object on the link line can change what the linker exports. Darwin's
 #    two-level namespace does not bind a dylib's `exit` to an executable's, so the test cannot run on
 #    a Mac and prints a skip line there; CI's Linux `make check` runs it.
+# 5. The libc `access` interposer (src/access.c), LINUX ONLY, built the same way: ci/access-interpose-lib.c
+#    is a shared object whose one function calls `access` (the shape of libmali's per-GL-call probe of
+#    /tmp/API_PRINT and three siblings), and ci/access-interpose-test.c `dlopen`s it by path and calls
+#    only through it, because a call made from the executable binds to the executable's own definition
+#    and proves nothing about a library's. With src/access.c linked and the link's own
+#    ACCESS_INTERPOSER_LDFLAG, the library's `access` of each of the four probe paths, which the test
+#    creates for the run (and deletes at exit and on a fatal signal; a file that was already there is
+#    left in place), must be -1/ENOENT, and every other path must be answered as the kernel does
+#    (compared with the raw system call: an existing file, permission modes, a missing path, a null
+#    path, a probe's base name in another directory, a probe path plus a slash). Without src/access.c
+#    the same library's `access` of an existing probe file must be 0, which is what proves the test can
+#    fail. The probe paths are the driver's and so fixed: the test takes a flock on /tmp so that two
+#    runs at once (ci/test_check_collisions.py makes some on purpose) take turns instead of deleting
+#    each other's probe files.
 .PHONY: check-c-unit
 check-c-unit:
 	@set -e; d=$$(mktemp -d "$${TMPDIR:-/tmp}/plx-c-unit.XXXXXX"); trap 'rm -rf "'"$$d"'"' EXIT; \
@@ -2024,8 +2049,13 @@ check-c-unit:
 	  "$$d/exit-interposed" "$$d/libexitcaller.so" interposed; \
 	  cc -O1 -Wall -Wextra -Werror -Isrc -o "$$d/exit-control" ci/exit-interpose-test.c src/crashtrace.c -ldl -lpthread; \
 	  "$$d/exit-control" "$$d/libexitcaller.so" control; \
+	  cc -O1 -Wall -Wextra -Werror -shared -fPIC -o "$$d/libaccesscaller.so" ci/access-interpose-lib.c; \
+	  cc -O1 -Wall -Wextra -Werror -o "$$d/access-interposed" ci/access-interpose-test.c src/access.c $(ACCESS_INTERPOSER_LDFLAG) -ldl; \
+	  "$$d/access-interposed" "$$d/libaccesscaller.so" interposed; \
+	  cc -O1 -Wall -Wextra -Werror -o "$$d/access-control" ci/access-interpose-test.c -ldl; \
+	  "$$d/access-control" "$$d/libaccesscaller.so" control; \
 	else \
-	  echo "check-c-unit: exit-interpose test skipped on $$(uname -s): only Linux binds a shared object's exit() to the executable's (CI runs it)"; \
+	  echo "check-c-unit: exit-interpose and access-interpose tests skipped on $$(uname -s): only Linux binds a shared object's exit() and access() to the executable's (CI runs them)"; \
 	fi
 
 check-python-rest:
