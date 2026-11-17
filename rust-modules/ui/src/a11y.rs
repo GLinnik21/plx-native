@@ -409,6 +409,22 @@ pub fn conformance<H: Host, F: Focusable<H> + ?Sized>(view: &F, cx: &Cx<'_, H>) 
     assert!(complaints.is_empty(), "a11y conformance:\n{}", complaints.join("\n"));
 }
 
+/// Every element `view` lists, as it projects, in group order and then index order: the whole id
+/// set a test reads (an element that projects nothing is skipped; [`conformance`] is what complains
+/// of that). For a test that asserts the names a page gives its sections.
+#[cfg(any(test, feature = "test-support"))]
+pub fn listing<H: Host, F: Focusable<H> + ?Sized>(view: &F, cx: &Cx<'_, H>) -> Vec<A11y<'static>> {
+    let mut groups = Vec::new();
+    view.groups(cx, &mut groups);
+    let (mut elems, mut out) = (Vec::new(), Vec::new());
+    for g in &groups {
+        elems.clear();
+        view.a11y_elems(g.id, cx, &mut elems);
+        out.extend(elems.iter().filter_map(|k| view.a11y(k, cx)).map(A11y::into_owned));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

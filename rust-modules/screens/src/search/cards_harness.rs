@@ -119,6 +119,37 @@ fn the_page_answers_accessibility_ids() {
     plx_ui::a11y::conformance::<SearchHost, _>(&h.screen, &h.cx());
 }
 
+/// **The sections are named for what they ARE, and a hit's id carries its ratingKey**: the field is
+/// `field.0` and a result row is named by its kind (`movies.card.<i>`, `shows.card.<i>`), so a row
+/// is the same name whichever rows stand before it, and a hit's subject is its ratingKey. A page
+/// whose Movies row is gone keeps its Shows row at `shows.card.<i>`, which a position-named section
+/// (`section.<i>`) would have renamed.
+#[test]
+fn the_sections_are_named_and_a_hit_names_its_rating_key() {
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let mut h = Harness::new((0..2).map(|i| format!("m{i}")).collect());
+    let ids = |h: &Harness| plx_ui::a11y::listing::<SearchHost, _>(&h.screen, &h.cx());
+    let cards = |h: &Harness| -> Vec<(String, Option<String>)> {
+        let all = ids(h);
+        assert!(all.iter().all(|a| !a.path.to_string().starts_with("section.")), "a section left unnamed");
+        assert!(all.iter().any(|a| a.path.to_string() == "field.0"), "the field is named");
+        all.into_iter()
+            .filter(|a| a.role == plx_ui::a11y::Role::Card)
+            .map(|a| (a.path.to_string(), a.subject.map(|s| s.into_owned())))
+            .collect()
+    };
+    let hit = |path: &str, rk: &str| (path.to_owned(), Some(rk.to_owned()));
+    assert_eq!(cards(&h), [hit("movies.card.0", "m0"), hit("movies.card.1", "m1")]);
+
+    h.store.publish_shelves_for_test(vec![Shelf {
+        epoch: 0, window: Default::default(), kind: Kind::Show, items: vec![movie("s0"), movie("s1")],
+    }]);
+    h.snap = h.store.snapshot();
+    h.step(ScreenEvent::StoreChanged(StoreId::Search.ord(), 1));
+    assert_eq!(cards(&h), [hit("shows.card.0", "s0"), hit("shows.card.1", "s1")]);
+}
+
 impl CardHarness for Harness {
     fn cards(&self) -> Vec<u32> { self.screen.rows.first().map(|r| r.elems.clone()).unwrap_or_default() }
     fn focused(&self) -> Option<u32> { self.focus.map(|k| k.elem) }
