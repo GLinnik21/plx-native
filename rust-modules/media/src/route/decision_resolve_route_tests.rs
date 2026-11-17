@@ -2265,6 +2265,64 @@ fn the_preview_describes_the_version_play_starts() {
     assert_eq!(forced, None, "Forced plays the first version, which the feed cannot take");
 }
 
+#[test]
+fn the_preview_judges_a_quality_rung_on_the_video_bitrate_play_judges() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    struct Back;
+    impl Drop for Back {
+        fn drop(&mut self) { restore_quality(Quality::Original); }
+    }
+    let _back = Back;
+    restore_quality(Quality::P1080);
+    const FIRST: &str = "/library/parts/1/1/uhd.mkv";
+    const SECOND: &str = "/library/parts/2/1/fhd.mkv";
+    let video = |bitrate: i64| Some(plx_data::metadata::Stream { bitrate, ..Default::default() });
+    let aac = || vec![plx_data::metadata::Stream { codec: "aac".into(), ..Default::default() }];
+    let movie = plx_data::metadata::Detail {
+        part: SECOND.into(),
+        vcodec: "h264".into(),
+        width: 1920,
+        height: 800,
+        bitrate: 8540,
+        video: video(7900),
+        audio: aac(),
+        ..Default::default()
+    };
+    assert_eq!(playback_preview(&movie), Some(Preview::DirectPlay), "7900 kbps of video fits the 8 Mbps rung");
+    let version = |id: i64, resolution: &str, width: i64, height: i64, vcodec: &str, kbps: i64, video_kbps: i64| {
+        plx_data::pms::MediaVersion {
+            id: plx_plex::plex::MediaId(id),
+            kbps,
+            video_kbps,
+            resolution: resolution.into(),
+            width,
+            height,
+            vcodec: vcodec.into(),
+            ..Default::default()
+        }
+    };
+    let part = |id: i64, key: &str| plx_data::metadata::VersionPart {
+        id: plx_plex::plex::MediaId(id),
+        part: key.into(),
+        audio: aac(),
+        subs: Vec::new(),
+    };
+    let substituted = plx_data::metadata::Detail {
+        part: FIRST.into(),
+        vcodec: "vp9".into(),
+        width: 3840,
+        height: 2160,
+        bitrate: 20000,
+        video: video(19000),
+        audio: aac(),
+        versions: vec![version(1, "4k", 3840, 2160, "vp9", 20000, 19000), version(2, "1080", 1920, 800, "h264", 8540, 7900)],
+        version_parts: vec![part(1, FIRST), part(2, SECOND)],
+        ..Default::default()
+    };
+    assert_eq!(playback_preview(&substituted), Some(Preview::DirectPlay), "the 1080p version Play starts, on its own video");
+}
+
 /// **The detail page says "audio converted" exactly when the planner would convert the audio of
 /// the track it means to play** — the planner's own pick (`audio_intent_needs_conversion`), not
 /// "is any track playable". An undecodable default with a same-language playable sibling plays the

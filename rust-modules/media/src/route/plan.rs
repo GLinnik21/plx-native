@@ -1443,10 +1443,11 @@ pub struct ResolveEnv {
     pub feed_original_eligible: bool,
     pub requested_rate_permille: i32,
     pub resume_ns: i64,
-    /// The SOURCE's whole-stream bitrate in **kbps**, or `0` when nobody has measured it — the
-    /// other half of what [`quality_policy`] needs, beside the frame size the playing-item store
-    /// already carries. It measures the first version: when the worker plays another one instead,
-    /// [`build_stream`] measures that version's own `PlayingItem::bitrate`.
+    /// The SOURCE's rate for the quality ceiling in **kbps**, the video stream's own else the whole
+    /// file's (`ceiling_kbps`), or `0` when nobody has measured it — the other half of what
+    /// [`quality_policy`] needs, beside the frame size the playing-item store already carries. It
+    /// measures the first version: when the worker plays another one instead, [`build_stream`]
+    /// measures that version's own `PlayingItem::video_kbps`, else its `PlayingItem::bitrate`.
     ///
     /// It comes off the LOADED DETAIL (`metadata::current().bitrate`, `Media[0]`) when that detail
     /// is this item, which is the ordinary path: a card's OK opens the detail page and Play is
@@ -1565,10 +1566,11 @@ pub(super) fn detail_describes(d: &plx_data::metadata::Detail, sid: ServerId, rk
 /// enough that the whole-file fallback has to stay. Falling back is the conservative direction,
 /// which is the right one here — see [`plx_plex::plex::Ceiling::admits`].
 pub(super) fn source_kbps(d: &plx_data::metadata::Detail) -> i64 {
-    match d.video.as_ref().map(|v| v.bitrate) {
-        Some(b) if b > 0 => b,
-        _ => d.bitrate,
-    }
+    ceiling_kbps(d.video.as_ref().map_or(0, |v| v.bitrate), d.bitrate)
+}
+
+pub(super) fn ceiling_kbps(video_kbps: i64, whole_kbps: i64) -> i64 {
+    if video_kbps > 0 { video_kbps } else { whole_kbps }
 }
 
 /// Rate the quality ceiling judges for this play. A trailer extra is a different file from the
@@ -1894,7 +1896,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             plan.playing_fresh = env.cached_item.is_none() && plan.playing.is_some();
             let src_kbps = match (env.version, played.as_ref()) {
                 (None, None) => env.src_kbps,
-                _ => plan.playing.as_ref().map_or(0, |p| p.bitrate),
+                _ => plan.playing.as_ref().map_or(0, |p| ceiling_kbps(p.video_kbps, p.bitrate)),
             };
             let reselected = env.with_selection_for_part(plan.part_id);
             let env = reselected.as_ref().unwrap_or(env);
@@ -2057,6 +2059,10 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             if let Some(port) = env.uri_preflight_port.as_ref().filter(|_| plan.uri_decline.is_none()) {
                 let source_kbps = plan.playing.as_ref().map_or(src_kbps, |p|
                     if p.bitrate > 0 { p.bitrate } else { src_kbps });
+                let ceiling_source_kbps = plan.playing.as_ref()
+                    .map(|p| ceiling_kbps(p.video_kbps, p.bitrate))
+                    .filter(|&kbps| kbps > 0)
+                    .unwrap_or(src_kbps);
                 let (width, height) = plan.playing.as_ref().map_or((0, 0), |p| (p.width, p.height));
                 let quality = if forced { Quality::Original } else { env.quality };
                 // What Standard would decide about this original, from the same rules and the same
@@ -2110,7 +2116,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                         .filter(|(w, h)| *w > 0 && *h > 0),
                     requested_rate_permille: env.requested_rate_permille,
                     resume_ns: env.resume_ns,
-                    quality_allows_original: quality_policy(quality, true, source_kbps, width, height).direct_play
+                    quality_allows_original: quality_policy(quality, true, ceiling_source_kbps, width, height).direct_play
                         && env.direct_play_mode != DirectPlayMode::Disabled,
                     link_allows_original: client.link() != Some(plx_plex::plex::probe::Location::Relay),
                     auto_allows_original: quality != Quality::Auto
@@ -2136,7 +2142,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     plan.fps = plan.src_fps;
                     plan.audio = plan_track(tracks, source_selection.audio_sid, -1, true);
                     plan.sub_sid = source_selection.subtitle_sid;
-                    plan.src_measure = (source_kbps, width, height);
+                    plan.src_measure = (ceiling_source_kbps, width, height);
                     plan.transport_kbps = source_kbps;
                     plan.uri_original = Some(known);
                     plan.uri_source_ready = true;
@@ -2374,7 +2380,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     show_prefs.subtitle_mode
                 ));
             }
-            // The SOURCE's whole-stream bitrate in kbps: the playing item's own, else the caller's.
+            // The SOURCE's whole-stream bitrate in kbps: the playing item's own, else `src_kbps`.
             let source_transport_kbps = plan
                 .playing
                 .as_ref()
