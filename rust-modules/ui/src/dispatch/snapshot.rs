@@ -30,18 +30,17 @@ impl<H: Host> Dispatcher<H>
 where
     H::Elem: IndexElem,
 {
-    /// The owner view as the state file lists it: the route word, who owns input, the focused full
-    /// id, every group and every element (no cap), each with where it rests, whether any of it shows,
-    /// whether it is focused and whether its item has loaded.
+    /// The owner view as the state file lists it: the route word (the top page's), who owns input,
+    /// the focused full id, every group and every element (no cap), each with where it rests, whether
+    /// any of it shows, whether it is focused and whether its item has loaded.
     ///
     /// A keyboard or an owner-less tree lists no element: nothing is addressable then (the by-id
     /// resolution refuses `NoOwner`).
     pub fn a11y_snapshot(&self, rig: &mut dyn Rig<H>) -> A11ySnapshot {
         let entry = self.owner_entry();
-        let route = entry
-            .and_then(|e| self.nav.entry(e))
-            .and_then(|e| e.inst.as_ref())
-            .map(|i| i.screen.name());
+        // The ROUTE is the top page's word (the heartbeat's `route=`), also while a surface owns
+        // input; `ns` below names the owner.
+        let route = self.top_screen().map(|s| s.name());
         let owner = if self.input.keyboard {
             OwnerKind::Keyboard
         } else if entry.is_none() {
@@ -176,10 +175,14 @@ fn group_prefix<'a>(ids: impl Iterator<Item = &'a str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::NoTap;
     use crate::a11y::{A11yPath, Role};
-    use crate::fixture::{booted, FixtureHost, FixtureMeasure, FixtureView, FixtureViews};
+    use crate::containers::modal::Style;
+    use crate::fixture::{booted, tick, FixtureArg, FixtureHost, FixtureMeasure, FixtureView, FixtureViews};
     use crate::screen::{AxisMask, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Seat, Step};
-    use plx_machine::machine::{EntryId, FocusKey, FocusRead, Measure, PressRead, Tick};
+    use plx_machine::machine::{
+        EntryId, FocusKey, FocusRead, MachineId, Measure, NavOp, PressRead, Tick,
+    };
 
     type H = FixtureHost;
 
@@ -365,7 +368,7 @@ mod tests {
     fn the_projection_has_no_way_to_log() {
         let source = include_str!("snapshot.rs");
         let production = source.split("#[cfg(test)]\nmod tests").next().unwrap();
-        for forbidden in ["LogLine", "Fx::Log", "eventlog", "println!", ".log("] {
+        for forbidden in ["LogLine", "Fx::Log", "eventlog", "println!", "rig.log"] {
             assert!(!production.contains(forbidden), "the projection names {forbidden}");
         }
     }
@@ -379,6 +382,23 @@ mod tests {
         assert_eq!(prefix(&["nav.watchlist"]), "nav");
         assert_eq!(prefix(&["home.shelf", "home.shelf.0"]), "home");
         assert_eq!(prefix(&[]), "");
+    }
+
+    /// **Under a surface the route stays the page's** and the namespace is the surface's: the
+    /// snapshot says who owns input (`owner`, `ns`) without losing which page is open (`route`).
+    #[test]
+    fn a_surface_owns_input_while_the_route_stays_the_pages() {
+        let _serial = plx_base::testlock::serial();
+        let (mut d, mut rig, _) = booted();
+        let page = d.top_screen().expect("a page is mounted").name();
+        d.nav.next_style = Style::Compact;
+        d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+        d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+        let snap = d.a11y_snapshot(&mut rig);
+        assert_eq!(snap.owner, OwnerKind::Surface);
+        assert_eq!(snap.route, Some(page));
+        assert_eq!(snap.ns, Some("settings"), "the fixture modal's word");
+        assert_ne!(snap.ns, snap.route);
     }
 
     /// **The dispatcher's snapshot** of a booted fixture: it names the owner screen and the frame,

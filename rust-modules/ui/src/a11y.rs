@@ -409,7 +409,8 @@ pub struct ElemSnapshot {
 pub struct A11ySnapshot {
     /// The dispatcher's frame index.
     pub frame: u64,
-    /// The owner screen's heartbeat word; `None` when no entry owns input.
+    /// The route: the top PAGE's heartbeat word (`Screen::name`), also while a surface owns input
+    /// (`ns` names the owner); `None` when no page is mounted.
     pub route: Option<&'static str>,
     pub owner: OwnerKind,
     /// The owner screen's `a11y_ns`; `None` unless a page or a surface owns input.

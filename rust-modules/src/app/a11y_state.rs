@@ -427,7 +427,7 @@ mod tests {
         write_state(&dir, b"{\"nonce\":\"c\"}").unwrap();
         assert_eq!(std::fs::read(&victim).unwrap(), b"precious", "the link's target is not written through");
         assert_eq!(std::fs::read(dir.join(A11Y_STATE)).unwrap(), b"{\"nonce\":\"c\"}");
-        assert_eq!(names(&dir), ["victim", A11Y_STATE]);
+        assert_eq!(names(&dir), [A11Y_STATE, "victim"], "sorted: the temp link is gone, the target is a plain file");
 
         std::fs::remove_file(dir.join(A11Y_STATE)).unwrap();
         symlink(&victim, dir.join(A11Y_STATE)).unwrap();
