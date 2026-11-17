@@ -40,6 +40,12 @@ extern "C" {
 
 static mut G_WL_SURFACE: *mut c_void = std::ptr::null_mut();
 static mut G_WL_DISPLAY: *mut c_void = std::ptr::null_mut();
+/// The last non-null `wl_surface` SDL handed [`update_wayland_info`], kept as an ADDRESS to compare
+/// against and never dereferenced or marshalled through. Unlike `G_WL_SURFACE` it survives
+/// [`sys_release_wayland`], so the DID-foreground grab can tell a replaced surface (PLX-NATIVE-K:
+/// SDL recreating the window's `wl_surface` under a live EGLSurface) from the first one.
+#[cfg(any(not(feature = "hostsim"), test))]
+static G_WL_SURFACE_SEEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 pub(crate) fn clear_opaque_region() {
     unsafe {
@@ -768,6 +774,7 @@ unsafe fn update_wayland_info(ok: c_int, info: &[u8; 512]) {
     sys_release_wayland();
     let subsystem = i32::from_ne_bytes(info[4..8].try_into().unwrap());
     let (mut display_present, mut surface_present) = (false, false);
+    let mut replaced = false;
     if ok != 0 && subsystem == 6 { // SDL_SYSWM_WAYLAND
         let pointers = info.as_ptr().add(8) as *const *mut c_void;
         let display = pointers.read_unaligned();
@@ -777,9 +784,17 @@ unsafe fn update_wayland_info(ok: c_int, info: &[u8; 512]) {
         if display_present && surface_present {
             G_WL_DISPLAY = display;
             G_WL_SURFACE = surface;
+            // Compared as an address against the last one SDL published: a different non-null
+            // surface means SDL replaced the window's `wl_surface`, which a live EGLSurface that
+            // was created on the old one does not follow (PLX-NATIVE-K).
+            let previous = G_WL_SURFACE_SEEN.swap(surface as usize, std::sync::atomic::Ordering::Relaxed);
+            replaced = previous != 0 && previous != surface as usize;
         }
     }
     use plx_telemetry::telemetry::window::{Observation, Stage};
+    if replaced {
+        plx_telemetry::telemetry::window::record(Observation::step(Stage::SurfaceChanged, None));
+    }
     let stage = if ok == 0 { Stage::WmFailed }
         else if subsystem != 6 { Stage::WmWrongBackend }
         else if G_WL_SURFACE.is_null() { Stage::WmNoSurface }
@@ -843,6 +858,74 @@ mod wayland_tests {
             assert!(released.0.is_null() && released.1.is_null());
             assert_eq!(refreshed, (display_ptr, replacement_ptr));
         }
+    }
+
+    /// A `SDL_SysWMinfo` buffer that reports Wayland with `surface` (and a fixed display).
+    fn wayland_info(surface: *mut c_void) -> [u8; 512] {
+        let mut info = [0u8; 512];
+        info[4..8].copy_from_slice(&6i32.to_ne_bytes());
+        unsafe {
+            let pointers = info.as_mut_ptr().add(8) as *mut *mut c_void;
+            pointers.write_unaligned(0x10 as *mut c_void);
+            pointers.add(1).write_unaligned(surface);
+        }
+        info
+    }
+
+    /// The window crumbs `refreshes` leaves, with consent on and the compare-only memory of the
+    /// last surface cleared, under the serial lock the process-wide handles need.
+    fn crumbs_of(refreshes: impl FnOnce()) -> Vec<&'static str> {
+        use plx_telemetry::telemetry::{consent::{self, Consent}, window};
+        let _guard = plx_base::testlock::serial();
+        let previous = consent::current();
+        let mut enabled = Consent::default();
+        enabled.errors = true;
+        enabled.asked_version = consent::POLICY_VERSION;
+        consent::install(enabled);
+        window::close_cycle_for_test();
+        window::take_recorded_for_test();
+        G_WL_SURFACE_SEEN.store(0, std::sync::atomic::Ordering::Relaxed);
+        refreshes();
+        sys_release_wayland();
+        G_WL_SURFACE_SEEN.store(0, std::sync::atomic::Ordering::Relaxed);
+        consent::install(previous.unwrap_or_default());
+        window::take_recorded_for_test()
+    }
+
+    #[test]
+    fn a_replaced_surface_is_a_crumb_after_the_query_that_found_it() {
+        let crumbs = crumbs_of(|| unsafe {
+            update_wayland_info(1, &wayland_info(0x1000 as *mut c_void));
+            update_wayland_info(1, &wayland_info(0x2000 as *mut c_void));
+        });
+        assert_eq!(crumbs, ["wm_ready", "surface_changed", "wm_ready"]);
+    }
+
+    #[test]
+    fn the_same_surface_again_and_the_first_surface_are_not_changes() {
+        let again = crumbs_of(|| unsafe {
+            update_wayland_info(1, &wayland_info(0x1000 as *mut c_void));
+            update_wayland_info(1, &wayland_info(0x1000 as *mut c_void));
+        });
+        assert_eq!(again, ["wm_ready", "wm_ready"]);
+        let first = crumbs_of(|| unsafe {
+            update_wayland_info(0, &[0; 512]);
+            update_wayland_info(1, &wayland_info(0x1000 as *mut c_void));
+        });
+        assert_eq!(first, ["wm_failed", "wm_ready"]);
+    }
+
+    /// The foreground grab is where a replaced surface is most likely to show: the background
+    /// release has nulled the borrow, and the surface SDL answers with afterwards is compared with
+    /// the one published before it.
+    #[test]
+    fn a_surface_replaced_across_a_background_release_is_a_crumb() {
+        let crumbs = crumbs_of(|| unsafe {
+            update_wayland_info(1, &wayland_info(0x1000 as *mut c_void));
+            sys_release_wayland();
+            update_wayland_info(1, &wayland_info(0x2000 as *mut c_void));
+        });
+        assert!(crumbs.contains(&"surface_changed"), "{crumbs:?}");
     }
 
     #[test]
