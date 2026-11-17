@@ -360,6 +360,10 @@ python3 ci/check-machine-shape.py
 # or head-moved PR never reaches `gh pr merge` (#387), the polling and backoff, the head-oid race, the verify against a temporary
 # origin, and a planted secret refused before any `gh` call. Real gh JSON as fixtures; temp dirs only, no network, no sleeping on the poll or race timers (one test lets a hung gh hit a 1 s timeout).
 python3 tools/test_pr_land.py
+# tools/review-eval.py (the pr-reviewer agent graded against past pull requests whose bugs are known): the case list's checks, the
+# replayed repository (no ref leads to the fix), the reviewer's task never carrying the answer key, and the score. Temp repositories only;
+# the last class reads the real tools/review-eval/cases.json and skips commits a shallow checkout lacks.
+python3 tools/test_review_eval.py
 python3 .claude/hooks/tv-lock-notify-test.py
 # The custom agents' files (AGENTS.md, "Harness-specific files"): every `.agents/agents/<name>.md` carries a matching frontmatter
 # `name`, an explicit `model:` (one documented exemption), a description, a RELATIVE `.claude/agents/<name>.md` symlink that resolves

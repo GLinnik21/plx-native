@@ -22,6 +22,9 @@ What this pins:
 * the merge: the exact `gh pr merge` arguments, the `expected head oid` race (retried when the head
   is unchanged and then refused, exit 5 when it moved), and the verify against origin/main, whose every
   failure says that the merge went through and which never ends in a traceback on odd JSON;
+* the review record: `reviewed` writes a `pr-reviewer` commit status on the head it was given and on
+  no other commit; a head with no record is green under PLX_REVIEW_GATE=observe (and says so) and
+  refused under enforce; a recorded blocker is red in every mode; an unknown mode is refused;
 * a planted secret in the subject or the body is refused before any `gh` call, without being repeated;
 * `restack`, on a disposable bare origin and clone: the four merges leave the upper branch's diff
   against origin/main equal to its own change, a conflict names its step and leaves the merge in
@@ -124,6 +127,8 @@ def kind(argv):
             return "rules"
         if "/check-runs" in argv[1]:
             return "runs"
+        if "/statuses/" in argv[1]:
+            return "status"
     return "unexpected"
 
 
@@ -305,8 +310,9 @@ class Sandbox:
     """A fake `gh` first on PATH, a scenario for it, a temporary repo root holding a copy of the real
     outbound-guard, and (with git=True) a clone whose origin has the commit `gh` calls the merge commit."""
 
-    def __init__(self, git=False, stack=False, conflict=None, **scenario):
+    def __init__(self, git=False, stack=False, conflict=None, review="observe", **scenario):
         self.git, self.stack, self.conflict, self.over = git, stack, conflict, scenario
+        self.review = review        # PLX_REVIEW_GATE for the run, so the caller's own setting is never read
 
     def __enter__(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -338,6 +344,7 @@ class Sandbox:
             "verify": [resp(self.lower_view())],
             "body": [resp({"body": "The PR body.\n"})],
             "runs": [resp(CHECK_RUNS)],
+            "status": [resp({"state": "success", "context": "pr-reviewer"})],
         }
         for kind, value in self.over.items():
             responses[kind] = value(self) if callable(value) else value
@@ -360,7 +367,8 @@ class Sandbox:
     def env(self):
         return dict(GIT_ENV, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                     FAKE_GH_SCENARIO=str(self.scenario), FAKE_GH_LOG=str(self.log),
-                    PLX_TV_CONFIG_DIR=str(self.base / "cfg"), HOME=str(self.base / "home"))
+                    PLX_TV_CONFIG_DIR=str(self.base / "cfg"), HOME=str(self.base / "home"),
+                    PLX_REVIEW_GATE=self.review)
 
     def calls(self):
         if not self.log.exists():
@@ -606,6 +614,93 @@ class GateTests(Base):
             r = sb.run("gate", "1049", "--sha", HEAD)
             self.check(r, 0)
             self.assertEqual(r.sleeps, [30])
+
+
+# The row a commit status named `pr-reviewer` adds to `gh pr checks` (a status has no workflow).
+REVIEW_ROW = {"bucket": "pass", "name": "pr-reviewer", "state": "SUCCESS", "workflow": ""}
+
+
+class ReviewTests(Base):
+    """A review is evidence about one commit: recorded on the head it read, and read back by the gate."""
+
+    def test_observe_stays_green_and_says_what_enforce_would_refuse(self):
+        with Sandbox() as sb:
+            r = sb.run("gate", "1049", "--sha", HEAD)
+            self.check(r, 0)
+            self.assertIn("review: NONE recorded for this head", r.out)
+            self.assertIn("PLX_REVIEW_GATE=enforce", r.out)
+
+    def test_enforce_refuses_a_green_head_nobody_reviewed_and_never_merges_it(self):
+        with Sandbox(review="enforce") as sb:
+            r = sb.run("gate", "1049", "--sha", HEAD)
+            self.check(r, 3)
+            self.assertIn("no pr-reviewer record on head " + HEAD, r.out)
+            r = sb.merge()
+            self.check(r, 3)
+            self.assertEqual(r.of("merge"), [], r.text())
+
+    def test_enforce_passes_a_head_with_a_recorded_review(self):
+        with Sandbox(review="enforce", checks=[resp(CHECKS_OPEN + [REVIEW_ROW])]) as sb:
+            r = sb.run("gate", "1049", "--sha", HEAD)
+            self.check(r, 0)
+            self.assertIn("review: recorded for this head", r.out)
+
+    def test_a_recorded_blocker_is_red_in_every_mode(self):
+        rows = CHECKS_OPEN + [dict(REVIEW_ROW, bucket="fail", state="FAILURE")]
+        for mode in ("off", "observe", "enforce"):
+            with Sandbox(review=mode, checks=[resp(rows)]) as sb:
+                r = sb.merge()
+                self.check(r, 1)
+                self.assertIn("pr-reviewer", r.out)
+                self.assertEqual(r.of("merge"), [], r.text())
+
+    def test_a_ci_failure_still_wins_over_a_missing_review(self):
+        with Sandbox(review="enforce", checks=[resp(mark(HOSTSIM, "fail", "FAILURE"))]) as sb:
+            self.check(sb.run("gate", "1049", "--sha", HEAD), 1)
+
+    def test_off_says_nothing_about_reviews(self):
+        with Sandbox(review="off") as sb:
+            r = sb.run("gate", "1049", "--sha", HEAD)
+            self.check(r, 0)
+            self.assertNotIn("review", r.out)
+
+    def test_a_mode_nobody_listed_is_refused_not_read_as_off(self):
+        with Sandbox(review="enforced") as sb:
+            r = sb.run("gate", "1049", "--sha", HEAD)
+            self.check(r, 3)
+            self.assertIn("PLX_REVIEW_GATE", r.out)
+
+    def test_reviewed_writes_a_status_on_the_commit_it_read(self):
+        with Sandbox() as sb:
+            r = sb.run("reviewed", "1049", "--sha", HEAD, "--blockers", "0", "--majors", "1", "--minors", "2")
+            self.check(r, 0)
+            self.assertEqual(r.of("status")[0]["argv"],
+                             ["api", "repos/{owner}/{repo}/statuses/" + HEAD, "--method", "POST", "-f", "state=success",
+                              "-f", "context=pr-reviewer", "-f", "description=0 blocker, 1 major, 2 minor"])
+
+    def test_a_blocker_is_recorded_as_a_failure(self):
+        with Sandbox() as sb:
+            r = sb.run("reviewed", "1049", "--sha", HEAD, "--blockers", "1", "--majors", "0", "--minors", "0")
+            self.check(r, 0)
+            self.assertIn("state=failure", r.of("status")[0]["argv"])
+
+    def test_a_review_of_a_commit_that_is_no_longer_the_head_is_not_recorded(self):
+        with Sandbox() as sb:
+            r = sb.run("reviewed", "1049", "--sha", OTHER_HEAD, "--blockers", "0", "--majors", "0", "--minors", "0")
+            self.check(r, 5)
+            self.assertEqual(r.of("status"), [], r.text())
+
+    def test_a_status_github_refused_is_exit_3_not_a_recorded_review(self):
+        with Sandbox(status=[resp(stderr="HTTP 403: Resource not accessible\n", rc=1)]) as sb:
+            r = sb.run("reviewed", "1049", "--sha", HEAD, "--blockers", "0", "--majors", "0", "--minors", "0")
+            self.check(r, 3)
+            self.assertNotIn("REVIEWED", r.out)
+
+    def test_the_counts_are_required(self):
+        with Sandbox() as sb:
+            r = sb.run("reviewed", "1049", "--sha", HEAD)
+            self.check(r, 2)
+            self.assertEqual(r.calls, [])
 
 
 class WaitTests(Base):

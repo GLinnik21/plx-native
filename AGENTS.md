@@ -237,7 +237,10 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   contradictions, not missing documentation.
 - Before opening or merging a PR, review its combined `base...head` diff once with the
   `pr-reviewer` custom agent (`pr_reviewer` in Codex): it returns findings only and never edits,
-  comments or merges.
+  comments or merges. It reads its rules from the base, and the review is recorded on the commit it
+  read (`tools/pr-land.py reviewed`, the `land-pr` skill); a push after it needs a new review.
+  `tools/review-eval.py` grades the reviewer against past pull requests whose bugs are known; run it
+  before and after changing the reviewer's prompt.
 
 ## Television and release safety
 
