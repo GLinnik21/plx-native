@@ -101,6 +101,22 @@ fi
 
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 
+# launchd hands the job a bare environment (PATH, HOME, SSH_AUTH_SOCK — nothing the user's shell
+# exported), so without this the agent resolves $PLX_FLEET_DIR to its $HOME/plx-fleet default and
+# reaps the wrong roots: the external fleet lanes keep being found only as registered worktrees,
+# never through the $PLX_FLEET_DIR sweeps. Bake the value the installing shell actually resolved,
+# and only when it was set explicitly — unset means the build-gc default, which needs no env key.
+FLEET_DIR=${PLX_FLEET_DIR:-$HOME/plx-fleet}
+ENV_BLOCK=""
+if [ -n "${PLX_FLEET_DIR:-}" ]; then
+  ENV_BLOCK="  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PLX_FLEET_DIR</key>
+    <string>$FLEET_DIR</string>
+  </dict>
+"
+fi
+
 # Rewritten from scratch on every run rather than diffed: a plist this small is cheaper to
 # regenerate than to patch, and regenerating means an edit to this script always takes effect on
 # the next `make disk-watch`, not just on a machine that never had the old version installed.
@@ -127,7 +143,7 @@ cat > "$PLIST" <<PLIST
   <integer>10</integer>
   <key>ProcessType</key>
   <string>Background</string>
-  <key>StandardOutPath</key>
+$ENV_BLOCK  <key>StandardOutPath</key>
   <string>$HOME/Library/Logs/plxnative-build-gc-launchd.log</string>
   <key>StandardErrorPath</key>
   <string>$HOME/Library/Logs/plxnative-build-gc-launchd.log</string>
@@ -142,7 +158,6 @@ launchctl bootout "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true
 launchctl bootstrap "$DOMAIN" "$PLIST"
 echo "install-disk-watch: installed $LABEL ($PLIST), runs tools/build-gc.sh --auto hourly"
 
-FLEET_DIR=${PLX_FLEET_DIR:-$HOME/plx-fleet}
 if command -v tmutil >/dev/null 2>&1 && tmutil destinationinfo >/dev/null 2>&1; then
   if [ -d "$FLEET_DIR" ]; then
     # Sticky, no `-p`, on $PLX_FLEET_DIR ITSELF, not on anything under it. A sticky exclusion is
