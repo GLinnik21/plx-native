@@ -1872,6 +1872,27 @@ fn a_scripted_arrival_on_a_card_across_the_door_presses_that_card() {
     assert_eq!(d.press(card), [("detail", d.card_rk.clone())], "the card's title opens, not the hero's");
 }
 
+/// **At 60 fps the OK a by-id press queues commits INSIDE the dive.** The press machine holds an OK's
+/// release for its 90 ms dip floor (`MIN_DIP_MS`, `ui/src/dispatch/press.rs`), which is six 60 Hz frames
+/// (100 ms), and the page's snap spring (`K_SNAP`) has crossed only 41% of the door by then: its midpoint is
+/// 119 ms away. So the remap a key's arrival would leave is live when the commit lands, and the scripted
+/// press must not get it. (The simulator's Home draws at 11-15 fps and has crossed the midpoint by its second
+/// frame, which is why only the television shows the unfixed behaviour on a real press.)
+#[test]
+fn a_scripted_press_committing_after_the_dip_floor_at_60_fps_still_lands_on_its_card() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Door::new();
+    let (hero, card) = (d.hero, d.card);
+    d.moved(hero, card, By::Script);
+    for frame in 0..6 {
+        let view = d.snapshot.view();
+        step(&mut d.s, view, Some(card), &ScreenEvent::Tick(Tick { ms: 16 * (frame + 1), dt_us: 16_667 }));
+    }
+    assert!(d.s.snap.pos > 0.3 && d.s.snap.pos < 0.5,
+        "premise: 100 ms in, the picture is still on the hero ({})", d.s.snap.pos);
+    assert_eq!(d.press(card), [("detail", d.card_rk.clone())], "the card's title opens, not the hero's");
+}
+
 /// The reverse: from a card with the page on the shelves, a scripted arrival on the hero's Play
 /// plays the hero's item, not the card the page came from.
 #[test]
