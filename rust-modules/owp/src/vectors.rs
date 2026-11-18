@@ -387,11 +387,20 @@ fn a_lone_surrogate_fails_a_checked_field_and_not_an_unknown_one() {
 }
 
 #[test]
-fn a_relay_message_that_repeats_a_member_name_is_malformed() {
-    assert_eq!(decode(r#"{"type":"pong","id":1,"id":2,"serverTime":5}"#), Received::Malformed("repeated name"));
-    assert_eq!(decode(&room_with_padding(0).replace(r#""locked":false"#, r#""locked":false,"locked":true"#)), Received::Malformed("repeated name"));
+fn a_relay_message_that_repeats_a_member_name_is_malformed_under_its_type() {
+    assert_eq!(decode(r#"{"type":"pong","id":1,"id":2,"serverTime":5}"#), Received::Malformed("pong"));
+    assert_eq!(decode(&room_with_padding(0).replace(r#""locked":false"#, r#""locked":false,"locked":true"#)), Received::Malformed("room"));
     let ext = room_with(r#""media":{"kind":"video","title":"Clip","durationMs":1,"ext":{"a.b":{"k":1,"k":2}}}"#);
-    assert_eq!(decode(&ext), Received::Malformed("repeated name"));
+    assert_eq!(decode(&ext), Received::Malformed("room"));
+    let joined = r#"{"type":"joined","code":"D4XN7P","code":"D4XN7P","you":{"peerId":"p1","token":"q3Jm8f0lYc2Kx9T4bWz7RuNs6dVhA1eGpLo5iCyZk0E"},"media":null,"serverTime":1}"#;
+    assert_eq!(decode(joined), Received::Malformed("joined"));
+}
+
+#[test]
+fn a_repeated_name_in_an_unknown_type_or_a_non_object_is_ignored() {
+    assert_eq!(decode(r#"{"type":"future","x":1,"x":2}"#), Received::Ignored);
+    assert_eq!(decode(r#"[{"a":1,"a":2}]"#), Received::Ignored);
+    assert_eq!(decode(r#"{"x":1,"x":2}"#), Received::Ignored);
 }
 
 #[test]

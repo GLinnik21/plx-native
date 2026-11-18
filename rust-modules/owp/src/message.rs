@@ -6,6 +6,7 @@ use crate::text::{valid_client, valid_name};
 
 pub const MAX_MESSAGE_BYTES: usize = 8192;
 pub const MAX_RELAY_MESSAGE_BYTES: usize = 65_536;
+const RELAY_TYPES: [&str; 5] = ["joined", "room", "pong", "error", "closed"];
 const TOKEN_LENGTH: usize = 43;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -297,11 +298,12 @@ pub fn decode(input: &str) -> Received {
     }
     let Ok(read) = read(input) else { return Received::Ignored };
     let message = read.value;
-    if message.repeats_a_member_name() {
-        return Received::Malformed("repeated name");
-    }
     let Some(kind) = plain_string(message.get("type")) else { return Received::Ignored };
-    match kind.as_str() {
+    let Some(&kind) = RELAY_TYPES.iter().find(|known| **known == kind) else { return Received::Ignored };
+    if message.repeats_a_member_name() {
+        return Received::Malformed(kind);
+    }
+    match kind {
         "joined" => decode_joined(&message),
         "room" if valid_snapshot(&message, Snapshot::Room) => {
             let media = message.get("media").cloned();
