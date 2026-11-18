@@ -1,4 +1,4 @@
-{"updated":"2026-11-18T17:13:45Z",
+{"updated":"2026-11-18T17:20:04Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5425,7 +5425,8 @@
 {"id":44341904241,"at":"2026-11-18T15:59:12Z","sha":"554058af6","title":"Docs: the morph menu lets go at the hand-back and never clears","pr":1459,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":155,"macOS simulator build + launch":253,"Windows launcher syntax":20,"Linux simulator build + launch":330}},
 {"id":44343652683,"at":"2026-11-18T16:08:08Z","sha":"f53aa8b34","title":"Name the live arrival read in FirstInGroupAnimated's doc","pr":1461,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":19,"Linux simulator build + launch":370,"macOS simulator build + launch":243}},
 {"id":44351405026,"at":"2026-11-18T16:48:05Z","sha":"06a54f5c9","title":"Glass menus are frosted, and their open and close fit the frame budget","pr":1459,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":184,"Linux simulator build + launch":396,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":221}},
-{"id":44352020805,"at":"2026-11-18T16:51:19Z","sha":"397e6afa3","title":"Stop describing how the card grid grows a seat from rest","pr":1461,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":25,"macOS tests against bundled FFmpeg and ASS":206,"macOS simulator build + launch":277,"Linux simulator build + launch":335}}
+{"id":44352020805,"at":"2026-11-18T16:51:19Z","sha":"397e6afa3","title":"Stop describing how the card grid grows a seat from rest","pr":1461,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":25,"macOS tests against bundled FFmpeg and ASS":206,"macOS simulator build + launch":277,"Linux simulator build + launch":335}},
+{"id":44354938217,"at":"2026-11-18T17:06:44Z","sha":"dab26adb9","title":"Name the live arrival read in FirstInGroupAnimated's doc","pr":1461,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":264,"Linux simulator build + launch":294,"Windows launcher syntax":19,"macOS simulator build + launch":186}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
