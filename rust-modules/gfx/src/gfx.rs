@@ -7795,21 +7795,22 @@ pub struct GlassFrost {
 }
 impl GlassFrost {
     pub const NONE: Self = Self { tex: 0, rect: [0.0; 4], knee: 0.0, ceiling: 0.0, rev: 0 };
-    /// `(knee, headroom, scale)` of `fs_glass.frag`'s `u_frost_cap`: `scale` makes a body of exactly
-    /// 1.0 land on the ceiling (`y = knee + headroom * o / (o + headroom) * scale`, `o = 1 - knee`).
-    fn cap_uniform(&self) -> [f32; 3] {
+    /// `(knee, headroom)` of `fs_glass.frag`'s `u_frost_cap`: `y = knee + headroom * o / (o + headroom)`
+    /// above the knee, `o = m - knee`. Slope 1 at the knee and never the ceiling, so a body of 1.0
+    /// lands just under it. `[0, 0]` = no cap.
+    fn cap_uniform(&self) -> [f32; 2] {
         let d = self.ceiling - self.knee;
         if self.tex == 0 || self.ceiling <= 0.0 || d <= 0.0 || self.knee >= 1.0 {
-            return [0.0, 0.0, 1.0];
+            return [0.0, 0.0];
         }
-        [self.knee, d, (1.0 - self.knee + d) / (1.0 - self.knee)]
+        [self.knee, d]
     }
     /// The same cap on one body channel, for host tests (the shader's rule on its brightest channel).
     pub fn cap(&self, m: f32) -> f32 {
-        let [k, d, scale] = self.cap_uniform();
+        let [k, d] = self.cap_uniform();
         if d <= 0.0 { return m; }
         let o = (m - k).max(0.0);
-        m.min(k) + d * (o / (o + d)) * scale
+        m.min(k) + d * (o / (o + d))
     }
 }
 
@@ -8015,7 +8016,7 @@ pub fn draw_blur_backdrop(
         glUniform4f(GL_MRG_TINT, 0.0, 0.0, 0.0, 0.0);
         glUniform1f(GL_CLEAR, 0.0);
         // …and wears no frost ceiling (a menu's frozen draw sets one; the uniform is the program's).
-        glUniform3f(GL_FROST_CAP, 0.0, 0.0, 1.0);
+        glUniform2f(GL_FROST_CAP, 0.0, 0.0);
         // A BLUR is the slowest field the app produces, so the policy is the area test, per draw
         // — moving or not: a panel's glass is a fraction of the screen and the tile is one fetch,
         // and gating it on motion (one day, 2026-09-04) flickered the bands in and out on every
@@ -8235,8 +8236,8 @@ pub fn draw_glass_frozen(
         // own texture (mode 1) over a frost and the body's own texel (mode 2) over the field.
         let framed = frost.tex != 0 && frost.rect[2] > 0.0 && frost.rect[3] > 0.0;
         let body = if framed { frost.tex } else { ground };
-        let cap = if framed { frost.cap_uniform() } else { [0.0, 0.0, 1.0] };
-        glUniform3f(GL_FROST_CAP, cap[0], cap[1], cap[2]);
+        let cap = if framed { frost.cap_uniform() } else { [0.0, 0.0] };
+        glUniform2f(GL_FROST_CAP, cap[0], cap[1]);
         glUniform1f(GL_SOURCE_ALPHA, 1.0);
         let g = tokens::CLEAR_RGB;
         glUniform3f(GL_SOURCE_GROUND, g.0, g.1, g.2);
@@ -12581,17 +12582,29 @@ mod frost_tests {
         }
     }
 
-    /// The ceiling is HARD (nothing reaches it), the knee is the identity below it, a full white body
-    /// lands on the ceiling and the curve never goes down.
+    /// **The knee is the identity below it, bends with a continuous slope above it, and the ceiling is
+    /// HARD** (nothing reaches it, a full white body lands just under). The knee sits at 0.9 of the
+    /// ceiling (`ui::theme::FROST_BODY_KNEE_AT`), so a body at 0.85 of it comes through unchanged and
+    /// only the last tenth bends. The slope is 1 on both sides of the knee: a curve that steepens
+    /// above it (a normalisation that made white land ON the ceiling did) is a kink, not a knee.
     #[test]
     fn the_frost_cap_is_a_soft_knee_under_a_hard_ceiling() {
-        let f = GlassFrost { tex: 1, rect: [0.0, 0.0, 8.0, 8.0], knee: 0.2, ceiling: 0.333, rev: 0 };
-        assert_eq!(f.cap(0.1), 0.1);
-        assert!((f.cap(1.0) - 0.333).abs() < 1e-5, "white lands on the ceiling: {}", f.cap(1.0));
+        let ceiling = 0.333;
+        let f = GlassFrost { tex: 1, rect: [0.0, 0.0, 8.0, 8.0], knee: 0.9 * ceiling, ceiling, rev: 0 };
+        for i in 0..=100 {
+            let m = f.knee * i as f32 / 100.0;
+            assert!((f.cap(m) - m).abs() <= 1e-6, "untouched below the knee at {m}: {}", f.cap(m));
+        }
+        assert!((f.cap(0.85 * ceiling) - 0.85 * ceiling).abs() <= 1.0 / 255.0, "0.85 of the ceiling passes through");
+        let e = 1e-4;
+        let slope = (f.cap(f.knee + e) - f.cap(f.knee)) / e;
+        assert!((0.98..=1.005).contains(&slope), "the slope is continuous at the knee (1 below it): {slope}");
+        let white = f.cap(1.0);
+        assert!(white < ceiling && white > ceiling - 1.0 / 255.0, "white lands just under the ceiling: {white}");
         let mut last = 0.0;
         for i in 0..=100 {
             let y = f.cap(i as f32 / 100.0);
-            assert!(y >= last && y <= 0.333 + 1e-5, "monotone and under the ceiling at {i}: {y}");
+            assert!(y >= last && y < ceiling, "monotone and under the ceiling at {i}: {y}");
             last = y;
         }
         assert_eq!(GlassFrost::NONE.cap(0.9), 0.9, "no frost, no cap");

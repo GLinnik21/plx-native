@@ -212,14 +212,15 @@ uniform highp vec2 u_mrg_rk;
 uniform vec4 u_mrg_tint;
 uniform float u_clear;
 // THE FROSTED BODY'S CEILING (`gfx::GlassFrost`), applied to what the body shows AFTER the modal dim:
-// `(knee, headroom, scale)`, headroom 0 = no cap (the field ground and every live glass, bit for
-// bit). The blurred page under a thin face can be as bright as the page, which a white poster
-// makes unreadable under light ink; the brightest CHANNEL of the body is held to `knee + headroom`
-// (a hard ceiling `ui::theme::FROST_BODY_CEILING` derives from the ink floors and the face's
-// thinnest alpha), through a rational soft knee that never reaches it. The whole texel is scaled
-// by the capped/uncapped ratio of that channel, so hue survives, and a grey is the worst case the
-// ceiling was derived for. `scale` makes a body of exactly 1.0 land ON the ceiling.
-uniform vec3 u_frost_cap;
+// `(knee, headroom)`, headroom 0 = no cap (the field ground and every live glass, bit for bit). The
+// blurred page under a thin face can be as bright as the page, which a white poster makes unreadable
+// under light ink; the brightest CHANNEL of the body is held under `knee + headroom` (a ceiling
+// `ui::theme::FROST_BODY_CEILING` derives from the ink floors and the face's thinnest alpha). A body at
+// or below the knee (0.9 of the ceiling) is untouched; above it `knee + headroom * o / (o + headroom)`
+// (`o` the excess over the knee) leaves the knee at slope 1 and approaches the ceiling without reaching
+// it. The whole texel is scaled by the capped/uncapped ratio of that channel, so hue survives, and a
+// grey is the worst case the ceiling was derived for.
+uniform vec2 u_frost_cap;
 
 // The composite-time modal dim over `c`, sampled at snapshot UV `uv` (see `u_dim`); `g` is the
 // `u_tex` texel already read at `uv`, the ink in mode 2.
@@ -264,7 +265,7 @@ vec3 srcRGB(highp vec2 uv, out vec4 g){
   if (u_frost_cap.y > 0.0) {
     float m = max(c.r, max(c.g, c.b));
     float o = max(m - u_frost_cap.x, 0.0);
-    float y = min(m, u_frost_cap.x) + u_frost_cap.y * (o / (o + u_frost_cap.y)) * u_frost_cap.z;
+    float y = min(m, u_frost_cap.x) + u_frost_cap.y * (o / (o + u_frost_cap.y));
     c *= y / max(m, 0.0001);
   }
   return c;

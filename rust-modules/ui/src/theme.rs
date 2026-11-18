@@ -561,9 +561,14 @@ pub const MENU_GLASS_FIELD_BOT: [f32; 4] = with_a(rgb8(40, 40, 46), 0.86);
 /// the dither, 0.3372 - 0.0039 = 0.333. The cap is applied after the modal dim, so the dim only adds
 /// to the margin. `popover_glass`'s test re-derives this number from the tokens.
 pub const FROST_BODY_CEILING: f32 = 0.333;
-/// Where the body's soft knee starts, as a share of [`FROST_BODY_CEILING`]: below it the frost is
-/// untouched, above it a rational curve bends towards the ceiling without reaching it.
-pub const FROST_BODY_KNEE_AT: f32 = 0.6;
+/// Where the body's soft knee starts, as a share of [`FROST_BODY_CEILING`]: a body at or below it is
+/// UNTOUCHED, and only the last tenth bends. Above it `knee + headroom * o / (o + headroom)`
+/// (`o` the excess over the knee, `headroom` = ceiling - knee) leaves the knee at slope 1, so there is
+/// no kink, and approaches the ceiling without reaching it: a body of 1.0 comes out at 0.9955 of the
+/// ceiling. It was 0.6, which squashed nearly every poster pixel (a 0.43 body came out ~0.28) and left
+/// the frost a flat dark panel; the ceiling is the contrast floors' number and did not move, so the
+/// knee only decides how much of the page's shape survives under it.
+pub const FROST_BODY_KNEE_AT: f32 = 0.9;
 /// The glass menu's drop shadow ink: the board's `0 24px 60px rgba(0,0,0,.45)` weight over
 /// [`CARD_SHADOW`]'s black.
 pub const MENU_SHADOW: [f32; 4] = with_a(CARD_SHADOW, 0.45);

@@ -141,6 +141,18 @@ pub fn draw(p: Painter, r: Rect, radius: f32, field: Option<&crate::underlay::Un
     draw_shadowed(p, r, r, radius, field, 1.0, plx_gfx::gfx::GlassMorph::NONE)
 }
 
+/// The menu's [`plx_gfx::gfx::GlassFrost`]: the host's retained blur `tex` over `rect`, its body held
+/// under [`theme::FROST_BODY_CEILING`] by a knee that starts at [`theme::FROST_BODY_KNEE_AT`] of it.
+fn frost_of(tex: std::ffi::c_uint, rect: [f32; 4], rev: u32) -> plx_gfx::gfx::GlassFrost {
+    plx_gfx::gfx::GlassFrost {
+        tex,
+        rect,
+        knee: theme::FROST_BODY_CEILING * theme::FROST_BODY_KNEE_AT,
+        ceiling: theme::FROST_BODY_CEILING,
+        rev,
+    }
+}
+
 /// [`draw`] with the drop shadow at `shadow` of the painter's opacity: a morph hands the glass and
 /// its shadow the same fill ramp (`Popover::ground`), a fallback open keeps its shadow whole.
 /// `morph` is the morph's join and clarity ([`plx_gfx::gfx::GlassMorph`], `NONE` at rest): a joined
@@ -179,13 +191,7 @@ pub fn draw_shadowed(
     if owed {
         crate::popover::host::defer_ground(true);
     }
-    let frost = read.map_or(plx_gfx::gfx::GlassFrost::NONE, |(tex, rect, rev)| plx_gfx::gfx::GlassFrost {
-        tex,
-        rect,
-        knee: theme::FROST_BODY_CEILING * theme::FROST_BODY_KNEE_AT,
-        ceiling: theme::FROST_BODY_CEILING,
-        rev,
-    });
+    let frost = read.map_or(plx_gfx::gfx::GlassFrost::NONE, |(tex, rect, rev)| frost_of(tex, rect, rev));
     let morph = if owed && frost.tex == 0 && morph.clear > 0.0 {
         plx_gfx::gfx::GlassMorph { clear: 1.0, ..morph }
     } else {
@@ -569,14 +575,13 @@ pub(crate) mod tests {
         assert_eq!(face_at(0.0).rim_lit[3], 0.0);
     }
 
-    /// The compact-menu dim is the board's 30% scrim.
     /// **The frost body's ceiling is the largest body the inks' floors allow.** Re-derived from the tokens:
     /// over the face's thinnest stop (the top, .36) a grey body at the ceiling keeps primary and secondary
     /// ink at 4.5:1 and tertiary at 3:1, and a body 2/255 brighter does not. The cap runs after the modal
     /// dim, so a white and a black page are graded here with the dim out of the sum (it only adds margin).
     #[test]
     fn the_frost_body_ceiling_keeps_the_ink_floors_at_the_thinnest_face() {
-        use plx_gfx::gfx::{lin, GlassFrost};
+        use plx_gfx::gfx::lin;
         let rel = |c: [f32; 3]| 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
         let ratio = |a: [f32; 3], b: [f32; 3]| {
             let (x, y) = (rel(a), rel(b));
@@ -590,19 +595,31 @@ pub(crate) mod tests {
         assert!(holds(theme::MENU_GLASS_TOP, ceiling), "the ceiling holds at the thinnest stop");
         assert!(holds(theme::MENU_GLASS_BOT, ceiling), "and at the bottom stop");
         assert!(!holds(theme::MENU_GLASS_TOP, ceiling + 2.0 / 255.0), "and it is the derived number, not a safe one");
-        let cap = GlassFrost {
-            tex: 1,
-            rect: [0.0, 0.0, 8.0, 8.0],
-            knee: ceiling * theme::FROST_BODY_KNEE_AT,
-            ceiling,
-            rev: 0,
-        };
+        let cap = frost_of(1, [0.0, 0.0, 8.0, 8.0], 0);
         for page in [1.0f32, 0.0] {
             let body = cap.cap(page);
             assert!(holds(theme::MENU_GLASS_TOP, body), "a {page} page's frost reads {body} and keeps the floors");
         }
     }
 
+    /// **A body at or below 0.9 of the ceiling is the frost as it is.** The knee used to start at 0.6 of
+    /// the ceiling, which squashed nearly every poster pixel (a 0.43 body came out ~0.28) and left the
+    /// menu a flat dark panel with no page in it. Graded through the pair the menu draws with
+    /// (`frost_of`: the theme's knee over `GlassFrost::cap`), so a theme edit that moves the knee down
+    /// again is red here, not only in the curve's own test.
+    #[test]
+    fn a_frost_body_under_the_knee_is_untouched() {
+        let cap = frost_of(1, [0.0, 0.0, 8.0, 8.0], 0);
+        let ceiling = theme::FROST_BODY_CEILING;
+        for share in [0.25, 0.5, 0.7, 0.85] {
+            let body = ceiling * share;
+            assert!((cap.cap(body) - body).abs() <= 1.0 / 255.0, "{share} of the ceiling is {body}, the cap makes it {}", cap.cap(body));
+        }
+        assert!(theme::FROST_BODY_KNEE_AT >= 0.9 - 1e-6, "the knee is the last tenth of the ceiling");
+        assert!(cap.cap(1.0) <= ceiling, "and a white body still lands at or under it");
+    }
+
+    /// The compact-menu dim is the board's 30% scrim.
     #[test]
     fn the_menu_scrim_is_thirty_percent() {
         assert_eq!(theme::underlay::DIM_COMPACT, 0.30);
