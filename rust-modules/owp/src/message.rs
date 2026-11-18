@@ -5,6 +5,7 @@ use crate::room::{is_peer_id, valid_snapshot, Snapshot, MAX_OFFSET_MS, MAX_RATE,
 use crate::text::{valid_client, valid_name};
 
 pub const MAX_MESSAGE_BYTES: usize = 8192;
+pub const MAX_RELAY_MESSAGE_BYTES: usize = 65_536;
 const TOKEN_LENGTH: usize = 43;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,6 +225,7 @@ pub enum Received {
     Message(Incoming),
     Ignored,
     Malformed(&'static str),
+    TooLarge,
 }
 
 fn plain_string(value: Option<&Json>) -> Option<String> {
@@ -290,6 +292,9 @@ fn decode_error(message: &Json) -> Received {
 }
 
 pub fn decode(input: &str) -> Received {
+    if input.len() > MAX_RELAY_MESSAGE_BYTES {
+        return Received::TooLarge;
+    }
     let Ok(read) = read(input) else { return Received::Ignored };
     let message = read.value;
     let Some(kind) = plain_string(message.get("type")) else { return Received::Ignored };

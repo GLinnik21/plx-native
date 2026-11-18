@@ -2,7 +2,7 @@ use crate::clock::{ClockEvent, ClockSync, PongOutcome};
 use crate::code;
 use crate::json::{read, Json, Text, MAX_SAFE_INT};
 use crate::media::{self, Direction};
-use crate::message::{decode, Incoming, InvalidMessage, Outgoing, PlayerState, Received};
+use crate::message::{decode, Incoming, InvalidMessage, Outgoing, PlayerState, Received, MAX_RELAY_MESSAGE_BYTES};
 use crate::relays::{self, Relay};
 use crate::room::{valid_snapshot, Snapshot, MAX_OFFSET_MS};
 use crate::text::{valid_client, valid_name};
@@ -275,13 +275,23 @@ fn room_with_padding(bytes: usize) -> String {
     )
 }
 
+fn room_of_length(length: usize) -> String {
+    let text = room_with_padding(length - room_with_padding(0).len());
+    assert_eq!(text.len(), length);
+    text
+}
+
 #[test]
 fn a_relay_message_of_32768_bytes_and_more_is_read() {
-    for size in [32_768, 65_536] {
-        let text = room_with_padding(size);
-        assert!(text.len() > size);
-        assert!(matches!(decode(&text), Received::Message(Incoming::Room { .. })));
+    for length in [32_768, 40_000, MAX_RELAY_MESSAGE_BYTES] {
+        assert!(matches!(decode(&room_of_length(length)), Received::Message(Incoming::Room { .. })), "{length}");
     }
+}
+
+#[test]
+fn a_relay_message_over_the_cap_is_refused_before_the_scan() {
+    assert_eq!(decode(&room_of_length(MAX_RELAY_MESSAGE_BYTES + 1)), Received::TooLarge);
+    assert_eq!(decode(&"x".repeat(MAX_RELAY_MESSAGE_BYTES + 1)), Received::TooLarge);
 }
 
 #[test]
