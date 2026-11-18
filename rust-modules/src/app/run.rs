@@ -1911,20 +1911,18 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // already took every wheel tick on this route and returned.
         }
     } else if et == SDL_TEXTINPUT {
-        // The television's own keyboard committing text. Route-UNCONDITIONAL, and
-        // `textinput::on_event` queues unconditionally too — it does NOT check
-        // whether we asked for the panel, deliberately. This is the raw platform
-        // seam: SDL delivered a character because SDL believes text input is on, and
-        // discarding it against our own flag would silently eat REAL typing the first
-        // time the two disagree (a panel dismissed from outside the app, or any
-        // future caller that enables text events another way). Dropping input is the
-        // worse failure, so instead both leaks are closed downstream, where they can
-        // be closed completely: `textinput::start` clears the queue, so nothing typed
-        // before the field opened can arrive in it, and `MAX_PENDING` bounds a queue
-        // nobody drains. Gating here would also be a second, weaker copy of a rule
-        // that lives in one place — and it would flip a frame away from the field's
-        // own edit state, because the route changes at the fade floor. The recipient is
-        // `text_owner`: Search on top as before, or any page whose keyboard is up.
+        // The television's own keyboard committing text. Gated on `bridge::text_owner`,
+        // and the gate is deliberate. Search on top takes every commit whatever our own
+        // record of the panel says: a panel the OS raised or kept behind our back must
+        // not eat REAL typing, so Search adopts it (`textinput::adopt`, via
+        // `Bridge::adopt_system_keyboard`). Any other page takes text only while
+        // `Dispatcher::system_keyboard_up()` says it raised the keyboard. Everything
+        // else goes to `textinput::on_event`, which queues without checking and which
+        // nothing drains, so for a non-Search field our own flag decides: text that
+        // arrives while it is down is not delivered. The leaks of that queue are closed
+        // downstream, where they can be closed completely: `textinput::start` clears
+        // it, so nothing typed before a field opened can arrive in it, and
+        // `MAX_PENDING` bounds a queue nobody drains.
         if super::bridge::text_owner(&app.pages) {
             let text = crate::textinput::decode(&app.ev);
             ingest_text(app, &text, crate::textinput::available(), plx_machine::machine::Source::Sdl);

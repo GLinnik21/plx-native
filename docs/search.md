@@ -348,7 +348,9 @@ carries a `char *text` **pointer** where SDL2 carries an inline `char[32]`; the 
 dereferences what it is handed. There is no Rust panic and no log line — the process is simply gone.
 The existing remote-FIFO injection is safe by luck of shape: key events and `ck:` pointer clicks are
 all scalar fields, and nothing in them is read as a pointer. Anything that wants to test the field
-headlessly must go in **above** SDL — through `textinput`'s own buffer — not by forging the event.
+headlessly must go in **above** SDL: through the `txt:` remote token or `ingest_text`'s event pair
+(`app::events::text_inputs`), never through `textinput`'s own buffer (which holds only text no field
+owns), and never by forging the event.
 
 ### Two dead ends, so nobody spends a day on them again
 

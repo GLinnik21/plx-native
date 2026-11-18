@@ -1959,7 +1959,9 @@ client).
 On a debug build on the television, with a dev-source install seeded by hand, Play on its row fetched the next
 `tools/hud-dev` build over the home network and showed the install offer as a development source; Install replaced it,
 the store kept the address, and the Remove row took it out. Not verified on the set: typing an address into "Install
-from address", because the remote harness cannot type into that field (its text token reaches only Search).
+from address". The remote harness can reach that field: its `txt:` token goes to any page whose keyboard is up
+(`bridge::text_owner`, PR #1428). It has to be sent in a FIFO batch after the one carrying the OK that raised the
+keyboard; in that same batch it finds no owner yet and lands in `textinput`'s unread queue.
 
 PR16. `fuzz/`, a `cargo fuzz` package outside the `rust-modules` workspace: one libFuzzer target per untrusted-input
 parser (`admit`, `bundle::read`, `bundle::archive::read`, `svg_subset::check_asset`, `address::parse`,

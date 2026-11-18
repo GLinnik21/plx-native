@@ -205,7 +205,8 @@ const SDL_LOG_PRIORITY_DEBUG: c_int = 2;
 /// deactivate and something else is wrong. One is a five-line mitigation, the other is not.
 ///
 /// Cheap and permanent: a handful of lines per keyboard session, on a log that is already the
-/// primary debugging surface, on a path a user reaches only by opening a search field.
+/// primary debugging surface, on a path a user reaches only by opening a text field: Search's,
+/// or Settings > Player HUD's "Install from address".
 fn trace_driver() {
     #[cfg(not(test))]
     unsafe {
@@ -321,7 +322,9 @@ const _: () = ();
 /// Re-take ownership of a panel that is demonstrably already up — see the note above and
 /// `screens::search::SearchScreen`. Deliberately does NOT call `SDL_StartTextInput` (the panel is up; asking
 /// for it again re-issues a wayland IME activation for nothing) and deliberately does NOT clear
-/// [`PENDING`], because the whole reason this is being called is that a commit is waiting in it.
+/// [`PENDING`]; clearing it is [`start`]'s fresh-field rule, and the commit that proved the panel up is
+/// not in it. That commit travels in `app.inputs`, behind the `SystemKeyboard(true)` input that led here
+/// (`app::events::text_inputs`).
 pub(crate) fn adopt() {
     unsafe {
         if *addr_of!(STARTED) {
