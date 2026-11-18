@@ -801,6 +801,35 @@ fn a_morphing_glass_asks_for_its_frost_before_its_field_latches_and_is_never_cle
         judged += 1;
     }
     assert!(judged >= 8, "frames were judged: {judged}");
+    // ... and the CLOSE of that mid-open menu, frost still owed: no frame that draws the glass draws it
+    // clear (what `Popover::ground` hands the panel is the morph's join and the face, never clarity)
+    pop.dismiss();
+    let mut closing = 0;
+    for frame in 0..60 {
+        pop.update(1.0 / 60.0);
+        if !pop.visible() {
+            break;
+        }
+        begin_frame(&_reset.modal, false);
+        PIXELS.with(|p| p.borrow_mut().clear());
+        {
+            let _page = page_pass(&_reset.modal);
+            ink("page");
+            let _scrim = live();
+            ink("scrim");
+        }
+        let sharp = page_tex().expect("the host holds its undimmed page");
+        let Some(g) = pop.ground(panel, RAD) else { continue };
+        let declared = declared_glass(|| pop.panel(root, panel, RAD, Some(&field), crate::widgets::Ground::Menu));
+        let Some(drawn) = declared.first() else { continue };
+        let want = expected_morphing(root.alpha(g.alpha), g.rect, g.radius, tex, sharp, crate::popover_glass::face_at(g.alpha), g.morph);
+        let clear = expected_morphing(root.alpha(g.alpha), g.rect, g.radius, tex, sharp, crate::popover_glass::face_at(g.alpha),
+            plx_gfx::gfx::GlassMorph { clear: 1.0, ..g.morph });
+        assert!(*drawn == want[0], "close frame {frame}: a body that is not the field under the face");
+        assert!(*drawn != clear[0], "close frame {frame}: the body is clear");
+        closing += 1;
+    }
+    assert!(closing >= 8, "close frames were judged: {closing}");
     FROST_PENDING.with(|p| p.set(false));
     FROST_ASKED.with(|a| a.set(None));
     pop.close();

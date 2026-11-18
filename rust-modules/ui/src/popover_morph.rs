@@ -951,7 +951,8 @@ mod tests {
         assert!((frames.last().unwrap().rows_scale - 1.0).abs() < 1e-3, "1 at rest");
         assert_eq!(at(0.0).content_alpha, 0.0, "none on the first glass frame");
         let first = frames.iter().position(|f| f.content_alpha > 0.0).expect("the rows show") - 1;
-        assert!(first <= 3, "the rows' first visible frame is at or before the fourth glass frame (frame {first}, ~{} ms)", first as f32 * DT * 1000.0);
+        assert!(first <= 3, "the rows' first visible frame is at or before glass frame 3 (frame {first}, ~{} ms)", first as f32 * DT * 1000.0);
+        assert_eq!(first, 2, "the rows start on the third glass frame (table frame 2, ~33 ms), as the module doc says");
         assert!(at(50.0).content_alpha > 0.1 && at(50.0).content_alpha < 0.6, "arriving by ~50 ms: {:?}", at(50.0));
         assert!(at(83.0).content_alpha > 0.5 && at(83.0).content_alpha < 1.0, "still arriving at 83 ms: {:?}", at(83.0));
         assert!(at(133.0).content_alpha > 0.99, "opaque by ~133 ms: {:?}", at(133.0));
