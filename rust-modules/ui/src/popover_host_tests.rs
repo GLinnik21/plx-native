@@ -458,7 +458,7 @@ fn a_morphing_popover_is_one_surface_and_settles_both_ways() {
 /// the pill for one frame (5-menus/libsf-zoom n=155 / 247). The rule, over every header opener:
 /// whenever an OPENING glass stands outside the opener's rect, its alpha AND its shadow are the
 /// morph's one fill ramp, so it is never opaque on the frame it first appears. A CLOSE is the
-/// droplet's (owner, 2026-11-17, measured from iOS 26): the clear slab is whole glass all the way
+/// droplet's (owner, 2026-11-17, measured from iOS 26): the frosted slab is whole glass all the way
 /// into the opener, so the ramp does not apply; what is held instead is that once it has arrived
 /// it hangs only in the drain band under the opener (no wider than the drain, no lower than it) and
 /// that the last frame of glass is a bead a fraction of the drain's size, never a slab.
