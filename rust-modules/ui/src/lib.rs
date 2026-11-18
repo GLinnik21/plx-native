@@ -2045,9 +2045,10 @@ impl Painter {
     /// program or the ground is missing — the caller's cue for its field ground.
     /// `crate::popover_glass::draw` is the component; reach for that.
     ///
-    /// `morph` is a morphing menu's join and clarity ([`plx_gfx::gfx::GlassMorph`]);
-    /// `GlassMorph::NONE` for everything else. Joined, the glass is drawn on the box around both
-    /// shapes, so that box (not `r`) is what the draw declares.
+    /// `morph` is a morphing menu's join ([`plx_gfx::gfx::GlassMorph`]; its clarity is always 0, and
+    /// clarity 1 is the profile chip's lift on the host snapshot); `GlassMorph::NONE` for everything
+    /// else. Joined, the glass is drawn on the box around both shapes, so that box (not `r`) is what
+    /// the draw declares.
     #[allow(clippy::too_many_arguments)]
     pub fn glass_frozen(
         self,

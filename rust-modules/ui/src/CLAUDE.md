@@ -708,9 +708,10 @@ tried first. None of it is reconstructable from the code without repeating the m
 
 - **Glass over a page stands on the frozen host; the page does not move while a menu is up, except
   under a menu that lets it reflow.**
-  A menu (opening, open or closing, until it has let go of the host at `CLOSING_GONE`) stands on
-  the page as the host snapshot holds it (`popover.rs` module doc, "A modal stands on a page that is
-  not moving"): nothing on the page animates, reflows or lands under it. A layout motion a menu's
+  A menu (opening, open or closing, until it has let go of the host: a morphing menu on the frame
+  its droplet is handed back, `Screen::handed_back`; any other menu when its fade drops below
+  `CLOSING_GONE`) stands on the page as the host snapshot holds it (`popover.rs` module doc, "A
+  modal stands on a page that is not moving"): nothing on the page animates, reflows or lands under it. A layout motion a menu's
   choice starts (the Watchlist's Remove) and the data that would change the page (the app's
   `watchlist_feed`) wait until the menu is gone and start on the first frame after
   (the owning stack's captured `cx.modal.page_veiled()`). **The one exception is a surface whose body answers

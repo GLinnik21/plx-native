@@ -36,13 +36,14 @@
 //! `series.md` "Iteration 2"). While it is small the corner radius is half its smaller side, a
 //! capsule, not the panel's radius; at [`SHAPE_AT`] (~150 ms) a spring ([`K_SHAPE`]) relaxes it to the
 //! caller's radius by ~250 ms, landing on it exactly ([`Frame::radius`]; a close rounds it back as it
-//! shrinks). The ROWS have their own underdamped spring, [`K_LENS`]/[`ZETA_LENS`] (0.65 when they first
-//! show, a 12% overshoot at ~167 ms, 1 by ~360, within 0.02 of the table), not the glass's height ratio
-//! ([`Frame::rows_scale`]); on a close they shrink with the slab. The rows are cut by the
+//! shrinks). The ROWS have their own underdamped spring, [`K_LENS`]/[`ZETA_LENS`] (~0.2 when they first
+//! show, on the third glass frame, 0.65 at 67 ms, a 12% overshoot at ~167 ms, 1 by ~360, within 0.02 of
+//! the table), not the glass's height ratio ([`Frame::rows_scale`]); on a close they shrink with the slab. The rows are cut by the
 //! lens itself, its rect and radius, through the shared painter's rounded clip
 //! (`ClipScope::open_rounded_in`: a coverage mask on the rect, text and icon programs), so a letter
-//! the round edge crosses is cut by the arc as on iOS 26; settled, nothing is cut. A stiff spring ([`K_OUT`]) carries the CLOSE's first phase, the content and the frost
-//! leaving. The old rows spring ([`K_ROWS`]) remains for the fade+scale fallback only.
+//! the round edge crosses is cut by the arc as on iOS 26; settled, nothing is cut. A stiff spring
+//! ([`K_OUT`]) carries the CLOSE's first phase, the rows leaving; the glass keeps its frost to the
+//! hand-back. The old rows spring ([`K_ROWS`]) remains for the fade+scale fallback only.
 //!
 //! **One surface, two clocks.** The pill and the panel are ONE surface whose rect, radius and fill
 //! animate. The glass's cross-in is a function of the HEIGHT alone (it leads, so the glass draws from
@@ -479,7 +480,7 @@ pub struct Morph {
     /// (`rows_scale = lerp(lens, rect.h / panel.h, out)`: the lens spring on an open, the slab's
     /// height on a close).
     rows: Spring,
-    /// A close's content-and-frost phase: 0 = in, 1 = out ([`K_OUT`]).
+    /// A close's content phase, the rows leaving: 0 = in, 1 = out ([`K_OUT`]); the glass stays frosted.
     out: Spring,
     /// The corner: 0 = the round lens (half the smaller side), 1 = the caller's panel radius
     /// ([`K_SHAPE`], released at [`SHAPE_AT`] on an open, back to 0 on a close).
@@ -526,8 +527,8 @@ impl Morph {
     ///
     /// A close is NOT that reversed: the rect springs are released on the first frame with an
     /// outward [`BULGE_KICK_H`] (a settled panel bulges before it shrinks), `out` rises with them (the
-    /// rows and the frost leave while the slab shrinks), and the fold is released once the slab is
-    /// within [`FOLD_AT`] of the drain rect.
+    /// rows leave while the slab shrinks; the glass stays frosted), and the fold is released once the
+    /// slab is within [`FOLD_AT`] of the drain rect.
     pub fn step(&mut self, open: bool, dt: f32) {
         // Every spring below is put EXACTLY on its target the moment the frame loop's own rest test (the one
         // its integrators report `Motion` by) stops calling it moving at this step's `dt`: the instant the loop

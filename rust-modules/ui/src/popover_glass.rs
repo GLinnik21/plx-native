@@ -164,7 +164,8 @@ pub(crate) fn frost_cap() -> (f32, f32) {
 
 /// [`draw`] with the drop shadow at `shadow` of the painter's opacity: a morph hands the glass and
 /// its shadow the same fill ramp (`Popover::ground`), a fallback open keeps its shadow whole.
-/// `morph` is the morph's join and clarity ([`plx_gfx::gfx::GlassMorph`], `NONE` at rest): a joined
+/// `morph` is the morph's join ([`plx_gfx::gfx::GlassMorph`], `NONE` at rest; a morphing menu's
+/// clarity is always 0, clarity 1 is the profile chip's lift on the host snapshot): a joined
 /// glass is drawn on the box around both shapes, and its shadow goes UNDER it (below).
 ///
 /// **The body is a FROST where the host holds one** (`popover::host::frost`, a retained blur of the

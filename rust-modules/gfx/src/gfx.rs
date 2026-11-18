@@ -5711,9 +5711,10 @@ static mut GPROG: c_uint = 0;
 /// shape as [`RectUniforms`]; `-1` is a location GL ignores.
 ///
 /// `boff`, `mrg`, `mrg_rk`, `mrg_tint`, `clear`: a morphing menu glass's join, the colour the joined
-/// shape wears and its clarity ([`GlassMorph`]). Uniforms are per-program state, so EVERY draw of a
-/// glass program sets them: the ones at their off values (no offset, `k` 0, tint amount 0, clear 0)
-/// are today's glass. `wash_k` is `u_wash_tl`, `u_wash_tr`, `u_wash_br`, `u_wash_bl`.
+/// shape wears and the clarity ([`GlassMorph`]: a morphing menu sets only the join, its clarity is
+/// always 0; clarity 1 is the profile chip's lift on the host snapshot). Uniforms are per-program
+/// state, so EVERY draw of a glass program sets them: the ones at their off values (no offset, `k` 0,
+/// tint amount 0, clear 0) are today's glass. `wash_k` is `u_wash_tl`, `u_wash_tr`, `u_wash_br`, `u_wash_bl`.
 #[derive(Clone, Copy)]
 struct GlassUniforms {
     rect: c_int,
