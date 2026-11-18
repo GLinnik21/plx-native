@@ -48,8 +48,8 @@ an app that never answered or a FIFO that is not there; 2 is an id, subject or t
 (nothing was sent). Each failure is one line on stderr, never a traceback.
 
 A title is pressed by NAME. A `press` (or a `send press:<id>`) of an element whose subject is a title (a
-card, a Detail episode or season tab, a Filmography credit, the catalog page's pill, a Home hero control, an
-item-menu row: `SUBJECT_BEARING`) needs `--subject <ratingKey>` and exits 2 without it, because the
+card, a Detail episode or season tab, a Filmography credit, the catalog page's pill, a Home hero Play, Info or
+Watchlist button, an item-menu row: `SUBJECT_BEARING`) needs `--subject <ratingKey>` and exits 2 without it, because the
 simulator boots against the owner's real server unless it is aimed at a mock, and OK on a title can play it.
 The library function `press` (`press_token`) stays unguarded for a script that means an element with no
 subject. `send` writes ONE word: a token with whitespace in it (`"back press:card"`) is refused, because the
@@ -109,7 +109,9 @@ def valid_subject(text):
 #   detail.season.*      the same file: `season.<i>`, a season tab
 #   filmography.row.*    screens/src/filmography.rs: `row.<i>`, a credit (its subject is the local copy's key)
 #   catalog.primary      screens/src/catalog.rs: the Add to / On Watchlist pill (its subject is the hex id)
-#   home.hero.*          screens/src/home/mod.rs: `hero.play|info|watchlist`, the hero item's ratingKey
+#   home.hero.play       screens/src/home/mod.rs: `hero.play|info|watchlist`, the hero item's ratingKey (three
+#   home.hero.info       explicit ids, not a glob: `home.hero.action`, the failure read-out's retry, is not a title's
+#   home.hero.watchlist  control and stays pressable)
 #   itemmenu.*           screens/src/item_menu.rs: `<row>` and `version.<n>`, the menu's item's ratingKey
 #
 # fnmatch globs, which are spelled exactly like the `case` patterns of `a11y_subject_bearing` in
@@ -117,11 +119,12 @@ def valid_subject(text):
 # in the list: `detail.hero.*` (Detail is only reached through a named route), `detail.about.card`,
 # `under-posters.row.3` and every other `*.row.*` outside Filmography.
 #
-# Two elements of these shapes have NO ratingKey to name, so the guarded doors cannot press them at all (the
-# library `press`, unguarded, still can): `home.hero.action` (the failure read-out's retry, shown while no hero
-# exists) and the rows of a Catalog item menu (a Watchlist title no server holds: its identity is a guid).
+# The rows of a Catalog item menu have NO ratingKey to name (a Watchlist title no server holds: its identity is a
+# guid), so the guarded doors cannot press them at all (the library `press`, unguarded, still can): the safe side,
+# because they act on a catalog title. `home.hero.action` is not in the list: it has no title (the failure
+# read-out's retry, shown while there is no hero) and a bare press of it goes out.
 SUBJECT_BEARING = ("*.card.*", "detail.episodes.*", "detail.season.*", "filmography.row.*", "catalog.primary",
-                   "home.hero.*", "itemmenu.*")
+                   "home.hero.play", "home.hero.info", "home.hero.watchlist", "itemmenu.*")
 
 
 def subject_bearing(id_):

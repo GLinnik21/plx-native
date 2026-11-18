@@ -2708,7 +2708,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   `state:<nonce>` (the structured readback `plxnative-a11y.json`, beside `focusprobe`'s fingerprint),
   via `tools/tv-session.sh focus|press|state` or `tools/a11y.py`, both of which refuse to press an
   element whose subject is a title (a card, a Detail episode or season tab, a Filmography credit, the
-  catalog pill, a Home hero button, an item-menu row) unless the press names it (`--rk` / `--subject`).
+  catalog pill, a Home hero Play, Info or Watchlist button, an item-menu row) unless the press names it (`--rk` / `--subject`).
   `tv-session.sh key` and `a11y.py send` are not a way round that: `key` refuses a `focus:`, `press:` or
   `state:` word (the three verbs are the one door for them), and both refuse a word with whitespace in it
   (the app cuts the FIFO at any whitespace, so `back press:<card>` would be a second, unchecked token).

@@ -316,7 +316,7 @@ class Tokens(unittest.TestCase):
 
 class SubjectBearing(unittest.TestCase):
     """An element whose subject is a title (a card, a Detail episode or season tab, a Filmography credit, the
-    catalog page's pill, a Home hero control, an item-menu row) is pressed by NAMING that title: the real-account
+    catalog page's pill, a Home hero Play, Info or Watchlist button, an item-menu row) is pressed by NAMING that title: the real-account
     rule is never to press OK on a title whose ratingKey you have not read, and OK on a Detail episode's still
     PLAYS it at once. ONE list of those id shapes lives in `a11y.SUBJECT_BEARING`; tools/tv-session.sh's
     `a11y_subject_bearing` is the same list."""
@@ -327,7 +327,8 @@ class SubjectBearing(unittest.TestCase):
                    "home.hero.watchlist", "itemmenu.play", "itemmenu.watchlist_remove", "itemmenu.version.0"]
     PLAIN_IDS = ["nav.watchlist", "detail.hero.play", "detail.hero.mark_watched", "detail.about.card",
                  "detail.about.languages", "detail.collection.heading", "under-posters.row.3", "filmography.tab.2",
-                 "watchlist.header.sort", "player.control.play", "catalog.back"]
+                 "watchlist.header.sort", "player.control.play", "catalog.back",
+                 "home.hero.action"]  # the failure read-out's retry: no title, so pressed bare
 
     def test_the_subject_bearing_shapes_are_matched_and_nothing_else(self):
         for id_ in self.SUBJECT_IDS:
@@ -384,10 +385,12 @@ class SubjectBearing(unittest.TestCase):
         expected = {**production, **not_a_production_site}
         self.assertEqual(calls, {path: n for path, (n, _) in expected.items()})
         # every production site is spelled in the list: one glob of SUBJECT_BEARING per id shape it presses
+        # the hero is three explicit ids, not a glob: `home.hero.action` (the failure read-out's retry) acts on no title
         for glob in ("*.card.*", "detail.episodes.*", "detail.season.*", "filmography.row.*", "catalog.primary",
-                     "home.hero.*", "itemmenu.*"):
+                     "home.hero.play", "home.hero.info", "home.hero.watchlist", "itemmenu.*"):
             self.assertIn(glob, a11y.SUBJECT_BEARING)
-        self.assertEqual(len(a11y.SUBJECT_BEARING), 7)
+        self.assertEqual(len(a11y.SUBJECT_BEARING), 9)
+        self.assertNotIn("home.hero.*", a11y.SUBJECT_BEARING)
 
 
 @unittest.skipUnless(HAS_FIFO, "needs os.mkfifo")
@@ -482,10 +485,11 @@ class CommandLine(unittest.TestCase):
         self.assertEqual(self.run_main("send", self.runtime, "press:itemmenu.watchlist_remove@2001"), (0, ""))
         self.assertEqual(self.run_main("send", self.runtime, "press:detail.episodes.text.0@78"), (0, ""))
         self.assertEqual(self.run_main("press", self.runtime, "detail.hero.play"), (0, ""))   # no subject to name
+        self.assertEqual(self.run_main("press", self.runtime, "home.hero.action"), (0, ""))   # the retry names no title
         self.assertEqual(self.run_main("send", self.runtime, "ok"), (0, ""))
         self.assertEqual(self.written(), ["press:detail.episodes.still.3@77", "press:home.hero.play@200622",
                                           "press:itemmenu.watchlist_remove@2001", "press:detail.episodes.text.0@78",
-                                          "press:detail.hero.play", "ok"])
+                                          "press:detail.hero.play", "press:home.hero.action", "ok"])
 
     def test_the_library_press_stays_unguarded_for_a_card_with_no_subject(self):
         """The mock scenario presses `watchlist.grid.card.7`, a coming-soon card whose subject is null."""

@@ -11,7 +11,8 @@
 #   tv-session.sh press <id> [--rk <ratingKey>]
 #                                focus that element and press OK; an element whose subject is a title
 #                                (a card, a Detail episode or season tab, a Filmography credit, the catalog
-#                                pill, a Home hero control, an item-menu row) needs --rk: see "BY ID" below
+#                                pill, a Home hero Play/Info/Watchlist button, an item-menu row) needs --rk: see
+#                                "BY ID" below
 #   tv-session.sh state [--out FILE]
 #                                what is on screen, by id: the focused id, the groups, every element
 #   tv-session.sh shot [out.png] grab the panel (video plane included) via the capture service
@@ -132,7 +133,8 @@
 # Prefer them to `key` walks, which are for tests whose subject is travel. Never press OK on a title whose
 # ratingKey you have not read: `press` refuses, without `--rk`, any id whose element's subject is a title (a
 # card `*.card.*`, a Detail episode `detail.episodes.*` (OK on a still PLAYS it) or season tab, a Filmography
-# credit, the catalog pill, a Home hero button `home.hero.*` (the carousel advances by itself), an item-menu
+# credit, the catalog pill, a Home hero button `home.hero.play|info|watchlist` (the carousel advances by itself,
+# but `home.hero.action`, the failure read-out's retry, names no title and is pressed bare), an item-menu
 # row `itemmenu.*`: `a11y_subject_bearing`), and the app refuses the press when the element now there carries
 # another subject (`a11y: refused press <id> subject_mismatch ...` in the event log). `key` refuses a
 # `focus:`, `press:` or `state:` word, so there is ONE door per action, and a word with whitespace in it is
@@ -1117,7 +1119,7 @@ selftest_key_doors_in() {  # $1 = scratch file
   local -a refused=(
     "cmd_key press:home.continue.card.0" "cmd_key focus:nav.watchlist" "cmd_key state:abc"
     "cmd_key back press:home.continue.card.0" "cmd_key press:home.hero.play back"
-    "cmd_press home.hero.play" "cmd_press home.hero.info" "cmd_press home.hero.watchlist" "cmd_press home.hero.action"
+    "cmd_press home.hero.play" "cmd_press home.hero.info" "cmd_press home.hero.watchlist"
     "cmd_press itemmenu.play" "cmd_press itemmenu.watchlist_remove" "cmd_press itemmenu.version.0"
     "cmd_press home.shelf.2.card.5" "cmd_press home.hero.play --rk" "cmd_press home.hero.play --rk 1+2"
   )
@@ -1137,6 +1139,7 @@ press:x")" = "2 0" ] || { bad "key sent a word with a newline in it"; return 1; 
   [ "$(selftest_door "$m" cmd_focus nav.watchlist)" = "0 1" ] && grep -q "'focus:nav.watchlist'" "$m" || { bad "focus did not send its token"; return 1; }
   [ "$(selftest_door "$m" cmd_press home.hero.play --rk 12)" = "0 1" ] && grep -q "'press:home.hero.play@12'" "$m" || { bad "press --rk did not send press:<id>@<rk>"; return 1; }
   [ "$(selftest_door "$m" cmd_press itemmenu.watchlist_remove --rk 7)" = "0 1" ] && grep -q "'press:itemmenu.watchlist_remove@7'" "$m" || { bad "an item-menu press naming its title was not sent"; return 1; }
+  [ "$(selftest_door "$m" cmd_press home.hero.action)" = "0 1" ] && grep -q "'press:home.hero.action'" "$m" || { bad "a bare press of the failure read-out's retry (no title) was not sent"; return 1; }
   [ "$(selftest_door "$m" cmd_press detail.hero.play)" = "0 1" ] && grep -q "'press:detail.hero.play'" "$m" || { bad "a Detail hero press (no title to name) was not sent"; return 1; }
   return 0
 }
@@ -1205,8 +1208,8 @@ nav.home"; do
   [ "$(a11y_token press home.shelf.2.card.5 1234)" = "press:home.shelf.2.card.5@1234" ] || { bad "press-with-subject token"; return 1; }
   [ "$(a11y_token press catalog.primary 5d7768ab)" = "press:catalog.primary@5d7768ab" ] || { bad "press subject on the catalog pill"; return 1; }
   # Every id whose element's subject is a title is pressed by name: a card, a Detail episode (OK on a still
-  # PLAYS it), a season tab, a Filmography credit, the catalog pill, a Home hero button (the carousel advances by
-  # itself, so a bare press acts on whichever title is showing), an item-menu row (it acts on the title the hold
+  # PLAYS it), a season tab, a Filmography credit, the catalog pill, a Home hero Play, Info or Watchlist button
+  # (the carousel advances by itself, so a bare press acts on whichever title is showing), an item-menu row (it acts on the title the hold
   # opened). Without --rk each is refused; with it, each is sent as press:<id>@<rk>.
   for aid in home.shelf.2.card.5 home.continue.card.0 watchlist.grid.card.3 detail.episodes.still.0 \
              detail.episodes.text.0 detail.episodes.still.3 detail.season.1 filmography.row.2 catalog.primary \
@@ -1216,9 +1219,10 @@ nav.home"; do
     [ "$(a11y_token focus "$aid")" = "focus:$aid" ] || { bad "focus of $aid was refused"; return 1; }
   done
   # ... and the ones that carry no title still press with none (nothing is named by `--rk` there): Detail is only
-  # reached through a named route, so its hero buttons stay unguarded.
+  # reached through a named route, so its hero buttons stay unguarded, and `home.hero.action` (the failure
+  # read-out's retry) acts on no title, so it is pressed bare.
   for aid in detail.about.card detail.about.languages detail.hero.play detail.hero.mark_watched under-posters.row.3 \
-             filmography.tab.2 nav.watchlist; do
+             filmography.tab.2 nav.watchlist home.hero.action; do
     [ "$(a11y_token press "$aid")" = "press:$aid" ] || { bad "press of $aid needlessly wanted --rk"; return 1; }
   done
   for aid in "1 2" "12'34" '12@3' '12$x' "12;x" ""; do
@@ -1458,16 +1462,17 @@ a11y_subject_ok() {  # $1 = a ratingKey / subject
 #   detail.season.*     the same file: `season.<i>`, a season tab
 #   filmography.row.*   screens/src/filmography.rs: `row.<i>`, a credit
 #   catalog.primary     screens/src/catalog.rs: the Add to / On Watchlist pill (the subject is a hex id)
-#   home.hero.*         screens/src/home/mod.rs: `hero.play|info|watchlist` (the carousel advances by itself: a bare
-#                       press acts on whatever title is showing at that frame)
+#   home.hero.play|info|watchlist
+#                       screens/src/home/mod.rs: `hero.play|info|watchlist` (the carousel advances by itself: a bare
+#                       press acts on whatever title is showing at that frame; three explicit ids, because
+#                       `home.hero.action`, the failure read-out's retry, names no title and stays pressable)
 #   itemmenu.*          screens/src/item_menu.rs: every row of the menu a hold opened (it acts on that title)
 # A bare `*.row.*` would also catch `under-posters.row.3`, so the namespaced ones are spelled out. `detail.hero.*`
-# is NOT in it: Detail is only reached through a named route. Two elements of these shapes have no ratingKey, so
-# `press` cannot name them and refuses them: `home.hero.action` (the failure read-out's retry, shown while there is
-# no hero) and the rows of a Catalog item menu (a Watchlist title no server holds).
+# is NOT in it: Detail is only reached through a named route. The rows of a Catalog item menu have no ratingKey,
+# so `press` cannot name them and refuses them (a Watchlist title no server holds: the safe side).
 a11y_subject_bearing() {  # $1 = a full accessibility id
   case "$1" in
-    *.card.*|detail.episodes.*|detail.season.*|filmography.row.*|catalog.primary|home.hero.*|itemmenu.*) return 0 ;;
+    *.card.*|detail.episodes.*|detail.season.*|filmography.row.*|catalog.primary|home.hero.play|home.hero.info|home.hero.watchlist|itemmenu.*) return 0 ;;
   esac
   return 1
 }
@@ -1482,7 +1487,7 @@ a11y_token() {
     press)
       if a11y_subject_bearing "$id"; then
         [ -n "$rk" ] || {
-          echo "tv-session: press $id: this element is a title's (a card, a Detail episode or season tab, a Filmography credit, the catalog pill, a Home hero control, an item-menu row), so name the title with --rk <ratingKey> (read it from \`state\` or the log first)" >&2
+          echo "tv-session: press $id: this element is a title's (a card, a Detail episode or season tab, a Filmography credit, the catalog pill, a Home hero Play/Info/Watchlist button, an item-menu row), so name the title with --rk <ratingKey> (read it from \`state\` or the log first)" >&2
           return 2; }
       fi
       if [ -n "$rk" ]; then
