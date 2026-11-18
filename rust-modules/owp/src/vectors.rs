@@ -345,10 +345,20 @@ fn a_descriptor_that_repeats_a_member_name_is_not_sent() {
     assert!(!media::check(&ids, Direction::Send));
 }
 
+const JOINED: &str = r#"{"type":"joined","code":"D4XN7P","you":{"peerId":"p1","token":"q3Jm8f0lYc2Kx9T4bWz7RuNs6dVhA1eGpLo5iCyZk0E"},"room":{"rev":1,"code":"D4XN7P","epoch":0,"phase":"idle","positionMs":0,"atMs":15023,"rate":1,"control":"host","locked":false,"waitingOn":[],"participants":[{"peerId":"p1","name":"Edde","client":"Example/1.31.0","host":true,"connected":true,"player":"idle","match":null,"offsetMs":0}],"action":{"kind":"join","by":"p1"}},"media":null,"serverTime":15023}"#;
+
 #[test]
 fn an_action_in_a_joined_room_is_an_unknown_member() {
-    let joined = r#"{"type":"joined","code":"D4XN7P","you":{"peerId":"p1","token":"q3Jm8f0lYc2Kx9T4bWz7RuNs6dVhA1eGpLo5iCyZk0E"},"room":{"rev":1,"code":"D4XN7P","epoch":0,"phase":"idle","positionMs":0,"atMs":15023,"rate":1,"control":"host","locked":false,"waitingOn":[],"participants":[{"peerId":"p1","name":"Edde","client":"Example/1.31.0","host":true,"connected":true,"player":"idle","match":null,"offsetMs":0}],"action":{"kind":"join","by":"p1"}},"media":null,"serverTime":15023}"#;
-    assert!(matches!(decode(joined), Received::Message(Incoming::Joined { .. })));
+    assert!(matches!(decode(JOINED), Received::Message(Incoming::Joined { .. })));
+}
+
+#[test]
+fn a_joined_descriptor_keeps_only_its_known_members() {
+    let media = r#"{"futureField":1,"kind":"episode","title":"Pilot","ids":{"tvdb":"127131","trakt":"4"},"series":{"futureField":"x","title":"Lost","ids":{"tvdb":"73739","trakt":"5"}},"season":1,"episode":1,"durationMs":2520000,"file":{"sizeBytes":1,"futureField":{"x":1}},"ext":{"com.example":{"future":[1],"x":{"y":null}}}}"#;
+    let known = r#"{"kind":"episode","title":"Pilot","ids":{"tvdb":"127131","trakt":"4"},"series":{"title":"Lost","ids":{"tvdb":"73739","trakt":"5"}},"season":1,"episode":1,"durationMs":2520000,"file":{"sizeBytes":1},"ext":{"com.example":{"future":[1],"x":{"y":null}}}}"#;
+    let joined = JOINED.replace(r#""media":null"#, &format!(r#""media":{media}"#));
+    let Received::Message(Incoming::Joined { media: Some(kept), .. }) = decode(&joined) else { panic!("not a joined with media: {joined}") };
+    assert_eq!(kept, read(known).unwrap().value);
 }
 
 #[test]

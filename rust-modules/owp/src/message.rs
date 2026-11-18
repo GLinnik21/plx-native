@@ -248,7 +248,7 @@ fn is_token(value: &str) -> bool {
 fn joined_media(value: &Json) -> Option<Option<Json>> {
     match value {
         Json::Null => Some(None),
-        descriptor if media::check(descriptor, Direction::Receive) => Some(Some(descriptor.clone())),
+        descriptor if media::check(descriptor, Direction::Receive) => Some(Some(media::known_members(descriptor))),
         _ => None,
     }
 }
