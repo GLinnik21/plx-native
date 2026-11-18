@@ -37,7 +37,7 @@ on:
         description: 'Explicit X.Y.Z instead of a bump level'
         required: false
       line:
-        description: 'Maintenance line to cut from, e.g. release/v0.6 (empty = main)'
+        description: 'Release line to cut the candidate from, e.g. release/v0.11'
         type: string
         required: false
         default: ''
@@ -84,8 +84,9 @@ jobs:
           LINE: ${{ inputs.line }}
         run: |
           set -euo pipefail
-          if [ -n "$LINE" ] && ! [[ "$LINE" =~ ^release/v[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::line '$LINE' is not a maintenance branch — expected release/vX.Y (e.g. release/v0.6) or empty for main."
+          # A pull request's dry run builds its own head, so it needs no line.
+          if [ "${{ github.event_name }}" != pull_request ] && ! [[ "$LINE" =~ ^release/v[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::line '$LINE' is not a release line — every candidate is cut from release/vX.Y (cut-line.yml makes one)."
             exit 1
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -112,7 +113,7 @@ jobs:
             # The line as it stands, under its own version: proves the pipeline, cuts nothing.
             python3 ci/rc.py plan --version "$(python3 ci/bump-version.py --current)" --line "$LINE" --dry >> "$GITHUB_OUTPUT"
           else
-            python3 ci/bump-version.py "$SPEC"
+            python3 ci/bump-version.py "$SPEC" --line "$LINE"
             python3 ci/rc.py plan --version "$(python3 ci/bump-version.py --current)" --line "$LINE" >> "$GITHUB_OUTPUT"
           fi
           # The four version files agree, and the release note and audit for this version exist —
@@ -134,7 +135,7 @@ jobs:
           fi
           git config user.name  'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
-          git add pkg/appinfo.json ipkroot/ctl/control rust-modules/Cargo.toml rust-modules/Cargo.lock
+          git add pkg/appinfo.json ipkroot/ctl/control rust-modules/Cargo.toml rust-modules/Cargo.lock RELEASE_LINE
           # The same message release.yml's bump commit carries — this IS that commit, tested early.
           # No commit when the version did not move (a candidate for the version already written).
           git diff --cached --quiet || git commit -m "release: $VERSION"
@@ -162,6 +163,9 @@ jobs:
       fwcompat: true
       # A pull request's dry run publishes nothing (see nightly.yml for the same choice).
       upload-debug-files: ${{ github.event_name != 'pull_request' }}
+      # Any dry run, dispatched ones too: a candidate it named would become the base of the next
+      # real one's commit range.
+      sentry-release: ${{ needs.prepare.outputs.dry != 'true' }}
       caches: false
     secrets:
       SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
@@ -237,3 +241,17 @@ jobs:
           mkdir -p verify
           gh release download "$TAG" --pattern "$IPK" --dir verify
           test "$(sha256sum "verify/$IPK" | cut -d' ' -f1)" = "$(cut -d' ' -f1 dist/rc.sha256)"
+
+      - name: Mark the Sentry release as shipped
+        if: needs.prepare.outputs.dry != 'true'
+        # Finalizes the release build-package.yml created and records its deploy; never fails
+        # the publish, which has already happened (.github/actions/sentry-deploy says why).
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: ./.github/actions/sentry-deploy
+        with:
+          release: ${{ needs.build.outputs.sentry-release }}
+          org: ${{ needs.build.outputs.sentry-org }}
+          project: ${{ needs.build.outputs.sentry-project }}
+          environment: ${{ needs.build.outputs.sentry-environment }}
+          auth-token: ${{ secrets.SENTRY_AUTH_TOKEN }}

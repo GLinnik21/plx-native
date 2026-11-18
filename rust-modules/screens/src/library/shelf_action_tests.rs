@@ -9,6 +9,7 @@ struct TestHost;
 
 #[derive(Clone, Copy)]
 struct Views<'a> {
+    inputs: &'a crate::registry::ScreenInputs,
     listing: plx_data::stores::browse::ListingView<'a>,
     directory: plx_data::stores::browse::DirectoryView<'a>,
     hubs: plx_data::stores::browse::HubsView<'a>,
@@ -22,7 +23,14 @@ impl Host for TestHost {
     type Init = FixtureArg;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for TestHost {
+    fn screen_inputs<'a>(cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        cx.views.inputs
+    }
+}
+
 impl LibraryLike for TestHost {
+    fn clock_facts<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { None }
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> {
         cx.views.listing
     }
@@ -69,18 +77,21 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
     let mut engine = FocusEngine::new();
     let cx = |engine: &FocusEngine<u32>| Cx::<TestHost> {
         views: Views {
+            inputs: crate::registry::caption_fixture(),
             listing: listing.view(),
             directory: directory.view(),
             hubs: hubs.view(),
         },
         tick: Tick::default(),
         measure: &FixtureMeasure,
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         focus: engine.read(owner),
         press: PressRead {
             scale: 0.85,
             is_long: true,
             held_ms: None,
             owner: None,
+            ..Default::default()
         },
         owner,
     };
@@ -106,15 +117,13 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
             (DeckPress::Play, true),
             (DeckPress::Details, true),
         ] {
-            let prior = plx_media::route::deck_press();
-            plx_media::route::restore_deck_press(mode);
-            struct Back(DeckPress);
-            impl Drop for Back {
-                fn drop(&mut self) {
-                    plx_media::route::restore_deck_press(self.0);
-                }
-            }
-            let _back = Back(prior);
+            let inputs = Box::leak(Box::new(crate::registry::ScreenInputs {
+                preferences: Some(plx_plex::plex::session::ProfilePrefs {
+                    deck_press: Some(mode), ..Default::default()
+                }), ..Default::default()
+            }));
+            let mut context = cx(&engine);
+            context.views.inputs = inputs;
             let mut out = Vec::new();
             let mut present = plx_machine::present::Present::new();
             let event = if held {
@@ -124,7 +133,7 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
             };
             let handled = page.step(
                 &event,
-                &cx(&engine),
+                &context,
                 &mut Effects::new(&mut out, MachineId::Instance(InstanceId(20)), &mut present),
             );
             assert_eq!(handled, Handled::Yes);
@@ -192,9 +201,10 @@ fn a_collection_shelf_heading_is_a_linked_focus_stop_that_opens_the_collection()
     let owner = InputOwner::Entry(entry);
     let mut engine = FocusEngine::new();
     let cx = |engine: &FocusEngine<u32>| Cx::<TestHost> {
-        views: Views { listing: listing.view(), directory: directory.view(), hubs: hubs.view() },
+        views: Views { inputs: crate::registry::caption_fixture(), listing: listing.view(), directory: directory.view(), hubs: hubs.view() },
         tick: Tick::default(),
         measure: &FixtureMeasure,
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         focus: engine.read(owner),
         press: PressRead::default(),
         owner,

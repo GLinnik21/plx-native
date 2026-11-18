@@ -49,12 +49,16 @@ impl LibraryScreen {
     /// shows changed, so the caller damages the frame (the reason line moves the action row).
     pub(super) fn watch_readout<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) -> bool {
         use super::super::plaintext_question::{asks, Near};
-        let machine = (self.readout == Readout::Failed)
-            .then(|| H::directory(cx).source().and_then(|(sid, _)| plx_plex::plex::client_for(*sid)))
-            .flatten()
-            .map(|client| client.machine_id());
-        let offer_moved = self.plaintext.refresh(machine, Near::Only);
-        let clock_moved = self.clock.refresh(machine);
+        let facts = H::clock_facts(cx);
+        let inputs = H::screen_inputs(cx);
+        let source = (self.readout == Readout::Failed)
+            .then(|| H::directory(cx).source().map(|(sid, _)| *sid)).flatten();
+        // Plaintext offers use the published server identity even without a clock publication.
+        let machine = source.and_then(|sid| inputs.servers.iter()
+            .find(|(_, slot)| *slot == sid).map(|(machine, _)| machine.as_str()));
+        let offer_moved = self.plaintext.refresh(&inputs.grants.offers, machine, Near::Only);
+        let clock_machine = source.and_then(|sid| facts.and_then(|facts| facts.machine(sid)));
+        let clock_moved = self.clock.refresh(facts, clock_machine);
         if self.plaintext_alert.is_open()
             && !(self.readout == Readout::Failed
                 && self.plaintext_alert.subject() == self.plaintext.verdict().map(|v| v.machine_id.as_str())

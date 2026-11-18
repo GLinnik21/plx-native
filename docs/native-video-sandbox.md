@@ -21,7 +21,7 @@ not cleared by success. The repair does not root a TV, install a service, downlo
 send Plex credentials to Homebrew Channel.
 
 Source evidence: v0.6.6 (`48866094e73493eb57a045723cdb6e195d9f4361`),
-[issue #74](https://github.com/GLinnik21/plx-native/issues/74#issuecomment-5634518876), and
+[issue #74](https://github.com/plxnative/plx-native/issues/74#issuecomment-5634518876), and
 [Homebrew Channel PR #202](https://github.com/webosbrew/webos-homebrew-channel/pull/202).
 The source records one reporter's k5lp 43UM7400PLB playback confirmation after a root-shell
 jailer repair. This port has host evidence only. It does not newly establish Repair execution,

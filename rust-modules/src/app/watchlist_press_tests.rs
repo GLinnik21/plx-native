@@ -125,10 +125,7 @@ impl WatchlistIo for Script {
     fn facts_gen(&self) -> u32 {
         self.facts.load(Ordering::SeqCst)
     }
-    fn guid_of(&self, server: ServerId, rk: &str) -> Option<String> {
-        self.record_reads.fetch_add(1, Ordering::SeqCst);
-        self.records.lock().unwrap().get(&(server, rk.to_owned())).cloned()
-    }
+
     fn today(&self) -> Option<String> {
         Some("2026-10-15".into())
     }
@@ -165,34 +162,33 @@ fn inline(_: &str, f: Box<dyn FnOnce() + Send + 'static>) -> bool {
 
 /// A spawn that refuses every job: the store's worker never starts, so its first read stays ON ITS
 /// WAY (the store retries on its frame counter and is refused again; it never blocks).
-fn refuse(_: &str, _: Box<dyn FnOnce() + Send + 'static>) -> bool {
-    false
-}
+
 
 /// Hold the Watchlist's reads: until [`release_reads`] the list is `Loading`, the answer a real
 /// plex.tv has not given yet (a scripted one answers inside the call).
 pub(super) fn hold_reads(rig: &mut Bridge) {
-    let store = std::mem::take(rig.watchlist_for_test());
-    *rig.watchlist_for_test() = store.with_spawn_for_test(refuse);
+    rig.store_runner.hold_watchlist_streams(true);
 }
 
 /// Let the held read run: the store reads the list again and the next frames land the rows.
 pub(super) fn release_reads(rig: &mut Bridge) {
-    let store = std::mem::take(rig.watchlist_for_test());
-    *rig.watchlist_for_test() = store.with_spawn_for_test(inline);
+    rig.store_runner.hold_watchlist_streams(false);
     rig.watchlist_for_test().run_with_input(plx_data::stores::watchlist::WatchlistCmd::Open, &Bridge::watchlist_input());
 }
 
 /// A rig on Home, the Watchlist store over `script` and the catalog store over [`Discover`].
-pub(super) fn rig_over(script: &Arc<Script>) -> (Dispatcher<AppHost>, Bridge) {
+pub(super) fn rig_over(script: &Arc<Script>) -> (Dispatcher<AppHost>, crate::app::runtime_owners::Harness) {
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     *rig.watchlist_for_test() = WatchlistStore::with_io(script.clone()).with_spawn_for_test(inline);
+    rig.store_runner.set_watchlist_write_io(script.clone());
     rig.seat_watchlist_account_for_test(true);
     rig.stores.catalog = CatalogStore::with_io(Arc::new(Discover));
     super::nav_root(&mut d, AppArg::Home);
     super::frame(&mut d, &mut rig, tick(0), vec![]);
-    (d, rig)
+    drop(rig);
+    (d, owner)
 }
 
 /// The catalog page's feed, then its read (if the feed emitted one) run on this thread, so the
@@ -207,6 +203,7 @@ pub(super) fn feed_catalog(rig: &mut Bridge, d: &mut Dispatcher<AppHost>) {
 pub(super) fn settle(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, from: u32) {
     for i in 0..6 {
         rig.watchlist_pump();
+        rig.store_runner.run_held_watchlist_writes();
         rig.watchlist_feed(d);
         feed_catalog(rig, d);
         super::frame(d, rig, tick(from + i), vec![]);
@@ -238,7 +235,8 @@ fn catalog_page(d: &Dispatcher<AppHost>) -> &CatalogScreen {
 fn the_state_by_press_table_holds_and_opens_the_right_thing_in_all_six_states() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&[1, 2, 3]);
-    let (mut d, mut rig) = rig_over(&script);
+    let (mut d, mut owner) = rig_over(&script);
+    let mut rig = owner.bridge();
     super::nav_tab(&mut d, &mut rig, HomeTab::Watchlist, None, None);
     super::frame(&mut d, &mut rig, tick(1), vec![]);
     settle(&mut d, &mut rig, 2);
@@ -288,7 +286,8 @@ fn the_state_by_press_table_holds_and_opens_the_right_thing_in_all_six_states() 
 fn the_catalog_page_loads_its_record_and_its_pill_flips_the_membership() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&[1]);
-    let (mut d, mut rig) = rig_over(&script);
+    let (mut d, mut owner) = rig_over(&script);
+    let mut rig = owner.bridge();
     let hex = [9u8; 12];
     super::open_catalog(&mut d, hex, None);
     for i in 0..40 {
@@ -321,7 +320,8 @@ fn a_press_flips_then_reverts_when_the_write_is_refused() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&[1]);
     script.fail_writes.store(true, Ordering::SeqCst);
-    let (mut d, mut rig) = rig_over(&script);
+    let (mut d, mut owner) = rig_over(&script);
+    let mut rig = owner.bridge();
     read_list(&mut d, &mut rig);
     assert!(!member(&mut rig, 5), "not on the list to begin with");
     rig.watchlist_add([5; 12]);
@@ -339,7 +339,8 @@ fn an_add_on_an_unread_list_feeds_unknown_then_on() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&[1]);
     script.fail_reads.store(true, Ordering::SeqCst);
-    let (mut d, mut rig) = rig_over(&script);
+    let (mut d, mut owner) = rig_over(&script);
+    let mut rig = owner.bridge();
     read_list(&mut d, &mut rig);
     assert_eq!(super::watchlist::membership_in(&rig.stores.watchlist.view(), &[5; 12]), Membership::Unknown);
     rig.watchlist_add([5; 12]);
@@ -356,7 +357,8 @@ fn with_plex_tv_unreachable_the_face_is_outline_the_menu_row_is_omitted_and_a_pr
     let script = Script::new(&[1]);
     script.fail_reads.store(true, Ordering::SeqCst);
     script.fail_writes.store(true, Ordering::SeqCst);
-    let (mut d, mut rig) = rig_over(&script);
+    let (mut d, mut owner) = rig_over(&script);
+    let mut rig = owner.bridge();
     read_list(&mut d, &mut rig);
     let card = plx_data::pms::PmsMovie { kind: 0, guid: Some([4; 12]), ..Default::default() };
     assert!(rig.watchlist_card_face(&card).is_none(), "the menu row is omitted (no face)");
@@ -378,7 +380,8 @@ fn with_plex_tv_unreachable_the_face_is_outline_the_menu_row_is_omitted_and_a_pr
 fn the_menu_face_carries_the_title_identity_and_the_membership_read_at_open() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&[1, 2]);
-    let (mut d, mut rig) = rig_over(&script);
+    let (mut d, mut owner) = rig_over(&script);
+    let mut rig = owner.bridge();
     let movie = plx_data::pms::PmsMovie { kind: 0, guid: Some([1; 12]), ..Default::default() };
     let episode = plx_data::pms::PmsMovie { kind: 3, guid: Some([8; 12]), show_guid: Some([2; 12]), ..Default::default() };
     let no_guid = plx_data::pms::PmsMovie { kind: 0, ..Default::default() };
@@ -401,26 +404,27 @@ fn the_menu_face_carries_the_title_identity_and_the_membership_read_at_open() {
 fn an_add_pulses_the_watchlist_tab_and_a_removal_does_not() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&[1]);
-    let (mut d, mut rig) = rig_over(&script);
+    let (mut d, mut owner) = rig_over(&script);
+    let mut rig = owner.bridge();
     super::nav_tab(&mut d, &mut rig, HomeTab::Watchlist, None, None);
     super::frame(&mut d, &mut rig, tick(1), vec![]);
     settle(&mut d, &mut rig, 2);
     let key = plx_ui::widgets::TAB_KEY_WATCHLIST;
-    let at = rig.chrome.keys.iter().position(|k| *k == key).expect("the mark is on the strip");
+    let at = rig.retained.chrome.keys.iter().position(|k| *k == key).expect("the mark is on the strip");
     rig.watchlist_press([1; 12], Intent::Remove);
-    assert_eq!(rig.chrome.take_pulse(), None, "a removal does not pulse");
+    assert_eq!(rig.retained.chrome.take_pulse(), None, "a removal does not pulse");
     rig.catalog_effect(plx_screens::catalog::CatalogOut::Remove { hex: [1; 12] });
-    assert_eq!(rig.chrome.take_pulse(), None, "nor does the catalog pill's removal");
+    assert_eq!(rig.retained.chrome.take_pulse(), None, "nor does the catalog pill's removal");
     rig.watchlist_add([7; 12]);
-    assert_eq!(rig.chrome.take_pulse(), Some(at), "an add pulses the Watchlist mark");
-    assert_eq!(rig.chrome.take_pulse(), None, "and the request is spent once handed on");
+    assert_eq!(rig.retained.chrome.take_pulse(), Some(at), "an add pulses the Watchlist mark");
+    assert_eq!(rig.retained.chrome.take_pulse(), None, "and the request is spent once handed on");
     // Handed to the strip's renderer it runs, and ends at rest.
-    rig.strip.pulse(at);
-    assert_eq!(rig.strip.pulse_read().map(|(i, _)| i), Some(at));
+    rig.retained.strip.pulse(at);
+    assert_eq!(rig.retained.strip.pulse_read().map(|(i, _)| i), Some(at));
     // A pulse asked for while no bar is on screen is dropped, not played late.
     rig.watchlist_add([7; 12]);
-    rig.chrome.drop_pulse();
-    assert_eq!(rig.chrome.take_pulse(), None);
+    rig.retained.chrome.drop_pulse();
+    assert_eq!(rig.retained.chrome.take_pulse(), None);
 }
 
 /// The catalog page's status line follows the title's TILE, not the release date alone: an
@@ -437,7 +441,8 @@ fn the_catalog_status_follows_the_tile_state_and_moves_when_it_does() {
     let _serial = plx_base::testlock::serial();
     // No server on the roster: the title is Unknown, which says nothing (never "on no server").
     let silent = Script::new(&[1]);
-    let (mut d, mut rig) = rig_over(&silent);
+    let (mut d, mut owner) = rig_over(&silent);
+    let mut rig = owner.bridge();
     super::open_catalog(&mut d, [1; 12], None);
     for i in 0..40 {
         super::frame(&mut d, &mut rig, tick(10 + i), vec![]);
@@ -450,7 +455,8 @@ fn the_catalog_status_follows_the_tile_state_and_moves_when_it_does() {
     let absent = Script::new(&[1]);
     *absent.roster.lock().unwrap() = vec![ServerId::from_raw(1)];
     absent.up.store(true, Ordering::SeqCst);
-    let (mut d, mut rig) = rig_over(&absent);
+    let (mut d, mut owner) = rig_over(&absent);
+    let mut rig = owner.bridge();
     super::open_catalog(&mut d, [1; 12], None);
     for i in 0..40 {
         super::frame(&mut d, &mut rig, tick(10 + i), vec![]);
@@ -463,7 +469,8 @@ fn the_catalog_status_follows_the_tile_state_and_moves_when_it_does() {
     *held.roster.lock().unwrap() = vec![ServerId::from_raw(1)];
     held.up.store(true, Ordering::SeqCst);
     held.holds.store(true, Ordering::SeqCst);
-    let (mut d, mut rig) = rig_over(&held);
+    let (mut d, mut owner) = rig_over(&held);
+    let mut rig = owner.bridge();
     super::open_catalog(&mut d, [1; 12], None);
     for i in 0..40 {
         super::frame(&mut d, &mut rig, tick(10 + i), vec![]);
@@ -482,6 +489,64 @@ fn the_catalog_status_follows_the_tile_state_and_moves_when_it_does() {
 /// A card row that carries no catalog id is resolved through its own server record
 /// (`client.metadata(rk or show_rk).guid`): the menu opened first omits the row and asks, the next
 /// one offers it, and its press ends in the write for the RESOLVED id.
+    #[test]
+    fn watchlist_write_live_and_held_finish_in_the_emitting_drain_and_cancel_queued() {
+        use plx_data::stores::watchlist::{WatchlistCmd, WatchlistStore};
+        use plx_data::stores::StoreJob;
+        use crate::app::adapters::stores::{StoreRunner, launch_watchlist_write};
+        use plx_data::watchlist::{WatchlistInput, ledger::Intent};
+        let _serial = plx_base::testlock::serial();
+        fn inline(_: &str, f: Box<dyn FnOnce() + Send + 'static>) -> bool { f(); true }
+        for live in [false, true] {
+            let io = Script::new(&[1]);
+            let mut store = WatchlistStore::with_io(io.clone()).with_spawn_for_test(inline);
+            let input = WatchlistInput::for_test(1);
+            store.run_with_input(WatchlistCmd::Open, &input);
+            store.pump();
+            store.pump();
+            store.run(WatchlistCmd::Press { hex: [1; 12], intent: Intent::Remove });
+            store.pump();
+            let job = store.take_jobs().pop().expect("write emitted");
+            let StoreJob::WatchlistWrite(ref request, _) = job else { panic!("write job") };
+            let captured = input.auth().unwrap();
+            assert_eq!(request.req.auth.generation, captured.generation);
+            assert_eq!(request.req.auth.client_id, captured.client_id);
+            assert_eq!(request.req.auth.credential, captured.credential);
+            assert_eq!(request.req.auth.user.id, captured.user.id);
+            assert_eq!(request.req.auth.user.uuid, captured.user.uuid);
+            assert_eq!(request.req.tag.profile_gen, captured.generation);
+            assert_eq!(request.req.tag.req, request.addr.req.0);
+            let mut held = StoreRunner::held_all();
+            held.set_watchlist_write_io(io.clone());
+            if live {
+                let StoreJob::WatchlistWrite(job, port) = job else { panic!("write job") };
+                assert_eq!(job.req.tag.profile_gen, 1);
+                assert_eq!(job.req.auth.generation, 1);
+                launch_watchlist_write(job, port, io.clone());
+                plx_base::task::drain_workers_for_test();
+            } else {
+                held.start(job);
+                assert!(io.writes().is_empty());
+                assert_eq!(held.run_held_watchlist_writes(), 1);
+            }
+            assert_eq!(io.writes(), vec![([1; 12], Intent::Remove)]);
+            assert!(store.land_write_results(plx_machine::landgate::fixture_gate(), &WatchlistInput::profile_for_test(1)));
+            assert!(!store.land_write_results(plx_machine::landgate::fixture_gate(), &WatchlistInput::profile_for_test(1)));
+        }
+        let io = Script::new(&[1]);
+        let mut store = WatchlistStore::with_io(io.clone()).with_spawn_for_test(inline);
+        store.run_with_input(WatchlistCmd::Open, &WatchlistInput::for_test(1));
+        store.pump(); store.pump();
+        store.run(WatchlistCmd::Press { hex: [1; 12], intent: Intent::Remove });
+        store.pump();
+        let mut held = StoreRunner::held_all();
+        held.set_watchlist_write_io(io.clone());
+        held.start(store.take_jobs().pop().unwrap());
+        store.run(WatchlistCmd::Reset);
+        assert_eq!(held.run_held_watchlist_writes(), 1);
+        assert!(io.writes().is_empty(), "cancelled queued write must not touch account IO");
+    }
+
 #[test]
 fn a_card_row_with_no_guid_resolves_through_its_record_and_the_press_writes_it() {
     let _serial = plx_base::testlock::serial();
@@ -492,13 +557,24 @@ fn a_card_row_with_no_guid_resolves_through_its_record_and_the_press_writes_it()
     script.records.lock().unwrap().insert((sid, "11".into()), format!("plex://movie/{}", encode_hex(&hex)));
     script.records.lock().unwrap().insert((sid, "5".into()), format!("plex://show/{}", encode_hex(&show_hex)));
     script.records.lock().unwrap().insert((sid, "12".into()), "local://12".into());
-    let (mut d, mut rig) = rig_over(&script);
+    let (mut d, mut owner) = rig_over(&script);
+    let mut rig = owner.bridge();
     read_list(&mut d, &mut rig);
     let movie = plx_data::pms::PmsMovie { sid, rk: "11".into(), kind: 0, ..Default::default() };
     let episode = plx_data::pms::PmsMovie { sid, rk: "99".into(), show_rk: "5".into(), kind: 3, ..Default::default() };
     let local = plx_data::pms::PmsMovie { sid, rk: "12".into(), kind: 0, ..Default::default() };
     for item in [&movie, &episode, &local] {
         assert!(rig.watchlist_card_face(item).is_none(), "nothing is known until the record is read");
+    }
+    rig.watchlist_pump();
+    use plx_machine::job::Port;
+    for job in rig.store_runner.take_held_watchlist_resolves() {
+        let plx_data::stores::StoreJob::WatchlistResolve(job, port) = job else { unreachable!() };
+        assert!(port.start());
+        script.record_reads.fetch_add(1, Ordering::SeqCst);
+        let guid = script.records.lock().unwrap().get(&(job.req.sid, job.req.rk.clone())).cloned();
+        let answer = guid.map(|g| plx_plex::plex::resolve_catalog_hex(None, || Some(g)));
+        port.done(job.addr, plx_data::stores::watchlist_job::ResolveEnd::Answer(answer));
     }
     settle(&mut d, &mut rig, 10);
     assert_eq!(script.record_reads.load(Ordering::SeqCst), 3, "one record read per title, the episode's SHOW record");
@@ -528,7 +604,8 @@ fn a_card_row_with_no_guid_resolves_through_its_record_and_the_press_writes_it()
 fn a_remove_from_another_page_leaves_the_watchlist_page_no_removal_to_replay() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&[1, 2]);
-    let (mut d, mut rig) = rig_over(&script);
+    let (mut d, mut owner) = rig_over(&script);
+    let mut rig = owner.bridge();
     super::nav_tab(&mut d, &mut rig, HomeTab::Watchlist, None, None);
     super::frame(&mut d, &mut rig, tick(1), vec![]);
     settle(&mut d, &mut rig, 2);
@@ -554,12 +631,13 @@ fn the_item_menu_watchlist_arms_queue_the_write_pulse_and_route() {
     use plx_screens::item_menu::Action;
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&[1]);
-    let (mut d, mut rig) = rig_over(&script);
+    let (mut d, mut owner) = rig_over(&script);
+    let mut rig = owner.bridge();
     super::nav_tab(&mut d, &mut rig, HomeTab::Watchlist, None, None);
     super::frame(&mut d, &mut rig, tick(1), vec![]);
     settle(&mut d, &mut rig, 2);
     let key = plx_ui::widgets::TAB_KEY_WATCHLIST;
-    let at = rig.chrome.keys.iter().position(|k| *k == key).expect("the mark is on the strip");
+    let at = rig.retained.chrome.keys.iter().position(|k| *k == key).expect("the mark is on the strip");
     let mut ps = plx_media::route::PlaybackSession::default();
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let mut pa = plx_media::player::adapter::PlayerAdapter::new(mt);
@@ -574,12 +652,12 @@ fn the_item_menu_watchlist_arms_queue_the_write_pulse_and_route() {
     };
     apply(&mut d, &mut rig, Action::WatchlistAdd { hex: [7; 12] });
     assert!(member(&mut rig, 7), "the Add row queued the write (the face flipped at the press)");
-    assert_eq!(rig.chrome.take_pulse(), Some(at), "and the Watchlist mark pulsed");
+    assert_eq!(rig.retained.chrome.take_pulse(), Some(at), "and the Watchlist mark pulsed");
     settle(&mut d, &mut rig, 10);
     assert!(script.writes.lock().unwrap().contains(&([7u8; 12], Intent::Add)));
     apply(&mut d, &mut rig, Action::WatchlistRemove(guid(7)));
     assert!(!member(&mut rig, 7), "the Remove row flipped the tile off");
-    assert_eq!(rig.chrome.take_pulse(), None, "a removal does not pulse");
+    assert_eq!(rig.retained.chrome.take_pulse(), None, "a removal does not pulse");
     settle(&mut d, &mut rig, 20);
     assert!(script.writes.lock().unwrap().contains(&([7u8; 12], Intent::Remove)));
     apply(&mut d, &mut rig, Action::GoToCatalog("plex://movie/not-a-hex".into()));
@@ -619,7 +697,7 @@ fn a_matched_titles_caption_reads_its_copys_facts_under_every_details_pick() {
     };
     let mut w = World::watchlist_over("watchlist-matched-facts", script);
     let _cell = Cell::default(); // after the world, which holds the process-global lock the setting needs
-    assert_eq!(w.bridge.watchlist_for_test().view().tile_state_of(&[1; 12]), Some(TileState::Available),
+    assert_eq!(w.bridge.bridge().watchlist_for_test().view().tile_state_of(&[1; 12]), Some(TileState::Available),
         "premise: a reachable server holds the title");
     // the focused poster's block as the frame DREW it (not the production label): Down brings focus onto
     // the one title, then each pick words its details line alone (the Title switch is off)

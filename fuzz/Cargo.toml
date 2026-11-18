@@ -43,7 +43,7 @@ plx_data = { path = "../rust-modules/data" }
 plx_net = { path = "../rust-modules/net" }
 # The registry-index targets sign with TEST ONLY keys (`src/signing.rs`) to reach what follows the signature
 # check. The same version and features as `plx_data`, so the lock gains nothing.
-ed25519-compact = { version = "=2.6.0", default-features = false, features = ["opt_size"] }
+ed25519-compact = { version = "=2.6.1", default-features = false, features = ["opt_size"] }
 # Named only to switch the layers below `plx_appkit` to their host stand-ins (`plx_media/hostsim`
 # forwards to every layer that has the feature); no code here calls it.
 plx_media = { path = "../rust-modules/media", features = ["hostsim"] }

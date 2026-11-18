@@ -77,6 +77,6 @@ PlxNative build older than this feature reads that whole list as read-only: it d
 remove it, so remove the dev install on a newer build before you go back to an older one.
 
 Submit the source folder, attribution README and maintainer contact to
-https://github.com/GLinnik21/plxnative-huds . CI builds once and binds linting, all-language/native
+https://github.com/plxnative/plxnative-huds . CI builds once and binds linting, all-language/native
 previews and publication to the same archive hash. The initial format has no compatibility reader
 for standalone JSON, scripts, fonts, bitmap artwork or plugin-localized labels.

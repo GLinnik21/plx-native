@@ -17,7 +17,7 @@ mod season;
 mod section;
 mod trailer;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 #[cfg(test)]
 pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
 
@@ -36,6 +36,7 @@ use plx_data::stores::viewstate::ViewStateCmd;
 use plx_data::stores::{StoreCmd, StoreId};
 use plx_ui::hstack::{Flow, Item};
 use plx_ui::cards as ui_cards;
+use plx_ui::a11y::{A11y, A11yPath, Role as A11yRole, Seg};
 use plx_ui::cards::{SectionFrame, Shelf};
 use plx_ui::frame::Budget;
 use plx_ui::hero_logo::{HeroLogo, LogoRung};
@@ -172,6 +173,8 @@ const EP_RETRY_MS: u32 = 1000;
 
 
 pub struct DetailScreen {
+    /// Derived frame input, shared by shelf captions and live/target section geometry.
+    caption_policy: plx_ui::caption_policy::CaptionPolicy,
     entry: EntryId,
     sid: ServerId,
     rk: String,
@@ -525,11 +528,10 @@ impl DetailScreen {
 
     /// The membership the bookmark disc wears: On draws the filled face, Off and Unknown the outline
     /// (the PUT is idempotent, so an unknown membership offers Add). A change flips the disc.
-    pub fn set_watchlist(&mut self, membership: plx_data::catalog::Membership) {
-        // When the disc snaps and when it animates is its own rule (`watchlist_disc::Disc::set`).
-        if self.watchlist.set(membership) {
-            plx_machine::idle::invalidate();
-        }
+    pub fn set_watchlist(&mut self, membership: plx_data::catalog::Membership) -> bool {
+        // The runner applies this changed-input effect to its owned Present. When
+        // the disc snaps or animates is still the disc's own motion rule.
+        self.watchlist.set(membership)
     }
 
     /// The membership the disc currently wears.
@@ -544,6 +546,7 @@ impl DetailScreen {
             ground.jump(AmbientWash::keyed(m.blur, [AmbientWash::GROUND_W; 4]));
         }
         Self {
+            caption_policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT),
             entry,
             sid,
             rk,
@@ -924,7 +927,7 @@ impl DetailScreen {
                 d.cur_season,
                 Some(i),
                 self.tab_scroll.pos,
-                self.season_pop.scale(0),
+                self.season_pop.scale(0, f.press),
             ),
             Some(Located::Episode(i, row)) => episodes::draw_focused(
                 f.painter,
@@ -966,7 +969,7 @@ impl DetailScreen {
 
     /// Shelf `which`'s cards over the published item `d` and the page's key projections.
     fn cards<'a>(&'a self, which: cards::Which, d: &'a Detail) -> cards::Cards<'a> {
-        Self::cards_of(&self.key_by_local, &self.local_by_key, which, d)
+        Self::cards_of(&self.key_by_local, &self.local_by_key, which, d, self.caption_policy)
     }
 
     /// [`cards`](Self::cards) without borrowing the whole screen, for a call that also borrows a
@@ -976,8 +979,9 @@ impl DetailScreen {
         local_by_key: &'a std::collections::HashMap<u32, u32>,
         which: cards::Which,
         d: &'a Detail,
+        policy: plx_ui::caption_policy::CaptionPolicy,
     ) -> cards::Cards<'a> {
-        cards::Cards::new(which, d, key_by_local, local_by_key)
+        cards::Cards::new(which, d, policy, key_by_local, local_by_key)
     }
 
     fn detail<'a>(&self, meta: plx_data::metadata::MetadataView<'a>) -> Option<&'a Detail> {
@@ -1715,7 +1719,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
                 let base =
                     hero::hero_btn_rect_at(set, i, self.hero_chain(measure, meta).btn_y - vertical, widths);
                 (
-                    base.scaled(self.ctl_pop.scale(i)),
+                    base.scaled(self.ctl_pop.scale(i, cx.press)),
                     base.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE),
                     Some(i as u32),
                 )
@@ -1727,7 +1731,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
                     self.tab_scroll.pos,
                 )?;
                 (
-                    base.scaled(self.season_pop.scale(0)),
+                    base.scaled(self.season_pop.scale(0, cx.press)),
                     base.scaled(plx_ui::widgets::CTRL_FOCUS_SCALE),
                     Some(i as u32),
                 )
@@ -1976,6 +1980,126 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Focusable<H> f
                 .unwrap_or(hero::ELEM_PLAY),
         }
     }
+
+    /// **The ids** (`detail.<path>`): the hero's controls `hero.<word>` ([`hero::HeroCtl::a11y_name`]),
+    /// a season tab `season.<i>`, an episode's still `episodes.still.<i>` and its text block
+    /// `episodes.text.<i>`, a shelf's cards `related|collection|extras|cast.card.<i>`, the collection's
+    /// linked heading `collection.heading` and the About footer's two stops `about.card` and
+    /// `about.languages`. An index is a position in the collection its segment names, so a card or an
+    /// episode off screen has its id as well. The `subject` of a season, an episode or a card is its
+    /// ratingKey.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let meta = H::metadata(cx);
+        let located = self.locate(*key, meta).filter(|l| self.valid(*l, meta))?;
+        let d = self.detail(meta);
+        let named = |section: &'static str| A11yPath::new().name(section);
+        // the text is the page's own words as the data layer published them: cloned, since the
+        // projection outlives the borrow of the views (a read-side state file only)
+        let with_subject = |a: A11y<'static>, rk: &str| if rk.is_empty() { a } else { a.with_subject(rk.to_owned()) };
+        Some(match located {
+            Located::Hero(ctl) => A11y::new(named("hero").name(ctl.a11y_name()), A11yRole::Button),
+            Located::Season(i) => {
+                let season = d?.seasons.get(i)?;
+                let a = A11y::new(named("season").index(i), A11yRole::Tab).with_label(season.title.clone());
+                with_subject(a, &season.rk)
+            }
+            Located::Episode(i, row) => {
+                let episode = d?.episodes.get(i)?;
+                let part = match row {
+                    episodes::Row::Still => "still",
+                    episodes::Row::Text => "text",
+                };
+                let a = A11y::new(named("episodes").name(part).index(i), A11yRole::Card).with_label(episode.title.clone());
+                with_subject(a, &episode.rk)
+            }
+            Located::Related(i) => self.cards(cards::Which::Related, d?).a11y_card::<H>(i),
+            Located::Extras(i) => self.cards(cards::Which::Extras, d?).a11y_card::<H>(i),
+            Located::Collection(i) => self.cards(cards::Which::Collection, d?).a11y_card::<H>(i),
+            Located::Cast(i) => self.cards(cards::Which::Cast, d?).a11y_card::<H>(i),
+            Located::CollectionHeading => collection::heading(d?.collection.as_ref()?)
+                .a11y(named("collection").name("heading"))
+                .into_owned(),
+            Located::About(0) => A11y::new(named("about").name("card"), A11yRole::Button),
+            Located::About(_) => A11y::new(named("about").name("languages"), A11yRole::Button),
+        })
+    }
+
+    /// Every element of group `g`: the hero's controls as the row shows them (what `len` counts), a
+    /// shelf's cards, the seasons, the heading, the About stops. The episodes are a grid of two rows
+    /// of `len` columns (every still, then every text block), and only an episode that has landed
+    /// holds a key: the page's `GroupSpec::len` counts the slots of one that has not, which the
+    /// listing cannot name.
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        let meta = H::metadata(cx);
+        if g == hero::HERO_GROUP {
+            let (ctls, n) = hero::visible_ctls(self.hero_set(meta), self.full_trailer());
+            out.extend(ctls[..n].iter().map(|ctl| ctl.elem()));
+            return;
+        }
+        let Some(d) = self.detail(meta) else { return };
+        let shelf = [
+            (extras::EXTRAS_GROUP, cards::Which::Extras),
+            (related::RELATED_GROUP, cards::Which::Related),
+            (collection::COLLECTION_GROUP, cards::Which::Collection),
+            (cast::CAST_GROUP, cards::Which::Cast),
+        ]
+        .into_iter()
+        .find_map(|(group, which)| (group == g).then_some(which));
+        if let Some(which) = shelf {
+            let cards = self.cards(which, d);
+            out.extend((0..cards.count()).map(|j| ui_cards::CardSource::<H>::elem(&cards, j)));
+        } else if g == season::SEASON_GROUP {
+            out.extend((0..d.seasons.len()).filter_map(|i| self.key_of(Located::Season(i))));
+        } else if g == episodes::EPISODES_GROUP {
+            for row in [episodes::Row::Still, episodes::Row::Text] {
+                out.extend(d.episodes.iter_loaded().filter_map(|(i, _)| self.key_of(Located::Episode(i, row))));
+            }
+        } else if g == collection::HEADING_GROUP {
+            if d.collection.is_some() {
+                out.extend(self.key_of(Located::CollectionHeading));
+            }
+        } else if g == about::ABOUT_GROUP {
+            out.extend(self.key_of(Located::About(0)));
+            if self.tracks_available(meta) {
+                out.extend(self.key_of(Located::About(1)));
+            }
+        }
+    }
+
+    /// The inverse of [`Self::a11y`]: the path names its candidate (by position in a collection, never
+    /// by a scan), and the projection of that candidate must answer the same path, so the two cannot
+    /// disagree about what exists.
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        let mut segs = path.segs();
+        let located = match (segs.next(), segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("hero")), Some(Seg::Name(word)), None, _) => Located::Hero(hero::HeroCtl::of_a11y_name(word)?),
+            (Some(Seg::Name("season")), Some(Seg::Index(i)), None, _) => Located::Season(i),
+            (Some(Seg::Name("episodes")), Some(Seg::Name("still")), Some(Seg::Index(i)), None) => {
+                Located::Episode(i, episodes::Row::Still)
+            }
+            (Some(Seg::Name("episodes")), Some(Seg::Name("text")), Some(Seg::Index(i)), None) => {
+                Located::Episode(i, episodes::Row::Text)
+            }
+            (Some(Seg::Name(shelf)), Some(Seg::Name("card")), Some(Seg::Index(n)), None) => {
+                // `n` is the card's place in the shelf's listing; the window index is what locates it
+                let (which, at): (cards::Which, fn(usize) -> Located) = match shelf {
+                    "related" => (cards::Which::Related, Located::Related),
+                    "extras" => (cards::Which::Extras, Located::Extras),
+                    "collection" => (cards::Which::Collection, Located::Collection),
+                    "cast" => (cards::Which::Cast, Located::Cast),
+                    _ => return None,
+                };
+                let d = self.detail(H::metadata(cx))?;
+                at(self.cards(which, d).window_index::<H>(n)?)
+            }
+            (Some(Seg::Name("collection")), Some(Seg::Name("heading")), None, _) => Located::CollectionHeading,
+            (Some(Seg::Name("about")), Some(Seg::Name("card")), None, _) => Located::About(0),
+            (Some(Seg::Name("about")), Some(Seg::Name("languages")), None, _) => Located::About(1),
+            _ => return None,
+        };
+        let key = self.key_of(located)?;
+        self.a11y(&key, cx).filter(|a| a.path == *path).map(|_| key)
+    }
 }
 
 impl DetailScreen {
@@ -2033,14 +2157,15 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
         // Related and the collection's members are POSTER shelves: they follow the Under posters
         // setting, so the band each reserves and the caption `cards::label` builds cannot disagree.
         // Extras (landscape stills) and Cast (headshots) are not posters and keep the legacy block.
-        let policy = Some(crate::registry::captions::policy());
+        self.caption_policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
+        let policy = Some(self.caption_policy);
         self.related.set_caption_policy(policy);
         self.collection.set_caption_policy(policy);
         // The cards component's one entry: every event reaches every shelf it owns (its pop,
         // scroll and let-go ride the Tick, its placement the FocusMoved). What a card DOES stays
         // in `activate` below.
         if let Some(d) = self.detail(meta) {
-            let related = Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Related, d);
+            let related = Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Related, d, self.caption_policy);
             let wanted = matches!(self.related.on(ev, cx, &related, fx), Some(ui_cards::CardEvent::Want(_)));
             if matches!(ev, ScreenEvent::Tick(_)) && !d.related_tail.hubs.is_empty() {
                 // The row is the head and a window of the tail. The shelf's leading edge is the
@@ -2063,9 +2188,9 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                     )));
                 }
             }
-            self.collection.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Collection, d), fx);
-            self.extras.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Extras, d), fx);
-            self.cast.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Cast, d), fx);
+            self.collection.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Collection, d, self.caption_policy), fx);
+            self.extras.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Extras, d, self.caption_policy), fx);
+            self.cast.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Cast, d, self.caption_policy), fx);
         }
         match ev {
             ScreenEvent::Mount => {
@@ -2150,7 +2275,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
                 self.related.reset_page_requests();
-                if matches!(by, By::Dir | By::Pointer) {
+                if matches!(by, By::Dir | By::Pointer | By::Script) {
                     self.return_pending = false;
                     self.restore_intent = None;
                 }
@@ -2165,7 +2290,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                 }
                 if let Some(located) = self.locate(to.elem, meta) {
                     if let Located::Season(i) = located {
-                        if matches!(by, By::Dir | By::Pointer) {
+                        if matches!(by, By::Dir | By::Pointer | By::Script) {
                             self.pending_season = Some(i);
                             self.season_settle = 0.0;
                         }
@@ -2228,7 +2353,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                         if let Some(act) = trailer::trailer_key(key, sym, wcode) {
                             let ps = H::session(cx);
                             self.trailer_act(act, edge, input.at.ms, plx_media::player::playpos_ns(ps), plx_media::player::duration_ns(ps),
-                                plx_media::route::is_preview(ps) && H::transport_paused(cx), fx);
+                                plx_media::route::is_preview(ps) && H::transport_paused(cx), H::screen_inputs(cx).preference::<plx_plex::plex::session::SkipIntervalPref>(), fx);
                             return Handled::Yes;
                         }
                     }
@@ -2577,7 +2702,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Screen<H> for 
                             _ => None,
                         },
                         self.tab_scroll.pos,
-                        self.season_pop.scale(0),
+                        self.season_pop.scale(0, f.press),
                     ),
                     2 => {
                         episodes::draw(
@@ -2984,13 +3109,15 @@ impl DetailScreen {
             parts.push(&d.rating);
         }
         if !d.edition.is_empty() { parts.insert(0, &d.edition); }
-        let resolution = plx_ui::fmt::resolution(&d.video_resolution, d.width, d.height);
+        let played = plx_media::route::detail_played_video(d);
+        let resolution = played.as_ref().and_then(|f| plx_ui::fmt::resolution(f.resolution, f.width, f.height));
+        let range = played.as_ref().and_then(|f| plx_ui::fmt::dynamic_range(f.range()));
         let access = [
             (!d.subs.is_empty(), plx_platform::i18n::msg::widgets_badge_cc()),
             (d.subs.iter().any(|s| s.sdh), plx_platform::i18n::msg::widgets_badge_sdh()),
             (d.audio.iter().any(|s| s.ad), plx_platform::i18n::msg::widgets_badge_ad()),
         ].into_iter().filter_map(|(present, label)| present.then_some(label));
-        let chips: Vec<&str> = plx_ui::fmt::dynamic_range(d.hdr, d.dovi.present).into_iter().chain(access).collect();
+        let chips: Vec<&str> = range.into_iter().chain(access).collect();
         let r = Rect::new(plx_ui::consts::MARGIN_X, y, plx_ui::detail_layout::HERO_TEXT_W, plx_ui::widgets::BADGE_H);
         plx_ui::widgets::hero_identity(p, r, &parts, resolution.as_deref(), &chips, measure);
     }
@@ -3073,7 +3200,7 @@ impl DetailScreen {
         for (i, ctl) in controls[..n].iter().copied().enumerate() {
             let rect = hero::hero_btn_rect_at(set, i, y, widths);
             let fill = self.ctl_pop.focus(i);
-            let scale = self.ctl_pop.scale(i);
+            let scale = self.ctl_pop.scale(i, cx.press);
             match ctl {
                 hero::HeroCtl::Play => Button::new(
                     hero::hero_pill_label(set.restart).as_ptr(),
@@ -3551,7 +3678,7 @@ impl DetailScreen {
             else if sec == SectionId::Cast.raw() { Some(cards::Which::Cast) }
             else { None };
         if let Some(which) = which {
-            let len = Self::cards_of(&self.key_by_local, &self.local_by_key, which, d).count();
+            let len = Self::cards_of(&self.key_by_local, &self.local_by_key, which, d, self.caption_policy).count();
             let shelf = match which {
                 cards::Which::Related => &mut self.related,
                 cards::Which::Collection => &mut self.collection,
@@ -3945,10 +4072,14 @@ impl DetailScreen {
         if moving || meta.season_loading() {
             fx.note(PresentEvent::Motion);
         }
-        self.preview_tick(t.ms, dt, focused, plx_media::player::duration_ns(H::session(cx)),
-            plx_media::route::is_preview(H::session(cx)) && H::transport_paused(cx), fx, meta);
+        if H::native_preview_available(cx) {
+            self.preview_tick(t.ms, dt, focused, plx_media::player::duration_ns(H::session(cx)),
+                plx_media::route::is_preview(H::session(cx)) && H::transport_paused(cx), fx, meta);
+        }
         let hint = self.hint_input(cx, focused);
-        self.hold_hint.step(hint, t.ms, dt, &mut |ev| fx.note(ev));
+        if let Some(event) = self.hold_hint.step(hint, t.ms, dt, &mut |ev| fx.note(ev), cx.hold_hint) {
+            fx.push(Fx::HoldHint(event));
+        }
     }
 
     /// The two screen-specific answers the hold hint needs (`ui::hold_hint`, "Adopting it"): the
@@ -3970,7 +4101,7 @@ impl DetailScreen {
         };
         match focused {
             Some(Located::Related(_) | Located::Collection(_)) => {
-                if !self.hold_hint.wants_input(ok_held) {
+                if !self.hold_hint.wants_input(ok_held, cx.hold_hint) {
                     return none;
                 }
                 let has_menu = self
@@ -3988,7 +4119,7 @@ impl DetailScreen {
             // nothing), and `focused_episode` is the gate, the menu's own: it answers `None` while
             // a switched season reloads and for an episode with no `rk`.
             Some(Located::Episode(_, episodes::Row::Still)) => {
-                if !self.hold_hint.wants_input(ok_held) {
+                if !self.hold_hint.wants_input(ok_held, cx.hold_hint) {
                     return none;
                 }
                 let has_menu = self
@@ -4011,7 +4142,7 @@ impl DetailScreen {
             // (the hint stands at the bottom of the screen); the capsule glide is quick enough not
             // to be waited for. Pinned animation clocks (documentation figures) never settle.
             Some(Located::Season(_)) => {
-                if !self.hold_hint.wants_input_on(Surface::SeasonPill, ok_held) {
+                if !self.hold_hint.wants_input_on(Surface::SeasonPill, ok_held, cx.hold_hint) {
                     return none;
                 }
                 let menu = self.focused_season(Some(key), <H as crate::registry::MetadataLike>::metadata(cx)).is_some();
@@ -4246,13 +4377,14 @@ impl DetailScreen {
         live_ns: Option<i64>,
         duration_ns: Option<i64>,
         preview_paused: bool,
+        interval: plx_plex::plex::session::SkipInterval,
         fx: &mut Effects<'_, H>,
     ) {
         use trailer::TrailerKey;
         if let TrailerKey::Scrub(fwd) = act {
             let commit = match edge {
                 Edge::Down => duration_ns.zip(live_ns).and_then(|(duration_ns, live_ns)| {
-                    self.trailer_ctl.scrub_fresh(fwd, now, duration_ns, live_ns)
+                    self.trailer_ctl.scrub_fresh(fwd, now, duration_ns, live_ns, interval)
                 }),
                 Edge::Repeat => {
                     self.trailer_ctl.scrub_repeat(now);
@@ -4492,6 +4624,7 @@ impl DetailScreen {
                     title: title.to_string(),
                     context: plx_data::metadata::TRAILER_CONTEXT.into(),
                     version: None,
+                    show_rk: String::new(),
                 };
                 self.content(fx, ContentReq::Play { play, resume_ns: 0 });
             }
@@ -4588,7 +4721,7 @@ impl DetailScreen {
             match i {
                 Some(i) => self.play_episode_at(i, from_start, version, fx, meta),
                 None => self.play_episode_value(
-                    hero_episode_played(d),
+                    d.play_episode(),
                     d,
                     from_start,
                     version,
@@ -4606,6 +4739,9 @@ impl DetailScreen {
                     title: d.title.clone(),
                     context: String::new(),
                     version,
+                    // An episode page plays its own episode: its show keys the queue. A movie
+                    // page has none.
+                    show_rk: d.episodes_show_rk().to_owned(),
                 },
                 |m| PlayIntent::Movie { item: m.clone(), version },
             );
@@ -4686,6 +4822,7 @@ impl DetailScreen {
             title,
             context,
             version,
+            show_rk: d.episodes_show_rk().to_owned(),
         };
         self.content(fx, ContentReq::Play { play, resume_ns });
         true
@@ -4697,16 +4834,11 @@ impl DetailScreen {
 
 }
 
-/// The episode a show page's hero Play plays: the one it is resuming, else the season's first.
-fn hero_episode_played(d: &Detail) -> Option<&plx_data::metadata::Episode> {
-    hero::hero_episode(d).or_else(|| d.episodes.first())
-}
-
 /// The versions the hero's Play chooses among, for its Play Version disc and panel: the page's
 /// own movie or episode, or on a show page the episode its Play plays.
 pub(crate) fn hero_versions(d: &Detail) -> &[plx_data::pms::MediaVersion] {
     if d.is_show {
-        hero_episode_played(d).map_or(&[], |ep| ep.versions.as_slice())
+        d.play_episode().map_or(&[], |ep| ep.versions.as_slice())
     } else {
         &d.versions
     }

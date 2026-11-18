@@ -14,9 +14,8 @@
 //! **No key carries a credential**: both are built from ids and a path with no query, so a key can be
 //! logged, hashed and persisted as it stands. The builders refuse anything a parser would not read
 //! back (`None`), and each parser accepts exactly what its builder produces, so a near-miss (a wrong
-//! prefix, an upper-case id, a query on the art path, a trailing segment) is never a key. The poster
-//! source bounds a key's total length itself (`KEY_MAX`), because the bound is a property of its
-//! slots, not of these shapes.
+//! prefix, an upper-case id, a query on the art path, a trailing segment) is never a key. Neither
+//! builder bounds a key's length: the poster source stores a key whole, whatever its length.
 
 use std::borrow::Cow;
 

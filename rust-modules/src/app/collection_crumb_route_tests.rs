@@ -33,7 +33,7 @@ fn open_over_top(w: &mut World) {
 fn caption(w: &World) -> Option<String> {
     let entry = w.d.nav.top_page().expect("a page is on top").id;
     let screen = &*w.d.nav.entry(entry).and_then(|e| e.inst.as_ref()).expect("it is mounted").screen;
-    let cx = w.d.page_cx(tick(w.frame), entry, w.bridge.views(), &w.bridge.measure);
+    let cx = w.d.page_cx(tick(w.frame), entry, w.bridge.views(), &w.bridge.retained().measure);
     screen.crumb(&cx).map(std::borrow::Cow::into_owned)
 }
 
@@ -84,7 +84,7 @@ fn opened_from_search_it_names_search() {
 #[test]
 fn opened_from_an_item_detail_it_names_the_item() {
     let mut w = World::detail_with_disc("crumb-from-detail", [7; 12]);
-    plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(), Some(plx_data::metadata::Detail {
+    plx_data::metadata::set_current_for_test(w.bridge.bridge().stores.metadata.state_mut(), Some(plx_data::metadata::Detail {
         sid: plx_plex::plex::ServerId::UNSET, rk: "movie".into(), kind: "movie".into(),
         title: "Synthetic film".into(), ..Default::default()
     }));

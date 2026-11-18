@@ -452,7 +452,6 @@ mod tests {
     impl DemuxSubtitle for NoCaptions {
         fn plan(&mut self, _: &[TrackInfo]) -> Vec<DecodeKind> { Vec::new() }
         fn max_header_bytes(&self) -> usize { 0 }
-        fn admit_font(&mut self, _: usize) -> bool { false }
         fn begin_sources(&mut self, _: &str, _: Manifest) -> Option<u64> { None }
         fn record_tracks(&self) {}
         fn selected_track(&self) -> i32 { -1 }

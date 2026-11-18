@@ -3,9 +3,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for telling me how PlxNative runs on your television. A report that it works is as useful as one that fails: the [compatibility list](https://github.com/GLinnik21/plx-native/blob/main/docs/compatibility.md) is built from these.
+        Thanks for telling me how PlxNative runs on your television. A report that it works is as useful as one that fails: the [compatibility list](https://github.com/plxnative/plx-native/blob/main/docs/compatibility.md) is built from these.
 
-        If something is **broken** (video never starts, the app closes, sign-in fails), please use the [bug report form](https://github.com/GLinnik21/plx-native/issues/new?template=bug_report.yml) instead, so it gets tracked and fixed.
+        If something is **broken** (video never starts, the app closes, sign-in fails), please use the [bug report form](https://github.com/plxnative/plx-native/issues/new?template=bug_report.yml) instead, so it gets tracked and fixed.
   - type: input
     id: tv-model
     attributes:

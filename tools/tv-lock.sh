@@ -1243,9 +1243,30 @@ cmd_selftest() {
   out="$(cat "$d/hang.out")"
   pfcheck "a hung pre-flight (PLX_TV_PREFLIGHT_SECS=1) returns within a few seconds" \
     "$([ "$hung" != 99 ] && [ "$el" -le 5 ] && echo 1)"
+  timeout_report_ok() {
+    # grep -q may close the pipe before printf finishes; pipefail then grades
+    # SIGPIPE instead of the report. Consume all bytes, keeping every predicate.
+    printf '%s\n' "$1" | grep 'UNKNOWN' >/dev/null \
+      && printf '%s\n' "$1" | grep 'timed out' >/dev/null \
+      && ! printf '%s\n' "$1" | grep -E 'IDLE|^IN USE:' >/dev/null
+  }
   pfcheck "... says UNKNOWN and that the read timed out, never IDLE, never the marker" \
-    "$(printf '%s\n' "$out" | grep -q 'UNKNOWN' && printf '%s\n' "$out" | grep -q 'timed out' \
-       && ! printf '%s\n' "$out" | grep -qE 'IDLE|^IN USE:' && echo 1)"
+    "$(timeout_report_ok "$out" && echo 1)"
+  local padding long_out attempt
+  printf -v padding '%*s' 131072 ''
+  long_out="$out"$'\n'"$padding"
+  for attempt in 1 2 3; do
+    pfcheck "timeout assertion drains a long valid report under pipefail (repeat $attempt)" \
+      "$(timeout_report_ok "$long_out" && echo 1)"
+  done
+  pfcheck "timeout assertion still rejects IDLE" \
+    "$(! timeout_report_ok "$long_out"$'\nIDLE' && echo 1)"
+  pfcheck "timeout assertion still rejects the IN USE marker" \
+    "$(! timeout_report_ok "$long_out"$'\nIN USE:' && echo 1)"
+  pfcheck "timeout assertion still requires UNKNOWN" \
+    "$(! timeout_report_ok 'timed out' && echo 1)"
+  pfcheck "timeout assertion still requires the timeout" \
+    "$(! timeout_report_ok 'UNKNOWN' && echo 1)"
   pfcheck "... and preflight_note itself still returns 0 (acquire and status keep their exit codes)" \
     "$(printf '%s\n' "$out" | grep -qx 'rc=0' && echo 1)"
   chk "... leaving none of its processes behind" "$(gone "$mkpat" && echo 1)" "$(left "$mkpat")"

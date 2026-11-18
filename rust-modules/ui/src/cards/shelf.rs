@@ -54,9 +54,10 @@ pub struct Shelf {
     /// By value ([`RowStyle`] is `Copy`): a strip's cards may be sized at runtime, by a HUD package.
     style: RowStyle,
     row: CardRow,
-    /// What the `FocusMoved`s since the last tick said: a deliberate move (`By::Dir` /
-    /// `By::Pointer`) grows its cell from rest, any other arrival is adopted at full pop, and none
-    /// at all means a changed focused index is a content landing. Cleared by the tick.
+    /// What the `FocusMoved`s since the last tick said: a deliberate move (a key, a hover or a by-id
+    /// jump: `By::Dir`, `By::Pointer`, `By::Script`; see `Seen::of`) grows its cell from rest, any
+    /// other arrival is adopted at full pop, and none at all means a changed focused index is a
+    /// content landing. Cleared by the tick.
     seen: Seen,
     /// The landing the last tick carried the focused pop through, if there was one.
     landed: Option<Landed>,
@@ -208,7 +209,7 @@ impl Shelf {
     /// view (Home's shelves while its dive has not reached them, the Recommended page's while its
     /// shelves dissolve in) the springs EASE to rest like an unfocused shelf's and park once they
     /// settle. While the page is a held transition image
-    /// ([`page_image_held`](crate::containers::transition::page_image_held): a dip's Out and In
+    /// (`Cx::page_image`: a dip's Out and In
     /// halves and the hold after it) nothing on screen can show the ease, and stepping it would hold
     /// the image past its dissolve (a page that is covered freezes its shelves mid-ease and resumes
     /// them under the BACK dip's image), so the springs and the caption band jump to rest on the
@@ -300,7 +301,7 @@ impl Shelf {
                 self.retry.tick(t.ms);
                 self.observe_landing(src);
                 self.tick(t.dt(), cx, src, held);
-                if self.landing.held() {
+                if self.landing.held(cx.page_image) {
                     // a landing waits under a held page image: a frame must follow its release
                     fx.invalidate(Provenance::Lifecycle);
                 }
@@ -312,7 +313,7 @@ impl Shelf {
                 let arrived = (to.entry == self.entry).then(|| here(&to.elem)).flatten();
                 // the reader has moved on from what the page returned with: a deliberate move, or
                 // focus gone from this shelf's cards (a header control, another shelf)
-                if arrived.is_none() || matches!(by, By::Dir | By::Pointer) {
+                if arrived.is_none() || matches!(by, By::Dir | By::Script | By::Pointer) {
                     self.returning = false;
                 }
                 if let Some(a) = arrived {
@@ -391,7 +392,7 @@ impl Shelf {
             self.anchor = None;
             self.landing.snap(src);
             if !self.row.at_exact_rest() {
-                if crate::containers::transition::page_image_held() {
+                if cx.page_image.is_held() {
                     // an image hides the page: nothing may step under it (it would hold the image
                     // past its dissolve), so what was lifted is at rest now
                     self.row.snap_to_rest();
@@ -475,7 +476,7 @@ impl Shelf {
             self.landing.snap(src);
         } else {
             self.landing.observe(src, &Scene { shift: (scroll - sx0, 0.0), slot: &slot, was: &slot, on: &on, lifted });
-            self.landing.step(dt, (self.style.k_scroll, self.style.k_scale), None);
+            self.landing.step(dt, (self.style.k_scroll, self.style.k_scale), None, cx.modal, cx.page_image);
         }
         if focus.is_some() || !self.row.at_exact_rest() {
             self.row.update(src.len(), focus, &self.style, dt);

@@ -45,15 +45,9 @@
 //! accessor reads for the CURRENT screen only — the `match` on [`Screen`] never reaches another
 //! screen's getters — plus one `String` build of 40–160 bytes.
 //!
-//! Measured on the dev Mac at `opt-level = 2` (2026-08-15, 50k builds per screen, host accessors
-//! over empty stores): **39–223 ns** per frame on every screen except the player, where the line
-//! costs **~7.3 µs**. That one number is worth knowing before adding a field: **~6.4 µs of it is a
-//! single filesystem `stat`**, inside [`plx_appkit::player_hud::transport_hidden`] →
-//! `player_hud::busy` → `devtrig::flag("failtest")`. The rest of the player's seventeen fields together
-//! cost ~0.9 µs. It is paid deliberately: `transport_hidden` is the exact predicate
-//! `PlayerScreen::handle_key` tests before any transport arm, and the alternative is a second
-//! derivation of a rule that module keeps in one place. The player route is also the one route the idle gate excludes, so it draws
-//! at full rate and 7 µs is ~0.04% of a 16.7 ms frame.
+//! The player reads the same captured busy value as input, hashing and rendering. Its LIVE
+//! diagnostic filesystem sampling belongs to the app's frame publication, never this probe.
+//! Historical timings included that removed filesystem read and do not describe this path.
 //!
 //! # Arming it
 //!
@@ -73,8 +67,8 @@ use plx_appkit::player_hud::ControlSlot;
 
 /// Which screen the frame ended on, as the probe dispatches on it.
 ///
-/// `app.rs` maps its private `Route` onto this with an EXHAUSTIVE `match`, so a new route is a
-/// compile error here rather than a screen that silently fingerprints as nothing. The route WORD
+/// Registry-owned data-only metadata chooses the schema; ordinary screens use Content with
+/// their own Screen logical projection and the engine's focus. The route WORD
 /// printed on the line is not taken from this type — it is `app.rs`'s own `rn`, handed to
 /// [`sample`] separately, so the fingerprint's `route=` and the heartbeat's `route=` are the same
 /// string built by the same expression and a harness can join the two lines on it.
@@ -134,21 +128,22 @@ pub(crate) enum Screen {
         /// not, and has to be re-recorded.
         row: i32,
     },
-    /// the home hero + grid
-    Home,
-    Library,
-    Detail,
-    Person,
-    Collection,
-    Search,
-    /// The Watchlist page (`screens::watchlist`), owned like Search: its fields ride on `content`.
-    Watchlist,
-    /// The catalog page of a title no server holds (`screens::catalog`); its fields ride on `content`.
-    Catalog,
+    /// The mounted screen's read projection, including generic engine focus and logical state.
+    Content,
+    // Historical formatter vocabulary retained only for byte-golden characterization tests.
+    #[cfg(test)] Home,
+    #[cfg(test)] Library,
+    #[cfg(test)] Detail,
+    #[cfg(test)] Person,
+    #[cfg(test)] Collection,
+    #[cfg(test)] Search,
+    #[cfg(test)] Watchlist,
+    #[cfg(test)] Catalog,
     /// `overlay` is the same word the heartbeat prints after `overlay=`, supplied by `app.rs` from
     /// its own exhaustive match on the private `Overlay` enum.
     Player {
         overlay: &'static str,
+        busy: plx_appkit::player_hud::Busy,
     },
 }
 
@@ -192,11 +187,11 @@ plx_base::devtrig::latched_flag!(
 ///
 /// Call once per frame, AFTER the frame's input has been handled and the screen drawn, so what is
 /// recorded is the state a key press has already moved rather than the state it is about to.
-pub(crate) fn sample(ps: &plx_media::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>) {
+pub(crate) fn sample(ps: &plx_media::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>, press_active: bool) {
     if !armed() {
         return;
     }
-    let line = fingerprint_content(ps, route, screen, hud, ctrl, content, meta);
+    let line = fingerprint_content(ps, route, screen, hud, ctrl, content, meta, press_active);
     static LAST: Mutex<Option<String>> = Mutex::new(None);
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
     if last.as_deref() == Some(line.as_str()) {
@@ -214,18 +209,18 @@ pub(crate) fn sample(ps: &plx_media::route::PlaybackSession, route: &str, screen
 /// one of those screens fingerprints as its route word and nothing else. `app::recorder`'s
 /// `state_hash` folds `Dispatcher::state_hash` in beside this line for exactly that reason; a
 /// replay graded on this alone would call a press that opened the wrong family page `SAME`.
-pub(crate) fn line(ps: &plx_media::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>) -> String {
-    fingerprint_content(ps, route, screen, hud, ctrl, content, meta)
+pub(crate) fn line(ps: &plx_media::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>, press_active: bool) -> String {
+    fingerprint_content(ps, route, screen, hud, ctrl, content, meta, press_active)
 }
 
 /// Build the line. Split out from [`sample`] so its determinism and its grammar are host-testable
 /// without a log file or a change-detection state.
 #[cfg(test)]
 fn fingerprint(ps: &plx_media::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, meta: plx_data::metadata::MetadataView<'_>) -> String {
-    fingerprint_content(ps, route, screen, hud, ctrl, "", meta)
+    fingerprint_content(ps, route, screen, hud, ctrl, "", meta, false)
 }
 
-fn fingerprint_content(ps: &plx_media::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>) -> String {
+fn fingerprint_content(ps: &plx_media::route::PlaybackSession, route: &str, screen: Screen, hud: Hud, ctrl: ControlSlot, content: &str, meta: plx_data::metadata::MetadataView<'_>, press_active: bool) -> String {
     let mut s = String::with_capacity(192);
     s.push_str("focus route=");
     s.push_str(route);
@@ -233,7 +228,7 @@ fn fingerprint_content(ps: &plx_media::route::PlaybackSession, route: &str, scre
     // The tvOS click, which is route-agnostic: an OK over a card arms a press and the activation
     // commits from the per-frame loop on the spring-back, so "a press is in flight" is a state the
     // ladder put the app into and a state the NEXT key cancels.
-    let _ = write!(s, " press={}", b(plx_ui::press::is_active()));
+    let _ = write!(s, " press={}", b(press_active));
     s
 }
 
@@ -265,19 +260,20 @@ fn push_fields(ps: &plx_media::route::PlaybackSession, s: &mut String, screen: S
             // dispatcher to get one screen's cursor.
             let _ = write!(s, " list={} row={row}", b(list));
         }
-        Screen::Home => s.push_str(content),
-        Screen::Library => s.push_str(content),
-        Screen::Detail | Screen::Person | Screen::Collection | Screen::Catalog => s.push_str(content),
+        Screen::Content => s.push_str(content),
+        #[cfg(test)]
+        Screen::Home | Screen::Library | Screen::Detail | Screen::Person | Screen::Collection | Screen::Catalog => s.push_str(content),
         // Owned like Library/Detail/Person: the content string is built generically by the
         // caller (`super::bridge::content_probe`, from the mounted `SearchScreen`'s own
         // `LogicalState::probe` output), not read off a legacy global here.
+        #[cfg(test)]
         Screen::Search | Screen::Watchlist => s.push_str(content),
         // The panels' own fields ride on `content`, for the same reason Library's, Detail's and
         // Search's do: since restructure phase 9 each is the state of a MOUNTED INSTANCE
         // (`screens::player::overlay`), and this module cannot reach into the container — the
         // caller (`app::bridge::content_probe`) builds them from the surface that is up.
-        Screen::Player { overlay } => {
-            push_player(ps, s, overlay, hud, ctrl, meta);
+        Screen::Player { overlay, busy } => {
+            push_player(ps, s, overlay, hud, ctrl, meta, busy);
             s.push_str(content);
         }
     }
@@ -285,7 +281,7 @@ fn push_fields(ps: &plx_media::route::PlaybackSession, s: &mut String, screen: S
 
 
 /// The player: the HUD cursor, what the control row currently holds, and each panel's own state.
-fn push_player(ps: &plx_media::route::PlaybackSession, s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot, meta: plx_data::metadata::MetadataView<'_>) {
+fn push_player(_ps: &plx_media::route::PlaybackSession, s: &mut String, overlay: &str, hud: Hud, ctrl: ControlSlot, meta: plx_data::metadata::MetadataView<'_>, busy: plx_appkit::player_hud::Busy) {
     // `upnext` is the PLAYER INSTANCE's countdown since phase 9, so it arrives on `content` with
     // the panels' fields rather than being read off a module global here.
     let slot = match ctrl {
@@ -293,7 +289,8 @@ fn push_player(ps: &plx_media::route::PlaybackSession, s: &mut String, overlay: 
         ControlSlot::Skip(_) => "skip",
         ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => "upnext",
     };
-    // `hidden` is `player_hud::transport_hidden()`, read here for the reason
+    // `hidden` projects the captured busy value by the same pure rule as transport_hidden,
+    // for the reason
     // `PlayerScreen::handle_key` reads it: it is that page's FIRST test, so while it is true every
     // transport arm beneath it is unreachable and only the read-out's two DRAWN escapes — OK to
     // the quality ladder, BACK out — plus EXIT do anything. A characterization run that could not
@@ -309,7 +306,7 @@ fn push_player(ps: &plx_media::route::PlaybackSession, s: &mut String, overlay: 
         hud.tab,
         slot,
         ctrl.items(),
-        b(plx_appkit::player_hud::transport_hidden(ps))
+        b(plx_appkit::player_hud::readout_owns_frame(busy))
     );
     // The episode pair's state is emitted whatever occupies the row (all zero under a stand-in),
     // so an occupant change is a value change and never a schema change.
@@ -317,8 +314,8 @@ fn push_player(ps: &plx_media::route::PlaybackSession, s: &mut String, overlay: 
         ControlSlot::Discs(controls) => controls,
         ControlSlot::Skip(_) | ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_) => plx_appkit::player_hud::Controls::NONE,
     };
-    let _ = write!(s, " pair={} previous={} next={} restart={}",
-        b(controls.pair()), b(controls.previous), b(controls.next), b(controls.restart));
+    let _ = write!(s, " pair={} previous={} next={}",
+        b(controls.pair()), b(controls.previous), b(controls.next));
     // Whether this item HAS chapters at all — a fact about the item, not about a panel, which is
     // why it stays here while each overlay's own open flag and cursor arrive on `content` from the
     // surface (`app::bridge::content_probe`).
@@ -445,9 +442,36 @@ mod tests {
             ("catalog", Screen::Catalog),
             ("search", Screen::Search),
             ("watchlist", Screen::Watchlist),
-            ("player", Screen::Player { overlay: "none" }),
-            ("player", Screen::Player { overlay: "info" }),
+            ("player", Screen::Player { overlay: "none", busy: plx_appkit::player_hud::Busy::None }),
+            ("player", Screen::Player { overlay: "info", busy: plx_appkit::player_hud::Busy::None }),
         ]
+    }
+
+    #[test]
+    fn descriptor_content_preserves_every_legacy_content_schema_byte_for_byte() {
+        let _serial = plx_base::testlock::serial();
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let store = test_store();
+        let ctrl = ControlSlot::Discs(plx_appkit::player_hud::Controls::NONE);
+        for (word, legacy) in [
+            ("home", Screen::Home), ("library", Screen::Library), ("detail", Screen::Detail),
+            ("person", Screen::Person), ("collection", Screen::Collection), ("catalog", Screen::Catalog),
+            ("search", Screen::Search), ("watchlist", Screen::Watchlist),
+        ] {
+            let content = " group=3 elem=4097 marker=1";
+            let old = line(&ps, word, legacy, hud(), ctrl, content, store.view(), false);
+            let new = line(&ps, word, Screen::Content, hud(), ctrl, content, store.view(), false);
+            assert_eq!(old, format!("focus route={word} group=3 elem=4097 marker=1 press=0"));
+            assert_eq!(new, old);
+        }
+        for (screen, expected) in [
+            (Screen::Login { phase: plx_session::auth::Phase::Idle, has_control: true }, "focus route=login phase=Idle ctl=1 press=0"),
+            (Screen::Profiles { elem: 2 }, "focus route=profiles elem=2 press=0"),
+            (Screen::Onboard { list: true, row: 3 }, "focus route=onboard list=1 row=3 press=0"),
+        ] {
+            let word = expected.split_whitespace().nth(1).unwrap().strip_prefix("route=").unwrap();
+            assert_eq!(line(&ps, word, screen, hud(), ctrl, "", store.view(), false), expected);
+        }
     }
 
     /// **The property the whole instrument rests on**: with nothing moved between two samples, the
@@ -522,12 +546,12 @@ mod tests {
         };
         let discs = keys(
             "player",
-            Screen::Player { overlay: "none" },
+            Screen::Player { overlay: "none", busy: plx_appkit::player_hud::Busy::None },
             ControlSlot::Discs(plx_appkit::player_hud::Controls::NONE),
         );
         let up = keys(
             "player",
-            Screen::Player { overlay: "none" },
+            Screen::Player { overlay: "none", busy: plx_appkit::player_hud::Busy::None },
             ControlSlot::UpNext(credits),
         );
         assert_eq!(
@@ -537,7 +561,7 @@ mod tests {
         // …and a HUD cursor move is a value change, never a key change
         let moved = fingerprint(&ps, 
             "player",
-            Screen::Player { overlay: "none" },
+            Screen::Player { overlay: "none", busy: plx_appkit::player_hud::Busy::None },
             Hud {
                 focus: 2,
                 btn: 1,
@@ -563,7 +587,7 @@ mod tests {
         let at = |f, btn, tab| {
             fingerprint(&ps, 
                 "player",
-                Screen::Player { overlay: "none" },
+                Screen::Player { overlay: "none", busy: plx_appkit::player_hud::Busy::None },
                 Hud {
                     focus: f,
                     btn,
@@ -592,7 +616,7 @@ mod tests {
             at(0, 0, 0),
             fingerprint(&ps, 
                 "player",
-                Screen::Player { overlay: "info" },
+                Screen::Player { overlay: "info", busy: plx_appkit::player_hud::Busy::None },
                 Hud {
                     focus: 0,
                     btn: 0,

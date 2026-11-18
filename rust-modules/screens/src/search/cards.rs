@@ -13,6 +13,7 @@ use plx_ui::Painter;
 /// [`SearchScreen::sync`], and a view that has since moved on shows as fewer cards, never as a
 /// card with no item.
 pub struct RowCards<'a> {
+    pub(super) policy: plx_ui::caption_policy::CaptionPolicy,
     pub(super) kind: Kind,
     pub(super) elems: &'a [u32],
     pub(super) items: &'a [Item],
@@ -54,7 +55,7 @@ impl<H: SearchLike> CardSource<H> for RowCards<'_> {
                 // result from a server that is not the household's own is credited after its details
                 let mut facts = tile_facts::caption_facts(row);
                 facts.source = Some(self.handle(item)).filter(|handle| !handle.is_empty()).map(str::to_owned);
-                crate::registry::captions::label(&crate::registry::captions::policy(), &facts, None)
+                crate::registry::captions::label(&self.policy, &facts, None)
             }
             // a still (an episode) is worded by the one landscape builder, like every other still; a
             // headshot is not a poster either and keeps its block, the server it came from last
@@ -70,6 +71,17 @@ impl<H: SearchLike> CardSource<H> for RowCards<'_> {
             Some(Item::Media(media)) if self.kind != Kind::Episode => media.resume_frac(),
             _ => None,
         }
+    }
+    /// The hit's ratingKey, for a card that has one: a library item's, or a collection's own. A
+    /// person (a tag, whose id is a tag id and not a ratingKey) and a tag-shaped collection (no
+    /// ratingKey) have none, so a press names them by their place.
+    fn subject(&self, i: usize) -> Option<Cow<'_, str>> {
+        let rk = match self.items.get(i)? {
+            Item::Media(media) => media.rk.as_str(),
+            Item::Collection(hit) => hit.item.rk.as_str(),
+            Item::Tag(_) => return None,
+        };
+        (!rk.is_empty()).then(|| Cow::Borrowed(rk))
     }
     fn more(&self) -> bool { self.window.after }
     fn page_epoch(&self) -> u32 { self.epoch }

@@ -1,6 +1,6 @@
 //! **The application bundle's SCREEN-SIDE half** (restructure spec §3.1, phase 5b): the effects a
-//! screen may ask for (`AppFx`), the messages a machine receives (`AppMsg`), and the requests an
-//! owned screen makes of the legacy LOOP (`LoopReq`) while the two coexist (§14).
+//! screen may ask for (`AppFx`), the messages a machine receives (`AppMsg`), and the app-runner
+//! commands (`LoopReq`) that require platform or application-owned resources.
 //!
 //! **…and, since restructure phase 10, the concrete `ScreenArg` ([`AppArg`]) and the one `mount`
 //! match ([`AppMounter`])** — which §2.1 always put here and which lived in `app/bridge.rs` until
@@ -20,11 +20,15 @@
 //! screens a second time for the surface's own inner stack (`screens::settings::InnerHost`), which
 //! is how one `OnboardScreen` mounts twice (§6.2).
 //!
-//! `LoopReq` is a DEBT with a phase number on each variant: a request the loop performs because
-//! the machine that should own it (Session, Player, Navigation over the app's real stack) is not
-//! on the dispatcher yet. The bridge drains them after every dispatcher frame.
+//! Loop, Player and the other external app commands retain their dispatcher FIFO head while
+//! the runner borrows application resources. Results rejoin that drain; no family queue is drained
+//! after the frame. Async Session and persistence completions retain their addressed owner fences.
 
 pub use crate::family::SettingsPage;
+pub use crate::family::InnerViews;
+pub use crate::inputs::{GrantInputs, RuntimePolicy, ScreenInputs};
+#[cfg(test)]
+pub(crate) use crate::inputs::{capture_fixture, caption_fixture, empty_fixture, publication_fixture};
 /// The stored Under posters setting as the ui caption policy: the shared door a screen outside
 /// Settings (the Library's Collections page) reads it through, so none names `crate::settings`.
 pub use crate::settings::caption_policy_of;
@@ -58,9 +62,9 @@ pub enum AppFx {
     StoreWork(StoreWork),
     /// The consent MACHINE's command (§2.2): it owns the two decisions and publishes them.
     Consent(ConsentCmd),
-    /// A request of the legacy loop (§14) — see [`LoopReq`].
+    /// An ordered app-resource command — see [`LoopReq`].
     Loop(LoopReq),
-    /// Content-page requests, executed by the navigation bridge during coexistence (phase 7).
+    /// Content-page commands, executed at the yielded dispatcher FIFO head.
     Content(ContentReq),
     /// Home-page semantic requests. The bridge owns navigation/player/menu execution.
     Home(HomeReq),
@@ -71,15 +75,105 @@ pub enum AppFx {
     /// page asks of the app that has no existing effect spelling.
     Watchlist(crate::watchlist::page::WatchlistOut),
     Catalog(crate::catalog::CatalogOut),
-    /// Player-route requests — what an overlay panel on the player's own `ModalStack` asks of the
-    /// loop, because the thing being asked for needs the `MainThread` token, the route or the
-    /// trail (§14). Executed by `app/playback.rs`'s drain.
+    /// Player-route commands requiring the MainThread capability, route or navigation stack.
+    /// The app runner executes each at its FIFO head, outside the screen's machine step.
     Player(PlayerReq),
     /// The item context menu's committed row (phase 10) — see [`ItemMenuReq`].
     ItemMenu(ItemMenuReq),
     /// The player-HUD page's commands on the package store, executed by the Bridge (PR10).
     Huds(HudCmd),
 }
+
+/// Operations executed while the dispatcher holds only logical owner borrows.
+pub enum InlineAppFx {
+    Session(plx_session::auth::SessionCmd),
+    PlaybackTrace(plx_platform::playback_trace::Command),
+    Store(StoreId, StoreCmd),
+    StoreWork(StoreWork),
+    Consent(ConsentCmd),
+    Huds(HudCmd),
+}
+
+/// Commands borrowing the navigation/player resource bundle, never inline effects.
+pub enum ResourceAppFx {
+    Library(LibraryReq),
+    Home(HomeReq),
+    Content(ContentReq),
+    ItemMenu(ItemMenuReq),
+}
+
+/// Operations admitted outside machine borrows, at the retained FIFO head.
+/// Inline store work cannot be placed in a yielded envelope:
+/// ```compile_fail
+/// use plx_screens::registry::{ExternalAppFx, InlineAppFx};
+/// let inline = InlineAppFx::StoreWork(plx_data::stores::StoreWork::Browse);
+/// let _: ExternalAppFx = inline;
+/// ```
+/// External commands cannot be passed to the logical executor:
+/// ```compile_fail
+/// use plx_screens::registry::{ExternalAppFx, InlineAppFx, ContentReq};
+/// fn logical(_: InlineAppFx) {}
+/// logical(ExternalAppFx::Content(ContentReq::Back));
+/// ```
+pub enum ExternalAppFx {
+    SessionEffect(plx_session::auth::owner::SessionFx),
+    Preferences(PreferenceCmd),
+    Loop(LoopReq),
+    Content(ContentReq),
+    Home(HomeReq),
+    Library(LibraryReq),
+    Search(SearchReq),
+    Watchlist(crate::watchlist::page::WatchlistOut),
+    Catalog(crate::catalog::CatalogOut),
+    Player(PlayerReq),
+    ItemMenu(ItemMenuReq),
+}
+
+impl plx_machine::machine::AppEffect for AppFx {
+    type Inline = InlineAppFx;
+    type ExternalFx = ExternalAppFx;
+    fn route(self) -> plx_machine::machine::EffectDisposition<InlineAppFx, ExternalAppFx> {
+        use plx_machine::machine::EffectDisposition::{Inline, External};
+        match self {
+            Self::Session(v) => Inline(InlineAppFx::Session(v)),
+            Self::PlaybackTrace(v) => Inline(InlineAppFx::PlaybackTrace(v)),
+            Self::Store(id, v) => Inline(InlineAppFx::Store(id, v)),
+            Self::StoreWork(v) => Inline(InlineAppFx::StoreWork(v)),
+            Self::Consent(v) => Inline(InlineAppFx::Consent(v)),
+            Self::Huds(v) => Inline(InlineAppFx::Huds(v)),
+            Self::SessionEffect(v) => External(ExternalAppFx::SessionEffect(v)),
+            Self::Preferences(v) => External(ExternalAppFx::Preferences(v)),
+            Self::Loop(v) => External(ExternalAppFx::Loop(v)),
+            Self::Content(v) => External(ExternalAppFx::Content(v)),
+            Self::Home(v) => External(ExternalAppFx::Home(v)),
+            Self::Library(v) => External(ExternalAppFx::Library(v)),
+            Self::Search(v) => External(ExternalAppFx::Search(v)),
+            Self::Watchlist(v) => External(ExternalAppFx::Watchlist(v)),
+            Self::Catalog(v) => External(ExternalAppFx::Catalog(v)),
+            Self::Player(v) => External(ExternalAppFx::Player(v)),
+            Self::ItemMenu(v) => External(ExternalAppFx::ItemMenu(v)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod effect_routing_contract {
+    #[test]
+    fn resource_and_store_effects_have_disjoint_execution_types() {
+        use super::*;
+        use plx_machine::machine::{AppEffect, EffectDisposition};
+        assert!(matches!(AppFx::Content(ContentReq::Back).route(),
+            EffectDisposition::External(ExternalAppFx::Content(ContentReq::Back))));
+        assert!(matches!(AppFx::StoreWork(StoreWork::Browse).route(),
+            EffectDisposition::Inline(InlineAppFx::StoreWork(StoreWork::Browse))));
+    }
+}
+
+/// Owned external-runner envelope: the original sender (including mounted lifetime), frozen
+/// navigation bookmark, FIFO sequence, and unmodified command/request identity. The dispatcher
+/// retains the head until a terminal receipt; this type is NOT another request queue.
+/// Family handler migration uses this contract without changing the screen's `Fx::App` spelling.
+pub type AppCommand = plx_machine::machine::AppCommand<ExternalAppFx, ReturnState<u32, PageMemory>>;
 
 /// The package-store view delivered through the HUD command channels.
 pub use crate::hud_settings::HudList;
@@ -120,6 +214,11 @@ pub struct AccountPreferenceReply {
 }
 
 pub enum PreferenceCmd {
+    AutoSignIn { on: bool, reply: std::sync::mpsc::Sender<bool> },
+    /// Install lesson write, fenced by the requesting runtime/profile lifetime.
+    HoldHint { taught: plx_plex::plex::session::HoldHintTaught,
+        live: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        reply: std::sync::mpsc::Sender<bool> },
     /// Demand viewer features; the app coalesces this profile-scoped read.
     EnsureMarkerAccess,
     ChooseMarker { kind: plx_data::metadata::MarkerKind, mode: plx_plex::plex::session::MarkerSkipMode,
@@ -265,18 +364,11 @@ pub enum PlayerReq {
     /// `super::bridge::open_player_overlay` straight from the loop's key ladder; `PlayerScreen`
     /// may not name that function itself (§2.2), so it asks instead.
     OpenOverlay(crate::player::overlay::OverlayKind),
-    /// **A pointer click landed on the transport's own control row** — whichever disc, the Skip
-    /// pill or the Up Next tile currently occupies it. Arms a tvOS press dip;
-    /// the loop's commit-frame dispatch
-    /// (`app/run.rs`'s `Route::Player => activate_player_row(...)`) performs whatever the row
-    /// decides once the spring-back has played, through the same performer OK reaches by
-    /// [`Command`](PlayerReq::Command) and [`StandIn`](PlayerReq::StandIn). OK on the row does not
-    /// ask this: the focus engine presses the control itself.
-    ArmControlRow,
+
     /// **A press on a control of the discs committed**, after the engine's tvOS dip has played
     /// (`PressCommit`, [`PlayerScreen`](crate::player::PlayerScreen)): perform this command. The screen resolves the command of the control the
     /// engine holds, so the app's performer (`app::playback::perform_hud_command`) never reads a
-    /// cursor. OK on the row is this; a pointer click on the row is still [`ArmControlRow`](PlayerReq::ArmControlRow).
+    /// cursor. Keyboard and pointer presses use this same commit path.
     Command(plx_appkit::player_hud::command::HudCommand),
     /// **A press on a stand-in committed** — the Skip pill, or one of the Up Next pair — after the
     /// same dip. A stand-in's meaning depends on the segment it offers, which the app resolves on
@@ -394,8 +486,8 @@ pub struct LibraryMenuArg {
     /// hid behind "+N". Empty for every other menu.
     pub folded: Vec<u32>,
     /// The page's entry and the control the menu grew out of. Every header menu names it, "+N"
-    /// included: the page leaves the control out of its pass and the opener lift draws it lit
-    /// above the panel's scrim (design review S12).
+    /// included: the page leaves the control out of its pass and the opener lift draws it above the
+    /// panel's scrim at the morph's `opener_alpha`.
     pub opener: Option<(plx_machine::machine::EntryId, u32)>,
 }
 
@@ -1294,6 +1386,10 @@ pub enum PlayIntent {
         context: String,
         /// The version picked on the Play Version panel, `None` for the default (`Media[0]`).
         version: Option<plx_plex::plex::MediaId>,
+        /// The show the item's episode belongs to, `""` for anything that is not an episode (a
+        /// trailer, a movie, an extra). The queue builder keys the PlayQueue off the show so the
+        /// episodes before this one are in it, which is what the HUD's Previous needs.
+        show_rk: String,
     },
     /// The alternative source the page had selected (`route::request_play_movie`). Owned rather
     /// than a `&'static` catalog borrow: it is held inside `PageAction`/`AppFx` across a frame
@@ -1306,15 +1402,15 @@ pub enum PlayIntent {
     },
 }
 
-pub trait ContentLike: AppLike<Memory = PageMemory> {}
-impl<H: AppLike<Memory = PageMemory>> ContentLike for H {}
+pub trait ContentLike: AppLike<Memory = PageMemory> + ScreenInputsLike {}
+impl<H: AppLike<Memory = PageMemory> + ScreenInputsLike> ContentLike for H {}
 
 /// A host publishing the Person model borrowed from its concrete store owner for this frame.
-pub trait PersonLike: AppLike + Sized {
+pub trait PersonLike: AppLike + ScreenInputsLike + Sized {
     fn person<'a>(cx: &Cx<'a, Self>) -> plx_data::person::PersonView<'a>;
 }
 
-pub trait CollectionLike: AppLike + Sized {
+pub trait CollectionLike: AppLike + ScreenInputsLike + Sized {
     fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a>;
 
     /// **The title of the page BACK returns to**, as the user sees it on that page: the entry
@@ -1341,7 +1437,8 @@ pub trait MetadataLike: AppLike + Sized {
 
 /// A host that publishes Home's retained catalog view. The view is borrowed from the rig-owned
 /// snapshot and is therefore valid for the complete step/draw query without per-frame cloning.
-pub trait HomeLike: AppLike<Memory = PageMemory> + Sized {
+pub trait HomeLike: AppLike<Memory = PageMemory> + ScreenInputsLike + Sized {
+    fn clock_facts<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts>;
     fn hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::pms::HubsView<'a>;
 }
 
@@ -1349,18 +1446,19 @@ pub trait HomeLike: AppLike<Memory = PageMemory> + Sized {
 /// read the Player machine's decisions through it; a change is asked for as an effect
 /// (`AppFx::Player`, `ContentReq::Play`), because the publication is a copy and there is no `&mut`
 /// on this path by construction.
-pub trait PlayerLike: AppLike<Memory = PageMemory> + Sized {
+pub trait PlayerLike: AppLike<Memory = PageMemory> + ScreenInputsLike + Sized {
     fn session<'a>(cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession;
     /// Viewer pause intent sampled by the host at this frame's Tick boundary.
     fn transport_paused(cx: &Cx<'_, Self>) -> bool;
 }
 
-pub trait SearchLike: AppLike<Memory = PageMemory> + Sized {
+pub trait SearchLike: AppLike<Memory = PageMemory> + ScreenInputsLike + Sized {
     fn search<'a>(cx: &Cx<'a, Self>) -> plx_data::search::view::SearchView<'a>;
 }
 
 /// A host that publishes all three retained Library views captured at the frame split.
-pub trait LibraryLike: AppLike<Memory = PageMemory> + Sized {
+pub trait LibraryLike: AppLike<Memory = PageMemory> + ScreenInputsLike + Sized {
+    fn clock_facts<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts>;
     fn marker_prefs(_cx: &Cx<'_, Self>) -> plx_appkit::skip_policy::MarkerPrefsView { Default::default() }
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a>;
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a>;
@@ -1403,7 +1501,7 @@ pub struct Forbidden;
 /// A host carrying the retained Browse directory needed by Chrome and the Settings family.
 /// Full Library hosts implement this automatically; the nested Settings host carries only this
 /// one publication so its Onboard child never falls back to the compatibility selector.
-pub trait DirectoryLike: AppLike + Sized {
+pub trait DirectoryLike: AppLike + ScreenInputsLike + Sized {
     fn marker_prefs(_cx: &Cx<'_, Self>) -> plx_appkit::skip_policy::MarkerPrefsView { Default::default() }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a>;
 }
@@ -1416,7 +1514,15 @@ impl<H: LibraryLike> DirectoryLike for H {
 }
 
 /// Session's immutable frame publication; playback retains its separate `session` view.
-pub trait AuthLike: AppLike + Sized {
+/// A host must explicitly supply the retained inputs; no ambient or neutral fallback.
+pub trait ScreenInputsLike: AppLike + Sized {
+    fn screen_inputs<'a>(cx: &Cx<'a, Self>) -> &'a crate::inputs::ScreenInputs;
+    /// Native preview is an app resource capability, unavailable to controlled/fixture hosts.
+    /// It is not harness policy or a profile preference; controlled recordings have no native port.
+    fn native_preview_available(_cx: &Cx<'_, Self>) -> bool { false }
+}
+
+pub trait AuthLike: AppLike + ScreenInputsLike + Sized {
     fn auth<'a>(cx: &Cx<'a, Self>) -> plx_session::auth::SessionRead<'a>;
 }
 
@@ -1429,8 +1535,26 @@ pub enum DetailRefreshPhase {
     Requested,
 }
 
+/// Explicit offline screen-host capture; the production machine has no registry fallback.
+#[cfg(test)]
+pub(crate) fn run_person_fixture(store: &mut plx_data::stores::person::PersonStore,
+    cmd: plx_data::stores::person::PersonCmd) -> bool {
+    let mut keys = plx_plex::plex::ClientKeys::default();
+    keys.refill_roster(plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
+        plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
+        plx_plex::plex::client_for, plx_plex::plex::server_facts, plx_plex::plex::server_probe_result);
+    let bio = plx_base::devtrig::read("personbio");
+    let input = plx_data::person::PersonInput { keys: &keys, session: None, visible_generation: 0,
+                profile_scope: 0, owner_epoch: 0, profile_generation: 0, tenure: 0, profile_key: "",
+        controlled: false, profile_refused: false, credits_refused: false, dev_bio: bio.as_deref(), dev_credits: None };
+    store.run_with_input(cmd, &input)
+}
+
 /// The application's messages (spec §3.1).
 pub enum AppMsg {
+    /// Pure observation of the actual visible Watch opportunity after a successful final swap.
+    /// Frame/entry/instance addressing and one-shot admission belong to Dispatcher.
+    PlayerPresented { watch: Option<plx_appkit::skip_policy::OfferId>, paired: bool },
     AutoSkipResolved { id: plx_appkit::skip_policy::OfferId, outcome: plx_appkit::skip_policy::OfferOutcome },
     PlaybackTrace(plx_platform::playback_trace::Status),
     Session(plx_session::auth::owner::SessionEvent),
@@ -1441,6 +1565,8 @@ pub enum AppMsg {
     SelectionReply { correlation: u32, accepted: bool, flow_epoch: u64 },
     BackReply { correlation: u32, resumed: bool },
     Store(StoreCmd),
+    /// Person commands retain their originating body through deferred delivery and teardown.
+    PersonCommand { from: MachineId, command: plx_data::stores::person::PersonCmd },
     StoreWork(StoreWork),
     HubsResult(plx_data::stores::hubs::HubsResult),
     Home(HomeCmd),
@@ -1479,6 +1605,23 @@ pub enum AppMsg {
     /// press on its opener does. Idempotent, which a toggle is not: two of these in one frame (the app's WILL and
     /// DID both park) leave the page closed, where two toggles would close it and reopen it.
     HudSectionsClose,
+    /// Reset the mounted player's transport in its own event order.
+    PlayerTransportReset { for_reload: bool },
+    /// Extend the player's HUD from the observation time, not delivery time.
+    PlayerExtendHud { now: u32, duration_ms: u32 },
+    PlayerStart { now: u32, hud_ms: u32 },
+    PlayerPinHud { now: u32, duration_ms: u32, tab: Option<i32> },
+    PlayerSlot { slot: plx_appkit::player_hud::ControlSlot, primary: bool },
+    PlayerFollowRow { slot: plx_appkit::player_hud::ControlSlot, now: u32 },
+    PlayerCancelNext { decline: bool },
+    PlayerHudCommand { command: plx_appkit::player_hud::command::HudCommand, now: u32 },
+    PlayerModel(plx_appkit::player_hud::model::HudModel),
+    PlayerCompiled(std::sync::Arc<plx_appkit::hud_format::compile::Compiled>),
+    PlayerHudPolicy(crate::player::HudPolicy),
+    PlayerOverlayRetarget(crate::player::overlay::OverlayKind),
+    PlayerOverlayTrackRow(plx_appkit::track_menu::TrackRow),
+    PlayerOverlayQuality,
+    PlayerOverlayPick(String),
 }
 
 /// What the consent machine is told (§2.3): a person's answer to both questions at once.
@@ -1487,8 +1630,8 @@ pub enum ConsentCmd {
     Record { errors: bool, usage: bool },
 }
 
-/// What an owned screen asks the LEGACY LOOP to do, because the owner of that decision is not on
-/// the dispatcher yet. Each names the phase that retires it.
+/// Commands requiring app-owned resources. The runner executes these at their dispatcher FIFO
+/// head; the historical phase annotations below describe their original migration boundaries.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LoopReq {
     /// BACK at a root the platform owns (Home, the FIRST consent question): hand the screen to
@@ -1991,7 +2134,45 @@ pub enum AppArg {
     FirstRunConsent(u8),
 }
 
+/// Data-only frame probe policy. A new ordinary screen selects `Generic` here; it does not
+/// extend an application-layer route ladder. Legacy schemas remain explicit for recorded bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProbeKind { Generic, Content, Login, Profiles, Onboard, Player, Surface }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RouteProbe {
+    pub word: &'static str,
+    pub kind: ProbeKind,
+}
+
 impl AppArg {
+    /// The heartbeat and probe share this registration-owned declaration. No wildcard: every
+    /// argument must choose its word and schema, including non-page surfaces.
+    pub fn route_probe(&self) -> RouteProbe {
+        use ProbeKind::*;
+        let (word, kind) = match self {
+            Self::Login => ("login", Login),
+            Self::Profiles => ("profiles", Profiles),
+            Self::Onboard => ("onboard", Onboard),
+            Self::Home => ("home", Content),
+            Self::Library | Self::LibraryCollections { .. } | Self::LibraryRecommended { .. } => ("library", Content),
+            Self::Search => ("search", Content),
+            Self::Watchlist => ("watchlist", Content),
+            Self::Player => ("player", Player),
+            Self::Content(ContentArg::Detail { .. }) => ("detail", Content),
+            Self::Content(ContentArg::Person { .. } | ContentArg::Filmography { .. }) => ("person", Content),
+            Self::Content(ContentArg::Collection(_)) => ("collection", Content),
+            Self::Content(ContentArg::Catalog { .. }) => ("catalog", Content),
+            Self::Settings(_) | Self::FirstRunConsent(_) | Self::LibraryMenu(_)
+            | Self::AccountMenu | Self::WatchlistMenu(_) | Self::ItemMenu(_)
+            | Self::PlayerOverlay(_) | Self::AltSources(_) | Self::VersionsPanel(_)
+            | Self::TracksPanel(_) | Self::AboutPanel | Self::PersonBio | Self::CollectionAbout => ("", Surface),
+        };
+        RouteProbe { word, kind }
+    }
+
+    pub fn route_word(&self) -> &'static str { self.route_probe().word }
+
     /// Is this one of the library screen's three routes: the full grid and the two pages its header
     /// pushes over it (Collections, Recommended)? They are all the one `LibraryScreen` family, so a
     /// request or a command addressed to "the library" is answered on any of them.
@@ -2008,6 +2189,24 @@ pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryC
      ItemMenu{sid:u32,rk:str,kind:{Card{from_deck:bool,type:u32},Episode{mark:u32},Season{mark:u32},Catalog{state:u32}},\
      host:u32,focus:Option<{entry:u32,elem:u32}>,anchor:[u32;4],loaded_episode:bool,from_home:bool,catalog:Option<{guid:str}>},\
      WatchlistMenu{host:u32,options:{type:u32,sort:u32,descending:bool,show:u32},anchor:[u32;4]}}";
+
+/// Append-only page samples for heartbeat/scenario validation. Adding an ordinary screen
+/// extends this registration census here, never a central application test table.
+#[cfg(any(test, feature = "test-support"))]
+pub fn every_page_arg() -> Vec<AppArg> {
+    let sid = plx_plex::plex::ServerId::UNSET;
+    vec![
+        AppArg::Login, AppArg::Profiles, AppArg::Onboard, AppArg::Home, AppArg::Library,
+        AppArg::LibraryCollections { section: 0 }, AppArg::LibraryRecommended { section: 0 },
+        AppArg::Content(ContentArg::Detail { sid, rk: String::new() }),
+        AppArg::Content(ContentArg::Person {
+            sid, key: String::new(), guid: String::new(), name: String::new(), thumb: String::new(),
+        }),
+        AppArg::Content(ContentArg::Collection(plx_plex::plex::collections::CollectionRef::by_tag(sid, 0, 1, ""))),
+        AppArg::Content(ContentArg::Catalog { hex: [0; 12] }),
+        AppArg::Search, AppArg::Watchlist, AppArg::Player,
+    ]
+}
 
 impl LogicalState for AppArg {
     fn write(&self, c: &mut Canon) {
@@ -2256,9 +2455,9 @@ where
             AppArg::WatchlistMenu(arg) => Box::new(crate::watchlist::menu::WatchlistMenuScreen::new(entry, *arg)),
             AppArg::PlayerOverlay(arg) => {
                 let offer_search = H::subtitle_search(cx).is_some();
-                Box::new(crate::player::overlay::PlayerOverlayScreen::new_folded(
+                Box::new(crate::player::overlay::PlayerOverlayScreen::new_captured(
                     H::session(cx), H::metadata(cx), entry, arg.kind, offer_search,
-                    self.player_menu_anchor.take(), std::mem::take(&mut self.player_more_folds)))
+                    self.player_menu_anchor.take(), std::mem::take(&mut self.player_more_folds), H::screen_inputs(cx)))
             }
             AppArg::AltSources(arg) => Box::new(
                 crate::alt_sources::AltSourcesScreen::new(entry, arg.clone(), H::metadata(cx)),
@@ -3070,6 +3269,323 @@ mod compaction_tests {
         let mut table = vec![1, 2, 3];
         assert!(Compaction::remove(&mut table, Vec::new()).is_none());
         assert_eq!(table, vec![1, 2, 3]);
+    }
+}
+
+/// The accessibility-id coverage TABLE (a11y-ids plan, D2 and workstream A): which screens answer
+/// `Focusable::a11y`, `a11y_elems` and `a11y_find` and run `plx_ui::a11y::conformance`.
+///
+/// [`coverage`] is an exhaustive `match` over every `AppArg` arm, and over the arms of `ContentArg`
+/// and `SettingsPage` it wraps, with NO wildcard: a new screen does not compile until it is tabled
+/// here. An arm is [`Coverage::Covered`] by a function that MOUNTS that screen and runs
+/// `plx_ui::a11y::conformance` over it; the function is the screen's own test body, exposed from its
+/// test module (`<screen>_conforms`). Where that module's ids test shares the mounting helper, a
+/// change to the mount reaches both; otherwise the table is the function's only caller. An arm that
+/// cannot be mounted on the host is [`Coverage::Pending`] with the true reason, and the table's
+/// tests print it. The table only shrinks; precedent: `cards_conformance_tests.rs`'s `table()`.
+///
+/// A covered function returns the namespace of every mounting it exercised (`Screen::a11y_ns`), and
+/// `plx_ui::a11y::conform` is the one way a test module produces one: it runs conformance and reads the
+/// namespace together, so a mount cannot be run through one without the other.
+///
+/// It lives in `registry.rs` because it names every screen's test function and that file is the one the
+/// `sibling` gate admits for that (a screen's own test module reaches the shared helper as
+/// `plx_ui::a11y::conform`, never through a sibling).
+#[cfg(test)]
+mod a11y_coverage_tests {
+    use super::{AppArg, ContentArg, SettingsPage};
+    use crate::family::{PickerKind, PosterKind};
+    use plx_ui::a11y::Namespaces;
+
+    /// Where one screen stands.
+    #[derive(Debug)]
+    pub(super) enum Coverage {
+        /// Mounted and run through `plx_ui::a11y::conformance` by this function; the name is the arm's.
+        Covered(&'static str, fn() -> Namespaces),
+        /// Cannot be run through it yet: the arm's name, then the reason, which says what is missing and
+        /// is TRUE of this commit. No arm is pending now (the table only shrinks); the variant stays for
+        /// the next screen that cannot be mounted on the host the day it is added.
+        #[allow(dead_code)]
+        Pending(&'static str, &'static str),
+    }
+
+    /// A Settings-family page through the surface (`RouteSurface`), the way `AppArg::Settings` mounts it.
+    fn surface(page: SettingsPage) -> Namespaces {
+        crate::settings::root_navigation_tests::settings_page_conforms(page)
+    }
+
+    /// The table: every screen the application can mount, and where it stands. A [`Coverage::Covered`]
+    /// arm names its mount function; a new arm is a compile error until it is tabled here.
+    pub(super) fn coverage(arg: &AppArg) -> Coverage {
+        use Coverage::Covered;
+        match arg {
+            AppArg::LibraryMenu(_) => Covered("LibraryMenu", crate::library::menu::tests::library_menu_conforms),
+            AppArg::AccountMenu => Covered("AccountMenu", crate::account_menu::tests::account_menu_conforms),
+            AppArg::ItemMenu(_) => Covered("ItemMenu", crate::item_menu::tests::item_menu_conforms),
+            AppArg::WatchlistMenu(_) => Covered("WatchlistMenu", crate::watchlist::page_tests::watchlist_menu_conforms),
+            AppArg::PlayerOverlay(_) => Covered("PlayerOverlay", crate::player::overlay_tests::player_overlay_conforms),
+            AppArg::AltSources(_) => Covered("AltSources", crate::alt_sources::tests::focus_and_hit::alt_sources_conforms),
+            AppArg::VersionsPanel(_) => Covered("VersionsPanel", crate::versions_panel::tests::versions_panel_conforms),
+            AppArg::TracksPanel(_) => Covered("TracksPanel", crate::tracks_panel::tests::tracks_panel_conforms),
+            AppArg::AboutPanel => Covered("AboutPanel", crate::about_panel::tests::about_panel_conforms),
+            AppArg::PersonBio => Covered("PersonBio", crate::person_bio::tests::person_bio_conforms),
+            AppArg::CollectionAbout => Covered("CollectionAbout", crate::about_panel::tests::collection_about_conforms),
+            AppArg::Login => Covered("Login", crate::login::tests::login_conforms),
+            AppArg::Profiles => Covered("Profiles", crate::profiles::selection_tests::profiles_conforms),
+            AppArg::Onboard => Covered("Onboard", crate::onboard::tests::onboard_first_run_conforms),
+            AppArg::Home => Covered("Home", crate::home::cards_harness::home_conforms),
+            AppArg::Library => Covered("Library", crate::library::cards_harness::library_conforms),
+            AppArg::LibraryCollections { .. } => Covered("LibraryCollections", crate::library::tests::collections_listing_tests::library_collections_conforms),
+            AppArg::LibraryRecommended { .. } => Covered("LibraryRecommended", crate::library::cards_harness::recommended_conforms),
+            AppArg::Search => Covered("Search", crate::search::cards_harness::search_conforms),
+            AppArg::Watchlist => Covered("Watchlist", crate::watchlist::page_tests::watchlist_conforms),
+            AppArg::Player => Covered("Player", crate::player::step_ladder_tests::player_conforms),
+            AppArg::Content(content) => match content {
+                ContentArg::Detail { .. } => Covered("Content::Detail", crate::detail::tests::detail_conforms),
+                ContentArg::Person { .. } => Covered("Content::Person", crate::person::cards_harness::person_conforms),
+                ContentArg::Filmography { .. } => Covered("Content::Filmography", crate::filmography::tests::filmography_conforms),
+                ContentArg::Collection(_) => Covered("Content::Collection", crate::collection::cards_harness::collection_conforms),
+                ContentArg::Catalog { .. } => Covered("Content::Catalog", crate::catalog::tests::catalog_conforms),
+            },
+            AppArg::Settings(page) => match page {
+                SettingsPage::Root => Covered("Settings::Root", || surface(SettingsPage::Root)),
+                SettingsPage::Language => Covered("Settings::Language", || surface(SettingsPage::Language)),
+                SettingsPage::UnderPosters => Covered("Settings::UnderPosters", || surface(SettingsPage::UnderPosters)),
+                SettingsPage::UnderPostersDetails(_) => Covered("Settings::UnderPostersDetails", || {
+                    let mut namespaces = surface(SettingsPage::UnderPostersDetails(PosterKind::Movie));
+                    namespaces.extend(surface(SettingsPage::UnderPostersDetails(PosterKind::Show)));
+                    namespaces
+                }),
+                SettingsPage::Contribute => Covered("Settings::Contribute", || surface(SettingsPage::Contribute)),
+                SettingsPage::Playback => Covered("Settings::Playback", || surface(SettingsPage::Playback)),
+                SettingsPage::AudioSubtitles => Covered("Settings::AudioSubtitles", || surface(SettingsPage::AudioSubtitles)),
+                SettingsPage::Favourites => Covered("Settings::Favourites", || surface(SettingsPage::Favourites)),
+                SettingsPage::LibraryFavourites => Covered("Settings::LibraryFavourites", || surface(SettingsPage::LibraryFavourites)),
+                SettingsPage::Privacy => Covered("Settings::Privacy", || surface(SettingsPage::Privacy)),
+                SettingsPage::Legal => Covered("Settings::Legal", || surface(SettingsPage::Legal)),
+                SettingsPage::About => Covered("Settings::About", || surface(SettingsPage::About)),
+                SettingsPage::Document(_) => Covered("Settings::Document", || surface(SettingsPage::Document(0))),
+                SettingsPage::Preview(_) => Covered("Settings::Preview", || surface(SettingsPage::Preview(0))),
+                SettingsPage::ConsentStage(_) => Covered("Settings::ConsentStage", || surface(SettingsPage::ConsentStage(0))),
+                SettingsPage::Picker(_) => Covered("Settings::Picker", || surface(SettingsPage::Picker(PickerKind::Quality))),
+                SettingsPage::Diagnostics => Covered("Settings::Diagnostics", || surface(SettingsPage::Diagnostics)),
+                SettingsPage::PlayerHud => Covered("Settings::PlayerHud", || surface(SettingsPage::PlayerHud)),
+                SettingsPage::HudGallery => Covered("Settings::HudGallery", || surface(SettingsPage::HudGallery)),
+                SettingsPage::HudDetail(_) => Covered("Settings::HudDetail", crate::hud_settings::tests::hud_detail_conforms),
+                SettingsPage::HudAbout(_) => Covered("Settings::HudAbout", crate::hud_settings::tests::hud_about_conforms),
+                SettingsPage::HudPreview(_) => Covered("Settings::HudPreview", crate::hud_settings::tests::hud_preview_conforms),
+            },
+            AppArg::FirstRunConsent(_) => Covered("FirstRunConsent", crate::settings::root_navigation_tests::first_run_consent_conforms),
+        }
+    }
+
+    /// How many leaf arms the table has: 21 flat `AppArg` arms, 5 `ContentArg`, 22 `SettingsPage` and
+    /// `FirstRunConsent`. A new arm fails [`coverage`] to compile, and then this to pass until the census
+    /// below holds it too.
+    const ARMS: usize = 49;
+
+    /// **A value of every leaf arm** the table names: the registry's own page and surface censuses, plus
+    /// the arms those leave out (Filmography and every Settings page).
+    fn every_arm() -> Vec<AppArg> {
+        let sha = plx_data::hudpacks::Sha::parse(&"0".repeat(64)).expect("a sha256");
+        let mut arms = super::every_page_arg();
+        arms.extend(super::every_surface_arg());
+        arms.push(AppArg::Content(ContentArg::Filmography {
+            sid: plx_plex::plex::ServerId::UNSET,
+            key: String::new(),
+        }));
+        arms.extend(
+            [
+                SettingsPage::Root,
+                SettingsPage::Language,
+                SettingsPage::UnderPosters,
+                SettingsPage::UnderPostersDetails(PosterKind::Movie),
+                SettingsPage::Contribute,
+                SettingsPage::Playback,
+                SettingsPage::AudioSubtitles,
+                SettingsPage::Favourites,
+                SettingsPage::LibraryFavourites,
+                SettingsPage::Privacy,
+                SettingsPage::Legal,
+                SettingsPage::About,
+                SettingsPage::Document(0),
+                SettingsPage::Preview(0),
+                SettingsPage::ConsentStage(0),
+                SettingsPage::Picker(PickerKind::Quality),
+                SettingsPage::Diagnostics,
+                SettingsPage::PlayerHud,
+                SettingsPage::HudGallery,
+                SettingsPage::HudDetail(sha),
+                SettingsPage::HudAbout(sha),
+                SettingsPage::HudPreview(sha),
+            ]
+            .map(AppArg::Settings),
+        );
+        arms.push(AppArg::FirstRunConsent(0));
+        arms
+    }
+
+    /// The census with each arm's coverage, one per arm name (the registry's censuses list a
+    /// surface's kinds more than once).
+    fn tabled() -> Vec<Coverage> {
+        let mut seen = std::collections::BTreeSet::new();
+        every_arm()
+            .iter()
+            .map(coverage)
+            .filter(|c| {
+                let (Coverage::Covered(name, _) | Coverage::Pending(name, _)) = c;
+                seen.insert(*name)
+            })
+            .collect()
+    }
+
+    /// **Every arm is tabled, and the table is real.** Each [`Coverage::Covered`] arm's function runs: it
+    /// mounts the screen and runs `plx_ui::a11y::conformance` over it, and answers at least one namespace.
+    /// A [`Coverage::Pending`] arm names a reason. `Pending` arms are printed, so a gap is read, not found.
+    #[test]
+    fn every_arm_is_covered_by_a_mount_that_conforms_or_pending_with_a_reason() {
+        let table = tabled();
+        assert_eq!(table.len(), ARMS, "the census lists every leaf arm of the table, once");
+        let (mut covered, mut pending) = (0, 0);
+        for entry in &table {
+            match entry {
+                Coverage::Covered(name, run) => {
+                    let namespaces = run();
+                    assert!(!namespaces.is_empty(), "{name}: a covered arm mounts something and answers its namespace");
+                    covered += 1;
+                }
+                Coverage::Pending(name, why) => {
+                    assert!(!why.trim().is_empty(), "{name}: a pending screen names why");
+                    eprintln!("a11y coverage PENDING {name}: {why}");
+                    pending += 1;
+                }
+            }
+        }
+        eprintln!("a11y coverage: {covered} covered, {pending} pending of {ARMS}");
+    }
+
+    /// Two arms that answer one namespace because they mount ONE screen type: the namespace, the arms, and
+    /// why they are the same screen. A pair that is not in this list and shares a namespace is two screens
+    /// whose ids would meet.
+    const ONE_SCREEN_TWO_MOUNTINGS: &[(&str, &[&str], &str)] = &[(
+        "onboard",
+        &["Onboard", "Settings::Favourites", "Settings::LibraryFavourites"],
+        "one `OnboardScreen`, mounted by the first run, by the Settings editor and by the Library's editor \
+         (`settings::mount_page` and the registry both build it); its ids are the same elements",
+    ), (
+        "library",
+        &["Library", "LibraryCollections"],
+        "one `LibraryScreen`: `AppArg::LibraryCollections` is the same screen in `Listing::Collections` mode, \
+         pushed over `AppArg::Library` (`is_library_family`)",
+    ), (
+        "consent",
+        &["FirstRunConsent", "Settings::ConsentStage"],
+        "one `ConsentPage::first_run`: `AppArg::FirstRunConsent` roots a `RouteSurface` in `Family::FirstRunConsent` \
+         at `SettingsPage::ConsentStage`, and the Settings family pushes the same page for the same stage",
+    ), (
+        "about",
+        &["AboutPanel", "CollectionAbout"],
+        "one `AboutPanelScreen`: the registry mounts it over the item (`AboutPanelScreen::new`) and over the \
+         collection (`AboutPanelScreen::collection`); it declares no group, so it answers no id at all",
+    )];
+
+    /// **No two DIFFERENT screens answer one namespace** (plan D2): the namespace is the `<ns>` of every id
+    /// the screen answers, so two screens sharing one would give two elements one id. The namespaces of
+    /// every covered mounting are collected (every `SettingsPage` and `ContentArg` arm included); an arm may
+    /// share only as [`ONE_SCREEN_TWO_MOUNTINGS`] allows.
+    #[test]
+    fn no_two_screens_answer_one_namespace() {
+        use std::collections::BTreeMap;
+        let mut by_namespace: BTreeMap<&'static str, Vec<&'static str>> = BTreeMap::new();
+        for entry in tabled() {
+            if let Coverage::Covered(name, run) = entry {
+                let mut own = run();
+                own.sort_unstable();
+                own.dedup();
+                for ns in own {
+                    by_namespace.entry(ns).or_default().push(name);
+                }
+            }
+        }
+        assert!(by_namespace.len() > 30, "the covered arms answer their own namespaces: {by_namespace:?}");
+        let mut complaints = Vec::new();
+        for (ns, arms) in &by_namespace {
+            if arms.len() == 1 {
+                continue;
+            }
+            let allowed = ONE_SCREEN_TWO_MOUNTINGS
+                .iter()
+                .any(|(allowed_ns, allowed_arms, _)| allowed_ns == ns && allowed_arms.len() == arms.len() && arms.iter().all(|a| allowed_arms.contains(a)));
+            if !allowed {
+                complaints.push(format!("namespace {ns:?} is answered by {arms:?}: two screens would share an id"));
+            }
+        }
+        assert!(complaints.is_empty(), "{}", complaints.join("\n"));
+        // an allow-list entry that no longer matches (its arms stopped sharing) is stale and fails too
+        for (ns, arms, _) in ONE_SCREEN_TWO_MOUNTINGS {
+            assert_eq!(by_namespace.get(ns).map(|a| a.len()), Some(arms.len()), "{ns:?} no longer shares: drop its allow-list entry");
+        }
+    }
+
+    /// **The replay alphabet names exactly the namespaces the table reports, and the bound `MAX_ID_SEGS`.**
+    /// `tests/fixtures/replay/ALPHABET.json` has one pattern for an accessibility id, and
+    /// `.claude/hooks/outbound-guard.py` lets a recording that matches it be committed and pushed. Its first
+    /// segment is a CLOSED alternation (an open `[a-z]+` would pass a household hostname like `nas.local`),
+    /// so a screen that gains a namespace fails here until the alternation is told, and a namespace no screen
+    /// answers any more fails here until it is dropped. `nav` is the one the table cannot report: the shared
+    /// strip answers it, not a screen (`plx_ui::dispatch`, `strip_path`). The repeat bound is
+    /// `plx_ui::a11y::MAX_ID_SEGS`, which the conformance suite holds every id to.
+    #[test]
+    fn the_replay_alphabet_names_exactly_the_namespaces_the_table_reports() {
+        use std::collections::BTreeSet;
+        let alphabet: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/replay/ALPHABET.json"
+        )))
+        .expect("ALPHABET.json is JSON");
+        // the id pattern is `(<ns>|<ns>|...)(\.(<name>|0|<index>)){1,<MAX_ID_SEGS>}`
+        const TAIL: &str = r"(\.([a-z][a-z0-9_]*|0|[1-9][0-9]*)){1,";
+        let pattern = alphabet["patterns"]
+            .as_array()
+            .expect("patterns is a list")
+            .iter()
+            .filter_map(|p| p.as_str())
+            .find(|p| p.contains(TAIL))
+            .expect("ALPHABET.json has the accessibility-id pattern");
+        let (head, bound) = pattern.split_once(TAIL).expect("the id pattern splits at its tail");
+        let named: BTreeSet<&str> = head
+            .strip_prefix('(')
+            .and_then(|h| h.strip_suffix(')'))
+            .expect("the id pattern opens with the parenthesised namespace alternation")
+            .split('|')
+            .collect();
+        assert_eq!(
+            bound.strip_suffix('}').and_then(|b| b.parse::<usize>().ok()),
+            Some(plx_ui::a11y::MAX_ID_SEGS),
+            "the id pattern's repeat bound is plx_ui::a11y::MAX_ID_SEGS: {pattern}"
+        );
+
+        let mut answered: BTreeSet<&'static str> = BTreeSet::new();
+        answered.insert("nav");
+        for entry in tabled() {
+            if let Coverage::Covered(_, run) = entry {
+                answered.extend(run());
+            }
+        }
+        let answered: BTreeSet<&str> = answered.into_iter().collect();
+        for ns in &answered {
+            assert!(
+                ns.starts_with(|c: char| c.is_ascii_lowercase()) && ns.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'),
+                "{ns:?} is not a well-formed namespace"
+            );
+        }
+        let missing: Vec<_> = answered.difference(&named).collect();
+        let stale: Vec<_> = named.difference(&answered).collect();
+        assert!(
+            missing.is_empty() && stale.is_empty(),
+            "ALPHABET.json's accessibility-id pattern must list exactly the namespaces the screens answer (plus nav): \
+             add {missing:?}, drop {stale:?}"
+        );
     }
 }
 

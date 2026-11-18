@@ -59,6 +59,8 @@ pub trait Port<T>: Send + Sync + 'static {
 
 /// Assert that a step emitted exactly these jobs, in this order. `$got` is the `Vec` the step's
 /// owner hands back (`take_jobs()`), the list holds the expected values.
+/// With `stamped [(emitter, effect_pattern), ...]`, assert the complete stamped buffer instead,
+/// allowing pattern guards without requiring `Eq` or `Debug` on application effects.
 ///
 /// ```ignore
 /// assert_fx!(store.take_jobs(), [StoreJob::Detail(Job { addr, req }, store.detail_port())]);
@@ -66,6 +68,21 @@ pub trait Port<T>: Send + Sync + 'static {
 /// ```
 #[macro_export]
 macro_rules! assert_fx {
+    ($actual:expr, stamped [$(($from:expr, $pattern:pat $(if $guard:expr)?)),* $(,)?]) => {{
+        let actual = &$actual;
+        let mut effects = actual.iter();
+        let total = actual.len();
+        $(
+            let index = total - effects.len();
+            let observed = effects.next().unwrap_or_else(|| panic!("missing effect at index {}", index));
+            assert_eq!(observed.from, $from, "wrong emitter at effect index {}", index);
+            assert!(matches!(&observed.fx, $pattern $(if $guard)?),
+                "wrong effect at index {}: expected {}", index, stringify!($pattern));
+
+        )*
+        let consumed = total - effects.len();
+        assert!(effects.next().is_none(), "extra effect at index {}", consumed);
+    }};
     ($got:expr, [$($want:expr),* $(,)?]) => {{
         let got: Vec<_> = $got;
         let want: Vec<_> = vec![$($want),*];
@@ -87,6 +104,7 @@ mod tests {
     fn assert_fx_passes_on_exactly_the_jobs_in_order() {
         assert_fx!(vec![job(1, "a"), job(2, "b")], [job(1, "a"), job(2, "b")]);
         assert_fx!(Vec::<Job<&str>>::new(), []);
+        assert_fx!(vec![(1, "a")], [(1, "a")]);
     }
 
     #[test]

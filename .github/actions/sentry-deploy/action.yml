@@ -1,0 +1,54 @@
+name: Mark a Sentry release as shipped
+description: >
+  Finalize the Sentry release a package reports and record a deploy of it to its environment, once
+  the package is actually published. Shared by the publish jobs of release.yml, rc.yml and
+  nightly.yml, which take every input from build-package.yml's `sentry-*` outputs, so the release
+  name and the project are derived in one place.
+
+# Why the publish job and not the build: build-package.yml creates the release and attaches its
+# commits as soon as the binary is graded, but a build can still fail its later gates or never be
+# published. Finalizing sets the release's date, which is what "resolve in the next release" and the
+# regression check order releases by; the deploy is what the release page shows as "shipped to
+# production" (or "development", for a nightly). Both only make sense for a package people can
+# install, so they happen after the publish step succeeded.
+#
+# Not fatal by design, and the caller says so with `continue-on-error`: the package is already
+# out, and a Sentry outage must not turn a published release red.
+
+inputs:
+  release:
+    description: The Sentry release, `plxnative@<reported version>`. Empty skips this action.
+    required: true
+  org:
+    description: The Sentry organization slug.
+    required: true
+  project:
+    description: The Sentry project the build's events and debug files go to.
+    required: true
+  environment:
+    description: The environment the build reports, `production` or `development`.
+    required: true
+  auth-token:
+    description: SENTRY_AUTH_TOKEN.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Finalize the release and record the deploy
+      if: inputs.release != ''
+      shell: bash
+      env:
+        SENTRY_AUTH_TOKEN: ${{ inputs.auth-token }}
+        SENTRY_ORG: ${{ inputs.org }}
+        SENTRY_PROJECT: ${{ inputs.project }}
+        RELEASE: ${{ inputs.release }}
+        ENVIRONMENT: ${{ inputs.environment }}
+      run: |
+        set -euo pipefail
+        # The CLI is the version pinned in tools/package.json, as in build-package.yml.
+        npm ci --prefix tools --no-audit --no-fund
+        cli=tools/node_modules/.bin/sentry-cli
+        "$cli" releases finalize "$RELEASE"
+        "$cli" deploys new --release "$RELEASE" -e "$ENVIRONMENT"
+        echo "Sentry: $RELEASE finalized and deployed to $ENVIRONMENT ($SENTRY_PROJECT)." >> "$GITHUB_STEP_SUMMARY"

@@ -1,6 +1,6 @@
 # HUD registry tooling
 
-The registry lives in `GLinnik21/plxnative-huds`. It uses the app's compiler, schema and real
+The registry lives in `plxnative/plxnative-huds`. It uses the app's compiler, schema and real
 text renderer through an immutable Linux authoring bundle. PR12's acceptance record belongs in
 the registry's `IMPLEMENTATION.md`; this document describes the app-side interfaces.
 

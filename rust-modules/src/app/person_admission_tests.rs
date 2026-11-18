@@ -60,7 +60,8 @@ fn a_person_opened_on_a_registered_server_admits_its_three_first_reads_in_slot_o
     let sid = plx_plex::plex::register_for_test("person-admission", "127.0.0.1", 9, "t", "cid");
     assert_eq!(sid.raw(), 0, "the slots below are server 0's");
     let client = plx_plex::plex::client_for(sid).expect("registered").instance_gen();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = owner.bridge();
 
     open(&mut bridge, sid);
     pump_once(&mut bridge);
@@ -83,7 +84,8 @@ fn a_person_on_a_server_with_no_client_admits_only_the_plex_tv_reads() {
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
     recording();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = owner.bridge();
 
     open(&mut bridge, ServerId::from_raw(0));
     pump_once(&mut bridge);

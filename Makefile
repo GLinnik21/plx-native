@@ -1094,6 +1094,16 @@ SMP_INTERPOSER_LDFLAG = $(if $(PLAYBACK_HAS_FEED),-Wl$(PLAYBACK_COMMA)--export-d
 # `ci/check-elf.sh` asserts it on the shipped binary.
 # `check-c-unit` links its host copy of the interposer with this same variable.
 EXIT_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=exit
+# The third symbol the executable exports: src/access.c defines libc's `access`, and this export makes
+# the `access` of every shared library bind to it. The GPU driver (libmali) calls access() on four
+# debug-switch paths (/tmp/API_PRINT at the top of every GL call, the other three per draw, swap or
+# glUseProgram), and each failing lookup costs ~8.5 us of kernel time on the webOS 5.6.2 TV, so
+# src/access.c answers those four paths "absent" in user space and hands every other path to the
+# kernel's own `access`. The export is what makes the definition preemptible; `ci/check-elf.sh`
+# asserts it on the shipped binary, and `check-c-unit` links its
+# host copy of the interposer with this same variable. The paths themselves are the table in
+# src/access.c (ci/access-interpose-test.c lists them again, to grade the table against).
+ACCESS_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=access
 # --gc-sections: this link is gcc's, not rustc's. rustc passes --gc-sections itself when IT links an
 # executable (which is why pkg/plxnative-storage above never needed the flag), but here the Rust
 # code arrives as a finished staticlib, so without the flag every section of every archive member
@@ -1103,16 +1113,16 @@ EXIT_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=exit
 # it DOES use is kept) and 13.2 MB .text, and 62 libc/libm imports (posix_spawn, chroot, splice,
 # sinf, ...) that only dead code used.
 # Roots needed no extra KEEP/--undefined: the entry point and the .init_array/.fini_array
-# constructors are roots by construction, the Starfish interposer (Feed builds only) and `exit` are
+# constructors are roots by construction, the Starfish interposer (Feed builds only), `exit` and `access` are
 # roots because --export-dynamic-symbol exports them, and everything else the app needs is reached by a relocation
 # (the ffmpeg/curl/ACB/Starfish entry points are dlsym'd out of OTHER libraries, never out of this
-# executable, whose .dynsym defines only _init, _fini, the Starfish interposer and `exit`; a
+# executable, whose .dynsym defines only _init, _fini, the Starfish interposer, `exit` and `access`; a
 # `PLAYBACK_BACKENDS=uri` binary has no interposer and no Starfish import, and `ci/check-elf.sh` uri
 # mode asserts the interposer is absent).
 # Nothing here uses `#[used]`/`link_section`/`__attribute__((constructor))`. If a future feature
 # needs a symbol that only `dlsym(RTLD_DEFAULT, ...)` reaches inside this binary, it must be
-# exported or KEEP()ed explicitly. `ci/check-elf.sh` only asserts that the Starfish interposer (a Feed build's) and
-# `exit` are exported (and that Load-with-context is not a loader dependency); it does not assert
+# exported or KEEP()ed explicitly. `ci/check-elf.sh` only asserts that the Starfish interposer (a Feed build's),
+# `exit` and `access` are exported (and that Load-with-context is not a loader dependency); it does not assert
 # that nothing else is defined.
 GC_SECTIONS_LDFLAG = -Wl,--gc-sections
 # `-lm` AHEAD of $(RUST_LIB) as well as at the end: the prebuilt armv7 std's compiler_builtins
@@ -1121,7 +1131,7 @@ GC_SECTIONS_LDFLAG = -Wl,--gc-sections
 # scanned and the members are never extracted, so every call (Rust's and svg.c's) binds to glibc's
 # VFP libm. `ci/check-elf.sh` fails if a local definition of one of them comes back.
 pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(SENTRY_NATIVE_STAMP) Makefile ci/arm-cc.py ci/check-link-evidence.py
-	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(GC_SECTIONS_LDFLAG) $(SMP_INTERPOSER_LDFLAG) $(EXIT_INTERPOSER_LDFLAG) \
+	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(GC_SECTIONS_LDFLAG) $(SMP_INTERPOSER_LDFLAG) $(EXIT_INTERPOSER_LDFLAG) $(ACCESS_INTERPOSER_LDFLAG) \
 	  $(OBJS) -lm $(RUST_LIB) $(SENTRY_NATIVE_LIB) \
 	  $(SENTRY_UNWIND_LIB) $(LIBS_REAL) -ldl -lrt -lpthread -lm -o $@
 
@@ -1689,6 +1699,18 @@ check-cargo-lint: lint
 # ci/test_test_crate.py pins the two equal.
 UNIT_RUN = python3 ../tools/cargo-test-parallel.py
 UNIT_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_net plx_ui plx_plex plx_telemetry plx_data plx_session plx_media plx_playback_contract plx_play_uri plx_play_feed plx_media_codecs plx_appkit plx_screens
+# The `hostsim` pass runs only the crates that DECLARE a `hostsim` feature (HOSTSIM_SUITE, a subset of
+# UNIT_SUITE in the same order; ci/test_test_crate.py pins both the subset and the recipe). The seven that
+# do not (plx_net, plx_ui, plx_appkit, plx_screens, plx_media_codecs, plx_play_uri, plx_playback_contract)
+# have no `feature = "hostsim"` in their source and the same test names in both passes (14 crates did in
+# CI run 43528579834; the three that differ are `plxnative-modules`, `plx_media` and `plx_play_feed`,
+# all kept). Their own test set is therefore identical in the two passes. The old second run did link
+# their test binaries against hostsim-built `plx_base`, `plx_gfx`, `plx_platform`, `plx_media` and
+# `plx_play_feed` (steerable `ENV_STEERABLE` paths, larger glyph-cache sizes, `ffi_host` present), but
+# none of their tests observes those dependency-side differences; the guard does not check that, it
+# checks that the crate declares no `hostsim` feature and has no `feature = "hostsim"` in its src, and
+# fails when one gains either, which is the moment it must join the list.
+HOSTSIM_SUITE = plxnative-modules plx_base plx_machine plx_platform plx_gfx plx_plex plx_telemetry plx_data plx_session plx_media plx_play_feed
 
 # The default-feature unit suite and everything that drives cargo through ci/ self-tests.
 check-cargo-unit-default:
@@ -1740,7 +1762,7 @@ check-cargo-unit-default:
 
 # The `hostsim` unit suite (the host feed seam exists only there).
 check-cargo-unit-hostsim:
-	@# The SAME suite as `check-cargo-unit-default`'s `cargo test --lib`, again under `hostsim`, which is
+	@# The crates of HOSTSIM_SUITE (the ones that declare `hostsim`) again under `hostsim`, which is
 	@# not a duplicate run: the host feed seam (`play-feed/src/ffi_host.rs`) only exists in that configuration,
 	@# so every test that drives an AU through `sf_feed` is COMPILED OUT of the default pass and cannot fail it. The prime-livelock
 	@# regression is one of those, and it guards the 94-second freeze of 2026-08-29 — a defect that
@@ -1751,7 +1773,7 @@ check-cargo-unit-hostsim:
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" PLXNATIVE_RUNTIME_DIR="$$d" \
 	  $(TELEMETRY_ENV) \
 	  $(HOST_ENV) \
-	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_playback_contract -p plx_play_uri -p plx_play_feed -p plx_media_codecs -p plx_appkit -p plx_screens --features hostsim
+	  $(UNIT_RUN) -- cargo +$(RUST_TOOLCHAIN) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_play_feed --features hostsim
 
 # OPT-IN incremental inner loop: the default-feature unit suite (the same `cargo test --lib` as
 # `check-cargo-unit-default`, same throwaway runtime root and telemetry env) with
@@ -1938,22 +1960,23 @@ build-bench build-bench-quick:
 # and the CI job. A gate is added to the manifest and nowhere else: this recipe never names one, CI
 # runs this target, and ci/test_ci_split.py fails on a test file no gate runs. Steps run beside each
 # other, so they must not share a scratch path, a port or the checkout (the manifest's header, and
-# ci/test_check_collisions.py).
+# ci/test_check_collisions.py); the one exception is check-c-unit's access leg, whose probe paths are
+# the GPU driver's and so fixed, which takes a flock on /tmp.
 check-python:
 	@python3 tools/check-parallel.py \
 	  rest='$(MAKE) --no-print-directory check-python-rest' \
 	  harness='$(MAKE) --no-print-directory check-python-harness'
 
 check-python-harness:
-	@# The harness's own host unit tests (tests/test_harness.py, stdlib unittest). THE MOST
-	@# EXPENSIVE STEP IN `check` BY FAR — 661 s of a 1100 s run, measured 2026-10-01 on a cold lane
-	@# at load ~5, and 630 s of that is the `DepGates` class running the whole of
-	@# `ci/check-deps.sh` (11 s a run) once or more per test to prove each structure gate still
-	@# catches a planted violation. Those self-tests now edit a private copy of the gate's inputs
-	@# and run on a thread pool (`PLX_TEST_JOBS`, default min(8, cpus)): the module takes 175 s
-	@# instead of 661 s. (It was 980 s of 1217 s before `check-deps.sh` stopped forking a process
-	@# per candidate line.) Measure before budgeting, and if this number needs to come down
-	@# further, `check-deps.sh` itself is the place. run.py
+	@# The harness's own host unit tests (tests/test_harness.py, stdlib unittest): the harness
+	@# branch of `check-python` and the whole of CI's `host-python-harness` job. Most of it is the
+	@# `DepGates` class: about 70 self-tests, each planting ONE violation in a private copy of the
+	@# gate's inputs and running `ci/check-deps.sh --only <the rules it plants for>` to prove that
+	@# rule still catches it (since #1386 a self-test runs its own rules, not all 43), on a thread
+	@# pool (`PLX_TEST_JOBS`, default min(8, cpus)). Measured 2026-11-14 on CI: this step took
+	@# 144-196 s on the commits since #1386 and 380-500 s on the ones before it. Measure before
+	@# budgeting; `check-deps.sh`'s per-rule cost, then the self-test count, is where more would
+	@# come from. run.py
 	@# decides WHAT gets driven on the one television and had no test of any kind until 2026-08-22.
 	@# What it pins is the code path a full manifest.local.json never enters: an `item` key this
 	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A
@@ -2000,6 +2023,20 @@ check-python-harness:
 #    path, never linked: a shared object on the link line can change what the linker exports. Darwin's
 #    two-level namespace does not bind a dylib's `exit` to an executable's, so the test cannot run on
 #    a Mac and prints a skip line there; CI's Linux `make check` runs it.
+# 5. The libc `access` interposer (src/access.c), LINUX ONLY, built the same way: ci/access-interpose-lib.c
+#    is a shared object whose one function calls `access` (the shape of libmali's per-GL-call probe of
+#    /tmp/API_PRINT and three siblings), and ci/access-interpose-test.c `dlopen`s it by path and calls
+#    only through it, because a call made from the executable binds to the executable's own definition
+#    and proves nothing about a library's. With src/access.c linked and the link's own
+#    ACCESS_INTERPOSER_LDFLAG, the library's `access` of each of the four probe paths, which the test
+#    creates for the run (and deletes at exit and on a fatal signal; a file that was already there is
+#    left in place), must be -1/ENOENT, and every other path must be answered as the kernel does
+#    (compared with the raw system call: an existing file, permission modes, a missing path, a null
+#    path, a probe's base name in another directory, a probe path plus a slash). Without src/access.c
+#    the same library's `access` of an existing probe file must be 0, which is what proves the test can
+#    fail. The probe paths are the driver's and so fixed: the test takes a flock on /tmp so that two
+#    runs at once (ci/test_check_collisions.py makes some on purpose) take turns instead of deleting
+#    each other's probe files.
 .PHONY: check-c-unit
 check-c-unit:
 	@set -e; d=$$(mktemp -d "$${TMPDIR:-/tmp}/plx-c-unit.XXXXXX"); trap 'rm -rf "'"$$d"'"' EXIT; \
@@ -2012,8 +2049,13 @@ check-c-unit:
 	  "$$d/exit-interposed" "$$d/libexitcaller.so" interposed; \
 	  cc -O1 -Wall -Wextra -Werror -Isrc -o "$$d/exit-control" ci/exit-interpose-test.c src/crashtrace.c -ldl -lpthread; \
 	  "$$d/exit-control" "$$d/libexitcaller.so" control; \
+	  cc -O1 -Wall -Wextra -Werror -shared -fPIC -o "$$d/libaccesscaller.so" ci/access-interpose-lib.c; \
+	  cc -O1 -Wall -Wextra -Werror -o "$$d/access-interposed" ci/access-interpose-test.c src/access.c $(ACCESS_INTERPOSER_LDFLAG) -ldl; \
+	  "$$d/access-interposed" "$$d/libaccesscaller.so" interposed; \
+	  cc -O1 -Wall -Wextra -Werror -o "$$d/access-control" ci/access-interpose-test.c -ldl; \
+	  "$$d/access-control" "$$d/libaccesscaller.so" control; \
 	else \
-	  echo "check-c-unit: exit-interpose test skipped on $$(uname -s): only Linux binds a shared object's exit() to the executable's (CI runs it)"; \
+	  echo "check-c-unit: exit-interpose and access-interpose tests skipped on $$(uname -s): only Linux binds a shared object's exit() and access() to the executable's (CI runs them)"; \
 	fi
 
 check-python-rest:

@@ -464,9 +464,10 @@ mod tests {
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         use plx_ui::route_screen::RouteLayout;
         use plx_ui::table::TableView;
-        let widths = [
-            ("library panel", plx_ui::table::MENU_MAX_W),
-            ("favourites editor", RouteLayout::screen().sectioned_table().w),
+        // the library panel is a menu table; the favourites editor is a route page's table
+        let widths: [(&str, f32, fn() -> TableView); 2] = [
+            ("library panel", plx_ui::table::MENU_MAX_W, || { let mut t = TableView::new(); t.compact = false; t }),
+            ("favourites editor", RouteLayout::screen().sectioned_table().w, TableView::page),
         ];
         let groups = vec![
             SrcGroup { name: "a-very-long-shared-server-machine-name".into(), handle: "a-long-plex-tv-handle-string".into(),
@@ -486,11 +487,10 @@ mod tests {
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             let tag = language.tag();
-            for (surface, w) in widths {
+            for (surface, w, table_for) in widths {
                 for (level_name, level, tail) in [("browse", Level::Browse, Tail::Recheck), ("on_home", Level::OnHome, Tail::None)] {
                     let (secs, _) = sections(level, &groups, &rows, tail);
-                    let mut table = TableView::new();
-                    table.compact = false;
+                    let mut table = table_for();
                     table.set_sections(secs, 0, false);
                     out.extend(table.app_fit_failures(w, &format!("{tag} {surface} {level_name}")));
                 }

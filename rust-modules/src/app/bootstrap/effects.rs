@@ -122,6 +122,11 @@ pub(crate) fn input(event: &plx_machine::machine::InputEvent<u32>) -> Result<Val
         InputKind::Pan { dx, x, y } => json!({"pan_bits":[dx.to_bits(),x.to_bits(),y.to_bits()]}),
         InputKind::PointerHidden => json!({"pointer_hidden":true}),
         InputKind::SystemKeyboard(up) => json!({"keyboard":up}),
+        // An accessibility-id focus/press (`focus:<id>`, `press:<id>[@<subject>]`): the id and the
+        // optional subject are the FIFO token's own text, recorded once here (never re-derived
+        // from the synthesized FocusMoved/Key deliveries, which replay re-expands).
+        InputKind::ById { id, press, expect } => json!({"by_id":{"id":&**id,
+            "press":press.map(|tap| json!([tap.sym,tap.wcode])),"expect":expect.as_deref()}}),
         InputKind::Text(_) => return Err("unsupported Home text input"),
     };
     Ok(json!({"kind":"owned", "ms":event.at.ms,"dt_us":event.at.dt_us,
@@ -133,6 +138,7 @@ pub(crate) fn decode_input(value: &Value) -> Result<plx_machine::machine::InputE
     let number = |value: &Value| value.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or("invalid input integer");
     if value["kind"] != "owned" { return Err("unsupported controlled input"); }
     let body = &value["body"];
+    if body.get("by_id").is_some() { return decode_by_id(value); }
     let key = match body["key"].as_str() {
         Some("Up") => Key::Up, Some("Down") => Key::Down, Some("Left") => Key::Left,
         Some("Right") => Key::Right, Some("Ok") => Key::Ok, Some("Back") => Key::Back,
@@ -162,6 +168,38 @@ pub(crate) fn decode_input(value: &Value) -> Result<plx_machine::machine::InputE
     let mut canonical = value.clone();
     if let Some(object) = canonical.as_object_mut() { object.remove("f"); object.remove("t"); }
     if input(&event)? != canonical { return Err("noncanonical controlled input"); }
+    Ok(event)
+}
+
+/// One recorded `focus:`/`press:` input. The id must parse as a full accessibility id, the press
+/// codes are the OK key's two integers and a subject rides only on a press; the canonical
+/// re-encoding must equal the row byte for byte, like every other input.
+fn decode_by_id(value: &Value) -> Result<plx_machine::machine::InputEvent<u32>, &'static str> {
+    use plx_machine::machine::{InputEvent, InputKind, OkTap, Source, Tick};
+    let number = |value: &Value| value.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or("invalid input integer");
+    let source = match value["source"].as_str() {
+        Some("Sdl") => Source::Sdl, Some("RemoteFifo") => Source::RemoteFifo,
+        Some("Script") => Source::Script, Some("Replay") => Source::Replay,
+        _ => return Err("invalid input source"),
+    };
+    let body = &value["body"]["by_id"];
+    let id = body["id"].as_str()
+        .filter(|id| plx_ui::a11y::A11yPath::parse_id(id).is_ok()).ok_or("invalid by-id")?;
+    let press = match &body["press"] {
+        Value::Null => None,
+        Value::Array(pair) if pair.len() == 2 => Some(OkTap { sym: number(&pair[0])?, wcode: number(&pair[1])? }),
+        _ => return Err("invalid by-id press"),
+    };
+    let expect = match &body["expect"] {
+        Value::Null => None,
+        Value::String(subject) if press.is_some() && plx_ui::dispatch::by_id_subject_ok(subject) => Some(subject.as_str().into()),
+        _ => return Err("invalid by-id subject"),
+    };
+    let event = InputEvent { at: Tick { ms: number(&value["ms"])?, dt_us: number(&value["dt_us"])? }, source,
+        kind: InputKind::ById { id: id.into(), press, expect } };
+    let mut canonical = value.clone();
+    if let Some(object) = canonical.as_object_mut() { object.remove("f"); object.remove("t"); }
+    if input(&event)? != canonical { return Err("noncanonical by-id input"); }
     Ok(event)
 }
 
@@ -204,12 +242,40 @@ pub(crate) fn app(effect: &AppFx) -> Result<Value, &'static str> {
         AppFx::SessionEffect(effect) => json!({"session_effect":wire(effect)?}),
         AppFx::PlaybackTrace(plx_platform::playback_trace::Command::Status) => json!({"playback_trace":"status"}),
         AppFx::Preferences(_) => return Err("unsupported controlled preferences effect"),
+        // Yielding is not authorization: these heads must refuse before any MainThread,
+        // recorder, catalog write or native player resource is borrowed by the runner.
+        AppFx::Loop(_) | AppFx::Player(_) | AppFx::Catalog(_) => return Err("unsupported Home application effect"),
         AppFx::Store(id, command) => json!({"store":id.ord().0,"command":store(command)?}),
         AppFx::StoreWork(work) => json!({"work":work_value(work)?}),
         AppFx::Content(req) => json!({"content":content_request(req)?}),
         AppFx::Home(plx_screens::registry::HomeReq::FoldToHero) => json!({"home":"fold"}),
         _ => return Err("unsupported Home application effect"),
     })
+}
+
+/// Validate the already-partitioned head without widening it back to `AppFx`.
+pub(crate) fn external(effect: &plx_screens::registry::ExternalAppFx) -> Result<Value, &'static str> {
+    use plx_screens::registry::ExternalAppFx;
+    match effect {
+        ExternalAppFx::SessionEffect(effect) => Ok(json!({"session_effect":wire(effect)?})),
+        ExternalAppFx::Content(req) => Ok(json!({"content":content_request(req)?})),
+        ExternalAppFx::Home(plx_screens::registry::HomeReq::FoldToHero) => Ok(json!({"home":"fold"})),
+        ExternalAppFx::Preferences(_) => Err("unsupported controlled preferences effect"),
+        ExternalAppFx::Loop(_) | ExternalAppFx::Player(_) | ExternalAppFx::Catalog(_)
+        | ExternalAppFx::Home(_) | ExternalAppFx::Library(_) | ExternalAppFx::Search(_)
+        | ExternalAppFx::Watchlist(_) | ExternalAppFx::ItemMenu(_) => Err("unsupported Home application effect"),
+    }
+}
+
+pub(crate) fn inline(effect: &plx_screens::registry::InlineAppFx) -> Result<Value, &'static str> {
+    use plx_screens::registry::InlineAppFx;
+    match effect {
+        InlineAppFx::Session(command) => Ok(json!({"session":wire(command)?})),
+        InlineAppFx::PlaybackTrace(plx_platform::playback_trace::Command::Status) => Ok(json!({"playback_trace":"status"})),
+        InlineAppFx::Store(id, command) => Ok(json!({"store":id.ord().0,"command":store(command)?})),
+        InlineAppFx::StoreWork(work) => Ok(json!({"work":work_value(work)?})),
+        InlineAppFx::PlaybackTrace(_) | InlineAppFx::Consent(_) | InlineAppFx::Huds(_) => Err("unsupported Home application effect"),
+    }
 }
 
 fn work_value(work: &plx_data::stores::StoreWork) -> Result<Value, &'static str> {
@@ -281,11 +347,42 @@ pub(crate) fn message(message: &AppMsg) -> Result<Value, &'static str> {
         },
         AppMsg::PlaybackTrace(plx_platform::playback_trace::Status::Off) => json!({"playback_trace":"off"}),
         AppMsg::Store(command) => store(command)?,
+        AppMsg::PersonCommand { command, .. } => store(&plx_data::stores::StoreCmd::Person(command.clone()))?,
         AppMsg::StoreWork(work) => work_value(work)?,
         AppMsg::HubsResult(result) => plx_data::pms::record::encode(result),
         AppMsg::Home(command) => json!({"home_command":home_command(command)}),
+        // Pure addressed owner inputs are observable; this does not authorize native
+        // playback commands, compiled resources, or a controlled playback bootstrap.
+        AppMsg::PlayerPinHud { now, duration_ms, tab } =>
+            json!({"player_pin_hud":{"now":now,"duration_ms":duration_ms,"tab":tab}}),
+        AppMsg::PlayerPresented { watch, paired } => json!({"player_presented":{"codec":1,"paired":paired,
+            "watch":watch.map(|id| json!({"scope":id.scope,"entry":id.entry,"playback":id.playback,"marker":id.marker}))}}),
+        AppMsg::PlayerTransportReset { for_reload } => json!({"player_transport_reset":for_reload}),
+        AppMsg::PlayerExtendHud { now, duration_ms } =>
+            json!({"player_extend_hud":{"now":now,"duration_ms":duration_ms}}),
         _ => return Err("unsupported Home message"),
     })
+}
+
+/// The retained Person sender duplicates the effect envelope, not the legacy delivery payload.
+/// Validate that equality before using the historical wire spelling; never erase forged provenance.
+/// Closed pure-owner observation alphabet. This never authorizes the persistence writer.
+pub(crate) fn validate_hold_hint(value: &Value) -> Result<(), &'static str> {
+    if value.as_object().is_none_or(|object| object.len() != 1)
+        || !matches!(value["hold_hint"].as_str(), Some("learned" | "read_card" | "read_pill")) {
+        return Err("invalid controlled hold-hint observation");
+    }
+    Ok(())
+}
+
+pub(crate) fn encode_from(from: plx_machine::machine::MachineId,
+    effect: &Fx<super::super::bridge::AppHost>) -> Result<Value, &'static str> {
+    if let Fx::Deliver(to, Delivery::Machine(AppMsg::PersonCommand { from: sender, .. })) = effect {
+        if *sender != from || *to != plx_machine::machine::MachineId::Store(plx_data::stores::StoreId::Person.ord()) {
+            return Err("mismatched controlled Person sender or destination");
+        }
+    }
+    encode(effect)
 }
 
 pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value, &'static str> {
@@ -316,6 +413,11 @@ pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value
         Fx::Remember { group, elem } => json!({"group":group.0,"elem":elem}),
         Fx::Press(arm) => json!({"press":{"key":focus(arm.key),"from":match arm.from {
             plx_machine::machine::PressFrom::Key => "key", plx_machine::machine::PressFrom::Pointer => "pointer" },"holdable":arm.holdable}}),
+        Fx::HoldHint(event) => json!({"hold_hint":match event {
+            plx_machine::machine::HoldHintEvent::Learned => "learned",
+            plx_machine::machine::HoldHintEvent::ReadCard => "read_card",
+            plx_machine::machine::HoldHintEvent::ReadPill => "read_pill",
+        }}),
         Fx::Log(line) => json!({"log":line.0}),
         Fx::Deliver(to, delivery) => {
             let body = match delivery {
@@ -360,7 +462,10 @@ pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value
                         ScreenEvent::FocusMoved { from, to, by } => json!({"from":from.map(focus),
                             "to":focus(*to),"by":match by { plx_ui::screen::By::Dir => "dir",
                                 plx_ui::screen::By::Pointer => "pointer", plx_ui::screen::By::Restore => "restore",
-                                plx_ui::screen::By::Reconcile => "reconcile" }}),
+                                plx_ui::screen::By::Reconcile => "reconcile", plx_ui::screen::By::Script => "script" }}),
+                        ScreenEvent::Presented(receipt) => json!({"paint_frame":receipt.frame(),
+                            "entry":receipt.entry().0,"instance":receipt.instance().0,
+                            "message":message(receipt.message())?}),
                         ScreenEvent::App(msg) => message(msg)?,
                         ScreenEvent::Async(req, msg) => json!({"req":req.0,"message":message(msg)?}),
                     };
@@ -379,6 +484,37 @@ mod tests {
     use plx_machine::machine::{Fx, NavOp};
 
     #[test]
+    fn controlled_person_delivery_retains_the_recorded_open_close_and_reset_payloads() {
+        use plx_data::stores::{StoreCmd, person::PersonCmd};
+        use plx_machine::machine::{Delivery, MachineId};
+        use plx_screens::registry::AppMsg;
+        use serde_json::json;
+        let from = MachineId::Instance(plx_machine::machine::InstanceId(3));
+        let to = MachineId::Store(plx_data::stores::StoreId::Person.ord());
+        for (command, body) in [
+            (PersonCmd::Open { sid: plx_plex::plex::ServerId::from_raw(0), key: "19".into(),
+                guid: "sf06c144a".into(), name: "s025b413f".into(),
+                thumb: "/library/metadata/people/19/thumb/1".into() },
+                json!({"person":{"open":[0,"19","sf06c144a","s025b413f","/library/metadata/people/19/thumb/1"]}})),
+            (PersonCmd::Close, json!({"person":"close"})),
+            (PersonCmd::Reset, json!({"person":"reset"})),
+        ] {
+            let legacy = Fx::Deliver(to, Delivery::Machine(AppMsg::Store(StoreCmd::Person(command.clone()))));
+            let addressed = Fx::Deliver(to, Delivery::Machine(AppMsg::PersonCommand { from, command: command.clone() }));
+            let misrouted = Fx::Deliver(MachineId::Session, Delivery::Machine(AppMsg::PersonCommand { from, command }));
+            assert_eq!(super::encode_from(from, &misrouted),
+                Err("mismatched controlled Person sender or destination"));
+            let expected = json!({"to":"store:4","delivery":body});
+            assert_eq!(serde_json::to_vec(&encode(&legacy).unwrap()).unwrap(),
+                serde_json::to_vec(&super::encode_from(from, &addressed).unwrap()).unwrap());
+            assert_eq!(encode(&legacy), Ok(expected.clone()));
+            assert_eq!(super::encode_from(from, &addressed), Ok(expected));
+            assert_eq!(super::encode_from(MachineId::Nav, &addressed),
+                Err("mismatched controlled Person sender or destination"));
+        }
+    }
+
+    #[test]
     fn controlled_diagnostics_only_records_the_deterministic_off_query() {
         use plx_platform::playback_trace::{Command, Status};
         use plx_screens::registry::{AppFx, AppMsg};
@@ -386,6 +522,45 @@ mod tests {
         assert_eq!(super::message(&AppMsg::PlaybackTrace(Status::Off)), Ok(serde_json::json!({"playback_trace":"off"})));
         assert!(super::app(&AppFx::PlaybackTrace(Command::Start)).is_err());
         assert!(super::message(&AppMsg::PlaybackTrace(Status::Recording)).is_err());
+    }
+
+    /// **A by-id input is recorded once and decodes only in its canonical spelling**: the id must
+    /// be a full accessibility id, the press pair the OK key's two integers, and a subject rides
+    /// only on a press. A row that is not exactly what the encoder writes is refused, so a recording
+    /// cannot carry a by-id input the dispatcher would resolve differently from the way it was tapped.
+    #[test]
+    fn a_by_id_input_records_once_and_decodes_only_canonically() {
+        use plx_machine::machine::{InputEvent, InputKind, OkTap, Source, Tick};
+        use serde_json::json;
+        let at = Tick { ms: 40, dt_us: 16_000 };
+        let ok = OkTap { sym: 0x0d, wcode: 0 };
+        let event = |source, press: Option<OkTap>, expect: Option<&str>| InputEvent { at, source,
+            kind: InputKind::ById { id: "home.row.2".into(), press, expect: expect.map(Into::into) } };
+        let row = |event: &InputEvent<u32>| {
+            let mut row = super::input(event).unwrap();
+            row["f"] = json!(3);
+            row["t"] = json!("in");
+            row
+        };
+        for event in [event(Source::RemoteFifo, None, None), event(Source::RemoteFifo, Some(ok), None),
+            event(Source::Script, Some(ok), Some("rk77"))] {
+            let decoded = super::decode_input(&row(&event)).expect("the encoder's own row decodes");
+            assert_eq!(super::input(&decoded), super::input(&event));
+        }
+        let good = row(&event(Source::RemoteFifo, Some(ok), Some("rk77")));
+        for (field, bad) in [("id", json!("Home.row.2")), ("id", json!("home")), ("id", json!(7)),
+            ("press", json!([13])), ("press", json!([13, 0, 0])), ("press", json!("ok")),
+            ("press", json!(null)), ("expect", json!("a b")), ("expect", json!(""))] {
+            let mut bad_row = good.clone();
+            bad_row["body"]["by_id"][field] = bad;
+            assert!(super::decode_input(&bad_row).is_err(), "{field}");
+        }
+        let mut extra = good.clone();
+        extra["body"]["by_id"]["extra"] = json!(1);
+        assert!(super::decode_input(&extra).is_err(), "an unknown field is not canonical");
+        let mut source = good;
+        source["source"] = json!("Other");
+        assert!(super::decode_input(&source).is_err());
     }
 
     #[test]
@@ -479,5 +654,25 @@ mod tests {
         let tab = encode(&Fx::Nav(NavOp::SelectTab(AppArg::Home))).unwrap();
         assert_eq!(root, serde_json::json!({"root": "home"}));
         assert_ne!(root, tab);
+    }
+
+    #[test]
+    fn player_owner_observations_keep_payload_truth_without_authorizing_native_playback() {
+        use super::message;
+        use plx_screens::registry::{AppFx, AppMsg};
+        use serde_json::json;
+        let pin = |now, duration_ms, tab| message(&AppMsg::PlayerPinHud { now, duration_ms, tab }).unwrap();
+        let expected = pin(10, 500, Some(1));
+        assert_eq!(expected, json!({"player_pin_hud":{"now":10,"duration_ms":500,"tab":1}}));
+        for changed in [pin(11, 500, Some(1)), pin(10, 501, Some(1)), pin(10, 500, None)] {
+            assert_ne!(expected, changed);
+        }
+        assert_ne!(message(&AppMsg::PlayerTransportReset { for_reload: true }).unwrap(),
+            message(&AppMsg::PlayerTransportReset { for_reload: false }).unwrap());
+        assert_ne!(message(&AppMsg::PlayerExtendHud { now: 10, duration_ms: 500 }).unwrap(), expected);
+        assert!(encode(&Fx::App(AppFx::Player(plx_screens::registry::PlayerReq::ExtendHud(500)))).is_err(),
+            "observing a message never authorizes a native application command");
+        assert!(message(&AppMsg::PlayerCompiled(plx_appkit::player_hud::loaded::classic_for_test())).is_err(),
+            "compiled resources still require a separate replay contract");
     }
 }

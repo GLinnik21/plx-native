@@ -32,6 +32,10 @@ impl ScreenArg for TestArg {
 
 pub(super) struct TestHost;
 
+impl crate::registry::ScreenInputsLike for TestHost {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::empty_fixture() }
+}
+
 impl crate::registry::PlayerLike for TestHost {
     fn session<'a>(_cx: &Cx<'a, Self>) -> &'a plx_media::route::PlaybackSession {
         plx_media::route::idle_session_for_test()
@@ -87,6 +91,7 @@ fn cx<'a>(measure: &'a dyn plx_machine::machine::Measure, elem: Option<u32>) -> 
         tick: Default::default(),
         measure,
         press: PressRead::default(),
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         focus: plx_machine::machine::FocusRead {
             current: elem.map(|elem| FocusKey {
                 entry: EntryId(7),
@@ -110,6 +115,32 @@ pub(super) fn drawn_stops(screen: &mut DetailScreen, context: &Cx<'_, TestHost>)
     f.into_stops()
 }
 
+#[test]
+#[cfg(feature = "devtriggers")]
+fn adjacent_cold_controlled_detail_never_initializes_native_preview_latch() {
+    const CHILD: &str = "PLX_COLD_CONTROLLED_PREVIEW_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--nocapture"])
+            .env_clear().envs(std::env::vars_os().filter(|(key, _)| !key.to_string_lossy().starts_with("GIT_")))
+            .env(CHILD, "1").output().unwrap();
+        assert!(output.status.success(), "cold child failed: {}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    let guard = install(detail(ServerId::UNSET, "cold-controlled"));
+    plx_base::devtrig::with_private_triggers(|| {
+        std::fs::write(plx_base::devtrig::path("nopreview"), "").unwrap();
+        let mut screen = bare(&guard, ServerId::UNSET, "cold-controlled");
+        let scope = plx_base::step::StepScope::enter();
+        assert!(std::panic::catch_unwind(plx_media::player::preview::enabled).is_err(), "fresh process must start with an uninitialized latch");
+        step(&mut screen, &ScreenEvent::Tick(plx_machine::machine::Tick { ms: 16, dt_us: 16_667 }), None);
+        assert!(std::panic::catch_unwind(plx_media::player::preview::enabled).is_err(), "controlled Detail must not prime the native latch");
+        drop(scope);
+    });
+    clear();
+}
+
 fn bare(_guard: &plx_base::testlock::Serial, sid: ServerId, rk: &str) -> DetailScreen {
     bare_held(sid, rk)
 }
@@ -118,6 +149,7 @@ fn bare(_guard: &plx_base::testlock::Serial, sid: ServerId, rk: &str) -> DetailS
 /// card-conformance matrix runs every harness inside `run_all`'s guard, `cards_harness`).
 pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
     let mut screen = DetailScreen {
+        caption_policy: crate::registry::captions::policy(),
         entry: EntryId(7),
         sid,
         rk: rk.into(),
@@ -227,11 +259,11 @@ fn clear() {
     // The *Also available* store outlives a page, so a test that seeded it hands the next one an
     // empty one — the addressed store cannot MIS-answer, but it can answer for an item a later
     // test happens to reuse the pair of.
-    test_store().run(plx_data::stores::metadata::MetadataCmd::AltInstall {
+    test_store().run_with_keys(plx_data::stores::metadata::MetadataCmd::AltInstall {
         sid: plx_plex::plex::ServerId::UNSET,
         rk: String::new(),
         copies: Vec::new(),
-    });
+    }, &plx_data::pms::registry_keys_for_test());
 }
 
 fn step(
@@ -1570,7 +1602,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                     // The *Also available* control's gate is the STORE, addressed by the page's own
                     // pair — seeded here the way a landed cross-source resolve seeds it, never by
                     // opening the panel.
-                    test_store().run(plx_data::stores::metadata::MetadataCmd::AltInstall {
+                    test_store().run_with_keys(plx_data::stores::metadata::MetadataCmd::AltInstall {
                         sid,
                         rk: "hero-hit".into(),
                         copies: if alt {
@@ -1581,7 +1613,7 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                         } else {
                             Vec::new()
                         },
-                    });
+                    }, &plx_data::pms::registry_keys_for_test());
                     let mut screen = bare(&_guard, sid, "hero-hit");
                     let set = screen.hero_set(test_store().view());
                     assert_eq!(
@@ -2213,7 +2245,7 @@ fn trailer_act_edge_with_pause(
         plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
         &mut present,
     );
-    screen.trailer_act::<TestHost>(act, edge, now, Some(0), Some(DurationFixture::DUR), preview_paused, &mut sink);
+    screen.trailer_act::<TestHost>(act, edge, now, Some(0), Some(DurationFixture::DUR), preview_paused, plx_plex::plex::session::SkipInterval::Seconds10, &mut sink);
     drop(sink);
     effects
 }
@@ -4263,8 +4295,7 @@ fn record_stops_places_nothing_outside_the_visible_walk() {
 fn the_hold_hint_stands_on_a_resting_related_card_once_per_install() {
     let sid = ServerId::UNSET;
     let _guard = install(collection_movie(sid));
-    plx_ui::hold_hint::reset_learned_for_test();
-    plx_ui::hold_hint::reset_shown_for_test();
+    let hint = std::cell::Cell::new(plx_machine::machine::HoldHintRead::default());
     let mut screen = bare(&_guard, sid, "m1");
     screen.sync_keys(test_store().view());
     let card = screen.engine_key(related::elem(1).unwrap()).unwrap();
@@ -4275,12 +4306,19 @@ fn the_hold_hint_stands_on_a_resting_related_card_once_per_install() {
             ms += 17;
             let mut context = cx(&measure, None);
             context.focus.current = focus;
+            context.hold_hint = hint.get();
             context.tick = plx_machine::machine::Tick { ms, dt_us: 16_667 };
             let mut effects = Vec::new();
             let mut present = plx_machine::present::Present::new();
             let mut sink = Effects::new(&mut effects,
                 plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)), &mut present);
             Machine::<TestHost>::step(screen, &ScreenEvent::Tick(context.tick), &context, &mut sink);
+            drop(sink);
+            let mut read = hint.get();
+            for effect in effects {
+                if let plx_machine::machine::Fx::HoldHint(event) = effect.fx { read.apply(event); }
+            }
+            hint.set(read);
         }
     };
     let on = |elem| Some(FocusKey { entry: EntryId(7), elem });
@@ -4288,9 +4326,9 @@ fn the_hold_hint_stands_on_a_resting_related_card_once_per_install() {
     assert!(!screen.hold_hint.visible(), "not before the dwell");
     // negatives first: a stand spends the run's latch and would make them vacuous
     rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 4.0);
-    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(), "never while a menu owns focus");
+    assert!(!screen.hold_hint.visible() && !hint.get().card, "never while a menu owns focus");
     rest(&mut screen, on(hero::ELEM_PLAY), 4.0);
-    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(), "never on a hero control");
+    assert!(!screen.hold_hint.visible() && !hint.get().card, "never on a hero control");
     rest(&mut screen, on(card), 3.6);
     assert!(screen.hold_hint.visible(), "after the dwell, on a settled Related card");
     rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 1.0);
@@ -4307,8 +4345,7 @@ fn the_hold_hint_stands_on_a_resting_related_card_once_per_install() {
 fn the_hold_hint_stands_on_a_resting_season_pill_after_its_shorter_dwell() {
     let sid = ServerId::UNSET;
     let _guard = install(detail(sid, "show"));
-    plx_ui::hold_hint::reset_learned_for_test();
-    plx_ui::hold_hint::reset_shown_for_test();
+    let hint = std::cell::Cell::new(plx_machine::machine::HoldHintRead::default());
     let mut screen = bare(&_guard, sid, "show");
     screen.sync_keys(test_store().view());
     let measure = plx_ui::fixture::FixtureMeasure;
@@ -4318,12 +4355,19 @@ fn the_hold_hint_stands_on_a_resting_season_pill_after_its_shorter_dwell() {
             ms += 17;
             let mut context = cx(&measure, None);
             context.focus.current = focus;
+            context.hold_hint = hint.get();
             context.tick = plx_machine::machine::Tick { ms, dt_us: 16_667 };
             let mut effects = Vec::new();
             let mut present = plx_machine::present::Present::new();
             let mut sink = Effects::new(&mut effects,
                 plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)), &mut present);
             Machine::<TestHost>::step(screen, &ScreenEvent::Tick(context.tick), &context, &mut sink);
+            drop(sink);
+            let mut read = hint.get();
+            for effect in effects {
+                if let plx_machine::machine::Fx::HoldHint(event) = effect.fx { read.apply(event); }
+            }
+            hint.set(read);
         }
     };
     let tab = screen.engine_key(season::elem(0).unwrap()).unwrap();
@@ -4331,12 +4375,12 @@ fn the_hold_hint_stands_on_a_resting_season_pill_after_its_shorter_dwell() {
     rest(&mut screen, pill, 0.3);
     assert!(!screen.hold_hint.visible(), "not before the pill dwell");
     rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 3.0);
-    assert!(!screen.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(), "never while a menu owns focus");
+    assert!(!screen.hold_hint.visible() && !hint.get().card, "never while a menu owns focus");
     rest(&mut screen, pill, 1.4);
     assert!(screen.hold_hint.visible(), "1.4 s on the pill is past its dwell and the tab capsule's arrival, short of the card's");
     rest(&mut screen, pill, 2.0);
-    assert!(plx_ui::hold_hint::shown(plx_ui::hold_hint::Surface::SeasonPill), "a read showing taught the pill");
-    assert!(!plx_ui::hold_hint::shown(plx_ui::hold_hint::Surface::Card), "and left the card hint unspent");
+    assert!(hint.get().pill, "a read showing taught the pill");
+    assert!(!hint.get().card, "and left the card hint unspent");
     clear();
 }
 
@@ -4348,8 +4392,7 @@ fn the_hold_hint_stands_on_a_resting_season_pill_after_its_shorter_dwell() {
 fn the_pill_dwell_counts_from_focus_landing_not_from_the_motion_ending() {
     let sid = ServerId::UNSET;
     let _guard = install(detail(sid, "show"));
-    plx_ui::hold_hint::reset_learned_for_test();
-    plx_ui::hold_hint::reset_shown_for_test();
+    let mut hint = plx_machine::machine::HoldHintRead::default();
     let mut screen = bare(&_guard, sid, "show");
     screen.sync_keys(test_store().view());
     let measure = plx_ui::fixture::FixtureMeasure;
@@ -4364,12 +4407,17 @@ fn the_pill_dwell_counts_from_focus_landing_not_from_the_motion_ending() {
         ms += 17;
         let mut context = cx(&measure, None);
         context.focus.current = pill;
+        context.hold_hint = hint;
         context.tick = plx_machine::machine::Tick { ms, dt_us: 16_667 };
         let mut effects = Vec::new();
         let mut present = plx_machine::present::Present::new();
         let mut sink = Effects::new(&mut effects,
             plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)), &mut present);
         Machine::<TestHost>::step(&mut screen, &ScreenEvent::Tick(context.tick), &context, &mut sink);
+        drop(sink);
+        for effect in effects {
+            if let plx_machine::machine::Fx::HoldHint(event) = effect.fx { hint.apply(event); }
+        }
         if frame == 20 {
             assert!(!screen.hold_hint.visible(), "not before the pill dwell (0.34 s in)");
         }
@@ -4388,8 +4436,7 @@ fn the_hold_hint_waits_for_a_season_whose_hold_opens_a_menu() {
     let mut unresolved = detail(sid, "show");
     unresolved.seasons[0].rk.clear();
     let _guard = install(unresolved);
-    plx_ui::hold_hint::reset_learned_for_test();
-    plx_ui::hold_hint::reset_shown_for_test();
+    let hint = std::cell::Cell::new(plx_machine::machine::HoldHintRead::default());
     let mut screen = bare(&_guard, sid, "show");
     screen.sync_keys(test_store().view());
     let measure = plx_ui::fixture::FixtureMeasure;
@@ -4399,19 +4446,26 @@ fn the_hold_hint_waits_for_a_season_whose_hold_opens_a_menu() {
             ms += 17;
             let mut context = cx(&measure, None);
             context.focus.current = focus;
+            context.hold_hint = hint.get();
             context.tick = plx_machine::machine::Tick { ms, dt_us: 16_667 };
             let mut effects = Vec::new();
             let mut present = plx_machine::present::Present::new();
             let mut sink = Effects::new(&mut effects,
                 plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)), &mut present);
             Machine::<TestHost>::step(screen, &ScreenEvent::Tick(context.tick), &context, &mut sink);
+            drop(sink);
+            let mut read = hint.get();
+            for effect in effects {
+                if let plx_machine::machine::Fx::HoldHint(event) = effect.fx { read.apply(event); }
+            }
+            hint.set(read);
         }
     };
     let tab = screen.engine_key(season::elem(0).unwrap()).unwrap();
     let pill = Some(FocusKey { entry: EntryId(7), elem: tab });
     rest(&mut screen, pill, 4.0);
     assert!(!screen.hold_hint.visible(), "a season with no rk has no menu to hold for");
-    assert!(!plx_ui::hold_hint::shown(plx_ui::hold_hint::Surface::SeasonPill), "so reading nothing taught nothing");
+    assert!(!hint.get().pill, "so reading nothing taught nothing");
     plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(detail(sid, "show")));
     screen.sync_keys(test_store().view());
     let tab = screen.engine_key(season::elem(0).unwrap()).unwrap();
@@ -5267,6 +5321,7 @@ fn identity_detail(parts_empty: bool) -> Detail {
     use plx_data::metadata::Stream;
     let mut d = Detail {
         kind: if parts_empty { "episode".into() } else { "movie".into() },
+        part: "/library/parts/1/1/video.mkv".into(),
         video_resolution: "1080".into(),
         subs: vec![Stream { sdh: true, ..Default::default() }],
         ..Default::default()
@@ -5319,7 +5374,8 @@ fn the_identity_line_names_the_dynamic_range_after_the_resolution() {
     assert!(x("1080p") < x("HDR") && x("HDR") < x(plx_platform::i18n::msg::widgets_badge_cc()), "between the resolution and the accessibility chips");
     d.dovi.present = true;
     let runs = row(&d);
-    assert!(painted_x(&runs, "Dolby Vision").is_some() && painted_x(&runs, "HDR").is_none(), "Dolby Vision replaces HDR");
+    assert!(painted_x(&runs, "HDR").is_some() && painted_x(&runs, "Dolby Vision").is_none(),
+        "the chip names what this set presents: no Dolby Vision probe, so a Dolby Vision file reads HDR (route::played_video's tests cover a supported set)");
 }
 
 /// **An empty dotted run owes no gap**: the first chip stands on the margin itself.
@@ -5332,6 +5388,34 @@ fn an_empty_identity_run_leaves_no_gap_before_the_first_chip() {
     let runs = plx_ui::draw_census::capture_runs(|| screen.identity_row(plx_ui::Painter::recording(), &d, 300.0, m));
     let res = keyline_left(painted_x(&runs, "1080p").expect("resolution chip"), "1080p", m);
     assert!((res.0 - plx_ui::consts::MARGIN_X).abs() < 0.5, "no run, no gap: chip at {}", res.0);
+}
+
+#[test]
+fn the_resolution_badge_names_the_version_play_starts() {
+    let _guard = plx_base::testlock::serial();
+    let screen = bare_held(ServerId::UNSET, "rk");
+    let version = |id: i64, resolution: &str, width: i64, height: i64, vcodec: &str| plx_data::pms::MediaVersion {
+        id: plx_plex::plex::MediaId(id),
+        resolution: resolution.into(),
+        width,
+        height,
+        vcodec: vcodec.into(),
+        ..Default::default()
+    };
+    let d = Detail {
+        kind: "movie".into(),
+        part: "/library/parts/1/1/uhd.mkv".into(),
+        vcodec: "vp9".into(),
+        video_resolution: "4k".into(),
+        width: 3840,
+        height: 2160,
+        versions: vec![version(1, "4k", 3840, 2160, "vp9"), version(2, "1080", 1920, 1080, "h264")],
+        ..Default::default()
+    };
+    let m = &plx_base::fontcov::advances::ShippedMeasure;
+    let runs = plx_ui::draw_census::capture_runs(|| screen.identity_row(plx_ui::Painter::recording(), &d, 300.0, m));
+    assert!(painted_x(&runs, "1080p").is_some(), "the badge names the version Play starts: {runs:?}");
+    assert!(painted_x(&runs, "4K").is_none(), "not the first version: {runs:?}");
 }
 
 /// **The held episode still is drawn ONCE while its hold menu is up.** The page pass (a frame
@@ -5354,18 +5438,20 @@ fn the_held_episode_still_is_left_out_of_the_page_pass_and_drawn_once_by_the_lif
     }
     const DIP: f32 = 0.918;
     let mut context = cx(&measure, Some(key.elem));
-    context.press = PressRead { scale: DIP, is_long: true, held_ms: Some(400), owner: Some(key) };
+    context.press = PressRead { scale: DIP, is_long: true, held_ms: Some(400), owner: Some(key), ..Default::default() };
 
     let mut census = |lifted: Option<FocusKey<u32>>, lift: bool| {
-        plx_ui::popover::set_lift_owns(false);
+        // The census observes local evidence without publishing input policy.
         plx_ui::draw_census::capture(|| {
             let mut f = DrawFrame::new(&context, plx_ui::Painter::recording());
             f.lifted = lifted;
+            f.lift_owner = Some(plx_machine::machine::InstanceId(7));
             if lift {
                 screen.redraw_focused::<TestHost>(&mut f, Some(key));
             } else {
                 plx_gfx::gfx::without_frame_clear(|| Screen::<TestHost>::draw(&mut screen, &mut f));
             }
+            assert_eq!(f.lift_receipt().map(|r| r.key), lifted, "only the page omission yields evidence");
         })
     };
     // The first cell, as a census reads it: its still is the one tag-21 art quad over the strip, its
@@ -5379,7 +5465,7 @@ fn the_held_episode_still_is_left_out_of_the_page_pass_and_drawn_once_by_the_lif
 
     // the menu is up: the page pass leaves the whole cell out and says so...
     let page_lifted = census(Some(key), false);
-    assert!(plx_ui::popover::lift_owns(), "the page pass said the lift owns the cell");
+    // The local receipt was asserted within the page pass above.
     assert_eq!((stills(&page_lifted).len(), plates(&page_lifted).len()), (0, 0), "the page pass drew {page_lifted:?}");
     // ...and the lift (a frame with no `lifted`) is its only copy: one still, one plate.
     let lift = census(None, true);
@@ -5414,14 +5500,13 @@ fn the_hold_hint_over_an_episode_still_waits_while_the_season_loads() {
     let mut show = detail(sid, "show");
     show.episodes = (1..=3).map(|i| episode(&format!("e{i}"), i)).collect();
     let _guard = install(show);
-    plx_ui::hold_hint::reset_learned_for_test();
-    plx_ui::hold_hint::reset_shown_for_test();
+
     let mut screen = bare(&_guard, sid, "show");
     screen.sync_keys(test_store().view());
     let measure = plx_ui::fixture::FixtureMeasure;
     let elem = episode_key(&screen, 0, episodes::Row::Still).unwrap();
     let mut context = cx(&measure, Some(elem));
-    context.press = PressRead { scale: 1.0, is_long: false, held_ms: Some(200), owner: None };
+    context.press = PressRead { scale: 1.0, is_long: false, held_ms: Some(200), owner: None, ..Default::default() };
     let located = Some(Located::Episode(0, episodes::Row::Still));
     let hinted = |screen: &DetailScreen| screen.hint_input(&context, located).focus.is_some();
 
@@ -5724,6 +5809,105 @@ fn only_an_episode_page_gets_a_go_to_show_disc() {
         assert_eq!(screen.hero_set(test_store().view()).go_show, want);
         clear();
     }
+}
+
+
+/// **The page's accessibility ids:** a show page with every section on it conforms (every element of
+/// every group projects, ids are unique, each id finds its element), the hero's controls are
+/// `hero.<word>`, the seasons `season.<i>`, an episode's two elements `episodes.still|text.<i>`, each
+/// shelf's cards `<shelf>.card.<i>` (the one far down the row, off screen, included) with the
+/// ratingKey as their subject, and the heading and the About stops answer their names.
+#[test]
+fn the_page_answers_its_ids_and_conforms() {
+    assert!(!detail_conforms().is_empty());
+}
+
+/// A show page with every section on it, run through the id conformance with the id asserts above
+/// (`ContentArg::Detail`; the coverage table calls this, and so does the test above). It lives in
+/// this test module, not in `cards_harness`, because the localization gate reads every non-test
+/// file: the fixture's `Season {i}` / `Saga` titles are not product text.
+pub(crate) fn detail_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    use plx_ui::a11y::{A11yPath, Role};
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let sid = ServerId::UNSET;
+    let movies = |prefix: &str, n: usize| -> Vec<plx_data::pms::PmsMovie> {
+        (0..n).map(|i| plx_data::pms::PmsMovie { sid, rk: format!("{prefix}{i}"), title: format!("{prefix} {i}"), ..Default::default() }).collect()
+    };
+    let d = Detail {
+        sid,
+        rk: "page".into(),
+        is_show: true,
+        kind: "show".into(),
+        seasons: (1..=3)
+            .map(|i| plx_data::metadata::Season { rk: format!("s{i}"), index: i, title: format!("Season {i}"), leaf_count: 2, viewed_leaf_count: 0 })
+            .collect(),
+        episodes: (1..=3)
+            .map(|i| plx_data::metadata::Episode { rk: format!("e{i}"), index: i, season: 1, title: format!("Episode {i}"), dur_ms: 60_000, ..Default::default() })
+            .collect::<Vec<_>>()
+            .into(),
+        related: movies("r", 40),
+        extras: (0..3).map(|i| Extra { rk: format!("x{i}"), title: format!("Extra {i}"), ..Default::default() }).collect(),
+        cast: (0..4)
+            .map(|i| plx_data::metadata::Cast { tag: format!("Actor {i}"), id: 10 + i, role: String::new(), thumb: String::new(), tag_key: String::new() })
+            .collect(),
+        collection: Some(plx_data::metadata::CollectionShelf { title: "Saga".into(), section: 1, tag: 1, members: movies("c", 5), count: 5 }),
+        ..Default::default()
+    };
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d));
+    let mut screen = bare_held(sid, "page");
+    // the season tabs have a place once their strip is measured, which a landing does in the app
+    // (`season_metrics.update`): the held screen has had none
+    screen.season_metrics.update(test_store().view().current().expect("the page's detail is mounted"), &plx_ui::fixture::FixtureMeasure);
+    static MEASURE: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
+    let cx = Cx {
+        views: (),
+        tick: plx_machine::machine::Tick { ms: 0, dt_us: 16_667 },
+        measure: &MEASURE,
+        modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
+        press: PressRead { scale: 1.0, owner: None, ..Default::default() },
+        focus: plx_machine::machine::FocusRead { current: None, ..Default::default() },
+        owner: plx_machine::machine::InputOwner::Entry(EntryId(7)),
+    };
+    namespaces.push(conform::<TestHost, _>(&screen, &cx));
+
+    let rel = |text: &str| A11yPath::parse_relative(text).expect("a well-formed id");
+    let find = |text: &str| Focusable::<TestHost>::a11y_find(&screen, &rel(text), &cx);
+    let project = |elem: u32| Focusable::<TestHost>::a11y(&screen, &elem, &cx).expect("an element of the page projects");
+
+    assert_eq!(find("hero.play"), Some(hero::ELEM_PLAY));
+    assert_eq!(project(hero::ELEM_PLAY).role, Role::Button);
+    assert_eq!(find("hero.nope"), None);
+    for (i, rk) in ["s1", "s2", "s3"].into_iter().enumerate() {
+        let elem = find(&format!("season.{i}")).expect("a season tab");
+        assert_eq!(Some(elem), screen.engine_key(season::elem(i).unwrap()));
+        let a = project(elem);
+        assert_eq!((a.role, a.subject.as_deref()), (Role::Tab, Some(rk)));
+    }
+    assert_eq!(find("season.3"), None, "one past the last season");
+    for (i, rk) in ["e1", "e2", "e3"].into_iter().enumerate() {
+        for (word, row) in [("still", episodes::Row::Still), ("text", episodes::Row::Text)] {
+            let elem = find(&format!("episodes.{word}.{i}")).expect("an episode's element");
+            assert_eq!(Some(elem), screen.engine_key(episodes::elem(i, row).unwrap()));
+            assert_eq!(project(elem).subject.as_deref(), Some(rk));
+        }
+    }
+    assert_eq!(find("episodes.still.3"), None, "one past the last episode");
+    for (shelf, last, rk, len) in [("related", 39, "r39", 40), ("collection", 4, "c4", 5), ("extras", 2, "x2", 3)] {
+        let elem = find(&format!("{shelf}.card.{last}")).unwrap_or_else(|| panic!("{shelf}'s last card"));
+        let a = project(elem);
+        assert_eq!((a.role, a.subject.as_deref(), a.loaded), (Role::Card, Some(rk), true), "{shelf}");
+        assert_eq!(find(&format!("{shelf}.card.{len}")), None, "{shelf}: one past the end");
+    }
+    let actor = project(find("cast.card.3").expect("the last headshot"));
+    assert_eq!((actor.label.as_deref(), actor.subject), (Some("Actor 3"), None), "a person is not a ratingKey");
+    let heading = project(find("collection.heading").expect("the collection's heading"));
+    assert_eq!((heading.role, heading.label.as_deref()), (Role::Button, Some("Saga")));
+    assert_eq!(find("about.card"), Some(about::CARD_ELEM));
+    assert_eq!(find("related.0"), None, "a card is `related.card.<i>`");
+    namespaces
 }
 
 #[path = "hero_shade_tests.rs"]

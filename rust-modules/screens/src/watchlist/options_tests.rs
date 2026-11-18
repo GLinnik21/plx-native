@@ -8,6 +8,7 @@ use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference, SHIP
 use plx_ui::fit::HEADROOM;
 use plx_ui::fixture::FixtureMeasure;
 use plx_ui::page_header::HeaderSwap;
+use plx_ui::theme;
 use plx_ui::table::MENU_MAX_W;
 use plx_ui::widgets::{StatusKind, StatusOverlay};
 use std::ffi::CString;
@@ -194,14 +195,13 @@ fn the_menu_is_a_morphing_popover_that_grows_out_of_the_pill_and_ends_on_the_pan
 }
 
 #[test]
-fn the_panel_hangs_under_the_pill_right_aligned_inside_the_safe_frame() {
+fn the_panel_covers_the_pill_right_aligned_inside_the_safe_frame() {
     let (m, pill, _) = open_menu();
     let panel = m.panel_rect(&ShippedMeasure);
     let safe = plx_ui::consts::SAFE;
     assert!((panel.x + panel.w - (pill.x + pill.w)).abs() < 0.5, "right edges align");
-    let hung = pill.y + pill.h + theme::space::SM;
-    assert_eq!(panel.y, hung.min(safe.y + safe.h - panel.h), "under the pill, or slid up to stay whole");
-    assert!(panel.y <= hung);
+    assert_eq!(panel.y, pill.y.min(safe.y + safe.h - panel.h), "the pill's top edge, or slid up to stay whole");
+    assert!(panel.y <= pill.y);
     assert!(panel.x >= safe.x && panel.y + panel.h <= safe.y + safe.h + 0.01);
     assert!(panel.w >= plx_ui::table::MENU_MIN_W && panel.w <= MENU_MAX_W);
 }
@@ -239,16 +239,20 @@ fn a_press_edits_the_value_and_keeps_the_highlight_on_its_row() {
     assert_eq!((state.sort, state.descending), (SortKey::Title, false));
 }
 
-/// **The pill is never under the panel's glass** (S12): the opener lift draws the pill lit above the
-/// panel, so the settled panel must hang clear of it, in every shipped language. A panel that
-/// slid up over the pill (taller than the room below) would put an accent pill across its top edge.
+/// **The panel covers the pill it consumed, in every shipped language** (owner, 2026-11-17, which
+/// reverses S12: the opener is part of the morph, not a control the glass hangs clear of): the
+/// settled panel contains the pill's whole rect and its top edge is the pill's top edge, so no empty
+/// slot is left in the header where the pill was.
 #[test]
-fn the_panel_hangs_clear_of_the_lit_pill_in_every_language() {
+fn the_panel_covers_the_pill_top_edges_flush_in_every_language() {
     for lang in LANGUAGES {
         let _g = language_on_this_thread_for_test(lang);
         let (m, pill, _) = open_menu();
         let panel = m.panel_rect(&ShippedMeasure);
-        assert!(panel.y >= pill.y + pill.h, "{}: the panel {panel:?} covers the pill {pill:?}", lang.tag());
+        assert_eq!(panel.y, pill.y, "{}: the panel {panel:?} and the pill {pill:?} share a top edge", lang.tag());
+        assert!(panel.x <= pill.x + 0.01 && panel.x + panel.w >= pill.x + pill.w - 0.01,
+            "{}: the panel {panel:?} covers the pill {pill:?} across", lang.tag());
+        assert!(panel.y + panel.h >= pill.y + pill.h, "{}: the panel {panel:?} covers the pill {pill:?} down", lang.tag());
     }
 }
 

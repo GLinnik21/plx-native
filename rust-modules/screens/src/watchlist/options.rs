@@ -8,7 +8,7 @@ use plx_platform::i18n::msg;
 use plx_ui::popover::Popover;
 use plx_ui::table::{Row, Section, TableView};
 use plx_ui::widgets::Ground;
-use plx_ui::{theme, Painter, Rect};
+use plx_ui::{Painter, Rect};
 
 /// The Type section: `Movies & Shows` / `Movies` / `TV Shows`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -158,6 +158,23 @@ impl OptionsRow {
         OptionsRow::Show(ShowFilter::OnYourServers),
     ];
 
+    /// The row's accessibility name (`watchlist_menu.<name>`): its meaning as a static word, never
+    /// its position (the order is draw order and may change).
+    pub fn a11y_name(self) -> &'static str {
+        match self {
+            OptionsRow::Type(TypeFilter::All) => "type_all",
+            OptionsRow::Type(TypeFilter::Movies) => "type_movies",
+            OptionsRow::Type(TypeFilter::Shows) => "type_shows",
+            OptionsRow::Sort(SortKey::DateAdded) => "sort_date_added",
+            OptionsRow::Sort(SortKey::Title) => "sort_title",
+            OptionsRow::Sort(SortKey::Release) => "sort_release",
+            OptionsRow::Sort(SortKey::Rating) => "sort_rating",
+            OptionsRow::Show(ShowFilter::All) => "show_all",
+            OptionsRow::Show(ShowFilter::Released) => "show_released",
+            OptionsRow::Show(ShowFilter::OnYourServers) => "show_on_servers",
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             OptionsRow::Type(TypeFilter::All) => msg::watchlist_filter_type_all(),
@@ -229,14 +246,15 @@ pub const PANEL_RAD: f32 = 24.0;
 /// table: it holds the open/morph state, the row cursor and the geometry, and answers `draw`.
 ///
 /// The panel grows out of the pill (`popover_morph`): [`draw`](Self::draw) lays the glass at the
-/// morphing rect, then the rows. It draws NO pill: the pill is the control's own, kept lit above the
-/// panel by the host's opener lift (the host surface names it as its `opener`, the page leaves it
-/// out of its pass, `WatchlistScreen::redraw_focused` paints it) like every header opener, so the
-/// panel opens under the control it is about (design review S12).
+/// morphing rect, then the rows. It draws NO pill: the pill is the control's own, painted by the
+/// host's opener lift (the host surface names it as its `opener`, the page leaves it out of its
+/// pass, `WatchlistScreen::redraw_focused` paints it) like every header opener, above the scrim and
+/// the panel at the morph's `opener_alpha`: lit as the glass grows out, gone while the menu stands,
+/// back as the droplet drains into it.
 pub struct OptionsMenu {
     popover: Popover,
     table: TableView,
-    /// The pill the panel grows from and hangs under.
+    /// The pill the panel grows from and covers.
     pill: Rect,
 }
 
@@ -251,7 +269,8 @@ impl OptionsMenu {
         let mut table = TableView::new();
         // A menu of one-word choices: BODY regular labels (the Library's sort menu does the same).
         table.compact = true;
-        Self { popover: Popover::new().morphing(), table, pill: Rect::default() }
+        // the header pill opens it: the close's blob whitens toward the pill's own focused fill
+        Self { popover: Popover::new().morphing().opener_fill(plx_ui::page_header::OPENER_FILL), table, pill: Rect::default() }
     }
 
     /// The open table as it reads: each section's heading and its rows' `(label, value)`.
@@ -308,20 +327,17 @@ impl OptionsMenu {
         changed
     }
 
-    /// The settled panel: hung under the pill, right edges aligned, as wide as its longest label and
-    /// never narrower than the pill ([`TableView::menu_panel_width_from`], the Library's rule too)
-    /// and as tall as its rows, held inside the safe frame.
+    /// The settled panel: laid OVER the pill (the shared rule, [`plx_ui::popover::cover_opener`]:
+    /// top edges flush, right edges flush), as wide as its longest label and never narrower than
+    /// the pill ([`TableView::menu_panel_width_from`], the Library's rule too) and as tall as its
+    /// rows, held inside the safe frame (a menu taller than the room below the pill's top slides up
+    /// rather than cutting its last rows off). The pill is consumed by the morph: the glass that
+    /// replaces it is this panel.
     pub fn panel_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let safe = plx_ui::consts::SAFE;
         let w = self.table.menu_panel_width_from(measure, self.pill);
-        let x = plx_ui::popover::hang_x(self.pill, w, safe);
         let h = self.table.measured_height().min(safe.h);
-        // Hung under the pill; a menu taller than the room below it slides up rather than cutting
-        // its last rows off (the ten-row menu fits under the header on a 1080 frame in every
-        // shipped language, so it does not today). The pill is drawn above the panel by the opener
-        // lift, never under its glass.
-        let y = (self.pill.y + self.pill.h + theme::space::SM).min(safe.y + safe.h - h);
-        Rect::new(x, y, w, h)
+        plx_ui::popover::cover_opener(self.pill, (w, h), safe)
     }
 
     /// The `row`-th row's drawn frame inside the settled panel (`OptionsRow::ALL` order), for the

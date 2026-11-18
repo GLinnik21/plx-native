@@ -163,7 +163,7 @@ fn the_tile_corner_veil_is_one_role_token_at_black_55() {
 /// its ink from role tokens, and the mark body carries no literal alpha of its own.
 #[test]
 fn the_watched_tick_reads_the_veil_token_and_no_literal_alpha() {
-    let src = include_str!("widgets.rs");
+    let src = include_str!("widgets.rs").replace("\r\n", "\n");
     // The tick is `corner_mark` with the check glyph (the Watchlist's marks share its body), so
     // the tokens are graded where they are read.
     let start = src.find("pub fn watched_mark(").expect("watched_mark is in widgets.rs");

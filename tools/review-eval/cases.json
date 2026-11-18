@@ -1,0 +1,156 @@
+{
+  "cases": [
+    {
+      "id": "pr-1281",
+      "kind": "bug",
+      "split": "tune",
+      "commit": "11d4ef04db0b54c5b34176bae06fbd661380dd93",
+      "fixed_by": "038e8e992774baf336a16b89d417753c770baf28",
+      "key": "A second ACB handle (player type 0, for the URI engine) is created at every boot whatever the viewer's playback engine, instead of only when the Experimental engine is first offered a play; on webOS 4.4 every Feed Load then times out."
+    },
+    {
+      "id": "pr-578",
+      "kind": "bug",
+      "split": "tune",
+      "commit": "331a0a5ab38c199a79e56a7654bf213cdafeaa79",
+      "fixed_by": "63fb1fe5717f79e9be00b0169e86890a5c4a0692",
+      "key": "SDL_webOSCursorVisibility is now looked up at runtime and is absent on webOS 3.x's SDL 2.0.4, so hide_cursor() silently does nothing there and the pointer stays on screen, over video too."
+    },
+    {
+      "id": "pr-1230",
+      "kind": "bug",
+      "split": "tune",
+      "commit": "e1ea6e2ec6481a90912a9e34b6b5155c27d67863",
+      "fixed_by": "c01b5136a3ef3656485879e99908666c153c1424",
+      "key": "Catalan is added as a shipped language without its entry in tools/hud_preview.py's LONG_TITLES corpus, so the HUD preview matrix refuses to plan."
+    },
+    {
+      "id": "pr-973",
+      "kind": "bug",
+      "split": "test",
+      "commit": "088f6f7644574342bce6e8e4482bbd0447e9c3a1",
+      "fixed_by": "774b611c37d96848c5ce961b5c93280c7f51f347",
+      "key": "The session owner's cache refill now runs on any app frame, and under Resources::Fixture SessionAdapter::begin_cache_refresh still submits a real storage-worker job, so fixture Bridge tests receive a CacheRefreshed on a timing-dependent frame and can read a developer's real auth.json."
+    },
+    {
+      "id": "pr-484",
+      "kind": "bug",
+      "split": "test",
+      "commit": "00b7c742015ea687fcd032d9beb2715336faa12d",
+      "fixed_by": "ad36c56a81113267d4c64cbf2aa1db8e150b3e29",
+      "key": "The release spring of a card whose hold the app took is reported by Press::tick as page damage, so under an open item menu the frozen host snapshot is re-captured on every frame of the spring."
+    },
+    {
+      "id": "pr-816",
+      "kind": "bug",
+      "split": "test",
+      "commit": "e351f56e083499e8f3e7b7e5576c984e1ca557fb",
+      "fixed_by": "d36e86301841ddd5fed686c0354ef20ba5656445",
+      "key": "The pull request removes the nightly toolchain but leaves .claude/settings.json's permission allowlist naming `cargo +nightly check`, so the documented release check no longer matches it and prompts."
+    },
+    {
+      "id": "pr-1313",
+      "kind": "bug",
+      "split": "tune",
+      "commit": "9be7a43f69a0550f1b125f35e76cb5331a7daf4a",
+      "fixed_by": "b71b0e5c41fd712cb4913240353e8c0c7625bd4b",
+      "key": "The Segment seek landing check requires a fresh displayed-frame count since Play, which a set that sends no displayed-frame callback never delivers, so every in-place seek there times out and reloads although it is already playing."
+    },
+    {
+      "id": "pr-981",
+      "kind": "bug",
+      "split": "tune",
+      "commit": "65e976b01803500e6717bf943186ca2cb3cf7c8f",
+      "fixed_by": "9bc127faf40c63e4c45d5debc4b668391068d425",
+      "key": "The new fs_ramp.frag shader's comment spells a dev-trigger name (plxnative-hwcnt), and shader sources are embedded whole, so the name is compiled into the binary and the packaged-binary scan for dev-trigger surface fails."
+    },
+    {
+      "id": "pr-237",
+      "kind": "bug",
+      "split": "tune",
+      "commit": "e66b644b95cb80244d3bc435d9adf6db40291313",
+      "fixed_by": "7d73931726c2fa5ece92c2279f6d652b43b9d724",
+      "key": "Hiding Change profile on a refused roster leaves Sign out as the account menu's first row, where the menu seats its focus, so one stray OK signs the user out."
+    },
+    {
+      "id": "pr-1252",
+      "kind": "bug",
+      "split": "tune",
+      "commit": "02be3ead1b169931c4ee4e362854dbbd716c292d",
+      "fixed_by": "1d96fbb73073b71dfc4ca61b4970b833462dfebb",
+      "key": "The Vietnamese headline added to the site's Featured in strip uses characters outside the site font subset's BASE_RANGES, so the subset check fails and the Pages build stops."
+    },
+    {
+      "id": "pr-865",
+      "kind": "bug",
+      "split": "test",
+      "commit": "60538b681a139775ce7e14fa9cfb6d0f5842250f",
+      "fixed_by": "8be69a89c2fb2c93e5539f077708486a5ccfa595",
+      "key": "A film now ends only on the pipeline's end-of-stream event, but the simulator's HostSink never sends one, so in the simulator a film whose audio outlasts its video hangs at the end."
+    },
+    {
+      "id": "pr-365",
+      "kind": "bug",
+      "split": "test",
+      "commit": "285f18a54e6ec46fa223dedeb5c1ae3f4c24e6eb",
+      "fixed_by": "3a485a900a5f98f18f339002529257409775fc40",
+      "key": "The underlay preload debounce is never wired: the dispatcher calls want_corners directly, so the reconstruction latches on the first quiescent frame instead of waiting out the rest frames."
+    },
+    {
+      "id": "pr-200",
+      "kind": "bug",
+      "split": "test",
+      "commit": "6c6d10e73ba87d34a99691b9dbc0cae4aec74b4d",
+      "fixed_by": "a44ba477740ae68fa60ead23b6d10a9da721dcfd",
+      "key": "Developer builds now SIGABRT the main thread after a 2 s stall, and the CI simulator's first frames on a software renderer legitimately take that long, so simulator jobs abort depending on runner timing."
+    },
+    {
+      "id": "pr-944",
+      "kind": "control",
+      "split": "tune",
+      "commit": "6ca6fbfd6a0ae8eb312f9cc497828825578f8f1d"
+    },
+    {
+      "id": "pr-898",
+      "kind": "control",
+      "split": "tune",
+      "commit": "4ed33e537813098c070033d30b891b1a07053586"
+    },
+    {
+      "id": "pr-839",
+      "kind": "control",
+      "split": "test",
+      "commit": "046f3058d7a95890dd874e6ba11a94619e57b30d"
+    },
+    {
+      "id": "pr-799",
+      "kind": "control",
+      "split": "test",
+      "commit": "81d930be2d30df6207fe56d3a195750f370939c7"
+    },
+    {
+      "id": "pr-887",
+      "kind": "control",
+      "split": "tune",
+      "commit": "fa04c5faf22ff2d6c885592136f9757aaca4c2af"
+    },
+    {
+      "id": "pr-912",
+      "kind": "control",
+      "split": "tune",
+      "commit": "0dd6797c1e483399038103c920c92faf994a99af"
+    },
+    {
+      "id": "pr-914",
+      "kind": "control",
+      "split": "test",
+      "commit": "07b4fee93337117b90864b11b56c69e7102ad671"
+    },
+    {
+      "id": "pr-838",
+      "kind": "control",
+      "split": "test",
+      "commit": "3ac9e03fd4ef8b3c3bf1061c6eb372d970a6a3da"
+    }
+  ]
+}

@@ -11,9 +11,17 @@ varying vec2 v_uv;
 // vertex source is built with `gfx::glsl_vs_dithered!` carry it — `fs_field.frag`, here.
 varying highp vec2 v_dither_nc;
 #endif
+#ifdef PLX_RCLIP
+// The authored px of this fragment, for the rounded clip's mask (`shaders/rclip.glsl`): the program
+// is linked behind `gfx::VS_SRC_RC` and bound only while a rounded clip is live.
+varying highp vec2 v_px;
+#endif
 void main(){
   v_uv = a_pos;
   vec2 px = u_rect.xy + a_pos * u_rect.zw;
+#ifdef PLX_RCLIP
+  v_px = px;
+#endif
 #ifdef PLX_DITHER_NC
   v_dither_nc = px * (1.0 / 256.0);
 #endif

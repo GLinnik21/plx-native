@@ -345,7 +345,13 @@ impl MetadataStore {
     /// `Clear` — see the struct doc. `Reset` (the server/profile switch) DOES rotate, before the
     /// state clears, so a worker spawned before the reset can only land into the retired `Arc` —
     /// mirrors `PersonStore::run`/`SearchStore::run_with_directory`'s `Reset` arm.
-    pub fn run(&mut self, cmd: MetadataCmd) -> bool {
+    pub fn run(&mut self, cmd: MetadataCmd) -> bool { self.run_with_optional_keys(cmd, None) }
+
+    pub fn run_with_keys(&mut self, cmd: MetadataCmd, keys: &plx_plex::plex::ClientKeys) -> bool {
+        self.run_with_optional_keys(cmd, Some(keys))
+    }
+
+    fn run_with_optional_keys(&mut self, cmd: MetadataCmd, keys: Option<&plx_plex::plex::ClientKeys>) -> bool {
         if matches!(&cmd, MetadataCmd::Reset) {
             self.adapter = Arc::new(Default::default());
         }
@@ -353,7 +359,7 @@ impl MetadataStore {
         // is drawn) raises no notice: a notice relayouts a mounted Detail page. Every other
         // command bumps whatever it returned.
         let view_edit = matches!(&cmd, MetadataCmd::ApplyView { .. });
-        let changed = crate::metadata::run(&mut self.state, &self.adapter, cmd);
+        let changed = crate::metadata::run_with_keys(&mut self.state, &self.adapter, cmd, keys);
         if changed || !view_edit {
             self.bump();
         }

@@ -57,7 +57,7 @@ fn nested_draw_preserves_navigation_at_rest_and_through_push_and_pop() {
         let seen = Rc::new(RefCell::new(Vec::new()));
         let instance = |id| Instance {
             id: InstanceId(id),
-            screen: Box::new(DrawProbe { id, seen: Rc::clone(&seen) }) as Box<dyn Screen<InnerHost>>,
+            screen: Box::new(DrawProbe { id, wake: order.last() == Some(&id), seen: Rc::clone(&seen) }) as Box<dyn Screen<InnerHost>>,
             inflight: Vec::new(),
             staged: false,
             staged_effects: Vec::new(),
@@ -83,6 +83,14 @@ fn nested_draw_preserves_navigation_at_rest_and_through_push_and_pop() {
         let mut f = DrawFrame::with_navigation(&c, Painter::root(), navigation);
         let before = LogicalState::hash(&surface);
         surface.draw_pages(&mut f, Painter::root());
+        let mut owner = plx_machine::present::Present::new();
+        let mut unrelated = plx_machine::present::Present::new();
+        for p in [&mut owner, &mut unrelated] { p.take(0); p.acknowledge(0); }
+        f.apply_frame_requests(&mut owner);
+        assert!(owner.peek(1), "{label}: even a leaving child must forward its deferred demand");
+        assert!(!unrelated.peek(1));
+        assert!(!owner.page_damaged());
+        assert!(!owner.page_moving());
         assert_eq!(LogicalState::hash(&surface), before, "{label}: draw changed logical state");
         actual.push((label, seen.borrow().clone()));
         expected.push((label, order.iter().map(|&id| (id, navigation)).collect::<Vec<_>>()));
@@ -138,7 +146,7 @@ fn opening_settings_never_writes_the_session_file() {
 fn the_signed_in_root_carries_no_sub_line_and_its_sentences_fit_elsewhere() {
     let _g = plx_base::testlock::serial();
     let _sess = multi_user_session("root-detail-widths");
-    let page = RootPage::new(EntryId(0), plx_data::stores::browse::DirectoryView::empty_for_test());
+    let page = RootPage::new(EntryId(0), plx_data::stores::browse::DirectoryView::empty_for_test(), &crate::registry::capture_fixture());
     // Settings v2: a root row is a label and a value, a switch or a chevron; its sentence is said
     // in the left column while it has focus (`sentence_for`, fit in `settings_v2_tests`), and a
     // server's switch (which states a status) is the only row that may keep a sub-line.

@@ -72,14 +72,20 @@ def verify(binary, media, output, instant_dpad=False):
         queue_posts = [path for path, _ in pms.requests if path.split("?")[0] == "/playQueues"]
         assert len(queue_posts) == 1, f"queue replaced during item navigation: {queue_posts}"
 
+        # Back on the first episode of the queue, past the five seconds the old Previous restarted
+        # from: Previous is no longer a restart, and with no episode before this one it is
+        # disabled. The row parks on Next, Left finds no Previous stop, and no seek to 0 is asked.
         wait(r"loop=.*route=player .*pos=(?:[5-9]|[1-9][0-9]+)s", stamp)
         control_row()
+        latest = sim.latest(lambda _, line: line.startswith("focus route=player "))[1]
+        assert "previous=0" in latest and "next=1" in latest, f"the first episode has no Previous: {latest}"
         stamp = sim.key("left")
-        wait(r"^focus route=player .*f=1 btn=0", stamp)
-        stamp = sim.key("ok")
-        wait(r"seek\(in-place\): av_seek t=0 ", stamp)
-        wait(r"loop=.*route=player .*pos=[12]s", stamp)
-        print("PASS Previous restarts the current item after five seconds", flush=True)
+        time.sleep(0.3)
+        assert not any(re.search(r"^focus route=player .*f=1 btn=0 ", line)
+                       for at, line in sim.snapshot() if at >= stamp), "Left reached a disabled Previous"
+        assert not any("seek(in-place): av_seek t=0 " in line
+                       for at, line in sim.snapshot() if at >= stamp), "Previous restarted the item"
+        print("PASS Previous is disabled on the first episode and never restarts it", flush=True)
 
         # UP from the control row explicitly dismisses the HUD. The focus probe uses the last
         # input time, so its timer-only sample cannot establish an automatic timeout by itself.

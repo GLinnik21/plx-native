@@ -126,7 +126,8 @@ pub enum HudCommand {
     TogglePlay,
     /// A relative jump.
     Seek(SeekBy),
-    /// The previous episode (or a restart of this one, the Previous disc's glyph says which).
+    /// The previous episode of the queue. Never a restart of this one: that is
+    /// [`HudCommand::FromBeginning`].
     Previous,
     /// The next episode.
     Next,
@@ -145,13 +146,40 @@ pub enum HudCommand {
 }
 
 impl HudCommand {
+    /// **The word that names a control with this command in an accessibility id**
+    /// (`player.control.next`): static text, a name in the id grammar (`[a-z][a-z0-9_]*`), one per
+    /// closed value of the command's parameters (a seek is `seek_back` or `seek_forward`, the
+    /// More menu's three pages are `more`, `quality` and `speed`). Two controls of one package can
+    /// carry the same command, so the word is not unique by itself: the screen makes the id unique.
+    pub fn a11y_word(self) -> &'static str {
+        match self {
+            HudCommand::TogglePlay => "play_pause",
+            HudCommand::Seek(SeekBy::Secs(n)) if n.get() < 0 => "seek_back",
+            HudCommand::Seek(SeekBy::Secs(_)) => "seek_forward",
+            HudCommand::Seek(SeekBy::Setting(SeekDir::Back)) => "seek_back",
+            HudCommand::Seek(SeekBy::Setting(SeekDir::Forward)) => "seek_forward",
+            HudCommand::Previous => "previous",
+            HudCommand::Next => "next",
+            HudCommand::OpenTracks(TrackTab::Audio) => "audio",
+            HudCommand::OpenTracks(TrackTab::Subtitles) => "subtitles",
+            HudCommand::OpenMore(MorePage::Root) => "more",
+            HudCommand::OpenMore(MorePage::Quality) => "quality",
+            HudCommand::OpenMore(MorePage::Speed) => "speed",
+            HudCommand::ToggleSection(Section::Chapters) => "chapters",
+            HudCommand::ToggleSection(Section::Info) => "info",
+            HudCommand::FromBeginning => "from_beginning",
+            HudCommand::GoToDetail => "go_to_detail",
+            HudCommand::ToggleStats => "stats",
+        }
+    }
+
     /// **Is a press of this command meaningful now?** The table's "Enabled" column, from the
     /// frame's [`HudModel`] alone.
     pub fn enabled(self, model: &HudModel) -> bool {
         match self {
             // a jump needs a known duration to clamp against (`commit_jump` returns without one)
             HudCommand::Seek(_) => model.duration_ns > 0,
-            // `Controls` already folds a restart target into `previous` (`Controls::for_item`)
+            // the playing row has a predecessor in the queue (`Controls::for_item`)
             HudCommand::Previous => model.controls.previous,
             HudCommand::Next => model.controls.next,
             HudCommand::ToggleSection(Section::Chapters) => model.chapters,
@@ -273,7 +301,7 @@ mod tests {
     /// performer used to spell as a `match` on `Action`.
     #[test]
     fn each_classic_control_is_the_command_of_the_action_it_always_performed() {
-        let episode = Controls::for_item(true, true, true, false);
+        let episode = Controls::for_item(true, true, true);
         let want = [
             (BTN_PREVIOUS, Action::Previous, HudCommand::Previous),
             (BTN_NEXT, Action::Next, HudCommand::Next),
@@ -293,21 +321,57 @@ mod tests {
         assert_eq!(TrackTab::Audio.index(), 0);
     }
 
+    /// **A control's id word is a name in the id grammar for every command**, classic's five are
+    /// five different words, and the closed parameters (a seek's direction, More's page) do not
+    /// share one. The `match` that names them has no wildcard, so a new command fails to compile
+    /// there until it has a word.
+    #[test]
+    fn every_command_has_a_word_in_the_id_grammar() {
+        let every = [
+            HudCommand::TogglePlay,
+            HudCommand::Seek(secs(-10)),
+            HudCommand::Seek(secs(30)),
+            HudCommand::Seek(SeekBy::Setting(SeekDir::Back)),
+            HudCommand::Seek(SeekBy::Setting(SeekDir::Forward)),
+            HudCommand::Previous,
+            HudCommand::Next,
+            HudCommand::OpenTracks(TrackTab::Audio),
+            HudCommand::OpenTracks(TrackTab::Subtitles),
+            HudCommand::OpenMore(MorePage::Root),
+            HudCommand::OpenMore(MorePage::Quality),
+            HudCommand::OpenMore(MorePage::Speed),
+            HudCommand::ToggleSection(Section::Chapters),
+            HudCommand::ToggleSection(Section::Info),
+            HudCommand::FromBeginning,
+            HudCommand::GoToDetail,
+            HudCommand::ToggleStats,
+        ];
+        for command in every {
+            assert!(plx_ui::a11y::is_name(command.a11y_word()), "{command:?}: {:?}", command.a11y_word());
+        }
+        let classic: Vec<&str> = CLASSIC_COMMANDS.iter().map(|c| c.a11y_word()).collect();
+        assert_eq!(classic, ["previous", "next", "subtitles", "audio", "more"]);
+        assert_ne!(HudCommand::Seek(secs(-10)).a11y_word(), HudCommand::Seek(secs(30)).a11y_word());
+        assert_eq!(
+            HudCommand::Seek(secs(-10)).a11y_word(),
+            HudCommand::Seek(SeekBy::Setting(SeekDir::Back)).a11y_word(),
+            "a seek back is a seek back however the package sized it"
+        );
+    }
+
     /// `command` and `action` are two spellings of one answer, whatever the row holds: the same
     /// controls are absent, and the rest agree.
     #[test]
     fn command_and_action_agree_for_every_row_the_discs_can_hold() {
         for previous in [false, true] {
             for next in [false, true] {
-                for restart in [false, true] {
-                    let controls = Controls { previous, next, restart };
-                    for i in -1..=BTN_N {
-                        assert_eq!(
-                            controls.command(i),
-                            controls.action(i).map(HudCommand::from),
-                            "{controls:?} control {i}"
-                        );
-                    }
+                let controls = Controls { previous, next };
+                for i in -1..=BTN_N {
+                    assert_eq!(
+                        controls.command(i),
+                        controls.action(i).map(HudCommand::from),
+                        "{controls:?} control {i}"
+                    );
                 }
             }
         }
@@ -339,15 +403,15 @@ mod tests {
             assert!(HudCommand::Seek(by).enabled(&model(|m| m.duration_ns = 1)), "{by:?} with one");
         }
 
-        // Previous is enabled by `previous || restart` (a restart target counts), Next by `next`
-        let controls = |previous, next, restart| model(|m| m.controls = Controls::for_item(true, previous, next, restart));
+        // Previous is enabled by `previous` (a predecessor in the queue, and nothing else), Next by `next`
+        let controls = |previous, next| model(|m| m.controls = Controls::for_item(true, previous, next));
         assert!(!HudCommand::Previous.enabled(&idle) && !HudCommand::Next.enabled(&idle), "not an episode");
-        assert!(!HudCommand::Previous.enabled(&controls(false, true, false)), "first episode, nothing to restart");
-        assert!(HudCommand::Previous.enabled(&controls(false, true, true)), "a restart target counts");
-        assert!(HudCommand::Previous.enabled(&controls(true, false, false)));
-        assert!(!HudCommand::Next.enabled(&controls(true, false, true)), "the last episode has no Next");
-        assert!(HudCommand::Next.enabled(&controls(false, true, false)));
-        assert!(!HudCommand::Next.enabled(&controls(false, false, true)), "neither neighbour: no pair");
+        assert!(!HudCommand::Previous.enabled(&controls(false, true)), "first episode: there is no episode before it");
+        assert!(HudCommand::Previous.enabled(&controls(true, false)));
+        assert!(HudCommand::Previous.enabled(&controls(true, true)));
+        assert!(!HudCommand::Next.enabled(&controls(true, false)), "the last episode has no Next");
+        assert!(HudCommand::Next.enabled(&controls(false, true)));
+        assert!(!HudCommand::Next.enabled(&controls(false, false)), "neither neighbour: no pair");
 
         // sections and the detail page need what they open
         assert!(!HudCommand::ToggleSection(Section::Chapters).enabled(&idle));
@@ -362,16 +426,14 @@ mod tests {
     fn a_discs_command_is_enabled_exactly_when_its_disc_has_a_stop() {
         for previous in [false, true] {
             for next in [false, true] {
-                for restart in [false, true] {
-                    let controls = Controls::for_item(true, previous, next, restart);
-                    let m = model(|m| m.controls = controls);
-                    for i in 0..BTN_N {
-                        assert_eq!(
-                            CLASSIC_COMMANDS[i as usize].enabled(&m),
-                            controls.enabled(i),
-                            "{controls:?} control {i}"
-                        );
-                    }
+                let controls = Controls::for_item(true, previous, next);
+                let m = model(|m| m.controls = controls);
+                for i in 0..BTN_N {
+                    assert_eq!(
+                        CLASSIC_COMMANDS[i as usize].enabled(&m),
+                        controls.enabled(i),
+                        "{controls:?} control {i}"
+                    );
                 }
             }
         }

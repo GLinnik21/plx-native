@@ -24,11 +24,12 @@ mod tests {
         }
     }
 
-    fn rig(stored: Session) -> Bridge {
+    fn rig(stored: Session) -> crate::app::runtime_owners::Harness {
         let mut init = SessionInit::captured(stored);
         init.epoch = INITIAL_EPOCH;
         init.picker = Picker::Boot;
-        Bridge::for_session_test(init)
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+        crate::app::runtime_owners::Harness::from_parts(runtime, retained)
     }
 
     fn step(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, records: Vec<SessionEnvelope>) {
@@ -98,7 +99,8 @@ mod tests {
     #[test]
     fn a_refused_back_leaves_the_live_pin_poll_running() {
         for session in [Session::default(), stored(true)] {
-            let mut rig = rig(session);
+            let mut harness = rig(session);
+            let mut rig = harness.bridge();
             let mut d = Dispatcher::<AppHost>::new();
             let mut records = waiting(&mut rig, &mut d);
             let publication = rig.session.publication();
@@ -127,7 +129,8 @@ mod tests {
             assert_eq!(rig.auth_read().0.phase, Phase::Ready);
         }
 
-        let mut rig = rig(stored(false));
+        let mut harness = rig(stored(false));
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         let records = waiting(&mut rig, &mut d);
         let old_epoch = rig.auth_read().0.flow_epoch;
@@ -150,7 +153,8 @@ mod tests {
         // Refusal's complete Ready/phase/code/exhaustion table is already checked by
         // session_protocol_tests::refused_restart_preserves_the_exact_owner_state_through_dispatch.
         // This mapping supplies its original accepted and unconditional-start contrast.
-        let mut rig = rig(Session::default());
+        let mut harness = rig(Session::default());
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         let records = waiting(&mut rig, &mut d);
         let epoch = rig.auth_read().0.flow_epoch;
@@ -189,7 +193,8 @@ mod tests {
 
     #[test]
     fn apply_progress_drops_an_observation_from_a_retired_epoch() {
-        let mut rig = rig(Session::default());
+        let mut harness = rig(Session::default());
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         let records = waiting(&mut rig, &mut d);
         let old_epoch = rig.auth_read().0.flow_epoch;
@@ -215,7 +220,8 @@ mod tests {
     #[test]
     fn a_cancel_mid_flight_cannot_be_overtaken_by_an_in_flight_success() {
         let _serial = plx_base::testlock::serial();
-        let mut rig = rig(stored(false));
+        let mut harness = rig(stored(false));
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         let mut records = waiting(&mut rig, &mut d);
         let authorized = records.remove(0);
@@ -245,14 +251,15 @@ mod tests {
 
     // Endpoint lifetimes: completion guards own physical reservations, the Session owner owns
     // logical pending entries, and transferred envelopes retain receipts until main ACKs them.
-    fn endpoint_rig() -> (Bridge, plx_plex::plex::ServerId) {
+    fn endpoint_rig() -> (crate::app::runtime_owners::Harness, plx_plex::plex::ServerId) {
         let mut saved = stored(false);
         saved.sources.push(plx_plex::plex::session::SourceRef {
             machine_id: "stored-server".into(), address: "127.0.0.1".into(), port: 32400,
             origin_url: "http://127.0.0.1:32400".into(), token: "synthetic-server-token".into(),
             owned: true, ..Default::default()
         });
-        let mut rig = rig(saved);
+        let mut owner = rig(saved);
+        let rig = owner.bridge();
         // Legacy admission used 32 slots; the registry has no slot-count ceiling any more.
         let sid = plx_plex::plex::ServerId::from_raw(15);
         rig.session_adapter.fixture_resources().endpoints.insert(
@@ -264,7 +271,7 @@ mod tests {
                 machine_id: "stored-server".into(),
             },
         );
-        (rig, sid)
+        (owner, sid)
     }
 
     fn endpoint_drop(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, sid: plx_plex::plex::ServerId) -> u32 {
@@ -314,7 +321,8 @@ mod tests {
 
     #[test]
     fn endpoint_terminal_release_is_main_applied_and_flight_matched() {
-        let (mut rig, sid) = endpoint_rig();
+        let (mut owner, sid) = endpoint_rig();
+        let mut rig = owner.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         let resources = resource_state(&mut rig);
         let first = endpoint_drop(&mut rig, &mut d, sid);
@@ -348,7 +356,8 @@ mod tests {
         // running_worker_unwind_uses_the_guard_terminal. Injection runs synchronously inside the
         // Bridge effect drain: catching a panic inside this producer would NOT unwind that guard.
         // This trace covers the approved logical-cancel / carried-receipt half using real Drop.
-        let (mut rig, sid) = endpoint_rig();
+        let (mut owner, sid) = endpoint_rig();
+        let mut rig = owner.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         let resources = resource_state(&mut rig);
         let first = endpoint_drop(&mut rig, &mut d, sid);
@@ -587,7 +596,8 @@ mod tests {
 
         #[test]
         fn invalidating_an_epoch_while_activation_waits_prevents_stale_publication() {
-            let mut rig = rig(stored(false));
+            let mut harness = rig(stored(false));
+            let mut rig = harness.bridge();
             let mut d = Dispatcher::<AppHost>::new();
             let stale = start_wait(&mut rig, &mut d);
             let old_epoch = rig.auth_read().0.flow_epoch;
@@ -617,7 +627,8 @@ mod tests {
             // The old arbitrary callback returned Switching while setting Profiles. Production has
             // no such callback: RestartWait guards CURRENT Waiting+QR and captures new Login inputs
             // at its Waiting -> Creating transition. Test that meaningful boundary, not invented API.
-            let mut rig = rig(stored(false));
+            let mut harness = rig(stored(false));
+            let mut rig = harness.bridge();
             let mut d = Dispatcher::<AppHost>::new();
             let stale = start_wait(&mut rig, &mut d);
             let read = rig.session.publication();

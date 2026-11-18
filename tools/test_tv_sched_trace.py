@@ -191,6 +191,10 @@ class ReadBack(unittest.TestCase):
         self.assertEqual(rig.run("--tid", "x").returncode, 2)
         self.assertEqual(rig.run("--read-timeout", "0").returncode, 2)
         self.assertEqual(rig.run("--app=Debug").returncode, 2)
+        # Locale-dependent: a bash range like `[a-z]` collates uppercase letters in between in a UTF-8
+        # locale (macOS /bin/bash under en_US.UTF-8, the CI runner's), which accepted "Debug" there
+        # (the daily build bench failed on it, 2026-11-13). A host without that locale falls back to C.
+        self.assertEqual(rig.run("--app=Debug", env={"LC_ALL": "en_US.UTF-8", "LANG": "en_US.UTF-8"}).returncode, 2)
 
     def test_tid_and_app_are_exclusive(self):
         rig = self.rig(0)

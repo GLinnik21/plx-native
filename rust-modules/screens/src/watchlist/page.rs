@@ -306,9 +306,9 @@ impl Page {
 
     /// The caption of the tile at `i` under the Under posters setting: its row and state, and the
     /// facts of its matched copy.
-    fn label(&self, i: usize) -> TileLabel {
+    fn label(&self, i: usize, policy: &plx_ui::caption_policy::CaptionPolicy) -> TileLabel {
         match self.tiles.get(i).zip(self.cells.get(i)) {
-            Some((t, c)) => caption::label(&t.row, t.state, &caption::policy(), &c.listing),
+            Some((t, c)) => caption::label(&t.row, t.state, policy, &c.listing),
             None => TileLabel::default(),
         }
     }
@@ -498,6 +498,7 @@ fn tile_facts<'a>(t: &'a WatchTile, c: &'a Cell) -> TileFacts<'a> {
 
 /// The grid's content (`CardSource`): the snapshot's titles and what was derived for them.
 struct Titles<'a> {
+    policy: plx_ui::caption_policy::CaptionPolicy,
     page: &'a Page,
 }
 
@@ -528,7 +529,7 @@ impl<H: ContentLike> CardSource<H> for Titles<'_> {
         }
     }
     fn label(&self, i: usize) -> TileLabel {
-        self.page.label(i)
+        self.page.label(i, &self.policy)
     }
     fn progress(&self, i: usize) -> Option<f32> {
         self.page.cells.get(i)?.resume
@@ -542,6 +543,13 @@ impl<H: ContentLike> CardSource<H> for Titles<'_> {
     /// (`art` answers `Poster(None)`), so focus that enters it is on something drawn.
     fn loaded(&self, _i: usize) -> bool {
         true
+    }
+    /// The ratingKey of the title's copy on the server it is matched to: what a by-id press names
+    /// to stay on the title it read. A reserved cell, and a title no server holds (coming soon,
+    /// not on any server), has none.
+    fn subject(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
+        let copy = self.page.tiles.get(i)?.copy?;
+        Some(std::borrow::Cow::Owned(copy.rating_key.to_string()))
     }
     /// Nothing is for the grid to ask: the list worker reads every page of the list on its own
     /// (`WatchlistStore`), so a reserved cell is waiting for a read already under way.
@@ -570,6 +578,7 @@ struct CountHold {
 /// The tiles a landing is fading out, in the order the grid names them (`Grid::ghost_keys`); one
 /// the page did not keep is `None` and is not drawn.
 struct GhostTitles<'a> {
+    policy: plx_ui::caption_policy::CaptionPolicy,
     tiles: Vec<Option<&'a (WatchTile, Cell)>>,
     /// Test support: the ghost posters actually asked for (`Page::ghost_draws`).
     #[cfg(test)]
@@ -600,7 +609,7 @@ impl<H: ContentLike> CardSource<H> for GhostTitles<'_> {
     /// Read only for the focused card's ghost, which keeps its caption until the landing steps.
     fn label(&self, i: usize) -> TileLabel {
         match self.tiles.get(i).copied().flatten() {
-            Some((t, c)) => caption::label(&t.row, t.state, &caption::policy(), &c.listing),
+            Some((t, c)) => caption::label(&t.row, t.state, &self.policy, &c.listing),
             None => TileLabel::default(),
         }
     }
@@ -626,20 +635,25 @@ impl<H: ContentLike> StackPage<H> for Page {
     }
 
     fn sections(&self, cx: &Cx<'_, H>, out: &mut Vec<SectionSpec<Sec>>) {
-        out.push(SectionSpec::new(Sec::Head, Kind::Custom { height: GRID_TOP, focusable: true }, HEADER_GROUP).ranked(1));
+        out.push(
+            SectionSpec::new(Sec::Head, Kind::Custom { height: GRID_TOP, focusable: true }, HEADER_GROUP)
+                .ranked(1)
+                .named("header"),
+        );
         // DS4: a removal plays (survivors spring to their cells) instead of cutting.
         out.push(SectionSpec::new(
             Sec::Items,
             Kind::Grid { spec: grid_spec().animate_landings(true) },
             GRID_GROUP,
-        ).seated(plx_ui::page_regions::CONTENT_HEAD_SEAT));
+        ).seated(plx_ui::page_regions::CONTENT_HEAD_SEAT).named("grid"));
         // The unreachable read-out's Try again is the one focusable thing in the status section.
         let retry = (self.list == ListState::Failed)
             .then(|| unreachable_overlay().action_frame_measured(cx.measure))
             .flatten();
         out.push(
             SectionSpec::new(Sec::Status, Kind::Overlay { rect: retry.unwrap_or(Rect::FULL), focusable: retry.is_some() }, STATUS_GROUP)
-                .ranked(2),
+                .ranked(2)
+                .named("status"),
         );
     }
 
@@ -647,8 +661,9 @@ impl<H: ContentLike> StackPage<H> for Page {
         out.extend([Sec::Items, Sec::Status, Sec::Head]);
     }
 
-    fn cards<'a>(&'a self, _cx: &'a Cx<'_, H>, k: Sec) -> Option<Titles<'a>> {
-        (k == Sec::Items && !self.cells.is_empty()).then_some(Titles { page: self })
+    fn cards<'a>(&'a self, cx: &'a Cx<'_, H>, k: Sec) -> Option<Titles<'a>> {
+        (k == Sec::Items && !self.cells.is_empty()).then_some(Titles { page: self,
+            policy: crate::registry::captions::policy_for(H::screen_inputs(cx)) })
     }
 
     /// A reserved cell whose row has landed: the title now keyed in the same cell stands for it.
@@ -660,6 +675,17 @@ impl<H: ContentLike> StackPage<H> for Page {
         match k {
             Sec::Head => Some(PILL_ELEM),
             Sec::Status => (self.list == ListState::Failed).then_some(RETRY_ELEM),
+            Sec::Items => None,
+        }
+    }
+
+    /// The accessibility names of the two plain elements, so the ids are `header.sort` (the one stop of
+    /// the header row, the Sort & Filter pill, which the Library's own row names the same) and
+    /// `status.retry` (the unreachable read-out's Try again); the grid's cards are `grid.card.<i>`.
+    fn plain_name(&self, k: Sec, _n: usize) -> Option<&'static str> {
+        match k {
+            Sec::Head => Some("sort"),
+            Sec::Status => Some("retry"),
             Sec::Items => None,
         }
     }
@@ -684,6 +710,7 @@ impl<H: ContentLike> StackPage<H> for Page {
     /// DS4: the removed tile fades where it stood, under the survivors that spring over its cell.
     fn paint_ghosts(&self, _k: Sec, grid: &Grid, f: &mut DrawFrame<'_, '_, H>, p: Painter) {
         let ghosts = GhostTitles {
+            policy: crate::registry::captions::policy_for(H::screen_inputs(f.cx)),
             tiles: grid.ghost_keys().map(|key| self.ghosts.get(&key)).collect(),
             #[cfg(test)]
             drawn: &self.ghost_draws,
@@ -694,8 +721,8 @@ impl<H: ContentLike> StackPage<H> for Page {
     }
 
     /// The grid's focused band follows the Under posters setting, as the Library's does.
-    fn caption_policy(&self, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
-        (k == Sec::Items).then(caption::band_policy)
+    fn caption_policy(&self, cx: &Cx<'_, H>, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
+        (k == Sec::Items).then(|| crate::registry::captions::status_policy(&crate::registry::captions::policy_for(H::screen_inputs(cx))))
     }
 
     /// The header section's group is the shared row's (`HeaderFocus::group_spec`: a Control row,
@@ -738,7 +765,7 @@ impl<H: ContentLike> StackPage<H> for Page {
                 // stands in while the scroll is still bringing it home (`Handoff::clearance`).
                 let p = p.alpha(self.handoff.head_alpha(r.y));
                 let row = self.header_row(f.measure);
-                row.draw(p, r.y, &self.header_capsules, self.header_pop.scale_with(0, f.press.scale), lifted, &self.header_swap.borrow());
+                row.draw(p, r.y, &self.header_capsules, self.header_pop.scale_with(0, f.press), lifted, &self.header_swap.borrow());
                 #[cfg(feature = "devtriggers")]
                 if self.dev_blocked {
                     header::draw_dev_blocked(p, r.y);
@@ -950,7 +977,7 @@ impl WatchlistScreen {
         let row = self.page.header_row(f.measure);
         let dy = placed.rect.y - row.plate().y;
         let p = f.painter.alpha(f.page_alpha).alpha(self.page.handoff.head_alpha(dy));
-        row.draw_opener(p, dy, self.page.header_pop.scale_with(0, f.press.scale), &self.page.header_swap.borrow());
+        row.draw_opener(p, dy, self.page.header_pop.scale_with(0, f.press), &self.page.header_swap.borrow());
     }
 
     /// The Sort & Filter control as the focused pill draws it, in the page's document space: the
@@ -1374,7 +1401,7 @@ impl WatchlistScreen {
     /// Test support: the grid's content, as the stack reads it.
     #[cfg(test)]
     pub(crate) fn cards_for_test(&self) -> impl ui_cards::CardSource<crate::watchlist::cards_harness::WatchHost> + '_ {
-        Titles { page: &self.page }
+        Titles { page: &self.page, policy: crate::registry::captions::policy() }
     }
 
     /// Test support: the reserved cells drawn since the last call, by index.

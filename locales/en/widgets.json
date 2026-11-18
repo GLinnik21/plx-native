@@ -48,7 +48,7 @@
   },
   "widgets.menu.previous_episode": {
     "value": "Previous Episode",
-    "description": "Row in the player overflow menu, shown when the playing episode has an earlier one (or can restart): starts the previous episode, or this one over. Same noun as widgets.next.episode, in the same capitalisation."
+    "description": "Row in the player overflow menu, shown when the playing episode has an earlier one: starts the previous episode. Same noun as widgets.next.episode, in the same capitalisation."
   },
   "widgets.badge.forced": {
     "value": "FORCED",
@@ -878,10 +878,6 @@
   },
   "widgets.ass.init_failed": {
     "value": "Couldn’t initialize styled subtitles",
-    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
-  },
-  "widgets.ass.font_too_large": {
-    "value": "The installed subtitle font is too large",
     "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
   },
   "widgets.ass.unreadable": {

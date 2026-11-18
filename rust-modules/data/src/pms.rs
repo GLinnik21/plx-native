@@ -258,6 +258,8 @@ pub struct MediaVersion {
     pub id: plx_plex::plex::MediaId,
     /// Whole-file bitrate, kbps.
     pub kbps: i64,
+    #[serde(default, skip_serializing_if = "crate::metadata::is_zero")]
+    pub video_kbps: i64,
     /// PMS's resolution class (`4k`, `1080`), with the frame size as its fallback.
     pub resolution: String,
     pub width: i64,
@@ -271,7 +273,11 @@ pub struct MediaVersion {
     /// A video stream is HDR or Dolby Vision. Only a response that carries streams can say so (a
     /// listing usually does not), so `false` is "not known to be".
     pub hdr: bool,
+    #[serde(default, skip_serializing_if = "no_dolby_vision")]
+    pub dovi: crate::metadata::Dovi,
 }
+
+fn no_dolby_vision(dovi: &crate::metadata::Dovi) -> bool { !dovi.present }
 
 /// The versions worth a picker: every `Media[]` entry with an id when there are at least two,
 /// else none.
@@ -286,6 +292,7 @@ pub fn versions_of(it: &plx_plex::plex::Metadata) -> Vec<MediaVersion> {
             MediaVersion {
                 id: m.id,
                 kbps: m.bitrate,
+                video_kbps: part.and_then(|p| p.stream.iter().find(|s| s.stream_type == 1)).map_or(0, |s| s.bitrate),
                 resolution: clean(&m.video_resolution),
                 width: m.width,
                 height: m.height,
@@ -295,6 +302,11 @@ pub fn versions_of(it: &plx_plex::plex::Metadata) -> Vec<MediaVersion> {
                 container: clean(part.map_or(&m.container, |p| if p.container.is_empty() { &m.container } else { &p.container })),
                 size: part.map_or(0, |p| p.size),
                 hdr: part.is_some_and(|p| p.stream.iter().any(|s| s.stream_type == 1 && s.is_hdr())),
+                dovi: part
+                    .and_then(|p| {
+                        p.stream.iter().filter(|s| s.stream_type == 1).filter_map(crate::metadata::Dovi::of_stream).last()
+                    })
+                    .unwrap_or_default(),
             }
         })
         .collect()
@@ -359,6 +371,8 @@ pub struct PmsState {
     seen: u64,
     /// …and what the roster SAID at the time. See the retired `SEEN_FACTS` static's doc.
     seen_facts: u32,
+    seen_clients: ClientKeys,
+    scope_pins: Vec<(ServerId, i64, bool)>,
     /// Bumped by every authoritative fetch. See the retired `HUB_GEN` static's doc.
     hub_gen: u32,
     /// The retained Browse directory's semantic pin fingerprint as of the last merge. See the
@@ -417,6 +431,8 @@ impl Default for PmsState {
             srcs: Vec::new(),
             seen: u64::MAX,
             seen_facts: u32::MAX,
+            seen_clients: ClientKeys::default(),
+            scope_pins: Vec::new(),
             hub_gen: 0,
             last_sections_gen: 0,
             catalog_gen: 0,
@@ -790,6 +806,11 @@ pub fn hubs_snapshot(state: &PmsState) -> HubsSnapshot {
         generation: state.catalog_gen,
         state: hub_state(state),
     }
+}
+
+/// The visible publication includes its readout, even when no catalog rows were replaced.
+pub(crate) fn visible_projection(state: &PmsState) -> (u32, HubState) {
+    (state.catalog_gen, hub_state(state))
 }
 
 impl HubsSnapshot {
@@ -1223,6 +1244,10 @@ fn cancel_page(state: &mut PmsState, sid: ServerId, id: &str, key: &str) {
         }
     }
     source.page = None;
+    // The page's deferral goes with it, as `pump_reloads` drops both: a flag left on a source
+    // with no page would be a whole-source read the tick launches, prompted.
+    // A deferred quiet read (no page of its own) is still owed, so only the page's share goes.
+    source.deferred = source.quiet;
     source.fetching = false;
     source.seq = source.seq.wrapping_add(1);
     source.retry_n = 0;
@@ -1666,7 +1691,7 @@ fn pump_reloads(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope,
         if let Some(page) = source.page.as_ref().filter(|page| page.reload && !source.fetching) {
             if !want.iter().any(|(id, key)| *id == page.id && *key == page.key) {
                 source.page = None;
-                source.deferred = false;
+                source.deferred = source.quiet;
             }
         }
         if source.page.is_some() || source.fetching || source.state != HubState::Ready { continue; }
@@ -2500,8 +2525,10 @@ struct Src {
     adoptable: bool,
     retry_s: f32,
     retry_n: u32,
-    /// A fetch was wanted and the fan-out gate had no room for it. Stays set until the fetch starts,
-    /// so the tick asks again; nothing is dropped.
+    /// A fetch was wanted and the fan-out gate had no room for it, so the tick asks again. Stays set
+    /// until a read for this source goes out (`begin_request`) or what it was deferred for is
+    /// withdrawn: a cancelled or ring-dropped page takes its deferral with it, and only a quiet read
+    /// the gate refused keeps it (`deferred = quiet`).
     deferred: bool,
     /// Rows `(hub id, key)` whose reload failed for good while held; asked again only after the
     /// screen's hold moves. A screen's `HoldBand` sends a band once per about three rows of
@@ -2573,6 +2600,11 @@ impl Src {
             self.staged = None;
             self.quiet_owed = true;
         }
+        // A read is going out for this source, so the gate's refusal of it is answered. `kick_gated`
+        // clears it when it admits, but a page ask kicks ungated (`request_page`) over a quiet read
+        // the gate had deferred, and a flag left behind made the next tick launch a prompted
+        // whole-source read (state `Loading`) after the page landed.
+        self.deferred = false;
         self.adoptable = false;
         let request = HubRequest {
             gen: generation, seq: mint(), sid: self.sid, key,
@@ -2945,7 +2977,7 @@ fn feeds_home(sid: ServerId, pinned: &[ServerId], known: &[ServerId]) -> bool {
 /// policy remains in force for them.
 struct BrowseScope<'a> {
     sections_gen: u32,
-    pins: Vec<(ServerId, i64, bool)>,
+    pins: &'a [(ServerId, i64, bool)],
     /// Borrowed from the host's one buffer ([`BrowseScope::retained`]), so an idle per-frame step
     /// allocates nothing for it; a standalone fixture owns the keys it read.
     clients: std::borrow::Cow<'a, ClientKeys>,
@@ -2956,13 +2988,13 @@ impl<'a> BrowseScope<'a> {
     /// code only: a production step is handed them ([`BrowseScope::retained`]).
     #[cfg(any(test, feature = "test-support"))]
     fn standalone() -> Self {
-        Self { sections_gen: 0, pins: Vec::new(), clients: std::borrow::Cow::Owned(registry_keys_for_test()) }
+        Self { sections_gen: 0, pins: &[], clients: std::borrow::Cow::Owned(registry_keys_for_test()) }
     }
 
-    fn retained(directory: crate::stores::browse::DirectoryView<'_>, clients: &'a ClientKeys) -> Self {
+    fn retained(directory: crate::stores::browse::DirectoryView<'a>, clients: &'a ClientKeys) -> Self {
         Self {
             sections_gen: directory.sections_gen(),
-            pins: directory.favorite_sections().to_vec(),
+            pins: directory.favorite_sections(),
             clients: std::borrow::Cow::Borrowed(clients),
         }
     }
@@ -2972,9 +3004,8 @@ impl<'a> BrowseScope<'a> {
     /// are fixed-width atomics; fold the actual `(server, section, pin)` input into that existing
     /// shape instead of adding a global owner selector.
     fn cache_key(&self) -> u32 {
-        if self.pins.is_empty() {
-            return 0;
-        }
+        // An empty pin table carries no new Home membership, even when discovery advances.
+        if self.pins.is_empty() { return 0; }
         let mut hash = 0x811c_9dc5u32;
         let mut fold = |bytes: &[u8]| {
             for byte in bytes {
@@ -2983,7 +3014,7 @@ impl<'a> BrowseScope<'a> {
         };
         fold(&self.sections_gen.to_le_bytes());
         fold(&(self.pins.len() as u64).to_le_bytes());
-        for (sid, section, pinned) in &self.pins {
+        for (sid, section, pinned) in self.pins {
             fold(&sid.raw().to_le_bytes());
             fold(&section.to_le_bytes());
             fold(&[*pinned as u8]);
@@ -2997,8 +3028,11 @@ impl<'a> BrowseScope<'a> {
 /// call and hands it in. Test code only, so it is no read of the registry by a machine.
 #[cfg(any(test, feature = "test-support"))]
 pub fn registry_keys_for_test() -> ClientKeys {
-    ClientKeys::of(plx_plex::plex::server_ids()
-        .filter_map(|sid| plx_plex::plex::client_for(sid).map(|client| (sid, client))))
+    let mut keys = ClientKeys::default();
+    keys.refill_roster(plx_plex::plex::current_server(), plx_plex::plex::server_roster_gen(),
+        plx_plex::plex::server_facts_gen(), plx_plex::plex::server_ids(),
+        plx_plex::plex::client_for, plx_plex::plex::server_facts, plx_plex::plex::server_probe_result);
+    keys
 }
 
 /// May this row appear on Home? **Per LIBRARY, which is the grain the switch offers.**
@@ -3052,11 +3086,11 @@ fn roster_with_scope(scope: &BrowseScope) -> Vec<(ServerId, String)> {
     let (pinned, known) = home_server_sets(&scope.pins);
     let mut own: Vec<(ServerId, String)> = Vec::new();
     let mut shared: Vec<(ServerId, String)> = Vec::new();
-    for sid in plx_plex::plex::server_ids() {
+    for sid in scope.clients.slots() {
         if scope.clients.key(sid).is_none() || !feeds_home(sid, &pinned, &known) {
             continue;
         }
-        let handle = plx_plex::plex::server_facts(sid)
+        let handle = scope.clients.facts(sid).and_then(|facts| facts.described)
             .map(|f| f.handle.clone())
             .unwrap_or_default();
         if handle.is_empty() {
@@ -3085,12 +3119,13 @@ fn roster_key() -> u64 {
 }
 
 fn roster_key_with_scope(scope: &BrowseScope) -> u64 {
-    ((plx_plex::plex::server_roster_gen() as u64) << 32) | u64::from(scope.cache_key())
+    ((scope.clients.roster_gen() as u64) << 32) | u64::from(scope.cache_key())
 }
 
 #[cfg(any(test, feature = "test-support"))]
 fn remember_roster(state: &mut PmsState, scope: &BrowseScope) {
     state.seen = roster_key_with_scope(scope);
+    if state.seen_clients != *scope.clients { state.seen_clients.clone_from(&scope.clients); }
 }
 
 #[allow(dead_code)] // Retained for symmetry with `remember_roster`; no production caller today.
@@ -3100,13 +3135,16 @@ fn forget_roster(state: &mut PmsState) {
 
 fn browse_scope_moved(state: &mut PmsState, scope: &BrowseScope) -> bool {
     let key = scope.cache_key();
-    let moved = state.last_sections_gen != key;
+    let moved = state.last_sections_gen != key || state.scope_pins.as_slice() != scope.pins;
+    if moved { state.scope_pins.clear(); state.scope_pins.extend_from_slice(scope.pins); }
     state.last_sections_gen = key;
     moved
 }
 
 fn adopt_browse_scope(state: &mut PmsState, scope: &BrowseScope) {
     state.last_sections_gen = scope.cache_key();
+    state.scope_pins.clear();
+    state.scope_pins.extend_from_slice(scope.pins);
 }
 
 /// The other half of the fingerprint, kept as its OWN counter rather than folded into the 64 bits
@@ -3117,8 +3155,8 @@ fn adopt_browse_scope(state: &mut PmsState, scope: &BrowseScope) {
 /// servers there are. `Src::handle` is a copy of the "Shared by …" credit and `merge` stamps that
 /// copy onto every shelf and hero row, so a credit re-graded by a roster refresh is exactly a
 /// change this table must rebuild for — and the roster epoch alone cannot see one.
-fn facts_key() -> u32 {
-    plx_plex::plex::server_facts_gen()
+fn facts_key(scope: &BrowseScope) -> u32 {
+    scope.clients.facts_gen()
 }
 
 /// Bring the source table in line with the roster: a surviving source keeps everything it has
@@ -3131,7 +3169,7 @@ fn sync_roster(state: &mut PmsState) {
 }
 
 fn sync_roster_with_scope(state: &mut PmsState, scope: &BrowseScope) {
-    let (k, fk) = (roster_key_with_scope(scope), facts_key());
+    let (k, fk) = (roster_key_with_scope(scope), facts_key(scope));
     let scope_moved = browse_scope_moved(state, scope);
     // Both, and both swapped every time: a frame on which only one moved must still record the
     // other, or the next change to it reads as "unchanged" against a value from two epochs ago.
@@ -3139,9 +3177,10 @@ fn sync_roster_with_scope(state: &mut PmsState, scope: &BrowseScope) {
     let was_fk = state.seen_facts;
     state.seen = k;
     state.seen_facts = fk;
-    if was_k == k && was_fk == fk && !scope_moved {
+    if was_k == k && was_fk == fk && !scope_moved && state.seen_clients == *scope.clients {
         return;
     }
+    if state.seen_clients != *scope.clients { state.seen_clients.clone_from(&scope.clients); }
     let want = roster_with_scope(scope);
     let mut srcs = std::mem::take(&mut state.srcs);
     let mut out: Vec<Src> = Vec::with_capacity(want.len());
@@ -3213,7 +3252,7 @@ fn commit(state: &mut PmsState, build: HubBuild) -> c_int {
     let n = new_cat.len();
     state.published = Some(Arc::new(HomeCatalog { items: new_cat, hubs: new_hubs, heroes: new_pool }));
     state.catalog_gen = state.catalog_gen.wrapping_add(1);
-    plx_machine::idle::invalidate();
+
     n as c_int
 }
 
@@ -3355,7 +3394,7 @@ fn settle_refused(state: &mut PmsState, adapter: &PmsAdapter) -> crate::stores::
         }
         endpoints.insert(landed_fail(s));
     }
-    if settled { plx_machine::idle::invalidate(); }
+    if settled {  }
     endpoints
 }
 
@@ -3566,9 +3605,9 @@ fn apply_landing(state: &mut PmsState, adapter: &Arc<PmsAdapter>, landing: &Land
 /// Test-only compatibility landing for fixtures without a retained directory.
 #[cfg(any(test, feature = "test-support"))]
 pub fn land(state: &mut PmsState, adapter: &Arc<PmsAdapter>, landing: &Landing) -> crate::stores::StoreOutcome {
-    let before = state.catalog_gen;
+    let before = visible_projection(state);
     let endpoints = apply_landing(state, adapter, landing);
-    crate::stores::StoreOutcome { changed: state.catalog_gen != before, endpoints }
+    crate::stores::StoreOutcome { changed: visible_projection(state) != before, endpoints }
 }
 
 /// Apply one addressed landing under the same retained directory policy the frame publishes.
@@ -3579,10 +3618,10 @@ pub fn land_with_directory(
     directory: crate::stores::browse::DirectoryView<'_>,
     clients: &ClientKeys,
 ) -> crate::stores::StoreOutcome {
-    let before = state.catalog_gen;
+    let before = visible_projection(state);
     let endpoints = emitting(state, adapter, |state, launch| step_landings_with_scope(state, adapter, None,
         || vec![landing.clone()], &BrowseScope::retained(directory, clients), launch));
-    crate::stores::StoreOutcome { changed: state.catalog_gen != before, endpoints }
+    crate::stores::StoreOutcome { changed: visible_projection(state) != before, endpoints }
 }
 
 /// `stores::hubs::HubsStore`'s one door onto every [`HubsCmd`](crate::stores::hubs::HubsCmd) (D3):
@@ -3631,18 +3670,18 @@ fn run_settled(
     use crate::stores::hubs::HubsCmd;
     match cmd {
         paging @ (HubsCmd::Page { .. } | HubsCmd::CancelPage { .. }) => {
-            let before = state.catalog_gen;
+            let before = visible_projection(state);
             let endpoints = run_page_cmd(state, adapter, scope, paging, launch);
-            crate::stores::StoreOutcome { changed: before != state.catalog_gen, endpoints }
+            crate::stores::StoreOutcome { changed: before != visible_projection(state), endpoints }
         }
         HubsCmd::RefetchHubs => crate::stores::StoreOutcome {
             changed: true,
             endpoints: request_refetch_hubs_with_scope(state, adapter, scope, launch),
         },
         HubsCmd::Hold { lo, hi } => {
-            let before = state.catalog_gen;
+            let before = visible_projection(state);
             let endpoints = run_hold(state, adapter, scope, lo, hi, launch);
-            crate::stores::StoreOutcome { changed: before != state.catalog_gen, endpoints }
+            crate::stores::StoreOutcome { changed: before != visible_projection(state), endpoints }
         }
         HubsCmd::Retry => {
             let gen = state.hub_gen;
@@ -3666,9 +3705,9 @@ fn run_settled(
             endpoints: refetch_source_quiet(state, adapter, scope, sid, launch),
         },
         HubsCmd::Publish { home_top_visible, focused_hub, press_live } => {
-            let before = state.catalog_gen;
+            let before = visible_projection(state);
             publish_staged(state, scope, home_top_visible, focused_hub, press_live);
-            crate::stores::StoreOutcome::changed(state.catalog_gen != before)
+            crate::stores::StoreOutcome::changed(visible_projection(state) != before)
         }
     }
 }
@@ -3684,9 +3723,9 @@ pub fn controlled_work(state: &mut PmsState, adapter: &Arc<PmsAdapter>, cmd: Opt
     let out = match cmd {
         Some(cmd) => run_with_scope(state, adapter, cmd, &BrowseScope::standalone()),
         None => {
-            let before = state.catalog_gen;
+            let before = visible_projection(state);
             let endpoints = pump_with_landings(state, adapter, dt, Vec::new);
-            crate::stores::StoreOutcome { changed: state.catalog_gen != before, endpoints }
+            crate::stores::StoreOutcome { changed: visible_projection(state) != before, endpoints }
         }
     };
     start_for_test(state, launch);
@@ -3835,10 +3874,10 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
     let scope_moved = browse_scope_moved(state, scope);
     if dirty || scope_moved { settle_deck(&mut srcs, refreshed); }
     let build = (dirty || scope_moved).then(|| {
-        let t0 = std::time::Instant::now();
+        let t0 = crate::instruments::start();
         let (mut build, _) = merge_held(&mut srcs, scope, state.hold);
         if paged && !refreshed && !scope_moved { preserve_heroes(state, &mut build); }
-        let took = t0.elapsed();
+        let took = crate::instruments::elapsed(t0);
         (build, took)
     });
     state.srcs = srcs;
@@ -3846,7 +3885,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         // A landing that COMMITS repaints from inside `commit`; this is the one that does not —
         // a failure rewrites no shelf but does change the status caption, under a Home screen that
         // may have gone idle with nothing else on it to move.
-        plx_machine::idle::invalidate();
+
     }
     if let Some((build, took)) = build {
         let bytes = catalog_bytes(&build.0);
@@ -3965,7 +4004,7 @@ pub fn seed_two_library_home_for_test(
     let build = merge_with_scope(&sources, &scope);
     state.srcs = sources;
     remember_roster(state, &scope);
-    state.seen_facts = facts_key();
+    state.seen_facts = facts_key(&scope);
     adopt_browse_scope(state, &scope);
     commit(state, build);
 }
@@ -3973,7 +4012,7 @@ pub fn seed_two_library_home_for_test(
 #[cfg(any(test, feature = "test-support"))]
 fn seed_with_scope_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, sid: ServerId, items: usize, hub_state: HubState, scope: &BrowseScope) {
     reset_with_scope(state, adapter, scope);
-    let handle = plx_plex::plex::server_facts(sid)
+    let handle = scope.clients.facts(sid).and_then(|facts| facts.described)
         .map(|facts| facts.handle.clone())
         .unwrap_or_default();
     let mut s = Src::new(sid, handle, &scope.clients);
@@ -3996,7 +4035,7 @@ fn seed_with_scope_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, sid
     // preserves the source whose sid and retained directory were supplied together. BOTH halves
     // of the fingerprint matter, or the facts epoch alone reads as a change and rebuilds anyway.
     remember_roster(state, scope);
-    state.seen_facts = facts_key();
+    state.seen_facts = facts_key(&scope);
     commit(state, build);
 }
 
@@ -4286,8 +4325,46 @@ pub fn seed_continue_window_for_test(state: &mut PmsState, adapter: &Arc<PmsAdap
     settle_deck(&mut srcs, false);
     let build = merge(&srcs);
     state.srcs = srcs;
-    remember_roster(state, &BrowseScope::standalone());
-    state.seen_facts = facts_key();
+    let scope = BrowseScope::standalone();
+    remember_roster(state, &scope);
+    state.seen_facts = facts_key(&scope);
+    commit(state, build);
+}
+
+/// Test hook: ONE server's Continue Watching answer lands on the store the way a whole-source answer
+/// lands it (`landed_ok`, `settle_deck`, the merge, the commit), so a test sees what a household sees
+/// when its servers answer one after the other, in either order. `cards` is `(rating key, last viewed)`,
+/// newest first (empty for a server with nothing to continue), and `slot` names the server; the first
+/// call starts from an empty table. The hook lands a first answer, or a refresh whose reload failed
+/// (both join the deck through `place`); a refresh whose reload succeeds goes through `deck::reload`,
+/// which this hook does not stand for.
+#[cfg(any(test, feature = "test-support"))]
+pub fn land_deck_lane_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, slot: u16, cards: &[(&str, i64)]) {
+    plx_base::testlock::assert_held("the pms hub catalog (land_deck_lane_for_test)");
+    let scope = BrowseScope::standalone();
+    if state.srcs.is_empty() { reset_with_scope(state, adapter, &scope); }
+    let sid = ServerId::from_raw(slot);
+    let cw: Vec<CwItem> = cards.iter().enumerate().map(|(position, &(rk, last_viewed_at))| CwItem {
+        last_viewed_at,
+        m: Arc::new(PmsMovie { sid, rk: rk.into(), title: rk.into(), thumb: "/t".into(), art: "/a".into(), ..Default::default() }),
+        position,
+    }).collect();
+    let key = |card: Option<&(&str, i64)>| card.map_or_else(String::new, |card| card.0.to_string());
+    // A server with nothing to continue keeps the default lane, as `project_deck` leaves it.
+    let lane = if cards.is_empty() { deck::Lane::default() }
+        else { deck::Lane::preview(&key(cards.first()), &key(cards.last()), cards.len(), cards.len(), true) };
+    let mut srcs = std::mem::take(&mut state.srcs);
+    let at = srcs.iter().position(|source| source.sid == sid).unwrap_or_else(|| {
+        srcs.push(Src::new(sid, String::new(), &registry_keys_for_test()));
+        srcs.len() - 1
+    });
+    srcs[at].ledger = state.ledger.clone();
+    landed_ok(&mut srcs[at], SourceBuild { cw, lane, shelves: Vec::new() });
+    settle_deck(&mut srcs, true);
+    let build = merge_with_scope(&srcs, &scope);
+    state.srcs = srcs;
+    remember_roster(state, &scope);
+    state.seen_facts = facts_key(&scope);
     commit(state, build);
 }
 
@@ -4724,3 +4801,7 @@ mod sort_info_tests {
         assert_eq!(movie.viewed_leaf_count, Some(0));
     }
 }
+
+#[cfg(test)]
+#[path = "pms/captured_inputs_tests.rs"]
+mod captured_inputs_tests;

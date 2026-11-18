@@ -13,8 +13,8 @@
 //! The sign-in screen hosts the question on its own alert (it shares that sheet with the report
 //! question and the Details card). Every other surface holds a [`PlaintextAlert`] — the question
 //! with its own [`DecisionAlert`] and the focus group its two answers form, which traps focus
-//! while it is open, as every decision alert does — and delegates its focus, pointer and draw
-//! hooks to it.
+//! while it is open, as every decision alert does — and delegates its focus, pointer, draw and
+//! accessibility-id hooks to it ([`plx_ui::decision_alert::AlertAnswers`] names the answers `alert.<verb>`).
 //!
 //! Not a screen: shared plumbing, named through `super::` like `family`, so no screen reaches a
 //! sibling to ask it.
@@ -25,7 +25,8 @@ use std::ffi::{CStr, CString};
 use plx_session::auth::{self, PlaintextVerdict, ReadoutSurface, SessionCmd};
 use plx_plex::plex::session::PlaintextChoice;
 use plx_plex::plex::ServerId;
-use plx_ui::decision_alert::{Choice, DecisionAlert, Tone};
+use plx_ui::a11y::{A11y, A11yPath};
+use plx_ui::decision_alert::{AlertAnswers, Choice, DecisionAlert, Tone};
 use plx_machine::machine::{
     Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, Host, InputEvent,
     InputKind, Key, MachineId,
@@ -102,6 +103,15 @@ impl PlaintextQuestion {
     /// The two verbs the host draws the alert with: *Not now* / *Connect*.
     pub fn verbs() -> (&'static CStr, &'static CStr) {
         (not_now(), connect())
+    }
+
+    /// **The question's answers as an accessibility id names them**: `alert.not_now` and
+    /// `alert.connect`, in the host's answer `group` with its element ids. Every host that asks
+    /// the question (a [`PlaintextAlert`], the sign-in screen's shared sheet) names them through
+    /// this, so *Connect* — which allows an insecure server and is persisted — has one id
+    /// wherever it is asked, and no host's own button names (`cancel`, `send`) can stand for it.
+    pub const fn answer_ids(group: GroupId, cancel: u32, affirm: u32) -> AlertAnswers {
+        AlertAnswers::new(group, cancel, affirm, "not_now", "connect")
     }
 
     /// **The person answered** — *Connect* (`allow`) or *Not now* / BACK. Dismisses the alert (an
@@ -356,14 +366,42 @@ impl PlaintextAlert {
         (g == self.group).then(|| self.key(entry, self.cancel))
     }
 
+    /// The answers as an accessibility id names them: `alert.not_now` and `alert.connect`.
+    pub fn answers(&self) -> AlertAnswers {
+        PlaintextQuestion::answer_ids(self.group, self.cancel, self.affirm).counted(self.alert.answers())
+    }
+
+    /// `Focusable::a11y` while open: `Some(answer)` — `Some(None)` for a key that is not an
+    /// answer, as the open alert makes every other element of the host nothing — and `None` when
+    /// closed (the host's).
+    pub fn a11y(&self, key: u32) -> Option<Option<A11y<'static>>> {
+        self.is_open().then(|| self.answers().a11y(key))
+    }
+
+    /// `Focusable::a11y_elems`: while open the answers are the ONLY group — list them for their
+    /// own group and return `true` so the host lists none of its own.
+    pub fn a11y_elems(&self, g: GroupId, out: &mut Vec<u32>) -> bool {
+        if !self.is_open() {
+            return false;
+        }
+        self.answers().elems(g, out);
+        true
+    }
+
+    /// `Focusable::a11y_find` while open: `Some(answer)`, `Some(None)` for a path that names no
+    /// answer (the page under a question is no owner's), and `None` when closed (the host's).
+    pub fn a11y_find(&self, path: &A11yPath) -> Option<Option<u32>> {
+        self.is_open().then(|| self.answers().find(path))
+    }
+
     /// Draw the alert over the host's page, and register its answers' stops once it has settled.
     pub fn draw<H: Host<Elem = u32>>(&mut self, f: &mut DrawFrame<'_, '_, H>, entry: EntryId) {
         if !self.alert.visible() {
             return;
         }
-        self.alert.draw_scrim();
+        self.alert.draw_scrim(f);
         let (cancel, affirm) = PlaintextQuestion::verbs();
-        self.alert.draw(cancel, affirm, f.measure);
+        self.alert.draw(cancel, affirm, f.measure, f.route_navigation(), f.press);
         let frames = self.alert.frames(f.measure);
         self.frames.set(Some(frames));
         if self.alert.is_open() && self.alert.settled() {
@@ -400,7 +438,7 @@ pub enum AlertStep {
 /// server the read-out is about changed.
 #[derive(Clone, Debug, Default)]
 pub struct OfferWatch {
-    seen: Option<(u64, Option<String>)>,
+
     held: Option<(PlaintextVerdict, CString)>,
 }
 
@@ -417,22 +455,12 @@ pub enum Near {
 impl OfferWatch {
     /// Re-read the offer for `machine` (`near` says whether another will do); `true` when what
     /// the read-out shows changed.
-    pub fn refresh(&mut self, machine: Option<&str>, near: Near) -> bool {
-        let key = (plx_plex::plex::grant::revision(), machine.map(str::to_owned));
-        if self.seen.as_ref() == Some(&key) {
-            return false;
-        }
-        self.seen = Some(key);
-        let offers = plx_plex::plex::grant::offers();
-        let at = offers.iter().position(|v| Some(v.machine_id.as_str()) == machine)
-            .or_else(|| (near == Near::First && !offers.is_empty()).then_some(0));
-        let next = at.and_then(|i| offers.into_iter().nth(i)).map(|v| {
-            let line = reason(&v);
-            (v, line)
-        });
-        let changed = next.as_ref().map(|(v, _)| v) != self.held.as_ref().map(|(v, _)| v);
-        self.held = next;
-        changed
+    pub fn refresh(&mut self, offers: &[PlaintextVerdict], machine: Option<&str>, near: Near) -> bool {
+        let next = offers.iter().find(|v| Some(v.machine_id.as_str()) == machine)
+            .or_else(|| (near == Near::First).then(|| offers.first()).flatten());
+        if next == self.held.as_ref().map(|(v, _)| v) { return false; }
+        self.held = next.map(|v| (v.clone(), reason(v)));
+        true
     }
 
     /// The offer the read-out speaks about.
@@ -498,5 +526,44 @@ mod tests {
             }
         }
         assert!(out.is_empty(), "answers wider than their pill:\n  {}", out.join("\n  "));
+    }
+}
+
+#[cfg(test)]
+mod retained_input_tests {
+    use super::*;
+    #[test]
+    fn retained_offers_expire_without_a_roster_change() {
+        let offer = PlaintextVerdict { machine_id: "server".into(), name: "Server".into(),
+            shared_by: String::new(), eligibility: plx_plex::plex::probe::PlaintextEligibility::Eligible,
+            choice: PlaintextChoice::Undecided };
+        let mut watch = OfferWatch::default();
+        assert!(watch.refresh(std::slice::from_ref(&offer), Some("server"), Near::Only));
+        assert!(!watch.refresh(std::slice::from_ref(&offer), Some("server"), Near::Only));
+        assert!(asks(watch.verdict()));
+        assert!(watch.refresh(&[], Some("server"), Near::Only));
+        assert!(watch.verdict().is_none());
+        assert!(watch.reason().is_none());
+        assert!(!watch.refresh(&[], Some("server"), Near::Only));
+    }
+}
+
+#[cfg(test)]
+mod a11y_tests {
+    use super::*;
+
+    fn path(id: &str) -> A11yPath {
+        A11yPath::parse_relative(id).expect("a relative path")
+    }
+
+    /// A closed alert answers nothing, so the host's own elements stand.
+    #[test]
+    fn a_closed_alert_leaves_the_host_its_own_elements() {
+        let alert = PlaintextAlert::new(GroupId(2), 70, 71);
+        assert!(alert.a11y(70).is_none());
+        let mut elems = Vec::new();
+        assert!(!alert.a11y_elems(GroupId(2), &mut elems));
+        assert!(elems.is_empty());
+        assert!(alert.a11y_find(&path("alert.connect")).is_none());
     }
 }

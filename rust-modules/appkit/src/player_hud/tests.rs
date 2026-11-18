@@ -39,6 +39,14 @@ fn chapter_panel_retains_selection_without_borrowing_hud_focus() {
 }
 
 use super::*;
+
+// Explicit fixture IO adapter; product helpers receive the already captured caption.
+fn busy_surface(ps: &plx_media::route::PlaybackSession, st: S, seen: bool) -> Busy {
+    super::busy_surface(plx_media::player::error_caption(ps), st, seen)
+}
+fn busy_surface_with(ps: &plx_media::route::PlaybackSession, st: S, seen: bool, audio: bool) -> Busy {
+    super::busy_surface_with(plx_media::player::error_caption(ps), st, seen, audio)
+}
 use plx_ui::widgets::{StatusKind, StatusOverlay};
 use super::classic::*;
 use super::geometry::*;
@@ -85,33 +93,36 @@ fn long_hud_titles_fit_before_every_control_slot() {
         let compiled = super::loaded::load_classic("test", plx_platform::i18n::current(), measure).compiled;
         let slots = [
             ControlSlot::Discs(Controls::NONE),
-            ControlSlot::Discs(Controls { previous: true, next: true, restart: true }),
+            ControlSlot::Discs(Controls { previous: true, next: true }),
             slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown),
             slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
         ];
         for slot in slots {
             let right = compiled_title_right(&compiled, slot);
             let items = geometry(&compiled, 0, slot, true, false).items;
+            // What a title draws depends on the cell's right edge and the title, never on which
+            // control holds the focus or how far its pop has run (an unpaused title reads no clock):
+            // drawn once per slot and kicker, not again for every focused control and pop frame.
+            for kicker in [Kicker::Episode(long.as_ptr()), Kicker::Context(long.as_ptr())] {
+                let runs = plx_ui::draw_census::capture_runs(|| {
+                    draw_player_title(Painter::recording(), kicker, long.as_ptr(),
+                        right, measure, false, &clock);
+                });
+                assert_eq!(runs.len(), 2);
+                for run in runs {
+                    assert!(run.text.ends_with('…'), "{}: expected ellipsis: {run:?}", language.tag());
+                    assert_eq!(run.at.x, SB_X);
+                    assert!(measure.width_str(&run.text, run.size, run.bold) <= right - SB_X + 1.0,
+                        "{}: fitted title exceeds the control boundary: {run:?}", language.tag());
+                }
+            }
             let mut row = HudMotion::new();
             for focused in 0..slot.items() {
                 for _ in 0..30 {
                     row.pop.step(Some(focused as usize), 1.0 / 60.0);
                     for i in 0..slot.items() {
                         let Some(rect) = items[i as usize] else { continue };
-                        assert!(right + theme::space::MD <= rect.scaled(row.scale(i)).x + 0.001);
-                    }
-                    for kicker in [Kicker::Episode(long.as_ptr()), Kicker::Context(long.as_ptr())] {
-                        let runs = plx_ui::draw_census::capture_runs(|| {
-                            draw_player_title(Painter::recording(), kicker, long.as_ptr(),
-                                right, measure, false, &clock);
-                        });
-                        assert_eq!(runs.len(), 2);
-                        for run in runs {
-                            assert!(run.text.ends_with('…'), "{}: expected ellipsis: {run:?}", language.tag());
-                            assert_eq!(run.at.x, SB_X);
-                            assert!(measure.width_str(&run.text, run.size, run.bold) <= right - SB_X + 1.0,
-                                "{}: fitted title exceeds the control boundary: {run:?}", language.tag());
-                        }
+                        assert!(right + theme::space::MD <= rect.scaled(row.scale(i, Default::default())).x + 0.001);
                     }
                 }
             }
@@ -147,10 +158,10 @@ fn paused_title_reveals_once_and_resume_restores_ellipsis() {
     });
     let start = paint(true);
     assert!(start[1].text.ends_with('…'));
-    plx_machine::idle::frame_begin(2.0);
+    plx_machine::motion::report::frame_begin(2.0);
     let moving = paint(true);
     assert!(moving[1].at.x < SB_X);
-    plx_machine::idle::frame_begin(30.0);
+    plx_machine::motion::report::frame_begin(30.0);
     let ended = paint(true);
     assert_eq!(ended[1].at.x, SB_X - (FM.width(long, HUD_TITLE_SZ, true) - (right - SB_X)));
     assert_eq!(paint(true)[1].at.x, ended[1].at.x, "the title must stay at the end");
@@ -173,12 +184,12 @@ fn a_paused_right_to_left_title_reveals_its_end_to_the_left() {
             long.as_ptr(), right, &FM, paused, &clock);
     });
     let _ = paint(true);
-    plx_machine::idle::frame_begin(2.0);
+    plx_machine::motion::report::frame_begin(2.0);
     let moving = paint(true);
     let elapsed = 2000.0 - plx_ui::marquee::TITLE.hold_ms;
     let off = elapsed / 1000.0 * plx_ui::marquee::SPEED;
     assert_eq!(moving[1].at.x, SB_X + window - full + off, "first words flush right, moving right");
-    plx_machine::idle::frame_begin(60.0);
+    plx_machine::motion::report::frame_begin(60.0);
     assert_eq!(paint(true)[1].at.x, SB_X, "the last words rest on the window's left edge");
     assert_eq!(paint(true)[1].at.x, SB_X, "and stay");
 }
@@ -1495,7 +1506,7 @@ fn the_layouts_band_is_classics_in_every_slot() {
     let compiled = super::loaded::classic_for_test();
     let slots = [
         ControlSlot::Discs(Controls::NONE),
-        ControlSlot::Discs(Controls { previous: true, next: true, restart: true }),
+        ControlSlot::Discs(Controls { previous: true, next: true }),
         slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown),
         slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
     ];
@@ -1569,7 +1580,7 @@ mod playback_navigation_tests {
     #[test]
     fn episode_pair_uses_custom_gap_without_moving_existing_discs() {
         let compiled = super::super::loaded::classic_for_test();
-        let pair = Controls::for_item(true, false, true, false);
+        let pair = Controls::for_item(true, false, true);
         let rects = |c: Controls| geometry(&compiled, 0, ControlSlot::Discs(c), false, false).items;
         let (pair_rects, none_rects) = (rects(pair), rects(Controls::NONE));
         for i in BTN_SUBTITLES..=BTN_MORE {
@@ -1586,19 +1597,32 @@ mod playback_navigation_tests {
         assert_eq!(pair.primary(), BTN_NEXT);
         assert_eq!(pair.action(BTN_PREVIOUS), None);
         assert_eq!(pair.icon(BTN_PREVIOUS), Icon::Previous);
-        let restarting = Controls::for_item(true, false, true, true);
-        assert_eq!(restarting.icon(BTN_PREVIOUS), Icon::Restart);
-        assert_eq!(restarting.action(BTN_PREVIOUS), Some(Action::Previous));
+    }
+
+    /// **Previous is the previous episode and nothing else.** Whatever the playhead, the disc is
+    /// enabled exactly when the queue has an episode before the playing one, and it always wears
+    /// the Previous glyph: there is no restart state to wear a different one.
+    #[test]
+    fn previous_is_enabled_by_a_predecessor_alone_and_always_wears_the_previous_glyph() {
+        let middle = Controls::for_item(true, true, true);
+        assert_eq!(middle.action(BTN_PREVIOUS), Some(Action::Previous));
+        assert_eq!(middle.icon(BTN_PREVIOUS), Icon::Previous);
+        let last = Controls::for_item(true, true, false);
+        assert_eq!(last.action(BTN_PREVIOUS), Some(Action::Previous));
+        assert_eq!(last.icon(BTN_PREVIOUS), Icon::Previous);
+        let first = Controls::for_item(true, false, true);
+        assert_eq!(first.action(BTN_PREVIOUS), None, "the first episode of the queue has no Previous");
+        assert!(!first.enabled(BTN_PREVIOUS));
     }
 
     #[test]
     fn episode_pair_is_absent_for_movies_extras_and_single_items() {
-        for controls in [Controls::for_item(false, true, true, true),
-            Controls::for_item(true, false, false, true)] {
+        for controls in [Controls::for_item(false, true, true),
+            Controls::for_item(true, false, false)] {
             assert_eq!(controls, Controls::NONE);
             assert_eq!(controls.primary(), BTN_SUBTITLES);
         }
-        let last = Controls::for_item(true, true, false, false);
+        let last = Controls::for_item(true, true, false);
         assert_eq!(last.primary(), BTN_PREVIOUS);
         assert_eq!(last.action(BTN_NEXT), None);
     }
@@ -1606,8 +1630,8 @@ mod playback_navigation_tests {
 
 /// **Under `builtin:classic`, the row resolved through the compile is the row resolved through `Controls`.**
 /// The page now asks the package's control at an index what a press performs and whether it has a stop;
-/// for classic's five discs that must be exactly classic's table, for every valuation of the pair and of
-/// Previous's restart target, and the cursor parks where `Controls::primary` parks it.
+/// for classic's five discs that must be exactly classic's table, for every valuation of the pair, and the
+/// cursor parks where `Controls::primary` parks it.
 #[test]
 fn classic_resolved_through_the_compile_is_classics_table() {
     use super::command::HudCommand;
@@ -1619,16 +1643,14 @@ fn classic_resolved_through_the_compile_is_classics_table() {
     for episode in [false, true] {
         for previous in [false, true] {
             for next in [false, true] {
-                for restart in [false, true] {
-                    let controls = Controls::for_item(episode, previous, next, restart);
-                    let slot = ControlSlot::Discs(controls);
-                    for i in -1..=BTN_N + 2 {
-                        let want: Option<HudCommand> = controls.command(i);
-                        assert_eq!(row_command(compiled, 0, slot, &model, i), want, "{controls:?} item {i}");
-                        assert_eq!(row_enabled(compiled, 0, slot, &model, i), controls.enabled(i), "{controls:?} item {i}");
-                    }
-                    assert_eq!(row_primary(compiled, 0, slot, &model), controls.primary(), "{controls:?}");
+                let controls = Controls::for_item(episode, previous, next);
+                let slot = ControlSlot::Discs(controls);
+                for i in -1..=BTN_N + 2 {
+                    let want: Option<HudCommand> = controls.command(i);
+                    assert_eq!(row_command(compiled, 0, slot, &model, i), want, "{controls:?} item {i}");
+                    assert_eq!(row_enabled(compiled, 0, slot, &model, i), controls.enabled(i), "{controls:?} item {i}");
                 }
+                assert_eq!(row_primary(compiled, 0, slot, &model), controls.primary(), "{controls:?}");
             }
         }
     }

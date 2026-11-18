@@ -5,7 +5,8 @@ is the canonical definition: on trunk, a build that is not `RELEASE=1` reports t
 after the tracked version, patch reset to zero; on a maintenance line (a tracked `RELEASE_LINE`
 marker) it reports the next PATCH on that same line instead.
 
-Three places now need exactly that arithmetic:
+Three places now need exactly that arithmetic (and `line_release_error` below is the one rule for
+which release a release line may publish, shared by `ci/bump-version.py` and `ci/rc.py`):
   * `rust-modules/build.rs` / `rust-modules/src/release_line.rs` — the Rust definition, which
     computes the `-dev` suffix AND (this change) the nightly `X.Y.Z` a reported
     `X.Y.Z-nightly-YYYYMMDD` is built from.
@@ -20,6 +21,8 @@ One Python implementation, imported by the two Python consumers, is what keeps t
 drifting into a fourth copy the way the id and the port already had to be guarded against.
 """
 from __future__ import annotations
+
+import re
 
 
 def parse_release_line(content: str) -> "tuple[int, int] | None":
@@ -101,3 +104,57 @@ def nightly_package_triplet(
     if triplet is None:
         return None, err
     return (triplet[0], triplet[1], int(date)), None
+
+
+_LINE_NAME = re.compile(r"release/v(\d+)\.(\d+)")
+
+
+def line_release_error(version: str, line: str, marker_content: "str | None",
+                       current: "str | None" = None) -> "str | None":
+    """Whether `version` may be released (or a candidate cut for it) from `line`. Pure.
+
+    Every release is cut from a release line, `release/vX.Y`, never from `main`: `main` keeps
+    taking pull requests while a line stabilizes (`.github/workflows/cut-line.yml` makes the line
+    and moves `main` on). Which release a line may publish depends on whether it has already
+    published its first one, and the line says that itself with its tracked `RELEASE_LINE` marker,
+    read here as it is on the branch BEFORE this release's own bump (`marker_content`, `None` when
+    the file is absent):
+
+      * no marker: a FRESH line, cut from `main` and not yet released. It publishes `X.Y.0` and
+        nothing else, and that release's bump commit adds the marker (`ci/bump-version.py --line`).
+        Until then the checkout reports `X.Y.0-dev` through trunk's "next minor" rule, because its
+        version files still name the release `main` was at when the line was cut.
+      * marker `X.Y`: the line has shipped `X.Y.0`, and every later release is a patch, `X.Y.N`
+        with `N >= 1`.
+
+    `current` is the version the line's files carried before this bump, when the caller knows it
+    (`ci/bump-version.py` does). `X.Y.0` on a line that already has its marker is then allowed when
+    the files already say `X.Y.0`: a re-run whose bump commit was pushed but whose tag push failed.
+    Whether `vX.Y.0` was really released is a question about the tag, which release.yml asks next.
+
+    `None` when the pair is allowed, else the reason it is not.
+    """
+    if line == "main":
+        return ("releases are cut from a release line, not from main — run the Cut a release line "
+                "workflow (cut-line.yml) and release from the release/vX.Y branch it makes")
+    m = _LINE_NAME.fullmatch(line)
+    if not m:
+        return f"line {line!r} is not a release line (release/vX.Y)"
+    v = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version)
+    if not v:
+        return f"{version!r} is not X.Y.Z"
+    major, minor, patch = (int(x) for x in v.groups())
+    lx, ly = int(m.group(1)), int(m.group(2))
+    if (major, minor) != (lx, ly):
+        return f"{line} publishes {lx}.{ly}.N, not {version}"
+    if marker_content is None:
+        if patch != 0:
+            return (f"{line} has not released {lx}.{ly}.0 yet (no RELEASE_LINE marker), so its next "
+                    f"release is {lx}.{ly}.0, not {version}")
+        return None
+    marker = parse_release_line(marker_content)
+    if marker != (lx, ly):
+        return f"{line}'s RELEASE_LINE marker says {marker_content.strip()!r}, not {lx}.{ly}"
+    if patch < 1 and version != current:
+        return f"{line} already released {lx}.{ly}.0 (RELEASE_LINE is present); its next release is a patch"
+    return None

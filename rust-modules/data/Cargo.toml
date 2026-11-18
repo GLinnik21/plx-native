@@ -44,7 +44,7 @@ serde_json = { version = "1", default-features = false, features = ["alloc", "st
 # arithmetic out of line and drops its base-point table: with the release profile's flags for armv7 the library
 # grows the shipped binary by 376 KB without it and by 56 KB with it (a scratch staticlib under `lto = "fat"`,
 # `opt-level = 2`, `target-cpu = cortex-a9`), and one verification a day does not need the speed.
-ed25519-compact = { version = "=2.6.0", default-features = false, features = ["opt_size"] }
+ed25519-compact = { version = "=2.6.1", default-features = false, features = ["opt_size"] }
 
 [dev-dependencies]
 plx_base = { path = "../base", features = ["test-support"] }

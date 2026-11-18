@@ -312,7 +312,7 @@ fn glass_step(r: &mut World, glass: &mut plx_ui::frame::glass::GlassPlan, inputs
     sources.borrow_mut().begin(r.d.backdrop_layers(1.0));
     {
         let _declarations = backdrop::discover(sources.clone());
-        r.d.draw_with_glass_below(&mut r.bridge, glass, true, backdrop::Z::ALL);
+        r.d.draw_with_glass_below(&mut r.bridge.bridge(), glass, true, backdrop::Z::ALL);
     }
     sources.borrow_mut().resolve();
     let seen = {

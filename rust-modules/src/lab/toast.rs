@@ -43,16 +43,12 @@ fn frame_for(stats: Option<Rect>) -> Rect {
     Rect::new(SCR_W - MARGIN_X - W, y, W, H)
 }
 
-/// Retire an expired toast. One call per frame from the update block; a no-op when nothing is up.
-pub(crate) fn update(now: u32) {
-    upload::update(now);
-}
-
-pub(crate) fn draw(stats: Option<Rect>) {
-    if !upload::showing() {
+/// Draw only the App's captured view, never re-read a worker during rendering.
+pub(crate) fn draw(view: &upload::ToastView, stats: Option<Rect>) {
+    if view.phase == upload::PHASE_IDLE {
         return;
     }
-    let (title, ink) = match upload::phase() {
+    let (title, ink) = match view.phase {
         upload::PHASE_SENDING => (plx_platform::i18n::msg::widgets_diagnostics_uploading(), theme::TEXT_PRIMARY),
         upload::PHASE_OK => (plx_platform::i18n::msg::widgets_diagnostics_uploaded(), theme::TEXT_PRIMARY),
         _ => (plx_platform::i18n::msg::widgets_diagnostics_failed(), theme::DANGER),
@@ -71,9 +67,9 @@ pub(crate) fn draw(stats: Option<Rect>) {
     }
     // The second line is the only variable text: a byte count, or why it failed. Never a URL, a
     // host or a session secret — `lab::upload::send` composes it and this draws whatever it says.
-    let detail = upload::detail();
+    let detail = &view.detail;
     if !detail.is_empty() {
-        if let Ok(cs) = CString::new(detail) {
+        if let Ok(cs) = CString::new(detail.as_str()) {
             Label::new(cs.as_ptr(), theme::size::CAPTION, theme::TEXT_SECONDARY)
                 .draw(p, Rect::new(r.x + PAD, r.y + 56.0, r.w - 2.0 * PAD, 28.0));
         }

@@ -17,6 +17,9 @@ impl Host for PersonHost {
     type Init = super::super::family::NoInit;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for PersonHost {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+}
 impl PersonLike for PersonHost {
     fn person<'a>(cx: &Cx<'a, Self>) -> plx_data::person::PersonView<'a> { cx.views }
 }
@@ -45,7 +48,7 @@ pub(crate) fn mount(n: usize) -> Box<dyn CardHarness> { Box::new(Harness::new((0
 impl Harness {
     fn new(movies: Vec<String>) -> Self {
         let mut store = plx_data::stores::person::PersonStore::default();
-        store.run(PersonCmd::Open { sid: ServerId::UNSET, key: "161".into(),
+        crate::registry::run_person_fixture(&mut store, PersonCmd::Open { sid: ServerId::UNSET, key: "161".into(),
             guid: "5d77682aeb5d26001f1de4b0".into(), name: "Idina Menzel".into(), thumb: String::new() });
         let mut h = Self { store, screen: new_screen(), movies, focus: None, press: 1.0, ms: 0 };
         h.install();
@@ -61,6 +64,7 @@ impl Harness {
         self.store.install_credits_for_test(&[("Actor", 9)]);
         self.store.install_profile_for_test();
         let cx: Cx<'_, PersonHost> = Cx { views: self.store.view(), tick: Tick::default(), measure: &FixtureMeasure,
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             press: PressRead::default(), focus: FocusRead::default(), owner: InputOwner::Entry(ENTRY) };
         self.screen.page.refresh_store_cache(&cx);
         // the stack lays its sections out on the first event it sees after the content moved
@@ -69,6 +73,7 @@ impl Harness {
 
     fn cx(&self) -> Cx<'_, PersonHost> {
         Cx { views: self.store.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
             focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) }
     }
@@ -76,8 +81,9 @@ impl Harness {
     fn step(&mut self, ev: ScreenEvent<PersonHost>) -> bool {
         let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
-        let (_, moving) = plx_machine::idle::scoped_motion(|| {
+        let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
             let cx = Cx { views: self.store.view(), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
+                modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
                 press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
                 focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
             let mut fx = Effects::new(&mut out,
@@ -95,6 +101,51 @@ impl Harness {
             _ => None,
         }
     }
+}
+
+/// **The page's elements have ids**: the header, the Filmography pill and the credit shelves it composes
+/// on the stack all project, are unique, and are found again (`plx_ui::a11y::conformance`). The ids are
+/// the stack's own; this page adds no group of its own beyond the sections it hands the stack.
+#[test]
+fn the_page_answers_accessibility_ids() {
+    assert!(!person_conforms().is_empty());
+}
+
+/// The Person page over eight credits, run through the id conformance (`ContentArg::Person`; the
+/// coverage table calls this, and so does the test above).
+pub(crate) fn person_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let h = Harness::new((0..8).map(|i| format!("m{i}")).collect());
+    namespaces.push(conform::<PersonHost, _>(&h.screen, &h.cx()));
+    namespaces
+}
+
+/// **The sections are named for what they ARE, and a credit's id carries its ratingKey**: a credit
+/// shelf is `shelf.<kind>` (0 = Movies, 1 = Shows) and a credit's subject is its ratingKey. A person
+/// with no movie credits has the Shows shelf at the same name (`shelf.1`), which a position-named
+/// section (`section.<i>`) would have moved up by one.
+#[test]
+fn the_sections_are_named_and_a_credit_names_its_rating_key() {
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let cards = |movies: usize| -> Vec<(String, Option<String>)> {
+        let h = Harness::new((0..movies).map(|i| format!("m{i}")).collect());
+        let ids = plx_ui::a11y::listing::<PersonHost, _>(&h.screen, &h.cx());
+        assert!(ids.iter().all(|a| !a.path.to_string().starts_with("section.")), "a section left unnamed");
+        ids.into_iter()
+            .filter(|a| a.role == plx_ui::a11y::Role::Card)
+            .map(|a| (a.path.to_string(), a.subject.map(|s| s.into_owned())))
+            .collect()
+    };
+    let credit = |path: &str, rk: &str| (path.to_owned(), Some(rk.to_owned()));
+    assert_eq!(cards(2), [
+        credit("shelf.0.card.0", "m0"), credit("shelf.0.card.1", "m1"),
+        credit("shelf.1.card.0", "s0"), credit("shelf.1.card.1", "s1"), credit("shelf.1.card.2", "s2"),
+    ]);
+    assert_eq!(cards(0), [credit("shelf.1.card.0", "s0"), credit("shelf.1.card.1", "s1"), credit("shelf.1.card.2", "s2")]);
 }
 
 impl CardHarness for Harness {

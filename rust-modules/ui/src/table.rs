@@ -396,15 +396,15 @@ const GROUP_DIM_A: f32 = 0.52;
 const NOTE_LEADING: f32 = 32.0;
 const NOTE_PAD: f32 = 14.0;
 const DIV_H: f32 = 24.0; // gap + hairline between sections
-/// [`DIV_H`] of a [`TableView::board_metrics`] table: the design system's section break is a 2px
+/// [`DIV_H`] of a [`TableView::page`] table: the design system's section break is a 2px
 /// hairline with 12px of margin above AND below it (`TableView.jsx`: `height: 2, margin: "12px
 /// 32px"`), 26 in all.
 const BOARD_DIV_H: f32 = 26.0;
-/// The gap between the runs of a [`TableView::board_metrics`] row's trailing stack (read-out, badge
+/// The gap between the runs of a [`TableView::page`] row's trailing stack (read-out, badge
 /// run, icon BOX): the design system's cell is a flex row with `gap: var(--space-sm)`.
 const BOARD_TRAIL_GAP: f32 = theme::space::SM;
 /// A section header's caps tracking in em (`--track-caps`, `.06em`), set on a
-/// [`TableView::board_metrics`] table only.
+/// [`TableView::page`] table only.
 const BOARD_CAPS_TRACK_EM: f32 = 0.06;
 /// [`BOARD_CAPS_TRACK_EM`] in px at the header size: the tracking a stand-alone caps label wears
 /// to read as a board section header (the Under posters picture's kind captions).
@@ -577,7 +577,7 @@ fn ticon_slot_w(icon: crate::icons::Icon) -> f32 {
 /// ([`trailing_stack`] at `text_right`) and the tests' read-out edge all read these items, so
 /// they cannot disagree.
 ///
-/// A `board` table ([`TableView::board_metrics`]) stands the icon's BOX instead, the way the design
+/// A `board` table ([`TableView::page`]) stands the icon's BOX instead, the way the design
 /// system's flex row does, and [`trailing_stack`] spaces the runs by [`BOARD_TRAIL_GAP`].
 fn trailing_items(row: &Row, value_w: Option<f32>, measure: &dyn plx_machine::machine::Measure, board: bool) -> [Item; 3] {
     [
@@ -677,7 +677,7 @@ pub struct TableView {
     pub compact: bool,
     /// see [`TableView::tall_rows`]
     tall: bool,
-    /// see [`TableView::board_metrics`]. Layout configuration like `min_panel_w`, not motion.
+    /// see [`TableView::page`]. Layout configuration like `min_panel_w`, not motion.
     board: bool,
     /// Semantic ink for section labels. Ambient routes can raise this role for contrast without
     /// replacing the shared table header renderer or changing row/detail hierarchy.
@@ -729,19 +729,37 @@ impl TableView {
     pub fn tall_rows(&mut self, v: bool) {
         self.tall = v;
     }
-    /// **The Settings family's table, set to the design system's `TableView` to the pixel.**
-    /// Opt-in per table (the Settings screens set it where they set `compact`), because the same
-    /// widget is every popover menu, picker and track menu, which keep the measures they have
-    /// always drawn. A board table differs in four things, all read off `TableView.jsx`:
+    /// **A route page's table** — the Settings family's, set to the design system's `TableView` to
+    /// the pixel, and the ONE place that look is defined: every page drawn in a
+    /// [`RouteLayout`](crate::route_screen::RouteLayout) (the Settings pages, first-run consent,
+    /// Favorite libraries, the Legal index) builds its table with this, or with
+    /// [`FormTable::page`](crate::form::FormTable::page), and states nothing of the look itself.
+    /// [`Self::new`] stays the widget every popover menu, picker and track menu draws, with the
+    /// measures they have always had. A page table differs from it in what the board specifies:
     ///
+    /// * full-height rows (not [`compact`](Self::compact));
+    /// * section headers in [`theme::TEXT_READING`];
     /// * the break between sections is [`BOARD_DIV_H`] (12px margin, 2px hairline, 12px margin)
     ///   and the hairline stands in the middle of it;
     /// * a section header's caps are set where a 24px, `line-height: 1` CSS line centred in the
     ///   [`HDR_H`] band puts them ([`Self::header_cap_inset`]), tracked `--track-caps` (.06em);
     /// * the trailing run is a flex row `gap: --space-sm` of boxes: the icon's 26px BOX, not its
     ///   ink, ends on the content edge ([`trailing_items`]).
-    pub fn board_metrics(&mut self, v: bool) {
+    pub const fn page() -> Self {
+        let mut t = Self::new();
+        t.compact = false;
+        t.board = true;
+        t.header_ink = theme::TEXT_READING;
+        t
+    }
+    /// The board measures alone, for this module's own tests that grade both variants.
+    #[cfg(test)]
+    pub(crate) fn board_metrics(&mut self, v: bool) {
         self.board = v;
+    }
+    /// Whether this is a [`Self::page`] table's board: a page proving it wears the route table.
+    pub fn is_board(&self) -> bool {
+        self.board
     }
     /// The gap between two sections: [`DIV_H`], or the board's.
     fn div_h(&self) -> f32 {
@@ -2746,18 +2764,18 @@ mod tests {
         let frame = Rect::new(0.0, 0.0, 500.0, 400.0);
         let t = marquee_table(0);
         ROW_MARQUEE.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
-        let _ = plx_machine::idle::take_local_damage();
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
+        let _ = plx_machine::motion::report::take_local_motion();
         let rest = row_text_xs(&t, frame, 0);
         assert_eq!(rest.len(), 2, "a run and its follower: {rest:?}");
-        assert_eq!(plx_machine::idle::take_local_damage(), 0, "resting is not damage");
+        assert_eq!(plx_machine::motion::report::take_local_motion(), 0, "resting is not damage");
         let x0 = rest.iter().copied().fold(f32::MAX, f32::min);
 
-        plx_machine::idle::frame_begin((crate::marquee::ROW.hold_ms + 500.0) / 1000.0);
+        plx_machine::motion::report::frame_begin((crate::marquee::ROW.hold_ms + 500.0) / 1000.0);
         let gliding = row_text_xs(&t, frame, 0);
         let x1 = gliding.iter().copied().fold(f32::MAX, f32::min);
         assert!(x1 < x0, "the run has moved left: {x0} -> {x1}");
-        assert!(plx_machine::idle::take_local_damage() > 0, "a gliding frame reports");
+        assert!(plx_machine::motion::report::take_local_motion() > 0, "a gliding frame reports");
     }
 
     /// **An Arabic release name scrolls mirrored**: it rests with its right edge (its first
@@ -2782,7 +2800,7 @@ mod tests {
         };
         // the label's column: its left edge is where a Latin label rests, its width the row's
         ROW_MARQUEE.with(|c| c.release());
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let col_x = row_text_xs(&marquee_table(0), frame, 0).into_iter().fold(f32::MAX, f32::min);
         let col_w = t.label_width(&Row::new(long).server_label(), frame.w, &crate::fixture::FixtureMeasure);
         ROW_MARQUEE.with(|c| c.release());
@@ -2792,7 +2810,7 @@ mod tests {
         assert!(w > col_w, "the fixture label overflows its column");
         assert!((rest[1].at.x + w - (col_x + col_w)).abs() < 0.01, "flush right: {rest:?} w {w} column {col_x}+{col_w}");
         assert!((rest[0].at.x + w + crate::marquee::GAP - rest[1].at.x).abs() < 0.01, "follower on the left");
-        plx_machine::idle::frame_begin((crate::marquee::ROW.hold_ms + 500.0) / 1000.0);
+        plx_machine::motion::report::frame_begin((crate::marquee::ROW.hold_ms + 500.0) / 1000.0);
         let moved = draw();
         assert!((moved[1].at.x - rest[1].at.x - 20.0).abs() < 0.01, "it glides right: {rest:?} -> {moved:?}");
         ROW_MARQUEE.with(|c| c.release());
@@ -2806,11 +2824,11 @@ mod tests {
         let frame = Rect::new(0.0, 0.0, 500.0, 400.0);
         let t = marquee_table(1); // focus on "Off"; the long row is unfocused
         for _ in 0..3 {
-            plx_machine::idle::frame_begin(1.5);
-            let _ = plx_machine::idle::take_local_damage();
+            plx_machine::motion::report::frame_begin(1.5);
+            let _ = plx_machine::motion::report::take_local_motion();
             assert_eq!(row_text_xs(&t, frame, 1).len(), 1, "a fitting focused label: one run");
             assert_eq!(row_text_xs(&t, frame, 0).len(), 1, "an unfocused overflowing label: one elided run");
-            assert_eq!(plx_machine::idle::take_local_damage(), 0, "nothing animates, nothing reports");
+            assert_eq!(plx_machine::motion::report::take_local_motion(), 0, "nothing animates, nothing reports");
         }
     }
 

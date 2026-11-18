@@ -24,6 +24,7 @@
 //! The optional route-family rule that makes a bottom band reachable only from the master is
 //! [`BandReach::MasterOnly`]. It is opt-in; ordinary toolbar/band geometry is otherwise untouched.
 
+use super::a11y::{A11y, A11yPath};
 use super::frame::Budget;
 use plx_machine::machine::{Canon, Cx, FocusKey, GroupId, Host, LogicalState};
 use super::screen::{
@@ -402,6 +403,30 @@ where
             self.detail.seat(group, from, cx)
         }
     }
+
+    // The two parts answer their own ids (the rail's letters, the grid's cards): they name their
+    // own collections, so this component adds no prefix of its own, and the owning screen sees ids
+    // that do not depend on the layout it composed them in. A part that answers nothing for a key
+    // leaves it to the other, as `place` does.
+    fn a11y(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        self.master
+            .a11y(key, cx)
+            .or_else(|| self.detail.a11y(key, cx))
+    }
+
+    fn a11y_elems(&self, group: GroupId, cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        if owns_group::<H, _>(&self.master, group, cx) {
+            self.master.a11y_elems(group, cx, out);
+        } else {
+            self.detail.a11y_elems(group, cx, out);
+        }
+    }
+
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<H::Elem> {
+        self.master
+            .a11y_find(path, cx)
+            .or_else(|| self.detail.a11y_find(path, cx))
+    }
 }
 
 impl<H, M, D, R> Part<H> for MasterDetail<M, D, R>
@@ -451,6 +476,7 @@ mod tests {
         PressRead, Tick,
     };
     use plx_machine::present::Present;
+    use crate::a11y::Role;
     use crate::screen::{AxisMask, ElemKind, GroupKind};
     use crate::Painter;
 
@@ -531,6 +557,19 @@ mod tests {
         fn index(&self, elem: u32) -> Option<usize> {
             self.elems.iter().position(|(key, _)| *key == elem)
         }
+
+        /// The collection this part's ids name, by the group it plays.
+        fn collection(&self) -> &'static str {
+            if self.group == MASTER {
+                "rail"
+            } else if self.group == DETAIL {
+                "grid"
+            } else if self.group == TOOLBAR {
+                "toolbar"
+            } else {
+                "band"
+            }
+        }
     }
 
     impl Focusable<FixtureHost> for ProbePart {
@@ -587,6 +626,17 @@ mod tests {
                 want
             } else {
                 self.key(0)
+            }
+        }
+
+        fn a11y(&self, key: &u32, _cx: &Cx<'_, FixtureHost>) -> Option<A11y<'_>> {
+            let i = self.index(*key)?;
+            Some(A11y::new(A11yPath::new().name(self.collection()).index(i), Role::Row))
+        }
+
+        fn a11y_elems(&self, group: GroupId, _cx: &Cx<'_, FixtureHost>, out: &mut Vec<u32>) {
+            if group == self.group {
+                out.extend(self.elems.iter().map(|(key, _)| *key));
             }
         }
 
@@ -661,6 +711,34 @@ mod tests {
         let (_, to) = moved(engine.reconcile(OWNER, &md, &cx));
         assert_eq!(to.elem, M0);
         assert_eq!(engine.current_group(OWNER), Some(MASTER));
+    }
+
+    /// **The pair answers its two parts' ids as they are**: no prefix of its own, the master's and
+    /// the detail's own collections (`rail.<i>`, `grid.<i>`), `a11y_elems` from the part that owns
+    /// the group, and `a11y_find` from whichever part knows the path. The suite of `a11y::conformance`
+    /// passes over the whole pair.
+    #[test]
+    fn the_pair_answers_its_parts_ids_without_a_prefix_of_its_own() {
+        use crate::a11y::conformance;
+        type H = FixtureHost;
+        let measure = FixtureMeasure;
+        let view = FixtureView::default();
+        let cx = cx(&measure, &view);
+        let md = component(MasterSide::Left, Follow::Live);
+        conformance(&md, &cx);
+        let rel = |s: &str| A11yPath::parse_relative(s).unwrap();
+        assert_eq!(Focusable::<H>::a11y(&md, &M1, &cx).unwrap().path, rel("rail.1"));
+        assert_eq!(Focusable::<H>::a11y(&md, &D0, &cx).unwrap().path, rel("grid.0"));
+        assert!(Focusable::<H>::a11y(&md, &T0, &cx).is_none(), "neither part owns the toolbar's key");
+        assert_eq!(Focusable::<H>::a11y_find(&md, &rel("rail.2"), &cx), Some(M2));
+        assert_eq!(Focusable::<H>::a11y_find(&md, &rel("grid.1"), &cx), Some(D1));
+        assert_eq!(Focusable::<H>::a11y_find(&md, &rel("rail.3"), &cx), None);
+        let mut out = Vec::new();
+        Focusable::<H>::a11y_elems(&md, DETAIL, &cx, &mut out);
+        assert_eq!(out, [D0, D1], "the detail's group is the detail's elements, and not the master's");
+        out.clear();
+        Focusable::<H>::a11y_elems(&md, TOOLBAR, &cx, &mut out);
+        assert!(out.is_empty(), "a group neither part declares lists nothing");
     }
 
     #[test]
@@ -779,6 +857,7 @@ mod tests {
             press: PressRead::default(),
             focus: FocusRead::default(),
             owner: OWNER,
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
         }
     }
 

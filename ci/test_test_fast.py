@@ -72,6 +72,13 @@ def make(*args, env=None, home=None):
     return subprocess.run(["make", *args], cwd=ROOT, env=full, capture_output=True, text=True)
 
 
+def ignored_target(name):
+    target = Path("rust-modules") / name
+    # Git refuses to traverse a symlink even to answer check-ignore.
+    probe = target if (ROOT / target).is_symlink() else target / "debug/x"
+    return subprocess.run(["git", "check-ignore", "-q", str(probe)], cwd=ROOT).returncode == 0
+
+
 class FakeCargoHome:
     def __enter__(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -185,9 +192,7 @@ class TestFastRuns(unittest.TestCase):
 
 class TheDirIsFencedOff(unittest.TestCase):
     def test_gitignored(self):
-        out = subprocess.run(["git", "check-ignore", "-q", f"rust-modules/{TDIR}/debug/x"],
-                             cwd=ROOT)
-        self.assertEqual(out.returncode, 0, f"rust-modules/{TDIR}/ must be in .gitignore")
+        self.assertTrue(ignored_target(TDIR))
 
     def test_cargo_seed_handles_only_target_and_target_release(self):
         text = (ROOT / "tools/cargo-seed.py").read_text()

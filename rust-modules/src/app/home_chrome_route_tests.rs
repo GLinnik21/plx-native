@@ -44,8 +44,8 @@ pub(super) fn home_hero_of(name: &str, cols: usize) -> World {
     let mut w = World::home_with_disc(name, [7; 12]);
     let ids: Vec<String> = (0..TITLES.len()).map(|i| format!("test.row.{i}")).collect();
     let rows: Vec<(&str, &str, &str)> = ids.iter().zip(TITLES).map(|(id, title)| (id.as_str(), "", title)).collect();
-    let adapter = w.bridge.stores.hubs.adapter_for_test();
-    plx_data::pms::seed_named_hubs_for_test(w.bridge.stores.hubs.state_mut(), &adapter, cols, &rows);
+    let adapter = w.bridge.stores().hubs.adapter_for_test();
+    plx_data::pms::seed_named_hubs_for_test(w.bridge.bridge().stores.hubs.state_mut(), &adapter, cols, &rows);
     w.frames(30);
     w
 }
@@ -164,7 +164,7 @@ fn heading_y(w: &mut World, shelf: usize) -> Option<f32> {
 /// Present Home's pointer stops as its draw registers them, the way a frame's hit map is presented
 /// (a host has no GL to run the page's full draw through the dispatcher).
 fn present_home_stops(w: &mut World) {
-    let stops = w.bridge.with_home(&w.d, |home, cx, _| {
+    let stops = w.with_home(|home, cx, _| {
         let mut draw = plx_ui::screen::DrawFrame::new(cx, plx_ui::Painter::root());
         home.record_stops::<AppHost>(&mut draw, cx.views.hubs);
         draw.into_stops()
@@ -271,9 +271,9 @@ fn long_line(drawn: &Drawn) -> Option<(f32, usize)> {
 
 /// Draw the frame, and say whether a marquee is moving in it (past its rest beat).
 fn draw_and_glides(w: &mut World) -> (Drawn, bool) {
-    let _ = plx_machine::idle::take_local_damage();
+    let _ = plx_machine::motion::report::take_local_motion();
     let frame = w.drawn();
-    (frame, plx_machine::idle::take_local_damage() > 0)
+    (frame, plx_machine::motion::report::take_local_motion() > 0)
 }
 
 /// **A held Right along a Home shelf glides the focused caption while the shelf headings stay clear

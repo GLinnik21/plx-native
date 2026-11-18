@@ -44,14 +44,14 @@ pub(super) fn collection_screen(name: &str) -> World {
 /// [`collection_screen`] whose members are `members` of the collection's own server.
 pub(super) fn collection_screen_of(name: &str, members: impl FnOnce(plx_plex::plex::ServerId) -> Vec<plx_data::pms::PmsMovie>) -> World {
     let mut w = World::collections(name, false);
-    w.bridge.stores.browse.borrow_mut().seed_collections_for_test(12);
+    w.bridge.bridge().stores.browse.borrow_mut().seed_collections_for_test(12);
     w.frames(40);
     // The Collections page arrives on its first collection's tile.
     w.press(Key::Ok);
     w.frames(40);
     assert!(matches!(w.d.top_arg(), Some(AppArg::Content(ContentArg::Collection(_)))), "premise: OK on a collection opened its screen");
     let items = members(w.own);
-    w.bridge.stores.collection.install_for_test(items, plx_data::collection::CollectionStatus::Ready);
+    w.bridge.bridge().stores.collection.install_for_test(items, plx_data::collection::CollectionStatus::Ready);
     w.frames(40);
     w
 }
@@ -159,7 +159,7 @@ fn collections_awaiting_its_listing(name: &str) -> World {
 #[test]
 fn a_listing_that_lands_after_the_dissolve_lifts_its_first_poster_from_rest() {
     let mut w = collections_awaiting_its_listing("late-lift");
-    w.bridge.stores.browse.borrow_mut().seed_collections_for_test(12);
+    w.bridge.bridge().stores.browse.borrow_mut().seed_collections_for_test(12);
     let mut lift = Vec::new();
     for _ in 0..90 {
         w.frames(1);
@@ -189,8 +189,8 @@ struct Loading {
     back: &'static str,
 }
 
-fn land_films(w: &mut World) { w.bridge.stores.browse.borrow_mut().seed_items_for_test(120); }
-fn land_collections(w: &mut World) { w.bridge.stores.browse.borrow_mut().seed_collections_for_test(12); }
+fn land_films(w: &mut World) { w.bridge.bridge().stores.browse.borrow_mut().seed_items_for_test(120); }
+fn land_collections(w: &mut World) { w.bridge.bridge().stores.browse.borrow_mut().seed_collections_for_test(12); }
 
 fn land_watchlist(w: &mut World) { w.land_watchlist(); }
 

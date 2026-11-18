@@ -29,6 +29,10 @@
 //! |x| ≈ 1e4 with three-part Cody-Waite reduction) and say what they do past it.
 #![allow(dead_code)] // phase 2: the reporting integrators gain callers as screens migrate
 
+pub mod report;
+#[cfg(test)]
+mod report_tests;
+
 use super::machine::{PresentHandle, Tick};
 use super::present::PresentEvent;
 
@@ -101,6 +105,12 @@ pub fn sin_cos(x: f32) -> (f32, f32) {
 /// velocity judged as the travel this frame.
 const REST_REL: f32 = 1e-3;
 const REST_CAP: f32 = 0.25;
+
+/// The largest `dt` the frame loop ever hands a step: an iteration that slept (the idle wake) measures the
+/// time since the last one, and the loop clamps it here so a long stall cannot throw a spring a long way
+/// (`app/run.rs`'s clock). A state that has to hold still across an idle wake is judged at THIS dt: a
+/// spring that [`moving`] calls at rest at 16 ms can still report motion when the wake steps it by 50.
+pub const FRAME_DT_CLAMP: f32 = 0.05;
 
 /// **Is a spring still moving?** The rest test the integrators below report `Motion` by, public so a state that
 /// snaps a spring onto its target can snap by the SAME test: a copy of it would let the spring go quiet (no more
@@ -434,6 +444,7 @@ mod tests {
     fn a_spring_reports_motion_until_it_rests() {
         let mut present = Present::new();
         let _ = present.take(0);
+                present.acknowledge(0);
         let (mut pos, mut vel) = (0.0f32, 0.0f32);
         let t = Tick {
             ms: 0,
@@ -447,6 +458,7 @@ mod tests {
             if !present.take(frames * 16) {
                 break;
             }
+            present.acknowledge(frames * 16);
             assert!(frames < 600, "never rested");
         }
         assert!((pos - 100.0).abs() < 0.25 && frames > 5, "pos={pos} frames={frames}");
@@ -456,12 +468,14 @@ mod tests {
     fn a_ramp_reports_motion_from_inside_advance() {
         let mut present = Present::new();
         let _ = present.take(0);
+                present.acknowledge(0);
         let mut r = Ramp::default();
         r.start(Tick { ms: 0, dt_us: 0 }, 200);
         let mut ph = PresentHandle(&mut present);
         let p = r.advance(Tick { ms: 100, dt_us: 0 }, &mut ph);
         assert!((p - 0.5).abs() < 1e-6);
         assert!(present.take(100), "a running ramp presents");
+        present.acknowledge(100);
         let mut ph = PresentHandle(&mut present);
         assert_eq!(r.advance(Tick { ms: 250, dt_us: 0 }, &mut ph), 1.0);
         assert!(!r.running);
@@ -472,6 +486,7 @@ mod tests {
     fn a_phase_reports_motion_from_inside_advance_and_starts_lazily() {
         let mut present = Present::new();
         let _ = present.take(0);
+                present.acknowledge(0);
         let mut ph_clock = Phase::default();
         // never explicitly `reset` — the first `advance` call anchors it, so a freshly constructed
         // `Phase` (what every screen's `Default`-derived state gets) needs no `Tick` up front.
@@ -489,6 +504,7 @@ mod tests {
     fn a_phase_reset_restarts_the_clock_from_the_given_tick() {
         let mut present = Present::new();
         let _ = present.take(0);
+                present.acknowledge(0);
         let mut ph_clock = Phase::default();
         let mut ph = PresentHandle(&mut present);
         assert_eq!(ph_clock.advance(Tick { ms: 5_000, dt_us: 0 }, &mut ph), 0.0);
@@ -510,6 +526,7 @@ mod tests {
     fn a_held_phase_clock_reads_the_held_value_and_reports_no_motion() {
         let mut present = Present::new();
         let _ = present.take(0);
+                present.acknowledge(0);
         let mut ph_clock = Phase::default();
         super::hold_phase_clocks(Some(190));
         // All inside the keepalive window, so a `true` could only be motion.
@@ -532,6 +549,7 @@ fn a_ramp_can_wait_quietly_and_exclude_a_suspended_interval() {
     let tick = |ms| Tick { ms, dt_us: 16_000 };
     let mut present = super::present::Present::new();
     let _ = present.take(0);
+        present.acknowledge(0);
     ramp.start(tick(100), 1000);
     let before = ramp.sample(tick(600));
     assert!(!present.take(0), "a quiet deadline must not report motion");

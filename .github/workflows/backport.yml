@@ -1,0 +1,128 @@
+name: Backport
+
+# Every change lands on `main` first; a release line (`release/vX.Y`, cut-line.yml) gets the fixes it
+# needs through this workflow. Label a pull request into `main` with `backport release/vX.Y` (before
+# or after it merges): once it is merged, its squash commit is cherry-picked onto that line
+# (`git cherry-pick -x`, so the line's commit names the one on `main`) and a pull request into the
+# line is opened with it. A cherry-pick that conflicts opens nothing and says so on the original
+# pull request, with the commands to do it by hand.
+#
+# This is what keeps `main` from falling behind a line, which is how `release/v0.6` once carried 37
+# commits of fixes that never reached `main` (`docs/known-issues.md`): a fix goes the other way
+# round, `main` first, so `main` always has it.
+#
+# `pull_request_target`, because the label can arrive on a pull request from a fork and a
+# `pull_request` run from a fork gets no write token. It is safe here because it never runs the
+# pull request's code: the checkout is `main` (the default for this event), the only commit used is
+# the squash commit already MERGED into `main`, and the title and labels reach the shell through
+# `env`, never through `${{ }}` interpolation into the script.
+
+on:
+  pull_request_target:
+    types: [closed, labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  backport:
+    name: cherry-pick onto the labelled release lines
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >-
+      github.event.pull_request.merged == true
+      && github.event.pull_request.base.ref == 'main'
+      && contains(join(github.event.pull_request.labels.*.name, ' '), 'backport release/v')
+    concurrency:
+      group: backport-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      # ci/bot-pr.sh starts CI on each pull request it opens
+      actions: write
+      # a conflict is reported as a comment on the original pull request
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          # Pushed through the deploy key, not the workflow token: GitHub refuses a GITHUB_TOKEN push
+          # of a commit that touches `.github/workflows/`, and a CI fix is exactly what a line needs
+          # backported. A deploy-key push of a `backport/*` branch starts no workflow (ci.yml's
+          # `push` trigger names `main` and `release/v*` only); ci/bot-pr.sh dispatches CI itself.
+          ssh-key: ${{ secrets.MAIN_PUSH_KEY }}
+
+      - name: Cherry-pick and open the pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ github.event.action }}
+          ADDED: ${{ github.event.label.name }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, '\n') }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          TITLE: ${{ github.event.pull_request.title }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          # `main`'s copy, taken before the loop checks a line out: a line cut before the script
+          # existed has none, and a later one may carry an older copy.
+          bot_pr="$RUNNER_TEMP/bot-pr.sh"
+          cp ci/bot-pr.sh "$bot_pr"
+          # Closing acts on every backport label; a label added after the merge acts on that one only,
+          # so labelling a second line later does not reopen the first.
+          if [ "$ACTION" = labeled ]; then
+            wanted="$ADDED"
+          else
+            wanted="$LABELS"
+          fi
+          failed=0
+          while IFS= read -r label; do
+            [[ "$label" =~ ^backport\ (release/v[0-9]+\.[0-9]+)$ ]] || continue
+            line="${BASH_REMATCH[1]}"
+            branch="backport/$NUMBER-to-${line#release/}"
+            if ! git ls-remote --exit-code --heads origin "refs/heads/$line" >/dev/null; then
+              gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --body "Backport to \`$line\`: there is no such branch, so nothing was cherry-picked."
+              failed=1
+              continue
+            fi
+            if [ -n "$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state all --json number --jq '.[0].number // empty')" ]; then
+              echo "$branch already has a pull request — skipping $line"
+              continue
+            fi
+            git fetch origin "$line"
+            git checkout -B "$branch" "origin/$line"
+            if ! git cherry-pick -x "$SHA"; then
+              if [ -z "$(git status --porcelain --untracked-files=no)" ]; then
+                # Nothing to pick: the line already has this change (an empty cherry-pick).
+                git cherry-pick --abort || git cherry-pick --skip || true
+                gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+                  --body "Backport to \`$line\`: the line already has this change, so there is nothing to backport."
+                continue
+              fi
+              git cherry-pick --abort
+              {
+                echo "Backport to \`$line\` did not apply cleanly, so no pull request was opened. To do it by hand:"
+                echo
+                echo '```sh'
+                echo "git fetch origin $line && git switch -c $branch origin/$line"
+                echo "git cherry-pick -x ${SHA:0:12}   # resolve, then git cherry-pick --continue"
+                echo "git push -u origin $branch       # and open a pull request into $line"
+                echo '```'
+              } > "$RUNNER_TEMP/conflict.md"
+              gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/conflict.md"
+              failed=1
+              continue
+            fi
+            printf 'Backport of #%s to `%s`: `git cherry-pick -x %s`.\n' "$NUMBER" "$line" "${SHA:0:12}" \
+              > "$RUNNER_TEMP/body.md"
+            if ! "$bot_pr" "$line" "$branch" "[${line#release/}] $TITLE" "$RUNNER_TEMP/body.md"; then
+              gh pr comment "$NUMBER" --repo "$GITHUB_REPOSITORY" \
+                --body "Backport to \`$line\`: the cherry-pick applied, but pushing it or opening the pull request failed. See $RUN_URL"
+              failed=1
+            fi
+          done <<< "$(printf '%b' "$wanted")"
+          exit "$failed"

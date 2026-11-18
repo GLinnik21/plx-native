@@ -30,7 +30,7 @@ impl Rig {
     fn drain(&mut self, pumps: usize) {
         for _ in 0..pumps {
             self.owner.pump(0.3);
-            let busy = slots().iter().filter(|&&i| self.owner.adapter.mailbox(i).busy()).count();
+            let busy = fixture_slots().iter().filter(|&&i| self.owner.adapter.mailbox(i).busy()).count();
             self.peak = self.peak.max(busy);
         }
     }
@@ -38,7 +38,7 @@ impl Rig {
     fn page(&mut self, kind: Kind, before: bool) {
         let seen = self.seen(kind);
         self.owner.state.run(&self.owner.adapter, SearchCmd::Page { kind, before, seen });
-        let n = 6 * nsrc() + 12;
+        let n = 6 * fixture_nsrc() + 12;
         self.drain(n);
     }
 
@@ -244,7 +244,7 @@ fn a_slide_waiting_on_a_source_that_left_the_roster_does_not_wait_for_ever() {
     let mut rig = Rig::new(2, Fake::new().movies(100));
     let lo = rig.owner.state.wins[0].lo;
     rig.owner.state.wins[0].pending = Some(Pending { lo: lo + 4, hi: lo + 16, todo: vec![57], ..Default::default() });
-    assert!(prune_pending(&mut rig.owner.state, &slots()), "the slide committed without it");
+    assert!(prune_pending(&mut rig.owner.state, &fixture_slots()), "the slide committed without it");
     assert_eq!(rig.owner.state.wins[0].lo, lo + 4);
     assert!(rig.owner.state.wins[0].pending.is_none());
 }
@@ -319,7 +319,7 @@ fn an_ask_computed_from_a_window_the_row_has_since_slid_is_refused() {
     let filled = rig.seen(Kind::Movie);
     assert_eq!((preview, filled), ((0, 12), (0, 24)), "the fill landed");
     rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: false, seen: preview });
-    rig.drain(6 * nsrc() + 12);
+    rig.drain(6 * fixture_nsrc() + 12);
     assert_eq!(rig.seen(Kind::Movie), filled, "the filled window did not slide");
     let first = filled.0;
     rig.page(Kind::Movie, false);
@@ -327,7 +327,7 @@ fn an_ask_computed_from_a_window_the_row_has_since_slid_is_refused() {
     assert!(slid > first, "the slide landed");
     let keys = rig.keys(Kind::Movie);
     rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: false, seen: filled });
-    rig.drain(6 * nsrc() + 12);
+    rig.drain(6 * fixture_nsrc() + 12);
     assert_eq!((rig.shelf(Kind::Movie).window.start, rig.keys(Kind::Movie)), (slid, keys), "the window did not move");
     assert!(rig.owner.state.wins[0].pending.is_none());
     // the way back, from the window that stands
@@ -348,7 +348,7 @@ fn a_repeated_slide_ask_reads_and_slides_once_and_a_refused_one_is_taken_when_re
         for _ in 0..repeats {
             rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: false, seen });
         }
-        rig.drain(6 * nsrc() + 12);
+        rig.drain(6 * fixture_nsrc() + 12);
         let log = rig.fake.lock().unwrap().log.len();
         (log, rig.seen(Kind::Movie), rig.keys(Kind::Movie))
     };
@@ -362,10 +362,10 @@ fn a_repeated_slide_ask_reads_and_slides_once_and_a_refused_one_is_taken_when_re
     assert_ne!(moved, stale);
     rig.fake.lock().unwrap().log.clear();
     rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: false, seen: stale });
-    rig.drain(6 * nsrc() + 12);
+    rig.drain(6 * fixture_nsrc() + 12);
     assert_eq!((rig.seen(Kind::Movie), rig.fake.lock().unwrap().log.len()), (moved, 0), "refused: no slide, no read");
     rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: false, seen: moved });
-    rig.drain(6 * nsrc() + 12);
+    rig.drain(6 * fixture_nsrc() + 12);
     assert_ne!(rig.seen(Kind::Movie), moved, "sent again from the window that stands, it is taken");
 }
 
@@ -400,7 +400,7 @@ fn a_row_whose_every_landing_meets_a_stale_ask_still_reaches_its_last_card() {
         let stale = rig.seen(Kind::Movie);
         rig.page(Kind::Movie, false);
         rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: false, seen: stale });
-        rig.drain(6 * nsrc() + 12);
+        rig.drain(6 * fixture_nsrc() + 12);
         seen.extend(rig.keys(Kind::Movie));
     }
     assert!(!rig.shelf(Kind::Movie).window.after, "the last card was reached");

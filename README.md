@@ -6,7 +6,7 @@ page — the interface is drawn straight on the GPU at 60 fps, and video plays o
 **Website: [plxnative.com](https://plxnative.com/)** · [Install guide](https://plxnative.com/install/) ·
 [Troubleshooting](https://plxnative.com/troubleshooting/)
 
-<a href="https://trendshift.io/repositories/244171?utm_source=repository-badge&utm_medium=badge&utm_campaign=badge-repository-244171" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/244171" alt="GLinnik21/plx-native | Trendshift" width="250" height="55"/></a>
+<a href="https://trendshift.io/repositories/244171?utm_source=repository-badge&utm_medium=badge&utm_campaign=badge-repository-244171" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/244171" alt="plxnative/plx-native | Trendshift" width="250" height="55"/></a>
 
 *In daily use on a 2019 LG set. PlxNative is an independent project and is not affiliated with Plex, Inc.
 or LG. The same install steps are in the repo: [installation guide](docs/install-and-verify.md).*
@@ -77,7 +77,7 @@ itself. (In this capture the frame under it was decoded by the simulator.)
 **It needs webOS 4.0 or newer**, with two tested exceptions: a 2016 set on **webOS 3.4.3** signs
 in, browses, searches and plays (direct play, transcodes, subtitles and seeking) through Developer
 Mode, and a 2018 set on **webOS 3.9.3** plays direct play the same way when built from source at
-or after [`60f99c7`](https://github.com/GLinnik21/plx-native/commit/60f99c7) — the catalogue's
+or after [`60f99c7`](https://github.com/plxnative/plx-native/commit/60f99c7) — the catalogue's
 prebuilt v0.8.0 predates that fix (see [Known issues](#known-issues)). Other 3.x releases are
 untested, and anything older than 3.4 is unknown. Past that, it most
 likely will. I develop and test on a 2019 set, and opt-in usage reports show
@@ -91,9 +91,9 @@ Owners' reports, set by set, are in the [compatibility list](docs/compatibility.
 | Where | What happens |
 |---|---|
 | **Some 2019 sets on LG's k5lp or k3lp chip**, installed through Developer Mode | Video won't play. On these sets LG's Developer Mode sandbox can withhold a device the video path needs — Kodi and Moonlight hit the same wall. The app checks for it and says so instead of crashing; other sets on the same chip play normally. On a rooted TV with Homebrew Channel, the failure screen offers **Repair**, which applies the Homebrew Channel fix to the sandbox (one owner fixed it this way from a root shell; the button itself hasn't been run on an affected set yet). Without root there is no fix. |
-| **2018 sets on firmware that reports platform release 3.9.3** | Sign-in and browsing work. The prebuilt **v0.8.0** holds a strong ELF reference to the cxx11 `StarfishMediaAPIs::Feed` symbol, which 3.x `libplayerAPIs` does not export, so on the prebuilt video never starts and no error is reported: [#249](https://github.com/GLinnik21/plx-native/issues/249). A source build at or after [`60f99c7`](https://github.com/GLinnik21/plx-native/commit/60f99c7) resolves Feed with a dual-ABI `dlsym` and plays direct play on a 2018 C7 (W17H chassis, 3.9.3). |
+| **2018 sets on firmware that reports platform release 3.9.3** | Sign-in and browsing work. The prebuilt **v0.8.0** holds a strong ELF reference to the cxx11 `StarfishMediaAPIs::Feed` symbol, which 3.x `libplayerAPIs` does not export, so on the prebuilt video never starts and no error is reported: [#249](https://github.com/plxnative/plx-native/issues/249). A source build at or after [`60f99c7`](https://github.com/plxnative/plx-native/commit/60f99c7) resolves Feed with a dual-ABI `dlsym` and plays direct play on a 2018 C7 (W17H chassis, 3.9.3). |
 | **webOS 3.x** | Seeking jumps in place through LG's public `Seek`, as on webOS 5 and newer (tested on platform release 3.9.3 only). The in-place path webOS 4 uses depends on the internal layout of LG's 4.x media player, which differs on 3.x, so it is not used there. A set that refuses `Seek` falls back to restarting the stream at the new position, as all 3.x sets did before. Menus can drop frames at 1920x1080 on these sets; **Settings → System → Interface resolution** trades sharper text for smoother menus. |
-| **Sets on LG's k6hp chip** | A crash seen in opt-in crash reports and not reproduced here, because I have no such set: [#174](https://github.com/GLinnik21/plx-native/issues/174). |
+| **Sets on LG's k6hp chip** | A crash seen in opt-in crash reports and not reproduced here, because I have no such set: [#174](https://github.com/plxnative/plx-native/issues/174). |
 
 ### Rooted or not
 
@@ -103,9 +103,9 @@ installed through it ([how to keep them](docs/install-and-verify.md#important-de
 A rooted TV with Homebrew Channel has no expiry.
 
 If something goes wrong, check [Troubleshooting](docs/troubleshooting.md) first, then
-[tell me what happened](https://github.com/GLinnik21/plx-native/issues/new/choose) — and if you own one of the
+[tell me what happened](https://github.com/plxnative/plx-native/issues/new/choose) — and if you own one of the
 sets above, it working is as useful a report as it failing: post it under
-[Discussions > Compatibility](https://github.com/GLinnik21/plx-native/discussions/categories/compatibility).
+[Discussions > Compatibility](https://github.com/plxnative/plx-native/discussions/categories/compatibility).
 
 ## Installing
 
@@ -131,6 +131,14 @@ remove that requirement. The guide explains [how to renew the session](docs/inst
 For manual `.ipk` downloads, [verify the release checksum](docs/install-and-verify.md#verifying-the-package)
 before installing. Homebrew Channel verifies catalogue downloads for you.
 
+## Also for LG webOS
+
+Want a cleaner home screen for your LG TV? [**Clean Your TV**](https://github.com/Razdva122/clean-your-tv-lg-webos),
+a separate project by another developer, lets you rearrange your apps, customize the dock and pick a
+theme. The launcher has no sponsored rows, and on a regular TV it installs through LG Developer Mode.
+
+[Explore Clean Your TV →](https://github.com/Razdva122/clean-your-tv-lg-webos)
+
 ## Nightly builds
 
 Every day `main` moves, CI cuts a nightly `.ipk` from wherever it stands. It installs beside the
@@ -142,9 +150,10 @@ the release you already trust.
 appears there as an update. The [nightly builds guide](docs/nightly-builds.md) has the steps, how
 the versions work and what to do if something goes wrong.
 
-**Without it:** each build is a
-[prerelease](https://github.com/GLinnik21/plx-native/releases?q=nightly), and the newest is always
-linked from [plxnative.com/nightly/latest.json](https://plxnative.com/nightly/latest.json). Install
+**Without it:** each build is a release of
+[plxnative/plx-native-nightly](https://github.com/plxnative/plx-native-nightly/releases), and the
+newest is always linked from
+[plxnative.com/nightly/latest.json](https://plxnative.com/nightly/latest.json). Install
 it with Dev Manager; a package installed that way does not update itself.
 
 **It is not tested on a television.** It passes the same automated build and packaging checks a
@@ -154,7 +163,7 @@ published, so link to a specific `.ipk` at your own risk.
 ## Release candidates
 
 Before a release, CI may publish a release candidate as a
-[prerelease](https://github.com/GLinnik21/plx-native/releases?q=rc) named like `PlxNative 0.8.0-rc.1`.
+[prerelease](https://github.com/plxnative/plx-native/releases?q=rc) named like `PlxNative 0.8.0-rc.1`.
 It is the release build itself, so it **installs as the regular PlxNative app**, replacing the one
 you have the way an update would. It is not in the Homebrew Channel, and the Channel will not offer
 the final release over it either: reinstall the final by hand once it is out.
@@ -192,7 +201,7 @@ If that fits, it's genuinely nice to use. If it doesn't, the official app will s
 Issues and pull requests are welcome, especially from anyone whose television or library differs
 from mine — [**docs/building.md**](docs/building.md) is the build and the test loop, and says what
 hardware I most need help with. Feature ideas go to [Discussions >
-Ideas](https://github.com/GLinnik21/plx-native/discussions/categories/ideas). Security issues go
+Ideas](https://github.com/plxnative/plx-native/discussions/categories/ideas). Security issues go
 through [`SECURITY.md`](SECURITY.md) rather than a public issue.
 
 ## Acknowledgements
@@ -222,10 +231,10 @@ respective owners; where they appear in the app, they identify whose service or 
 
 ## Star history
 
-<a href="https://www.star-history.com/?repos=glinnik21%2Fplx-native&type=date&legend=bottom-right">
+<a href="https://www.star-history.com/?repos=plxnative%2Fplx-native&type=date&legend=bottom-right">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=glinnik21/plx-native&type=date&theme=dark&legend=bottom-right">
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=glinnik21/plx-native&type=date&legend=bottom-right">
-    <img alt="Star history chart" src="https://api.star-history.com/chart?repos=glinnik21/plx-native&type=date&legend=bottom-right">
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=plxnative/plx-native&type=date&theme=dark&legend=bottom-right">
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=plxnative/plx-native&type=date&legend=bottom-right">
+    <img alt="Star history chart" src="https://api.star-history.com/chart?repos=plxnative/plx-native&type=date&legend=bottom-right">
   </picture>
 </a>

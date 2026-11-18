@@ -202,7 +202,7 @@ fn drawn_strip(generation: u32, faces: &[TabFace]) -> DrawnStrip {
     let mut strip = StripRender::new();
     let mut band = TabBand::new();
     strip.update(labels, 0, TopFocus::Away, DT);
-    strip.draw(labels, Painter::recording(), &mut band);
+    strip.draw(labels, Painter::recording(), &mut band, Default::default());
     let (content, track) = with_tab_metrics_for(labels, |_, _, w| (tab_content_w(w), tab_track_w(w)));
     DrawnStrip { glass: band.face().is_some(), content, track }
 }

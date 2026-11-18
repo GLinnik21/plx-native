@@ -21,6 +21,7 @@ use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 
 pub mod qr;
+pub mod a11y; // accessibility ids: `<ns>.<path>` for every focusable element, so a UI test addresses one by id (plan a11y-ids D1, D2)
 pub mod anim;
 pub(crate) mod card_row;
 pub mod cards; // shared card sections (plan: shared-card-sections): Shelf, Grid, CardSource, and the card conformance suite
@@ -75,7 +76,7 @@ pub mod master_detail; // RESTRUCTURE (spec §10): reusable two-region focus/ret
 // no module-level deletion counter remains for a newly mounted screen to poll.
 pub mod page_stack; // the drill-in page stack Tracks and More share
 pub mod panel_motion; // the resize/page-slide spring of the in-player table popovers (Tracks, More)
-pub mod nav; // the page transition's PRESENTATION, published once a frame from the container
+
 pub mod breadcrumb; // 'Films > Collections' crumb (PR5)
 pub mod hstack; // one gap between a run of measured items (UIStackView spacing)
 pub mod vstack; // the same stack top to bottom (VStack/VFlow over hstack's engine) + the alert head ladder
@@ -89,7 +90,7 @@ pub mod scroll_capsule; // the scroll capsule + top fade a tucked long page leav
 pub mod popover_glass; // the popover panel's glass: gradient face, rim, highlight, shadow (DS6)
 pub mod popover_morph; // the morph open style (pill -> panel) beside the shared K_APPEAR fade+slide
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
-pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
+
 pub use plx_gfx::gfx::profile; // the draw-phase profiler lives in `gfx` now (module-layers step L5)
 pub mod preview_controls;
 pub mod route_screen;
@@ -223,7 +224,7 @@ impl Spring {
     /// a card to the focus program for as long as the row keeps focus elsewhere).
     ///
     /// Arrived means within [`LAND_REL`] of the larger magnitude (plus one) and travelling less than
-    /// that per frame (`vel * dt`, the form [`plx_machine::idle::settled`] judges): about 1.2e-4 for
+    /// that per frame (`vel * dt`, the form [`plx_machine::motion::report::settled`] judges): about 1.2e-4 for
     /// a 0..1 pop, a hundredth of a pixel on a 280 px scroll, a thousand times the ulp it has to
     /// catch and a seventeenth of what the idle gate already treats as finished, so nothing visible moves.
     /// The caller picks which springs: a cell that is NOT focused calls it with its rest value.
@@ -240,6 +241,35 @@ impl Spring {
         }
         false
     }
+    /// [`land`](Self::land) by the frame loop's own rest test: put the spring exactly on `target` (position and
+    /// velocity) once [`plx_machine::motion::moving`], the test every integrator reports `Motion` by, stops
+    /// calling it moving at the step's `dt`, and say whether it is there. A spring this lands is one the loop
+    /// was about to stop asking frames for, and a landed spring can never be woken by a later step: it is
+    /// exactly on its target with no velocity, whatever `dt` that step has.
+    ///
+    /// [`land`](Self::land)'s own threshold (about 1e-4) is far tighter than the loop's rest test (a quarter
+    /// pixel at most), which is why it cannot promise that. An UNDERdamped spring rings on below the loop's test
+    /// for many more frames, the loop sleeps, and the idle wake that follows steps it by up to
+    /// [`plx_machine::motion::FRAME_DT_CLAMP`], three times the travel the 16 ms test judged: the spring reports
+    /// motion again, one sub-pixel frame presents, the loop sleeps again. Landing at the `dt` of the very step
+    /// that stops reporting motion leaves no such gap; landing only when the test would pass at
+    /// [`FRAME_DT_CLAMP`](plx_machine::motion::FRAME_DT_CLAMP) would, since a spring still travelling more than
+    /// a quarter pixel in 50 ms but less in 16 ms is quiet, asleep and not landed.
+    ///
+    /// A spring that is not finite is never landed (a broken value must not look quiet), and one already
+    /// exactly on `target` reports nothing, like [`land`](Self::land).
+    #[inline]
+    pub fn land_if_still(&mut self, target: f32, dt: f32) -> bool {
+        if self.pos == target && self.vel == 0.0 {
+            return true;
+        }
+        let finite = self.pos.is_finite() && self.vel.is_finite() && target.is_finite() && dt.is_finite();
+        if finite && !plx_machine::motion::moving(self.pos, target, self.vel, dt) {
+            self.jump(target);
+            return true;
+        }
+        false
+    }
     /// Teleport, with no motion in between. Reports to [`plx_machine::idle`](plx_machine::idle) — a jump
     /// changes the drawn value without ever reaching a spring integrator, so nothing else would
     /// hear it.
@@ -249,7 +279,7 @@ impl Spring {
     /// would pin the loop at 60 fps on precisely the screen the present gate exists for.
     #[inline]
     pub fn jump(&mut self, v: f32) {
-        plx_machine::idle::note_jump(self.pos != v || self.vel != 0.0);
+        plx_machine::motion::report::note_jump(self.pos != v || self.vel != 0.0);
         self.pos = v;
         self.vel = 0.0;
     }
@@ -898,6 +928,48 @@ impl Painter {
         self.cached_region_in(plx_gfx::gfx::region_paint, key, r, paint)
     }
 
+    /// **[`cached_region`](Self::cached_region) for a GROUND**: an OPAQUE picture that stands in for
+    /// the frame's clear (a page's wash, its photograph and its scrims, `HomeScreen`'s backdrop), whose
+    /// cached frame must be the very pixels the live draw leaves.
+    ///
+    /// The difference is the cascade. `cached_region` serves a picture as a GROUP, so an alpha, a gain
+    /// or a translate on the painter is applied to the texture. A ground does not take them that way:
+    /// its primitives take the alpha one by one (an alpha mixes the wash toward the app ground and
+    /// thins the art over it, [`Painter::ambient`]), which is not the group's blend of the whole, and
+    /// a quad at a translate is not the live draw's pixels. So the ground is cached only through a
+    /// painter that carries NONE of them ([`is_plain`](Self::is_plain): a page at rest, not dipping,
+    /// not sliding); through any other it is drawn live, with `paint` handed this painter. That frame
+    /// does not ask the region cache at all (unlike a call with no key, which does), so the texture
+    /// goes back for it and the first plain frame after fills it again.
+    ///
+    /// **`key` names what the CALLER holds; the renderer adds what only it knows.** `textures` are the
+    /// texture ids the picture samples: the key the region texture is served by is `key` with each one's
+    /// revision (a texture re-specified under the same name is another picture) and the program switches
+    /// the ground's paths read folded in ([`plx_gfx::gfx::region_ground_key`]), so a screen reads no
+    /// renderer state to name its picture and cannot forget one.
+    ///
+    /// Everything else is `cached_region`'s: `key` names the picture and must change with everything
+    /// `paint` draws (`None`: it is not settled, draw it live), `paint` draws no glass and no blur, a
+    /// frame whose page never asks gives the texture back, and the host and the glass's discovery and
+    /// source passes draw it live, so the chrome glass over it sees the primitives it always saw.
+    pub fn cached_ground(self, key: Option<u64>, textures: &[u32], r: Rect, paint: impl FnOnce(Painter)) {
+        let key = key.map(|k| plx_gfx::gfx::region_ground_key(k, textures));
+        self.cached_in(plx_gfx::gfx::region_paint, key, r, true, paint)
+    }
+
+    /// Does this painter carry nothing the picture would have to take through the cascade: no alpha
+    /// below 1, no gain, no translate, no pop, no zoom and no clip? What a [`cached_ground`](
+    /// Self::cached_ground) requires of the painter it is handed.
+    pub fn is_plain(self) -> bool {
+        self.a >= 1.0
+            && self.rgb == 1.0
+            && self.dx == 0.0
+            && self.dy == 0.0
+            && self.scale == 1.0
+            && self.zoom.is_none()
+            && self.clip == Rect::FULL
+    }
+
     /// [`cached_region`](Self::cached_region) over the region `serve` stands for (the renderer's
     /// `region_paint`, or a table-driven stand-in a host test hands it: no GL is linked there).
     fn cached_region_in(
@@ -905,6 +977,20 @@ impl Painter {
         serve: impl FnOnce(Option<u64>, [f32; 4], [f32; 2], [f32; 4], &mut dyn FnMut()) -> bool,
         key: Option<u64>,
         r: Rect,
+        paint: impl FnOnce(Painter),
+    ) {
+        self.cached_in(serve, key, r, false, paint)
+    }
+
+    /// The one body behind [`cached_region`](Self::cached_region) and [`cached_ground`](
+    /// Self::cached_ground): `exact` asks that the painter be [`is_plain`](Self::is_plain) for the
+    /// picture to be served at all.
+    fn cached_in(
+        self,
+        serve: impl FnOnce(Option<u64>, [f32; 4], [f32; 2], [f32; 4], &mut dyn FnMut()) -> bool,
+        key: Option<u64>,
+        r: Rect,
+        exact: bool,
         paint: impl FnOnce(Painter),
     ) {
         let mut paint = Some(paint);
@@ -917,6 +1003,7 @@ impl Painter {
             && self.scale == 1.0
             && self.a > 0.0
             && self.clip == Rect::FULL
+            && (!exact || self.is_plain())
             && screen::ClipScope::current().is_none()
         {
             let g = self.rgb * self.a;
@@ -1423,6 +1510,31 @@ impl Painter {
         }
         plx_gfx::gfx::draw_tex_uv(tex, uv, m.x, m.y, m.w, m.h, self.px(rad), t.as_ptr());
     }
+    /// A texture that holds PREMULTIPLIED RGBA (`(rgb * a, a)` per texel), drawn in `r` as one
+    /// square-cornered quad: what [`tex`](Self::tex) does for a straight-alpha one, through
+    /// [`plx_gfx::gfx::draw_tex_premultiplied`]'s blend. `tint` is the STRAIGHT ink and fade `tex`
+    /// takes, and the painter's own cascade (its alpha and colour gain) applies to it exactly as it does
+    /// to `tex`'s, so a subtitle's ink rung or a fade dims a premultiplied picture the way it dims a
+    /// straight one. Used for the libass regions, which the facade composes premultiplied; a texture
+    /// uploaded straight (an image subtitle, a glyph) stays on `tex`. Unlike `tex` it is not cut by an
+    /// ink clip (`widgets::paint_inked`): that path samples a texture as coverage, which a colour
+    /// picture is not.
+    pub fn tex_premultiplied(self, tex: u32, r: Rect, tint: [f32; 4]) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() {
+            draw_census::note_tex(tex, self.place(r), self.c(tint)[3]);
+        }
+        if self.declare(r, 15, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            plx_gfx::gfx::tex_ledger::revision(tex).record(data);
+            tint.record(data);
+        }) { return; }
+        if self.records() { return; }
+        let t = self.c(tint);
+        let m = self.place(r);
+        plx_gfx::gfx::draw_tex_premultiplied(tex, m.x, m.y, m.w, m.h, t);
+    }
     /// The FROSTED ground: what the frame drew behind `r`, blurred, clipped to `r`'s rounded rect.
     ///
     /// Returns whether it drew. `false` is not an error — the blur latches itself off on a driver
@@ -1618,7 +1730,7 @@ impl Painter {
     /// being ignored. That is the only reading of "fade this out" an opaque full-screen field HAS,
     /// and it is the right one: the app's ground is what lies behind a page (`gfx::frame_clear` lays
     /// down `theme::CLEAR_RGB`, the same colour), so at alpha 0 the wash IS the ground and
-    /// [`ui::nav`](crate::nav)'s page dip has no seam where the framebuffer was cleared and the
+    /// the owning stack's page dip has no seam where the framebuffer was cleared and the
     /// next screen takes over.
     ///
     /// Alpha 1 is bit-for-bit the old call, which is every call outside a page transition; only the
@@ -1772,7 +1884,7 @@ impl Painter {
         plx_gfx::gfx::draw_scrim_layer(m.x, m.y, m.w, m.h, ink, &scrim);
     }
     /// Does the cascade hand a wash's corners to the GPU as they are: no alpha mixing them toward
-    /// [`theme::SURFACE_APP`] (a page dipping for [`ui::nav`](crate::nav)'s route transition moves
+    /// [`theme::SURFACE_APP`] (a page dipping for the owning stack's route transition moves
     /// the drawn corners every frame with every spring at rest) and no gain? Only then is a wash
     /// whose springs have landed also a wash whose drawn corners have stopped changing, which is
     /// what a glass above it re-takes its source on.
@@ -1931,6 +2043,10 @@ impl Painter {
     /// its rim's sharp source and the frame's modal `dim` applied to both. `false` when the glass
     /// program or the ground is missing — the caller's cue for its field ground.
     /// `crate::popover_glass::draw` is the component; reach for that.
+    ///
+    /// `morph` is a morphing menu's join and clarity ([`plx_gfx::gfx::GlassMorph`]);
+    /// `GlassMorph::NONE` for everything else. Joined, the glass is drawn on the box around both
+    /// shapes, so that box (not `r`) is what the draw declares.
     #[allow(clippy::too_many_arguments)]
     pub fn glass_frozen(
         self,
@@ -1942,8 +2058,10 @@ impl Painter {
         tint: [f32; 4],
         rim: plx_gfx::gfx::GlassRim,
         face: plx_gfx::gfx::GlassFace,
+        morph: plx_gfx::gfx::GlassMorph,
     ) -> bool {
-        if self.declare(r, frame::backdrop::GLASS_FROZEN_COMMAND, |data| {
+        let quad = morph.quad(r.x, r.y, r.w, r.h);
+        if self.declare(quad, frame::backdrop::GLASS_FROZEN_COMMAND, |data| {
             use frame::backdrop::Value;
             rad.record(data);
             ground.record(data);
@@ -1953,11 +2071,21 @@ impl Painter {
             tint.record(data);
             face.scrim_top.record(data); face.scrim_bot.record(data);
             face.rim.record(data); face.rim_lit.record(data); face.rim_w.record(data);
+            let j = morph.merge.map_or([0.0; 4], |j| [j.rect.x, j.rect.y, j.rect.w, j.rect.h]);
+            j.record(data);
+            [morph.merge.map_or(0.0, |j| j.radius), morph.merge.map_or(0.0, |j| j.k), morph.clear, 0.0].record(data);
+            // the join's colour and amount: an amount, not an opacity, so it is recorded as it is and
+            // not through the painter's cascade (a different tint is a different draw)
+            morph.merge.map_or([0.0; 4], |j| j.tint).record(data);
         }) { return ground != 0; }
         if self.records() { return false; }
         let t = self.c(tint);
         let m = self.place(r);
-        plx_gfx::gfx::draw_glass_frozen(m.x, m.y, m.w, m.h, self.px(rad), ground, sharp, dim, t.as_ptr(), rim, face)
+        let morph = plx_gfx::gfx::GlassMorph {
+            merge: morph.merge.map(|j| plx_gfx::gfx::GlassMerge { rect: self.place(j.rect), radius: self.px(j.radius), k: self.px(j.k), tint: j.tint }),
+            ..morph
+        };
+        plx_gfx::gfx::draw_glass_frozen(m.x, m.y, m.w, m.h, self.px(rad), ground, sharp, dim, t.as_ptr(), rim, face, morph)
     }
     /// draw text at absolute (x,y) plus the cascade translate; returns width
     pub fn text(
@@ -2413,6 +2541,26 @@ mod tests {
         assert_eq!(p.a, 0.125);
     }
 
+    /// A premultiplied texture is the same recorded quad as a straight one under the painter's cascade
+    /// (translate and fade), and its shader tint is the cascaded tint premultiplied AFTER the cascade:
+    /// the cascade scales colour by the gain and alpha by the fade, so premultiplying first would leave
+    /// a faded picture's colour too bright.
+    #[test]
+    fn a_premultiplied_texture_takes_the_cascade_of_a_straight_one_and_is_premultiplied_after_it() {
+        let r = Rect::new(10.0, 20.0, 30.0, 40.0);
+        let ink = [0.85, 0.85, 0.85, 1.0];
+        let faded = || Painter::recording().translate(5.0, 6.0).alpha(0.5);
+        let straight = draw_census::capture_tex(|| faded().tex(7, r, 0.0, ink));
+        let premultiplied = draw_census::capture_tex(|| faded().tex_premultiplied(7, r, ink));
+        assert_eq!(premultiplied, vec![(7, Rect::new(15.0, 26.0, 30.0, 40.0), 0.5)]);
+        assert_eq!(premultiplied, straight, "the same texture, place and effective alpha");
+        let tag = |f: &dyn Fn()| draw_census::capture(|| f()).iter().map(|c| c.0).collect::<Vec<_>>();
+        assert_eq!(tag(&|| faded().tex(7, r, 0.0, ink)), [12]);
+        assert_eq!(tag(&|| faded().tex_premultiplied(7, r, ink)), [15], "its own command, so a glass replay can tell them apart");
+        let cascaded = Painter::root().alpha(0.5).c(ink);
+        assert_eq!(plx_gfx::gfx::premultiplied_tint(cascaded), [0.425, 0.425, 0.425, 0.5]);
+    }
+
     #[test]
     fn output_gain_scales_the_colour_that_reaches_the_renderer_and_never_the_alpha() {
         let col = [0.8, 0.6, 0.4, 0.5];
@@ -2657,6 +2805,54 @@ mod tests {
             "missing artwork must still traverse the placeholder path");
     }
 
+    /// **A ground is cached only through a painter that carries nothing** (`Painter::cached_ground`): an
+    /// alpha, a gain, a translate, a pop, a zoom or a clip is applied to the picture's primitives one by
+    /// one on the live path (an alpha mixes a wash toward the app ground), and a group blend of the texture
+    /// is not the same pixels. Through such a painter the picture is drawn live with THAT painter, exactly
+    /// once, and the renderer is not asked. A region (`cached_region`) takes the cascade as a group and is
+    /// still served through an alpha or a translate.
+    #[test]
+    fn a_ground_is_served_only_through_a_plain_painter_and_a_region_through_any() {
+        let r = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        // `(times the table was asked, times the picture was drawn, the painter's own alpha / dx at the draw)`
+        let drive = |p: Painter, exact: bool| {
+            let (mut asked, mut drawn, mut seen) = (0, 0, None);
+            p.cached_in(
+                |key, _, _, _, paint| {
+                    asked += 1;
+                    paint();
+                    key.is_some()
+                },
+                Some(3),
+                r,
+                exact,
+                |q| {
+                    drawn += 1;
+                    seen = Some((q.opacity(), q.dx()));
+                },
+            );
+            (asked, drawn, seen)
+        };
+        let plain = Painter::root();
+        assert!(plain.is_plain());
+        assert_eq!(drive(plain, true), (1, 1, Some((1.0, 0.0))), "plain: served, and filled with the identity painter");
+        for (what, p) in [
+            ("an alpha", plain.alpha(0.5)),
+            ("a gain", plain.rgb(0.5)),
+            ("a translate", plain.translate(40.0, 0.0)),
+            ("a pop", plain.scaled(1.05)),
+            ("a clip", plain.clipped(Rect::new(0.0, 0.0, 100.0, 100.0))),
+        ] {
+            assert!(!p.is_plain(), "{what}: not plain");
+            let (asked, drawn, seen) = drive(p, true);
+            assert_eq!((asked, drawn), (0, 1), "{what}: a ground is drawn live, once, and the renderer is not asked");
+            assert_eq!(seen, Some((p.opacity(), p.dx())), "{what}: with the caller's own painter");
+        }
+        // the group form takes an alpha and a translate through the cascade, as it always has
+        assert_eq!(drive(plain.alpha(0.5), false).0, 1, "a region is served through an alpha");
+        assert_eq!(drive(plain.translate(40.0, 0.0), false).0, 1, "and through a translate");
+    }
+
     /// The zoom is ONE transform: a plain rect and every flavour of text land exactly where
     /// `Zoom::map` puts them, and an identity zoom is the plain translate.
     #[test]
@@ -2746,7 +2942,8 @@ mod spring_tests {
     //! `Spring`'s own reports to the present gate. They need `testlock`, which the geometry tests
     //! above do not (`plx_machine::idle`'s gate state is process-wide).
     use super::Spring;
-    use plx_machine::idle::{frame_begin, note_present, reset_for_test, should_present};
+    use plx_machine::motion::report::{frame_begin, reset_for_test};
+    use plx_machine::present::Present;
 
     /// A jump reports only when it actually moved — `home.rs` jumps to the same value every frame
     /// while the hub list is empty, and an unguarded report would pin 60fps on that exact screen.
@@ -2757,14 +2954,18 @@ mod spring_tests {
         let _g = plx_base::testlock::serial();
         reset_for_test();
         let mut s = Spring::at(1.0);
-        note_present(10_000);
+        let mut present = Present::new();
+        present.take(10_000);
+        present.acknowledge(10_000);
         frame_begin(1.0 / 60.0);
         s.jump(1.0); // already there
-        assert!(!should_present(10_016));
+        plx_machine::motion::report::collect_into(&mut present, 10_016);
+        assert!(!present.take(10_016));
 
         frame_begin(1.0 / 60.0);
         s.jump(2.0); // teleported
-        assert!(should_present(10_032));
+        plx_machine::motion::report::collect_into(&mut present, 10_032);
+        assert!(present.take(10_032));
     }
 
     /// `step` parks a released spring one ulp off its target and leaves it there; `land` is what puts
@@ -2811,15 +3012,62 @@ mod spring_tests {
         let _g = plx_base::testlock::serial();
         reset_for_test();
         let mut s = Spring { pos: 1.0 + 1.2e-7, vel: -9.8e-7 }; // where a released pop parks
-        note_present(10_000);
+        let mut present = Present::new();
+        present.take(10_000);
+        present.acknowledge(10_000);
         frame_begin(1.0 / 60.0);
         assert!(s.land(1.0, 1.0 / 60.0));
-        assert!(should_present(10_016), "the landing is a change, so the exactly-resting frame is presented");
-        note_present(10_016);
+        plx_machine::motion::report::collect_into(&mut present, 10_016);
+        assert!(present.take(10_016), "the landing is a change, so the exactly-resting frame is presented");
+        present.acknowledge(10_016);
         frame_begin(1.0 / 60.0);
         assert!(s.land(1.0, 1.0 / 60.0));
-        assert!(!should_present(10_032), "already there: nothing to report");
+        plx_machine::motion::report::collect_into(&mut present, 10_032);
+        assert!(!present.take(10_032), "already there: nothing to report");
         assert!(!Spring::at(1.5).land(1.0, 1.0 / 60.0), "a spring half a unit away has not arrived");
         assert!(!Spring { pos: 1.0, vel: 5.0 }.land(1.0, 1.0 / 60.0), "on the target but still travelling is not arrived");
+    }
+
+    /// [`Spring::land_if_still`] lands by the loop's own rest test, not by `land`'s tight threshold: a ringing
+    /// spring the loop would stop asking frames for lands, one it would still ask for is left alone.
+    #[test]
+    fn land_if_still_lands_exactly_where_the_frame_loops_rest_test_stops_calling_it_moving() {
+        let _g = plx_base::testlock::serial();
+        reset_for_test();
+        let dt = 1.0 / 60.0;
+        // 1.2e-3 off and drifting 1e-3 a frame: below the quarter-pixel rest test, far above `land`'s 1.2e-4.
+        let mut s = Spring { pos: 1.0 - 1.2e-3, vel: 0.06 };
+        assert!(!plx_machine::motion::moving(s.pos, 1.0, s.vel, dt), "the premise: the loop calls it at rest");
+        assert!(!s.land(1.0, dt), "the premise: land's own threshold has not caught it");
+        assert!(s.land_if_still(1.0, dt));
+        assert_eq!((s.pos, s.vel), (1.0, 0.0), "exactly on the target, with no velocity");
+        // The same spring at an idle wake's 50 ms is still travelling more than the test allows: left alone.
+        let mut wake = Spring { pos: 1.0 - 1.2e-3, vel: 0.06 };
+        assert!(plx_machine::motion::moving(wake.pos, 1.0, wake.vel, plx_machine::motion::FRAME_DT_CLAMP));
+        assert!(!wake.land_if_still(1.0, plx_machine::motion::FRAME_DT_CLAMP));
+        assert_eq!((wake.pos, wake.vel), (1.0 - 1.2e-3, 0.06), "a moving spring is not touched");
+        assert!(!Spring::at(1.5).land_if_still(1.0, dt), "half a unit away is moving");
+        assert!(!Spring { pos: 1.0, vel: 5.0 }.land_if_still(1.0, dt), "on the target but still travelling is moving");
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut broken = Spring { pos: bad, vel: 0.0 };
+            assert!(!broken.land_if_still(1.0, dt), "a broken value must never look quiet");
+            let mut broken = Spring { pos: 1.0, vel: bad };
+            assert!(!broken.land_if_still(1.0, dt));
+        }
+    }
+
+    /// Like [`Spring::land`], it reports to the present gate once when it moves something and not at all when
+    /// the spring is already exactly there.
+    #[test]
+    fn land_if_still_reports_only_when_it_moves_something() {
+        let _g = plx_base::testlock::serial();
+        reset_for_test();
+        let mut s = Spring { pos: 1.0 - 1.2e-3, vel: 0.06 };
+        frame_begin(1.0 / 60.0);
+        assert!(s.land_if_still(1.0, 1.0 / 60.0));
+        assert!(plx_machine::motion::report::read().jumped, "the landing is a change the frame must present");
+        frame_begin(1.0 / 60.0);
+        assert!(s.land_if_still(1.0, 1.0 / 60.0));
+        assert!(!plx_machine::motion::report::read().jumped, "already there: nothing to report");
     }
 }

@@ -105,7 +105,7 @@ CASES = [
     (BLOCK, 'git -C /repo commit -m "wake %s first"' % FAKE_MAC),         # subcommand behind -C
     (BLOCK, 'git tag -a v0.3.0 -m "cut against %s"' % FAKE_TV),
     (BLOCK, 'gh pr create --title "player: fix seek" --body "reproduced on %s"' % FAKE_TV),
-    (BLOCK, 'gh -R GLinnik21/plx-native issue comment 22 --body "user id %s"' % FAKE_USERID),
+    (BLOCK, 'gh -R plxnative/plx-native issue comment 22 --body "user id %s"' % FAKE_USERID),
     (BLOCK, 'gh release create v0.3.0 --notes "verified against %s"' % FAKE_PMS),
     (BLOCK, "gh api repos/x/y/issues/1/comments -f body='the TV is %s'" % FAKE_TV),
     (BLOCK, 'gh pr comment 5 --body "token %s"' % FAKE_TOKEN),
@@ -162,7 +162,7 @@ CASES = [
     (ALLOW, 'curl -s "http://%s:32400/library/sections?X-Plex-Token=%s"' % (FAKE_PMS, FAKE_TOKEN)),
     (ALLOW, 'curl -s "https://plex.tv/api/v2/resources?X-Plex-Token=%s"' % FAKE_TOKEN),
     (ALLOW, 'gh release view v0.2.1 --json body --jq .body'),             # --json body is a READ
-    (ALLOW, 'gh api repos/GLinnik21/plx-native/releases/tags/v0.2.1 --jq ".assets[].name"'),
+    (ALLOW, 'gh api repos/plxnative/plx-native/releases/tags/v0.2.1 --jq ".assets[].name"'),
     (ALLOW, 'gh pr view 49 --json body,title'),
     (ALLOW, 'gh release download v0.2.1 -D /tmp/rel'),
     (ALLOW, 'git push origin main'),                                      # deliberately not a gate
@@ -257,8 +257,8 @@ MERGE_CASES = [
     (BLOCK, 'gh pr merge 5 --squash --match-head-commit %s' % GIT_SHA),
     (BLOCK, 'gh pr merge --auto --squash 5'),
     (BLOCK, 'gh pr merge 5 --admin'),
-    (BLOCK, 'gh -R GLinnik21/plx-native pr merge 5'),           # the verb sits behind a global flag
-    (BLOCK, 'gh --repo GLinnik21/plx-native pr merge 5 --squash'),
+    (BLOCK, 'gh -R plxnative/plx-native pr merge 5'),           # the verb sits behind a global flag
+    (BLOCK, 'gh --repo plxnative/plx-native pr merge 5 --squash'),
     (BLOCK, 'cd /repo && gh pr merge 5 --squash'),
     (BLOCK, 'make check; gh pr merge 5'),
     (BLOCK, 'gh pr checks 5 --watch && gh pr merge 5'),         # the chain this guard exists for
@@ -565,6 +565,48 @@ def recording_case():
     return ok
 
 
+def alphabet_id_case():
+    """The REAL tests/fixtures/replay/ALPHABET.json: an accessibility id is accepted, a lookalike is not.
+
+    The alphabet is the gate that lets a recording under tests/fixtures/replay/ be committed and
+    pushed, and its id pattern once fully matched ANY lowercase dotted string, so a household
+    hostname (`nas.local`, `first.last`) in a recording would have passed. The first segment is now
+    a closed namespace alternation and the segment count is bounded: this loads the file itself
+    (not the throwaway alphabet `recording_case` writes) and asks the guard's own matcher.
+    """
+    ok = True
+    repo = os.path.abspath(os.path.join(HERE, "..", ".."))
+    alphabet = guard.load_alphabet(repo)
+    if not alphabet[1]:
+        print("  FAIL  the repository's ALPHABET.json did not load: %s" % repo)
+        return False
+    for want_in, text in (
+        (True, "nav.watchlist"),
+        (True, "nav.tab.7"),
+        (True, "home.hero.play"),
+        (True, "home.shelf.2.card.5"),
+        (True, "detail.shelf.1.card.2"),
+        (True, "library.shelf.2.card.3"),
+        (True, "filmography.row.0"),
+        (True, "hud-detail.row.0"),
+        (True, "home.a.b.c.d.e.f"),           # six segments: the bound
+        (False, "nas.local"),
+        (False, "first.last"),
+        (False, "my-laptop.lan"),
+        (False, "nav."),
+        (False, "NAV.watchlist"),
+        (False, "nav.Watchlist"),
+        (False, "nav.watchlist."),
+        (False, "nav.01"),                    # an index has no leading zero
+        (False, "home.a.b.c.d.e.f.g"),        # seven segments: one past the bound
+    ):
+        bad = guard.offending_strings(json.dumps({"id": text}), alphabet)
+        if bool(bad) == want_in:
+            print("  FAIL  alphabet: %r should be %s" % (text, "accepted" if want_in else "refused"))
+            ok = False
+    return ok
+
+
 def refusal_case():
     """Drive the REAL binary and grep its stderr for the fake secrets.
 
@@ -712,7 +754,8 @@ def main():
                   % ("BLOCK" if want else "ALLOW", "BLOCK" if got else "ALLOW",
                      cmd.replace("\n", "\\n")[:110]))
     helpers = (file_payload_case, secrets_case, refusal_case, variable_reference_case,
-               recording_case, merge_case, pr_land_text_case, merge_refusal_case, settings_case)
+               recording_case, alphabet_id_case, merge_case, pr_land_text_case, merge_refusal_case,
+               settings_case)
     for fn in helpers:
         if not fn():
             fails += 1

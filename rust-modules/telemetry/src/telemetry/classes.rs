@@ -957,6 +957,34 @@ impl TerminalStageClass {
     }
 }
 
+/// **Why a detail-page trailer preview was refused before it opened** (Sentry PLX-NATIVE-23, on
+/// 0.9.0 PLX-NATIVE-1G): the closed domain of `playback.preview_refusal`. A preview takes only a
+/// plain direct play, and the resolve checks it in this fixed order, so the FIRST condition that
+/// fails is the one named:
+///
+/// 1. `no_part`: the item has no media part to play at all;
+/// 2. `not_direct`: a direct play was not on offer before Auto quality chose a delivery, so the
+///    route was going to be a transcode or a remux. That is the server's decision, but also a link
+///    or quality policy that denies direct play and a track the TV cannot play as it is; this
+///    domain does not tell those apart;
+/// 3. `adaptive`: a direct play WAS on offer, and Auto did not keep the Original. That is Auto's
+///    bandwidth probe finding the link too slow, the probe coming back inconclusive, or the link
+///    not being classified yet; this domain does not tell those apart.
+///
+/// A direct play that was on offer and that Auto kept, then lost to a later demotion (an
+/// enhancement's remux), is also named `not_direct`: the fall-through. A route that is still the
+/// direct play a preview takes is never refused, so this domain has no "none". It rides a report
+/// only when the failure kind is `preview_not_direct`; every value is a code of this enum and
+/// nothing the server said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewRefusal { NotDirect, NoPart, Adaptive }
+impl PreviewRefusal {
+    pub const ALL: [Self; 3] = [Self::NotDirect, Self::NoPart, Self::Adaptive];
+    pub const fn code(self) -> &'static str {
+        match self { Self::NotDirect => "not_direct", Self::NoPart => "no_part", Self::Adaptive => "adaptive" }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlaybackErrorContext {
     pub backend: ErrorBackendClass,
@@ -999,6 +1027,10 @@ pub struct PlaybackErrorContext {
     pub pipeline_error: i32,
     /// Only for a refusal the server made at `/decision` — see [`RefusalContext`].
     pub refusal: Option<RefusalContext>,
+    /// Which condition refused a trailer preview — see [`PreviewRefusal`]. `Some` only for a
+    /// session whose plan carried the preview verdict; the wire sends it only for the
+    /// `preview_not_direct` kind.
+    pub preview_refusal: Option<PreviewRefusal>,
 }
 
 /// The video codec, as a CLOSED domain.
@@ -1161,9 +1193,9 @@ pub enum FailureClass {
 }
 
 impl FailureClass {
-    /// Every class, so a test can hold the declared `playback.failed` domain to the enum it is
-    /// built from.
-    #[cfg(any(test, feature = "test-support"))]
+    /// Every class, in declaration order. The consent legend's failure-kind row is built from it
+    /// (every class reaches the handled report), and a test holds the declared `playback.failed`
+    /// domain to the enum it is built from.
     pub const ALL: [Self; 15] = [
         Self::DecisionRefused,
         Self::PlaybackPolicy,

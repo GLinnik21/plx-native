@@ -31,7 +31,7 @@ impl Drop for Reset {
 /// One server registered at a port nothing listens on, so a fetch that does start fails at once,
 /// and a controlled-home Bridge recording over it (`replay == false`: the launch runs and its
 /// answer is written down).
-fn recording_home() -> (Bridge, ServerId, &'static plx_plex::plex::Client) {
+fn recording_home() -> (crate::app::runtime_owners::Harness, ServerId, &'static plx_plex::plex::Client) {
     plx_plex::plex::reset_servers_for_test();
     let sid = plx_plex::plex::register_for_test("home-admission", "127.0.0.1", 9, "t", "cid");
     assert_eq!(sid.raw(), 0, "the first server registered is slot 0, which the recorded descriptors name");
@@ -39,12 +39,13 @@ fn recording_home() -> (Bridge, ServerId, &'static plx_plex::plex::Client) {
     let client = plx_plex::plex::client_for(sid).expect("registered");
     let mt = unsafe { plx_base::task::MainThread::assume() };
     let initial = super::super::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-    (Bridge::controlled_home(|| 0, &initial, &mt, false), sid, client)
+    let (runtime, retained) = super::super::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, false);
+    (crate::app::runtime_owners::Harness::from_parts(runtime, retained), sid, client)
 }
 
 /// One message to a store, as the central dispatcher delivers it.
 fn deliver(bridge: &mut Bridge, store: StoreId, msg: AppMsg) {
-    let parts = CxParts { tick: Tick::default(), press: Default::default(),
+    let parts = CxParts { modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(), tick: Tick::default(), press: Default::default(),
         focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
     let mut present = plx_machine::present::Present::default();
     let mut out = Vec::new();
@@ -61,7 +62,8 @@ fn deliver(bridge: &mut Bridge, store: StoreId, msg: AppMsg) {
 fn a_refetch_then_discovery_in_one_frame_record_hubs_then_discovery() {
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
-    let (mut bridge, _sid, client) = recording_home();
+    let (mut owner, _sid, client) = recording_home();
+    let mut bridge = owner.bridge();
 
     deliver(&mut bridge, StoreId::Hubs, AppMsg::Store(StoreCmd::Hubs(HubsCmd::RefetchHubs)));
     deliver(&mut bridge, StoreId::Browse, AppMsg::StoreWork(StoreWork::BrowseDiscovery));
@@ -88,7 +90,8 @@ fn a_refetch_then_discovery_in_one_frame_record_hubs_then_discovery() {
 fn a_sections_landing_then_discovery_records_the_counts_request() {
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
-    let (mut bridge, _sid, client) = recording_home();
+    let (mut owner, _sid, client) = recording_home();
+    let mut bridge = owner.bridge();
 
     deliver(&mut bridge, StoreId::Browse, AppMsg::StoreWork(StoreWork::BrowseDiscovery));
     let epoch = bridge.stores.browse.borrow().table_epoch_for_test();

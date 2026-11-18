@@ -16,7 +16,7 @@ pub mod order;
 
 use ledger::{Intent, PendingWrite, WriteOutcome};
 use model::{Asked, Kind, Reach, ServerMatch, WatchRow};
-use plx_plex::plex::account::AccountClient;
+
 use plx_plex::plex::session::{CurrentProfile, UserRef};
 use plx_plex::plex::watchlist::{WatchItem, WatchKind, WatchPage, WatchlistError, MAX_PAGE};
 use plx_plex::plex::{GuidKind, GuidLookupError, GuidMatch, ServerId, GUIDS_PER_REQUEST};
@@ -48,9 +48,11 @@ impl WatchlistAuth {
             && now.user.as_ref().is_some_and(|u| u.id == self.user.id && u.uuid == self.user.uuid)
     }
 
-    fn client(&self) -> AccountClient {
-        AccountClient::new(&self.client_id, Some(&self.credential))
+    pub fn matches_lease(&self, profile: &CurrentProfile, credential: Option<&str>) -> bool {
+        self.is_current(profile) && credential == Some(self.credential.as_str())
     }
+
+
 }
 
 /// **What the app reads from the session for the two plex.tv stores (docs/sans-io.md S5):** the
@@ -106,8 +108,8 @@ impl WatchlistInput {
     }
 }
 
-/// Everything a worker (and the store's frame pass) asks of the outside world. Production is
-/// [`LiveIo`]; tests script it. `Reach` carries the roster and the reachability facts.
+/// Worker transport plus captured facts. The job wrapper supplies `Reach`, generations and
+/// today from its request; the narrow live port or a script supplies transport responses.
 pub trait WatchlistIo: Reach + Send + Sync {
     /// One page of the list. `if_none_match` is the `ETag` of the last COMPLETE read, handed over
     /// for page 0 only; an answer of `Err(WatchlistError::NotModified)` is the service saying the
@@ -123,82 +125,13 @@ pub trait WatchlistIo: Reach + Send + Sync {
     fn facts_gen(&self) -> u32;
     /// Today as `YYYY-MM-DD` (UTC), the fallback "coming soon" test when the released list failed.
     fn today(&self) -> Option<String>;
-    /// WORKER THREAD. The `guid` of the item `rk` on `server`'s own record
-    /// (`client.metadata(rk).guid`): what a card row that carried no catalog id is resolved by
-    /// (`plex::resolve_catalog_hex`). `None` when the server did not answer (the caller then forgets the
-    /// attempt and asks again at the next menu; a guid that is not portable answers `Some`). The default answers
-    /// nothing, so a script that never resolves needs no line for it.
-    fn guid_of(&self, _server: ServerId, _rk: &str) -> Option<String> {
-        None
-    }
+
 }
 
-/// The production seam: libcurl through `plex::watchlist`, matching through the registered
-/// servers' clients, reachability from the probe results.
-pub struct LiveIo;
 
-impl Reach for LiveIo {
-    fn reachable(&self, server: ServerId) -> bool {
-        matches!(plx_plex::plex::server_probe_result(server), Some(plx_plex::plex::probe::Outcome::Reachable))
-    }
-    fn roster(&self) -> Vec<ServerId> {
-        plx_plex::plex::server_ids().collect()
-    }
-    fn copy_rank(&self, server: ServerId) -> u8 {
-        if plx_plex::plex::current_server() == server {
-            0
-        } else if plx_plex::plex::server_facts(server).is_some_and(|f| f.owned) {
-            1
-        } else {
-            2
-        }
-    }
-}
-
-impl WatchlistIo for LiveIo {
-    fn page(&self, auth: &WatchlistAuth, start: u32, size: u32, if_none_match: Option<&str>)
-        -> Result<WatchPage, WatchlistError>
-    {
-        let client = auth.client();
-        let mut transport = client.watchlist_transport();
-        let answer = client.watchlist_page(start, size, if_none_match, &mut transport);
-        answer
-    }
-    fn released(&self, auth: &WatchlistAuth) -> Result<Vec<WatchItem>, WatchlistError> {
-        let client = auth.client();
-        let mut transport = client.watchlist_transport();
-        let answer = client.watchlist_released(&mut transport);
-        answer
-    }
-    fn write(&self, auth: &WatchlistAuth, hex: &str, intent: Intent) -> Result<(), WatchlistError> {
-        let client = auth.client();
-        let mut transport = client.watchlist_transport();
-        let answer = match intent {
-            Intent::Add => client.watchlist_add(hex, &mut transport),
-            Intent::Remove => client.watchlist_remove(hex, &mut transport),
-        };
-        answer
-    }
-    fn find(&self, server: ServerId, kind: GuidKind, guids: &[String]) -> Result<Vec<GuidMatch>, GuidLookupError> {
-        plx_plex::plex::client_for(server).ok_or(GuidLookupError::Unanswered)?.find_by_guids(kind, guids)
-    }
-    fn roster_gen(&self) -> u32 {
-        plx_plex::plex::server_roster_gen()
-    }
-    fn facts_gen(&self) -> u32 {
-        plx_plex::plex::server_facts_gen()
-    }
-    fn guid_of(&self, server: ServerId, rk: &str) -> Option<String> {
-        plx_plex::plex::client_for(server)?.metadata(rk).map(|m| m.guid)
-    }
-    fn today(&self) -> Option<String> {
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-        Some(ymd_of_unix_days((secs / 86_400) as i64))
-    }
-}
 
 /// Civil date of a day count since 1970-01-01 (Howard Hinnant's algorithm).
-fn ymd_of_unix_days(days: i64) -> String {
+pub fn ymd_of_unix_days(days: i64) -> String {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
@@ -395,7 +328,8 @@ pub fn match_on(io: &dyn WatchlistIo, sid: ServerId, rows: &[(String, Kind)]) ->
 
 /// WORKER THREAD: read the list. Page 0, then the released set, then the remaining pages until
 /// the server's own end (`start` reaches `totalSize`, a short page, or an empty one); each page is
-/// matched against the servers before it is posted so a tile arrives with its state. Stops at the first page that fails. Always ends with [`What::ListDone`].
+/// matched against the servers before it is posted so a tile arrives with its state. Stops at
+/// the first page that fails; the owned stream worker owes the terminal completion.
 /// `known` is the guids already matched against every reachable server under roster generation
 /// `known.1`; they are skipped while the roster has not moved (a new roster is a full re-match).
 /// `etag` is the validator of the last complete read (`If-None-Match` on page 0 only): when the
@@ -457,7 +391,7 @@ pub fn run_list(
         }
         page_no += 1;
     }
-    post(Landed { tag, what: What::ListDone });
+
 }
 
 /// WORKER THREAD: the full re-match of `rows` after the roster moved.
@@ -499,6 +433,21 @@ mod tests {
         assert_eq!(ymd_of_unix_days(0), "1970-01-01");
         assert_eq!(ymd_of_unix_days(19_782), "2024-02-29");
         assert_eq!(ymd_of_unix_days(20_001), "2024-10-05");
+    }
+
+    #[test]
+    fn auth_lease_requires_the_same_profile_and_current_credential() {
+        let input = WatchlistInput::for_test(9);
+        let auth = input.auth().unwrap();
+        assert!(auth.matches_lease(input.profile(), Some("test-credential")));
+        assert!(!auth.matches_lease(input.profile(), Some("rotated-credential")));
+        assert!(!auth.matches_lease(input.profile(), None));
+        let other = WatchlistInput::profile_for_test(10);
+        assert!(!auth.matches_lease(&other, Some("test-credential")));
+        let mut user = input.profile().user.clone().unwrap();
+        user.uuid = "different".into();
+        let other = CurrentProfile { user: Some(user), generation: 9, stamp: String::new() };
+        assert!(!auth.matches_lease(&other, Some("test-credential")));
     }
 
     #[test]

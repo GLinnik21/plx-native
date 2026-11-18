@@ -40,6 +40,9 @@ impl Host for HostFixture {
     type Init = Arg;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for HostFixture {
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+}
 impl SearchLike for HostFixture {
     fn search<'a>(cx: &Cx<'a, Self>) -> SearchView<'a> { cx.views }
 }
@@ -64,6 +67,7 @@ struct Fixture {
     store: plx_data::stores::search::SearchStore,
     search: plx_data::stores::search::SearchSnapshot,
     measure: FixtureMeasure,
+    hold_hint: std::cell::Cell<plx_machine::machine::HoldHintRead>,
 }
 
 impl Fixture {
@@ -71,7 +75,7 @@ impl Fixture {
     fn new() -> Self {
         let store = plx_data::stores::search::SearchStore::default();
         let search = store.snapshot();
-        Self { store, search, measure: FixtureMeasure }
+        Self { store, search, measure: FixtureMeasure, hold_hint: Default::default() }
     }
     fn query(&mut self, q: &str) -> &mut Self {
         self.store.run(SearchCmd::SetQuery(q.into()));
@@ -88,7 +92,7 @@ impl Fixture {
     fn cx(&self, focus: Option<FocusKey<u32>>) -> Cx<'_, HostFixture> {
         Cx { views: self.search.view(), tick: Tick::default(), measure: &self.measure,
             focus: FocusRead { current: focus, ..Default::default() },
-            press: PressRead::default(), owner: OWNER }
+            press: PressRead::default(), owner: OWNER, modal: Default::default(), page_image: Default::default(), hold_hint: self.hold_hint.get() }
     }
     /// A mounted screen, its content fade already run out so a settled-motion assertion is about
     /// the springs rather than about the page arriving.
@@ -109,12 +113,21 @@ fn deliver(screen: &mut SearchScreen, fixture: &Fixture, focus: Option<FocusKey<
     let cx = fixture.cx(focus);
     let mut out = Vec::new();
     let mut present = Present::new();
-    present.take(0); // a fresh gate's own always-dirty first frame is not this event's damage
+    // Simulate the initial swap: admission alone must not retire its damage.
+    assert!(present.take(0));
+    present.acknowledge(0);
     let handled = {
         let mut fx = Effects::new(&mut out, MachineId::Instance(INSTANCE), &mut present);
         Machine::<HostFixture>::step(screen, &event, &cx, &mut fx)
     };
-    (handled, out, present.take(1))
+    let mut read = fixture.hold_hint.get();
+    for effect in &out {
+        if let Fx::HoldHint(event) = &effect.fx { read.apply(*event); }
+    }
+    fixture.hold_hint.set(read);
+    let asked = present.take(1);
+    if asked { present.acknowledge(1); }
+    (handled, out, asked)
 }
 
 /// One frame: the tick every screen owes, graded on whether it asked the gate for a present.
@@ -1033,7 +1046,7 @@ fn scroll_row(screen: &mut SearchScreen, fixture: &Fixture, row: usize, x: f32) 
 
 /// The pop of `elem` on result row `row`, as the row's shelf would draw it now.
 fn pop_of(screen: &SearchScreen, fixture: &Fixture, focus: Option<FocusKey<u32>>, row: usize, elem: u32) -> Option<f32> {
-    let src = screen.row_cards(fixture.search.view(), row)?;
+    let src = screen.row_cards(fixture.search.view(), row, crate::registry::captions::policy())?;
     shelf_of(screen, row).scale_of::<HostFixture, _>(&fixture.cx(focus), &src, &elem)
 }
 
@@ -1328,8 +1341,7 @@ mod characterization {
 #[test]
 fn the_hold_hint_does_not_stand_on_a_collection_hit() {
     let _serial = plx_base::testlock::serial();
-    plx_ui::hold_hint::reset_learned_for_test();
-    plx_ui::hold_hint::reset_shown_for_test();
+
     let mut fixture = Fixture::new();
     let hits = (0..5).map(|i| Item::Collection(plx_data::search::CollectionHit {
         item: plx_data::pms::PmsMovie { rk: format!("c-{i}"), title: format!("Collection {i}"),
@@ -1344,7 +1356,7 @@ fn the_hold_hint_does_not_stand_on_a_collection_hit() {
         deliver(&mut screen, &fixture, card, ScreenEvent::Tick(tick(at)));
     }
     assert!(!screen.stack.hint_visible(), "a hold on a collection hit opens its page, not a menu");
-    assert!(!plx_ui::hold_hint::shown_this_run(), "and nothing is spent");
+    assert!(!fixture.hold_hint.get().card, "and nothing is spent");
 }
 
 /// The hold hint (`ui::hold_hint`) on a result card: it stands after the dwell on a settled card,
@@ -1352,8 +1364,7 @@ fn the_hold_hint_does_not_stand_on_a_collection_hit() {
 #[test]
 fn the_hold_hint_stands_on_a_resting_result_card_once_per_install() {
     let _serial = plx_base::testlock::serial();
-    plx_ui::hold_hint::reset_learned_for_test();
-    plx_ui::hold_hint::reset_shown_for_test();
+
     let mut fixture = Fixture::new();
     fixture.query("hint").shelves(vec![shelf(Kind::Movie, "m", 8)]);
     let mut screen = fixture.screen();
@@ -1370,10 +1381,10 @@ fn the_hold_hint_stands_on_a_resting_result_card_once_per_install() {
     assert!(!screen.stack.hint_visible(), "not before the dwell");
     // negatives first: a stand spends the run's latch and would make them vacuous
     rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 4.0);
-    assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(), "never while a menu owns focus");
+    assert!(!screen.stack.hint_visible() && !fixture.hold_hint.get().card, "never while a menu owns focus");
     let field = Some(screen.key(FIELD));
     rest(&mut screen, field, 4.0);
-    assert!(!screen.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(), "never on the field");
+    assert!(!screen.stack.hint_visible() && !fixture.hold_hint.get().card, "never on the field");
     rest(&mut screen, card, 3.6);
     assert!(screen.stack.hint_visible(), "after the dwell, on a settled card");
     rest(&mut screen, Some(FocusKey { entry: EntryId(900), elem: 0 }), 1.0);
@@ -1589,7 +1600,7 @@ fn no_landing_on_a_search_row_ever_moves_the_card_under_the_focus() {
 #[test]
 fn a_slid_row_names_its_cards_by_listing_position() {
     let window = plx_data::search::Window { start: 12, before: true, after: true };
-    let slid = cards::RowCards { kind: Kind::Movie, elems: &[], items: &[], sources: &[], window, epoch: 1 };
+    let slid = cards::RowCards { policy: crate::registry::captions::policy(), kind: Kind::Movie, elems: &[], items: &[], sources: &[], window, epoch: 1 };
     assert_eq!(plx_ui::cards::CardSource::<HostFixture>::global(&slid, 11), 23);
     let opening = cards::RowCards { window: Default::default(), ..slid };
     assert_eq!(plx_ui::cards::CardSource::<HostFixture>::global(&opening, 11), 11);
@@ -1615,7 +1626,7 @@ fn a_poster_result_is_worded_by_the_under_posters_builder() {
     }];
     let label_of = |kind, item: Item, sources: &[ScopeSource]| {
         let items = [item];
-        let cards = cards::RowCards { kind, elems: &[7], items: &items, sources, window: Default::default(), epoch: 0 };
+        let cards = cards::RowCards { policy: crate::registry::captions::policy(), kind, elems: &[7], items: &items, sources, window: Default::default(), epoch: 0 };
         plx_ui::cards::CardSource::<HostFixture>::label(&cards, 0)
     };
     let heat = || Item::Media(PmsMovie { title: "Heat".into(), year: 1995, genre: Some("Crime".into()), ..Default::default() });

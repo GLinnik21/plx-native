@@ -33,20 +33,20 @@ fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
     plx_plex::plex::reset_servers_for_test();
     let sid = plx_plex::plex::register_for_test("freeze-own", "127.0.0.1", 9, "synthetic", "fixture");
     plx_plex::plex::set_current(sid);
-    let base = plx_ui::popover::host_users_for_test();
-    let users = || plx_ui::popover::host_users_for_test() - base;
+    let users = |d: &Dispatcher<AppHost>| u32::from(d.modal_presentation().read.host_cached);
 
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
     rig.refresh_browse_directory();
     rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
     rig.stores.browse.borrow_mut().seed_items_for_test(120);
     frame(&mut d, &mut rig, AppArg::Library, tick(0), vec![]);
-    assert_eq!(users(), 0, "a bare library page freezes nothing");
+    assert_eq!(users(&d), 0, "a bare library page freezes nothing");
     let page = d.nav.top_page().unwrap().id;
     let host = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
-    let listing = rig.listing.view().id().unwrap();
+    let listing = rig.retained.listing.view().id().unwrap();
     d.nav.next_style = plx_ui::containers::modal::Style::Compact;
     d.request(
         MachineId::Nav,
@@ -78,7 +78,7 @@ fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
         .id;
     assert_ne!(menu, page, "the menu is its own entry");
     assert_eq!(
-        users(),
+        users(&d),
         1,
         "an open Compact menu holds the one host snapshot its style's HostRender::Cached promises"
     );
@@ -91,7 +91,7 @@ fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
         d.nav.modals.surfaces.is_empty(),
         "the menu finished fading out"
     );
-    assert_eq!(users(), 0, "and gave the page back to the live path");
+    assert_eq!(users(&d), 0, "and gave the page back to the live path");
 }
 
 /// **A page that MOVES under an open panel is the HOST moving** (spec §4.4, §15.1) — the sibling
@@ -131,7 +131,8 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
     let sid = plx_plex::plex::register_for_test("motion-own", "127.0.0.1", 9, "synthetic", "fixture");
     plx_plex::plex::set_current(sid);
     let mut d = Dispatcher::<AppHost>::new();
-    let mut rig = Bridge::for_test(|| 0);
+    let mut owner = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = owner.bridge();
     rig.stores.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
     rig.refresh_browse_directory();
     rig.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
@@ -144,7 +145,7 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     let host = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
-    let listing = rig.listing.view().id().unwrap();
+    let listing = rig.retained.listing.view().id().unwrap();
     d.nav.next_style = plx_ui::containers::modal::Style::Compact;
     d.request(
         MachineId::Nav,
@@ -168,9 +169,9 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
 
     // a settled panel over a settled page: nothing moves, and in particular the panel's own
     // appear spring (`ModalStack::tick`, now in a scope of its own) is not the page's motion
-    plx_machine::idle::frame_begin(1.0 / 60.0);
+    plx_machine::motion::report::frame_begin(1.0 / 60.0);
     frame(&mut d, &mut rig, AppArg::Library, tick(120), vec![]);
-    assert!(!plx_machine::idle::page_moving(), "a settled host does not move");
+    assert!(!plx_machine::motion::report::page_moving(), "a settled host does not move");
 
     // dismiss: input returns to the page while the panel is still visible, and the page is driven
     d.request(MachineId::Nav, NavOp::Dismiss(menu));
@@ -178,12 +179,12 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
     Bridge::library_command(&mut d, plx_screens::registry::LibraryCmd::FocusGrid { row: 0, col: 0 });
     let mut moved = 0;
     for i in 122..136u32 {
-        plx_machine::idle::frame_begin(1.0 / 60.0);
+        plx_machine::motion::report::frame_begin(1.0 / 60.0);
         let (_, report) = frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
         // The panel's own close MORPH is motion too (S11: the menu runs back into its control), in
         // the panel's scope; it is not the page's. A frame counts here when the page's own spring
         // moved, and the attribution bug this pins shows as that never happening.
-        if !plx_machine::idle::page_moving() {
+        if !plx_machine::motion::report::page_moving() {
             continue;
         }
         moved += 1;
@@ -194,7 +195,7 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
             report.underlay_moving
         );
         assert!(
-            plx_ui::popover::host_refresh(true, false, plx_machine::idle::page_moving()),
+            plx_ui::popover::host_refresh(true, false, plx_machine::motion::report::page_moving()),
             "frame {i}: …so the fading panel's frozen snapshot is re-taken"
         );
     }

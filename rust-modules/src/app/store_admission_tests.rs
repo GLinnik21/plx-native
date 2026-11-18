@@ -65,7 +65,8 @@ fn a_collection_opened_by_rating_key_admits_its_header_read_once() {
     let _reset = Reset;
     let sid = recording();
     let client = plx_plex::plex::client_for(sid).expect("registered").instance_gen();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
 
     open(&mut bridge, sid, "50001", 1, 7);
     pump_once(&mut bridge);
@@ -85,7 +86,8 @@ fn a_collection_opened_by_tag_admits_its_tag_resolution_once() {
     let _reset = Reset;
     let sid = recording();
     let client = plx_plex::plex::client_for(sid).expect("registered").instance_gen();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
 
     open(&mut bridge, sid, "", 4, 77);
     pump_once(&mut bridge);
@@ -104,7 +106,8 @@ fn a_collection_for_an_unregistered_server_admits_nothing_and_reads_failed() {
     let _serial = plx_base::testlock::serial();
     let _reset = Reset;
     let _ = recording();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
 
     open(&mut bridge, ServerId::UNSET, "50001", 1, 7);
     pump_once(&mut bridge);
@@ -127,7 +130,8 @@ fn a_frame_with_a_person_and_a_collection_admits_the_person_first() {
     let sid = recording();
     assert_eq!(sid.raw(), 0, "the first server registered is slot 0, which the person slots below name");
     let client = plx_plex::plex::client_for(sid).expect("registered").instance_gen();
-    let mut bridge = Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
 
     assert!(bridge.person_run(PersonCmd::Open { sid, key: "19".into(), guid: "sf06c144a".into(),
         name: "Actor".into(), thumb: String::new() }));

@@ -5,8 +5,8 @@
 //! page. Structural ops arrive as `NavOp`s at NAV COMMIT and come back out as [`Life`] steps the
 //! dispatcher executes; the container never calls a screen.
 //!
-//! Under `ui/containers/` rather than the spec's `ui/nav/` because `ui/nav.rs` is the LEGACY page
-//! transition and lives until phase 12; the directory takes that name when the file goes.
+//! Navigation presentation is derived from this tree and passed explicitly as
+//! `screen::NavPresentation`; there is no global navigation publication.
 #![allow(dead_code)] // phase 3b: the tree was a shadow of the loop's route; screens arrive from 5b
 
 pub mod modal;
@@ -189,8 +189,14 @@ impl<H: Host> Navigation<H> {
 
     /// The input owner (§2.2): the shared modal stack first, then the top page.
     pub fn input_owner(&self) -> Option<InputOwner> {
+        self.input_owner_unless(|_| false)
+    }
+
+    /// [`input_owner`](Self::input_owner) with every surface `dismissed` names counted as already
+    /// closed: who holds input once those dismissals commit. Page ops are never read.
+    pub fn input_owner_unless(&self, dismissed: impl Fn(EntryId) -> bool) -> Option<InputOwner> {
         self.modals
-            .input_owner()
+            .input_owner_unless(dismissed)
             .or_else(|| self.top_page().map(|e| InputOwner::Entry(e.id)))
     }
 

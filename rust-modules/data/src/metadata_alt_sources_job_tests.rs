@@ -9,7 +9,7 @@ fn roster() -> (ServerId, ServerId, ClientKeys) {
     plx_plex::plex::reset_servers_for_test();
     let a = plx_plex::plex::register_for_test("m4-a", "127.0.0.1", 9, "a", "cid");
     let b = plx_plex::plex::register_for_test("m4-b", "127.0.0.1", 9, "b", "cid");
-    (a, b, ClientKeys::of([a, b].map(|s| (s, plx_plex::plex::client_for(s).unwrap()))))
+    (a, b, crate::pms::registry_keys_for_test())
 }
 fn ask(state: &mut MetadataState, adapter: &Arc<MetadataAdapter>, sid: ServerId, keys: &ClientKeys)
     -> (plx_machine::machine::Addr, MetaAltSourcesReq, MetaAltSourcesPort) {
@@ -30,7 +30,7 @@ fn exact_job_addr_whole_snapshot_and_origin_inclusive_roster_start_nothing() {
     let _serial = plx_base::testlock::serial();
     let (a, b, mut keys) = roster();
     let extra = ServerId::from_raw(999);
-    keys.refill(keys.clone().iter().chain([(extra, plx_plex::plex::ClientKey { instance: 7, token: 8, grant: 9 })]));
+    keys.replace_keys_for_test(keys.clone().iter().chain([(extra, plx_plex::plex::ClientKey { instance: 7, token: 8, grant: 9 })]));
     let mut state = MetadataState::default();
     let adapter = Arc::new(MetadataAdapter::default());
     let (addr, req, port) = ask(&mut state, &adapter, a, &keys);
@@ -57,6 +57,7 @@ fn no_guid_or_one_roster_slot_settles_without_a_job() {
     assert_eq!(adapter.alt_done.load(Ordering::SeqCst), 1);
     plx_plex::plex::reset_servers_for_test();
     let a = plx_plex::plex::register_for_test("one", "127.0.0.1", 9, "a", "cid");
+    let keys = crate::pms::registry_keys_for_test();
     request_alt_sources(&mut state, &adapter, a, "x", "guid", &keys);
     assert!(state.jobs.is_empty());
     assert_eq!(adapter.alt_done.load(Ordering::SeqCst), 2);
@@ -188,6 +189,7 @@ fn ready_real_result_wins_registration_in_the_same_pass_and_next_pass_sees_new_r
     assert_eq!(adapter.alt_gen.load(Ordering::SeqCst), addr.req.0, "no invalidation between begin/finish");
     assert_eq!(state.alt.copies[0].rk, "real", "real replaces stand-in in SAME pass");
     assert!(!state.alt.stand_in);
+    let keys = crate::pms::registry_keys_for_test();
     begin_alt_sources(&mut state, &adapter, &keys, false).finish(None, plx_machine::landgate::fixture_gate());
     assert!(adapter.alt_gen.load(Ordering::SeqCst) > addr.req.0, "NEXT pass observes registration");
 }
@@ -284,6 +286,7 @@ fn reset_rotates_alt_identity_and_a_retired_completion_cannot_reach_the_same_ite
     assert!(!alt_sources_owed_for_test(store.adapter_ref()));
     assert!(!alt_sources_ready_for_test(store.adapter_ref()));
     let mut witness = MetadataState::default();
+    witness.alt.clients.clone_from(&keys);
     assert!(pump_alt_sources(&mut witness, &old, &keys, true, None));
     assert_eq!(alt_copies(&witness, sid, "item")[0].rk, "retired");
     assert!(!alt_sources_owed_for_test(&old));

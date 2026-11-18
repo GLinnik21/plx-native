@@ -6,15 +6,17 @@ fn frame(rig: &mut Bridge, d: &mut Dispatcher<AppHost>) {
     rig.settle_session_io_for_test(d);
 }
 
-fn dev_fixture() -> Bridge {
+fn dev_fixture() -> crate::app::runtime_owners::Harness {
     let saved = plx_plex::plex::session::Session { client_id: "synthetic-device".into(),
         account_token: "synthetic-saved-a".into(), ..Default::default() };
     let dev = plx_plex::plex::session::ServerRef { address: "127.0.0.2".into(), port: 32400,
         token: "synthetic-dev-b".into(), ..Default::default() };
-    let mut rig = Bridge::for_session_test(super::super::boot::captured_session_for_boot(saved.clone(), Some(dev), Vec::new()));
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(super::super::boot::captured_session_for_boot(saved.clone(), Some(dev), Vec::new()));
+    let mut owner = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let rig = owner.bridge();
     // Explicit resource baseline is the actual saved A, not sanitized in-memory auth input.
     rig.session_adapter.fixture_resources().disk = saved;
-    rig
+    owner
 }
 
 #[test]
@@ -25,7 +27,8 @@ fn dev_revoke_resource_completes_before_carried_ack_and_stale_ack_after_erase_is
     // Cut the normal dispatcher budget at each nearby step; require the precise post-resource,
     // pre-ACK cut, not merely the earlier carried-effect case. No dispatcher seam is changed.
     for remaining in 1..16 {
-        let mut rig = dev_fixture();
+        let mut harness = dev_fixture();
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         let ran = Arc::new(AtomicUsize::new(0));
         let signal = Arc::clone(&ran);
@@ -69,10 +72,12 @@ fn dev_revoke_resource_completes_before_carried_ack_and_stale_ack_after_erase_is
 #[test]
 fn dev_login_preflights_both_request_slots_and_coalesces_pending_intent() {
     for (epoch, next_req) in [(u64::MAX, 0), (1, u32::MAX - 1), (1, u32::MAX)] {
-        let mut init = dev_fixture().session.snapshot_init();
+        let mut init = dev_fixture().bridge().session.snapshot_init();
         init.epoch = epoch;
         init.next_req = next_req;
-        let mut rig = Bridge::for_session_test(init);
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
         let before = rig.session.subhash();
         let mut d = Dispatcher::<AppHost>::new();
         execute_session_command(&mut d, plx_session::auth::SessionCmd::StartLogin);
@@ -80,7 +85,8 @@ fn dev_login_preflights_both_request_slots_and_coalesces_pending_intent() {
         assert_eq!(rig.session.subhash(), before);
         assert!(rig.session_adapter.fixture_resources().registry_writes.is_empty());
     }
-    let mut rig = dev_fixture();
+    let mut harness = dev_fixture();
+    let mut rig = harness.bridge();
     let mut d = Dispatcher::<AppHost>::new();
     execute_session_command(&mut d, plx_session::auth::SessionCmd::StartLogin);
     execute_session_command(&mut d, plx_session::auth::SessionCmd::StartLogin);
@@ -98,7 +104,8 @@ fn dev_erase_and_signout_retire_pending_boundaries_without_reinstalling_grants()
     use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
     for sign_out in [false, true] {
         for boundary in 0..3 {
-            let mut rig = dev_fixture();
+            let mut harness = dev_fixture();
+            let mut rig = harness.bridge();
             let mut d = Dispatcher::<AppHost>::new();
             let ran = Arc::new(AtomicUsize::new(0));
             if sign_out {
@@ -146,14 +153,15 @@ fn dev_erase_and_signout_retire_pending_boundaries_without_reinstalling_grants()
 fn carried_dev_ready_is_not_handed_off_after_erase() {
     let mut witnessed = false;
     for remaining in 1..16 {
-        let mut rig = dev_fixture();
+        let mut harness = dev_fixture();
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         for _ in 0..plx_ui::dispatch::MAX_STEPS_PRE + plx_ui::dispatch::MAX_STEPS_POST - remaining {
             execute_session_command(&mut d, plx_session::auth::SessionCmd::NoteDeleteLeftovers(0));
         }
         execute_session_command(&mut d, plx_session::auth::SessionCmd::ActivateDevBootstrap);
         frame(&mut rig, &mut d);
-        if rig.auth_read().0.phase != plx_session::auth::Phase::Ready || rig.session_ready.is_some() { continue; }
+        if rig.auth_read().0.phase != plx_session::auth::Phase::Ready || rig.retained.session_ready.is_some() { continue; }
         witnessed = true;
         execute_session_command(&mut d, plx_session::auth::SessionCmd::EraseLocal);
         frame(&mut rig, &mut d);
@@ -177,7 +185,9 @@ fn mounted_login_try_again_recovers_dev_boundary_errors_through_revoke_ack() {
             account_token: "synthetic-saved-a".into(), ..Default::default() };
         let dev = ServerRef { address: "127.0.0.2".into(), port: 32400,
             token: "synthetic-dev-b".into(), ..Default::default() };
-        let mut rig = Bridge::for_session_test(super::super::boot::captured_session_for_boot(saved, Some(dev), Vec::new()));
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(super::super::boot::captured_session_for_boot(saved, Some(dev), Vec::new()));
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
         let mut d = Dispatcher::<AppHost>::new();
         for attempt in 0..failures {
             let state = rig.session.snapshot_init();
@@ -230,9 +240,11 @@ fn dev_retry_is_inert_outside_error_and_restart_wait_remains_account_only() {
     use plx_session::auth::{Phase, SessionCmd};
     use plx_session::auth::owner::ReplyTo;
     for phase in [Phase::Idle, Phase::Creating, Phase::Ready, Phase::Error] {
-        let mut init = dev_fixture().session.snapshot_init();
+        let mut init = dev_fixture().bridge().session.snapshot_init();
         init.phase = phase;
-        let mut rig = Bridge::for_session_test(init);
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
         rig.session_adapter.fixture_resources().disk.account_token = "synthetic-saved-a".into();
         let before = rig.session.subhash();
         let mut d = Dispatcher::<AppHost>::new();
@@ -293,8 +305,10 @@ fn dev_native_activation_is_ephemeral_and_revoke_ack_precedes_clean_login_work()
             token: "synthetic-extra-token".into(), shared_by: "Synthetic owner".into(), owned: false,
             tier: Some(plx_plex::plex::probe::Location::Remote), ..Default::default() };
         let init = super::super::boot::captured_session_for_boot(saved, Some(primary), vec![extra.clone()]);
-        let mut rig = Bridge::for_session_test(init);
-        rig.session_adapter = super::super::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
+        *rig.session_adapter = super::super::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
         let mut d = Dispatcher::<AppHost>::new();
         execute_session_command(&mut d, plx_session::auth::SessionCmd::ActivateDevBootstrap);
         assert_eq!(plx_plex::plex::server_ids().count(), 0);
@@ -364,7 +378,9 @@ fn dev_boot_capture_cannot_keep_saved_account_as_worker_authority() {
         origin_url: "http://127.0.0.2:32400".into(), token: "synthetic-pms-b".into(), ..Default::default() };
     // This is the same capture function actual boot uses before creating its sole Bridge.
     let init = super::super::boot::captured_session_for_boot(saved, Some(dev), Vec::new());
-    let rig = Bridge::for_session_test(init);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(init);
+    let mut owner = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let rig = owner.bridge();
     let state = rig.session.snapshot_init();
     assert!(state.persisted.account_token.is_empty(), "dev B must not inherit saved A's worker authority");
     assert!(state.persisted.user.token.is_empty());
@@ -386,8 +402,10 @@ fn clean_login_replacement_checks_disk_identity_and_keeps_best_effort_ack_contra
         session::save(&saved);
         let dev = ServerRef { address: "127.0.0.2".into(), port: 32400,
             token: "synthetic-pms-b".into(), ..Default::default() };
-        let mut rig = Bridge::for_session_test(super::super::boot::captured_session_for_boot(saved, Some(dev), Vec::new()));
-        rig.session_adapter = super::super::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(super::super::boot::captured_session_for_boot(saved, Some(dev), Vec::new()));
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut rig = harness.bridge();
+        *rig.session_adapter = super::super::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
         let mut d = Dispatcher::<AppHost>::new();
         // StartLogin also works before dev activation: it must still revoke before account work.
         rig.session_adapter.inject_fixture_work(2, |output, _| {

@@ -41,10 +41,9 @@
 //! The explicit `ServerId::UNSET` namespace is credential-free public content, not a Plex slot. Its HTTPS PNG filename
 //! names its SHA-256, checked on every disk hit and network response; it uses the same workers and cache without PMS IO.
 //!
-//! The server is a FIELD on the slot, not a prefix on the key, deliberately: keys already run
-//! ~140 bytes (an ordinary relative thumb) to ~177 (an absolute headshot — see [`built_key`])
-//! into a fixed [`PT_KEYLEN`]-byte array (see [`Pslot::key`]), and a `u16` compare is also the
-//! cheaper half of the per-frame identity scan, so it goes first.
+//! The server is a FIELD on the slot, not a prefix on the key, deliberately: a `u16` compare is
+//! the cheaper half of the per-frame identity scan, so it goes first, and the key stays exactly
+//! the request path the worker sends.
 mod baked;
 mod card;
 mod cover;
@@ -102,32 +101,16 @@ fn note_backlog(slots: &[Pslot; PT_CAP]) -> usize {
     bytes
 }
 
-/// Bytes a slot's key array holds, NUL included — see [`Pslot::key`] for the cliff at the end of
-/// it, and [`KEY_MAX`] for the gate that keeps requests off it.
-const PT_KEYLEN: usize = 256;
-/// The longest built path that survives the round trip into a slot intact. Derived from
-/// [`PT_KEYLEN`] rather than written as a literal, so the gate cannot drift from the array it
-/// gates.
-const KEY_MAX: usize = PT_KEYLEN - 1;
-
-/// Can this key ever resolve to a picture? The store's ONE precondition, and it lives here for the
-/// same reason [`victim`] and [`idle_of`] were split out: it was duplicated across the entry
-/// points, none of those copies could be tested (reaching them drags in `gfx::delete_tex`, which
-/// no host test binary links), and the array it protects belongs to [`lookup`], not to whoever
-/// built the string.
+/// Can this key ever resolve to a picture? The store's ONE precondition, kept beside [`lookup`]
+/// so it is host-testable on its own. An empty key means no request could be built: an unknown
+/// server, or an item the server gave no art for (see [`poster_key`]). No slot is claimed, and the
+/// tile draws its skeleton.
 ///
-/// **Empty** means no request could be built — an unknown server, or an item the server gave no
-/// art for (see [`poster_key`]).
-///
-/// **Longer than [`KEY_MAX`]** means [`set_key`] would TRUNCATE it, after which the stored key can
-/// never equal the probe that built it: every frame misses, claims a fresh slot and evicts a real
-/// poster — the whole store thrashing over one tile. `poster_key` refuses to hand such a path out,
-/// but it is not the only thing that can reach `lookup` (the three entry points take a raw
-/// `*const c_char`), so the check that matters is the one at the array.
-///
-/// Either way the answer is the same: no slot is claimed, and the tile draws its skeleton.
+/// Length is no part of it. A slot keeps its key whole ([`Pslot::key`]), so a request path of any
+/// length is stored intact and found again by the probe that built it (#1408: a Live TV channel
+/// logo built into a 326-byte path never loaded while the slot was a fixed 256-byte array).
 fn is_fetchable(key: &str) -> bool {
-    !key.is_empty() && key.len() <= KEY_MAX
+    !key.is_empty()
 }
 const P_EMPTY: c_int = 0;
 const P_WANT: c_int = 1;
@@ -169,16 +152,14 @@ enum Touch {
 // `Warm` — what a prefetch did — is the library's `ui::tex::Warm` now (re-exported through
 // the `use` above): the prefetch loops in `ui/` read it without naming this module.
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Pslot {
-    // Full /photo/:/transcode request path = store key. NB set_key TRUNCATES to KEY_MAX bytes +
-    // NUL: a key at/over PT_KEYLEN would never match its probe again (the text.rs glyph cache had
-    // this exact bug at 96 — fixed with klen there), so every frame would miss, claim a fresh slot
-    // and evict a real poster — the whole store thrashing over one tile. `poster_key` now REFUSES
-    // to hand out a path this cannot hold (see [`KEY_MAX`]), which turns that into one skeleton
-    // tile; if the shape ever routinely needs more room, key this the klen way instead of raising
-    // the number.
-    key: [u8; PT_KEYLEN],
+    /// The full built request path (or synthetic baked key) = store key, held WHOLE. A
+    /// fixed-size array here once capped reachable art at 255 bytes (#1408): a longer key would
+    /// have been truncated and never matched its probe again, so it was refused instead, and an
+    /// external logo URL wrapped in a resizer link stayed a skeleton. A `String` has no such
+    /// ceiling; [`set_key`] reuses its capacity, so a warm store claims without allocating.
+    key: String,
     /// Which server this art was asked of — the OTHER half of the slot's identity, and what the
     /// worker dials. Two servers can hand out the same `/photo/:/transcode?url=/library/metadata/
     /// 42/thumb/…` path (their rating keys are both server-local integers from 1), so a key alone
@@ -237,7 +218,7 @@ struct Pslot {
 }
 impl Pslot {
     const ZERO: Pslot = Pslot {
-        key: [0; PT_KEYLEN],
+        key: String::new(),
         srv: ServerId::UNSET,
         pw: 0,
         ph: 0,
@@ -370,18 +351,16 @@ fn evict_wake_due(s: &Pslot, now: u32) -> bool {
     s.state == P_EVICTED && s.evict_cooldown_until.is_some_and(|t| now.wrapping_sub(t) < u32::MAX / 2)
 }
 
-/// Wake the present gate once a scheduled retry's main-thread deadline arrives. The loop calls this
-/// even while a settled screen skips draws; the draw it requests is what probes the slot again and
-/// moves it back to `P_WANT`.
-fn invalidate_due_retries(slots: &mut [Pslot; PT_CAP], now: u32) {
+/// Return a typed deadline result once per scheduled retry batch. The runner consumes it
+/// through its owned present gate even while a settled screen skips draws; the admitted draw
+/// probes the slot again and moves it back to `P_WANT`.
+fn invalidate_due_retries(slots: &mut [Pslot; PT_CAP], now: u32) -> Option<ResourceOutcome> {
     let mut due = false;
     for s in slots.iter_mut().filter(|s| !s.retry_wake_sent && retry_due(s, now)) {
         s.retry_wake_sent = true; // latch the whole batch; one frame probes every visible slot
         due = true;
     }
-    if due {
-        plx_machine::idle::invalidate();
-    }
+    due.then_some(ResourceOutcome::RetryDue)
 }
 
 /// The eviction-cooldown twin of [`invalidate_due_retries`], and the fix for the gap the
@@ -392,24 +371,22 @@ fn invalidate_due_retries(slots: &mut [Pslot; PT_CAP], now: u32) {
 /// draws would invalidate every loop iteration forever, undoing the idle behaviour the app depends
 /// on. The wake only ever asks for one present; it does not itself re-arm anything — re-arming
 /// stays Draw-only, through `lookup`'s P_EVICTED branch, exactly as before.
-fn invalidate_due_evictions(slots: &mut [Pslot; PT_CAP], now: u32) {
+fn invalidate_due_evictions(slots: &mut [Pslot; PT_CAP], now: u32) -> Option<ResourceOutcome> {
     let mut due = false;
     for s in slots.iter_mut().filter(|s| !s.evict_wake_sent && evict_wake_due(s, now)) {
         s.evict_wake_sent = true;
         due = true;
     }
-    if due {
-        plx_machine::idle::invalidate();
-    }
+    due.then_some(ResourceOutcome::EvictionDue)
 }
 
 /// Park one transient result and request the draw that assigns its main-thread deadline.
-fn park_retry(s: &mut Pslot) {
+fn park_retry(s: &mut Pslot) -> ResourceOutcome {
     s.attempts = s.attempts.saturating_add(1);
     s.retry_at = None;
     s.retry_wake_sent = false;
     s.state = P_RETRY;
-    plx_machine::idle::invalidate();
+    ResourceOutcome::RetryParked
 }
 
 /// Does a failed fetch's outcome deserve another try? Transport failure and the statuses whose
@@ -457,8 +434,20 @@ fn sans_token(key: &[u8]) -> &[u8] {
     }
 }
 
+/// Actual resource/admission results, consumed by the runner's owned present gate.
+/// No worker publishes presentation provenance; deadlines remain main-thread observations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResourceOutcome {
+    AdmissionRefused,
+    RetryParked,
+    RetryDue,
+    EvictionDue,
+    LoadFailed,
+}
+
 struct Store {
     slots: [Pslot; PT_CAP],
+    results: Vec<ResourceOutcome>,
     clock: c_uint,
     frame: c_uint,
     quit: bool,
@@ -468,6 +457,7 @@ impl Store {
     const fn new() -> Store {
         Store {
             slots: [Pslot::ZERO; PT_CAP],
+            results: Vec::new(),
             clock: 0,
             frame: 0,
             quit: false,
@@ -509,10 +499,13 @@ fn store() -> MutexGuard<'static, Store> {
 }
 
 fn key_bytes(s: &Pslot) -> &[u8] {
-    plx_base::cbuf::as_bytes(&s.key)
+    s.key.as_bytes()
 }
+/// Store `key` whole. The slot's `String` keeps its capacity across recycles, so a store that has
+/// warmed up claims a slot without allocating unless a key is longer than any before it in that slot.
 fn set_key(s: &mut Pslot, key: &str) {
-    plx_base::cbuf::set_bytes(&mut s.key, key);
+    s.key.clear();
+    s.key.push_str(key);
 }
 
 // (server, path, w, h, png) → built transcode path, memoised. resolve_tex_wh_on re-derives the key for
@@ -625,15 +618,9 @@ pub(crate) fn resident_art_survives_for_test(sid: ServerId, change: impl FnOnce(
 }
 
 /// The built request path for `(srv, path, w, h, png)` — the store key — memoised. `None` for an
-/// unknown server, an empty path, or a path the slot array cannot hold ([`KEY_MAX`]: a path that
-/// cannot survive the round trip is worse than no path, since the stored key would never equal
-/// the probe that built it and every frame would claim a fresh slot and evict a real poster).
-/// The calling thread's own memo ([`KEY_MEMO`]); the key comes back as a reference count, so the
-/// memo is not borrowed once this returns.
-///
-/// Headroom today, worth stating so a future shape can be judged against it: a headshot key
-/// measures ~177 bytes of the 255 (54 fixed + 89 encoded URL + 34 of token), an ordinary relative
-/// thumb ~140.
+/// unknown server or an empty path. The calling thread's own memo ([`KEY_MEMO`]); the key comes
+/// back as a reference count, so the memo is not borrowed once this returns. There is no length
+/// bound: a slot holds its key whole ([`Pslot::key`]).
 fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option<Rc<str>> {
     if path.is_empty() {
         return None;
@@ -667,10 +654,6 @@ fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option
             transcode_request(c, path, w, h, png)
         })
     });
-    if s.len() > KEY_MAX {
-        warn_key_refused(s.len());
-        return None;
-    }
     Some(s)
 }
 
@@ -701,22 +684,6 @@ fn content_png(url: &str) -> Option<plx_data::hudpacks::Sha> {
 fn transcode_request(c: &plx_plex::plex::Client, path: &str, w: c_int, h: c_int, png: bool) -> String {
     let n = plx_base::surface::render_scale() as i64;
     c.image_transcode_path(path, w as i64 * n, h as i64 * n, png)
-}
-
-/// A refused key logs ONCE per process, with both ceilings and the length that missed them.
-///
-/// The latch is the whole design. This is a per-tile, per-frame path and the memo means a refusal
-/// REPEATS every frame, so an unlatched log would bury `/tmp/plxnative-events.log` — but silence
-/// is the failure `paths.rs` was fixed for (a font fell through to DroidSans while `init_text`
-/// still logged `ok=1`), and a silent refusal here is a tile that is a skeleton forever with
-/// nothing in the one file an issue report is asked for. Once is enough to name the cause.
-fn warn_key_refused(len: usize) {
-    static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if !LOGGED.swap(true, Ordering::Relaxed) {
-        plx_base::eventlog::log(&format!(
-            "posters: REFUSED art key of {len} bytes (slot holds {KEY_MAX}) - tile stays a skeleton"
-        ));
-    }
 }
 
 /// Process-wide counts of the two halves of issue #107's fix: a `P_READY` slot the render cache
@@ -767,10 +734,10 @@ fn interval_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bo
 /// followed by a working re-arm. Those are two different failures a screenshot cannot tell apart,
 /// and this line is what lets a future field report on #107 tell them apart after the fact.
 ///
-/// Throttled for the reason [`warn_key_refused`] gives for its own latch: `unresident` and the
+/// Throttled because `unresident` and the
 /// re-arm branch are both per-tile, per-frame paths, and a fast scroll evicts dozens of keys a
-/// second, so a line per transition would bury `/tmp/plxnative-events.log`. Unlike that latch this
-/// does not go silent after one line — a long session should keep producing fresh readings — so it
+/// second, so a line per transition would bury `/tmp/plxnative-events.log`. It does not go silent
+/// after one line — a long session should keep producing fresh readings — so it
 /// is a minimum-interval throttle (about one second, monotonic so a skewed wall clock never lies
 /// about it) rather than a one-shot. The first call in a process is let through unthrottled, so a
 /// short session still leaves evidence.
@@ -1123,8 +1090,8 @@ type Hit = Option<PosterKey>;
 /// outside that scope remain eligible.
 /// A refusal claims no source slot; a follow-up present samples placement again.
 fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
-    // The array's own precondition, checked before a slot can be claimed for a key that could
-    // never match its probe again. `Warm::Known` (not `Full`) so a prefetch loop walks on to the
+    // An empty key names no request (an unknown server, or no art), so it claims no slot.
+    // `Warm::Known` (not `Full`) so a prefetch loop walks on to the
     // next candidate instead of retiring this frame's one warm here.
     if !is_fetchable(key_s) {
         return (None, Warm::Known);
@@ -1187,7 +1154,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     g.slots[i].retry_wake_sent = false;
                 } else if retry_due(&g.slots[i], now) {
                     if decline {
-                        plx_ui::card_motion::deferred();
+                        g.results.push(ResourceOutcome::AdmissionRefused);
                         #[cfg(feature = "devtriggers")]
                         plx_ui::card_motion_metrics::refused(plx_ui::card_motion_metrics::Refused::Retry);
                         trace::outcome("declined_retry");
@@ -1237,7 +1204,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     return (None, Warm::Known);
                 }
                 if decline {
-                    plx_ui::card_motion::deferred();
+                    g.results.push(ResourceOutcome::AdmissionRefused);
                     #[cfg(feature = "devtriggers")]
                     plx_ui::card_motion_metrics::refused(plx_ui::card_motion_metrics::Refused::Evicted);
                     // The same deferral the cooldown just made, for the same reason: the slot
@@ -1329,7 +1296,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // slow server, which [`victim`] (a stale request is recyclable) and [`next_wanted`] (newest
     // draw first) bound.
     if decline {
-        plx_ui::card_motion::deferred();
+        g.results.push(ResourceOutcome::AdmissionRefused);
         #[cfg(feature = "devtriggers")]
         plx_ui::card_motion_metrics::refused(plx_ui::card_motion_metrics::Refused::New);
         trace::outcome("declined_new");
@@ -1592,16 +1559,20 @@ fn store_idle() -> bool {
 /// checked (see [`log_residency_settled`]'s doc for why THIS seam and not `PosterSource::idle`):
 /// the slot scan below is the same one [`idle_of`] would run, so this is the store's one
 /// once-a-frame, screen-agnostic read of whether it is quiet.
-pub(crate) fn begin_frame() {
+/// Returns actual resource results and newly due deadlines to the owning runner. The runner
+/// assigns resource provenance before its present decision; this source never mutates a gate.
+pub(crate) fn begin_frame() -> Vec<ResourceOutcome> {
     trace::begin_frame();
     let now = crate::app::clock::now();
     let mut g = store();
     g.frame = g.frame.wrapping_add(1);
-    invalidate_due_retries(&mut g.slots, now);
-    invalidate_due_evictions(&mut g.slots, now);
+    let mut results = std::mem::take(&mut g.results);
+    results.extend(invalidate_due_retries(&mut g.slots, now));
+    results.extend(invalidate_due_evictions(&mut g.slots, now));
     let settled = idle_of(&g.slots);
     drop(g);
     log_residency_settled(settled);
+    results
 }
 
 /// MAIN thread, once per frame (§3.3 step 3, the adapter's results): every slot a worker has
@@ -1690,13 +1661,8 @@ impl Uploader for GfxUploader {
 /// under the frame budget — the `Poster` class for an ordinary poster, the solo `Residency` class
 /// for a backdrop or a hero logo (`ui::tex`'s `RESIDENCY_BYTES`).
 ///
-/// **The frame this runs on has already been decided to present**, because the budget's
-/// queued-work term is the second half of that decision (`app/run.rs`, §3.3 step 8). So what
-/// `idle::invalidate` marks here is not this frame but the NEXT one, and it is still worth its
-/// frame: a landed texture is DISCRETE damage, which is exactly what `idle::present_dirty`'s
-/// readers — the glass hosts deciding whether to re-snapshot the page under them — are asking
-/// about, and no spring reports it. The cache's own `Provenance::Resource` note is the same
-/// statement to the phase-2 `Present` machine.
+/// The queued-work budget already admits this frame. The cache reports genuine uploads
+/// through the supplied owned `PresentHandle`; no compatibility damage is published.
 pub(crate) fn prepare(
     b: &mut plx_ui::frame::Budget,
     present: &mut plx_machine::machine::PresentHandle<'_>,
@@ -1705,7 +1671,7 @@ pub(crate) fn prepare(
     let n = tex::prepare(b, &mut GfxUploader, present, now_us);
     if n > 0 {
         CV.notify_all();
-        plx_machine::idle::invalidate();
+
     }
     n
 }
@@ -1784,7 +1750,7 @@ fn first_failure(srv: ServerId, cause: ArtFail) -> bool {
 /// naming them is the silence `paths.rs` was fixed for, where a font fell through to DroidSans
 /// while `init_text` still logged `ok=1`.
 ///
-/// **Why it is latched**, exactly as [`warn_key_refused`] is: this is a per-SLOT path and a grid
+/// **Why it is latched**: this is a per-SLOT path and a grid
 /// claims dozens of them at once, so one line per failure would be dozens per screen, and a log
 /// that scrolls itself away is as useless as a silent one.
 ///
@@ -2220,9 +2186,12 @@ fn poster_worker() {
                     true
                 } else {
                     if plx_gfx::dump::armed() { note_dump_failure(key_bytes(s), transient); }
-                    if transient && cache_gen == plx_platform::imgcache::generation() { park_retry(s); }
-                    else { s.state = P_FAILED; }
+                    let outcome = if transient && cache_gen == plx_platform::imgcache::generation() { park_retry(s) }
+                    else { s.state = P_FAILED; ResourceOutcome::LoadFailed };
                     trace::lost(idx, gen, "failed");
+                    // Publish the actual result. The runner owns its repaint provenance; this
+                    // mutation-only source does not manufacture a worker/platform wake.
+                    g.results.push(outcome);
                     false
                 }
             } else { false }
@@ -2376,7 +2345,7 @@ mod tests {
         slots[0].ph = 1024;
         assert!(decode_admitted(&slots, 0));
         assert!(!decode_admitted(&slots, 4 * 1024 * 1024));
-        slots[1] = slots[0];
+        slots[1] = slots[0].clone();
         assert!(!decode_admitted(&slots, 0));
         slots[0].state = P_READY;
         assert!(decode_admitted(&slots, 0));
@@ -2386,7 +2355,7 @@ mod tests {
     /// A synthetic headshot URL of the SHAPE the server really returns for a `/hubs/search`
     /// `actor` row: absolute, on Plex's metadata CDN, with a 32-hex digest. A made-up digest
     /// rather than a captured one, so nothing here is a record of who is in anyone's library —
-    /// the LENGTH is what the encoding and the [`KEY_MAX`] headroom are graded on, and it matches.
+    /// the LENGTH is what the encoding is graded on, and it matches.
     const HEADSHOT: &str =
         "https://metadata-static.plex.tv/a/people/0123456789abcdef0123456789abcdef.jpg";
     /// The same, encoded — every `:` and `/` gone, which is the whole reason the PMS photo
@@ -2479,15 +2448,6 @@ mod tests {
         assert!(
             k.ends_with(&format!("&X-Plex-Token={tok}")),
             "the token belongs to the OUTER request: {k}"
-        );
-
-        // The headroom the doc quotes, pinned. A headshot key is the longest shape the store holds
-        // today; if a future one crosses KEY_MAX it is refused rather than truncated (below), so
-        // this failing means artwork silently became skeletons, not that anything corrupted.
-        assert!(
-            k.len() <= KEY_MAX,
-            "a headshot key must fit a slot: {} bytes",
-            k.len()
         );
     }
 
@@ -2629,74 +2589,48 @@ mod tests {
         assert!(!started.still_current(), "the grant moved under the bake");
     }
 
-    /// The cliff absolute URLs brought within sight, and the reason [`poster_key`] gates on
-    /// [`KEY_MAX`] instead of trusting the caller's 352-byte buffer.
-    ///
-    /// `set_key` truncates into [`PT_KEYLEN`]. A truncated key never equals the probe that built
-    /// it, so the slot can never be found again: every frame misses, claims a fresh slot and
-    /// evicts a real poster — the whole store thrashing over one tile, which is far worse than the
-    /// tile simply not loading. The sizes are DERIVED from a probe build rather than written down,
-    /// so this keeps grading the real boundary if the request shape ever changes.
+    /// **#1408.** A Live TV channel logo from a Threadfin tuner is a `wsrv.nl` resizer link with
+    /// the logo's own URL encoded inside it; built into `/photo/:/transcode?…&url=…` it came to
+    /// 326 bytes, and the store's fixed 256-byte key slot refused it, so the tile stayed a
+    /// skeleton while PMS served the image fine. The store keeps the whole request path, so a
+    /// path of any length claims a slot, is stored intact, and is found again by the next draw.
     #[test]
-    fn a_path_too_long_for_a_slot_is_refused_rather_than_truncated() {
-        let (_g, sid, _) = one_server();
-        // Everything around the source, measured: build with a one-character source and subtract
-        // it. The filler is alphanumeric, so it passes through `enc` one byte per byte.
-        let overhead = key_for(sid, "x", 300, 300, 0).len() - 1;
-
-        let exact = key_for(sid, &"a".repeat(KEY_MAX - overhead), 300, 300, 0);
+    fn an_art_path_longer_than_255_bytes_claims_and_keeps_a_slot() {
+        let (_fresh, sid, _) = one_server();
+        plx_ui::card_motion::begin_frame(crate::app::clock::now());
+        let logo = "https://wsrv.nl/?url=https%3A%2F%2Fexample-cdn.invalid%2Fchannels%2Flogos%2Flove-nature-4k%2Flogo-dark-background-transparent-1920x1080.png&w=300&h=450&fit=contain&output=png";
+        let key = key_for(sid, logo, 300, 450, 1);
+        assert!(!key.is_empty(), "the store refused the key: the tile stays a skeleton");
+        assert!(key.len() > 255, "the fixture must exceed the old 255-byte slot: {} bytes", key.len());
+        assert!(is_fetchable(&key), "a long key is still a request the server can answer");
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            g.frame = 1;
+        }
+        assert_eq!(lookup(sid, &key, Touch::Draw).1, Warm::Claimed, "the first draw claims a slot");
+        let claimed: Vec<usize> = store().slots.iter().enumerate()
+            .filter(|(_, s)| s.state == P_WANT && key_bytes(s) == key.as_bytes())
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(claimed.len(), 1, "the slot holds the whole key, not a truncation of it");
+        store().frame = 2;
+        assert_eq!(lookup(sid, &key, Touch::Draw).1, Warm::Known, "the next draw finds the same slot");
         assert_eq!(
-            exact.len(),
-            KEY_MAX,
-            "the fixture must land exactly on the boundary"
+            store().slots.iter().filter(|s| s.state != P_EMPTY).count(),
+            1,
+            "a repeated draw must not claim a second slot (the thrash a truncated key caused)"
         );
-        let mut s = Pslot::ZERO;
-        set_key(&mut s, &exact);
-        assert_eq!(
-            key_bytes(&s),
-            exact.as_bytes(),
-            "a key the gate accepts must survive a slot intact"
-        );
-
-        let over = key_for(sid, &"a".repeat(KEY_MAX - overhead + 1), 300, 300, 0);
-        assert_eq!(
-            over, "",
-            "one byte past what a slot holds must be refused, not handed out"
-        );
-
-        // …because this is what handing it out would have meant. Not a claim about `set_key`, a
-        // claim about `lookup`: the probe it compares against is the FULL string.
-        let would_be = "b".repeat(KEY_MAX + 1);
-        set_key(&mut s, &would_be);
-        assert_ne!(
-            key_bytes(&s),
-            would_be.as_bytes(),
-            "a truncated slot can never match its own probe"
-        );
+        store().slots = [Pslot::ZERO; PT_CAP];
     }
 
-    /// The store's precondition, asserted where it actually lives.
-    ///
-    /// `poster_key` refusing is only half the guarantee: [`lookup`] takes a `&str` from three
-    /// `pub(crate)` entry points that each accept a raw `*const c_char`, so a key built by any
-    /// other route reaches the 256-byte array without passing the producer's gate. Testing
-    /// [`is_fetchable`] directly is the whole reason it was split out — `lookup` itself cannot be
-    /// called from a host test binary (it reaches `gfx::delete_tex`, and nothing here links GL).
+    /// The store's precondition, asserted where it actually lives: [`lookup`] claims no slot for
+    /// an empty key (no request could be built), and length is no part of the answer.
     #[test]
-    fn only_a_key_that_survives_a_slot_is_fetchable() {
+    fn only_an_empty_key_is_unfetchable() {
         assert!(!is_fetchable(""), "an empty key names no request");
-        assert!(
-            is_fetchable("/photo/:/transcode?url=x"),
-            "an ordinary key is fetchable"
-        );
-        assert!(
-            is_fetchable(&"a".repeat(KEY_MAX)),
-            "exactly what a slot holds is still fetchable"
-        );
-        assert!(
-            !is_fetchable(&"a".repeat(KEY_MAX + 1)),
-            "one byte past the array must never claim a slot"
-        );
+        assert!(is_fetchable("/photo/:/transcode?url=x"), "an ordinary key is fetchable");
+        assert!(is_fetchable(&"a".repeat(4096)), "a long key is fetchable");
     }
 
     /// A settled, drawable slot: READY, last touched on frame `frame` with LRU age `use_`.
@@ -3202,8 +3136,7 @@ mod tests {
         assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "text prewarming must not start poster work");
         for frame in 0..3 {
             plx_ui::card_motion::begin_frame(frame * 16);
-            plx_machine::idle::frame_begin(0.016);
-            plx_machine::idle::take_local_damage();
+            store().results.clear();
             let painter = plx_ui::Painter::root().translate(if frame == 0 { 0.0 } else { 80.0 }, 0.0);
             let facts = plx_screens::registry::tile_facts::of(&item);
             for art in [plx_ui::widgets::Art::Poster(Some(facts)), plx_ui::widgets::Art::Still(Some(facts)),
@@ -3214,7 +3147,7 @@ mod tests {
             // Frame 0 is `Unknown`; frame 1 jumped 80 px in 16 ms (`Moving`, 5000 px/s); frame 2 held.
             if frame == 0 || enforced && frame == 1 {
                 assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "unknown/moving cards must claim no slots");
-                assert!(plx_machine::idle::take_local_damage() > 0, "a refused unknown needs a follow-up present");
+                assert_eq!(store().results, vec![ResourceOutcome::AdmissionRefused; 4], "each refused request needs a follow-up present");
             } else {
                 assert_eq!(store().slots.iter().filter(|s| s.state == P_WANT).count(), 4, "all four admitted variants must queue art");
             }
@@ -3241,14 +3174,14 @@ mod tests {
         }
         let _enforce = plx_ui::card_motion::enforce_for_test();
         let motion = plx_ui::card_motion::Scope::moving_for_test();
-        plx_machine::idle::take_local_damage();
+        store().results.clear();
         assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
             "the future retry must match its existing slot, not take the fresh-miss gate");
-        assert_eq!(plx_machine::idle::take_local_damage(), 0, "a future retry must let the present gate rest");
+        assert!(store().results.is_empty(), "a future retry must let the present gate rest");
         store().slots[0].retry_at = Some(0);
         assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
             "motion must defer the known due retry");
-        assert!(plx_machine::idle::take_local_damage() > 0, "an actually refused rearm needs a follow-up draw");
+        assert_eq!(store().results, vec![ResourceOutcome::AdmissionRefused], "an actually refused rearm needs a follow-up draw");
         assert_eq!(store().slots[0].state, P_RETRY);
         drop(motion);
         assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
@@ -3814,7 +3747,7 @@ mod tests {
     #[test]
     fn a_due_evicted_slot_invalidates_the_frame_gate_exactly_once() {
         let _g = plx_base::testlock::serial();
-        plx_machine::idle::reset_for_test();
+
         let mut slots = [Pslot::ZERO; PT_CAP];
         slots[3] = Pslot {
             state: P_EVICTED,
@@ -3827,24 +3760,21 @@ mod tests {
             ..Pslot::ZERO
         };
 
-        invalidate_due_evictions(&mut slots, 1_999);
         assert_eq!(
-            plx_machine::idle::take_local_damage(),
-            0,
+            invalidate_due_evictions(&mut slots, 1_999),
+            None,
             "a cooling slot must leave the screen settled before its deadline"
         );
 
-        invalidate_due_evictions(&mut slots, 2_000);
         assert_eq!(
-            plx_machine::idle::take_local_damage(),
-            1,
+            invalidate_due_evictions(&mut slots, 2_000),
+            Some(ResourceOutcome::EvictionDue),
             "the deadline must wake exactly one draw that can probe the slot again"
         );
 
-        invalidate_due_evictions(&mut slots, 2_001);
         assert_eq!(
-            plx_machine::idle::take_local_damage(),
-            0,
+            invalidate_due_evictions(&mut slots, 2_001),
+            None,
             "an off-screen expired slot must not hold the present gate awake - the latch makes \
              this ONE redraw request, not a request every frame"
         );
@@ -3968,7 +3898,7 @@ mod tests {
             "an untouched store fills from the front"
         );
 
-        let mut one_hole = [ready(100, 1); PT_CAP];
+        let mut one_hole: [Pslot; PT_CAP] = std::array::from_fn(|_| ready(100, 1));
         one_hole[40] = Pslot::ZERO;
         assert_eq!(
             victim(&one_hole, 7),
@@ -3976,7 +3906,7 @@ mod tests {
             "an empty slot beats every settled one"
         );
 
-        let mut full = [ready(100, 1); PT_CAP];
+        let mut full: [Pslot; PT_CAP] = std::array::from_fn(|_| ready(100, 1));
         full[17].use_ = 3; // the oldest
         full[52].use_ = 9;
         assert_eq!(
@@ -3986,7 +3916,7 @@ mod tests {
         );
 
         // FAILED is settled too — a 404 must not pin a slot forever.
-        let mut failed = [ready(100, 1); PT_CAP];
+        let mut failed: [Pslot; PT_CAP] = std::array::from_fn(|_| ready(100, 1));
         failed[8] = Pslot {
             state: P_FAILED,
             use_: 1,
@@ -4051,7 +3981,7 @@ mod tests {
     #[test]
     fn a_due_parked_retry_invalidates_the_frame_gate() {
         let _g = plx_base::testlock::serial();
-        plx_machine::idle::reset_for_test();
+
         let mut slots = [Pslot::ZERO; PT_CAP];
         slots[3] = Pslot {
             state: P_RETRY,
@@ -4064,24 +3994,21 @@ mod tests {
             ..Pslot::ZERO
         };
 
-        invalidate_due_retries(&mut slots, 1_999);
         assert_eq!(
-            plx_machine::idle::take_local_damage(),
-            0,
+            invalidate_due_retries(&mut slots, 1_999),
+            None,
             "a parked retry must leave the screen settled before its deadline"
         );
 
-        invalidate_due_retries(&mut slots, 2_000);
         assert_eq!(
-            plx_machine::idle::take_local_damage(),
-            1,
+            invalidate_due_retries(&mut slots, 2_000),
+            Some(ResourceOutcome::RetryDue),
             "the deadline must wake a draw that can re-queue the retry"
         );
 
-        invalidate_due_retries(&mut slots, 2_001);
         assert_eq!(
-            plx_machine::idle::take_local_damage(),
-            0,
+            invalidate_due_retries(&mut slots, 2_001),
+            None,
             "an off-screen due slot must not hold the present gate awake"
         );
     }
@@ -4092,19 +4019,19 @@ mod tests {
     #[test]
     fn a_newly_parked_retry_wakes_the_draw_that_schedules_it() {
         let _g = plx_base::testlock::serial();
-        plx_machine::idle::reset_for_test();
+
         let mut s = Pslot {
             state: P_LOADING,
             attempts: 2,
             ..Pslot::ZERO
         };
 
-        park_retry(&mut s);
+        let outcome = park_retry(&mut s);
 
         assert_eq!(s.state, P_RETRY);
         assert_eq!(s.attempts, 3);
         assert_eq!(s.retry_at, None, "only a draw may read the loop clock and schedule");
-        assert_eq!(plx_machine::idle::take_local_damage(), 1);
+        assert_eq!(outcome, ResourceOutcome::RetryParked);
     }
 
     /// **The test the whole prefetch rests on.** `Touch::Warm` writes `use_ = 0` and a frame stamp
@@ -4114,7 +4041,7 @@ mod tests {
     #[test]
     fn a_warmed_slot_is_evicted_before_anything_the_frame_drew() {
         let f: c_uint = 42;
-        let mut slots = [ready(c_uint::MAX - 1, f); PT_CAP]; // 64 tiles this frame drew
+        let mut slots: [Pslot; PT_CAP] = std::array::from_fn(|_| ready(c_uint::MAX - 1, f)); // 64 tiles this frame drew
         slots[31] = ready(0, f.wrapping_sub(1)); // …and one warmed a moment ago
         assert_eq!(
             victim(&slots, f),
@@ -4122,7 +4049,7 @@ mod tests {
             "the prefetched slot is the cheapest to throw away"
         );
 
-        let drawn = [ready(5, f); PT_CAP];
+        let drawn: [Pslot; PT_CAP] = std::array::from_fn(|_| ready(5, f));
         assert_eq!(
             victim(&drawn, f),
             None,
@@ -4131,7 +4058,7 @@ mod tests {
 
         // frame counters wrap (`wrapping_add` in poster_pump), and a warm at frame 0 stamps
         // c_uint::MAX — which must still read as "not this frame" rather than as protection.
-        let mut wrapped = [ready(c_uint::MAX - 1, 0); PT_CAP];
+        let mut wrapped: [Pslot; PT_CAP] = std::array::from_fn(|_| ready(c_uint::MAX - 1, 0));
         wrapped[2] = ready(0, 0u32.wrapping_sub(1));
         assert_eq!(victim(&wrapped, 0), Some(2));
     }
@@ -4142,12 +4069,12 @@ mod tests {
     #[test]
     fn an_in_flight_slot_is_never_evicted() {
         for st in [P_WANT, P_LOADING, P_DECODED] {
-            let slots = [Pslot {
+            let slots: [Pslot; PT_CAP] = std::array::from_fn(|_| Pslot {
                 state: st,
                 use_: 0,
                 frame: 0,
                 ..Pslot::ZERO
-            }; PT_CAP];
+            });
             assert_eq!(victim(&slots, 7), None, "state {st} must not be evictable");
         }
     }
@@ -4190,7 +4117,7 @@ mod tests {
         // slot must be rejected before either is even compared
         let evicted = Pslot {
             state: P_EMPTY,
-            ..s
+            ..s.clone()
         };
         assert!(!same_art(&evicted, a, KEY.as_bytes()));
 
@@ -4296,20 +4223,20 @@ mod tests {
             "an untouched store is idle"
         );
         for st in [P_READY, P_EVICTED, P_FAILED] {
-            let slots = [Pslot {
+            let slots: [Pslot; PT_CAP] = std::array::from_fn(|_| Pslot {
                 state: st,
                 ..Pslot::ZERO
-            }; PT_CAP];
+            });
             assert!(
                 idle_of(&slots),
                 "settled state {st} is not work in progress"
             );
         }
         for st in [P_WANT, P_LOADING, P_DECODED] {
-            let mut slots = [Pslot {
+            let mut slots: [Pslot; PT_CAP] = std::array::from_fn(|_| Pslot {
                 state: P_READY,
                 ..Pslot::ZERO
-            }; PT_CAP];
+            });
             slots[63] = Pslot {
                 state: st,
                 ..Pslot::ZERO
@@ -4428,7 +4355,7 @@ mod tests {
         slots[7].frame = f - WANT_STALE_FRAMES;
         assert_eq!(victim(&slots, f), Some(7));
         // The lookahead's claim obeys the same rule (it had only recency before).
-        assert_eq!(ahead_victim(&[drawn(5, f - 1); PT_CAP], f), None);
+        assert_eq!(ahead_victim(&std::array::from_fn(|_| drawn(5, f - 1)), f), None);
     }
 
     /// The same defect through the store itself: a held scroll whose server answers slower than
@@ -4626,10 +4553,10 @@ mod tests {
         assert_eq!(ahead_victim(&mixed, f), None,
             "below the lookahead cap with every ordinary slot protected: no slot, the warming stops");
         // A drawn-this-frame slot is never a victim, protected or not.
-        let drawn = [ready(1, f); PT_CAP];
+        let drawn: [Pslot; PT_CAP] = std::array::from_fn(|_| ready(1, f));
         assert_eq!(ahead_victim(&drawn, f), None);
         // Empty first.
-        let mut one_hole = [ready(1, 3); PT_CAP];
+        let mut one_hole: [Pslot; PT_CAP] = std::array::from_fn(|_| ready(1, 3));
         one_hole[40] = Pslot::ZERO;
         assert_eq!(ahead_victim(&one_hole, f), Some(40));
     }

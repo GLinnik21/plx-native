@@ -38,16 +38,17 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
             std::fs::write(root.join("plxnative-rec"), b"").unwrap();
         }
 
-        let mut bridge = Bridge::for_session_test(plx_session::auth::SessionInit::captured(Session {
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(plx_session::auth::SessionInit::captured(Session {
             client_id: "synthetic-erasure".into(),
             ..Default::default()
         }));
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut bridge = harness.bridge();
         rec.arm_landgate(bridge.landgate());
-        bridge.session_adapter =
-            super::super::adapters::session::SessionAdapter::live_recording_resources_for_test(
-                &mt,
-                root.clone(),
-            );
+        *bridge.session_adapter = super::super::adapters::session::SessionAdapter::live_recording_resources_for_test(
+            &mt,
+            root.clone(),
+        );
         let mut pages = Dispatcher::<AppHost>::new();
         assert!(run::request_local_erasure(
             &mut rec,
@@ -75,7 +76,7 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
         assert_eq!(bridge.auth_read().0.phase, plx_session::auth::Phase::Deleted);
         assert_eq!(bridge.auth_read().0.delete_leftovers, usize::from(partial));
         assert!(bridge
-            .take_reqs()
+            .take_observed_loop_commands()
             .iter()
             .any(|req| matches!(req, LoopReq::LocalDataErased)));
         run::finish_local_erasure(&bridge, &mut pages);
@@ -117,6 +118,45 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
 }
 
 #[test]
+fn ordered_erasure_retires_the_single_owned_recorder_before_session_io() {
+    let _serial = plx_base::testlock::serial();
+    let mt = unsafe { plx_base::task::MainThread::assume() };
+    let temp = session::TempSession::new("ordered-recording-erasure");
+    temp.assert_only_target();
+    let root = temp.path().parent().unwrap().to_path_buf();
+    let recording = root.join("plxnative-recordings");
+    let sink = plx_ui::rec::DirSink::create(&recording.join("latest")).unwrap();
+    let initial = bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
+    let mut rec = recorder::Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
+    rec.tick(0, 0.0);
+    let mut boot_initial = Some(initial);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::for_session_test(plx_session::auth::SessionInit::captured(Session {
+        client_id: "synthetic-ordered-erasure".into(), ..Default::default()
+    }));
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut bridge = harness.bridge();
+    rec.arm_landgate(bridge.landgate());
+    *bridge.session_adapter = super::super::adapters::session::SessionAdapter::live_recording_resources_for_test(&mt, root);
+    let mut pages = Dispatcher::<AppHost>::new();
+    pages.emit(MachineId::Nav, Fx::App(AppFx::Loop(LoopReq::DeleteAllLocalData)));
+    let mut owned = super::test_support::TestCommandResources::new();
+    let mut resources = owned.borrow();
+    resources.rec = &mut rec;
+    resources.boot_initial = &mut boot_initial;
+    super::frame_with_commands(&mut pages, &mut bridge, &mut resources, Tick::default(), vec![], &mut plx_ui::dispatch::NoTap);
+    assert!(matches!(rec, recorder::Recplay::Off));
+    assert!(boot_initial.is_none());
+    assert_eq!(bridge.retained.screen_command_receipts[0].2, plx_machine::machine::AppCommandOutcome::Completed);
+    bridge.settle_session_io_for_test(&mut pages);
+    assert_eq!(bridge.auth_read().0.phase, plx_session::auth::Phase::Deleted);
+    assert!(!recording.exists());
+    assert!(!temp.path().exists());
+    assert!(matches!(pages.top_arg(), Some(AppArg::Login)));
+    session::ProfilePublisher::new(&mt).publish(None, 0, String::new());
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
 fn replay_cannot_authorize_erasure_of_a_recording_target() {
     let _serial = plx_base::testlock::serial();
     let mt = unsafe { plx_base::task::MainThread::assume() };
@@ -124,7 +164,9 @@ fn replay_cannot_authorize_erasure_of_a_recording_target() {
     temp.assert_only_target();
     let before = std::fs::read(temp.path()).unwrap();
     let initial = bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-    let mut bridge = Bridge::controlled_home(|| 0, &initial, &mt, true);
+    let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, true);
+    let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+    let mut bridge = harness.bridge();
     let mut pages = Dispatcher::<AppHost>::new();
     let mut rec = recorder::Recplay::Off;
     assert!(!run::request_local_erasure(

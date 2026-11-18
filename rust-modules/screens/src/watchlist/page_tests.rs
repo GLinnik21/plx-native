@@ -427,6 +427,7 @@ fn the_menu_surface_is_glass_and_rows_and_draws_no_pill_of_its_own() {
             tick: Tick { ms, dt_us: 16_667 },
             measure: &plx_ui::fixture::FixtureMeasure,
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             focus: FocusRead::default(),
             owner: InputOwner::Entry(entry),
         };
@@ -441,6 +442,7 @@ fn the_menu_surface_is_glass_and_rows_and_draws_no_pill_of_its_own() {
             tick: Tick { ms: 0, dt_us: 16_667 },
             measure: &plx_ui::fixture::FixtureMeasure,
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             focus: FocusRead { current: Some(FocusKey { entry, elem: 0 }), ..Default::default() },
             owner: InputOwner::Entry(entry),
         };
@@ -689,18 +691,18 @@ fn the_count_is_all_or_shown_of_total_and_absent_off_the_landed_list() {
 #[test]
 fn a_remove_lowers_the_count_when_the_landing_starts() {
     use plx_ui::cards::conformance::{CardHarness, Landing};
-    use plx_ui::containers::modal::{set_veil, CLOSING_GONE};
+    use plx_ui::containers::modal::CLOSING_GONE;
     let mut h = Harness::new(tiles(12));
     h.focus_index(2);
     assert_eq!(h.screen.count(), Some(Count::All(12)));
-    set_veil(1.0);
+    h.modal.veil = 1.0;
     h.landing(Landing::RemoveFocused).unwrap();
     assert_eq!(h.screen.tiles().len(), 11, "premise: committed");
     for frame in 0..30 {
         h.run(1);
         assert_eq!(h.screen.count(), Some(Count::All(12)), "frame {frame}: the menu is still up");
     }
-    set_veil(CLOSING_GONE * 0.5);
+    h.modal.veil = CLOSING_GONE * 0.5;
     let mut lowered_at_start = false;
     for frame in 0..40 {
         h.run(1);
@@ -713,7 +715,7 @@ fn a_remove_lowers_the_count_when_the_landing_starts() {
         }
     }
     assert!(lowered_at_start, "the landing began and the count followed");
-    set_veil(0.0);
+    h.modal.veil = 0.0;
 }
 
 /// **A Remove holds the colour wash until the grid's landing ends.** The wash eases one 8-bit step
@@ -723,8 +725,7 @@ fn a_remove_lowers_the_count_when_the_landing_starts() {
 #[test]
 fn a_remove_holds_the_wash_target_until_the_landing_ends() {
     use plx_ui::cards::conformance::{CardHarness, Landing};
-    use plx_ui::containers::modal::set_veil;
-    set_veil(0.0);
+    // This harness owns an explicit unveiled ModalRead from construction.
     let mut rows = tiles(12);
     for (i, t) in rows.iter_mut().enumerate() {
         let c = 20 + 15 * i as u8;
@@ -761,9 +762,7 @@ fn a_remove_holds_the_wash_target_until_the_landing_ends() {
 #[test]
 fn the_ease_after_a_remove_is_about_half_the_ordinary_one() {
     use plx_ui::cards::conformance::{CardHarness, Landing};
-    use plx_ui::containers::modal::set_veil;
     use plx_ui::widgets::PageGround;
-    set_veil(0.0);
     let mut rows = tiles(12);
     for (i, t) in rows.iter_mut().enumerate() {
         let c = if i % 2 == 0 { 10 } else { 245 };
@@ -827,8 +826,7 @@ fn the_ease_after_a_remove_is_about_half_the_ordinary_one() {
 #[test]
 fn an_unveiled_remove_lowers_the_count_with_its_first_step() {
     use plx_ui::cards::conformance::{CardHarness, Landing};
-    use plx_ui::containers::modal::set_veil;
-    set_veil(0.0);
+    // This harness owns an explicit unveiled ModalRead from construction.
     let mut h = Harness::new(tiles(12));
     h.focus_index(2);
     h.landing(Landing::RemoveFocused).unwrap();
@@ -852,7 +850,7 @@ fn the_shape_follows_the_write_order() {
 #[test]
 fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
     use plx_ui::cards::conformance::CardHarness;
-    use plx_ui::containers::modal::{set_veil, CLOSING_GONE};
+    use plx_ui::containers::modal::CLOSING_GONE;
     let mut h = Harness::new(tiles(14));
     h.focus_index(2);
     h.run(60);
@@ -862,7 +860,7 @@ fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
     // every word the frame draws and where: the focus caption (title and year line) among them
     let words_before = h.draw_texts();
     assert!(words_before.iter().any(|(w, _)| w == "2002"), "premise: the removed title's caption is drawn: {words_before:?}");
-    set_veil(1.0);
+    h.modal.veil = 1.0;
     let guid = h.screen.tiles()[h.screen.index_of(removed).unwrap()].row.guid.clone();
     h.screen.input(WatchlistIn::Removed(guid));
     for frame in 0..30 {
@@ -892,7 +890,7 @@ fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
             assert!((s - want).abs() < 1e-3, "frame {frame}: card {e} rescaled under the menu: {want} -> {s}");
         }
     }
-    set_veil(CLOSING_GONE * 0.5);
+    h.modal.veil = CLOSING_GONE * 0.5;
     let now = h.focused().unwrap();
     let mut last = 1.0f32;
     let mut rose = false;
@@ -907,7 +905,7 @@ fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
     }
     assert!(rose && (last - h.focus_scale()).abs() < 1e-3, "the new focus rose once to the pop and rests there");
     assert!(moved, "the landing's start moved the caption to the new focus");
-    set_veil(0.0);
+    h.modal.veil = 0.0;
 }
 
 /// **A mounted harness does not follow the process-wide Under posters cell.** The grid sizes the
@@ -994,8 +992,7 @@ fn coloured(n: usize, bare: &[usize]) -> Vec<super::page::WatchTile> {
 #[test]
 fn a_remove_never_passes_the_wash_through_neutral() {
     use plx_ui::cards::conformance::{CardHarness, Landing};
-    use plx_ui::containers::modal::set_veil;
-    set_veil(0.0);
+    // This harness owns an explicit unveiled ModalRead from construction.
     let flat = [theme::SURFACE_APP; 4];
     let mut h = Harness::new(coloured(12, &[3]));
     h.focus_index(2);
@@ -1024,8 +1021,7 @@ fn a_remove_never_passes_the_wash_through_neutral() {
 #[test]
 fn a_filter_never_passes_the_wash_through_neutral_or_another_title() {
     use plx_machine::machine::{EntryId, FocusKey};
-    use plx_ui::containers::modal::set_veil;
-    set_veil(0.0);
+    // This harness owns an explicit unveiled ModalRead from construction.
     let flat = [theme::SURFACE_APP; 4];
     let mut h = Harness::new(coloured(9, &[]));
     h.focus_index(2);
@@ -1309,4 +1305,89 @@ fn the_header_row_is_built_once_per_key_not_once_per_question() {
     h.run(30);
     h.draw();
     assert_eq!(h.screen.probe_header_builds(), built + 1, "and the frames after it build none");
+}
+
+/// **The Sort & Filter menu's accessibility ids:** each of its ten rows is named by what it
+/// chooses (`watchlist_menu.sort_title`), not by its draw position, and the view conforms.
+#[test]
+fn the_options_menu_rows_answer_their_names() {
+    assert!(!watchlist_menu_conforms().is_empty());
+}
+
+/// The Sort & Filter menu opened over three tiles, run through the id conformance with the id
+/// asserts above (`AppArg::WatchlistMenu`; the coverage table calls this, and so does the test above).
+pub(crate) fn watchlist_menu_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    use super::cards_harness::{WatchHost, ENTRY};
+    use super::menu::WatchlistMenuScreen;
+    use super::options::OptionsRow;
+    use plx_machine::machine::EntryId;
+    use plx_ui::a11y::{A11yPath, Role};
+    use plx_ui::screen::Focusable;
+    let h = Harness::new(tiles(3));
+    let arg = crate::registry::WatchlistMenuArg {
+        host: ENTRY,
+        options: WatchlistOptionsState::default(),
+        anchor: [100.0f32, 100.0, 300.0, 60.0].map(f32::to_bits),
+    };
+    let mut menu = WatchlistMenuScreen::new(EntryId(ENTRY.0 + 1), arg);
+    let cx = h.cx();
+    // the rows are laid out once the menu has opened, which its Mount does: a row that is not in
+    // the panel yet has no place
+    {
+        use plx_machine::machine::{Effects, InstanceId, Machine, MachineId, ScreenEvent};
+        let mut present = plx_machine::present::Present::new();
+        let mut out = Vec::new();
+        let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(10)), &mut present);
+        Machine::<WatchHost>::step(&mut menu, &ScreenEvent::Mount, &cx, &mut fx);
+    }
+    namespaces.push(conform::<WatchHost, _>(&menu, &cx));
+    for (i, row) in OptionsRow::ALL.iter().enumerate() {
+        let id = A11yPath::parse_relative(row.a11y_name()).expect("a plain row name");
+        assert_eq!(Focusable::<WatchHost>::a11y_find(&menu, &id, &cx), Some(i as u32), "{}", row.a11y_name());
+        let a = Focusable::<WatchHost>::a11y(&menu, &(i as u32), &cx).expect("every row projects");
+        assert_eq!(a.role, Role::Row);
+        assert_eq!(a.label.as_deref(), Some(row.label()));
+    }
+    let sort_title = A11yPath::parse_relative("sort_title").unwrap();
+    assert_eq!(Focusable::<WatchHost>::a11y_find(&menu, &sort_title, &cx), Some(4), "Title is the fifth row");
+    namespaces
+}
+
+/// **The page's accessibility ids:** the header's one stop is `header.sort`, each title (the loaded
+/// ones and an off-screen one alike) is `grid.card.<i>` with its copy's ratingKey as the subject,
+/// the unreachable read-out's Try again is `status.retry` once it is up, and the view conforms.
+#[test]
+fn the_page_answers_its_ids_and_conforms() {
+    assert!(!watchlist_conforms().is_empty());
+}
+
+/// The Watchlist page over sixty tiles, run through the id conformance with the id asserts above
+/// (`AppArg::Watchlist`; the coverage table calls this, and so does the test above).
+pub(crate) fn watchlist_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    use super::cards_harness::WatchHost;
+    use plx_ui::a11y::{A11yPath, Role};
+    use plx_ui::screen::Focusable;
+    let h = Harness::new(tiles(60));
+    let cx = h.cx();
+    namespaces.push(conform::<WatchHost, _>(&h.screen, &cx));
+    let rel = |id: &str| A11yPath::parse_relative(id).expect("a well-formed id");
+    let find = |id: &str| Focusable::<WatchHost>::a11y_find(&h.screen, &rel(id), &cx);
+    assert_eq!(find("header.sort"), Some(PILL_ELEM));
+    let sort = Focusable::<WatchHost>::a11y(&h.screen, &PILL_ELEM, &cx).expect("the pill projects");
+    assert_eq!((sort.path, sort.role), (rel("header.sort"), Role::Button));
+    for i in [0, 1, 17, 59] {
+        let elem = find(&format!("grid.card.{i}")).unwrap_or_else(|| panic!("card {i} resolves, on screen or not"));
+        let a = Focusable::<WatchHost>::a11y(&h.screen, &elem, &cx).expect("a card projects");
+        assert_eq!((a.path, a.role), (rel(&format!("grid.card.{i}")), Role::Card));
+        assert_eq!(a.subject.as_deref(), Some((100 + i).to_string().as_str()), "the subject is the copy's ratingKey");
+        assert!(a.loaded);
+    }
+    assert_eq!(find("grid.card.60"), None, "one past the end");
+    assert_eq!(find("status.retry"), None, "the read-out is not up");
+    assert_eq!(find("grid.0"), None, "a card is `grid.card.<i>`");
+    namespaces
 }

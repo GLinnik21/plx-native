@@ -504,7 +504,7 @@ impl SearchScreen {
         let _clip = f.clip(painter, Rect::new(0.0, floor, SCR_W, SCR_H - floor));
         let cx = f.cx;
         let view = H::search(cx);
-        let Some(src) = self.row_cards(view, row) else { return };
+        let Some(src) = self.row_cards(view, row, crate::registry::captions::policy_for(H::screen_inputs(cx))) else { return };
         let Some((frame, shelf)) = self.row_frame(cx, row) else { return };
         shelf.redraw_focused(f, painter, &src, frame, Some(key));
     }
@@ -575,10 +575,10 @@ impl SearchScreen {
         Some((self.stack.shelf_frame(self, cx, k)?, self.stack.shelf(k)?))
     }
     /// Result row `row`'s cards over `view`; `None` when the view has no such shelf.
-    fn row_cards<'a>(&'a self, view: plx_data::search::view::SearchView<'a>, row: usize) -> Option<RowCards<'a>> {
+    fn row_cards<'a>(&'a self, view: plx_data::search::view::SearchView<'a>, row: usize, policy: plx_ui::caption_policy::CaptionPolicy) -> Option<RowCards<'a>> {
         let model = self.rows.get(row)?;
         let shelf = view.shelves().get(row)?;
-        Some(RowCards { kind: model.kind, elems: &model.elems, items: &shelf.items,
+        Some(RowCards { policy, kind: model.kind, elems: &model.elems, items: &shelf.items,
             sources: view.scope().sources(), window: shelf.window, epoch: shelf.epoch })
     }
     fn tick<H: SearchLike>(&mut self, tick: plx_machine::machine::Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
@@ -659,12 +659,15 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
         h
     }
     fn sections(&self, _cx: &Cx<'_, H>, out: &mut Vec<SectionSpec<Sec>>) {
-        out.push(SectionSpec::new(Sec::Head, plx_ui::cards::Kind::Custom { height: layout::CONTENT_TOP, focusable: true }, FIELD_GROUP));
+        // The sections are named for what they ARE (the accessibility ids: `field.0`, `recents.<n>`,
+        // `clear.0`, `movies.card.<i>`), not by position: the recents come and go, and a result row
+        // is the page's one row of its kind (`layout::name`), wherever the results place it.
+        out.push(SectionSpec::new(Sec::Head, plx_ui::cards::Kind::Custom { height: layout::CONTENT_TOP, focusable: true }, FIELD_GROUP).named("field"));
         if !self.recents.is_empty() {
             let shown = self.recents.len().min(layout::RECENT_CAP) as f32;
             out.push(SectionSpec::new(Sec::Recents, plx_ui::cards::Kind::Custom {
-                height: plx_ui::table::HDR_H + shown * plx_ui::table::ROW_H, focusable: true }, RECENTS_GROUP));
-            out.push(SectionSpec::new(Sec::Clear, plx_ui::cards::Kind::Custom { height: 0.0, focusable: true }, CLEAR_GROUP));
+                height: plx_ui::table::HDR_H + shown * plx_ui::table::ROW_H, focusable: true }, RECENTS_GROUP).named("recents"));
+            out.push(SectionSpec::new(Sec::Clear, plx_ui::cards::Kind::Custom { height: 0.0, focusable: true }, CLEAR_GROUP).named("clear"));
         }
         for row in &self.rows {
             let elem = if matches!(row.kind, Kind::Movie | Kind::Show | Kind::Episode) { ElemKind::Card } else { ElemKind::Bare };
@@ -674,19 +677,20 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
                 plx_ui::cards::Kind::Shelf { style: layout::style(row.kind), heading: layout::HEAD_TO_ROW }, row.group)
                 .seated(Seat::Projected)
                 .edges([EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop])
-                .of_kind(elem));
+                .of_kind(elem)
+                .named(layout::name(row.kind)));
         }
     }
     fn fallback(&self, _cx: &Cx<'_, H>, out: &mut Vec<Sec>) { out.push(Sec::Head); }
     /// The poster rows follow the Under posters setting; the Episode still row and the Person
     /// headshot row are not posters and keep the legacy band.
-    fn caption_policy(&self, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
-        matches!(k, Sec::Row(kind, _) if layout::is_poster(kind)).then(crate::registry::captions::policy)
+    fn caption_policy(&self, cx: &Cx<'_, H>, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
+        matches!(k, Sec::Row(kind, _) if layout::is_poster(kind)).then(|| crate::registry::captions::policy_for(H::screen_inputs(cx)))
     }
     fn cards<'a>(&'a self, cx: &'a Cx<'_, H>, k: Sec) -> Option<RowCards<'a>> {
         let Sec::Row(kind, _) = k else { return None };
         let row = self.rows.iter().position(|row| row.kind == kind)?;
-        self.row_cards(H::search(cx), row)
+        self.row_cards(H::search(cx), row, crate::registry::captions::policy_for(H::screen_inputs(cx)))
     }
     /// Only a library item opens an item menu on a hold; a collection hit opens its page.
     fn card_has_menu(&self, cx: &Cx<'_, H>, _k: Sec, elem: &u32) -> bool {

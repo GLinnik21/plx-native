@@ -149,7 +149,8 @@ pub(crate) fn bitmap_cue(display: plx_media_codecs::subtitle::BitmapDisplay, tra
 
 
 /// Install a codec-extracted inventory into the common ASS store. The job has already admitted
-/// header and font bytes before copying; this layer gives tracks dialects and source generation.
+/// header bytes before copying and collected every font attachment; this layer gives tracks
+/// dialects and source generation.
 pub(crate) fn begin_sources(
     media_key: &str,
     kinds: &[PresentationTrack],

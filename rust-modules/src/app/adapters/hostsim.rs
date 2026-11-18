@@ -14,10 +14,13 @@ use plx_play_feed::ffi_host::{HostSink, Hooks};
 /// it as `Port.sink`; a hostsim test binary of this crate reads it directly.
 pub(crate) static HOST_SINK: HostSink = HostSink::new(Hooks::over(&sim_video::SimVideo));
 
-/// The render thread's half of the simulator's picture, once per presented frame, before the
-/// capture and the swap: the current decoded frame, composited UNDER what the UI drew.
-pub(crate) fn composite_under() {
-    sim_video::composite_under();
+/// The render thread's half of the simulator's picture, once per bound-plane frame, after the
+/// straighten pass and before the capture and the swap: the current decoded frame, composited UNDER
+/// what the UI drew through the television compositor's straight-alpha mix. `false` when there is no
+/// picture to put under it (not armed, or nothing decoded yet), which is the caller's cue to
+/// composite over black instead.
+pub(crate) fn composite_under() -> bool {
+    sim_video::composite_under()
 }
 
 /// The simulator's clock-sink stop; the television's pipeline has no such control.

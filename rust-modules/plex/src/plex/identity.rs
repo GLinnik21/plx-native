@@ -2,7 +2,7 @@
 //!
 //! There are two independent transports here and they used to each hardcode their own identity:
 //! [`account`](super::account) talks to plex.tv over libcurl and sends `X-Plex-*` as HEADERS, while
-//! [`client`](super::client) talks to the PMS and sends them as QUERY PARAMETERS. Nothing kept the
+//! [`client`](super::client) talks to PMS and sends identity in request headers and playback query parameters. Nothing kept the
 //! two in step, and they had drifted on every field that mattered:
 //!
 //! | field       | plex.tv said        | the PMS said     |
@@ -91,7 +91,7 @@ pub const PLATFORM: &str = "webOS";
 /// reporting 4.5 from a 6.5.2 television (issue #22). PMS augments our named Generic profile
 /// from the X-Plex-Client-Profile-Extra we send, so the version is informational today — but it
 /// is also how a server-side profile could ever distinguish firmware generations, and a false
-/// one poisons that forever. The fallback when `os_info.json` is unreadable keeps the literal
+/// one poisons that forever. The fallback when neither `os_info.json` nor `/usr/lib/os-release` names a release keeps the literal
 /// this replaces — the exact claim every release so far has made — rather than inventing an
 /// empty-string case no server has ever been shown. Safe by boot order: `tv::probe_device()` runs
 /// before any PMS request, so none can precede the read.

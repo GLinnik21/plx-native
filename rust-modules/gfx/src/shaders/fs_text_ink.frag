@@ -1,5 +1,5 @@
 // The INK variant of the text program, a SEPARATE program bound only while an ink clip is set
-// (`text::set_ink_clip`, opened by `ui::widgets::paint_inked`) - so a label a capsule's rounded end
+// (`text::set_ink_clip`, opened by `ui::widgets::paint_inked`) or a rounded clip is live - so a label a capsule's rounded end
 // crosses is painted in each ink exactly where the capsule is. The plain program (fs_text.frag) pays
 // nothing for it. Each call paints ONE ink: its alpha is multiplied by the coverage of up to two
 // rounded-rect shapes in ABSOLUTE LOGICAL SCREEN px (the space `u_trect` is passed in; v_lx / v_ly,
@@ -9,6 +9,10 @@
 // u_mp keep == 0 is off and costs one compare. Alpha is scaled, never `discard`ed.
 // u_ma / u_mb = (x0, y0, x1, y1); u_mp = (radius A, keep A, radius B, keep B), keep +1 inside,
 // -1 outside, 0 off.
+// A THIRD SLOT is the painter's ROUNDED CLIP (`gfx::rclip_set`, opened by `ui::screen::ClipScope::
+// open_rounded_in`): u_mc = (x0, y0, x1, y1), u_mq = (radius, on), always INSIDE, `on` 0 when no rounded
+// clip is live. It is what cuts the glass menu's labels by the lens's arc while it grows; a draw with
+// no rounded clip pays one more compare.
 precision mediump float;
 varying highp vec2 v_tuv;
 varying highp float v_lx;
@@ -18,6 +22,8 @@ uniform vec4 u_tcol;
 uniform highp vec4 u_ma;
 uniform highp vec4 u_mb;
 uniform highp vec4 u_mp;
+uniform highp vec4 u_mc;
+uniform highp vec2 u_mq;
 highp float shape_cover(highp vec4 r, highp float rad) {
   highp vec2 c = (r.xy + r.zw) * 0.5;
   highp vec2 q = abs(vec2(v_lx, v_ly) - c) - ((r.zw - r.xy) * 0.5 - rad);
@@ -27,4 +33,5 @@ highp float shape_cover(highp vec4 r, highp float rad) {
 void main(){ float a=texture2D(u_tex,v_tuv).a;
   if (u_mp.y != 0.0) { float c = shape_cover(u_ma, u_mp.x); a *= u_mp.y > 0.0 ? c : 1.0 - c; }
   if (u_mp.w != 0.0) { float c = shape_cover(u_mb, u_mp.z); a *= u_mp.w > 0.0 ? c : 1.0 - c; }
+  if (u_mq.y != 0.0) a *= shape_cover(u_mc, u_mq.x);
   gl_FragColor=vec4(u_tcol.rgb, u_tcol.a*a); }

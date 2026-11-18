@@ -21,14 +21,40 @@ fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
     TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
 }
 
-/// D3 test helper: `metadata::alt_install`/`alt_restamp_owners` are private now, reached only
-/// through `MetadataStore::run` — these wrap that so the call sites below read exactly as they
-/// did before the visibility change.
+/// TEST ONLY: capture the registry facts at each fixture command, as the host does before a step.
 fn alt_install(sid: ServerId, rk: &str, copies: Vec<AltCopy>) -> bool {
-    test_store().run(MetadataCmd::AltInstall { sid, rk: rk.to_string(), copies })
+    test_store().run_with_keys(MetadataCmd::AltInstall { sid, rk: rk.to_string(), copies },
+        &plx_data::pms::registry_keys_for_test())
 }
 fn alt_restamp_owners() -> bool {
-    test_store().run(MetadataCmd::AltRestampOwners)
+    test_store().run_with_keys(MetadataCmd::AltRestampOwners, &plx_data::pms::registry_keys_for_test())
+}
+
+#[test]
+fn alt_fixture_uses_captured_server_facts() {
+    struct Cleanup;
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            test_store().run(MetadataCmd::Clear);
+            plx_plex::plex::reset_servers_for_test();
+        }
+    }
+    let _guard = plx_base::testlock::serial();
+    let _cleanup = Cleanup;
+    plx_plex::plex::reset_servers_for_test();
+    let server = plx_plex::plex::register_for_test("alt-capture", "127.0.0.1", 1, "t", "cid");
+    plx_plex::plex::describe_server(server, "Server", "captured", plx_plex::plex::GrantEvidence::outside());
+    let keys = plx_data::pms::registry_keys_for_test();
+    plx_plex::plex::describe_server(server, "Server", "current", plx_plex::plex::GrantEvidence::outside());
+    assert!(test_store().run_with_keys(MetadataCmd::AltInstall {
+        sid: server, rk: "4".into(), copies: vec![copy(server.raw(), "Movies", "stale", "4", "1080")],
+    }, &keys));
+    assert_eq!(test_store().view().alt_copies(server, "4")[0].owner.as_deref(), Some("captured"));
+    assert!(alt_restamp_owners());
+    assert_eq!(test_store().view().alt_copies(server, "4")[0].owner.as_deref(), Some("current"));
+    plx_plex::plex::describe_server(server, "Server", "latest", plx_plex::plex::GrantEvidence::outside());
+    assert!(alt_install(server, "4", vec![copy(server.raw(), "Movies", "stale", "4", "1080")]));
+    assert_eq!(test_store().view().alt_copies(server, "4")[0].owner.as_deref(), Some("latest"));
 }
 
 fn sid(n: u16) -> ServerId {
@@ -809,7 +835,7 @@ fn a_reset_hides_the_menu_at_once_while_back_fades_it() {
 // observable behaviour they pin (row navigation order, which copy a commit opens, BACK closes
 // the panel) is exactly what the removed raw-input tests pinned before the rewrite, verified by
 // hand against both trees during the conversion.
-mod focus_and_hit {
+pub(crate) mod focus_and_hit {
     use super::*;
     use crate::registry::{AppFx, AppMsg, PageMemory};
     use plx_machine::machine::{
@@ -862,6 +888,7 @@ mod focus_and_hit {
             measure: &plx_ui::fixture::FixtureMeasure,
             focus: FocusRead { current: focus, ..Default::default() },
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             owner: InputOwner::Entry(EntryId(5)),
         }
     }
@@ -919,6 +946,32 @@ mod focus_and_hit {
         assert!(matches!(g.kind, plx_ui::screen::GroupKind::Column));
         assert!(matches!(g.elem, plx_ui::screen::ElemKind::Bare));
         assert!(g.edge.iter().all(|e| matches!(e, plx_ui::screen::EdgeRule::Stop)));
+    }
+
+    /// The *Also available* panel over two servers' rows, run through the id conformance
+    /// (`AppArg::AltSources`; the coverage table calls this).
+    pub(crate) fn alt_sources_conforms() -> plx_ui::a11y::Namespaces {
+        let (p, ..) = two_row_panel();
+        vec![plx_ui::a11y::conform::<HostFixture, _>(&p, &fixture_cx(None))]
+    }
+
+    /// **Every row has an id, `row.<n>` in table order, and the id finds the row again**; the label
+    /// is the row's own text.
+    #[test]
+    fn every_row_answers_an_id_in_table_order() {
+        let (p, ..) = two_row_panel();
+        let cx = fixture_cx(None);
+        plx_ui::a11y::conform::<HostFixture, _>(&p, &cx);
+        for n in 0..2u32 {
+            let path = plx_ui::a11y::A11yPath::parse_relative(&format!("row.{n}")).expect("a well-formed path");
+            assert_eq!(Focusable::<HostFixture>::a11y_find(&p, &path, &cx), Some(n), "row.{n} is table row {n}");
+            let a = Focusable::<HostFixture>::a11y(&p, &n, &cx).expect("the row projects");
+            assert_eq!(a.path, path);
+            assert_eq!(a.role, plx_ui::a11y::Role::Row);
+            assert_eq!(a.label.as_deref(), Some(p.rows[n as usize].label.as_str()), "the label is the row's text");
+        }
+        let past = plx_ui::a11y::A11yPath::parse_relative("row.2").expect("a well-formed path");
+        assert_eq!(Focusable::<HostFixture>::a11y_find(&p, &past, &cx), None, "no third row");
     }
 
     /// **`neighbour` walks the table's own rows, and stops at either end** — the same order

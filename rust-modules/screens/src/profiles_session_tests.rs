@@ -779,6 +779,31 @@ fn a_readout_whose_back_leaves_the_app_offers_no_back_pill() {
     assert!(Focusable::<SessionHost>::group_of(&s, &FOOTER, &c).is_some(), "Sign out is still there");
 }
 
+/// **The read-out answers `back` and `sign_out`, and only while it is up**: *Back* only when BACK
+/// would resume a session, *Sign out* always; the footer's `sign_out` is the same id (the footer
+/// is not drawn under the read-out), and no `roster` or `pad` id exists beside either.
+#[test]
+fn the_readout_answers_ids_for_its_back_and_its_sign_out() {
+    for back_resumes in [true, false] {
+        let read = readout(auth::owner::roster_refused(), back_resumes);
+        let s = ProfilesScreen::new(EntryId(0), read.read());
+        let c = cx_with(None, &read);
+        plx_ui::a11y::conformance(&s, &c);
+        let find = |text: &str| {
+            Focusable::<SessionHost>::a11y_find(&s, &A11yPath::parse_relative(text).unwrap(), &c)
+        };
+        assert_eq!(find("sign_out"), Some(FOOTER), "back_resumes={back_resumes}");
+        assert_eq!(find("back"), back_resumes.then_some(READOUT_BACK), "back_resumes={back_resumes}");
+        assert_eq!(find("roster.card.0"), None);
+        assert_eq!(find("pad.digit.1"), None);
+        let sign_out = Focusable::<SessionHost>::a11y(&s, &FOOTER, &c).unwrap();
+        assert_eq!(
+            sign_out.label.as_deref(),
+            plx_platform::i18n::msg::settings_account_sign_out_c().to_str().ok()
+        );
+    }
+}
+
 /// **A correct PIN goes from the pad to Home — the picker is never shown again.** Owner's TV
 /// video, 2026-09-30: after the last digit the who's-watching roster reappeared (placeholder
 /// circles, then loaded avatars, then fading out) for ~270 ms before Home. The Session publishes

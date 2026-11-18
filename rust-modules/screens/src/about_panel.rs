@@ -684,7 +684,7 @@ fn sheet_painter(appear: f32) -> Painter {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The ladder in the mock's own order, with every block present: each block sits below the one
@@ -944,6 +944,9 @@ mod tests {
         TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
     }
 
+    impl crate::registry::ScreenInputsLike for TestHost {
+        fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
+    }
     impl crate::registry::CollectionLike for TestHost {
         fn collection<'a>(_cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> {
             plx_data::collection::CollectionView::default()
@@ -964,6 +967,7 @@ mod tests {
             tick: Tick::default(),
             measure,
             press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
             focus: FocusRead::default(),
             owner: InputOwner::Entry(ENTRY),
         }
@@ -1082,6 +1086,30 @@ mod tests {
             (plx_ui::screen::FocusSource::Engine, plx_ui::screen::HitSource::Engine),
             "the conversion this test guards"
         );
+    }
+
+    /// The Detail About sheet mounted as the registry mounts it and run through the id conformance
+    /// (`AppArg::AboutPanel`; the coverage table calls this).
+    pub(crate) fn about_panel_conforms() -> plx_ui::a11y::Namespaces {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let cx = cx(&measure);
+        vec![plx_ui::a11y::conform::<TestHost, _>(&AboutPanelScreen::new(ENTRY), &cx)]
+    }
+
+    /// The Collection summary sheet, the same panel over `collection::current()`
+    /// (`AppArg::CollectionAbout`; the coverage table calls this).
+    pub(crate) fn collection_about_conforms() -> plx_ui::a11y::Namespaces {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let cx = cx(&measure);
+        vec![plx_ui::a11y::conform::<TestHost, _>(&AboutPanelScreen::collection(ENTRY), &cx)]
+    }
+
+    /// The panel declares no group, so it has no element to name: the id conformance holds because
+    /// there is nothing to project (the default `a11y_elems` is the right answer).
+    #[test]
+    fn the_panel_has_no_element_to_name() {
+        assert!(!about_panel_conforms().is_empty());
+        assert!(!collection_about_conforms().is_empty());
     }
 
     // ---- the synopsis is READABLE to its last line (a cap on reachable text is a bug) -------------

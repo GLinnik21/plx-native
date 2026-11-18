@@ -23,77 +23,21 @@ use plx_screens::registry::AppArg;
 /// a route renamed here without its scenes following would otherwise fail on the device as
 /// "never entered this screen", which reads exactly like a total regression.
 pub(crate) fn route_word(route: &AppArg) -> &'static str {
-    use plx_screens::registry::ContentArg;
-    match route {
-        AppArg::Login => "login",
-        AppArg::Profiles => "profiles",
-        AppArg::Onboard => "onboard",
-        AppArg::Library | AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. } => "library",
-        AppArg::Content(ContentArg::Detail { .. }) => "detail",
-        // The filmography sheet answers `word::PERSON` too (`FilmographyScreen::name`): the test
-        // manifest intentionally records that opaque modal as `route=person`.
-        AppArg::Content(ContentArg::Person { .. } | ContentArg::Filmography { .. }) => "person",
-        AppArg::Content(ContentArg::Collection(_)) => "collection",
-        AppArg::Content(ContentArg::Catalog { .. }) => "catalog",
-        AppArg::Search => "search",
-        AppArg::Watchlist => "watchlist",
-        AppArg::Player => "player",
-        AppArg::Home => "home",
-        // Not pages: a surface's word is ` overlay=`, and none of these reaches the page stack's
-        // top. The arm is written out rather than swept into a `_` so a new PAGE variant is a
-        // compile error here — the failure this table exists to prevent is a word the app cannot
-        // print, which reads on the television as "0 post-warmup samples".
-        AppArg::Settings(_)
-        | AppArg::FirstRunConsent(_)
-        | AppArg::LibraryMenu(_)
-        | AppArg::AccountMenu
-        | AppArg::WatchlistMenu(_)
-        | AppArg::ItemMenu(_)
-        | AppArg::PlayerOverlay(_)
-        | AppArg::AltSources(_)
-        | AppArg::VersionsPanel(_)
-        | AppArg::TracksPanel(_)
-        | AppArg::AboutPanel
-        | AppArg::PersonBio
-        | AppArg::CollectionAbout => "",
-    }
+    route.route_word()
 }
 /// **Every PAGE argument** (a word may repeat: the library's three pages are all `library`) — the domain [`route_word`] is applied over to DERIVE the
 /// heartbeat's `route=` alphabet, and the list `app::bridge`'s own argument tests walk.
 ///
-/// The compiler is what keeps it complete: the array's length is written out, so an added variant
-/// with no entry here fails the exhaustiveness `match` in `heartbeat_word_tests` rather than
-/// quietly missing from the table the fps tier selects on. That is the failure this exists for —
-/// a word the app cannot print makes a scene fail on the television as "only 0 post-warmup
-/// samples", which is indistinguishable from a real regression.
+/// This is the historical scenario census, not an extension registration requirement. The
+/// registry's exhaustive `AppArg::route_probe` requires every new argument to declare a word
+/// and schema; the private fresh-variant compiler proof checks that no app ladder needs edits.
 ///
 /// `#[cfg(test)]`, because nothing in the SHIPPED app ever wants every route at once: the loop
 /// holds one and asks about it. Its two readers are this module's word derivation and
 /// `app::bridge`'s argument tests, which used to keep a second copy of the same list.
 #[cfg(test)]
-pub(crate) fn every_route() -> [AppArg; 14] {
-    use plx_screens::registry::ContentArg;
-    let sid = plx_plex::plex::ServerId::UNSET;
-    [
-        AppArg::Login,
-        AppArg::Profiles,
-        AppArg::Onboard,
-        AppArg::Home,
-        AppArg::Library,
-        // The two pages the library's header pushes. They answer the library's word and the
-        // tab bar's chrome, and a list without them is how the strip they wear went unpublished.
-        AppArg::LibraryCollections { section: 0 },
-        AppArg::LibraryRecommended { section: 0 },
-        AppArg::Content(ContentArg::Detail { sid, rk: String::new() }),
-        AppArg::Content(ContentArg::Person {
-            sid, key: String::new(), guid: String::new(), name: String::new(), thumb: String::new(),
-        }),
-        AppArg::Content(ContentArg::Collection(plx_plex::plex::collections::CollectionRef::by_tag(sid, 0, 1, ""))),
-        AppArg::Content(ContentArg::Catalog { hex: [0; 12] }),
-        AppArg::Search,
-        AppArg::Watchlist,
-        AppArg::Player,
-    ]
+pub(crate) fn every_route() -> Vec<AppArg> {
+    plx_screens::registry::every_page_arg()
 }
 
 /// The heartbeat's ` overlay=` WORD, or `None` when nothing is over the page.
@@ -164,8 +108,8 @@ pub(crate) fn section_suffix(pages: &plx_ui::dispatch::Dispatcher<bridge::AppHos
 /// So the routes come from [`route_word`] applied over [`every_route`], and the overlays from the
 /// MOUNTER: `bridge::every_surface_word()` mounts one instance of every surface `AppArg` variant
 /// through the real `Mounter` and reads its `Screen::name`, so the alphabet is what the screens
-/// say it is. Neither list can carry a word its source does not produce, and neither can miss one
-/// — the exhaustiveness of `every_route` and of the mounter's own `match` is the compiler's.
+/// say it is. Registry metadata and the mounter are exhaustive; this historical scenario census
+/// checks existing manifest words without imposing an app-file edit on ordinary extensions.
 #[cfg(test)]
 fn route_words() -> Vec<&'static str> {
     every_route().iter().map(route_word).collect()
@@ -186,7 +130,8 @@ fn section_words() -> Vec<&'static str> {
     use plx_appkit::player_hud::command::Section;
     use plx_screens::player::input::Sections;
     let mut d = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
-    let mut rig = bridge::Bridge::for_test(|| 0);
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut rig = harness.bridge();
     bridge::show_page(&mut d, AppArg::Player);
     bridge::frame(&mut d, &mut rig, plx_machine::machine::Tick { ms: 0, dt_us: 16_000 }, vec![]);
     let mut out = Vec::new();
@@ -304,6 +249,17 @@ mod heartbeat_word_tests {
     /// is the player's.
     #[test]
     fn the_tables_are_derived_and_the_two_alphabets_stay_apart() {
+        use plx_screens::registry::ProbeKind;
+        // Append-only registration samples preserve these fourteen historical words/schemas;
+        // a new screen extends the registry census, not this legacy-byte characterization.
+        assert_eq!(every_route()[..14].iter().map(|arg| arg.route_probe()).collect::<Vec<_>>(), [
+            ("login", ProbeKind::Login), ("profiles", ProbeKind::Profiles), ("onboard", ProbeKind::Onboard),
+            ("home", ProbeKind::Content), ("library", ProbeKind::Content),
+            ("library", ProbeKind::Content), ("library", ProbeKind::Content),
+            ("detail", ProbeKind::Content), ("person", ProbeKind::Content),
+            ("collection", ProbeKind::Content), ("catalog", ProbeKind::Content),
+            ("search", ProbeKind::Content), ("watchlist", ProbeKind::Content), ("player", ProbeKind::Player),
+        ].map(|(word, kind)| plx_screens::registry::RouteProbe { word, kind }));
         let _guard = plx_base::testlock::serial();
         let routes = route_words();
         let overlays = overlay_alphabet();
@@ -380,7 +336,8 @@ mod heartbeat_word_tests {
         use plx_screens::player::input::Sections;
         let _guard = plx_base::testlock::serial();
         let mut d = plx_ui::dispatch::Dispatcher::<super::bridge::AppHost>::new();
-        let mut rig = super::bridge::Bridge::for_test(|| 0);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut rig = harness.bridge();
         super::bridge::show_page(&mut d, AppArg::Player);
         super::bridge::frame(&mut d, &mut rig, plx_machine::machine::Tick { ms: 0, dt_us: 16_000 }, vec![]);
         assert_eq!(super::section_word(&d), None);

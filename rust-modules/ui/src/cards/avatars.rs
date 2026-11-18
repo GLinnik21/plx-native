@@ -7,7 +7,7 @@ use plx_machine::machine::{EntryId, GroupId, Measure};
 
 use crate::card_row::{self, CardRow, RowStyle, TileLabel};
 use crate::geom::Shelf;
-use crate::widgets::{Art, DipLatch};
+use crate::widgets::Art;
 use crate::{Painter, Rect};
 
 /// The avatar row's animation cache (focus-scale and scroll springs) and its centring margin. A
@@ -15,7 +15,7 @@ use crate::{Painter, Rect};
 pub struct AvatarRow {
     row: CardRow,
     sty: RowStyle,
-    dip: DipLatch,
+
 }
 
 impl AvatarRow {
@@ -23,7 +23,7 @@ impl AvatarRow {
     pub const STYLE: RowStyle = RowStyle::PROFILES;
 
     pub fn new() -> Self {
-        Self { row: CardRow::new(), sty: Self::STYLE, dip: DipLatch::default() }
+        Self { row: CardRow::new(), sty: Self::STYLE }
     }
 
     /// The first tile's left edge before scroll (the picker centres a short roster).
@@ -57,12 +57,11 @@ impl AvatarRow {
     }
 
     /// Paint avatar `i` whose settled rect is `base`; returns the drawn (scaled) rect, which is
-    /// also the hit-map stop's. The click dip folds into the PRESSED avatar's pop (latched while the
-    /// press is off rest, see [`DipLatch`]: the row has no keys to match `PressRead::owner`), so an
-    /// abandoned press springs back on the avatar that was pressed. The focused one is the one the
-    /// caller paints last.
-    pub fn draw(&self, p: Painter, i: usize, base: Rect, art: Art, focused: bool, measure: &dyn Measure) -> Rect {
-        let dip = self.dip.factor(i, focused.then_some(i), crate::press::scale());
+    /// also the hit-map stop's. The click dip matches the frame's pressed owner to this avatar's
+    /// key, so an abandoned press springs back on the original avatar even after focus moves.
+    /// The caller paints the focused avatar last.
+    pub fn draw<K: PartialEq>(&self, p: Painter, i: usize, base: Rect, art: Art, focused: bool, measure: &dyn Measure, press: &plx_machine::machine::PressRead<K>, key: &plx_machine::machine::FocusKey<K>) -> Rect {
+        let dip = press.dip_of(key);
         if focused {
             let sc = self.row.scale(i) * dip;
             let rect = base.scaled(sc);

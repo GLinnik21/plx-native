@@ -170,7 +170,7 @@ impl Xfade {
         // would pin the loop forever. `Hold` is excluded because it is a genuine wait on data
         // (Library's deferred reload) where the screen is legitimately static.
         if matches!(self.phase, Phase::Out | Phase::In) {
-            plx_machine::idle::invalidate();
+            plx_machine::motion::report::note_motion();
         }
         match self.phase {
             Phase::Idle => {
@@ -263,9 +263,12 @@ mod tests {
     /// this thread nor the 2 s keepalive can answer in the fader's place — this must isolate the
     /// fader's own report and nothing else.
     fn asked_to_repaint() -> bool {
-        plx_machine::idle::frame_begin(DT);
-        plx_machine::idle::note_present(0);
-        plx_machine::idle::should_present(0)
+        let mut present = plx_machine::present::Present::new();
+        present.take(0);
+        present.acknowledge(0);
+        plx_machine::motion::report::collect_into(&mut present, 0);
+        plx_machine::motion::report::frame_begin(DT);
+        present.take(0)
     }
 
     /// A running ramp MUST report, in both directions. This is the regression that shipped: the

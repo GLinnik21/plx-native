@@ -22,7 +22,14 @@ impl Host for HostFixture {
     type Init = FixtureArg;
     type Memory = PageMemory;
 }
+impl crate::registry::ScreenInputsLike for HostFixture {
+    fn screen_inputs<'a>(_cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
+        crate::registry::empty_fixture()
+    }
+}
+
 impl LibraryLike for HostFixture {
+    fn clock_facts<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_plex::plex::ClockFacts> { None }
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.hubs }
@@ -93,7 +100,8 @@ impl Fixture {
     pub(super) fn cx(&self, focus: Option<FocusKey<u32>>) -> Cx<'_, HostFixture> {
         Cx { views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
             tick: Tick::default(), measure: &self.measure, focus: FocusRead { current: focus, ..Default::default() },
-            press: PressRead::default(), owner: OWNER }
+            press: PressRead::default(), owner: OWNER,
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default() }
     }
     pub(super) fn screen(&self) -> RecommendedScreen {
         let mut page = RecommendedScreen::new(ENTRY, InstanceId(19), SecKind::Movie);
@@ -283,7 +291,7 @@ fn a_landscape_deck_card_draws_the_continue_footer() {
     let tile = Tile { rect: Rect::new(0.0, 0.0, 420.0, 236.0), scale: 1.0, radius: 12.0, focused: true, pop: 1.0 };
     let m = plx_ui::fixture::FixtureMeasure;
     for (row, deck) in [(0, true), (1, false)] {
-        let src = HubSrc { elems: &[1, 2, 3, 4], shelf: hubs.shelves().get(row), paging: false, deck: None };
+        let src = HubSrc { policy: crate::registry::captions::policy(), elems: &[1, 2, 3, 4], shelf: hubs.shelves().get(row), paging: false, deck: None, deck_press: plx_plex::plex::session::DeckPress::Details };
         let words = |draw: &dyn Fn(plx_ui::Painter)| -> Vec<String> {
             plx_ui::draw_census::capture_runs(|| draw(plx_ui::Painter::recording())).into_iter().map(|run| run.text).collect()
         };

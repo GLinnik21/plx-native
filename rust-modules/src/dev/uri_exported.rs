@@ -1,5 +1,5 @@
 //! The exported-window override (`plxnative-uriexported`): the PRODUCTION URI backend, bound to the
-//! exported window (`Binding::Exported`) on a webOS 5+ set whose firmware release the evidence
+//! exported window (`Binding::Exported`) on a webOS 5+ set whose firmware major the evidence
 //! table has not admitted. Debug builds only: this file is compiled with `devtriggers` and
 //! `play-uri` (see `dev.rs`), so a release binary carries none of it, and the read below is
 //! `false` at compile time there.

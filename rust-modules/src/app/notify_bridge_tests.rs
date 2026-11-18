@@ -25,7 +25,7 @@ fn servers() -> (ServerId, ServerId) {
     (a, b)
 }
 fn capture(bridge: &mut Bridge, slots: &[ServerId], allowed: bool) {
-    bridge.client_keys.refill_roster_with_stream_policy(slots[0], 1, 1, slots.iter().copied(),
+    bridge.retained.client_keys.refill_roster_with_stream_policy(slots[0], 1, 1, slots.iter().copied(),
         plex::client_for, plex::server_facts, |_| None, |_| allowed);
 }
 fn eligible(req: &NotifyStreamReq) -> Option<&'static Client> {
@@ -55,8 +55,8 @@ fn ordered(port: &NotifyStreamPort, addr: Addr, _: &'static Client, req: NotifyS
 }
 fn boot(bridge: &mut Bridge, held: bool) {
     SCRIPT.with(|s| s.borrow_mut().eligible = true);
-    bridge.store_runner = if held { StoreRunner::held_all() } else {
-        StoreRunner::Held { parked: Vec::new(), live: &[LiveKind::NotifyStream], notify: NotifyTransport::Refuse }
+    *bridge.store_runner = if held { StoreRunner::held_all() } else {
+        StoreRunner::Held { parked: Vec::new(), live: &[LiveKind::NotifyStream], notify: NotifyTransport::Refuse, watchlist_write: None, watchlist_streams_held: false }
     };
     bridge.store_runner.set_notify_transport(NotifyTransport::Script { eligible, run: ordered });
 }
@@ -67,16 +67,18 @@ fn direct_stream_bypasses_supplied_home_ledger_and_tape_in_record_and_replay() {
     let mt = unsafe { plx_base::task::MainThread::assume() };
     for replay in [false, true] {
         let initial = crate::app::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
-        let mut bridge = Bridge::controlled_home(|| 0, &initial, &mt, replay);
+        let (runtime, retained) = crate::app::bridge::BridgeRetained::controlled_home(|| 0, &initial, &mt, replay);
+        let mut harness = crate::app::runtime_owners::Harness::from_parts(runtime, retained);
+        let mut bridge = harness.bridge();
         boot(&mut bridge, false); capture(&mut bridge, &[a], true);
         tape::init(None, replay); tape::begin(Default::default(), Default::default());
         let mut source = plx_data::stores::notify::NotifyStore::default();
-        let input = plx_data::stores::notify::NotifyInput { keys: &bridge.client_keys, armed: false };
+        let input = plx_data::stores::notify::NotifyInput { keys: &bridge.retained.client_keys, armed: false };
         let mut pass = source.begin(&input);
         while let Some(mut turn) = source.prepare_next(&mut pass, &input) {
             for job in source.take_jobs() {
                 assert_eq!(job.admission(), plx_data::stores::Admission::Direct);
-                bridge.store_runner.start_admitted(job, bridge.home_io.as_mut());
+                bridge.store_runner.start_admitted(job, bridge.retained.home_io.as_mut());
             }
             source.settle_admission(&mut pass, &mut turn);
             source.finish_turn(&mut pass, turn, &input);
@@ -93,18 +95,20 @@ fn direct_stream_bypasses_supplied_home_ledger_and_tape_in_record_and_replay() {
 #[test]
 fn fresh_host_fill_rechecks_data_gate_without_key_or_generation_change() {
     let _serial = plx_base::testlock::serial(); let _reset = Reset;
-    let (a, _) = servers(); let mut bridge = Bridge::for_test(|| 0);
-    crate::app::adapters::stores::refill_client_keys(&mut bridge.client_keys);
+    let (a, _) = servers();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
+    crate::app::adapters::stores::refill_client_keys(&mut bridge.retained.client_keys);
     let client = plex::client_for(a).unwrap();
-    let key = bridge.client_keys.key(a);
-    let generations = (bridge.client_keys.roster_gen(), bridge.client_keys.facts_gen());
-    assert_eq!(bridge.client_keys.stream_allowed(a),
+    let key = bridge.retained.client_keys.key(a);
+    let generations = (bridge.retained.client_keys.roster_gen(), bridge.retained.client_keys.facts_gen());
+    assert_eq!(bridge.retained.client_keys.stream_allowed(a),
         client.has_token() && !client.data_io_disabled() && client.credential_transport_open());
     client.disable_data_io();
-    crate::app::adapters::stores::refill_client_keys(&mut bridge.client_keys);
-    assert_eq!(bridge.client_keys.key(a), key);
-    assert_eq!((bridge.client_keys.roster_gen(), bridge.client_keys.facts_gen()), generations);
-    assert!(!bridge.client_keys.stream_allowed(a));
+    crate::app::adapters::stores::refill_client_keys(&mut bridge.retained.client_keys);
+    assert_eq!(bridge.retained.client_keys.key(a), key);
+    assert_eq!((bridge.retained.client_keys.roster_gen(), bridge.retained.client_keys.facts_gen()), generations);
+    assert!(!bridge.retained.client_keys.stream_allowed(a));
     let (_, endpoints) = bridge.notify_pump_captured(&[], Default::default());
     assert!(endpoints.is_empty());
     assert!(bridge.take_held_store_jobs_for_test().is_empty());
@@ -113,13 +117,15 @@ fn fresh_host_fill_rechecks_data_gate_without_key_or_generation_change() {
 
 fn clean(bridge: &Bridge) {
     bridge.assert_no_store_jobs_left_for_test();
-    assert_eq!(bridge.late_store_jobs, 0);
+    assert_eq!(bridge.retained.late_store_jobs, 0);
 }
 
 #[test]
 fn cursor_posts_and_terminal_map_in_connection_order_without_second_drain_or_late_jobs() {
     let _serial = plx_base::testlock::serial(); let _reset = Reset;
-    let (a, b) = servers(); let mut bridge = Bridge::for_test(|| 0); boot(&mut bridge, false);
+    let (a, b) = servers();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge(); boot(&mut bridge, false);
     capture(&mut bridge, &[a, b], true);
     let pages = [(a, "a-first"), (a, "a-late"), (b, "b-first"), (b, "b-after-end")]
         .map(|(sid, rk)| ContentArg::Detail { sid, rk: rk.into() });
@@ -133,7 +139,7 @@ fn cursor_posts_and_terminal_map_in_connection_order_without_second_drain_or_lat
     assert_eq!(bridge.stores.reconcile.pending_for_test(),
         [(a, "a-first".into()), (b, "b-first".into()), (a, "a-late".into())]);
     SCRIPT.with(|s| assert_eq!(s.borrow().launches, [a, b]));
-    assert_eq!(plx_data::stores::Stores::NOTIFY_FILLS, [StoreId::Browse, StoreId::Hubs]);
+    assert_eq!(plx_data::stores::Stores::NOTIFY_FILLS, [StoreId::Browse, StoreId::Hubs, StoreId::Watchlist]);
     assert!(StoreId::Hubs.ord().0 < StoreId::Notify.ord().0);
     clean(&bridge); bridge.notify_suspend();
 }
@@ -141,11 +147,13 @@ fn cursor_posts_and_terminal_map_in_connection_order_without_second_drain_or_lat
 #[test]
 fn default_test_boot_refuses_streams_and_refills_before_begin_without_live_accounts() {
     let _serial = plx_base::testlock::serial(); let _reset = Reset;
-    let (a, _) = servers(); let mut bridge = Bridge::for_test(|| 0);
-    assert!(matches!(bridge.store_runner, StoreRunner::Held { notify: NotifyTransport::Refuse, .. }));
+    let (a, _) = servers();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge();
+    assert!(matches!(&*bridge.store_runner, StoreRunner::Held { notify: NotifyTransport::Refuse, .. }));
     let (_, endpoints) = bridge.notify_pump(&[], Default::default());
     assert!(endpoints.is_empty());
-    assert!(bridge.client_keys.key(a).is_some(), "host capture preceded begin");
+    assert!(bridge.retained.client_keys.key(a).is_some(), "host capture preceded begin");
     assert!(bridge.take_held_store_jobs_for_test().is_empty(), "default refusal never parks an indefinite stream");
     assert_eq!(bridge.run_held_store_jobs_for_test(), 0);
     clean(&bridge);
@@ -154,7 +162,9 @@ fn default_test_boot_refuses_streams_and_refills_before_begin_without_live_accou
 #[test]
 fn parked_acceptance_release_cancel_and_fresh_permission_loss_are_deliberate() {
     let _serial = plx_base::testlock::serial(); let _reset = Reset;
-    let (a, _) = servers(); let mut bridge = Bridge::for_test(|| 0); boot(&mut bridge, true);
+    let (a, _) = servers();
+    let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+    let mut bridge = harness.bridge(); boot(&mut bridge, true);
     capture(&mut bridge, &[a], true);
     let (_, endpoints) = bridge.notify_pump_captured(&[], Default::default());
     assert!(endpoints.is_empty());
@@ -166,9 +176,9 @@ fn parked_acceptance_release_cancel_and_fresh_permission_loss_are_deliberate() {
     bridge.notify_suspend(); bridge.notify_resume();
     let (_, endpoints) = bridge.notify_pump_captured(&[], Default::default()); // second accepted-held incarnation
     assert!(endpoints.is_empty());
-    let generations = (bridge.client_keys.roster_gen(), bridge.client_keys.facts_gen());
+    let generations = (bridge.retained.client_keys.roster_gen(), bridge.retained.client_keys.facts_gen());
     capture(&mut bridge, &[a], false); // policy expiry, unchanged key and generations
-    assert_eq!(generations, (bridge.client_keys.roster_gen(), bridge.client_keys.facts_gen()));
+    assert_eq!(generations, (bridge.retained.client_keys.roster_gen(), bridge.retained.client_keys.facts_gen()));
     let (_, endpoints) = bridge.notify_pump_captured(&[], Default::default()); // cancels held mail before release
     assert!(endpoints.is_empty());
     assert_eq!(bridge.run_held_store_jobs_of_for_test(StoreId::Notify), 1);
@@ -181,7 +191,8 @@ fn armed_record_and_replay_have_no_notify_home_or_tape_bytes_and_no_held_claim()
     let _serial = plx_base::testlock::serial(); let _reset = Reset;
     let (a, _) = servers();
     for replay in [false, true] {
-        let mut bridge = Bridge::for_test(|| 0); boot(&mut bridge, true); capture(&mut bridge, &[a], true);
+        let mut harness = crate::app::runtime_owners::Harness::new(|| 0);
+        let mut bridge = harness.bridge(); boot(&mut bridge, true); capture(&mut bridge, &[a], true);
         let (_, endpoints) = bridge.notify_pump_captured(&[], Default::default()); // explicitly accepted and parked
         assert!(endpoints.is_empty());
         bridge.stores.landgate.arm_recording();

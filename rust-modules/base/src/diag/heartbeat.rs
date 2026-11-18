@@ -221,7 +221,8 @@ pub struct Instruments {
     thresh_ms: f64,
     perf_freq: f64,
     stamps: [u64; 9],
-    /// The watchdog label of the leg `mark` last opened (label-only; a no-op without `threadcheck`).
+    /// The leg `mark` last opened: recorded for the freeze probe in every build, and published as
+    /// the watchdog's hang label only under `threadcheck`.
     leg: crate::task::watchdog::LoopPhases,
     /// Worst frame total this second (presented frames only), for the heartbeat peak.
     worst: f64,
@@ -359,7 +360,8 @@ impl Instruments {
     pub fn mark(&mut self, phase: Phase) {
         use crate::task::watchdog::LoopPhase as Leg;
         // A mark ends the leg it names and opens the next one: the watchdog names the leg a hang
-        // lands in. Draw and Capture open nothing new (`draw_scope` / `present_scope` label them).
+        // lands in, and in every build the freeze probe records it. Draw and Capture open nothing
+        // new (`draw_scope` / `present_scope` label them).
         match phase {
             Phase::Top => {
                 self.leg.enter(Leg::EventIngest);

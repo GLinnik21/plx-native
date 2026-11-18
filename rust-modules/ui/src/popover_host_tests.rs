@@ -4,26 +4,263 @@
 use super::mock::{FrameCache, PIXELS};
 use super::*;
 
+// Legacy host-only cases have no typed runtime damage; production passes it explicitly.
+fn begin_frame(modal: &crate::containers::modal::ModalPresentation, page_moving: bool) {
+    super::begin_frame(modal, 0.0, page_moving, false);
+}
+
+#[test]
+fn typed_page_damage_refreshes_frozen_host_but_surface_damage_does_not() {
+    use plx_machine::present::{Present, PresentEvent, Provenance, ResourceKind, Scope};
+    use plx_machine::motion::report;
+    let _serial = plx_base::testlock::serial();
+    report::reset_for_test();
+    let _reset = Reset::new(false);
+    let mut present = Present::new();
+    let draw = |present: &mut Present, ms, during_draw| {
+        report::collect_into(present, ms);
+        present.take(ms);
+        super::begin_frame(&_reset.modal, 0.0, false, present.page_damaged());
+        {
+            let _page = page_pass(&_reset.modal);
+            ink("page");
+        }
+        if during_draw {
+            present.note(PresentEvent::Damage(Provenance::Resource(ResourceKind::Texture)));
+        }
+        present.acknowledge(ms);
+    };
+    draw(&mut present, 0, false);
+    let captured = page_epoch();
+    present.set_scope(Scope::Surface);
+    present.note(PresentEvent::Damage(Provenance::Input));
+    draw(&mut present, 16, false);
+    assert_eq!(page_epoch(), captured, "typed surface damage keeps the frozen page");
+    {
+        plx_machine::machine::PresentHandle::of(&mut present)
+            .note(PresentEvent::Damage(Provenance::Input));
+    }
+    draw(&mut present, 32, false);
+    assert_eq!(page_epoch(), captured, "owned surface damage is not reclassified as page damage");
+    present.set_scope(Scope::Page);
+    present.note(PresentEvent::Damage(Provenance::Resource(ResourceKind::Texture)));
+    draw(&mut present, 48, false);
+    assert_eq!(page_epoch(), captured.wrapping_add(1), "typed page landing refreshes the frozen host");
+    draw(&mut present, 64, true);
+    assert!(present.page_damaged(), "swap cannot erase typed page damage raised during draw");
+    draw(&mut present, 80, false);
+    assert_eq!(page_epoch(), captured.wrapping_add(2));
+}
+
+#[test]
+fn nested_decision_alert_discards_cached_pixels_without_publishing_modal_policy() {
+    use crate::decision_alert::{Answers, DecisionAlert};
+    let _serial = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
+    // A Settings/consent-style parent already owns its modal presentation. The embedded
+    // DecisionAlert has local choreography, but cannot change that parent's host/input policy.
+    let (d, _, _) = crate::fixture::booted();
+    let other_before = d.modal_presentation();
+    embedded_alert_frame(&_reset.modal, true, true);
+    assert!(matches!(held(), Held::Ground(_)));
+    let epoch = page_epoch();
+    let parent_before = _reset.modal.read;
+    let mut alert = DecisionAlert::new();
+    alert.open_card(c"Confirm", vec!["Synthetic disclosure".into()], Answers::Two);
+    assert!(held() == Held::Nothing, "opening a nested outline discards the old pixels");
+    embedded_alert_frame(&_reset.modal, true, true);
+    assert_eq!(page_epoch(), epoch.wrapping_add(1));
+    assert!(matches!(held(), Held::Ground(_)));
+    alert.close();
+    assert!(held() == Held::Nothing, "closing cannot keep the alert baked into a composite");
+    embedded_alert_frame(&_reset.modal, true, true);
+    assert_eq!(page_epoch(), epoch.wrapping_add(2));
+    assert_eq!(_reset.modal.read, parent_before);
+    assert_eq!(d.modal_presentation().read, other_before.read,
+        "discarding context-local pixels never publishes another runtime's modal policy");
+}
+
+#[test]
+fn same_thread_owner_switch_never_reuses_another_hosts_frozen_pixels() {
+    use crate::dispatch::NoTap;
+    use crate::fixture::{booted, tick, FixtureArg};
+    use crate::containers::modal::Style;
+    use plx_machine::machine::{MachineId, NavOp};
+    let _serial = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
+    let (mut a, mut ar, _) = booted();
+    let (mut b, mut br, _) = booted();
+    a.nav.next_style = Style::Compact;
+    a.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    a.frame(&mut ar, tick(16), vec![], vec![], &mut NoTap);
+    let a_open = a.modal_presentation();
+    let draw = |modal: &crate::containers::modal::ModalPresentation, page| {
+        super::begin_frame(modal, 0.0, false, false);
+        PIXELS.with(|p| p.borrow_mut().clear());
+        { let _page = page_pass(modal); ink(page); }
+        PIXELS.with(|p| p.borrow().clone())
+    };
+    assert_eq!(draw(&a_open, "A"), ["A"]);
+    let epoch = page_epoch();
+    assert_eq!(draw(&a_open, "wrong"), ["A"], "same owner reuses its frozen host");
+    assert_eq!(page_epoch(), epoch);
+    b.frame(&mut br, tick(32), vec![], vec![], &mut NoTap);
+    let b_rest = b.modal_presentation();
+    assert_eq!(draw(&b_rest, "B"), ["B"], "a resting owner never inherits A's freeze");
+    assert_eq!(draw(&a_open, "A-new"), ["A-new"], "returning A recaptures rather than serving B's pixels");
+    b.nav.next_style = Style::Compact;
+    b.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    b.frame(&mut br, tick(48), vec![], vec![], &mut NoTap);
+    let b_open = b.modal_presentation();
+    assert_eq!(a.nav.modals.top().unwrap().entry.id, b.nav.modals.top().unwrap().entry.id,
+        "equal per-dispatcher entry ids are the aliasing case");
+    assert_eq!(draw(&b_open, "B-open"), ["B-open"]);
+    assert_eq!(draw(&a_open, "A-back"), ["A-back"]);
+    assert_eq!(a.modal_presentation().read, a_open.read, "render cache switches cannot mutate modal authority");
+}
+
+/// **The container's own dismissal of a LIVE-host surface keeps the page's snapshot.** A caching
+/// surface (`Style::Compact`; the frozen styles below retake it) starting to close changes the owner's cache key (its layer is `Closing` now), and `bind_owner`
+/// answered with a full `invalidate()`: the close's first frame then redrew the page into the
+/// snapshot, re-sourced the tab bar's blur and re-latched the dim field, the 131% of a 60 Hz
+/// frame's GPU budget that `Popover::release` no longer costs a glass menu. A closing flip drops
+/// what a close must not show (a GROUND-stage composite, the panel at full strength) and keeps the
+/// page's: the page under a fading menu has not changed, and real page damage and motion still
+/// re-take through `begin_frame`.
+#[test]
+fn a_surface_that_starts_closing_keeps_the_page_snapshot_and_drops_only_a_ground_stage() {
+    use crate::dispatch::NoTap;
+    use crate::fixture::{booted, tick, FixtureArg};
+    use crate::containers::modal::Style;
+    use plx_machine::machine::{MachineId, NavOp};
+    let _serial = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
+    let (mut d, mut rig, _) = booted();
+    d.nav.next_style = Style::Compact;
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    let id = d.nav.modals.top().expect("presented").entry.id;
+    let open = d.modal_presentation();
+    assert!(open.read.host_cached && !open.read.closing_only, "premise: an open surface that caches its host");
+    let draw = |modal: &crate::containers::modal::ModalPresentation, page| {
+        super::begin_frame(modal, 0.0, false, false);
+        PIXELS.with(|p| p.borrow_mut().clear());
+        { let _page = page_pass(modal); ink(page); }
+        PIXELS.with(|p| p.borrow().clone())
+    };
+    assert_eq!(draw(&open, "page"), ["page"]);
+    assert!(held() == Held::Page, "premise: the open surface froze the page");
+    let epoch = page_epoch();
+
+    d.request(MachineId::Nav, NavOp::Dismiss(id));
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    let closing = d.modal_presentation();
+    assert!(closing.read.closing_only, "premise: the surface is closing");
+    assert!(!open.cache_key().same_snapshot(&closing.cache_key()), "premise: the close changed the cache key");
+    let before = invalidations();
+    assert_eq!(draw(&closing, "retaken"), ["page"], "the close serves the page's snapshot, it does not redraw the page");
+    assert_eq!(page_epoch(), epoch, "the close's first frame re-took nothing");
+    assert_eq!(invalidations(), before, "…and threw nothing away");
+    assert!(held() == Held::Page);
+
+    // the guard: a GROUND-stage snapshot is the panel at full strength, which a fade must not be
+    // drawn over, so the same flip still drops it
+    let _ = embedded_alert_frame(&open, true, true);
+    let _ = embedded_alert_frame(&open, true, true);
+    assert!(matches!(held(), Held::Ground(_)), "premise: a caching panel's ground is held");
+    super::begin_frame(&closing, 0.0, false, false);
+    assert!(held() == Held::Nothing, "a closing surface keeps no ground snapshot");
+}
+
+/// **Only a surface that kept the host LIVE while it was open may keep the page's snapshot when it
+/// starts closing.** `surface_policy` freezes the host under a Sheet, an Alert and an
+/// `Opaque { snapshot: true }` surface, and a frozen page gets no Tick: the page's snapshot is as
+/// old as the surface. The full `invalidate()` at the Open -> Closing flip is the one retake after
+/// that stretch: keeping the snapshot there showed the Library's OLD captions through Settings'
+/// exit fade (an `Opaque` snapshot surface; Under posters changed inside it) and the page jumped
+/// when the layer was pruned. Presents `styles` bottom to top (a frame each, the page
+/// drawn and held in between), dismisses the TOP one and answers whether the close's first frame
+/// redrew the page (the snapshot was thrown away) rather than served it.
+fn the_close_retakes_the_page(styles: &[crate::containers::modal::Style]) -> bool {
+    use crate::dispatch::NoTap;
+    use crate::fixture::{booted, tick, FixtureArg};
+    use plx_machine::machine::{MachineId, NavOp};
+    let _serial = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
+    let (mut d, mut rig, _) = booted();
+    let draw = |modal: &crate::containers::modal::ModalPresentation, page| {
+        super::begin_frame(modal, 0.0, false, false);
+        PIXELS.with(|p| p.borrow_mut().clear());
+        { let _page = page_pass(modal); ink(page); }
+        PIXELS.with(|p| p.borrow().clone())
+    };
+    let mut ms = 0;
+    for style in styles {
+        d.nav.next_style = *style;
+        d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+        ms += 16;
+        d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        assert_eq!(draw(&d.modal_presentation(), "page").len(), 1, "premise: the page is drawn under {style:?}");
+    }
+    assert!(held() == Held::Page, "premise: the stack froze the page");
+    let top = d.nav.modals.top().expect("presented").entry.id;
+    let open = d.modal_presentation();
+    d.request(MachineId::Nav, NavOp::Dismiss(top));
+    ms += 16;
+    d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    let closing = d.modal_presentation();
+    assert!(!open.cache_key().same_snapshot(&closing.cache_key()), "premise: the close changed the cache key");
+    draw(&closing, "retaken") == ["retaken"]
+}
+
+#[test]
+fn a_frozen_host_surface_that_starts_closing_retakes_the_page() {
+    use crate::containers::modal::Style;
+    let kept: Vec<Style> = [Style::Sheet, Style::Alert, Style::Opaque { snapshot: true }]
+        .into_iter().filter(|style| !the_close_retakes_the_page(&[*style])).collect();
+    assert!(kept.is_empty(),
+        "{kept:?} froze the host while open, so the page each kept is as old as the surface: \
+         the close's first frame must retake it");
+}
+
+#[test]
+fn a_live_host_surface_that_starts_closing_still_keeps_the_page() {
+    use crate::containers::modal::Style;
+    assert!(!the_close_retakes_the_page(&[Style::Compact]),
+        "a Compact surface kept the host live while open: the page's snapshot is current");
+}
+
+#[test]
+fn a_mixed_stack_whose_frozen_host_layer_starts_closing_retakes_the_page() {
+    use crate::containers::modal::Style;
+    assert!(the_close_retakes_the_page(&[Style::Compact, Style::Sheet]),
+        "the Sheet above a Compact menu froze the host: its close retakes the page");
+}
+
 struct Reset {
-    users: u32,
+    modal: crate::containers::modal::ModalPresentation,
     frozen: bool,
 }
 impl Reset {
     fn new(cache_off: bool) -> Self {
-        let users = HOST_USERS.swap(1, Relaxed);
+        let mut stack = crate::containers::modal::ModalStack::<crate::fixture::FixtureHost>::new();
+        stack.present(&mut crate::containers::Minter::default(), crate::fixture::FixtureArg::Modal,
+            crate::containers::modal::Style::Sheet);
+        let modal = stack.presentation();
+        CACHE_OWNER.set(None);
         let frozen = plx_gfx::gfx::set_page_frozen(false);
         cache(|c| *c = FrameCache { snapshot: None, off: cache_off, prev: None });
         HELD.set(Held::Nothing);
         CAPTURE_OWED.store(false, Relaxed);
         CAPTURE_POINTLESS.store(false, Relaxed);
         GROUND_DRAWN.store(false, Relaxed);
-        Self { users, frozen }
+        Self { modal, frozen }
     }
 }
 impl Drop for Reset {
     fn drop(&mut self) {
         invalidate();
-        HOST_USERS.store(self.users, Relaxed);
+        CACHE_OWNER.set(None);
         plx_gfx::gfx::set_page_frozen(self.frozen);
         CAPTURE_OWED.store(false, Relaxed);
         CAPTURE_POINTLESS.store(false, Relaxed);
@@ -37,12 +274,12 @@ fn ink(label: &'static str) {
     }
 }
 
-fn embedded_alert_frame(settled: bool, later_scope: bool) -> Vec<&'static str> {
-    begin_frame(false);
+fn embedded_alert_frame(modal: &crate::containers::modal::ModalPresentation, settled: bool, later_scope: bool) -> Vec<&'static str> {
+    begin_frame(modal, false);
     // BUFFER_DESTROYED: every present starts with no usable prior framebuffer contents.
     PIXELS.with(|p| p.borrow_mut().clear());
     {
-        let _page = page_pass();
+        let _page = page_pass(modal);
         ink("page");
         {
             let _scrim = live();
@@ -69,11 +306,12 @@ fn captured_ground_cannot_overwrite_an_embedded_alerts_foreground() {
     let _serial = plx_base::testlock::serial();
     let _reset = Reset::new(false);
     let expected = vec!["page", "scrim", "glass", "title/body/buttons"];
-    assert_eq!(embedded_alert_frame(false, true), expected, "opening frame");
-    assert_eq!(embedded_alert_frame(true, true), expected, "first settled frame");
-    assert_eq!(embedded_alert_frame(true, true), expected, "cached input frame");
-    plx_machine::idle::invalidate();
-    assert_eq!(embedded_alert_frame(true, true), expected, "host damage recapture");
+    assert_eq!(embedded_alert_frame(&_reset.modal, false, true), expected, "opening frame");
+    assert_eq!(embedded_alert_frame(&_reset.modal, true, true), expected, "first settled frame");
+    assert_eq!(embedded_alert_frame(&_reset.modal, true, true), expected, "cached input frame");
+    // Capture attribution is now supplied by the owning Present.
+    super::begin_frame(&_reset.modal, 0.0, false, true);
+    assert_eq!(embedded_alert_frame(&_reset.modal, true, true), expected, "host damage recapture");
 }
 
 #[test]
@@ -82,11 +320,11 @@ fn cache_off_and_no_later_scope_explain_the_old_green_paths() {
     let expected = vec!["page", "scrim", "glass", "title/body/buttons"];
     {
         let _reset = Reset::new(true);
-        assert_eq!(embedded_alert_frame(true, true), expected, "cache-off simulator");
+        assert_eq!(embedded_alert_frame(&_reset.modal, true, true), expected, "cache-off simulator");
     }
     {
         let _reset = Reset::new(false);
-        assert_eq!(embedded_alert_frame(true, false), expected, "alert drawn last");
+        assert_eq!(embedded_alert_frame(&_reset.modal, true, false), expected, "alert drawn last");
     }
 }
 
@@ -97,13 +335,13 @@ fn reconciling_card_content_invalidates_its_cached_ground_only_when_changed() {
     let _reset = Reset::new(false);
     let mut alert = DecisionAlert::new();
     alert.open_card(c"Details", vec!["support".into()], Answers::One);
-    embedded_alert_frame(true, true);
+    embedded_alert_frame(&_reset.modal, true, true);
     assert!(matches!(held(), Held::Ground(_)));
     assert!(!alert.reconcile_card(c"Details", vec!["support".into()], Answers::One));
     assert!(matches!(held(), Held::Ground(_)), "unchanged content keeps its snapshot");
     assert!(alert.reconcile_card(c"Details", vec!["receipt".into(), "support".into()], Answers::Two));
     assert!(held() == Held::Nothing, "the taller card cannot reuse the old panel outline");
-    assert_eq!(embedded_alert_frame(true, true), ["page", "scrim", "glass", "title/body/buttons"]);
+    assert_eq!(embedded_alert_frame(&_reset.modal, true, true), ["page", "scrim", "glass", "title/body/buttons"]);
 }
 
 // Moved here from `gfx.rs`'s tests (module-layers step L5): it drives the popover host's
@@ -111,11 +349,12 @@ fn reconciling_card_content_invalidates_its_cached_ground_only_when_changed() {
 // term to be reached through.
 #[test]
 fn a_field_keeps_its_dither_through_every_motion() {
-    use plx_machine::idle::{frame_begin, note_spring, page_moving, present_moving, MotionScope};
-    use crate::popover::host::begin_frame;
+    use plx_machine::motion::report::{frame_begin, note_spring, page_moving, present_moving, MotionScope};
+
     let _g = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
     frame_begin(1.0 / 60.0);
-    begin_frame(false);
+    begin_frame(&_reset.modal, false);
     assert_eq!(plx_gfx::gfx::dither_for_field(700.0, 700.0), plx_gfx::gfx::DITHER_LSB, "at rest, the field pays");
 
     // A POPOVER's spring: 100 units from its target, stepped inside its own scope, the way
@@ -125,7 +364,7 @@ fn a_field_keeps_its_dither_through_every_motion() {
     note_spring(0.0, 100.0, 0.0);
     assert!(scope.close(), "the scope saw the spring");
     assert!(present_moving() && !page_moving());
-    begin_frame(false);
+    begin_frame(&_reset.modal, false);
     assert_eq!(
         plx_gfx::gfx::dither_for_field(700.0, 700.0),
         plx_gfx::gfx::DITHER_LSB,
@@ -138,8 +377,21 @@ fn a_field_keeps_its_dither_through_every_motion() {
     frame_begin(1.0 / 60.0);
     note_spring(0.0, 100.0, 0.0);
     assert!(page_moving());
-    begin_frame(true);
+    begin_frame(&_reset.modal, true);
     assert_eq!(plx_gfx::gfx::dither_for_field(700.0, 700.0), plx_gfx::gfx::DITHER_LSB, "page motion is not a field's business");
+}
+
+#[test]
+fn decorative_page_motion_does_not_count_as_layout_motion() {
+    use plx_machine::motion::report::{decorative, frame_begin, note_motion, page_layout_moving, page_moving, present_moving};
+    let _serial = plx_base::testlock::serial();
+    frame_begin(1.0 / 60.0);
+    decorative(note_motion);
+    assert!(present_moving(), "decorative pixels still need a present");
+    assert!(page_moving(), "decorative pixels belong to the page");
+    assert!(!page_layout_moving(), "decoration must not hold page quiescence");
+    note_motion();
+    assert!(page_layout_moving(), "ordinary page motion must still hold quiescence");
 }
 
 /// A caller's own panel radius, deliberately not the board's 22: the morph must END on it.
@@ -168,16 +420,22 @@ fn a_morphing_popover_is_one_surface_and_settles_both_ways() {
     let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
     assert!((f.radius - RAD).abs() < 0.05 && (f.rect.h - panel.h).abs() < 0.5, "the morph ends on the caller's radius");
     pop.dismiss();
-    let mut last = f.rect.h;
-    for _ in 0..240 {
+    // a close BULGES (iOS: ~7% of the travel at ~33 ms, `popover_morph::BULGE_KICK_H`) and only shrinks
+    // from ~50 ms on
+    let mut last = f.rect.h * 1.08;
+    for n in 0..240 {
         pop.update(1.0 / 60.0);
         if !pop.visible() {
             break;
         }
         let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
         one_surface(f);
-        assert!(f.rect.h <= last + 1e-3, "the close only shrinks");
-        last = f.rect.h;
+        // the slab shrinks into the opener until it is gone; after that the frame is the closed one
+        // (the opener at rest, no glass), which stays until the appear fade lands
+        if f.ground_alpha > 0.0 && n >= 3 {
+            assert!(f.rect.h <= last + 1e-3, "the close only shrinks: {f:?} after {last}");
+            last = f.rect.h;
+        }
     }
     assert!(!pop.visible(), "the close lands and the panel is gone");
     let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
@@ -185,14 +443,18 @@ fn a_morphing_popover_is_one_surface_and_settles_both_ways() {
     pop.close();
 }
 
-/// **N-b: the glass leaves its opener as a ramp, never as an opaque slab.** The first glass frame of
-/// an open (and the last of a close) used to be laid at FULL strength while the springs had already
-/// pushed its rect ~25 px past the lit opener, so a ~165x62 dark slab hung under the pill for one
-/// frame (5-menus/libsf-zoom n=155 / 247). The rule, over every header opener: whenever the glass
-/// stands outside the opener's rect, its alpha AND its shadow are the morph's one fill ramp, so it is
-/// never opaque on the frame it first appears or last shows.
+/// **N-b: the glass leaves its opener as a ramp, never as an opaque slab; and it comes back as a
+/// drop that drains.** The first glass frame of an open used to be laid at FULL strength while the
+/// springs had already pushed its rect ~25 px past the lit opener, so a ~165x62 dark slab hung under
+/// the pill for one frame (5-menus/libsf-zoom n=155 / 247). The rule, over every header opener:
+/// whenever an OPENING glass stands outside the opener's rect, its alpha AND its shadow are the
+/// morph's one fill ramp, so it is never opaque on the frame it first appears. A CLOSE is the
+/// droplet's (owner, 2026-11-17, measured from iOS 26): the clear slab is whole glass all the way
+/// into the opener, so the ramp does not apply; what is held instead is that once it has arrived
+/// it hangs only in the drain band under the opener (no wider than the drain, no lower than it) and
+/// that the last frame of glass is a bead a fraction of the drain's size, never a slab.
 #[test]
-fn the_glass_leaves_every_header_opener_as_a_ramp_on_open_and_on_close() {
+fn the_glass_leaves_every_header_opener_as_a_ramp_and_drains_back_on_close() {
     let _g = plx_base::testlock::serial();
     let openers = [
         ("Library Sort & Filter", crate::Rect::new(1589.0, 146.0, 204.0, 60.0)),
@@ -202,17 +464,9 @@ fn the_glass_leaves_every_header_opener_as_a_ramp_on_open_and_on_close() {
         ("the account chip at rest, a circle", crate::widgets::chip_cap(0.0, 0.0)),
     ];
     for (name, pill) in openers {
-        let panel = crate::Rect::new(pill.x, pill.y + pill.h + 14.0, 316.0, 400.0);
+        let panel = crate::popover::cover_opener(pill, (316.0, 400.0), crate::consts::SAFE);
+        let drain = crate::popover_morph::drain_rect(pill);
         let outside = |r: crate::Rect| r.x < pill.x - 1.0 || r.y < pill.y - 1.0 || r.x + r.w > pill.x + pill.w + 1.0 || r.y + r.h > pill.y + pill.h + 1.0;
-        let check = |pop: &crate::popover::Popover, what: &str, frame: usize, shown: &mut Vec<f32>| {
-            let Some(g) = pop.ground(panel, RAD) else { return };
-            let fill = crate::popover_morph::fill_at(pop.morph_frame(Some(pill), panel, RAD).unwrap().progress);
-            shown.push(g.alpha);
-            if outside(g.rect) {
-                assert!(g.alpha <= fill + 1e-4 && g.shadow <= fill + 1e-4,
-                    "{name} {what} frame {frame}: glass {} / shadow {} past the opener outruns the fill ramp {fill}", g.alpha, g.shadow);
-            }
-        };
         let mut pop = crate::popover::Popover::new().morphing();
         pop.open_from(Some(pill));
         // the morph begins ON the opener, in its own corner: the lit opener's rect and its round
@@ -222,25 +476,90 @@ fn the_glass_leaves_every_header_opener_as_a_ramp_on_open_and_on_close() {
         let mut opening = Vec::new();
         for n in 0..240 {
             pop.update(1.0 / 60.0);
-            check(&pop, "open", n, &mut opening);
+            let Some(g) = pop.ground(panel, RAD) else { continue };
+            // the fill ramp is the HEIGHT's (it leads, so the glass draws from the first step): read it off the rect
+            let fill = crate::popover_morph::fill_at(((g.rect.h - pill.h) / (panel.h - pill.h)).clamp(0.0, 1.0));
+            opening.push(g.alpha);
+            if outside(g.rect) {
+                assert!(g.alpha <= fill + 1e-4 && g.shadow <= fill + 1e-4,
+                    "{name} open frame {n}: glass {} / shadow {} past the opener outruns the fill ramp {fill}", g.alpha, g.shadow);
+            }
         }
         assert!(opening.first().is_some_and(|a| *a < 1.0), "{name}: the first glass frame is not opaque: {opening:?}");
         assert!(opening.windows(2).all(|w| w[1] >= w[0] - 1e-4), "{name}: the glass only strengthens while opening");
         pop.dismiss();
-        let mut closing = Vec::new();
-        for n in 0..240 {
+        let mut bead = None;
+        for _ in 0..240 {
             pop.update(1.0 / 60.0);
             if !pop.visible() {
                 break;
             }
-            check(&pop, "close", n, &mut closing);
+            let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
+            if f.ground_alpha <= 0.0 {
+                continue;
+            }
+            bead = Some(f.rect);
         }
-        assert!(closing.last().is_some_and(|a| *a < 1.0), "{name}: the last glass frame is not opaque: {closing:?}");
+        let bead = bead.expect("the close draws glass");
+        assert!(bead.w * bead.h <= 0.15 * drain.w * drain.h, "{name}: the last glass frame {bead:?} is a bead, not a slab (drain {drain:?})");
         let end = pop.morph_frame(Some(pill), panel, RAD).unwrap();
-        assert_eq!((end.rect, end.radius), (pill, pill.h * 0.5), "{name}: the close lands on the opener's rect and corner");
-        assert!(closing.windows(2).all(|w| w[1] <= w[0] + 1e-4), "{name}: the glass only weakens while closing");
+        assert_eq!((end.rect, end.radius, end.ground_alpha, end.opener_alpha), (pill, pill.h * 0.5, 0.0, 1.0),
+            "{name}: the close lands on the opener's rect and corner, the opener whole");
         pop.close();
     }
+}
+
+/// **The opener fill a caller names reaches the glass the close draws**: the last frame of a
+/// header menu's close that draws glass wears the opener's focused fill (`Popover::opener_fill`,
+/// the colour [`crate::page_header::OPENER_FILL`] the lift paints the pill with) as the join's
+/// tint, the glass it DECLARES says so (a different draw from the same frame with no fill), and a
+/// popover that names none (the profile chip's menu) joins the glass as it always did.
+#[test]
+fn the_close_whitens_the_blob_toward_the_fill_its_caller_names() {
+    use crate::popover_glass::{face_at, tests::{declared_glass, expected_morphing, latched, unlatch}};
+    let _g = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
+    let tex = 9_752;
+    let field = latched(tex);
+    let sharp = page_tex().unwrap_or(0);
+    let (pill, panel) = (crate::Rect::new(1589.0, 146.0, 204.0, 60.0), crate::Rect::new(1380.0, 146.0, 316.0, 400.0));
+    let fill = crate::page_header::OPENER_FILL;
+    let root = crate::Painter::root();
+    // the last close frame that draws glass, as declared and as the morph says it is
+    let last_glass = |fill: Option<[f32; 4]>| {
+        let mut pop = crate::popover::Popover::new().morphing();
+        if let Some(c) = fill {
+            pop = pop.opener_fill(c);
+        }
+        pop.open_from(Some(pill));
+        for _ in 0..120 {
+            pop.update(1.0 / 60.0);
+        }
+        pop.dismiss();
+        let mut last = None;
+        for _ in 0..240 {
+            pop.update(1.0 / 60.0);
+            if !pop.visible() {
+                break;
+            }
+            let Some(g) = pop.ground(panel, RAD) else { continue };
+            let declared = declared_glass(|| pop.panel(root, panel, RAD, Some(&field), crate::widgets::Ground::Menu));
+            last = Some((g, pop.morph_frame(Some(pill), panel, RAD).unwrap(), declared));
+        }
+        pop.close();
+        last.expect("the close draws glass")
+    };
+    let (g, f, declared) = last_glass(Some(fill));
+    let tint = g.morph.merge.expect("B is joined on the last glass frame").tint;
+    assert_eq!((tint[0], tint[1], tint[2]), (fill[0], fill[1], fill[2]), "the colour is the caller's, the one the lift paints");
+    assert!(tint[3] >= 0.97, "the last glass frame wears the fill: {tint:?}");
+    let a = f.ground_alpha;
+    let want = expected_morphing(root.alpha(a), f.rect, f.radius, tex, sharp, face_at(a), f.glass_morph(Some(fill)));
+    assert!(declared[0] == want[0], "the glass declares the join's tint: {f:?}");
+    let (g_plain, _, plain) = last_glass(None);
+    assert_eq!(g_plain.morph.merge.expect("B is joined").tint[3], 0.0, "no fill named, no whitening");
+    assert!(declared[0] != plain[0], "the tint is part of the declared draw");
+    unlatch(tex);
 }
 
 /// **NV1: a panel's near edge is its opener's outer edge**, one rule for every header menu: a control
@@ -256,6 +575,33 @@ fn a_panel_hangs_from_its_openers_outer_edge() {
     assert_eq!(crate::popover::hang_x(right, right.w, keep), right.x, "a panel as wide as its pill is the pill's own span");
     let at_edge = crate::Rect::new(keep.x - 2.0, 146.0, 100.0, 60.0);
     assert_eq!(crate::popover::hang_x(at_edge, 300.0, keep), keep.x, "held inside the safe frame");
+}
+
+/// **Owner, 2026-11-17: a morphing menu opens OVER its opener** (`popover::cover_opener`, the one
+/// shared rule): the panel's top edge is the opener's, the near edge hangs by [`hang_x`]'s rule, the
+/// panel is never narrower or shorter than the opener, and a panel taller than the room slides UP
+/// inside `keep` rather than down off it.
+#[test]
+fn a_panel_opens_over_its_opener_top_edges_flush() {
+    let keep = crate::consts::SAFE;
+    let right = crate::Rect::new(1589.0, 146.0, 204.0, 60.0);
+    let left = crate::Rect::new(120.0, 146.0, 230.0, 60.0);
+    let chip = crate::widgets::chip_cap(1.0, 120.0);
+    for pill in [right, left, chip] {
+        let panel = crate::popover::cover_opener(pill, (316.0, 400.0), keep);
+        assert_eq!(panel.y, pill.y, "{pill:?}: top edges flush");
+        assert!(panel.x <= pill.x + 1e-3 && panel.x + panel.w >= pill.x + pill.w - 1e-3, "{pill:?}: {panel:?} covers it across");
+        assert!(panel.y + panel.h >= pill.y + pill.h, "{pill:?}: {panel:?} covers it down");
+    }
+    assert_eq!(crate::popover::cover_opener(right, (316.0, 400.0), keep).x + 316.0, right.x + right.w, "a right control: right edges flush");
+    assert_eq!(crate::popover::cover_opener(left, (316.0, 400.0), keep).x, left.x, "a left control: left edges flush");
+    // never narrower than the opener, even when the rows are
+    let narrow = crate::popover::cover_opener(right, (120.0, 400.0), keep);
+    assert_eq!((narrow.x, narrow.w), (right.x, right.w), "a panel as narrow as its rows still spans the opener");
+    // a tall panel slides up to keep its bottom on keep's, and still covers the opener
+    let tall = crate::popover::cover_opener(right, (316.0, 900.0), keep);
+    assert_eq!(tall.y + tall.h, keep.y + keep.h, "the panel's bottom is held inside the safe frame");
+    assert!(tall.y < right.y && tall.y >= keep.y, "slid up, not down, and not off the top: {tall:?}");
 }
 
 /// DS7: every popover that does not opt in keeps the shared fade+slide, byte for byte.
@@ -281,7 +627,7 @@ fn the_default_popover_keeps_the_shared_fade_and_slide() {
 /// there carried a part-faded face over the rows (frame dump, n181: rows outside a faint glass).
 #[test]
 fn a_morphing_panel_grows_from_the_pill_and_its_glass_is_whole_once_it_is_down() {
-    use crate::popover_glass::{face_at, tests::{declared_glass, expected, latched, unlatch}};
+    use crate::popover_glass::{face_at, tests::{declared_glass, expected, expected_morphing, latched, unlatch}};
     let _g = plx_base::testlock::serial();
     let _reset = Reset::new(false);
     let tex = 9_751;
@@ -313,10 +659,13 @@ fn a_morphing_panel_grows_from_the_pill_and_its_glass_is_whole_once_it_is_down()
         // The glass rides the fill's one ramp, painter alpha and face together (N-b: no opaque slab
         // past the opener), and is whole once the fill is.
         let a = f.ground_alpha;
-        let ramped = expected(root.alpha(a), f.rect, f.radius, tex, sharp, face_at(a));
+        // ... wearing the droplet's join and clarity (`Frame::glass_morph`): a morph is clear and joined
+        // to the opener's shrinking shape until it has grown, and the declared box is the one around both.
+        let ramped = expected_morphing(root.alpha(a), f.rect, f.radius, tex, sharp, face_at(a), f.glass_morph(None));
         assert!(declared[0] == ramped[0], "mid-open: the morph rect and radius on the fill ramp {a}: {f:?}");
         grew = true;
-        assert!(f.rect.w <= panel.w + 1e-3 && f.rect.h <= panel.h + 1e-3 && f.rect.w >= pill.w - 1e-3);
+        // the open rings past the panel (height ~6%, width ~4.6% of the travel) before it rests
+        assert!(f.rect.w <= panel.w + 0.1 * (panel.w - pill.w) && f.rect.h <= panel.h + 0.1 * (panel.h - pill.h) && f.rect.w >= pill.w - 1e-3);
     }
     assert!(painted > 0 && grew, "mid-open the ground is the morphing rect, not the settled one");
     let settled = declared_glass(|| pop.panel(root, panel, RAD, Some(&field), crate::widgets::Ground::Menu));
@@ -325,12 +674,14 @@ fn a_morphing_panel_grows_from_the_pill_and_its_glass_is_whole_once_it_is_down()
     unlatch(tex);
 }
 
-/// **A menu's glass stands on ONE capture of its host while it opens and stays, and one more for
-/// its whole close.** Frames of a menu over a still page, through the real host protocol: the
-/// snapshot is taken once ([`page_epoch`] moves once) for the open and the stay, however its own
-/// springs move; the dismiss drops it (`Popover::release`) and the close's first frame takes it
-/// again, after which the fade re-takes nothing. The glass's rim reads the snapshot's texture
-/// (the CPU stand-in's).
+/// **A menu's glass stands on ONE capture of its host for its whole life: the open, the stay and
+/// the close.** Frames of a menu over a still page, through the real host protocol: the snapshot is
+/// taken once ([`page_epoch`] moves once) for the open and the stay, however its own springs move,
+/// and the dismiss throws nothing away (`Popover::release` drops only a GROUND-stage snapshot, which
+/// a morphing panel's `Live` host never holds), so the close's first frame is not the frame that
+/// re-draws the page into the snapshot, re-sources the tab bar's blur and re-latches the dim field
+/// (131% of a 60 Hz frame's GPU budget on the TV, measured). The glass's rim reads the snapshot's
+/// texture (the CPU stand-in's).
 #[test]
 fn a_menu_glass_reads_one_host_capture_through_open_stay_and_close() {
     use crate::popover_glass::tests::{declared_glass, expected, latched, unlatch};
@@ -342,13 +693,13 @@ fn a_menu_glass_reads_one_host_capture_through_open_stay_and_close() {
     let epoch = page_epoch();
     let mut pop = crate::popover::Popover::new().morphing();
     pop.open_from(Some(crate::Rect::new(1500.0, 40.0, 196.0, 38.0)));
-    let (mut frames, mut drawn, mut closing, mut closed_at) = (0, 0, false, 0);
+    let (mut frames, mut drawn, mut closing) = (0, 0, false);
     while pop.visible() {
         pop.update(1.0 / 60.0);
-        begin_frame(false);
+        begin_frame(&_reset.modal, false);
         PIXELS.with(|p| p.borrow_mut().clear());
         {
-            let _page = page_pass();
+            let _page = page_pass(&_reset.modal);
             ink("page");
             let _scrim = live();
             ink("scrim");
@@ -358,31 +709,66 @@ fn a_menu_glass_reads_one_host_capture_through_open_stay_and_close() {
         assert!(glass.len() <= 1);
         drawn += glass.len();
         frames += 1;
-        // Each frame of the close after the first re-takes nothing (the first: below).
-        if closing && frames > closed_at + 1 {
-            assert_eq!(page_epoch().wrapping_sub(epoch), 2, "frame {frames} of the close re-took the host");
+        // Not one frame of the close re-takes the host, the first included.
+        if closing {
+            assert_eq!(page_epoch().wrapping_sub(epoch), 1, "frame {frames} of the close re-took the host");
         }
         if !closing && pop.appear_settled() {
             assert_eq!(page_epoch().wrapping_sub(epoch), 1, "one host capture for the open and the stay");
-            closed_at = frames;
             // The settled panel's glass, against one built with this capture's texture as its
             // rim's source and against one with none.
             let want = |sharp| expected(crate::Painter::root(), panel, RAD, tex, sharp, crate::popover_glass::FACE);
             assert!(sharp != 0 && glass[0] == want(sharp)[0], "the rim reads the host snapshot");
             assert!(glass[0] != want(0)[0]);
-            // The close key, as `app.rs` delivers it: inside the panel's input scope, so its
-            // invalidate is the panel's damage, not the page's.
-            let _input = input_scope();
+            // The app captures input attribution and addresses only its owned surface.
+            assert!(!_reset.modal.read.closing_only, "premise: the close key is delivered to the open panel");
+            let mut present = plx_machine::present::Present::new();
+            present.note_in_scope(plx_machine::present::Scope::Surface,
+                plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
+            assert!(!present.page_damaged());
+            let invalidated = invalidations();
             pop.dismiss();
+            assert_eq!(invalidations(), invalidated, "the dismiss threw the host snapshot away");
             closing = true;
         }
         assert!(frames < 600);
     }
     assert!(closing && drawn > 0, "the glass drew: {drawn}");
-    // `Popover::release` drops the snapshot on the dismiss itself (a ground-stage snapshot holds
-    // the panel), so the close's first frame takes the page once more; its fade takes nothing.
-    assert_eq!(page_epoch().wrapping_sub(epoch), 2, "one capture for open and stay, one at the dismiss, over {frames} frames");
+    assert_eq!(page_epoch().wrapping_sub(epoch), 1, "one capture for the open, the stay and the close, over {frames} frames");
     unlatch(tex);
+}
+
+/// **The dismiss still drops a GROUND-stage snapshot — the one thing `Popover::release` has to
+/// protect.** A `Held::Ground` snapshot is page + scrim + lifted opener + the panel's own ground at
+/// FULL strength, so a fade drawn over it would keep showing the settled panel; it must be retaken
+/// from the live ground. (Only a `caching_host` popover reaches that stage: `decision_alert` is the
+/// production one. A `Live` host, every glass menu, never holds a ground, and a plain page snapshot
+/// is exactly what a fade-out wants to keep — see
+/// `a_menu_glass_reads_one_host_capture_through_open_stay_and_close`.) Green before and after the
+/// release narrowed from `invalidate` to `ground_invalidate`.
+#[test]
+fn a_dismiss_drops_the_ground_stage_of_a_caching_popover() {
+    let _serial = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
+    let mut pop = crate::popover::Popover::new().caching_host();
+    pop.open();
+    for _ in 0..240 {
+        pop.update(1.0 / 60.0);
+    }
+    assert!(pop.appear_settled(), "premise: the panel has landed");
+    for _ in 0..3 {
+        begin_frame(&_reset.modal, false);
+        PIXELS.with(|p| p.borrow_mut().clear());
+        let _page = page_pass(&_reset.modal);
+        ink("page");
+        let _scrim = live();
+        ink("scrim");
+        ground_drawn(pop.appear_settled());
+    }
+    assert!(matches!(held(), Held::Ground(_)), "premise: the settled panel's ground is held");
+    pop.dismiss();
+    assert!(held() == Held::Nothing, "the dismiss kept a snapshot of the panel at full strength");
+    pop.close();
 }
 
 /// Finding 1: the ground's radius is the caller's through the whole life of the panel. The old
@@ -419,14 +805,15 @@ fn the_ground_radius_does_not_snap_at_settle_or_at_the_start_of_a_close() {
     pop.close();
 }
 
-/// Spec (c): the rows of an unsettled morph are clipped to the CURRENT surface rect on every frame
+/// Spec (c): the rows of an unsettled morph are clipped to the surface's ROUND LENS (its rect and radius, through the shared
+/// painter's rounded clip, so a letter is cut by the arc and not by a straight edge) on every frame
 /// they draw, scaled about the panel anchor by the row spring, at the content alpha, and not drawn
 /// at all before the glass has taken over (but still walked by the text recorder, so their text is
 /// resident in time); settled (and the fade+slide) they draw through `p` untouched. Red on the
 /// build whose rows led the glass: rows drew at progress 0.05, on a surface that was still pill.
 #[test]
 fn morph_rows_are_clipped_to_the_surface_and_wait_for_the_glass() {
-    use crate::{popover_morph::rows_anchor, screen::ClipScope, Painter, Rect};
+    use crate::{popover_morph::rows_anchor, screen::{ClipScope, RoundClip}, Painter, Rect};
     let _g = plx_base::testlock::serial();
     let (pill, panel) = (Rect::new(1500.0, 40.0, 196.0, 38.0), Rect::new(1380.0, 40.0, 316.0, 400.0));
     let row = Rect::new(panel.x + 10.0, panel.y + 100.0, panel.w - 20.0, 60.0);
@@ -446,6 +833,7 @@ fn morph_rows_are_clipped_to_the_surface_and_wait_for_the_glass() {
                 // The morph has settled (a visual-arrival test, within 0.1% of rest): untouched rows.
                 assert!((f.rect.w - panel.w).abs() < 1.0 && (f.rows_scale - 1.0).abs() < 0.01, "only a settled morph is unclipped: {f:?}");
                 assert_eq!(ClipScope::current(), None);
+                assert_eq!(ClipScope::current_round(), None, "settled: the handover crops nothing");
                 assert_eq!(p.place(row), row, "settled: rows at their final layout");
                 return;
             }
@@ -453,10 +841,13 @@ fn morph_rows_are_clipped_to_the_surface_and_wait_for_the_glass() {
             assert!(f.content_alpha > 0.0 && f.ground_alpha == 1.0, "rows drawn on a surface that is not yet glass: {f:?}");
             assert!((p.opacity() - f.content_alpha).abs() < 1e-6, "at the content alpha");
             let same = |a: Rect, b: Rect| (a.x - b.x).abs() + (a.y - b.y).abs() + (a.w - b.w).abs() + (a.h - b.h).abs() < 1e-2;
-            assert!(same(p.clip_rect(), f.rect), "the cascade clip is the surface rect");
-            assert!(same(ClipScope::current().unwrap(), f.rect), "the scissor is the surface rect");
+            assert!(same(p.clip_rect(), f.rect), "the cascade clip is the surface's rect");
+            assert!(same(ClipScope::current().unwrap(), f.rect), "the scissor is the lens's bounding box");
+            let round = ClipScope::current_round().expect("a morph frame's rows are cut by the lens");
+            assert!(same(round.rect, f.rect) && (round.radius - f.radius).abs() < 1e-2, "the lens, rect and radius: {round:?} vs {f:?}");
+            assert_eq!(round, RoundClip { rect: round.rect, radius: round.radius });
             let placed = p.place(row);
-            assert!((placed.w - row.w * f.rows_scale).abs() < 1e-3 && (placed.h - row.h * f.rows_scale).abs() < 1e-3, "scaled by the row spring");
+            assert!((placed.w - row.w * f.rows_scale).abs() < 1e-3 && (placed.h - row.h * f.rows_scale).abs() < 1e-3, "scaled by the lens spring");
             let (ax, ay) = rows_anchor(Some(pill), panel);
             let fixed = p.place(Rect::new(ax, ay, 1.0, 1.0));
             assert!((fixed.x - ax).abs() < 1e-3 && (fixed.y - ay).abs() < 1e-3, "the anchor does not move");
@@ -466,6 +857,7 @@ fn morph_rows_are_clipped_to_the_surface_and_wait_for_the_glass() {
             waited += 1;
         }
         assert_eq!(ClipScope::current(), None, "the scissor is released");
+        assert_eq!(ClipScope::current_round(), None, "the rounding is released");
     };
     for _ in 0..240 {
         pop.update(1.0 / 60.0);
@@ -494,14 +886,16 @@ fn morph_rows_are_clipped_to_the_surface_and_wait_for_the_glass() {
 
 /// One frame of a surface over a page, as `embedded_alert_frame` draws it, with the page's ink
 /// named so a test sees WHICH page was drawn. The page raises damage (it is moving).
-fn reflow_frame(page: &'static str, moving: bool) -> Vec<&'static str> {
+fn reflow_frame(modal: &crate::containers::modal::ModalPresentation, page: &'static str, moving: bool) -> Vec<&'static str> {
+    let mut present = plx_machine::present::Present::new();
     if moving {
-        plx_machine::idle::invalidate();
+        plx_machine::machine::PresentHandle::of(&mut present).note(
+            plx_machine::present::PresentEvent::Damage(plx_machine::present::Provenance::Input));
     }
-    begin_frame(false);
+    super::begin_frame(modal, 1.0 / 60.0, moving, present.page_damaged());
     PIXELS.with(|p| p.borrow_mut().clear());
     {
-        let _page = page_pass();
+        let _page = page_pass(modal);
         ink(page);
         {
             let _scrim = live();
@@ -538,39 +932,36 @@ fn counts() -> (u32, u32, u32, u32, usize) {
 #[test]
 fn a_reflowing_page_is_live_under_the_glass_and_the_host_is_retaken_once() {
     let _serial = plx_base::testlock::serial();
-    let _reset = Reset::new(false);
+    let mut _reset = Reset::new(false);
     reset_reflow();
     mock::CAPTURES.with(|c| c.set(0));
     mock::PREV_COPIES.with(|c| c.set(0));
     mock::PREV_RELEASES.with(|c| c.set(0));
     mock::PREV_DRAWS.with(|d| d.borrow_mut().clear());
-    let dt = 1.0 / 60.0;
     // open: the page stage, then the settled ground
     for _ in 0..3 {
-        reflow_frame("page-open", false);
+        reflow_frame(&_reset.modal, "page-open", false);
     }
     assert!(matches!(held(), Held::Ground(_)), "premise: the ground is held");
     let (epoch, caps, ..) = counts();
     assert_eq!(caps, 2, "premise: one page capture and one ground capture to open");
 
-    set_reflow(true, dt);
+    _reset.modal.reflow = true;
     for k in 0..10 {
         let name: &'static str = ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9"][k];
-        assert_eq!(reflow_frame(name, true), vec![name, "scrim", "glass", "foreground"], "frame {k}: the live page, under the glass");
-        set_reflow(true, dt);
+        assert_eq!(reflow_frame(&_reset.modal, name, true), vec![name, "scrim", "glass", "foreground"], "frame {k}: the live page, under the glass");
         let (e, c, ..) = counts();
         assert_eq!((e, c), (epoch, caps), "frame {k}: nothing is captured while the page moves");
     }
 
     // it stops: the exit frame is still live and keeps the old look
-    set_reflow(false, dt);
-    assert_eq!(reflow_frame("r-final", false), vec!["r-final", "scrim", "glass", "foreground"], "the exit frame is live");
+    _reset.modal.reflow = false;
+    assert_eq!(reflow_frame(&_reset.modal, "r-final", false), vec!["r-final", "scrim", "glass", "foreground"], "the exit frame is live");
     let (e, c, copies, released, _) = counts();
     assert_eq!((e, c, copies, released), (epoch, caps, 1, 0), "the exit frame copies the old look, once, and captures nothing");
 
     // the next frame takes the host once: page (epoch + 1) and ground (one more snapshot)
-    set_reflow(false, dt);
-    reflow_frame("r-final", false);
+    reflow_frame(&_reset.modal, "r-final", false);
     let (e, c, copies, released, draws) = counts();
     assert_eq!(e, epoch + 1, "page_epoch moved exactly once for the whole reflow");
     assert_eq!(c, caps + 2, "one page capture and one ground capture, nothing per frame");
@@ -580,8 +971,7 @@ fn a_reflowing_page_is_live_under_the_glass_and_the_host_is_retaken_once() {
     // the blend runs to 1 over about 150 ms of ticks, drawing the old look at 1 - b
     let mut frames = 0;
     while crossfade().is_some() && frames < 30 {
-        set_reflow(false, dt);
-        reflow_frame("r-final", false);
+        reflow_frame(&_reset.modal, "r-final", false);
         frames += 1;
     }
     assert!(crossfade().is_none(), "the blend finished");
@@ -593,7 +983,6 @@ fn a_reflowing_page_is_live_under_the_glass_and_the_host_is_retaken_once() {
     assert_eq!((e, c, copies, released), (epoch + 1, caps + 2, 1, 1), "still one retake in all; the old texture is released at b = 1");
     assert!(!cache(|c| c.has_prev()), "and the cache keeps no second slot");
     let after = counts().4;
-    set_reflow(false, dt);
-    reflow_frame("r-final", false);
+    reflow_frame(&_reset.modal, "r-final", false);
     assert_eq!(counts().4, after, "no old-look quad once it is released");
 }
