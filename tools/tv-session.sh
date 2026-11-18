@@ -4,13 +4,14 @@
 #
 #   tv-session.sh up [opts]      wake -> deploy-if-stale -> clear triggers -> arm -> launch -> verify
 #   tv-session.sh status         re-assert an existing session without disturbing it
-#   tv-session.sh key <token>…   send key tokens (down, ok, back, play, pause, stop, …)
+#   tv-session.sh key <token>…   send key tokens (down, ok, back, play, pause, stop, …); never `focus:`,
+#                                `press:` or `state:` (the three verbs below are their one door)
 #   tv-session.sh click <x> <y>  click at authored 1920x1080 coords
 #   tv-session.sh focus <id>     move focus to the element an accessibility id names (`nav.watchlist`)
 #   tv-session.sh press <id> [--rk <ratingKey>]
 #                                focus that element and press OK; an element whose subject is a title
 #                                (a card, a Detail episode or season tab, a Filmography credit, the catalog
-#                                pill) needs --rk: see "BY ID" below
+#                                pill, a Home hero control, an item-menu row) needs --rk: see "BY ID" below
 #   tv-session.sh state [--out FILE]
 #                                what is on screen, by id: the focused id, the groups, every element
 #   tv-session.sh shot [out.png] grab the panel (video plane included) via the capture service
@@ -131,8 +132,11 @@
 # Prefer them to `key` walks, which are for tests whose subject is travel. Never press OK on a title whose
 # ratingKey you have not read: `press` refuses, without `--rk`, any id whose element's subject is a title (a
 # card `*.card.*`, a Detail episode `detail.episodes.*` (OK on a still PLAYS it) or season tab, a Filmography
-# credit, the catalog pill: `a11y_subject_bearing`), and the app refuses the press when the element now there
-# carries another subject (`a11y: refused press <id> subject_mismatch ...` in the event log).
+# credit, the catalog pill, a Home hero button `home.hero.*` (the carousel advances by itself), an item-menu
+# row `itemmenu.*`: `a11y_subject_bearing`), and the app refuses the press when the element now there carries
+# another subject (`a11y: refused press <id> subject_mismatch ...` in the event log). `key` refuses a
+# `focus:`, `press:` or `state:` word, so there is ONE door per action, and a word with whitespace in it is
+# refused (the app would cut it into two tokens, the second past every check here).
 # A `state` snapshot holds titles and rating keys: it is for you, not for an issue or a recording.
 #
 # THE TV LOCK: every subcommand that DRIVES the set (up, key, click, focus, press, state, shot, down) requires the
@@ -1019,26 +1023,47 @@ cmd_up() {
   echo "== session up"
 }
 
-# `fifo_write` / `fifo_send`: any one-line word reaches the remote shell as ONE quoted word, a newline is
-# refused, and nothing is sent for a refusal. Round trip through `sh -c`, the way the set's shell reads it.
+# `fifo_write` / `fifo_send`: any ONE-WORD token reaches the remote shell as ONE quoted word; a token with
+# whitespace in it (any the app cuts a line at: see `fifo_token_ok`) is refused, and nothing is sent for a
+# refusal. Round trip through `sh -c`, the way the set's shell reads it. Then the doors in front of it: `key`
+# refuses the three by-id tokens and judges every word before sending any, while `click`, `focus` and `press`
+# still send through `send_tokens` (no television: `tv` and `require_lock` are stubbed in a subshell).
 selftest_fifo() {
-  local REMOTE_FIFO probe word stmt got sent_to_tv=0 sent_arg="" _real_tv
+  local REMOTE_FIFO probe word stmt got sent_to_tv=0 sent_arg="" _real_tv marker
   probe=$(mktemp "${TMPDIR:-/tmp}/plx-fifo-selftest.XXXXXX") || { bad "no scratch file for the FIFO quoting check"; return 1; }
   REMOTE_FIFO=$probe
-  for word in "txt:it's" "txt:'; echo pwned >&2; '" "'" "''" 'a"b' 'a$HOME`id`b;&|()<>' 'x\y\n' "txt:a b" "txt:*" "back" "ck:10,20"; do
-    stmt=$(fifo_write "$word") || { bad "fifo_write refused a one-line word: $word"; rm -f "$probe"; return 1; }
+  # one-word tokens, injection attempts spelled without a space (a space is refused below), and non-ASCII text
+  # that is NOT whitespace: Cyrillic, an accented letter, a curly apostrophe, an em dash and an ellipsis
+  # (U+2019, U+2014, U+2026 share their lead bytes with the Unicode spaces `fifo_token_ok` refuses)
+  for word in "txt:it's" "txt:';echo\${IFS}pwned>&2;'" "'" "''" 'a"b' 'a$HOME`id`b;&|()<>' 'x\y\n' "txt:a+b" "txt:*" \
+              "back" "ck:10,20" "txt:привет" "txt:caf$(printf '\303\251')" "txt:it’s—a…b"; do
+    stmt=$(fifo_write "$word") || { bad "fifo_write refused a one-word token: $word"; rm -f "$probe"; return 1; }
     : > "$probe"
     sh -c "$stmt" 2>/dev/null
     got=$(cat "$probe")
     [ "$got" = "$word" ] || { bad "the FIFO got '$got' for the word '$word'"; rm -f "$probe"; return 1; }
   done
   rm -f "$probe"
-  if fifo_write $'back\nok' >/dev/null 2>&1; then bad "fifo_write accepted a word with a newline"; return 1; fi
+  # A token is ONE word: the app cuts a line at ANY whitespace, so each of these would be two tokens, the second
+  # (a title's press with no subject) past every check in this file. The multi-byte ones are U+0085, U+00A0,
+  # U+1680, U+2000, U+200A, U+2028, U+2029, U+202F, U+205F and U+3000.
+  local refused=(
+    $'back\nok' "back ok" $'back\tok' $'back\rok' $'back\vok' $'back\fok' " back" "back " "txt:a b"
+    "back press:home.hero.play" "ok press:home.shelf.2.card.5" $'back\n press:x'
+    $'back\xc2\x85press:x' $'back\xc2\xa0press:x' $'back\xe1\x9a\x80press:x' $'back\xe2\x80\x80press:x'
+    $'back\xe2\x80\x8apress:x' $'back\xe2\x80\xa8press:x' $'back\xe2\x80\xa9press:x' $'back\xe2\x80\xafpress:x'
+    $'back\xe2\x81\x9fpress:x' $'back\xe3\x80\x80press:x'
+  )
+  for word in "${refused[@]}"; do
+    if fifo_write "$word" >/dev/null 2>&1; then bad "fifo_write accepted a token with whitespace in it: $(printf '%s' "$word" | od -An -c | tr -s ' ' | head -c 60)"; return 1; fi
+  done
   # fifo_send: a refusal sends nothing, a word is sent as one ssh command carrying the escaped quote.
   _real_tv=$(declare -f tv)
   tv() { sent_to_tv=1; sent_arg=$1; }
-  fifo_send $'back\nok' >/dev/null 2>&1; got=$?
-  [ "$got" = 2 ] && [ "$sent_to_tv" = 0 ] || { eval "$_real_tv"; bad "a newline word was sent (status $got)"; return 1; }
+  for word in "${refused[@]}"; do
+    fifo_send "$word" >/dev/null 2>&1; got=$?
+    [ "$got" = 2 ] && [ "$sent_to_tv" = 0 ] || { eval "$_real_tv"; bad "a token with whitespace was sent (status $got)"; return 1; }
+  done
   fifo_send "txt:it's" >/dev/null 2>&1; got=$?
   eval "$_real_tv"
   [ "$got" = 0 ] && [ "$sent_to_tv" = 1 ] || { bad "an ordinary word was not sent (status $got)"; return 1; }
@@ -1046,7 +1071,74 @@ selftest_fifo() {
     *"'txt:it'\\''s'"*) ;;
     *) bad "the apostrophe was not escaped for the remote shell: $sent_arg"; return 1 ;;
   esac
-  ok "tv-session FIFO quoting (any one-line word is sent as one remote word; a newline is not sent)"
+  ok "tv-session FIFO quoting (any one-word token is sent as one remote word; a token with whitespace is not sent)"
+
+  # ---- `key` is not a second door for the by-id tokens. `key_word_ok` is the predicate (returns 2, so it can be
+  # tested here: `cmd_key` exits).
+  for word in down ok back "ck:10,20" "txt:a+b" "txt:press:x" "pat:x" "shot" "hang:1000" "focused" "pressed:x" "stated"; do
+    key_word_ok "$word" >/dev/null 2>&1 || { bad "key refused the key token: $word"; return 1; }
+  done
+  for word in "focus:nav.watchlist" "press:home.continue.card.0" "press:home.hero.play" "press:home.shelf.2.card.5@1234" \
+              "press:nav.watchlist" "state:abc" "focus:" "press:" "state:"; do
+    if key_word_ok "$word" >/dev/null 2>&1; then bad "key accepted the by-id token: $word"; return 1; fi
+  done
+  got=$(key_word_ok "press:home.continue.card.0" 2>&1 || true)   # (not a pipe into grep: the refusal's status 2 fails a pipefail pipeline)
+  case "$got" in
+    *"use the press verb"*) ;;
+    *) bad "key's refusal does not point to the press verb: $got"; return 1 ;;
+  esac
+  # ... and every door still sends what it should, and a refusal sends NOTHING (not even the words in front of
+  # the bad one).
+  selftest_key_doors || return 1
+  ok "tv-session key door (focus:/press:/state: only through their verbs; a refusal sends nothing)"
+}
+
+# Run one door (`cmd_key`, `cmd_press`, ...) in a subshell, the set and its lock stubbed out: each `tv` call is one
+# line in `$1`. Prints "<exit status> <tokens sent>". `exit` inside a door only ends the subshell.
+selftest_door() {  # $1 = scratch file, then the door and its words
+  local marker=$1 rc
+  shift
+  : > "$marker"
+  ( tv() { printf '%s\n' "$1" >> "$marker"; }; require_lock() { :; }; info() { :; }; "$@" ) >/dev/null 2>&1; rc=$?
+  printf '%s %s' "$rc" "$(grep -c . "$marker")"
+}
+
+selftest_key_doors() {
+  local marker rc=0
+  marker=$(mktemp "${TMPDIR:-/tmp}/plx-key-selftest.XXXXXX") || { bad "no scratch file for the key check"; return 1; }
+  selftest_key_doors_in "$marker" || rc=1
+  rm -f "$marker"
+  return "$rc"
+}
+
+selftest_key_doors_in() {  # $1 = scratch file
+  local m=$1
+  # a refusal: status 2 and nothing sent
+  local -a refused=(
+    "cmd_key press:home.continue.card.0" "cmd_key focus:nav.watchlist" "cmd_key state:abc"
+    "cmd_key back press:home.continue.card.0" "cmd_key press:home.hero.play back"
+    "cmd_press home.hero.play" "cmd_press home.hero.info" "cmd_press home.hero.watchlist" "cmd_press home.hero.action"
+    "cmd_press itemmenu.play" "cmd_press itemmenu.watchlist_remove" "cmd_press itemmenu.version.0"
+    "cmd_press home.shelf.2.card.5" "cmd_press home.hero.play --rk" "cmd_press home.hero.play --rk 1+2"
+  )
+  local door
+  for door in "${refused[@]}"; do
+    # shellcheck disable=SC2086  # the words are spelled in the entry, none holds a space
+    [ "$(selftest_door "$m" $door)" = "2 0" ] || { bad "$door was not refused with nothing sent ($(selftest_door "$m" $door))"; return 1; }
+  done
+  # one WORD with whitespace in it (a space, an NBSP) is refused before the `back` ahead of it is sent
+  [ "$(selftest_door "$m" cmd_key back "ok press:home.continue.card.0")" = "2 0" ] || { bad "key sent a word with a space in it"; return 1; }
+  [ "$(selftest_door "$m" cmd_key back $'ok\xc2\xa0press:x')" = "2 0" ] || { bad "key sent a word with an NBSP in it"; return 1; }
+  [ "$(selftest_door "$m" cmd_key ok "back
+press:x")" = "2 0" ] || { bad "key sent a word with a newline in it"; return 1; }
+  # the doors that stay open: key tokens through `key`/`click`, and the ids through their verbs
+  [ "$(selftest_door "$m" cmd_key back ok)" = "0 2" ] || { bad "key did not send two key tokens"; return 1; }
+  [ "$(selftest_door "$m" cmd_click 10 20)" = "0 1" ] && grep -q "'ck:10,20'" "$m" || { bad "click did not send ck:10,20"; return 1; }
+  [ "$(selftest_door "$m" cmd_focus nav.watchlist)" = "0 1" ] && grep -q "'focus:nav.watchlist'" "$m" || { bad "focus did not send its token"; return 1; }
+  [ "$(selftest_door "$m" cmd_press home.hero.play --rk 12)" = "0 1" ] && grep -q "'press:home.hero.play@12'" "$m" || { bad "press --rk did not send press:<id>@<rk>"; return 1; }
+  [ "$(selftest_door "$m" cmd_press itemmenu.watchlist_remove --rk 7)" = "0 1" ] && grep -q "'press:itemmenu.watchlist_remove@7'" "$m" || { bad "an item-menu press naming its title was not sent"; return 1; }
+  [ "$(selftest_door "$m" cmd_press detail.hero.play)" = "0 1" ] && grep -q "'press:detail.hero.play'" "$m" || { bad "a Detail hero press (no title to name) was not sent"; return 1; }
+  return 0
 }
 
 # Host-only regression for the command contract above. It deliberately performs no TV I/O and is
@@ -1113,17 +1205,20 @@ nav.home"; do
   [ "$(a11y_token press home.shelf.2.card.5 1234)" = "press:home.shelf.2.card.5@1234" ] || { bad "press-with-subject token"; return 1; }
   [ "$(a11y_token press catalog.primary 5d7768ab)" = "press:catalog.primary@5d7768ab" ] || { bad "press subject on the catalog pill"; return 1; }
   # Every id whose element's subject is a title is pressed by name: a card, a Detail episode (OK on a still
-  # PLAYS it), a season tab, a Filmography credit, the catalog pill. Without --rk each is refused; with it,
-  # each is sent as press:<id>@<rk>.
+  # PLAYS it), a season tab, a Filmography credit, the catalog pill, a Home hero button (the carousel advances by
+  # itself, so a bare press acts on whichever title is showing), an item-menu row (it acts on the title the hold
+  # opened). Without --rk each is refused; with it, each is sent as press:<id>@<rk>.
   for aid in home.shelf.2.card.5 home.continue.card.0 watchlist.grid.card.3 detail.episodes.still.0 \
-             detail.episodes.text.0 detail.episodes.still.3 detail.season.1 filmography.row.2 catalog.primary; do
+             detail.episodes.text.0 detail.episodes.still.3 detail.season.1 filmography.row.2 catalog.primary \
+             home.hero.play home.hero.info home.hero.watchlist itemmenu.play itemmenu.watchlist_remove itemmenu.version.0; do
     if a11y_token press "$aid" >/dev/null 2>&1; then bad "a press of $aid without --rk was accepted"; return 1; fi
     [ "$(a11y_token press "$aid" 4321)" = "press:$aid@4321" ] || { bad "press of $aid with --rk was not sent as press:<id>@<rk>"; return 1; }
     [ "$(a11y_token focus "$aid")" = "focus:$aid" ] || { bad "focus of $aid was refused"; return 1; }
   done
-  # ... and the ones that carry no title still press with none (nothing is named by `--rk` there).
-  for aid in detail.about.card detail.about.languages detail.hero.play under-posters.row.3 filmography.tab.2 \
-             itemmenu.watchlist_remove home.hero.watchlist nav.watchlist; do
+  # ... and the ones that carry no title still press with none (nothing is named by `--rk` there): Detail is only
+  # reached through a named route, so its hero buttons stay unguarded.
+  for aid in detail.about.card detail.about.languages detail.hero.play detail.hero.mark_watched under-posters.row.3 \
+             filmography.tab.2 nav.watchlist; do
     [ "$(a11y_token press "$aid")" = "press:$aid" ] || { bad "press of $aid needlessly wanted --rk"; return 1; }
   done
   for aid in "1 2" "12'34" '12@3' '12$x' "12;x" ""; do
@@ -1249,14 +1344,31 @@ cmd_status() {
 
 # One token into the remote FIFO. The app drains it each frame; the write is time-boxed so a FIFO
 # with no reader (app not running) cannot wedge this shell. `fifo_write` single-quotes the token for the
-# remote shell the POSIX way (`'` becomes `'\''`) and refuses a newline, so ANY one-line word is safe here: an
-# apostrophe in a `txt:` token included. `focus`, `press` and `state` additionally validate their ids,
-# subjects and nonce against the app's grammar (`a11y_id_ok`, `a11y_subject_ok`) before they get here.
+# remote shell the POSIX way (`'` becomes `'\''`) and refuses a token with whitespace in it, so ANY one-word
+# token is safe here: an apostrophe in a `txt:` token included (`txt:` spells a space `+`). `focus`, `press` and
+# `state` additionally validate their ids, subjects and nonce against the app's grammar (`a11y_id_ok`,
+# `a11y_subject_ok`) before they get here.
+#
+# A TOKEN IS ONE WORD. The app cuts the FIFO into tokens at ANY whitespace: `rust-modules/src/remote.rs` finds
+# the end of the complete run at ASCII whitespace (space, tab, newline, CR, FF) and then `split_whitespace`
+# cuts it at every Unicode White_Space (VT, U+0085, U+00A0, U+2000-200A, U+2028/9, U+202F, U+205F, U+3000, ...).
+# So `key $'back press:<card>'` would write TWO tokens, the second a title's press with no subject named, past
+# every check in this file. Refusing only a newline left that door open; every one of those separators is
+# refused now, and the word is judged as BYTES (`LC_ALL=C`), so the multi-byte ones are matched in any locale.
+fifo_token_ok() {  # $1 = one token; says why not (stderr) and returns 2 for a word the app would read as several
+  local LC_ALL=C
+  case "$1" in
+    *[$' \t\n\r\v\f']*|*$'\xc2\x85'*|*$'\xc2\xa0'*|*$'\xe1\x9a\x80'*|*$'\xe3\x80\x80'*|\
+    *$'\xe2\x80'[$'\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a\xa8\xa9\xaf']*|*$'\xe2\x81\x9f'*)
+      echo "tv-session: a FIFO token is ONE word with no whitespace in it (the app reads a space, tab, newline or any other whitespace as the end of a token, so a second word would be a second token, past every check here)" >&2
+      return 2 ;;
+  esac
+  return 0
+}
+
 fifo_write() {  # $1 = one token; prints the one remote statement that writes it to the FIFO, or returns 2
   local sq="'" esc
-  case "$1" in
-    *$'\n'*) echo "tv-session: a FIFO token is one line; refusing a word with a newline in it" >&2; return 2 ;;
-  esac
+  fifo_token_ok "$1" || return 2
   esc=${1//$sq/$sq\\$sq$sq}
   printf '%s' "printf '%s\n' '$esc' > $REMOTE_FIFO"
 }
@@ -1270,8 +1382,23 @@ fifo_send() {  # $1 = one token
   return 0
 }
 
-cmd_key() {
-  [ $# -gt 0 ] || { echo "usage: tv-session.sh key <token>..." >&2; exit 2; }
+# `key` is for KEYS and the like (`down`, `ok`, `ck:<x>,<y>`, `txt:...`): never for the by-id tokens, which have
+# ONE door each, `focus`, `press` and `state`, because those are where an id is checked against the grammar and a
+# title's press is made to name the title (`--rk`). Returns 2 (and says why) for a word that starts one.
+key_word_ok() {  # $1 = one word given to `key`
+  case "$1" in
+    focus:*|press:*|state:*)
+      echo "tv-session: key does not send '${1%%:*}:' tokens: use the ${1%%:*} verb (focus <id>, press <id> [--rk <ratingKey>], state), which checks the id and makes a title's press name the title" >&2
+      return 2 ;;
+  esac
+  return 0
+}
+
+# Every word is judged BEFORE any is sent (and before the lock is asked for): `key back "ok press:x"` must not
+# send `back` and then refuse. The sender behind `key`, `click`, `focus` and `press`; exits 2 on a refusal.
+send_tokens() {  # $@ = tokens, in order
+  local t
+  for t in "$@"; do fifo_write "$t" >/dev/null || exit 2; done
   require_lock "tv-session key"
   for t in "$@"; do
     fifo_send "$t" || exit 2
@@ -1279,16 +1406,24 @@ cmd_key() {
   done
 }
 
+cmd_key() {
+  [ $# -gt 0 ] || { echo "usage: tv-session.sh key <token>...   (key tokens: down ok back ... ; focus/press/state have their own verbs)" >&2; exit 2; }
+  local t
+  for t in "$@"; do key_word_ok "$t" || exit 2; done
+  send_tokens "$@"
+}
+
 cmd_click() {
   [ $# -eq 2 ] || { echo "usage: tv-session.sh click <x> <y>   (authored 1920x1080)" >&2; exit 2; }
-  cmd_key "ck:$1,$2"
+  send_tokens "ck:$1,$2"
 }
 
 # ----------------------------------------------------- by accessibility id ----
 # `focus:<id>`, `press:<id>[@<subject>]` and `state:<nonce>` are FIFO tokens of a `devtriggers` build
 # (rust-modules/ui/src/a11y.rs, dispatch/by_id.rs, src/app/a11y_state.rs). The checks below are the
 # grammar's own, so a malformed id stops HERE rather than as a refusal line on the set. (Quoting for the
-# remote shell is `fifo_write`'s, for every word `key` and `click` send as well.)
+# remote shell is `fifo_write`'s, for every word `key` and `click` send as well, and so is the refusal of a word
+# with whitespace in it; `key` itself refuses these three tokens: see `key_word_ok`.)
 #
 #   id       <ns>.<path>: ns [a-z][a-z0-9_-]*, then one or more segments, each a name [a-z][a-z0-9_]*
 #            or a canonical decimal index (0, or digits with no leading zero)
@@ -1316,17 +1451,23 @@ a11y_subject_ok() {  # $1 = a ratingKey / subject
 # takes none. Which ids those are is `a11y_subject_bearing`.
 #
 # THE LIST IS READ OFF THE CODE (`git grep -n with_subject rust-modules`), one entry per production
-# `A11y::with_subject` call, and is the same list as `SUBJECT_BEARING` in tools/a11y.py (a test holds the two
-# equal; another holds the call sites equal to the sites this list was derived from):
+# `A11y::with_subject` call SITE, and is the same list as `SUBJECT_BEARING` in tools/a11y.py (a test holds the two
+# equal; another holds the number of calls per file equal to the sites this list was derived from):
 #   *.card.*            ui/src/cards/mod.rs `card_a11y`: <section>.card.<n>, a poster, still or headshot
 #   detail.episodes.*   screens/src/detail/mod.rs: `episodes.still.<i>` (OK PLAYS it) and `episodes.text.<i>`
 #   detail.season.*     the same file: `season.<i>`, a season tab
 #   filmography.row.*   screens/src/filmography.rs: `row.<i>`, a credit
 #   catalog.primary     screens/src/catalog.rs: the Add to / On Watchlist pill (the subject is a hex id)
-# A bare `*.row.*` would also catch `under-posters.row.3`, so the namespaced ones are spelled out.
+#   home.hero.*         screens/src/home/mod.rs: `hero.play|info|watchlist` (the carousel advances by itself: a bare
+#                       press acts on whatever title is showing at that frame)
+#   itemmenu.*          screens/src/item_menu.rs: every row of the menu a hold opened (it acts on that title)
+# A bare `*.row.*` would also catch `under-posters.row.3`, so the namespaced ones are spelled out. `detail.hero.*`
+# is NOT in it: Detail is only reached through a named route. Two elements of these shapes have no ratingKey, so
+# `press` cannot name them and refuses them: `home.hero.action` (the failure read-out's retry, shown while there is
+# no hero) and the rows of a Catalog item menu (a Watchlist title no server holds).
 a11y_subject_bearing() {  # $1 = a full accessibility id
   case "$1" in
-    *.card.*|detail.episodes.*|detail.season.*|filmography.row.*|catalog.primary) return 0 ;;
+    *.card.*|detail.episodes.*|detail.season.*|filmography.row.*|catalog.primary|home.hero.*|itemmenu.*) return 0 ;;
   esac
   return 1
 }
@@ -1341,7 +1482,7 @@ a11y_token() {
     press)
       if a11y_subject_bearing "$id"; then
         [ -n "$rk" ] || {
-          echo "tv-session: press $id: this element is a title's (a card, a Detail episode or season tab, a Filmography credit, the catalog pill), so name the title with --rk <ratingKey> (read it from \`state\` or the log first)" >&2
+          echo "tv-session: press $id: this element is a title's (a card, a Detail episode or season tab, a Filmography credit, the catalog pill, a Home hero control, an item-menu row), so name the title with --rk <ratingKey> (read it from \`state\` or the log first)" >&2
           return 2; }
       fi
       if [ -n "$rk" ]; then
@@ -1357,7 +1498,7 @@ a11y_token() {
 cmd_focus() {
   [ $# -eq 1 ] || { echo "usage: tv-session.sh focus <id>   (e.g. nav.watchlist)" >&2; exit 2; }
   local tok; tok=$(a11y_token focus "$1") || exit 2
-  cmd_key "$tok"
+  send_tokens "$tok"
 }
 
 cmd_press() {
@@ -1374,7 +1515,7 @@ cmd_press() {
   done
   [ -n "$id" ] || { echo "$usage" >&2; exit 2; }
   local tok; tok=$(a11y_token press "$id" "$rk") || exit 2
-  cmd_key "$tok"
+  send_tokens "$tok"
 }
 
 # A nonce in the app's grammar ([A-Za-z0-9_-]{1,32}): 16 hex digits.

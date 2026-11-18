@@ -3241,7 +3241,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     /// position in the page and `<n>` the card's place in the row's LISTING (the hub's window offset
     /// plus its place in the window, `CardSource::global`), so a window that pages never gives one id
     /// to another title; the card's `subject` (its ratingKey) is what a press names to stay safe
-    /// when a publication moves them. A listing position the window does not hold is no element.
+    /// when a publication moves them. A hero control's `subject` is the ratingKey of the hero item it acts
+    /// on (the carousel advances by itself, so a press names the title it read); the failure read-out's
+    /// `hero.action` has none. A listing position the window does not hold is no element.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         // while the question is open its answers are the page's only elements
         if let Some(answer) = self.plaintext_alert.a11y(*key) {
@@ -3259,7 +3261,15 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                     1 => "info",
                     _ => "watchlist",
                 };
-                Some(A11y::new(A11yPath::new().name("hero").name(name), A11yRole::Button))
+                let a = A11y::new(A11yPath::new().name("hero").name(name), A11yRole::Button);
+                // The ratingKey of the hero item the controls act on NOW (`selected_hero`, the one every
+                // activation reads), because the carousel advances by itself: a bare `press home.hero.play`
+                // plays whatever title is showing at that frame. The failure read-out's lone action acts
+                // on no title, and an item with no key has no subject to name.
+                Some(match self.selected_hero(view).map(|hero| hero.item.rk.as_str()).filter(|rk| !rk.is_empty() && name != "action") {
+                    Some(rk) => a.with_subject(rk.to_owned()),
+                    None => a,
+                })
             }
             Located::Heading(row) => {
                 let title = self.rows.get(row)?.title.as_str();

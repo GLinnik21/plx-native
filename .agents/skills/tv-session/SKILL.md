@@ -41,11 +41,11 @@ read from the gitignored `src/config.local.h` at runtime and never printed.
 ```bash
 tools/tv-session.sh up [--flavor <f>] [--screen <name>] [--server <slot>] [--stream[=PORT]] [--remote[=PORT]] [--no-token]
 tools/tv-session.sh status [--flavor <f>]   # re-assert without disturbing the session
-tools/tv-session.sh key down down ok        # key tokens through the real handlers
+tools/tv-session.sh key down down ok        # key tokens through the real handlers (never focus:/press:/state:)
 tools/tv-session.sh click 960 540           # authored 1920x1080 coords
 tools/tv-session.sh focus watchlist.grid.card.7   # move focus to an element BY ID (no key walk)
-tools/tv-session.sh press itemmenu.watchlist_remove  # focus it, then an OK press
-tools/tv-session.sh press home.shelf.0.card.2 --rk <ratingKey>  # a title's element (card, Detail episode...) REQUIRES the title it must be
+tools/tv-session.sh press nav.watchlist     # focus it, then an OK press
+tools/tv-session.sh press home.shelf.0.card.2 --rk <ratingKey>  # a title's element (card, hero button, item-menu row, Detail episode...) REQUIRES the title it must be
 tools/tv-session.sh state [--out FILE]      # the app's JSON snapshot: route, owner, focused id, every element
 tools/tv-session.sh shot [out.png]          # panel capture (video plane included)
 tools/tv-session.sh log [--flavor <f>] [regex]   # the on-device event log
@@ -287,15 +287,20 @@ a log you did not watch being produced.
 
 Every `plxnative-*` trigger in the install's runtime root is read **once at boot**, so it
 must be in place before the launch. Anything you want to do to a *running* app goes through
-the remote FIFO (`tv-session.sh key` / `click`, or by id: `focus` / `press` / `state`).
+the remote FIFO (`tv-session.sh key` / `click`, or by id: `focus` / `press` / `state`). `key` sends keys
+and the like (`down`, `ok`, `ck:<x>,<y>`, `txt:...`) and refuses a `focus:`, `press:` or `state:` word, so each
+by-id action has ONE door, the verb, where the id is checked and a title's press must name the title. A word
+with whitespace in it is refused too (`key back "ok press:<card>"`): the app cuts a FIFO line at any
+whitespace, so it would be two tokens, the second a press nothing had checked.
 
 **Prefer `focus` / `press` by id over key walks.** A walk of `down down right ok` breaks when a row
 gains a card; an id (`watchlist.grid.card.7`, `detail.hero.play`; the grammar is in `tools/a11y.py`)
 names the element whatever the row holds. Ids resolve in the namespace of whoever owns input, so a
 menu answers `itemmenu.*`, not the screen under it. A press of any element whose subject is a title
 (a card `*.card.*`, a Detail episode `detail.episodes.*`, where OK on a still PLAYS it, a season tab, a
-Filmography credit, the catalog pill; `a11y_subject_bearing` in `tools/tv-session.sh`) needs `--rk
-<ratingKey>` so a re-sorted row cannot press a different title, and on a real account that title's
+Filmography credit, the catalog pill, a Home hero button `home.hero.*` (the carousel advances by itself),
+an item-menu row `itemmenu.*`; `a11y_subject_bearing` in `tools/tv-session.sh`) needs `--rk
+<ratingKey>` so a re-sorted row, a moved hero or a menu opened on another card cannot press a different title, and on a real account that title's
 `ratingKey` must be one you read from the log (the boot rule: never `ok` a title you have not read). `state` is the
 structured readback: it sends a random nonce and reads `plxnative-a11y.json` until the nonce comes
 back, so a stale file never passes for the answer. Walks stay for tests whose subject is travel

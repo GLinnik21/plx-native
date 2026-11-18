@@ -23,7 +23,7 @@ request's answer, which is why every request carries a fresh nonce and a reader 
     from a11y import focus, press, expect_focus, state, send, wait_for
     focus(fifo, "nav.watchlist")                       # no key walk: the id names the target
     expect_focus(runtime, "nav.watchlist")             # `state`, then compare the focused id (FocusMismatch)
-    press(fifo, "home.hero.play")
+    press(fifo, "nav.watchlist")                       # an element with no subject: nothing to name
     snap = state(runtime)                              # send `state:<random nonce>`, wait for it
     ids = [e["id"] for e in snap["elements"]]
     wait_for(lambda: any(e["id"] == "nav.watchlist" for e in state(runtime)["elements"]), timeout=10)
@@ -48,10 +48,12 @@ an app that never answered or a FIFO that is not there; 2 is an id, subject or t
 (nothing was sent). Each failure is one line on stderr, never a traceback.
 
 A title is pressed by NAME. A `press` (or a `send press:<id>`) of an element whose subject is a title (a
-card, a Detail episode or season tab, a Filmography credit, the catalog page's pill: `SUBJECT_BEARING`)
-needs `--subject <ratingKey>` and exits 2 without it, because the simulator boots against the owner's
-real server unless it is aimed at a mock, and OK on a title can play it. The library function `press`
-(`press_token`) stays unguarded for a script that means an element with no subject.
+card, a Detail episode or season tab, a Filmography credit, the catalog page's pill, a Home hero control, an
+item-menu row: `SUBJECT_BEARING`) needs `--subject <ratingKey>` and exits 2 without it, because the
+simulator boots against the owner's real server unless it is aimed at a mock, and OK on a title can play it.
+The library function `press` (`press_token`) stays unguarded for a script that means an element with no
+subject. `send` writes ONE word: a token with whitespace in it (`"back press:card"`) is refused, because the
+app would cut it into two tokens and the second would never meet the press guard.
 
 On the television use `tools/tv-session.sh focus|press|state`.
 """
@@ -94,22 +96,32 @@ def valid_subject(text):
 
 # The id shapes whose element carries a SUBJECT, a title's ratingKey (a catalog page's hex id): pressing one
 # acts on a title (a card opens or plays it; a Detail episode's still PLAYS at once, its text block opens the
-# episode; the catalog pill adds it to a Watchlist). The real-account rule is never to press OK on a title whose
-# ratingKey you have not read, so the COMMAND LINE and `tools/tv-session.sh press` make the press name it
-# (`--subject` / `--rk`) and the app refuses a mismatch. The list is read off the code, not guessed: each
-# production `A11y::with_subject` call is one entry (`git grep -n with_subject rust-modules`; a test here holds
-# the call sites equal to the table below).
+# episode; the catalog pill adds it to a Watchlist; a Home hero button plays, opens or bookmarks the title the
+# auto-advancing carousel shows at that frame; an item-menu row plays, marks or removes the title the menu was
+# opened on). The real-account rule is never to press OK on a title whose ratingKey you have not read, so the
+# COMMAND LINE and `tools/tv-session.sh press` make the press name it (`--subject` / `--rk`) and the app
+# refuses a mismatch. The list is read off the code, not guessed: each production `A11y::with_subject` call
+# SITE is an entry (`git grep -n with_subject rust-modules`; a test here holds the number of calls per file
+# equal to the table below).
 #
 #   *.card.*             ui/src/cards/mod.rs `card_a11y`: <section>.card.<n>, every poster, still and headshot
 #   detail.episodes.*    screens/src/detail/mod.rs: `episodes.still.<i>` (OK plays) and `episodes.text.<i>`
 #   detail.season.*      the same file: `season.<i>`, a season tab
 #   filmography.row.*    screens/src/filmography.rs: `row.<i>`, a credit (its subject is the local copy's key)
 #   catalog.primary      screens/src/catalog.rs: the Add to / On Watchlist pill (its subject is the hex id)
+#   home.hero.*          screens/src/home/mod.rs: `hero.play|info|watchlist`, the hero item's ratingKey
+#   itemmenu.*           screens/src/item_menu.rs: `<row>` and `version.<n>`, the menu's item's ratingKey
 #
 # fnmatch globs, which are spelled exactly like the `case` patterns of `a11y_subject_bearing` in
 # tools/tv-session.sh (tests/test_a11y_tool.py reads both and holds them equal). Not subject-bearing, so never
-# in the list: `detail.about.card`, `under-posters.row.3` and every other `*.row.*` outside Filmography.
-SUBJECT_BEARING = ("*.card.*", "detail.episodes.*", "detail.season.*", "filmography.row.*", "catalog.primary")
+# in the list: `detail.hero.*` (Detail is only reached through a named route), `detail.about.card`,
+# `under-posters.row.3` and every other `*.row.*` outside Filmography.
+#
+# Two elements of these shapes have NO ratingKey to name, so the guarded doors cannot press them at all (the
+# library `press`, unguarded, still can): `home.hero.action` (the failure read-out's retry, shown while no hero
+# exists) and the rows of a Catalog item menu (a Watchlist title no server holds: its identity is a guid).
+SUBJECT_BEARING = ("*.card.*", "detail.episodes.*", "detail.season.*", "filmography.row.*", "catalog.primary",
+                   "home.hero.*", "itemmenu.*")
 
 
 def subject_bearing(id_):
@@ -183,9 +195,12 @@ def send(fifo, token):
     """Write ONE token to the remote FIFO, newline-terminated, in a single write.
 
     The FIFO is whitespace-delimited and a trailing partial token waits for its terminator, so a token
-    must not contain whitespace and must end with one. A single `write` of fewer than PIPE_BUF bytes is
-    atomic, so two writers cannot interleave inside a token. The FIFO is opened read-write: a
-    write-only open blocks when the app is gone, and this one never does.
+    must not contain whitespace and must end with one. A word with whitespace in it is TWO tokens to the app
+    (`rust-modules/src/remote.rs` cuts at ASCII whitespace and then at any Unicode whitespace), and the
+    second would never meet a guard written for the first, so it is refused here: `str.isspace` is the
+    superset of both. A single `write` of fewer than PIPE_BUF bytes is atomic, so two writers cannot
+    interleave inside a token. The FIFO is opened read-write: a write-only open blocks when the app is gone,
+    and this one never does.
     """
     if not token or any(c.isspace() for c in token):
         raise ValueError(f"a FIFO token is one non-empty word with no whitespace: {token!r}")
@@ -335,6 +350,11 @@ def main(argv=None):
         elif args.command == "expect":
             expect_focus(args.runtime, args.id, args.timeout)
         else:
+            # ONE word: the app cuts a line at whitespace, so `back press:<card>` is two tokens and the
+            # second would skip the press guard below. Checked here, before the guard, so the refusal says why.
+            if not args.token or any(c.isspace() for c in args.token):
+                raise ValueError(f"send writes ONE token, with no whitespace in it (the app would read {args.token!r} "
+                                 f"as several, past the press guard); nothing was sent")
             act, id_, subject = parse_token(args.token) if args.token.startswith("press:") else (None, None, None)
             if act:  # the raw writer is no way round the guard: a `press:` token is held to it too
                 guarded_press_token(id_, subject)

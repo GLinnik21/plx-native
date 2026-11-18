@@ -2708,7 +2708,11 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   `state:<nonce>` (the structured readback `plxnative-a11y.json`, beside `focusprobe`'s fingerprint),
   via `tools/tv-session.sh focus|press|state` or `tools/a11y.py`, both of which refuse to press an
   element whose subject is a title (a card, a Detail episode or season tab, a Filmography credit, the
-  catalog pill) unless the press names it (`--rk` / `--subject`). Prefer them over a key walk to a
+  catalog pill, a Home hero button, an item-menu row) unless the press names it (`--rk` / `--subject`).
+  `tv-session.sh key` and `a11y.py send` are not a way round that: `key` refuses a `focus:`, `press:` or
+  `state:` word (the three verbs are the one door for them), and both refuse a word with whitespace in it
+  (the app cuts the FIFO at any whitespace, so `back press:<card>` would be a second, unchecked token).
+  Prefer them over a key walk to a
   target; walks remain for tests whose subject is travel (fps walks, focus fingerprints);
   With `devtriggers`, `hang:<ms>` stalls the frame thread under the `dev hang probe` guard and
   `hang-raw:<ms>` sleeps without a label; both accept unsigned decimal u64 milliseconds capped at

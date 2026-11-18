@@ -16,7 +16,12 @@ The ONE capture recipe (the scenario's `comment` repeats it):
      direction key stands between the boot and the target in any capture. What stays a key is a key whose
      subject is the key itself: `hold`, a timing (`ok@0.12`), `back`; and `ck:<x>,<y>` pointer clicks,
      which `w6/detail-offline.png` alone uses as its walk. An id is checked against the grammar before
-     anything boots.
+     anything boots. A press whose element's subject is a title (a card, a Home hero button, an item-menu
+     row: `a11y.SUBJECT_BEARING`) NAMES that title, `press:<id>@<ratingKey>`, and the app refuses it when
+     another title is there, so a hero that moved on or a menu opened on another card fails the capture
+     instead of acting on it: `press:itemmenu.watchlist_remove@2001` (The Long Meridian, the mock's second
+     Watchlist title) and `press:home.hero.watchlist@200622` (the first Continue Watching episode of the
+     `catalog` mock). The one bare title press is `watchlist.grid.card.7`, a coming-soon card with no key.
      A key `mock:<json>` POSTs <json> to /_mock/discover mid-walk (`{"pms":"fail"}` makes the PMS side
      answer 503: once a library read fails and the list is read again, a title matched there reads
      ServerOffline); `lib:<json>` POSTs <json> to /_mock/library (a TEST-ONLY library add/remove plus the

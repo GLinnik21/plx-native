@@ -131,6 +131,53 @@ fn an_episode_hero_adds_its_show() {
     assert_eq!(item_menu_act(&out), Some(Action::WatchlistAdd { hex: HEX_SHOW }));
 }
 
+/// Every hero control's `(id, subject)`, in row order.
+fn hero_subjects(s: &HomeScreen, view: HubsView<'_>) -> Vec<(String, Option<String>)> {
+    let c = cx(view, None);
+    let mut elems = Vec::new();
+    Focusable::<TestHost>::a11y_elems(s, HERO_GROUP, &c, &mut elems);
+    elems
+        .iter()
+        .map(|e| {
+            let a = Focusable::<TestHost>::a11y(s, e, &c).expect("a hero control projects");
+            (a.path.to_string(), a.subject.map(|t| t.into_owned()))
+        })
+        .collect()
+}
+
+/// **A hero control names the title it acts on.** The carousel advances by itself, so a bare
+/// `press home.hero.play` would play whatever is showing at that frame: Play, the disc and Info all carry
+/// the ratingKey of the hero item shown now (the one every activation reads), and it follows the carousel.
+#[test]
+fn every_hero_control_names_the_shown_hero_as_its_subject() {
+    let _guard = plx_base::testlock::serial();
+    let snapshot = seeded(true);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    let shown = |s: &HomeScreen| hero_subjects(s, view);
+    let want = |rk: &str| {
+        ["hero.play", "hero.watchlist", "hero.info"].map(|id| (id.to_string(), Some(rk.to_string()))).to_vec()
+    };
+    assert_eq!(shown(&s), want("1"), "the first hero");
+    step(&mut s, view, None, &ScreenEvent::App(AppMsg::Home(HomeCmd::PinHero(1))));
+    tick(&mut s, view, 1);
+    assert_eq!(shown(&s), want("2"), "the subject follows the carousel");
+}
+
+/// The failure read-out's lone action acts on no title, so it names none (and a hero item with no
+/// ratingKey has none to name).
+#[test]
+fn the_failure_readouts_action_names_no_subject() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 0, plx_data::pms::HubState::Failed);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let s = screen(view);
+    assert_eq!(hero_subjects(&s, view), vec![("hero.action".to_string(), None)]);
+}
+
 /// The first answer for an already-listed title snaps the fill: nothing flips on open.
 #[test]
 fn an_already_listed_title_does_not_flip_on_open() {

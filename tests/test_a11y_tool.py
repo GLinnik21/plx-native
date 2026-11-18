@@ -112,11 +112,42 @@ class WaitFor(unittest.TestCase):
         self.assertEqual(a11y.wait_for(lambda: "now", 0, clock=Clock(), sleep=lambda s: None), "now")
 
 
+#: One token as the writer sees it, spelled with each separator the app cuts a FIFO line at:
+#: `rust-modules/src/remote.rs` finds the end of the run at ASCII whitespace and then `split_whitespace`s it, so
+#: VT, NEL, NBSP, the U+2000 block, the line and paragraph separators and the ideographic space split a word too.
+SMUGGLED = ["back press:home.continue.card.0", "back\tpress:x", "back\rpress:x", "back\x0bpress:x", "back\x0cpress:x",
+            "back\npress:x", "back\u0085press:x", "back press:x", "back press:x", "back press:x",
+            "back press:x", "back press:x", "back press:x", "back press:x", "back press:x",
+            "back　press:x"]
+
+
 class Send(unittest.TestCase):
     def test_a_token_with_whitespace_or_nothing_is_refused(self):
-        for bad in ["", "two words", "tab\tbed", "line\nbreak", " lead"]:
+        for bad in ["", "two words", "tab\tbed", "line\nbreak", " lead"] + SMUGGLED:
             with self.assertRaises(ValueError, msg=repr(bad)):
                 a11y.send("/nonexistent", bad)
+
+    @unittest.skipUnless(HAS_FIFO, "needs os.mkfifo")
+    def test_a_refused_token_writes_nothing_and_a_non_space_word_is_one_token(self):
+        """U+2019, U+2014 and U+2026 share lead bytes with the Unicode spaces; Cyrillic and accented text are words."""
+        runtime = tempfile.mkdtemp(prefix="a11y-tool-")
+        self.addCleanup(shutil.rmtree, runtime, ignore_errors=True)
+        fifo = pathlib.Path(runtime, a11y.FIFO_NAME)
+        os.mkfifo(fifo)
+        reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+        self.addCleanup(os.close, reader)
+        for bad in SMUGGLED:
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                a11y.send(fifo, bad)
+        try:
+            nothing = os.read(reader, 4096)   # b"" (no writer left) or, on some platforms, would-block
+        except BlockingIOError:
+            nothing = b""
+        self.assertEqual(nothing, b"")
+        words = ["txt:привет", "txt:café", "txt:it’s—a…b", "ck:10,20"]
+        for word in words:
+            a11y.send(fifo, word)
+        self.assertEqual(os.read(reader, 4096).decode().split("\n")[:-1], words)
 
     @unittest.skipUnless(HAS_FIFO, "needs os.mkfifo")
     def test_one_token_is_one_newline_terminated_write_to_the_fifo(self):
@@ -285,16 +316,18 @@ class Tokens(unittest.TestCase):
 
 class SubjectBearing(unittest.TestCase):
     """An element whose subject is a title (a card, a Detail episode or season tab, a Filmography credit, the
-    catalog page's pill) is pressed by NAMING that title: the real-account rule is never to press OK on a title
-    whose ratingKey you have not read, and OK on a Detail episode's still PLAYS it at once. ONE list of those
-    id shapes lives in `a11y.SUBJECT_BEARING`; tools/tv-session.sh's `a11y_subject_bearing` is the same list."""
+    catalog page's pill, a Home hero control, an item-menu row) is pressed by NAMING that title: the real-account
+    rule is never to press OK on a title whose ratingKey you have not read, and OK on a Detail episode's still
+    PLAYS it at once. ONE list of those id shapes lives in `a11y.SUBJECT_BEARING`; tools/tv-session.sh's
+    `a11y_subject_bearing` is the same list."""
 
     SUBJECT_IDS = ["home.shelf.2.card.5", "home.continue.card.0", "watchlist.grid.card.7", "library.grid.card.3",
                    "collection.card.1", "detail.related.card.0", "detail.episodes.still.3", "detail.episodes.text.3",
-                   "detail.season.2", "filmography.row.4", "catalog.primary"]
-    PLAIN_IDS = ["nav.watchlist", "detail.hero.play", "detail.about.card", "detail.about.languages",
-                 "detail.collection.heading", "under-posters.row.3", "itemmenu.watchlist_remove", "filmography.tab.2",
-                 "home.hero.watchlist", "watchlist.header.sort", "player.control.play", "catalog.back"]
+                   "detail.season.2", "filmography.row.4", "catalog.primary", "home.hero.play", "home.hero.info",
+                   "home.hero.watchlist", "itemmenu.play", "itemmenu.watchlist_remove", "itemmenu.version.0"]
+    PLAIN_IDS = ["nav.watchlist", "detail.hero.play", "detail.hero.mark_watched", "detail.about.card",
+                 "detail.about.languages", "detail.collection.heading", "under-posters.row.3", "filmography.tab.2",
+                 "watchlist.header.sort", "player.control.play", "catalog.back"]
 
     def test_the_subject_bearing_shapes_are_matched_and_nothing_else(self):
         for id_ in self.SUBJECT_IDS:
@@ -321,27 +354,40 @@ class SubjectBearing(unittest.TestCase):
         self.assertEqual(tuple(found.group(1).split("|")), a11y.SUBJECT_BEARING)
 
     def test_every_production_with_subject_call_is_a_site_the_list_was_derived_from(self):
-        """`SUBJECT_BEARING` was read off the code (`git grep with_subject rust-modules`). A new call site is a new
-        id shape: it fails here until the list above, tv-session.sh's copy and this table say what it presses."""
-        sites = {}
+        """`SUBJECT_BEARING` was read off the code (`git grep with_subject rust-modules`), one entry per production
+        CALL site. A new call site, even in a file that already has one, is a new id shape: the COUNT per file
+        fails here until the list above, tv-session.sh's copy and this table say what it presses (a table of
+        files alone would pass a second call added beside the first)."""
+        calls = {}
         for root, dirs, files in os.walk(ROOT / "rust-modules"):
             dirs[:] = [d for d in dirs if not d.startswith("target")]
             for name in files:
                 path = pathlib.Path(root, name)
-                if path.suffix == ".rs" and ".with_subject(" in path.read_text(errors="replace"):
-                    sites[path.relative_to(ROOT / "rust-modules").as_posix()] = True
-        derived_from = {
-            "ui/src/cards/mod.rs": "card_a11y: <section>.card.<n>",
-            "screens/src/detail/mod.rs": "detail.season.<i>, detail.episodes.still|text.<i>",
-            "screens/src/filmography.rs": "filmography.row.<i>",
-            "screens/src/catalog.rs": "catalog.primary",
+                if path.suffix == ".rs":
+                    n = path.read_text(errors="replace").count(".with_subject(")
+                    if n:
+                        calls[path.relative_to(ROOT / "rust-modules").as_posix()] = n
+        # file -> (calls in it, what it presses). The detail call is ONE closure, applied to three id shapes.
+        production = {
+            "ui/src/cards/mod.rs": (1, "card_a11y: <section>.card.<n>"),
+            "screens/src/detail/mod.rs": (1, "detail.season.<i>, detail.episodes.still|text.<i> (one closure)"),
+            "screens/src/filmography.rs": (1, "filmography.row.<i>"),
+            "screens/src/catalog.rs": (1, "catalog.primary"),
+            "screens/src/home/mod.rs": (1, "home.hero.play|info|watchlist (not the failure read-out's action)"),
+            "screens/src/item_menu.rs": (1, "itemmenu.<row>, itemmenu.version.<n> (not a Catalog menu's rows)"),
         }
         not_a_production_site = {
-            "ui/src/a11y.rs": "the builder itself and its tests",
-            "ui/src/dispatch/snapshot.rs": "its own #[cfg(test)] fixture",
-            "ui/src/fixture.rs": "FixtureHost, test-only",
+            "ui/src/a11y.rs": (1, "the builder itself and its tests"),
+            "ui/src/dispatch/snapshot.rs": (1, "its own #[cfg(test)] fixture"),
+            "ui/src/fixture.rs": (1, "FixtureHost, test-only"),
         }
-        self.assertEqual(set(sites), set(derived_from) | set(not_a_production_site))
+        expected = {**production, **not_a_production_site}
+        self.assertEqual(calls, {path: n for path, (n, _) in expected.items()})
+        # every production site is spelled in the list: one glob of SUBJECT_BEARING per id shape it presses
+        for glob in ("*.card.*", "detail.episodes.*", "detail.season.*", "filmography.row.*", "catalog.primary",
+                     "home.hero.*", "itemmenu.*"):
+            self.assertIn(glob, a11y.SUBJECT_BEARING)
+        self.assertEqual(len(a11y.SUBJECT_BEARING), 7)
 
 
 @unittest.skipUnless(HAS_FIFO, "needs os.mkfifo")
@@ -411,7 +457,8 @@ class CommandLine(unittest.TestCase):
 
     def test_a_subject_bearing_press_without_a_subject_is_refused_and_sends_nothing(self):
         for id_ in ("home.shelf.2.card.5", "detail.episodes.still.3", "detail.episodes.text.3", "detail.season.1",
-                    "filmography.row.0", "catalog.primary"):
+                    "filmography.row.0", "catalog.primary", "home.hero.play", "home.hero.info", "home.hero.watchlist",
+                    "itemmenu.play", "itemmenu.watchlist_remove", "itemmenu.version.0"):
             code, err = self.run_main("press", self.runtime, id_)
             self.assertEqual(code, 2, id_)
             self.assertTrue(err.startswith("a11y: ") and err.count("\n") == 1 and "--subject" in err, f"{id_}: {err!r}")
@@ -420,12 +467,24 @@ class CommandLine(unittest.TestCase):
             self.assertTrue("--subject" in err or "subject" in err, err)
         self.assertEqual(self.written(), [])
 
+    def test_send_is_one_word_so_no_press_rides_in_behind_another_token(self):
+        """`send "back press:<card>"` would write ONE line the app cuts into two tokens, the second a title's press
+        with no subject named: it is refused (exit 2, one line, nothing written) for every separator the app uses."""
+        for token in SMUGGLED + ["", " back", "back "]:
+            code, err = self.run_main("send", self.runtime, token)
+            self.assertEqual(code, 2, repr(token))
+            self.assertTrue(err.startswith("a11y: ") and err.count("\n") == 1 and "ONE token" in err, f"{token!r}: {err!r}")
+        self.assertEqual(self.written(), [])
+
     def test_a_subject_bearing_press_that_names_its_title_is_sent(self):
         self.assertEqual(self.run_main("press", self.runtime, "detail.episodes.still.3", "--subject", "77"), (0, ""))
+        self.assertEqual(self.run_main("press", self.runtime, "home.hero.play", "--subject", "200622"), (0, ""))
+        self.assertEqual(self.run_main("send", self.runtime, "press:itemmenu.watchlist_remove@2001"), (0, ""))
         self.assertEqual(self.run_main("send", self.runtime, "press:detail.episodes.text.0@78"), (0, ""))
         self.assertEqual(self.run_main("press", self.runtime, "detail.hero.play"), (0, ""))   # no subject to name
         self.assertEqual(self.run_main("send", self.runtime, "ok"), (0, ""))
-        self.assertEqual(self.written(), ["press:detail.episodes.still.3@77", "press:detail.episodes.text.0@78",
+        self.assertEqual(self.written(), ["press:detail.episodes.still.3@77", "press:home.hero.play@200622",
+                                          "press:itemmenu.watchlist_remove@2001", "press:detail.episodes.text.0@78",
                                           "press:detail.hero.play", "ok"])
 
     def test_the_library_press_stays_unguarded_for_a_card_with_no_subject(self):
@@ -678,10 +737,14 @@ class CommittedScenario(unittest.TestCase):
 
     def test_a_subject_bearing_press_in_the_scenario_is_the_named_coming_soon_card(self):
         """The driver writes a token raw (the library path, unguarded), so a title's press with no `@<subject>`
-        is a decision: the one here is `watchlist.grid.card.7`, a coming-soon card whose subject is null."""
-        bare = {k for spec in self.captures.values() for k in spec["keys"]
-                if k.startswith("press:") and "@" not in k and a11y.subject_bearing(k[len("press:"):])}
-        self.assertEqual(bare, {"press:watchlist.grid.card.7"})
+        is a decision: the one here is `watchlist.grid.card.7`, a coming-soon card whose subject is null. Every
+        other title's press names it (`@<ratingKey>`), so a hero that moved or a menu opened on another card is
+        refused by the app and fails the capture."""
+        presses = [k for spec in self.captures.values() for k in spec["keys"]
+                   if k.startswith("press:") and a11y.subject_bearing(k[len("press:"):].partition("@")[0])]
+        self.assertEqual({k for k in presses if "@" not in k}, {"press:watchlist.grid.card.7"})
+        self.assertEqual({k for k in presses if "@" in k},
+                         {"press:itemmenu.watchlist_remove@2001", "press:home.hero.watchlist@200622"})
 
     def test_a_capture_without_expect_focus_is_a_named_exception(self):
         missing = {file for file, spec in self.captures.items() if "expect_focus" not in spec}
