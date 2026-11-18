@@ -1894,12 +1894,14 @@ fn a_scripted_arrival_on_a_card_across_the_door_presses_that_card() {
     assert_eq!(d.press(card), [("detail", d.card_rk.clone())], "the card's title opens, not the hero's");
 }
 
-/// **At 60 fps the OK a by-id press queues commits INSIDE the dive.** The press machine holds an OK's
-/// release for its 90 ms dip floor (`MIN_DIP_MS`, `ui/src/dispatch/press.rs`), which is six 60 Hz frames
-/// (100 ms), and the page's snap spring (`K_SNAP`) has crossed only 41% of the door by then: its midpoint is
-/// 119 ms away. So the remap a key's arrival would leave is live when the commit lands, and the scripted
-/// press must not get it. (The simulator's Home draws at 11-15 fps and has crossed the midpoint by its second
-/// frame, which is why only the television shows the unfixed behaviour on a real press.)
+/// **At 60 fps the dive is still short of its midpoint when the press machine's dip floor is over.** The
+/// machine holds an OK's release for at least its 90 ms floor (`MIN_DIP_MS`, `ui/src/dispatch/press.rs`:
+/// six 60 Hz frames, 100 ms) and commits `COMMIT_MS` (120 ms) after the release, about 200 ms after OK goes
+/// down. The page's snap spring (`K_SNAP`) has crossed only 41% of the door at 100 ms: its midpoint is
+/// 119 ms away. The test delivers the commit at that 100 ms point, earlier than the machine commits, so it
+/// holds the screen's rule while the picture is still on the far side: the remap a key's arrival would leave
+/// is live there, and the scripted press must not get it. (The simulator's Home draws at 11-15 fps and has
+/// crossed the midpoint by its second frame.)
 #[test]
 fn a_scripted_press_committing_after_the_dip_floor_at_60_fps_still_lands_on_its_card() {
     let _guard = plx_base::testlock::serial();
@@ -7466,8 +7468,8 @@ fn frames_until_the_carousel_turns(
 }
 
 /// **Review finding on PR #1442, round 7: the carousel can turn inside a hero press's dip.** A hero
-/// control is a `Control`: OK arms a press that commits no sooner than `MIN_DIP_MS` later, and the commit
-/// re-reads the title the billboard shows. Pressing the control that already has focus moves no focus,
+/// control is a `Control`: OK arms a press that commits about 200 ms after OK goes down (`MIN_DIP_MS` +
+/// `COMMIT_MS`), and the commit re-reads the title the billboard shows. Pressing the control that already has focus moves no focus,
 /// so nothing restarted the 8 s countdown; if it ran out inside the dip the page turned and a press
 /// accepted against one title (`press home.hero.play --rk X`, or a person's OK a moment before the turn)
 /// played the next page's. **Round 8:** a press on a hero control restarts the countdown, as a focus move
@@ -7478,7 +7480,7 @@ fn frames_until_the_carousel_turns(
 fn a_hero_press_plays_the_title_it_was_armed_on_when_the_countdown_runs_out_inside_its_dip() {
     let _guard = plx_base::testlock::serial();
     for elem in [HERO_PLAY_ELEM, HERO_INFO_ELEM] {
-        // 0.05 s left: three 16.667 ms frames would run it out, inside the six frames of the dip
+        // 0.05 s left: three 16.667 ms frames would run it out, inside the six press frames below
         // (`the_carousel_turns_on_schedule_...` pins that this schedule turns the page at frame 3)
         let (snapshot, mut s) = countdown_at(0.05);
         let view = snapshot.view();
@@ -7578,11 +7580,13 @@ fn a_cancelled_hero_press_releases_the_carousel() {
     );
 }
 
-/// **The other two turns a person makes are held the same way.** Right at the hero's edge moves no focus
-/// (so it does not abandon the press) and `HomeCmd::Flip` is addressed to the page: both go through the
-/// one turn, so neither can replace the title under a press, and both work as ever with none.
+/// **The other two turns are refused while a hero press stands, and dropped, not kept.** Right at the
+/// hero's edge moves no focus (so it does not abandon the press) and `HomeCmd::Flip` is addressed to the
+/// page: both go through the one turn, which refuses (`Handled::No`) so neither can replace the title under
+/// a press. Nothing is queued: once the press has settled the page has not turned, and the caller sends
+/// the turn again. Both work as ever with no press.
 #[test]
-fn a_manual_turn_waits_for_a_hero_press_too() {
+fn a_manual_turn_is_refused_while_a_hero_press_stands_and_not_applied_after() {
     let _guard = plx_base::testlock::serial();
     let (snapshot, mut s) = countdown_at(HERO_AUTO_S);
     let view = snapshot.view();
@@ -7596,6 +7600,10 @@ fn a_manual_turn_waits_for_a_hero_press_too() {
         &ScreenEvent::App(AppMsg::Home(HomeCmd::Flip(1))));
     assert_eq!(handled, Handled::No);
     assert_eq!(shown_rk(&s), before, "neither turned the page under the press");
+    assert!(s.outgoing.is_none());
+    // the press settles: the refused turns are not owed
+    step(&mut s, view, Some(focus), &hero_tick_16(1));
+    assert_eq!(shown_rk(&s), before, "a refused turn is dropped, not applied when the press settles");
     assert!(s.outgoing.is_none());
 
     let (handled, _, _) = step(&mut s, view, Some(focus), &hero_edge_right());

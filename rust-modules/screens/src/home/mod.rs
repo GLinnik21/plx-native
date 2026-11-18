@@ -1592,7 +1592,8 @@ impl HomeScreen {
     /// control when [`Self::locate`] says so.
     ///
     /// **Why the billboard holds for it.** A hero control's press (Play, Info, the bookmark disc)
-    /// commits no sooner than `MIN_DIP_MS` after OK, and its `activate` re-reads the title the
+    /// commits about 200 ms after OK goes down (the release is held for `MIN_DIP_MS`, 90 ms, and the
+    /// commit follows it by `COMMIT_MS`, 120 ms), and its `activate` re-reads the title the
     /// billboard shows AT THE COMMIT ([`Self::selected_hero`]), because the press armed on an
     /// element, not on a title. Pressing the control that already holds focus moves no focus, so
     /// nothing restarted the 8 s countdown: if it ran out inside the dip, the carousel turned and the

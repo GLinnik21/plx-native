@@ -309,7 +309,8 @@ list, and a test holds them equal), so a re-sorted row, a moved hero or a menu o
 different title: the subject is compared where the press is delivered, and the press commits about 200 ms later, so
 Home's carousel does not turn while a press stands on a hero control (the 8 s countdown restarts from full while
 the press stands, as a focus move restarts it, so no turn is owed when the press settles and the next one comes a
-full interval later; Flip and Left/Right at the edge wait for it), which keeps the title the press was accepted
+full interval later; Flip and Left/Right at the edge are refused while it stands, dropped rather than applied
+when it settles, so send them again then), which keeps the title the press was accepted
 against the title it plays (a landing that takes that title out of the hero pool inside the 200 ms is the one
 change nothing holds: the press then acts on its successor). At Home's hero/grid door
 a quick OK after a key lands on what the picture shows, not on the focused

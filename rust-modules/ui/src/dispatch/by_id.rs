@@ -38,10 +38,11 @@
 //! the title while one stands on its element. Home's carousel does (`HomeScreen::hero_press_armed`):
 //! while a press stands on a hero control the 8 s countdown restarts from its full length every tick,
 //! as a focus move restarts it, so no turn falls due inside the press and none is owed after it (the
-//! next one comes a full interval later), and `HomeCmd::Flip` and Left/Right at the hero's edge wait
-//! for the press. A hero press therefore plays the title it was accepted against. A landing that
-//! takes the title OUT of the pool is not held (there is no such title to play): the press acts on
-//! its successor.
+//! next one comes a full interval later). `HomeCmd::Flip` and Left/Right at the hero's edge are
+//! REFUSED while the press stands (the page answers `Handled::No` and the turn is dropped, not
+//! applied when the press settles), so the caller sends them again once it has. A hero press
+//! therefore plays the title it was accepted against. A landing that takes the title OUT of the pool
+//! is not held (there is no such title to play): the press acts on its successor.
 //!
 //! A refusal leaves one `Fx::Log` line carrying words and ids only (`a11y: refused <act> <id>
 //! <reason> owner=<ns>`). The label and subject of an element never reach it.
