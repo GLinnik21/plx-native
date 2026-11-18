@@ -98,8 +98,9 @@ def valid_subject(text):
 # The id shapes whose element carries a SUBJECT, a title's ratingKey (a catalog page's hex id): pressing one
 # acts on a title (a card opens or plays it; a Detail episode's still PLAYS at once, its text block opens the
 # episode; the catalog pill adds it to a Watchlist; a Home hero button plays, opens or bookmarks the title the
-# auto-advancing carousel shows at that frame; an item-menu row plays, marks or removes the title the menu was
-# opened on). The real-account rule is never to press OK on a title whose ratingKey you have not read, so the
+# auto-advancing carousel shows at that frame; a Detail hero button plays, restarts, marks or bookmarks a title,
+# which on a started show's Mark watched is the on-deck episode and not the page's; an item-menu row plays,
+# marks or removes the title the menu was opened on). The real-account rule is never to press OK on a title whose ratingKey you have not read, so the
 # COMMAND LINE and `tools/tv-session.sh press` make the press name it (`--subject` / `--rk`) and the app
 # refuses a mismatch. The list is read off the code, not guessed: each production `A11y::with_subject` call
 # SITE is an entry (`git grep -n with_subject rust-modules`; a test here holds the number of calls per file

@@ -4854,8 +4854,10 @@ fn hero_episode_played(d: &Detail) -> Option<&plx_data::metadata::Episode> {
 /// card (`selected`) or the page's item on any other; the watched toggle writes the on-deck episode of a
 /// show that has been started, else the page's item; the bookmark and the trailer act on the page's item.
 /// `None` for the controls that only navigate or open a menu or a panel (Go to Show, Also available, Play
-/// Version, More): their own rows, or the page they open, are where a title is acted on. Exhaustive, so a
-/// new control must be placed here.
+/// Version, More): the control itself acts on no title. The panel or menu one of them opens has rows of its
+/// own, and not all of those are guarded: a library item's menu (`itemmenu.*`) carries its title's key, but the
+/// Play Version panel's `versions.row.<n>` (`versions_panel.rs`, OK delivers `AppMsg::PlayVersion`, which
+/// plays) project no subject. Exhaustive, so a new control must be placed here.
 pub(crate) fn hero_control_subject<'a>(
     ctl: hero::HeroCtl,
     d: &'a Detail,
