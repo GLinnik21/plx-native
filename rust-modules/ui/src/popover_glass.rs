@@ -11,19 +11,24 @@
 //! stacked over another surface's dim.
 //!
 //! **The glass stands on FROZEN ground and reads no framebuffer** (owner decision, 2026-10-17). A
-//! menu stands on a page that is not moving (`popover.rs`'s module doc), so its glass is fed the two
-//! pictures of that page the frame already holds, through `gfx::draw_glass_frozen`: the body shows
-//! the latched underlay field (`ui::underlay`, the 60x32 reconstruction the modal dim draws), and
-//! the rim's lens bends the host snapshot (`popover::host::page_tex`, the one capture of the
-//! undimmed page) at `tokens::MENU_SHARP` — `fs_glass.frag`'s refraction with the SAME rounded-rect
-//! SDF it rounds the panel with. Both are undimmed, and the frame's one modal dim ([`note_dim`]) is
-//! applied to both at composite. No backdrop entry is requested, no blur source pass runs and no
-//! band is copied off the framebuffer, so the menu's glass costs one panel quad (and its shadow) on every frame of
-//! its open, its stay and its close, and a morph or a slide moves that quad over pictures that do
-//! not change. It replaced a live `Glass::DYNAMIC_BACKDROP` surface that re-ran the page at quarter
-//! resolution as its blur source whenever the draws beneath it changed (the `src` and `pagex2`
-//! spans) and composited a 5-tap blur plus a band copy every frame: about 2 to 2.6M Mali GPU
-//! cycles a frame over the field ground (television, 2026-10-17).
+//! menu stands on a page that is not moving (`popover.rs`'s module doc), so its glass is fed pictures
+//! of that page the frame already holds, through `gfx::draw_glass_frozen`: the body is the host's
+//! FROST (`popover::host::frost`, one blur of the frozen page per snapshot, built at the head of a
+//! later frame, with the frame's lowest modal dim and the body's ceiling baked in), and the rim's lens
+//! bends the host snapshot (`popover::host::page_tex`, the one capture of the undimmed page) at
+//! `tokens::MENU_SHARP` — `fs_glass.frag`'s refraction with the SAME rounded-rect SDF it rounds the
+//! panel with. The frame's one modal dim ([`note_dim`]) is applied at composite to that undimmed
+//! snapshot only: the baked body already holds it. The latched underlay field (`ui::underlay`, the
+//! 60x32 reconstruction the modal dim draws) is the FALLBACK body, worn under [`FACE`] by a glass
+//! with no frost (before the first build, the variant unlinked, a failed build or bake); it takes
+//! the dim at composite too. No backdrop entry is requested, no blur source pass runs and no band
+//! is copied off the framebuffer, so the menu's glass costs one panel quad (and its shadow) at rest,
+//! its open adds one frost build and the dim ramp's bakes, its close adds the bakes, and a morph or a
+//! slide moves that quad over pictures that do not change. It replaced a live
+//! `Glass::DYNAMIC_BACKDROP` surface that re-ran the page at quarter resolution as its blur source
+//! whenever the draws beneath it changed (the `src` and `pagex2` spans) and composited a 5-tap blur
+//! plus a band copy every frame: about 2 to 2.6M Mali GPU cycles a frame over the field ground
+//! (television, 2026-10-17).
 //!
 //! **What it does not see**: anything drawn live above the host after its capture — an opener
 //! lifted over the dim (the item menu's card, the account chip) — is not in the snapshot, so the
@@ -91,8 +96,10 @@ thread_local! {
     static SURFACE: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
 }
 
-/// A modal dim was just drawn on the visible frame, under whatever surface draws next. The glass's
-/// two pictures are undimmed, so it applies this at composite.
+/// A modal dim was just drawn on the visible frame, under whatever surface draws next. The glass
+/// applies this at composite to the undimmed pictures it reads (the rim's snapshot; the field body of
+/// a glass with no frost) and checks its frost body, baked under the dim the host predicted, against
+/// it ([`crate::popover::host::frost_body_current`]).
 pub(crate) fn note_dim(d: Dim) {
     let owner = DIM_OWNER.with(std::cell::Cell::get);
     DIMS.with(|c| c.borrow_mut().push((owner, d)));
@@ -162,10 +169,12 @@ pub(crate) fn frost_cap() -> (f32, f32) {
 ///
 /// **The body is a FROST where the host holds one** (`popover::host::frost`, a retained blur of the
 /// frozen page over `settled`'s region, built once per snapshot at a later frame's head): the face is
-/// then [`FROST_FACE`] and the body is capped at [`theme::FROST_BODY_CEILING`]. With none (a stacked
-/// menu, no page snapshot, a failed build) it is the field ground under [`FACE`], as it always was.
-/// While a frost is OWED the ground stage is held back (so a stale or missing frost is never baked
-/// into it) and a clear glass stays clear, so no frame shows the field body as frost.
+/// then [`FROST_FACE`] and the body, baked with the frame's dim, is capped at
+/// [`theme::FROST_BODY_CEILING`]. With none (no page snapshot, the first build not done yet, the
+/// variant unlinked, a failed build or bake) it is the field ground under [`FACE`], as it always was.
+/// A menu stacked over another surface's dim draws no glass at all (`false`, below), so it wears
+/// neither. While a frost is OWED the ground stage is held back (so a stale or missing frost is
+/// never baked into it) and a clear glass stays clear, so no frame shows the field body as frost.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn draw_shadowed(
@@ -654,13 +663,13 @@ pub(crate) mod tests {
         }
     }
 
-    /// **The frosted body is graded with the DIM in the sum.** `fs_glass.frag` dims the body first (the
-    /// modal dim, `mix(body, ink, alpha)`), then caps its brightest channel, then the .36/.44 face goes
-    /// over what is left. A white page and a black page run through that whole chain for every dim role
-    /// and an appear spring's alpha in between, with the darkest dim ink there is (black: a flat scrim)
-    /// and the brightest (`TINT` of a white field: the page's own light pushed down, which LIFTS a black
-    /// page and is the case where the dim works against a light ink), and the three inks must keep their
-    /// floors over the result at both stops of the face. The dim can only lower a white page toward its
+    /// **The frosted body is graded with the DIM in the sum.** `fs_frost_bake.frag` dims the body first
+    /// (the modal dim, `mix(body, ink, alpha)`), then caps its brightest channel, and `fs_glass.frag`
+    /// then lays the .36/.44 face over what is left. A white page and a black page run through that
+    /// whole chain for every dim role and an appear spring's alpha in between, with the darkest dim
+    /// ink there is (black: a flat scrim) and the brightest (`TINT` of a white field: the page's own
+    /// light pushed down, which LIFTS a black page and is the case where the dim works against a light
+    /// ink), and the three inks must keep their floors over the result at both stops of the face. The dim can only lower a white page toward its
     /// ink, so the cap still binds there; that it binds AFTER the dim is what the order of the sum pins.
     #[test]
     fn the_frosted_body_keeps_the_ink_floors_through_the_dim_the_cap_and_the_face() {

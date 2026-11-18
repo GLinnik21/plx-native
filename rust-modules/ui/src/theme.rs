@@ -543,8 +543,8 @@ pub const MENU_GLASS_TOP: [f32; 4] = with_a(rgb8(58, 58, 64), 0.36);
 /// The glass menu face's gradient, bottom stop, over a frost: `rgb(40,40,46)` at .44 (was .86); see
 /// [`MENU_GLASS_TOP`].
 pub const MENU_GLASS_BOT: [f32; 4] = with_a(rgb8(40, 40, 46), 0.44);
-/// The face's density where there is NO frost to stand on (a stacked menu, a menu whose page was not
-/// snapshotted, before the frost exists): the board's `rgba(58,58,64,.78)` over the latched underlay
+/// The face's density where there is NO frost to stand on (a menu whose page was not snapshotted,
+/// before the frost exists, the frost variant unlinked, a failed build or bake): the board's `rgba(58,58,64,.78)` over the latched underlay
 /// field, which is a colour wash with no shapes and so needs the heavier face. Same hue as
 /// [`MENU_GLASS_TOP`].
 pub const MENU_GLASS_FIELD_TOP: [f32; 4] = with_a(rgb8(58, 58, 64), 0.78);
@@ -666,11 +666,12 @@ impl Material {
 /// context menu passes almost nothing of the page behind it.
 ///
 /// **A menu spends neither half since it moved onto frozen ground.** `widgets::panel_ground` with
-/// `Ground::Menu` draws `popover_glass`, whose body is the latched underlay field itself under the
-/// menu's gradient face (no blur, so no `deep()` sample, and no frost quad), for the MENUS only;
-/// a `Ground::Sheet` (the centred alerts, About, Track information, the person bio, the decision
-/// alert), and a menu with no latched field, takes the field ground, which spends the `frost()`
-/// half alone.
+/// `Ground::Menu` draws `popover_glass`, whose body is the menu's own once-per-snapshot frost of the
+/// host page (`gfx::GlassFrost`; the latched underlay field is its fallback body). That frost is not
+/// [`Material`]'s `deep()`, so a menu spends neither half of `PANEL_MATERIAL` and draws no frost
+/// quad. That is for the MENUS only: a `Ground::Sheet` (the centred alerts, About, Track
+/// information, the person bio, the decision alert), and a menu with no latched field, takes the
+/// field ground, which spends the `frost()` half alone.
 pub const PANEL_MATERIAL: Material = Material::UltraThick;
 // The five `MODAL_*` tokens that stood here — `MODAL_SAMPLE_MATERIAL`, `MODAL_FROST_ALPHA`,
 // `MODAL_BLUR_TAPS`, `MODAL_BLUR_TINT`, `MODAL_BLUR_SATURATION` — were the material of a

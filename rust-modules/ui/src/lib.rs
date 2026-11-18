@@ -1973,7 +1973,8 @@ impl Painter {
             tint.record(data);
         }) { return; }
         if self.records() || frame::backdrop::dim_deferred() { return; }
-        // A menu's glass over this dim reads undimmed pictures and applies it at composite.
+        // A menu's glass over this dim applies it at composite to the undimmed pictures it reads (the
+        // rim's snapshot; the field body of a glass with no frost). A frost body has it baked in.
         if !plx_gfx::gfx::blur_source_pass() {
             crate::popover_glass::note_dim(ink);
         }

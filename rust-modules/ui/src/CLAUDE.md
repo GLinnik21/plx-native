@@ -655,19 +655,26 @@ tried first. None of it is reconstructable from the code without repeating the m
   under the frost. The choice is explicit at each call, `widgets::Ground::Menu` or
   `Ground::Sheet` (`panel_ground`'s last argument, `Popover::panel`'s too); there is no global
   switch. A `Menu` ground's first act is `popover_glass::draw`: `fs_glass.frag`'s composite through
-  `gfx::draw_glass_frozen`, wearing a gradient face (`FACE_TOP`/`FACE_BOT`), the 1 px
-  `theme::GLASS_RIM`, the lit top edge `GLASS_RIM_LIGHT` and `GlassRim::Menu`, then a soft shadow
-  cut out around the panel's rounded shape. **It reads no framebuffer** (owner decision,
-  2026-10-17: menus stand on main's frozen ground and never live-refract a re-rendered page). Its
-  body shows the latched underlay field (`ui::underlay`, the 60x32 reconstruction the modal dim
-  draws, reaching a surface as `DrawFrame::underlay`); its rim's lens refracts the host snapshot
+  `gfx::draw_glass_frozen`, wearing a gradient face (`FROST_FACE`, `theme::MENU_GLASS_TOP/BOT`,
+  .36/.44), the 1 px `theme::GLASS_RIM`, the lit top edge `GLASS_RIM_LIGHT` and `GlassRim::Menu`,
+  then a soft shadow cut out around the panel's rounded shape. **It reads no framebuffer** (owner
+  decision, 2026-10-17: menus stand on main's frozen ground and never live-refract a re-rendered
+  page). Its body is the host's FROST (`popover::host::frost`): one blur of the frozen page per
+  snapshot (`FrameCache::frost_build_owed`, phase `glass.frost_build`) with the frame's lowest modal
+  dim and `theme::FROST_BODY_CEILING` baked in (`FrameCache::frost_bake_owed`, phase `glass.bake`, on
+  the frames where the dim moves and never at rest), so under `PLX_FROST` the composite returns the
+  baked texel for the body (no `dimRGB`, no cap). Its rim's lens refracts the host snapshot
   (`popover::host::page_tex`, the one capture of the undimmed page) with the SAME rounded-rect SDF
   that rounds the panel, at `tokens::MENU_SHARP`; the frame's one modal dim (noted by
-  `Painter::dim`) is applied to both at composite (`u_dim`, and `u_dim_sharp` for the snapshot).
+  `Painter::dim`) is applied at composite to that sharp source only (`u_dim_sharp`). **The latched
+  underlay field** (`ui::underlay`, the 60x32 reconstruction the modal dim draws, reaching a
+  surface as `DrawFrame::underlay`) **under `FACE_TOP`/`FACE_BOT`** (`MENU_GLASS_FIELD_TOP/BOT`,
+  .78/.86) **is the FALLBACK body**, worn by a glass with no frost: before the first build, with the
+  variant unlinked, or after a failed build or bake (it takes the dim at composite, `u_dim`).
   So a menu requests no backdrop entry, runs no blur source pass (`src`, `pagex2`) and copies no
-  band (`glass.sharp`): its open, stay and close cost one panel quad (profiler phase
-  `glass.frozen`) and its shadow, and a morph or a slide moves that quad over pictures that do not
-  change. What the pictures do not hold, the glass does not show: an opener lifted over the dim
+  band (`glass.sharp`): at rest it costs one panel quad (profiler phase `glass.frozen`) and its
+  shadow, its open adds one frost build and the dim ramp's bakes, its close adds the bakes, and a
+  morph or a slide moves that quad over pictures that do not change. What the pictures do not hold, the glass does not show: an opener lifted over the dim
   (the item menu's card, the account chip) is absent from the lens, and a menu stacked over
   another surface's dim, or drawn before the field has latched (the first frames of a modal), or
   over the video plane, falls back to the field ground (`draw` returns `false`), windowed to the
@@ -683,7 +690,9 @@ tried first. None of it is reconstructable from the code without repeating the m
   once that has latched, the host snapshot drawn CLEAR (`GlassMorph::clear`, the morph's own opening
   material) before, a flat capsule if neither exists. Only the chip on the tab strip, with no menu up, is live glass. The scrim behind a compact menu is
   `theme::underlay::DIM_COMPACT`, 30%. The face colours and shadow are theme roles
-  (`MENU_GLASS_TOP/BOT`, `MENU_SHADOW*`); the face fades with the panel's cascaded alpha.
+  (`MENU_GLASS_TOP/BOT` over the frost, `MENU_GLASS_FIELD_TOP/BOT` over the fallback field,
+  `MENU_SHADOW*`), so editing `FACE_TOP`/`FACE_BOT` restyles only the fallback; the face fades
+  with the panel's cascaded alpha.
   `GlassRim::Menu` over the LIVE path (`draw_blur_backdrop`) would turn on a per-frame sharp band
   copy; no menu takes that path any more. A source-grep test (`widgets_glass_budget_tests`) keeps `Glass` and
   `Painter::backdrop_blur` out of every file except the chrome list — no popover and no screen
@@ -702,7 +711,8 @@ tried first. None of it is reconstructable from the code without repeating the m
   reflows under it, the host is drawn live while the cards move (`popover::host::set_reflow`: no
   per-frame capture, `page_epoch` does not move) and is retaken ONCE when they stop, the old look
   fading into the new ground over `host::CROSSFADE_S` from a second retained copy. The menu's glass samples only that frozen ground (above), so
-  even a page that did move under it would rebuild nothing for the glass. **Do not add new
+  while the page moves under it nothing is rebuilt for the glass (the old frost is served); each
+  host retake moves `page_epoch` and costs one frost rebuild and a bake. **Do not add new
   live-refracting glass over a page unless the owner asks.** Live glass measured about 2 to 2.6M
   Mali GPU cycles per frame more than frozen ground (2026-10-17, release build, mock, panel off),
   with the page re-drawn at quarter resolution on each frame its draws changed (the `src` and

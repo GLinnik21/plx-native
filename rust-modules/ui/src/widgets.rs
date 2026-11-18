@@ -139,8 +139,9 @@ pub fn declare_chrome_glass_for_test(p: Painter, rects: &[Rect]) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ground {
     /// A MENU (Sort & Filter, the account menu, the item hold menu): glass on the frozen ground
-    /// (`popover_glass`: the latched field and the host snapshot), the latched-field ground only
-    /// when there is nothing frozen to stand on.
+    /// (`popover_glass`: a frost of the host snapshot, the latched field as its fallback body, and
+    /// the snapshot itself for the rim), the latched-field ground only when there is nothing frozen
+    /// to stand on.
     Menu,
     /// Everything else that stands on a panel (alerts, About, Tracks, the person bio, the decision
     /// alert): the pre-DS6 ground, the latched underlay field under the frost. Never glass.
@@ -173,8 +174,8 @@ pub enum Ground {
 /// **DS6 put glass back on MENUS, and only menus** (owner decision, wave 2 review): the caller
 /// states which ground it wants with a [`Ground`], per call, and there is no global switch.
 /// [`Ground::Menu`] runs `popover_glass::draw` first and wins whenever the field is latched; that
-/// glass stands on the same frozen pictures (this field, and the host snapshot for its rim) and
-/// reads no framebuffer either. Everything described above is the ground of [`Ground::Sheet`]
+/// glass stands on frozen pictures (the host's frost of the page for its body, this field as the
+/// body's fallback, and the host snapshot for its rim) and reads no framebuffer either. Everything described above is the ground of [`Ground::Sheet`]
 /// (alerts, About, Tracks, the person bio, the decision alert) and the FALLBACK ground of a menu
 /// with nothing frozen to stand on. The chrome (the top bar's track, the profile chip's capsule,
 /// the hold hint) is the only live-blur user.

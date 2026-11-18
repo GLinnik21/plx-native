@@ -117,8 +117,9 @@ macro_rules! glsl_undithered {
 
 /// The FROST variant of the glass fragment source ([`GLASS_FROST`]): [`glsl_dithered`] with
 /// `#define PLX_FROST` in front of the dither prelude, so `fs_glass.frag`'s `#ifdef PLX_FROST` code (the
-/// frosted body's ceiling) is part of this program and of no other. The plain glass program is
-/// [`glsl_dithered`] of the same file and carries none of it.
+/// frosted body's bare return: the baked body takes no dim and no ceiling at composite) is part of
+/// this program and of no other. The plain glass program is [`glsl_dithered`] of the same file and
+/// carries none of it.
 macro_rules! glsl_dithered_frost {
     ($file:literal) => {
         // SAFETY: as `glsl!` — GLSL sources contain no interior NUL.
@@ -5705,10 +5706,9 @@ static mut GPROG: c_uint = 0;
 
 /// The glass program's uniform locations ([`FS_GLASS`] behind [`VS_IMG_DITHERED`]): one `Copy` struct,
 /// so the FROST variant ([`GLASS_FROST`], the same source behind `PLX_FROST`) carries its own — two
-/// programs linked from one source are not promised the same locations, and the variant has a uniform
-/// (`u_frost_cap`) the plain program does not, so its other locations may well move. Obtained by value
+/// programs linked from one source are not promised the same locations. Obtained by value
 /// from [`glass_program`] and nowhere else, which binds the program the draw calls for. The same
-/// shape as [`RectUniforms`]; `-1` (`frost_cap` on the plain program) is a location GL ignores.
+/// shape as [`RectUniforms`]; `-1` is a location GL ignores.
 ///
 /// `boff`, `mrg`, `mrg_rk`, `mrg_tint`, `clear`: a morphing menu glass's join, the colour the joined
 /// shape wears and its clarity ([`GlassMorph`]). Uniforms are per-program state, so EVERY draw of a
@@ -5875,7 +5875,7 @@ impl GlassUniforms {
 
 /// [`GPROG`]'s locations, written once at [`blur_lazy_init`].
 static mut GLASS_UNIFORMS: GlassUniforms = GlassUniforms::NONE;
-/// The glass program with the FROSTED BODY's ceiling ([`FS_GLASS_FROST`]: `fs_glass.frag` behind
+/// The glass program for a FROSTED BODY ([`FS_GLASS_FROST`]: `fs_glass.frag` behind
 /// `PLX_FROST`), linked at boot beside the plain one so the first menu open pays no compile hitch.
 /// Bound by [`glass_program`] only for a draw that has a [`GlassFrost`]; `None` (a driver that
 /// refused it) leaves every glass surface on [`GPROG`], and [`glass_frost_linked`] tells the frost's
@@ -6254,7 +6254,7 @@ fn blur_lazy_init() -> bool {
         plain.init(GPROG);
         GLASS_UNIFORMS = plain;
         // The same source behind `PLX_FROST`, for the menus' frosted body. Optional: a compiler that
-        // refuses the ceiling must cost the menus their frost and not every glass surface its program.
+        // refuses the variant must cost the menus their frost and not every glass surface its program.
         GLASS_FROST = link_optional_program(VS_IMG_DITHERED.as_ptr(), FS_GLASS_FROST.as_ptr()).and_then(|program| {
             let bake = FrostBake::link()?;
             let u = GlassUniforms::of(program);
@@ -8089,7 +8089,7 @@ pub struct GlassFrost {
 }
 impl GlassFrost {
     pub const NONE: Self = Self { tex: 0, rect: [0.0; 4], knee: 0.0, ceiling: 0.0, rev: 0 };
-    /// `(knee, headroom)` of `fs_glass.frag`'s `u_frost_cap`: `y = knee + headroom * o / (o + headroom)`
+    /// `(knee, headroom)` of `fs_frost_bake.frag`'s `u_frost_cap`: `y = knee + headroom * o / (o + headroom)`
     /// above the knee, `o = m - knee`. Slope 1 at the knee and never the ceiling, so a body of 1.0
     /// lands just under it. `[0, 0]` = no cap.
     fn cap_uniform(&self) -> [f32; 2] {
@@ -8484,18 +8484,22 @@ pub fn draw_blur_backdrop(
 /// [`draw_blur_backdrop`] (the face gradient, the rim, the lit edge, the lens), fed two pictures
 /// the frame already holds instead of a blur chain: `ground`, the latched underlay field
 /// (`ui::underlay`'s 60x32 reconstruction of the undimmed host page, mapped over the whole screen
-/// top-down), as the backdrop the panel's body shows, and `sharp`, the host snapshot
-/// (`ui::popover::host`'s one page-sized capture, bottom-up as [`FrameCache`] holds it), as the
-/// rim's sharp source. Neither is taken here and neither is a function of this frame's page:
+/// top-down), as the backdrop the panel's body shows (unless a `frost` stands in for it, below), and
+/// `sharp`, the host snapshot (`ui::popover::host`'s one page-sized capture, bottom-up as
+/// [`FrameCache`] holds it), as the rim's sharp source. Neither is taken here and neither is a function of this frame's page:
 /// nothing is copied off the framebuffer, no source pass runs and no backdrop entry is requested,
 /// so a menu standing over its host costs one panel quad however long it stands, and its morph or
 /// slide moves that quad over pictures that do not change.
 ///
-/// Both pictures are UNDIMMED, so the modal dim the frame drew under the panel is applied to both
-/// at composite (`dim`, the [`backdrop::Dim`] a glass over a live band applies the same way):
-/// blur is linear and the dim's ink is a smooth field, so the panel shows the dimmed page it
-/// stands on. `sharp` 0 draws the single-source material (the host holds no undimmed page this
-/// frame).
+/// Without a `frost`, both pictures are UNDIMMED, so the modal dim the frame drew under the panel
+/// is applied to both at composite (`dim`, the [`backdrop::Dim`] a glass over a live band applies
+/// the same way): blur is linear and the dim's ink is a smooth field, so the panel shows the dimmed
+/// page it stands on. With a `frost` ([`GlassFrost`]: the host's retained blur of its page, on the
+/// frost variant of the glass program) the body is that texture instead of `ground`, the BAKED body
+/// ([`FrameCache::frost_bake_owed`]): already dimmed by the frame's lowest modal dim and held
+/// under its ceiling, so the composite dims only `sharp` (`ground` is still required, and is the
+/// body again when the frost variant did not link). `sharp` 0 draws the single-source material
+/// (the host holds no undimmed page this frame).
 ///
 /// Returns whether the material was handled, a culled or `drawmask`ed quad included (as
 /// [`draw_field_panel`] answers). `false` — no glass program, no ground, a video-plane frame —
@@ -8554,8 +8558,8 @@ pub fn draw_glass_frozen(
         // The body's picture: the menu's FROST (a retained blur of its page, drawn through a UV
         // window of its region) or the latched field. Unit 0 is whichever, so the dim's field is its
         // own texture (mode 1) over a frost and the body's own texel (mode 2) over the field. Only a
-        // draw WITH a frost takes the frost variant of the glass program (the one that holds the
-        // body under its ceiling); every other glass draw keeps the plain program, and a driver that
+        // draw WITH a frost takes the frost variant of the glass program (the one that draws the
+        // baked body as it is); every other glass draw keeps the plain program, and a driver that
         // refused the variant leaves a frost nobody can draw, so it falls back to the field here too.
         let (gu, framed) =
             glass_program(frost.tex != 0 && frost.rect[2] > 0.0 && frost.rect[3] > 0.0);

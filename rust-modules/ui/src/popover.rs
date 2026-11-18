@@ -39,11 +39,13 @@
 //!   dimmed by the live scrim drawn over it, which is the exact bug the lift exists to fix.
 //! - **A MENU's ground is glass on the frozen host (DS6), a sheet's ground never is glass, and
 //!   neither reads the framebuffer.** [`crate::widgets::panel_ground`] draws `popover_glass` for a
-//!   [`Ground::Menu`](crate::widgets::Ground): its body shows the latched underlay field (the one
-//!   the modal dim draws, `ui::underlay`) and its rim refracts the page this snapshot holds, so the
-//!   snapshot must be the undimmed page (above); the frame's dim is applied to both at composite.
-//!   With no latched field it falls back to the sheet's ground — that same field sampled at the
-//!   panel's own rect under the frost, which constrains nothing.
+//!   [`Ground::Menu`](crate::widgets::Ground): its body is a FROST of this snapshot ([`host::frost`]:
+//!   one blur per snapshot, the frame's dim baked in) and its rim refracts the page this snapshot
+//!   holds, so the snapshot must be the undimmed page (above); the frame's dim is applied to the rim's
+//!   snapshot at composite. A glass with no frost yet wears the latched underlay field (the one the
+//!   modal dim draws, `ui::underlay`) as its body instead. With no latched field it falls back to the
+//!   sheet's ground — that same field sampled at the panel's own rect under the frost, which
+//!   constrains nothing.
 //! - **HOST DAMAGE refreshes the snapshot; the popover's OWN activity does not.** That distinction
 //!   is typed by the owning `Present`: Page damage refreshes; Surface damage does not.
 //!   [`own_motion`] / [`host::live`] / [`host::page_pass`] attribute only frame animation;
@@ -602,8 +604,9 @@ impl Popover {
     /// bar's blur and re-latches the dim field: 131% of a 60 Hz frame's GPU budget on the TV.
     /// Real page damage and page motion during the fade still re-take through
     /// [`host::begin_frame`]; the host cache's owner key treats the container's own dismissal the
-    /// same way (`host::bind_owner`: a live-host layer, `Style::Compact`, that starts closing drops only a ground stage), so the
-    /// close's first frame is not the frame that re-takes the page either.
+    /// same way (`host::bind_owner`: a layer of ANY style that only starts closing drops only a ground
+    /// stage and keeps the page snapshot), so the close's first frame is not the frame that re-takes
+    /// the page either.
     fn release(&mut self) {
         self.open = false;
         host::ground_invalidate();

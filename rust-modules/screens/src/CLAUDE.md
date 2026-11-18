@@ -68,14 +68,15 @@ instantiates the same screens a second time for its own inner stack, which is ho
 A glass menu or Sheet freezes the page under it, and the host retakes that snapshot on typed page
 damage (`Present::page_damaged()`, read by `popover::host::begin_frame`; page motion also does once
 every surface is fading), the close's first frame included: a page that returns from under a cover (`Uncover`, `Enter(Restored)`, a focus
-restored onto the key it already holds) raises none of its own, and one that does it unconditionally
-costs the close a dropped frame. So a page draws from a user setting only if it keeps the value it
+restored onto the key it already holds) should raise none of its own, and one that does it
+unconditionally costs the close a dropped frame. So a page draws from a user setting only if it keeps the value it
 last drew from and compares it at the head of `step`, on whichever event comes first
 (`registry::moved(&mut self.field, now)`, then `fx.invalidate(Provenance::Nav)`): Home, Library,
 Recommended, the collection, person, Search, Detail and Watchlist pages do so for the Under posters
 policy (and Library's sort value line, the Continue Watching press the deck draws). A page that
 reads the catalog or a store compares its revision the same way (Home's `sync_catalog_changed`, the
-Watchlist's `rev`).
+Watchlist's `rev`). The collection and person pages are not narrowed yet: both still damage on every
+`Uncover`/`Enter` (over-damage, safe: the host may retake their page when nothing changed).
 
 ## A landing must not move ground somebody is looking at
 
