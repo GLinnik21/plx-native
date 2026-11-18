@@ -238,7 +238,7 @@ fn descriptor_examples(dir: &str) -> Vec<(String, Json)> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(fixtures().join("examples").join(dir)).unwrap() {
         let name = entry.unwrap().file_name().to_string_lossy().into_owned();
-        if name.contains("duplicate") || name.contains("invalid-utf8") {
+        if name.contains("invalid-utf8") {
             continue;
         }
         let document = load(fixtures().join("examples").join(dir).join(&name));
@@ -264,7 +264,7 @@ fn every_valid_descriptor_example_passes_the_send_checks() {
 fn every_invalid_descriptor_example_fails_the_send_checks() {
     let examples = descriptor_examples("invalid");
     let accepted: Vec<_> = examples.iter().filter(|(_, d)| media::check(d, Direction::Send)).map(|(n, _)| n).collect();
-    assert_eq!(examples.len(), 28);
+    assert_eq!(examples.len(), 31);
     assert!(accepted.is_empty(), "{accepted:?}");
 }
 
@@ -324,6 +324,21 @@ fn a_message_over_8192_bytes_is_not_sent() {
     assert!(Outgoing::SetMedia { media, position_ms: None }.encode().is_ok());
     let padded = Outgoing::Kick { peer_id: "p".repeat(9000) };
     assert_eq!(padded.encode(), Err(InvalidMessage("message size")));
+}
+
+#[test]
+fn a_descriptor_that_repeats_a_member_name_is_not_sent() {
+    let ext = read(r#"{"kind":"movie","title":"Arrival","durationMs":6960000,"ext":{"com.example":{"server":"1a2b3c","server":"9z8y7x"}}}"#).unwrap().value;
+    assert_eq!(Outgoing::SetMedia { media: ext.clone(), position_ms: None }.encode(), Err(InvalidMessage("media")));
+    assert!(media::check(&ext, Direction::Receive));
+    let ids = read(r#"{"kind":"movie","title":"Heat","durationMs":1,"ids":{"imdb":"tt1","\u0069mdb":"tt2"}}"#).unwrap().value;
+    assert!(!media::check(&ids, Direction::Send));
+}
+
+#[test]
+fn an_action_in_a_joined_room_is_an_unknown_member() {
+    let joined = r#"{"type":"joined","code":"D4XN7P","you":{"peerId":"p1","token":"q3Jm8f0lYc2Kx9T4bWz7RuNs6dVhA1eGpLo5iCyZk0E"},"room":{"rev":1,"code":"D4XN7P","epoch":0,"phase":"idle","positionMs":0,"atMs":15023,"rate":1,"control":"host","locked":false,"waitingOn":[],"participants":[{"peerId":"p1","name":"Edde","client":"Example/1.31.0","host":true,"connected":true,"player":"idle","match":null,"offsetMs":0}],"action":{"kind":"join","by":"p1"}},"media":null,"serverTime":15023}"#;
+    assert!(matches!(decode(joined), Received::Message(Incoming::Joined { .. })));
 }
 
 #[test]

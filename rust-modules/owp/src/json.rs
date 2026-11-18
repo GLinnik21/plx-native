@@ -71,6 +71,42 @@ fn number_end(bytes: &[u8], start: usize) -> usize {
     end
 }
 
+fn digits_from(bytes: &[u8], mut at: usize) -> usize {
+    while bytes.get(at).is_some_and(u8::is_ascii_digit) {
+        at += 1;
+    }
+    at
+}
+
+fn is_json_number(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    let mut at = usize::from(bytes.first() == Some(&b'-'));
+    match bytes.get(at) {
+        Some(b'0') => at += 1,
+        Some(b'1'..=b'9') => at = digits_from(bytes, at),
+        _ => return false,
+    }
+    if bytes.get(at) == Some(&b'.') {
+        let end = digits_from(bytes, at + 1);
+        if end == at + 1 {
+            return false;
+        }
+        at = end;
+    }
+    if matches!(bytes.get(at), Some(b'e' | b'E')) {
+        at += 1;
+        if matches!(bytes.get(at), Some(b'+' | b'-')) {
+            at += 1;
+        }
+        let end = digits_from(bytes, at);
+        if end == at {
+            return false;
+        }
+        at = end;
+    }
+    at == bytes.len()
+}
+
 fn scan(input: &str) -> Scan {
     let bytes = input.as_bytes();
     let mut out = bytes.to_vec();
@@ -83,7 +119,7 @@ fn scan(input: &str) -> Scan {
         let byte = bytes[i];
         if !in_string && (byte == b'-' || byte.is_ascii_digit()) {
             let end = number_end(bytes, i);
-            if let Some(number) = input.get(i..end).and_then(|token| token.parse::<f64>().ok()) {
+            if let Some(number) = input.get(i..end).filter(|token| is_json_number(token)).and_then(|token| token.parse::<f64>().ok()) {
                 if number.is_infinite() {
                     out[i] = b'0';
                     out[i + 1..end].fill(b' ');
@@ -287,6 +323,17 @@ impl Json {
         }
     }
 
+    pub fn repeats_a_member_name(&self) -> bool {
+        match self {
+            Json::Object(members) => {
+                let mut seen = BTreeSet::new();
+                members.iter().any(|(key, value)| !seen.insert(key.value.as_str()) || value.repeats_a_member_name())
+            }
+            Json::Array(items) => items.iter().any(Json::repeats_a_member_name),
+            Json::Null | Json::Bool(_) | Json::Int(_) | Json::Float(_) | Json::Str(_) => false,
+        }
+    }
+
     pub fn holds_unpaired(&self) -> bool {
         match self {
             Json::Str(text) => text.unpaired,
@@ -439,7 +486,7 @@ mod tests {
 
     #[test]
     fn broken_numbers_stay_errors() {
-        for text in ["[-]", "[1.2.3]", "[-inf]", "[01]"] {
+        for text in ["[-]", "[1.2.3]", "[-inf]", "[01]", "[01e400]", "[1.e400]", "[-.5e400]", "[1e+]"] {
             assert!(read(text).is_err(), "{text}");
         }
     }

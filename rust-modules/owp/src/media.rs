@@ -119,7 +119,7 @@ pub fn check(media: &Json, direction: Direction) -> bool {
         Direction::Receive => true,
         Direction::Send => {
             let ext_fits = media.get("ext").is_none_or(|ext| ext.compact().len() <= MAX_EXT_BYTES);
-            known_members(media).compact().len() <= MAX_MEDIA_BYTES && ext_fits
+            !media.repeats_a_member_name() && known_members(media).compact().len() <= MAX_MEDIA_BYTES && ext_fits
         }
     }
 }

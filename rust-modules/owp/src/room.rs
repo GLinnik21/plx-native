@@ -71,9 +71,8 @@ fn valid_participants(room: &Json) -> bool {
 pub fn valid_snapshot(room: &Json, snapshot: Snapshot) -> bool {
     let phase = room.get("phase").and_then(Json::as_text).map(|text| text.value.as_str());
     let action = match (room.get("action"), snapshot) {
-        (None, _) => true,
         (Some(action), Snapshot::Room) => valid_action(action),
-        (Some(_), Snapshot::Joined) => false,
+        (None, _) | (Some(_), Snapshot::Joined) => true,
     };
     room.members().is_some()
         && room.get("rev").and_then(Json::as_int).is_some_and(|rev| rev >= 1)
