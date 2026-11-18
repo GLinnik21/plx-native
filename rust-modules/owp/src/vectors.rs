@@ -2,7 +2,7 @@ use crate::clock::{ClockEvent, ClockSync, PongOutcome};
 use crate::code;
 use crate::json::{read, Json, Text, MAX_SAFE_INT};
 use crate::media::{self, Direction};
-use crate::message::{decode, Incoming, InvalidMessage, Outgoing, PlayerState, Received, MAX_RELAY_MESSAGE_BYTES};
+use crate::message::{decode, Incoming, InvalidMessage, Outgoing, PingId, PlayerState, Received, MAX_RELAY_MESSAGE_BYTES};
 use crate::relays::{self, Relay};
 use crate::room::{valid_snapshot, Snapshot, MAX_OFFSET_MS};
 use crate::text::{valid_client, valid_name};
@@ -359,4 +359,68 @@ fn relay_messages_that_fail_their_rules_are_malformed_and_others_ignored() {
     assert!(matches!(decode(r#"{"type":"future"}"#), Received::Ignored));
     assert!(matches!(decode(r#"[1]"#), Received::Ignored));
     assert!(matches!(decode(r#"{"type":"pong","id":"a-17","serverTime":918273001}"#), Received::Message(Incoming::Pong { .. })));
+}
+
+fn room_with(member: &str) -> String {
+    room_with_padding(0).replace(r#""pad":"""#, member)
+}
+
+#[test]
+fn unknown_members_are_ignored_at_every_depth() {
+    let pong = r#"{"type":"pong","id":1,"serverTime":5,"future":{"a":[1,2]}}"#;
+    assert_eq!(decode(pong), Received::Message(Incoming::Pong { id: PingId::Number(1), server_time: 5 }));
+    let room = room_with_padding(0).replace(r#""offsetMs":0}"#, r#""offsetMs":0,"badge":"gold"}"#);
+    assert!(matches!(decode(&room), Received::Message(Incoming::Room { .. })));
+}
+
+#[test]
+fn escaped_names_and_values_read_as_their_text() {
+    let pong = r#"{"type":"pong","id":"a\"b\\c","serverTime":5}"#;
+    assert_eq!(decode(pong), Received::Message(Incoming::Pong { id: PingId::Text(r#"a"b\c"#.into()), server_time: 5 }));
+}
+
+#[test]
+fn a_lone_surrogate_fails_a_checked_field_and_not_an_unknown_one() {
+    assert_eq!(decode(r#"{"type":"closed","reason":"kicked\ud800"}"#), Received::Malformed("closed"));
+    assert_eq!(decode(&room_with_padding(0).replace(r#""peerId":"p1""#, r#""peerId":"p\ud800""#)), Received::Malformed("room"));
+    assert!(matches!(decode(r#"{"type":"pong","id":1,"serverTime":5,"note":"\ud800"}"#), Received::Message(Incoming::Pong { .. })));
+}
+
+#[test]
+fn a_relay_message_that_repeats_a_member_name_is_malformed() {
+    assert_eq!(decode(r#"{"type":"pong","id":1,"id":2,"serverTime":5}"#), Received::Malformed("repeated name"));
+    assert_eq!(decode(&room_with_padding(0).replace(r#""locked":false"#, r#""locked":false,"locked":true"#)), Received::Malformed("repeated name"));
+    let ext = room_with(r#""media":{"kind":"video","title":"Clip","durationMs":1,"ext":{"a.b":{"k":1,"k":2}}}"#);
+    assert_eq!(decode(&ext), Received::Malformed("repeated name"));
+}
+
+#[test]
+fn numbers_past_their_range_fail_their_field() {
+    assert_eq!(decode(r#"{"type":"pong","id":1,"serverTime":1e400}"#), Received::Malformed("pong"));
+    assert_eq!(decode(r#"{"type":"pong","id":1,"serverTime":9007199254740992}"#), Received::Malformed("pong"));
+    assert_eq!(decode(&room_with_padding(0).replace(r#""rev":2"#, r#""rev":1e400"#)), Received::Malformed("room"));
+    assert_eq!(decode(&room_with_padding(0).replace(r#""rev":2"#, r#""rev":9007199254740992"#)), Received::Malformed("room"));
+    let ext = room_with(r#""media":{"kind":"video","title":"Clip","durationMs":1,"ext":{"a.b":{"n":1e400}}}"#);
+    assert!(matches!(decode(&ext), Received::Message(Incoming::Room { .. })));
+}
+
+#[test]
+fn a_deep_ext_reads_up_to_the_recursion_limit() {
+    let media = |depth: usize| {
+        let nested = format!("{}1{}", r#"{"a":"#.repeat(depth), "}".repeat(depth));
+        room_with(&format!(r#""media":{{"kind":"video","title":"Clip","durationMs":1,"ext":{{"a.b":{nested}}}}}"#))
+    };
+    assert!(matches!(decode(&media(100)), Received::Message(Incoming::Room { .. })));
+    assert_eq!(decode(&media(5_000)), Received::Ignored);
+}
+
+#[test]
+fn unknown_error_codes_closed_reasons_and_action_kinds_stay_strings() {
+    let error = r#"{"type":"error","code":"queue_full","message":"later","re":"join"}"#;
+    assert_eq!(decode(error), Received::Message(Incoming::Error { code: "queue_full".into(), message: "later".into(), re: Some("join".into()) }));
+    assert_eq!(decode(r#"{"type":"closed","reason":"maintenance"}"#), Received::Message(Incoming::Closed { reason: "maintenance".into() }));
+    let text = room_with(r#""action":{"kind":"confetti","by":"p1"}"#);
+    let Received::Message(Incoming::Room { room, .. }) = decode(&text) else { panic!("{text}") };
+    let kind = room.get("action").and_then(|action| action.get("kind")).and_then(Json::as_text).map(|kind| kind.value.as_str());
+    assert_eq!(kind, Some("confetti"));
 }

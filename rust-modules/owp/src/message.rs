@@ -297,6 +297,9 @@ pub fn decode(input: &str) -> Received {
     }
     let Ok(read) = read(input) else { return Received::Ignored };
     let message = read.value;
+    if message.repeats_a_member_name() {
+        return Received::Malformed("repeated name");
+    }
     let Some(kind) = plain_string(message.get("type")) else { return Received::Ignored };
     match kind.as_str() {
         "joined" => decode_joined(&message),
