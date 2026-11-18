@@ -75,9 +75,11 @@ def inside_checkout(call):
     if resolved.is_symlink():
         storage = runpy.run_path(str(ROOT / "tools/build-root.py"))
         if storage["CONFIG"].is_file():
-            owner = storage["location"](ROOT)
-            if owner and resolved.parent == ROOT / "rust-modules" and resolved.resolve() == owner / resolved.name:
-                return Path(resolved.name)
+            location = storage["location"](ROOT)
+            if location and resolved.parent == ROOT / "rust-modules":
+                directory, _ = location
+                if resolved.resolve() == directory / resolved.name:
+                    return Path(resolved.name)
     resolved = Path(os.path.realpath(resolved))
     root = Path(os.path.realpath(ROOT / "rust-modules"))
     return resolved.relative_to(root) if resolved == root or root in resolved.parents else None
