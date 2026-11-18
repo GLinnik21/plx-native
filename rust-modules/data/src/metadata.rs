@@ -1574,6 +1574,21 @@ fn convert_ratings(it: &plx_plex::plex::Metadata) -> Vec<Rating> {
     out
 }
 
+/// Ownership of the episode stream facts stored on a show detail page.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum EpisodeStreams {
+    #[default]
+    Unavailable,
+    Loaded(String),
+    /// Old recordings fetched the on-deck episode when one existed and omitted the owner.
+    LegacyOnDeck,
+}
+
+impl EpisodeStreams {
+    fn legacy() -> Self { Self::LegacyOnDeck }
+    fn is_legacy(&self) -> bool { matches!(self, Self::LegacyOnDeck) }
+}
+
 #[derive(Default, Clone)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Detail {
@@ -1648,8 +1663,8 @@ pub struct Detail {
     #[serde(with = "record::float_bits")]
     pub video_fps: f64, // video Stream frameRate (0 = unknown); feeds the Load esInfo
     /// Episode whose streams were loaded into a show page. Its displayed season may since have changed.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub stream_episode_rk: String,
+    #[serde(default = "EpisodeStreams::legacy", skip_serializing_if = "EpisodeStreams::is_legacy")]
+    pub episode_streams: EpisodeStreams,
     // ---- the PRIMARY version's technical fields (plex::Metadata::media_version(None) = Media[0], NOT a
     // best-of pick — a multi-version item has more, and the user chooses among them in the Play Version
     // picker, by `MediaId`). For a SHOW these are borrowed from its hero episode, like the
@@ -1774,10 +1789,10 @@ impl Detail {
 
     /// Older recordings predate the explicit owner and loaded the on-deck episode if present.
     pub fn stream_episode_key(&self) -> Option<&str> {
-        if self.stream_episode_rk.is_empty() {
-            self.on_deck.as_ref().map(|e| e.rk.as_str())
-        } else {
-            Some(&self.stream_episode_rk)
+        match &self.episode_streams {
+            EpisodeStreams::Unavailable => None,
+            EpisodeStreams::Loaded(rk) => Some(rk),
+            EpisodeStreams::LegacyOnDeck => self.on_deck.as_ref().map(|e| e.rk.as_str()),
         }
     }
 
@@ -2357,7 +2372,7 @@ fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::Se
         video_fps: 0.0, // set from the video Stream by parse_streams below
         // likewise set by parse_streams (one assignment point), which for a SHOW runs a second
         // time over its hero episode — the show container carries no Media of its own
-        stream_episode_rk: String::new(),
+        episode_streams: EpisodeStreams::Unavailable,
         video_resolution: String::new(),
         width: 0,
         height: 0,
@@ -3430,6 +3445,7 @@ mod lang_matches_tests {
 
 /// Install the hero episode's primary stream facts and the complete list of alternate versions.
 fn backfill_episode(d: &mut Detail, rk: String, it: &plx_plex::plex::Metadata) {
+    if it.default_part().is_none() { return; }
     parse_streams(it, d);
     let versions = crate::pms::versions_of(it);
     if let Some(ep) = d.on_deck.as_mut().filter(|e| e.rk == rk) {
@@ -3438,7 +3454,7 @@ fn backfill_episode(d: &mut Detail, rk: String, it: &plx_plex::plex::Metadata) {
     if d.episodes.position(&rk).and_then(|i| d.episodes.get(i)).is_some_and(|ep| ep.versions != versions) {
         d.episodes.edit(&rk, |ep| ep.versions = versions);
     }
-    d.stream_episode_rk = rk;
+    d.episode_streams = EpisodeStreams::Loaded(rk);
 }
 
 fn fetch_seasons(client: &'static plx_plex::plex::Client, rk: &str) -> Vec<Season> {
