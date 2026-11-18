@@ -5304,7 +5304,7 @@ pub(crate) fn close_player_sections(d: &mut Dispatcher<AppHost>) {
 /// `frame_with_results` asserts every frame anyway. Every one of them was already reading the top
 /// entry.
 pub(crate) fn page_owned(d: &Dispatcher<AppHost>) -> bool {
-    d.top_screen().map_or(false, |s| s.focus_source() == FocusSource::Engine)
+    d.page_owned()
 }
 
 pub(crate) fn search_owns_input(d: &Dispatcher<AppHost>) -> bool {

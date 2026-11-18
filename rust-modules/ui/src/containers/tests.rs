@@ -562,6 +562,27 @@ fn only_the_first_dim_the_host_folded_is_declared_instead_of_drawn() {
     assert_eq!(fb.events, ["dim_folded", "dim"], "the folded first dim is declared, the second still drawn over it");
 }
 
+/// **The fold gate's facts are the sync's own** (`FoldGate::sync_is_noop`, read off the stack at the head of
+/// a frame): not while the first read is in flight or about to be collected, a no-op once the field is
+/// latched from this very snapshot, and not again when the snapshot is re-taken, on a video-plane frame
+/// or for a stack that inherits nothing from the page.
+#[test]
+fn the_fold_gate_is_true_only_when_the_sync_has_nothing_left_to_do() {
+    let (mut d, mut rig, _) = booted();
+    let _ = two_dimming_sheets(&mut d, &mut rig);
+    let mut fb = FakeFb::new(0.5);
+    assert!(!d.nav.modals.fold_gate().sync_is_noop(0, false), "nothing latched yet");
+    dims_frame(&mut d, &rig, &mut fb);
+    assert!(d.nav.modals.fold_gate().pending, "the read is in flight");
+    assert!(!d.nav.modals.fold_gate().sync_is_noop(0, false), "and the next sync collects it");
+    fb.frame(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
+    let gate = d.nav.modals.fold_gate();
+    assert!(!gate.pending && gate.sync_is_noop(0, false), "latched from snapshot 0 and nothing in flight");
+    assert!(!gate.sync_is_noop(1, false), "the snapshot was re-taken: the sync reads again");
+    assert!(!gate.sync_is_noop(0, true), "a video-plane frame keeps whatever it has, which says nothing of the page");
+}
+
 /// **The page read never stalls the frame that asked for it.** A `glReadPixels` of work queued on
 /// the same frame waits for the GPU to draw everything submitted so far: measured on the
 /// television (2026-09-19, `FRAMEDROP … spans=…fieldread:25.7`), 26–37 ms of every modal's

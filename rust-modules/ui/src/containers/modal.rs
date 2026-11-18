@@ -322,6 +322,11 @@ pub struct ModalPresentation {
     /// frost's body from at the head of the frame, before `draw_scrims` paints it. `None` unless the
     /// owner asked for it ([`Dispatcher::modal_presentation_at`](crate::dispatch::Dispatcher)).
     pub dim: Option<crate::frame::backdrop::Dim>,
+    /// **What the host needs to fold [`dim`](Self::dim) into the page it draws** ([`FoldGate`]): `None` unless
+    /// the owner asked for it AND this frame's page walk will reach the dim pass
+    /// ([`Dispatcher::modal_presentation_at`](crate::dispatch::Dispatcher)). A fold cannot be undone, so
+    /// every fact it rests on is decided here, before the page is drawn.
+    pub fold: Option<FoldGate>,
     key: ModalCacheKey,
     /// The caching layers whose style kept the host live while open ([`Self::kept_host_live`]); not
     /// part of the cache key, which is identity only.
@@ -458,6 +463,38 @@ pub fn latch_step(
     }
 }
 
+/// **The facts that make this frame's [`ModalUnderlay::sync`] a provable no-op** — the one condition under which
+/// the host may fold the frame's lowest dim into the held page before the dim pass runs
+/// (`popover::host::page_pass`). The sync is where the field can change (a page read landing, a re-latch, a
+/// reset), and the dim the host folds is read from the field as it stands BEFORE it; so a frame whose sync
+/// could change it must keep its own dim pass, and the fold itself cannot be taken back.
+///
+/// Pure values, read off the stack when the presentation is made: the source the stack inherits from, what
+/// the field is latched from, and whether a page read is in flight. The epoch and the video plane are the
+/// host's to supply when it asks ([`sync_is_noop`](Self::sync_is_noop)), because `page_epoch` can move
+/// between the presentation and the page pass (a retake) and the answer must be the one the sync will give.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FoldGate {
+    /// Where the stack's field inherits from ([`ModalStack::underlay_source`]): `None` when nothing dims.
+    pub source: Option<UnderlaySource>,
+    /// What the field is latched from ([`ModalUnderlay::held`]).
+    pub held: Latched,
+    /// A page read is queued and has not landed ([`ModalUnderlay::sync`] would collect it).
+    pub pending: bool,
+}
+
+impl FoldGate {
+    /// Is the sync a no-op on a frame at page epoch `epoch`? A page-sourced stack, no read in flight, and
+    /// [`latch_step`] says `Keep`: the field already describes this very snapshot. Never on a video-plane
+    /// frame (`latch_step` keeps whatever it has there, which is not a statement about the page).
+    pub fn sync_is_noop(&self, epoch: u32, video_plane: bool) -> bool {
+        self.source == Some(UnderlaySource::Page)
+            && !self.pending
+            && !video_plane
+            && latch_step(self.source, self.held, epoch, video_plane) == LatchStep::Keep
+    }
+}
+
 /// **Where a frame's dims meet the renderer** — the one seam between [`ModalStack::draw_scrims`]'
 /// ordering and GL, so that ordering is host-testable. Production is [`GlDims`]; a test hands in a
 /// fake framebuffer and watches whether the latch ever reads a dim, and when it reads it.
@@ -562,10 +599,17 @@ impl DimSink for GlDims<'_> {
         );
     }
     fn folded(&self) -> bool {
-        false
+        crate::popover::host::dim_folded()
     }
     fn dim_folded(&mut self, field: &crate::underlay::UnderlayField, alpha: f32) {
-        self.dim(field, alpha);
+        field.draw(
+            crate::Painter::root(),
+            crate::Rect::FULL,
+            crate::underlay::Role::DimFolded {
+                weight: crate::theme::underlay::TINT,
+            },
+            alpha,
+        );
     }
 }
 
@@ -729,6 +773,7 @@ impl<H: Host> ModalStack<H> {
             },
             reflow: false,
             dim: None,
+            fold: None,
             key: ModalCacheKey { owner: self.presentation_owner.clone(),
                 layers: self.surfaces.iter().filter(|s| holders.contains(&s.entry.id))
                     .map(|s| (s.entry.id, s.phase == Phase::Closing)).collect() },
@@ -1076,6 +1121,11 @@ impl<H: Host> ModalStack<H> {
     pub fn first_dim(&self, nav_page_alpha: f32) -> Option<crate::frame::backdrop::Dim> {
         let (_, alpha) = *self.scrims(nav_page_alpha).first()?;
         Some(self.underlay.field().dim_of(crate::theme::underlay::TINT, alpha))
+    }
+
+    /// The [`FoldGate`]'s facts, as the stack stands now. Pure: reads the stack and its field.
+    pub fn fold_gate(&self) -> FoldGate {
+        FoldGate { source: self.underlay_source(), held: self.underlay.held(), pending: self.underlay.pending.is_some() }
     }
 
     /// Where the stack's field inherits from: the BOTTOM surface that declares a dim — it is the

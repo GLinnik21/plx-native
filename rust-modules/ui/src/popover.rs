@@ -1360,6 +1360,49 @@ pub mod host {
         cache(|c| c.draw())
     }
 
+    /// **The held page, with the frame's lowest modal dim folded into the same pass when it may be**
+    /// ([`dim_to_fold`]). Otherwise exactly [`draw_held`].
+    fn draw_held_folding(modal: &crate::containers::modal::ModalPresentation) -> bool {
+        let Some(dim) = dim_to_fold(modal) else { return draw_held() };
+        let _layer=held_ceiling().map(|z|crate::frame::backdrop::layer(z,false));
+        cache(|c| c.draw_folded(dim))
+    }
+
+    /// **The dim `page_pass` folds into the held page this frame, or `None`.** A fold cannot be undone (the
+    /// dim pass that follows skips its first dim's pixels once it has happened, `DimSink::folded`), so it
+    /// happens only when every one of these holds:
+    ///
+    /// - the dim is a FIELD dim at a visible alpha: a flat dim is undithered and keeps its own pass;
+    /// - the frame's page walk will reach the dim pass ([`ModalPresentation::fold`], decided by the
+    ///   dispatcher), and the stack's sync is provably a no-op at the epoch the held page has NOW
+    ///   (`FoldGate::sync_is_noop`): the dim was predicted from the field at the head of the frame, and it
+    ///   is the very one the pass would paint only if the sync changes nothing. The epoch is read here, in
+    ///   the `Held::Page` arm, because `begin_frame` may have invalidated the snapshot since the
+    ///   presentation was made;
+    /// - this is the VISIBLE walk (a blur source pass keeps the page undimmed for the glass to composite
+    ///   the dim over, and a source walk's dim pass draws its own), on a frame that is not the video plane
+    ///   (no opaque page to fold into) and is not fading the old look over the new one (`FADE_ON`).
+    ///
+    /// `Held::Ground` already holds the scrim and never reaches this; only the FIRST dim is ever folded
+    /// (`modal.dim` is the first of the stack), so a stacked second dim keeps its own pass.
+    fn dim_to_fold(modal: &crate::containers::modal::ModalPresentation) -> Option<crate::frame::backdrop::Dim> {
+        let dim = modal.dim.filter(|d| d.tex != 0 && d.tint[3] > 0.0)?;
+        let gate = modal.fold?;
+        let visible = !plx_gfx::gfx::blur_source_pass() && !crate::frame::backdrop::source_walk();
+        (visible
+            && !plx_gfx::gfx::video_plane_frame()
+            && !FADE_ON.load(Relaxed)
+            && gate.sync_is_noop(page_epoch(), false))
+        .then_some(dim)
+    }
+
+    /// Did this frame's page pass fold the lowest modal dim into the held page
+    /// (`FrameCache::draw_folded`)? `DimSink::folded`'s answer: the stack's dim pass then declares that dim
+    /// and does not draw it.
+    pub fn dim_folded() -> bool {
+        cache(|c| c.dim_folded())
+    }
+
     fn freezes_current_layer() -> bool {
         held_ceiling().is_some_and(|end|
             crate::frame::backdrop::current_layer().is_none_or(|current|current<end))
@@ -1378,8 +1421,13 @@ pub mod host {
     /// [`begin_frame`] cannot carry this alone, because the player and a preview-bound page never
     /// call it (a hardware plane has no host to snapshot), so a stale count would survive into the
     /// first popover frame after them. `app/run.rs` calls this at the top of each iteration.
+    ///
+    /// It also forgets a FOLD (`FrameCache::clear_dim_fold`): the fact that the page pass laid the lowest
+    /// dim on the page is about one frame, and a stale one would make the next frame's dim pass skip a dim
+    /// nothing drew: on a frame with no held page, or a video-plane one.
     pub fn clear_dims() {
         crate::popover_glass::clear_dims();
+        cache(|c| c.clear_dim_fold());
     }
 
     /// Open the frame from the owning Present's typed page damage and captured page motion.
@@ -1403,8 +1451,8 @@ pub mod host {
         // A new frame has drawn no modal dim yet (`popover_glass` applies the frame's dims to its
         // frozen pictures). `app/run.rs` already cleared it at the head of the iteration through
         // [`clear_dims`], which the player and preview routes need because they never get here;
-        // this clears it again for any other caller that opens a popover frame.
-        crate::popover_glass::clear_dims();
+        // this clears it again for any other caller that opens a popover frame (and a fold with it).
+        clear_dims();
         // §9: there is no host to snapshot on a video-plane frame — what is behind these panels is
         // a hardware plane GL cannot read back, so a capture is a photograph of the punch-through
         // hole. The player path already did not call this (`app/run.rs`'s player branch says so);
@@ -1511,8 +1559,8 @@ pub mod host {
             // which is also where the freeze has to still be armed. Nothing is drawn here.
             Held::Ground(_) => true,
             // `FrameCache::draw` lifts the freeze around its own quad, so this is correct whether
-            // or not an outer pass has one armed.
-            Held::Page => draw_held(),
+            // or not an outer pass has one armed. The frame's lowest dim rides it when it may.
+            Held::Page => draw_held_folding(modal),
             Held::Nothing => false,
         };
         if !served {

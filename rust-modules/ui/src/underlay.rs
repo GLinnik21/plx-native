@@ -116,6 +116,10 @@ pub enum Role {
     /// PR3's `ModalUnderlay` (`containers::modal::ModalStack::draw_scrims`), which constructs it as
     /// `Role::Dim { weight: theme::underlay::TINT }` for every surface's scrim.
     Dim { weight: f32 },
+    /// A [`Role::Dim`] the host has already laid on the framebuffer, inside the held page it drew
+    /// (`gfx::FrameCache::draw_folded`): declared and noted for the glass above exactly as `Dim` is
+    /// ([`Painter::dim_folded`]), and not painted again. Flat dims do not fold and are painted.
+    DimFolded { weight: f32 },
 }
 
 /// **What a [`UnderlayField::draw`] resolves to, as a VALUE.**
@@ -366,6 +370,10 @@ impl UnderlayField {
             Role::Dim { weight } => match plan(self.latched && self.tex != 0, weight, alpha) {
                 Draw::Flat(c) => p.dim(r, 0, c),
                 Draw::Field(tint) => p.dim(r, self.tex, tint),
+            },
+            Role::DimFolded { weight } => match plan(self.latched && self.tex != 0, weight, alpha) {
+                Draw::Flat(c) => p.dim(r, 0, c),
+                Draw::Field(tint) => p.dim_folded(r, self.tex, tint),
             },
         }
     }

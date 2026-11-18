@@ -1224,7 +1224,25 @@ where
     pub fn modal_presentation_at(&self, nav_page_alpha: f32) -> super::containers::modal::ModalPresentation {
         let mut captured = self.modal_presentation();
         captured.dim = self.nav.modals.first_dim(nav_page_alpha);
+        // The host may fold that dim into the page it draws only when this frame's page walk will reach
+        // the dim pass (`draw_scrims`) at all: a fold that nothing follows would paint a dim the frame
+        // never had.
+        captured.fold = self.page_walk_reaches_the_dim_pass().then(|| self.nav.modals.fold_gate());
         captured
+    }
+
+    /// **Does the page this dispatcher owns reach `draw_scrims` in the loop's visible walk?** `draw_with`
+    /// paints the surfaces' dims only `if pages && host_render != Replaced`, and the loop passes `pages` for
+    /// an owned top page ([`page_owned`](Self::page_owned)) while a replaced host gets no page pass at all
+    /// (`bridge::page_plan`). The ceiling is `Z::ALL` in the visible walk, where `Z::DIM < ceiling` holds.
+    pub fn page_walk_reaches_the_dim_pass(&self) -> bool {
+        self.page_owned() && self.nav.modals.host_policy().1 != HostRender::Replaced
+    }
+
+    /// **Does the top page draw itself through the dispatcher** (its focus is the engine's), rather than
+    /// through the loop's legacy closure? One definition: `bridge::page_owned` is this.
+    pub fn page_owned(&self) -> bool {
+        self.top_screen().is_some_and(|s| s.focus_source() == FocusSource::Engine)
     }
 
     pub fn top_screen(&self) -> Option<&dyn super::screen::Screen<H>> {
