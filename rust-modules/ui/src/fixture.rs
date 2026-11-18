@@ -202,6 +202,10 @@ pub struct FixtureRow {
     /// The first element whose data has not landed (an unloaded paged slot, for the by-id
     /// `Unloaded` refusal). `usize::MAX` is a row every element of which has landed.
     pub unloaded_from: usize,
+    /// The row's FOCUSED element is not loaded (a screen whose press on its focused element lands
+    /// elsewhere while its picture lags, as Home's does across the hero/grid door). It reads the
+    /// context's focus, so a resolution handed a stale focus does not see it.
+    pub unloaded_while_focused: bool,
 }
 
 impl Focusable<FixtureHost> for FixtureRow {
@@ -262,8 +266,10 @@ impl Focusable<FixtureHost> for FixtureRow {
     }
     /// `row.<i>`: the row's role follows what its elements are for the press. The subject is
     /// `rk<i>` (a catalog key's stand-in) and the label is a word, never a title.
-    fn a11y(&self, key: &u32, _cx: &Cx<'_, FixtureHost>) -> Option<A11y<'_>> {
+    fn a11y(&self, key: &u32, cx: &Cx<'_, FixtureHost>) -> Option<A11y<'_>> {
         let i = *key as usize;
+        let held = self.unloaded_while_focused
+            && cx.focus.current.is_some_and(|focus| focus.entry == self.entry && focus.elem == *key);
         (i < self.len).then(|| {
             let role = match self.kind {
                 ElemKind::Card => Role::Card,
@@ -273,7 +279,7 @@ impl Focusable<FixtureHost> for FixtureRow {
             A11y::new(A11yPath::new().name("row").index(i), role)
                 .with_label("row item")
                 .with_subject(format!("rk{i}"))
-                .with_loaded(i < self.unloaded_from)
+                .with_loaded(i < self.unloaded_from && !held)
         })
     }
     fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, FixtureHost>, out: &mut Vec<u32>) {
@@ -405,6 +411,10 @@ impl FixtureScreen {
     pub(crate) fn set_unloaded_from(&mut self, from: usize) {
         self.row.unloaded_from = from;
     }
+    /// The row's focused element is not loaded while it holds focus.
+    pub(crate) fn set_unloaded_while_focused(&mut self, held: bool) {
+        self.row.unloaded_while_focused = held;
+    }
 }
 
 impl Composed<FixtureHost> for FixtureScreen {
@@ -446,6 +456,15 @@ impl Machine<FixtureHost> for FixtureScreen {
                 plx_machine::machine::InputOwner::Entry(_) => "entry_owner",
             });
             if cx.focus.current.is_some() { self.state.events.push("has_focus"); }
+        }
+        // Page 660 (a `Control` row) says what the press machine reads in each Tick it is delivered:
+        // a press standing on the focused element, or none (`a_tick_in_the_frame_a_press_armed_...`).
+        if self.arg == FixtureArg::Page(660) && matches!(ev, ScreenEvent::Tick(_)) {
+            self.state.events.push(if cx.press.live && cx.press.owner.is_some() && cx.press.owner == cx.focus.current {
+                "tick_press_on_focus"
+            } else {
+                "tick_press_idle"
+            });
         }
         // Page 800 makes stale interactive delivery observable at BOTH exits: the logical
         // handler and an adapter/store write. The dispatcher must reject it before step.
@@ -772,6 +791,7 @@ impl FixtureModal {
                                     drawn: 0,
                                     kind: ElemKind::Card,
                                     unloaded_from: usize::MAX,
+                                    unloaded_while_focused: false,
                                 },
                                 draw_at: 0,
                                 recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None,
@@ -967,10 +987,19 @@ impl Screen<FixtureHost> for FixtureModal {
         self.bar_opener
     }
     fn opener_alpha(&self) -> f32 {
-        self.opener_alpha
+        // a surface that owns a popover answers its morph's (a menu's opener is consumed by it); one
+        // without keeps the alpha a test states
+        self.popover.as_ref().map_or(self.opener_alpha, |p| p.opener_alpha())
+    }
+    fn handed_back(&self) -> bool {
+        self.popover.as_ref().is_some_and(|p| p.handed_back())
     }
     fn opener_rect(&mut self, drawn: super::Rect) {
         self.opener_seen.push(drawn);
+        // the menus' own `opener_rect`: the morph starts and ends on the opener's live drawn rect
+        if let Some(pop) = self.popover.as_mut() {
+            pop.track_opener(drawn);
+        }
     }
     fn draw_held(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
         self.held_faces.push(!f.painter.records());
@@ -1102,6 +1131,7 @@ impl Mounter<FixtureHost> for FixtureMounter {
                 drawn: 0,
                 kind,
                 unloaded_from: usize::MAX,
+                unloaded_while_focused: false,
             },
             draw_at: 0,
             recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None,
@@ -1861,7 +1891,7 @@ fn the_fixture_focusables_conform_to_the_accessibility_id_contract() {
         hold_hint: Default::default(),
     };
     for (kind, role) in [(ElemKind::Card, Role::Card), (ElemKind::Bare, Role::Row), (ElemKind::Control, Role::Button)] {
-        let row = FixtureRow { len: 5, group: GroupId(1), entry: EntryId(1), prepared: 0, drawn: 0, kind, unloaded_from: 3 };
+        let row = FixtureRow { len: 5, group: GroupId(1), entry: EntryId(1), prepared: 0, drawn: 0, kind, unloaded_from: 3, unloaded_while_focused: false };
         super::a11y::conformance(&row, &cx);
         let third = row.a11y(&2, &cx).unwrap();
         assert_eq!(third.role, role);

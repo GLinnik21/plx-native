@@ -1217,6 +1217,16 @@ where
         captured
     }
 
+    /// [`modal_presentation`](Self::modal_presentation) carrying the frame's lowest modal dim
+    /// ([`ModalStack::first_dim`](super::containers::modal::ModalStack::first_dim)) at the route
+    /// transition's `nav_page_alpha`, the value `draw_scrims` is handed: what the host's frost body is
+    /// baked from at the head of the frame.
+    pub fn modal_presentation_at(&self, nav_page_alpha: f32) -> super::containers::modal::ModalPresentation {
+        let mut captured = self.modal_presentation();
+        captured.dim = self.nav.modals.first_dim(nav_page_alpha);
+        captured
+    }
+
     pub fn top_screen(&self) -> Option<&dyn super::screen::Screen<H>> {
         self.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| &*i.screen)
     }
@@ -3164,6 +3174,14 @@ where
                     let entry_owner = InputOwner::Entry(entry);
                     addressed.owner = if self.owner_entry() == Some(entry) { self.owner() } else { entry_owner };
                     addressed.focus = self.input.engine.read(entry_owner);
+                    // **The press is read where the delivery runs, as the focus is.** `parts` was
+                    // built before this drain, and an OK-down arms its press INSIDE it (`Fx::Press`,
+                    // queued ahead of the next delivery): the frame's own Tick, delivered after the
+                    // arm, would otherwise read a press that is not live yet, and a screen that acts
+                    // on a press standing on its element (Home's carousel, which restarts its countdown
+                    // while a hero control's press dips: `HomeScreen::hero_press_armed`) would be one
+                    // frame late on exactly the frame the press began.
+                    addressed.press = self.input.press_read(parts.tick.ms);
                     addressed.page_image = self.page_image_read().for_owner(entry, id);
                 }
                 // **A page whose first seat is still on its way HOLDS an arrow other than Up** (design

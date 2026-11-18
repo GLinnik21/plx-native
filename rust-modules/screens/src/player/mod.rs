@@ -1091,6 +1091,26 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
     }
 }
 
+/// **The ratingKey of the item the session is playing**, `None` when it holds none (a URL playback has no key).
+/// What a player control that restarts or finishes the playing item names as its accessibility subject
+/// ([`PlayerScreen::control_subject`]).
+fn playing_rk(ps: &plx_media::route::PlaybackSession) -> Option<String> {
+    let rk = plx_media::route::cur_rk(ps);
+    (!rk.is_empty()).then_some(rk)
+}
+
+/// What a pick of a rung of the More menu's quality ladder names as its accessibility subject: the title it
+/// re-resolves, read the way the performer reads it (`app::playback::apply_more_action`). On a failed play the pick is
+/// the failure read-out's Retry at the chosen rung, so it repeats the failed REQUEST ([`plx_media::route::retry_rk`]);
+/// on a live one it asks the route again for the item playing.
+fn quality_pick_subject(ps: &plx_media::route::PlaybackSession) -> Option<String> {
+    if matches!(plx_media::player::state(ps), plx_media::player::PlaybackState::Error) {
+        plx_media::route::retry_rk(ps)
+    } else {
+        playing_rk(ps)
+    }
+}
+
 /// **Does this key press continue the relative-seek gesture in progress?** Every key but LEFT and
 /// RIGHT ends it ([`PlayerScreen::handle_key`] resets the burst), except OK on a control whose
 /// command is a seek: two seek controls pressed inside [`BURST_GAP_MS`](plx_appkit::player_hud::seek_jump::BURST_GAP_MS) are one gesture, and their steps
@@ -2353,15 +2373,7 @@ impl PlayerScreen {
     ) {
         let Some(i) = focused.and_then(|e| e.checked_sub(player_hud::ELEM_SECTION_BASE)) else { return };
         let chapters = plx_appkit::chapters_panel::has_chapters(H::metadata(cx));
-        let command = player_hud::geometry::frame_state_content(
-            &self.compiled,
-            self.hud.sections.bits(),
-            self.eff_slot(),
-            chapters,
-            self.model.is_episode,
-            self.model.paused,
-        )
-        .and_then(|(state, skip)| player_hud::geometry::section_command(state.skip_variant(skip), i as usize));
+        let command = self.section_command_at(chapters, i as usize);
         // A command that is not meaningful now (Go to details with no detail page) is not asked, but the press still
         // puts the page away: the overlay's card closed when it had no action to report, too.
         let Some(command) = command else { return };
@@ -2628,10 +2640,56 @@ impl PlayerScreen {
     /// Both spellings are built from static names and an integer, never from content.
     fn control_path(&self, i: i32) -> A11yPath {
         let path = A11yPath::new().name("control");
-        match self.row_word(i) {
-            Some(word) if (0..i).all(|j| self.row_word(j) != Some(word)) => path.name(word),
-            _ => path.index(i as usize),
+        match self.control_word(i) {
+            Some(word) => path.name(word),
+            None => path.index(i as usize),
         }
+    }
+
+    /// The word item `i`'s id is spelled with ([`Self::control_path`]): its [`Self::row_word`] when no earlier item of
+    /// the row has the same one, `None` when the id is the item's position.
+    fn control_word(&self, i: i32) -> Option<&'static str> {
+        self.row_word(i).filter(|&word| (0..i).all(|j| self.row_word(j) != Some(word)))
+    }
+
+    /// The command the package placed at item `i` of the row, enabled or not (`player_hud::geometry::row_declared`).
+    fn row_declared(&self, i: i32) -> Option<HudCommand> {
+        player_hud::geometry::row_declared(&self.compiled, self.hud.sections.bits(), self.eff_slot(), &self.model, i)
+    }
+
+    /// **The ratingKey a press of item `i` of the control row plays, restarts or finishes**, the subject of its
+    /// accessibility id (`tools/a11y.py`, `SUBJECT_BEARING`), read off the session the way the app's performer
+    /// reads it: Previous and Next the queue neighbour they would start ([`HudCommand::plays_rk`]), From beginning
+    /// the item playing, Up Next's `next_episode` the episode `up_next` holds (`app::playback::play_up_next`), the
+    /// Skip pill the item playing (a final credits segment finishes it). A control that starts or writes no title
+    /// (a seek, a panel opener, `watch`, `watch_credits`) has none and stays pressable bare. An id spelled by POSITION
+    /// hides its word, so `player.control.<i>` is guarded whole and carries the playing item's key when its command
+    /// names no other. No IO: the session is the frame's own copy.
+    fn control_subject(&self, i: i32, ps: &plx_media::route::PlaybackSession) -> Option<String> {
+        let target = match (self.row_declared(i), self.row_word(i)) {
+            (Some(command), _) => command.plays_rk(ps),
+            (None, Some("next_episode")) => plx_media::route::up_next(ps).map(|next| next.rk.clone()).filter(|rk| !rk.is_empty()),
+            (None, Some("skip")) => playing_rk(ps),
+            (None, _) => None,
+        };
+        match self.control_word(i) {
+            Some(_) => target,
+            None => target.or_else(|| playing_rk(ps)),
+        }
+    }
+
+    /// **The command of an open section's button `i`** (`player_hud::geometry::section_command` over the frame's state): what
+    /// [`Self::section_pressed`] performs and what the button's accessibility subject is read from.
+    fn section_command_at(&self, chapters: bool, i: usize) -> Option<HudCommand> {
+        player_hud::geometry::frame_state_content(
+            &self.compiled,
+            self.hud.sections.bits(),
+            self.eff_slot(),
+            chapters,
+            self.model.is_episode,
+            self.model.paused,
+        )
+        .and_then(|(state, skip)| player_hud::geometry::section_command(state.skip_variant(skip), i))
     }
 
     /// The failure read-out's row, when the read-out owns the frame: the read-out and each action's rect
@@ -2780,8 +2838,12 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
                 return None;
             }
             let item = A11y::new(self.control_path(i), Role::Button);
-            return Some(match self.row_word(i) {
+            let item = match self.row_word(i) {
                 Some(word) => item.with_label(word),
+                None => item,
+            };
+            return Some(match self.control_subject(i, H::session(cx)) {
+                Some(rk) => item.with_subject(rk),
                 None => item,
             });
         }
@@ -2798,13 +2860,34 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             let at = (key - ELEM_FAILURE_BASE) as usize;
             let (readout, frames) = self.failure_row(cx.measure)?;
             frames.get(at).copied().flatten()?;
-            let word = player_hud::failure_action_word(*readout.actions().get(at)?);
-            return Some(A11y::new(A11yPath::new().name("failure").name(word), Role::Button));
+            let action = *readout.actions().get(at)?;
+            let item = A11y::new(A11yPath::new().name("failure").name(player_hud::failure_action_word(action)), Role::Button);
+            // Try again and Play automatically resolve the failed request again (`app::playback::retry_failed_playback`,
+            // `route::retry_current_play`): the key of THAT request, which a play that failed before its plan landed
+            // holds and `cur_rk` does not. Change quality, Repair and Back start no title.
+            use plx_media::player::FailureAction as Fail;
+            return Some(match action {
+                Fail::TryAgain | Fail::PlayAutomatically => match plx_media::route::retry_rk(H::session(cx)) {
+                    Some(rk) => item.with_subject(rk),
+                    None => item,
+                },
+                Fail::ChangeQuality | Fail::Repair | Fail::Back => item,
+            });
         }
         if (ELEM_SECTION_BASE..ELEM_SECTION_END).contains(&key) {
             let at = (key - ELEM_SECTION_BASE) as usize;
-            return (at < self.section_rects(chapters).len())
-                .then(|| A11y::new(A11yPath::new().name("section").index(at), Role::Button));
+            if at >= self.section_rects(chapters).len() {
+                return None;
+            }
+            // The Info card's buttons (From the beginning, Go to details) are named by POSITION, so the whole
+            // spelling is guarded: the key of what the button's command plays, else the item playing.
+            let ps = H::session(cx);
+            let subject = self.section_command_at(chapters, at).and_then(|command| command.plays_rk(ps)).or_else(|| playing_rk(ps));
+            let item = A11y::new(A11yPath::new().name("section").index(at), Role::Button);
+            return Some(match subject {
+                Some(rk) => item.with_subject(rk),
+                None => item,
+            });
         }
         if (ELEM_CHAPTER_BASE..plx_ui::dispatch::STRIP_BASE).contains(&key) {
             let (_, src) = self.strip_source(cx)?;
@@ -4515,6 +4598,138 @@ pub(crate) mod step_ladder_tests {
         Focusable::<TestHost>::groups(&page, &cx, &mut groups);
         let row = groups.iter().find(|g| g.id == GROUP_ROW).expect("the row is declared");
         assert_eq!(row.len, elems.len(), "with both live no cell of the row is a hole");
+    }
+
+    /// The `subject` of the element `id` names on `page`, `None` when it names none or is no element.
+    fn subject_of(page: &PlayerScreen, cx: &Cx<'_, TestHost>, id: &str) -> Option<String> {
+        let path = plx_ui::a11y::A11yPath::parse_relative(id).expect("a well-formed path");
+        let key = Focusable::<TestHost>::a11y_find(page, &path, cx)?;
+        Focusable::<TestHost>::a11y(page, &key, cx)?.subject.map(Cow::into_owned)
+    }
+
+    /// **The controls that start a title name the one they start** (`SUBJECT_BEARING`, so the harness's press
+    /// must name it), read the way the app's performer reads it: Previous and Next the queue neighbour
+    /// (`queue_transport::step`), Up Next's `next_episode` the episode `up_next` holds (`play_up_next`), the Skip pill
+    /// the item playing (a final credits segment finishes it). The rest of the row starts no title and names none, so
+    /// `tests/player_shots.sh` still opens its panels bare.
+    #[test]
+    fn the_player_controls_that_start_a_title_name_the_one_they_start() {
+        use plx_data::metadata::{Marker, MarkerKind};
+        let _g = plx_base::testlock::serial();
+        let ps = super::overlay_tests::middle_episode_session();
+        let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+        let controls = player_hud::Controls::for_item(true, true, true);
+        page.slot = ControlSlot::Discs(controls);
+        page.model.controls = controls;
+        page.model.is_episode = true;
+        let playing = cx_over(&ps);
+        assert_eq!(subject_of(&page, &playing, "control.next").as_deref(), Some("12"), "Next plays the following episode");
+        assert_eq!(subject_of(&page, &playing, "control.previous").as_deref(), Some("10"), "Previous plays the preceding one");
+        for id in ["control.subtitles", "control.audio", "control.more"] {
+            assert_eq!(subject_of(&page, &playing, id), None, "{id} opens a panel: it names no title");
+        }
+
+        let marker = |kind| Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg: kind == MarkerKind::Credits };
+        page.slot = player_hud::slot_for(Some(marker(MarkerKind::Credits)), true, plx_media::route::NextEpisodeMode::Countdown);
+        assert!(matches!(page.slot, ControlSlot::UpNext(_)), "rig: the Up Next pair");
+        assert_eq!(subject_of(&page, &playing, "control.next_episode").as_deref(), Some("12"), "Next Episode plays what up_next holds");
+        assert_eq!(subject_of(&page, &playing, "control.watch_credits"), None, "Watch Credits starts nothing");
+
+        page.slot = player_hud::slot_for(Some(marker(MarkerKind::Intro)), false, plx_media::route::NextEpisodeMode::Countdown);
+        assert!(matches!(page.slot, ControlSlot::Skip(_)), "rig: the Skip pill");
+        assert_eq!(subject_of(&page, &playing, "control.skip").as_deref(), Some("11"), "Skip acts on the item playing");
+
+        // an idle session names nothing: nothing to play, so the guarded doors cannot press the control
+        let idle = cx();
+        page.slot = ControlSlot::Discs(controls);
+        assert_eq!(subject_of(&page, &idle, "control.next"), None, "no queue: Next plays nothing");
+    }
+
+    /// **An id spelled by position hides its word, so it is guarded whole**: a package placing two Next controls
+    /// (or any command twice) names the second `control.<i>`, and that id carries what its command plays, else the
+    /// item playing, so a bare `press player.control.5` cannot start the queue's next episode behind the word.
+    #[test]
+    fn a_position_spelled_control_carries_a_subject_whatever_its_command() {
+        let _g = plx_base::testlock::serial();
+        let ps = super::overlay_tests::middle_episode_session();
+        let controls = player_hud::Controls::for_item(true, true, true);
+        let positional = |command: &str| {
+            let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::reference_with_forward_as_for_test(command));
+            page.slot = ControlSlot::Discs(controls);
+            page.model.controls = controls;
+            page.model.is_episode = true;
+            let cx = cx_over(&ps);
+            let mut elems = Vec::new();
+            Focusable::<TestHost>::a11y_elems(&page, GROUP_ROW, &cx, &mut elems);
+            let ids: Vec<_> = elems
+                .iter()
+                .filter_map(|key| Focusable::<TestHost>::a11y(&page, key, &cx))
+                .filter(|a| a.path.to_string().rsplit('.').next().is_some_and(|last| last.chars().all(|c| c.is_ascii_digit())))
+                .map(|a| (a.path.to_string(), a.subject.map(Cow::into_owned)))
+                .collect();
+            (subject_of(&page, &cx, "control.next"), ids)
+        };
+        let (first, ids) = positional("next");
+        assert_eq!(first.as_deref(), Some("12"), "the first Next keeps its word");
+        assert_eq!(ids, [("control.5".to_owned(), Some("12".to_owned()))], "the second is `control.5` and plays the same episode");
+        let (_, ids) = positional("toggle_play");
+        assert_eq!(ids, [("control.5".to_owned(), Some("11".to_owned()))], "a repeated pause names the item playing");
+    }
+
+    /// **The failure read-out's Try again and Play automatically resolve the failed REQUEST again**
+    /// (`retry_failed_playback`, `route::retry_current_play`), so each names the request's key and not `cur_rk`: a
+    /// play that failed before its plan landed holds the item it asked for in the one and the previous item in the
+    /// other. Change quality, Repair and Back start no title and name none; a session that made no request (a URL)
+    /// has nothing to retry and names none.
+    #[test]
+    fn the_failure_actions_that_play_again_name_the_request_they_repeat() {
+        use plx_media::player::FailureAction as Fail;
+        let _g = plx_base::testlock::serial();
+        let mut ps = super::overlay_tests::middle_episode_session();
+        let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::classic_for_test());
+        let subjects = |ps: &plx_media::route::PlaybackSession, page: &mut PlayerScreen| {
+            let cx = cx_over(ps);
+            let actions = vec![Fail::PlayAutomatically, Fail::TryAgain, Fail::ChangeQuality, Fail::Back];
+            let readout = plx_appkit::player_hud::FailureReadout::captured(
+                plx_media::player::error_now(ps), actions, String::new(), ps.repair_status);
+            let busy = player_hud::Busy::Readout(plx_ui::widgets::StatusKind::Failed, c"Playback failed");
+            page.busy = busy;
+            page.presentation = player_hud::Presentation { busy, failure: Some(std::sync::Arc::new(readout)) };
+            ["failure.play_automatically", "failure.try_again", "failure.change_quality", "failure.back"].map(|id| {
+                let path = plx_ui::a11y::A11yPath::parse_relative(id).expect("a well-formed path");
+                let key = Focusable::<TestHost>::a11y_find(page, &path, &cx).unwrap_or_else(|| panic!("{id} is an element"));
+                Focusable::<TestHost>::a11y(page, &key, &cx).expect(id).subject.map(Cow::into_owned)
+            })
+        };
+        assert_eq!(subjects(&ps, &mut page), [None, None, None, None], "no request was made: nothing to retry");
+        // the item playing is `11`; the request that failed is `99` (its plan never landed)
+        plx_media::route::seed_request_for_test(&mut ps, "99");
+        assert_eq!(plx_media::route::cur_rk(&ps), "11", "rig: the session holds another item");
+        assert_eq!(
+            subjects(&ps, &mut page),
+            [Some("99".to_owned()), Some("99".to_owned()), None, None],
+            "Try again and Play automatically name the request's key, not `cur_rk`"
+        );
+    }
+
+    /// **The Info card's buttons are named by position, so each carries a subject**: From the beginning restarts
+    /// the item playing and Go to details leaves for its page, both naming it (`section.<i>` is guarded whole).
+    #[test]
+    fn the_info_cards_buttons_name_the_item_playing() {
+        let _g = plx_base::testlock::serial();
+        let ps = super::overlay_tests::middle_episode_session();
+        let mut page = PlayerScreen::new(ENTRY, plx_appkit::player_hud::loaded::reference_with_info_actions_for_test());
+        page.model.chapters = true;
+        page.model.is_episode = true;
+        page.hud.sections = input::Sections::NONE.toggled(Section::Info, false);
+        let playing = cx_over(&ps);
+        assert_eq!(page.section_command_at(true, 0), Some(HudCommand::FromBeginning), "rig: the Info card's first button");
+        assert_eq!(subject_of(&page, &playing, "section.0").as_deref(), Some("11"), "From the beginning restarts the item playing");
+        assert_eq!(page.section_command_at(true, 1), Some(HudCommand::GoToDetail), "rig: the second button");
+        assert_eq!(subject_of(&page, &playing, "section.1").as_deref(), Some("11"), "Go to details names the same item");
+        assert_eq!(subject_of(&page, &playing, "section.2"), None, "there is no third button");
+        let idle = cx();
+        assert_eq!(subject_of(&page, &idle, "section.0"), None, "nothing playing: nothing to name");
     }
 
     /// Every group this screen declares resolves back through `group_of` to the group it came

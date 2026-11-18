@@ -3184,7 +3184,9 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // is no framebuffer to snapshot. Skip the door instead of tripping the
                         // debug assertion. A popover from this page halts the preview first, so
                         // this frame only skips while the picture is the intended ground.
-                        let modal = pages.modal_presentation();
+                        // Carrying the frame's lowest modal dim, the value `draw_scrims` is handed below: the host bakes
+                        // a glass menu's frost body from it at the head of the frame (`begin_frame`).
+                        let modal = pages.modal_presentation_at(bridge.navigation_presentation(&pages.nav).page_alpha);
                         if !(player.video_plane_bound && plx_media::route::is_preview(&player.session)) {
                             plx_base::diag::spans::span("host", || plx_ui::popover::host::begin_frame(
                                 &modal, fr.dt, fr.underlay_moving, pages.present.page_damaged()));
@@ -8604,6 +8606,155 @@ mod lifecycle_regression_tests {
         assert!(worst < 0.04, "no frame jumps the card (biggest step {worst}); the dip is 0.082 deep");
         assert!(!app.pages.input.press.is_active(), "…and the spring comes to rest under the menu");
         assert_eq!(app.pages.input.press.scale(), 1.0);
+    }
+
+    /// **`[Down, press:<card>@<rk>]` across Home's hero/grid door, through the real dispatcher.** The
+    /// Down crosses the door and leaves the picture on the hero for a few frames (a human's quick OK
+    /// there lands on the hero's Play); the by-id press of the card the Down landed on moves no focus
+    /// (it is already there), so nothing clears that remap. Home projects its focused element not
+    /// loaded while the picture lags, and the dispatcher, asking with the focus the Down left (not
+    /// the one its drain began with), refuses the press as `unloaded`: nothing plays and nothing
+    /// opens. Once the picture has settled the same press opens the card's title.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn a_by_id_press_in_the_batch_of_the_key_that_crossed_homes_door_is_refused_until_the_picture_settles() {
+        use plx_machine::machine::{InputEvent, InputKind, Key, OkTap, Source, Tick};
+        let _serial = plx_base::testlock::serial();
+        plx_base::eventlog::with_private_log(|| {
+            let mut app = app();
+            let mut t = 0u32;
+            super::super::bridge::show_page(&mut app.pages, AppArg::Home);
+            app.runtime.bridge(&mut app.bridge).seed_hub_grid_for_test(3, 4);
+            settle(&mut app, &mut t);
+            let home = app.pages.nav.top_page().unwrap().id;
+            let at = |t: u32| Tick { ms: t + 16, dt_us: 16_000 };
+            let by_id = |id: &str, press: Option<&str>, t: u32| InputEvent {
+                at: at(t),
+                source: Source::RemoteFifo,
+                kind: InputKind::ById {
+                    id: id.into(),
+                    press: press.map(|_| OkTap { sym: 0x0d, wcode: 0 }),
+                    expect: press.map(std::sync::Arc::<str>::from),
+                },
+            };
+            let snapshot = |app: &mut App| app.pages.a11y_snapshot(&mut app.runtime.bridge(&mut app.bridge));
+            let refused = || std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+                .lines().filter(|line| line.contains("a11y: refused")).map(str::to_owned).collect::<Vec<_>>();
+            let hero = "home.hero.play";
+
+            // the card a Down from the hero's Play lands on, and its title (a dry run)
+            let tokens = |app: &mut App, t: &mut u32, id: &str| {
+                let now = *t;
+                step(app, t, vec![by_id(id, None, now)]);
+                settle(app, t);
+            };
+            tokens(&mut app, &mut t, hero);
+            assert_eq!(snapshot(&mut app).focused.as_deref(), Some(hero), "premise: the hero's Play is focused");
+            let now = t;
+            step(&mut app, &mut t, vec![plx_ui::fixture::key(Key::Down, at(now))]);
+            settle(&mut app, &mut t);
+            let after = snapshot(&mut app);
+            let card = after.focused.clone().expect("a Down from the hero lands somewhere");
+            let rk = after.elems.iter().find(|e| e.id == card).and_then(|e| e.subject.clone())
+                .expect("the card carries the ratingKey its press acts on");
+            assert!(card.starts_with("home.") && card != hero, "premise: the Down crossed the door onto a card: {card}");
+
+            // back to the hero, then ONE batch: the Down and the press naming the card it lands on
+            tokens(&mut app, &mut t, hero);
+            assert_eq!(snapshot(&mut app).focused.as_deref(), Some(hero));
+            assert!(refused().is_empty(), "premise: nothing refused so far: {:?}", refused());
+            let now = t;
+            step(&mut app, &mut t, vec![plx_ui::fixture::key(Key::Down, at(now)), by_id(&card, Some(&rk), now)]);
+            for _ in 0..24 { step(&mut app, &mut t, vec![]); }
+            let lines = refused();
+            assert_eq!(lines.len(), 1, "{lines:?}");
+            assert!(lines[0].ends_with(&format!("a11y: refused press {card} unloaded owner=home")), "{lines:?}");
+            assert_eq!(snapshot(&mut app).focused.as_deref(), Some(card.as_str()), "the Down moved focus");
+            assert_eq!(app.pages.nav.top_page().unwrap().id, home, "nothing opened");
+            assert!(!plx_media::route::play_pending(), "and nothing played");
+
+            // the picture has caught up: the same press opens the card's title
+            let now = t;
+            step(&mut app, &mut t, vec![by_id(&card, Some(&rk), now)]);
+            for _ in 0..24 { step(&mut app, &mut t, vec![]); }
+            assert_eq!(refused().len(), 1, "no second refusal: {:?}", refused());
+            assert_ne!(app.pages.nav.top_page().unwrap().id, home, "the card's title opened");
+        });
+    }
+
+    /// **A press accepted against one hero is played against it, even in the frame the carousel turns**
+    /// (PR #1442, round 7). A hero control's press commits a dip (about 200 ms) after OK and plays the
+    /// title the billboard shows AT THE COMMIT; the press of the control that already has focus moves
+    /// nothing, so the 8 s countdown ran on, and a countdown that ran out inside the dip turned the page:
+    /// `press home.hero.play --rk X`, accepted against X, played the next page's title. The hardest frame
+    /// is the one the press ARMS in: the dispatcher built that frame's press read before its drain, so
+    /// the frame's own Tick, delivered after the arm, read a press that was not live, and the carousel
+    /// turned there. A dry run finds the frame the page turns on; the press is then delivered in that
+    /// frame's batch.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn a_hero_press_accepted_in_the_frame_the_carousel_turns_plays_the_title_it_was_accepted_against() {
+        use plx_machine::machine::{InputEvent, InputKind, OkTap, Source, Tick};
+        let _serial = plx_base::testlock::serial();
+        // One run: Home on the hero's Play, then frames until the page has turned (or, with
+        // `press_in`, that many frames and ONE batch carrying the press). Returns the frame the page
+        // turned on (a dry run only), the title the press named, and the titles Home asked to play.
+        let run = |press_in: Option<usize>| -> (Option<usize>, String, Vec<String>) {
+            plx_base::eventlog::with_private_log(|| {
+                let mut app = app();
+                let mut t = 0u32;
+                super::super::bridge::show_page(&mut app.pages, AppArg::Home);
+                app.runtime.bridge(&mut app.bridge).seed_hubs_for_test(3, plx_data::pms::HubState::Ready);
+                settle(&mut app, &mut t);
+                let at = |t: u32| Tick { ms: t + 16, dt_us: 16_000 };
+                let by_id = |press: Option<&str>, t: u32| InputEvent {
+                    at: at(t),
+                    source: Source::RemoteFifo,
+                    kind: InputKind::ById {
+                        id: "home.hero.play".into(),
+                        press: press.map(|_| OkTap { sym: 0x0d, wcode: 0 }),
+                        expect: press.map(std::sync::Arc::<str>::from),
+                    },
+                };
+                let shown = |app: &mut App| {
+                    let snapshot = app.pages.a11y_snapshot(&mut app.runtime.bridge(&mut app.bridge));
+                    assert_eq!(snapshot.focused.as_deref(), Some("home.hero.play"), "premise: Play is focused");
+                    snapshot.elems.iter().find(|e| e.id == "home.hero.play").and_then(|e| e.subject.clone())
+                        .expect("the hero's Play carries the ratingKey it acts on")
+                };
+                let now = t;
+                step(&mut app, &mut t, vec![by_id(None, now)]);
+                settle(&mut app, &mut t);
+                let named = shown(&mut app);
+                let mut turned = None;
+                // the countdown restarts at the focus move: 8 s is 500 frames, then some
+                for frame in 0..560usize {
+                    if press_in == Some(frame) {
+                        let now = t;
+                        step(&mut app, &mut t, vec![by_id(Some(&named), now)]);
+                        // the dip, the commit and the spring-back
+                        for _ in 0..40 { step(&mut app, &mut t, vec![]); }
+                        break;
+                    }
+                    step(&mut app, &mut t, vec![]);
+                    if press_in.is_none() && shown(&mut app) != named {
+                        turned = Some(frame);
+                        break;
+                    }
+                }
+                let played = app.runtime.bridge(&mut app.bridge).take_observed_home_commands().into_iter()
+                    .filter_map(|(_, request, _)| match request { plx_screens::registry::HomeReq::Play { rk, .. } => Some(rk), _ => None })
+                    .collect();
+                (turned, named, played)
+            })
+        };
+        let (turned, named, _) = run(None);
+        let frame = turned.expect("premise: the countdown turns the page within 560 frames");
+        assert!(frame > 400, "premise: the turn is the 8 s countdown's, frame {frame}");
+        let (_, named_again, played) = run(Some(frame));
+        assert_eq!(named_again, named, "premise: the same hero is shown when the press arrives");
+        assert_eq!(played, vec![named.clone()],
+            "the press named {named} in the frame the page turned on and must play it, not the next page's");
     }
 
     /// What `hold_bench_tick` put on the input queue in one frame: `(ok_down, ok_up, back, direction)`

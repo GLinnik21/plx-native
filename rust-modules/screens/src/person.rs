@@ -434,6 +434,9 @@ struct Page {
     entry_count_c: CString,
     header: HeaderFlow,
     header_dirty: bool,
+    /// The Under posters policy the filmography shelves were last drawn with (`step` compares it:
+    /// Settings changes the setting while it covers the page).
+    caption_policy: plx_ui::caption_policy::CaptionPolicy,
     /// What the page's links are made of; the screen turns it into group ids ([`PersonScreen::links`]).
     reach: Reach,
     /// The store revision ([`PersonView::revision`](plx_data::person::PersonView::revision)) the
@@ -554,6 +557,7 @@ impl Page {
             entry_count_c: CString::default(),
             header: HeaderFlow::default(),
             header_dirty: true,
+            caption_policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT),
             reach: Reach::default(),
             synced: None,
             covered_ready_c: false,
@@ -1231,6 +1235,12 @@ impl PersonScreen {
 impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        // The shelves draw the Under posters policy, which Settings changes while it covers the page:
+        // noticed on whichever event comes first, and answered with page damage (a returning page
+        // raises none of its own).
+        if crate::registry::moved(&mut self.page.caption_policy, crate::registry::captions::policy_for(H::screen_inputs(cx))) {
+            fx.invalidate(Provenance::Nav);
+        }
         // The content the stack reads is current before it reads it for this event.
         let mut live = false;
         match ev {
@@ -1538,6 +1548,32 @@ mod tests {
         s.page.refresh_store_cache(&cx(&FixtureMeasure, store.view()));
         lay(&mut s, &store, &FixtureMeasure);
         (store, s)
+    }
+
+    /// **A person page, covered, notices that Settings changed what its filmography draws under the
+    /// posters** (`step`'s head): a page returning from under a cover raises no damage of its own,
+    /// and typed page damage is what retakes a frozen host's snapshot.
+    #[test]
+    fn the_person_damages_the_page_when_the_under_posters_setting_moved_under_a_cover() {
+        use crate::registry::captions::{PolicyPin, FIXTURE_TITLE_ON};
+        use plx_plex::plex::session::UnderPosters;
+        let _guard = plx_base::testlock::serial();
+        let (store, mut s) = seed(4, 3);
+        let mut uncover_under = |setting: UnderPosters| {
+            let _pin = PolicyPin::set(setting);
+            let mut present = plx_machine::present::Present::new();
+            let mut buf: Vec<plx_machine::machine::Stamped<PersonHost>> = Vec::new();
+            let mut fx = Effects::new(&mut buf,
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(0)), &mut present);
+            Machine::<PersonHost>::step(&mut s, &ScreenEvent::Cover, &cx(&FixtureMeasure, store.view()), &mut fx);
+            present.page_damaged()
+        };
+        // Probed with `Cover`: this page still damages unconditionally on `Uncover`/`Enter` (a
+        // leftover), and the head compare is the same on whichever event comes first.
+        uncover_under(UnderPosters::DEFAULT);
+        assert!(!uncover_under(UnderPosters::DEFAULT), "control: an unchanged setting damages nothing");
+        assert!(uncover_under(FIXTURE_TITLE_ON), "the Title switch moved the caption policy");
+        assert!(!uncover_under(FIXTURE_TITLE_ON), "...once");
     }
 
     fn focus_of(s: &PersonScreen, store: &plx_data::stores::person::PersonStore, kind: usize, col: usize) -> plx_machine::machine::FocusKey<u32> {

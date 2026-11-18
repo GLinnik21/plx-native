@@ -1765,3 +1765,29 @@ fn a_day_turn_changes_the_rails_labels_and_where_its_step_falls() {
     assert_eq!(labels_of(&page), ["Today", "2026", "2025"]);
     assert_eq!(rail_centres(&page, &fixture), [264.0, 304.0, 344.0], "Today and the year after it are a pitch apart, no step");
 }
+
+/// **A grid that was covered notices that Settings changed what it draws under the posters.** A
+/// page returning from under a cover raises no damage of its own (typed page damage retakes a frozen
+/// host's snapshot, the cost a glass menu's BACK paid), so the Under posters policy and the sort value
+/// line, which `step` reads at its head, are what the page answers with damage, once.
+#[test]
+fn the_grid_damages_the_page_when_the_under_posters_setting_moved_under_a_cover() {
+    use crate::registry::captions::{PolicyPin, FIXTURE_TITLE_ON};
+    use plx_plex::plex::session::UnderPosters;
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    let mut uncover_under = |setting: UnderPosters| {
+        let _pin = PolicyPin::set(setting);
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        page.step(&ScreenEvent::Uncover, &fixture.cx(None),
+            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+        present.page_damaged()
+    };
+    assert!(!uncover_under(UnderPosters::DEFAULT), "control: an unchanged setting damages nothing");
+    assert!(uncover_under(FIXTURE_TITLE_ON), "the Title switch moved the caption policy");
+    assert!(!uncover_under(FIXTURE_TITLE_ON), "...once");
+    assert!(uncover_under(UnderPosters { sort_value: !FIXTURE_TITLE_ON.sort_value, ..FIXTURE_TITLE_ON }),
+        "the sort value line is not part of the policy, and is drawn under every card");
+}

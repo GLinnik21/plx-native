@@ -1430,6 +1430,56 @@ fn press_by_id_delivers_ok_down_and_up_so_a_card_commits_and_a_bare_element_acti
     assert!(!events.contains("\"press_commit\""), "{events}");
 }
 
+/// **A by-id input resolves against the focus an earlier input of its batch moved.** The dispatcher
+/// hands every delivery of a drain the context it built BEFORE the drain, so a `[Right, press:X]` batch
+/// resolved `X` against the focus from before the `Right`. A screen whose press on its focused element
+/// lands elsewhere (Home's hero/grid door) answers that by projecting the element NOT LOADED while it
+/// holds focus, and the dispatcher must read that projection with the focus the key left, in the same
+/// batch as in the next frame, or the press goes through to the other element.
+#[test]
+fn a_by_id_press_resolves_against_the_focus_an_earlier_key_of_its_batch_moved() {
+    let (mut d, mut rig) = boot(FixtureArg::Page(700));
+    assert_eq!(elem(&d), Some(0), "the row's first element is seated");
+    fixture_screen(&mut d).set_unloaded_while_focused(true);
+    // the key and the press in ONE batch: the press names the element the key lands on
+    d.frame(&mut rig, tick(16), vec![key(Key::Right, tick(16)), by_id("detail.row.1", true, None, tick(16))],
+        vec![], &mut NoTap);
+    settle(&mut d, &mut rig, 32, 800);
+    assert_eq!(elem(&d), Some(1), "the key moved focus");
+    assert_eq!(refusals(&rig), vec!["a11y: refused press detail.row.1 unloaded owner=detail"], "{:?}", rig.log);
+    let events = events_of(&d, 0);
+    assert!(!events.contains("\"press_commit\"") && !events.contains("\"activate\""), "nothing was pressed: {events}");
+    // the next frame sees the same
+    d.frame(&mut rig, tick(816), vec![by_id("detail.row.1", true, None, tick(816))], vec![], &mut NoTap);
+    settle(&mut d, &mut rig, 832, 1600);
+    assert_eq!(refusals(&rig).len(), 2, "{:?}", rig.log);
+    assert!(!events_of(&d, 0).contains("\"press_commit\""));
+    // `focus:` asks no `loaded`; once the screen has caught up the press is accepted
+    fixture_screen(&mut d).set_unloaded_while_focused(false);
+    d.frame(&mut rig, tick(1616), vec![by_id("detail.row.1", true, None, tick(1616))], vec![], &mut NoTap);
+    settle(&mut d, &mut rig, 1632, 2400);
+    assert_eq!(refusals(&rig).len(), 2, "{:?}", rig.log);
+    assert_eq!(events_of(&d, 0).matches("\"press_commit\"").count(), 1);
+}
+
+/// **A delivery reads the press as it stands at its position in the frame, as it reads the focus.**
+/// `parts` is built before the drain, and an OK-down arms its press INSIDE it, ahead of the frame's own
+/// Tick: that Tick read a press that was not live yet, so a screen that holds something still while a
+/// press stands on its element (Home's carousel, over a hero control's dip) was one frame late on
+/// exactly the frame the press began, and the frame a countdown ran out on could turn the page under
+/// a press it had just been accepted for (PR #1442, round 7).
+#[test]
+fn a_tick_in_the_frame_a_press_armed_reads_that_press_live_on_the_focused_element() {
+    let (mut d, mut rig) = boot(FixtureArg::Page(660));
+    d.frame(&mut rig, tick(16), vec![], vec![], &mut NoTap);
+    let events = events_of(&d, 0);
+    assert!(events.contains("tick_press_idle") && !events.contains("tick_press_on_focus"), "no press yet: {events}");
+    d.frame(&mut rig, tick(32), vec![key(Key::Ok, tick(32))], vec![], &mut NoTap);
+    let events = events_of(&d, 0);
+    assert!(events.contains("\"tick_press_on_focus\""),
+        "the arm frame's own Tick must read the press it followed: {events}");
+}
+
 /// **A refused press emits no key, and an `expect` that is not the element's subject presses
 /// nothing**; the subject that is, presses. An unloaded slot can be focused but not pressed.
 #[test]

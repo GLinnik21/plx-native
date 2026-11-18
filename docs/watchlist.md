@@ -259,10 +259,12 @@ loaded yet (a matched copy whose facts have not arrived) leaves the wash on its 
 the flat surface is for a page that has no key and for a title that has none.
 
 **The menus' glass (DS6).** The Sort & Filter panel and the hold menu are glass on frozen ground
-(`ui::popover_glass`): the panel's body shows the modal dim's latched field and its rim refracts the
-host snapshot taken once when the hold menu opened (the Sort & Filter panel's is retaken once when the
-reflow a click started has stopped, below), with the frame's dim applied to both. Nothing behind
-the hold menu is re-rendered or re-blurred while it opens, stands or closes, and the page under it
+(`ui::popover_glass`): the panel's body is a frost of the page (one blur of the host snapshot with the
+modal dim baked in, built once per snapshot; the modal dim's latched field is the fallback body) and
+its rim refracts the host snapshot taken once when the hold menu opened, with the frame's dim applied
+to the rim's snapshot at composite. The Sort & Filter panel's snapshot is retaken once when the
+reflow a click started has stopped (below), and its frost is rebuilt once after that retake. Nothing
+behind the hold menu is re-rendered while it opens, stands or closes, and the page under it
 does not move until it has let go (the Remove landing above). **The Sort & Filter menu shows each
 click**: its value reaches the grid at once and the cards reflow under the open panel (a card that
 changes slot in its row slides, one that changes row crossfades, the longest mover on top, a new

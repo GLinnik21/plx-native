@@ -173,6 +173,31 @@ impl HudCommand {
         }
     }
 
+    /// **The ratingKey a press of this command plays or restarts**, read off the session the way the app's
+    /// performer reads it (`app::playback::perform_hud_command`): a queue step plays the row
+    /// [`queue_neighbor`](plx_media::route::queue_neighbor) names, a restart plays the item now playing
+    /// ([`cur_rk`](plx_media::route::cur_rk)). `None` for a command that starts no title (a seek, a panel
+    /// opener) and for a press that would start nothing (no neighbour, an item with no key). This is what an
+    /// accessibility id's subject names for a control that changes or restarts what plays, so a harness press
+    /// of it must say which title it means (`tools/a11y.py`, `SUBJECT_BEARING`). A pure read of the session's
+    /// own memory: no IO.
+    pub fn plays_rk(self, ps: &plx_media::route::PlaybackSession) -> Option<String> {
+        use plx_media::route::{cur_rk, queue_neighbor, QueueStep};
+        let rk = match self {
+            HudCommand::Previous => queue_neighbor(ps, QueueStep::Previous)?.rk,
+            HudCommand::Next => queue_neighbor(ps, QueueStep::Next)?.rk,
+            HudCommand::FromBeginning => cur_rk(ps),
+            HudCommand::TogglePlay
+            | HudCommand::Seek(_)
+            | HudCommand::OpenTracks(_)
+            | HudCommand::OpenMore(_)
+            | HudCommand::ToggleSection(_)
+            | HudCommand::GoToDetail
+            | HudCommand::ToggleStats => return None,
+        };
+        (!rk.is_empty()).then_some(rk)
+    }
+
     /// **Is a press of this command meaningful now?** The table's "Enabled" column, from the
     /// frame's [`HudModel`] alone.
     pub fn enabled(self, model: &HudModel) -> bool {

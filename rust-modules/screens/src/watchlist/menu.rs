@@ -211,6 +211,11 @@ impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
     fn opener_alpha(&self) -> f32 {
         self.menu.popover().opener_alpha()
     }
+    /// The droplet has drained into the pill: the surface, and the lift that holds the pill above
+    /// it, end on this frame (`Screen::handed_back`).
+    fn handed_back(&self) -> bool {
+        self.menu.popover().handed_back()
+    }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
