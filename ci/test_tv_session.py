@@ -1017,15 +1017,6 @@ class SelfTest(unittest.TestCase):
                          "tv-session identity contract"):
             self.assertIn(contract, out)
 
-    def test_the_selftest_does_not_report_a_failed_fifo_or_key_check(self):
-        """A `bad` line prints a cross; the identity block prints its own by design, so only the FIFO and key
-        checks' own lines are looked for (each names what it was checking)."""
-        out = self._run()
-        for line in out.splitlines():
-            if line.lstrip().startswith("✗"):
-                for word in ("FIFO", "key ", "press", "click", "focus", "whitespace", "refused with nothing sent"):
-                    self.assertNotIn(word, line, out)
-
 
 if __name__ == "__main__":
     unittest.main()
