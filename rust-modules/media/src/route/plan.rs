@@ -1526,7 +1526,7 @@ impl ResolveEnv {
 
 /// Does the loaded detail describe the leaf `rk` is about to play?
 ///
-/// **Its own ratingKey, OR its on-deck episode's** — and the second half is not an optimisation.
+/// **Its own ratingKey, OR the episode that supplied its stream facts** — and the second half is not an optimisation.
 /// A SHOW's `Detail.rk` is the show's key while the play `rk` is the EPISODE's, so an rk-only test
 /// (which is all `cached_playing` needs, because it is fetching stream lists a show container does
 /// not have) never matches on the commonest path in the app: press Play on a show page. With a
@@ -1535,19 +1535,16 @@ impl ResolveEnv {
 /// Direct Play for it. Two answers to one question, which is the mismatch that preview exists to
 /// prevent.
 ///
-/// The show's technical fields ARE the on-deck episode's: `metadata::fetch_item_streams` backfills
-/// them from exactly the leaf `playback_preview` answers for. An episode reached some OTHER way (a
-/// season list, Up Next) still measures 0 and still fails closed — honest, and the residue that
-/// `PlayingItem` carrying its own bitrate would close (`ResolveEnv::src_kbps`).
+/// A show borrows its technical fields from the hero episode at load time. A later season
+/// selection can change the Play target, so the source rate follows the stored episode key.
+///
 ///
 /// The SERVER half of the test is load-bearing on both arms: a ratingKey names an item only within
 /// one server, so a bare-rk match against a colliding item on the other machine would hand the
 /// ceiling the wrong file's bitrate.
 pub(super) fn detail_describes(d: &plx_data::metadata::Detail, sid: ServerId, rk: &str) -> bool {
     plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk))
-        || d.on_deck
-            .as_ref()
-            .is_some_and(|ep| plx_plex::plex::same_item((d.sid, &ep.rk), (sid, rk)))
+        || d.stream_episode_key().is_some_and(|key| plx_plex::plex::same_item((d.sid, key), (sid, rk)))
 }
 
 
@@ -4317,6 +4314,64 @@ pub(super) fn automatic_version<'a>(
     env: &ResolveEnv,
 ) -> Option<&'a plx_data::pms::MediaVersion> {
     version_play_starts(versions, env.direct_play_mode, &env.caps, env.dolby_vision_mode, env.dv_capability)
+}
+
+/// Source video facts for the file that the detail page's Play action would start.
+pub struct PlayedVideo<'a> {
+    /// A substituted version. Otherwise the primary part and its backfilled detail facts apply.
+    pub version: Option<&'a plx_data::pms::MediaVersion>,
+    pub resolution: &'a str,
+    pub width: i64,
+    pub height: i64,
+    pub vcodec: &'a str,
+    pub acodec: &'a str,
+    pub kbps: i64,
+    pub hdr: bool,
+    pub dovi: plx_data::metadata::Dovi,
+    pub dv: plx_data::metadata::DvDecision,
+    pub(super) primary_part: &'a str,
+    pub(super) ceiling_kbps: i64,
+}
+
+impl PlayedVideo<'_> {
+    /// Source range with the set's Dolby Vision presentation decision applied.
+    pub fn range(&self) -> plx_base::detail_parts::DynamicRange {
+        plx_base::detail_parts::DynamicRange::carried(self.hdr, self.dv.presentation.declared().is_some())
+    }
+}
+
+pub fn played_video<'a>(
+    d: &'a plx_data::metadata::Detail,
+    mode: DirectPlayMode,
+    caps: &plx_platform::devcaps::Caps,
+    dv_mode: plx_plex::plex::session::DolbyVisionMode,
+    dv_probed: plx_platform::devcaps::dv::DvCapability,
+) -> Option<PlayedVideo<'a>> {
+    // A show's primary stream metadata is backfilled on Detail. Its part and codecs live on
+    // the episode, so the show container itself retains its identity as a non-playable item.
+    let (primary_part, vcodec, acodec, versions) = if d.part.is_empty() {
+        let ep = d.play_episode().filter(|ep| !ep.part.is_empty())?;
+        if d.stream_episode_key() != Some(ep.rk.as_str()) {
+            return None;
+        }
+        (&ep.part, &ep.vcodec, &ep.acodec, &ep.versions)
+    } else {
+        (&d.part, &d.vcodec, &d.acodec, &d.versions)
+    };
+    let version = version_play_starts(versions, mode, caps, dv_mode, dv_probed);
+    Some(match version {
+        Some(v) => PlayedVideo {
+            version, primary_part, resolution: &v.resolution, width: v.width, height: v.height,
+            vcodec: &v.vcodec, acodec: &v.acodec, kbps: v.kbps,
+            ceiling_kbps: ceiling_kbps(v.video_kbps, v.kbps), hdr: v.hdr, dovi: v.dovi,
+            dv: frozen_dv_decision(dv_mode, dv_probed, v.dovi, &v.vcodec),
+        },
+        None => PlayedVideo {
+            version, primary_part, resolution: &d.video_resolution, width: d.width, height: d.height,
+            vcodec, acodec, kbps: d.bitrate, ceiling_kbps: source_kbps(d), hdr: d.hdr, dovi: d.dovi,
+            dv: frozen_dv_decision(dv_mode, dv_probed, d.dovi, vcodec),
+        },
+    })
 }
 
 pub fn version_play_starts<'a>(

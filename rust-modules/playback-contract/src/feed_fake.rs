@@ -19,7 +19,7 @@ use crate::feed::{
     defer_media_join, AcceptedLoadOutcome, CtorGate, DvWithdrawal, FeedCommand, FeedControl, FeedFacts, FeedLoad, FeedOpen,
     FeedSeek, FeedStop, FeedTransportAction, OpenRequest, ReleaseHandoff, ResetScope, UnblockFacts,
     LoadTick, PausedSeekStep,
-    PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction, UserPauseOutcome,
+    HoldRoute, PresentationTick, SeekMode, SeekPause, Stage, StuckSeekAction, UserPauseOutcome,
     UserResumeOutcome,
 };
 use crate::{AttemptId, Failure, SourceKey};
@@ -40,7 +40,7 @@ pub enum FeedCall {
     Command(FeedCommand),
     TickLoad { now: u32, segmented_hls: bool, speed_deadline_ms: u32,
         no_audio: bool },
-    TickPresentation { segmented_hls: bool, immersive: bool },
+    TickPresentation { route: HoldRoute, immersive: bool },
     CtorGate,
     TakeLoadOutcomes,
     NativeAudioStallFired { now: u32 },
@@ -238,9 +238,9 @@ impl FeedLoad for FakeFeed {
         self.answer(FeedCall::TickLoad { now, segmented_hls, speed_deadline_ms, no_audio },
             |s| s.load_tick)
     }
-    fn tick_presentation(&mut self, _mt: &MainThread, segmented_hls: bool, immersive: bool)
+    fn tick_presentation(&mut self, _mt: &MainThread, route: HoldRoute, immersive: bool)
         -> PresentationTick {
-        self.answer(FeedCall::TickPresentation { segmented_hls, immersive }, |s| s.presentation)
+        self.answer(FeedCall::TickPresentation { route, immersive }, |s| s.presentation)
     }
     fn ctor_gate(&mut self, _mt: &MainThread) -> CtorGate {
         self.answer(FeedCall::CtorGate, |s| s.ctor_gate)

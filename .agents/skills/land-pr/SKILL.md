@@ -27,6 +27,7 @@ never a reason to merge one you were not.
     tools/pr-land.py wait  N --sha S [--timeout 45m]
     tools/pr-land.py merge N --sha S --subject "Title (#N)" (--body-file F | --body-from-pr) [--timeout 45m]
     tools/pr-land.py restack --worktree W --upper BRANCH --lower PR [--dry-run] [--push]
+    tools/pr-land.py reviewed N --sha S --blockers B --majors M --minors K
 
 `S` is the full head SHA you pushed and want landed. `gate N` without `--sha` prints the head to use.
 A gate is evidence about that exact commit, so a SHA you did not push or review is not green.
@@ -34,6 +35,17 @@ A gate is evidence about that exact commit, so a SHA you did not push or review 
 `wait` is the same verdict polled until `--timeout`; `merge` is `wait`, then the merge, then the verify.
 The PR must be open, not a draft, based on `main` or `release/v*`, with every required check passing and
 `mergeStateStatus` CLEAN. `--help` on each subcommand and the module docstring have the rest.
+
+## The review record
+
+A review is about one commit, like a check. After `pr-reviewer` has read `base...S`, record it:
+`tools/pr-land.py reviewed N --sha S --blockers B --majors M --minors K` writes a commit status named
+`pr-reviewer` on `S` (exit 5 if the PR's head is no longer `S`), so a push leaves the new head with no
+record. `gate`, `wait` and `merge` read it. A recorded BLOCKER is red like a failed check: fix it and
+review the new head, or re-record it once the owner has judged the finding false. A head with no record
+is judged by `PLX_REVIEW_GATE`: `observe` (the default) stays green and says in the verdict line what
+`enforce` would refuse; `enforce` refuses it (exit 3); `off` says nothing. Never record a review that
+did not run on that commit.
 
 ## Exit codes
 

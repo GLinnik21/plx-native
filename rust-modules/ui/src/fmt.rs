@@ -385,6 +385,12 @@ pub fn episode_kicker(season: i64, index: i64, title: &str) -> String {
     join_present(&[&episode_ordinal(season, index), title], KICKER_SEPARATOR)
 }
 
+/// Format names are shared by the quality caption and the identity chips.
+pub fn dynamic_range(range: plx_base::detail_parts::DynamicRange) -> Option<&'static str> {
+    use plx_base::detail_parts::DynamicRange::*;
+    match range { Sdr => None, Hdr => Some("HDR"), DolbyVision => Some("Dolby Vision") }
+}
+
 /// The media badge for a video version — `"4K"` / `"1080p"` / `"SD"`, or None when the item has no
 /// video (a show container, a music item, an unparsed response).
 ///

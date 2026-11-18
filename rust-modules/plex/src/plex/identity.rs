@@ -2,7 +2,7 @@
 //!
 //! There are two independent transports here and they used to each hardcode their own identity:
 //! [`account`](super::account) talks to plex.tv over libcurl and sends `X-Plex-*` as HEADERS, while
-//! [`client`](super::client) talks to the PMS and sends them as QUERY PARAMETERS. Nothing kept the
+//! [`client`](super::client) talks to PMS and sends identity in request headers and playback query parameters. Nothing kept the
 //! two in step, and they had drifted on every field that mattered:
 //!
 //! | field       | plex.tv said        | the PMS said     |
