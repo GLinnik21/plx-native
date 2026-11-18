@@ -155,7 +155,7 @@ def owp_seeds():
         "error": '{"type":"error","code":"room_full","message":"full","re":"join"}',
         "closed": '{"type":"closed","reason":"kicked"}',
         "lone-surrogates": r'{"\ud800":["\udc00x","\\ud83d\ude00","\\\ud83d"]}',
-        "overflow": '[1e400,-1e400,"1e400",2,9007199254740992]',
+        "overflow": '[1e400,-1e400,"1e400",2,9007199254740992,1.79769313486231581e308]',
     })
     return seeds
 

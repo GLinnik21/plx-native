@@ -53,7 +53,7 @@ fuzz_target!(|data: &[u8]| {
     }
     if serde_json::from_str::<serde_json::Value>(input).is_ok() {
         assert!(read.is_ok(), "serde_json reads {input:?} and the reader does not");
-        assert!(scan.marked.is_empty() && scan.overflowing.is_empty(), "marks on {input:?}, which serde_json reads");
+        assert!(scan.marked.is_empty(), "marks on {input:?}, which serde_json reads");
     }
     let Ok(read) = read else { return };
     let mut seen = Seen::default();

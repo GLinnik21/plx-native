@@ -565,6 +565,11 @@ mod tests {
     }
 
     #[test]
+    fn a_number_rounded_past_the_largest_double_reads_as_infinity() {
+        assert_eq!(read("[1.79769313486231581e308]").unwrap().value, Json::Array(vec![Json::Float(f64::INFINITY)]));
+    }
+
+    #[test]
     fn broken_numbers_stay_errors() {
         for text in ["[-]", "[1.2.3]", "[-inf]", "[01]", "[01e400]", "[1.e400]", "[-.5e400]", "[1e+]"] {
             assert!(read(text).is_err(), "{text}");
