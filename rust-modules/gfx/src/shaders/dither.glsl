@@ -12,7 +12,8 @@
 // reported against — had a hash that was both structured AND unconditional. Five programs, four
 // answers. This file is the one answer — for the three programs whose ramp is a slow FIELD:
 // `fs_ambient.frag`, `fs_field.frag`, `fs_glass.frag` (`fs_field.frag`, the underlay field, took
-// the slot of `fs_modal_ground.frag` when that dead chain was deleted, 2026-09-19).
+// the slot of `fs_modal_ground.frag` when that dead chain was deleted, 2026-09-19). `fs_dim_fold.frag`
+// carries it too: it IS `fs_field.frag`'s modal dim, folded into the held page's own quad.
 // `fs_src.frag` and `fs_shadow.frag`
 // carried it too for two days and were taken back off on 2026-09-04: rule 1 below makes the branch
 // cheap, not free, and on the two programs behind every rect and every card shadow it measured

@@ -1065,7 +1065,8 @@ impl<H: Host> ModalStack<H> {
 
     /// [`draw_scrims`](Self::draw_scrims) against any [`DimSink`] — the order is the contract:
     /// the field is brought up to date FIRST, from a framebuffer no dim of this frame has touched,
-    /// and only then is each surface's dim painted through it, bottom to top.
+    /// and only then is each surface's dim painted through it, bottom to top. The LOWEST dim is declared
+    /// and not painted when the host already folded it into the page it drew ([`DimSink::folded`]).
     pub fn draw_scrims_on(
         &mut self,
         nav_page_alpha: f32,
