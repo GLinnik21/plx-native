@@ -86,7 +86,7 @@ fn played_video_reports_the_on_deck_episodes_base_layer_when_dv_is_unavailable()
     let caps = Caps::assumed();
     let mut d = Detail { hdr: true, dovi: profile_8(), ..Default::default() };
     assert!(played_video(&d, DirectPlayMode::Auto, &caps, DolbyVisionMode::Auto, DvCapability::Supported).is_none());
-    d.on_deck = Some(Episode { part: "/episode".into(), vcodec: "hevc".into(), acodec: "aac".into(), ..Default::default() });
+    d.on_deck = Some(Episode { resume_ms: 5000, part: "/episode".into(), vcodec: "hevc".into(), acodec: "aac".into(), ..Default::default() });
     for (mode, capability, range) in [
         (DolbyVisionMode::Auto, DvCapability::Supported, DynamicRange::DolbyVision),
         (DolbyVisionMode::Off, DvCapability::Supported, DynamicRange::Hdr),
@@ -198,4 +198,22 @@ fn a_garbage_frame_size_is_a_large_class_not_an_overflow() {
     assert_eq!(resolution_class(&version(14, "", i64::MAX, 0, "hevc")), Some(2160));
     assert_eq!(resolution_class(&version(15, "", 0, i64::MAX, "hevc")), Some(2160));
     assert_eq!(resolution_class(&version(16, "", -1, i64::MIN, "hevc")), None);
+}
+
+#[test]
+fn played_video_follows_the_first_episode_of_an_unstarted_show() {
+    use plx_data::metadata::{Detail, Episode};
+    let first = Episode { rk: "first".into(), part: "/first".into(), vcodec: "h264".into(), ..Default::default() };
+    let mut d = Detail {
+        is_show: true, episodes: vec![first].into(), stream_episode_rk: "first".into(),
+        video_resolution: "720".into(), ..Default::default()
+    };
+    fn facts(d: &Detail) -> Option<PlayedVideo<'_>> {
+        played_video(d, DirectPlayMode::Auto, &Caps::assumed(), DolbyVisionMode::Auto, DvCapability::Unknown)
+    }
+    assert_eq!(facts(&d).unwrap().resolution, "720");
+    d.on_deck = Some(Episode { rk: "other".into(), part: "/other".into(), ..Default::default() });
+    assert_eq!(facts(&d).unwrap().primary_part, "/first");
+    d.on_deck.as_mut().unwrap().resume_ms = 5000;
+    assert!(facts(&d).is_none(), "the backfill belongs to a different episode");
 }

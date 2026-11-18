@@ -1647,6 +1647,9 @@ pub struct Detail {
     pub acodec: String, // Media[0].audioCodec
     #[serde(with = "record::float_bits")]
     pub video_fps: f64, // video Stream frameRate (0 = unknown); feeds the Load esInfo
+    /// Episode whose streams were loaded into a show page. Its displayed season may since have changed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub stream_episode_rk: String,
     // ---- the PRIMARY version's technical fields (plex::Metadata::media_version(None) = Media[0], NOT a
     // best-of pick — a multi-version item has more, and the user chooses among them in the Play Version
     // picker, by `MediaId`). For a SHOW these are borrowed from its first episode, like the
@@ -1755,6 +1758,29 @@ pub struct Detail {
 }
 
 impl Detail {
+    pub fn show_started(&self) -> bool {
+        self.on_deck.as_ref().is_some_and(|ep| ep.resume_ms > 0 || ep.watched)
+            || self.seasons.iter().any(|s| s.viewed_leaf_count > 0)
+    }
+
+    pub fn resume_episode(&self) -> Option<&Episode> {
+        self.on_deck.as_ref().filter(|_| self.show_started())
+    }
+
+    /// The show hero resumes its underway episode, otherwise it starts the displayed season.
+    pub fn play_episode(&self) -> Option<&Episode> {
+        self.resume_episode().or_else(|| self.episodes.first())
+    }
+
+    /// Older recordings predate the explicit owner and loaded the on-deck episode if present.
+    pub fn stream_episode_key(&self) -> Option<&str> {
+        if self.stream_episode_rk.is_empty() {
+            self.on_deck.as_ref().or_else(|| self.episodes.first()).map(|e| e.rk.as_str())
+        } else {
+            Some(&self.stream_episode_rk)
+        }
+    }
+
     /// **The show an episode played from this page belongs to**, which the play queue is built
     /// from so the episodes BEFORE it are in the queue: a show page's own key, a season page's
     /// parent, an episode page's grandparent, empty for anything else (a movie). The `show_rk` field
@@ -2331,6 +2357,7 @@ fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::Se
         video_fps: 0.0, // set from the video Stream by parse_streams below
         // likewise set by parse_streams (one assignment point), which for a SHOW runs a second
         // time over its first episode — the show container carries no Media of its own
+        stream_episode_rk: String::new(),
         video_resolution: String::new(),
         width: 0,
         height: 0,
@@ -2652,7 +2679,7 @@ mod convert_streams_tests {
 /// parse an item's Media[0].Part[0].Stream[] into d.audio / d.subs (the About footer), plus that
 /// same version's technical fields (resolution/size/bitrate — the hero's media badge). Both ride
 /// the ONE version (see `plex::Metadata::media_version`), and both are borrowed from a show's
-/// first episode by the same call in `fetch_item_streams`, so they can't describe different files.
+/// hero episode by the same call in `backfill_episode`, so they can't describe different files.
 fn parse_streams(it: &plx_plex::plex::Metadata, d: &mut Detail) {
     d.version_parts = if crate::pms::versions_of(it).is_empty() { Vec::new() } else { version_parts_of(it) };
     if let Some(m) = it.media_version(None).map(|(_, m)| m) {
@@ -3401,12 +3428,17 @@ mod lang_matches_tests {
     }
 }
 
-/// fetch one item's full metadata and parse its streams into `d` — used to borrow a
-/// show's first-episode audio/subtitle tracks (the show container carries none).
-fn fetch_item_streams(client: &'static plx_plex::plex::Client, rk: &str, d: &mut Detail) {
-    if let Some(it) = client.metadata(rk) {
-        parse_streams(&it, d);
+/// Install the hero episode's primary stream facts and the complete list of alternate versions.
+fn backfill_episode(d: &mut Detail, rk: String, it: &plx_plex::plex::Metadata) {
+    parse_streams(it, d);
+    let versions = crate::pms::versions_of(it);
+    if let Some(ep) = d.on_deck.as_mut().filter(|e| e.rk == rk) {
+        ep.versions.clone_from(&versions);
     }
+    if d.episodes.position(&rk).and_then(|i| d.episodes.get(i)).is_some_and(|ep| ep.versions != versions) {
+        d.episodes.edit(&rk, |ep| ep.versions = versions);
+    }
+    d.stream_episode_rk = rk;
 }
 
 fn fetch_seasons(client: &'static plx_plex::plex::Client, rk: &str) -> Vec<Season> {
@@ -3869,19 +3901,13 @@ pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::
             .map(|ep| plx_base::task::beside(s, "detail-hero", move || client.metadata(&ep)));
         if d.is_show {
             load_show_seasons(client, rk, &mut d, prefer);
-            match on_deck {
-                Some(on_deck) => {
-                    if let Some(it) = on_deck.finish() {
-                        parse_streams(&it, &mut d);
-                        if let Some(ep) = d.on_deck.as_mut() {
-                            ep.versions = crate::pms::versions_of(&it);
-                        }
-                    }
-                }
-                None => {
-                    if let Some(ep_rk) = d.episodes.first().map(|e| e.rk.clone()) {
-                        fetch_item_streams(client, &ep_rk, &mut d);
-                    }
+            if let Some(target) = d.play_episode().map(|e| e.rk.clone()) {
+                let streams = match on_deck {
+                    Some(job) if d.on_deck.as_ref().is_some_and(|ep| ep.rk == target) => job.finish(),
+                    _ => client.metadata(&target),
+                };
+                if let Some(it) = streams {
+                    backfill_episode(&mut d, target, &it);
                 }
             }
             // NB `part`/`vcodec`/`acodec` are deliberately NOT backfilled. They are the item's OWN

@@ -4719,7 +4719,7 @@ impl DetailScreen {
             match i {
                 Some(i) => self.play_episode_at(i, from_start, version, fx, meta),
                 None => self.play_episode_value(
-                    hero_episode_played(d),
+                    d.play_episode(),
                     d,
                     from_start,
                     version,
@@ -4832,16 +4832,11 @@ impl DetailScreen {
 
 }
 
-/// The episode a show page's hero Play plays: the one it is resuming, else the season's first.
-fn hero_episode_played(d: &Detail) -> Option<&plx_data::metadata::Episode> {
-    hero::hero_episode(d).or_else(|| d.episodes.first())
-}
-
 /// The versions the hero's Play chooses among, for its Play Version disc and panel: the page's
 /// own movie or episode, or on a show page the episode its Play plays.
 pub(crate) fn hero_versions(d: &Detail) -> &[plx_data::pms::MediaVersion] {
     if d.is_show {
-        hero_episode_played(d).map_or(&[], |ep| ep.versions.as_slice())
+        d.play_episode().map_or(&[], |ep| ep.versions.as_slice())
     } else {
         &d.versions
     }

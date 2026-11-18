@@ -1526,7 +1526,7 @@ impl ResolveEnv {
 
 /// Does the loaded detail describe the leaf `rk` is about to play?
 ///
-/// **Its own ratingKey, OR its on-deck episode's** — and the second half is not an optimisation.
+/// **Its own ratingKey, OR the episode that supplied its stream facts** — and the second half is not an optimisation.
 /// A SHOW's `Detail.rk` is the show's key while the play `rk` is the EPISODE's, so an rk-only test
 /// (which is all `cached_playing` needs, because it is fetching stream lists a show container does
 /// not have) never matches on the commonest path in the app: press Play on a show page. With a
@@ -1535,19 +1535,16 @@ impl ResolveEnv {
 /// Direct Play for it. Two answers to one question, which is the mismatch that preview exists to
 /// prevent.
 ///
-/// The show's technical fields ARE the on-deck episode's: `metadata::fetch_item_streams` backfills
-/// them from exactly the leaf `playback_preview` answers for. An episode reached some OTHER way (a
-/// season list, Up Next) still measures 0 and still fails closed — honest, and the residue that
-/// `PlayingItem` carrying its own bitrate would close (`ResolveEnv::src_kbps`).
+/// A show borrows its technical fields from the hero episode at load time. A later season
+/// selection can change the Play target, so the source rate follows the stored episode key.
+///
 ///
 /// The SERVER half of the test is load-bearing on both arms: a ratingKey names an item only within
 /// one server, so a bare-rk match against a colliding item on the other machine would hand the
 /// ceiling the wrong file's bitrate.
 pub(super) fn detail_describes(d: &plx_data::metadata::Detail, sid: ServerId, rk: &str) -> bool {
     plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk))
-        || d.on_deck
-            .as_ref()
-            .is_some_and(|ep| plx_plex::plex::same_item((d.sid, &ep.rk), (sid, rk)))
+        || d.stream_episode_key().is_some_and(|key| plx_plex::plex::same_item((d.sid, key), (sid, rk)))
 }
 
 
@@ -4353,7 +4350,10 @@ pub fn played_video<'a>(
     // A show's primary stream metadata is backfilled on Detail. Its part and codecs live on
     // the episode, so the show container itself retains its identity as a non-playable item.
     let (primary_part, vcodec, acodec, versions) = if d.part.is_empty() {
-        let ep = d.on_deck.as_ref().filter(|ep| !ep.part.is_empty())?;
+        let ep = d.play_episode().filter(|ep| !ep.part.is_empty())?;
+        if d.stream_episode_key() != Some(ep.rk.as_str()) {
+            return None;
+        }
         (&ep.part, &ep.vcodec, &ep.acodec, &ep.versions)
     } else {
         (&d.part, &d.vcodec, &d.acodec, &d.versions)

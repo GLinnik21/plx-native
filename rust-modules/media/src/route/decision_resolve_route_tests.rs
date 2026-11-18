@@ -2250,6 +2250,7 @@ fn the_preview_describes_the_version_play_starts() {
         height: 2160,
         audio: vec![plx_data::metadata::Stream { codec: "aac".into(), ..Default::default() }],
         on_deck: Some(plx_data::metadata::Episode {
+            resume_ms: 5000,
             part: FIRST.into(),
             vcodec: "vp9".into(),
             versions: vec![version(1, "4k", 3840, 2160, "vp9"), version(2, "1080", 1920, 1080, "h264")],
@@ -2460,6 +2461,7 @@ fn on_deck_hevc_p5_preview_uses_the_selected_episodes_codec() {
             ..Default::default()
         }],
         on_deck: Some(plx_data::metadata::Episode {
+            resume_ms: 5000,
             part: "/library/parts/1/2/on-deck.mkv".into(),
             vcodec: "hevc".into(),
             acodec: "eac3".into(),
