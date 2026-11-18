@@ -42,6 +42,13 @@ varying highp float v_gloss;
 // vertex source is built with `gfx::glsl_vs_dithered!` carry it — never the poster/card path.
 varying highp vec2 v_dither_nc;
 #endif
+#ifdef PLX_FOLD_UV
+// The SCREEN's own top-down UV (`a_pos` itself, which is what `fs_field.frag` reads as `v_uv`), beside
+// `v_cuv`, which is the bottom-up snapshot's: `fs_dim_fold.frag` fetches both and may not spend an
+// arithmetic word on either coordinate (`shaders/dither.glsl`, cost rule 4). Only that program's vertex
+// source (`gfx::VS_DIM_FOLD`) carries it; this is a full-screen quad, so `a_pos` IS the screen UV.
+varying highp vec2 v_fuv;
+#endif
 #ifdef PLX_STILL_GROUND
 uniform highp vec2 u_still_band; // inverse band height, card-local band start
 varying mediump float v_still_ramp;
@@ -54,6 +61,9 @@ varying highp vec2 v_px;
 void main(){
   v_cuv = u_uvrect.xy + a_pos * u_uvrect.zw;
   v_p = (a_pos - 0.5) * u_trect.zw;
+#ifdef PLX_FOLD_UV
+  v_fuv = a_pos;
+#endif
 #ifdef PLX_FOCUS
   // Same 160deg CSS direction / literals as fs_img.frag's GLOSS term (pinned together by
   // `image_focus_geometry_matches_the_shader_literals`); `u_focus.x <= 0` (every draw but at most

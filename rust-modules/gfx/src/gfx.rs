@@ -200,6 +200,10 @@ const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
 const FS_DISSOLVE_PLAIN: &CStr = glsl!("shaders/fs_tex.frag", "#define PLX_DISSOLVE\n");
 const FS_DISSOLVE: &CStr = glsl!("shaders/fs_img.frag", "#define PLX_DISSOLVE\n");
 const FS_FIELD: &CStr = glsl_dithered!("shaders/fs_field.frag");
+/// The held page and the lowest modal dim in one pass ([`DimFold`]): the dithered vertex half, plus the
+/// field's own top-down UV (`PLX_FOLD_UV`) beside the snapshot's.
+const VS_DIM_FOLD: &CStr = glsl!("shaders/vs_img.vert", "#define PLX_DITHER_NC\n#define PLX_FOLD_UV\n");
+const FS_DIM_FOLD: &CStr = glsl_dithered!("shaders/fs_dim_fold.frag");
 const FS_FIELD_PANEL: &CStr = glsl_dithered!("shaders/fs_field_panel.frag");
 const VS_STILL: &CStr = glsl!("shaders/vs_img.vert", "#define PLX_STILL_GROUND\n");
 const FS_STILL: &CStr = glsl!("shaders/fs_img.frag", "#define PLX_STILL_GROUND\n");
@@ -3938,6 +3942,11 @@ pub struct FrameCache {
     body: c_uint,
     body_fbo: c_uint,
     body_key: Option<BodyKey>,
+    /// **The lowest modal dim is already on this frame's framebuffer**: [`draw_folded`](Self::draw_folded)
+    /// drew the held page through `fs_dim_fold.frag`, which laid the dim on it in the same pass. The
+    /// stack's dim pass reads it (`DimSink::folded`) to declare the dim without drawing it again. A fact
+    /// about ONE frame: [`clear_dim_fold`](Self::clear_dim_fold) runs at the head of every frame.
+    dim_folded: bool,
 }
 
 #[cfg_attr(test, allow(dead_code))]
@@ -3966,6 +3975,7 @@ impl FrameCache {
             body: 0,
             body_fbo: 0,
             body_key: None,
+            dim_folded: false,
         }
     }
 
@@ -4078,7 +4088,7 @@ impl FrameCache {
         if video_plane_refuses("FrameCache::frost_bake_owed") {
             return false;
         }
-        let Some((_, _, bake)) = (unsafe { std::ptr::addr_of!(GLASS_FROST).read() }) else { return false };
+        let Some((_, _, bake, _)) = (unsafe { std::ptr::addr_of!(GLASS_FROST).read() }) else { return false };
         let ok = profile::phase("glass.bake", || unsafe { self.bake_passes(&bake, dim, cap) });
         if ok {
             self.body_key = Some(key);
@@ -4523,6 +4533,56 @@ impl FrameCache {
     /// that would show up as a blank screen with no error anywhere.
     pub fn draw(&self) -> bool {
         self.draw_alpha(1.0)
+    }
+
+    /// **[`draw`](Self::draw) with the lowest modal dim folded in**: the held page and `dim` (a FIELD dim,
+    /// `dim.tex != 0`) in one pass through `fs_dim_fold.frag` instead of the page quad and then the dim's own
+    /// full-screen quad over it. `true` = the page is on the frame, as `draw`'s answer (`false`: no snapshot).
+    /// [`dim_folded`](Self::dim_folded) says whether the dim went with it.
+    ///
+    /// **Anything that cannot be folded draws exactly as `draw` does and leaves the fact unset**, so the
+    /// stack's dim pass then draws the dim itself: a flat or invisible dim, a driver that refused the program
+    /// (`GLASS_FROST`'s fourth member), a frame that is not the visible walk (a blur source pass keeps the page
+    /// undimmed for the glass to composite the dim over; a discovery walk draws nothing), a video-plane frame
+    /// (the page is not opaque there) and a `drawmask=field` leg, which prices the dim by removing it.
+    /// The caller owns the rest of the gate (`popover::host::page_pass`).
+    ///
+    /// It lifts [`page_frozen`] around its own quad for the reason [`draw`](Self::draw) does, and books the
+    /// page quad (`Class::Image`) as `draw` does; the dim's own `Class::Field` booking goes with the quad it
+    /// replaced.
+    pub fn draw_folded(&mut self, dim: backdrop::Dim) -> bool {
+        let fold = unsafe { std::ptr::addr_of!(GLASS_FROST).read() }.and_then(|(_, _, _, fold)| fold);
+        let foldable = dim.tex != 0 && dim.tint[3] > 0.0 && self.valid && self.tex != 0;
+        let Some(fold) = fold.filter(|_| foldable) else { return self.draw() };
+        if blur_source_pass() || backdrop::discovering() || video_plane_frame() || crate::overdraw::masked(Class::Field) {
+            return self.draw();
+        }
+        let was = set_page_frozen(false);
+        if !(culled(0.0, 0.0, SCR_W, SCR_H) || gate(Class::Image, 0.0, 0.0, SCR_W, SCR_H)) {
+            // SAFETY: render thread, current context, like every draw here.
+            unsafe {
+                use_prog(fold.prog);
+                glUniform4f(fold.tint, dim.tint[0], dim.tint[1], dim.tint[2], dim.tint[3]);
+                glActiveTexture(GL_TEXTURE3);
+                glBindTexture(GL_TEXTURE_2D, dim.tex);
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, self.tex);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, straighten::Extent::quad(0.0, 0.0, SCR_W, SCR_H));
+            }
+            self.dim_folded = true;
+        }
+        set_page_frozen(was);
+        true
+    }
+
+    /// Did [`draw_folded`](Self::draw_folded) lay the dim on this frame's framebuffer?
+    pub fn dim_folded(&self) -> bool {
+        self.dim_folded
+    }
+
+    /// A new frame: nothing is folded yet. Called at the head of every frame, whatever the route.
+    pub fn clear_dim_fold(&mut self) {
+        self.dim_folded = false;
     }
 
     pub fn draw_alpha(&self, alpha: f32) -> bool {
@@ -5869,7 +5929,42 @@ static mut GLASS_UNIFORMS: GlassUniforms = GlassUniforms::NONE;
 /// Bound by [`glass_program`] only for a draw that has a [`GlassFrost`]; `None` (a driver that
 /// refused it) leaves every glass surface on [`GPROG`], and [`glass_frost_linked`] tells the frost's
 /// owner not to build a frost nobody can draw.
-static mut GLASS_FROST: Option<(c_uint, GlassUniforms, FrostBake)> = None;
+///
+/// The fourth element is the DIM FOLD ([`DimFold`]): the same optional unit's last member, but one whose
+/// refusal costs only itself. `None` leaves menus the frost and today's separate dim pass.
+static mut GLASS_FROST: Option<(c_uint, GlassUniforms, FrostBake, Option<DimFold>)> = None;
+
+/// **The held page with the lowest modal dim folded into it** (`fs_dim_fold.frag` on [`VS_DIM_FOLD`]) and
+/// its locations: the program [`FrameCache::draw_folded`] draws the page snapshot through on a glass
+/// menu's frame, so the dim is not a second full-screen pass. It lives with the frost's payload (no new
+/// static) but is optional on its own: a driver that refuses it logs one line and every frame keeps the
+/// separate dim, the frost untouched.
+#[derive(Clone, Copy)]
+struct DimFold {
+    prog: c_uint,
+    tint: c_int,
+}
+
+impl DimFold {
+    /// Link it and set its per-program constants: the full-screen quad and the snapshot's flip undone by
+    /// its UV window (as every `FrameCache` quad), the samplers' units (the held page on 0, the field on
+    /// 3 as the frost bake's dim reads it, the dither tile on 2) and the dither's amplitude, which is
+    /// one number because the quad is always the whole screen.
+    unsafe fn link() -> Option<Self> {
+        let prog = link_optional_program(VS_DIM_FOLD.as_ptr(), FS_DIM_FOLD.as_ptr())?;
+        let loc = |n: &CStr| glGetUniformLocation(prog, n.as_ptr());
+        let fold = Self { prog, tint: loc(c"u_tint") };
+        let dither = dither_uniforms(prog);
+        use_prog(prog);
+        glUniform1i(loc(c"u_tex"), 0);
+        glUniform1i(loc(c"u_field"), 3);
+        glUniform2f(loc(c"u_tscreen"), SCR_W, SCR_H);
+        glUniform4f(loc(c"u_trect"), 0.0, 0.0, SCR_W, SCR_H);
+        glUniform4f(loc(c"u_uvrect"), 0.0, 1.0, 1.0, -1.0);
+        glUniform1f(dither, dither_for_field(SCR_W, SCR_H));
+        Some(fold)
+    }
+}
 
 /// **The frost's body bake program** (`fs_frost_bake.frag` on [`VS_IMG`], the blur chain's own vertex
 /// half) and its locations, linked with [`GLASS_FROST`]'s variant and part of the same optional unit: a
@@ -5920,7 +6015,7 @@ impl FrostBake {
 #[inline]
 unsafe fn glass_program(frost: bool) -> (GlassUniforms, bool) {
     if frost {
-        if let Some((program, u, _)) = std::ptr::addr_of!(GLASS_FROST).read() {
+        if let Some((program, u, _, _)) = std::ptr::addr_of!(GLASS_FROST).read() {
             use_prog(program);
             return (u, true);
         }
@@ -6248,7 +6343,12 @@ fn blur_lazy_init() -> bool {
             let bake = FrostBake::link()?;
             let u = GlassUniforms::of(program);
             u.init(program);
-            Some((program, u, bake))
+            // The fold is the frost unit's last, optional member: a refusal costs only the fold.
+            let fold = DimFold::link();
+            if fold.is_none() {
+                log("dim fold prog unavailable — the modal dim keeps its own pass");
+            }
+            Some((program, u, bake, fold))
         });
         if !glass_frost_linked() {
             log("glass frost prog unavailable — menus keep the field ground and the heavier face");
@@ -9814,6 +9914,7 @@ mod tests {
             ("vs_ambient.vert", VS_AMBIENT_DITHERED),
             ("vs_ambient.vert (art wash)", VS_ART_WASH),
             ("vs_img.vert", VS_IMG_DITHERED),
+            ("vs_img.vert (dim fold)", VS_DIM_FOLD),
             ("vs_src.vert", VS_SRC_DITHERED),
         ] {
             let code = shader_code(vs);
@@ -9844,6 +9945,7 @@ mod tests {
             ("fs_field_panel.frag", FS_FIELD_PANEL),
             ("fs_glass.frag", FS_GLASS),
             ("fs_glass.frag (frost)", FS_GLASS_FROST),
+            ("fs_dim_fold.frag", FS_DIM_FOLD),
             ("fs_art_wash.frag", FS_ART_WASH),
         ] {
             let code = shader_code(src);
@@ -12044,6 +12146,107 @@ mod tests {
         assert!(prod.contains("!self.off && !self.fbo_off && !self.frost_off && glass_frost_linked()"), "no variant, no frost owed");
         assert!(prod.contains("|| !blur_lazy_init() || !glass_frost_linked()"), "and none built");
         assert!(!prod.contains("static mut GL_"), "the glass's locations are GlassUniforms, not a static per uniform");
+    }
+
+    /// **The dim fold's wiring, which no host test can drive.** It is the frost unit's last, OPTIONAL member
+    /// (a driver that refuses it logs one line and keeps today's separate dim pass: never an exit, never a
+    /// lost frost), the frost's own link lines are untouched, the program is `mix` plus the shared dither
+    /// with both coordinates read as bare varyings, and `draw_folded` declines everything it cannot fold.
+    #[test]
+    fn the_dim_fold_is_the_mix_plus_the_dither_and_an_optional_link() {
+        let src = include_str!("gfx.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the unit tests")];
+        let body = |head: &str| {
+            let from = prod.find(head).unwrap_or_else(|| panic!("`{head}` is gone"));
+            let rest = &prod[from..];
+            &rest[..rest.find("\n    }\n").or_else(|| rest.find("\n}\n")).expect("the end of the function")]
+        };
+        let fs = shader_code(FS_DIM_FOLD);
+        assert!(fs.contains("mix(h.rgb, ink, a)"), "the page and the dim are one mix");
+        assert!(fs.contains("clamp(plx_dither(f.rgb * u_tint.rgb), 0.0, 1.0)"), "the field's ink, dithered, then clamped as the framebuffer clamped a source");
+        assert!(fs.contains("float a = f.a * u_tint.a;"), "the coverage is fs_field.frag's");
+        assert!(fs.contains("a + h.a * (1.0 - a)"), "the alpha the two passes left");
+        assert!(fs.contains("texture2D(u_tex, v_cuv)") && fs.contains("texture2D(u_field, v_fuv)"), "both fetches read a bare varying");
+        assert!(!fs.contains("v_cuv.") && !fs.contains("v_fuv."), "no arithmetic on a texture coordinate (dither.glsl, cost rule 4)");
+        assert!(!fs.contains("gl_FragCoord"), "the tile coordinate is the vertex shader's");
+        assert!(fs.contains("uniform sampler2D u_field;"), "the field is its own sampler, unit 3");
+        let vs = shader_code(VS_DIM_FOLD);
+        assert!(vs.contains("#define PLX_FOLD_UV") && vs.contains("#define PLX_DITHER_NC"));
+        assert!(vs.contains("v_fuv = a_pos;"), "the field is read top-down, as fs_field.frag's v_uv");
+        for plain in [VS_IMG, VS_IMG_DITHERED, VS_FOCUS, VS_STILL, VS_IMG_RC] {
+            assert!(!shader_code(plain).contains("#define PLX_FOLD_UV"), "only the fold's vertex source carries the second UV");
+        }
+        assert!(
+            prod.contains("link_optional_program(VS_DIM_FOLD.as_ptr(), FS_DIM_FOLD.as_ptr())"),
+            "the fold is an optional link"
+        );
+        assert!(prod.contains("let fold = DimFold::link();"), "a refused fold is a value, never a `?` that drops the frost");
+        assert!(prod.contains("Some((program, u, bake, fold))"), "the fold rides the frost payload: no new static");
+        assert!(prod.contains("log(\"dim fold prog unavailable"), "a refusal logs one line");
+        assert!(prod.contains("let bake = FrostBake::link()?;"), "the frost's own link lines are as they were");
+        assert!(prod.contains("glUniform1i(loc(c\"u_field\"), 3);") && prod.contains("glUniform4f(loc(c\"u_uvrect\"), 0.0, 1.0, 1.0, -1.0);"));
+        let draw = body("pub fn draw_folded(");
+        for declined in ["blur_source_pass()", "backdrop::discovering()", "video_plane_frame()", "crate::overdraw::masked(Class::Field)"] {
+            assert!(draw.contains(declined), "draw_folded declines {declined}");
+        }
+        assert!(draw.contains("set_page_frozen(false)") && draw.contains("gate(Class::Image,"), "it is the page quad: unfrozen and booked as one");
+        assert!(draw.contains("self.dim_folded = true;"), "and says so only when it drew");
+        assert!(body("pub fn clear_dim_fold(").contains("self.dim_folded = false;"));
+    }
+
+    /// **One pass is the two it replaces, in colour AND alpha.** The held page is drawn as a quad
+    /// (`SRC_ALPHA, ONE_MINUS_SRC_ALPHA` for colour, `ONE, ONE_MINUS_SRC_ALPHA` for alpha, into an 8-bit
+    /// framebuffer, so its result is rounded to a code) and the modal dim is blended over it with the
+    /// dithered ink CLAMPED first (the framebuffer clamps a source). The fold writes
+    /// `(mix(held, ink, a), a + held.a * (1 - a))` once. With the same noise at the same pixel the two
+    /// differ only by the first pass's 8-bit rounding, which the second pass carries at `1 - a`: under one
+    /// code in colour (0.5 + 0.5 of the final rounding), and in alpha the identity is exact for any held
+    /// alpha and any destination. Colour is exact only for an OPAQUE held page, which a snapshot is.
+    #[test]
+    fn the_folded_pass_is_the_two_passes_it_replaces_in_colour_and_alpha() {
+        let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() / 255.0;
+        // One blend of `(src, sa)` over `(dst, da)` with the default function pair.
+        let over = |src: f32, sa: f32, dst: f32, da: f32| (src * sa + dst * (1.0 - sa), sa + da * (1.0 - sa));
+        let one_lsb = 1.0 / 255.0;
+        let held_rows: [(&str, Vec<f32>); 3] = [
+            ("gradient", (0..256).map(|i| i as f32 / 255.0).collect()),
+            ("white", vec![1.0; 256]),
+            ("black", vec![0.0; 256]),
+        ];
+        let mut worst = 0.0_f32;
+        for (name, held) in &held_rows {
+            for (field, tint, cover) in [(0.62_f32, 0.35_f32, 0.74_f32), (0.9, 0.35, 0.3), (0.05, 0.4, 0.5), (1.0, 1.0, 1.0), (0.0, 1.0, 0.2)] {
+                // `fs_field.frag`'s ink before the dither; the tile's noise at this pixel, ±u_dither/2.
+                let ink0 = field * tint;
+                for noise in [-1.0_f32, -0.5, 0.0, 0.5, 1.0] {
+                    let ink = (ink0 + noise * one_lsb).clamp(0.0, 1.0);
+                    for dst in [0.0_f32, 0.3, 1.0] {
+                        for h in held {
+                            // Two passes: the page quad (opaque) over whatever the frame held, rounded to a code, then the dim.
+                            let (c1, a1) = over(*h, 1.0, dst, 1.0);
+                            let (c2, a2) = over(ink, cover, q(c1), a1);
+                            // One pass.
+                            let (c, a) = over(h * (1.0 - cover) + ink * cover, cover + 1.0 * (1.0 - cover), dst, 1.0);
+                            worst = worst.max((q(c) - q(c2)).abs());
+                            assert!((q(c) - q(c2)).abs() <= one_lsb + 1e-6, "{name}: colour {c} vs {c2} (held {h}, ink {ink}, cover {cover})");
+                            assert!((a - a2).abs() < 1e-6, "{name}: alpha {a} vs {a2}");
+                        }
+                    }
+                }
+            }
+        }
+        assert!(worst <= one_lsb + 1e-6, "within one code");
+        // Alpha for ANY held alpha and destination alpha: the fold's source alpha `a + h.a (1 - a)` leaves what two blends left.
+        for ha in [0.0_f32, 0.25, 0.7, 1.0] {
+            for da in [0.0_f32, 0.4, 1.0] {
+                for cover in [0.05_f32, 0.5, 1.0] {
+                    let two = cover + (ha + da * (1.0 - ha)) * (1.0 - cover);
+                    let src = cover + ha * (1.0 - cover);
+                    let one = src + da * (1.0 - src);
+                    assert!((one - two).abs() < 1e-6, "held alpha {ha}, destination {da}, cover {cover}: {one} vs {two}");
+                }
+            }
+        }
     }
 
     /// Under a live rounded clip a flat or ramp rect is the rect program's SDF fill (its flat fast
