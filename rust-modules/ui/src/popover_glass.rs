@@ -575,31 +575,79 @@ pub(crate) mod tests {
         assert_eq!(face_at(0.0).rim_lit[3], 0.0);
     }
 
-    /// **The frost body's ceiling is the largest body the inks' floors allow.** Re-derived from the tokens:
-    /// over the face's thinnest stop (the top, .36) a grey body at the ceiling keeps primary and secondary
-    /// ink at 4.5:1 and tertiary at 3:1, and a body 2/255 brighter does not. The cap runs after the modal
-    /// dim, so a white and a black page are graded here with the dim out of the sum (it only adds margin).
-    #[test]
-    fn the_frost_body_ceiling_keeps_the_ink_floors_at_the_thinnest_face() {
+    /// WCAG contrast of two display-code colours (the shader composites in display codes).
+    fn contrast(a: [f32; 3], b: [f32; 3]) -> f32 {
         use plx_gfx::gfx::lin;
         let rel = |c: [f32; 3]| 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
-        let ratio = |a: [f32; 3], b: [f32; 3]| {
-            let (x, y) = (rel(a), rel(b));
-            (x.max(y) + 0.05) / (x.min(y) + 0.05)
-        };
-        let ink = |c: [f32; 4]| [c[0], c[1], c[2]];
-        let floors = [(theme::TEXT_PRIMARY, 4.5), (theme::TEXT_SECONDARY, 4.5), (theme::TEXT_TERTIARY, 3.0)];
-        let face = |stop: [f32; 4], body: [f32; 3]| [0, 1, 2].map(|i| body[i] * (1.0 - stop[3]) + stop[i] * stop[3]);
-        let holds = |stop: [f32; 4], g: f32| floors.iter().all(|(c, f)| ratio(ink(*c), face(stop, [g; 3])) >= *f);
+        let (x, y) = (rel(a), rel(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// Do the shipped inks keep their floors (primary and secondary 4.5:1, tertiary 3:1, as
+    /// `underlay_tests`' contrast test states them) over the grey body `g` under the face's `stop`?
+    /// The composite is the shader's: `body * (1 - a) + face * a`.
+    fn inks_hold(stop: [f32; 4], g: f32) -> bool {
+        let ground = [0, 1, 2].map(|i| g * (1.0 - stop[3]) + stop[i] * stop[3]);
+        [(theme::TEXT_PRIMARY, 4.5), (theme::TEXT_SECONDARY, 4.5), (theme::TEXT_TERTIARY, 3.0)]
+            .iter()
+            .all(|(c, floor)| contrast([c[0], c[1], c[2]], ground) >= *floor)
+    }
+
+    /// **The frost body's ceiling is the largest body the inks' floors allow.** Re-derived from the tokens:
+    /// over the face's thinnest stop (the top, .36) a grey body at the ceiling keeps primary and secondary
+    /// ink at 4.5:1 and tertiary at 3:1, and a body 2/255 brighter does not. This grades the cap alone;
+    /// [`the_frosted_body_keeps_the_ink_floors_through_the_dim_the_cap_and_the_face`] grades the whole sum.
+    #[test]
+    fn the_frost_body_ceiling_keeps_the_ink_floors_at_the_thinnest_face() {
         let ceiling = theme::FROST_BODY_CEILING;
-        assert!(holds(theme::MENU_GLASS_TOP, ceiling), "the ceiling holds at the thinnest stop");
-        assert!(holds(theme::MENU_GLASS_BOT, ceiling), "and at the bottom stop");
-        assert!(!holds(theme::MENU_GLASS_TOP, ceiling + 2.0 / 255.0), "and it is the derived number, not a safe one");
+        assert!(inks_hold(theme::MENU_GLASS_TOP, ceiling), "the ceiling holds at the thinnest stop");
+        assert!(inks_hold(theme::MENU_GLASS_BOT, ceiling), "and at the bottom stop");
+        assert!(!inks_hold(theme::MENU_GLASS_TOP, ceiling + 2.0 / 255.0), "and it is the derived number, not a safe one");
         let cap = frost_of(1, [0.0, 0.0, 8.0, 8.0], 0);
         for page in [1.0f32, 0.0] {
             let body = cap.cap(page);
-            assert!(holds(theme::MENU_GLASS_TOP, body), "a {page} page's frost reads {body} and keeps the floors");
+            assert!(inks_hold(theme::MENU_GLASS_TOP, body), "a {page} page's frost reads {body} and keeps the floors");
         }
+    }
+
+    /// **The frosted body is graded with the DIM in the sum.** `fs_glass.frag` dims the body first (the
+    /// modal dim, `mix(body, ink, alpha)`), then caps its brightest channel, then the .36/.44 face goes
+    /// over what is left. A white page and a black page run through that whole chain for every dim role
+    /// and an appear spring's alpha in between, with the darkest dim ink there is (black: a flat scrim)
+    /// and the brightest (`TINT` of a white field: the page's own light pushed down, which LIFTS a black
+    /// page and is the case where the dim works against a light ink), and the three inks must keep their
+    /// floors over the result at both stops of the face. The dim can only lower a white page toward its
+    /// ink, so the cap still binds there; that it binds AFTER the dim is what the order of the sum pins.
+    #[test]
+    fn the_frosted_body_keeps_the_ink_floors_through_the_dim_the_cap_and_the_face() {
+        use theme::underlay as u;
+        let cap = frost_of(1, [0.0, 0.0, 8.0, 8.0], 0);
+        let roles = [u::DIM_COMPACT, u::DIM_PANEL, u::DIM_SHEET, u::DIM_DECISION, u::DIM_PLAYER, u::DIM_PROSE];
+        let sweep = (0..=20).map(|i| i as f32 / 20.0);
+        let (mut graded, mut lifted) = (0, false);
+        for alpha in std::iter::once(0.0).chain(roles).chain(sweep) {
+            for dim_ink in [0.0, u::TINT] {
+                for page in [1.0f32, 0.0] {
+                    let dimmed = page * (1.0 - alpha) + dim_ink * alpha;
+                    let body = cap.cap(dimmed);
+                    lifted |= page == 0.0 && body > 0.05;
+                    for stop in [theme::MENU_GLASS_TOP, theme::MENU_GLASS_BOT] {
+                        assert!(
+                            inks_hold(stop, body),
+                            "page {page}, dim {alpha} of ink {dim_ink}: the body reads {body} and an ink loses its floor over stop {stop:?}"
+                        );
+                        graded += 1;
+                    }
+                }
+            }
+        }
+        assert!(lifted, "the grid includes a black page the dim lifts, the case a bright ink works against");
+        // (no dim + 6 roles + 21 sweep steps) x 2 dim inks x 2 pages x 2 face stops
+        assert_eq!(graded, 28 * 2 * 2 * 2, "the whole grid was graded");
+        // The order is part of the sum: capped BEFORE the dim, a bright dim ink would lift the capped
+        // white page back over the ceiling and cost the tertiary ink its floor.
+        let wrong = cap.cap(1.0) * (1.0 - u::DIM_PROSE) + u::TINT * u::DIM_PROSE;
+        assert!(wrong > theme::FROST_BODY_CEILING && !inks_hold(theme::MENU_GLASS_TOP, wrong), "cap-then-dim reads {wrong}");
     }
 
     /// **A body at or below 0.9 of the ceiling is the frost as it is.** The knee used to start at 0.6 of
