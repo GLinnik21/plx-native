@@ -111,7 +111,7 @@ fn the_pager_slides_with_the_page_it_belongs_to() {
     };
     let rest = chevrons(&s);
     assert_eq!(rest.len(), 1, "a settled billboard draws one pager");
-    assert!(s.flip(view, 1));
+    assert!(s.flip(view, 1, &plx_machine::machine::PressRead::default()));
     for slide in [0.25, 0.5, 0.75] {
         s.hero_slide.jump(slide);
         let (out_x, in_x) = s.slide_offsets().unwrap();

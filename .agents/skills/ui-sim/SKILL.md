@@ -221,6 +221,33 @@ Tokens: `up`/`down`/`left`/`right`, `ok`, `back`, `play`/`pause`/`stop`, `ck:X,Y
 authored 1920×1080 coords), `okdown`/`okup` (split halves — the only way to drive a press-and-hold
 past `press::LONG_MS`), and `shot` (simulator only).
 
+**Reach a target by id, not by walking to it.** A debug (`devtriggers`) build also takes
+`focus:<id>`, `press:<id>` (focus, then an ordinary OK) and `press:<id>@<subject>` (refuses and
+presses nothing when the element the id NAMES carries another subject than the one given), plus
+`state:<nonce>`, which writes `plxnative-a11y.json` in the runtime dir (route, owner, the focused full
+id, every element's id, role, rect, `visible`, `loaded`, label and subject) with the nonce echoed back.
+An id is a place-based dot path (`nav.watchlist`, `watchlist.grid.card.7`, `detail.hero.play`) in the
+namespace of whoever OWNS input, so inside a menu it is the menu's (`itemmenu.watchlist_remove`); a
+refusal presses nothing and logs `a11y: refused <act> <id> <reason> owner=<ns>` (`unloaded` is not
+an error: the element is not pressable yet, a card whose item has not landed or Home's focused element while its picture
+lags a key across the hero/grid door, so press again once the screen has settled). `tools/a11y.py` writes
+the tokens (`focus`, `press`) and reads the answer (`expect_focus`). Prefer these over key walks; a walk
+stays where the test's subject IS the travel (fps walks, focus fingerprints, a held key).
+
+The simulator boots against the owner's real server unless you aim it at the mock, and OK on a title
+can play it, so the command line refuses to press one UNNAMED: `python3 tools/a11y.py press <runtime>
+<id>` WITHOUT `--subject <ratingKey>` (and `send press:<id>` without an `@<subject>`) exits 2 and sends
+nothing when the id is of an element that ACTS ON a title it names (it plays, restarts, finishes or retries it,
+marks it watched or unwatched, bookmarks it, acts on the title a menu was opened for, or opens that title's own page
+or menu where the title can change under the press: a card, a credit, the Home carousel's Info, a hero button, an
+item-menu row, a Play Version row, a player control that starts a title; only a control whose target the page fixes
+stays bare). `SUBJECT_BEARING` in `tools/a11y.py` is the one list of those ids, and the key to name is the ratingKey
+of the title the press acts on, which `state` prints as the element's subject. Read the ratingKey from `state`
+first. The library functions `a11y.press` / `press_token` stay unguarded, for a script that drives the mock (a
+script that imports them against a real server has no check). `a11y.py
+send` writes ONE token: a word with whitespace in it (`send "back press:<card>"`) exits 2 and sends
+nothing, because the app cuts a FIFO line at any whitespace and the second token would skip that guard.
+
 A desktop keyboard also works directly in `make sim-macos-run`: arrows, RETURN, ESC (`is_ok`/`is_back`
 have always accepted keyboard keys), plus space=pause, `p`=play, `s`=stop, backspace=BACK.
 

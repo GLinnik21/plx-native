@@ -13,7 +13,7 @@
 //! [`A11yPath::parse_id`], whose result exists to be COMPARED with a projected path
 //! ([`Focusable::a11y_find`]); it is never logged and never kept.
 //!
-//! An element's [`A11y::label`] and [`A11y::subject`] (the ratingKey of a catalog card) are runtime
+//! An element's [`A11y::label`] and [`A11y::subject`] (the ratingKey of the title the element acts on) are runtime
 //! text. They never reach a `LogLine` or a heartbeat; the state file a test reads back is where they
 //! are written. A `press:<id>@<subject>` token records its `@<subject>` text in the recording's `in`
 //! row, which on a press that resolves equals the element's subject, so a recording of a
@@ -283,10 +283,16 @@ pub enum Role {
 
 /// One element's projection: its id and what a test reads about it.
 ///
-/// `label` and `subject` are runtime text (a card's title, its ratingKey): they go to the state file,
+/// `label` and `subject` are runtime text (a card's title; the ratingKey of the title the press acts on, see
+/// `SUBJECT_BEARING` in `tools/a11y.py`): they go to the state file,
 /// never to a log line or heartbeat (a press's `@<subject>` guard is kept by a recording, see the
 /// module doc).
-/// `loaded` is false for a placeholder whose item has not arrived. The borrow is of the view the
+/// `loaded` is false for a placeholder whose item has not arrived, and more generally for an element
+/// that is **not pressable yet**: a screen whose OK would not land on its focused element for a few
+/// frames (Home's hero/grid door, while the picture lags the key that crossed it) projects that element
+/// not loaded, and a by-id press of it is refused as `unloaded`. The element's own `a11y` keeps its label
+/// and subject, but the state file lists neither for an element that is not `loaded`
+/// (`dispatch::snapshot::project_into`). The borrow is of the view the
 /// projection was asked of; a view built per query returns [`A11y::into_owned`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct A11y<'a> {

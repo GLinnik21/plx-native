@@ -78,6 +78,27 @@ arguments, and its time is the `dt` it is handed.
    nothing here is close — and then it lands *here*, as a reusable `View`, so the next screen gets
    it for free.
 
+   **A new focusable element answers an accessibility id.** Tests and agents reach it with
+   `focus:<id>` / `press:<id>` (`tools/a11y.py`), not by walking keys to it, so an element that
+   cannot be named cannot be tested. An element whose press ACTS ON a title it names (it plays, restarts,
+   finishes or retries it, marks it watched or unwatched, bookmarks it, or opens that title's own page or menu where
+   the title can change under the press: a card, a credit, the Home carousel's Info, a hero or menu button, a Play
+   Version row, a player control that starts a title) also carries the ratingKey of the title the press acts on as its
+   `subject` (`A11y::with_subject`), because the harness refuses to press it without naming the title (that key is not
+   always the page's or the playing item's: Detail's Mark watched writes a started show's on-deck episode,
+   `hero_control_subject`; the player's Next plays the queue neighbour, `HudCommand::plays_rk`). Navigation is not the
+   test: only a control whose target the page fixes (Go to Show, Also available, the Play Version opener, More, a panel
+   opener, a seek) carries none. A screen whose OK can land somewhere other than on the focused element (Home's door
+   remap, after a Dir key) projects that element `loaded: false` while the picture lags its focus, so a by-id press
+   of it, named or bare, is refused as `unloaded` and the caller retries once the screen has settled. A new such shape joins `SUBJECT_BEARING` in `tools/a11y.py`, the one list,
+   and `a11y_subject_bearing` in `tools/tv-session.sh`; `tests/test_a11y_tool.py` counts the `with_subject` calls per
+   file and fails on a file that constructs a Play, queue step or write message it does not list. It gets its id from the three `Focusable` hooks (`a11y`,
+   `a11y_elems`, `a11y_find`, `screen.rs`) or from the shared widget it composes (`card_a11y` for a
+   card, `PageHeader`, `LinkedHeading`, `MasterDetail`), never from a screen-local table.
+   The `#[cfg(test)] mod a11y_coverage_tests` in `rust-modules/screens/src/registry.rs` (its
+   `coverage()`) is an exhaustive `match` over `AppArg`, so a new screen does not compile in the TEST
+   build until it is tabled there.
+
    A mechanism is forked the same way and more quietly, because it looks like three lines of glue.
    Find the ready-made one first; if it almost fits, extend it in place for every caller; if it
    truly cannot do the job, say why before writing a new one, which then lands here. PR #843

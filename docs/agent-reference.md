@@ -2704,7 +2704,24 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   in authored 1920x1080 coords, and they replay through the real key/pointer handlers. `ok` is a
   TAP (both edges at once); **`okdown` / `okup` are the split halves**, which is the only way to
   drive a press-and-**hold** — `okdown`, sleep past `press::LONG_MS` (500 ms), `okup` opens the
-  item context menu;
+  item context menu; a debug build also takes `focus:<id>`, `press:<id>[@<ratingKey>]` and
+  `state:<nonce>` (the structured readback `plxnative-a11y.json`, beside `focusprobe`'s fingerprint),
+  via `tools/tv-session.sh focus|press|state` or `tools/a11y.py`. A press of an element that ACTS ON a title it
+  names (it plays, restarts, finishes or retries it, marks it watched or unwatched, bookmarks it, or opens that
+  title's own page or menu where the title can change under the press, as a card, a credit or the Home
+  carousel's Info do) names the title: `--rk <ratingKey>` on `tv-session.sh press`, `--subject <ratingKey>` on
+  `a11y.py press` (`send press:<id>@<ratingKey>`), the ratingKey of the title the press acts on, which `state`
+  prints as the element's subject. Those THREE command lines refuse the unnamed press (exit 2, nothing sent); only
+  a control whose target the page fixes (Go to Show, Also available, the Play Version opener, More, a panel
+  opener, a seek) is pressed bare, and `SUBJECT_BEARING` in `tools/a11y.py` is the one list of the ids. The
+  guard is on the command lines only: the library functions `a11y.press()` and `a11y.press_token()` are
+  unguarded on purpose, for scripts that drive the mock, so a script that imports them against a real server has
+  no check at all.
+  `tv-session.sh key` and `a11y.py send` are not a way round that: `key` refuses a `focus:`, `press:` or
+  `state:` word (the three verbs are the one door for them), and both refuse a word with whitespace in it
+  (the app cuts the FIFO at any whitespace, so `back press:<card>` would be a second, unchecked token).
+  Prefer them over a key walk to a
+  target; walks remain for tests whose subject is travel (fps walks, focus fingerprints);
   With `devtriggers`, `hang:<ms>` stalls the frame thread under the `dev hang probe` guard and
   `hang-raw:<ms>` sleeps without a label; both accept unsigned decimal u64 milliseconds capped at
   5000, via `tools/tv-session.sh key hang:1000` or `key hang-raw:1000` with the existing TV lock.

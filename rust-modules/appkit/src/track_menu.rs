@@ -339,6 +339,31 @@ impl FormId for TrackRow {
 }
 
 impl TrackRow {
+    /// **Does a press of this row WRITE to the playing title on the server?** A track pick selects the part's streams on
+    /// the PMS (`route`'s `select_streams`, `PUT /library/parts/{id}`: the transcoder encodes the SELECTED audio and burns
+    /// the SELECTED subtitle) and a search result installs its subtitle on the item (`PUT /library/metadata/{rk}/subtitles`),
+    /// so the overlay screen names the title playing on those rows (the harness's `press ... --rk`). Every other row
+    /// opens a page, picks a local setting (Style, Timing, the search language) or reconfigures the live stream (Boost
+    /// dialog, Normalize loudness) and writes nothing of the title's. An exhaustive match, so a new row cannot compile
+    /// without the decision.
+    pub fn writes_title(&self) -> bool {
+        match *self {
+            TrackRow::Audio(_) | TrackRow::SubOff | TrackRow::SubForcedOnly | TrackRow::Sub(_) | TrackRow::SearchHit(_) => true,
+            TrackRow::Boost
+            | TrackRow::Loudness
+            | TrackRow::Timing
+            | TrackRow::Style
+            | TrackRow::OpenOther
+            | TrackRow::OpenLang(_)
+            | TrackRow::OpenField(_)
+            | TrackRow::Choice(..)
+            | TrackRow::OpenSearch
+            | TrackRow::SearchLang
+            | TrackRow::SearchRetry
+            | TrackRow::LangChoice(_) => false,
+        }
+    }
+
     /// **The row's name in the menu's accessibility ids** (`plx_ui::a11y`), relative to the menu:
     /// what the row IS, and the index it already carries when it is one of a list (`audio.<i>`,
     /// `sub.<i>`, `hit.<i>`, `lang.<slot>`, `language.<i>`). A singleton is its word: `boost`,
@@ -2450,6 +2475,18 @@ where
     }
     fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
         popover_a11y_elems(&self.state.form, g, self.group, out)
+    }
+}
+
+impl TrackMenuPart<'_> {
+    /// **Does a press of the row `key` write to the playing title** ([`TrackRow::writes_title`]), read off the form's
+    /// binding the way `a11y` reads its id. The overlay screen asks it to name the title playing on those rows.
+    pub fn writes_title_at<E: IndexElem>(&self, key: &E) -> bool {
+        let form = &self.state.form;
+        key.index()
+            .and_then(|index| form.index_of_key(RowKey(index)))
+            .and_then(|at| form.binding_at(at))
+            .is_some_and(|binding| binding.id.writes_title())
     }
 }
 

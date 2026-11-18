@@ -32,7 +32,7 @@ use plx_ui::landing_hero::{
 };
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent,
-    InputKind, InstanceId, Key, LogicalState, Machine, MachineId, Measure, Tick,
+    InputKind, InstanceId, Key, LogicalState, Machine, MachineId, Measure, PressRead, Tick,
 };
 use plx_machine::present::{PresentEvent, Provenance};
 use plx_ui::screen::{
@@ -804,6 +804,9 @@ pub struct HomeScreen {
     reveal_press: Option<u32>,
     /// Stable element still visible while the engine has already crossed the hero/grid door.
     /// This is a press landing policy, not current focus, and retires at the visual midpoint.
+    /// It exists for a hand on the remote: a `By::Script` arrival (a by-id press, which names its
+    /// element) clears it, and while it holds, the focused element's `a11y` is not loaded
+    /// (`Self::a11y`), so a by-id press of it is refused as `unloaded` until the picture catches up.
     visible_activation: Option<u32>,
     cta_available: bool,
     strip_chosen: bool,
@@ -1582,9 +1585,48 @@ impl HomeScreen {
             .unwrap_or(0)
     }
 
-    fn flip(&mut self, view: HubsView<'_>, dir: i32) -> bool {
+    /// **Is a press standing on one of this page's hero controls?** Read from the press machine
+    /// through the context, never mirrored: [`PressRead::live`] (a press that can still commit, and
+    /// through its commit: it ends with the spring-back, not at the commit) and its `owner` (the
+    /// element the press was armed on, retained after the arm is gone), and the owner is a hero
+    /// control when [`Self::locate`] says so.
+    ///
+    /// **Why the billboard holds for it.** A hero control's press (Play, Info, the bookmark disc)
+    /// commits about 200 ms after OK goes down (the release is held for `MIN_DIP_MS`, 90 ms, and the
+    /// commit follows it by `COMMIT_MS`, 120 ms), and its `activate` re-reads the title the
+    /// billboard shows AT THE COMMIT ([`Self::selected_hero`]), because the press armed on an
+    /// element, not on a title. Pressing the control that already holds focus moves no focus, so
+    /// nothing restarted the 8 s countdown: if it ran out inside the dip, the carousel turned and the
+    /// press that was accepted against one title (a person's OK a moment before the flip; a scripted
+    /// `press home.hero.play --rk X`) played the next page's. While this is true the countdown
+    /// restarts from its full length every tick ([`Self::restart_hero_countdown`], the reset a focus
+    /// move already makes), so no turn falls due inside the press and none is OWED once it has
+    /// settled: the next one comes a full interval later, not on the first tick after Play or Info
+    /// when the person is coming back to Home. [`Self::flip`] refuses as well, for the writers the
+    /// countdown does not drive.
+    fn hero_press_armed(&self, press: &PressRead<u32>) -> bool {
+        press.live && matches!(self.focused_loc(press.owner), Some(Located::Hero(_)))
+    }
+
+    /// Start the 8 s countdown again from its full length: the ONE reset. A turn (`flip`), an
+    /// uncover, a focus move by a person or a script, a page that is off the hero or has a shelf
+    /// holding focus, and a press standing on a hero control ([`Self::hero_press_armed`]) all end
+    /// here, so "what restarts the carousel's clock" has one spelling.
+    fn restart_hero_countdown(&mut self) {
+        self.hero_auto = HERO_AUTO_S;
+    }
+
+    /// Turn the billboard one page (`dir` is +1 or -1). **Every writer of the shown title that a person
+    /// or the countdown drives goes through here** (the 8 s auto-advance, `HomeCmd::Flip`, Left/Right at
+    /// the hero's edge), so the one refusal below, [`Self::hero_press_armed`], holds for all three. A
+    /// refused turn changes nothing and is not owed: the countdown has no turn pending for it (it
+    /// restarts while the press stands, in `tick`), and `HomeCmd::Flip` and an edge key are a request
+    /// the caller makes again once the press has settled. The two writers it does not cover are not a
+    /// person's: `HomeCmd::SelectHero` / `PinHero` (the dev scenarios' direct selection) and
+    /// [`Self::reconcile_carousel`] (the title LEFT the pool, which no press can hold).
+    fn flip(&mut self, view: HubsView<'_>, dir: i32, press: &PressRead<u32>) -> bool {
         let n = view.hero_count();
-        if n <= 1 || self.hero_flip_cd > 0.0 {
+        if n <= 1 || self.hero_flip_cd > 0.0 || self.hero_press_armed(press) {
             return false;
         }
         let cur = self.carousel_index(view).min(n - 1);
@@ -1601,7 +1643,7 @@ impl HomeScreen {
         self.hero_dir = dir as f32;
         self.hero_slide.jump(0.0);
         self.hero_flip_cd = HERO_FLIP_CD;
-        self.hero_auto = HERO_AUTO_S;
+        self.restart_hero_countdown();
         // One line per page TURN (a key press or the 8 s advance, never a frame): the demo film
         // reads the pages it showed from these (`tools/site_video.py`, `hero_pool.logged`, `hero_pool.turns`).
         if let Some(page) = view.hero(next) {
@@ -2001,13 +2043,26 @@ impl HomeScreen {
             // (~24 ms of GPU a frame on the TV), and the next transition's first frame paid that
             // queue in its `glClear`.
             // `a_settled_hero_counting_down_lets_the_gate_close_and_still_flips` holds both halves.
-            self.hero_auto = self.hero_auto - dt;
-            if self.hero_auto <= 0.0 {
-                self.hero_flip_cd = 0.0;
-                self.flip(view, 1);
+            //
+            // **A press standing on a hero control restarts the countdown** ([`Self::hero_press_armed`],
+            // read through `cx.press`), every tick of it, the way a focus move restarts it: the press
+            // is a deliberate interaction, and the page it was accepted against must still be the page
+            // it commits on. Nothing is owed afterwards. The next turn comes a full interval after the
+            // press settles, not on the first tick after Play or Info, which is often the person's
+            // return to Home. Only a press that stands on a hero control changes `hero_auto` here; a
+            // cancelled one, a shelf card's and another page's hero are `PressRead`s this page does
+            // not arm on, so the schedule with no press is the decrement below, bit for bit.
+            if self.hero_press_armed(&cx.press) {
+                self.restart_hero_countdown();
+            } else {
+                self.hero_auto = self.hero_auto - dt;
+                if self.hero_auto <= 0.0 {
+                    self.hero_flip_cd = 0.0;
+                    self.flip(view, 1, &cx.press);
+                }
             }
         } else {
-            self.hero_auto = HERO_AUTO_S;
+            self.restart_hero_countdown();
         }
         let snap_to = pinned_snap(self.snap_target, self.rows.len());
         self.snap.step(snap_to, K_SNAP, dt);
@@ -2230,7 +2285,7 @@ impl HomeScreen {
                 );
             }
             HomeCmd::Flip(direction) => {
-                if direction == 0 || !self.flip(H::hubs(cx), direction.signum()) {
+                if direction == 0 || !self.flip(H::hubs(cx), direction.signum(), &cx.press) {
                     return Handled::No;
                 }
                 fx.invalidate(Provenance::Input);
@@ -3250,37 +3305,36 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     /// position in the page and `<n>` the card's place in the row's LISTING (the hub's window offset
     /// plus its place in the window, `CardSource::global`), so a window that pages never gives one id
     /// to another title; the card's `subject` (its ratingKey) is what a press names to stay safe
-    /// when a publication moves them. A listing position the window does not hold is no element.
+    /// when a publication moves them. A hero control's `subject` is the ratingKey of the hero item it acts
+    /// on (the carousel advances by itself, so a press names the title it read); the failure read-out's
+    /// `hero.action` has none. While the picture still shows the other side of the hero/grid door
+    /// after a KEY crossed it, the focused element is not loaded, so a by-id press of it is refused as
+    /// `unloaded` (its press would land on the element the picture shows, `activation_elem`) until the
+    /// picture catches up (about 8 frames, 130 ms at 60 fps: the dive's midpoint). That projection
+    /// still carries the element's own label and subject, but the state file lists neither for an
+    /// element that is not loaded (`dispatch::snapshot`), so a reader of `state` sees `loaded: false`
+    /// and no subject until the door has settled. A listing position the window does not hold is no
+    /// element.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
-        // while the question is open its answers are the page's only elements
-        if let Some(answer) = self.plaintext_alert.a11y(*key) {
-            return answer;
+        let own = self.element_a11y(key, cx)?;
+        // A press on the engine's focused element lands where `activation_elem` says: while the picture
+        // still shows the other side of the hero/grid door after a KEY crossed it, that is the element
+        // the picture shows. A by-id press that names the focused element moves no focus
+        // (`FocusEngine::set` answers `Nothing`), so it cannot clear the remap the way a scripted
+        // arrival does (`[Down, press:X]`), and an element with no subject to compare (a linked
+        // heading) cannot be refused by it either. So the focused element is NOT PRESSABLE while its
+        // press would land elsewhere: `loaded: false`, which the dispatcher refuses as `unloaded`
+        // for any press, named or bare, until the picture catches up (the retry is the caller's).
+        // This projection keeps the element's own label and subject (it is still what the element
+        // is), but the state file lists an element that is not loaded without text (`snapshot.rs`),
+        // so a reader of `state` sees `loaded: false` and no subject, and asks again. `focus:` is
+        // unaffected (only a press asks `loaded`). Any other element is pressed where it stands,
+        // because a press moves focus to it first.
+        let focused = cx.focus.current.is_some_and(|f| f.entry == self.entry && f.elem == *key);
+        if focused && self.activation_elem(*key) != *key {
+            return Some(own.with_loaded(false));
         }
-        let view = H::hubs(cx);
-        match self.locate(*key)? {
-            Located::Hero(slot) => {
-                if !self.hero_has(view, slot) {
-                    return None;
-                }
-                let name = match slot {
-                    _ if status_read(view).is_some() => "action",
-                    0 => "play",
-                    1 => "info",
-                    _ => "watchlist",
-                };
-                Some(A11y::new(A11yPath::new().name("hero").name(name), A11yRole::Button))
-            }
-            Located::Heading(row) => {
-                let title = self.rows.get(row)?.title.as_str();
-                Some(A11y::new(shelf_path(self.rows.get(row)?, row).name("heading"), A11yRole::Button).with_label(title))
-            }
-            Located::Item(row, col) => {
-                let projection = self.rows.get(row)?;
-                // a slot whose card has not landed exists and can be focused, not pressed: it is
-                // not loaded, which `card_a11y` says by the same rule the shelf's draw skips it by
-                Some(ui_cards::card_a11y::<H, _>(shelf_path(projection, row), &self.cards(view, row), col))
-            }
-        }
+        Some(own)
     }
 
     /// Every element of group `g` in index order: the hero's controls in ROW order, a shelf's cards
@@ -3400,6 +3454,48 @@ impl HomeScreen {
             self.visible_activation.unwrap_or(engine_elem)
         } else {
             engine_elem
+        }
+    }
+
+    /// An element's own projection, whatever the picture shows ([`Focusable::a11y`] is this one, but
+    /// not loaded while the press on the engine's focused element would land on another).
+    fn element_a11y<H: HomeLike>(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        // while the question is open its answers are the page's only elements
+        if let Some(answer) = self.plaintext_alert.a11y(*key) {
+            return answer;
+        }
+        let view = H::hubs(cx);
+        match self.locate(*key)? {
+            Located::Hero(slot) => {
+                if !self.hero_has(view, slot) {
+                    return None;
+                }
+                let name = match slot {
+                    _ if status_read(view).is_some() => "action",
+                    0 => "play",
+                    1 => "info",
+                    _ => "watchlist",
+                };
+                let a = A11y::new(A11yPath::new().name("hero").name(name), A11yRole::Button);
+                // The ratingKey of the hero item the controls act on NOW (`selected_hero`, the one every
+                // activation reads), because the carousel advances by itself: a bare `press home.hero.play`
+                // plays whatever title is showing at that frame. The failure read-out's lone action acts
+                // on no title, and an item with no key has no subject to name.
+                Some(match self.selected_hero(view).map(|hero| hero.item.rk.as_str()).filter(|rk| !rk.is_empty() && name != "action") {
+                    Some(rk) => a.with_subject(rk.to_owned()),
+                    None => a,
+                })
+            }
+            Located::Heading(row) => {
+                let title = self.rows.get(row)?.title.as_str();
+                Some(A11y::new(shelf_path(self.rows.get(row)?, row).name("heading"), A11yRole::Button).with_label(title))
+            }
+            Located::Item(row, col) => {
+                let projection = self.rows.get(row)?;
+                // a slot whose card has not landed exists and can be focused, not pressed: it is
+                // not loaded, which `card_a11y` says by the same rule the shelf's draw skips it by
+                Some(ui_cards::card_a11y::<H, _>(shelf_path(projection, row), &self.cards(view, row), col))
+            }
         }
     }
 
@@ -3584,7 +3680,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
             }
             ScreenEvent::Uncover => {
                 self.covered = false;
-                self.hero_auto = HERO_AUTO_S;
+                self.restart_hero_countdown();
                 // **Damage only for what changed under the cover.** Raised unconditionally this
                 // made Home redraw itself on the BACK commit of every glass menu: the page damage
                 // retakes the host snapshot on the close's first frame, which is the frame that
@@ -3624,7 +3720,15 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 self.feed_shelves(ev, cx, fx);
                 let from_loc = from.and_then(|key| self.locate(key.elem));
                 let to_loc = self.locate(to.elem);
-                if let (Some(a), Some(b)) = (from_loc, to_loc) {
+                if *by == By::Script {
+                    // A scripted arrival (a by-id `focus:`/`press:`) NAMES what the press that
+                    // follows acts on, and the dispatcher queues that press in the same frame, before
+                    // the dive has run a tick. The picture's remap is for a hand on the remote that
+                    // has not yet seen the page move, so it never applies here, and one a key left
+                    // behind does not survive the move either. The dive itself still runs: the
+                    // remap is where a press lands, not the picture.
+                    self.visible_activation = None;
+                } else if let (Some(a), Some(b)) = (from_loc, to_loc) {
                     if self.on_grid_page(a) != self.on_grid_page(b) {
                         self.visible_activation = from.map(|key| key.elem);
                     }
@@ -3672,7 +3776,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                     self.strip_chosen = false;
                 }
                 if matches!(by, By::Dir | By::Pointer | By::Script) {
-                    self.hero_auto = HERO_AUTO_S;
+                    self.restart_hero_countdown();
                 }
                 fx.invalidate(Provenance::Input);
                 Handled::Yes
@@ -3715,7 +3819,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                     if let Some(shelf) = self.grid.shelves.get_mut(row) { shelf.reset_page_requests(); }
                 }
                 if matches!(self.focused_loc(cx.focus.current), Some(Located::Hero(_)))
-                    && self.flip(H::hubs(cx), direction)
+                    && self.flip(H::hubs(cx), direction, &cx.press)
                 {
                     fx.invalidate(Provenance::Input);
                     Handled::Yes

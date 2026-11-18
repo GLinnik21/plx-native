@@ -5733,6 +5733,168 @@ fn pdf_proposal_on_deck_watched_action_targets_one_episode() {
     plx_plex::plex::reset_servers_for_test();
 }
 
+/// The hero row's elements as `(id, subject)`, in the row's order.
+fn hero_subjects(screen: &DetailScreen) -> Vec<(String, Option<String>)> {
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let context = cx(&measure, None);
+    let mut keys = Vec::new();
+    Focusable::<TestHost>::a11y_elems(screen, hero::HERO_GROUP, &context, &mut keys);
+    keys.iter()
+        .map(|key| {
+            let a = Focusable::<TestHost>::a11y(screen, key, &context).expect("a hero control projects");
+            (a.path.to_string(), a.subject.map(|rk| rk.into_owned()))
+        })
+        .collect()
+}
+
+fn named<'a>(row: &'a [(String, Option<String>)], id: &str) -> Option<&'a str> {
+    row.iter().find(|(path, _)| path == id).and_then(|(_, subject)| subject.as_deref())
+}
+
+/// **Every hero control that plays a title or writes to one names the title it acts on**, so the harness
+/// can make a press say which title it means. On a show that has been STARTED that is the on-deck
+/// episode, not the page's key: Play and Restart play it, the watched toggle writes it, and only the
+/// bookmark acts on the page's own item. The controls that open a menu or a panel carry none.
+#[test]
+fn a_started_shows_hero_controls_name_the_on_deck_episode_they_act_on() {
+    let two = || plx_appkit::version_list::sample().into_iter().take(2).collect::<Vec<_>>();
+    let on_deck = plx_data::metadata::Episode { resume_ms: 30_000, versions: two(), ..episode("e2", 2) };
+    let mut d = detail(ServerId::UNSET, "show");
+    d.guid = "plex://show/5d77680135a8fc45188ba331".into();
+    d.episodes = vec![episode("e1", 1), on_deck.clone()].into();
+    d.on_deck = Some(on_deck);
+    let _guard = install(d);
+    let screen = bare(&_guard, ServerId::UNSET, "show");
+    let row = hero_subjects(&screen);
+    let owned = |id: &str, rk: Option<&str>| (id.to_string(), rk.map(str::to_string));
+    assert_eq!(
+        row,
+        vec![
+            owned("hero.play", Some("e2")),
+            owned("hero.watchlist", Some("show")),
+            owned("hero.restart", Some("e2")),
+            owned("hero.mark_watched", Some("e2")),
+            owned("hero.version", None),
+            owned("hero.more", None),
+        ]
+    );
+    clear();
+}
+
+/// A show nobody has started: Play plays the season's first episode, and the toggle writes the WHOLE show
+/// (the page's own key), because no episode is the hero's subject yet.
+#[test]
+fn an_unstarted_shows_play_names_its_first_episode_and_its_toggle_the_show() {
+    let mut d = detail(ServerId::UNSET, "show");
+    d.guid = "plex://show/5d77680135a8fc45188ba331".into();
+    let _guard = install(d);
+    let screen = bare(&_guard, ServerId::UNSET, "show");
+    let row = hero_subjects(&screen);
+    assert_eq!(named(&row, "hero.play"), Some("e1"));
+    assert_eq!(named(&row, "hero.mark_watched"), Some("show"));
+    assert_eq!(named(&row, "hero.watchlist"), Some("show"));
+    clear();
+}
+
+/// A movie page, and an episode's page (the Go to Show disc is there and only navigates).
+#[test]
+fn a_movie_and_an_episode_page_name_their_own_item_and_go_to_show_names_none() {
+    let _guard = install(Detail {
+        sid: ServerId::UNSET,
+        rk: "movie".into(),
+        kind: "movie".into(),
+        guid: "plex://movie/5d77680135a8fc45188ba331".into(),
+        resume_ms: 30_000,
+        dur_ms: 600_000,
+        ..Default::default()
+    });
+    let screen = bare(&_guard, ServerId::UNSET, "movie");
+    let row = hero_subjects(&screen);
+    for id in ["hero.play", "hero.watchlist", "hero.restart", "hero.mark_watched"] {
+        assert_eq!(named(&row, id), Some("movie"), "{id}");
+    }
+    clear();
+    drop(_guard);
+
+    let _guard = install(episode_naming_its_show());
+    let screen = bare(&_guard, ServerId::UNSET, "ep");
+    let row = hero_subjects(&screen);
+    assert_eq!(named(&row, "hero.play"), Some("ep"));
+    assert_eq!(named(&row, "hero.mark_watched"), Some("ep"));
+    assert!(row.contains(&("hero.go_to_show".to_string(), None)), "Go to Show only navigates: {row:?}");
+    clear();
+}
+
+/// The subject is the key the press ACTS on, read off the effect it pushes: the on-deck episode's for Play
+/// and for the watched toggle, and the loaded card's for a movie page that holds one.
+#[test]
+fn a_hero_controls_subject_is_the_rating_key_its_activation_acts_on() {
+    let _guard = plx_base::testlock::serial();
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("hero-subject", "127.0.0.1", 1, "t", "c");
+    let on_deck = plx_data::metadata::Episode { rk: "next-episode".into(), resume_ms: 60_000, dur_ms: 120_000, ..episode("next-episode", 3) };
+    let mut d = Detail { sid, rk: "show".into(), is_show: true, kind: "show".into(), ..Default::default() };
+    d.episodes = vec![episode("first", 1), on_deck.clone()].into();
+    d.on_deck = Some(on_deck);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d));
+    let mut screen = bare(&_guard, sid, "show");
+    let subject = |screen: &DetailScreen, id: &str| named(&hero_subjects(screen), id).map(str::to_string);
+
+    let (_, effects) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_PLAY), Some(hero::ELEM_PLAY));
+    let played = match play_item(&effects) {
+        Some((PlayIntent::Item { rk, .. }, _)) => rk.clone(),
+        Some((PlayIntent::Movie { item, .. }, _)) => item.rk.clone(),
+        None => panic!("Play pushes a play request"),
+    };
+    assert_eq!(subject(&screen, "hero.play").as_deref(), Some(played.as_str()));
+    assert_eq!(played, "next-episode");
+
+    let (_, effects) = step(&mut screen, &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), Some(hero::ELEM_MARK_WATCHED));
+    let marked = effects.iter().find_map(|effect| match &effect.fx {
+        Fx::App(AppFx::Store(StoreId::ViewState, StoreCmd::ViewState(ViewStateCmd::Request { rk, .. }))) => Some(rk.clone()),
+        _ => None,
+    }).expect("one watched request");
+    assert_eq!(subject(&screen, "hero.mark_watched").as_deref(), Some(marked.as_str()));
+    clear();
+    plx_plex::plex::reset_servers_for_test();
+    drop(_guard);
+
+    // a movie page that holds the card it was opened from plays THAT card's key
+    let _guard = install(Detail { sid: ServerId::UNSET, rk: "movie".into(), kind: "movie".into(), ..Default::default() });
+    let mut screen = bare(&_guard, ServerId::UNSET, "movie");
+    screen.selected = Some(plx_data::pms::PmsMovie { rk: "card".into(), ..Default::default() });
+    let (_, effects) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_PLAY), Some(hero::ELEM_PLAY));
+    let played = match play_item(&effects) {
+        Some((PlayIntent::Movie { item, .. }, _)) => item.rk.clone(),
+        Some((PlayIntent::Item { rk, .. }, _)) => rk.clone(),
+        None => panic!("Play pushes a play request"),
+    };
+    assert_eq!(played, "card");
+    assert_eq!(subject(&screen, "hero.play").as_deref(), Some("card"));
+    clear();
+}
+
+/// Every control is placed: the ones that play or write have a subject, the ones that only navigate or open
+/// a menu or a panel have none (the trailer disc is not shown today, so only this table reaches it).
+#[test]
+fn the_hero_controls_that_play_or_write_have_a_subject_and_the_rest_have_none() {
+    let d = detail(ServerId::UNSET, "show");
+    for (ctl, acts) in [
+        (hero::HeroCtl::Play, true),
+        (hero::HeroCtl::Restart, true),
+        (hero::HeroCtl::Trailer, true),
+        (hero::HeroCtl::MarkWatched, true),
+        (hero::HeroCtl::MarkUnwatched, true),
+        (hero::HeroCtl::Watchlist, true),
+        (hero::HeroCtl::GoToShow, false),
+        (hero::HeroCtl::Alt, false),
+        (hero::HeroCtl::Version, false),
+        (hero::HeroCtl::More, false),
+    ] {
+        assert_eq!(hero_control_subject(ctl, &d, None).is_some(), acts, "{}", ctl.a11y_name());
+    }
+}
+
 // ---- the Go to Show disc on an episode's page ------------------------------------------------
 
 fn episode_naming_its_show() -> Detail {
@@ -5859,6 +6021,7 @@ pub(crate) fn detail_conforms() -> plx_ui::a11y::Namespaces {
 
     assert_eq!(find("hero.play"), Some(hero::ELEM_PLAY));
     assert_eq!(project(hero::ELEM_PLAY).role, Role::Button);
+    assert_eq!(project(hero::ELEM_PLAY).subject.as_deref(), Some("e1"), "Play plays the first episode of a show not yet started");
     assert_eq!(find("hero.nope"), None);
     for (i, rk) in ["s1", "s2", "s3"].into_iter().enumerate() {
         let elem = find(&format!("season.{i}")).expect("a season tab");

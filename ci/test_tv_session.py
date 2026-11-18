@@ -974,5 +974,50 @@ class ForegroundIsReadOnly(unittest.TestCase):
         self.assertTrue(woke)
 
 
+class SelfTest(unittest.TestCase):
+    """The script's own `selftest` (`make check` runs it as `tools/tv-session.sh selftest`). Every other case here
+    sources the script with `selftest` as $1, which RUNS it, and grades only its own markers, so a `bad` line
+    there was invisible: this one grades the selftest itself, including the by-id guard and the FIFO quoting."""
+
+    def _run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "tools").mkdir()
+            script_link = root / "tools" / "tv-session.sh"
+            script_link.symlink_to(SCRIPT)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            (bin_dir / "make").write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' debug com.beb.plxnative.debug /app /run /events 8911 fake-host\n",
+                encoding="utf-8",
+            )
+            (bin_dir / "make").chmod(0o755)
+            environment = os.environ.copy()
+            environment["PATH"] = f"{bin_dir}:{environment['PATH']}"
+            return subprocess.run(
+                ["bash", "-c", 'source "$1" selftest; echo "RC:$?"', "selftest", str(script_link)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=environment,
+                check=False,
+                timeout=60,
+            ).stdout
+
+    def test_the_selftest_passes_and_reports_the_by_id_and_fifo_contracts(self):
+        out = self._run()
+        # The identity checks print ✗ lines by design (they exercise a refusal), so the verdict is the exit
+        # status, which is the first failed contract's `return 1`, and every contract's own ✓ line.
+        self.assertIn("RC:0", out, out)
+        for contract in ("tv-session direct-screen contract",
+                         "tv-session by-id contract (grammar, a title's element needs --rk, nonce match)",
+                         "tv-session FIFO quoting (any one-word token is sent as one remote word; a token with whitespace is not sent)",
+                         "tv-session key door (focus:/press:/state: only through their verbs; a refusal sends nothing)",
+                         "tv-session usage text (the whole command and option list, ending on --keep)",
+                         "tv-session identity contract"):
+            self.assertIn(contract, out)
+
+
 if __name__ == "__main__":
     unittest.main()

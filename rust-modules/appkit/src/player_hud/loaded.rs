@@ -118,6 +118,20 @@ pub fn reference_with_info_actions_for_test() -> Arc<Compiled> {
         .compiled
 }
 
+/// **The reference package whose `fwd` control carries `command`** instead of its seek (`"next"`, `"toggle_play"`):
+/// the row then holds two controls with one command, so the second is named by its POSITION in an accessibility id
+/// (`player.control.<i>`) and not by its word. Loaded like [`reference_for_test`].
+#[cfg(any(test, feature = "test-support"))]
+pub fn reference_with_forward_as_for_test(command: &str) -> Arc<Compiled> {
+    let text = include_str!("../hud_format/fixtures/reference/hud.json");
+    let forward = r#"{ "id": "fwd", "command": "seek", "by": 30,"#;
+    assert_eq!(text.matches(forward).count(), 1, "the reference fixture has one forward seek");
+    let replaced = text.replace(forward, &format!(r#"{{ "id": "fwd", "command": "{command}","#));
+    load(&crate::hud_format::fixtures::with_hud("reference", &replaced), "0.0.0-test", plx_platform::i18n::english(), &plx_ui::fixture::FixtureMeasure)
+        .expect("the reference fixture with a replaced forward control loads")
+        .compiled
+}
+
 /// **The reference with its Chapters and Info discs taken out of the row**, under `policy` (`"modal"` or `"inline"`): the
 /// two section bands stay, so both sections are laid out, and the package places no opener for either. A More fold
 /// row is the only way to either section. Loaded like [`reference_for_test`].
