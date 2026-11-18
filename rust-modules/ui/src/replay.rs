@@ -170,6 +170,7 @@ fn input_label<K>(kind: &InputKind<K>) -> &'static str {
         InputKind::Text(_) => "text",
         InputKind::PointerHidden => "pointer_hidden",
         InputKind::SystemKeyboard(_) => "keyboard",
+        InputKind::ById { .. } => "by_id",
     }
 }
 

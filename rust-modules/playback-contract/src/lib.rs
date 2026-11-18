@@ -8,6 +8,7 @@ mod state;
 mod time;
 pub use time::MediaTimeMs;
 pub mod adaptive;
+pub mod clock_debt;
 pub mod subtitle;
 pub mod readout;
 pub mod tracks;

@@ -3012,6 +3012,70 @@ fn the_hero_countdown_restarts_when_the_last_modal_is_dismissed() {
     );
 }
 
+/// **Home comes back from a glass menu without damaging itself.** The BACK commit delivers
+/// `Uncover` then `Enter(Restored)` to the host page; page damage raised by either retakes the
+/// frozen host snapshot on the close's first frame (the page redrawn into it, the tab bar's blur
+/// re-sourced, the dim re-latched: 131% of a 60 Hz frame's GPU budget on the TV). What a covered
+/// Home can have missed is the catalog (`sync_catalog`'s generation) and the Under posters setting
+/// that Settings changes while it covers Home (noticed at the head of `step`). Both still damage,
+/// once; nothing else does, and a page that ARRIVES (`Enter(Fresh)`) still paints.
+///
+/// Red while `Uncover` and `Enter` damaged unconditionally.
+#[test]
+fn home_raises_no_damage_coming_back_from_under_a_cover_unless_what_it_draws_changed() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 0, 24, true);
+    let old = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(old.view());
+    // Typed PAGE damage, which is what retakes a frozen host snapshot (`step`'s third answer is
+    // `Present::peek`, and a new gate is dirty before anything happens to it).
+    let damage = |s: &mut HomeScreen, view: HubsView<'_>, event: ScreenEvent<TestHost>| {
+        let context = cx(view, None);
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        {
+            let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(InstanceId(9)), &mut present);
+            Machine::<TestHost>::step(s, &event, &context, &mut fx);
+        }
+        present.page_damaged()
+    };
+
+    // a glass menu's close: Uncover, then Enter(Restored), over an unchanged page
+    assert!(!damage(&mut s, old.view(), ScreenEvent::Cover));
+    assert!(!damage(&mut s, old.view(), ScreenEvent::Uncover), "an unchanged page has nothing to redraw on Uncover");
+    assert!(!damage(&mut s, old.view(), ScreenEvent::Enter(Enter::Restored)), "...nor on Enter(Restored)");
+    assert!(!s.covered);
+
+    // the catalog landed while covered: Uncover still damages, and the Enter after it has nothing left
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 12, 24, true);
+    let next = plx_data::pms::hubs_snapshot(&state);
+    assert_ne!(old.view().generation, next.view().generation, "premise: the catalog changed");
+    damage(&mut s, next.view(), ScreenEvent::Cover);
+    assert!(damage(&mut s, next.view(), ScreenEvent::Uncover), "a catalog that changed under the cover is redrawn");
+    assert!(!damage(&mut s, next.view(), ScreenEvent::Enter(Enter::Restored)));
+
+    // Settings changed Under posters while it covered Home: the caption policy is what the page draws
+    damage(&mut s, next.view(), ScreenEvent::Cover);
+    use plx_plex::plex::session::{UnderPosters, UnderPostersLadder as Details};
+    let before = crate::registry::captions::policy();
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| {
+        cell.set(Some(UnderPosters { title: false, details: Details::None.movie_parts(), show_details: Details::None.show_parts(), sort_value: false }));
+    });
+    let after = crate::registry::captions::policy();
+    let changed = before != after;
+    let damaged = damage(&mut s, next.view(), ScreenEvent::Uncover);
+    let again = damage(&mut s, next.view(), ScreenEvent::Enter(Enter::Restored));
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
+    assert!(changed, "premise: the setting resolved to a different policy");
+    assert!(damaged, "a caption policy that changed under the cover is redrawn");
+    assert!(!again, "...once");
+
+    // a page that ARRIVES paints, whatever it finds
+    assert!(damage(&mut s, next.view(), ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(GroupId(0)) })));
+}
+
 /// `HomeCmd::PinHero` — the screenshot pipeline's hero pin (`/tmp/plxnative-heropin=<n>`) —
 /// selects that slot and HOLDS it: the auto-advance never fires, however long the page sits
 /// uncovered, so a capture taken at any settled moment shows the same billboard.

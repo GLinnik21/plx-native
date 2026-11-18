@@ -14,8 +14,11 @@
 //! ([`Focusable::a11y_find`]); it is never logged and never kept.
 //!
 //! An element's [`A11y::label`] and [`A11y::subject`] (the ratingKey of a catalog card) are runtime
-//! text. They appear ONLY in the state file a test reads back, never in a `LogLine`, a recording or a
-//! heartbeat.
+//! text. They never reach a `LogLine` or a heartbeat; the state file a test reads back is where they
+//! are written. A `press:<id>@<subject>` token records its `@<subject>` text in the recording's `in`
+//! row, which on a press that resolves equals the element's subject, so a recording of a
+//! subject-guarded press carries a ratingKey and is private like any other recording (and the closed
+//! replay `ALPHABET.json` has no pattern for it, so such a recording cannot be committed as a fixture).
 //!
 //! The three hooks live on [`Focusable`] (defaulted, so nothing changes until a widget answers):
 //! `a11y` projects a key to its [`A11y`], `a11y_elems` lists a group's keys in index order (what
@@ -95,6 +98,14 @@ enum Piece {
     Name(Cow<'static, str>),
     Index(usize),
 }
+
+/// The most segments an id may carry after its namespace. The deepest id the application builds is
+/// four (`detail.shelf.1.card.2`: a shelf, its index, a card, its index), so this leaves two spare for a
+/// composite that nests one more container. [`conformance_report`] complains of a longer id, and the
+/// replay alphabet's id pattern (`tests/fixtures/replay/ALPHABET.json`) repeats this number as its
+/// repeat bound: a test in `plx_screens`' registry keeps the two equal, so an id that grew past it
+/// would fail a build, not a recording at the moment somebody tried to commit it.
+pub const MAX_ID_SEGS: usize = 6;
 
 /// The path of one element: an optional namespace and the segments after it.
 ///
@@ -272,7 +283,9 @@ pub enum Role {
 
 /// One element's projection: its id and what a test reads about it.
 ///
-/// `label` and `subject` are runtime text (a card's title, its ratingKey): the state file only.
+/// `label` and `subject` are runtime text (a card's title, its ratingKey): they go to the state file,
+/// never to a log line or heartbeat (a press's `@<subject>` guard is kept by a recording, see the
+/// module doc).
 /// `loaded` is false for a placeholder whose item has not arrived. The borrow is of the view the
 /// projection was asked of; a view built per query returns [`A11y::into_owned`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -341,6 +354,90 @@ pub fn default_walk<H: Host, F: Focusable<H> + ?Sized>(
     None
 }
 
+/// Who owns input when a snapshot is taken: the `owner` word of the state file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnerKind {
+    /// A page owns input.
+    Page,
+    /// A modal surface owns input.
+    Surface,
+    /// The television keyboard is up: no element is addressable.
+    Keyboard,
+    /// No entry owns input (the tree has no page yet).
+    None,
+}
+
+impl OwnerKind {
+    /// The closed word the state file prints.
+    pub fn word(self) -> &'static str {
+        match self {
+            OwnerKind::Page => "page",
+            OwnerKind::Surface => "surface",
+            OwnerKind::Keyboard => "keyboard",
+            OwnerKind::None => "none",
+        }
+    }
+}
+
+/// One focus group of the owner view, as the state file lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupSnapshot {
+    /// `GroupId.0`, unique within the owner view.
+    pub group: u32,
+    /// The id prefix its elements share (`home.shelf.2.card`: an element's id is the prefix, then
+    /// its index; a one-element group names its parent, `home.hero`). Empty for a group no element
+    /// of which projected.
+    pub prefix: String,
+    /// `GroupSpec::len`: how many elements the group declares, listed or not.
+    pub len: usize,
+    /// The role of the group's first listed element (`None` when none is listed).
+    pub role: Option<Role>,
+}
+
+/// One element of the owner view, as the state file lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ElemSnapshot {
+    /// The full id, `<ns>.<path>`.
+    pub id: String,
+    /// The group it belongs to (`GroupSnapshot::group`).
+    pub group: u32,
+    /// Its position in the group's `a11y_elems` list.
+    pub index: usize,
+    pub role: Role,
+    /// Where it rests (`Focusable::place` at `SpringTarget`); `None` when the view places nothing
+    /// for it.
+    pub rest_rect: Option<super::Rect>,
+    /// Does any of it show: `rest_rect ∩ clip ∩ viewport` has an area.
+    pub visible: bool,
+    pub focused: bool,
+    pub loaded: bool,
+    /// Runtime text, the state file only. An unloaded element carries none.
+    pub label: Option<String>,
+    pub subject: Option<String>,
+}
+
+/// **What `state:<nonce>` reads back** (the a11y-ids plan, D8): the owner view of the dispatcher at
+/// one instant, owned and non-generic so the application can serialize it without `plx_ui` naming a
+/// JSON type. There is no cap on the element list. `label` and `subject` are runtime text: this value
+/// is for the state file and must not reach a `LogLine`, a heartbeat or a recording.
+#[derive(Clone, Debug, PartialEq)]
+pub struct A11ySnapshot {
+    /// The dispatcher's frame index.
+    pub frame: u64,
+    /// The route: the top PAGE's heartbeat word (`Screen::name`), also while a surface owns input
+    /// (`ns` names the owner); `None` when no page is mounted.
+    pub route: Option<&'static str>,
+    pub owner: OwnerKind,
+    /// The owner screen's `a11y_ns`; `None` unless a page or a surface owns input.
+    pub ns: Option<&'static str>,
+    /// The focused element's full id (`None` when nothing is focused or it does not project).
+    pub focused: Option<String>,
+    /// Strip group first (when the page wears the strip), then the page's, in declaration order.
+    pub groups: Vec<GroupSnapshot>,
+    /// Every element of every group, group by group in index order.
+    pub elems: Vec<ElemSnapshot>,
+}
+
 /// The complaints [`conformance`] has about `view`, one line each (empty when it conforms).
 ///
 /// For every group `view.groups` declares: `a11y_elems` lists AT MOST `GroupSpec::len` keys, and at
@@ -393,6 +490,12 @@ pub fn conformance_report<H: Host, F: Focusable<H> + ?Sized>(view: &F, cx: &Cx<'
                 continue;
             };
             let id = a.path.to_string();
+            if a.path.len() > MAX_ID_SEGS {
+                complaints.push(format!(
+                    "group {} element {i}: {id:?} has {} segments, more than MAX_ID_SEGS {MAX_ID_SEGS}",
+                    g.id.0, a.path.len()
+                ));
+            }
             let reparsed = if a.path.ns().is_some() {
                 A11yPath::parse_id(&id)
             } else {

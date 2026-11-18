@@ -5321,6 +5321,7 @@ fn identity_detail(parts_empty: bool) -> Detail {
     use plx_data::metadata::Stream;
     let mut d = Detail {
         kind: if parts_empty { "episode".into() } else { "movie".into() },
+        part: "/library/parts/1/1/video.mkv".into(),
         video_resolution: "1080".into(),
         subs: vec![Stream { sdh: true, ..Default::default() }],
         ..Default::default()

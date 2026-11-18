@@ -565,6 +565,48 @@ def recording_case():
     return ok
 
 
+def alphabet_id_case():
+    """The REAL tests/fixtures/replay/ALPHABET.json: an accessibility id is accepted, a lookalike is not.
+
+    The alphabet is the gate that lets a recording under tests/fixtures/replay/ be committed and
+    pushed, and its id pattern once fully matched ANY lowercase dotted string, so a household
+    hostname (`nas.local`, `first.last`) in a recording would have passed. The first segment is now
+    a closed namespace alternation and the segment count is bounded: this loads the file itself
+    (not the throwaway alphabet `recording_case` writes) and asks the guard's own matcher.
+    """
+    ok = True
+    repo = os.path.abspath(os.path.join(HERE, "..", ".."))
+    alphabet = guard.load_alphabet(repo)
+    if not alphabet[1]:
+        print("  FAIL  the repository's ALPHABET.json did not load: %s" % repo)
+        return False
+    for want_in, text in (
+        (True, "nav.watchlist"),
+        (True, "nav.tab.7"),
+        (True, "home.hero.play"),
+        (True, "home.shelf.2.card.5"),
+        (True, "detail.shelf.1.card.2"),
+        (True, "library.shelf.2.card.3"),
+        (True, "filmography.row.0"),
+        (True, "hud-detail.row.0"),
+        (True, "home.a.b.c.d.e.f"),           # six segments: the bound
+        (False, "nas.local"),
+        (False, "first.last"),
+        (False, "my-laptop.lan"),
+        (False, "nav."),
+        (False, "NAV.watchlist"),
+        (False, "nav.Watchlist"),
+        (False, "nav.watchlist."),
+        (False, "nav.01"),                    # an index has no leading zero
+        (False, "home.a.b.c.d.e.f.g"),        # seven segments: one past the bound
+    ):
+        bad = guard.offending_strings(json.dumps({"id": text}), alphabet)
+        if bool(bad) == want_in:
+            print("  FAIL  alphabet: %r should be %s" % (text, "accepted" if want_in else "refused"))
+            ok = False
+    return ok
+
+
 def refusal_case():
     """Drive the REAL binary and grep its stderr for the fake secrets.
 
@@ -712,7 +754,8 @@ def main():
                   % ("BLOCK" if want else "ALLOW", "BLOCK" if got else "ALLOW",
                      cmd.replace("\n", "\\n")[:110]))
     helpers = (file_payload_case, secrets_case, refusal_case, variable_reference_case,
-               recording_case, merge_case, pr_land_text_case, merge_refusal_case, settings_case)
+               recording_case, alphabet_id_case, merge_case, pr_land_text_case, merge_refusal_case,
+               settings_case)
     for fn in helpers:
         if not fn():
             fails += 1

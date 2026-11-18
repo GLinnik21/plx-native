@@ -153,7 +153,7 @@ def check(flow, lines):
             return "the Detail fingerprints omit the item identity or position"
         if any(before[-1].get(k) != after[-1].get(k) for k in ("sid", "rk", "sec", "col")):
             return "dismissing the item menu lost the Related card's position"
-    elif flow == 12:
+    elif flow in (12, 13):
         film = lambda r: r.get("route") == "person" and r.get("filmography") == "1"
         first = next((i for i, r in enumerate(records) if film(r)), None)
         if first is None:

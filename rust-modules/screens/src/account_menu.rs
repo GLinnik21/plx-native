@@ -229,17 +229,25 @@ fn action_row(a: Action) -> Row {
         .destructive(matches!(a, Action::SignOut))
 }
 
-/// Top-left popover, tucked under the profile chip.
+/// Top-left popover, laid OVER the profile chip (the shared rule,
+/// [`plx_ui::popover::cover_opener`]: top edges flush, left edges flush, so the settled glass
+/// covers the chip the morph consumed).
 ///
-/// `px` is the app's own side margin: it was a literal 80, which sat 16px outside the 5% overscan
-/// frame — and the chip it hangs off is at `MARGIN_X`, so aligning the two is what the design meant
-/// anyway. `py` clears `widgets::TOP_BAR_BOTTOM` (130) by a `space::MD`.
-fn panel_rect(table: &TableView, measure: &dyn plx_machine::machine::Measure) -> Rect {
+/// `chip` is the chip's rect: the one the dispatcher last handed the surface
+/// ([`Screen::opener_rect`], the chip's LIVE drawn rect, the bar's tuck and unfurl included), or the
+/// resting circle before the first draw. The panel is as wide as its rows and never narrower than
+/// the chip (a long profile name unfurls a capsule wider than a one-word action list), held inside
+/// the safe frame. The chip sits on the safe frame's own corner, so the panel does too.
+fn panel_rect(table: &TableView, measure: &dyn plx_machine::machine::Measure, chip: Rect) -> Rect {
     let pw = table.menu_panel_width(measure);
-    let px = plx_ui::consts::MARGIN_X;
-    let py = 154.0f32;
     let ph = table.measured_height().clamp(120.0, 440.0);
-    Rect::new(px, py, pw, ph)
+    plx_ui::popover::cover_opener(chip, (pw, ph), plx_ui::consts::SAFE)
+}
+
+/// The chip's resting rect, the closed circle: the opener a menu that has not been handed its
+/// chip's drawn rect yet is laid over.
+fn resting_chip() -> Rect {
+    plx_ui::widgets::chip_cap(0.0, 0.0)
 }
 
 /// The panel at its TALLEST, for the overscan audit ([`plx_ui::consts::SAFE`]) — the clamp
@@ -247,7 +255,7 @@ fn panel_rect(table: &TableView, measure: &dyn plx_machine::machine::Measure) ->
 /// in and the height comes from a `TableView` no host test can measure.
 #[cfg(any(test, feature = "test-support"))]
 pub fn overscan_rects(out: &mut Vec<(&'static str, plx_ui::Rect)>) {
-    let r = panel_rect(&TableView::new(), &plx_ui::fixture::FixtureMeasure);
+    let r = panel_rect(&TableView::new(), &plx_ui::fixture::FixtureMeasure, resting_chip());
     out.push((
         "account menu panel",
         plx_ui::Rect::new(r.x, r.y, plx_ui::table::MENU_MAX_W, 440.0),
@@ -281,6 +289,8 @@ impl AccountMenuScreen {
             built: false,
             session_watch: Default::default(),
             switch_refused: false,
+            // no `opener_fill`: the profile chip is itself a glass capsule (`widgets::glass_capsule`
+            // at every focus), with no flat focused fill for the close's blob to whiten toward
             popover: Popover::new().morphing(),
         }
     }
@@ -306,7 +316,7 @@ impl AccountMenuScreen {
     }
 
     fn frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
-        panel_rect(&self.form.table, measure)
+        panel_rect(&self.form.table, measure, self.popover.opener().unwrap_or_else(resting_chip))
     }
 
     /// Commit the focused row. **Every action dismisses**, exactly as the legacy `on_ok` did by
@@ -486,22 +496,29 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
         None
     }
     /// The CHIP is this menu's opener, like a header pill is the Library menu's: the dispatcher's one
-    /// lift pass (`Z::OPENER`, `Dispatcher::lifted_opener`) draws it lit above the dim and the panel,
-    /// so the glass grows out from under it. The chip is chrome the bar draws, so it is named as a
-    /// bar member rather than a page element.
+    /// lift pass (`Z::OPENER`, `Dispatcher::lifted_opener`) draws it lit above the dim and the panel
+    /// at the morph's `opener_alpha` (gone while the menu stands, back as the droplet drains into
+    /// it). The chip is chrome the bar draws, so it is named as a bar member rather than a page
+    /// element.
     fn bar_opener(&self) -> Option<u32> {
         Some(plx_ui::widgets::TAB_KEY_CHIP)
     }
     /// The chip's LIVE drawn rect (the bar's tuck and its unfurl included): the rect the morph starts
     /// and ends on, re-read every frame, so a chip that moves while the menu opens or closes is
-    /// followed (the Watchlist tucks the bar). The panel's settled placement is its own.
+    /// followed (the Watchlist tucks the bar), and the settled panel is laid over it ([`panel_rect`]).
     fn opener_rect(&mut self, drawn: plx_ui::Rect) {
         self.popover.track_opener(drawn);
     }
+    /// The opener is CONSUMED by the morph (`popover_morph`): the lift paints it at the morph's
+    /// `opener_alpha`, out as the glass detaches from it and back in as it merges into it.
+    fn opener_alpha(&self) -> f32 {
+        self.popover.opener_alpha()
+    }
     /// The modal dim: the COMPACT role, as every menu hung off a chip: how dark the page goes behind
-    /// this menu, the peak the container ramps with the appear spring (`ModalStack::draw_scrims`).
+    /// this menu. The role sets only the PEAK; the morph ramps it (`Popover::dim` ->
+    /// `Scrim::following`): in as the glass grows, out with the slab.
     fn scrim(&self) -> Scrim {
-        Scrim::dim(plx_ui::theme::underlay::DIM_COMPACT)
+        self.popover.dim(plx_ui::theme::underlay::DIM_COMPACT)
     }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
@@ -753,9 +770,38 @@ impl AuthLike for MenuHost {
             ms += 16;
             step(&mut menu, &read, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
         }
+        // (the measured iOS close: the width leads, the height holds its bulge to ~50 ms)
+        let closing = glass(&mut menu, &read);
+        assert!(closing.w < settled.w - 20.0, "three frames into the close the panel is narrowing into the chip ({closing:?})");
+        for _ in 0..2 {
+            ms += 16;
+            step(&mut menu, &read, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+        }
         let closing = glass(&mut menu, &read);
         assert!(closing.w < settled.w - 20.0 && closing.h < settled.h - 20.0,
-            "three frames into the close the panel is shrinking into the chip ({closing:?})");
+            "five frames into the close the panel is shrinking into the chip ({closing:?})");
+    }
+
+    /// **Owner, 2026-11-17: the profile menu opens OVER its chip, as on iOS.** The settled panel
+    /// contains the chip's whole rect and its top edge is the chip's, whether the chip is the closed
+    /// circle or an unfurled capsule wider than the row list (a long profile name): the panel is
+    /// never narrower than the chip. The chip is the rect the dispatcher last handed the surface.
+    #[test]
+    fn the_panel_covers_the_chip_it_consumed_top_edges_flush() {
+        let table = TableView::new();
+        for chip in [
+            plx_ui::widgets::chip_cap(0.0, 0.0),
+            plx_ui::widgets::chip_cap(1.0, 120.0),
+            plx_ui::widgets::CHIP_CAP_MAX,
+        ] {
+            let panel = panel_rect(&table, &plx_ui::fixture::FixtureMeasure, chip);
+            assert_eq!(panel.y, chip.y, "{chip:?}: the panel's top is the chip's top");
+            assert!(panel.x <= chip.x + 1e-3 && panel.x + panel.w >= chip.x + chip.w - 1e-3, "{panel:?} covers {chip:?} across");
+            assert!(panel.y + panel.h >= chip.y + chip.h, "{panel:?} covers {chip:?} down");
+        }
+        let safe = plx_ui::consts::SAFE;
+        let r = panel_rect(&table, &plx_ui::fixture::FixtureMeasure, resting_chip());
+        assert_eq!((r.x, r.y), (safe.x, safe.y), "the chip sits on the safe frame's corner, so the panel does");
     }
 
     /// #132's dead end, not led into: once the Session KNOWS switching is unavailable for the

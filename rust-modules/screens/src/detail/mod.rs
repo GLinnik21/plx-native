@@ -2275,7 +2275,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
                 self.related.reset_page_requests();
-                if matches!(by, By::Dir | By::Pointer) {
+                if matches!(by, By::Dir | By::Pointer | By::Script) {
                     self.return_pending = false;
                     self.restore_intent = None;
                 }
@@ -2290,7 +2290,7 @@ impl<H: ContentLike + crate::registry::MetadataLike + PlayerLike> Machine<H> for
                 }
                 if let Some(located) = self.locate(to.elem, meta) {
                     if let Located::Season(i) = located {
-                        if matches!(by, By::Dir | By::Pointer) {
+                        if matches!(by, By::Dir | By::Pointer | By::Script) {
                             self.pending_season = Some(i);
                             self.season_settle = 0.0;
                         }
@@ -3109,10 +3109,8 @@ impl DetailScreen {
             parts.push(&d.rating);
         }
         if !d.edition.is_empty() { parts.insert(0, &d.edition); }
-        let resolution = match plx_media::route::detail_play_version(d) {
-            Some(v) => plx_ui::fmt::resolution(&v.resolution, v.width, v.height),
-            None => plx_ui::fmt::resolution(&d.video_resolution, d.width, d.height),
-        };
+        let resolution = plx_media::route::detail_played_video(d)
+            .and_then(|f| plx_ui::fmt::resolution(f.resolution, f.width, f.height));
         let chips: Vec<&str> = [
             (!d.subs.is_empty(), plx_platform::i18n::msg::widgets_badge_cc()),
             (d.subs.iter().any(|s| s.sdh), plx_platform::i18n::msg::widgets_badge_sdh()),
@@ -4721,7 +4719,7 @@ impl DetailScreen {
             match i {
                 Some(i) => self.play_episode_at(i, from_start, version, fx, meta),
                 None => self.play_episode_value(
-                    hero_episode_played(d),
+                    d.play_episode(),
                     d,
                     from_start,
                     version,
@@ -4834,16 +4832,11 @@ impl DetailScreen {
 
 }
 
-/// The episode a show page's hero Play plays: the one it is resuming, else the season's first.
-fn hero_episode_played(d: &Detail) -> Option<&plx_data::metadata::Episode> {
-    hero::hero_episode(d).or_else(|| d.episodes.first())
-}
-
 /// The versions the hero's Play chooses among, for its Play Version disc and panel: the page's
 /// own movie or episode, or on a show page the episode its Play plays.
 pub(crate) fn hero_versions(d: &Detail) -> &[plx_data::pms::MediaVersion] {
     if d.is_show {
-        hero_episode_played(d).map_or(&[], |ep| ep.versions.as_slice())
+        d.play_episode().map_or(&[], |ep| ep.versions.as_slice())
     } else {
         &d.versions
     }

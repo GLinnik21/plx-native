@@ -13,7 +13,9 @@
 # fails, and each step's whole output is printed when it ends). So a step in this file must:
 #   * write only to a directory it made itself (`mktemp -d`, `tempfile`), never to a fixed path in
 #     /tmp or $TMPDIR, the checkout, `$HOME` or `~/.cache`; and a fixture that edits "the repo" edits
-#     a private copy of it;
+#     a private copy of it. The one exception is `check-c-unit`'s access leg
+#     (ci/access-interpose-test.c): its probe paths are the GPU driver's, fixed by the driver, so it
+#     takes a flock on /tmp;
 #   * bind port 0 (an ephemeral port), never a fixed one;
 #   * not take `tools/check-lock.py`'s real lock (ci/test_check_lock.py uses a throwaway path), not
 #     run cargo, and not assume it is the only `make` running;
@@ -65,6 +67,7 @@ python3 ci/test_disk_budget.py
 # trees; the cold store's unpark of an absent parked tree: the cheap no-gos (config removed, volume unmounted) come before any lock wait, the
 # lock is held to claim the copy and not across it (two trees restore at once), a claimed or dead-claimed tree, and the free-space rule. `make -n` and `make -s print-*` only, no cargo.
 python3 ci/test_disk_preflight.py
+python3 ci/test_build_root.py
 # The TV lock's own protocol suite, with NO television: the device half runs under a local sh in a temp dir, and the
 # HEADS-UP cases run the real `acquire`/`break` as children with their own lane, lease directory and lock path (one
 # line on a new lease, including your own expired one, none on a live renew or a refusal). It also runs the pre-flight's
@@ -186,6 +189,8 @@ python3 ci/test_module_cycle.py
 python3 ci/check-module-cycle.py
 python3 tests/player_pointer.py --selftest
 python3 tests/test_replay_fixtures.py
+# The accessibility-id harness tool (tools/a11y.py): token grammar, state-file wait, id matching.
+python3 tests/test_a11y_tool.py
 python3 tools/prune-gh-caches.py --selftest
 # The demo library and the screenshot scene manifest (make screenshots). Offline: the cases
 # that serve the catalog skip, and say so, where the derived artwork cache is absent.
@@ -356,6 +361,10 @@ python3 ci/check-machine-shape.py
 # or head-moved PR never reaches `gh pr merge` (#387), the polling and backoff, the head-oid race, the verify against a temporary
 # origin, and a planted secret refused before any `gh` call. Real gh JSON as fixtures; temp dirs only, no network, no sleeping on the poll or race timers (one test lets a hung gh hit a 1 s timeout).
 python3 tools/test_pr_land.py
+# tools/review-eval.py (the pr-reviewer agent graded against past pull requests whose bugs are known): the case list's checks, the
+# replayed repository (no ref leads to the fix), the reviewer's task never carrying the answer key, and the score. Temp repositories only;
+# the last class reads the real tools/review-eval/cases.json and skips commits a shallow checkout lacks.
+python3 tools/test_review_eval.py
 python3 .claude/hooks/tv-lock-notify-test.py
 # The custom agents' files (AGENTS.md, "Harness-specific files"): every `.agents/agents/<name>.md` carries a matching frontmatter
 # `name`, an explicit `model:` (one documented exemption), a description, a RELATIVE `.claude/agents/<name>.md` symlink that resolves

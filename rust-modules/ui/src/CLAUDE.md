@@ -447,27 +447,46 @@ presentation in a design pass.
 
    **Popover open styles.** Two exist. `Appear` (default) is the shared `K_APPEAR` fade+slide.
    `Morph` (`Popover::morphing()` is the one selector; open with `open_from(opener.rect)`) is the glass opener's pill-to-panel
-   morph in `popover_morph.rs`: width spring k 620 and height spring k 950 critically damped, radius
-   pill -> THE CALLER'S panel radius with a bulge (so settle and the start of a close do not snap),
-   rows 0.82 -> 1 at zeta 0.6 k 720, and a 0.92 -> 1 fade+scale fallback when the opener has no
-   rect. The glass is laid whole at the morphing rect and the rows come in over it (from 30%,
-   opaque by 60%, clipped to the current rect), all on one clock (the slower rect spring).
-   **The header menus morph the glass ONLY (design review S11/S12):** Library Sort & Filter, the
-   Library's `+N` list and the Watchlist's Sort & Filter all open this way, and their opener is
-   never part of the morph. A morphing surface names its opener (`Screen::opener`), the page
+   morph in `popover_morph.rs`, fitted to a frame-by-frame measurement of iOS 26's glass menu (the
+   owner's recording, 2026-11-17): UNDERDAMPED width and height springs (height k 920 zeta 0.66,
+   width k 450 zeta 0.7 after a 26 ms lag; the rect rings 6% / 4.6% past the panel and lands by
+   ~0.4 s, within 0.06 of the measured table on every frame), the glass is a round LENS (corner = half its
+   smaller side while small, relaxing to THE CALLER'S panel radius from ~150 ms by a spring that lands
+   exactly, so settle does not snap; a close rounds it back), a 0.92 -> 1 fade+scale
+   fallback (with its own 0.82 -> 1 rows spring) when the opener has no rect. The glass is laid whole at the
+   morphing rect, clear then frosted by ~150 ms, and the rows are laid out IN the glass: they are
+   magnified by the lens (their own spring: 0.65 when they first show, ~1.12 at ~167 ms, 1 by ~360 ms),
+   appear at ~75 ms and are opaque by ~150 ms, cut by the lens itself (its rect and radius, through
+   the shared painter's ROUNDED clip, `ClipScope::open_rounded_in`: a letter the round edge crosses is cut
+   by the arc, not a straight edge). A close bulges ~7% by ~33 ms (width and
+   height on their own springs, fitted to the recording's close), then the slab shrinks with its rows
+   and frost leaving over ~50 ms and drains into the opener (hand-back at ~233 ms; the drawn series is what the close test fits). The modal dim of a
+   morphing menu FOLLOWS the morph (`Popover::dim` -> `Scrim::following`: in by ~150 ms, out with
+   the slab), not the container's appear spring; a screen's `scrim()` returns `self.popover.dim(DIM_*)`.
+   **The header menus' glass CONSUMES its opener (owner decision 2026-11-17, reversing design
+   review S11/S12):** Library Sort & Filter, the Library's `+N` list and the Watchlist's Sort &
+   Filter all open this way: the opener fades out over the first 15% of the open
+   (`Frame::opener_alpha`, `OPENER_OUT_AT`), is not drawn while the menu stands (the panel covers
+   it, `popover::cover_opener`) and fades back in as the droplet drains into it on a close. Only
+   the item hold menu's lifted card stays whole. A morphing surface names its opener
+   (`Screen::opener`), the page
    leaves it out of its pass (`DrawFrame::lifted`: a pill left on the page sits under the menu's
    glass, and the rim's lens refracts its label into the panel's edge), and the dispatcher's lift
    pass (`Dispatcher::draw_with`, `Z::OPENER`: ONE place, after the last surface, on every page
    plan; the account chip, a `Screen::bar_opener`, is lifted by the same pass through `Rig::lift_bar_member`) calls `Screen::redraw_focused`
-   -> `PageHeader::draw_opener`, the ONE paint of a header opener, which draws it focused above the
-   scrim AND the panel, so the glass grows out from under a pill that does not change and a close
-   shrinks back into it (`the_page_openers_lift_is_drawn_after_the_surfaces_on_both_plans`). The shared painters are
+   -> `PageHeader::draw_opener`, the ONE paint of a header opener, which paints it focused above the
+   scrim AND the panel at the morph's `opener_alpha`, so the glass detaches from the pill as it
+   fades and a close drains back into it (`the_page_openers_lift_is_drawn_after_the_surfaces_on_both_plans`). The shared painters are
    `Popover::panel` (the glass at the morphing rect) and `Popover::morph_rows` (the rows, scaled
-   about the panel anchor by the row spring). The morph draws no opener face: every header
+   about the panel anchor by their own lens spring (`K_LENS`) on an open, and by the shrinking
+   slab's height on a close). The morph draws no opener face: every header
    opener, the profile chip included, is the lift pass's, and the morph starts and ends on the opener's LIVE drawn rect (`Screen::opener_rect` -> `Popover::track_opener`, so the chip follows the bar's tuck). The morph is not
    faded by the container's appear: the surface begins and ends as the opener. A held surface is ticked with no time, so a morph starts on the first
    frame anyone sees. The item hold menu keeps lift+appear. A new morph constant is named in
-   `popover_morph.rs`.
+   `popover_morph.rs`. A menu whose opener is a flat focused pill names that fill
+   (`Popover::opener_fill(page_header::OPENER_FILL)`, the colour `PageHeader::draw_opener` paints) so
+   the close's re-forming blob whitens toward it and the hand-back to the real pill does not pop; an
+   opener that is itself glass (the profile chip) names none.
 
 2. **Clickable text marks are ALL CAPS.** `MORE` and every other pressable text mark is
    capitalised, overriding the design system's sentence-case rule for app-written text: the mark is
@@ -655,9 +674,14 @@ tried first. None of it is reconstructable from the code without repeating the m
   panel's rect and graded under `PANEL_LUMA_MAX`. The opener lift is frozen too: the account
   menu's profile chip, lifted above the dim and the panel (`widgets::lift_profile_chip`, called by the
   lift pass through `Rig::lift_bar_member`), is a `glass_frozen`
-  capsule on the stack's latched field (`ModalStack::lift_field`, no dim, the host snapshot behind its
-  rim) and requests no backdrop entry or `src` pass; before the field latches the lift draws
-  nothing (the bar's own chip is already on screen at that rect). Only the chip on the tab strip, with no menu up, is live glass. The scrim behind a compact menu is
+  capsule (no dim, the host snapshot behind its rim) and requests no backdrop entry or `src` pass.
+  **The lift owns the chip from the frame its menu mounts to the frame it is removed**: the chrome
+  pass leaves it out (`Rig::draw_chrome`'s `lifted`) for all of them, so the host snapshot never
+  holds a chip the panel's rim would refract, the snapshot is re-taken on the mount and the removal
+  and nowhere between, and the lift paints it on every one of those frames. What it stands on is
+  chosen where it paints (`widgets::lift_ground`): the stack's latched field (`ModalStack::lift_field`)
+  once that has latched, the host snapshot drawn CLEAR (`GlassMorph::clear`, the morph's own opening
+  material) before, a flat capsule if neither exists. Only the chip on the tab strip, with no menu up, is live glass. The scrim behind a compact menu is
   `theme::underlay::DIM_COMPACT`, 30%. The face colours and shadow are theme roles
   (`MENU_GLASS_TOP/BOT`, `MENU_SHADOW*`); the face fades with the panel's cascaded alpha.
   `GlassRim::Menu` over the LIVE path (`draw_blur_backdrop`) would turn on a per-frame sharp band
@@ -919,7 +943,13 @@ Its docstring states what it cannot see.
   the document reader, the glass cut in `home`/`library`/`filmography`, the card underline are its
   users). A screen drawing through a `DrawFrame` uses `f.clip(p, rect)` instead: an RAII scope that
   restores the previous scissor when dropped AND narrows the painter's `clip` cascade value, so a
-  `stop` registered inside it is intersected with the visible part (spec §7.6). Do NOT reach for either in
+  `stop` registered inside it is intersected with the visible part (spec §7.6). **A ROUNDED edge is a
+  third spelling: `ClipScope::open_rounded_in(p, rect, radius)`.** The scissor is the rect's bounding box
+  as above, and the rect, text and icon draws inside it are also cut by the arc (a coverage mask, `gfx::
+  rclip_set`, `shaders/rclip.glsl`), so a label is cut by the curve and not by an inscribed rectangle. Open it on the
+  un-zoomed painter, one at a time (a debug build asserts on a rounded scope inside another); a `TableView`
+  or panel scope opened inside it narrows the scissor and keeps the arc. Images, shadows, glass, blur and
+  fade text are bounded by the scissor box only (the debug log names the first such bind). Do NOT reach for either in
   the big scroll flow: `ScrollColumn`/the shelves deliberately **cull** off-frame children by index
   (`on_axis`) instead, which avoids per-frame scissor churn and needs no clean-up. So: bounded list/panel
   → `clip`; long scrolling document → cull. (The old edge-fade-mask trick is gone — a linear fade can't

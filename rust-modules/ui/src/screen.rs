@@ -61,6 +61,9 @@ pub struct Scrim {
     /// Where the dim's inherited light comes from — see [`UnderlaySource`]. Every constructor
     /// but [`Scrim::over_video`] answers [`UnderlaySource::Page`].
     pub source: UnderlaySource,
+    /// The surface's OWN 0..1 ramp for the dim, when it has one: the container uses it in place of
+    /// the surface's appear spring ([`Scrim::following`]). `None` = the appear spring.
+    pub ramp: Option<f32>,
 }
 
 /// **What a surface's dim inherits.** A dim here is not a black sheet: the container paints it
@@ -82,6 +85,7 @@ impl Scrim {
     pub const NONE: Scrim = Scrim {
         alpha: 0.0,
         source: UnderlaySource::Page,
+        ramp: None,
     };
 
     /// A dim of `alpha`. `alpha` is a `theme::underlay::DIM_*`
@@ -90,6 +94,7 @@ impl Scrim {
         Scrim {
             alpha,
                 source: UnderlaySource::Page,
+            ramp: None,
         }
     }
 
@@ -100,7 +105,15 @@ impl Scrim {
         Scrim {
             alpha,
                 source: UnderlaySource::Flat,
+            ramp: None,
         }
+    }
+
+    /// This dim with the surface's own `ramp` (0..1) in place of the container's appear spring: a
+    /// morphing menu's dim follows its MORPH (`Popover::dim`), so the page dims as the glass grows
+    /// and clears as the slab drains, not on a clock of its own.
+    pub const fn following(self, ramp: f32) -> Scrim {
+        Scrim { alpha: self.alpha, source: self.source, ramp: Some(ramp) }
     }
 }
 
@@ -239,8 +252,10 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn redraw_focused(&self, _f: &mut DrawFrame<'_, '_, H>, _focus: Option<FocusKey<H::Elem>>) {}
     /// **The page element this surface lifts back out of the dim** (`(host page, element)`), for a
     /// surface that has one: the item menu's captured opener and every header menu's control (Library
-    /// and Watchlist Sort & Filter, the Library's `+N`), which the host's `redraw_focused` paints lit
-    /// above the scrim and the panel while the menu is up (design review S12). The
+    /// and Watchlist Sort & Filter, the Library's `+N`), which the host's `redraw_focused` paints
+    /// above the scrim and the panel, at the alpha the surface's
+    /// [`opener_alpha`](Self::opener_alpha) says (a morphing menu consumes it: gone while the menu
+    /// stands, back as the droplet drains into it). The
     /// dispatcher folds it with the surface's phase and the engine's focus into
     /// [`Dispatcher::lifted_opener`] and keeps that element OUT of the frozen page pass
     /// (`DrawFrame::lifted`), so the lift is its only copy. `None` (the default) for every other
@@ -262,6 +277,14 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// draw so its morph starts and ends on the live opener, not on a rect measured once at mount.
     /// Called only for a surface that answers [`bar_opener`](Self::bar_opener).
     fn opener_rect(&mut self, _drawn: crate::Rect) {}
+    /// **How much of the opener this surface leaves**, 1.0 (whole, the default) .. 0.0 (consumed):
+    /// the lift pass (`Z::OPENER`) paints the opener it lifts at this alpha. A MORPHING menu answers
+    /// its popover's [`opener_alpha`](crate::popover::Popover::opener_alpha): the glass detaches from
+    /// the opener on open (it fades out) and merges back into it on close (it fades back in), so the
+    /// opener is part of the morph rather than a control the glass grows from under.
+    fn opener_alpha(&self) -> f32 {
+        1.0
+    }
     /// **The opener element LEFT this page and is still drawn as it goes** (a removed card's
     /// landing ghost). While a menu fades, the opener lift stands down once focus moves off the
     /// opener; a page answering `true` here keeps it up instead, because focus moved only because
@@ -1267,20 +1290,40 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
     }
 }
 
+/// The ROUNDED part of a clip, in screen px: the rounded rect a coverage mask cuts the draws by (the
+/// lens of a morphing glass menu), on top of the scissor box. See [`ClipScope::open_rounded_in`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RoundClip {
+    pub rect: Rect,
+    pub radius: f32,
+}
+
+/// What a [`ClipScope`] holds: the scissor box, and the rounded clip if one is open. The box is the
+/// bounding cut every draw gets; the rounding is what the masked programs add (`plx_gfx::gfx::RClip`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Clip {
+    pub scissor: Rect,
+    pub round: Option<RoundClip>,
+}
+
 /// A live GL scissor, restored on drop to what was set before it. Scopes NEST by intersection: an
 /// inner scope can only narrow the enclosing one, never widen past it, so a widget that clips its
 /// own viewport (`TableView::draw`) composes inside an outer panel clip with no knowledge of it.
 /// This is the ONE scissor stack — the painter's carried clip (`Painter::clipped`, what the hit
 /// map reads) is the same rectangle by construction, so painting and hit-testing cannot drift.
 /// Pure bookkeeping on the host test binary (no GL is linked): what is graded is the stack.
+///
+/// A scope can also carry a ROUNDED clip ([`open_rounded_in`](Self::open_rounded_in)): the scissor
+/// is then its bounding box, and the draws that wear a coverage mask (rects, labels, icons) are cut
+/// by the arc too. A rect scope opened inside it narrows the box and KEEPS the rounding.
 pub struct ClipScope {
-    prev: Option<Rect>,
+    prev: Option<Clip>,
     active: bool,
 }
 
 thread_local! {
-    /// The scissor currently set by a `ClipScope`, if any — what a nested scope restores to.
-    static CLIP_STACK: std::cell::Cell<Option<Rect>> = const { std::cell::Cell::new(None) };
+    /// The clip currently set by a `ClipScope`, if any — what a nested scope restores to.
+    static CLIP_STACK: std::cell::Cell<Option<Clip>> = const { std::cell::Cell::new(None) };
 }
 
 impl ClipScope {
@@ -1288,6 +1331,7 @@ impl ClipScope {
     /// that holds only a [`Painter`] (every `TableView`-style widget draw; [`DrawFrame::clip`]
     /// delegates here). The box is `r` placed by the cascade, intersected with the cascade's own
     /// carried clip AND with the scope already open, if any; a recording painter opens nothing.
+    /// The rounded clip of an enclosing scope, if any, stays in force.
     pub fn open_in(p: Painter, r: Rect) -> Self {
         // Backdrop DISCOVERY first, as `Painter::clip` does: a discovery painter records, and the
         // backdrop walk keeps its own clip that culls what a scissor would hide. Without the
@@ -1295,14 +1339,37 @@ impl ClipScope {
         if !crate::frame::backdrop::discovering() && p.is_recording() {
             return Self::inert();
         }
-        Self::open(p.clipped(r).clip_rect())
+        Self::open(p.clipped(r).clip_rect(), None)
     }
 
-    fn open(screen: Rect) -> Self {
+    /// [`open_in`](Self::open_in) with a ROUNDED clip: `r` (in `p`'s space) with corner `radius`. The
+    /// scissor is `r`'s bounding box as `open_in` makes it; the rounding is `r` as `p` PLACES it
+    /// (the cascade translate and zoom, NOT intersected with the cascade's clip, which would move the
+    /// arc) and the radius under the zoom. Open it on the painter the rect is in, before zooming what
+    /// is drawn under it: a zoomed painter then maps its own vertices into the same screen px.
+    ///
+    /// A radius under half a pixel has no arc to cut and is `open_in` exactly. Rounded clips do not
+    /// nest (one lens at a time): a debug build asserts, a release build lets the inner one win while
+    /// the scissor still intersects.
+    pub fn open_rounded_in(p: Painter, r: Rect, radius: f32) -> Self {
+        if !crate::frame::backdrop::discovering() && p.is_recording() {
+            return Self::inert();
+        }
+        let radius = p.px(radius);
+        let round = (radius >= 0.5).then(|| RoundClip { rect: p.place(r), radius });
+        Self::open(p.clipped(r).clip_rect(), round)
+    }
+
+    fn open(screen: Rect, round: Option<RoundClip>) -> Self {
         let prev = CLIP_STACK.with(|c| c.get());
-        let narrowed = prev.map_or(screen, |outer| outer.intersect(screen));
-        CLIP_STACK.with(|c| c.set(Some(narrowed)));
-        apply_scissor(Some(narrowed));
+        debug_assert!(
+            round.is_none() || prev.is_none_or(|c| c.round.is_none()),
+            "rounded clips do not nest: one lens at a time"
+        );
+        let scissor = prev.map_or(screen, |outer| outer.scissor.intersect(screen));
+        let clip = Clip { scissor, round: round.or(prev.and_then(|c| c.round)) };
+        CLIP_STACK.with(|c| c.set(Some(clip)));
+        apply_scissor(Some(clip));
         Self { prev, active: true }
     }
 
@@ -1312,7 +1379,12 @@ impl ClipScope {
 
     /// The scissor in force (the innermost open scope), for tests and instruments.
     pub fn current() -> Option<Rect> {
-        CLIP_STACK.with(|c| c.get())
+        CLIP_STACK.with(|c| c.get()).map(|c| c.scissor)
+    }
+
+    /// The rounded clip in force, if a scope opened one ([`open_rounded_in`](Self::open_rounded_in)).
+    pub fn current_round() -> Option<RoundClip> {
+        CLIP_STACK.with(|c| c.get()).and_then(|c| c.round)
     }
 }
 
@@ -1326,26 +1398,39 @@ impl Drop for ClipScope {
     }
 }
 
-/// Set (or clear) the scissor for the current pass: the backdrop walk's own clip while discovery
-/// runs (mirroring `Painter::clip`/`clip_clear`), GL otherwise.
-fn apply_scissor(r: Option<Rect>) {
+/// Set (or clear) the clip for the current pass: the backdrop walk's own clip while discovery
+/// runs (the bounding box only; the walk culls by rectangle, mirroring `Painter::clip`/`clip_clear`),
+/// GL otherwise.
+fn apply_scissor(c: Option<Clip>) {
     if crate::frame::backdrop::discovering() {
-        crate::frame::backdrop::clip(r);
+        crate::frame::backdrop::clip(c.map(|c| c.scissor));
     } else {
-        gl_scissor(r);
+        gl_scissor(c);
     }
 }
 
 #[cfg(not(any(test, feature = "test-support")))]
-fn gl_scissor(r: Option<Rect>) {
-    match r {
-        Some(r) => plx_gfx::gfx::clip_set(r.x, r.y, r.w, r.h),
-        None => plx_gfx::gfx::clip_clear(),
+fn gl_scissor(c: Option<Clip>) {
+    match c {
+        Some(c) => {
+            plx_gfx::gfx::clip_set(c.scissor.x, c.scissor.y, c.scissor.w, c.scissor.h);
+            plx_gfx::gfx::rclip_set(c.round.map(|r| plx_gfx::gfx::RClip {
+                x0: r.rect.x,
+                y0: r.rect.y,
+                x1: r.rect.x + r.rect.w,
+                y1: r.rect.y + r.rect.h,
+                radius: r.radius,
+            }));
+        }
+        None => {
+            plx_gfx::gfx::clip_clear();
+            plx_gfx::gfx::rclip_set(None);
+        }
     }
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn gl_scissor(_r: Option<Rect>) {}
+fn gl_scissor(_c: Option<Clip>) {}
 
 impl<'a, 'views, H: Host> Deref for DrawFrame<'a, 'views, H> {
     type Target = Cx<'views, H>;
@@ -1546,6 +1631,68 @@ mod draw_frame_tests {
         }
         drop(outer);
         assert!(ClipScope::current().is_none());
+    }
+
+    /// **The rounded scope**: the shared painter's rounded clip. It carries the lens (`p.place(r)`, the
+    /// radius in screen px) next to the scissor, which is the bounding box intersected with the scope
+    /// already open; a nested rect scope narrows the scissor and keeps the arc; closing restores both.
+    #[test]
+    fn a_rounded_scope_carries_the_lens_narrows_the_scissor_and_restores_both() {
+        let _g = plx_base::testlock::serial();
+        let p = Painter::root().translate(30.0, 10.0);
+        let r = Rect::new(100.0, 50.0, 300.0, 200.0);
+        let rect = |r: Rect| (r.x, r.y, r.w, r.h);
+        assert_eq!(ClipScope::current_round(), None);
+        let outer = ClipScope::open_in(Painter::root(), Rect::new(0.0, 0.0, 330.0, 120.0));
+        let outer_box = ClipScope::current().unwrap();
+        {
+            let _round = ClipScope::open_rounded_in(p, r, 40.0);
+            let placed = p.place(r);
+            assert_eq!(ClipScope::current_round(), Some(RoundClip { rect: placed, radius: 40.0 }), "the lens");
+            let want = outer_box.intersect(p.clipped(r).clip_rect());
+            assert_eq!(rect(ClipScope::current().unwrap()), rect(want), "the scissor is the lens's bounding box ∩ the outer scope");
+            {
+                let _inner = ClipScope::open_in(Painter::root(), Rect::new(150.0, 70.0, 100.0, 400.0));
+                assert_eq!(ClipScope::current_round(), Some(RoundClip { rect: placed, radius: 40.0 }), "a rect scope keeps the arc");
+                let narrowed = want.intersect(Rect::new(150.0, 70.0, 100.0, 400.0));
+                assert_eq!(rect(ClipScope::current().unwrap()), rect(narrowed), "and narrows the scissor");
+            }
+            assert_eq!(ClipScope::current_round(), Some(RoundClip { rect: placed, radius: 40.0 }));
+            assert_eq!(rect(ClipScope::current().unwrap()), rect(want), "the inner scope restored the rounded one's box");
+        }
+        assert_eq!(ClipScope::current_round(), None, "closed: no rounding left");
+        assert_eq!(rect(ClipScope::current().unwrap()), rect(outer_box), "closed: the outer scope is back");
+        drop(outer);
+        assert!(ClipScope::current().is_none() && ClipScope::current_round().is_none());
+    }
+
+    /// A radius under half a pixel has no arc to cut: the scope is `open_in` exactly. A recording
+    /// painter (outside discovery) opens nothing, rounded or not.
+    #[test]
+    fn a_rounded_scope_with_no_radius_is_a_rect_scope_and_a_recording_painter_opens_nothing() {
+        let _g = plx_base::testlock::serial();
+        let r = Rect::new(100.0, 50.0, 300.0, 200.0);
+        {
+            let _s = ClipScope::open_rounded_in(Painter::root(), r, 0.25);
+            assert_eq!(ClipScope::current_round(), None);
+            let c = ClipScope::current().unwrap();
+            assert_eq!((c.x, c.y, c.w, c.h), (100.0, 50.0, 300.0, 200.0), "the scissor is the rect's");
+        }
+        {
+            let _s = ClipScope::open_rounded_in(Painter::recording(), r, 30.0);
+            assert_eq!((ClipScope::current(), ClipScope::current_round()), (None, None), "a recording painter is inert");
+        }
+        assert!(ClipScope::current().is_none());
+    }
+
+    /// Rounded inside rounded is a bug, like zoom inside zoom: there is one lens at a time.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "rounded clips do not nest")]
+    fn a_rounded_scope_inside_a_rounded_one_is_refused() {
+        let _g = plx_base::testlock::serial();
+        let _a = ClipScope::open_rounded_in(Painter::root(), Rect::new(0.0, 0.0, 300.0, 200.0), 20.0);
+        let _b = ClipScope::open_rounded_in(Painter::root(), Rect::new(10.0, 10.0, 100.0, 100.0), 20.0);
     }
 
     /// Spec §14 phase 8: `nav_page_alpha` is the ROUTE-level nav dip's page alpha this frame was

@@ -417,8 +417,8 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
         } else {
             0.016
         };
-        if d > 0.05 {
-            d = 0.05;
+        if d > plx_machine::motion::FRAME_DT_CLAMP {
+            d = plx_machine::motion::FRAME_DT_CLAMP;
         }
         d
     };
@@ -1048,8 +1048,11 @@ pub(crate) unsafe fn ingest(app: &mut App, fr: &mut Frame) {
             crate::lab::command_done(command.id, ok);
         }
         // The FIFO's tokens are collected first so the recorder (a field beside `remote`) can
-        // be written per token; a token that pushes SDL events is recorded where they are
-        // polled, a DIRECT one (`pat:`, `shot`, `txt:`) here — `token_is_direct` is the split.
+        // be written per token. Where a token is recorded depends on what it is: a token that
+        // pushes SDL events (a key, a click) is recorded where those are polled; a DIRECT one
+        // (`pat:`, `shot`, `txt:`; `token_is_direct`) here, as a `token` row; `focus:<id>` and
+        // `press:<id>[@<subject>]` become ONE typed `InputKind::ById` input that the tap records
+        // at its ordered delivery position; `state:<nonce>` is not recorded at all.
         let mut toks: Vec<String> = Vec::new();
         if let Some(r) = app.remote.as_mut() {
             r.drain(|tok| toks.push(tok.to_string()));
@@ -1086,6 +1089,34 @@ unsafe fn ingress_token(app: &mut App, fr: &mut Frame, token: &str) -> bool {
             return true;
         }
     }
+    // `focus:<id>` / `press:<id>[@<subject>]`: an ordered input like a key, resolved by the
+    // dispatcher at its delivery position (so it is recorded once, by the tap, and never as a token).
+    // Earlier keys are still in SDL and must act first, as with the `txt:` block above.
+    #[cfg(feature = "devtriggers")]
+    if let Some(parsed) = super::events::by_id_token(token) {
+        drain_sdl(app, fr);
+        return match parsed {
+            Ok(kind) => {
+                let at = plx_machine::machine::Tick { ms: clock::now(), dt_us: 0 };
+                queue_by_id(app, plx_machine::machine::InputEvent {
+                    at,
+                    source: plx_machine::machine::Source::RemoteFifo,
+                    kind,
+                });
+                true
+            }
+            Err(why) => {
+                plx_base::eventlog::log(&format!("remote: {why}"));
+                false
+            }
+        };
+    }
+    // `state:<nonce>`: the accessibility read-back request (`app/a11y_state.rs`). Parsed before
+    // `dispatch_remote_token`, which notes input damage for every token it sees, so a read-back
+    // wakes nothing; it is no key or click, so it is not recorded either. It only leaves the latest
+    // nonce pending: the frame tail (`report`) answers it.
+    #[cfg(feature = "devtriggers")]
+    if let Some(accepted) = app.a11y_pending.intercept(token) { return accepted; }
     let scope = app.pages.input_scope();
     let accepted = dispatch_remote_token(token, &app.player.session, &app.adapters.player, &mut app.pages.present, scope);
     if accepted && token_is_direct(token) { app.rec.input(super::recorder::enc_token(token)); }
@@ -3158,6 +3189,11 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             plx_base::diag::spans::span("host", || plx_ui::popover::host::begin_frame(
                                 &modal, fr.dt, fr.underlay_moving, pages.present.page_damaged()));
                         }
+                        // Who owns the opener lift is settled HERE, before anything reads the host
+                        // snapshot: `backdrop_layers` and the page pass below serve or retake it,
+                        // and a flip decided inside the draw (after that pass) retook it a frame
+                        // late. See `Dispatcher::settle_lift`.
+                        pages.settle_lift();
                         use plx_ui::frame::backdrop::Z;
                         let layers = pages.backdrop_layers(bridge.navigation_presentation(&pages.nav).page_alpha);
                         glass.sources.borrow_mut().begin(layers);
@@ -3308,6 +3344,11 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
     // Diagnostic facts leave machine scopes before any worker admission or file IO.
     #[cfg(feature = "devtriggers")]
     let _ = super::anim_diagnostics::drain();
+    // dev: answer the pending `state:<nonce>` request (`app/a11y_state.rs`). Here, at the tail both
+    // the presented and the skipped path reach, so a settled screen that stopped presenting still
+    // answers; it requests no frame and reports nothing to the idle gate.
+    #[cfg(feature = "devtriggers")]
+    super::a11y_state::serve(app);
         // dev: the stress-bench oscillators' own frame-time accumulator — right after Swap is
         // stamped (`present_and_swap`, just above this call in `run()`), the earliest point this
         // iteration's total is known. See `crate::dev::scenarios::bench_frame_tick`'s doc.
@@ -3776,8 +3817,29 @@ unsafe fn replay_inject(app: &mut App, fr: &mut Frame, v: &serde_json::Value) {
         "token" => {
             let _ = ingress_token(app, fr, v["tok"].as_str().unwrap_or(""));
         }
+        // The dispatcher's own row for an input (`Tap::input`). For a key or pointer the legacy row
+        // above is the injected one and this row is only graded when that input is tapped again. A
+        // by-id input has NO legacy row (its FIFO token is never recorded, D6), so this row is the
+        // only copy of it: re-enter it where the live run did, after the SDL events synthesized
+        // ahead of it (`ingress_token`'s `drain_sdl`), with its recorded tick and source.
+        "owned" => match super::recorder::decode_input(v) {
+            Ok(event) if matches!(event.kind, plx_machine::machine::InputKind::ById { .. }) => {
+                drain_sdl(app, fr);
+                queue_by_id(app, event);
+            }
+            _ => log("replay: input kind \"owned\" is not replayable; skipped"),
+        },
         other => log(&format!("replay: input kind {other:?} is not replayable; skipped")),
     }
+}
+
+/// A by-id input (`focus:` / `press:`) joining the frame's inputs, from the FIFO or from a recording.
+/// The dispatcher resolves it at its ordered delivery position and expands a press itself, so it
+/// needs none of the key bookkeeping (`controlled_key_input`'s, the press arm's) a key does.
+fn queue_by_id(app: &mut App, event: plx_machine::machine::InputEvent<u32>) {
+    app.last_input = event.at.ms;
+    app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle);
+    app.inputs.push(event);
 }
 
 fn controlled_replay(app: &App) -> bool {
@@ -3795,6 +3857,12 @@ unsafe fn controlled_key_input(app: &mut App, event: plx_machine::machine::Input
         if matches!(event.kind,InputKind::Click{..}) { app.ptr.button_down=true; }
         app.note_presentation_damage(plx_machine::present::Provenance::Lifecycle);
         app.inputs.push(event);
+        return;
+    }
+    // A recorded `focus:`/`press:` input: the dispatcher resolves it at its delivery position and
+    // expands the press itself, so it needs no key bookkeeping here (plan a11y-ids D5/D6).
+    if matches!(event.kind, InputKind::ById { .. }) {
+        queue_by_id(app, event);
         return;
     }
     if matches!(event.kind,InputKind::Key { key:Key::Ok,sym:0,wcode:0,edge:Edge::Up,at_edge:false })
@@ -4027,6 +4095,8 @@ mod lifecycle_regression_tests {
             glass: Default::default(),
             pages: plx_ui::dispatch::Dispatcher::new(),
             inputs: Default::default(),
+            #[cfg(feature = "devtriggers")]
+            a11y_pending: Default::default(),
             runtime,
             bridge,
         };
@@ -4427,6 +4497,288 @@ mod lifecycle_regression_tests {
         let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
         let _scope = plx_base::task::FrameScope::enter();
         assert!(unsafe { ingress_token(&mut app, &mut fr, "hang-raw:1") });
+    }
+
+    /// **`state:<nonce>` notes no damage and is not recorded** (the a11y-ids plan, D7): the token is
+    /// taken before `dispatch_remote_token` (which notes input damage for every token it sees) and
+    /// before the recorder's direct-token path, so a read-back leaves the present gate and the
+    /// recording exactly as it found them and only parks the nonce for the frame tail. A malformed
+    /// nonce is refused the same way (and parks nothing).
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn a_state_request_is_not_recorded_and_notes_no_damage() {
+        use super::super::{bootstrap::Initial, recorder::{Recplay, state_fp}};
+        use plx_ui::rec::{Header, MemSink, Recording};
+        let _serial = plx_base::testlock::serial();
+        let mut app = app();
+        let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+        let initial = Initial::synthetic_home(1, 32517, None).unwrap();
+        let sink = MemSink::default();
+        let segments = sink.segments.clone();
+        let manifest = Header::new(state_fp(), &initial).to_json().to_string();
+        app.rec = Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
+        app.rec.tick(initial.clock_start, 0.0);
+        assert_eq!(app.a11y_pending.take(), None, "a fresh app has no request waiting");
+        let damage = app.pages.present.damage_epoch();
+        {
+            let _frame = plx_base::task::FrameScope::enter();
+            assert!(unsafe { ingress_token(&mut app, &mut fr, "state:probe-1") });
+            assert!(!unsafe { ingress_token(&mut app, &mut fr, "state:not a nonce") });
+        }
+        assert_eq!(app.pages.present.damage_epoch(), damage, "a read-back wakes nothing");
+        assert!(app.inputs.is_empty(), "a read-back is no input");
+        assert_eq!(app.a11y_pending.take().as_ref().map(|n| n.as_str().to_owned()).as_deref(),
+            Some("probe-1"), "the request waits for the frame tail");
+        app.rec.end_frame(&|| 7);
+        std::mem::replace(&mut app.rec, Recplay::Off).finish(plx_machine::landgate::fixture_gate());
+        let recording = Recording::parse(&manifest,
+            &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(), state_fp()).unwrap();
+        assert!(recording.frames.iter().all(|frame| frame.inputs.is_empty()), "a read-back is not recorded");
+    }
+
+    /// Only SDL's event subsystem, for the tests that poll SDL (a by-id token drains it first): no
+    /// window, renderer, boot or device. Quits when dropped.
+    struct SdlEvents;
+    impl SdlEvents {
+        fn init() -> Self {
+            assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
+            Self
+        }
+    }
+    impl Drop for SdlEvents {
+        fn drop(&mut self) { unsafe { SDL_Quit(); } }
+    }
+
+    fn by_id_tags(inputs: &[plx_machine::machine::InputEvent<u32>]) -> Vec<String> {
+        use plx_machine::machine::InputKind;
+        inputs.iter().map(|event| match &event.kind {
+            InputKind::ById { id, press, expect } => format!("{} {id}{}{}", if press.is_some() { "press" } else { "focus" },
+                if expect.is_some() { " @" } else { "" }, expect.as_deref().unwrap_or("")),
+            InputKind::Key { .. } => "key".to_string(),
+            _ => "other".to_string(),
+        }).collect()
+    }
+
+    /// **`focus:` / `press:` tokens enter the input queue as ONE typed input each, in FIFO order with
+    /// the keys around them**, and a malformed id is refused with one `remote:` line and pushes
+    /// nothing. The `down` before the first token and the `up` between them are still in SDL when the
+    /// token arrives (`ingress_token` drains SDL first, the `txt:` precedent), so each by-id input
+    /// lands AFTER the keys that were ahead of it and BEFORE the keys behind it.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn by_id_tokens_enter_the_input_queue_in_fifo_order_and_a_malformed_id_is_refused_once() {
+        use plx_machine::machine::{InputKind, Source};
+        let _serial = plx_base::testlock::serial();
+        let _events = SdlEvents::init();
+        plx_base::eventlog::with_private_log(|| {
+            let mut app = app();
+            super::super::bridge::show_page(&mut app.pages,
+                AppArg::Settings(plx_screens::family::SettingsPage::Root));
+            frame(&mut app, 0);
+            let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+            app.remote = Some(crate::remote::Remote::buffered_for_test(
+                "down\nfocus:settings.row.1\nup\npress:settings.row.2@rk7\nfocus:Bad.Id\nfocus:settings\npress:settings.row.2@a@b\nright\n"));
+            {
+                let _scope = plx_base::task::FrameScope::enter();
+                unsafe { ingest(&mut app, &mut fr); }
+            }
+            let tags = by_id_tags(&app.inputs);
+            let by_id: Vec<&String> = tags.iter().filter(|t| *t != "key").collect();
+            assert_eq!(by_id, ["focus settings.row.1", "press settings.row.2 @rk7"], "{tags:?}");
+            let at = |wanted: &str| tags.iter().position(|t| t == wanted).unwrap();
+            assert!(at("focus settings.row.1") > 0, "the down ahead of it acts first: {tags:?}");
+            assert!(at("press settings.row.2 @rk7") > at("focus settings.row.1") + 1,
+                "the up between them sits between them: {tags:?}");
+            assert_eq!(tags.last().map(String::as_str), Some("key"), "the right behind them acts after: {tags:?}");
+            let ok = super::super::events::remote_token_key("ok").expect("the ok token's key");
+            let press = app.inputs.iter().find_map(|event| match &event.kind {
+                InputKind::ById { press: Some(tap), .. } => Some((tap.sym, tap.wcode)),
+                _ => None,
+            });
+            assert_eq!(press, Some(ok), "a press carries the ok token's own key");
+            assert!(app.inputs.iter().filter(|event| matches!(event.kind, InputKind::ById { .. }))
+                .all(|event| event.source == Source::RemoteFifo));
+
+            let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+            assert!(!log.contains("remote: unknown token"), "every token was recognised: {log}");
+            let refusals: Vec<&str> = log.lines().filter(|line| line.contains("remote: ")).collect();
+            assert_eq!(refusals.len(), 3, "one `remote:` line per malformed token: {log}");
+            assert_eq!(refusals.iter().filter(|line| line.contains("malformed accessibility id")).count(), 2, "{log}");
+            assert_eq!(refusals.iter().filter(|line| line.contains("malformed press subject")).count(), 1, "{log}");
+            assert!(!log.contains("Bad.Id"), "a refused id is never echoed: {log}");
+        });
+    }
+
+    /// **A `focus:` / `press:` token reaches the dispatcher, is recorded ONCE as an input (the
+    /// dispatcher's tap, never as a token), and leaves one Id resolution row each**: a focus on a real
+    /// element moves focus there; a press with a subject the element does not have is refused and
+    /// presses nothing. The recording validates (one Id row per by-id input).
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn by_id_tokens_record_one_input_and_one_resolution_each_through_the_dispatcher() {
+        use plx_machine::machine::Tick;
+        use plx_ui::rec::{Header, MemSink, Recording};
+        let _serial = plx_base::testlock::serial();
+        let _events = SdlEvents::init();
+        plx_base::eventlog::with_private_log(|| {
+            let mut app = app();
+            super::super::bridge::show_page(&mut app.pages,
+                AppArg::Settings(plx_screens::family::SettingsPage::Root));
+            frame(&mut app, 0);
+            let before = app.pages.a11y_snapshot(&mut app.runtime.bridge(&mut app.bridge));
+            let target = before.elems.iter().find(|e| !e.focused && e.loaded && e.id.starts_with("settings."))
+                .expect("Settings lists an element other than the focused one").id.clone();
+            assert_ne!(before.focused.as_deref(), Some(target.as_str()));
+
+            let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, Some("root".into())).unwrap();
+            let sink = MemSink::default();
+            let segments = sink.segments.clone();
+            let manifest = Header::new(super::super::recorder::state_fp(), &initial).to_json().to_string();
+            app.rec = super::super::recorder::Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
+            app.rec.arm_landgate(app.runtime.bridge(&mut app.bridge).landgate());
+            app.boot_initial = Some(initial);
+            app.rec.prepare_resources(&mut app.runtime.bridge(&mut app.bridge));
+            app.rec.tick(100, 0.016);
+            clock::set_replay(100);
+            let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+            unsafe {
+                assert!(ingress_token(&mut app, &mut fr, &format!("focus:{target}")));
+                assert!(ingress_token(&mut app, &mut fr, &format!("press:{target}@no-such-subject")));
+            }
+            assert_eq!(by_id_tags(&app.inputs), [format!("focus {target}"), format!("press {target} @no-such-subject")]);
+            // The app's own frame path (`CommandRig`), which hands the recorder the dispatcher's
+            // resolution questions as well as its taps.
+            let inputs = std::mem::take(&mut app.inputs);
+            super::super::bridge::app_frame(&mut app, Tick { ms: 100, dt_us: 16000 }, inputs);
+            app.rec.measurements(&app.runtime.bridge(&mut app.bridge));
+            app.rec.end_frame(&|| 0);
+            app.rec.finish(app.runtime.bridge(&mut app.bridge).landgate());
+
+            let after = app.pages.a11y_snapshot(&mut app.runtime.bridge(&mut app.bridge));
+            assert_eq!(after.focused.as_deref(), Some(target.as_str()), "the focus token moved focus by id");
+            let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+            let refused: Vec<&str> = log.lines().filter(|line| line.contains("a11y: refused")).collect();
+            assert_eq!(refused.len(), 1, "{log}");
+            assert!(refused[0].ends_with(&format!("a11y: refused press {target} subject_mismatch owner=settings")), "{log}");
+
+            let recording = Recording::parse(&manifest,
+                &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(), super::super::recorder::state_fp()).unwrap();
+            let frame0 = &recording.frames[0];
+            assert_eq!(frame0.inputs.len(), 2, "each by-id input is recorded once, never also as a token: {:?}", frame0.inputs);
+            assert!(frame0.inputs.iter().all(|v| v["kind"] == "owned"));
+            let ok = super::super::events::remote_token_key("ok").unwrap();
+            assert_eq!(frame0.inputs[0]["body"]["by_id"],
+                serde_json::json!({"id": target, "press": null, "expect": null}));
+            assert_eq!(frame0.inputs[1]["body"]["by_id"],
+                serde_json::json!({"id": target, "press": [ok.0, ok.1], "expect": "no-such-subject"}));
+            let ids: Vec<&serde_json::Value> = frame0.resolutions.iter().map(|row| &row["payload"])
+                .filter(|payload| payload["kind"] == "Id").collect();
+            assert_eq!(ids.len(), 2, "one Id row per by-id input: {:?}", frame0.resolutions);
+            assert_eq!(ids[0]["refusal"], 0);
+            assert!(ids[0]["focus"].is_array(), "the focus names the element: {}", ids[0]);
+            assert_eq!(ids[1]["refusal"], plx_ui::dispatch::IdRefusal::SubjectMismatch.code());
+            assert!(ids[1]["focus"].is_null());
+            super::super::recorder::validate_resolution_recording(&recording).expect("one Id row per by-id input");
+            plx_machine::landgate::disarm();
+        });
+    }
+
+    /// **A `state:<nonce>` token is answered end to end**: the token only parks the request on the
+    /// app (the latest nonce wins, nothing is written yet); the frame tail's `serve` projects the
+    /// owner through the app's own dispatcher and one storage-worker job replaces the fixed state file,
+    /// leaving no temp file; the JSON carries the nonce, the frame, the route and the focused id the
+    /// dispatcher itself reports; a second tail with nothing pending writes nothing.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn a_state_token_is_answered_at_the_frame_tail_with_the_json_file_and_only_once() {
+        use plx_base::paths::runtime_file::{A11Y_STATE, A11Y_STATE_TMP};
+        let _serial = plx_base::testlock::serial();
+        let state = plx_base::paths::in_runtime_dir(A11Y_STATE);
+        let temp = plx_base::paths::in_runtime_dir(A11Y_STATE_TMP);
+        plx_base::storage_worker::drain_for_test();
+        let _ = std::fs::remove_file(&state);
+        let mut app = app();
+        super::super::bridge::show_page(&mut app.pages,
+            AppArg::Settings(plx_screens::family::SettingsPage::Root));
+        frame(&mut app, 0);
+        let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+        {
+            let _frame = plx_base::task::FrameScope::enter();
+            assert!(unsafe { ingress_token(&mut app, &mut fr, "state:e2e-1") });
+            assert!(unsafe { ingress_token(&mut app, &mut fr, "state:e2e-2") });
+        }
+        plx_base::storage_worker::drain_for_test();
+        assert!(!state.exists(), "the token only parks the request");
+
+        let expected = app.pages.a11y_snapshot(&mut app.runtime.bridge(&mut app.bridge));
+        assert!(!expected.elems.is_empty(), "the page lists elements");
+        super::super::a11y_state::serve(&mut app);
+        plx_base::storage_worker::drain_for_test();
+        let written: serde_json::Value = serde_json::from_slice(&std::fs::read(&state).expect("the state file was written"))
+            .expect("the state file is JSON");
+        assert_eq!(written["nonce"], "e2e-2", "the latest request is the one answered");
+        assert_eq!(written["frame"], expected.frame);
+        assert_eq!(written["route"], "settings");
+        assert_eq!(written["owner"], "page");
+        assert_eq!(written["ns"], "settings");
+        assert_eq!(written["focused"].as_str(), expected.focused.as_deref());
+        let elements = written["elements"].as_array().expect("an element list");
+        assert_eq!(elements.len(), expected.elems.len());
+        assert!(elements.iter().all(|e| e["id"].as_str().is_some_and(|id| id.starts_with("settings.") || id.starts_with("nav."))));
+        assert_eq!(elements.iter().filter(|e| e["focused"] == true).count(), usize::from(expected.focused.is_some()));
+        assert!(!temp.exists(), "the temp file is renamed away");
+
+        std::fs::remove_file(&state).unwrap();
+        super::super::a11y_state::serve(&mut app);
+        plx_base::storage_worker::drain_for_test();
+        assert!(!state.exists(), "an answered request is not answered again");
+    }
+
+    /// **A recorded by-id input replays without a controlled initial too**: the legacy dispatch of
+    /// `replay_inject` (a recording with no typed initial) used to skip the product's `owned` row as
+    /// "not replayable", and a by-id input has no legacy sibling row, so replay never re-injected it.
+    /// It re-enters after the SDL events synthesized ahead of it, with its recorded tick and source;
+    /// every other `owned` row is still only graded, not injected.
+    #[test]
+    fn a_recorded_by_id_input_is_replayed_by_the_legacy_dispatch_in_order() {
+        use plx_machine::machine::{InputEvent, InputKind, Key, OkTap, Source, Tick};
+        let _serial = plx_base::testlock::serial();
+        let _events = SdlEvents::init();
+        let mut app = app();
+        super::super::bridge::show_page(&mut app.pages,
+            AppArg::Settings(plx_screens::family::SettingsPage::Root));
+        frame(&mut app, 0);
+        assert!(app.boot_initial.is_none(), "the legacy dispatch is the uncontrolled one");
+        let mut fr = Frame::begin(&app.player.session, app.runtime.metadata_view());
+        let row = |event: &InputEvent<u32>| {
+            let mut row = super::super::bootstrap::effects::input(event).unwrap();
+            row["f"] = serde_json::json!(3);
+            row["t"] = serde_json::json!("in");
+            row
+        };
+        let at = Tick { ms: 200, dt_us: 16_000 };
+        let press = InputEvent { at, source: Source::RemoteFifo,
+            kind: InputKind::ById { id: "settings.row.2".into(), press: Some(OkTap { sym: 0x0d, wcode: 0 }),
+                expect: Some("rk7".into()) } };
+        let focus = InputEvent { at, source: Source::RemoteFifo,
+            kind: InputKind::ById { id: "settings.row.1".into(), press: None, expect: None } };
+        let owned_key = super::super::bridge::key_input(plx_ui::consts::SDLK_DOWN, 0, 1, at, Source::Sdl);
+        // the frame's recorded rows, in order: a legacy key (re-synthesized into SDL), the by-id
+        // input's owned row, the dispatcher's own row for that key (graded, not injected), a second by-id
+        let rows = [super::super::recorder::enc_key(plx_ui::consts::SDLK_DOWN, 0, true, false), row(&press),
+            row(&owned_key), row(&focus)];
+        for value in &rows {
+            unsafe { replay_inject(&mut app, &mut fr, value); }
+        }
+        unsafe { drain_sdl(&mut app, &mut fr); }
+        let tags = by_id_tags(&app.inputs);
+        assert_eq!(tags, ["key", "press settings.row.2 @rk7", "focus settings.row.1"],
+            "the by-id inputs re-enter in order, behind the key synthesized before them; the owned key row injects nothing");
+        for (replayed, original) in app.inputs.iter().filter(|e| matches!(e.kind, InputKind::ById { .. })).zip([&press, &focus]) {
+            assert_eq!(super::super::bootstrap::effects::input(replayed), super::super::bootstrap::effects::input(original),
+                "the replayed input is the recorded one, tick and source included");
+        }
+        assert!(matches!(app.inputs[0].kind, InputKind::Key { key: Key::Down, .. }));
     }
 
     #[cfg(feature = "devtriggers")]

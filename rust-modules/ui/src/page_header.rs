@@ -53,6 +53,12 @@ use super::widgets::{focus_pill_popped, paint_inked, CtlPop, PillInk, SelMark, T
 use super::xfade::Xfade;
 use super::{icons::{self, Icon}, theme, Painter, Rect, Spring};
 
+/// **The flat fill of a header control that is focused** — the pill [`PageHeader::draw_opener`]
+/// paints under the control a menu opened from (and the focus capsule the row draws is the same
+/// accent). The menus those controls open pass it to `Popover::opener_fill` so the close's
+/// re-forming blob whitens toward exactly this colour, and the pill the lift then paints is the
+/// one the blob already wears.
+pub const OPENER_FILL: [f32; 4] = crate::ACCENT;
 /// Left text edge of the first library name.
 pub const TEXT_X0: f32 = 96.0;
 /// Right text edge of the last right-cluster item.
@@ -512,7 +518,7 @@ impl PageHeader {
         let face = self.face_in(r, swap);
         let lead = face.fade.map_or(0.0, |fade| fade.lead);
         let pill = focus_pill_popped(Rect::new(r.plate.x + lead, r.plate.y, r.plate.w - lead, r.plate.h), pop);
-        face.fade.map_or(p, |fade| p.alpha(fade.face)).rrect(pill, pill.h * 0.5, pill.h * 0.5, crate::ACCENT);
+        face.fade.map_or(p, |fade| p.alpha(fade.face)).rrect(pill, pill.h * 0.5, pill.h * 0.5, OPENER_FILL);
         self.draw_face_at(p, r.text, &face, (0.0, 0.0), (1.0, 0.0));
     }
 
@@ -819,7 +825,8 @@ impl HeaderRow {
     /// paint of an opener for every header menu (Sort & Filter, `+N`): the page's pass leaves the
     /// control out of the row ([`Self::draw`]'s `lifted`) and `Screen::redraw_focused` calls this
     /// from the dispatcher's lift pass, which runs after the last surface on every plan (above the
-    /// dim AND the menu's panel; `Z::OPENER`), so the panel never covers it. `pop` is the
+    /// dim AND the menu's panel; `Z::OPENER`), at the alpha `p` carries: a morphing menu's
+    /// `opener_alpha`, 0 while the panel stands over the opener. `pop` is the
     /// row's [`CtlPop`] factor, so the pill follows the press spring as the menu opens.
     pub fn draw_opener(&self, p: Painter, scroll: f32, pop: f32, elem: u32) {
         self.draw_opener_with(p, scroll, pop, elem, &HeaderSwap::new());
