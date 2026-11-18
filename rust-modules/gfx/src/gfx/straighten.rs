@@ -36,7 +36,7 @@
 //! chrome is just as translucent) and [`frame_drew`], whether [`note_draw`] booked a draw onto the
 //! surface since [`frame_begin`].
 //!
-//! **Where it draws.** One quad over each box of the surface the frame drew into, and nowhere else. A
+//! **Where it draws.** One quad over each box booked for colour conversion. A
 //! pass over the whole viewport (2.07 M pixels, about 40 fps where the frame ran at about 50 on the dev
 //! set, the same fixture and the release build) touched every tile of a frame that is, for the length of
 //! a film, a subtitle line and a clear. Every draw call in this crate says what it writes
@@ -54,7 +54,9 @@
 //! **What books nothing, and what books everything.** A draw into a target of gfx's own (a blur pass, a
 //! field reduction, a region fill; [`note_bind`] knows from the binds, and a host-page snapshot by
 //! `default_fb`) is not the surface's and books nothing; the draw that puts its pixels on the surface
-//! books its own quad. A draw with no known extent ([`Extent::Target`], or a quad that is not a
+//! books its own quad. Dedicated flat and ramp fills with exact black RGB also add no coverage:
+//! over the transparent clear they leave RGB zero, and earlier coloured draws retain their boxes.
+//! A draw with no known extent ([`Extent::Target`], or a quad that is not a
 //! number) books the whole surface and the pass covers the viewport, as it did before it knew where the
 //! frame drew. A `glClear` is not a draw ([`note_clear`]): the two alphas the app clears the surface to,
 //! 0 and 1, are fixed points, and any other alpha books the whole surface. The scissor is ignored: it
@@ -86,7 +88,7 @@
 //! colour: it must clear every damaged region first and run this pass over exactly that region (the
 //! ledger already holds the boxes a frame drew; it would be reset to the damage instead of to nothing).
 //! The same fact is why untouched pixels may be left alone: a frame starts from a clear, so a pixel no
-//! draw booked is `(0, 0, 0, 0)`.
+//! draw booked over the transparent clear has zero RGB, including under a black scrim.
 //!
 //! # Readbacks
 //!
@@ -161,6 +163,7 @@ pub(crate) fn note_draw(extent: Extent) {
         return;
     }
     let b = match extent {
+        Extent::BlackFill => None,
         Extent::Target => Some(EVERYTHING),
         Extent::Quad(q) => {
             let (vx, vy, _, _) = plx_base::surface::viewport();
@@ -199,7 +202,7 @@ pub fn frame_begin() {
     STRAIGHTENED.with(|s| s.set(false));
 }
 
-/// Has this frame drawn anything onto the presented surface since [`frame_begin`]?
+/// Has this frame booked any pixels for alpha conversion since [`frame_begin`]?
 pub fn frame_drew() -> bool {
     LEDGER.with(|l| !l.borrow().is_empty())
 }
@@ -535,6 +538,8 @@ pub const UNDER: UnderBlend = UnderBlend {
 /// What a draw call writes to the surface, as the draw site declares it (see [`Ledger`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Extent {
+    /// An exact black fill adds no pixels requiring conversion and retains all earlier coverage.
+    BlackFill,
     /// The authored-pixel quad `(x, y, w, h)` the vertex shader places the unit quad over: the very
     /// numbers the draw's `*_RECT` uniform holds.
     Quad([f32; 4]),
@@ -895,6 +900,30 @@ mod tests {
         frame_begin();
         assert!(!frame_drew() && !straightened() && booked().is_empty());
         assert!(!super::super::video_plane_refuses("test door"), "and is open again on the next frame");
+    }
+
+    #[test]
+    fn black_scrims_preserve_only_the_coverage_of_coloured_content() {
+        let _g = plx_base::testlock::serial();
+        let full = Extent::quad(0.0, 0.0, 1920.0, 1080.0);
+        let black = [0.0, 0.0, 0.0, 0.58];
+        let clear = [0.0; 4];
+        let tint = [0.0, 1.0 / 255.0, 0.0, 0.58];
+        let fill = |a: &[f32; 4], b: &[f32; 4]| unsafe {
+            super::super::black_fill_extent(full, a.as_ptr(), b.as_ptr())
+        };
+
+        frame_begin();
+        note_draw(fill(&clear, &black));
+        assert!(!frame_drew());
+        note_draw(Extent::quad(10.0, 20.0, 30.0, 40.0));
+        let subtitle = booked();
+        assert!(!subtitle.is_empty());
+        note_draw(fill(&black, &black));
+        assert_eq!(booked(), subtitle);
+        assert_eq!(fill(&black, &tint), full);
+        assert_eq!(fill(&tint, &black), full);
+        frame_begin();
     }
 
     /// **Only a draw onto the presented surface is booked.** A blur pass, a field reduction or a region
