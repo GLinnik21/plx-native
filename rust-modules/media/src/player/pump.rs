@@ -1057,7 +1057,7 @@ fn apply_paused_seek_step(ps: &mut crate::route::PlaybackSession, pa: &mut super
 /// (`readout::Presentation::nothing_in_flight`), so a seek the feed itself just re-posted in this
 /// tick counts. "Buffering…" over a player in that state is a spinner for nothing; the ladder
 /// reports `PlaybackState::Paused` (the normal paused transport) instead. A Load still opening
-/// (`Stage::Loading` -> Connecting) and an HLS rebuffer are real work and are decided before this
+/// (`Stage::Loading` -> Connecting) and a rebuffer hold are real work and are decided before this
 /// is asked.
 fn nothing_in_flight() -> bool {
     !super::claim_hold::active() && !crate::route::flight_outstanding()
@@ -1744,7 +1744,12 @@ fn pump_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::P
 
     // Load and speed policy are settled. Borrow the physical feed for ACB, feeding and EOS.
     let physical = pa.tick_feed_presentation(
-        crate::route::is_segmented_hls(ps), crate::route::stream_immersive(ps),
+        plx_playback_contract::feed::HoldRoute::of(
+            crate::route::is_segmented_hls(ps),
+            crate::route::is_preview(ps),
+            crate::route::is_progressive_original(ps),
+        ),
+        crate::route::stream_immersive(ps),
     );
 
     // ---------- the derived UI state and the end of stream ----------
@@ -2215,17 +2220,17 @@ mod flight_tests {
 
     const SEEK_TARGET_NS: i64 = 120_000_000_000;
 
-    struct Rig {
-        ps: crate::route::PlaybackSession,
-        pa: super::super::adapter::PlayerAdapter,
-        flight: FlightRig,
+    pub(super) struct Rig {
+        pub(super) ps: crate::route::PlaybackSession,
+        pub(super) pa: super::super::adapter::PlayerAdapter,
+        pub(super) flight: FlightRig,
         now: u32,
     }
 
     impl Rig {
         /// A playing transcode `rig-1` on a loopback server whose `/decision` takes `delay`, and
         /// an Engine streaming it.
-        fn new(delay_ms: u64) -> Rig {
+        pub(super) fn new(delay_ms: u64) -> Rig {
             let mut ps = crate::route::PlaybackSession::IDLE;
             let flight = FlightRig::start(&mut ps, Duration::from_millis(delay_ms));
             Rig::on(ps, flight)
@@ -2241,7 +2246,7 @@ mod flight_tests {
         }
 
         /// [`Rig::new`] on a direct play of the Part, no transcode session (`FlightRig::start_direct`).
-        fn direct(delay_ms: u64) -> Rig {
+        pub(super) fn direct(delay_ms: u64) -> Rig {
             let mut ps = crate::route::PlaybackSession::IDLE;
             let flight = FlightRig::start_direct(&mut ps, Duration::from_millis(delay_ms));
             Rig::on(ps, flight)
@@ -2288,7 +2293,7 @@ mod flight_tests {
 
         /// One frame, exactly as the run loop drives it: inside a `FrameScope`, so a PMS call
         /// without an `allow_blocking` panics.
-        fn frame(&mut self) {
+        pub(super) fn frame(&mut self) {
             let _frame = plx_base::task::FrameScope::enter();
             self.now += 16;
             // The app's frame drain owns a rollback whose trial Load was refused before
@@ -2303,7 +2308,7 @@ mod flight_tests {
         }
 
         /// Frames until `done`, bounded: the worker lands on its own thread.
-        fn frames_until(&mut self, what: &str, done: impl Fn(&Rig) -> bool) {
+        pub(super) fn frames_until(&mut self, what: &str, done: impl Fn(&Rig) -> bool) {
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             while !done(self) {
                 assert!(std::time::Instant::now() < deadline,
@@ -2448,7 +2453,7 @@ mod flight_tests {
     /// Both lanes of the reloaded Engine filled past the prime thresholds (`PRIME_NS` of video,
     /// `PRIME_AUDIO_NS` of audio): what the field's "both AU lanes full" was, pushed into the
     /// queues the pump's feed lanes drain.
-    fn fill_both_lanes(rig: &mut Rig) {
+    pub(super) fn fill_both_lanes(rig: &mut Rig) {
         const V_STEP_NS: i64 = 41_708_333; // 23.976 fps
         const A_STEP_NS: i64 = 32_000_000; // 1536 samples at 48 kHz
         let mut eng = rig.pa.engine().expect("the reloaded Engine");
@@ -2470,7 +2475,7 @@ mod flight_tests {
     /// runner commands the reloaded stream's first Play (`primed` is whether that Play waits for
     /// the prime proof or goes at once), it reaches the sink, the feed gate is open and the
     /// clock runs and advances.
-    fn assert_scrub_reload_plays(rig: &mut Rig, primed: bool) {
+    pub(super) fn assert_scrub_reload_plays(rig: &mut Rig, primed: bool) {
         let (goal_after_landing, plays) = scrub_until_reloaded(rig);
         {
             let eng = rig.pa.engine().expect("the reloaded Engine");
@@ -2646,7 +2651,7 @@ mod flight_tests {
     }
 
     /// A rig whose route is a live fixed-rung HLS transcode under an applied Auto contract.
-    fn hls_rig(delay_ms: u64) -> Rig {
+    pub(super) fn hls_rig(delay_ms: u64) -> Rig {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let flight = FlightRig::start_hls(&mut ps, Duration::from_millis(delay_ms));
         crate::player::reset_session_for_test();
@@ -5145,6 +5150,135 @@ mod native_seek_pump_tests {
         assert_eq!(reloads(), vec![target], "reopen succeeded, but the seek needs one fresh Load");
     }
 
+    /// A Segment seek driven to the Play it accepts: returns the native epoch the sink's callbacks
+    /// address. `before_play` runs after the seek is armed and before the keyframe lands, so a
+    /// callback it delivers is one the landing's baseline (taken at Play) excludes.
+    fn segment_seek_through_play(rig: &mut Rig, keyframe: i64, before_play: impl FnOnce(u32)) -> u32 {
+        plx_play_feed::seek::set_seek_mode(SeekMode::Segment);
+        FEED_SHARED.playpos_ns.store(2_220_000_000_000, Relaxed);
+        rig.arm(keyframe);
+        let epoch = rig.eng().native_epoch;
+        before_play(epoch);
+        rig.land_keyframe_aus(keyframe, 80);
+        for _ in 0..20 {
+            rig.frame();
+            if !rig.eng().prime_play {
+                break;
+            }
+        }
+        assert!(!rig.eng().prime_play, "the in-place seek reached Play");
+        assert!(ffi_host::segment_calls_for_test() > 0, "the new segment was sent");
+        epoch
+    }
+
+    /// The event-log lines the Segment presentation deadline wrote while `run` drove the rig.
+    fn deadline_lines(run: impl FnOnce()) -> Vec<String> {
+        plx_base::eventlog::with_private_log(|| {
+            run();
+            std::fs::read_to_string(plx_base::eventlog::events_log())
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| l.contains("Segment presentation deadline"))
+                .map(str::to_owned)
+                .collect()
+        })
+    }
+
+    /// #1436: a set that never sends the displayed-frame counter (an OLED C8 on webOS 4.4.3 sends
+    /// no callback numbered 46-49) proves a Segment seek by the clock and the runway alone. Before
+    /// the fix every in-place seek on it ran out the presentation deadline and reloaded.
+    #[test]
+    fn a_segment_seek_with_no_displayed_counter_in_the_session_lands_on_the_clock_alone() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        let keyframe = 2_112_110_000_000;
+        let epoch = segment_seek_through_play(&mut rig, keyframe, |_| {});
+        assert_eq!(FEED_SHARED.dg_sink_displayed_cb.load(Relaxed), 0, "PRECONDITION FAILED, not the defect");
+        let lines = deadline_lines(|| {
+            // One clock tick on the accepted video, and no counter callback.
+            plx_play_feed::sf_event::sf_on_event(epoch, 0, keyframe, std::ptr::null());
+            rig.frame();
+            assert!(!rig.ps.readout().seeking(), "the seek landed on the clock and the runway");
+            rig.now += 10_000;
+            for _ in 0..5 {
+                rig.frame();
+            }
+        });
+        assert!(reloads().is_empty(), "a landed seek is not reloaded at the deadline: {:?}", reloads());
+        assert!(lines.is_empty(), "no deadline fired: {lines:?}");
+    }
+
+    /// #1313 unchanged: a session that has sent the counter keeps requiring a fresh positive count
+    /// after Play. The clock ticks on the accepted video here and the sink has counted frames, but
+    /// none since Play.
+    #[test]
+    fn a_segment_seek_whose_session_sends_the_counter_still_needs_a_fresh_count() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        let keyframe = 2_112_110_000_000;
+        let epoch = segment_seek_through_play(&mut rig, keyframe, |epoch| {
+            // Counted before Play: the landing's baseline excludes it.
+            plx_play_feed::sf_event::sf_on_event(epoch, 47, 3, std::ptr::null());
+        });
+        assert!(FEED_SHARED.dg_sink_displayed_cb.load(Relaxed) > 0, "PRECONDITION FAILED, not the defect");
+        plx_play_feed::sf_event::sf_on_event(epoch, 0, keyframe, std::ptr::null());
+        rig.frame();
+        assert!(rig.ps.readout().seeking(), "the clock alone does not land a seek on a counting set");
+        assert!(reloads().is_empty(), "the presentation gets its time");
+        rig.now += 10_000;
+        for _ in 0..5 {
+            rig.frame();
+        }
+        assert_eq!(reloads(), vec![keyframe], "no fresh count: one fresh Load");
+    }
+
+    /// The counter is read when the landing is polled, not once at Play: a session whose counter
+    /// first speaks after Play (here a zero count, which is not a displayed frame) goes back to
+    /// needing a fresh positive count, and one arrives to land the seek.
+    #[test]
+    fn a_counter_that_first_speaks_after_play_makes_the_segment_seek_need_a_fresh_count() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        let keyframe = 2_112_110_000_000;
+        let epoch = segment_seek_through_play(&mut rig, keyframe, |_| {});
+        assert_eq!(FEED_SHARED.dg_sink_displayed_cb.load(Relaxed), 0, "PRECONDITION FAILED, not the defect: silent at Play");
+        plx_play_feed::sf_event::sf_on_event(epoch, 47, 0, std::ptr::null());
+        plx_play_feed::sf_event::sf_on_event(epoch, 0, keyframe, std::ptr::null());
+        rig.frame();
+        assert!(rig.ps.readout().seeking(), "the counter spoke after Play, so the clock alone no longer lands it");
+        assert!(reloads().is_empty(), "the presentation gets its time");
+        plx_play_feed::sf_event::sf_on_event(epoch, 47, 1, std::ptr::null());
+        rig.frame();
+        assert!(!rig.ps.readout().seeking(), "a fresh positive count lands it");
+        assert!(reloads().is_empty());
+    }
+
+    /// The deadline's one event-log line names the evidence the landing was missing, and it is
+    /// written once for the stuck seek, not on every frame that follows.
+    #[test]
+    fn the_segment_presentation_deadline_names_the_missing_check_once() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        let keyframe = 2_112_110_000_000;
+        let epoch = segment_seek_through_play(&mut rig, keyframe, |epoch| {
+            plx_play_feed::sf_event::sf_on_event(epoch, 47, 3, std::ptr::null());
+        });
+        plx_play_feed::sf_event::sf_on_event(epoch, 0, keyframe, std::ptr::null());
+        rig.frame();
+        let lines = deadline_lines(|| {
+            rig.now += 10_000;
+            for _ in 0..20 {
+                rig.frame();
+            }
+        });
+        assert_eq!(lines.len(), 1, "one line for one stuck seek: {lines:?}");
+        let line = &lines[0];
+        assert!(line.contains("clock_advanced=true"), "{line}");
+        assert!(line.contains("in_runway=true"), "{line}");
+        assert!(line.contains("displayed=false"), "{line}");
+        assert!(line.contains("counter_present=true"), "{line}");
+    }
+
     #[test]
     fn an_old_segment_deadline_does_not_reload_a_newer_seek() {
         let _serial = plx_base::testlock::serial();
@@ -6162,6 +6296,13 @@ mod native_seek_pump_tests {
 #[cfg(all(test, feature = "hostsim"))]
 #[path = "dv_start_pump_tests.rs"]
 mod dv_start_pump_tests;
+#[cfg(all(test, feature = "hostsim"))]
+#[path = "held_prime_play_tests.rs"]
+mod held_prime_play_tests;
+
+#[cfg(all(test, feature = "hostsim"))]
+#[path = "progressive_rebuffer_pump_tests.rs"]
+mod progressive_rebuffer_pump_tests;
 
 /// **A film whose audio outlasts its video ends on the host sink too (#865).** The pipeline stops
 /// its clock at the last video frame, so the playhead never comes within [`EOS_TAIL_NS`](crate::player::readout::EOS_TAIL_NS) of the
@@ -6188,10 +6329,19 @@ mod end_of_film_tests {
     /// Steps a run may take: 23 s at one tick per step is 115.
     const STEP_BUDGET: usize = 400;
 
-    struct Rig {
-        ps: crate::route::PlaybackSession,
-        pa: super::super::adapter::PlayerAdapter,
-        now: u32,
+    pub(super) struct Rig {
+        pub(super) ps: crate::route::PlaybackSession,
+        pub(super) pa: super::super::adapter::PlayerAdapter,
+        pub(super) now: u32,
+        /// When set, each `step` re-stamps the position callback's time (`dg_vpres_at`) with this
+        /// virtual wall, advanced one period a step. The sink's clock is virtual
+        /// (`advance_clock_for_test`) but the callback stamps its time from the real monotonic clock,
+        /// on which a step takes microseconds; a detector that differences the wall against the
+        /// position needs the two to move together. The stamps sit far in the FUTURE of the real
+        /// clock, so the silence observation (`vclock_ms - stamp`, saturating) reads 0 and the
+        /// dead-link arm stays off. A test of that arm leaves the wall alone instead (it ages the
+        /// real clock by not ticking the sink: [`Rig::step_without_sink`]).
+        pub(super) wall_ms: Option<u32>,
     }
 
     impl Rig {
@@ -6199,6 +6349,12 @@ mod end_of_film_tests {
         /// callback gate is open: otherwise the sink reports nothing and a red run would be a dead
         /// instrument, not the defect), holding 20 s of video and 23 s of audio, primed to play.
         fn new() -> Rig {
+            Self::with_media(VIDEO_END_NS, AUDIO_END_NS)
+        }
+
+        /// [`Self::new`] with its own lane lengths: the same real session, holding `video_end_ns` of
+        /// video and `audio_end_ns` of audio, the producer done with neither (no EOF is set).
+        pub(super) fn with_media(video_end_ns: i64, audio_end_ns: i64) -> Rig {
             crate::player::reset_session_for_test();
             FEED_TX.reset();
             super::super::claim_hold::clear();
@@ -6217,28 +6373,28 @@ mod end_of_film_tests {
             assert!(eng.stage >= Stage::Playing, "PRECONDITION FAILED, not the defect: the engine is not past its Load");
             let au = [0u8; 64];
             let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
-            for i in 0..VIDEO_END_NS / V_STEP_NS {
+            for i in 0..video_end_ns / V_STEP_NS {
                 plx_play_feed::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, i * V_STEP_NS, c_int::from(i == 0), 1);
             }
             let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut plx_play_feed::aq::AuQueue;
-            for i in 0..AUDIO_END_NS / A_STEP_NS {
+            for i in 0..audio_end_ns / A_STEP_NS {
                 plx_play_feed::aq::aq_push(qa, au.as_ptr(), au.len() as c_int, i * A_STEP_NS, 1, 2);
             }
             pa.install(eng);
-            FEED_SHARED.duration_ns.store(AUDIO_END_NS, Relaxed);
+            FEED_SHARED.duration_ns.store(audio_end_ns, Relaxed);
             // The pump's `present` addresses the attempt the session's view began for: the readout is
             // what `player::state` and `player::ended` read, so the rig owes it that attempt.
             let mut ps = crate::route::PlaybackSession::IDLE;
             ps.begin_attempt_view(crate::route::RouteStartAttempt::fixture(), super::super::attempt_view::Backend::Feed);
-            Rig { ps, pa, now: 1_000 }
+            Rig { ps, pa, now: 1_000, wall_ms: None }
         }
 
-        fn eng(&mut self) -> std::cell::RefMut<'_, Engine> {
+        pub(super) fn eng(&mut self) -> std::cell::RefMut<'_, Engine> {
             self.pa.engine().expect("engine")
         }
 
         /// The demuxer reached the end of the file: both lanes are complete.
-        fn producer_done(&mut self) {
+        pub(super) fn producer_done(&mut self) {
             let mut guard = self.eng();
             let eng = &mut *guard;
             for q in [eng.aq_video.as_mut().unwrap(), eng.aq_audio.as_mut().unwrap()] {
@@ -6247,16 +6403,47 @@ mod end_of_film_tests {
         }
 
         /// One pipeline period: the clock runs 200 ms, the sink takes its tick, the frame runs.
-        fn step(&mut self) {
+        pub(super) fn step(&mut self) {
             ffi_host::advance_clock_for_test(TICK_MS);
             ffi_host::tick_for_test();
+            if let Some(wall) = self.wall_ms.as_mut() {
+                *wall += TICK_MS as u32;
+                FEED_SHARED.dg_vpres_at.store(*wall, std::sync::atomic::Ordering::Relaxed);
+            }
             let _frame = plx_base::task::FrameScope::enter();
             self.now += TICK_MS as u32;
             pump(&mut self.ps, &mut self.pa, self.now);
         }
 
+        /// One pump period in which the rig does not tick the sink. The host's own position thread
+        /// still reports while the clock plays, so a dead link also needs
+        /// `ffi_host::silence_clock_for_test`: then no position callback arrives, as on a link
+        /// that died under a stream with nothing left to present.
+        pub(super) fn step_without_sink(&mut self) {
+            let _frame = plx_base::task::FrameScope::enter();
+            self.now += TICK_MS as u32;
+            pump(&mut self.ps, &mut self.pa, self.now);
+        }
+
+        /// Stamp every later step's position callback with a virtual wall (see [`Rig::wall_ms`]).
+        /// Also [`hushed`](Rig::hushed): a real-time callback from the host's own position thread
+        /// would stamp the wall backwards.
+        pub(super) fn with_virtual_wall(mut self) -> Rig {
+            self.wall_ms = Some(plx_base::clock::vclock_ms().wrapping_add(1_000_000));
+            self.hushed()
+        }
+
+        /// Silence the host's own position thread, which reports on REAL time whenever the clock
+        /// plays: from here the only position callbacks are the ones `step` takes, so a test owns
+        /// every callback and its stamp. With no `step` the pipeline reports nothing while the app
+        /// still believes it plays, which is a link that died under it (`step_without_sink`).
+        pub(super) fn hushed(self) -> Rig {
+            ffi_host::hush_ticker_for_test(true);
+            self
+        }
+
         /// Step until `done`, within [`STEP_BUDGET`].
-        fn run_until(&mut self, done: impl Fn(&mut Rig) -> bool) -> bool {
+        pub(super) fn run_until(&mut self, done: impl Fn(&mut Rig) -> bool) -> bool {
             for _ in 0..STEP_BUDGET {
                 self.step();
                 if done(self) {
@@ -6267,7 +6454,7 @@ mod end_of_film_tests {
         }
 
         /// What a failure message needs to explain itself.
-        fn facts(&mut self) -> String {
+        pub(super) fn facts(&mut self) -> String {
             let (clock_ns, running) = ffi_host::clock_state_for_test();
             let ended = crate::player::feed_ended(&self.ps);
             let streaming = self.eng().stage >= Stage::Streaming;

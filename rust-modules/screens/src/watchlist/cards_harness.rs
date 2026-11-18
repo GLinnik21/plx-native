@@ -255,6 +255,16 @@ impl Harness {
 
     /// Step one event; returns the effects it queued and whether the step reported page motion.
     pub(crate) fn step_fx(&mut self, ev: ScreenEvent<WatchHost>) -> (Vec<plx_machine::machine::Stamped<WatchHost>>, bool) {
+        let (out, moving, _) = self.step_all(ev);
+        (out, moving)
+    }
+
+    /// Step one event; whether it raised typed PAGE damage (what retakes a frozen host's snapshot).
+    pub(crate) fn damages(&mut self, ev: ScreenEvent<WatchHost>) -> bool {
+        self.step_all(ev).2
+    }
+
+    fn step_all(&mut self, ev: ScreenEvent<WatchHost>) -> (Vec<plx_machine::machine::Stamped<WatchHost>>, bool, bool) {
         let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
         let (_, moving) = plx_machine::motion::report::scoped_motion(|| {
@@ -274,7 +284,7 @@ impl Harness {
             );
             Machine::<WatchHost>::step(&mut self.screen, &ev, &cx, &mut fx);
         });
-        (out, moving || present.page_moving())
+        (out, moving || present.page_moving(), present.page_damaged())
     }
 
     pub(crate) fn step(&mut self, ev: ScreenEvent<WatchHost>) -> bool {

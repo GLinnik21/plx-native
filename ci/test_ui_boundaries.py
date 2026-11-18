@@ -307,6 +307,7 @@ class BoundaryTests(unittest.TestCase):
             ('FrameObservers::Caller | FrameObservers::Owned(_) => call(&mut LiveAuthority)',
              'FrameObservers::Caller | FrameObservers::Owned(caller) => call(caller)'),
             ('pub trait Tap<H: Host> {', 'pub trait Tap<H: Host> { fn resolution_mode(&self) -> Option<bool> { Some(false) }'),
+            ('pub trait Tap<H: Host> {', 'pub trait Tap<H: Host> { fn resolve_id(&mut self) {}'),
             ('let mut once = || *cached.get_or_insert_with(&mut *hash);', 'let mut once = || hash();'),
         ):
             with self.subTest(before=before):

@@ -2,6 +2,7 @@
 //! preserves the filled 60px Filmography control; `Heading` is a bare card-row heading at rest
 //! and becomes that same control face on focus. The component owns no application or Plex type.
 
+use super::a11y::{A11y, A11yPath, Role};
 use super::card_row;
 use super::hstack::{Align, HStack, Item};
 use super::icons::{self, Icon};
@@ -149,6 +150,14 @@ impl<'a> LinkedHeading<'a> {
     pub const fn total(mut self, total: usize) -> Self {
         self.total = total;
         self
+    }
+
+    /// **The heading's accessibility projection under `path`.** The heading is one element of the
+    /// one group [`group_spec`] declares, so the screen that declares the group names it (a
+    /// collection's heading is `collection.heading`); what is shared is what it IS: a button
+    /// (OK opens the linked page) labelled with its title.
+    pub fn a11y(&self, path: A11yPath) -> A11y<'a> {
+        A11y::new(path, Role::Button).with_label(self.title)
     }
 
     /// A `Heading`'s member count as the text `card_row::heading_parts` flows after the title.
@@ -513,6 +522,15 @@ mod tests {
             focus,
             owner: OWNER,
             modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
+        }
+    }
+
+    /// The heading projects as a button labelled with its title, under the path the screen names.
+    #[test]
+    fn a_linked_heading_is_a_button_labelled_with_its_title() {
+        for heading in [LinkedHeading::heading("Related", "12"), LinkedHeading::entry("Related", "12")] {
+            let a = heading.a11y(A11yPath::new().name("heading"));
+            assert_eq!((a.path.to_string(), a.role, a.label.as_deref(), a.loaded), ("heading".to_owned(), Role::Button, Some("Related"), true));
         }
     }
 

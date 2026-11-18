@@ -278,8 +278,8 @@ pub struct PlaybackSession {
     /// that decision is made from the same numbers `build_stream` used rather than from a guess.
     cur_src: (i64, i64, i64),
     /// Whole Part transport bitrate, including audio. Auto's progressive watchdog compares the
-    /// live socket against this rather than `cur_src.0` (the video stream's rate for a default version measured
-    /// from the detail, a fetched version's whole-file rate otherwise), because the wire has to carry
+    /// live socket against this rather than `cur_src.0` (the video stream's rate where PMS gave one,
+    /// else the whole file's), because the wire has to carry
     /// both lanes. `0` means PMS did not provide one and disables the watchdog fail-safely.
     cur_transport_kbps: i64,
     /// **Can this television decode the SOURCE video stream as it stands** — `video_direct_plays`
@@ -7035,6 +7035,19 @@ pub fn resolve_as_preview_for_test(ps: &mut PlaybackSession) {
 pub fn mark_preview_for_test(ps: &mut PlaybackSession) {
     ps.preview = true;
 }
+/// Test-only: mark `ps` as a direct-play playback the Auto Original supervisor watches, as
+/// `apply_plan` leaves it when Quality is Auto and the route is Original.
+#[cfg(any(test, feature = "test-support"))]
+pub fn mark_auto_original_watched_for_test(ps: &mut PlaybackSession) {
+    ps.cur_auto_original_watched = true;
+}
+/// Test-only: mark `ps` as carrying a fixed quality ceiling (1080p), as a fixed quality's progressive
+/// re-encode over `start.mkv` leaves it (the delivery stays progressive, the ceiling is what makes
+/// it a re-encode and not Original).
+#[cfg(any(test, feature = "test-support"))]
+pub fn mark_fixed_quality_ceiling_for_test(ps: &mut PlaybackSession) {
+    ps.cur_contract.ceiling = plx_plex::plex::session::PlaybackQuality::P1080.ceiling();
+}
 /// Test-only: install a live transcode route (`encoder` session, optional remux, optional
 /// fixed-HLS delivery) the way a successful [`apply_plan`] leaves it.
 #[cfg(any(test, feature = "test-support"))]
@@ -7111,6 +7124,35 @@ pub fn cur_sid(ps: &PlaybackSession) -> ServerId {
 #[cfg(any(test, feature = "test-support"))]
 pub fn swap_cur_sid_for_test(ps: &mut PlaybackSession, sid: ServerId) -> ServerId {
     { let s = &mut *ps; std::mem::replace(&mut s.cur_sid, sid) }
+}
+/// Test-only: install the playing item's ratingKey, the queue it came from and its Up Next directly.
+///
+/// In production the three have one writer, `apply_plan` (the queue and Up Next from the plan's `QueueInfo`), so a suite
+/// elsewhere that needs "this episode is playing, with a neighbour on each side" sets it through here, as it sets the
+/// server through [`swap_cur_sid_for_test`]. The player's accessibility ids read the neighbours and the key it
+/// hands them (`HudCommand::plays_rk`).
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_queue_for_test(ps: &mut PlaybackSession, cur_rk: &str, rows: Vec<plx_plex::plex::QueueRow>, up_next: Option<UpNext>) {
+    ps.cur_rk = cur_rk.to_owned();
+    ps.queue = rows;
+    ps.up_next = up_next.map(std::sync::Arc::new);
+}
+/// Test-only: record the request a Try again repeats ([`retry_rk`]) without a plan having landed, as a play that is
+/// asked for and fails before `apply_plan` leaves the session. Does not touch `cur_rk`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_request_for_test(ps: &mut PlaybackSession, rk: &str) {
+    ps.request = Some(PlaybackRequest {
+        sid: ServerId::UNSET,
+        rk: rk.to_owned(),
+        part: String::new(),
+        vcodec: String::new(),
+        acodec: String::new(),
+        title: String::new(),
+        ctx: String::new(),
+        preview: false,
+        version: None,
+        show_rk: String::new(),
+    });
 }
 /// The `Client` for the currently-playing item's server, `None` before the first play (or after a
 /// plan that never resolved). The main-thread twin of `client_for(env.sid)` on the resolve worker
@@ -9457,14 +9499,14 @@ fn apply_quality_choice(ps: &mut PlaybackSession, q: Quality) {
 /// and proves nothing. What it does NOT do is decide anything — [`crate::abr::bootstrap`] owns the
 /// admission rule, so the policy is stated once and is host-testable without a network.
 ///
-/// `None` means there is nothing to reason from (no source bitrate, or the transfer never
-/// returned), which is deliberately distinct from a completed slow probe.
-pub(super) fn measure_remote_original(url: &str, source_kbps: i64) -> Option<crate::abr::CapacityObservation> {
+/// Anything but [`RemoteProbe::Sample`] means there is nothing to reason from (no source bitrate, or
+/// the transfer never returned), which is deliberately distinct from a completed slow probe.
+pub(super) fn measure_remote_original(url: &str, source_kbps: i64) -> RemoteProbe {
     let Some(plan) = remote_probe_plan(source_kbps) else {
         crate::player::log(
             "auto: remote Original unavailable — source bitrate is unknown; using HLS",
         );
-        return None;
+        return RemoteProbe::Unmeasured;
     };
     // `url` already names the playback's own identity. Direct play samples the Part; a remux
     // Original samples start.mkv. A throwaway `source-N` forces an exact miss and makes PMS run a
@@ -9480,7 +9522,7 @@ pub(super) fn measure_remote_original(url: &str, source_kbps: i64) -> Option<cra
             crate::player::log(&format!(
                 "auto: remote Original preflight produced no capacity sample failure={failure:?}; using HLS"
             ));
-            return None;
+            return RemoteProbe::of_failure(failure);
         }
     };
     let measured = sample.kbps();
@@ -9490,12 +9532,50 @@ pub(super) fn measure_remote_original(url: &str, source_kbps: i64) -> Option<cra
         sample.elapsed.as_millis(),
         sample.target_reached as i32,
     ));
-    Some(crate::abr::CapacityObservation {
+    RemoteProbe::Sample(crate::abr::CapacityObservation {
         kbps: u32::try_from(measured).unwrap_or(u32::MAX),
         bytes: u64::try_from(sample.bytes).unwrap_or(0),
         active_us: u64::try_from(sample.elapsed.as_micros()).unwrap_or(u64::MAX),
         completed: sample.target_reached,
     })
+}
+
+/// **What Auto's remote Original preflight came back with**, typed so the planner can tell a slow
+/// link from a request that never got an answer. Both used to be `None`, and only the first says
+/// anything about capacity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RemoteProbe {
+    /// The server answered and bytes were read, however few ([`crate::abr::CapacityObservation::completed`]
+    /// says whether the target was reached). This is the link's own answer.
+    Sample(crate::abr::CapacityObservation),
+    /// The network never produced a response: DNS, TLS, connect, a timeout or the setup deadline
+    /// before the first header (#1425: `Open(Transport(28))` on a trailer reached through two
+    /// cross-origin redirects; which phase timed out is not known). Nothing was measured, so the
+    /// preflight says nothing about the link's rate.
+    NoResponse,
+    /// Nothing to reason from, for any other reason: no source bitrate, a status or range refusal
+    /// from the server, local machinery failing, or a transfer that failed after it had opened.
+    Unmeasured,
+}
+
+impl RemoteProbe {
+    pub(super) fn sample(self) -> Option<crate::abr::CapacityObservation> {
+        match self {
+            Self::Sample(observation) => Some(observation),
+            Self::NoResponse | Self::Unmeasured => None,
+        }
+    }
+
+    /// Only an open that failed in the network counts as [`Self::NoResponse`]. A server's own
+    /// status (503 after a transcode MDE, a range it ignored) is a statement about the request,
+    /// and a body that stalled or broke after the open is a slow or bad link: neither is "no answer".
+    fn of_failure(failure: crate::curlio::ThroughputFailure) -> Self {
+        use crate::curlio::{OpenErr, ThroughputFailure};
+        match failure {
+            ThroughputFailure::Open(OpenErr::Transport(_) | OpenErr::Deadline) => Self::NoResponse,
+            _ => Self::Unmeasured,
+        }
+    }
 }
 
 /// PMS 1.43 503s a Part GET after a transcode MDE. The Original we would actually play is a
@@ -9563,7 +9643,7 @@ pub(super) fn measure_remote_remux(
         crate::player::log("auto: remote remux preflight refused by /decision; using HLS");
         return RemuxProbe { sample: None, enhancement_refused };
     }
-    let sample = measure_remote_original(&client.transcode_start_url(&spec).to_url(), source_kbps);
+    let sample = measure_remote_original(&client.transcode_start_url(&spec).to_url(), source_kbps).sample();
     if sample.is_none() {
         // Same playback identity the HLS/remux that follows will register. closeResourceSession=1
         // would 503 that next start; physical-stop keeps the Streaming Resource.
@@ -10031,87 +10111,23 @@ impl ResolveEnv {
 }
 
 pub fn playback_preview(d: &plx_data::metadata::Detail) -> Option<Preview> {
+    detail_playback_preview(d).map(|(preview, _)| preview)
+}
+
+/// The route preview and its source facts from the same selection and capability snapshot.
+pub fn detail_playback_preview(d: &plx_data::metadata::Detail) -> Option<(Preview, PlayedVideo<'_>)> {
     playback_preview_with_capability(d, None)
 }
 
-pub fn detail_play_version(d: &plx_data::metadata::Detail) -> Option<&plx_data::pms::MediaVersion> {
+pub fn detail_played_video(d: &plx_data::metadata::Detail) -> Option<PlayedVideo<'_>> {
     let caps = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
-    detail_version_with(d, direct_play_mode(), &caps, dolby_vision_mode(), plx_platform::devcaps::dv::capability())
-}
-
-fn detail_version_with<'a>(
-    d: &'a plx_data::metadata::Detail,
-    mode: DirectPlayMode,
-    caps: &plx_platform::devcaps::Caps,
-    dv_mode: plx_plex::plex::session::DolbyVisionMode,
-    dv_probed: plx_platform::devcaps::dv::DvCapability,
-) -> Option<&'a plx_data::pms::MediaVersion> {
-    let versions = match d.on_deck.as_ref().filter(|_| d.part.is_empty()) {
-        Some(ep) => &ep.versions,
-        None if d.part.is_empty() => return None,
-        None => &d.versions,
-    };
-    version_play_starts(versions, mode, caps, dv_mode, dv_probed)
-}
-
-struct PreviewFile<'a> {
-    part: &'a str,
-    vcodec: &'a str,
-    width: i64,
-    height: i64,
-    kbps: i64,
-    acodec: &'a str,
-    audio: &'a [plx_data::metadata::Stream],
-    subs: &'a [plx_data::metadata::Stream],
-    dovi: plx_data::metadata::Dovi,
-}
-
-fn preview_file<'a>(
-    d: &'a plx_data::metadata::Detail,
-    mode: DirectPlayMode,
-    caps: &plx_platform::devcaps::Caps,
-    dv_mode: plx_plex::plex::session::DolbyVisionMode,
-    dv_probed: plx_platform::devcaps::dv::DvCapability,
-) -> Option<PreviewFile<'a>> {
-    let own = |part: &'a str, vcodec: &'a str| PreviewFile {
-        part,
-        vcodec,
-        width: d.width,
-        height: d.height,
-        kbps: d.bitrate,
-        acodec: &d.acodec,
-        audio: &d.audio,
-        subs: &d.subs,
-        dovi: d.dovi,
-    };
-    // A SHOW's container carries no file of its own, so the page answers for the episode its Play
-    // button would start — the one the hero is already about. Its frame size and audio list are
-    // the show Detail's, which `fetch_item_streams` backfilled from that same episode.
-    let (part, vcodec) = match d.on_deck.as_ref().filter(|_| d.part.is_empty()) {
-        Some(ep) => (ep.part.as_str(), ep.vcodec.as_str()),
-        None => (d.part.as_str(), d.vcodec.as_str()),
-    };
-    let Some(v) = detail_version_with(d, mode, caps, dv_mode, dv_probed) else {
-        return Some(own(part, vcodec));
-    };
-    let file = d.version_parts.iter().find(|p| p.id == v.id)?;
-    Some(PreviewFile {
-        part: &file.part,
-        vcodec: &v.vcodec,
-        width: v.width,
-        height: v.height,
-        kbps: v.kbps,
-        acodec: &v.acodec,
-        audio: &file.audio,
-        subs: &file.subs,
-        dovi: v.dovi,
-    })
+    played_video(d, direct_play_mode(), &caps, dolby_vision_mode(), plx_platform::devcaps::dv::capability())
 }
 
 fn playback_preview_with_capability(
     d: &plx_data::metadata::Detail,
     capability: Option<plx_platform::devcaps::dv::DvCapability>,
-) -> Option<Preview> {
+) -> Option<(Preview, PlayedVideo<'_>)> {
     let mode = direct_play_mode();
     // The facts row is a read-out of what the device would do NOW, with no attempt behind it, so it
     // is a start edge of its own: the value a play started this moment would begin on (the boot
@@ -10120,27 +10136,32 @@ fn playback_preview_with_capability(
     let caps = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
     let dv_mode = dolby_vision_mode();
     let dv_probed = capability.unwrap_or_else(plx_platform::devcaps::dv::capability);
-    let file = preview_file(d, mode, &caps, dv_mode, dv_probed)?;
-    // The page answers for the play a press would start, so it plans from the same gated
-    // capability `ResolveEnv::dolby_vision_mode` hands the resolve.
-    let presentation = frozen_dv_decision(dv_mode, dv_probed, file.dovi, file.vcodec).presentation;
+    let file = played_video(d, mode, &caps, dv_mode, dv_probed)?;
+    let (part, audio, subs) = match file.version {
+        Some(v) => {
+            let streams = d.version_parts.iter().find(|p| p.id == v.id)?;
+            (streams.part.as_str(), &streams.audio, &streams.subs)
+        }
+        None => (file.primary_part, &d.audio, &d.subs),
+    };
+    let presentation = file.dv.presentation;
     if mode == DirectPlayMode::Forced {
-        return (!file.part.is_empty() && part_is_streamable(file.part)
+        return (part_is_streamable(part)
             && video_feed_supported(file.vcodec, presentation, &caps)
-            && file.audio.iter().any(|a| audio_direct_plays_with(&caps, mode, &a.codec, a.channels, a.sampling_rate)))
-            .then_some(Preview::DirectPlay);
+            && audio.iter().any(|a| audio_direct_plays_with(&caps, mode, &a.codec, a.channels, a.sampling_rate)))
+            .then_some((Preview::DirectPlay, file));
     }
     let p = playback_preview_with_audio(
         &caps,
-        file.part,
+        part,
         file.vcodec,
         file.width,
         file.height,
         presentation,
-        file.audio,
+        audio,
         AudioPreviewInputs {
             default_acodec: file.acodec,
-            sub_selected: pick_dp_subtitle(file.subs).is_some(),
+            sub_selected: pick_dp_subtitle(subs).is_some(),
             quality: quality(),
             dv_declared: false, // filled from `presentation` by the preview itself
             local_link: plx_plex::plex::client_for(d.sid)
@@ -10151,22 +10172,23 @@ fn playback_preview_with_capability(
     // The user's quality ceiling is the LAST gate `build_stream` applies, so it is the last one
     // here too — and it can only ever downgrade, never promote. Without this the facts row would
     // promise "Direct Play" for a source the rung is about to send to an encoder, which is the
-    // exact mismatch this preview's doc says it exists to avoid. `file.kbps`/`width`/`height` are
-    // those of the version Play starts, i.e. the same numbers `ResolveEnv` hands the resolve.
+    // exact mismatch this preview's doc says it exists to avoid. `file.ceiling_kbps`/`width`/`height`
+    // are those of the version Play starts, i.e. the same numbers `ResolveEnv` hands the resolve.
     let location = plx_plex::plex::client_for(d.sid).and_then(|client| client.link());
     // A detail page has not downloaded the file yet, so it reports what can preserve the source,
     // not a fictitious failed bandwidth result. Remote Auto is measured at Play. Relay remains a
     // conversion because its independent link policy refuses both original-rate flavors.
     let policy = direct_play_policy(mode, flavors_allowed(
         plx_plex::plex::link_policy(location),
-        quality_policy(quality(), true, file.kbps, file.width, file.height),
+        quality_policy(quality(), true, file.ceiling_kbps, file.width, file.height),
     ));
-    Some(match p {
+    let preview = match p {
         Preview::DirectPlay if !policy.direct_play && policy.remux && mode == DirectPlayMode::Disabled => Preview::Remux,
         Preview::DirectPlay if !policy.direct_play => Preview::Converts,
         Preview::Remux | Preview::OriginalAudioConverted if !policy.remux => Preview::Converts,
         _ => p,
-    })
+    };
+    Some((preview, file))
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -10174,7 +10196,7 @@ pub fn playback_preview_with_capability_for_test(
     d: &plx_data::metadata::Detail,
     capability: plx_platform::devcaps::dv::DvCapability,
 ) -> Option<Preview> {
-    playback_preview_with_capability(d, Some(capability))
+    playback_preview_with_capability(d, Some(capability)).map(|(preview, _)| preview)
 }
 
 static PLAY_GEN: AtomicU32 = AtomicU32::new(0);
@@ -10286,6 +10308,18 @@ pub fn play_pending() -> bool {
 /// This session is a hero preview. The route backstop must not steal it onto the player.
 pub fn is_preview(ps: &PlaybackSession) -> bool {
     ps.preview
+}
+
+/// **Is this a progressive stream at Quality=Original?** The Feed holds such a stream's clock and
+/// shows Buffering when its link stops keeping up (`plx_playback_contract::feed::HoldRoute`).
+/// Progressive delivery with no quality ceiling: direct play and remux, where Original and forced
+/// direct play carry no ceiling. Three cases that are progressive are NOT it. Segmented HLS has its
+/// own hold. A fixed quality's progressive re-encode carries a ceiling. And a playback Quality=Auto's
+/// Original supervisor watches (`cur_auto_original_watched`) keeps Auto's own Original -> HLS exit
+/// (`auto_original_watch`) as the answer to a starved link, which a hold would stand in front of.
+/// A trailer preview is the caller's to exclude.
+pub fn is_progressive_original(ps: &PlaybackSession) -> bool {
+    !is_segmented_hls(ps) && cur_ceiling(ps).is_none() && !ps.cur_auto_original_watched
 }
 
 pub fn clear_preview(ps: &mut PlaybackSession) {
@@ -10882,6 +10916,15 @@ fn reset_track_selection(ps: &mut PlaybackSession, sid: ServerId, rk: &str, retr
 /// playback, which never entered the Plex request funnel and therefore has no item to resolve.
 pub fn can_retry_current_play(ps: &PlaybackSession) -> bool {
     ps.request.is_some()
+}
+
+/// The ratingKey [`retry_current_play`] resolves again: the key of the request this session last made, which a Try
+/// again, a Play automatically and a quality pick on the failure read-out all repeat. It is NOT [`cur_rk`]: the
+/// request is recorded when the play is asked for and `cur_rk` only when its plan lands (`apply_plan`), so a play
+/// that failed before its plan landed has the request's key here and none (or the previous item's) there. `None`
+/// when no request was made (URL and dev-trigger playback), which has nothing to retry.
+pub fn retry_rk(ps: &PlaybackSession) -> Option<String> {
+    ps.request.as_ref().map(|request| request.rk.clone()).filter(|rk| !rk.is_empty())
 }
 
 /// Resume target not yet proven by a presented frame.  A refused retry keeps this so the next

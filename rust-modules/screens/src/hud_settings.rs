@@ -46,6 +46,7 @@ use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputEvent, InputKind, InputOwner, InstanceId, Key, LogicalState,
     Machine, MachineId, TextEdit, NavOp,
 };
+use plx_ui::a11y::{A11y, A11yPath, Role, Seg};
 use plx_ui::decision_prompt::{DecisionPrompt, PromptStep};
 use plx_ui::follow_copy::{FollowCopy, LandscapePicture};
 use plx_ui::text_buffer::TextBuffer;
@@ -55,10 +56,14 @@ use plx_ui::route_screen::RouteLayout;
 use plx_ui::screen::{At, Dir, DrawFrame, Enter, Focusable, FocusSource, FocusTarget, GroupSpec, HitSource, Placed, RenderStrategy, Screen, ScreenEvent, Step};
 use plx_ui::table::Row;
 use plx_ui::table_screen::{Header, TableScreen};
-use plx_ui::{consts, theme, Rect};
+use plx_ui::{consts, Rect};
 
 use super::family::{form_activate, form_focus, form_right_target, InnerHost, SettingsPage, ALERT_GROUP};
+use plx_ui::decision_alert::AlertAnswers;
 use super::registry::{word, AppFx, HudCmd, ALERT, BAND};
+
+/// The install prompt's two answers as an accessibility id names them: `alert.cancel` and `alert.install`.
+const INSTALL_ANSWERS: AlertAnswers = AlertAnswers::new(ALERT_GROUP, ALERT, ALERT + 1, "cancel", "install");
 
 /// What the Bridge publishes to the page: the store's listing at one moment.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -453,7 +458,7 @@ impl HudPage {
             page: SettingsPage::PlayerHud,
             title: String::new(),
             parent: String::new(),
-            form: { let mut form = FormTable::new(BAND); form.table.set_empty_text(Some("")); form },
+            form: { let mut form = FormTable::page(BAND); form.table.set_empty_text(Some("")); form },
             state: State { end_time: None, saving_end_time: false, selected: 0, rows: 0, notice: 0, confirming: false, affirmative: false, alert_scroll: 0, editing: false, fetching: false, kind: 0, scene: 0, visible: false, suspended: false, pending_select_focus: false, registry_request: false, provisional: true },
             list: HudList::default(),
             copy: String::new(),
@@ -648,6 +653,21 @@ impl HudPage {
 
     fn is_preview(&self) -> bool { matches!(self.page, SettingsPage::HudPreview(..)) }
 
+    /// A full-screen preview control as an id names it: key 0 is Back (`back`), key `i + 1` the scene
+    /// `i` (`scene.<i>`, labelled with the scene's own word).
+    fn preview_a11y(&self, key: u32) -> A11y<'static> {
+        match key.checked_sub(1) {
+            None => A11y::new(A11yPath::new().name("back"), Role::Button),
+            Some(i) => {
+                let tab = A11y::new(A11yPath::new().name("scene").index(i as usize), Role::Tab);
+                match self.scenes().get(i as usize) {
+                    Some((label, _)) => tab.with_label(*label),
+                    None => tab,
+                }
+            }
+        }
+    }
+
     fn activate_preview(&mut self, key: u32, fx: &mut Effects<'_, InnerHost>) -> Handled {
         if key == 0 {
             fx.push(Fx::Nav(NavOp::Pop));
@@ -693,7 +713,7 @@ impl HudPage {
     }
 
     fn view(&self) -> TableScreen<'_> {
-        let header = Header::new(RouteLayout::settings_page(), Some(&self.parent), &self.title, &self.copy);
+        let header = Header::new(RouteLayout::screen(), Some(&self.parent), &self.title, &self.copy);
         // The gallery's loading read-out is the page's own copy, counted and sentinel-painted as one; any other
         // sentence follows focus.
         let header = if matches!(self.page, SettingsPage::HudGallery) && self.list.catalog.fetching && self.form.table.n_rows() == 0 {
@@ -736,9 +756,6 @@ impl HudPage {
         self.says = says;
         self.title = title;
         self.parent = parent;
-        self.form.table.compact = false;
-        self.form.table.board_metrics(true);
-        self.form.table.header_ink = theme::TEXT_READING;
         self.form.table.list_focused = true;
         self.form.set(form, keep.as_ref());
         self.state.fetching = self.list.fetching;
@@ -1082,7 +1099,7 @@ impl Machine<InnerHost> for HudPage {
                 }
                 cycle.tick(*t, self.preview_active(), &mut fx.present());
                 self.preview_cycle = cycle;
-                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 self.follow.update(t.dt());
                 Handled::Yes
             }
@@ -1107,7 +1124,7 @@ impl Machine<InnerHost> for HudPage {
                 Handled::No
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
-                if matches!(by, plx_machine::machine::By::Dir | plx_machine::machine::By::Pointer) { self.state.provisional = false; }
+                if matches!(by, plx_machine::machine::By::Dir | plx_machine::machine::By::Pointer | plx_machine::machine::By::Script) { self.state.provisional = false; }
                 form_focus(&mut self.form, to.elem);
                 self.state.selected = self.form.key_at(self.form.table.sel.max(0) as usize).map_or(0, |k| k.0);
                 self.follow.follow(&self.sentence());
@@ -1178,6 +1195,46 @@ impl Focusable<InnerHost> for HudPage {
             None => Focusable::<InnerHost>::seat(&self.view(), g, from, cx),
         }
     }
+    // The full-screen preview answers its controls (`back`, `scene.<i>`); a prompt that is open answers
+    // its two answers ALONE (`alert.cancel`, `alert.install`), as `groups` lists them; any other page
+    // answers its table's rows.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, InnerHost>) -> Option<A11y<'_>> {
+        if self.is_preview() {
+            return self.controls.as_ref().filter(|c| c.contains(*key)).map(|_| self.preview_a11y(*key));
+        }
+        if self.prompt.is_open() {
+            return INSTALL_ANSWERS.a11y(*key);
+        }
+        Focusable::<InnerHost>::a11y(&self.view(), key, cx).map(A11y::into_owned)
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, InnerHost>, out: &mut Vec<u32>) {
+        if self.is_preview() {
+            if let Some(controls) = self.controls.as_ref().filter(|_| g == GroupId(0)) {
+                out.extend(0..controls.len() as u32);
+            }
+            return;
+        }
+        if self.prompt.is_open() {
+            INSTALL_ANSWERS.elems(g, out);
+            return;
+        }
+        Focusable::<InnerHost>::a11y_elems(&self.view(), g, cx, out)
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, InnerHost>) -> Option<u32> {
+        if self.is_preview() {
+            let controls = self.controls.as_ref()?;
+            let mut segs = path.segs();
+            return match (segs.next(), segs.next(), segs.next()) {
+                (Some(Seg::Name("back")), None, _) => Some(0),
+                (Some(Seg::Name("scene")), Some(Seg::Index(i)), None) if i + 1 < controls.len() => Some(i as u32 + 1),
+                _ => None,
+            };
+        }
+        if self.prompt.is_open() {
+            return INSTALL_ANSWERS.find(path);
+        }
+        Focusable::<InnerHost>::a11y_find(&self.view(), path, cx)
+    }
 }
 
 impl Screen<InnerHost> for HudPage {
@@ -1241,11 +1298,11 @@ impl Screen<InnerHost> for HudPage {
 /// The `(focus key, id)` of every row `list` shows, for a test: the page's own builder.
 #[cfg(test)]
 fn rows_for_test(list: &HudList) -> Vec<(u32, HudId)> {
-    let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::new(BAND);
+    let mut form: FormTable<HudId, HudAction, SettingsPage> = FormTable::page(BAND);
     form.set(hud_form(list, None, false).0, None);
     (0..form.table.n_rows() as usize).filter_map(|i| Some((form.key_at(i)?.0, form.binding_at(i)?.id.clone()))).collect()
 }
 
 #[cfg(test)]
 #[path = "hud_settings_tests.rs"]
-mod tests;
+pub(crate) mod tests;

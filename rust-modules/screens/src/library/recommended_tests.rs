@@ -24,7 +24,7 @@ impl Host for HostFixture {
 }
 impl crate::registry::ScreenInputsLike for HostFixture {
     fn screen_inputs<'a>(_cx: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs {
-        crate::registry::empty_fixture()
+        crate::registry::caption_fixture()
     }
 }
 
@@ -432,4 +432,27 @@ fn the_crumb_row_is_built_once_per_key_not_once_per_question() {
     assert_eq!(page.probe_header_builds(), built + 1, "the library's new name builds the row once");
     for _ in 0..10 { ask(&fixture); }
     assert_eq!(page.probe_header_builds(), built + 1, "and the questions after it build none");
+}
+
+/// **Recommended, covered, notices that Settings changed what its shelves draw under the posters**
+/// (`step`'s head): a page returning from under a cover raises no damage of its own, and typed page
+/// damage is what retakes a frozen host's snapshot.
+#[test]
+fn recommended_damages_the_page_when_the_under_posters_setting_moved_under_a_cover() {
+    use crate::registry::captions::{PolicyPin, FIXTURE_TITLE_ON};
+    use plx_plex::plex::session::UnderPosters;
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::shelves(&["Trending"], 6);
+    let mut page = fixture.screen();
+    let mut uncover_under = |setting: UnderPosters| {
+        let _pin = PolicyPin::set(setting);
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        page.step(&ScreenEvent::Uncover, &fixture.cx(None),
+            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+        present.page_damaged()
+    };
+    assert!(!uncover_under(UnderPosters::DEFAULT), "control: an unchanged setting damages nothing");
+    assert!(uncover_under(FIXTURE_TITLE_ON), "the Title switch moved the caption policy");
+    assert!(!uncover_under(FIXTURE_TITLE_ON), "...once");
 }

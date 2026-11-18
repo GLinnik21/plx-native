@@ -81,7 +81,7 @@ pub(crate) mod framedump;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 49] = [
+const DIAG: [&str; 51] = [
     "plxnative-diag.log",
     "plxnative-hud-text-metrics",
     "plxnative-hud-text-metrics.json",
@@ -216,6 +216,12 @@ const DIAG: [&str; 49] = [
     // who's-watching picker, and a stale file would keep suppressing it. Listed so that
     // `ci/check-package.py` greps the shipped bytes for the name.
     "plxnative-uriexported",
+    // The accessibility state a `state:<nonce>` FIFO token writes (`app/a11y_state.rs`) and the fixed
+    // temp name it is renamed from. Output of an observer: a file left behind by a harness (or by a
+    // crash between the temp write and the rename) must not suppress the who's-watching picker, so
+    // the next boot of that harness would not land on the screen the last one did.
+    "plxnative-a11y.json",
+    "plxnative-a11y.json.tmp",
 ];
 
 /// **Turn on the TELEVISION'S OWN GStreamer logging** — `/tmp/plxnative-gstlog`.
@@ -993,6 +999,34 @@ mod tests {
         assert!(super::armed_triggers_in(&root).is_empty());
         std::fs::write(root.join("plxnative-home"), b"").unwrap();
         assert_eq!(super::armed_triggers_in(&root), vec!["plxnative-home"]);
+    }
+
+    /// A `state:<nonce>` request leaves `plxnative-a11y.json` (and, between its temp write and its
+    /// rename, the `.tmp` beside it) in the runtime root. Neither may read as an armed trigger, or
+    /// one harness run would take the who's-watching picker away from every later boot.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn the_a11y_state_files_are_never_armed_triggers() {
+        let _serial = plx_base::testlock::serial();
+        let root = std::env::temp_dir().join(format!(".plx-a11y-trigger-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        }
+        let _cleanup = Cleanup(root.clone());
+        for name in [plx_base::paths::runtime_file::A11Y_STATE, plx_base::paths::runtime_file::A11Y_STATE_TMP] {
+            std::fs::write(root.join(name), b"{}").unwrap();
+        }
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&root).unwrap() {
+            assert!(!super::is_armed_trigger(&entry.unwrap()));
+            seen += 1;
+        }
+        assert_eq!(seen, 2);
+        std::fs::write(root.join("plxnative-a11y"), b"").unwrap();
+        assert!(std::fs::read_dir(&root).unwrap().any(|e| super::is_armed_trigger(&e.unwrap())),
+            "a name that merely starts like the state file is still an armed trigger");
     }
 
     /// The poster pipeline's two observers — the per-image timeline and the cache counters — must

@@ -170,7 +170,8 @@ impl GridBands {
 /// step.
 ///
 /// It only starts from REST when a deliberate MOVE arms it ([`arm`](Self::arm), from the
-/// `FocusMoved` arm for `By::Dir` / `By::Pointer`); every other way a cell becomes focused — a
+/// `FocusMoved` arm when `Seen::of` reads the move as deliberate: a key, a hover or a by-id jump,
+/// `By::Dir`, `By::Pointer`, `By::Script`); every other way a cell becomes focused — a
 /// restore, a reconcile, a command seating the cursor — is adopted at full scale by
 /// [`tick`](Self::tick), because a page coming back from a Detail push must land exactly as it
 /// was left. Inputs and the `FocusMoved` they deliver run BEFORE the screen's `Tick`, so a D-pad

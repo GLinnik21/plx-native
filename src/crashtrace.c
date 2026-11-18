@@ -606,9 +606,9 @@ void plx_exit_record(int status, unsigned long caller) {
         }
     }
     /* `plx_crash_install` binds ahead of time the libc entries the record writes with and ends
-     * with (`time`, `getpid`, `syscall`, `prctl`, `open`, `read`, `close`, `write`), so none of
-     * them goes through the dynamic linker's lazy resolver here, the exit included: it is the
-     * `exit_group` syscall, not `_exit` (see `end_process`). */
+     * with (`time`, `getpid`, `syscall`, `prctl`, `open`, `read`, `close`, `write`) and the `errno`
+     * accessor, so none of them goes through the dynamic linker's lazy resolver here, the exit
+     * included: it is the `exit_group` syscall, not `_exit` (see `end_process`). */
     end_process(status);
 }
 
@@ -625,6 +625,11 @@ void plx_crash_install(int ev_fd, int cr_fd) {
      * crash. One call here resolves it at startup; the handler's own use is unchanged and
      * `time()` stays async-signal-safe. */
     (void)time(NULL);
+    /* Binds the executable's `__errno_location` PLT slot too (a store, which the compiler cannot
+     * drop; glibc marks the accessor `const`, so a read could be): neither the crash handlers, which
+     * read `errno`, nor `access()`'s ENOENT store (src/access.c) can then be the first caller and run
+     * the lazy resolver inside a signal handler. Nothing reads an `errno` set before this point. */
+    errno = 0;
     {
         struct timespec ts;
         if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) install_mono_secs = (long)ts.tv_sec;

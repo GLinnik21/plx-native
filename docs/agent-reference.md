@@ -18,7 +18,7 @@ the streaming/demux pipeline, and the Plex data layer), compiled to a static lib
 handle, stderr capture, process bring-up) that then calls the Rust `plex_run()` — and
 `src/starfish.c`, the **buffer-feed StarfishMediaAPIs C++ seam**, and `src/video_plane.c`, the shared
 **ACB/exported-window display binding**, beside `src/svg.c` (the nanosvg rasterizer),
-`src/sentry_context.c`, `src/exit.c` (the key-files list below says what each does) and, since
+`src/sentry_context.c`, `src/exit.c`, `src/access.c` (the key-files list below says what each does) and, since
 2026-08-29, `src/crashtrace.c` — the async-signal-safe **crash tracer**, lifted out of `main.c` into
 its own translation unit for one reason, that `ci/crashtrace-test.c` links it ALONE and can therefore
 fault a process on purpose and check how it died. Doing that immediately found a seven-week-old bug no
@@ -1226,8 +1226,14 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   process through `plx_exit_record` in `src/crashtrace.c` (an async-signal-safe record, in the event
   log and the crash log, naming the thread and the calling library, then the `exit_group` syscall,
   or a park while a fatal signal's handler is running, which lets that crash end the process; not
-  through Rust's `exit_now`, which flushes under locks); `ci/exit-interpose-test.c` grades it on Linux. These seven are the
-  entire normal C side (`gpdebug.c` is an opt-in allocator instrument). Reach for
+  through Rust's `exit_now`, which flushes under locks); `ci/exit-interpose-test.c` grades it on Linux.
+  `src/access.c` — libc `access` defined the same way (exported by the link, so a shared library's
+  `access` binds to it): the GPU driver probes four `/tmp` debug-switch paths (`API_PRINT` at the top
+  of every GL call, `SKIP_PRINT` in each draw and swap, `GM_FPS_PRINT` once per swap, `SHADER_PRINT`
+  from `glUseProgram`), each failing lookup costs ~8.5 us of kernel time on the webOS 5.6.2 TV, so
+  those paths are answered "absent" in user space and every other path gets the kernel's own
+  answer; `ci/access-interpose-test.c` grades it on Linux. These
+  eight are the entire normal C side (`gpdebug.c` is an opt-in allocator instrument). Reach for
   `/tmp/plxnative-crashtest=<segv|abrt|bus|ill|trap|panic|unwind>` to fault the app deliberately
   ON the television — `segv` is a real null write, `abrt`/`bus`/`ill`/`trap` are `raise`, `panic`
   panics inside an `extern "C"` callback, and `unwind` panics straight in `crash_on_purpose` so the
@@ -2539,9 +2545,11 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   one recorded landing sat on frame 1 and every replay observed it on frame 0, which — a spring
   started a frame early never re-converging bit for bit — diverged 927 of 928 frames. The current
   schema writes exactly one final `fo` focus record after all drains in every product frame and
-  ordered `rs` records for each Focus/Hit resolution point. Product replay has two modes: Targets
-  feeds recorded answers; Resolve computes and compares the real engine/hit-map answers pointwise,
-  increments `focus_diffs`/`hit_diffs`, and then continues from recorded answers. A typed,
+  ordered `rs` records for each resolution point, of three families: Focus (the engine's focus),
+  Hit (a pointer's hit map) and Id (a by-id `focus:`/`press:` token). Product replay has two modes:
+  Targets feeds recorded answers; Resolve computes and compares the real engine/hit-map/id answers
+  pointwise, increments `focus_diffs` (Focus) or `hit_diffs` (Hit and Id; the `resolution=focus|hit|id`
+  word of the `replay: input diverge` line says which), and then continues from recorded answers. A typed,
   bit-exact Width/Cap/Line table prevents replay from consulting a live font. Both names are `dev::DIAG`, so
   neither moves the boot screen; both armed at once is
   refused), `/tmp/plxnative-softfloat` (the host↔ARM soft-float differential table, spec §4.2:
@@ -2696,7 +2704,24 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   in authored 1920x1080 coords, and they replay through the real key/pointer handlers. `ok` is a
   TAP (both edges at once); **`okdown` / `okup` are the split halves**, which is the only way to
   drive a press-and-**hold** — `okdown`, sleep past `press::LONG_MS` (500 ms), `okup` opens the
-  item context menu;
+  item context menu; a debug build also takes `focus:<id>`, `press:<id>[@<ratingKey>]` and
+  `state:<nonce>` (the structured readback `plxnative-a11y.json`, beside `focusprobe`'s fingerprint),
+  via `tools/tv-session.sh focus|press|state` or `tools/a11y.py`. A press of an element that ACTS ON a title it
+  names (it plays, restarts, finishes or retries it, marks it watched or unwatched, bookmarks it, or opens that
+  title's own page or menu where the title can change under the press, as a card, a credit or the Home
+  carousel's Info do) names the title: `--rk <ratingKey>` on `tv-session.sh press`, `--subject <ratingKey>` on
+  `a11y.py press` (`send press:<id>@<ratingKey>`), the ratingKey of the title the press acts on, which `state`
+  prints as the element's subject. Those THREE command lines refuse the unnamed press (exit 2, nothing sent); only
+  a control whose target the page fixes (Go to Show, Also available, the Play Version opener, More, a panel
+  opener, a seek) is pressed bare, and `SUBJECT_BEARING` in `tools/a11y.py` is the one list of the ids. The
+  guard is on the command lines only: the library functions `a11y.press()` and `a11y.press_token()` are
+  unguarded on purpose, for scripts that drive the mock, so a script that imports them against a real server has
+  no check at all.
+  `tv-session.sh key` and `a11y.py send` are not a way round that: `key` refuses a `focus:`, `press:` or
+  `state:` word (the three verbs are the one door for them), and both refuse a word with whitespace in it
+  (the app cuts the FIFO at any whitespace, so `back press:<card>` would be a second, unchecked token).
+  Prefer them over a key walk to a
+  target; walks remain for tests whose subject is travel (fps walks, focus fingerprints);
   With `devtriggers`, `hang:<ms>` stalls the frame thread under the `dev hang probe` guard and
   `hang-raw:<ms>` sleeps without a label; both accept unsigned decimal u64 milliseconds capped at
   5000, via `tools/tv-session.sh key hang:1000` or `key hang-raw:1000` with the existing TV lock.

@@ -563,3 +563,46 @@ fn pin_unit_centres_the_dot_row_in_the_air_above_the_keypad() {
     assert!((grid_y - (title_y + title_h) - PAD_TITLE_GRID).abs() < 0.01, "the keypad is PAD_TITLE_GRID under the title");
     assert!(((title_y + grid_y + PAD_GRID_H) * 0.5 - SCR_H as f32 * 0.5).abs() < 0.01, "the unit is centred");
 }
+
+// ---------------------------------------------------------------------------------------
+// accessibility ids — the pad's keys, the hole that has none
+// ---------------------------------------------------------------------------------------
+
+fn id(text: &str) -> A11yPath {
+    A11yPath::parse_relative(text).unwrap()
+}
+
+/// **Every key of the open pad has an id and the hole has none**: `pad.digit.<n>` types `n`,
+/// `pad.delete` deletes, `a11y_find` inverts each (a digit past 9, an extra or a missing segment
+/// find nothing), and the listing is its eleven keys while the group's `len` stays its twelve
+/// cells (the hole is a cell, not an element: the conformance rule is "at most `len`"). With the pad
+/// shut the pad's ids do not exist.
+#[test]
+fn the_open_pad_answers_an_id_for_each_key_and_none_for_the_hole() {
+    let s = bare(Pad::opened(0));
+    let c = cx(None);
+    plx_ui::a11y::conformance(&s, &c);
+    let find = |text: &str| Focusable::<SessionHost>::a11y_find(&s, &id(text), &c);
+    for (r, row) in KEYS.iter().enumerate() {
+        for (col, key) in row.iter().enumerate() {
+            let elem = pad_elem(r, col);
+            match key {
+                Some(b'D') => assert_eq!(find("pad.delete"), Some(elem)),
+                Some(digit) => assert_eq!(find(&format!("pad.digit.{}", digit - b'0')), Some(elem)),
+                None => assert!(Focusable::<SessionHost>::a11y(&s, &elem, &c).is_none(), "the hole"),
+            }
+        }
+    }
+    let one = Focusable::<SessionHost>::a11y(&s, &pad_elem(0, 0), &c).unwrap();
+    assert_eq!((one.path.to_string(), one.role), ("pad.digit.1".to_string(), Role::Button));
+    let mut keys = Vec::new();
+    Focusable::<SessionHost>::a11y_elems(&s, PAD_GROUP, &c, &mut keys);
+    assert_eq!(keys.len(), PAD_ROWS * PAD_COLS - PAD_HOLES.len(), "the keys, not the cells");
+    for refused in ["pad.digit.10", "pad.digit", "pad", "pad.delete.1", "pad.hole", "sign_out", "back"] {
+        assert_eq!(find(refused), None, "{refused}");
+    }
+
+    let shut = bare(Pad::new());
+    assert_eq!(Focusable::<SessionHost>::a11y_find(&shut, &id("pad.digit.1"), &c), None);
+    assert!(Focusable::<SessionHost>::a11y(&shut, &pad_elem(0, 0), &c).is_none());
+}

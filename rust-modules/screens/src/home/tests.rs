@@ -91,7 +91,20 @@ fn step(
     focus: Option<FocusKey<u32>>,
     event: &ScreenEvent<TestHost>,
 ) -> (Handled, Vec<Stamped<TestHost>>, bool) {
-    let context = cx(view, focus);
+    step_pressed(s, view, focus, PressRead::default(), event)
+}
+
+/// [`step`] with the press machine's read as `press` (the context a delivery runs with while a press
+/// stands somewhere).
+fn step_pressed(
+    s: &mut HomeScreen,
+    view: HubsView<'_>,
+    focus: Option<FocusKey<u32>>,
+    press: PressRead<u32>,
+    event: &ScreenEvent<TestHost>,
+) -> (Handled, Vec<Stamped<TestHost>>, bool) {
+    let mut context = cx(view, focus);
+    context.press = press;
     let mut out = Vec::new();
     let mut present = plx_machine::present::Present::new();
     let handled = {
@@ -250,7 +263,7 @@ fn the_pager_is_not_a_focus_stop_and_the_rows_end_pages_instead() {
         Outcome::Edge(EdgeRule::Screen)
     );
     let before = s.carousel.clone();
-    assert!(s.flip(snapshot.view(), 1));
+    assert!(s.flip(snapshot.view(), 1, &PressRead::default()));
     assert_ne!(s.carousel, before);
     assert_eq!(engine.current(owner).unwrap().elem, HERO_INFO_ELEM);
 }
@@ -1787,6 +1800,307 @@ fn activation_across_the_snap_midpoint_is_not_a_canonical_collision() {
         "the same input activates different items, so these cannot be the same logical state");
 }
 
+// --- The hero/grid door: where a press LANDS --------------------------------------------------
+//
+// A human's quick OK after a Dir key across the door lands on what the picture still shows
+// (`visible_activation`); a by-id press names what it presses, so a scripted ARRIVAL clears that
+// remap and lands on exactly the named element. A by-id press of the element focus already rests
+// on cannot clear it, so that element is not loaded (`Focusable::a11y`) while the picture lags and
+// the dispatcher refuses the press as `unloaded`.
+
+/// A page with a poster shelf first, so the door exists (the Continue Watching row stands in view
+/// on the hero's page and has none), and three cards in it. The billboard shows the shelf's FIRST
+/// title, so the test's `card` and `next` are its second and third: a press that lands on the wrong
+/// side of the door acts on a different rating key.
+struct Door {
+    s: HomeScreen,
+    snapshot: plx_data::pms::HubsSnapshot,
+    hero: FocusKey<u32>,
+    card: FocusKey<u32>,
+    next: FocusKey<u32>,
+    hero_rk: String,
+    card_rk: String,
+    next_rk: String,
+}
+
+impl Door {
+    fn new() -> Self {
+        let mut state = plx_data::pms::PmsState::default();
+        let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+        plx_data::pms::seed_grid_for_test(&mut state, &adapter, 1, 3);
+        let snapshot = plx_data::pms::hubs_snapshot(&state);
+        let s = screen(snapshot.view());
+        let view = snapshot.view();
+        let hero = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+        let card = FocusKey { entry: s.entry, elem: s.rows[0].elems[1] };
+        let next = FocusKey { entry: s.entry, elem: s.rows[0].elems[2] };
+        let hero_rk = s.selected_hero(view).expect("the page has a hero").item.rk.to_string();
+        let card_rk = s.item_at(view, 0, 1).expect("the second card").rk.to_string();
+        let next_rk = s.item_at(view, 0, 2).expect("the third card").rk.to_string();
+        assert!(hero_rk != card_rk && hero_rk != next_rk && card_rk != next_rk,
+            "premise: three different titles ({hero_rk}, {card_rk}, {next_rk})");
+        assert!(!s.holds_page(0), "premise: the first shelf is not the Continue Watching row, so the door exists");
+        Self { s, snapshot, hero, card, next, hero_rk, card_rk, next_rk }
+    }
+
+    fn view(&self) -> HubsView<'_> { self.snapshot.view() }
+
+    /// The page at rest on the shelves.
+    fn on_the_shelves(&mut self) {
+        self.s.snap.jump(1.0);
+        self.s.snap_target = 1.0;
+    }
+
+    fn moved(&mut self, from: FocusKey<u32>, to: FocusKey<u32>, by: By) {
+        let view = self.snapshot.view();
+        step(&mut self.s, view, Some(to), &ScreenEvent::FocusMoved { from: Some(from), to, by });
+    }
+
+    /// The press the focus `at` commits, as the requests it emitted: `(kind, rk)`.
+    fn press(&mut self, at: FocusKey<u32>) -> Vec<(&'static str, String)> {
+        let view = self.snapshot.view();
+        let (_, out, _) = step(&mut self.s, view, Some(at), &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
+        out.iter().filter_map(|stamped| match &stamped.fx {
+            Fx::App(AppFx::Home(HomeReq::Play { rk, .. })) => Some(("play", rk.to_string())),
+            Fx::App(AppFx::Home(HomeReq::Detail { rk, .. })) => Some(("detail", rk.to_string())),
+            _ => None,
+        }).collect()
+    }
+
+    /// `(loaded, subject)` the screen projects for `elem` while the engine's focus is `at`.
+    fn projection(&self, elem: u32, at: FocusKey<u32>) -> (bool, Option<String>) {
+        let a = Focusable::<TestHost>::a11y(&self.s, &elem, &cx(self.view(), Some(at))).expect("the element exists");
+        (a.loaded, a.subject.map(|s| s.into_owned()))
+    }
+
+    /// The dive passes its midpoint with focus on `at`: the picture catches up with the engine.
+    fn settle(&mut self, at: FocusKey<u32>) {
+        self.s.snap.jump(if self.s.snap_target >= 0.5 { 1.0 } else { 0.0 });
+        let view = self.snapshot.view();
+        step(&mut self.s, view, Some(at), &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }));
+    }
+}
+
+/// A scripted arrival on a card from the hero's Play, then the press: the card's title opens. The
+/// picture is still on the hero (the dive has not run a frame), and a by-id press puts the move and
+/// the OK in ONE frame, so the remap a human's quick OK gets must not apply to it.
+#[test]
+fn a_scripted_arrival_on_a_card_across_the_door_presses_that_card() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Door::new();
+    let (hero, card) = (d.hero, d.card);
+    d.moved(hero, card, By::Script);
+    assert!(d.s.snap.pos < 0.5, "premise: the picture is still on the hero");
+    assert_eq!(d.press(card), [("detail", d.card_rk.clone())], "the card's title opens, not the hero's");
+}
+
+/// **At 60 fps the dive is still short of its midpoint when the press machine's dip floor is over.** The
+/// machine holds an OK's release for at least its 90 ms floor (`MIN_DIP_MS`, `ui/src/dispatch/press.rs`:
+/// six 60 Hz frames, 100 ms) and commits `COMMIT_MS` (120 ms) after the release, about 200 ms after OK goes
+/// down. The page's snap spring (`K_SNAP`) has crossed only 41% of the door at 100 ms: its midpoint is
+/// 119 ms away. The test delivers the commit at that 100 ms point, earlier than the machine commits, so it
+/// holds the screen's rule while the picture is still on the far side: the remap a key's arrival would leave
+/// is live there, and the scripted press must not get it. (The simulator's Home draws at 11-15 fps and has
+/// crossed the midpoint by its second frame.)
+#[test]
+fn a_scripted_press_committing_after_the_dip_floor_at_60_fps_still_lands_on_its_card() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Door::new();
+    let (hero, card) = (d.hero, d.card);
+    d.moved(hero, card, By::Script);
+    for frame in 0..6 {
+        let view = d.snapshot.view();
+        step(&mut d.s, view, Some(card), &ScreenEvent::Tick(Tick { ms: 16 * (frame + 1), dt_us: 16_667 }));
+    }
+    assert!(d.s.snap.pos > 0.3 && d.s.snap.pos < 0.5,
+        "premise: 100 ms in, the picture is still on the hero ({})", d.s.snap.pos);
+    assert_eq!(d.press(card), [("detail", d.card_rk.clone())], "the card's title opens, not the hero's");
+}
+
+/// The reverse: from a card with the page on the shelves, a scripted arrival on the hero's Play
+/// plays the hero's item, not the card the page came from.
+#[test]
+fn a_scripted_arrival_on_the_hero_across_the_door_presses_the_hero() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Door::new();
+    d.on_the_shelves();
+    let (hero, card) = (d.hero, d.card);
+    d.moved(card, hero, By::Script);
+    assert!(d.s.snap.pos > 0.5, "premise: the picture is still on the shelves");
+    assert_eq!(d.press(hero), [("play", d.hero_rk.clone())], "the hero's item plays, not the card's");
+}
+
+/// A stale remap must not survive a scripted move that crosses no door: a Dir key across it sets
+/// the remap, the scripted move to the card's neighbour (same page) then presses THAT card.
+#[test]
+fn a_scripted_move_within_a_page_clears_the_remap_an_earlier_key_left() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Door::new();
+    let (hero, card, next) = (d.hero, d.card, d.next);
+    d.moved(hero, card, By::Dir);
+    d.moved(card, next, By::Script);
+    assert!(d.s.snap.pos < 0.5, "premise: the picture is still on the hero");
+    assert_eq!(d.press(next), [("detail", d.next_rk.clone())]);
+}
+
+/// The human case is kept: a Dir key across the door and a quick OK activates what the picture
+/// still shows, the hero's Play, in both directions.
+#[test]
+fn a_key_across_the_door_and_a_quick_ok_still_lands_on_what_the_picture_shows() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Door::new();
+    let (hero, card) = (d.hero, d.card);
+    d.moved(hero, card, By::Dir);
+    assert_eq!(d.press(card), [("play", d.hero_rk.clone())], "the picture still shows the hero");
+    d.on_the_shelves();
+    d.s.visible_activation = None;
+    d.moved(card, hero, By::Dir);
+    assert_eq!(d.press(hero), [("detail", d.card_rk.clone())], "the picture still shows the card");
+}
+
+/// A by-id press on the element the engine's focus ALREADY rests on emits no `FocusMoved`
+/// (`FocusEngine::set` answers `Nothing`), so the Script rule cannot clear the remap a key left: the
+/// `[Down, press:X]` batch. And an element with no subject (a linked heading) gives a subject check
+/// nothing to refuse by. So while the focused element's press would land on another element, it is NOT
+/// LOADED, and the dispatcher refuses any by-id press of it as `unloaded` (`ui/src/dispatch/by_id.rs`,
+/// pinned by `input_tests::a_refused_press_emits_no_key_and_a_subject_mismatch_presses_nothing`). Its
+/// `a11y` keeps its own subject; the state file lists none for an element that is not loaded.
+#[test]
+fn the_focused_element_is_not_pressable_while_its_press_would_land_elsewhere() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Door::new();
+    let (hero, card, next) = (d.hero, d.card, d.next);
+    d.moved(hero, card, By::Dir);
+    assert_eq!(d.projection(card.elem, card), (false, Some(d.card_rk.clone())),
+        "the focused card's press lands on the hero: not loaded, and still its own title");
+    assert_eq!(d.projection(next.elem, card), (true, Some(d.next_rk.clone())),
+        "another card is pressed where it stands: a press moves focus to it first");
+    assert_eq!(d.projection(hero.elem, card), (true, Some(d.hero_rk.clone())), "the hero is not the focused one");
+    // the dive passes its midpoint: the picture catches up and the press lands on the card itself
+    d.settle(card);
+    assert_eq!(d.projection(card.elem, card), (true, Some(d.card_rk.clone())));
+    assert_eq!(d.press(card), [("detail", d.card_rk.clone())], "once settled the press acts on the named card");
+    // and the reverse door: from the card to the hero's Play, the picture still on the shelves
+    d.moved(card, hero, By::Dir);
+    assert_eq!(d.projection(hero.elem, hero), (false, Some(d.hero_rk.clone())),
+        "the hero's press would now open the card the picture still shows");
+    assert_eq!(d.projection(card.elem, hero), (true, Some(d.card_rk.clone())));
+    d.settle(hero);
+    assert_eq!(d.projection(hero.elem, hero), (true, Some(d.hero_rk.clone())));
+    assert_eq!(d.press(hero), [("play", d.hero_rk.clone())], "once settled the press acts on the hero's item");
+}
+
+/// How long the lag lasts at 60 fps: the frames between a Dir key across the door and the focused element
+/// being pressable again, which is the picture's snap crossing its midpoint (`K_SNAP`, critically
+/// damped: 8 frames, about 130 ms). Measured in both directions so the prose that quotes it has a test behind it.
+#[test]
+fn the_lag_a_key_leaves_lasts_about_eight_frames_at_60_fps_in_both_directions() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Door::new();
+    let (hero, card) = (d.hero, d.card);
+    let frames_until_pressable = |d: &mut Door, at: FocusKey<u32>| -> u32 {
+        for frame in 1..=60u32 {
+            let view = d.snapshot.view();
+            step(&mut d.s, view, Some(at), &ScreenEvent::Tick(Tick { ms: frame * 17, dt_us: 16_667 }));
+            if d.projection(at.elem, at).0 { return frame; }
+        }
+        panic!("the picture never caught up");
+    };
+    d.moved(hero, card, By::Dir);
+    let down = frames_until_pressable(&mut d, card);
+    d.on_the_shelves(); // the page at rest there, as a key that comes later finds it
+    d.moved(card, hero, By::Dir);
+    let up = frames_until_pressable(&mut d, hero);
+    assert!((6..=10).contains(&down) && (6..=10).contains(&up), "hero to grid {down} frames, grid to hero {up}");
+}
+
+/// A Scripted arrival names what it presses and clears the remap, so the element it lands on is
+/// pressable at once (the round-5 rule, unchanged by the lag rule above).
+#[test]
+fn a_scripted_arrival_leaves_the_focused_element_pressable() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Door::new();
+    let (hero, card) = (d.hero, d.card);
+    d.moved(hero, card, By::Script);
+    assert_eq!(d.projection(card.elem, card), (true, Some(d.card_rk.clone())));
+}
+
+/// A home whose catalog is `rows` (seeded in order), for the linked-heading door tests below.
+fn heading_door(rows: &[(&'static str, &'static str, &'static str)]) -> (HomeScreen, plx_data::pms::HubsSnapshot) {
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_named_hubs_for_test(&mut state, &adapter, 3, rows);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.carousel = Some((plx_plex::plex::ServerId::UNSET, "1".into()));
+    (s, snapshot)
+}
+
+/// Did the requests push a collection page (what OK on a linked heading does)?
+fn pushed_collection(out: &[Stamped<TestHost>]) -> bool {
+    out.iter().any(|stamped| matches!(&stamped.fx, Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Collection(_))))))
+}
+
+/// **A linked heading has no subject, so the lag rule is what protects it.** A Down from the hero seats
+/// the linked heading under the billboard and the door's remap points at the hero's Play. A bare by-id
+/// press of the heading resolves (an element with no subject gives a subject check nothing to refuse
+/// by), moves no focus because it is already seated, and its OK arrives in the same frame: it would PLAY
+/// THE HERO. The heading is not loaded while the picture lags its focus, and the dispatcher refuses it.
+#[test]
+fn a_bare_press_of_a_linked_heading_is_refused_while_the_picture_lags_its_focus() {
+    let _guard = plx_base::testlock::serial();
+    let rows = [COLLECTION_ROWS[1], COLLECTION_ROWS[0]];
+    // the hazard, as a human's quick OK meets it: the OK the heading's press queues plays the hero
+    let (mut human, snapshot) = heading_door(&rows);
+    let hero = FocusKey { entry: human.entry, elem: HERO_PLAY_ELEM };
+    let heading = heading_key(&human, 0);
+    step(&mut human, snapshot.view(), Some(heading), &ScreenEvent::FocusMoved { from: Some(hero), to: heading, by: By::Dir });
+    let (_, out, _) = step(&mut human, snapshot.view(), Some(heading), &ScreenEvent::Activate(heading.elem));
+    assert!(has_home(&out, |r| matches!(r, HomeReq::Play { .. })), "premise: the remap lands the press on the hero");
+
+    // the by-id door: the heading is not pressable until the picture has caught up
+    let (mut s, snapshot) = heading_door(&rows);
+    let view = snapshot.view();
+    step(&mut s, view, Some(heading), &ScreenEvent::FocusMoved { from: Some(hero), to: heading, by: By::Dir });
+    let loaded = |s: &HomeScreen| Focusable::<TestHost>::a11y(s, &heading.elem, &cx(view, Some(heading))).unwrap().loaded;
+    let a = Focusable::<TestHost>::a11y(&s, &heading.elem, &cx(view, Some(heading))).unwrap();
+    assert!(!a.loaded && a.subject.is_none(), "unloaded, and a heading has no subject: {a:?}");
+    assert_eq!(Focusable::<TestHost>::a11y_find(&s, &a.path, &cx(view, Some(heading))), Some(heading.elem),
+        "the id still resolves: `focus:` is unaffected, and the refusal is the press's");
+    // the picture catches up: the press acts on the heading itself
+    s.snap.jump(1.0);
+    step(&mut s, view, Some(heading), &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }));
+    assert!(loaded(&s));
+    let (_, out, _) = step(&mut s, view, Some(heading), &ScreenEvent::Activate(heading.elem));
+    assert!(pushed_collection(&out) && !has_home(&out, |r| matches!(r, HomeReq::Play { .. } | HomeReq::Detail { .. })),
+        "settled, the heading opens its collection and nothing else");
+}
+
+/// The variant from the Continue Watching row: a Down from a deck card to the linked heading under it, then
+/// a bare press of the heading, would RESUME THE CARD (the deck row stands in view on the hero's page, so
+/// the door lies between it and the heading).
+#[test]
+fn a_bare_press_of_a_heading_under_the_deck_is_refused_while_the_picture_lags_its_focus() {
+    let _guard = plx_base::testlock::serial();
+    let _press = deck_press_is(plx_media::route::DeckPress::Play);
+    let rows = [("home.continue", "", "Continue Watching"), COLLECTION_ROWS[1]];
+    let (mut human, snapshot) = heading_door(&rows);
+    let card = FocusKey { entry: human.entry, elem: human.rows[0].elems[0] };
+    let heading = heading_key(&human, 1);
+    step(&mut human, snapshot.view(), Some(heading), &ScreenEvent::FocusMoved { from: Some(card), to: heading, by: By::Dir });
+    let (_, out, _) = step(&mut human, snapshot.view(), Some(heading), &ScreenEvent::Activate(heading.elem));
+    assert!(has_home(&out, |r| matches!(r, HomeReq::Play { .. })), "premise: the remap resumes the deck card");
+
+    let (mut s, snapshot) = heading_door(&rows);
+    let view = snapshot.view();
+    step(&mut s, view, Some(heading), &ScreenEvent::FocusMoved { from: Some(card), to: heading, by: By::Dir });
+    let loaded = |s: &HomeScreen| Focusable::<TestHost>::a11y(s, &heading.elem, &cx(view, Some(heading))).unwrap().loaded;
+    assert!(!loaded(&s), "the heading's press would resume the card: not pressable");
+    s.snap.jump(1.0);
+    step(&mut s, view, Some(heading), &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }));
+    assert!(loaded(&s));
+}
+
 #[test]
 fn the_home_census_covers_input_motion_and_current_projection() {
     let _guard = plx_base::testlock::serial();
@@ -3012,6 +3326,175 @@ fn the_hero_countdown_restarts_when_the_last_modal_is_dismissed() {
     );
 }
 
+/// **Home comes back from a glass menu without damaging itself.** The BACK commit delivers
+/// `Uncover` then `Enter(Restored)` to the host page; page damage raised by either retakes the
+/// frozen host snapshot on the close's first frame (the page redrawn into it, the tab bar's blur
+/// re-sourced, the dim re-latched: 131% of a 60 Hz frame's GPU budget on the TV). What a covered
+/// Home can have missed is the catalog (`sync_catalog`'s generation) and the Under posters setting
+/// that Settings changes while it covers Home (noticed at the head of `step`). Both still damage,
+/// once; nothing else does, and a page that ARRIVES (`Enter(Fresh)`) still paints.
+///
+/// Red while `Uncover` and `Enter` damaged unconditionally.
+#[test]
+fn home_raises_no_damage_coming_back_from_under_a_cover_unless_what_it_draws_changed() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 0, 24, true);
+    let old = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(old.view());
+    // Typed PAGE damage, which is what retakes a frozen host snapshot (`step`'s third answer is
+    // `Present::peek`, and a new gate is dirty before anything happens to it).
+    let damage = |s: &mut HomeScreen, view: HubsView<'_>, event: ScreenEvent<TestHost>| {
+        let context = cx(view, None);
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        {
+            let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(InstanceId(9)), &mut present);
+            Machine::<TestHost>::step(s, &event, &context, &mut fx);
+        }
+        present.page_damaged()
+    };
+
+    // a glass menu's close: Uncover, then Enter(Restored), over an unchanged page
+    assert!(!damage(&mut s, old.view(), ScreenEvent::Cover));
+    assert!(!damage(&mut s, old.view(), ScreenEvent::Uncover), "an unchanged page has nothing to redraw on Uncover");
+    assert!(!damage(&mut s, old.view(), ScreenEvent::Enter(Enter::Restored)), "...nor on Enter(Restored)");
+    assert!(!s.covered);
+
+    // the catalog landed while covered: Uncover still damages, and the Enter after it has nothing left
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 12, 24, true);
+    let next = plx_data::pms::hubs_snapshot(&state);
+    assert_ne!(old.view().generation, next.view().generation, "premise: the catalog changed");
+    damage(&mut s, next.view(), ScreenEvent::Cover);
+    assert!(damage(&mut s, next.view(), ScreenEvent::Uncover), "a catalog that changed under the cover is redrawn");
+    assert!(!damage(&mut s, next.view(), ScreenEvent::Enter(Enter::Restored)));
+
+    // Settings changed Under posters while it covered Home: the caption policy is what the page draws
+    damage(&mut s, next.view(), ScreenEvent::Cover);
+    use plx_plex::plex::session::{UnderPosters, UnderPostersLadder as Details};
+    let before = crate::registry::captions::policy();
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| {
+        cell.set(Some(UnderPosters { title: false, details: Details::None.movie_parts(), show_details: Details::None.show_parts(), sort_value: false }));
+    });
+    let after = crate::registry::captions::policy();
+    let changed = before != after;
+    let damaged = damage(&mut s, next.view(), ScreenEvent::Uncover);
+    let again = damage(&mut s, next.view(), ScreenEvent::Enter(Enter::Restored));
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
+    assert!(changed, "premise: the setting resolved to a different policy");
+    assert!(damaged, "a caption policy that changed under the cover is redrawn");
+    assert!(!again, "...once");
+
+    // a page that ARRIVES paints, whatever it finds
+    assert!(damage(&mut s, next.view(), ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(GroupId(0)) })));
+}
+
+/// **Home, covered, notices that Settings changed what its Continue Watching deck promises.** The
+/// deck's tile draws the press's triangle only while a press plays, which is the Continue Watching
+/// setting Settings changes under a cover: a returning page raises no damage of its own, so `step`'s
+/// head compares it and answers with page damage, once.
+#[test]
+fn home_damages_the_page_when_the_continue_watching_setting_moved_under_a_cover() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 0, 24, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    let mut uncover_under = |mode: plx_media::route::DeckPress| {
+        let _press = deck_press_is(mode);
+        let context = cx(snapshot.view(), None);
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        {
+            let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(InstanceId(9)), &mut present);
+            Machine::<TestHost>::step(&mut s, &ScreenEvent::Uncover, &context, &mut fx);
+        }
+        present.page_damaged()
+    };
+    assert!(!uncover_under(plx_media::route::DeckPress::Details), "control: an unchanged setting damages nothing");
+    assert!(uncover_under(plx_media::route::DeckPress::Play), "the press moved from opening to playing");
+    assert!(!uncover_under(plx_media::route::DeckPress::Play), "...once");
+}
+
+/// **A focus that did not move damages nothing.** A modal's dismissal re-enters the covered page
+/// (`FocusEngine::enter`), which announces the key it already holds as `FocusMoved { from: Some(k),
+/// to: k, by: Restore }`: the page was only covered, so the focus the snapshot was drawn with is the
+/// focus it comes back to. Home raised `Input` page damage for it, and typed page damage is what
+/// retakes the host snapshot on the close's first frame (the account menu's BACK, with the chip
+/// focused: 14.9M GPU cycles against an 11.2M budget on the TV). A real move, and a restore that
+/// jumps the page to its saved place, still repaint.
+#[test]
+fn home_raises_no_damage_for_a_restore_onto_the_focus_it_already_holds() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 0, 24, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    let damage = |s: &mut HomeScreen, focus: Option<FocusKey<u32>>, event: ScreenEvent<TestHost>| {
+        let context = cx(view, focus);
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        {
+            let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(InstanceId(9)), &mut present);
+            Machine::<TestHost>::step(s, &event, &context, &mut fx);
+        }
+        present.page_damaged()
+    };
+    let hero = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+    let card = FocusKey { entry: s.entry, elem: s.rows[0].elems[0] };
+
+    assert!(!damage(&mut s, Some(hero), ScreenEvent::FocusMoved { from: Some(hero), to: hero, by: By::Restore }),
+        "a restore onto the focus the page already holds moves nothing");
+    assert!(damage(&mut s, Some(card), ScreenEvent::FocusMoved { from: Some(hero), to: card, by: By::Dir }),
+        "a key that moves focus still repaints the page");
+    assert!(damage(&mut s, Some(hero), ScreenEvent::FocusMoved { from: None, to: hero, by: By::Restore }),
+        "a restore that lands focus where it was not still repaints");
+    // the dispatcher's `RestoreMemory` re-arms the saved-place jump on every dismissal's host page
+    s.restore_reveal = true;
+    assert!(!damage(&mut s, Some(hero), ScreenEvent::FocusMoved { from: Some(hero), to: hero, by: By::Restore }),
+        "a jump to the place the page already stands at moves nothing");
+    assert!(!s.restore_reveal, "premise: the jump was taken");
+    s.restore_reveal = true;
+    s.snap.jump(1.0);
+    assert!(damage(&mut s, Some(hero), ScreenEvent::FocusMoved { from: Some(hero), to: hero, by: By::Restore }),
+        "a jump that moves the page repaints it");
+}
+
+/// **A dismissal's `RestoreMemory` damages only a page it moves.** The dispatcher hands the host page
+/// its own memory back on every modal's close; a page that was only covered stands where it was
+/// frozen, so it repaints nothing (the account menu's BACK), while a body minted again lands at the
+/// remembered place and does.
+#[test]
+fn home_raises_damage_for_a_restored_memory_only_when_it_moves_the_page() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 0, 24, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let damage = |s: &mut HomeScreen, memory: HomeMemory| {
+        let context = cx(view, None);
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        {
+            let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(InstanceId(9)), &mut present);
+            Machine::<TestHost>::step(s, &ScreenEvent::RestoreMemory(PageMemory::Home(memory)), &context, &mut fx);
+        }
+        present.page_damaged()
+    };
+    let mut covered = screen(view);
+    covered.grid.scroll_y.jump(120.0);
+    covered.grid.scroll_target = 120.0;
+    let memory = memory_of(&covered);
+    assert!(!damage(&mut covered, memory.clone()), "a covered page handed its own memory stands where it was");
+    let mut remounted = screen(view);
+    assert!(damage(&mut remounted, memory), "a page minted again lands at the remembered place");
+}
+
 /// `HomeCmd::PinHero` — the screenshot pipeline's hero pin (`/tmp/plxnative-heropin=<n>`) —
 /// selects that slot and HOLDS it: the auto-advance never fires, however long the page sits
 /// uncovered, so a capture taken at any settled moment shows the same billboard.
@@ -3083,6 +3566,32 @@ fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
     let from = Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None };
     assert_eq!(Focusable::<TestHost>::seat(&s, PLAINTEXT_GROUP, from, &context).elem, PLAINTEXT_CANCEL_ELEM,
         "seated on Not now");
+
+    // One question, one id set: Home answers the three accessibility hooks with the alert's own,
+    // so `alert.not_now` / `alert.connect` read the same wherever the question opens, and the page
+    // under it is no owner's while it is open.
+    let alert = &s.plaintext_alert;
+    let (mut ours, mut theirs) = (Vec::new(), Vec::new());
+    Focusable::<TestHost>::a11y_elems(&s, PLAINTEXT_GROUP, &context, &mut ours);
+    assert!(alert.a11y_elems(PLAINTEXT_GROUP, &mut theirs), "the open alert owns its group's listing");
+    assert_eq!(ours, theirs);
+    assert_eq!(ours, [PLAINTEXT_CANCEL_ELEM, PLAINTEXT_CONNECT_ELEM]);
+    for key in ours {
+        let home = Focusable::<TestHost>::a11y(&s, &key, &context).expect("an answer projects");
+        let own = alert.a11y(key).flatten().expect("the alert projects its own answer");
+        assert_eq!(home, own);
+        assert_eq!(
+            Focusable::<TestHost>::a11y_find(&s, &own.path, &context),
+            alert.a11y_find(&own.path).flatten()
+        );
+        assert_eq!(Focusable::<TestHost>::a11y_find(&s, &own.path, &context), Some(key));
+    }
+    let hero_path = A11yPath::parse_relative("hero.play").unwrap();
+    assert!(Focusable::<TestHost>::a11y(&s, &HERO_PLAY_ELEM, &context).is_none());
+    assert_eq!(Focusable::<TestHost>::a11y_find(&s, &hero_path, &context), None);
+    let mut under = Vec::new();
+    Focusable::<TestHost>::a11y_elems(&s, HERO_GROUP, &context, &mut under);
+    assert!(under.is_empty(), "the page under the question lists nothing");
 
     let connect = Some(FocusKey { entry, elem: PLAINTEXT_CONNECT_ELEM });
     let (_, answered, _) = step(&mut s, view, connect, &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
@@ -7012,4 +7521,213 @@ fn the_backdrop_has_its_name_back_after_a_trip_to_the_grid() {
     run(&mut s, 900);
     assert_eq!((s.snap.pos, s.snap.vel), (0.0, 0.0), "the dive has parked on the hero, position and velocity");
     assert_eq!(name(&s), Some(parked), "back at the hero the backdrop is the picture it was, with its name");
+}
+
+// ---- A hero control's press plays the title it was armed on, whatever the carousel does in its dip ----
+
+/// What the press machine reads while a press stands on `elem` of `s`'s page: live, dipping, and the
+/// owner is the pressed element (`InputMachine::press_read`).
+fn press_on(s: &HomeScreen, elem: u32) -> PressRead<u32> {
+    PressRead {
+        scale: 0.97, identity: 1, live: true, active: true,
+        owner: Some(FocusKey { entry: s.entry, elem }), ..Default::default()
+    }
+}
+
+/// The read of a press that was CANCELLED (a direction key moved focus off its element, BACK, a
+/// declined hold): `live` is gone at the cancel while the spring-back is still on screen (`active`) and
+/// the owner is retained for it (`press::a_cancelled_press_stops_being_live_while_it_is_still_on_screen`).
+fn press_cancelled_on(s: &HomeScreen, elem: u32) -> PressRead<u32> {
+    PressRead { live: false, ..press_on(s, elem) }
+}
+
+fn hero_tick_16(frame: u32) -> ScreenEvent<TestHost> {
+    ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_667 })
+}
+
+/// Three heroes, Home parked at the hero with the countdown `left` seconds from turning the page.
+fn countdown_at(left: f32) -> (plx_data::pms::HubsSnapshot, HomeScreen) {
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 3, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    assert!(snapshot.view().hero_count() > 1, "the auto-advance only arms with more than one hero slot");
+    let mut s = screen(snapshot.view());
+    s.hero_auto = left;
+    (snapshot, s)
+}
+
+fn shown_rk(s: &HomeScreen) -> String {
+    s.carousel.as_ref().map(|(_, rk)| rk.clone()).expect("the carousel shows a hero")
+}
+
+/// Ticks `s` with no press until the carousel turns (or `limit` frames pass) and says how many it took.
+fn frames_until_the_carousel_turns(
+    s: &mut HomeScreen, view: HubsView<'_>, focus: FocusKey<u32>, from: u32, limit: u32,
+) -> Option<u32> {
+    let before = shown_rk(s);
+    (1..=limit).find(|n| {
+        step(s, view, Some(focus), &hero_tick_16(from + n));
+        shown_rk(s) != before
+    })
+}
+
+/// **Review finding on PR #1442, round 7: the carousel can turn inside a hero press's dip.** A hero
+/// control is a `Control`: OK arms a press that commits about 200 ms after OK goes down (`MIN_DIP_MS` +
+/// `COMMIT_MS`), and the commit re-reads the title the billboard shows. Pressing the control that already has focus moves no focus,
+/// so nothing restarted the 8 s countdown; if it ran out inside the dip the page turned and a press
+/// accepted against one title (`press home.hero.play --rk X`, or a person's OK a moment before the turn)
+/// played the next page's. **Round 8:** a press on a hero control restarts the countdown, as a focus move
+/// does, every tick it stands; so the press plays the title it was armed on, and no turn is OWED when it
+/// settles (a turn owed during the dip fired on the first tick after Play or Info, often the person's
+/// return to Home): the next one comes a full interval after the press.
+#[test]
+fn a_hero_press_plays_the_title_it_was_armed_on_when_the_countdown_runs_out_inside_its_dip() {
+    let _guard = plx_base::testlock::serial();
+    for elem in [HERO_PLAY_ELEM, HERO_INFO_ELEM] {
+        // 0.05 s left: three 16.667 ms frames would run it out, inside the six press frames below
+        // (`the_carousel_turns_on_schedule_...` pins that this schedule turns the page at frame 3)
+        let (snapshot, mut s) = countdown_at(0.05);
+        let view = snapshot.view();
+        let armed_on = shown_rk(&s);
+        let focus = FocusKey { entry: s.entry, elem };
+        let press = press_on(&s, elem);
+        for frame in 1..=6 {
+            step_pressed(&mut s, view, Some(focus), press, &hero_tick_16(frame));
+            assert_eq!(shown_rk(&s), armed_on, "frame {frame}: the carousel turned under the press");
+            assert!(s.outgoing.is_none(), "frame {frame}: a page slide began under the press");
+            assert_eq!(s.hero_auto, HERO_AUTO_S, "frame {frame}: the press did not restart the countdown");
+        }
+        let (_, out, _) = step_pressed(&mut s, view, Some(focus), press,
+            &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
+        let acted = if elem == HERO_PLAY_ELEM {
+            has_home(&out, |r| matches!(r, HomeReq::Play { rk, .. } if *rk == armed_on))
+        } else {
+            has_home(&out, |r| matches!(r, HomeReq::Detail { rk, .. } if *rk == armed_on))
+        };
+        assert!(acted, "elem {elem}: the press did not act on the title it was armed on ({armed_on}) among {} effects", out.len());
+        // The press settles (the spring-back is over: no press is live). Nothing is owed: the page
+        // does not turn on this tick or the next, only after a full interval from here.
+        let turned_after = frames_until_the_carousel_turns(&mut s, view, focus, 6, 600)
+            .expect("the carousel turns again once the press has settled");
+        assert!(turned_after > 400,
+            "elem {elem}: the page turned {turned_after} frames after the press settled; no turn is owed");
+        assert!(
+            (turned_after as f32 * 0.016_667 - HERO_AUTO_S).abs() < 0.05,
+            "elem {elem}: turned {turned_after} frames after the press, not a full {HERO_AUTO_S} s interval later"
+        );
+        assert!(s.outgoing.is_some(), "and it slides");
+    }
+}
+
+/// **The countdown is not stopped by anything else.** No press, a press on another page's element, a
+/// press on a shelf card, and a CANCELLED press (`live` is gone at the cancel while `active` and the
+/// owner stay for the spring-back) each leave the carousel turning on schedule: the hold reads `live`
+/// and the hero owner, not `active`, not the owner alone.
+#[test]
+fn the_carousel_turns_on_schedule_unless_a_press_stands_on_one_of_its_hero_controls() {
+    let _guard = plx_base::testlock::serial();
+    let reads: Vec<(&str, Box<dyn Fn(&HomeScreen) -> PressRead<u32>>)> = vec![
+        ("no press", Box::new(|_| PressRead::default())),
+        ("a cancelled hero press, still springing back", Box::new(|s| press_cancelled_on(s, HERO_PLAY_ELEM))),
+        ("a press on a card of a shelf", Box::new(|s| press_on(s, s.rows[0].elems[0]))),
+        ("a press on another page's hero control", Box::new(|s| PressRead {
+            owner: Some(FocusKey { entry: EntryId(s.entry.0 + 1), elem: HERO_PLAY_ELEM }), ..press_on(s, HERO_PLAY_ELEM)
+        })),
+    ];
+    for (what, read) in reads {
+        let (snapshot, mut s) = countdown_at(0.05);
+        let view = snapshot.view();
+        let before = shown_rk(&s);
+        let focus = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+        let press = read(&s);
+        for frame in 1..=2 {
+            step_pressed(&mut s, view, Some(focus), press, &hero_tick_16(frame));
+            assert_eq!(shown_rk(&s), before, "{what}: turned early, at frame {frame}");
+        }
+        step_pressed(&mut s, view, Some(focus), press, &hero_tick_16(3));
+        assert_ne!(shown_rk(&s), before, "{what}: the countdown ran out and the page did not turn");
+        assert!(s.outgoing.is_some(), "{what}: and it slides");
+    }
+}
+
+/// **A cancelled press releases the hold, and the countdown runs from where the restart left it.** The
+/// press restarts the countdown through its dip (the page does not turn, `hero_auto` rests at its full
+/// length), and the frame its read says it was cancelled the countdown is counting again from that full
+/// length: one tick off it, the page still the one shown, and the turn a full interval after the press.
+#[test]
+fn a_cancelled_hero_press_releases_the_carousel() {
+    let _guard = plx_base::testlock::serial();
+    let (snapshot, mut s) = countdown_at(0.05);
+    let view = snapshot.view();
+    let before = shown_rk(&s);
+    let focus = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
+    let held = press_on(&s, HERO_PLAY_ELEM);
+    for frame in 1..=5 {
+        step_pressed(&mut s, view, Some(focus), held, &hero_tick_16(frame));
+    }
+    assert_eq!(shown_rk(&s), before, "held through the dip");
+    assert_eq!(s.hero_auto, HERO_AUTO_S, "the premise: the press restarted the countdown");
+    let cancelled = press_cancelled_on(&s, HERO_PLAY_ELEM);
+    step_pressed(&mut s, view, Some(focus), cancelled, &hero_tick_16(6));
+    assert!(
+        (s.hero_auto - (HERO_AUTO_S - 0.016_667)).abs() < 1e-4,
+        "the cancel released the hold: the countdown ran one tick from its full length, got {}",
+        s.hero_auto
+    );
+    assert_eq!(shown_rk(&s), before, "no turn is owed for the dip the press held");
+    assert!(s.outgoing.is_none());
+    let turned_after = frames_until_the_carousel_turns(&mut s, view, focus, 6, 600)
+        .expect("the carousel turns once the countdown has run its length");
+    assert!(
+        ((turned_after + 1) as f32 * 0.016_667 - HERO_AUTO_S).abs() < 0.05,
+        "turned {turned_after} frames after the cancel tick, not a full interval after the press"
+    );
+}
+
+/// **The other two turns are refused while a hero press stands, and dropped, not kept.** Right at the
+/// hero's edge moves no focus (so it does not abandon the press) and `HomeCmd::Flip` is addressed to the
+/// page: both go through the one turn, which refuses (`Handled::No`) so neither can replace the title under
+/// a press. Nothing is queued: once the press has settled the page has not turned, and the caller sends
+/// the turn again. Both work as ever with no press.
+#[test]
+fn a_manual_turn_is_refused_while_a_hero_press_stands_and_not_applied_after() {
+    let _guard = plx_base::testlock::serial();
+    let (snapshot, mut s) = countdown_at(HERO_AUTO_S);
+    let view = snapshot.view();
+    let before = shown_rk(&s);
+    let focus = FocusKey { entry: s.entry, elem: HERO_INFO_ELEM };
+    let press = press_on(&s, HERO_INFO_ELEM);
+
+    let (handled, _, _) = step_pressed(&mut s, view, Some(focus), press, &hero_edge_right());
+    assert_eq!(handled, Handled::No, "the edge key is not taken while a press stands");
+    let (handled, _, _) = step_pressed(&mut s, view, Some(focus), press,
+        &ScreenEvent::App(AppMsg::Home(HomeCmd::Flip(1))));
+    assert_eq!(handled, Handled::No);
+    assert_eq!(shown_rk(&s), before, "neither turned the page under the press");
+    assert!(s.outgoing.is_none());
+    // the press settles: the refused turns are not owed
+    step(&mut s, view, Some(focus), &hero_tick_16(1));
+    assert_eq!(shown_rk(&s), before, "a refused turn is dropped, not applied when the press settles");
+    assert!(s.outgoing.is_none());
+
+    let (handled, _, _) = step(&mut s, view, Some(focus), &hero_edge_right());
+    assert_eq!(handled, Handled::Yes, "with no press the edge key turns the page as ever");
+    assert_ne!(shown_rk(&s), before);
+}
+
+/// The predicate itself, over the three hero slots: Play, Info and the bookmark disc are hero controls
+/// (`Located::Hero`), a shelf card and another page's element are not, and only a LIVE press counts.
+#[test]
+fn a_press_is_armed_on_the_hero_when_it_is_live_and_its_owner_is_one_of_this_pages_hero_controls() {
+    let _guard = plx_base::testlock::serial();
+    let (snapshot, s) = countdown_at(HERO_AUTO_S);
+    let _ = snapshot;
+    for elem in [HERO_PLAY_ELEM, HERO_INFO_ELEM, HERO_WATCHLIST_ELEM] {
+        assert!(s.hero_press_armed(&press_on(&s, elem)), "elem {elem}");
+        assert!(!s.hero_press_armed(&press_cancelled_on(&s, elem)), "a cancelled press on {elem}");
+    }
+    assert!(!s.hero_press_armed(&PressRead::default()));
+    assert!(!s.hero_press_armed(&press_on(&s, s.rows[0].elems[0])), "a shelf card");
+    assert!(!s.hero_press_armed(&PressRead { owner: None, ..press_on(&s, HERO_PLAY_ELEM) }), "no owner");
 }

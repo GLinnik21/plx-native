@@ -164,7 +164,13 @@ const APP_SHAPES: &[&str] = &[
 /// Product wire compatibility joins the existing TextInputWire/content codec census. The
 /// generic frame envelope is schema 3; product recordings without ordered resolutions and
 /// canonical final focus must be refused before parsing/boot, including Targets mode.
-const RESOLUTION_SHAPE: &str = "ProductResolutionV1{fo:Option<(entry:u32,elem:u32,group:Option<u32>)>,rs:ordered<Focus{phase:u8,entry:u32,focus:Option<(u32,u32)>,group:Option<u32>,outcome:u8,from:Option<(u32,u32)>,to:Option<(u32,u32)>,by:u8}|Hit{phase:u8,entry:Option<u32>,hit:Option<(u32,u32)>,focus:Option<(u32,u32)>,activate:Option<((u32,u32),u8)>,miss:bool}>,input:post-hit,metrics:Width(bytes,i32,bool)|Cap(i32)|Line(i32)->f32bits}";
+const RESOLUTION_SHAPE: &str = "ProductResolutionV2{fo:Option<(entry:u32,elem:u32,group:Option<u32>)>,rs:ordered<Focus{phase:u8,entry:u32,focus:Option<(u32,u32)>,group:Option<u32>,outcome:u8,from:Option<(u32,u32)>,to:Option<(u32,u32)>,by:u8}|Hit{phase:u8,entry:Option<u32>,hit:Option<(u32,u32)>,focus:Option<(u32,u32)>,activate:Option<((u32,u32),u8)>,miss:bool}|Id{entry:u32,focus:Option<(u32,u32)>,group:Option<u32>,refusal:u8}>,input:post-hit,metrics:Width(bytes,i32,bool)|Cap(i32)|Line(i32)->f32bits}";
+
+/// The census before the by-id `Id` row. The frozen session-codec vectors and the historical
+/// profile identities were graded under these bytes, so they keep them (`state_fp_v7`,
+/// `session_app_prior_vector`): a changed current shape must not move what history was computed from.
+#[cfg(test)]
+const RESOLUTION_SHAPE_V1: &str = "ProductResolutionV1{fo:Option<(entry:u32,elem:u32,group:Option<u32>)>,rs:ordered<Focus{phase:u8,entry:u32,focus:Option<(u32,u32)>,group:Option<u32>,outcome:u8,from:Option<(u32,u32)>,to:Option<(u32,u32)>,by:u8}|Hit{phase:u8,entry:Option<u32>,hit:Option<(u32,u32)>,focus:Option<(u32,u32)>,activate:Option<((u32,u32),u8)>,miss:bool}>,input:post-hit,metrics:Width(bytes,i32,bool)|Cap(i32)|Line(i32)->f32bits}";
 
 /// The state SHAPE of the product hash: bump by changing a `SHAPE` string, never silently.
 ///
@@ -271,7 +277,7 @@ pub(crate) fn state_fp_v7() -> u64 {
         .expect("controlled initial shape");
     *shape = super::bootstrap::SHAPE_V7;
     shapes.push(super::bootstrap::CONTENT_SHAPE);
-    shapes.push(RESOLUTION_SHAPE);
+    shapes.push(RESOLUTION_SHAPE_V1);
     shapes.push("CaptureReadinessV2{before_dispatch:pending:bool,text:bool}");
     shapes.push("MeasurementV1{query:Width(text:bytes,sz:i32,bold:bool)|Cap(sz:i32)|Line(sz:i32),answer:f32bits:u32}");
     shapes.extend_from_slice(plx_screens::registry::SCREEN_SHAPES);
@@ -286,7 +292,7 @@ fn session_app_prior_vector() -> Vec<&'static str> {
     // This test's session-codec census is frozen history, not today's product shape.
     shapes[3] = "AppFrameV4{route:str,overlay:str,focus:str,tree:u64,session:u64,consent:u64,initial:u64}";
     shapes.push(super::bootstrap::CONTENT_SHAPE);
-    shapes.push(RESOLUTION_SHAPE);
+    shapes.push(RESOLUTION_SHAPE_V1);
     shapes.push("CaptureReadinessV2{before_dispatch:pending:bool,text:bool}");
     shapes.push("MeasurementV1{query:Width(text:bytes,sz:i32,bold:bool)|Cap(sz:i32)|Line(sz:i32),answer:f32bits:u32}");
     shapes.extend_from_slice(plx_screens::registry::SCREEN_SHAPES);
@@ -441,6 +447,9 @@ enum ResolutionWire {
         outcome: u8, from: Option<WireKey>, to: Option<WireKey>, by: u8 },
     Hit { phase: u8, entry: Option<u32>, hit: Option<WireKey>, focus: Option<WireKey>,
         activate: Option<(WireKey, u8)>, miss: bool },
+    /// One `InputKind::ById`, asked at its ordered delivery position: the element it named (and
+    /// the group it is in) or `refusal`, an `IdRefusal::code` (0 is "resolved").
+    Id { entry: u32, focus: Option<WireKey>, group: Option<u32>, refusal: u8 },
 }
 
 fn wire_key(k: plx_machine::machine::FocusKey<u32>) -> WireKey { (k.entry.0, k.elem) }
@@ -459,7 +468,9 @@ impl ResolutionWire {
         let (outcome, from, to, by) = match answer.outcome {
             Outcome::Nothing => (0,None,None,0),
             Outcome::Moved { from, to, by } => (1, from.map(wire_key), Some(wire_key(to)),
-                match by { By::Dir=>0, By::Pointer=>1, By::Restore=>2, By::Reconcile=>3 }),
+                // 4 is `By::Script`: a by-id move is resolved by an `Id` row, never a `Focus` row,
+                // so `focus_answer` refuses 4 as a Focus row's cause.
+                match by { By::Dir=>0, By::Pointer=>1, By::Restore=>2, By::Reconcile=>3, By::Script=>4 }),
             Outcome::Edge(rule) => (match rule { EdgeRule::Geometric=>2, EdgeRule::Stop=>3,
                 EdgeRule::Screen=>4, EdgeRule::Nav(NavOpKind::Back)=>5, EdgeRule::Nav(NavOpKind::Dismiss)=>6 },None,None,0),
         };
@@ -504,15 +515,45 @@ impl ResolutionWire {
         Ok(plx_ui::hit::Resolution { hit:hit.map(focus_key), focus:focus.map(focus_key), miss,
             activate:activate.map(|(k,a)|(focus_key(k), match a { 0=>Activate::Press,1=>Activate::Immediate,_=>Activate::Direct })) })
     }
+    fn id(entry: plx_machine::machine::EntryId, answer: plx_ui::dispatch::IdAnswer<u32>) -> Self {
+        Self::Id { entry:entry.0, focus:answer.focus.map(wire_key), group:answer.group.map(|g|g.0),
+            refusal:answer.refusal.map_or(0, |why|why.code()) }
+    }
+    fn id_answer(&self) -> Result<plx_ui::dispatch::IdAnswer<u32>, &'static str> {
+        use plx_ui::dispatch::{IdAnswer, IdRefusal};
+        let Self::Id { entry, focus, group, refusal } = *self else { return Err("wrong resolution family"); };
+        let refusal = match refusal {
+            0 => None,
+            code => Some(IdRefusal::from_code(code).ok_or("invalid id refusal")?),
+        };
+        let valid = match refusal {
+            // an element of the row's own entry, in a group or not
+            None => entry != 0 && focus.is_some_and(|k| k.0 == entry),
+            // a refusal names no element and no group; entry 0 is a by-id input no page was
+            // addressed (the one reason that has no entry to name)
+            Some(why) => focus.is_none() && group.is_none() && (entry != 0 || why == IdRefusal::NoOwner),
+        };
+        if !valid { return Err("invalid id resolution"); }
+        Ok(IdAnswer { focus:focus.map(focus_key), group:group.map(plx_machine::machine::GroupId), refusal })
+    }
     fn decode(value: Value) -> Result<Self, &'static str> {
         let v: Self = serde_json::from_value(value.clone()).map_err(|_|"invalid resolution encoding")?;
         // Option fields must be explicit null, not omitted.
         if serde_json::to_value(&v).ok().as_ref()!=Some(&value) { return Err("noncanonical resolution"); }
-        match &v { Self::Focus { .. } => { v.focus_answer()?; }, Self::Hit { .. } => { v.hit_answer()?; } }
+        match &v {
+            Self::Focus { .. } => { v.focus_answer()?; },
+            Self::Hit { .. } => { v.hit_answer()?; },
+            Self::Id { .. } => { v.id_answer()?; },
+        }
         Ok(v)
     }
-    fn identity(&self) -> (bool,u8,Option<u32>) {
-        match self { Self::Focus {phase,entry,..}=>(true,*phase,Some(*entry)), Self::Hit {phase,entry,..}=>(false,*phase,*entry) }
+    /// `(family, phase, entry)`: the family is 0 Focus, 1 Hit, 2 Id (the order the rows are asked in).
+    fn identity(&self) -> (u8,u8,Option<u32>) {
+        match self {
+            Self::Focus {phase,entry,..}=>(0,*phase,Some(*entry)),
+            Self::Hit {phase,entry,..}=>(1,*phase,*entry),
+            Self::Id {entry,..}=>(2,0,Some(*entry)),
+        }
     }
 }
 
@@ -653,6 +694,8 @@ pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootst
     Ok(())
 }
 pub(crate) fn validate_resolution_recording(recording:&Recording) -> Result<(), &'static str> {
+    // By-id inputs tapped so far and not yet resolved: see the pairing note below.
+    let mut id_owed = 0usize;
     for frame in &recording.frames {
         if frame.focus.is_none() { return Err("missing controlled focus truth"); }
         if frame.focus.flatten().is_some_and(|(entry,_,_)|entry==0) { return Err("invalid focus entry"); }
@@ -668,19 +711,34 @@ pub(crate) fn validate_resolution_recording(recording:&Recording) -> Result<(), 
         // Legacy pointers have no rs rows; current product pages are all Engine pages. Runtime
         // observation accounting still protects generic legacy test doubles.
         if hits!=pointer_inputs { return Err("incoherent pointer truth"); }
+        // Every by-id input is resolved exactly once, at its ORDERED DELIVERY position, and that
+        // position is not the pre-pass a pointer resolves in: a delivery the drain's budget carried
+        // runs in a later frame than the one that tapped it. A pointer's Hit rows therefore pair
+        // with its frame's inputs exactly, while Id rows pair as a running balance: a frame's rows
+        // are those of inputs tapped in this frame or an earlier one (a row ahead of its input is an
+        // extra row), and the balance is zero at the end (an input left over has no row). With
+        // nothing carried this is the exact per-frame pairing.
+        id_owed += frame.inputs.iter().filter(|row|matches!(decode_input(row),
+            Ok(plx_machine::machine::InputEvent{kind:plx_machine::machine::InputKind::ById{..},..}))).count();
+        let id_rows = frame.resolutions.iter().filter(|row|row["payload"]["kind"]=="Id").count();
+        id_owed = id_owed.checked_sub(id_rows).ok_or("id resolution without a by-id input")?;
     }
+    if id_owed != 0 { return Err("by-id input without an id resolution"); }
     Ok(())
 }
 impl Replay {
-    fn resolution_diff(&mut self, focus: bool, reason: &'static str, index: usize, hashes:Option<(u64,u64)>) {
-        if focus { self.resolution.focus_diffs += 1; } else { self.resolution.hit_diffs += 1; }
+    /// `family` is [`ResolutionWire::identity`]'s first term. By-id and pointer truth share the
+    /// `hit_diffs` counter (the `done` line's fields are read by tools and stay as they are); the
+    /// log line's `resolution=` word tells them apart.
+    fn resolution_diff(&mut self, family: u8, reason: &'static str, index: usize, hashes:Option<(u64,u64)>) {
+        if family == 0 { self.resolution.focus_diffs += 1; } else { self.resolution.hit_diffs += 1; }
         // Focus/hit truth is a subset of INPUT-resolution grading. Keep it in input_diffs too:
         // the existing adoption gate refuses input differences, including state-only rebaseline
         // with an unrelated state mismatch. Dedicated counters identify the exact subcategory.
         self.input_diffs += 1;
         let hashes=hashes.map(|(expected,got)|format!(" expected={expected:#018x} got={got:#018x}")).unwrap_or_default();
         plx_base::eventlog::log(&format!("replay: input diverge f={} resolution_index={index} reason={reason} resolution={}{hashes}",
-            self.rec.frames.get(self.at).map_or(self.at as u64,|f|f.f), if focus { "focus" } else { "hit" }));
+            self.rec.frames.get(self.at).map_or(self.at as u64,|f|f.f), ["focus","hit","id"][usize::from(family)]));
     }
     fn same(&self) -> bool {
         self.failure.is_none() && self.diverged == 0 && self.present_diffs == 0
@@ -705,7 +763,7 @@ impl plx_ui::dispatch::ReplayAuthority<super::bridge::AppHost> for Recplay {
     fn resolve_focus(&mut self, _f:u64, phase:u8, entry:plx_machine::machine::EntryId,
         actual:Option<plx_ui::dispatch::FocusAnswer<u32>>) -> Option<plx_ui::dispatch::FocusAnswer<u32>> {
         if matches!(self,Self::Off) { return actual; }
-        self.resolve_observation((true,phase,Some(entry.0)), actual.map(|a|ResolutionWire::focus(phase,entry,a)))
+        self.resolve_observation((0,phase,Some(entry.0)), actual.map(|a|ResolutionWire::focus(phase,entry,a)))
             .and_then(|v|v.focus_answer().ok())
     }
     fn resolve_hit(&mut self, _f:u64, kind:plx_ui::hit::PointerKind, entry:Option<plx_machine::machine::EntryId>,
@@ -713,8 +771,14 @@ impl plx_ui::dispatch::ReplayAuthority<super::bridge::AppHost> for Recplay {
         if matches!(self,Self::Off) { return actual; }
         use plx_ui::hit::PointerKind;
         let phase = match kind { PointerKind::Move=>0, PointerKind::Click=>1, PointerKind::Drag=>2 };
-        self.resolve_observation((false,phase,entry.map(|e|e.0)),actual.map(|a|ResolutionWire::hit(phase,entry,a)))
+        self.resolve_observation((1,phase,entry.map(|e|e.0)),actual.map(|a|ResolutionWire::hit(phase,entry,a)))
             .and_then(|v|v.hit_answer().ok())
+    }
+    fn resolve_id(&mut self, _f:u64, entry:plx_machine::machine::EntryId,
+        actual:Option<plx_ui::dispatch::IdAnswer<u32>>) -> Option<plx_ui::dispatch::IdAnswer<u32>> {
+        if matches!(self,Self::Off) { return actual; }
+        self.resolve_observation((2,0,Some(entry.0)),actual.map(|a|ResolutionWire::id(entry,a)))
+            .and_then(|v|v.id_answer().ok())
     }
     fn focus_continuation(&mut self, _f:u64, engine:bool, actual:Option<(u32,u32,Option<u32>)>)
         -> Option<Option<(u32,u32,Option<u32>)>> {
@@ -854,7 +918,7 @@ impl Recplay {
         FrameHashProfile::OwnedV5
     }
 
-    fn resolve_observation(&mut self, identity:(bool,u8,Option<u32>), actual:Option<ResolutionWire>) -> Option<ResolutionWire> {
+    fn resolve_observation(&mut self, identity:(u8,u8,Option<u32>), actual:Option<ResolutionWire>) -> Option<ResolutionWire> {
         match self {
             Self::Off => actual,
             Self::Recording(r) => {
@@ -1266,14 +1330,15 @@ impl Recplay {
                 r.started = true;
                 let remaining = r.rec.frames.get(r.at).map_or(0,|f|f.resolutions.len()).saturating_sub(r.resolution.at);
                 for index in r.resolution.at..r.resolution.at+remaining {
-                    let focus = r.rec.frames[r.at].resolutions[index]["payload"]["kind"]=="Focus";
-                    r.resolution_diff(focus,"missing",index,None);
+                    let family = match r.rec.frames[r.at].resolutions[index]["payload"]["kind"].as_str() {
+                        Some("Focus") => 0, Some("Id") => 2, _ => 1 };
+                    r.resolution_diff(family,"missing",index,None);
                 }
                 if let Some(expected) = r.rec.frames.get(r.at).and_then(|f|f.focus) {
                     if !r.resolution.final_seen {
-                        r.resolution_diff(true,"missing-final",r.resolution.at,None);
+                        r.resolution_diff(0,"missing-final",r.resolution.at,None);
                     } else if r.resolution.final_focus != expected {
-                        r.resolution_diff(true,"changed-final",r.resolution.at,Some((
+                        r.resolution_diff(0,"changed-final",r.resolution.at,Some((
                             resolution_hash(&expected),resolution_hash(&r.resolution.final_focus))));
                         r.failure=Some("final focus continuation was not applied");
                     }
@@ -2134,6 +2199,46 @@ mod tests {
         plx_machine::landgate::disarm();
     }
 
+    /// **An Id row pairs with its by-id input**: exactly in a frame with nothing carried, and as a
+    /// running balance when the drain's budget carried the delivery into a later frame. A missing row,
+    /// an extra row, and a row that runs AHEAD of its input are all refused.
+    #[test]
+    fn a_by_id_input_pairs_with_one_id_row_and_a_missing_or_extra_row_is_refused() {
+        use plx_machine::machine::{InputEvent, InputKind, Source, Tick};
+        let initial=super::super::bootstrap::Initial::synthetic_home(1,32517,None).unwrap();
+        let frame=|f:u64,inputs:usize,rows:usize|{
+            let by_id=InputEvent {at:Tick{ms:(f*16) as u32,dt_us:16_000},source:Source::RemoteFifo,
+                kind:InputKind::ById{id:"home.row.2".into(),press:None,expect:None}};
+            let mut input=super::super::bootstrap::effects::input(&by_id).unwrap();
+            input["f"]=json!(f);input["t"]=json!("in");
+            // an unaddressed by-id input: no page owned input, so a `NoOwner` row names entry 0
+            let payload=serde_json::to_value(ResolutionWire::Id{entry:0,focus:None,group:None,
+                refusal:plx_ui::dispatch::IdRefusal::NoOwner.code()}).unwrap();
+            plx_ui::rec::Frame {f,focus:Some(None),st:Some(7),inputs:vec![input;inputs],
+                resolutions:vec![json!({"f":f,"t":"rs","payload":payload});rows],..Default::default()}
+        };
+        let recording=|frames:Vec<plx_ui::rec::Frame>|Recording {header:Header::new(state_fp(),&initial),
+            frames,metrics:Default::default(),stopped_at:None};
+        // one input, one row, the same frame; two of each; none of either
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,1,1)])),Ok(()));
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,2,2),frame(2,0,0)])),Ok(()));
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,0,0)])),Ok(()));
+        // a carried delivery: tapped in frame 1, resolved in frame 3
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,1,0),frame(2,0,0),frame(3,0,1)])),Ok(()));
+        // a MISSING row: the input has none, in its frame or after
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,1,0)])),
+            Err("by-id input without an id resolution"));
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,2,1),frame(2,0,0)])),
+            Err("by-id input without an id resolution"));
+        // an EXTRA row: none in the recording, a second beside one input, one a frame AHEAD of its input
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,0,1)])),
+            Err("id resolution without a by-id input"));
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,1,2)])),
+            Err("id resolution without a by-id input"));
+        assert_eq!(validate_resolution_recording(&recording(vec![frame(0,0,0),frame(1,0,1),frame(2,1,0)])),
+            Err("id resolution without a by-id input"));
+    }
+
     #[test]
     fn product_targets_and_resolve_grade_pointwise_and_continue_before_effects() {
         let _serial=plx_base::testlock::serial();
@@ -2713,10 +2818,18 @@ mod tests {
         // AppFrameV5 drops the duplicate legacy press prefix; the tree hashes the real input.
         // V12: Input owns HoldHintRead and the gesture/key/page-instance LiftReceipt.
         // Reviewed against write_with: the receipt option precedes the four hint facts.
-        assert_eq!(plx_ui::rec::state_fp(APP_SHAPES), 0x6b18_a6a7_e8d6_f465);
+        // Accessibility ids (plan a11y-ids D3): the queued-input census gained the by-id input
+        // `ById{id,press,expect}` and the `Pan` it had left out, so this moves from
+        // 0x6b18_a6a7_e8d6_f465. `ProductResolutionV2` adds the `Id` row, which moves the full census
+        // below and not this APP-side half.
+        assert_eq!(plx_ui::rec::state_fp(APP_SHAPES), 0x19b7_5414_e5d4_c071);
         // V13 adds the exact captured presentation ingress, canonical latest-source
         // generation and sealed queued event. The V12 fixture/census remains history.
-        assert_eq!(state_fp(), 0xea74_3865_5115_46c5, "current V13 producer census");
+        // `ProductResolutionV2` (the by-id `Id` resolution row, a11y-ids D6) moves the full census
+        // from 0xea74_3865_5115_46c5, which `the_pre_content_navigation_recording_shape_is_refused`
+        // keeps refused at the shape boundary like every older value.
+        assert_eq!(state_fp(), 0x7f1d_280c_909c_8603, "current V13 producer census");
+        assert_ne!(state_fp(), 0xea74_3865_5115_46c5, "the census without the `Id` resolution row");
         assert_ne!(state_fp(), 0x3ed9_2e0f_25bd_7f8e, "V12 cannot describe captured positive-swap presentation inputs");
     }
 
@@ -2790,7 +2903,8 @@ mod tests {
         for old in [0x8446_64d2_3399_0e72, 0x002c_b89e_e6a9_3668, 0x51ac_a85c_c16b_4b59,
             0x8af1_d09e_bbb1_1d47, 0x76d4_1ddb_e172_6b88, 0x702b_f9f7_e7c8_fe57,
             0x7252_4cf7_ed8d_97a3, 0x5ba4_34ad_d5db_5bdf, 0xe61b_6d55_f442_8637,
-            0x1006_0b14_b43f_5f57, 0x19e7_c63b_e018_e61f, 0x489b_bd48_8180_e355] {
+            0x1006_0b14_b43f_5f57, 0x19e7_c63b_e018_e61f, 0x489b_bd48_8180_e355,
+            0xea74_3865_5115_46c5] {
             let manifest = format!(r#"{{"schema": {}, "state_fp": {old}}}"#, plx_ui::rec::SCHEMA);
             assert_eq!(plx_ui::rec::Recording::parse(&manifest, &[], state_fp()).err(),
                 Some(plx_ui::rec::RecError::StateShape { theirs: old, ours: state_fp() }));
@@ -2804,7 +2918,7 @@ mod tests {
         let initial = shapes.iter_mut().find(|s| **s == super::super::bootstrap::SHAPE).unwrap();
         *initial = super::super::bootstrap::SHAPE_V7;
         shapes.push(super::super::bootstrap::CONTENT_SHAPE);
-        shapes.push(RESOLUTION_SHAPE);
+        shapes.push(RESOLUTION_SHAPE_V1);
         shapes.push("CaptureReadinessV2{before_dispatch:pending:bool,text:bool}");
         shapes.push("MeasurementV1{query:Width(text:bytes,sz:i32,bold:bool)|Cap(sz:i32)|Line(sz:i32),answer:f32bits:u32}");
         shapes.extend_from_slice(plx_screens::registry::SCREEN_SHAPES);

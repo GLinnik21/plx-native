@@ -13,10 +13,10 @@
 //! This file DECLARES the row ([`Row::new`]); its layout, paint, motion (the focus capsule that
 //! travels, the pop, the criterion's swap) and focus group are the ui's, the same ones the Library,
 //! Collections and Recommended pages wear. The control a Sort & Filter menu has lifted is drawn by the
-//! host's opener lift, focused, above the menu's scrim ([`Row::draw_opener`], which is
-//! [`PageHeader::draw_opener`]: the one paint every header opener has), so the page's pass leaves it
-//! out ([`Row::draw`] with `lifted`) and the pill stays lit for as long as its panel is up (design
-//! review S12).
+//! host's opener lift, focused, above the menu's scrim and panel at the morph's `opener_alpha`
+//! ([`Row::draw_opener`], which is [`PageHeader::draw_opener`]: the one paint every header opener
+//! has), so the page's pass leaves it out ([`Row::draw`] with `lifted`); the glass consumes it (gone
+//! while the menu stands, back as the droplet drains into it).
 //!
 //! The row is built here as a value ([`Row`]) from the measure, the summary and the read-out, and
 //! every consumer (paint, the focus rect, the menu's anchor) reads that one value.

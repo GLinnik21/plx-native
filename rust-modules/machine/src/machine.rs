@@ -744,16 +744,17 @@ pub enum FocusTarget<K> {
     /// so the arrival is exactly as deliberate as a directional move into the same group would
     /// be; reporting `By::Restore` for it read as "the page is being restored to where it was",
     /// which is false the first time a tab is ever visited, and it silently disabled every
-    /// screen's own "deliberate move" arrival animation (`library::LibraryScreen`'s
+    /// screen's own "deliberate move" arrival animation (at the time `library::LibraryScreen`'s
     /// `pop_from_rest`, gated on `By::Dir | By::Pointer`) for that one path only — the reason a
-    /// fresh Home/Search → TV Shows mint SNAPPED to the first tile while a Movies → TV Shows
-    /// peer switch (which never leaves the strip's already-focused pill, and never re-enters
-    /// through here at all) animated normally. `stack.rs`'s `SelectTab` "cover-and-mint" arm is
-    /// the one constructor of a MINT. The second sanctioned producer is a page seating its OWN
-    /// arrival through a self-delivered `Enter::Fresh`: the Watchlist's `follow_seat` moves its
-    /// first seat from the Sort & Filter pill to the first tile as the grid lands, and that seat
-    /// must read as a deliberate move for the opening animation to play
-    /// (`watchlist/opening_tests.rs`). Nothing else may produce this variant.
+    /// fresh Home/Search → TV Shows mint SNAPPED to the first tile while a Movies → TV Shows peer
+    /// switch (which never leaves the strip's already-focused pill, and never re-enters through
+    /// here at all) animated normally. Today the shared card grid reads a `By::Dir | By::Pointer |
+    /// By::Script` move as deliberate (`ui/src/cards/mod.rs`'s `Seen::of`). `stack.rs`'s
+    /// `SelectTab` "cover-and-mint" arm is the one constructor of a MINT. The second sanctioned
+    /// producer is a page seating its OWN arrival through a self-delivered `Enter::Fresh`: the
+    /// Watchlist's `follow_seat` moves its first seat from the Sort & Filter pill to the first tile
+    /// as the grid lands, and that seat must read as a deliberate move for the opening animation to
+    /// play (`watchlist/opening_tests.rs`). Nothing else may produce this variant.
     FirstInGroupAnimated(GroupId),
 }
 
@@ -763,6 +764,11 @@ pub enum By {
     Pointer,
     Restore,
     Reconcile,
+    /// **A deliberate arrival named by an accessibility id** (`focus:<id>` / `press:<id>`): the
+    /// dispatcher's by-id delivery sets focus with it. It reads like `Dir` everywhere a screen
+    /// asks "was this a deliberate move" (reveal-scroll, arrival animations, edge paging) and is
+    /// never a pointer hover. Recorded in its own resolution row, never as a `Focus` row.
+    Script,
 }
 
 /// What a `Deliver` carries: a screen event, app message, or identity-bound input operation.
@@ -829,6 +835,11 @@ impl<K> InputEvent<K> {
             InputKind::PointerHidden => { c.u32(6); }
             InputKind::SystemKeyboard(up) => { c.u32(7).bool(*up); }
             InputKind::Pan { dx, x, y } => { c.u32(8).f32(*dx).f32(*x).f32(*y); }
+            InputKind::ById { id, press, expect } => {
+                c.u32(9).str(id);
+                c.option(press.as_ref(), |c, tap| { c.u32(tap.sym).u32(tap.wcode); });
+                c.option(expect.as_ref(), |c, subject| { c.str(subject); });
+            }
         }
     }
 }
@@ -903,6 +914,27 @@ pub enum InputKind<K> {
     Text(TextEdit),
     PointerHidden,
     SystemKeyboard(bool),
+    /// **An accessibility-id focus or press** (`focus:<id>`, `press:<id>[@<subject>]`), ingress
+    /// only. The dispatcher acts on it at its ORDERED delivery position (never in the ingest
+    /// pre-pass): it resolves `id` against the input owner's view, moves focus with
+    /// `By::Script` and, for a press (`press` is `Some`), delivers the OK key's Down and Up to
+    /// the owner exactly as a remote OK would. `expect` is the subject the element must carry
+    /// (`@<subject>`), compared in the same delivery step. A refusal moves nothing and emits no
+    /// key. The id is text from the FIFO, so it is canonical content (`write_with` hashes the
+    /// bytes, never the `Arc` address).
+    ById {
+        id: std::sync::Arc<str>,
+        press: Option<OkTap>,
+        expect: Option<std::sync::Arc<str>>,
+    },
+}
+
+/// The OK key's codes a by-id press delivers (`InputKind::ById::press`), filled by the
+/// application from its `ok` token table so the core never names a platform key code.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct OkTap {
+    pub sym: u32,
+    pub wcode: u32,
 }
 
 /// A whole keyboard commit preserves LG's prediction boundary (`docs/search.md`). Cloning an

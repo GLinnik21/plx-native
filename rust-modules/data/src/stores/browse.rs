@@ -15,7 +15,7 @@ use super::StoreId;
 
 #[allow(unused_imports)] // Shared owner vocabulary; some members are feature/test specific.
 pub use crate::browse::{
-    Cursor, CursorAt, GenreEntry, LibraryType, SecFetch, SecKind, SortEntry, SourceState, SrcGroup, SrcRow,
+    Cursor, CursorAt, GenreEntry, LibraryType, PinCommit, SecFetch, SecKind, SortEntry, SourceState, SrcGroup, SrcRow,
 };
 #[allow(unused_imports)] // Shared owner vocabulary; some members are feature/test specific.
 pub use crate::browse::section_hubs::{HubsId, HubsSnapshot, HubsView, Publication};

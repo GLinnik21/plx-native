@@ -54,8 +54,10 @@ Controlled replay supplies Home/Browse results through the production dispatcher
 Flow 12 Detail/Person results at their original store consumers. It binds the recorded Client
 explicitly and denies resource execution and data transport. Account, playback, and every other
 unlisted domain remain unsupported and fail closed before IO. Product replay has two explicit
-modes: Targets substitutes each recorded Focus/Hit resolution before dependent effects, while
-Resolve runs the current engine/map and grades every resolution pointwise before continuing.
+modes: Targets substitutes each recorded Focus, Hit (pointer) or Id (by-id) resolution before
+dependent effects, while Resolve runs the current engine/map and grades every resolution pointwise
+before continuing. `focus_diffs` counts the Focus family; `hit_diffs` counts Hit AND Id (the
+`resolution=focus|hit|id` word of the `replay: input diverge` line tells them apart).
 
 Person's provider requests use the captured authority throughout controlled recording and replay.
 Ambient session-cache recovery cannot retire those requests or introduce unrecorded retries.
@@ -106,11 +108,12 @@ library-matched credit opened in Detail, and both BACK steps). Phase 7 rerecorde
 after an observed loader refusal and added the content-return anchor. **Phase 11 rerecorded all
 three onto schema 2**, which carries the landing schedule above. **The product Resolve milestone
 rerecorded them onto schema 3**, adding a typed, bit-exact Width/Cap/Line measurement table, one
-final `fo` after all drains in each product frame, and ordered `rs` Focus/Hit observations.
+final `fo` after all drains in each product frame, and ordered `rs` Focus/Hit observations (the Id
+family, a by-id `focus:`/`press:` input's resolution, joined them with `13-by-id-filmography`).
 A key missing from that table refuses the replay, with one exception: the text-prewarm walks
 (`rec::speculative`), which lay out a page no frame is drawing yet so its glyphs are resident.
 Their answers are recorded like any other. A key an older recording lacks inside such a walk
-answers 0.0, and state, presents, effects and Focus/Hit are still graded on every frame. The
+answers 0.0, and state, presents, effects and Focus/Hit/Id are still graded on every frame. The
 held-page walk measures Flow 12's focused cast caption, which that anchor never drew, because the
 Person page is pushed before Detail's replacement capture.
 
@@ -119,6 +122,20 @@ controlled-replay coverage. Flow 12 has typed initial state, exact synchronous a
 recorded content results, and denied resource execution. This bounded support does not imply
 all-domain acceptance. Editing manifest fingerprints or state hashes is never a replacement for
 rerecording. The D1 results below describe that earlier build, not current all-domain acceptance.
+
+**The by-id anchor.** `13-by-id-filmography` (`tests/focusfp.sh` flow 13) is Flow 12's controlled
+domain driven by the harness's by-id tokens: `focus:nav.watchlist` (refused: the Filmography page has
+no strip), `focus:filmography.row.3` and `press:filmography.row.0` (no `@subject`; a press that opens
+Detail like Flow 12's `down ok`), four BACK keys down to Home, and `focus:nav.watchlist` again (it
+resolves there). It carries the only `by_id` input rows and `Id` resolution rows in the directory, and
+`ALPHABET.json` admits its one refusal log line, and the Person store's `close`, as literals.
+A recording of a `press:<id>@<subject>` token holds the subject (a ratingKey) in its `in` row and no
+pattern admits it, so such a recording cannot become a fixture. The fixture lives on Flow 12's page
+because that is the only controlled domain whose manifest shape the closed gates admit and where a
+press records: `press:nav.profile`, `press:nav.movies` and `press:home.hero.info` on the controlled
+Home abort the recording with `replay: REFUSED -- unsupported Home application effect`. It is kept
+short because the loader refuses a recording past its decoded budget (about 1.3 MB here) as
+`invalid or incompatible recording`.
 
 **Historical Phase 12 (D1) rerecorded all three again**, and it is the cleanest example of what `rerecord` is
 for: `enum Route` was folded into `AppArg`, so `ARG_SHAPE` lost its nested `Legacy:Route{…}` and
@@ -709,3 +726,10 @@ re-recorded as a current `AppFrameV5`/codec-6 recording (`tests/focusfp.sh --rec
 `anchor` flag. That retires this one fixture's `AppFrameV4` ledger; `6-settings-family` remains the key-only
 fixture that replays SAME. `make check-replay` replays every fixture as SAME or REFUSED_EXPECTED in Targets and
 Resolve with every difference counter at zero (three consecutive runs, one of them at the CI window, 960x540).
+
+The shared route anatomy (2026-11-17: every route title, Filmography's included, is the 48 Settings
+title) changed recorded behaviour without moving the shape: the `v13-owned-input-content` anchor was
+observed being refused in both modes (`replay: REFUSED — replay measurement table miss`) and was
+recorded afresh the same way (`tests/focusfp.sh --rec --only 12`, `plxnative-rec import`, `anchor:
+true` restored), then replayed SAME in Targets and Resolve on three consecutive runs.
+`docs/ui-replay-v13-anchor.md` has the record.

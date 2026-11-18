@@ -45,31 +45,34 @@ default alone.**
 
 ## Current renderer replay anchor (host, no television)
 
-`tests/replay_fixtures.py` discovers four recording directories by default and executes each in
-Targets and Resolve. `make check-replay` and Simulator CI use that same discovery, not a private
-fixture list. Expected outcomes: **SAME=6, REFUSED_EXPECTED=2, unexpected=0**.
+`tests/replay_fixtures.py` discovers six recording directories by default (twelve replays) and
+executes each in Targets and Resolve. `make check-replay` and Simulator CI use that same discovery,
+not a private fixture list. Expected outcomes: **SAME=4, REFUSED_EXPECTED=8, unexpected=0**.
 
-- Home: the re-recorded `1-boot-home-chip-grid`, a current AppFrameV5 anchor graded in full in each
-  mode (its frame count is pinned by `tests/test_replay_fixtures.py`'s census and
-  `fixture_preflight_tests` in `app/recorder.rs`); Settings: 621 in each.
-- `12-filmography-detail-return-current`: the current V11 default Flow 12 producer's typed
-  Person → Filmography → item Detail → Back → Back/focus-memory flow, 2287 fully graded frames
-  in each mode. Both require raw exit 0, exactly one SAME, and all eight difference counters zero.
-  Any current refusal, including a historical scheduler reason, fails the gate.
-- Immutable `12-filmography-detail-return`: historical content scheduling is incompatible;
-  both modes require the exact early scheduler REFUSED (raw exit 1), before any graded frame.
-  This is a typed compatibility outcome, not a supported replay, SAME, quarantine or skip.
+- Current, graded in full in each mode (raw exit 0, exactly one SAME, all eight difference counters
+  zero): `v13-owned-input-content`, the V13 Flow 12 producer's typed Filmography -> Detail -> Back ->
+  Back flow, 922 frames; and `13-by-id-filmography`, the same controlled domain driven by the
+  harness's by-id tokens (`focus:`/`press:` -> one typed `ById` input, resolved by the `Id`
+  resolution row), 1209 frames. Both are anchors; their frame counts are pinned by
+  `tests/test_replay_fixtures.py`'s census. Any current refusal, including a historical scheduler
+  reason, fails the gate.
+- Historical, immutable, each REFUSED in both modes (raw exit 1) with the exact early typed reason
+  `incompatible owner-input/presentation state; requires V13 capture`, before any graded frame:
+  `1-boot-home-chip-grid` (Home), `6-settings-family` (Settings: 621 frames),
+  `12-filmography-detail-return` (historical content scheduling) and
+  `12-filmography-detail-return-current` (2287 frames, the V11 Flow 12 producer). This is a typed
+  compatibility outcome, not a supported replay, SAME, quarantine or skip.
 
-The current recording was independently privacy-checked, then added with the official
+The current recordings were independently privacy-checked, then added with the official
 `tools/plxnative-rec import` command, byte-for-byte; no old recording, fingerprint, hash or alphabet
 was rewritten. Manifest preference/language strings pass only the checker's closed exact-path enums;
 all remaining text and metric bytes retain the synthetic alphabet gate. Rust fixture preflight and
-canonical initial-hash tests include the new recording. No production name/path/hash whitelist exists.
+canonical initial-hash tests include the historical recordings. No production name/path/hash whitelist exists.
 
 Private Xvfb/GLX llvmpipe replay verifies logical renderer-backed behavior, not accepted visuals,
 native/TV/ARM behavior, glyph/video composition, performance, or all-domain UI acceptance.
-The preserved fixture README's earlier three-anchor accounts describe historical captures; this
-additional current anchor does not make the old Content recording supported.
+The preserved fixture README's earlier three-anchor accounts describe historical captures; the
+current anchors do not make the old Content recording supported.
 
 ## The synthetic PMS and the focus-fingerprint flows (host, no television)
 
@@ -159,6 +162,23 @@ If the set is held, the run refuses and names the holder; queue for it with
 The split is not just anonymisation. The symbolic key keeps "five cases deliberately share one
 item" visible in the tracked file — which is the fact the per-case resume reset exists for — and
 it makes a mis-set item a named setup error instead of a mystery failure.
+
+## Reaching a target by accessibility id, not by key walk
+
+A debug (`devtriggers`) build takes `focus:<id>`, `press:<id>[@<ratingKey>]` and `state:<nonce>` on
+the remote FIFO (`tools/a11y.py` writes and reads them; `tools/tv-session.sh focus|press|state` is
+the television's form). An id is a place-based dot path in the namespace of whoever owns input
+(`nav.watchlist`, `watchlist.grid.card.7`, `itemmenu.watchlist_remove`); a press of an element that acts on a
+title it names (`a11y.SUBJECT_BEARING` is the one list) names that title,
+`press:<id>@<ratingKey>`, the ratingKey of the title the press acts on, and the app refuses it when another title is there (the committed scenario's
+`press:itemmenu.watchlist_remove@2001`, `press:home.hero.watchlist@200622` and `press:detail.hero.watchlist@1001`); `state` writes
+`plxnative-a11y.json` (route, owner, the focused id, every element) and echoes the nonce, so a script
+can assert where focus is before it takes a screenshot. **A script that only needs to REACH a screen
+element uses these**, as `tests/scenarios/watchlist_captures.json` does (`keys` entries, plus an
+`expect_focus` checked before `shot`; no capture there walks with a direction key: each reaches its
+target by id or by a boot trigger, except `w6/detail-offline.png`, which navigates by pointer clicks) and
+`tests/player_shots.sh` does (`press:player.control.*`). A key walk stays where the walk is the subject:
+the fps scenes, the focus fingerprints (`tests/focusfp.sh`), `hold` and timed keys.
 
 ## Which install it drives (`--flavor`)
 

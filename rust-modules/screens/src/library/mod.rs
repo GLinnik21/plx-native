@@ -19,7 +19,7 @@ mod toolbar;
 mod status;
 pub mod menu;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 #[cfg(test)]
 pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
 #[cfg(test)]
@@ -43,6 +43,7 @@ use crate::registry::{
 };
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
 use plx_data::stores::browse::{BrowseCmd, LibraryWork, SectionAddress};
+use plx_ui::a11y::{A11y, A11yPath, Role as A11yRole};
 use plx_ui::consts::{MARGIN_X, SCR_W, SCR_H, K_SCROLL};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
@@ -211,6 +212,9 @@ pub enum Listing {
 pub struct LibraryScreen {
     /// Derived from retained effective frame inputs, shared by live/target grid geometry.
     caption_policy: plx_ui::caption_policy::CaptionPolicy,
+    /// The Sort value setting the grid last drew its value lines from (`caption_policy` does not
+    /// carry it): what `step` compares to damage a page that Settings changed it under.
+    sort_value: bool,
     /// Which listing the page shows. Fixed at mount by the `AppArg` that mounted it, so it is not
     /// part of the canon: `LibraryCollections` / `LibraryRecommended` already say it.
     listing: Listing,
@@ -356,6 +360,7 @@ impl LibraryScreen {
         let layout = Layout::new(false, 0);
         Self {
             caption_policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT),
+            sort_value: plx_plex::plex::session::UnderPosters::DEFAULT.sort_value,
             listing: Listing::All,
             entry, instance, kind, wanted_kind: Some(kind), listed: Default::default(), values: false, keys: KeyRegistry::default(),
             pair: MasterDetail::new(
@@ -1277,8 +1282,15 @@ impl LibraryScreen {
 impl<H: LibraryLike> Machine<H> for LibraryScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        let handled = self.step_event(ev, cx, fx);
-        handled
+        // What the grid draws under each poster (the Under posters policy and the sort value line) is
+        // a setting Settings changes while it covers the page: noticed here, on whichever event
+        // comes first, and answered with page damage (a returning page raises none of its own).
+        let inputs = H::screen_inputs(cx);
+        let policy = crate::registry::moved(&mut self.caption_policy, crate::registry::captions::policy_for(inputs));
+        if crate::registry::moved(&mut self.sort_value, crate::registry::captions::sort_value_for(inputs)) | policy {
+            fx.invalidate(Provenance::Nav);
+        }
+        self.step_event(ev, cx, fx)
     }
 }
 
@@ -1442,7 +1454,7 @@ impl LibraryScreen {
                 // focus WITHIN the page. Only the latter claims the arrival from the cells that land.
                 let engine_seat = by == &By::Dir && self.initial && !self.switched && to.entry == self.entry
                     && from.is_none_or(|from| from.entry != self.entry);
-                if matches!(by, By::Dir | By::Pointer) && !engine_seat {
+                if matches!(by, By::Dir | By::Pointer | By::Script) && !engine_seat {
                     self.initial = false;
                     self.provisional = None;
                 }
@@ -1724,7 +1736,39 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         // The failed read-out's one control.
         self.key(self.row_elems(Some(group)).first().copied().unwrap_or(plx_ui::dispatch::STRIP_BASE))
     }
+
+    /// **The ids** (`library.<path>`): while the plaintext question is open its answers `alert.<verb>`
+    /// (the page beneath is no owner's), else the header row's controls `header.<name>` (`sort`,
+    /// `collections`, `recommended`, `libraries`, `crumb`; a library's own name is `header.left.<n>`,
+    /// its position, since the name is runtime text), the failed read-out's `status.retry`, the rail's
+    /// letters `rail.<i>` and the grid's cards `grid.card.<i>`. The header, the alert and the parts
+    /// answer for themselves: this page only says which of them a key or a path is for.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        if let Some(answer) = self.plaintext_alert.a11y(*key) { return answer; }
+        if let Some(a) = self.header.row().and_then(|row| row.a11y(*key)) { return Some(a); }
+        if self.readout == Readout::Failed && *key == RETRY { return Some(A11y::new(retry_path(), A11yRole::Button)); }
+        Focusable::<H>::a11y(&self.pair, key, cx)
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if self.plaintext_alert.a11y_elems(g, out) { return; }
+        if g == LIBRARY_GROUP {
+            if let Some(row) = self.header.row() { row.a11y_elems(out); }
+        } else if g == STATUS_GROUP {
+            if self.readout == Readout::Failed { out.push(RETRY); }
+        } else {
+            Focusable::<H>::a11y_elems(&self.pair, g, cx, out);
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        if let Some(found) = self.plaintext_alert.a11y_find(path) { return found; }
+        if let Some(elem) = self.header.row().and_then(|row| row.a11y_find(path)) { return Some(elem); }
+        if *path == retry_path() { return (self.readout == Readout::Failed).then_some(RETRY); }
+        Focusable::<H>::a11y_find(&self.pair, path, cx)
+    }
 }
+
+/// The failed read-out's Try again: `status.retry`.
+fn retry_path() -> A11yPath { A11yPath::new().name("status").name("retry") }
 
 impl LibraryScreen {
     fn row_elems(&self, group: Option<GroupId>) -> Vec<u32> {

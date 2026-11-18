@@ -286,6 +286,11 @@ impl<H: Host<Elem = u32>> CardSource<H> for Members<'_> {
         self.collection.item(i).map(|item| member_caption(item, &self.policy)).unwrap_or_default()
     }
     fn progress(&self, i: usize) -> Option<f32> { self.collection.item(i)?.resume_frac() }
+    /// The member's ratingKey: what a by-id press names to stay on the title it read (the id's
+    /// position, `items.card.<i>`, moves when the listing does).
+    fn subject(&self, i: usize) -> Option<std::borrow::Cow<'_, str>> {
+        self.collection.item(i).map(|item| std::borrow::Cow::Borrowed(item.rk.as_str()))
+    }
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
         let persistent = self.label_at(i);
         if persistent.is_empty() { return; }
@@ -621,13 +626,15 @@ impl<H: ContentLike + CollectionLike> StackPage<H> for Page {
         let collection = self.collection(cx);
         let head = collection.is_some_and(CollectionScreen::shows_head);
         let failed = collection.is_some_and(|c| c.status == CollectionStatus::Failed);
-        out.push(SectionSpec::new(Sec::Head, Kind::Custom { height: GRID_TOP, focusable: head && self.summary_more }, HEADER_GROUP).ranked(1));
-        out.push(SectionSpec::new(Sec::Items, Kind::Grid { spec: GridSpec::new(GRID_TOP, CONTENT_TOP) }, GRID_GROUP));
+        // The sections are named for what they ARE (the accessibility ids: `head.0`, `items.card.<i>`,
+        // `status.0`), not by position: the head or the status comes and goes with the data.
+        out.push(SectionSpec::new(Sec::Head, Kind::Custom { height: GRID_TOP, focusable: head && self.summary_more }, HEADER_GROUP).ranked(1).named("head"));
+        out.push(SectionSpec::new(Sec::Items, Kind::Grid { spec: GridSpec::new(GRID_TOP, CONTENT_TOP) }, GRID_GROUP).named("items"));
         let retry = if failed {
             CollectionScreen::status_overlay(collection, cx.tick.ms, cx.measure).action_frame_measured(cx.measure)
         } else { None };
         out.push(SectionSpec::new(Sec::Status,
-            Kind::Overlay { rect: retry.unwrap_or(CollectionScreen::status_frame()), focusable: retry.is_some() }, STATUS_GROUP).ranked(2));
+            Kind::Overlay { rect: retry.unwrap_or(CollectionScreen::status_frame()), focusable: retry.is_some() }, STATUS_GROUP).ranked(2).named("status"));
     }
 
     fn fallback(&self, _cx: &Cx<'_, H>, out: &mut Vec<Sec>) {
@@ -957,7 +964,11 @@ impl CollectionScreen {
 impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        self.page.policy = crate::registry::captions::policy_for(H::screen_inputs(cx));
+        // Under posters is a setting Settings changes while it covers the page: noticed here, on
+        // whichever event comes first, and answered with page damage (a returning page raises none).
+        if crate::registry::moved(&mut self.page.policy, crate::registry::captions::policy_for(H::screen_inputs(cx))) {
+            fx.invalidate(Provenance::Nav);
+        }
         // The content index is current before the stack reads it for this event.
         match ev {
             ScreenEvent::Tick(_) => self.resync(cx),
@@ -1002,8 +1013,8 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
                 fx.invalidate(Provenance::Nav); Handled::Yes
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
-                if matches!(by, By::Dir | By::Pointer) { self.page.return_pending = false; }
-                if self.collection(cx).is_some() && to.elem == HEADER_ELEM && matches!(by, By::Dir | By::Pointer) {
+                if matches!(by, By::Dir | By::Pointer | By::Script) { self.page.return_pending = false; }
+                if self.collection(cx).is_some() && to.elem == HEADER_ELEM && matches!(by, By::Dir | By::Pointer | By::Script) {
                     self.page.header_marked = true;
                 }
                 fx.invalidate(Provenance::Input); Handled::Yes
@@ -1193,6 +1204,33 @@ mod tests {
         Machine::<CollectionHost>::step(screen, &ev, cx, &mut fx);
         drop(fx);
         out
+    }
+
+    /// **A collection page, covered, notices that Settings changed what its members draw under
+    /// the posters** (`step`'s head): a page returning from under a cover raises no damage of its
+    /// own, and typed page damage is what retakes a frozen host's snapshot.
+    #[test]
+    fn the_collection_damages_the_page_when_the_under_posters_setting_moved_under_a_cover() {
+        use crate::registry::captions::{PolicyPin, FIXTURE_TITLE_ON};
+        use plx_plex::plex::session::UnderPosters;
+        let _guard = plx_base::testlock::serial();
+        let (store, mut screen) = seeded();
+        let mut uncover_under = |setting: UnderPosters| {
+            let _pin = PolicyPin::set(setting);
+            let mut present = plx_machine::present::Present::new();
+            let mut out = Vec::new();
+            let mut fx = Effects::new(&mut out,
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(9)), &mut present);
+            Machine::<CollectionHost>::step(&mut screen, &ScreenEvent::Cover, &cx(store.view(), None), &mut fx);
+            drop(fx);
+            present.page_damaged()
+        };
+        // Probed with `Cover`: this page still damages unconditionally on `Uncover`/`Enter` (a
+        // leftover), and the head compare is the same on whichever event comes first.
+        uncover_under(UnderPosters::DEFAULT);
+        assert!(!uncover_under(UnderPosters::DEFAULT), "control: an unchanged setting damages nothing");
+        assert!(uncover_under(FIXTURE_TITLE_ON), "the Title switch moved the caption policy");
+        assert!(!uncover_under(FIXTURE_TITLE_ON), "...once");
     }
 
     fn opens_summary(out: &[plx_machine::machine::Stamped<CollectionHost>]) -> bool {

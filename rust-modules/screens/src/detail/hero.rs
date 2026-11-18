@@ -167,6 +167,40 @@ impl HeroCtl {
     pub fn is_watch(self) -> bool {
         matches!(self, HeroCtl::MarkWatched | HeroCtl::MarkUnwatched)
     }
+    /// **The control's accessibility word** (`detail.hero.<word>`): one static word per variant, never
+    /// derived from the label, which changes with the item (Play wears "Resume" mid-title: both are
+    /// `play`) and the language. The watched toggle's two faces are two words, for what pressing each does.
+    pub const fn a11y_name(self) -> &'static str {
+        match self {
+            HeroCtl::Play => "play",
+            HeroCtl::Restart => "restart",
+            HeroCtl::Trailer => "trailer",
+            HeroCtl::Alt => "alt",
+            HeroCtl::MarkWatched => "mark_watched",
+            HeroCtl::MarkUnwatched => "mark_unwatched",
+            HeroCtl::Watchlist => "watchlist",
+            HeroCtl::GoToShow => "go_to_show",
+            HeroCtl::Version => "version",
+            HeroCtl::More => "more",
+        }
+    }
+    /// The inverse of [`a11y_name`](Self::a11y_name): the control a word names, whether the row
+    /// shows it or not (the caller checks that).
+    pub fn of_a11y_name(word: &str) -> Option<Self> {
+        const ALL: [HeroCtl; 10] = [
+            HeroCtl::Play,
+            HeroCtl::Restart,
+            HeroCtl::Trailer,
+            HeroCtl::Alt,
+            HeroCtl::MarkWatched,
+            HeroCtl::MarkUnwatched,
+            HeroCtl::Watchlist,
+            HeroCtl::GoToShow,
+            HeroCtl::Version,
+            HeroCtl::More,
+        ];
+        ALL.into_iter().find(|ctl| ctl.a11y_name() == word)
+    }
 }
 
 /// Which of the conditional controls the row is showing: the independent bits (bookmark, Go to
@@ -296,21 +330,7 @@ pub fn watch_index(set: HeroSet) -> Option<usize> {
     v[..n].iter().position(|&c| c.is_watch())
 }
 
-/// Has this show been started AT ALL? PMS puts `S1E1 off=0` on deck for a show nobody has
-/// touched, so "there is something on deck" is not the same question as "this show is underway".
-/// A locally marked on-deck leaf remains the subject until the server replaces it.
-pub fn show_started(d: &Detail) -> bool {
-    d.on_deck.as_ref().is_some_and(|e| e.resume_ms > 0 || e.watched)
-        || d.seasons.iter().any(|s| s.viewed_leaf_count > 0)
-}
-
-/// The episode a show's hero is ABOUT — the server's on-deck episode, once the show has actually
-/// been started. `None` means the hero presents the SERIES instead (finished, or never opened).
-/// Ported verbatim from `ui/detail.rs::hero_episode`.
-pub fn hero_episode(d: &Detail) -> Option<&Episode> {
-    let ep = d.on_deck.as_ref()?;
-    show_started(d).then_some(ep)
-}
+pub(super) fn hero_episode(d: &Detail) -> Option<&Episode> { d.resume_episode() }
 
 /// The resume position (ns) the hero's Play control would ACTUALLY apply. Ported verbatim from
 /// `ui/detail.rs::hero_resume_ns`.
@@ -351,7 +371,7 @@ pub fn hero_watch_state(
 pub fn hero_mark(d: &Detail) -> PosterMark {
     if let Some(ep) = hero_episode(d) {
         hero_watch_state(false, false, ep.watched, plx_data::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
-    } else { hero_watch_state(d.is_show, show_started(d), d.watched, hero_resume_ns(d)) }
+    } else { hero_watch_state(d.is_show, d.show_started(), d.watched, hero_resume_ns(d)) }
 }
 
 /// Name the episode explicitly when the hero presents a leaf, including a show's on-deck item.
@@ -643,15 +663,11 @@ enum Bit {
 const FACTS_BITS: usize = 8;
 
 fn play_mode_bits(d: &Detail, after: bool) -> ([Bit; FACTS_BITS], usize) {
-    match plx_media::route::playback_preview(d) {
-        Some(plx_media::route::Preview::DirectPlay | plx_media::route::Preview::Remux) => ([Bit::Air(0.0); FACTS_BITS], 0),
-        Some(preview) => play_mode_bits_for(preview, played_hdr(d), item_subscription(d), after),
+    match plx_media::route::detail_playback_preview(d) {
+        Some((plx_media::route::Preview::DirectPlay | plx_media::route::Preview::Remux, _)) => ([Bit::Air(0.0); FACTS_BITS], 0),
+        Some((preview, file)) => play_mode_bits_for(preview, file.hdr, item_subscription(d), after),
         None => ([Bit::Air(0.0); FACTS_BITS], 0),
     }
-}
-
-fn played_hdr(d: &Detail) -> bool {
-    plx_media::route::detail_play_version(d).map_or(d.hdr, |v| v.hdr)
 }
 
 /// [`play_mode_bits`] once the item's route has been read: the line's play-mode clause, behind a
@@ -928,9 +944,9 @@ mod tests {
             versions: vec![version(1, "4k", 3840, 2160, "vp9", true), version(2, "1080", 1920, 1080, "h264", false)],
             ..Default::default()
         };
-        assert!(!played_hdr(&d), "the 1080p SDR copy plays, not the 4K HDR one");
+        assert!(!plx_media::route::detail_played_video(&d).unwrap().hdr, "the 1080p SDR copy plays, not the 4K HDR one");
         d.versions.clear();
-        assert!(played_hdr(&d), "a single version is described by the item itself");
+        assert!(plx_media::route::detail_played_video(&d).unwrap().hdr, "a single version is described by the item itself");
     }
 
     // TEST ONLY: this module's few call sites still read/write metadata as free functions, a

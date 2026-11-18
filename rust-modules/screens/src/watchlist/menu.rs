@@ -12,6 +12,7 @@ use std::borrow::Cow;
 use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key, LogicalState, Machine, NavOp,
 };
+use plx_ui::a11y::{A11y, A11yPath, Role};
 use plx_ui::frame::Budget;
 use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Hover, Placed,
@@ -179,6 +180,17 @@ impl<H: ContentLike> Focusable<H> for WatchlistMenuScreen {
     fn seat(&self, _: GroupId, _: Placed, _: &Cx<'_, H>) -> FocusKey<u32> {
         self.key(self.sel)
     }
+    /// `watchlist_menu.<row>`: each row is named by what it chooses (`OptionsRow::a11y_name`),
+    /// labelled with its drawn words.
+    fn a11y(&self, key: &u32, _: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let row = *OptionsRow::ALL.get(self.row_of(*key)?)?;
+        Some(A11y::new(A11yPath::new().name(row.a11y_name()), Role::Row).with_label(row.label()))
+    }
+    fn a11y_elems(&self, g: GroupId, _: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == GROUP {
+            out.extend((0..OptionsRow::ALL.len()).map(|row| row as u32));
+        }
+    }
 }
 
 impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
@@ -189,10 +201,20 @@ impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
     }
     /// The pill the panel grew out of: the page leaves it out of its pass (`DrawFrame::lifted`) and
     /// the host's opener lift (`WatchlistScreen::redraw_focused`) is its only copy, lit above the
-    /// scrim and the panel for as long as the menu is up (design review S12). Left on the page it
-    /// sat dimmed under the scrim; drawn by this surface it vanished once the panel settled.
+    /// scrim and the panel at the morph's `opener_alpha` (gone while the menu stands, back as the
+    /// droplet drains into it). Left on the page it sat dimmed under the scrim.
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<u32>>)> {
         Some((self.arg.host, Some(FocusKey { entry: self.arg.host, elem: super::page::PILL_ELEM })))
+    }
+    /// The opener is CONSUMED by the morph (`popover_morph`): the lift paints it at the morph's
+    /// `opener_alpha`, out as the glass detaches from it and back in as it merges into it.
+    fn opener_alpha(&self) -> f32 {
+        self.menu.popover().opener_alpha()
+    }
+    /// The droplet has drained into the pill: the surface, and the lift that holds the pill above
+    /// it, end on this frame (`Screen::handed_back`).
+    fn handed_back(&self) -> bool {
+        self.menu.popover().handed_back()
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -208,7 +230,7 @@ impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
     }
     /// The COMPACT role (DS6's 30% scrim): a chip-shaped control on a live page opening a list.
     fn scrim(&self) -> Scrim {
-        Scrim::dim(plx_ui::theme::underlay::DIM_COMPACT)
+        self.menu.popover().dim(plx_ui::theme::underlay::DIM_COMPACT)
     }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
     /// The panel, growing out of the pill's rect (`OptionsMenu::draw`). Drawn on the frame painter,

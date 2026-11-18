@@ -6,10 +6,9 @@ plxnative-modules --features hostsim` and a `CARGO_INCREMENTAL=0 cargo check ...
 and every agent that ran one picked its own `/tmp/<dir>`. Nothing tracked those: on 2026-10-19 there
 were 28 PlxNative cargo trees in `/tmp`, 45.6 GiB, none of them visible to `make disk` or
 `tools/build-gc.sh`. The two make targets replace the recipes, and this pins the property that
-matters, that neither can put a cargo tree outside the checkout:
+matters, that the default paths belong to this checkout or its configured external build directory:
 
-* `test-hostsim` builds into `rust-modules/target-hostsim` (relative, so it resolves inside the
-  checkout), whatever `CARGO_TARGET_DIR` the caller exported; it is incremental in that dir only,
+* `test-hostsim` builds into `rust-modules/target-hostsim` (a checkout-relative path), whatever `CARGO_TARGET_DIR` the caller exported; it is incremental in that dir only,
   runs `plxnative-modules` (or the `C=<crate>` named, spelled as for `test-crate`: `plx_media`,
   `media`, `app`, several allowed; the SAME recipe, so the same dir and the same rules) with
   `--features hostsim`, gives the run a throwaway runtime dir that is removed afterwards, and FAILS
@@ -31,11 +30,12 @@ from __future__ import annotations
 
 import os
 import re
+import runpy
 import subprocess
 import unittest
 from pathlib import Path
 
-from test_test_fast import FakeCargoHome, make
+from test_test_fast import FakeCargoHome, ignored_target, make
 
 ROOT = Path(__file__).resolve().parent.parent
 TDIR = "target-hostsim"
@@ -72,6 +72,14 @@ def inside_checkout(call):
         resolved = base / "target"          # cargo's own default: <workspace root>/target
     else:
         resolved = base / tdir
+    if resolved.is_symlink():
+        storage = runpy.run_path(str(ROOT / "tools/build-root.py"))
+        if storage["CONFIG"].is_file():
+            location = storage["location"](ROOT)
+            if location and resolved.parent == ROOT / "rust-modules":
+                directory, _ = location
+                if resolved.resolve() == directory / resolved.name:
+                    return Path(resolved.name)
     resolved = Path(os.path.realpath(resolved))
     root = Path(os.path.realpath(ROOT / "rust-modules"))
     return resolved.relative_to(root) if resolved == root or root in resolved.parents else None
@@ -258,8 +266,7 @@ class NeverOutsideTheCheckout(unittest.TestCase):
 
 class TheDirIsManaged(unittest.TestCase):
     def test_gitignored(self):
-        out = subprocess.run(["git", "check-ignore", "-q", f"rust-modules/{TDIR}/debug/x"], cwd=ROOT)
-        self.assertEqual(out.returncode, 0, f"rust-modules/{TDIR}/ must be in .gitignore")
+        self.assertTrue(ignored_target(TDIR))
 
     def test_build_gc_sweeps_it_without_a_name_list(self):
         text = (ROOT / "tools/build-gc.sh").read_text()

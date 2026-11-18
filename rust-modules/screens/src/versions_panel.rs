@@ -17,7 +17,8 @@ use std::convert::Infallible;
 
 use plx_data::pms::MediaVersion;
 use plx_plex::plex::{MediaId, ServerId};
-use crate::registry::{AppLike, AppMsg, PageMemory};
+use crate::registry::{AppLike, AppMsg, MetadataLike, PageMemory};
+use plx_ui::a11y::{A11y, A11yPath};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind,
@@ -160,7 +161,7 @@ impl<H: AppLike<Memory = PageMemory>> Machine<H> for VersionsPanelScreen {
 }
 
 /// One column of `Bare` rows over the table's own cursor, *Also available*'s `Focusable`.
-impl<H: AppLike<Memory = PageMemory>> Focusable<H> for VersionsPanelScreen {
+impl<H: AppLike<Memory = PageMemory> + MetadataLike> Focusable<H> for VersionsPanelScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         out.push(GroupSpec {
             id: GroupId(0),
@@ -205,6 +206,38 @@ impl<H: AppLike<Memory = PageMemory>> Focusable<H> for VersionsPanelScreen {
             elem: self.form.selected_key().or_else(|| self.form.opening_key()).map_or(0, |k| k.0),
         }
     }
+
+    /// **Row `n` is `row.<n>`**, the shared table convention
+    /// ([`plx_ui::geom::table_a11y`]): `n` is the row's ordinal among the focusable rows (the same
+    /// count `GroupSpec::len` states), so a separator or note never shifts an id. The label is the
+    /// row's own text, for the state file only. The elements and the inverse are the shared ones.
+    ///
+    /// **A row plays, so it names what it plays.** OK delivers `AppMsg::PlayVersion` to the page, which plays the
+    /// hero's title as its Play pill would, in the version the row names: the subject is the Play pill's own
+    /// (`registry::versions_subject`: the page's loaded item, read from the metadata store the way the mount reads the
+    /// versions), so `versions.row.<n>` needs a press that names the title. The key is derived from `cx`, not kept on the
+    /// screen: it is no part of the screen's recorded state (`SHAPE`).
+    fn a11y(&self, elem: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let slot = self.form.index_of_key(RowKey(*elem))?;
+        let row = plx_ui::geom::table_a11y(&self.form.table, Some(&self.form), slot)?;
+        Some(match crate::registry::versions_subject(cx, &self.arg) {
+            Some(rk) => row.with_subject(rk),
+            None => row,
+        })
+    }
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if g == GroupId(0) {
+            out.extend(
+                plx_ui::geom::table_elems(&self.form.table, Some(&self.form))
+                    .filter_map(|i| self.form.key_at(i))
+                    .map(|k| k.0),
+            );
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, _cx: &Cx<'_, H>) -> Option<u32> {
+        let slot = plx_ui::geom::table_a11y_find(&self.form.table, Some(&self.form), path)?;
+        self.form.key_at(slot).map(|k| k.0)
+    }
 }
 
 impl LogicalState for VersionsPanelScreen {
@@ -222,7 +255,7 @@ impl LogicalState for VersionsPanelScreen {
     }
 }
 
-impl<H: AppLike<Memory = PageMemory>> Screen<H> for VersionsPanelScreen {
+impl<H: AppLike<Memory = PageMemory> + MetadataLike> Screen<H> for VersionsPanelScreen {
     fn name(&self) -> &'static str {
         "versions"
     }
@@ -284,7 +317,7 @@ impl<H: AppLike<Memory = PageMemory>> Screen<H> for VersionsPanelScreen {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use plx_machine::machine::Host;
     use plx_ui::screen::ScreenArg;
@@ -320,6 +353,26 @@ mod tests {
         type Memory = PageMemory;
     }
 
+    thread_local! {
+        // TEST ONLY: the page a panel reads its subject off, as `screens::detail::tests`'s `TEST_METADATA`.
+        static TEST_METADATA: std::cell::UnsafeCell<plx_data::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(plx_data::stores::metadata::MetadataStore::default());
+    }
+    fn test_store() -> &'static mut plx_data::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+    impl MetadataLike for HostFixture {
+        fn metadata<'a>(_cx: &Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a> {
+            test_store().view()
+        }
+    }
+    /// Make `d` the page the metadata store holds (or none), and keep the shared store to this test.
+    fn page(d: Option<plx_data::metadata::Detail>) -> plx_base::testlock::Serial {
+        let guard = plx_base::testlock::serial();
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), d);
+        guard
+    }
+
     fn panel() -> VersionsPanelScreen {
         let anchor = [500.0f32, 600.0, 64.0, 64.0].map(f32::to_bits);
         VersionsPanelScreen::new(
@@ -327,6 +380,78 @@ mod tests {
             VersionsArg { host: InstanceId(9), sid: ServerId::from_raw(1), rk: "42".into(), anchor },
             &plx_appkit::version_list::sample(),
         )
+    }
+
+    fn cx() -> Cx<'static, HostFixture> {
+        use plx_machine::machine::{FocusRead, InputOwner, PressRead, Tick};
+        Cx {
+            views: (),
+            tick: Tick::default(),
+            measure: &plx_ui::fixture::FixtureMeasure,
+            focus: FocusRead::default(),
+            press: PressRead::default(),
+            modal: Default::default(), page_image: Default::default(), hold_hint: Default::default(),
+            owner: InputOwner::Entry(EntryId(3)),
+        }
+    }
+
+    /// The *Play Version* list over the sample versions, run through the id conformance
+    /// (`AppArg::VersionsPanel`; the coverage table calls this).
+    pub(crate) fn versions_panel_conforms() -> plx_ui::a11y::Namespaces {
+        vec![plx_ui::a11y::conform::<HostFixture, _>(&panel(), &cx())]
+    }
+
+    /// Every version is a row with an id, `row.<n>` in the server's order, and the id finds it
+    /// again.
+    #[test]
+    fn every_version_answers_an_id_in_the_servers_order() {
+        let p = panel();
+        let cx = cx();
+        plx_ui::a11y::conform::<HostFixture, _>(&p, &cx);
+        let n = plx_appkit::version_list::sample().len();
+        assert!(n >= 2, "the sample has several versions");
+        for i in 0..n {
+            let path = plx_ui::a11y::A11yPath::parse_relative(&format!("row.{i}")).expect("a well-formed path");
+            assert_eq!(Focusable::<HostFixture>::a11y_find(&p, &path, &cx), Some(i as u32), "row.{i} is version {i}");
+        }
+        let past = plx_ui::a11y::A11yPath::parse_relative(&format!("row.{n}")).expect("a well-formed path");
+        assert_eq!(Focusable::<HostFixture>::a11y_find(&p, &past, &cx), None);
+    }
+
+    fn row_subject(p: &VersionsPanelScreen, row: u32) -> Option<String> {
+        let cx = cx();
+        Focusable::<HostFixture>::a11y(p, &row, &cx)?.subject.map(Cow::into_owned)
+    }
+
+    /// **A row plays, so it names the title it plays** (`versions.row.<n>` is in `SUBJECT_BEARING`): the subject is
+    /// what the page's Play pill plays, the key `AppMsg::PlayVersion` acts on (`DetailScreen::play_hero`), and not the
+    /// route's. A movie page plays itself; a show page plays the episode its hero plays, so the route's show key
+    /// would name the wrong title. With no page loaded (or another one) a row names none, and the guarded doors
+    /// cannot press it.
+    #[test]
+    fn a_row_names_the_title_its_page_plays() {
+        use plx_data::metadata::{Detail, Episode};
+        let sid = ServerId::from_raw(1);
+        let p = panel();
+        {
+            let _guard = page(Some(Detail { sid, rk: "42".into(), kind: "movie".into(), ..Default::default() }));
+            for row in 0..plx_appkit::version_list::sample().len() as u32 {
+                assert_eq!(row_subject(&p, row).as_deref(), Some("42"), "row {row} plays the movie");
+            }
+        }
+        {
+            let episode = Episode { rk: "e1".into(), index: 1, season: 1, ..Default::default() };
+            let _guard = page(Some(Detail {
+                sid, rk: "42".into(), kind: "show".into(), is_show: true, episodes: vec![episode].into(), ..Default::default()
+            }));
+            assert_eq!(row_subject(&p, 0).as_deref(), Some("e1"), "a show's rows play the hero's episode, not the show");
+        }
+        {
+            let _guard = page(Some(Detail { sid, rk: "another".into(), kind: "movie".into(), ..Default::default() }));
+            assert_eq!(row_subject(&p, 0), None, "another page is loaded: the panel names no title");
+        }
+        let _guard = page(None);
+        assert_eq!(row_subject(&p, 0), None, "no page loaded");
     }
 
     /// OK on a row closes the panel and reports THAT version to the page that opened it.

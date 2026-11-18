@@ -1306,3 +1306,135 @@ fn the_header_row_is_built_once_per_key_not_once_per_question() {
     h.draw();
     assert_eq!(h.screen.probe_header_builds(), built + 1, "and the frames after it build none");
 }
+
+/// **The Sort & Filter menu's accessibility ids:** each of its ten rows is named by what it
+/// chooses (`watchlist_menu.sort_title`), not by its draw position, and the view conforms.
+#[test]
+fn the_options_menu_rows_answer_their_names() {
+    assert!(!watchlist_menu_conforms().is_empty());
+}
+
+/// The Sort & Filter menu opened over three tiles, run through the id conformance with the id
+/// asserts above (`AppArg::WatchlistMenu`; the coverage table calls this, and so does the test above).
+pub(crate) fn watchlist_menu_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    use super::cards_harness::{WatchHost, ENTRY};
+    use super::menu::WatchlistMenuScreen;
+    use super::options::OptionsRow;
+    use plx_machine::machine::EntryId;
+    use plx_ui::a11y::{A11yPath, Role};
+    use plx_ui::screen::Focusable;
+    let h = Harness::new(tiles(3));
+    let arg = crate::registry::WatchlistMenuArg {
+        host: ENTRY,
+        options: WatchlistOptionsState::default(),
+        anchor: [100.0f32, 100.0, 300.0, 60.0].map(f32::to_bits),
+    };
+    let mut menu = WatchlistMenuScreen::new(EntryId(ENTRY.0 + 1), arg);
+    let cx = h.cx();
+    // the rows are laid out once the menu has opened, which its Mount does: a row that is not in
+    // the panel yet has no place
+    {
+        use plx_machine::machine::{Effects, InstanceId, Machine, MachineId, ScreenEvent};
+        let mut present = plx_machine::present::Present::new();
+        let mut out = Vec::new();
+        let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(10)), &mut present);
+        Machine::<WatchHost>::step(&mut menu, &ScreenEvent::Mount, &cx, &mut fx);
+    }
+    namespaces.push(conform::<WatchHost, _>(&menu, &cx));
+    for (i, row) in OptionsRow::ALL.iter().enumerate() {
+        let id = A11yPath::parse_relative(row.a11y_name()).expect("a plain row name");
+        assert_eq!(Focusable::<WatchHost>::a11y_find(&menu, &id, &cx), Some(i as u32), "{}", row.a11y_name());
+        let a = Focusable::<WatchHost>::a11y(&menu, &(i as u32), &cx).expect("every row projects");
+        assert_eq!(a.role, Role::Row);
+        assert_eq!(a.label.as_deref(), Some(row.label()));
+    }
+    let sort_title = A11yPath::parse_relative("sort_title").unwrap();
+    assert_eq!(Focusable::<WatchHost>::a11y_find(&menu, &sort_title, &cx), Some(4), "Title is the fifth row");
+    namespaces
+}
+
+/// **The page's accessibility ids:** the header's one stop is `header.sort`, each title (the loaded
+/// ones and an off-screen one alike) is `grid.card.<i>` with its copy's ratingKey as the subject,
+/// the unreachable read-out's Try again is `status.retry` once it is up, and the view conforms.
+#[test]
+fn the_page_answers_its_ids_and_conforms() {
+    assert!(!watchlist_conforms().is_empty());
+}
+
+/// The Watchlist page over sixty tiles, run through the id conformance with the id asserts above
+/// (`AppArg::Watchlist`; the coverage table calls this, and so does the test above).
+pub(crate) fn watchlist_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    use super::cards_harness::WatchHost;
+    use plx_ui::a11y::{A11yPath, Role};
+    use plx_ui::screen::Focusable;
+    let h = Harness::new(tiles(60));
+    let cx = h.cx();
+    namespaces.push(conform::<WatchHost, _>(&h.screen, &cx));
+    let rel = |id: &str| A11yPath::parse_relative(id).expect("a well-formed id");
+    let find = |id: &str| Focusable::<WatchHost>::a11y_find(&h.screen, &rel(id), &cx);
+    assert_eq!(find("header.sort"), Some(PILL_ELEM));
+    let sort = Focusable::<WatchHost>::a11y(&h.screen, &PILL_ELEM, &cx).expect("the pill projects");
+    assert_eq!((sort.path, sort.role), (rel("header.sort"), Role::Button));
+    for i in [0, 1, 17, 59] {
+        let elem = find(&format!("grid.card.{i}")).unwrap_or_else(|| panic!("card {i} resolves, on screen or not"));
+        let a = Focusable::<WatchHost>::a11y(&h.screen, &elem, &cx).expect("a card projects");
+        assert_eq!((a.path, a.role), (rel(&format!("grid.card.{i}")), Role::Card));
+        assert_eq!(a.subject.as_deref(), Some((100 + i).to_string().as_str()), "the subject is the copy's ratingKey");
+        assert!(a.loaded);
+    }
+    assert_eq!(find("grid.card.60"), None, "one past the end");
+    assert_eq!(find("status.retry"), None, "the read-out is not up");
+    assert_eq!(find("grid.0"), None, "a card is `grid.card.<i>`");
+    namespaces
+}
+
+/// **The Watchlist comes back from a glass menu without damaging itself.** The BACK commit
+/// delivers `Uncover`, then `Enter(Restored)` and a `FocusMoved` onto the key the page already
+/// holds (`FocusEngine::enter`), to the host page; page damage raised by any of them retakes the
+/// frozen host snapshot on the close's first frame (14.9M GPU cycles against an 11.2M budget on the
+/// TV). What a covered page can have missed is its tiles and options (`rev`) and the Under posters
+/// setting (read at draw, so `step`'s head compares it): both still damage, once, and a page that
+/// ARRIVES (`Enter(Fresh)`) or a focus that really moves still paints.
+#[test]
+fn the_watchlist_raises_no_damage_coming_back_from_under_a_cover_unless_what_it_draws_changed() {
+    use crate::registry::captions::{PolicyPin, FIXTURE_TITLE_ON};
+    use plx_machine::machine::{Enter, FocusTarget, GroupId};
+    use plx_ui::screen::{By, ScreenEvent};
+    let _guard = plx_base::testlock::serial();
+    let mut h = Harness::new(tiles(6));
+    h.run(30);
+    // the account menu is opened from the profile chip, a control: focus stands on one when the
+    // dismissal re-enters the page (a focus held on a CARD is the grid's own `FocusMoved` damage,
+    // `cards::Grid::on`, which a same-key restore still raises)
+    h.focus_elem(PILL_ELEM, By::Dir);
+    h.run(30);
+    let held = h.focus.expect("premise: a control holds focus");
+
+    assert!(!h.damages(ScreenEvent::Cover), "control: a cover raises none");
+    assert!(!h.damages(ScreenEvent::Uncover), "an unchanged page has nothing to redraw on Uncover");
+    assert!(!h.damages(ScreenEvent::Enter(Enter::Restored)), "...nor on Enter(Restored)");
+    assert!(!h.damages(ScreenEvent::FocusMoved { from: Some(held), to: held, by: By::Restore }),
+        "...nor for the focus it already holds");
+
+    // the cards moved while covered: the tiles landed through `input`
+    h.screen.input(WatchlistIn::Rows(tiles(7)));
+    assert!(h.damages(ScreenEvent::Uncover), "a tile list that changed under the cover is redrawn");
+    assert!(!h.damages(ScreenEvent::Enter(Enter::Restored)), "...once");
+
+    // Settings changed Under posters while it covered the page
+    {
+        let _setting = PolicyPin::set(FIXTURE_TITLE_ON);
+        assert!(h.damages(ScreenEvent::Uncover), "a caption policy that changed under the cover is redrawn");
+        assert!(!h.damages(ScreenEvent::Enter(Enter::Restored)), "...once");
+    }
+    h.run(30);
+
+    // a focus that really moves, and a page that arrives, still paint
+    let next = h.screen.elem_at(1).expect("a second tile");
+    assert!(h.damages(ScreenEvent::FocusMoved { from: Some(held), to: h.key(next), by: By::Dir }));
+    assert!(h.damages(ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(GroupId(0)) })));
+}

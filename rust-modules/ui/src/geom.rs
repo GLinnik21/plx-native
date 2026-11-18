@@ -17,6 +17,7 @@
 #![allow(dead_code)] // phase 3a: the screens compose through these from 3b (the engine) and 5b on
 
 use plx_machine::machine::{Cx, EntryId, FocusKey, GroupId, Host};
+use super::a11y::{A11y, A11yPath, Role, Seg};
 use super::screen::{At, AxisMask, Dir, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Placed, Seat, Step};
 use super::{card_row, Rect};
 
@@ -90,6 +91,100 @@ fn clamp_index<K: IndexElem>(entry: EntryId, want: FocusKey<K>, n: usize) -> Foc
     key(entry, clamp_plain_index(i, n))
 }
 
+/// The index `i` of `name.<i>` when `path` is exactly that two-segment RELATIVE path and `i < n`:
+/// what every indexed widget's `a11y_find` reads (`card.3`, `tab.0`, `band.1`), so none of them
+/// scans. (A table's `row.<n>` reads it for the parse alone and resolves through [`table_elems`],
+/// `table_a11y_find`.) A qualified path never matches (the owner view strips the namespace before it hands a
+/// path down), the same rule [`crate::a11y::default_walk`] keeps by comparing whole paths.
+pub(crate) fn indexed(path: &A11yPath, name: &str, n: usize) -> Option<usize> {
+    if path.ns().is_some() {
+        return None;
+    }
+    let mut segs = path.segs();
+    match (segs.next(), segs.next(), segs.next()) {
+        (Some(Seg::Name(s)), Some(Seg::Index(i)), None) if s == name && i < n => Some(i),
+        _ => None,
+    }
+}
+
+/// The name of a one-segment RELATIVE path (`document`, `sort`), else `None`.
+pub(crate) fn sole_name(path: &A11yPath) -> Option<&str> {
+    if path.ns().is_some() {
+        return None;
+    }
+    let mut segs = path.segs();
+    match (segs.next(), segs.next()) {
+        (Some(Seg::Name(name)), None) => Some(name),
+        _ => None,
+    }
+}
+
+/// Row `index` of `t` in layout order (section headers are not rows), as `TableView::n_rows` counts.
+pub fn table_row(t: &super::table::TableView, index: usize) -> Option<&super::table::Row> {
+    t.sections.iter().flat_map(|s| s.rows.iter()).nth(index)
+}
+
+/// The LAYOUT indices of the rows of `t` an element stands for, in layout order: every row but a
+/// separator or a note (`Row::separator`, `Row::note`, both `sep`), which `TableView::n_rows` and so
+/// `GroupSpec::len` count but no key can land on and `TableView::row_frame` never places. With a
+/// row-key map (`keys`, a form-backed table) a row is an element only when the form binds a key to
+/// it.
+pub fn table_elems<'a>(
+    t: &'a super::table::TableView,
+    keys: Option<&'a dyn super::form::RowKeys>,
+) -> impl Iterator<Item = usize> + 'a {
+    t.sections
+        .iter()
+        .flat_map(|s| s.rows.iter())
+        .enumerate()
+        .filter(move |(i, r)| !r.sep && keys.map_or(true, |k| k.key_at(*i).is_some()))
+        .map(|(i, _)| i)
+}
+
+/// **The one convention for the id of a table row**, shared by [`Table`], `table_screen::TablePart`
+/// and every screen that answers the hooks over a `FormTable` itself (the Source and Version
+/// pickers' panels): a row is `row.<n>`, where `n` is the row's ORDINAL among the
+/// table's element rows ([`table_elems`]), so a separator or a note never leaves a gap
+/// (`row.0`, `row.1`, `row.2`) and an id never depends on how many dividers the layout carries. A
+/// row whose form id names itself ([`FormId::a11y`](super::form::FormId::a11y), read through
+/// `keys`) is that single name instead, and then answers only to it.
+///
+/// A toggle row is a `Toggle`, every other row a `Row`, and the label is the row's own text,
+/// borrowed from the table. `index` is the LAYOUT index; a separator or note, or an index past the
+/// end, is no element (`None`).
+pub fn table_a11y<'t>(
+    t: &'t super::table::TableView,
+    keys: Option<&'t dyn super::form::RowKeys>,
+    index: usize,
+) -> Option<A11y<'t>> {
+    let row = table_row(t, index).filter(|r| !r.sep)?;
+    let path = match keys.and_then(|k| k.a11y_name(index)) {
+        Some(name) => A11yPath::new().name(name),
+        None => A11yPath::new().name("row").index(table_elems(t, keys).position(|i| i == index)?),
+    };
+    let role = if row.toggle.is_some() { Role::Toggle } else { Role::Row };
+    let a = A11y::new(path, role);
+    Some(if row.label.is_empty() { a } else { a.with_label(row.label.as_str()) })
+}
+
+/// The inverse of [`table_a11y`]: the LAYOUT index the relative `path` names. `row.<n>` names the
+/// `n`th element row, named rows counted, and answers only when that row has no name of its own; a
+/// named row answers to its name alone. A path that names no element (an ordinal past the last, a
+/// name no row declares) is `None`.
+pub fn table_a11y_find(
+    t: &super::table::TableView,
+    keys: Option<&dyn super::form::RowKeys>,
+    path: &A11yPath,
+) -> Option<usize> {
+    let named = |i: usize| keys.and_then(|k| k.a11y_name(i));
+    match (indexed(path, "row", usize::MAX), sole_name(path)) {
+        // a row with a name answers only to it, so one element has one spelling
+        (Some(n), _) => table_elems(t, keys).nth(n).filter(|&i| named(i).is_none()),
+        (None, Some(name)) => table_elems(t, keys).find(|&i| named(i) == Some(name)),
+        (None, None) => None,
+    }
+}
+
 /// One shelf (`CardRow`) as the draw sees it this frame: the same arguments the tile draw takes,
 /// so `place` and the drawn tile are one formula.
 pub struct Shelf<'a> {
@@ -159,6 +254,20 @@ where
         let from_i = from.index.map_or(guess, |i| i as usize);
         let i = card_row::column_near_x(cx_, self.sty.margin_x, self.pitch, self.size.0, self.row.scroll_x(), self.n, from_i);
         key(self.entry, i)
+    }
+    /// `card.<i>`: a shelf holds cards, and a card is known by its position in the row. The text a
+    /// card shows (its title, its ratingKey) is the item source's, which the owning screen adds.
+    fn a11y(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let i = key.index()? as usize;
+        (i < self.n).then(|| A11y::new(A11yPath::new().name("card").index(i), Role::Card))
+    }
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        if g == self.group {
+            out.extend((0..self.n as u32).map(H::Elem::of_index));
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, _cx: &Cx<'_, H>) -> Option<H::Elem> {
+        indexed(path, "card", self.n).map(|i| H::Elem::of_index(i as u32))
     }
 }
 
@@ -234,6 +343,21 @@ where
         }
         key(self.entry, best.1.max(0) as usize)
     }
+    /// `row.<n>` for each row a key can land on, `n` its ordinal among them (see [`table_a11y`]): a
+    /// separator or note is a cell `GroupSpec::len` counts (`n_rows`) but no element, so the
+    /// listing is shorter than it by exactly those, and `place` (`TableView::row_frame`) places
+    /// every row that is listed.
+    fn a11y(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        table_a11y(self.table, None, key.index()? as usize)
+    }
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        if g == self.group {
+            out.extend(table_elems(self.table, None).map(|i| H::Elem::of_index(i as u32)));
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, _cx: &Cx<'_, H>) -> Option<H::Elem> {
+        table_a11y_find(self.table, None, path).map(|i| H::Elem::of_index(i as u32))
+    }
 }
 
 /// The shared top strip's pills as DRAWN (their recorded rects): a `Row` group the container
@@ -295,6 +419,21 @@ where
             }
         }
         key(self.entry, best.1)
+    }
+    /// `tab.<i>`, by the pill's position in the strip. The container that owns the strip
+    /// (`PageWithStrip`) names its pills by stable id instead (`nav.watchlist`); this is the bare
+    /// widget's answer.
+    fn a11y(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let i = key.index()? as usize;
+        (i < self.rects.len()).then(|| A11y::new(A11yPath::new().name("tab").index(i), Role::Tab))
+    }
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        if g == self.group {
+            out.extend((0..self.rects.len() as u32).map(H::Elem::of_index));
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, _cx: &Cx<'_, H>) -> Option<H::Elem> {
+        indexed(path, "tab", self.rects.len()).map(|i| H::Elem::of_index(i as u32))
     }
 }
 
@@ -366,6 +505,33 @@ where
         let c = seated.elem.index().unwrap_or(0) as usize;
         key(self.entry, self.join(r, c) as usize)
     }
+    /// `shelf.<r>.card.<c>`: the shelf's own `card.<c>` under the position of the shelf in the
+    /// column, so the shelves of one grid never meet.
+    fn a11y(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        let (r, c) = self.split(key.index()?);
+        let s = self.shelves.get(r)?;
+        let mut a = Focusable::<H>::a11y(s, &H::Elem::of_index(c as u32), cx)?;
+        a.path = A11yPath::new().name("shelf").index(r).join(&a.path);
+        Some(a)
+    }
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        if let Some((r, s)) = self.shelves.iter().enumerate().find(|(_, s)| s.group == g) {
+            out.extend((0..s.n).map(|c| H::Elem::of_index(self.join(r, c))));
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<H::Elem> {
+        if path.ns().is_some() {
+            return None;
+        }
+        let mut segs = path.segs();
+        let (Some(Seg::Name("shelf")), Some(Seg::Index(r))) = (segs.next(), segs.next()) else {
+            return None;
+        };
+        let s = self.shelves.get(r)?;
+        // the shelf answers its own `card.<c>`; this grid only knows where the shelf stands
+        let c = Focusable::<H>::a11y_find(s, &path.tail(2), cx)?.index()?;
+        Some(H::Elem::of_index(self.join(r, c as usize)))
+    }
 }
 
 /// A `DocumentReader` in its frame: a `Document` group of ONE element that scrolls inside and
@@ -418,6 +584,18 @@ where
     }
     fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         key(self.entry, 0)
+    }
+    /// `document`: the group's one element, the page of text itself.
+    fn a11y(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        (key.index()? == 0).then(|| A11y::new(A11yPath::new().name("document"), Role::Text))
+    }
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        if g == self.group {
+            out.push(H::Elem::of_index(0));
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, _cx: &Cx<'_, H>) -> Option<H::Elem> {
+        (sole_name(path) == Some("document")).then(|| H::Elem::of_index(0))
     }
 }
 
@@ -604,5 +782,141 @@ mod tests {
         assert_eq!(Focusable::<FixtureHost>::reconcile(&row, strip_pill, &cx).elem, 0);
         let stale = FocusKey { entry: E, elem: 7u32 };
         assert_eq!(Focusable::<FixtureHost>::reconcile(&row, stale, &cx).elem, 2);
+    }
+
+    fn shelf_of<'a>(r: &'a card_row::CardRow, sty: &'a card_row::RowStyle, n: usize, g: u32) -> Shelf<'a> {
+        Shelf {
+            row: r,
+            n,
+            sty,
+            row_y: 100.0,
+            size: (sty.w, sty.h),
+            pitch: sty.w + sty.gap,
+            group: GroupId(g),
+            entry: E,
+            extent: Rect::FULL,
+        }
+    }
+
+    /// **A shelf, a grid of shelves, a tab row and a document answer the id contract** (plan A
+    /// tests 1-4, through `a11y::conformance`: every element projects, the ids are unique, `a11y_find`
+    /// inverts `a11y` for every element, and `a11y_elems` lists at most `GroupSpec::len`), and the
+    /// ids are the documented ones: `card.<i>`, `shelf.<r>.card.<c>`, `tab.<i>`, `document`.
+    #[test]
+    fn the_shelf_grid_tab_row_and_document_answer_the_id_contract() {
+        use crate::a11y::conformance;
+        type H = FixtureHost;
+        let (m, v) = (FixtureMeasure, FixtureView::default());
+        let c = cx(&m, &v);
+        let rel = |s: &str| A11yPath::parse_relative(s).unwrap();
+        let qualified = A11yPath::parse_id("home.card.1").unwrap();
+        let sty = card_row::RowStyle::HOME;
+
+        let row = card_row::CardRow::new();
+        let shelf = shelf_of(&row, &sty, 8, 1);
+        conformance(&shelf, &c);
+        let a = Focusable::<H>::a11y(&shelf, &3, &c).unwrap();
+        assert_eq!((a.path, a.role, a.loaded), (rel("card.3"), Role::Card, true));
+        assert!(Focusable::<H>::a11y(&shelf, &8, &c).is_none(), "past the end is no element");
+        assert_eq!(Focusable::<H>::a11y_find(&shelf, &rel("card.7"), &c), Some(7));
+        assert_eq!(Focusable::<H>::a11y_find(&shelf, &rel("card.8"), &c), None, "past the end");
+        assert_eq!(Focusable::<H>::a11y_find(&shelf, &rel("row.1"), &c), None, "another widget's name");
+        assert_eq!(Focusable::<H>::a11y_find(&shelf, &qualified, &c), None, "the owner strips the namespace");
+        let mut elems = Vec::new();
+        Focusable::<H>::a11y_elems(&shelf, GroupId(2), &c, &mut elems);
+        assert!(elems.is_empty(), "a foreign group lists nothing");
+        conformance(&shelf_of(&row, &sty, 0, 1), &c);
+
+        let rows = [card_row::CardRow::new(), card_row::CardRow::new()];
+        let shelves = [shelf_of(&rows[0], &sty, 10, 1), shelf_of(&rows[1], &sty, 4, 2)];
+        let grid = Grid { shelves: &shelves, stride: 64, entry: E };
+        conformance(&grid, &c);
+        assert_eq!(Focusable::<H>::a11y(&grid, &(64 + 2), &c).unwrap().path, rel("shelf.1.card.2"));
+        assert_eq!(Focusable::<H>::a11y_find(&grid, &rel("shelf.0.card.9"), &c), Some(9));
+        assert_eq!(Focusable::<H>::a11y_find(&grid, &rel("shelf.1.card.3"), &c), Some(64 + 3));
+        assert_eq!(Focusable::<H>::a11y_find(&grid, &rel("shelf.1.card.4"), &c), None, "the shorter shelf ends at 4");
+        assert_eq!(Focusable::<H>::a11y_find(&grid, &rel("shelf.2.card.0"), &c), None, "no third shelf");
+        assert_eq!(Focusable::<H>::a11y_find(&grid, &rel("card.1"), &c), None, "a bare card names no shelf");
+        let mut elems = Vec::new();
+        Focusable::<H>::a11y_elems(&grid, GroupId(2), &c, &mut elems);
+        assert_eq!(elems, [64, 65, 66, 67], "one shelf's group is that shelf's cards, in order");
+
+        let rects = [Rect::new(0.0, 0.0, 10.0, 10.0), Rect::new(20.0, 0.0, 10.0, 10.0), Rect::new(40.0, 0.0, 10.0, 10.0)];
+        let tabs = TabRow { rects: &rects, group: GroupId(1), entry: E };
+        conformance(&tabs, &c);
+        assert_eq!(Focusable::<H>::a11y(&tabs, &2, &c).unwrap().role, Role::Tab);
+        assert_eq!(Focusable::<H>::a11y_find(&tabs, &rel("tab.1"), &c), Some(1));
+        assert_eq!(Focusable::<H>::a11y_find(&tabs, &rel("tab.3"), &c), None);
+
+        let reader = super::super::document_reader::DocumentReader::new();
+        let doc = Document { reader: &reader, frame: Rect::new(0.0, 0.0, 800.0, 600.0), group: GroupId(9), entry: E };
+        conformance(&doc, &c);
+        let a = Focusable::<H>::a11y(&doc, &0, &c).unwrap();
+        assert_eq!((a.path, a.role), (rel("document"), Role::Text));
+        assert!(Focusable::<H>::a11y(&doc, &1, &c).is_none(), "a document has the one element");
+        assert_eq!(Focusable::<H>::a11y_find(&doc, &rel("document"), &c), Some(0));
+        assert_eq!(Focusable::<H>::a11y_find(&doc, &rel("document.0"), &c), None);
+    }
+
+    /// **A table projects every row a key can land on, and says what each is.** `row.<n>`, `n` the
+    /// row's ordinal among the rows a key can land on (the layout index counts the separator and the
+    /// note, the id does not, so the ids have no gaps); a toggle row is a `Toggle`; the label of a
+    /// row is its own text. A separator and a note are cells `GroupSpec::len` counts but no
+    /// elements: they are not listed, not found and not projected, which is also what keeps every
+    /// listed row placed (`TableView::row_frame` places neither). Rows below the viewport are found
+    /// as well as the ones on screen.
+    #[test]
+    fn a_table_names_its_rows_and_says_which_are_not_controls() {
+        use crate::a11y::conformance;
+        use crate::table::{Row, Section, TableView};
+        type H = FixtureHost;
+        let (m, v) = (FixtureMeasure, FixtureView::default());
+        let c = cx(&m, &v);
+        let mut t = TableView::new();
+        t.set_sections(
+            vec![
+                Section::new("First").row(Row::new("a")).row(Row::separator()),
+                Section::new("Second").row(Row::new("b").toggle(true)).row(Row::note("careful")).row(Row::new("c")),
+            ],
+            0,
+            false,
+        );
+        // a frame two rows tall: the rest are below it, and still elements
+        let table = Table { table: &t, frame: Rect::new(0.0, 0.0, 600.0, 120.0), group: GroupId(5), entry: E };
+        conformance(&table, &c);
+        let mut groups = Vec::new();
+        Focusable::<H>::groups(&table, &c, &mut groups);
+        assert_eq!(groups[0].len, 5, "the group counts the separator and the note");
+        let mut elems = Vec::new();
+        Focusable::<H>::a11y_elems(&table, GroupId(5), &c, &mut elems);
+        assert_eq!(elems, [0, 2, 4], "the listing holds the three rows a key can land on");
+        let at = |i: u32| Focusable::<H>::a11y(&table, &i, &c).unwrap();
+        let rel = |s: &str| A11yPath::parse_relative(s).unwrap();
+        let facts: Vec<_> = elems.iter().map(|&i| (at(i).path, at(i).role, at(i).label.map(|l| l.into_owned()))).collect();
+        assert_eq!(
+            facts,
+            [
+                (rel("row.0"), Role::Row, Some("a".to_owned())),
+                (rel("row.1"), Role::Toggle, Some("b".to_owned())),
+                (rel("row.2"), Role::Row, Some("c".to_owned())),
+            ],
+            "the ordinal among the rows a key can land on: no gap where the separator and the note sit"
+        );
+        for sep in [1u32, 3] {
+            assert!(Focusable::<H>::a11y(&table, &sep, &c).is_none(), "layout row {sep} is not an element");
+            assert!(Focusable::<H>::place(&table, &sep, &c, At::SpringTarget).is_none(), "and it places nowhere");
+        }
+        for (ordinal, layout) in [(0, 0), (1, 2), (2, 4)] {
+            assert_eq!(
+                Focusable::<H>::a11y_find(&table, &rel(&format!("row.{ordinal}")), &c),
+                Some(layout),
+                "row.{ordinal} finds layout row {layout}, and a row below the viewport is found too"
+            );
+        }
+        assert_eq!(Focusable::<H>::a11y_find(&table, &rel("row.3"), &c), None, "past the last element");
+        assert!(Focusable::<H>::a11y(&table, &5, &c).is_none());
+        let mut foreign = Vec::new();
+        Focusable::<H>::a11y_elems(&table, GroupId(6), &c, &mut foreign);
+        assert!(foreign.is_empty(), "a foreign group lists nothing");
     }
 }

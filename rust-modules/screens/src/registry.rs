@@ -26,7 +26,7 @@
 
 pub use crate::family::SettingsPage;
 pub use crate::family::InnerViews;
-pub use crate::inputs::{GrantInputs, RuntimePolicy, ScreenInputs};
+pub use crate::inputs::{moved, GrantInputs, RuntimePolicy, ScreenInputs};
 #[cfg(test)]
 pub(crate) use crate::inputs::{capture_fixture, caption_fixture, empty_fixture, publication_fixture};
 /// The stored Under posters setting as the ui caption policy: the shared door a screen outside
@@ -486,8 +486,8 @@ pub struct LibraryMenuArg {
     /// hid behind "+N". Empty for every other menu.
     pub folded: Vec<u32>,
     /// The page's entry and the control the menu grew out of. Every header menu names it, "+N"
-    /// included: the page leaves the control out of its pass and the opener lift draws it lit
-    /// above the panel's scrim (design review S12).
+    /// included: the page leaves the control out of its pass and the opener lift draws it above the
+    /// panel's scrim at the morph's `opener_alpha`.
     pub opener: Option<(plx_machine::machine::EntryId, u32)>,
 }
 
@@ -803,6 +803,25 @@ pub struct CardIdentity {
     pub sid: plx_plex::plex::ServerId,
     pub rk: String,
     pub elem: u32,
+}
+
+/// **The page a Play Version panel belongs to**: the metadata store's loaded detail when it is the item `arg`
+/// names. The mount reads the versions off it, and [`versions_subject`] the key its rows play.
+fn versions_page<'a>(
+    meta: plx_data::metadata::MetadataView<'a>,
+    arg: &crate::versions_panel::VersionsArg,
+) -> Option<&'a plx_data::metadata::Detail> {
+    meta.current().filter(|d| plx_plex::plex::same_item((d.sid, d.rk.as_str()), (arg.sid, arg.rk.as_str())))
+}
+
+/// **The ratingKey a Play Version row plays**, the subject of its accessibility id: the page's Play pill's own
+/// (`detail::hero_control_subject(Play, ..)`: on a show the episode the hero plays, else the page's item), because
+/// the row's OK delivers `AppMsg::PlayVersion` to that page, which plays it as its Play pill would. It lives here
+/// because a panel may not name the page's module (`ci/check-deps.sh`, `sibling`), and it reads the page off
+/// the host's metadata view, the way the mount does.
+pub(crate) fn versions_subject<H: MetadataLike>(cx: &Cx<'_, H>, arg: &crate::versions_panel::VersionsArg) -> Option<String> {
+    let d = versions_page(H::metadata(cx), arg)?;
+    crate::detail::play_subject(d).map(str::to_owned)
 }
 
 /// The slot ranges to project, sorted and merged, clamped to `total`. Shared by the sliding-window
@@ -2463,10 +2482,7 @@ where
                 crate::alt_sources::AltSourcesScreen::new(entry, arg.clone(), H::metadata(cx)),
             ),
             AppArg::VersionsPanel(arg) => {
-                let versions = H::metadata(cx)
-                    .current()
-                    .filter(|d| plx_plex::plex::same_item((d.sid, d.rk.as_str()), (arg.sid, arg.rk.as_str())))
-                    .map_or(&[][..], crate::detail::hero_versions);
+                let versions = versions_page(H::metadata(cx), arg).map_or(&[][..], crate::detail::hero_versions);
                 Box::new(crate::versions_panel::VersionsPanelScreen::new(entry, arg.clone(), versions))
             }
             AppArg::TracksPanel(arg) => Box::new(
@@ -3269,6 +3285,323 @@ mod compaction_tests {
         let mut table = vec![1, 2, 3];
         assert!(Compaction::remove(&mut table, Vec::new()).is_none());
         assert_eq!(table, vec![1, 2, 3]);
+    }
+}
+
+/// The accessibility-id coverage TABLE (a11y-ids plan, D2 and workstream A): which screens answer
+/// `Focusable::a11y`, `a11y_elems` and `a11y_find` and run `plx_ui::a11y::conformance`.
+///
+/// [`coverage`] is an exhaustive `match` over every `AppArg` arm, and over the arms of `ContentArg`
+/// and `SettingsPage` it wraps, with NO wildcard: a new screen does not compile until it is tabled
+/// here. An arm is [`Coverage::Covered`] by a function that MOUNTS that screen and runs
+/// `plx_ui::a11y::conformance` over it; the function is the screen's own test body, exposed from its
+/// test module (`<screen>_conforms`). Where that module's ids test shares the mounting helper, a
+/// change to the mount reaches both; otherwise the table is the function's only caller. An arm that
+/// cannot be mounted on the host is [`Coverage::Pending`] with the true reason, and the table's
+/// tests print it. The table only shrinks; precedent: `cards_conformance_tests.rs`'s `table()`.
+///
+/// A covered function returns the namespace of every mounting it exercised (`Screen::a11y_ns`), and
+/// `plx_ui::a11y::conform` is the one way a test module produces one: it runs conformance and reads the
+/// namespace together, so a mount cannot be run through one without the other.
+///
+/// It lives in `registry.rs` because it names every screen's test function and that file is the one the
+/// `sibling` gate admits for that (a screen's own test module reaches the shared helper as
+/// `plx_ui::a11y::conform`, never through a sibling).
+#[cfg(test)]
+mod a11y_coverage_tests {
+    use super::{AppArg, ContentArg, SettingsPage};
+    use crate::family::{PickerKind, PosterKind};
+    use plx_ui::a11y::Namespaces;
+
+    /// Where one screen stands.
+    #[derive(Debug)]
+    pub(super) enum Coverage {
+        /// Mounted and run through `plx_ui::a11y::conformance` by this function; the name is the arm's.
+        Covered(&'static str, fn() -> Namespaces),
+        /// Cannot be run through it yet: the arm's name, then the reason, which says what is missing and
+        /// is TRUE of this commit. No arm is pending now (the table only shrinks); the variant stays for
+        /// the next screen that cannot be mounted on the host the day it is added.
+        #[allow(dead_code)]
+        Pending(&'static str, &'static str),
+    }
+
+    /// A Settings-family page through the surface (`RouteSurface`), the way `AppArg::Settings` mounts it.
+    fn surface(page: SettingsPage) -> Namespaces {
+        crate::settings::root_navigation_tests::settings_page_conforms(page)
+    }
+
+    /// The table: every screen the application can mount, and where it stands. A [`Coverage::Covered`]
+    /// arm names its mount function; a new arm is a compile error until it is tabled here.
+    pub(super) fn coverage(arg: &AppArg) -> Coverage {
+        use Coverage::Covered;
+        match arg {
+            AppArg::LibraryMenu(_) => Covered("LibraryMenu", crate::library::menu::tests::library_menu_conforms),
+            AppArg::AccountMenu => Covered("AccountMenu", crate::account_menu::tests::account_menu_conforms),
+            AppArg::ItemMenu(_) => Covered("ItemMenu", crate::item_menu::tests::item_menu_conforms),
+            AppArg::WatchlistMenu(_) => Covered("WatchlistMenu", crate::watchlist::page_tests::watchlist_menu_conforms),
+            AppArg::PlayerOverlay(_) => Covered("PlayerOverlay", crate::player::overlay_tests::player_overlay_conforms),
+            AppArg::AltSources(_) => Covered("AltSources", crate::alt_sources::tests::focus_and_hit::alt_sources_conforms),
+            AppArg::VersionsPanel(_) => Covered("VersionsPanel", crate::versions_panel::tests::versions_panel_conforms),
+            AppArg::TracksPanel(_) => Covered("TracksPanel", crate::tracks_panel::tests::tracks_panel_conforms),
+            AppArg::AboutPanel => Covered("AboutPanel", crate::about_panel::tests::about_panel_conforms),
+            AppArg::PersonBio => Covered("PersonBio", crate::person_bio::tests::person_bio_conforms),
+            AppArg::CollectionAbout => Covered("CollectionAbout", crate::about_panel::tests::collection_about_conforms),
+            AppArg::Login => Covered("Login", crate::login::tests::login_conforms),
+            AppArg::Profiles => Covered("Profiles", crate::profiles::selection_tests::profiles_conforms),
+            AppArg::Onboard => Covered("Onboard", crate::onboard::tests::onboard_first_run_conforms),
+            AppArg::Home => Covered("Home", crate::home::cards_harness::home_conforms),
+            AppArg::Library => Covered("Library", crate::library::cards_harness::library_conforms),
+            AppArg::LibraryCollections { .. } => Covered("LibraryCollections", crate::library::tests::collections_listing_tests::library_collections_conforms),
+            AppArg::LibraryRecommended { .. } => Covered("LibraryRecommended", crate::library::cards_harness::recommended_conforms),
+            AppArg::Search => Covered("Search", crate::search::cards_harness::search_conforms),
+            AppArg::Watchlist => Covered("Watchlist", crate::watchlist::page_tests::watchlist_conforms),
+            AppArg::Player => Covered("Player", crate::player::step_ladder_tests::player_conforms),
+            AppArg::Content(content) => match content {
+                ContentArg::Detail { .. } => Covered("Content::Detail", crate::detail::tests::detail_conforms),
+                ContentArg::Person { .. } => Covered("Content::Person", crate::person::cards_harness::person_conforms),
+                ContentArg::Filmography { .. } => Covered("Content::Filmography", crate::filmography::tests::filmography_conforms),
+                ContentArg::Collection(_) => Covered("Content::Collection", crate::collection::cards_harness::collection_conforms),
+                ContentArg::Catalog { .. } => Covered("Content::Catalog", crate::catalog::tests::catalog_conforms),
+            },
+            AppArg::Settings(page) => match page {
+                SettingsPage::Root => Covered("Settings::Root", || surface(SettingsPage::Root)),
+                SettingsPage::Language => Covered("Settings::Language", || surface(SettingsPage::Language)),
+                SettingsPage::UnderPosters => Covered("Settings::UnderPosters", || surface(SettingsPage::UnderPosters)),
+                SettingsPage::UnderPostersDetails(_) => Covered("Settings::UnderPostersDetails", || {
+                    let mut namespaces = surface(SettingsPage::UnderPostersDetails(PosterKind::Movie));
+                    namespaces.extend(surface(SettingsPage::UnderPostersDetails(PosterKind::Show)));
+                    namespaces
+                }),
+                SettingsPage::Contribute => Covered("Settings::Contribute", || surface(SettingsPage::Contribute)),
+                SettingsPage::Playback => Covered("Settings::Playback", || surface(SettingsPage::Playback)),
+                SettingsPage::AudioSubtitles => Covered("Settings::AudioSubtitles", || surface(SettingsPage::AudioSubtitles)),
+                SettingsPage::Favourites => Covered("Settings::Favourites", || surface(SettingsPage::Favourites)),
+                SettingsPage::LibraryFavourites => Covered("Settings::LibraryFavourites", || surface(SettingsPage::LibraryFavourites)),
+                SettingsPage::Privacy => Covered("Settings::Privacy", || surface(SettingsPage::Privacy)),
+                SettingsPage::Legal => Covered("Settings::Legal", || surface(SettingsPage::Legal)),
+                SettingsPage::About => Covered("Settings::About", || surface(SettingsPage::About)),
+                SettingsPage::Document(_) => Covered("Settings::Document", || surface(SettingsPage::Document(0))),
+                SettingsPage::Preview(_) => Covered("Settings::Preview", || surface(SettingsPage::Preview(0))),
+                SettingsPage::ConsentStage(_) => Covered("Settings::ConsentStage", || surface(SettingsPage::ConsentStage(0))),
+                SettingsPage::Picker(_) => Covered("Settings::Picker", || surface(SettingsPage::Picker(PickerKind::Quality))),
+                SettingsPage::Diagnostics => Covered("Settings::Diagnostics", || surface(SettingsPage::Diagnostics)),
+                SettingsPage::PlayerHud => Covered("Settings::PlayerHud", || surface(SettingsPage::PlayerHud)),
+                SettingsPage::HudGallery => Covered("Settings::HudGallery", || surface(SettingsPage::HudGallery)),
+                SettingsPage::HudDetail(_) => Covered("Settings::HudDetail", crate::hud_settings::tests::hud_detail_conforms),
+                SettingsPage::HudAbout(_) => Covered("Settings::HudAbout", crate::hud_settings::tests::hud_about_conforms),
+                SettingsPage::HudPreview(_) => Covered("Settings::HudPreview", crate::hud_settings::tests::hud_preview_conforms),
+            },
+            AppArg::FirstRunConsent(_) => Covered("FirstRunConsent", crate::settings::root_navigation_tests::first_run_consent_conforms),
+        }
+    }
+
+    /// How many leaf arms the table has: 21 flat `AppArg` arms, 5 `ContentArg`, 22 `SettingsPage` and
+    /// `FirstRunConsent`. A new arm fails [`coverage`] to compile, and then this to pass until the census
+    /// below holds it too.
+    const ARMS: usize = 49;
+
+    /// **A value of every leaf arm** the table names: the registry's own page and surface censuses, plus
+    /// the arms those leave out (Filmography and every Settings page).
+    fn every_arm() -> Vec<AppArg> {
+        let sha = plx_data::hudpacks::Sha::parse(&"0".repeat(64)).expect("a sha256");
+        let mut arms = super::every_page_arg();
+        arms.extend(super::every_surface_arg());
+        arms.push(AppArg::Content(ContentArg::Filmography {
+            sid: plx_plex::plex::ServerId::UNSET,
+            key: String::new(),
+        }));
+        arms.extend(
+            [
+                SettingsPage::Root,
+                SettingsPage::Language,
+                SettingsPage::UnderPosters,
+                SettingsPage::UnderPostersDetails(PosterKind::Movie),
+                SettingsPage::Contribute,
+                SettingsPage::Playback,
+                SettingsPage::AudioSubtitles,
+                SettingsPage::Favourites,
+                SettingsPage::LibraryFavourites,
+                SettingsPage::Privacy,
+                SettingsPage::Legal,
+                SettingsPage::About,
+                SettingsPage::Document(0),
+                SettingsPage::Preview(0),
+                SettingsPage::ConsentStage(0),
+                SettingsPage::Picker(PickerKind::Quality),
+                SettingsPage::Diagnostics,
+                SettingsPage::PlayerHud,
+                SettingsPage::HudGallery,
+                SettingsPage::HudDetail(sha),
+                SettingsPage::HudAbout(sha),
+                SettingsPage::HudPreview(sha),
+            ]
+            .map(AppArg::Settings),
+        );
+        arms.push(AppArg::FirstRunConsent(0));
+        arms
+    }
+
+    /// The census with each arm's coverage, one per arm name (the registry's censuses list a
+    /// surface's kinds more than once).
+    fn tabled() -> Vec<Coverage> {
+        let mut seen = std::collections::BTreeSet::new();
+        every_arm()
+            .iter()
+            .map(coverage)
+            .filter(|c| {
+                let (Coverage::Covered(name, _) | Coverage::Pending(name, _)) = c;
+                seen.insert(*name)
+            })
+            .collect()
+    }
+
+    /// **Every arm is tabled, and the table is real.** Each [`Coverage::Covered`] arm's function runs: it
+    /// mounts the screen and runs `plx_ui::a11y::conformance` over it, and answers at least one namespace.
+    /// A [`Coverage::Pending`] arm names a reason. `Pending` arms are printed, so a gap is read, not found.
+    #[test]
+    fn every_arm_is_covered_by_a_mount_that_conforms_or_pending_with_a_reason() {
+        let table = tabled();
+        assert_eq!(table.len(), ARMS, "the census lists every leaf arm of the table, once");
+        let (mut covered, mut pending) = (0, 0);
+        for entry in &table {
+            match entry {
+                Coverage::Covered(name, run) => {
+                    let namespaces = run();
+                    assert!(!namespaces.is_empty(), "{name}: a covered arm mounts something and answers its namespace");
+                    covered += 1;
+                }
+                Coverage::Pending(name, why) => {
+                    assert!(!why.trim().is_empty(), "{name}: a pending screen names why");
+                    eprintln!("a11y coverage PENDING {name}: {why}");
+                    pending += 1;
+                }
+            }
+        }
+        eprintln!("a11y coverage: {covered} covered, {pending} pending of {ARMS}");
+    }
+
+    /// Two arms that answer one namespace because they mount ONE screen type: the namespace, the arms, and
+    /// why they are the same screen. A pair that is not in this list and shares a namespace is two screens
+    /// whose ids would meet.
+    const ONE_SCREEN_TWO_MOUNTINGS: &[(&str, &[&str], &str)] = &[(
+        "onboard",
+        &["Onboard", "Settings::Favourites", "Settings::LibraryFavourites"],
+        "one `OnboardScreen`, mounted by the first run, by the Settings editor and by the Library's editor \
+         (`settings::mount_page` and the registry both build it); its ids are the same elements",
+    ), (
+        "library",
+        &["Library", "LibraryCollections"],
+        "one `LibraryScreen`: `AppArg::LibraryCollections` is the same screen in `Listing::Collections` mode, \
+         pushed over `AppArg::Library` (`is_library_family`)",
+    ), (
+        "consent",
+        &["FirstRunConsent", "Settings::ConsentStage"],
+        "one `ConsentPage::first_run`: `AppArg::FirstRunConsent` roots a `RouteSurface` in `Family::FirstRunConsent` \
+         at `SettingsPage::ConsentStage`, and the Settings family pushes the same page for the same stage",
+    ), (
+        "about",
+        &["AboutPanel", "CollectionAbout"],
+        "one `AboutPanelScreen`: the registry mounts it over the item (`AboutPanelScreen::new`) and over the \
+         collection (`AboutPanelScreen::collection`); it declares no group, so it answers no id at all",
+    )];
+
+    /// **No two DIFFERENT screens answer one namespace** (plan D2): the namespace is the `<ns>` of every id
+    /// the screen answers, so two screens sharing one would give two elements one id. The namespaces of
+    /// every covered mounting are collected (every `SettingsPage` and `ContentArg` arm included); an arm may
+    /// share only as [`ONE_SCREEN_TWO_MOUNTINGS`] allows.
+    #[test]
+    fn no_two_screens_answer_one_namespace() {
+        use std::collections::BTreeMap;
+        let mut by_namespace: BTreeMap<&'static str, Vec<&'static str>> = BTreeMap::new();
+        for entry in tabled() {
+            if let Coverage::Covered(name, run) = entry {
+                let mut own = run();
+                own.sort_unstable();
+                own.dedup();
+                for ns in own {
+                    by_namespace.entry(ns).or_default().push(name);
+                }
+            }
+        }
+        assert!(by_namespace.len() > 30, "the covered arms answer their own namespaces: {by_namespace:?}");
+        let mut complaints = Vec::new();
+        for (ns, arms) in &by_namespace {
+            if arms.len() == 1 {
+                continue;
+            }
+            let allowed = ONE_SCREEN_TWO_MOUNTINGS
+                .iter()
+                .any(|(allowed_ns, allowed_arms, _)| allowed_ns == ns && allowed_arms.len() == arms.len() && arms.iter().all(|a| allowed_arms.contains(a)));
+            if !allowed {
+                complaints.push(format!("namespace {ns:?} is answered by {arms:?}: two screens would share an id"));
+            }
+        }
+        assert!(complaints.is_empty(), "{}", complaints.join("\n"));
+        // an allow-list entry that no longer matches (its arms stopped sharing) is stale and fails too
+        for (ns, arms, _) in ONE_SCREEN_TWO_MOUNTINGS {
+            assert_eq!(by_namespace.get(ns).map(|a| a.len()), Some(arms.len()), "{ns:?} no longer shares: drop its allow-list entry");
+        }
+    }
+
+    /// **The replay alphabet names exactly the namespaces the table reports, and the bound `MAX_ID_SEGS`.**
+    /// `tests/fixtures/replay/ALPHABET.json` has one pattern for an accessibility id, and
+    /// `.claude/hooks/outbound-guard.py` lets a recording that matches it be committed and pushed. Its first
+    /// segment is a CLOSED alternation (an open `[a-z]+` would pass a household hostname like `nas.local`),
+    /// so a screen that gains a namespace fails here until the alternation is told, and a namespace no screen
+    /// answers any more fails here until it is dropped. `nav` is the one the table cannot report: the shared
+    /// strip answers it, not a screen (`plx_ui::dispatch`, `strip_path`). The repeat bound is
+    /// `plx_ui::a11y::MAX_ID_SEGS`, which the conformance suite holds every id to.
+    #[test]
+    fn the_replay_alphabet_names_exactly_the_namespaces_the_table_reports() {
+        use std::collections::BTreeSet;
+        let alphabet: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/replay/ALPHABET.json"
+        )))
+        .expect("ALPHABET.json is JSON");
+        // the id pattern is `(<ns>|<ns>|...)(\.(<name>|0|<index>)){1,<MAX_ID_SEGS>}`
+        const TAIL: &str = r"(\.([a-z][a-z0-9_]*|0|[1-9][0-9]*)){1,";
+        let pattern = alphabet["patterns"]
+            .as_array()
+            .expect("patterns is a list")
+            .iter()
+            .filter_map(|p| p.as_str())
+            .find(|p| p.contains(TAIL))
+            .expect("ALPHABET.json has the accessibility-id pattern");
+        let (head, bound) = pattern.split_once(TAIL).expect("the id pattern splits at its tail");
+        let named: BTreeSet<&str> = head
+            .strip_prefix('(')
+            .and_then(|h| h.strip_suffix(')'))
+            .expect("the id pattern opens with the parenthesised namespace alternation")
+            .split('|')
+            .collect();
+        assert_eq!(
+            bound.strip_suffix('}').and_then(|b| b.parse::<usize>().ok()),
+            Some(plx_ui::a11y::MAX_ID_SEGS),
+            "the id pattern's repeat bound is plx_ui::a11y::MAX_ID_SEGS: {pattern}"
+        );
+
+        let mut answered: BTreeSet<&'static str> = BTreeSet::new();
+        answered.insert("nav");
+        for entry in tabled() {
+            if let Coverage::Covered(_, run) = entry {
+                answered.extend(run());
+            }
+        }
+        let answered: BTreeSet<&str> = answered.into_iter().collect();
+        for ns in &answered {
+            assert!(
+                ns.starts_with(|c: char| c.is_ascii_lowercase()) && ns.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'),
+                "{ns:?} is not a well-formed namespace"
+            );
+        }
+        let missing: Vec<_> = answered.difference(&named).collect();
+        let stale: Vec<_> = named.difference(&answered).collect();
+        assert!(
+            missing.is_empty() && stale.is_empty(),
+            "ALPHABET.json's accessibility-id pattern must list exactly the namespaces the screens answer (plus nav): \
+             add {missing:?}, drop {stale:?}"
+        );
     }
 }
 

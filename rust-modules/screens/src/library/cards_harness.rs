@@ -479,3 +479,112 @@ mod return_tests {
         }
     }
 }
+
+/// **The page's accessibility ids:** the All grid conforms (every element of every group projects,
+/// ids are unique, each id finds its element), the header's controls answer their names
+/// (`header.sort`, `header.recommended`, `header.libraries`), each card is `grid.card.<i>` with its
+/// ratingKey as the subject, the rail's letters `rail.<i>` exist only while focus is in the grid or
+/// the rail (as their group does), and the plaintext question's answers are the only ids while it
+/// is open.
+#[test]
+fn the_page_answers_its_ids_and_conforms() {
+    assert!(!library_conforms().is_empty());
+}
+
+/// The Library grid page (grid, rail, plaintext question), run through the id conformance with the id
+/// asserts above (`AppArg::Library`; the coverage table calls this, and so does the test above).
+pub(crate) fn library_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    use plx_ui::a11y::{A11yPath, Role};
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let mut h = Harness::new(Set::Grid, 5);
+    let rel = |text: &str| A11yPath::parse_relative(text).expect("a well-formed id");
+    let first = h.screen.pair.detail.elem_at(0).expect("the seeded grid holds a key");
+    // unfocused: the rail's group is not declared, so its ids are not there either
+    {
+        let cx = h.cx();
+        namespaces.push(conform::<LibHost, _>(&h.screen, &cx));
+        assert_eq!(Focusable::<LibHost>::a11y_find(&h.screen, &rel("rail.0"), &cx), None);
+    }
+    CardHarness::focus(&mut h, first, By::Dir);
+    let rail = h.screen.pair.master.elems.clone();
+    {
+        let cx = h.cx();
+        namespaces.push(conform::<LibHost, _>(&h.screen, &cx));
+        let screen = &h.screen;
+        let find = |text: &str| Focusable::<LibHost>::a11y_find(screen, &rel(text), &cx);
+        assert_eq!(find("header.sort"), Some(SORTFILTER));
+        assert_eq!(find("header.recommended"), Some(RECOMMENDED));
+        assert_eq!(find("header.libraries"), Some(MORE));
+        for i in 0..5 {
+            let elem = find(&format!("grid.card.{i}")).unwrap_or_else(|| panic!("card {i} resolves"));
+            assert_eq!(Some(elem), screen.pair.detail.elem_at(i));
+            let a = Focusable::<LibHost>::a11y(screen, &elem, &cx).expect("a card projects");
+            assert_eq!((a.role, a.loaded), (Role::Card, true));
+            assert_eq!(a.subject.as_deref(), Some(format!("m{i}").as_str()), "the subject is the ratingKey");
+            assert_eq!(a.label.as_deref(), Some(format!("m{i}").as_str()), "the title is the label");
+        }
+        assert_eq!(find("grid.card.5"), None, "one past the end");
+        assert_eq!(find("grid.0"), None, "a card is `grid.card.<i>`");
+        assert_eq!(find("status.retry"), None, "the read-out is not up");
+        for (i, elem) in rail.iter().enumerate() {
+            assert_eq!(find(&format!("rail.{i}")), Some(*elem), "letter {i}");
+            let a = Focusable::<LibHost>::a11y(screen, elem, &cx).expect("a letter projects");
+            assert_eq!(a.role, Role::Row);
+        }
+        assert_eq!(find(&format!("rail.{}", rail.len())), None, "one past the last letter");
+    }
+    // the plaintext question: its answers are the page's only elements while it is open
+    let mut out = Vec::new();
+    let mut present = plx_machine::present::Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Instance(INSTANCE), &mut present);
+    h.screen.plaintext_alert.open::<LibHost>("lan-machine", None, MachineId::Instance(INSTANCE), &mut fx);
+    let cx = h.cx();
+    namespaces.push(conform::<LibHost, _>(&h.screen, &cx));
+    let find = |text: &str| Focusable::<LibHost>::a11y_find(&h.screen, &rel(text), &cx);
+    assert_eq!(find("alert.connect"), Some(PLAINTEXT_CONNECT));
+    assert_eq!(find("alert.not_now"), Some(PLAINTEXT_CANCEL));
+    assert_eq!(find("grid.card.0"), None, "the page under a question is no owner's");
+    namespaces
+}
+
+/// **The Recommended page's accessibility ids:** the page conforms, its crumb is `header.crumb`, and
+/// each hub card is `shelf.<row>.card.<global index>` (its place in the listing, `CardSource::global`,
+/// as `cards::card_a11y` names it) with the hub item's ratingKey as the subject.
+#[test]
+fn the_recommended_page_answers_its_ids_and_conforms() {
+    assert!(!recommended_conforms().is_empty());
+}
+
+/// The Recommended page over four hubs, run through the id conformance with the id asserts above
+/// (`AppArg::LibraryRecommended`; the coverage table calls this, and so does the test above).
+pub(crate) fn recommended_conforms() -> plx_ui::a11y::Namespaces {
+    use plx_ui::a11y::conform;
+    let mut namespaces = Vec::new();
+    use plx_ui::a11y::{A11yPath, Role};
+    let _guard = plx_base::testlock::serial();
+    let _policy = crate::registry::captions::PolicyPin::default_setting();
+    let h = Harness::new(Set::Shelf, 4);
+    let cx = h.cx();
+    namespaces.push(conform::<LibHost, _>(&h.rec, &cx));
+    let rel = |text: &str| A11yPath::parse_relative(text).expect("a well-formed id");
+    let find = |text: &str| Focusable::<LibHost>::a11y_find(&h.rec, &rel(text), &cx);
+    assert_eq!(find("header.crumb"), Some(toolbar::CRUMB_ROOT));
+    assert!(!h.rec.shelves.is_empty(), "the seeded hubs are shelves");
+    let published = h.hubs.view();
+    for (row, shelf) in h.rec.shelves.iter().enumerate() {
+        for (col, elem) in shelf.elems.iter().enumerate() {
+            assert_eq!(find(&format!("shelf.{row}.card.{col}")), Some(*elem), "row {row} card {col}");
+            let a = Focusable::<LibHost>::a11y(&h.rec, elem, &cx).expect("a card projects");
+            assert_eq!(a.role, Role::Card);
+            let item = &published.shelves()[row].items[col];
+            assert_eq!(a.subject.as_deref(), Some(item.rk.as_str()), "the subject is the ratingKey");
+        }
+        assert_eq!(find(&format!("shelf.{row}.card.{}", shelf.elems.len())), None, "one past the end of row {row}");
+    }
+    assert_eq!(find(&format!("shelf.{}.card.0", h.rec.shelves.len())), None, "a row that does not exist");
+    assert_eq!(Screen::<LibHost>::a11y_ns(&h.rec), "recommended");
+    namespaces
+}

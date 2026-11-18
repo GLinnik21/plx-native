@@ -270,6 +270,10 @@ RELEASE_LEGITIMATE_TRIGGER_NAMES = {
     "plxnative-anim.log",
     # Explicit local playback-diagnostic export; a create-only sink, also in privacy erasure.
     "plxnative-playback.log",
+    # The accessibility read-back (`app/a11y_state.rs`): one rewritten snapshot and its fixed temp
+    # name, both in `dev.rs`'s DIAG (so neither arms a trigger) and in `paths::runtime_file::LOGS`
+    # (so a "delete all my data" erases them). Release code names them for that erasure.
+    "plxnative-a11y.json", "plxnative-a11y.json.tmp",
 }
 
 

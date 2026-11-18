@@ -37,18 +37,21 @@ class ExpectedRefusalTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 replay.verdict(line, 1, (7, 5), refusal)
 
-    def test_committed_census_requires_eight_historical_refusals_and_two_current_same(self):
+    def test_committed_census_requires_eight_historical_refusals_and_four_current_same(self):
         root = Path(__file__).resolve().parent / 'fixtures/replay'
         fixtures = replay.discover(root)
         historical = [p for p in fixtures if replay.expected_refusal(p) is not None]
         current = [p for p in fixtures if replay.expected_refusal(p) is None]
         self.assertEqual(len(historical), 4)
-        self.assertEqual(len(current), 1)
+        self.assertEqual(len(current), 2)
         self.assertCountEqual([replay.expected_counts(p) for p in historical],
                               [(266, 266), (621, 621), (2287, 2287), (457, 457)])
+        # the v13 anchor and the by-id anchor, each re-recorded onto the `Id` resolution row's shape
+        # (docs/ui-replay-v13-anchor.md)
+        self.assertEqual({p.name: replay.expected_counts(p) for p in current},
+                         {'v13-owned-input-content': (922, 922), '13-by-id-filmography': (1209, 1209)})
         for fixture in current:
             counts = replay.expected_counts(fixture)
-            self.assertEqual(counts, (1216, 1216))
             manifest = json.loads((fixture / 'manifest.json').read_text())
             self.assertIs(manifest.get('anchor'), True)
             self.assertNotIn((manifest['schema'], manifest['state_fp']),

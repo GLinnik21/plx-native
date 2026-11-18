@@ -248,6 +248,47 @@ pub(crate) fn remote_token_key(tok: &str) -> Option<(c_uint, c_uint)> {
     })
 }
 
+/// **`focus:<id>`, `press:<id>` and `press:<id>@<subject>`**, the by-id tokens of the remote FIFO and
+/// Lab Control: focus (or press) the element an accessibility id names, and not the one a key walk
+/// would arrive at. `None` is "not a by-id token" (the token goes on to `dispatch_remote_token`);
+/// `Some(Err(why))` is a by-id token that names nothing a recording could replay, refused here
+/// with a finite reason that carries no token text.
+///
+/// The input is never acted on in this function or in the ingress: the dispatcher resolves it at
+/// its ordered delivery position (`plx_ui::dispatch`, the by-id module), so every key ahead of it
+/// has already acted. The press edges are the `ok` token's own pair, so a replayed press is the
+/// key a remote OK is. Producers only are `devtriggers`-gated; the input type is not.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn by_id_token(token: &str) -> Option<Result<plx_machine::machine::InputKind<u32>, &'static str>> {
+    use plx_machine::machine::{InputKind, OkTap};
+    let (press, rest) = if let Some(rest) = token.strip_prefix("press:") {
+        (true, rest)
+    } else if let Some(rest) = token.strip_prefix("focus:") {
+        (false, rest)
+    } else {
+        return None;
+    };
+    // An id has no `@`, so the first one starts the subject.
+    let (id, expect) = match rest.split_once('@') {
+        Some((id, subject)) if press => (id, Some(subject)),
+        Some(_) => return Some(Err("a focus token takes no subject")),
+        None => (rest, None),
+    };
+    if plx_ui::a11y::A11yPath::parse_id(id).is_err() {
+        return Some(Err("malformed accessibility id"));
+    }
+    if expect.is_some_and(|subject| !plx_ui::dispatch::by_id_subject_ok(subject)) {
+        return Some(Err("malformed press subject"));
+    }
+    let tap = if press {
+        let Some((sym, wcode)) = remote_token_key("ok") else { return Some(Err("no ok key")) };
+        Some(OkTap { sym, wcode })
+    } else {
+        None
+    };
+    Some(Ok(InputKind::ById { id: id.into(), press: tap, expect: expect.map(Into::into) }))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RemotePointer {
     Click,
@@ -326,9 +367,12 @@ pub(crate) fn remote_synth_lifecycle(code: u32) {
 }
 
 /// A remote token that acts DIRECTLY rather than by pushing SDL events — the recorder writes
-/// these as `token` records (the SDL kinds are recorded where they are polled), and the replay
-/// driver re-dispatches them. `txt:` is here because its payload never becomes an SDL event on
-/// this host (`dispatch_remote_token`'s arm says why).
+/// these as `token` records, and the replay driver re-dispatches them. It is one of four fates:
+/// the SDL-synthesised kinds (a key, a click) are recorded where they are polled; a direct token
+/// (this predicate) is recorded as a `token` row; `focus:<id>` / `press:<id>[@<subject>]`
+/// (`by_id_token`) become one typed `InputKind::ById` input that the tap records, not a token
+/// row; and `state:<nonce>` is not recorded at all. `txt:` is here because its payload never
+/// becomes an SDL event on this host (`dispatch_remote_token`'s arm says why).
 pub(crate) fn token_is_direct(tok: &str) -> bool {
     #[cfg(feature = "devtriggers")]
     if crate::remote::HangProbe::parse(tok).is_some() {
@@ -444,6 +488,33 @@ mod input_event_tests {
         for token in ["down", "hang:", "hang:-1", "hang-raw:bad"] {
             assert!(!token_is_direct(token));
         }
+    }
+
+    /// **The by-id tokens parse to the one input the dispatcher resolves**: the id, the `ok` token's
+    /// own key pair for a press, an optional subject, and a refusal (never a guess) for anything a
+    /// recording could not replay.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn by_id_tokens_parse_to_one_input_and_refuse_what_cannot_replay() {
+        use plx_machine::machine::InputKind;
+        let ok = remote_token_key("ok").expect("the ok token");
+        let parsed = |token: &str| by_id_token(token).expect("a by-id token").map(|kind| match kind {
+            InputKind::ById { id, press, expect } =>
+                (id.to_string(), press.map(|tap| (tap.sym, tap.wcode)), expect.map(|s| s.to_string())),
+            other => panic!("{other:?}"),
+        });
+        assert_eq!(parsed("focus:home.row.2"), Ok(("home.row.2".into(), None, None)));
+        assert_eq!(parsed("press:detail.row.0"), Ok(("detail.row.0".into(), Some(ok), None)));
+        assert_eq!(parsed("press:nav.tab.1@rk77"), Ok(("nav.tab.1".into(), Some(ok), Some("rk77".into()))));
+        for token in ["focus:", "press:", "focus:Home.row.1", "focus:home", "focus:home..row", "press:home.row.01",
+            "focus:home.row.1@rk1", "press:home.row.1@", "press:home.row.1@a b", "press:home.row.1@a@b"] {
+            assert!(by_id_token(token).is_some_and(|parsed| parsed.is_err()), "{token}");
+        }
+        for token in ["ok", "down", "focus", "press", "pat:x", "txt:a", "k:13,0", "shot"] {
+            assert!(by_id_token(token).is_none(), "{token} is not a by-id token");
+        }
+        // a by-id input is recorded as an input at its tap, never as a direct recorder token
+        assert!(!token_is_direct("focus:home.row.2") && !token_is_direct("press:home.row.2"));
     }
 
     /// The boundary `Dispatcher::input_scope` rests on: every input kind is in, and the

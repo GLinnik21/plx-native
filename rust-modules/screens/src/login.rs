@@ -51,6 +51,7 @@ use std::os::raw::c_int;
 use std::sync::Arc;
 
 use plx_session::auth::{self, Phase};
+use plx_ui::a11y::{A11y, A11yPath, Role, Seg};
 use plx_ui::frame::Budget;
 use plx_ui::label::HAlign;
 use plx_machine::machine::{
@@ -66,7 +67,7 @@ use plx_ui::screen::{
 use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::text_view::TextView;
 use plx_ui::vstack::{Anchor, VStack};
-use plx_ui::decision_alert::{Choice, DecisionAlert, Tone};
+use plx_ui::decision_alert::{AlertAnswers, Choice, DecisionAlert, Tone};
 use plx_ui::widgets::{Button, CtlPop, Spinner, StatusKind, StatusOverlay};
 use plx_ui::{theme, Env, Painter, Rect, View};
 
@@ -1361,6 +1362,17 @@ impl LoginScreen {
         Self::enter_group(fx, ALERT_GROUP);
     }
 
+    /// The words on the control, for the state file: the QR screen's escape sentence while the
+    /// code is up, the read-out's primary otherwise (`None` when there is no control).
+    fn control_label(&self) -> Option<&'static str> {
+        let text = if self.phase == Phase::Waiting && self.persistence_warning.is_none() {
+            self.waiting_label()
+        } else {
+            label_for(self.control_kind()?)
+        };
+        text.to_str().ok()
+    }
+
     /// The QR screen's *Details* pill, at the head of the route's bottom action band.
     fn waiting_details(&self, measure: &dyn Measure) -> Option<Rect> {
         if !self.details_offered() {
@@ -1786,7 +1798,6 @@ impl LoginScreen {
             None,
             plx_platform::i18n::msg::browse_login_title(),
             plx_platform::i18n::msg::browse_login_instructions(),
-            theme::size::LABEL,
             f.measure,
         );
         let status = self.waiting_label();
@@ -1971,6 +1982,21 @@ impl LoginScreen {
         plx_machine::machine::FocusKey { entry: self.entry, elem }
     }
 
+    /// **The open alert's answers as an accessibility id names them**, which is the SHEET's own
+    /// vocabulary: on the plaintext question they are the question's (`alert.not_now`,
+    /// `alert.connect`, through the shared [`PlaintextQuestion::answer_ids`]), because *Connect*
+    /// there allows an insecure server and is persisted, and `alert.send` must never stand for it;
+    /// `alert.cancel` / `alert.send` are the report question's and the Details card's only.
+    fn alert_answers(&self) -> AlertAnswers {
+        match self.report.sheet {
+            Sheet::Plaintext => PlaintextQuestion::answer_ids(ALERT_GROUP, ALERT_CANCEL, ALERT_SEND),
+            Sheet::Question | Sheet::Details => {
+                AlertAnswers::new(ALERT_GROUP, ALERT_CANCEL, ALERT_SEND, "cancel", "send")
+            }
+        }
+        .counted(self.report.alert.answers())
+    }
+
     /// The open alert's answers: both, or — a Details card with nothing left to send — *Close*
     /// alone.
     fn alert_elems(&self) -> &'static [u32] {
@@ -2120,6 +2146,50 @@ impl<H: AppLike> Focusable<H> for LoginScreen {
         }
         let row = self.row();
         self.key(if row.n > 0 { row.elems[0] } else { CONTROL })
+    }
+    /// **The ids** (relative; the host qualifies them with `login`): `control` (the read-out's
+    /// primary, or the QR screen's escape sentence), `details`, and the open alert's answers,
+    /// which are the SHEET's own ([`Self::alert_answers`]): `alert.not_now` / `alert.connect` on
+    /// the plaintext question, `alert.cancel` / `alert.send` on the report's. An element that is
+    /// not in the current group has no id.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        if self.report.alert.is_open() {
+            return self.alert_answers().a11y(*key);
+        }
+        self.group_of(key, cx)?;
+        let path = A11yPath::new();
+        let (path, label) = match *key {
+            CONTROL => (path.name("control"), self.control_label()),
+            DETAILS => (
+                path.name("details"),
+                plx_platform::i18n::msg::settings_login_details_c().to_str().ok(),
+            ),
+            _ => return None,
+        };
+        let a = A11y::new(path, Role::Button);
+        Some(match label {
+            Some(text) => a.with_label(text),
+            None => a,
+        })
+    }
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if self.report.alert.is_open() {
+            self.alert_answers().elems(g, out);
+        } else if g == CONTROL_GROUP {
+            out.extend_from_slice(self.row().as_slice());
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        if self.report.alert.is_open() {
+            return self.alert_answers().find(path);
+        }
+        let mut segs = path.segs();
+        let elem = match (segs.next(), segs.next(), segs.next()) {
+            (Some(Seg::Name("control")), None, _) => CONTROL,
+            (Some(Seg::Name("details")), None, _) => DETAILS,
+            _ => return None,
+        };
+        self.group_of(&elem, cx).map(|_| elem)
     }
 }
 
@@ -2344,7 +2414,7 @@ mod incident_icon_tests {
 mod text_fit_tests;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -3639,6 +3709,63 @@ impl AuthLike for SessionHost {
         assert_eq!(s.row().as_slice(), [CONTROL, DETAILS]);
     }
 
+    /// **Every element the screen has answers an id, in each state it has one**: nothing while the
+    /// QR code is fresh, `control` on the stalled wait and the failed read-out, `details` beside it,
+    /// and `alert.cancel` / `alert.send` alone while the Details card traps the screen. Each
+    /// conforms (listed, unique, inverted by `a11y_find`), and an element the state hides has no id.
+    #[test]
+    fn the_login_screen_answers_ids_for_the_elements_of_each_state() {
+        assert!(!login_conforms().is_empty());
+    }
+
+    /// The sign-in screen in each state, run through the id conformance with the id asserts above
+    /// (`AppArg::Login`; the coverage table calls this, and so does the test above).
+    pub(crate) fn login_conforms() -> plx_ui::a11y::Namespaces {
+        use plx_ui::a11y::conform;
+        let mut namespaces = Vec::new();
+        let _serial = plx_base::testlock::serial();
+        let m = plx_ui::fixture::FixtureMeasure;
+        fn id(text: &str) -> A11yPath {
+            A11yPath::parse_relative(text).unwrap()
+        }
+        fn find(s: &LoginScreen, text: &str, cx: &Cx<'_, SessionHost>) -> Option<u32> {
+            Focusable::<SessionHost>::a11y_find(s, &id(text), cx)
+        }
+
+        let cx = test_cx(&m);
+        let quiet = bare_screen(Phase::Waiting, 0.0);
+        namespaces.push(conform::<SessionHost, _>(&quiet, &cx));
+        assert_eq!(find(&quiet, "control", &cx), None, "nothing to press while the code is fresh");
+
+        let stuck = bare_screen(Phase::Waiting, QR_ESCAPE_AFTER_MS);
+        namespaces.push(conform::<SessionHost, _>(&stuck, &cx));
+        assert_eq!(find(&stuck, "control", &cx), Some(CONTROL));
+        assert_eq!(find(&stuck, "details", &cx), None);
+        let control = Focusable::<SessionHost>::a11y(&stuck, &CONTROL, &cx).unwrap();
+        assert_eq!((control.path, control.role), (id("control"), Role::Button));
+        assert_eq!(control.label.as_deref(), stuck.waiting_label().to_str().ok());
+
+        let failed = failed_with(auth::owner::IncidentState::NotNow);
+        let mut s = LoginScreen::new(EntryId(0), failed.read());
+        step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
+        let cx = cx_with(&m, &failed);
+        namespaces.push(conform::<SessionHost, _>(&s, &cx));
+        assert_eq!(find(&s, "control", &cx), Some(CONTROL));
+        assert_eq!(find(&s, "details", &cx), Some(DETAILS));
+        assert_eq!(find(&s, "alert.send", &cx), None, "the alert is closed");
+        let control = Focusable::<SessionHost>::a11y(&s, &CONTROL, &cx).unwrap();
+        assert_eq!(control.label.as_deref(), plx_platform::i18n::msg::browse_action_retry_c().to_str().ok());
+
+        step_ev_with(&mut s, &ScreenEvent::Activate(DETAILS), &failed, InstanceId(0), &m);
+        let cx = cx_with(&m, &failed);
+        namespaces.push(conform::<SessionHost, _>(&s, &cx));
+        assert_eq!(find(&s, "alert.cancel", &cx), Some(ALERT_CANCEL));
+        assert_eq!(find(&s, "alert.send", &cx), Some(ALERT_SEND));
+        assert_eq!(find(&s, "control", &cx), None, "the card traps everything under it");
+        assert_eq!(find(&s, "details", &cx), None);
+        namespaces
+    }
+
     #[test]
     fn open_details_card_reconciles_delivery_failure_without_reopening() {
         use auth::owner::IncidentState as S;
@@ -3898,6 +4025,45 @@ impl AuthLike for SessionHost {
             assert!(!s.report.alert.is_open(), "{how}");
             assert!(enters_group(&fx, CONTROL_GROUP), "{how}: focus returns to the read-out");
         }
+    }
+
+    /// **The plaintext question names its own answers.** `alert_answer` makes the sheet's send slot
+    /// *Connect*, which allows an insecure server and is persisted, so `alert.send` must not stand
+    /// for it: while the question is up the ids are `alert.not_now` / `alert.connect`, and
+    /// `alert.cancel` / `alert.send` resolve only on the report's own sheets.
+    #[test]
+    fn the_plaintext_question_names_not_now_and_connect_and_never_send() {
+        use plx_ui::a11y::conform;
+        let _serial = plx_base::testlock::serial();
+        let m = plx_ui::fixture::FixtureMeasure;
+        fn find(s: &LoginScreen, text: &str, cx: &Cx<'_, SessionHost>) -> Option<u32> {
+            Focusable::<SessionHost>::a11y_find(s, &A11yPath::parse_relative(text).unwrap(), cx)
+        }
+        let failed = insecure_failure(plx_plex::plex::probe::PlaintextEligibility::Eligible);
+        let mut s = LoginScreen::new(EntryId(0), failed.read());
+        step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
+        step_ev_with(&mut s, &ScreenEvent::Activate(CONTROL), &failed, InstanceId(0), &m);
+        assert!(s.report.alert.is_open() && s.report.sheet == Sheet::Plaintext);
+        let cx = cx_with(&m, &failed);
+        conform::<SessionHost, _>(&s, &cx);
+        assert_eq!(find(&s, "alert.not_now", &cx), Some(ALERT_CANCEL));
+        assert_eq!(find(&s, "alert.connect", &cx), Some(ALERT_SEND), "Connect is the question's affirm slot");
+        assert_eq!(find(&s, "alert.send", &cx), None, "the report's Send is not on this sheet");
+        assert_eq!(find(&s, "alert.cancel", &cx), None);
+        let words = |elem: u32| Focusable::<SessionHost>::a11y(&s, &elem, &cx).map(|a| a.path);
+        assert_eq!(words(ALERT_SEND), Some(A11yPath::parse_relative("alert.connect").unwrap()));
+        assert_eq!(words(ALERT_CANCEL), Some(A11yPath::parse_relative("alert.not_now").unwrap()));
+
+        // the report question that an ineligible failure raises keeps `cancel` / `send`
+        let failed = insecure_failure(plx_plex::plex::probe::PlaintextEligibility::NotLocal);
+        let mut s = LoginScreen::new(EntryId(0), failed.read());
+        step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
+        assert_eq!(s.report.sheet, Sheet::Question);
+        let cx = cx_with(&m, &failed);
+        conform::<SessionHost, _>(&s, &cx);
+        assert_eq!(find(&s, "alert.send", &cx), Some(ALERT_SEND));
+        assert_eq!(find(&s, "alert.cancel", &cx), Some(ALERT_CANCEL));
+        assert_eq!(find(&s, "alert.connect", &cx), None);
     }
 
     /// A verdict that cannot be offered (remote-only here) keeps today's read-out: *Try again*, and

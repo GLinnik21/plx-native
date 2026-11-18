@@ -321,7 +321,7 @@ fn a_tick_advances_the_shared_table_highlight_spring() {
 /// false` (its focus is the answer band), so the inherited value silently drew Settings with
 /// focus on nothing at all, while the keys still moved and committed an invisible selection.
 /// **That channel does not exist any more to leak through**: `ConsentPage::bare` (this file,
-/// above) builds a fresh `TableView::new()` into `self.form.table` on every call, so `first_run`
+/// above) builds a fresh page table (`FormTable::page`) into `self.form` on every call, so `first_run`
 /// and `settings` each own a table that belongs to their OWN struct instance rather than to
 /// the module. Proven here by holding both alive at once and mutating the first before the
 /// second is ever built — the shape a shared static would have to survive, and a plain
@@ -651,13 +651,13 @@ fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
     let _guard = plx_base::testlock::serial();
     let _no_live_font = plx_ui::text_view::ForbidLive::enter();
     let measure = ReadingMeasure;
-    let reader = DocumentReader::new().with_size(theme::size::BODY);
+    let reader = DocumentReader::new().with_size(plx_ui::route_screen::COPY_SIZE);
     for (name, locale) in plx_platform::i18n::SHIPPED
         .into_iter()
         .map(|p| (p.tag(), LocaleContext::resolve(p, None, None, None, None)))
         .chain([("pseudo", LocaleContext::pseudo_for_test())])
     {
-        let mut table = TableView::new();
+        let mut table = TableView::page(); // the page table first run sizes its columns with
         table.set_sections(vec![Section::new("")
             .row(Row::new(msg::settings_consent_example_in(&locale)).chevron(true))
             .row(Row::new(msg::settings_consent_policy_in(&locale)).chevron(true))], 0, false);
@@ -671,12 +671,12 @@ fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
             };
             let labels = [positive, msg::settings_consent_do_not_share_c_in(&locale)];
             let layout = ConsentPage::first_run_layout(title, body, product, &table, &labels, &measure);
-            let frame = layout.narrative_copy_frame(product, title, layout.action.y, &measure);
+            let frame = layout.copy_text_frame(product, title, layout.action.y, &measure);
             assert!(!RouteLayout::narrative_title(title).with_measure(&measure).truncates(layout.narrative.w),
                 "{name} product={product}: the complete question remains visible");
             if name != "pseudo" {
                 assert!(reader.measured_height(body, frame.w, &measure) <= frame.h,
-                    "{name} product={product}: complete real disclosure must fit at BODY size");
+                    "{name} product={product}: complete real disclosure must fit at the route copy size");
             }
             assert!((frame.y + frame.h + theme::space::MD - layout.action.y).abs() < 0.01);
             // `measured_width` budgets the device's headroom on top of every run; this page only
@@ -703,12 +703,12 @@ fn overflowing_disclosure_scrolls_before_draw_with_visible_choice_focus_and_repl
     use plx_machine::machine::Measure;
     use plx_ui::rec::{Measurements, TableMeasure};
     use plx_ui::screen::By;
-    // Expand only BODY text: titles and links remain normal, while a future long disclosure
-    // cannot fit even after its column has used all available width.
+    // Expand only the copy size (the disclosure's): titles and links remain normal, while a future
+    // long disclosure cannot fit even after its column has used all available width.
     struct ExpandedBody;
     impl Measure for ExpandedBody {
         fn width(&self, text: &core::ffi::CStr, size: i32, _bold: bool) -> f32 {
-            let factor = if size == theme::size::BODY { 1.5 } else { 0.5 };
+            let factor = if size == plx_ui::route_screen::COPY_SIZE { 1.5 } else { 0.5 };
             text.to_string_lossy().chars().count() as f32 * size as f32 * factor
         }
         fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }

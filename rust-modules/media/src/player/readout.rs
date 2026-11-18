@@ -162,7 +162,8 @@ pub(super) fn stream_ended(pos_ns: i64, duration_ns: i64, pipeline_eos: bool) ->
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Presentation {
     pub tick: PresentationTick,
-    /// The HLS runtime rebuffer, distinct from the initial Load and from seek priming.
+    /// The runtime rebuffer hold (segmented HLS or a progressive stream's), distinct from the
+    /// initial Load and from seek priming.
     pub rebuffering: bool,
     /// The container's duration, 0 while unknown.
     pub duration_ns: i64,

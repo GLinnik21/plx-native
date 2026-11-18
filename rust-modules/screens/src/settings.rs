@@ -37,6 +37,7 @@
 use std::borrow::Cow;
 
 use plx_ui::containers::modal::EntryMotion;
+use plx_ui::a11y::{A11y, A11yPath};
 use plx_ui::containers::stack::{Instance, NavStack};
 use plx_ui::containers::transition::Immediate;
 use plx_ui::containers::{Life, Minter};
@@ -550,9 +551,8 @@ fn mount_page(
 ///  * `ConsentPage` (Privacy & data, and each first-run stage) → `ConsentState`: the mode, both
 ///    halves of the draft decision, and whether the delete alert is up.
 ///  * `OnboardScreen` (Favorite libraries) → `OnboardState`: whether it is the Settings or the
-///    first-run instance, whether it currently HAS an action band (the group set the engine is
-///    reasoning about, cached at `rebuild` for the reason that field's own doc gives), and the
-///    whole draft pin list.
+///    first-run instance, where it is in its lifecycle (`Exit`: editing, committing after a pin
+///    commit count, or left), and the whole draft pin list.
 ///  * `DocumentPage` (the six Legal documents and About) → `DocState`: WHICH document, and its
 ///    reading position in whole `document_reader::STEP`s.
 ///  * `PreviewPage` (the five Privacy previews) → `PreviewState`: which preview. **Its reading
@@ -854,11 +854,29 @@ impl<H: DirectoryLike> Focusable<H> for RouteSurface {
             |t| t.screen.seat(g, from, &inner_cx(cx)),
         )
     }
+    // The ids are the top page's own, relative to it: the surface adds nothing and answers for the
+    // page that owns input (its namespace is the page's, `Screen::a11y_ns` below).
+    fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        self.top().and_then(|t| t.screen.a11y(key, &inner_cx(cx)))
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<u32>) {
+        if let Some(top) = self.top() {
+            top.screen.a11y_elems(g, &inner_cx(cx), out);
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<u32> {
+        self.top().and_then(|t| t.screen.a11y_find(path, &inner_cx(cx)))
+    }
 }
 
 impl<H: DirectoryLike> Screen<H> for RouteSurface {
     fn name(&self) -> &'static str {
         self.top_word()
+    }
+    /// The top page's namespace, not its heartbeat word: two pages that share a word (a Legal
+    /// document and the index, a Privacy preview and the page) answer different namespaces.
+    fn a11y_ns(&self) -> &'static str {
+        self.top().map_or(word::SETTINGS, |i| i.screen.a11y_ns())
     }
     fn state(&self) -> &dyn LogicalState {
         // the surface itself, so the hash covers the inner stack — see the `LogicalState` impl
@@ -1102,6 +1120,24 @@ impl FormId for RootId {
             RootId::Diagnostics => 12,
             // the base; `root_form` adds the position (`item_keyed`)
             RootId::Plaintext(_) => PLAINTEXT_KEY_BASE,
+        })
+    }
+    fn a11y(&self) -> Option<&'static str> {
+        Some(match self {
+            RootId::Favourites => "favourites",
+            RootId::UnderPosters => "under_posters",
+            RootId::Playback => "playback",
+            RootId::AudioSubtitles => "audio_subtitles",
+            RootId::Language => "language",
+            RootId::AutoSignIn => "auto_sign_in",
+            RootId::TrailerAutoplay => "trailer_autoplay",
+            RootId::Resolution => "resolution",
+            // one row per server, so no one name fits them all: the position names each (`row.<i>`)
+            RootId::Plaintext(_) => return None,
+            RootId::Privacy => "privacy",
+            RootId::Diagnostics => "diagnostics",
+            RootId::Legal => "legal",
+            RootId::About => "about",
         })
     }
 }
@@ -1413,7 +1449,7 @@ impl RootPage {
     fn new(entry: EntryId, directory: plx_data::stores::browse::DirectoryView<'_>, inputs: &crate::registry::ScreenInputs) -> Self {
         let mut s = Self {
             entry,
-            form: FormTable::new(super::registry::BAND),
+            form: FormTable::page(super::registry::BAND),
             session_watch: Default::default(),
             inputs: inputs.clone(),
             session_snapshot: Default::default(),
@@ -1474,9 +1510,6 @@ impl RootPage {
             under_posters: self.state.under_posters, plaintext,
         });
         let keep = self.form.selected_id().cloned();
-        self.form.table.compact = false;
-        self.form.table.board_metrics(true);
-        self.form.table.header_ink = theme::TEXT_READING;
         self.form.set(form, keep.as_ref());
         self.form.table.list_focused = true;
         if let Some(key) = self.form.key_at(self.form.table.sel.max(0) as usize) {
@@ -1542,7 +1575,7 @@ impl RootPage {
     fn view(&self) -> TableScreen<'_> {
         TableScreen::new(
             Header::new(
-                RouteLayout::settings_page(),
+                RouteLayout::screen(),
                 None,
                 plx_platform::i18n::msg::settings_title(),
                 plx_platform::i18n::msg::settings_root_copy(),
@@ -1732,7 +1765,7 @@ impl Machine<InnerHost> for RootPage {
                 if landed { fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session)); }
 
                 self.form.table
-                    .update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                    .update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 self.follow.update(t.dt());
                 Handled::Yes
             }
@@ -1807,6 +1840,25 @@ impl Focusable<InnerHost> for RootPage {
         match self.alert.seat(g, self.entry) {
             Some(key) => key,
             None => Focusable::<InnerHost>::seat(&self.view(), g, from, cx),
+        }
+    }
+    // While the question is open its two answers are the page's only elements (`alert.not_now`,
+    // `alert.connect`); the rows beneath it answer nothing, as `groups` lists none of them.
+    fn a11y(&self, key: &u32, cx: &Cx<'_, InnerHost>) -> Option<A11y<'_>> {
+        match self.alert.a11y(*key) {
+            Some(answer) => answer,
+            None => Focusable::<InnerHost>::a11y(&self.view(), key, cx).map(A11y::into_owned),
+        }
+    }
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, InnerHost>, out: &mut Vec<u32>) {
+        if !self.alert.a11y_elems(g, out) {
+            Focusable::<InnerHost>::a11y_elems(&self.view(), g, cx, out)
+        }
+    }
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, InnerHost>) -> Option<u32> {
+        match self.alert.a11y_find(path) {
+            Some(answer) => answer,
+            None => Focusable::<InnerHost>::a11y_find(&self.view(), path, cx),
         }
     }
 }
@@ -1886,7 +1938,7 @@ mod text_fit_tests;
 
 #[cfg(test)]
 #[path = "settings_root_navigation_tests.rs"]
-mod root_navigation_tests;
+pub(crate) mod root_navigation_tests;
 
 #[cfg(test)]
 #[path = "settings_pop_and_remember_tests.rs"]
@@ -1936,6 +1988,13 @@ impl FormId for LangId {
             LangId::Choice(p) => p.settings_row(),
             LangId::Contribute => 1000,
         })
+    }
+    fn a11y(&self) -> Option<&'static str> {
+        match self {
+            // one row per language, so the position names each (`row.<i>`)
+            LangId::Choice(_) => None,
+            LangId::Contribute => Some("contribute"),
+        }
     }
 }
 
@@ -2007,7 +2066,7 @@ impl LanguagePage {
     fn new(entry: EntryId, inputs: &crate::registry::ScreenInputs) -> Self {
         let selected = inputs.install_language;
         let sel = LangId::Choice(selected).key();
-        let mut page = Self { entry, form: FormTable::new(super::registry::BAND), state: LanguageState { selected, sel, failed: false, busy: false }, save: None, running_language: inputs.running_language };
+        let mut page = Self { entry, form: FormTable::page(super::registry::BAND), state: LanguageState { selected, sel, failed: false, busy: false }, save: None, running_language: inputs.running_language };
         page.rebuild();
         page
     }
@@ -2020,8 +2079,6 @@ impl LanguagePage {
     /// first build).
     fn rebuild(&mut self) {
         let keep = self.form.selected_id().cloned().unwrap_or(LangId::Choice(self.state.selected));
-        self.form.table.compact = false;
-        self.form.table.board_metrics(true);
         self.form.set(language_form(self.state.selected, self.state.busy), Some(&keep));
         self.form.table.list_focused = true;
     }
@@ -2036,7 +2093,7 @@ impl LanguagePage {
         } else {
             plx_platform::i18n::msg::settings_language_copy()
         };
-        TableScreen::new(Header::new(RouteLayout::settings_page(), Some(plx_platform::i18n::msg::settings_title()),
+        TableScreen::new(Header::new(RouteLayout::screen(), Some(plx_platform::i18n::msg::settings_title()),
             plx_platform::i18n::msg::settings_language_title(), copy).with_hint(restart_hint()),
             &self.form.table, GroupId(0), self.entry).keyed(&self.form)
     }
@@ -2093,7 +2150,7 @@ impl Machine<InnerHost> for LanguagePage {
             }
             ScreenEvent::Tick(t) => {
                 if self.poll_save() { fx.invalidate(plx_machine::present::Provenance::Input); }
-                self.form.table.update(t.dt(), RouteLayout::settings_page().sectioned_table().h);
+                self.form.table.update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, .. } => {

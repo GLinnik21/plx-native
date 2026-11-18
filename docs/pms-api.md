@@ -1447,8 +1447,9 @@ against a PMS, which nobody has run.
 **What THIS app sends is a subset of the table, and the two must not be read as one.**
 `rust-modules/plex/src/plex/client.rs::playback_identity` (constants in `plex/identity.rs`) always emits
 nine fields: `X-Plex-Client-Identifier`, `-Product`, `-Version`, `-Platform`, `-Platform-Version`,
-`-Device`, `-Device-Name`, `-Model` and `-Provides`, plus the token. The central PMS request choke
-point sends **`X-Plex-Language` as a header** on every operation, using the UI language resolved
+`-Device`, `-Device-Name`, `-Model` and `-Provides`, plus the token. Ordinary PMS requests, including metadata and the notification feed, send the
+first seven fields as HTTP headers. This lets a server apply the same per-client rules when it
+returns the version picker's `Media[]` as it does during playback. The central PMS request path also sends **`X-Plex-Language` as a header** on every operation, using the UI language resolved
 at boot from the app preference and TV locale (English fallback). This is THIS app's own
 System-preference resolution (webOS locale → shipped catalog, `i18n::mod.rs`); once resolved, the
 literal tag is what goes on the wire, unchanged by whether PMS happens to have a full translation

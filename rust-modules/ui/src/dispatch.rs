@@ -15,7 +15,11 @@
 //! receives no `Tick`, a Cached or Replaced host does not prepare, a Replaced host does not draw.
 #![allow(dead_code)] // since 5b screens run through most of this; suspend/resume/set_focus_source_override/viewport/frame_index still have no caller anywhere (grep-checked, not 3b's stale "screens from 5b")
 
+mod by_id;
 pub mod press;
+mod snapshot;
+
+pub use by_id::{by_id_subject_ok, IdAnswer, IdRefusal};
 
 use std::collections::VecDeque;
 
@@ -39,6 +43,7 @@ use super::screen::{
     GroupSpec, HitSource, Mounter, Placed, ReturnState, Screen, ScreenArg, ScreenEvent, Step, Stop,
 };
 
+use super::a11y::{A11y, A11yPath, Role, Seg};
 use super::{Painter, Rect};
 
 #[cfg(test)]
@@ -49,6 +54,46 @@ mod presentation_tests;
 /// A removed pill therefore cannot renumber another destination or collide with a page's tile.
 pub const STRIP_BASE: u32 = 0xFFFF_0000;
 const _: () = assert!(STRIP_BASE >= super::geom::NAMESPACE_FLOOR);
+
+/// The strip's members by the name their accessibility ids carry (`nav.home`): the `TAB_KEY_*`
+/// destinations of `widgets`, each a destination's identity, never a position in the strip. Any
+/// other member is `nav.tab.<stable_id>`, its key less [`STRIP_BASE`] ([`strip_path`]).
+const STRIP_NAMES: &[(u32, &str)] = &[
+    (super::widgets::TAB_KEY_HOME, "home"),
+    (super::widgets::TAB_KEY_MOVIES, "movies"),
+    (super::widgets::TAB_KEY_SHOWS, "shows"),
+    (super::widgets::TAB_KEY_SEARCH, "search"),
+    (super::widgets::TAB_KEY_CHIP, "profile"),
+    (super::widgets::TAB_KEY_WATCHLIST, "watchlist"),
+];
+
+/// The id of strip member `key` (a key at or above [`STRIP_BASE`]): `nav.<name>`, or
+/// `nav.tab.<stable_id>` for a destination `STRIP_NAMES` does not name.
+fn strip_path(key: u32) -> A11yPath {
+    let nav = A11yPath::new().qualified("nav");
+    match STRIP_NAMES.iter().find(|(k, _)| *k == key) {
+        Some(&(_, name)) => nav.name(name),
+        None => nav.name("tab").index((key - STRIP_BASE) as usize),
+    }
+}
+
+/// The member of `members` the path `path` (a `nav.` id) names: the inverse of [`strip_path`], so a
+/// named destination has no second spelling as `nav.tab.<stable_id>`.
+fn strip_find<E: IndexElem>(path: &A11yPath, members: &[super::containers::tabs::StripMember<E>]) -> Option<E> {
+    let mut segs = path.segs();
+    let key = match (segs.next(), segs.next(), segs.next()) {
+        (Some(Seg::Name(name)), None, None) => STRIP_NAMES.iter().find(|(_, n)| *n == name)?.0,
+        (Some(Seg::Name("tab")), Some(Seg::Index(id)), None) => {
+            let key = STRIP_BASE.checked_add(u32::try_from(id).ok()?)?;
+            if STRIP_NAMES.iter().any(|(k, _)| *k == key) {
+                return None;
+            }
+            key
+        }
+        _ => return None,
+    };
+    members.iter().find(|m| m.elem.index() == Some(key)).map(|m| m.elem)
+}
 
 /// The input owner's page COMPOSED with the container's strip (§6.2): the strip is a `Row`
 /// group above the page's own, contributed only while the page allows it.
@@ -147,6 +192,273 @@ where
             _ => self.page.seat(g, from, cx),
         }
     }
+
+    /// **The owner view's accessibility projection** (the a11y-ids plan, D1): a strip pill is
+    /// `nav.<name>` ([`Role::Tab`], [`strip_path`]), and the page's own element is the path the page
+    /// answered, qualified by the page's `a11y_ns` (a page answers a path RELATIVE to itself, so a
+    /// shared widget never names the screen it sits on).
+    fn a11y(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        match (key.index(), &self.strip) {
+            (Some(i), Some((_, members))) if i >= STRIP_BASE => {
+                members.iter().any(|m| m.elem == *key).then(|| A11y::new(strip_path(i), Role::Tab))
+            }
+            _ => self
+                .page
+                .a11y(key, cx)
+                .map(|a| A11y { path: a.path.qualified(self.page.a11y_ns()), ..a }),
+        }
+    }
+    /// The strip's pills in strip order for its own group, else the page's elements of `g`.
+    fn a11y_elems(&self, g: GroupId, cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        match &self.strip {
+            Some((spec, members)) if spec.id == g => out.extend(members.iter().map(|m| m.elem)),
+            _ => self.page.a11y_elems(g, cx, out),
+        }
+    }
+    /// The inverse of [`Self::a11y`], routed by the id's namespace: `nav` to the strip, the page's
+    /// own `a11y_ns` to the page (which gets the path RELATIVE to itself), and any other namespace
+    /// finds nothing. A path with no namespace is nobody's id here.
+    fn a11y_find(&self, path: &A11yPath, cx: &Cx<'_, H>) -> Option<H::Elem> {
+        match path.ns()? {
+            "nav" => self.strip.as_ref().and_then(|(_, members)| strip_find(path, members)),
+            ns if ns == self.page.a11y_ns() => self.page.a11y_find(&path.relative(), cx),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod strip_a11y_tests {
+    use std::borrow::Cow;
+
+    use super::*;
+    use crate::containers::tabs::StripMember;
+    use crate::fixture::{FixtureHost, FixtureMeasure, FixtureView, FixtureViews};
+    use crate::screen::{AxisMask, GroupKind, RenderStrategy, Seat};
+    use crate::widgets::{
+        TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST,
+    };
+    use plx_machine::machine::{LogicalState, Machine};
+
+    const ENTRY: EntryId = EntryId(4);
+    const STRIP: GroupId = GroupId(1);
+    const PAGE_GROUP: GroupId = GroupId(5);
+    const PAGE_CARDS: u32 = 3;
+    /// A destination the strip names no word for.
+    const UNNAMED: u32 = STRIP_BASE + 9;
+
+    /// A page of three cards, `card.<i>`, that answers a path relative to itself and takes the
+    /// default `a11y_find`: the smallest page an owner view can be built over.
+    struct ProbePage;
+
+    impl Focusable<FixtureHost> for ProbePage {
+        fn groups(&self, _cx: &Cx<'_, FixtureHost>, out: &mut Vec<GroupSpec>) {
+            out.push(GroupSpec {
+                id: PAGE_GROUP,
+                kind: GroupKind::Row { wrap: false },
+                seat: Seat::First,
+                reachable: AxisMask::BOTH,
+                edge: [EdgeRule::Stop; 4],
+                extent: Rect::new(0.0, 300.0, 900.0, 200.0),
+                len: PAGE_CARDS as usize,
+                elem: ElemKind::Card,
+            });
+        }
+        fn group_of(&self, key: &u32, _cx: &Cx<'_, FixtureHost>) -> Option<GroupId> {
+            (*key < PAGE_CARDS).then_some(PAGE_GROUP)
+        }
+        fn neighbour(&self, _key: FocusKey<u32>, _dir: Dir, _cx: &Cx<'_, FixtureHost>) -> Step<u32> {
+            Step::Edge
+        }
+        /// Card `key` in its own cell of the group's extent, so every card the group lists places.
+        fn place(&self, key: &u32, _cx: &Cx<'_, FixtureHost>, _at: At) -> Option<Placed> {
+            (*key < PAGE_CARDS).then(|| {
+                let rect = Rect::new(*key as f32 * 300.0, 300.0, 280.0, 200.0);
+                Placed { rect, rest_rect: rect, clip: Rect::new(0.0, 300.0, 900.0, 200.0), index: Some(*key) }
+            })
+        }
+        fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, FixtureHost>) -> FocusKey<u32> {
+            want
+        }
+        fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, FixtureHost>) -> FocusKey<u32> {
+            FocusKey { entry: ENTRY, elem: 0 }
+        }
+        fn a11y(&self, key: &u32, _cx: &Cx<'_, FixtureHost>) -> Option<A11y<'_>> {
+            (*key < PAGE_CARDS).then(|| A11y::new(A11yPath::new().name("card").index(*key as usize), Role::Card))
+        }
+        fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, FixtureHost>, out: &mut Vec<u32>) {
+            if g == PAGE_GROUP {
+                out.extend(0..PAGE_CARDS);
+            }
+        }
+    }
+
+    impl Machine<FixtureHost> for ProbePage {
+        type Ev = ScreenEvent<FixtureHost>;
+        fn step(&mut self, _ev: &Self::Ev, _cx: &Cx<'_, FixtureHost>, _fx: &mut Effects<'_, FixtureHost>) -> Handled {
+            Handled::No
+        }
+    }
+
+    impl Screen<FixtureHost> for ProbePage {
+        fn name(&self) -> &'static str {
+            "probe"
+        }
+        fn state(&self) -> &dyn LogicalState {
+            &()
+        }
+        fn crumb(&self, _cx: &Cx<'_, FixtureHost>) -> Option<Cow<'_, str>> {
+            None
+        }
+        fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, FixtureHost>) {}
+        fn draw(&mut self, _f: &mut DrawFrame<'_, '_, FixtureHost>) {}
+        fn render(&self) -> RenderStrategy {
+            RenderStrategy::Page
+        }
+    }
+
+    /// The strip's pills in VISUAL order (Watchlist before Search, as the application lays them),
+    /// then one destination with no word of its own.
+    fn members() -> Vec<StripMember<u32>> {
+        [TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST, TAB_KEY_SEARCH, TAB_KEY_CHIP, UNNAMED]
+            .into_iter()
+            .enumerate()
+            .map(|(i, key)| StripMember::new(key, Rect::new(i as f32 * 100.0, 0.0, 90.0, 60.0)))
+            .collect()
+    }
+
+    fn view<'a>(page: &'a ProbePage, members: Option<&'a [StripMember<u32>]>) -> PageWithStrip<'a, FixtureHost> {
+        let strip = members.map(|m| {
+            let spec = GroupSpec {
+                id: STRIP,
+                kind: GroupKind::Row { wrap: false },
+                seat: Seat::Nearest,
+                reachable: AxisMask::VERTICAL,
+                edge: [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
+                extent: Rect::new(0.0, 0.0, 700.0, 60.0),
+                len: m.len(),
+                elem: ElemKind::Control,
+            };
+            (spec, m)
+        });
+        PageWithStrip { page, strip, strip_fallback: None, strip_selected: None, entry: ENTRY }
+    }
+
+    fn with_cx<R>(f: impl FnOnce(&Cx<'_, FixtureHost>) -> R) -> R {
+        let (measure, store) = (FixtureMeasure, FixtureView::default());
+        let cx = Cx {
+            views: FixtureViews { store: &store },
+            tick: Tick::default(),
+            measure: &measure,
+            press: PressRead::default(),
+            focus: FocusRead::default(),
+            owner: InputOwner::Entry(ENTRY),
+            modal: Default::default(),
+            page_image: Default::default(),
+            hold_hint: Default::default(),
+        };
+        f(&cx)
+    }
+
+    fn id(text: &str) -> A11yPath {
+        A11yPath::parse_id(text).expect("a well-formed id")
+    }
+
+    /// **The owner view conforms**, the strip group and the page's own, and each pill is named by
+    /// its destination: `nav.home`, `nav.movies`, `nav.shows`, `nav.search`, `nav.profile`,
+    /// `nav.watchlist`, and `nav.tab.<stable_id>` for one with no word. The page's cards are
+    /// qualified by the page's namespace.
+    #[test]
+    fn the_owner_view_names_the_strip_and_qualifies_the_page() {
+        with_cx(|cx| {
+            let (page, pills) = (ProbePage, members());
+            let v = view(&page, Some(&pills));
+            crate::a11y::conformance(&v, cx);
+            let path = |key: u32| v.a11y(&key, cx).expect("projects").path.to_string();
+            assert_eq!(path(TAB_KEY_HOME), "nav.home");
+            assert_eq!(path(TAB_KEY_MOVIES), "nav.movies");
+            assert_eq!(path(TAB_KEY_SHOWS), "nav.shows");
+            assert_eq!(path(TAB_KEY_SEARCH), "nav.search");
+            assert_eq!(path(TAB_KEY_CHIP), "nav.profile");
+            assert_eq!(path(TAB_KEY_WATCHLIST), "nav.watchlist");
+            assert_eq!(path(UNNAMED), "nav.tab.9");
+            assert_eq!(path(1), "probe.card.1");
+            assert_eq!(v.a11y(&TAB_KEY_HOME, cx).unwrap().role, Role::Tab);
+            assert_eq!(v.a11y(&1, cx).unwrap().role, Role::Card);
+            // a key of neither the strip nor the page projects nothing
+            assert!(v.a11y(&77, cx).is_none());
+            assert!(v.a11y(&(STRIP_BASE + 40), cx).is_none(), "not a member of this strip");
+        });
+    }
+
+    /// **Elements are listed by group**, the strip's in strip order and the page's in index order,
+    /// and nothing for a group neither declares.
+    #[test]
+    fn each_group_lists_its_own_elements() {
+        with_cx(|cx| {
+            let (page, pills) = (ProbePage, members());
+            let v = view(&page, Some(&pills));
+            let list = |g: GroupId| {
+                let mut out = Vec::new();
+                v.a11y_elems(g, cx, &mut out);
+                out
+            };
+            assert_eq!(list(STRIP), pills.iter().map(|m| m.elem).collect::<Vec<_>>());
+            assert_eq!(list(PAGE_GROUP), vec![0, 1, 2]);
+            assert!(list(GroupId(99)).is_empty());
+        });
+    }
+
+    /// **The inverse routes by namespace**: `nav` to the strip, the page's word to the page (with
+    /// the path relative to it), and nothing for another screen's word or a path with no namespace.
+    /// A named destination has one spelling, its name.
+    #[test]
+    fn an_id_is_routed_by_its_namespace() {
+        with_cx(|cx| {
+            let (page, pills) = (ProbePage, members());
+            let v = view(&page, Some(&pills));
+            assert_eq!(v.a11y_find(&id("nav.watchlist"), cx), Some(TAB_KEY_WATCHLIST));
+            assert_eq!(v.a11y_find(&id("nav.profile"), cx), Some(TAB_KEY_CHIP));
+            assert_eq!(v.a11y_find(&id("nav.tab.9"), cx), Some(UNNAMED));
+            assert_eq!(v.a11y_find(&id("nav.tab.0"), cx), None, "Home is nav.home, not nav.tab.0");
+            assert_eq!(v.a11y_find(&id("nav.tab.8"), cx), None, "no such member");
+            assert_eq!(v.a11y_find(&id("nav.tab"), cx), None);
+            assert_eq!(v.a11y_find(&id("nav.home.0"), cx), None);
+            assert_eq!(v.a11y_find(&id("probe.card.2"), cx), Some(2));
+            assert_eq!(v.a11y_find(&id("probe.card.3"), cx), None, "past the end");
+            assert_eq!(v.a11y_find(&id("other.card.1"), cx), None, "another screen's namespace");
+            let relative = A11yPath::parse_relative("card.1").expect("a relative path");
+            assert_eq!(v.a11y_find(&relative, cx), None, "a path with no namespace is nobody's id here");
+        });
+    }
+
+    /// **A page that does not wear the strip has no `nav` ids**: the strip's group is not listed,
+    /// its keys project nothing and `nav.home` finds nothing; the page still conforms.
+    #[test]
+    fn a_page_without_the_strip_has_no_nav_ids() {
+        with_cx(|cx| {
+            let page = ProbePage;
+            let v = view(&page, None);
+            crate::a11y::conformance(&v, cx);
+            assert!(v.a11y(&TAB_KEY_HOME, cx).is_none());
+            assert_eq!(v.a11y_find(&id("nav.home"), cx), None);
+            assert_eq!(v.a11y_find(&id("probe.card.0"), cx), Some(0));
+        });
+    }
+
+    /// A strip that lacks a destination (a type with no favourite library draws no pill) does not
+    /// answer that destination's id.
+    #[test]
+    fn a_pill_the_strip_does_not_draw_finds_nothing() {
+        with_cx(|cx| {
+            let page = ProbePage;
+            let pills: Vec<_> = members().into_iter().filter(|m| m.elem != TAB_KEY_MOVIES).collect();
+            let v = view(&page, Some(&pills));
+            crate::a11y::conformance(&v, cx);
+            assert_eq!(v.a11y_find(&id("nav.movies"), cx), None);
+            assert_eq!(v.a11y_find(&id("nav.shows"), cx), Some(TAB_KEY_SHOWS));
+        });
+    }
 }
 
 /// Step invocations the pre-commit drain may spend per frame (§3.3 step 6).
@@ -170,6 +482,11 @@ pub trait ReplayAuthority<H: Host> {
         actual: Option<FocusAnswer<H::Elem>>) -> Option<FocusAnswer<H::Elem>> { actual }
     fn resolve_hit(&mut self, _f: u64, _kind: PointerKind, _entry: Option<EntryId>,
         actual: Option<super::hit::Resolution<H::Elem>>) -> Option<super::hit::Resolution<H::Elem>> { actual }
+    /// Where one `focus:`/`press:` landed (or why it was refused): the by-id analogue of
+    /// [`Self::resolve_hit`], asked once per `InputKind::ById` at its ORDERED delivery position.
+    /// `entry` is the entry the delivery was addressed to (`EntryId(0)` when none was).
+    fn resolve_id(&mut self, _f: u64, _entry: EntryId,
+        actual: Option<IdAnswer<H::Elem>>) -> Option<IdAnswer<H::Elem>> { actual }
     /// A final observation, including None; the optional outer value requests continuation.
     fn focus_continuation(&mut self, _f: u64, _engine: bool,
         _actual: Option<(u32, u32, Option<u32>)>) -> Option<Option<(u32, u32, Option<u32>)>> { None }
@@ -374,8 +691,16 @@ pub trait Rig<H: Host> {
         }
     }
     /// Shared chrome draws after its page and before surfaces, using a captured vocabulary.
+    ///
+    /// `lifted` is **the bar member the opener lift owns this frame** ([`Screen::bar_opener`], the
+    /// profile chip while its menu is up), `None` otherwise. It is the lift's from the frame the menu
+    /// mounts to the frame it is removed, and the chrome pass LEAVES IT OUT, as a page leaves its lifted
+    /// element out of its own pass ([`DrawFrame::lifted`]): the lift ([`Self::lift_bar_member`]) is its
+    /// only copy, painted on every one of those frames at the morph's `opener_alpha`, so a consumed
+    /// chip is not under the dim, and the host snapshot the glass refracts never holds it.
     fn draw_chrome(&mut self, _arg: &H::Arg, _parts: &CxParts<H::Elem>,
-        _nav: super::screen::NavPresentation, _glass: Option<&mut super::frame::glass::GlassPlan>) {}
+        _nav: super::screen::NavPresentation, _glass: Option<&mut super::frame::glass::GlassPlan>,
+        _lifted: Option<H::Elem>) {}
     /// **Where the shared bar's member `elem` is DRAWN this frame**, under `presented` (the host page's
     /// tuck, [`chrome_presented`]): its resting rect through the tuck, the rect the lit copy of an
     /// opener is drawn at and a surface's morph starts and ends on. `None` for a rig with no such
@@ -383,8 +708,10 @@ pub trait Rig<H: Host> {
     fn bar_member_rect(&self, _elem: H::Elem, _presented: super::screen::NavPresentation) -> Option<super::Rect> { None }
     /// **Redraw the bar member `elem` lit above the dim AND the panel** (the Z::OPENER lift pass, for
     /// a surface whose [`Screen::bar_opener`] is that member — the profile chip), at the position and
-    /// alpha the chrome pass drew it with (`presented`), on `ground`, the stack's latched underlay
-    /// field (the frozen ground; no live glass over a page), and `material`, this frame's tab face.
+    /// alpha the chrome pass drew it with (`presented`), on `ground`, the stack's underlay field
+    /// (latched or not: the lift chooses its frozen ground when it paints, `widgets::lift_ground`; no
+    /// live glass over a page), and `material`, this frame's tab face. Asked on EVERY frame the
+    /// surface owns the member (the chrome pass leaves it out for all of them), so it must paint.
     fn lift_bar_member(&mut self, _elem: H::Elem, _presented: super::screen::NavPresentation,
         _material: Option<plx_gfx::gfx::GlassFace>, _ground: &super::underlay::UnderlayField) {}
     /// Coexistence adapter for a legacy overlay which freezes an owned host (phase 10 retirement).
@@ -587,8 +914,8 @@ pub struct Dispatcher<H: Host> {
     pending_back: bool,
     /// The tick of the last `frame_with`, for a `draw` the caller runs later in its own frame.
     last_tick: Tick,
-    /// The page element the surface pass lifted out of the dim on the previous drawn frame
-    /// ([`Self::lifted_opener`]); a change re-takes the host snapshot (`draw_with`).
+    /// The page element or bar member the surface pass lifted out of the dim on the previous drawn
+    /// frame ([`Self::lifted_opener`]); a change re-takes the host snapshot ([`Self::settle_lift`]).
     lifted_last: Option<FocusKey<H::Elem>>,
     /// This frame's prepare pass ran (a `draw` after a non-presenting frame runs it itself).
     prepared: bool,
@@ -897,6 +1224,16 @@ where
         captured
     }
 
+    /// [`modal_presentation`](Self::modal_presentation) carrying the frame's lowest modal dim
+    /// ([`ModalStack::first_dim`](super::containers::modal::ModalStack::first_dim)) at the route
+    /// transition's `nav_page_alpha`, the value `draw_scrims` is handed: what the host's frost body is
+    /// baked from at the head of the frame.
+    pub fn modal_presentation_at(&self, nav_page_alpha: f32) -> super::containers::modal::ModalPresentation {
+        let mut captured = self.modal_presentation();
+        captured.dim = self.nav.modals.first_dim(nav_page_alpha);
+        captured
+    }
+
     pub fn top_screen(&self) -> Option<&dyn super::screen::Screen<H>> {
         self.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| &*i.screen)
     }
@@ -934,13 +1271,14 @@ where
     /// itself and the lift stands down. While the menu is open the engine's focus is on the menu's
     /// own rows, so the lift always paints then.
     pub fn lifted_opener(&self) -> Option<(EntryId, Option<FocusKey<H::Elem>>)> {
-        self.lift_target().map(|(entry, opener, _)| (entry, opener))
+        self.lift_target().map(|(entry, opener, _, _)| (entry, opener))
     }
 
     /// [`Self::lifted_opener`]'s decision with the kind of the opener: `true` when it is a member of the
     /// shared bar ([`Screen::bar_opener`], hosted by the page on top), `false` for a page element
-    /// ([`Screen::opener`]). One decision and one stand-down rule for both.
-    fn lift_target(&self) -> Option<(EntryId, Option<FocusKey<H::Elem>>, bool)> {
+    /// ([`Screen::opener`]), and the alpha the lift paints it at ([`Screen::opener_alpha`]: a morphing
+    /// menu consumes its opener). One decision and one stand-down rule for both.
+    fn lift_target(&self) -> Option<(EntryId, Option<FocusKey<H::Elem>>, bool, f32)> {
         use super::containers::modal::{Phase, Style};
         let surfaces = &self.nav.modals.surfaces;
         // Once an opaque surface paints its ground or its entrance dip, the lower openers
@@ -948,11 +1286,11 @@ where
         let first = surfaces.iter().rposition(|s| matches!(s.style, Style::Opaque { .. })
             && s.entry.inst.is_some() && s.phase != Phase::Hidden && !s.motion.held()
             && (s.motion.appear > 0.0 || s.motion.floor() > 0.0)).unwrap_or(0);
-        let (surface, (entry, opener, bar)) = surfaces[first..].iter().find_map(|s| {
+        let (surface, (entry, opener, bar, alpha)) = surfaces[first..].iter().find_map(|s| {
             let screen = &s.entry.inst.as_ref()?.screen;
-            let found = screen.opener().map(|(entry, key)| (entry, key, false)).or_else(|| {
+            let found = screen.opener().map(|(entry, key)| (entry, key, false, screen.opener_alpha())).or_else(|| {
                 let host = self.nav.top_page()?.id;
-                Some((host, Some(FocusKey { entry: host, elem: screen.bar_opener()? }), true))
+                Some((host, Some(FocusKey { entry: host, elem: screen.bar_opener()? }), true, screen.opener_alpha()))
             })?;
             Some((s, found))
         })?;
@@ -965,7 +1303,7 @@ where
                 .is_some_and(|i| i.screen.opener_departing(k)));
             if live.is_some() && live != opener && !departing() { return None; }
         }
-        Some((entry, opener, bar))
+        Some((entry, opener, bar, alpha))
     }
 
     /// **What the opener lift reads of the press: the dispatcher's own, live.** The lift is the
@@ -1385,16 +1723,19 @@ where
                 }
                 _ => {}
             }
-            if let Some(eid) = self.owner_entry() {
-                if let Some(inst) = self.nav.instance_of(eid) {
-                    head.push(Stamped {
-                        from: MachineId::Input,
-                        fx: Fx::Deliver(
-                            MachineId::Instance(inst),
-                            Delivery::Screen(ScreenEvent::Input(ev)),
-                        ),
-                    });
-                }
+            let addressed = self.owner_entry().and_then(|eid| self.nav.instance_of(eid));
+            if let Some(inst) = addressed {
+                head.push(Stamped {
+                    from: MachineId::Input,
+                    fx: Fx::Deliver(
+                        MachineId::Instance(inst),
+                        Delivery::Screen(ScreenEvent::Input(ev)),
+                    ),
+                });
+            } else if matches!(ev.kind, InputKind::ById { .. }) {
+                // No page to deliver to: the by-id input still answers (a `NoOwner` refusal and its
+                // resolution row), so a recording pairs one row with every input.
+                self.refuse_unaddressed_by_id(rig, f, &ev, &mut head);
             }
         }
         // 3. adapter results, in the caller's composite-key order (the recorder's order)
@@ -1460,7 +1801,7 @@ where
             .filter_map(|s| Some((s.entry.inst.as_ref()?.id, s.motion.held())))
             .collect();
         // the press machine (§7.4): hold and commit are delivered from the Tick
-        let lift_target = self.lift_target().filter(|t| !t.2).and_then(|(entry, key, _)| {
+        let lift_target = self.lift_target().filter(|t| !t.2).and_then(|(entry, key, _, _)| {
             Some((key?, self.nav.entry(entry)?.inst.as_ref()?.id))
         });
         self.input.validate_lift(lift_target);
@@ -1964,6 +2305,32 @@ where
         plx_machine::motion::report::collect_into(&mut self.present, tick.ms);
     }
 
+    /// **Settle who owns the lift before the page pass** — the application calls this at the head of
+    /// the frame, after the steps and the popover host's `begin_frame` and before anything that reads
+    /// the host snapshot (`backdrop_layers`, the page pass). What the opener lift owns ([`Self::lift_target`],
+    /// a page element or a bar member alike) is left out of the page's own pass and so out of the host
+    /// snapshot; when it changes the snapshot is thrown away and the card sections say again whether
+    /// they left a card out (a local `LiftReceipt`, accepted by Input from the draw). That has to happen BEFORE the page pass: the
+    /// pass serves the held snapshot or takes a new one, and a flip decided inside [`Self::draw_with`]
+    /// (after it) re-took the snapshot a frame late and showed the old one on the flip frame (a closing
+    /// menu's opener, once focus left it, was drawn by nobody for that frame). Source and discovery
+    /// walks and a recording painter (the text recorder's walk of a held surface) neither decide nor
+    /// re-take: they redraw the page the visible pass is about to show.
+    ///
+    /// The decision is a function of dispatcher state alone, and idempotent: `draw_with` calls it too,
+    /// for the callers with no pre-pass (a host test, the plain [`Self::draw`]), where it finds the
+    /// application's call already made and does nothing.
+    pub fn settle_lift(&mut self) {
+        if super::frame::backdrop::source_walk() || plx_gfx::gfx::blur_source_pass()
+            || Painter::root().is_recording() { return; }
+        let owned = self.lift_target().and_then(|t| t.1);
+        if owned != self.lifted_last {
+            self.lifted_last = owned;
+            // Cache identity only: Input validates evidence against the live target before tick.
+            super::popover::host::invalidate();
+        }
+    }
+
     fn draw_with(&mut self, rig: &mut dyn Rig<H>, tick: Tick, report: &mut FrameReport, pages: bool,
         mut glass: Option<&mut super::frame::glass::GlassPlan>, ceiling: super::frame::backdrop::Z) {
         use super::frame::backdrop::{self, Z};
@@ -1979,11 +2346,13 @@ where
         // they left a card out (a local LiftReceipt). Source and discovery walks neither
         // decide nor re-take: they redraw the page the visible pass is about to show.
         let target = self.lift_target();
-        let page_lift = target.filter(|t| !t.2).map(|(entry, key, _)| (entry, key));
+        let page_lift = target.filter(|t| !t.2).map(|(entry, key, _, _)| (entry, key));
+        // How much of the lifted opener a morphing menu has left (1.0 for every other surface).
+        let opener_alpha = target.map_or(1.0, |t| t.3);
         // A bar member (the profile chip) is lifted by the same pass, drawn where the chrome pass
         // drew it: the host page's tuck is part of that, and the surface hanging from it is told
         // the rect (`Screen::opener_rect`) before it draws, so its morph rides the live opener.
-        let bar_lift = target.filter(|t| t.2).and_then(|(entry, key, _)| {
+        let bar_lift = target.filter(|t| t.2).and_then(|(entry, key, _, _)| {
             let elem = key?.elem;
             let host = self.nav.tabs.stack.top().filter(|e| e.id == entry)?.inst.as_ref()?;
             let presented = chrome_presented::<H>(navigation, &*host.screen)?;
@@ -1997,13 +2366,14 @@ where
             }
         }
         let lifted = page_lift.and_then(|(_, key)| key);
+        // What the lift owns is settled before the page pass (`settle_lift`: the application calls it
+        // at the head of the frame); a caller with no such call has it made here, late. A bar member
+        // is owned from the frame its menu mounts: the chrome pass leaves it out of the snapshot from
+        // that frame, and the lift paints it on every frame of the open and the close
+        // (`widgets::lift_profile_chip` stands on the field once that has latched and on the host
+        // snapshot before), so nothing about it changes while the menu is up.
+        self.settle_lift();
         let lift_parts = page_lift.map(|(entry, focus)| self.opener_parts(entry, focus));
-        if !backdrop::source_walk() && !plx_gfx::gfx::blur_source_pass()
-            && !Painter::root().is_recording() && lifted != self.lifted_last {
-            self.lifted_last = lifted;
-            // Cache identity only: Input validates evidence against the live target before tick.
-            super::popover::host::invalidate();
-        }
         let (_, host_render) = self.nav.modals.host_policy();
         // §9: armed for the LENGTH OF THE DRAW, and restored rather than cleared, exactly as the
         // page freeze is. Every framebuffer-sampling door is refused while it is up.
@@ -2226,7 +2596,8 @@ where
                         // (`chrome_presented`), and a skipped frame publishes no material, so the
                         // band's goes back to Flat rather than staying on the last drawn frame's face.
                         if let Some(navigation) = chrome_presented::<H>(navigation, &*inst.screen) {
-                            backdrop::draw_span("chrome", || rig.draw_chrome(&e.arg, &chrome_parts, navigation, glass.as_deref_mut()));
+                            let bar_lifted = bar_lift.map(|(elem, _, _)| elem);
+                            backdrop::draw_span("chrome", || rig.draw_chrome(&e.arg, &chrome_parts, navigation, glass.as_deref_mut(), bar_lifted));
                         } else if let Some(glass) = glass.as_deref_mut() {
                             glass.tab_band_mut().reset_material();
                         }
@@ -2342,23 +2713,26 @@ where
             }
         }
         // **The lift pass: ONE place, ONE layer, ONE order, on every plan** (`Z::OPENER`, after the
-        // last surface). The element a surface was opened from is lit above the dim AND the panels,
-        // so a morphing panel grows out from under it and a close shrinks back into it. Two kinds
-        // are drawn here, bottom to top:
+        // last surface). The element a surface was opened from is lit above the dim AND the panels:
+        // a morphing menu CONSUMES it (painted at the morph's `opener_alpha`: gone while the menu
+        // stands, back as the droplet drains into it), the item hold menu's lifted card stays whole.
+        // Two kinds are drawn here, bottom to top:
         // - the host PAGE's opener (`lifted_opener`: a header pill, an item hold menu's card) by
         //   the page that drew it (`Screen::redraw_focused`). Not gated on `pages`: the loop's
         //   surfaces-only second call (`bridge::PagePlan::LegacyThenSurfaces`) owes it too, and a
         //   replaced host owes none (`SurfacesOnly`). It stands down by `lifted_opener`'s rule once
         //   focus leaves the opener while the menu fades.
         // - the shared BAR's member the surface hangs from (`Screen::bar_opener`: the profile chip),
-        //   by the rig (`Rig::lift_bar_member`) on the stack's latched ground, at the position and
-        //   alpha the chrome pass drew it with. Chrome the page does not own, so not a
-        //   `redraw_focused`; the same pass, the same layer, the same stand-down rule.
+        //   by the rig (`Rig::lift_bar_member`) on the stack's field once it has latched, and before
+        //   that on the host snapshot drawn clear (`widgets::lift_ground`); it paints on every frame
+        //   the menu owns the chip at a non-zero `opener_alpha`, at the position and alpha the
+        //   chrome pass drew it with. Chrome the page does not own, so not a `redraw_focused`; the
+        //   same pass, the same layer, the same stand-down rule.
         if Z::OPENER < ceiling {
             let _lift_layer = backdrop::layer(Z::OPENER, false);
             let _scope = rig.surface_scope();
             backdrop::draw_span("lifts", || {
-                let owed = (host_render != HostRender::Replaced).then_some(page_lift.zip(lift_parts)).flatten();
+                let owed = (host_render != HostRender::Replaced && opener_alpha > 0.0).then_some(page_lift.zip(lift_parts)).flatten();
                 if let Some(((entry, focus), lift_parts)) = owed {
                     if let Some(screen) = nav.tabs.stack.top().filter(|e| e.id == entry).and_then(|e| e.inst.as_ref()).map(|i| &*i.screen) {
                         let Split { views, measure, .. } = rig.split();
@@ -2366,12 +2740,15 @@ where
                         // page pass, so a redraw reads the same views the page drew with
                         let lift_cx = lift_parts.page_cx::<H>(
                             views, measure, entry, lift_parts.focus.clone(), nav.tabs.stack.beneath_id(entry));
-                        let mut frame = DrawFrame::with_navigation(&lift_cx, Painter::root(), navigation);
+                        let mut frame = DrawFrame::with_navigation(&lift_cx, Painter::root().alpha(opener_alpha), navigation);
                         screen.redraw_focused(&mut frame, focus);
                         frame.apply_frame_requests(present);
                     }
                 }
-                if let Some((elem, presented, _)) = bar_lift.filter(|_| pages) {
+                if let Some((elem, presented, _)) = bar_lift.filter(|_| pages && opener_alpha > 0.0) {
+                    // the member is lifted at the alpha the chrome pass drew it with, times what the
+                    // morphing menu has left of it
+                    let presented = super::screen::NavPresentation { chrome_alpha: presented.chrome_alpha * opener_alpha, ..presented };
                     rig.lift_bar_member(elem, presented, glass.as_deref().and_then(super::frame::glass::GlassPlan::tab_face), modals.lift_field());
                 }
             });
@@ -2473,6 +2850,19 @@ where
                 entry.inst.as_ref().is_some_and(|instance| instance.id == id)),
             _ => true,
         }
+    }
+
+    /// **Who holds input once the dismissals already parked this drain have committed.** A surface
+    /// that closes on a pick pushes its own `Nav(Dismiss)` and then reports the pick to the page
+    /// that opened it. The dismissal stays PARKED until NAV COMMIT (step 7), so the page's command
+    /// for that report reaches the FIFO head while [`Navigation::input_owner`] still names the
+    /// closing surface. A runner that gates a page's command on "the sender holds input" asks this
+    /// instead: a surface whose `Dismiss` is parked no longer counts. Read-only; only a parked
+    /// `Dismiss` is read, never a page op, so a page under a surface that stays up is still not
+    /// the owner.
+    pub fn input_owner_after_dismissals(&self) -> Option<InputOwner> {
+        self.nav.input_owner_unless(|id| self.parked.iter()
+            .any(|(item, _)| matches!(&item.fx, Fx::Nav(NavOp::Dismiss(target)) if *target == id)))
     }
 
     /// Revalidate immediately before IO if a runner invokes lifecycle operations after take.
@@ -2730,11 +3120,32 @@ where
                 // can write stores or request playback; a later navigation-effect guard is
                 // too late. Addressed commands, notices and lifecycle restoration still reach
                 // covered entries (including the host beneath a restored modal).
+                //
+                // A by-id focus/press (`InputKind::ById`) is the one input this guard does not
+                // drop without a trace: it still owes the recording its resolution row and the
+                // reader its refusal line, so it resolves as a `NoOwner` refusal instead
+                // (`deliver_by_id` with `instance_owns_input = false`), moving no focus and
+                // emitting no key.
+                let by_id = match &ev {
+                    ScreenEvent::Input(input) if matches!(input.kind, InputKind::ById { .. }) => Some(input),
+                    _ => None,
+                };
                 if matches!(ev, ScreenEvent::Input(_) | ScreenEvent::Activate(_) |
                     ScreenEvent::PressHold(_) | ScreenEvent::PressCommit(_))
                     && self.owner_entry().and_then(|entry| self.nav.instance_of(entry)) != Some(id)
                 {
                     report.dropped_deliveries += 1;
+                    if let Some(input) = by_id {
+                        self.deliver_by_id(rig, parts, id, input, false, out);
+                    }
+                    return;
+                }
+                // An accessibility-id focus/press acts HERE, once the delivery has passed the
+                // owner guard, at its ordered delivery position (every earlier input of the batch
+                // has already acted), and no screen is stepped with it: the dispatcher resolves
+                // it, moves focus and queues the OK key's edges itself.
+                if let Some(input) = by_id {
+                    self.deliver_by_id(rig, parts, id, input, true, out);
                     return;
                 }
                 // Ingest releases an already-live gesture before the press Tick. A Down in
@@ -2770,6 +3181,14 @@ where
                     let entry_owner = InputOwner::Entry(entry);
                     addressed.owner = if self.owner_entry() == Some(entry) { self.owner() } else { entry_owner };
                     addressed.focus = self.input.engine.read(entry_owner);
+                    // **The press is read where the delivery runs, as the focus is.** `parts` was
+                    // built before this drain, and an OK-down arms its press INSIDE it (`Fx::Press`,
+                    // queued ahead of the next delivery): the frame's own Tick, delivered after the
+                    // arm, would otherwise read a press that is not live yet, and a screen that acts
+                    // on a press standing on its element (Home's carousel, which restarts its countdown
+                    // while a hero control's press dips: `HomeScreen::hero_press_armed`) would be one
+                    // frame late on exactly the frame the press began.
+                    addressed.press = self.input.press_read(parts.tick.ms);
                     addressed.page_image = self.page_image_read().for_owner(entry, id);
                 }
                 // **A page whose first seat is still on its way HOLDS an arrow other than Up** (design

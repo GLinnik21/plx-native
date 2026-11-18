@@ -186,7 +186,15 @@ the episode strip's `EPISODE` look, its caption band and `StillFooter::Shelf`.
   holds focus (`HomeScreen::row_holds_focus`), and it restarts at its full length when focus returns to the
   hero. A page that rests at the hero while a Continue Watching card is focused (the row scrolls nothing)
   therefore keeps its billboard still and presents nothing once settled, as it always did when focus on a
-  row scrolled the page off the hero (the `home-idle` scene grades it).
+  row scrolled the page off the hero (the `home-idle` scene grades it). A press standing on a hero control
+  (its dip, about 200 ms: Play, Info or the bookmark disc; `HomeScreen::hero_press_armed`, read from the press
+  machine) restarts the countdown at its full length every tick, as a focus move does, so no turn falls due
+  inside the press and none is owed once it has settled: the next one comes a full interval after the press,
+  not on the first tick after Play or Info, which is often the person's return to Home. A press therefore acts
+  on the title it was armed on (unless a landing takes that title out of the hero pool inside the dip: the press
+  then acts on its successor). `HomeCmd::Flip` and Left/Right at the hero's edge are REFUSED while the press
+  stands (the page answers `Handled::No` and the turn is dropped, not applied when the press settles), so the
+  caller sends them again once it has.
 
 Tile text is `TileLabel::title(t)` or `TileLabel::titled(t, caption)`, with the focused-label band
 driven by `line_reveal_for` and `under_band` (a line shows once the room under its card holds its
@@ -196,7 +204,7 @@ shelf pitch, `consts::TITLE_DY + CARD_DY` (see `related.rs`, `cast.rs`, `extras.
 heading-to-card distance Home and the Library use, quoted as the sum rather than as a number this
 file would then have to keep in step.
 
-Menus over a page are glass on frozen ground (DS6: `popover_glass`, gradient face, 1 px rim, soft shadow, 30% scrim; the body shows the dim's latched field and the rim refracts the once-captured host snapshot, so nothing is re-blurred while a menu is up). Every other surface stands on the page's own latched light: `widgets::panel_ground` draws the
+Menus over a page are glass on frozen ground (DS6: `popover_glass`, gradient face, 1 px rim, soft shadow, 30% scrim; the body is a once-per-snapshot frost of the captured host page, the dim baked in, with the dim's latched field as the fallback body, and the rim refracts the once-captured host snapshot, so a menu runs no live blur chain). Every other surface stands on the page's own latched light: `widgets::panel_ground` draws the
 underlay field the modal dim latched, windowed to the panel's rect and graded toward the panel
 material under its frost. Backdrop-blur glass (`Glass::DYNAMIC_BACKDROP`) is chrome-only — the top
 bar's track and the profile chip — plus two non-interactive standing notes in the page layer: the "Hold OK for options"
@@ -217,8 +225,9 @@ the only part anybody needs. Keep the BACK-return `KeyHint` on read-only ALERT p
 it supplies their dismissal affordance; do not repeat it beside a route's return crumb.
 
 First-run consent sizes its narrative from the complete disclosure and the related-link column.
-Its contextual answer verbs share one horizontal row, separated from BODY-sized reading copy by
-`space::MD`. Exceptional overflow scrolls with UP/DOWN while the selected answer stays focused.
+Its contextual answer verbs share one horizontal row, separated by `space::MD` from reading copy
+set at `route_screen::COPY_SIZE`, the one copy rung of every route (first run has no larger reading
+size of its own). Exceptional overflow scrolls with UP/DOWN while the selected answer stays focused.
 
 ## Where to look when you are changing something
 

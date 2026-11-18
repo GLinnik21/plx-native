@@ -114,6 +114,7 @@ use plx_data::metadata;
 use plx_data::metadata::sub_layout::{self, LangId, OtherLang, RowBadge, RowTarget, SubHeader, SubModel, SubRow, SubTrack};
 use plx_data::metadata::track_label;
 use plx_plex::plex::session::{SubtitlePosition, SubtitleSize, SubtitleTone};
+use plx_ui::a11y::{A11y, A11yPath};
 use plx_ui::frame::Budget;
 use plx_ui::geom::IndexElem;
 use plx_machine::machine::{Canon, Cx, EntryId, FocusKey, GroupId, Host, Measure};
@@ -121,8 +122,8 @@ use plx_ui::popover::Popover;
 use plx_ui::screen::{At, Dir, DrawFrame, Focusable, GroupSpec, Part, Placed, Step};
 use plx_ui::form::{Activation, Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use plx_ui::page_stack::{
-    self, popover_group_of, popover_groups, popover_neighbour, popover_place,
-    popover_register_stops, popover_seat, PageStack, PopoverPanel,
+    self, popover_a11y, popover_a11y_elems, popover_group_of, popover_groups, popover_neighbour,
+    popover_place, popover_register_stops, popover_seat, PageStack, PopoverPanel,
 };
 use plx_ui::panel_motion::PanelMotion;
 use plx_ui::table::{Badge, Row, Section, TableView};
@@ -217,6 +218,15 @@ impl StyleField {
 
     fn ordinal(self) -> u32 {
         self as u32
+    }
+
+    /// The field's name in the menu's accessibility ids ([`TrackRow::a11y_path`]).
+    fn a11y_name(self) -> &'static str {
+        match self {
+            Self::Size => "size",
+            Self::Position => "position",
+            Self::Color => "color",
+        }
     }
 
     fn label(self) -> &'static str {
@@ -325,6 +335,64 @@ impl FormId for TrackRow {
             TrackRow::SearchHit(i) => 0x000C_0000 + (i as u32).min(0xFFFF),
             TrackRow::LangChoice(i) => 0x000D_0000 + (i as u32).min(0xFFFF),
         })
+    }
+}
+
+impl TrackRow {
+    /// **Does a press of this row WRITE to the playing title on the server?** A track pick selects the part's streams on
+    /// the PMS (`route`'s `select_streams`, `PUT /library/parts/{id}`: the transcoder encodes the SELECTED audio and burns
+    /// the SELECTED subtitle) and a search result installs its subtitle on the item (`PUT /library/metadata/{rk}/subtitles`),
+    /// so the overlay screen names the title playing on those rows (the harness's `press ... --rk`). Every other row
+    /// opens a page, picks a local setting (Style, Timing, the search language) or reconfigures the live stream (Boost
+    /// dialog, Normalize loudness) and writes nothing of the title's. An exhaustive match, so a new row cannot compile
+    /// without the decision.
+    pub fn writes_title(&self) -> bool {
+        match *self {
+            TrackRow::Audio(_) | TrackRow::SubOff | TrackRow::SubForcedOnly | TrackRow::Sub(_) | TrackRow::SearchHit(_) => true,
+            TrackRow::Boost
+            | TrackRow::Loudness
+            | TrackRow::Timing
+            | TrackRow::Style
+            | TrackRow::OpenOther
+            | TrackRow::OpenLang(_)
+            | TrackRow::OpenField(_)
+            | TrackRow::Choice(..)
+            | TrackRow::OpenSearch
+            | TrackRow::SearchLang
+            | TrackRow::SearchRetry
+            | TrackRow::LangChoice(_) => false,
+        }
+    }
+
+    /// **The row's name in the menu's accessibility ids** (`plx_ui::a11y`), relative to the menu:
+    /// what the row IS, and the index it already carries when it is one of a list (`audio.<i>`,
+    /// `sub.<i>`, `hit.<i>`, `lang.<slot>`, `language.<i>`). A singleton is its word: `boost`,
+    /// `loudness`, `off`, `forced`, `timing`, `style`, `other`, `search`, `search_language`, `retry`.
+    /// The Style page's drill-ins are `field.<size|position|color>` and a picker's rungs
+    /// `<field>.<rung>`. A page shows one of these sets at a time, so no two rows of a view share
+    /// an id. An exhaustive match, so a new row cannot compile without a name, as it cannot without
+    /// a focus key ([`FormId::key`]).
+    fn a11y_path(&self) -> A11yPath {
+        let path = A11yPath::new();
+        match *self {
+            TrackRow::Audio(i) => path.name("audio").index(i),
+            TrackRow::Boost => path.name("boost"),
+            TrackRow::Loudness => path.name("loudness"),
+            TrackRow::SubOff => path.name("off"),
+            TrackRow::SubForcedOnly => path.name("forced"),
+            TrackRow::Sub(i) => path.name("sub").index(i),
+            TrackRow::Timing => path.name("timing"),
+            TrackRow::Style => path.name("style"),
+            TrackRow::OpenField(field) => path.name("field").name(field.a11y_name()),
+            TrackRow::Choice(field, i) => path.name(field.a11y_name()).index(i),
+            TrackRow::OpenOther => path.name("other"),
+            TrackRow::OpenLang(lang) => path.name("lang").index(lang.slot),
+            TrackRow::OpenSearch => path.name("search"),
+            TrackRow::SearchLang => path.name("search_language"),
+            TrackRow::SearchRetry => path.name("retry"),
+            TrackRow::SearchHit(i) => path.name("hit").index(i),
+            TrackRow::LangChoice(i) => path.name("language").index(i),
+        }
     }
 }
 
@@ -2398,6 +2466,27 @@ where
     }
     fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         popover_seat(self.state, self.entry)
+    }
+    /// A row is its [`TrackRow::a11y_path`], relative to the menu (the overlay screen that composes
+    /// this part places the menu under its own namespace). The inverse is the default walk: a page
+    /// of a popover is a list a viewer reads, not a library.
+    fn a11y(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<A11y<'_>> {
+        popover_a11y(&self.state.form, key, TrackRow::a11y_path)
+    }
+    fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, H>, out: &mut Vec<H::Elem>) {
+        popover_a11y_elems(&self.state.form, g, self.group, out)
+    }
+}
+
+impl TrackMenuPart<'_> {
+    /// **Does a press of the row `key` write to the playing title** ([`TrackRow::writes_title`]), read off the form's
+    /// binding the way `a11y` reads its id. The overlay screen asks it to name the title playing on those rows.
+    pub fn writes_title_at<E: IndexElem>(&self, key: &E) -> bool {
+        let form = &self.state.form;
+        key.index()
+            .and_then(|index| form.index_of_key(RowKey(index)))
+            .and_then(|at| form.binding_at(at))
+            .is_some_and(|binding| binding.id.writes_title())
     }
 }
 
@@ -5514,6 +5603,7 @@ mod forced_only_tests {
 mod focus_tests {
     use super::*;
     use plx_machine::machine::{FocusRead, InputOwner, PressRead, Tick};
+    use plx_ui::a11y::Role;
 
     /// The focus element of the `i`-th Audio row, named by identity.
     fn audio_key(i: usize) -> u32 {
@@ -5553,6 +5643,11 @@ mod focus_tests {
         }
         let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         form.set(TrackForm::new().section(sec), None);
+        menu_of(form)
+    }
+
+    /// A menu showing `form`, with nothing else about it asked of a playback or a playing item.
+    fn menu_of(form: TrackTable) -> TrackMenuState {
         TrackMenuState {
             tab: 0,
             active_audio: 0,
@@ -5584,6 +5679,78 @@ mod focus_tests {
             anchor: crate::player_hud::classic::ctrl_row_hit_rect(),
             side: std::cell::Cell::new(plx_ui::popover::Side::Above),
         }
+    }
+
+    /// **The rows of the Audio tab are `audio.<i>`** and the menu conforms (every row projects,
+    /// ids are unique, the inverse finds each row, the group lists no more rows than it declares, and
+    /// some when it declares any); the title band's pointer-only key and a key of no row project nothing.
+    #[test]
+    fn audio_rows_are_named_by_their_track_index_and_conform() {
+        let e = EntryId(5);
+        let st = three_row_menu();
+        let part = TrackMenuPart { state: &st, entry: e, group: GroupId(0) };
+        with_cx(e, |cx| {
+            plx_ui::a11y::conformance(&part, cx);
+            let at = |key: u32| {
+                <TrackMenuPart as Focusable<HostFixture>>::a11y(&part, &key, cx).map(|a| (a.path.to_string(), a.role))
+            };
+            assert_eq!(at(audio_key(0)), Some(("audio.0".to_string(), Role::Row)));
+            assert_eq!(at(audio_key(2)), Some(("audio.2".to_string(), Role::Row)));
+            assert_eq!(at(plx_ui::page_stack::TITLE_KEY), None);
+            assert_eq!(at(9999), None);
+            let path = A11yPath::parse_relative("audio.1").expect("a relative path");
+            assert_eq!(<TrackMenuPart as Focusable<HostFixture>>::a11y_find(&part, &path, cx), Some(audio_key(1)));
+        });
+    }
+
+    /// **Every kind of row has a name of its own**: the root's Off, Forced only and tracks, the
+    /// DSP switches, the Style page's drill-ins and a picker's rungs, the language pages and the
+    /// search rows. One page holding one of each conforms, so no two share an id.
+    #[test]
+    fn every_kind_of_row_has_a_unique_name() {
+        use plx_data::metadata::sub_layout::LangId;
+        let nav = || RowKind::Nav(TrackPage::Style);
+        let rows: Vec<(TrackRow, RowKind<TrackPage>, &str, Role)> = vec![
+            (TrackRow::Audio(0), RowKind::Choice, "audio.0", Role::Row),
+            (TrackRow::Audio(1), RowKind::Choice, "audio.1", Role::Row),
+            (TrackRow::Boost, RowKind::Toggle, "boost", Role::Toggle),
+            (TrackRow::Loudness, RowKind::Toggle, "loudness", Role::Toggle),
+            (TrackRow::SubOff, RowKind::Choice, "off", Role::Row),
+            (TrackRow::SubForcedOnly, RowKind::Choice, "forced", Role::Row),
+            (TrackRow::Sub(0), RowKind::Choice, "sub.0", Role::Row),
+            (TrackRow::Sub(2), RowKind::Choice, "sub.2", Role::Row),
+            (TrackRow::Timing, nav(), "timing", Role::Row),
+            (TrackRow::Style, nav(), "style", Role::Row),
+            (TrackRow::OpenOther, nav(), "other", Role::Row),
+            (TrackRow::OpenLang(LangId { stream: 7, slot: 1 }), nav(), "lang.1", Role::Row),
+            (TrackRow::OpenField(StyleField::Size), nav(), "field.size", Role::Row),
+            (TrackRow::OpenField(StyleField::Position), nav(), "field.position", Role::Row),
+            (TrackRow::OpenField(StyleField::Color), nav(), "field.color", Role::Row),
+            (TrackRow::Choice(StyleField::Size, 0), RowKind::Choice, "size.0", Role::Row),
+            (TrackRow::Choice(StyleField::Position, 1), RowKind::Choice, "position.1", Role::Row),
+            (TrackRow::Choice(StyleField::Color, 3), RowKind::Choice, "color.3", Role::Row),
+            (TrackRow::OpenSearch, nav(), "search", Role::Row),
+            (TrackRow::SearchLang, nav(), "search_language", Role::Row),
+            (TrackRow::SearchRetry, RowKind::Button, "retry", Role::Button),
+            (TrackRow::SearchHit(4), RowKind::Button, "hit.4", Role::Button),
+            (TrackRow::LangChoice(2), RowKind::Choice, "language.2", Role::Row),
+        ];
+        let sec = rows
+            .iter()
+            .fold(FormSection::new("All"), |sec, (id, kind, _, _)| sec.item(*id, kind.clone(), (), Row::new("row")));
+        let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
+        form.set(TrackForm::new().section(sec), None);
+        let st = menu_of(form);
+        let e = EntryId(5);
+        let part = TrackMenuPart { state: &st, entry: e, group: GroupId(0) };
+        with_cx(e, |cx| {
+            plx_ui::a11y::conformance(&part, cx);
+            for (id, _, name, role) in &rows {
+                let got = <TrackMenuPart as Focusable<HostFixture>>::a11y(&part, &id.key().0, cx)
+                    .map(|a| (a.path.to_string(), a.role));
+                assert_eq!(got, Some((name.to_string(), *role)), "{id:?}");
+            }
+        });
     }
 
     /// **UP/DOWN step by one row and clamp at both ends**, matching

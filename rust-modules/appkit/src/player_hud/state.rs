@@ -139,6 +139,21 @@ impl ControlSlot {
     pub fn enabled(self, idx: i32) -> bool {
         match self { Self::Discs(controls) => controls.enabled(idx), _ => (0..self.items()).contains(&idx) }
     }
+    /// **The word that names item `idx` of a stand-in's row in an accessibility id**
+    /// (`player.control.skip`): the Skip pill is `skip`, beside the Watch cancel of the automatic
+    /// prompt (`watch`, then `skip`); Up Next's pair is `watch_credits` and `next_episode`. `None`
+    /// for the discs, whose controls are named by their command (`HudCommand::a11y_word`), and for an
+    /// index the row does not have. Static text, a name in the id grammar.
+    pub fn a11y_word(self, idx: i32) -> Option<&'static str> {
+        match (self, idx) {
+            (ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_), 0) => Some("watch_credits"),
+            (ControlSlot::UpNext(_) | ControlSlot::AutomaticUpNext(_), 1) => Some("next_episode"),
+            (ControlSlot::Skip(pr), 0) if pr.automatic => Some("watch"),
+            (ControlSlot::Skip(pr), 1) if pr.automatic => Some("skip"),
+            (ControlSlot::Skip(_), 0) => Some("skip"),
+            _ => None,
+        }
+    }
     /// The command a press of item `idx` performs, when the row holds the discs. A stand-in's
     /// items (the Skip pill, the Up Next pair) are app-owned and carry no [`HudCommand`](super::command::HudCommand): what
     /// they do depends on the segment they offer.
@@ -526,6 +541,20 @@ pub struct FailureReadout {
     pub(super) note: Option<CString>,
     pub(super) actions: Vec<plx_media::player::FailureAction>,
     pub(super) footer: CString,
+}
+
+/// **The word that names a failure read-out's action in an accessibility id**
+/// (`player.failure.try_again`): static text, a name in the id grammar, one per action (a read-out
+/// offers each action at most once, so the word is unique in its row).
+pub fn failure_action_word(a: plx_media::player::FailureAction) -> &'static str {
+    use plx_media::player::FailureAction as A;
+    match a {
+        A::PlayAutomatically => "play_automatically",
+        A::TryAgain => "try_again",
+        A::ChangeQuality => "change_quality",
+        A::Repair => "repair",
+        A::Back => "back",
+    }
 }
 
 /// A control's label. Sentence case, as every `StatusOverlay` row is (the sign-in read-out's *Try

@@ -14,6 +14,10 @@
 // so the picture is the one the image program wrote. The vertex half is `vs_img.vert`, so `u_trect`,
 // `u_tscreen` and `u_uvrect` mean what they mean for every other image draw; `v_p` is written there
 // and never read here.
+//
+// ROUNDED CLIP: linked a second time behind `#define PLX_RCLIP` (`gfx::FS_TEX_RC` / `VS_IMG_RC`, `rclip.glsl`
+// in front), the write becomes `rclip_out(..)`. Bound only while a rounded clip is live: an icon in the glass
+// menu's rows is cut by the lens's arc like its labels are.
 precision mediump float;
 varying highp vec2 v_cuv;
 uniform sampler2D u_tex;
@@ -29,5 +33,9 @@ void main(){
 #endif
   vec3 tex = c.rgb*u_tint.rgb;
   float ta = c.a*u_tint.a;
+#ifdef PLX_RCLIP
+  gl_FragColor = rclip_out(vec4(tex, ta));
+#else
   gl_FragColor = vec4(tex, ta);
+#endif
 }

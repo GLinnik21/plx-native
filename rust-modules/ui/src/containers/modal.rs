@@ -15,8 +15,9 @@
 //!   A surface's LIFT (the element it was opened from) is drawn by the dispatcher's one lift pass
 //!   (`Z::OPENER`), after every surface, so a panel never covers the element it grows out of. The
 //!   host page's own opener (`Screen::opener`) is drawn in that same pass, by the dispatcher.
-//! - `prune()` clears a Closing surface once its fade settles (a page opening over one retires it
-//!   at once instead: `Navigation::commit`), so Closing surfaces step unconditionally (the
+//! - `prune()` clears a Closing surface once its fade settles, or once its body has handed its
+//!   opener back (`Surface::faded`, `Screen::handed_back`: a morph menu's droplet is gone) (a page
+//!   opening over one retires it at once instead: `Navigation::commit`), so Closing surfaces step unconditionally (the
 //!   fade must finish whatever the host is doing) — `the_closing_phase_is_stepped_even_when_the_host_is_frozen`.
 //! - `on_miss(style)` is consulted only while the surface is `Open`: a click beside a Compact,
 //!   Sheet or PlayerPanel dismisses it; an Alert ignores the miss; an Opaque surface swallows it.
@@ -250,10 +251,19 @@ impl PopoverMotion {
 }
 
 impl<H: Host> Surface<H> {
-    /// A menu (`Compact`) dismissed and faded past [`CLOSING_GONE`]: draws nothing, owes its host
-    /// no dim. Only menus: a sheet's or an opaque surface's close is decided by the spring's rest.
+    /// A surface dismissed and already GONE: draws nothing, owes its host no dim. Two ways:
+    ///
+    /// - a menu (`Compact`) faded past [`CLOSING_GONE`] on the container's appear spring; a sheet's
+    ///   or an opaque surface's close is otherwise decided by the spring's rest;
+    /// - a surface whose body has HANDED BACK its opener ([`Screen::handed_back`](crate::screen::Screen::handed_back)):
+    ///   the morph's droplet is gone, whatever the spring still says. The morph is not faded by the
+    ///   container's appear (it begins and ends as the opener), so that spring's tail is a surface
+    ///   with nothing to draw; waiting for it kept the opener's lift (frozen glass, a lighter body)
+    ///   in the opener's place for about twice as long as the droplet's own close.
     pub fn faded(&self) -> bool {
-        self.phase == Phase::Closing && self.style == Style::Compact && self.motion.gone()
+        self.phase == Phase::Closing
+            && ((self.style == Style::Compact && self.motion.gone())
+                || self.entry.inst.as_ref().is_some_and(|i| i.screen.handed_back()))
     }
 }
 
@@ -318,6 +328,10 @@ pub const CLOSING_GONE: f32 = plx_machine::machine::MODAL_CLOSING_GONE;
 pub struct ModalPresentation {
     pub read: plx_machine::machine::ModalRead,
     pub reflow: bool,
+    /// **The frame's lowest modal dim, as a value** ([`ModalStack::first_dim`]): what the host bakes the
+    /// frost's body from at the head of the frame, before `draw_scrims` paints it. `None` unless the
+    /// owner asked for it ([`Dispatcher::modal_presentation_at`](crate::dispatch::Dispatcher)).
+    pub dim: Option<crate::frame::backdrop::Dim>,
     key: ModalCacheKey,
 }
 /// GL snapshot signature only. Never consulted for phase, policy, veil or input decisions.
@@ -329,6 +343,23 @@ pub struct ModalCacheKey {
 impl ModalCacheKey {
     pub fn same_snapshot(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.owner, &other.owner) && self.layers == other.layers
+    }
+    /// Is `other` this key's stack with the same layers, some of which STARTED closing and none of
+    /// which came or went (a layer is `(entry, closing)`)? What a dismissal changes and nothing
+    /// else: `false` for any other change.
+    pub fn began_closing(&self, other: &Self) -> bool {
+        if !std::sync::Arc::ptr_eq(&self.owner, &other.owner) || self.layers.len() != other.layers.len() {
+            return false;
+        }
+        let mut began = false;
+        for (a, b) in self.layers.iter().zip(&other.layers) {
+            // the same layer, which may only have STARTED closing (never un-closed)
+            if a.0 != b.0 || (a.1 && !b.1) {
+                return false;
+            }
+            began |= !a.1 && b.1;
+        }
+        began
     }
 }
 impl ModalPresentation {
@@ -444,6 +475,14 @@ pub trait DimSink {
     fn in_flight(&mut self, pending: bool);
     /// Paint one surface's dim through `field` at `alpha`.
     fn dim(&mut self, field: &crate::underlay::UnderlayField, alpha: f32);
+    /// The frame's lowest dim as the field stands once [`ModalUnderlay::sync`] has run, i.e. the dim the
+    /// glass is about to composite under. The host baked a glass menu's frost body at the head of the
+    /// frame from a PREDICTION of it (`ModalStack::first_dim` before the sync), and a field that
+    /// latched in this very sync makes the prediction wrong: the glass then draws that body for one
+    /// frame (`popover_glass::draw_shadowed`). Nothing else presents the frame whose head bakes the right
+    /// one, so the sink does: on a frost baked for another dim it keeps the loop turning for exactly
+    /// that one frame, the way [`in_flight`](Self::in_flight) does for the read itself.
+    fn dim_settled(&mut self, dim: Option<crate::frame::backdrop::Dim>);
 }
 
 /// The production [`DimSink`].
@@ -491,6 +530,11 @@ impl DimSink for GlDims<'_> {
         if pending {
             // A frame for the read to land in, without claiming the page changed — which would
             // re-capture the host and restart the read it is waiting on.
+            self.present.note(plx_machine::present::PresentEvent::Wake);
+        }
+    }
+    fn dim_settled(&mut self, dim: Option<crate::frame::backdrop::Dim>) {
+        if crate::popover::host::frost_body_stale(dim) {
             self.present.note(plx_machine::present::PresentEvent::Wake);
         }
     }
@@ -608,6 +652,18 @@ impl ModalUnderlay {
         self.held = Latched::Nothing;
         self.pending = None;
     }
+
+    /// The field as a stack that has read its page holds it: latched on texture `tex`, the read
+    /// landed. A host test has no framebuffer to read, and the fixture's surfaces declare no dim to
+    /// keep a latch alive (one would paint through GL, which a host test has no context for), so a
+    /// test states the field's condition at the top of a frame itself. `held` stays `Nothing`: the
+    /// frame's dim pass, with nobody dimming, then KEEPS the field (`latch_step`) through to the lift
+    /// pass, as a dimming surface's page source does on the device, instead of resetting it.
+    #[cfg(test)]
+    pub(crate) fn latch_for_test(&mut self, tex: u32) {
+        self.field = crate::underlay::UnderlayField::latched_for_test(tex);
+        self.held = Latched::Nothing;
+    }
 }
 
 impl Default for ModalUnderlay {
@@ -646,6 +702,7 @@ impl<H: Host> ModalStack<H> {
                 veil: veil_of(&self.surfaces),
             },
             reflow: false,
+            dim: None,
             key: ModalCacheKey { owner: self.presentation_owner.clone(),
                 layers: self.surfaces.iter().filter(|s| holders.contains(&s.entry.id))
                     .map(|s| (s.entry.id, s.phase == Phase::Closing)).collect() },
@@ -745,10 +802,16 @@ impl<H: Host> ModalStack<H> {
 
     /// The topmost Opening|Open surface owns input.
     pub fn input_owner(&self) -> Option<InputOwner> {
+        self.input_owner_unless(|_| false)
+    }
+
+    /// [`input_owner`](Self::input_owner) with every surface `dismissed` names counted as already
+    /// closed: the owner a parked `Dismiss` is about to leave behind.
+    pub fn input_owner_unless(&self, dismissed: impl Fn(EntryId) -> bool) -> Option<InputOwner> {
         self.surfaces
             .iter()
             .rev()
-            .find(|s| matches!(s.phase, Phase::Opening | Phase::Open))
+            .find(|s| matches!(s.phase, Phase::Opening | Phase::Open) && !dismissed(s.entry.id))
             .map(|s| InputOwner::Entry(s.entry.id))
     }
 
@@ -899,7 +962,8 @@ impl<H: Host> ModalStack<H> {
     /// `popover::host::live()` scope or a frozen page will refuse every fill.
     ///
     /// The dims only: a surface's LIFT (the element it was opened from) is drawn after every
-    /// surface, by the dispatcher's lift pass, so the panel's glass grows out from under it.
+    /// surface, by the dispatcher's lift pass, above the panel: whole for the item hold menu's
+    /// card, at the morph's `opener_alpha` for a morphing menu's opener (which the glass consumes).
     pub fn draw_scrims(&mut self, nav_page_alpha: f32, present: &mut plx_machine::present::Present) {
         let mut sink = GlDims::new(present);
         // Nothing is up: no dim to paint, and the field is not this frame's to touch.
@@ -946,6 +1010,13 @@ impl<H: Host> ModalStack<H> {
         // surface on a frame that captured nothing still queues nothing.
         if !dims.is_empty() || source != Some(UnderlaySource::Page) || sink.captured() {
             plx_base::diag::spans::span("ulatch", || self.underlay.sync(source, sink));
+            // The field may have latched in that sync, after the head of the frame predicted the dim
+            // the frost body was baked for: tell the sink what the glass will composite under.
+            // Only a page-sourced dim has a frost under it: the player's flat dim is drawn on a frame
+            // that never bakes one, and a frost left standing must not wake it every frame.
+            if let Some(&(_, a)) = dims.first().filter(|_| source == Some(UnderlaySource::Page) && !sink.video_plane()) {
+                sink.dim_settled(Some(self.underlay.field().dim_of(crate::theme::underlay::TINT, a)));
+            }
         }
         for (id, a) in dims {
             let index = self.surfaces.iter().position(|s| s.entry.id == id).unwrap_or(0);
@@ -953,6 +1024,16 @@ impl<H: Host> ModalStack<H> {
                 crate::popover_glass::dim_owner(index, || sink.dim(self.underlay.field(), a));
             });
         }
+    }
+
+    /// **The frame's lowest modal dim as a value**: the first of [`scrims`](Self::scrims), resolved through
+    /// the stack's latched field exactly as [`draw_scrims_on`](Self::draw_scrims_on) paints it
+    /// (`underlay::UnderlayField::dim_of`, the one function both read), so the frost body baked from it
+    /// at the head of the frame is the body the glass composites under that paint. `None`: no surface
+    /// dims. Pure: reads the stack and its field, draws and samples nothing.
+    pub fn first_dim(&self, nav_page_alpha: f32) -> Option<crate::frame::backdrop::Dim> {
+        let (_, alpha) = *self.scrims(nav_page_alpha).first()?;
+        Some(self.underlay.field().dim_of(crate::theme::underlay::TINT, alpha))
     }
 
     /// Where the stack's field inherits from: the BOTTOM surface that declares a dim — it is the
@@ -985,7 +1066,7 @@ impl<H: Host> ModalStack<H> {
             }
             let Some(inst) = s.entry.inst.as_ref() else { continue };
             let scrim = inst.screen.scrim();
-            let a = scrim.alpha * s.motion.appear * nav_page_alpha;
+            let a = scrim.alpha * scrim.ramp.unwrap_or(s.motion.appear) * nav_page_alpha;
             if a > 0.0 {
                 out.push((s.entry.id, a));
             }

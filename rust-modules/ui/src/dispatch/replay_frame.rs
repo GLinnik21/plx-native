@@ -37,7 +37,9 @@ impl<H: Host> Rig<H> for ReplayFrame<'_, H> {
     fn adopt_system_keyboard(&mut self) { self.rig.adopt_system_keyboard(); }
     fn navigation_presentation(&self, nav: &Navigation<H>) -> super::super::screen::NavPresentation { self.rig.navigation_presentation(nav) }
     fn draw_chrome(&mut self, arg: &H::Arg, parts: &CxParts<H::Elem>, nav: super::super::screen::NavPresentation,
-        glass: Option<&mut super::super::frame::glass::GlassPlan>) { self.rig.draw_chrome(arg, parts, nav, glass); }
+        glass: Option<&mut super::super::frame::glass::GlassPlan>, lifted: Option<H::Elem>) {
+        self.rig.draw_chrome(arg, parts, nav, glass, lifted);
+    }
     fn bar_member_rect(&self, elem: H::Elem, nav: super::super::screen::NavPresentation) -> Option<super::super::Rect> {
         self.rig.bar_member_rect(elem, nav)
     }

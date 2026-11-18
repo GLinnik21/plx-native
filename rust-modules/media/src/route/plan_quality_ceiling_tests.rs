@@ -291,6 +291,7 @@ fn the_loaded_detail_describes_its_own_key_and_its_on_deck_episodes() {
     let show = plx_data::metadata::Detail {
         sid: a,
         rk: "100".into(),
+        episode_streams: plx_data::metadata::EpisodeStreams::Loaded("205".into()),
         on_deck: Some(plx_data::metadata::Episode {
             rk: "205".into(),
             ..Default::default()

@@ -16,6 +16,13 @@ thread_local! {
     pub(super) static PREV_COPIES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     pub(super) static PREV_RELEASES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     pub(super) static PREV_DRAWS: RefCell<Vec<f32>> = const { RefCell::new(Vec::new()) };
+    /// A frost a test stands, as the dim its body was baked for (`None`: no frost, the default).
+    pub(super) static FROST_BODY: std::cell::Cell<Option<Option<plx_gfx::gfx::backdrop::Dim>>> = const { std::cell::Cell::new(None) };
+    /// A frost a test says is COMING but not here (a build the head has not run yet): `frost_possible`
+    /// and no `frost_read`, which is what `popover_glass::draw_shadowed` reads as "owed, none standing".
+    pub(super) static FROST_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The last panel a glass asked a frost for (`frost_want`), `[x, y, w, h]`.
+    pub(super) static FROST_ASKED: std::cell::Cell<Option<[f32; 4]>> = const { std::cell::Cell::new(None) };
 }
 
 pub(super) struct FrameCache {
@@ -76,6 +83,30 @@ impl FrameCache {
             PREV_RELEASES.with(|c| c.set(c.get() + 1));
         }
     }
+    // The frost is a GL texture: a host test has none, and `frost_possible` says so, so the glass
+    // takes its field ground exactly as before.
+    pub(super) fn frost_want(&mut self, panel: [f32; 4]) {
+        FROST_ASKED.with(|a| a.set(Some(panel)));
+    }
+    pub(super) fn frost_read(&self) -> Option<(std::ffi::c_uint, [f32; 4], u32)> {
+        FROST_BODY.with(|b| b.get()).map(|_| (1, [0.0; 4], 0))
+    }
+    pub(super) fn frost_possible(&self) -> bool {
+        FROST_BODY.with(|b| b.get()).is_some() || FROST_PENDING.with(|p| p.get())
+    }
+    pub(super) fn frost_fresh(&self, _key: u32) -> bool {
+        false
+    }
+    pub(super) fn frost_build_owed(&mut self, _key: u32) -> bool {
+        false
+    }
+    pub(super) fn frost_bake_owed(&mut self, _dim: Option<plx_gfx::gfx::backdrop::Dim>, _knee: f32, _ceiling: f32) -> bool {
+        false
+    }
+    pub(super) fn frost_body_for(&self, dim: Option<plx_gfx::gfx::backdrop::Dim>) -> bool {
+        FROST_BODY.with(|b| b.get()).is_none_or(|baked| baked == dim)
+    }
+    pub(super) fn release_frost(&mut self) {}
     pub(super) fn has_prev(&self) -> bool {
         self.prev.is_some()
     }
