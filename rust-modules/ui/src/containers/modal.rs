@@ -1020,7 +1020,9 @@ impl<H: Host> ModalStack<H> {
             plx_base::diag::spans::span("ulatch", || self.underlay.sync(source, sink));
             // The field may have latched in that sync, after the head of the frame predicted the dim
             // the frost body was baked for: tell the sink what the glass will composite under.
-            if let Some(&(_, a)) = dims.first() {
+            // Only a page-sourced dim has a frost under it: the player's flat dim is drawn on a frame
+            // that never bakes one, and a frost left standing must not wake it every frame.
+            if let Some(&(_, a)) = dims.first().filter(|_| source == Some(UnderlaySource::Page) && !sink.video_plane()) {
                 sink.dim_settled(Some(self.underlay.field().dim_of(crate::theme::underlay::TINT, a)));
             }
         }

@@ -1184,6 +1184,12 @@ pub mod host {
         cache(|c| c.frost_possible() && c.frost_read().is_some() && !c.frost_body_for(dim))
     }
 
+    /// A host test stands a frost whose body was baked for `body`'s dim (`None` takes it down again).
+    #[cfg(test)]
+    pub fn mock_frost_body(body: Option<Option<crate::frame::backdrop::Dim>>) {
+        mock::FROST_BODY.with(|b| b.set(body));
+    }
+
     /// Hold off the GROUND stage for this frame. Set by `containers::modal::ModalUnderlay` while its
     /// field is still being read off the GPU: the ground quad bakes the dim in, so a ground taken
     /// now would keep the dim of the field BEFORE the read lands for as long as the panel stays

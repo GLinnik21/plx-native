@@ -586,6 +586,45 @@ fn a_frost_body_baked_before_the_field_latched_is_redrawn_once_and_then_the_loop
     assert_eq!(fb.wakes, 1, "redrawn once, then quiet");
 }
 
+/// **The production sink's wake**: `GlDims::dim_settled` presents a frame when the host's frost body was
+/// baked for another dim than the one the field now gives, and for no other reason (the fake above
+/// counts by its own comparison; this one runs `popover::host::frost_body_stale` for real).
+#[test]
+fn the_production_sink_wakes_the_loop_only_for_a_frost_baked_for_another_dim() {
+    use super::modal::{DimSink, GlDims};
+    use crate::frame::backdrop::Dim;
+    let flat = Dim { tex: 0, tint: [0.0, 0.0, 0.0, 0.3] };
+    let field = Dim { tex: 7, tint: [0.35, 0.35, 0.35, 0.3] };
+    let woken = |baked: Option<Option<Dim>>, now: Option<Dim>| {
+        crate::popover::host::mock_frost_body(baked);
+        let mut present = plx_machine::present::Present::new();
+        let _ = present.take(0);
+        present.acknowledge(0);
+        assert!(!present.changed(), "a settled gate to start from");
+        GlDims::new(&mut present).dim_settled(now);
+        let changed = present.changed();
+        crate::popover::host::mock_frost_body(None);
+        changed
+    };
+    assert!(woken(Some(Some(flat)), Some(field)), "baked for the flat ink, the field's is drawn: one frame");
+    assert!(!woken(Some(Some(field)), Some(field)), "the body is the one for this dim: nothing owed");
+    assert!(!woken(None, Some(field)), "no frost stands: nothing to correct");
+}
+
+/// A frame that cannot bake a frost (a video-plane frame, a flat-ink dim) is never told to correct one.
+#[test]
+fn a_flat_dim_and_a_video_plane_frame_never_report_a_settled_dim() {
+    let (mut d, mut rig, _) = booted();
+    let a = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    modal_mut(&mut d, a).scrim_alpha = 0.5;
+    d.nav.modals.surface_mut(a).unwrap().motion = super::modal::PopoverMotion::at(1.0);
+    let mut fb = FakeFb::new(0.5);
+    fb.video_plane = true;
+    fb.baked = Some(None);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.wakes, 0, "a video-plane frame has no frost to correct");
+}
+
 /// **The page is read on the frame that captured it, before any dim is seen.** That frame's GPU
 /// work is waited out before anything else presents (`gfx::snapshot_frame_begin`), so the
 /// reduction queued there costs no presented frame — queued a frame later, it was the GPU backlog
