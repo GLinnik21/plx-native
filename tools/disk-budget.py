@@ -1286,8 +1286,8 @@ def log_tail(env, count: int = 5) -> List[str]:
 
 
 def render(inv: Inventory, th: Thresholds, free: int, total: int, me: str, build_tree: str, need: int,
-           now: float, env) -> str:
-    pl = plan(inv, free, need, th, me, now, build_tree)
+           now: float, env, build_volume: Optional[Tuple[int, int]] = None) -> str:
+    pl = plan(inv, free, 0 if build_volume else need, th, me, now, build_tree)
     actions, kept = ladder(inv, th, me, now, build_tree)
     lines = ["== disk budget (tools/disk-budget.py report: read-only, deletes nothing) =="]
     lines.append("volume        %s free of %s" % (gib(free), gib(total)))
@@ -1299,7 +1299,13 @@ def render(inv: Inventory, th: Thresholds, free: int, total: int, me: str, build
     lines.append("lanes judged  against %s" % (inv.base_ref.replace("refs/remotes/", "").replace("refs/heads/", "")
                                                or "(no main ref found: no lane reads as merged)"))
     lines.extend(cold_store_lines(env))
-    if pl.verdict == "ok":
+    if build_volume:
+        available, capacity = build_volume
+        verdict, reason = settle(need, th.reserve, available)
+        lines.append("Cargo volume  %s free of %s" % (gib(available), gib(capacity)))
+        lines.append("verdict       %s: %s" % ("ok" if verdict == "ok" else "WOULD REFUSE", reason))
+        lines.append("checkout volume reclaim: %s" % pl.reason)
+    elif pl.verdict == "ok":
         lines.append("verdict       ok: %s" % pl.reason)
     elif pl.verdict == "reclaim":
         lines.append("verdict       would reclaim: %s" % pl.reason)
@@ -1490,13 +1496,11 @@ def cmd_report(args, env) -> int:
     current = next((t.private_bytes for t in inv.trees if t.path == build_tree), 0)
     need = int(args.need_gib * GIB) if args.need_gib is not None else estimate_need(build_tree, current, env)
     free, total = free_bytes(root, env)
-    print(render(inv, th, free, total, root, build_tree, need, now, env))
-    # The SSD ladder measures only its own volume. Account for redirected Cargo
-    # artifacts separately, without recursively sizing the external disk.
-    external_tree = real(build_tree)
-    if device_of(external_tree) != device_of(root):
-        external_free, external_total = free_bytes(nearest_existing(external_tree), env)
-        print("Cargo volume  %s free of %s at %s" % (gib(external_free), gib(external_total), tilde(external_tree)))
+    external = None
+    if device_of(build_tree) != device_of(root):
+        external = free_bytes(nearest_existing(build_tree), env)
+        need = int(upper_need(build_tree, str(args.need_gib) if args.need_gib is not None else None, env) * GIB)
+    print(render(inv, th, free, total, root, build_tree, need, now, env, build_volume=external))
     return 0
 
 
