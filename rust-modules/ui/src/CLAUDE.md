@@ -88,9 +88,9 @@ arguments, and its time is the `dt` it is handed.
    always the page's or the playing item's: Detail's Mark watched writes a started show's on-deck episode,
    `hero_control_subject`; the player's Next plays the queue neighbour, `HudCommand::plays_rk`). Navigation is not the
    test: only a control whose target the page fixes (Go to Show, Also available, the Play Version opener, More, a panel
-   opener, a seek) carries none. A screen whose OK lands somewhere other than on the focused element (Home's door
-   remap, after a Dir key) projects the title it lands on as that element's subject, so a press that names the other
-   title is refused. A new such shape joins `SUBJECT_BEARING` in `tools/a11y.py`, the one list,
+   opener, a seek) carries none. A screen whose OK can land somewhere other than on the focused element (Home's door
+   remap, after a Dir key) projects that element `loaded: false` while the picture lags its focus, so a by-id press
+   of it, named or bare, is refused as `unloaded` and the caller retries once the screen has settled. A new such shape joins `SUBJECT_BEARING` in `tools/a11y.py`, the one list,
    and `a11y_subject_bearing` in `tools/tv-session.sh`; `tests/test_a11y_tool.py` counts the `with_subject` calls per
    file and fails on a file that constructs a Play, queue step or write message it does not list. It gets its id from the three `Focusable` hooks (`a11y`,
    `a11y_elems`, `a11y_find`, `screen.rs`) or from the shared widget it composes (`card_a11y` for a

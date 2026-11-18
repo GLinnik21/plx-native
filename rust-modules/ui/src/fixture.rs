@@ -202,6 +202,10 @@ pub struct FixtureRow {
     /// The first element whose data has not landed (an unloaded paged slot, for the by-id
     /// `Unloaded` refusal). `usize::MAX` is a row every element of which has landed.
     pub unloaded_from: usize,
+    /// The row's FOCUSED element is not loaded (a screen whose press on its focused element lands
+    /// elsewhere while its picture lags, as Home's does across the hero/grid door). It reads the
+    /// context's focus, so a resolution handed a stale focus does not see it.
+    pub unloaded_while_focused: bool,
 }
 
 impl Focusable<FixtureHost> for FixtureRow {
@@ -262,8 +266,10 @@ impl Focusable<FixtureHost> for FixtureRow {
     }
     /// `row.<i>`: the row's role follows what its elements are for the press. The subject is
     /// `rk<i>` (a catalog key's stand-in) and the label is a word, never a title.
-    fn a11y(&self, key: &u32, _cx: &Cx<'_, FixtureHost>) -> Option<A11y<'_>> {
+    fn a11y(&self, key: &u32, cx: &Cx<'_, FixtureHost>) -> Option<A11y<'_>> {
         let i = *key as usize;
+        let held = self.unloaded_while_focused
+            && cx.focus.current.is_some_and(|focus| focus.entry == self.entry && focus.elem == *key);
         (i < self.len).then(|| {
             let role = match self.kind {
                 ElemKind::Card => Role::Card,
@@ -273,7 +279,7 @@ impl Focusable<FixtureHost> for FixtureRow {
             A11y::new(A11yPath::new().name("row").index(i), role)
                 .with_label("row item")
                 .with_subject(format!("rk{i}"))
-                .with_loaded(i < self.unloaded_from)
+                .with_loaded(i < self.unloaded_from && !held)
         })
     }
     fn a11y_elems(&self, g: GroupId, _cx: &Cx<'_, FixtureHost>, out: &mut Vec<u32>) {
@@ -404,6 +410,10 @@ impl FixtureScreen {
     /// The row's first element whose data has not landed (an unloaded paged slot).
     pub(crate) fn set_unloaded_from(&mut self, from: usize) {
         self.row.unloaded_from = from;
+    }
+    /// The row's focused element is not loaded while it holds focus.
+    pub(crate) fn set_unloaded_while_focused(&mut self, held: bool) {
+        self.row.unloaded_while_focused = held;
     }
 }
 
@@ -772,6 +782,7 @@ impl FixtureModal {
                                     drawn: 0,
                                     kind: ElemKind::Card,
                                     unloaded_from: usize::MAX,
+                                    unloaded_while_focused: false,
                                 },
                                 draw_at: 0,
                                 recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None,
@@ -1102,6 +1113,7 @@ impl Mounter<FixtureHost> for FixtureMounter {
                 drawn: 0,
                 kind,
                 unloaded_from: usize::MAX,
+                unloaded_while_focused: false,
             },
             draw_at: 0,
             recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None,
@@ -1861,7 +1873,7 @@ fn the_fixture_focusables_conform_to_the_accessibility_id_contract() {
         hold_hint: Default::default(),
     };
     for (kind, role) in [(ElemKind::Card, Role::Card), (ElemKind::Bare, Role::Row), (ElemKind::Control, Role::Button)] {
-        let row = FixtureRow { len: 5, group: GroupId(1), entry: EntryId(1), prepared: 0, drawn: 0, kind, unloaded_from: 3 };
+        let row = FixtureRow { len: 5, group: GroupId(1), entry: EntryId(1), prepared: 0, drawn: 0, kind, unloaded_from: 3, unloaded_while_focused: false };
         super::a11y::conformance(&row, &cx);
         let third = row.a11y(&2, &cx).unwrap();
         assert_eq!(third.role, role);

@@ -1790,8 +1790,10 @@ fn activation_across_the_snap_midpoint_is_not_a_canonical_collision() {
 // --- The hero/grid door: where a press LANDS --------------------------------------------------
 //
 // A human's quick OK after a Dir key across the door lands on what the picture still shows
-// (`visible_activation`); a by-id press names what it presses, so it lands on exactly that, and
-// the app refuses it when its subject is not the title the press would act on.
+// (`visible_activation`); a by-id press names what it presses, so a scripted ARRIVAL clears that
+// remap and lands on exactly the named element. A by-id press of the element focus already rests
+// on cannot clear it, so that element is not loaded (`Focusable::a11y`) while the picture lags and
+// the dispatcher refuses the press as `unloaded`.
 
 /// A page with a poster shelf first, so the door exists (the Continue Watching row stands in view
 /// on the hero's page and has none), and three cards in it. The billboard shows the shelf's FIRST
@@ -1852,10 +1854,17 @@ impl Door {
         }).collect()
     }
 
-    /// The `subject` the screen projects for `elem` while the engine's focus is `at`.
-    fn subject(&self, elem: u32, at: FocusKey<u32>) -> Option<String> {
-        Focusable::<TestHost>::a11y(&self.s, &elem, &cx(self.view(), Some(at)))
-            .and_then(|a| a.subject.map(|s| s.into_owned()))
+    /// `(loaded, subject)` the screen projects for `elem` while the engine's focus is `at`.
+    fn projection(&self, elem: u32, at: FocusKey<u32>) -> (bool, Option<String>) {
+        let a = Focusable::<TestHost>::a11y(&self.s, &elem, &cx(self.view(), Some(at))).expect("the element exists");
+        (a.loaded, a.subject.map(|s| s.into_owned()))
+    }
+
+    /// The dive passes its midpoint with focus on `at`: the picture catches up with the engine.
+    fn settle(&mut self, at: FocusKey<u32>) {
+        self.s.snap.jump(if self.s.snap_target >= 0.5 { 1.0 } else { 0.0 });
+        let view = self.snapshot.view();
+        step(&mut self.s, view, Some(at), &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }));
     }
 }
 
@@ -1936,29 +1945,121 @@ fn a_key_across_the_door_and_a_quick_ok_still_lands_on_what_the_picture_shows() 
 
 /// A by-id press on the element the engine's focus ALREADY rests on emits no `FocusMoved`
 /// (`FocusEngine::set` answers `Nothing`), so the Script rule cannot clear the remap a key left: the
-/// `[Down, press:X]` batch. The element's `subject` is then the title the press acts on, so the
-/// dispatcher refuses a press that names the card (`subject_mismatch`) rather than playing the hero.
+/// `[Down, press:X]` batch. And an element with no subject (a linked heading) gives a subject check
+/// nothing to refuse by. So while the focused element's press would land on another element, it is NOT
+/// LOADED, and the dispatcher refuses any by-id press of it as `unloaded` (`ui/src/dispatch/by_id.rs`,
+/// pinned by `input_tests::a_refused_press_emits_no_key_and_a_subject_mismatch_presses_nothing`). Its
+/// projection keeps its own subject.
 #[test]
-fn the_subject_of_the_focused_element_is_the_title_its_press_acts_on() {
+fn the_focused_element_is_not_pressable_while_its_press_would_land_elsewhere() {
+    let _guard = plx_base::testlock::serial();
+    let mut d = Door::new();
+    let (hero, card, next) = (d.hero, d.card, d.next);
+    d.moved(hero, card, By::Dir);
+    assert_eq!(d.projection(card.elem, card), (false, Some(d.card_rk.clone())),
+        "the focused card's press lands on the hero: not loaded, and still its own title");
+    assert_eq!(d.projection(next.elem, card), (true, Some(d.next_rk.clone())),
+        "another card is pressed where it stands: a press moves focus to it first");
+    assert_eq!(d.projection(hero.elem, card), (true, Some(d.hero_rk.clone())), "the hero is not the focused one");
+    // the dive passes its midpoint: the picture catches up and the press lands on the card itself
+    d.settle(card);
+    assert_eq!(d.projection(card.elem, card), (true, Some(d.card_rk.clone())));
+    assert_eq!(d.press(card), [("detail", d.card_rk.clone())], "once settled the press acts on the named card");
+    // and the reverse door: from the card to the hero's Play, the picture still on the shelves
+    d.moved(card, hero, By::Dir);
+    assert_eq!(d.projection(hero.elem, hero), (false, Some(d.hero_rk.clone())),
+        "the hero's press would now open the card the picture still shows");
+    assert_eq!(d.projection(card.elem, hero), (true, Some(d.card_rk.clone())));
+    d.settle(hero);
+    assert_eq!(d.projection(hero.elem, hero), (true, Some(d.hero_rk.clone())));
+    assert_eq!(d.press(hero), [("play", d.hero_rk.clone())], "once settled the press acts on the hero's item");
+}
+
+/// A Scripted arrival names what it presses and clears the remap, so the element it lands on is
+/// pressable at once (the round-5 rule, unchanged by the lag rule above).
+#[test]
+fn a_scripted_arrival_leaves_the_focused_element_pressable() {
     let _guard = plx_base::testlock::serial();
     let mut d = Door::new();
     let (hero, card) = (d.hero, d.card);
-    d.moved(hero, card, By::Dir);
-    assert_eq!(d.subject(card.elem, card), Some(d.hero_rk.clone()),
-        "a press on the card now plays the hero's item, and the projection says so");
-    assert_eq!(d.subject(d.next.elem, card), Some(d.next_rk.clone()),
-        "an element that is not the focused one is pressed where it stands: a press moves focus first");
-    assert_eq!(d.subject(hero.elem, card), Some(d.hero_rk.clone()));
-    // the dive passes its midpoint: the remap retires and the card's own title is its subject
-    d.s.snap.jump(1.0);
-    let view = d.snapshot.view();
-    step(&mut d.s, view, Some(card), &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }));
-    assert_eq!(d.subject(card.elem, card), Some(d.card_rk.clone()));
-    // and the reverse door
-    d.s.snap_target = 1.0;
-    d.moved(card, hero, By::Dir);
-    assert_eq!(d.subject(hero.elem, hero), Some(d.card_rk.clone()),
-        "a press on the hero's Play now opens the card the picture still shows");
+    d.moved(hero, card, By::Script);
+    assert_eq!(d.projection(card.elem, card), (true, Some(d.card_rk.clone())));
+}
+
+/// A home whose catalog is `rows` (seeded in order), for the linked-heading door tests below.
+fn heading_door(rows: &[(&'static str, &'static str, &'static str)]) -> (HomeScreen, plx_data::pms::HubsSnapshot) {
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_named_hubs_for_test(&mut state, &adapter, 3, rows);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.carousel = Some((plx_plex::plex::ServerId::UNSET, "1".into()));
+    (s, snapshot)
+}
+
+/// Did the requests push a collection page (what OK on a linked heading does)?
+fn pushed_collection(out: &[Stamped<TestHost>]) -> bool {
+    out.iter().any(|stamped| matches!(&stamped.fx, Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Collection(_))))))
+}
+
+/// **A linked heading has no subject, so the lag rule is what protects it.** A Down from the hero seats
+/// the linked heading under the billboard and the door's remap points at the hero's Play. A bare by-id
+/// press of the heading resolves (an element with no subject gives a subject check nothing to refuse
+/// by), moves no focus because it is already seated, and its OK arrives in the same frame: it would PLAY
+/// THE HERO. The heading is not loaded while the picture lags its focus, and the dispatcher refuses it.
+#[test]
+fn a_bare_press_of_a_linked_heading_is_refused_while_the_picture_lags_its_focus() {
+    let _guard = plx_base::testlock::serial();
+    let rows = [COLLECTION_ROWS[1], COLLECTION_ROWS[0]];
+    // the hazard, as a human's quick OK meets it: the OK the heading's press queues plays the hero
+    let (mut human, snapshot) = heading_door(&rows);
+    let hero = FocusKey { entry: human.entry, elem: HERO_PLAY_ELEM };
+    let heading = heading_key(&human, 0);
+    step(&mut human, snapshot.view(), Some(heading), &ScreenEvent::FocusMoved { from: Some(hero), to: heading, by: By::Dir });
+    let (_, out, _) = step(&mut human, snapshot.view(), Some(heading), &ScreenEvent::Activate(heading.elem));
+    assert!(has_home(&out, |r| matches!(r, HomeReq::Play { .. })), "premise: the remap lands the press on the hero");
+
+    // the by-id door: the heading is not pressable until the picture has caught up
+    let (mut s, snapshot) = heading_door(&rows);
+    let view = snapshot.view();
+    step(&mut s, view, Some(heading), &ScreenEvent::FocusMoved { from: Some(hero), to: heading, by: By::Dir });
+    let loaded = |s: &HomeScreen| Focusable::<TestHost>::a11y(s, &heading.elem, &cx(view, Some(heading))).unwrap().loaded;
+    let a = Focusable::<TestHost>::a11y(&s, &heading.elem, &cx(view, Some(heading))).unwrap();
+    assert!(!a.loaded && a.subject.is_none(), "unloaded, and a heading has no subject: {a:?}");
+    assert_eq!(Focusable::<TestHost>::a11y_find(&s, &a.path, &cx(view, Some(heading))), Some(heading.elem),
+        "the id still resolves: `focus:` is unaffected, and the refusal is the press's");
+    // the picture catches up: the press acts on the heading itself
+    s.snap.jump(1.0);
+    step(&mut s, view, Some(heading), &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }));
+    assert!(loaded(&s));
+    let (_, out, _) = step(&mut s, view, Some(heading), &ScreenEvent::Activate(heading.elem));
+    assert!(pushed_collection(&out) && !has_home(&out, |r| matches!(r, HomeReq::Play { .. } | HomeReq::Detail { .. })),
+        "settled, the heading opens its collection and nothing else");
+}
+
+/// The variant from the Continue Watching row: a Down from a deck card to the linked heading under it, then
+/// a bare press of the heading, would RESUME THE CARD (the deck row stands in view on the hero's page, so
+/// the door lies between it and the heading).
+#[test]
+fn a_bare_press_of_a_heading_under_the_deck_is_refused_while_the_picture_lags_its_focus() {
+    let _guard = plx_base::testlock::serial();
+    let _press = deck_press_is(plx_media::route::DeckPress::Play);
+    let rows = [("home.continue", "", "Continue Watching"), COLLECTION_ROWS[1]];
+    let (mut human, snapshot) = heading_door(&rows);
+    let card = FocusKey { entry: human.entry, elem: human.rows[0].elems[0] };
+    let heading = heading_key(&human, 1);
+    step(&mut human, snapshot.view(), Some(heading), &ScreenEvent::FocusMoved { from: Some(card), to: heading, by: By::Dir });
+    let (_, out, _) = step(&mut human, snapshot.view(), Some(heading), &ScreenEvent::Activate(heading.elem));
+    assert!(has_home(&out, |r| matches!(r, HomeReq::Play { .. })), "premise: the remap resumes the deck card");
+
+    let (mut s, snapshot) = heading_door(&rows);
+    let view = snapshot.view();
+    step(&mut s, view, Some(heading), &ScreenEvent::FocusMoved { from: Some(card), to: heading, by: By::Dir });
+    let loaded = |s: &HomeScreen| Focusable::<TestHost>::a11y(s, &heading.elem, &cx(view, Some(heading))).unwrap().loaded;
+    assert!(!loaded(&s), "the heading's press would resume the card: not pressable");
+    s.snap.jump(1.0);
+    step(&mut s, view, Some(heading), &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }));
+    assert!(loaded(&s));
 }
 
 #[test]

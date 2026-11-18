@@ -5,10 +5,12 @@
 //! arms on X and `[focus:X, ok]` presses X. The dispatcher (not a screen) then:
 //!
 //! 1. resolves the id against the input owner's view only (`owner_view`, so an id of the page under
-//!    a modal is `Unknown`: the modal owns input) through the replay hook
+//!    a modal is `Unknown`: the modal owns input), asking the view with the engine's focus as this
+//!    position finds it (not as the drain began), through the replay hook
 //!    [`ReplayAuthority::resolve_id`](super::ReplayAuthority::resolve_id);
-//! 2. for a press with a subject, compares the element's `subject` first (the race between a
-//!    `state` read and the press is closed in this one step);
+//! 2. for a press, refuses an element that is not `loaded` (`unloaded`), then, for a press with a
+//!    subject, compares the element's `subject` (the race between a `state` read and the press is
+//!    closed in this one step);
 //! 3. on success abandons a press armed elsewhere (`abandon_if_off`, the rule a direction key
 //!    uses), sets focus with `By::Script` and notes the d-pad (hover is not live);
 //! 4. pushes to the FRONT of the queue, in order, the `FocusMoved{by: Script}` delivery (when focus
@@ -16,15 +18,17 @@
 //!
 //! A press on the element focus ALREADY rests on moves nothing (`FocusEngine::set` answers `Nothing`) and
 //! delivers no `FocusMoved`, so a screen cannot tell it from a human's OK. The screen's own answer is
-//! the `subject` it projects for the FOCUSED element: when its OK lands somewhere else than on that
-//! element (Home's door remap, after a Dir key), the subject is the title it lands on, and step 2
-//! refuses the press that names another.
+//! its projection of the FOCUSED element: while its OK would land somewhere else than on that element
+//! (Home's hero/grid door, while the picture lags a Dir key's move: about 120 ms, the dive's midpoint), the screen projects it
+//! `loaded: false`, and step 2 refuses ANY press of it as `unloaded`, subject or not (a linked heading
+//! has none to compare). The caller asks again once the screen has settled; `focus:` asks no `loaded`.
 //!
 //! The OK Down is delivered next and the screen sees it exactly as a remote OK; unconsumed, it
 //! arms on the engine's current key, which is now the element. The Up follows, and the delivery
 //! path applies its release in order after the arm. A later input of the same batch that moves
-//! focus off the element abandons the uncommitted press, so the result is the named element
-//! pressed, or nothing. **All or nothing**: a refusal moves no focus and emits no key.
+//! focus off the element abandons the uncommitted press, so an accepted press acts on the named
+//! element or on nothing, and a screen whose OK lands elsewhere says so by projecting the element
+//! not loaded (above). **All or nothing**: a refusal moves no focus and emits no key.
 //!
 //! A refusal leaves one `Fx::Log` line carrying words and ids only (`a11y: refused <act> <id>
 //! <reason> owner=<ns>`). The label and subject of an element never reach it.
@@ -41,7 +45,9 @@ pub enum IdRefusal {
     /// The television keyboard, or no page, owns input, or the owner changed earlier in the
     /// batch so the delivery was addressed to a screen that no longer owns it.
     NoOwner,
-    /// A press on a paged slot whose data has not landed.
+    /// A press on an element that is not loaded: a paged slot whose data has not landed, or the
+    /// element a screen's OK would not land on yet (Home's focused element while its picture lags the
+    /// hero/grid door). Not an error: ask again once the screen has settled.
     Unloaded,
     /// A press whose `@<subject>` is not the element's subject.
     SubjectMismatch,
@@ -129,7 +135,11 @@ where
             return IdAnswer::refused(IdRefusal::Unknown);
         }
         let Split { views, measure, .. } = rig.split();
-        let cx = parts.cx::<H>(views, measure);
+        let mut cx = parts.cx::<H>(views, measure);
+        // `parts` was built before the drain, so its focus is the one from before any earlier key of
+        // this batch (`[Down, press:X]`): the screen's projection (`a11y`'s `loaded` of its focused
+        // element) is asked with the engine's focus as it stands at this delivery position.
+        cx.focus = self.input.engine.read(InputOwner::Entry(entry));
         let Some(elem) = view.a11y_find(&path, &cx) else { return IdAnswer::refused(IdRefusal::Unknown) };
         let Some(a11y) = view.a11y(&elem, &cx) else { return IdAnswer::refused(IdRefusal::Unknown) };
         // An element the owner cannot place is not one a recording could replay.

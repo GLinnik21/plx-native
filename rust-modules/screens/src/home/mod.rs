@@ -805,8 +805,8 @@ pub struct HomeScreen {
     /// Stable element still visible while the engine has already crossed the hero/grid door.
     /// This is a press landing policy, not current focus, and retires at the visual midpoint.
     /// It exists for a hand on the remote: a `By::Script` arrival (a by-id press, which names its
-    /// element) clears it, and the focused element's `a11y` subject names the title it lands on
-    /// (`Self::a11y`), so a press that names the other title is refused, never played.
+    /// element) clears it, and while it holds, the focused element's `a11y` is not loaded
+    /// (`Self::a11y`), so a by-id press of it is refused as `unloaded` until the picture catches up.
     visible_activation: Option<u32>,
     cta_available: bool,
     strip_chosen: bool,
@@ -3256,28 +3256,29 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     /// when a publication moves them. A hero control's `subject` is the ratingKey of the hero item it acts
     /// on (the carousel advances by itself, so a press names the title it read); the failure read-out's
     /// `hero.action` has none. While the picture still shows the other side of the hero/grid door
-    /// after a KEY crossed it, the focused element's `subject` is the title its press lands on
-    /// (`activation_elem`), not its own. A listing position the window does not hold is no element.
+    /// after a KEY crossed it, the focused element is not loaded, so a by-id press of it is refused as
+    /// `unloaded` (its press would land on the element the picture shows, `activation_elem`) until the
+    /// picture catches up (about 120 ms, the dive's midpoint); its projection keeps its own subject. A listing
+    /// position the window does not hold is no element.
     fn a11y(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         let own = self.element_a11y(key, cx)?;
-        // The subject is the title the PRESS acts on, and a press on the engine's focused element
-        // lands where `activation_elem` says: while the picture still shows the other side of the
-        // hero/grid door after a key crossed it, that is the element the picture shows. A by-id press
-        // that names the focused element moves no focus (`FocusEngine::set` answers `Nothing`), so it
-        // cannot clear the remap the way a scripted arrival does (`[Down, press:X]`): it is refused
-        // here by its subject instead of playing the other title. Any other element is pressed where
-        // it stands, because a press moves focus to it first.
+        // A press on the engine's focused element lands where `activation_elem` says: while the picture
+        // still shows the other side of the hero/grid door after a KEY crossed it, that is the element
+        // the picture shows. A by-id press that names the focused element moves no focus
+        // (`FocusEngine::set` answers `Nothing`), so it cannot clear the remap the way a scripted
+        // arrival does (`[Down, press:X]`), and an element with no subject to compare (a linked
+        // heading) cannot be refused by it either. So the focused element is NOT PRESSABLE while its
+        // press would land elsewhere: `loaded: false`, which the dispatcher refuses as `unloaded`
+        // for any press, named or bare, until the picture catches up (the retry is the caller's). The
+        // projection keeps the element's own subject (it is still what the element is); `state` shows
+        // any unloaded element without text (`snapshot.rs`), so a reader sees `loaded: false` and asks
+        // again. `focus:` is unaffected (only a press asks `loaded`). Any other element is pressed
+        // where it stands, because a press moves focus to it first.
         let focused = cx.focus.current.is_some_and(|f| f.entry == self.entry && f.elem == *key);
-        let acts = if focused { self.activation_elem(*key) } else { *key };
-        if acts == *key {
-            return Some(own);
+        if focused && self.activation_elem(*key) != *key {
+            return Some(own.with_loaded(false));
         }
-        let acting = self.element_a11y(&acts, cx);
-        Some(A11y {
-            subject: acting.as_ref().and_then(|a| a.subject.clone()),
-            loaded: own.loaded && acting.as_ref().is_some_and(|a| a.loaded),
-            ..own
-        })
+        Some(own)
     }
 
     /// Every element of group `g` in index order: the hero's controls in ROW order, a shelf's cards
@@ -3400,8 +3401,8 @@ impl HomeScreen {
         }
     }
 
-    /// An element's own projection, whatever the picture shows ([`Focusable::a11y`] is this one,
-    /// but for the title the press on the engine's focused element lands on).
+    /// An element's own projection, whatever the picture shows ([`Focusable::a11y`] is this one, but
+    /// not loaded while the press on the engine's focused element would land on another).
     fn element_a11y<H: HomeLike>(&self, key: &u32, cx: &Cx<'_, H>) -> Option<A11y<'_>> {
         // while the question is open its answers are the page's only elements
         if let Some(answer) = self.plaintext_alert.a11y(*key) {
