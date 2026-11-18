@@ -260,16 +260,19 @@ fn page_damage_on_close(w: &mut World) -> u64 {
 /// cycles against an 11.2M budget on the TV, a dropped frame on every close). The dismissal re-enters
 /// the covered page, which hears `FocusMoved { from: Some(chip), to: chip, by: Restore }` (a move that
 /// moves nothing) after its `RestoreMemory` re-armed the saved-place jump; Home answered with `Input`
-/// page damage. The pages whose closes were already quiet stay so (the Watchlist is not among them:
-/// its `Uncover`, `Enter` and `FocusMoved` all damage, `watchlist/page.rs`).
+/// page damage, and the Watchlist's `Uncover`, `Enter` and `FocusMoved` each damaged unconditionally
+/// (`watchlist/page.rs`); both now damage only for what changed. The page damage the close raises is
+/// what this rig can see of the host's snapshot: it runs no GL, so `popover::host`'s retake itself is
+/// read at the host level (`popover_host_tests`), and a close with no typed damage re-takes nothing.
 #[test]
 fn closing_the_account_menu_with_back_raises_no_page_damage() {
-    let worlds: [(&str, fn() -> World); 5] = [
+    let worlds: [(&str, fn() -> World); 6] = [
         ("home", || World::home_grid("route-account-quiet-home", 3, 5)),
         ("library", || World::movies_library("route-account-quiet-library", false)),
         ("recommended", || World::recommended("route-account-quiet-recommended")),
         ("collections", || World::collections("route-account-quiet-collections", false)),
         ("episodes", || World::episodes_library("route-account-quiet-episodes")),
+        ("watchlist", || World::watchlist("route-account-quiet-watchlist")),
     ];
     let mut noisy = Vec::new();
     for (name, build) in worlds {
