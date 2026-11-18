@@ -7112,6 +7112,35 @@ pub fn cur_sid(ps: &PlaybackSession) -> ServerId {
 pub fn swap_cur_sid_for_test(ps: &mut PlaybackSession, sid: ServerId) -> ServerId {
     { let s = &mut *ps; std::mem::replace(&mut s.cur_sid, sid) }
 }
+/// Test-only: install the playing item's ratingKey, the queue it came from and its Up Next directly.
+///
+/// In production the three have one writer, `apply_plan` (the queue and Up Next from the plan's `QueueInfo`), so a suite
+/// elsewhere that needs "this episode is playing, with a neighbour on each side" sets it through here, as it sets the
+/// server through [`swap_cur_sid_for_test`]. The player's accessibility ids read the neighbours and the key it
+/// hands them (`HudCommand::plays_rk`).
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_queue_for_test(ps: &mut PlaybackSession, cur_rk: &str, rows: Vec<plx_plex::plex::QueueRow>, up_next: Option<UpNext>) {
+    ps.cur_rk = cur_rk.to_owned();
+    ps.queue = rows;
+    ps.up_next = up_next.map(std::sync::Arc::new);
+}
+/// Test-only: record the request a Try again repeats ([`retry_rk`]) without a plan having landed, as a play that is
+/// asked for and fails before `apply_plan` leaves the session. Does not touch `cur_rk`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_request_for_test(ps: &mut PlaybackSession, rk: &str) {
+    ps.request = Some(PlaybackRequest {
+        sid: ServerId::UNSET,
+        rk: rk.to_owned(),
+        part: String::new(),
+        vcodec: String::new(),
+        acodec: String::new(),
+        title: String::new(),
+        ctx: String::new(),
+        preview: false,
+        version: None,
+        show_rk: String::new(),
+    });
+}
 /// The `Client` for the currently-playing item's server, `None` before the first play (or after a
 /// plan that never resolved). The main-thread twin of `client_for(env.sid)` on the resolve worker
 /// — every in-playback PMS call in this file goes through one of the two, and none through
@@ -10923,6 +10952,15 @@ fn reset_track_selection(ps: &mut PlaybackSession, sid: ServerId, rk: &str, retr
 /// playback, which never entered the Plex request funnel and therefore has no item to resolve.
 pub fn can_retry_current_play(ps: &PlaybackSession) -> bool {
     ps.request.is_some()
+}
+
+/// The ratingKey [`retry_current_play`] resolves again: the key of the request this session last made, which a Try
+/// again, a Play automatically and a quality pick on the failure read-out all repeat. It is NOT [`cur_rk`]: the
+/// request is recorded when the play is asked for and `cur_rk` only when its plan lands (`apply_plan`), so a play
+/// that failed before its plan landed has the request's key here and none (or the previous item's) there. `None`
+/// when no request was made (URL and dev-trigger playback), which has nothing to retry.
+pub fn retry_rk(ps: &PlaybackSession) -> Option<String> {
+    ps.request.as_ref().map(|request| request.rk.clone()).filter(|rk| !rk.is_empty())
 }
 
 /// Resume target not yet proven by a presented frame.  A refused retry keeps this so the next

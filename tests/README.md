@@ -168,9 +168,9 @@ it makes a mis-set item a named setup error instead of a mystery failure.
 A debug (`devtriggers`) build takes `focus:<id>`, `press:<id>[@<ratingKey>]` and `state:<nonce>` on
 the remote FIFO (`tools/a11y.py` writes and reads them; `tools/tv-session.sh focus|press|state` is
 the television's form). An id is a place-based dot path in the namespace of whoever owns input
-(`nav.watchlist`, `watchlist.grid.card.7`, `itemmenu.watchlist_remove`); a press whose element's subject
-is a title (a card, a Home hero Play, Info or Watchlist button, a Detail hero Play, Restart, Mark watched or Watchlist button,
-an item-menu row, a Detail episode...) names it,
+(`nav.watchlist`, `watchlist.grid.card.7`, `itemmenu.watchlist_remove`); a press whose element's press
+plays or writes a title (`a11y.SUBJECT_BEARING` is the one list: a card, a hero or menu button, a Detail episode, a
+Play Version row, a player control that starts a title...) names it,
 `press:<id>@<ratingKey>`, and the app refuses it when another title is there (the committed scenario's
 `press:itemmenu.watchlist_remove@2001`, `press:home.hero.watchlist@200622` and `press:detail.hero.watchlist@1001`); `state` writes
 `plxnative-a11y.json` (route, owner, the focused id, every element) and echoes the nonce, so a script

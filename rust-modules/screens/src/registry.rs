@@ -805,6 +805,25 @@ pub struct CardIdentity {
     pub elem: u32,
 }
 
+/// **The page a Play Version panel belongs to**: the metadata store's loaded detail when it is the item `arg`
+/// names. The mount reads the versions off it, and [`versions_subject`] the key its rows play.
+fn versions_page<'a>(
+    meta: plx_data::metadata::MetadataView<'a>,
+    arg: &crate::versions_panel::VersionsArg,
+) -> Option<&'a plx_data::metadata::Detail> {
+    meta.current().filter(|d| plx_plex::plex::same_item((d.sid, d.rk.as_str()), (arg.sid, arg.rk.as_str())))
+}
+
+/// **The ratingKey a Play Version row plays**, the subject of its accessibility id: the page's Play pill's own
+/// (`detail::hero_control_subject(Play, ..)`: on a show the episode the hero plays, else the page's item), because
+/// the row's OK delivers `AppMsg::PlayVersion` to that page, which plays it as its Play pill would. It lives here
+/// because a panel may not name the page's module (`ci/check-deps.sh`, `sibling`), and it reads the page off
+/// the host's metadata view, the way the mount does.
+pub(crate) fn versions_subject<H: MetadataLike>(cx: &Cx<'_, H>, arg: &crate::versions_panel::VersionsArg) -> Option<String> {
+    let d = versions_page(H::metadata(cx), arg)?;
+    crate::detail::play_subject(d).map(str::to_owned)
+}
+
 /// The slot ranges to project, sorted and merged, clamped to `total`. Shared by the sliding-window
 /// key projections of the Library grid and the Collection page.
 pub(crate) fn merged_ranges(mut ranges: Vec<std::ops::Range<usize>>, total: usize) -> Vec<std::ops::Range<usize>> {
@@ -2463,10 +2482,7 @@ where
                 crate::alt_sources::AltSourcesScreen::new(entry, arg.clone(), H::metadata(cx)),
             ),
             AppArg::VersionsPanel(arg) => {
-                let versions = H::metadata(cx)
-                    .current()
-                    .filter(|d| plx_plex::plex::same_item((d.sid, d.rk.as_str()), (arg.sid, arg.rk.as_str())))
-                    .map_or(&[][..], crate::detail::hero_versions);
+                let versions = versions_page(H::metadata(cx), arg).map_or(&[][..], crate::detail::hero_versions);
                 Box::new(crate::versions_panel::VersionsPanelScreen::new(entry, arg.clone(), versions))
             }
             AppArg::TracksPanel(arg) => Box::new(

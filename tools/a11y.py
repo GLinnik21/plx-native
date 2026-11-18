@@ -95,16 +95,17 @@ def valid_subject(text):
     return isinstance(text, str) and SUBJECT_RE.fullmatch(text) is not None
 
 
-# The id shapes whose element carries a SUBJECT, a title's ratingKey (a catalog page's hex id): pressing one
-# acts on a title (a card opens or plays it; a Detail episode's still PLAYS at once, its text block opens the
-# episode; the catalog pill adds it to a Watchlist; a Home hero button plays, opens or bookmarks the title the
-# auto-advancing carousel shows at that frame; a Detail hero button plays, restarts, marks or bookmarks a title,
-# which on a started show's Mark watched is the on-deck episode and not the page's; an item-menu row plays,
-# marks or removes the title the menu was opened on). The real-account rule is never to press OK on a title whose ratingKey you have not read, so the
-# COMMAND LINE and `tools/tv-session.sh press` make the press name it (`--subject` / `--rk`) and the app
-# refuses a mismatch. The list is read off the code, not guessed: each production `A11y::with_subject` call
-# SITE is an entry (`git grep -n with_subject rust-modules`; a test here holds the number of calls per file
-# equal to the table below).
+# The id shapes whose element carries a SUBJECT, a title's ratingKey (a catalog page's hex id). THE RULE: an
+# element is on this list when pressing it PLAYS or WRITES a title (plays, restarts, finishes or retries it,
+# marks it watched or unwatched, bookmarks it, opens or removes it from a menu that acts on it); an element that
+# only navigates or opens a panel is not, and stays pressable bare. The real-account rule is never to press OK on
+# a title whose ratingKey you have not read, so the COMMAND LINE and `tools/tv-session.sh press` make the press
+# name it (`--subject` / `--rk`) and the app refuses a mismatch. This tuple is THE list (the other spellings of it,
+# `a11y_subject_bearing` in tools/tv-session.sh, the docs and the refusal message, describe it by that rule): it
+# is read off the code, not guessed. Each production `A11y::with_subject` call SITE is an entry
+# (`git grep -n with_subject rust-modules`), a test here holds the number of calls per file equal to the table
+# below, and a census test reads every file that constructs a title-acting message (Play, PlayVersion, Resume, a
+# queue step, a watched or watchlist write) and holds the set of those files equal to the table's.
 #
 #   *.card.*             ui/src/cards/mod.rs `card_a11y`: <section>.card.<n>, every poster, still and headshot
 #   detail.episodes.*    screens/src/detail/mod.rs: `episodes.still.<i>` (OK plays) and `episodes.text.<i>`
@@ -122,12 +123,46 @@ def valid_subject(text):
 #   detail.hero.watchlist       detail.hero.mark_watched` cannot mark an episode nobody named), Watchlist and Trailer
 #                               the page's own title. Explicit ids, not a glob: `go_to_show`, `alt`, `version` and
 #                               `more` only navigate or open a menu and stay pressable bare
+#   versions.row.*       screens/src/versions_panel.rs: the Play Version panel's `row.<n>` (OK plays the hero's title
+#                        in that version): the Play pill's own key (`registry::versions_subject`)
 #   itemmenu.*           screens/src/item_menu.rs: `<row>` and `version.<n>`, the menu's item's ratingKey
+#   player.control.previous      screens/src/player/mod.rs `control_subject`, the player's control row: Previous and
+#   player.control.next          Next the queue neighbour they would start, Up Next's `next_episode` the episode
+#   player.control.next_episode  `up_next` holds, From beginning and the Skip pill (a final credits segment finishes
+#   player.control.from_beginning  the item) the item playing. Explicit words, not a glob: `play_pause`, the seeks,
+#   player.control.skip          `subtitles`, `audio`, `more`, `watch` and `watch_credits` start no title and stay
+#                                pressable bare (tests/player_shots.sh opens its panels with them)
+#   player.control.[0-9]*  the row's items an id spells by POSITION (a package placing two controls with one word):
+#                          the position hides the word, so the whole spelling is guarded and each carries its
+#                          command's key, else the item playing
+#   player.section.*     the same file: the open Info card's buttons (From beginning, Go to details), positional too
+#   player.failure.try_again          the failure read-out's two actions that resolve the failed play again: the key
+#   player.failure.play_automatically of the REQUEST they repeat (`route::retry_rk`; the item playing, `cur_rk`, is
+#                                     only installed when a plan lands, so a play that failed earlier differs).
+#                                     `change_quality`, `repair` and `back` start no title
+#   more.fold.previous      screens/src/player/overlay.rs: the More menu's folded rows that start a title (the
+#   more.fold.next          package placed the command in no reachable state), `HudCommand::plays_rk`; the other
+#   more.fold.from_beginning  folds start none
+#   more.rung.*          the same file: the Quality page's rungs. A pick re-resolves the title: after a failed play it
+#                        is the failure read-out's Retry at that rung (the request's key, as above), on a live one
+#                        it asks the route again for the item playing (`quality_pick_subject`)
+#   menu.audio.*         the same file, the Tracks menu: a track pick selects the part's streams on the PMS (`PUT
+#   menu.sub.*           /library/parts/{id}`) and a subtitle-search result installs its subtitle on the item (`PUT
+#   menu.off             /library/metadata/{rk}/subtitles`), each naming the item playing
+#   menu.forced          (`TrackRow::writes_title`, an exhaustive match: a new row cannot compile without the decision)
+#   menu.hit.*
 #
 # fnmatch globs, which are spelled exactly like the `case` patterns of `a11y_subject_bearing` in
 # tools/tv-session.sh (tests/test_a11y_tool.py reads both and holds them equal). Not subject-bearing, so never
 # in the list: `detail.hero.go_to_show|alt|version|more` (they navigate or open a menu), `detail.about.card`,
-# `under-posters.row.3` and every other `*.row.*` outside Filmography.
+# `under-posters.row.3` and every other `*.row.*` outside Filmography and the Play Version panel. NOT GUARDED, on
+# purpose: the rest of the Tracks menu (`menu.boost|loudness` reconfigure the live stream, `menu.timing|style|
+# field.*|<field>.<n>|search_language|language.*|lang.*|other|search|retry` open a page or pick a local setting),
+# the player's panel openers and seeks, `player.chapter.<i>` and the scrubber (they only seek) and `more.quality|
+# speed|stats|rate.*` (a drill-in, a local switch, a speed). The discriminator for the reconfigures (`more.rate.*`,
+# `menu.boost|loudness`): on a URI attempt they re-resolve the playing request too (`route::request_viewer_reconfigure`),
+# but that needs a proven playhead and pause state, so it refuses without a live attempt: they can never START a
+# title from a failed or idle session, and only a quality rung can (it retries the failed request).
 #
 # The rows of a Catalog item menu have NO ratingKey to name (a Watchlist title no server holds: its identity is a
 # guid), so the guarded doors cannot press them at all (the library `press`, unguarded, still can): the safe side,
@@ -136,7 +171,12 @@ def valid_subject(text):
 SUBJECT_BEARING = ("*.card.*", "detail.episodes.*", "detail.season.*", "filmography.row.*", "catalog.primary",
                    "home.hero.play", "home.hero.info", "home.hero.watchlist",
                    "detail.hero.play", "detail.hero.restart", "detail.hero.trailer", "detail.hero.mark_watched",
-                   "detail.hero.mark_unwatched", "detail.hero.watchlist", "itemmenu.*")
+                   "detail.hero.mark_unwatched", "detail.hero.watchlist", "itemmenu.*", "versions.row.*",
+                   "player.control.previous", "player.control.next", "player.control.next_episode",
+                   "player.control.from_beginning", "player.control.skip", "player.control.[0-9]*",
+                   "player.section.*", "player.failure.try_again", "player.failure.play_automatically",
+                   "more.fold.previous", "more.fold.next", "more.fold.from_beginning", "more.rung.*",
+                   "menu.audio.*", "menu.sub.*", "menu.off", "menu.forced", "menu.hit.*")
 
 
 def subject_bearing(id_):

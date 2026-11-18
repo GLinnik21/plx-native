@@ -314,25 +314,72 @@ class Tokens(unittest.TestCase):
         self.assertEqual(a11y.refusals("nothing here\n"), [])
 
 
+def without_test_code(text):
+    """`text` of a Rust file with every `#[cfg(test)]` item (a `mod tests { .. }`, a `mod tests;`, a fixture fn) and every
+    `//` line removed: what the production build compiles, near enough to ask which messages it constructs."""
+    out, i = [], 0
+    attr = re.compile(r"#\[cfg\((?:test|all\(test|any\(test)[^\n]*\]\s*")
+    while True:
+        found = attr.search(text, i)
+        if not found:
+            out.append(text[i:])
+            break
+        out.append(text[i:found.start()])
+        j = found.end()
+        while text.startswith("#[", j):  # further attributes of the same item
+            j = text.index("]", j) + 1
+            while j < len(text) and text[j] in " \n":
+                j += 1
+        depth = 0
+        while j < len(text):  # the item: up to its `;`, or its balanced braces
+            c = text[j]
+            j += 1
+            if c == ";" and depth == 0:
+                break
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+        i = j
+    return "\n".join(line for line in "".join(out).splitlines() if not line.lstrip().startswith("//"))
+
+
 class SubjectBearing(unittest.TestCase):
-    """An element whose subject is a title (a card, a Detail episode or season tab, a Filmography credit, the
-    catalog page's pill, a Home hero Play, Info or Watchlist button, a Detail hero Play, Restart, Trailer, Mark
-    watched, Mark unwatched or Watchlist button, an item-menu row) is pressed by NAMING that title: the real-account
-    rule is never to press OK on a title whose ratingKey you have not read, and OK on a Detail episode's still
-    PLAYS it at once. ONE list of those id shapes lives in `a11y.SUBJECT_BEARING`; tools/tv-session.sh's
-    `a11y_subject_bearing` is the same list."""
+    """An element whose press PLAYS or WRITES a title (a card, a Detail episode or season tab, a Filmography credit,
+    the catalog page's pill, a Home or Detail hero button, an item-menu row, a Play Version row, a player control that
+    starts or restarts a title) is pressed by NAMING that title: the real-account rule is never to press OK on a title
+    whose ratingKey you have not read, and OK on a Detail episode's still PLAYS it at once. ONE list of those id
+    shapes lives in `a11y.SUBJECT_BEARING`; tools/tv-session.sh's `a11y_subject_bearing` is the same list."""
 
     SUBJECT_IDS = ["home.shelf.2.card.5", "home.continue.card.0", "watchlist.grid.card.7", "library.grid.card.3",
                    "collection.card.1", "detail.related.card.0", "detail.episodes.still.3", "detail.episodes.text.3",
                    "detail.season.2", "filmography.row.4", "catalog.primary", "home.hero.play", "home.hero.info",
                    "home.hero.watchlist", "detail.hero.play", "detail.hero.restart", "detail.hero.trailer",
                    "detail.hero.mark_watched", "detail.hero.mark_unwatched", "detail.hero.watchlist",
-                   "itemmenu.play", "itemmenu.watchlist_remove", "itemmenu.version.0"]
-    # `detail.hero.go_to_show|alt|version|more` only navigate or open a menu or a panel: no title is acted on
+                   "itemmenu.play", "itemmenu.watchlist_remove", "itemmenu.version.0", "versions.row.0", "versions.row.3",
+                   "player.control.previous", "player.control.next", "player.control.next_episode",
+                   "player.control.from_beginning", "player.control.skip", "player.control.5", "player.control.12",
+                   "player.section.0", "player.section.1", "player.failure.try_again",
+                   "player.failure.play_automatically", "more.fold.previous", "more.fold.next",
+                   "more.fold.from_beginning", "more.rung.auto", "more.rung.p720", "menu.audio.0", "menu.sub.1", "menu.off",
+                   "menu.forced", "menu.hit.2"]
+    # `detail.hero.go_to_show|alt|version|more` only navigate or open a menu or a panel: no title is acted on; the
+    # player's panel openers, seeks, pause and the Up Next / Skip cancels start none (tests/player_shots.sh presses
+    # `player.control.subtitles|audio|more` and `player.tab.*` bare)
     PLAIN_IDS = ["nav.watchlist", "detail.hero.go_to_show", "detail.hero.alt", "detail.hero.version",
                  "detail.hero.more", "detail.about.card",
                  "detail.about.languages", "detail.collection.heading", "under-posters.row.3", "filmography.tab.2",
                  "watchlist.header.sort", "player.control.play", "catalog.back",
+                 "player.control.subtitles", "player.control.audio", "player.control.more", "player.control.play_pause",
+                 "player.control.seek_back", "player.control.seek_forward", "player.control.watch",
+                 "player.control.watch_credits", "player.control.chapters", "player.control.info",
+                 "player.control.go_to_detail", "player.tab.info", "player.tab.chapters", "player.chapter.0",
+                 "player.scrub", "player.failure.change_quality", "player.failure.repair", "player.failure.back",
+                 "player.repair.cancel", "more.quality", "more.speed", "more.stats",
+                 "more.rate.1500", "more.fold.go_to_detail", "more.fold.play_pause", "menu.boost", "menu.loudness",
+                 "menu.timing", "menu.style", "menu.search", "menu.field.size", "menu.retry", "menu.lang.0",
                  "home.hero.action"]  # the failure read-out's retry: no title, so pressed bare
 
     def test_the_subject_bearing_shapes_are_matched_and_nothing_else(self):
@@ -382,6 +429,12 @@ class SubjectBearing(unittest.TestCase):
             "screens/src/catalog.rs": (1, "catalog.primary"),
             "screens/src/home/mod.rs": (1, "home.hero.play|info|watchlist (not the failure read-out's action)"),
             "screens/src/item_menu.rs": (1, "itemmenu.<row>, itemmenu.version.<n> (not a Catalog menu's rows)"),
+            "screens/src/versions_panel.rs": (1, "versions.row.<n>: the Play Version panel's rows (OK plays)"),
+            "screens/src/player/mod.rs": (3, "player.control.<word|i> (control_subject), player.section.<i>, "
+                                             "player.failure.try_again|play_automatically"),
+            "screens/src/player/overlay.rs": (2, "more.fold.previous|next|from_beginning (the More menu's folded rows), "
+                                                 "more.rung.<name> (the quality rungs re-resolve the title); "
+                                                 "menu.audio|sub|off|forced|hit (the Tracks menu's writes)"),
         }
         not_a_production_site = {
             "ui/src/a11y.rs": (1, "the builder itself and its tests"),
@@ -396,11 +449,82 @@ class SubjectBearing(unittest.TestCase):
         for glob in ("*.card.*", "detail.episodes.*", "detail.season.*", "filmography.row.*", "catalog.primary",
                      "home.hero.play", "home.hero.info", "home.hero.watchlist",
                      "detail.hero.play", "detail.hero.restart", "detail.hero.trailer", "detail.hero.mark_watched",
-                     "detail.hero.mark_unwatched", "detail.hero.watchlist", "itemmenu.*"):
+                     "detail.hero.mark_unwatched", "detail.hero.watchlist", "itemmenu.*", "versions.row.*",
+                     "player.control.previous", "player.control.next", "player.control.next_episode",
+                     "player.control.from_beginning", "player.control.skip", "player.control.[0-9]*",
+                     "player.section.*", "player.failure.try_again", "player.failure.play_automatically",
+                     "more.fold.previous", "more.fold.next", "more.fold.from_beginning", "more.rung.*", "menu.audio.*", "menu.sub.*", "menu.off",
+                     "menu.forced", "menu.hit.*"):
             self.assertIn(glob, a11y.SUBJECT_BEARING)
-        self.assertEqual(len(a11y.SUBJECT_BEARING), 15)
+        self.assertEqual(len(a11y.SUBJECT_BEARING), 34)
+        self.assertNotIn("menu.*", a11y.SUBJECT_BEARING)
         self.assertNotIn("home.hero.*", a11y.SUBJECT_BEARING)
         self.assertNotIn("detail.hero.*", a11y.SUBJECT_BEARING)
+        # the player's controls are spelled by word, never `player.control.*`: its panel openers stay pressable bare
+        self.assertNotIn("player.control.*", a11y.SUBJECT_BEARING)
+        self.assertNotIn("more.fold.*", a11y.SUBJECT_BEARING)
+
+    # The messages a screen constructs when a press PLAYS or WRITES a title: a Play request, a queue step or restart
+    # (`PlayerReq::Command` carries Previous, Next and From beginning), the Play Version commit, the watched and
+    # watchlist writes, the catalog pill's write, and the Tracks menu's two writes to the server: a track pick
+    # (`PlayerReq::CommitTrack`, which selects the part's streams) and a subtitle-search result (`SubSearchCmd::Download`,
+    # which installs the subtitle on the item).
+    TITLE_ACTING = re.compile(
+        r"\b(ContentReq::Play\b|HomeReq::Play\b|LibraryReq::Play\b|AppMsg::PlayVersion|"
+        r"PlayerReq::(?:Command|StandIn|RetryPlayback|PlayAutomatically|More|CommitTrack)\b|SubSearchCmd::Download\b|"
+        r"Write::(?:Watched|Unwatched)\b|"
+        r"WatchlistAdd\b|WatchlistRemove\b|AppFx::Catalog\b|PlayIntent::\w+)")
+    PLAYER_WORDS = ("player.control.previous", "player.control.next", "player.control.next_episode",
+                    "player.control.from_beginning", "player.control.skip", "player.control.[0-9]*",
+                    "player.section.*", "player.failure.try_again", "player.failure.play_automatically")
+    # file -> the SUBJECT_BEARING entries guarding the presses it constructs. A file that constructs one of the
+    # messages and is not here fails this test until someone has decided what its elements are: guard them (a subject
+    # and an entry) or say why they are not pressable by id.
+    TITLE_ACTING_FILES = {
+        "screens/src/catalog.rs": ("catalog.primary",),
+        "screens/src/detail/extras.rs": ("*.card.*",),   # an extra is a card: its subject is the clip's key
+        "screens/src/detail/hero.rs": ("detail.hero.watchlist",),
+        "screens/src/detail/mod.rs": ("detail.hero.play", "detail.hero.restart", "detail.hero.trailer",
+                                      "detail.hero.mark_watched", "detail.hero.mark_unwatched", "detail.episodes.*",
+                                      "versions.row.*"),   # receives AppMsg::PlayVersion; the panel names the title
+        "screens/src/home/mod.rs": ("home.hero.play", "home.hero.watchlist", "*.card.*"),
+        "screens/src/item_menu.rs": ("itemmenu.*",),
+        "screens/src/item_menu/watchlist.rs": ("itemmenu.*",),   # a Catalog menu's rows have no key: unpressable
+        "screens/src/library/recommended.rs": ("*.card.*",),
+        "screens/src/player/mod.rs": PLAYER_WORDS,
+        "screens/src/player/overlay.rs": ("more.fold.previous", "more.fold.next", "more.fold.from_beginning",
+                                          "more.rung.*", "menu.audio.*", "menu.sub.*", "menu.off", "menu.forced",
+                                          "menu.hit.*"),
+        "screens/src/versions_panel.rs": ("versions.row.*",),
+        "appkit/src/track_menu.rs": ("menu.hit.*",),   # a search result's OK asks the download; the overlay names the title
+    }
+
+    def test_every_file_that_constructs_a_title_acting_message_is_covered_by_the_list(self):
+        """The systematic half of the guard: SUBJECT_BEARING is read off `with_subject` calls (what carries a
+        subject), and this reads the other side (what ACTS). Every non-test file of the screens, appkit and ui
+        crates that constructs a title-acting message is named in `TITLE_ACTING_FILES`, with the list entries that
+        guard its presses, and no file there has stopped constructing one. An unguarded new Play, queue step or write
+        is therefore a failure here, not a review finding."""
+        found = {}
+        for crate in ("screens", "appkit", "ui"):
+            base = ROOT / "rust-modules" / crate / "src"
+            for root, _dirs, files in os.walk(base):
+                for name in files:
+                    if not name.endswith(".rs") or name == "tests.rs" or name.endswith("_tests.rs"):
+                        continue
+                    path = pathlib.Path(root, name)
+                    hits = set(self.TITLE_ACTING.findall(without_test_code(path.read_text(errors="replace"))))
+                    if hits:
+                        found[path.relative_to(ROOT / "rust-modules").as_posix()] = sorted(hits)
+        self.assertEqual(set(found), set(self.TITLE_ACTING_FILES), found)
+        for file, globs in self.TITLE_ACTING_FILES.items():
+            for glob in globs:
+                self.assertIn(glob, a11y.SUBJECT_BEARING, f"{file}: its presses are guarded by {glob}")
+
+    def test_the_census_helper_reads_production_code_only(self):
+        text = ("fn a() { ContentReq::Play }\n// PlayerReq::Command\n#[cfg(test)]\nmod tests { fn t() { PlayerReq::Command } }\n"
+                "#[cfg(test)]\nmod more_tests;\nfn b() { Write::Watched }\n")
+        self.assertEqual(sorted(self.TITLE_ACTING.findall(without_test_code(text))), ["ContentReq::Play", "Write::Watched"])
 
     def test_the_detail_closure_is_applied_to_exactly_the_shapes_the_list_names(self):
         """The one `.with_subject(` call in screens/src/detail/mod.rs sits inside a closure applied at each id shape
@@ -494,7 +618,9 @@ class CommandLine(unittest.TestCase):
     def test_a_subject_bearing_press_without_a_subject_is_refused_and_sends_nothing(self):
         for id_ in ("home.shelf.2.card.5", "detail.episodes.still.3", "detail.episodes.text.3", "detail.season.1",
                     "filmography.row.0", "catalog.primary", "home.hero.play", "home.hero.info", "home.hero.watchlist",
-                    "itemmenu.play", "itemmenu.watchlist_remove", "itemmenu.version.0"):
+                    "itemmenu.play", "itemmenu.watchlist_remove", "itemmenu.version.0", "versions.row.1",
+                    "player.control.next", "player.control.next_episode", "player.control.5", "player.section.0",
+                    "player.failure.try_again", "more.fold.from_beginning", "more.rung.p720"):
             code, err = self.run_main("press", self.runtime, id_)
             self.assertEqual(code, 2, id_)
             self.assertTrue(err.startswith("a11y: ") and err.count("\n") == 1 and "--subject" in err, f"{id_}: {err!r}")
@@ -520,11 +646,15 @@ class CommandLine(unittest.TestCase):
         self.assertEqual(self.run_main("press", self.runtime, "detail.hero.mark_watched", "--subject", "200622"), (0, ""))
         self.assertEqual(self.run_main("press", self.runtime, "detail.hero.go_to_show"), (0, ""))   # only navigates
         self.assertEqual(self.run_main("press", self.runtime, "home.hero.action"), (0, ""))   # the retry names no title
+        self.assertEqual(self.run_main("press", self.runtime, "versions.row.1", "--subject", "1001"), (0, ""))
+        self.assertEqual(self.run_main("press", self.runtime, "player.control.next", "--subject", "200623"), (0, ""))
+        self.assertEqual(self.run_main("press", self.runtime, "player.control.subtitles"), (0, ""))   # opens a panel
         self.assertEqual(self.run_main("send", self.runtime, "ok"), (0, ""))
         self.assertEqual(self.written(), ["press:detail.episodes.still.3@77", "press:home.hero.play@200622",
                                           "press:itemmenu.watchlist_remove@2001", "press:detail.episodes.text.0@78",
                                           "press:detail.hero.mark_watched@200622", "press:detail.hero.go_to_show",
-                                          "press:home.hero.action", "ok"])
+                                          "press:home.hero.action", "press:versions.row.1@1001",
+                                          "press:player.control.next@200623", "press:player.control.subtitles", "ok"])
 
     def test_the_library_press_stays_unguarded_for_a_card_with_no_subject(self):
         """The mock scenario presses `watchlist.grid.card.7`, a coming-soon card whose subject is null."""

@@ -944,6 +944,19 @@ where
     }
 }
 
+impl MoreMenuPart<'_> {
+    /// **What a press of the row `key` performs**, for a row that performs one (the Quality and Speed drill-ins
+    /// open a page and have none): the row's [`Action`], read off the form's binding the way `a11y` reads
+    /// its id. The overlay screen asks it to name the title a folded row plays.
+    pub fn action_at<E: IndexElem>(&self, key: &E) -> Option<Action> {
+        let form = &self.state.form;
+        match form.binding_at(form.index_of_key(RowKey(key.index()?))?)?.id {
+            MoreRow::Act(action) => Some(action),
+            MoreRow::OpenQuality | MoreRow::OpenSpeed => None,
+        }
+    }
+}
+
 impl<H: Host> Part<H> for MoreMenuPart<'_>
 where
     H::Elem: IndexElem,

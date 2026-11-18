@@ -4855,9 +4855,9 @@ fn hero_episode_played(d: &Detail) -> Option<&plx_data::metadata::Episode> {
 /// show that has been started, else the page's item; the bookmark and the trailer act on the page's item.
 /// `None` for the controls that only navigate or open a menu or a panel (Go to Show, Also available, Play
 /// Version, More): the control itself acts on no title. The panel or menu one of them opens has rows of its
-/// own, and not all of those are guarded: a library item's menu (`itemmenu.*`) carries its title's key, but the
-/// Play Version panel's `versions.row.<n>` (`versions_panel.rs`, OK delivers `AppMsg::PlayVersion`, which
-/// plays) project no subject. Exhaustive, so a new control must be placed here.
+/// own, each guarded by its own subject: a library item's menu (`itemmenu.*`) carries its title's key, and the
+/// Play Version panel's `versions.row.<n>` (`versions_panel.rs`, OK delivers `AppMsg::PlayVersion`, which plays)
+/// carries [`play_subject`], this function's answer for Play. Exhaustive, so a new control must be placed here.
 pub(crate) fn hero_control_subject<'a>(
     ctl: hero::HeroCtl,
     d: &'a Detail,
@@ -4874,6 +4874,13 @@ pub(crate) fn hero_control_subject<'a>(
         HeroCtl::Watchlist | HeroCtl::Trailer => Some(d.rk.as_str()),
         HeroCtl::GoToShow | HeroCtl::Alt | HeroCtl::Version | HeroCtl::More => None,
     }
+}
+
+/// **The ratingKey the hero's Play plays** ([`hero_control_subject`] of Play, with no loaded card to prefer): what the
+/// Play Version panel's rows play too, since a committed row plays the hero's title in that version
+/// (`AppMsg::PlayVersion`, [`DetailScreen::play_hero`]).
+pub(crate) fn play_subject(d: &Detail) -> Option<&str> {
+    hero_control_subject(hero::HeroCtl::Play, d, None)
 }
 
 /// The versions the hero's Play chooses among, for its Play Version disc and panel: the page's

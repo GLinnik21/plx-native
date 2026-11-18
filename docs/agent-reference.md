@@ -2707,9 +2707,10 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   item context menu; a debug build also takes `focus:<id>`, `press:<id>[@<ratingKey>]` and
   `state:<nonce>` (the structured readback `plxnative-a11y.json`, beside `focusprobe`'s fingerprint),
   via `tools/tv-session.sh focus|press|state` or `tools/a11y.py`, both of which refuse to press an
-  element whose subject is a title (a card, a Detail episode or season tab, a Filmography credit, the
-  catalog pill, a Home hero Play, Info or Watchlist button, a Detail hero Play, Restart, Trailer, Mark watched, Mark
-  unwatched or Watchlist button, an item-menu row) unless the press names it (`--rk` / `--subject`).
+  element whose press plays or writes a title (it plays, restarts, finishes or retries it, marks it watched or
+  unwatched, bookmarks it, or acts on the title a menu was opened for) unless the press names it (`--rk` /
+  `--subject`); an element that only navigates or opens a panel is pressed bare, and `SUBJECT_BEARING` in
+  `tools/a11y.py` is the one list of the ids.
   `tv-session.sh key` and `a11y.py send` are not a way round that: `key` refuses a `focus:`, `press:` or
   `state:` word (the three verbs are the one door for them), and both refuse a word with whitespace in it
   (the app cuts the FIFO at any whitespace, so `back press:<card>` would be a second, unchecked token).
