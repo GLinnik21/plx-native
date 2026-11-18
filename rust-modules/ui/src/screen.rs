@@ -285,6 +285,18 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn opener_alpha(&self) -> f32 {
         1.0
     }
+    /// **A closing MORPH surface has handed its opener back**: its droplet has drained into the
+    /// opener (the frame IS the closed frame, [`Popover::handed_back`](crate::popover::Popover::handed_back)):
+    /// no glass, no dim, the opener whole. Nothing of the surface is drawn from here, so the
+    /// container retires it on this frame (`Surface::faded`, which `ModalStack::prune` reads) and
+    /// the opener lift lets go of the opener once, on the frame nothing else of the menu draws: from
+    /// the next paint the page's own pass (the chrome pass, for the profile chip) draws the opener as
+    /// it rests, where the lift had it on the stack's latched field (a lighter, frozen glass) until
+    /// the container's appear spring came to rest. Asked only of a `Closing` surface. `false` (the
+    /// default) for every surface whose close is the container's spring: a menu that does not morph.
+    fn handed_back(&self) -> bool {
+        false
+    }
     /// **The opener element LEFT this page and is still drawn as it goes** (a removed card's
     /// landing ghost). While a menu fades, the opener lift stands down once focus moves off the
     /// opener; a page answering `true` here keeps it up instead, because focus moved only because

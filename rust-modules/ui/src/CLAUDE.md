@@ -475,13 +475,17 @@ presentation in a design pass.
    smaller side while small, relaxing to THE CALLER'S panel radius from ~150 ms by a spring that lands
    exactly, so settle does not snap; a close rounds it back), a 0.92 -> 1 fade+scale
    fallback (with its own 0.82 -> 1 rows spring) when the opener has no rect. The glass is laid whole at the
-   morphing rect, clear then frosted by ~150 ms, and the rows are laid out IN the glass: they are
-   magnified by the lens (their own spring: 0.65 when they first show, ~1.12 at ~167 ms, 1 by ~360 ms),
-   appear at ~75 ms and are opaque by ~150 ms, cut by the lens itself (its rect and radius, through
+   morphing rect and is FROSTED the whole way, never clear (owner, 2026-11-18: the body is the frost
+   under the dark face on every frame of the open and the close, until the close's hand-back; the
+   frost is asked for on the open's first frame, before the field has latched, so it is built at the
+   head of the next one, and a frame it is still owed wears the field under the heavier face), and the
+   rows are laid out IN the glass: they are
+   magnified by the lens (their own spring: ~0.2 when they first show, 0.65 at 67 ms, ~1.12 at ~167 ms, 1 by ~360 ms),
+   appear from the third glass frame (~33 ms) and are opaque by ~120 ms, cut by the lens itself (its rect and radius, through
    the shared painter's ROUNDED clip, `ClipScope::open_rounded_in`: a letter the round edge crosses is cut
    by the arc, not a straight edge). A close bulges ~7% by ~33 ms (width and
    height on their own springs, fitted to the recording's close), then the slab shrinks with its rows
-   and frost leaving over ~50 ms and drains into the opener (hand-back at ~233 ms; the drawn series is what the close test fits). The modal dim of a
+   leaving over ~50 ms (the frost stays) and drains into the opener (hand-back at ~233 ms; the drawn series is what the close test fits). The modal dim of a
    morphing menu FOLLOWS the morph (`Popover::dim` -> `Scrim::following`: in by ~150 ms, out with
    the slab), not the container's appear spring; a screen's `scrim()` returns `self.popover.dim(DIM_*)`.
    **The header menus' glass CONSUMES its opener (owner decision 2026-11-17, reversing design
@@ -676,19 +680,26 @@ tried first. None of it is reconstructable from the code without repeating the m
   under the frost. The choice is explicit at each call, `widgets::Ground::Menu` or
   `Ground::Sheet` (`panel_ground`'s last argument, `Popover::panel`'s too); there is no global
   switch. A `Menu` ground's first act is `popover_glass::draw`: `fs_glass.frag`'s composite through
-  `gfx::draw_glass_frozen`, wearing a gradient face (`FACE_TOP`/`FACE_BOT`), the 1 px
-  `theme::GLASS_RIM`, the lit top edge `GLASS_RIM_LIGHT` and `GlassRim::Menu`, then a soft shadow
-  cut out around the panel's rounded shape. **It reads no framebuffer** (owner decision,
-  2026-10-17: menus stand on main's frozen ground and never live-refract a re-rendered page). Its
-  body shows the latched underlay field (`ui::underlay`, the 60x32 reconstruction the modal dim
-  draws, reaching a surface as `DrawFrame::underlay`); its rim's lens refracts the host snapshot
+  `gfx::draw_glass_frozen`, wearing a gradient face (`FROST_FACE`, `theme::MENU_GLASS_TOP/BOT`,
+  .36/.44), the 1 px `theme::GLASS_RIM`, the lit top edge `GLASS_RIM_LIGHT` and `GlassRim::Menu`,
+  then a soft shadow cut out around the panel's rounded shape. **It reads no framebuffer** (owner
+  decision, 2026-10-17: menus stand on main's frozen ground and never live-refract a re-rendered
+  page). Its body is the host's FROST (`popover::host::frost`): one blur of the frozen page per
+  snapshot (`FrameCache::frost_build_owed`, phase `glass.frost_build`) with the frame's lowest modal
+  dim and `theme::FROST_BODY_CEILING` baked in (`FrameCache::frost_bake_owed`, phase `glass.bake`, on
+  the frames where the dim moves and never at rest), so under `PLX_FROST` the composite returns the
+  baked texel for the body (no `dimRGB`, no cap). Its rim's lens refracts the host snapshot
   (`popover::host::page_tex`, the one capture of the undimmed page) with the SAME rounded-rect SDF
   that rounds the panel, at `tokens::MENU_SHARP`; the frame's one modal dim (noted by
-  `Painter::dim`) is applied to both at composite (`u_dim`, and `u_dim_sharp` for the snapshot).
+  `Painter::dim`) is applied at composite to that sharp source only (`u_dim_sharp`). **The latched
+  underlay field** (`ui::underlay`, the 60x32 reconstruction the modal dim draws, reaching a
+  surface as `DrawFrame::underlay`) **under `FACE_TOP`/`FACE_BOT`** (`MENU_GLASS_FIELD_TOP/BOT`,
+  .78/.86) **is the FALLBACK body**, worn by a glass with no frost: before the first build, with the
+  variant unlinked, or after a failed build or bake (it takes the dim at composite, `u_dim`).
   So a menu requests no backdrop entry, runs no blur source pass (`src`, `pagex2`) and copies no
-  band (`glass.sharp`): its open, stay and close cost one panel quad (profiler phase
-  `glass.frozen`) and its shadow, and a morph or a slide moves that quad over pictures that do not
-  change. What the pictures do not hold, the glass does not show: an opener lifted over the dim
+  band (`glass.sharp`): at rest it costs one panel quad (profiler phase `glass.frozen`) and its
+  shadow, its open adds one frost build and the dim ramp's bakes, its close adds the bakes, and a
+  morph or a slide moves that quad over pictures that do not change. What the pictures do not hold, the glass does not show: an opener lifted over the dim
   (the item menu's card, the account chip) is absent from the lens, and a menu stacked over
   another surface's dim, or drawn before the field has latched (the first frames of a modal), or
   over the video plane, falls back to the field ground (`draw` returns `false`), windowed to the
@@ -696,15 +707,20 @@ tried first. None of it is reconstructable from the code without repeating the m
   menu's profile chip, lifted above the dim and the panel (`widgets::lift_profile_chip`, called by the
   lift pass through `Rig::lift_bar_member`), is a `glass_frozen`
   capsule (no dim, the host snapshot behind its rim) and requests no backdrop entry or `src` pass.
-  **The lift owns the chip from the frame its menu mounts to the frame it is removed**: the chrome
+  **The lift owns the chip from the frame its menu mounts to the frame it is removed** (for a morphing menu
+  the frame its droplet is gone, `Screen::handed_back` -> `Popover::handed_back`: the container retires the
+  surface then, `Surface::faded`, not when its appear spring comes to rest, so the chip changes hands once
+  on the frame nothing else of the menu draws): the chrome
   pass leaves it out (`Rig::draw_chrome`'s `lifted`) for all of them, so the host snapshot never
   holds a chip the panel's rim would refract, the snapshot is re-taken on the mount and the removal
   and nowhere between, and the lift paints it on every one of those frames. What it stands on is
   chosen where it paints (`widgets::lift_ground`): the stack's latched field (`ModalStack::lift_field`)
-  once that has latched, the host snapshot drawn CLEAR (`GlassMorph::clear`, the morph's own opening
-  material) before, a flat capsule if neither exists. Only the chip on the tab strip, with no menu up, is live glass. The scrim behind a compact menu is
+  once that has latched, the host snapshot drawn CLEAR (`GlassMorph::clear`, which this lift alone uses now:
+  the morph's own glass is never clear) before, a flat capsule if neither exists. Only the chip on the tab strip, with no menu up, is live glass. The scrim behind a compact menu is
   `theme::underlay::DIM_COMPACT`, 30%. The face colours and shadow are theme roles
-  (`MENU_GLASS_TOP/BOT`, `MENU_SHADOW*`); the face fades with the panel's cascaded alpha.
+  (`MENU_GLASS_TOP/BOT` over the frost, `MENU_GLASS_FIELD_TOP/BOT` over the fallback field,
+  `MENU_SHADOW*`), so editing `FACE_TOP`/`FACE_BOT` restyles only the fallback; the face fades
+  with the panel's cascaded alpha.
   `GlassRim::Menu` over the LIVE path (`draw_blur_backdrop`) would turn on a per-frame sharp band
   copy; no menu takes that path any more. A source-grep test (`widgets_glass_budget_tests`) keeps `Glass` and
   `Painter::backdrop_blur` out of every file except the chrome list — no popover and no screen
@@ -713,9 +729,10 @@ tried first. None of it is reconstructable from the code without repeating the m
 
 - **Glass over a page stands on the frozen host; the page does not move while a menu is up, except
   under a menu that lets it reflow.**
-  A menu (opening, open or closing, until it has let go of the host at `CLOSING_GONE`) stands on
-  the page as the host snapshot holds it (`popover.rs` module doc, "A modal stands on a page that is
-  not moving"): nothing on the page animates, reflows or lands under it. A layout motion a menu's
+  A menu (opening, open or closing, until it has let go of the host: a morphing menu on the frame
+  its droplet is handed back, `Screen::handed_back`; any other menu when its fade drops below
+  `CLOSING_GONE`) stands on the page as the host snapshot holds it (`popover.rs` module doc, "A
+  modal stands on a page that is not moving"): nothing on the page animates, reflows or lands under it. A layout motion a menu's
   choice starts (the Watchlist's Remove) and the data that would change the page (the app's
   `watchlist_feed`) wait until the menu is gone and start on the first frame after
   (the owning stack's captured `cx.modal.page_veiled()`). **The one exception is a surface whose body answers
@@ -723,7 +740,8 @@ tried first. None of it is reconstructable from the code without repeating the m
   reflows under it, the host is drawn live while the cards move (`popover::host::set_reflow`: no
   per-frame capture, `page_epoch` does not move) and is retaken ONCE when they stop, the old look
   fading into the new ground over `host::CROSSFADE_S` from a second retained copy. The menu's glass samples only that frozen ground (above), so
-  even a page that did move under it would rebuild nothing for the glass. **Do not add new
+  while the page moves under it nothing is rebuilt for the glass (the old frost is served); each
+  host retake moves `page_epoch` and costs one frost rebuild and a bake. **Do not add new
   live-refracting glass over a page unless the owner asks.** Live glass measured about 2 to 2.6M
   Mali GPU cycles per frame more than frozen ground (2026-10-17, release build, mock, panel off),
   with the page re-drawn at quarter resolution on each frame its draws changed (the `src` and

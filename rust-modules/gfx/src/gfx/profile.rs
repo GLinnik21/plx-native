@@ -107,6 +107,11 @@ mod imp {
         "glass.sharp",
         // A menu's glass on frozen ground (`gfx::draw_glass_frozen`): the panel quad alone.
         "glass.frozen",
+        // A menu's frost BUILD (`FrameCache::frost_build_owed`): the frozen page's blur, once per snapshot.
+        "glass.frost_build",
+        // The frost body's dim-and-ceiling bake (`FrameCache::frost_bake_owed`): one 1/8-resolution pass.
+        "glass.bake",
+        // `glassload`'s frost quad, a full-resolution quad into framebuffer 0 (NOT a menu's frost build).
         "glass.frost",
         "glass.foreground",
         "panel.glass",

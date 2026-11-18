@@ -115,6 +115,22 @@ macro_rules! glsl_undithered {
     };
 }
 
+/// The FROST variant of the glass fragment source ([`GLASS_FROST`]): [`glsl_dithered`] with
+/// `#define PLX_FROST` in front of the dither prelude, so `fs_glass.frag`'s `#ifdef PLX_FROST` code (the
+/// frosted body's bare return: the baked body takes no dim and no ceiling at composite) is part of
+/// this program and of no other. The plain glass program is [`glsl_dithered`] of the same file and
+/// carries none of it.
+macro_rules! glsl_dithered_frost {
+    ($file:literal) => {
+        // SAFETY: as `glsl!` — GLSL sources contain no interior NUL.
+        unsafe {
+            ::std::ffi::CStr::from_bytes_with_nul_unchecked(
+                concat!("#define PLX_FROST\n", include_str!("shaders/dither.glsl"), include_str!($file), "\0").as_bytes(),
+            )
+        }
+    };
+}
+
 macro_rules! glsl_dithered {
     ($file:literal) => {
         // SAFETY: as `glsl!` — GLSL sources contain no interior NUL.
@@ -209,6 +225,10 @@ const VS_ART_WASH: &CStr = glsl!(
 );
 const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
 const FS_GLASS: &CStr = glsl_dithered!("shaders/fs_glass.frag");
+/// [`FS_GLASS`] behind `PLX_FROST`: the glass a menu's frosted body is drawn with ([`GLASS_FROST`]).
+const FS_GLASS_FROST: &CStr = glsl_dithered_frost!("shaders/fs_glass.frag");
+/// The frost's BODY BAKE ([`FrostBake`]): the retained blur dimmed and capped once, at 1/8 resolution.
+const FS_FROST_BAKE: &CStr = glsl!("shaders/fs_frost_bake.frag");
 const FS_FLAT: &CStr = glsl!("shaders/fs_flat.frag");
 const FS_RAMP: &CStr = glsl!("shaders/fs_ramp.frag");
 /// The PLAIN TEXTURE program's fragment half ([`PLAIN_IMAGE`]): `fs_img.frag`'s `u_card.z < 0.5`
@@ -3911,6 +3931,25 @@ pub struct FrameCache {
     /// where it was drawn, and the pixels are PREMULTIPLIED (the frame is drawn onto a transparent
     /// clear, so what the blend leaves is `(rgb * a, a)`).
     region: [c_int; 4],
+    /// **The retained FROST** (a glass menu's body): a blur of the page snapshot's `frost_rect`, its
+    /// own texture and FBO, at 1/8 of that rect. Built ONCE per snapshot ([`frost_build_owed`](Self::frost_build_owed)
+    /// at the head of a later frame), never per frame, and given back by [`release_frost`](Self::release_frost).
+    /// `frost_key` is the snapshot's epoch it was built from, `frost_want` the region the standing
+    /// menu asked for, `frost_off` the latch after a failed build.
+    frost: c_uint,
+    frost_fbo: c_uint,
+    frost_dim: (c_int, c_int),
+    frost_rect: [c_int; 4],
+    frost_key: u32,
+    frost_want: Option<[c_int; 4]>,
+    frost_off: bool,
+    /// **The frost's BODY**: the retained frost dimmed by the modal dim and held under its ceiling, the
+    /// texture the menu's glass actually draws ([`frost_read`](Self::frost_read)), at the frost's own
+    /// size and orientation. Baked by [`frost_bake_owed`](Self::frost_bake_owed) at the head of a frame
+    /// whenever its inputs ([`BodyKey`]) change, and given back with the frost.
+    body: c_uint,
+    body_fbo: c_uint,
+    body_key: Option<BodyKey>,
 }
 
 #[cfg_attr(test, allow(dead_code))]
@@ -3929,7 +3968,239 @@ impl FrameCache {
             prev: 0,
             prev_w: 0,
             prev_h: 0,
+            frost: 0,
+            frost_fbo: 0,
+            frost_dim: (0, 0),
+            frost_rect: [0; 4],
+            frost_key: 0,
+            frost_want: None,
+            frost_off: false,
+            body: 0,
+            body_fbo: 0,
+            body_key: None,
         }
+    }
+
+    /// The standing menu's settled panel, `[x, y, w, h]` authored px: the region the frost is owed over.
+    pub fn frost_want(&mut self, panel: [f32; 4]) {
+        self.frost_want = Some(frost_region(panel));
+    }
+
+    /// The frost as the glass reads it: its texture and canvas rect, whatever snapshot it was built
+    /// from (a stale one is kept until its replacement lands). `None`: none yet, or it failed.
+    ///
+    /// The texture is the BODY ([`frost_bake_owed`](Self::frost_bake_owed)): what the glass draws is the
+    /// frost already dimmed and capped, so a frost with no bake yet answers `None` (the field ground)
+    /// rather than an undimmed, uncapped picture the composite has no code to fix.
+    pub fn frost_read(&self) -> Option<(c_uint, [f32; 4], u32)> {
+        (self.frost != 0 && self.frost_rect[2] > 0 && self.body != 0 && self.body_key.is_some()).then(|| {
+            let r = self.frost_rect;
+            (self.body, [r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32], self.frost_key)
+        })
+    }
+
+    /// Could a frost be built at all (no latched failure, an FBO backend, and the glass program's frost
+    /// variant linked, [`glass_frost_linked`]: a menu whose frost nobody can draw keeps the field
+    /// ground and its heavier face)? Host tests' stand-in says no.
+    pub fn frost_possible(&self) -> bool {
+        !self.off && !self.fbo_off && !self.frost_off && glass_frost_linked()
+    }
+
+    /// Is the baked body the one for `dim`, the dim the glass is about to draw under? `false` is a body
+    /// baked from a PREDICTION that did not hold (the dim's field latched after the frame's head): the
+    /// glass draws it for this one frame and the next head's bake replaces it.
+    pub fn frost_body_for(&self, dim: Option<backdrop::Dim>) -> bool {
+        self.body_key.is_some_and(|k| k.dim == BodyKey::dim_key(dim))
+    }
+
+    /// Is the frost the one for snapshot `key` over the region the menu wants?
+    pub fn frost_fresh(&self, key: u32) -> bool {
+        self.frost != 0 && self.frost_key == key && self.frost_want == Some(self.frost_rect)
+    }
+
+    /// Give the frost's texture back: it goes with its host.
+    pub fn release_frost(&mut self) {
+        if self.frost_fbo != 0 {
+            // SAFETY: render thread, current context, like every GL resource here.
+            unsafe { glDeleteFramebuffers(1, &self.frost_fbo) };
+            self.frost_fbo = 0;
+        }
+        delete_tex(self.frost);
+        self.frost = 0;
+        self.frost_rect = [0; 4];
+        self.frost_want = None;
+        if self.body_fbo != 0 {
+            // SAFETY: as above.
+            unsafe { glDeleteFramebuffers(1, &self.body_fbo) };
+            self.body_fbo = 0;
+        }
+        delete_tex(self.body);
+        self.body = 0;
+        self.body_key = None;
+    }
+
+    /// **Build the frost a standing menu is owed**, if the page snapshot (epoch `key`) holds and none
+    /// is fresh for it. Called at the HEAD of a frame (before any draw reaches the frame's
+    /// framebuffer, so there is no mid-frame render-target switch to resolve), which is also always
+    /// a LATER frame than the capture it reads. `true` once a build ran.
+    pub fn frost_build_owed(&mut self, key: u32) -> bool {
+        let Some(want) = self.frost_want else { return false };
+        if self.frost_fresh(key) || self.frost_off || !self.valid || self.tex == 0 || self.region != [0; 4] {
+            return false;
+        }
+        if blur_source_pass() || backdrop::discovering() || unsafe { LIVE_SCISSOR }.is_some() {
+            return false;
+        }
+        if video_plane_refuses("FrameCache::frost_build_owed") || !blur_lazy_init() || !glass_frost_linked() {
+            return false;
+        }
+        let ok = profile::phase("glass.frost_build", || unsafe { self.frost_passes(want) });
+        if ok {
+            self.frost_rect = want;
+            self.frost_key = key;
+        } else {
+            self.frost_off = true;
+            log("frost: build failed — menus keep the field ground");
+        }
+        ok
+    }
+
+    /// **Bake the frost's body** if a frost stands and the body is not already the one for `dim` and the
+    /// ceiling `(knee, ceiling)`: the retained frost dimmed by `dim` (the frame's lowest modal dim, as
+    /// the glass would have applied it at composite), THEN held under the ceiling, into [`body`](Self::frost_read)
+    /// at 1/8 resolution (one 240x135 pass). Called at the HEAD of a frame beside
+    /// [`frost_build_owed`](Self::frost_build_owed), before any draw reaches the frame's framebuffer, so
+    /// the frame's render pass is not split. Runs when the snapshot, the dim (every frame of its ramp)
+    /// or the ceiling changed; at rest, never. `true` once a bake ran.
+    ///
+    /// The precondition is "a frost EXISTS", not "the page is held": a closing menu is served the stale
+    /// frost while its dim ramps down, and every frame of that ramp owes a bake.
+    pub fn frost_bake_owed(&mut self, dim: Option<backdrop::Dim>, knee: f32, ceiling: f32) -> bool {
+        if self.frost == 0 || self.frost_rect[2] <= 0 || self.frost_off || self.off {
+            return false;
+        }
+        let cap = frost_cap_uniform(knee, ceiling);
+        let key = BodyKey::of(self.frost_key, self.frost_rect, dim, cap);
+        if self.body_key == Some(key) {
+            return false;
+        }
+        if blur_source_pass() || backdrop::discovering() || unsafe { LIVE_SCISSOR }.is_some() {
+            return false;
+        }
+        if video_plane_refuses("FrameCache::frost_bake_owed") {
+            return false;
+        }
+        let Some((_, _, bake)) = (unsafe { std::ptr::addr_of!(GLASS_FROST).read() }) else { return false };
+        let ok = profile::phase("glass.bake", || unsafe { self.bake_passes(&bake, dim, cap) });
+        if ok {
+            self.body_key = Some(key);
+        } else {
+            self.frost_off = true;
+            self.body_key = None;
+            log("frost: body bake failed — menus keep the field ground");
+        }
+        ok
+    }
+
+    /// The bake's one pass: the frost into the body target with `fs_frost_bake.frag`, the quad's flip
+    /// undone by the program's UV window so the body is stored the way the frost is ([`FROST_BOTTOM_UP`]),
+    /// which is the orientation every glass mapping already assumes.
+    unsafe fn bake_passes(&mut self, bake: &FrostBake, dim: Option<backdrop::Dim>, cap: [f32; 2]) -> bool {
+        let (w8, h8) = self.frost_dim;
+        if w8 <= 0 || h8 <= 0 {
+            return false;
+        }
+        while glGetError() != GL_NO_ERROR {}
+        if self.body == 0 || self.body_fbo == 0 {
+            delete_tex(self.body);
+            let Some((t, f)) = fbo_target(w8, h8, "frost") else { return false };
+            (self.body, self.body_fbo) = (t, f);
+        }
+        glDisable(GL_BLEND);
+        use_prog(bake.prog);
+        glBindFramebuffer(GL_FRAMEBUFFER, self.body_fbo);
+        glViewport(0, 0, w8, h8);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glUniform2f(bake.cap, cap[0], cap[1]);
+        match dim.filter(|d| d.tint[3] > 0.0) {
+            Some(d) => {
+                glUniform4f(bake.dim, d.tint[0], d.tint[1], d.tint[2], d.tint[3]);
+                let r = self.frost_rect;
+                let u = snapshot_to_screen([r[0] as f32, r[1] as f32, r[2] as f32, r[3] as f32], [1.0, 1.0], FROST_BOTTOM_UP);
+                glUniform4f(bake.dim_uv, u[0], u[1], u[2], u[3]);
+                glUniform1f(bake.dim_field, if d.tex != 0 { 1.0 } else { 0.0 });
+                if d.tex != 0 {
+                    glActiveTexture(GL_TEXTURE3);
+                    glBindTexture(GL_TEXTURE_2D, d.tex);
+                    glActiveTexture(GL_TEXTURE0);
+                }
+            }
+            None => {
+                glUniform4f(bake.dim, 0.0, 0.0, 0.0, 0.0);
+                glUniform1f(bake.dim_field, 0.0);
+            }
+        }
+        note_px(Class::Blur, (w8 as f64) * (h8 as f64));
+        glBindTexture(GL_TEXTURE_2D, self.frost);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, straighten::Extent::Target);
+        glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
+        let (vx, vy, vw, vh) = plx_base::surface::viewport();
+        glViewport(vx, vy, vw, vh);
+        glEnable(GL_BLEND);
+        glGetError() == GL_NO_ERROR
+    }
+
+    /// The chain: the snapshot's window to 1/4 (four taps one authored px out: the exact 4x4 box),
+    /// to 1/8 (one bilinear tap on the shared corner: the 2x2 box), then [`FROST_TAPS`] at 1/8. The
+    /// last pass lands in the retained texture; the scratch targets are given back. See
+    /// [`FROST_TAPS`] for sigma. Every pass is a full quad into an exactly-sized target with BPROG, the
+    /// live chain's own shader, so the orientation rule is [`blur_bottom_up`] of [`FROST_PASSES`].
+    unsafe fn frost_passes(&mut self, want: [c_int; 4]) -> bool {
+        let [rx, ry, rw, rh] = want;
+        if rw < 8 || rh < 8 || rw % 8 != 0 || rh % 8 != 0 {
+            return false;
+        }
+        let ((w4, h4), (w8, h8)) = ((rw / 4, rh / 4), (rw / 8, rh / 8));
+        while glGetError() != GL_NO_ERROR {}
+        if self.frost == 0 || self.frost_dim != (w8, h8) {
+            self.release_frost();
+            let Some((t, f)) = fbo_target(w8, h8, "frost") else { return false };
+            (self.frost, self.frost_fbo, self.frost_dim) = (t, f, (w8, h8));
+        }
+        let Some((t4, f4)) = fbo_target(w4, h4, "frost") else { return false };
+        let Some((ts, fs)) = fbo_target(w8, h8, "frost") else {
+            glDeleteFramebuffers(1, &f4);
+            delete_tex(t4);
+            return false;
+        };
+        glDisable(GL_BLEND);
+        use_prog(BPROG);
+        let pass = |fbo: c_uint, src: c_uint, w: c_int, h: c_int, uv: [f32; 4], texel: [f32; 2]| {
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glViewport(0, 0, w, h);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glUniform4f(BL_UVRECT, uv[0], uv[1], uv[2], uv[3]);
+            glUniform2f(BL_TEXEL, texel[0], texel[1]);
+            note_px(Class::Blur, (w as f64) * (h as f64));
+            glBindTexture(GL_TEXTURE_2D, src);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, straighten::Extent::Target);
+        };
+        // The snapshot is bottom-up: the region's bottom edge sits at v = 1 - (y + h) / H.
+        let win = [rx as f32 / SCR_W, 1.0 - (ry + rh) as f32 / SCR_H, rw as f32 / SCR_W, rh as f32 / SCR_H];
+        pass(f4, self.tex, w4, h4, win, [1.0 / SCR_W, 1.0 / SCR_H]);
+        pass(self.frost_fbo, t4, w8, h8, [0.0, 0.0, 1.0, 1.0], [0.0, 0.0]);
+        let (d1, d2) = (FROST_TAPS[0], FROST_TAPS[1]);
+        pass(fs, self.frost, w8, h8, [0.0, 0.0, 1.0, 1.0], [d1 / w8 as f32, d1 / h8 as f32]);
+        pass(self.frost_fbo, ts, w8, h8, [0.0, 0.0, 1.0, 1.0], [d2 / w8 as f32, d2 / h8 as f32]);
+        glBindFramebuffer(GL_FRAMEBUFFER, plx_base::surface::default_fb());
+        let (vx, vy, vw, vh) = plx_base::surface::viewport();
+        glViewport(vx, vy, vw, vh);
+        glEnable(GL_BLEND);
+        glDeleteFramebuffers(1, &f4);
+        glDeleteFramebuffers(1, &fs);
+        delete_tex(t4);
+        delete_tex(ts);
+        glGetError() == GL_NO_ERROR
     }
 
     /// Copy the framebuffer into the retained second slot. `false` (nothing retained) in a blur
@@ -3983,6 +4254,7 @@ impl FrameCache {
         self.valid = false;
         self.checked = false;
         self.region = [0; 4];
+        self.release_frost();
     }
 
     /// Draw the second slot across the canvas at `alpha`, over what is drawn so far.
@@ -4248,7 +4520,8 @@ impl FrameCache {
 
     pub fn resident_bytes(&self) -> usize {
         let one = |t: c_uint, w: c_int, h: c_int| if t == 0 { 0 } else { w as usize * h as usize * 4 };
-        one(self.tex, self.w, self.h) + one(self.prev, self.prev_w, self.prev_h)
+        one(self.tex, self.w, self.h) + one(self.prev, self.prev_w, self.prev_h) + one(self.frost, self.frost_dim.0, self.frost_dim.1)
+            + one(self.body, self.frost_dim.0, self.frost_dim.1)
     }
 
     /// Draw the cached viewport across the authored canvas. A framebuffer copy is bottom-up;
@@ -5430,52 +5703,249 @@ fn chamfer() -> ([f32; 4], [f32; 3]) {
 }
 
 static mut GPROG: c_uint = 0;
-static mut GL_RECT: c_int = 0;
-static mut GL_SCREEN: c_int = 0;
-static mut GL_UVRECT: c_int = 0;
-static mut GL_TEX: c_int = 0;
-static mut GL_TINT: c_int = 0;
-static mut GL_RADIUS: c_int = 0;
-static mut GL_CH: c_int = 0;
-static mut GL_UVPX: c_int = 0;
-static mut GL_BEVEL: c_int = 0;
-static mut GL_LENS: c_int = 0;
-static mut GL_EDGE: c_int = 0;
-static mut GL_LIGHT: c_int = 0;
-static mut GL_SPEC: c_int = 0;
-static mut GL_DITHER_AMT: c_int = 0;
-static mut GL_SCRIM_TOP: c_int = 0;
-static mut GL_SCRIM_BOT: c_int = 0;
-static mut GL_RIMCOL_G: c_int = 0;
-static mut GL_RIMLIT_G: c_int = 0;
-static mut GL_RIMW_G: c_int = 0;
-static mut GL_SHARP: c_int = 0;
-static mut GL_SHARP_RECT: c_int = 0;
-static mut GL_SHARP_PX: c_int = 0;
-static mut GL_SHARPW: c_int = 0;
-static mut GL_RIMCLEAR: c_int = 0;
-/// `u_boff`, `u_mrg`, `u_mrg_rk`, `u_mrg_tint`, `u_clear`: a morphing menu glass's join, the colour
-/// the joined shape wears and its clarity ([`GlassMorph`]). Uniforms are per-program state, so EVERY
-/// draw of `GPROG` sets them: the ones at their off values (no offset, `k` 0, tint amount 0, clear 0)
-/// are today's glass.
-static mut GL_BOFF: c_int = 0;
-static mut GL_MRG: c_int = 0;
-static mut GL_MRG_RK: c_int = 0;
-static mut GL_MRG_TINT: c_int = 0;
-static mut GL_CLEAR: c_int = 0;
-static mut GL_DEEP: c_int = 0;
-static mut GL_SOURCE_ALPHA: c_int = 0;
-static mut GL_SOURCE_GROUND: c_int = 0;
-static mut GL_DIM: c_int = 0;
-static mut GL_DIM_UV: c_int = 0;
-static mut GL_DIM_FIELD: c_int = 0;
-static mut GL_DIM_TEX: c_int = 0;
-static mut GL_DIM_SHARP: c_int = 0;
-static mut GL_WASH_ON: c_int = 0;
-static mut GL_WASH_UV: c_int = 0;
-/// `u_wash_tl`, `u_wash_tr`, `u_wash_br`, `u_wash_bl`.
-static mut GL_WASH_K: [c_int; 4] = [0; 4];
-static mut GL_WASH_W: c_int = 0;
+
+/// The glass program's uniform locations ([`FS_GLASS`] behind [`VS_IMG_DITHERED`]): one `Copy` struct,
+/// so the FROST variant ([`GLASS_FROST`], the same source behind `PLX_FROST`) carries its own — two
+/// programs linked from one source are not promised the same locations. Obtained by value
+/// from [`glass_program`] and nowhere else, which binds the program the draw calls for. The same
+/// shape as [`RectUniforms`]; `-1` is a location GL ignores.
+///
+/// `boff`, `mrg`, `mrg_rk`, `mrg_tint`, `clear`: a morphing menu glass's join, the colour the joined
+/// shape wears and the clarity ([`GlassMorph`]: a morphing menu sets only the join, its clarity is
+/// always 0; clarity 1 is the profile chip's lift on the host snapshot). Uniforms are per-program
+/// state, so EVERY draw of a glass program sets them: the ones at their off values (no offset, `k` 0,
+/// tint amount 0, clear 0) are today's glass. `wash_k` is `u_wash_tl`, `u_wash_tr`, `u_wash_br`, `u_wash_bl`.
+#[derive(Clone, Copy)]
+struct GlassUniforms {
+    rect: c_int,
+    screen: c_int,
+    uvrect: c_int,
+    tex: c_int,
+    tint: c_int,
+    radius: c_int,
+    ch: c_int,
+    uvpx: c_int,
+    bevel: c_int,
+    lens: c_int,
+    edge: c_int,
+    light: c_int,
+    spec: c_int,
+    scrim_top: c_int,
+    scrim_bot: c_int,
+    rimcol: c_int,
+    rimlit: c_int,
+    rimw: c_int,
+    sharp: c_int,
+    sharp_rect: c_int,
+    sharp_px: c_int,
+    sharpw: c_int,
+    rimclear: c_int,
+    boff: c_int,
+    mrg: c_int,
+    mrg_rk: c_int,
+    mrg_tint: c_int,
+    clear: c_int,
+    deep: c_int,
+    source_alpha: c_int,
+    source_ground: c_int,
+    dim: c_int,
+    dim_uv: c_int,
+    dim_field: c_int,
+    dim_tex: c_int,
+    dim_sharp: c_int,
+    wash_on: c_int,
+    wash_uv: c_int,
+    wash_w: c_int,
+    dither_amt: c_int,
+    wash_k: [c_int; 4],
+}
+
+impl GlassUniforms {
+    const NONE: GlassUniforms = GlassUniforms {
+        rect: 0,
+        screen: 0,
+        uvrect: 0,
+        tex: 0,
+        tint: 0,
+        radius: 0,
+        ch: 0,
+        uvpx: 0,
+        bevel: 0,
+        lens: 0,
+        edge: 0,
+        light: 0,
+        spec: 0,
+        scrim_top: 0,
+        scrim_bot: 0,
+        rimcol: 0,
+        rimlit: 0,
+        rimw: 0,
+        sharp: 0,
+        sharp_rect: 0,
+        sharp_px: 0,
+        sharpw: 0,
+        rimclear: 0,
+        boff: 0,
+        mrg: 0,
+        mrg_rk: 0,
+        mrg_tint: 0,
+        clear: 0,
+        deep: 0,
+        source_alpha: 0,
+        source_ground: 0,
+        dim: 0,
+        dim_uv: 0,
+        dim_field: 0,
+        dim_tex: 0,
+        dim_sharp: 0,
+        wash_on: 0,
+        wash_uv: 0,
+        wash_w: 0,
+        dither_amt: 0,
+        wash_k: [0; 4],
+    };
+
+    /// Look every location up in `program`, and give it its dither tile (`u_dither_tex` on unit 2).
+    unsafe fn of(program: c_uint) -> GlassUniforms {
+        let loc = |name: &CStr| glGetUniformLocation(program, name.as_ptr());
+        GlassUniforms {
+            rect: loc(c"u_trect"),
+            screen: loc(c"u_tscreen"),
+            uvrect: loc(c"u_uvrect"),
+            tex: loc(c"u_tex"),
+            tint: loc(c"u_tint"),
+            radius: loc(c"u_iradius"),
+            ch: loc(c"u_ch"),
+            uvpx: loc(c"u_uvpx"),
+            bevel: loc(c"u_bevel"),
+            lens: loc(c"u_lens"),
+            edge: loc(c"u_edge"),
+            light: loc(c"u_light"),
+            spec: loc(c"u_spec"),
+            scrim_top: loc(c"u_scrim_top"),
+            scrim_bot: loc(c"u_scrim_bot"),
+            rimcol: loc(c"u_rimcol"),
+            rimlit: loc(c"u_rimlit"),
+            rimw: loc(c"u_rimw"),
+            sharp: loc(c"u_sharp"),
+            sharp_rect: loc(c"u_sharp_rect"),
+            sharp_px: loc(c"u_sharp_px"),
+            sharpw: loc(c"u_sharpw"),
+            rimclear: loc(c"u_rimclear"),
+            boff: loc(c"u_boff"),
+            mrg: loc(c"u_mrg"),
+            mrg_rk: loc(c"u_mrg_rk"),
+            mrg_tint: loc(c"u_mrg_tint"),
+            clear: loc(c"u_clear"),
+            deep: loc(c"u_deep"),
+            source_alpha: loc(c"u_source_alpha"),
+            source_ground: loc(c"u_source_ground"),
+            dim: loc(c"u_dim"),
+            dim_uv: loc(c"u_dim_uv"),
+            dim_field: loc(c"u_dim_field"),
+            dim_tex: loc(c"u_dim_tex"),
+            dim_sharp: loc(c"u_dim_sharp"),
+            wash_on: loc(c"u_wash_on"),
+            wash_uv: loc(c"u_wash_uv"),
+            wash_w: loc(c"u_wash_w"),
+            dither_amt: dither_uniforms(program),
+            wash_k: [c"u_wash_tl", c"u_wash_tr", c"u_wash_br", c"u_wash_bl"].map(loc),
+        }
+    }
+
+    /// The constants a glass program holds for life, set once at link (uniforms are per-program
+    /// state, so none of THESE belongs in the draw): the screen, the snapshot on unit 0, the dim's
+    /// field on unit 3 (0 is the snapshot, 1 the sharp grab, 2 the dither tile; bound per draw, and
+    /// only by a draw that owes a field dim), the rim's second source on unit 1 (only the texture
+    /// bound there changes, and only when a chain is rebuilt), and the material constants. `u_bevel`
+    /// and `u_lens` are the exception and are set per draw — see [`GlassRim`], which is the one thing
+    /// a surface gets to say about the material. `uvpx` is NOT set here: the snapshot is a REGION and
+    /// that ratio moves with it, so it belongs to the draw (`draw_blur_backdrop` says what goes wrong
+    /// if it is left behind).
+    unsafe fn init(&self, program: c_uint) {
+        use_prog(program);
+        glUniform2f(self.screen, SCR_W, SCR_H);
+        glUniform1i(self.tex, 0);
+        glUniform1i(self.dim_tex, 3);
+        glUniform1i(self.sharp, 1);
+        let (edge, light) = chamfer();
+        glUniform4fv(self.edge, 1, edge.as_ptr());
+        glUniform3f(self.light, light[0], light[1], light[2]);
+    }
+}
+
+/// [`GPROG`]'s locations, written once at [`blur_lazy_init`].
+static mut GLASS_UNIFORMS: GlassUniforms = GlassUniforms::NONE;
+/// The glass program for a FROSTED BODY ([`FS_GLASS_FROST`]: `fs_glass.frag` behind
+/// `PLX_FROST`), linked at boot beside the plain one so the first menu open pays no compile hitch.
+/// Bound by [`glass_program`] only for a draw that has a [`GlassFrost`]; `None` (a driver that
+/// refused it) leaves every glass surface on [`GPROG`], and [`glass_frost_linked`] tells the frost's
+/// owner not to build a frost nobody can draw.
+static mut GLASS_FROST: Option<(c_uint, GlassUniforms, FrostBake)> = None;
+
+/// **The frost's body bake program** (`fs_frost_bake.frag` on [`VS_IMG`], the blur chain's own vertex
+/// half) and its locations, linked with [`GLASS_FROST`]'s variant and part of the same optional unit: a
+/// driver that refuses either leaves menus the field ground, since the variant's composite no longer
+/// dims or caps the body itself.
+#[derive(Clone, Copy)]
+struct FrostBake {
+    prog: c_uint,
+    trect: c_int,
+    tscreen: c_int,
+    uvrect: c_int,
+    dim: c_int,
+    dim_uv: c_int,
+    dim_field: c_int,
+    cap: c_int,
+}
+
+impl FrostBake {
+    /// Link the bake and set its per-program constants (the full-target quad, its samplers' units).
+    unsafe fn link() -> Option<Self> {
+        let prog = link_optional_program(VS_IMG.as_ptr(), FS_FROST_BAKE.as_ptr())?;
+        let loc = |n: &CStr| glGetUniformLocation(prog, n.as_ptr());
+        let b = Self {
+            prog,
+            trect: loc(c"u_trect"),
+            tscreen: loc(c"u_tscreen"),
+            uvrect: loc(c"u_uvrect"),
+            dim: loc(c"u_dim"),
+            dim_uv: loc(c"u_dim_uv"),
+            dim_field: loc(c"u_dim_field"),
+            cap: loc(c"u_frost_cap"),
+        };
+        use_prog(prog);
+        glUniform1i(loc(c"u_tex"), 0);
+        glUniform1i(loc(c"u_dim_tex"), 3);
+        glUniform2f(b.tscreen, SCR_W, SCR_H);
+        glUniform4f(b.trect, 0.0, 0.0, SCR_W, SCR_H);
+        // The frost texel's own UV with the quad's flip undone: the body is stored the way the frost is.
+        glUniform4f(b.uvrect, 0.0, 1.0, 1.0, -1.0);
+        Some(b)
+    }
+}
+
+/// **The glass program for this draw, bound, with its uniform locations**, and whether it is the
+/// frost variant: the variant when `frost` asks for it and it linked, else the plain program. The
+/// ONLY way a draw obtains the glass program's locations (a draw that wrote the plain program's
+/// locations while the variant is bound would be a silent miss).
+#[inline]
+unsafe fn glass_program(frost: bool) -> (GlassUniforms, bool) {
+    if frost {
+        if let Some((program, u, _)) = std::ptr::addr_of!(GLASS_FROST).read() {
+            use_prog(program);
+            return (u, true);
+        }
+    }
+    use_prog(GPROG);
+    (std::ptr::addr_of!(GLASS_UNIFORMS).read(), false)
+}
+
+/// Is the glass program's frost variant linked? A menu's frost is only built when it is
+/// ([`FrameCache::frost_possible`]); without the variant menus keep the field look and its face.
+pub fn glass_frost_linked() -> bool {
+    unsafe { std::ptr::addr_of!(GLASS_FROST).read().is_some() }
+}
 
 /// Invalidate the scratch snapshot used by the synthetic load dial and navigation experiments.
 /// Live surfaces own separate retained outputs through the frame's layer/region registry.
@@ -5781,68 +6251,20 @@ fn blur_lazy_init() -> bool {
                 return false;
             }
         };
-        GL_RECT = glGetUniformLocation(GPROG, c"u_trect".as_ptr());
-        GL_SCREEN = glGetUniformLocation(GPROG, c"u_tscreen".as_ptr());
-        GL_UVRECT = glGetUniformLocation(GPROG, c"u_uvrect".as_ptr());
-        GL_TEX = glGetUniformLocation(GPROG, c"u_tex".as_ptr());
-        GL_TINT = glGetUniformLocation(GPROG, c"u_tint".as_ptr());
-        GL_RADIUS = glGetUniformLocation(GPROG, c"u_iradius".as_ptr());
-        GL_CH = glGetUniformLocation(GPROG, c"u_ch".as_ptr());
-        GL_UVPX = glGetUniformLocation(GPROG, c"u_uvpx".as_ptr());
-        GL_BEVEL = glGetUniformLocation(GPROG, c"u_bevel".as_ptr());
-        GL_LENS = glGetUniformLocation(GPROG, c"u_lens".as_ptr());
-        GL_EDGE = glGetUniformLocation(GPROG, c"u_edge".as_ptr());
-        GL_LIGHT = glGetUniformLocation(GPROG, c"u_light".as_ptr());
-        GL_SPEC = glGetUniformLocation(GPROG, c"u_spec".as_ptr());
-        GL_DITHER_AMT = dither_uniforms(GPROG);
-        GL_SCRIM_TOP = glGetUniformLocation(GPROG, c"u_scrim_top".as_ptr());
-        GL_SCRIM_BOT = glGetUniformLocation(GPROG, c"u_scrim_bot".as_ptr());
-        GL_RIMCOL_G = glGetUniformLocation(GPROG, c"u_rimcol".as_ptr());
-        GL_RIMLIT_G = glGetUniformLocation(GPROG, c"u_rimlit".as_ptr());
-        GL_RIMW_G = glGetUniformLocation(GPROG, c"u_rimw".as_ptr());
-        GL_SHARP = glGetUniformLocation(GPROG, c"u_sharp".as_ptr());
-        GL_SHARP_RECT = glGetUniformLocation(GPROG, c"u_sharp_rect".as_ptr());
-        GL_SHARP_PX = glGetUniformLocation(GPROG, c"u_sharp_px".as_ptr());
-        GL_SHARPW = glGetUniformLocation(GPROG, c"u_sharpw".as_ptr());
-        GL_RIMCLEAR = glGetUniformLocation(GPROG, c"u_rimclear".as_ptr());
-        GL_BOFF = glGetUniformLocation(GPROG, c"u_boff".as_ptr());
-        GL_MRG = glGetUniformLocation(GPROG, c"u_mrg".as_ptr());
-        GL_MRG_RK = glGetUniformLocation(GPROG, c"u_mrg_rk".as_ptr());
-        GL_MRG_TINT = glGetUniformLocation(GPROG, c"u_mrg_tint".as_ptr());
-        GL_CLEAR = glGetUniformLocation(GPROG, c"u_clear".as_ptr());
-        GL_DEEP = glGetUniformLocation(GPROG, c"u_deep".as_ptr());
-        GL_SOURCE_ALPHA = glGetUniformLocation(GPROG, c"u_source_alpha".as_ptr());
-        GL_SOURCE_GROUND = glGetUniformLocation(GPROG, c"u_source_ground".as_ptr());
-        GL_DIM = glGetUniformLocation(GPROG, c"u_dim".as_ptr());
-        GL_DIM_UV = glGetUniformLocation(GPROG, c"u_dim_uv".as_ptr());
-        GL_DIM_FIELD = glGetUniformLocation(GPROG, c"u_dim_field".as_ptr());
-        GL_DIM_TEX = glGetUniformLocation(GPROG, c"u_dim_tex".as_ptr());
-        GL_DIM_SHARP = glGetUniformLocation(GPROG, c"u_dim_sharp".as_ptr());
-        GL_WASH_ON = glGetUniformLocation(GPROG, c"u_wash_on".as_ptr());
-        GL_WASH_UV = glGetUniformLocation(GPROG, c"u_wash_uv".as_ptr());
-        GL_WASH_K = [c"u_wash_tl", c"u_wash_tr", c"u_wash_br", c"u_wash_bl"]
-            .map(|name| glGetUniformLocation(GPROG, name.as_ptr()));
-        GL_WASH_W = glGetUniformLocation(GPROG, c"u_wash_w".as_ptr());
-        use_prog(GPROG);
-        glUniform2f(GL_SCREEN, SCR_W, SCR_H);
-        glUniform1i(GL_TEX, 0);
-        // The composite-time dim's field, on unit 3 (0 is the snapshot, 1 the sharp grab, 2 the
-        // dither tile). Bound per draw, and only by a draw that owes a field dim.
-        glUniform1i(GL_DIM_TEX, 3);
-        // The rim's second source lives on unit 1 for the life of the program; only the texture
-        // bound there changes, and only when a chain is rebuilt.
-        glUniform1i(GL_SHARP, 1);
-        // Material constants and the orientation term: fixed for the life of the process, and
-        // uniforms are per-program state, so none of THESE belongs in the draw. `u_bevel`/`u_lens`
-        // are the exception and are set per draw — see [`GlassRim`], which is the one thing a
-        // surface gets to say about the material.
-        let (edge, light) = chamfer();
-        glUniform4fv(GL_EDGE, 1, edge.as_ptr());
-        glUniform3f(GL_LIGHT, light[0], light[1], light[2]);
-        // `GL_UVPX` is NOT set here. It was, back when the grab was always the whole screen and one
-        // authored pixel was therefore always `1/SCR_W` of the texture — but the snapshot is a
-        // REGION now and that ratio moves with it, so it belongs to the draw. `draw_blur_backdrop`
-        // says what goes wrong if it is left behind.
+        let plain = GlassUniforms::of(GPROG);
+        plain.init(GPROG);
+        GLASS_UNIFORMS = plain;
+        // The same source behind `PLX_FROST`, for the menus' frosted body. Optional: a compiler that
+        // refuses the variant must cost the menus their frost and not every glass surface its program.
+        GLASS_FROST = link_optional_program(VS_IMG_DITHERED.as_ptr(), FS_GLASS_FROST.as_ptr()).and_then(|program| {
+            let bake = FrostBake::link()?;
+            let u = GlassUniforms::of(program);
+            u.init(program);
+            Some((program, u, bake))
+        });
+        if !glass_frost_linked() {
+            log("glass frost prog unavailable — menus keep the field ground and the heavier face");
+        }
         use_prog(PROG);
 
         let (gx, gy, gw, gh) = plx_base::surface::viewport();
@@ -7620,8 +8042,10 @@ pub struct GlassMerge {
 
 /// **What a menu glass does while its morph runs** (`ui::popover_morph::Frame`): optionally JOINED
 /// to a second shape ([`GlassMerge`]) and CLEAR — the sharp page over the whole face instead of the
-/// frosted material. [`GlassMorph::NONE`] (no join, clarity 0) is the glass every settled menu and
-/// every chip wears, bit for bit.
+/// frosted material. A morphing menu is joined but never clear (its body is the frost on every frame,
+/// `ui::popover_morph`); clarity is the opener chip's lift on the host snapshot, before the field
+/// latches (`ui::widgets::LiftGround::Snapshot`). [`GlassMorph::NONE`] (no join, clarity 0) is the glass
+/// every settled menu and every chip wears, bit for bit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GlassMorph {
     pub merge: Option<GlassMerge>,
@@ -7644,6 +8068,98 @@ impl GlassMorph {
         let (x1, y1) = ((x + w).max(m.rect.x + m.rect.w) + pad, (y + h).max(m.rect.y + m.rect.h) + pad);
         Rect::new(x0, y0, x1 - x0, y1 - y0)
     }
+}
+
+/// **A menu's FROST** (`ui::popover::host`'s retained blur of its frozen page, [`FrameCache::frost_read`]):
+/// the texture the glass body shows INSTEAD of the latched field ground, the canvas rect it holds,
+/// and the body's brightness ceiling. [`GlassFrost::NONE`] (`tex` 0) is the field ground, bit for bit.
+///
+/// The texture is the region's own, [`FROST_PASSES`] flips from the bottom-up snapshot it was drawn from
+/// ([`FROST_BOTTOM_UP`]); the glass samples it through a UV window ([`blur_uv_rect`]) and
+/// `CLAMP_TO_EDGE` is what a fragment of the (rare) overshoot past the region reads, which is the
+/// region's edge texel, so the body never goes black or wraps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlassFrost {
+    pub tex: c_uint,
+    /// The canvas rect `tex` holds, authored px `[x, y, w, h]`, top-down.
+    pub rect: [f32; 4],
+    /// The body's soft knee: the brightest channel below this is untouched.
+    pub knee: f32,
+    /// The hard ceiling no body channel reaches (`ui::theme::FROST_BODY_CEILING`); 0 = no cap.
+    pub ceiling: f32,
+    /// The snapshot epoch the frost was built from: a rebuild into the same texture is a different draw.
+    pub rev: u32,
+}
+impl GlassFrost {
+    pub const NONE: Self = Self { tex: 0, rect: [0.0; 4], knee: 0.0, ceiling: 0.0, rev: 0 };
+    /// `(knee, headroom)` of `fs_frost_bake.frag`'s `u_frost_cap`: `y = knee + headroom * o / (o + headroom)`
+    /// above the knee, `o = m - knee`. Slope 1 at the knee and never the ceiling, so a body of 1.0
+    /// lands just under it. `[0, 0]` = no cap.
+    fn cap_uniform(&self) -> [f32; 2] {
+        if self.tex == 0 { [0.0, 0.0] } else { frost_cap_uniform(self.knee, self.ceiling) }
+    }
+    /// The same cap on one body channel, for host tests (the shader's rule on its brightest channel).
+    pub fn cap(&self, m: f32) -> f32 {
+        let [k, d] = self.cap_uniform();
+        if d <= 0.0 { return m; }
+        let o = (m - k).max(0.0);
+        m.min(k) + d * (o / (o + d))
+    }
+}
+
+/// `(knee, headroom)` of `fs_frost_bake.frag`'s `u_frost_cap` for a body ceiling: `[0, 0]` (no cap) when
+/// the ceiling is not above the knee or the knee is not below 1. Pure.
+pub fn frost_cap_uniform(knee: f32, ceiling: f32) -> [f32; 2] {
+    let d = ceiling - knee;
+    if ceiling <= 0.0 || d <= 0.0 || knee >= 1.0 {
+        return [0.0, 0.0];
+    }
+    [knee, d]
+}
+
+/// **What a frost body was baked from**: when this equals the key of a bake that is due, the body
+/// texture is still right and nothing runs. `frost` is the snapshot epoch the blur was built from, `rect`
+/// its region, `dim` the modal dim applied (its field texture, that texture's content revision and the
+/// tint's bits), `cap` the ceiling's `(knee, headroom)` bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BodyKey {
+    frost: u32,
+    rect: [c_int; 4],
+    dim: Option<(u32, u64, [u32; 4])>,
+    cap: [u32; 2],
+}
+
+impl BodyKey {
+    /// The dim's share of the key: none for no dim (or a transparent one), else its field texture, that
+    /// texture's content revision (a field re-latched in place is a different ink) and its tint's bits.
+    fn dim_key(dim: Option<backdrop::Dim>) -> Option<(u32, u64, [u32; 4])> {
+        dim.filter(|d| d.tint[3] > 0.0).map(|d| (d.tex, tex_ledger::revision(d.tex), d.tint.map(f32::to_bits)))
+    }
+    fn of(frost: u32, rect: [c_int; 4], dim: Option<backdrop::Dim>, cap: [f32; 2]) -> Self {
+        Self { frost, rect, dim: Self::dim_key(dim), cap: cap.map(f32::to_bits) }
+    }
+}
+
+/// Passes the frost's chain runs from the bottom-up page snapshot: 1/4, 1/8, then two Kawase taps.
+const FROST_PASSES: usize = 4;
+/// Is the retained frost stored bottom-up? The parity of [`FROST_PASSES`], as the live chain reads its own.
+const FROST_BOTTOM_UP: bool = blur_bottom_up(FROST_PASSES);
+/// The two Kawase offsets at the frost's 1/8 resolution, in texels. Per axis a pass at offset `d`
+/// has variance `d^2 + 1/4` (four bilinear taps on the diagonals), so `[1.5, 2.5]` give
+/// `2.5 + 6.5 = 9` texel^2: sigma 3 texels = 24 px at 1/8, the Gaussian the owner approved.
+const FROST_TAPS: [f32; 2] = [1.5, 2.5];
+/// How far past a menu's settled panel the frost's region reaches, authored px (a multiple of 8):
+/// 72 (3 sigma, where the clamped region edge stops mattering) plus the lens' push and a morph's overshoot.
+pub const FROST_MARGIN: f32 = 120.0;
+
+/// The frost's region for a settled panel `[x, y, w, h]`: grown by [`FROST_MARGIN`], clamped to the
+/// canvas and aligned OUT to multiples of 8, so every 1/8 texel is whole authored pixels. Pure.
+pub fn frost_region(panel: [f32; 4]) -> [c_int; 4] {
+    let lo = |v: f32, max: f32| ((v - FROST_MARGIN).max(0.0).min(max) / 8.0).floor() as c_int * 8;
+    let hi = |v: f32, max: f32| (((v + FROST_MARGIN).min(max).max(0.0)) / 8.0).ceil() as c_int * 8;
+    let (x0, y0) = (lo(panel[0], SCR_W), lo(panel[1], SCR_H));
+    let (x1, y1) = (hi(panel[0] + panel[2], SCR_W), hi(panel[1] + panel[3], SCR_H));
+    [x0, y0, (x1 - x0).max(0), (y1 - y0).max(0)]
 }
 
 /// **Snapshot UV back to the screen**: `(su, sv, ou, ov)` with `screen_uv = uv * (su, sv) + (ou, ov)`
@@ -7765,13 +8281,13 @@ pub fn draw_blur_backdrop(
             (c.rh / 2) as f32 / c.mh as f32,
         ];
         let uv = blur_uv_rect(x, y, w, h, c.reg, span, c.bottom_up);
-        use_prog(GPROG);
+        let (gu, _) = glass_program(false);
         let source_alpha = if retained.as_ref().is_some_and(|image| image.alpha_invariant) {
             live.and_then(|request| backdrop::source_alpha(request.z)).unwrap_or(1.0)
         } else { 1.0 };
         let ground = tokens::CLEAR_RGB;
-        glUniform1f(GL_SOURCE_ALPHA, source_alpha);
-        glUniform3f(GL_SOURCE_GROUND, ground.0, ground.1, ground.2);
+        glUniform1f(gu.source_alpha, source_alpha);
+        glUniform3f(gu.source_ground, ground.0, ground.1, ground.2);
         // THE MODAL DIM, at composite. A band whose dim is the last draw under it filters the
         // UNDIMMED prefix once (`backdrop::dim_deferred` skipped the dim in the replay) and takes
         // this frame's dim here, in `srcRGB`, before the sharp rim mix — the sharp grab is off the
@@ -7785,17 +8301,17 @@ pub fn draw_blur_backdrop(
         };
         match dim {
             Some(d) if d.tint[3] > 0.0 => {
-                glUniform4f(GL_DIM, d.tint[0], d.tint[1], d.tint[2], d.tint[3]);
-                glUniform1f(GL_DIM_FIELD, if d.tex != 0 { 1.0 } else { 0.0 });
+                glUniform4f(gu.dim, d.tint[0], d.tint[1], d.tint[2], d.tint[3]);
+                glUniform1f(gu.dim_field, if d.tex != 0 { 1.0 } else { 0.0 });
                 if d.tex != 0 {
                     let [su, sv, ou, ov] = snapshot_to_screen(c.reg, span, c.bottom_up);
-                    glUniform4f(GL_DIM_UV, su, sv, ou, ov);
+                    glUniform4f(gu.dim_uv, su, sv, ou, ov);
                     glActiveTexture(GL_TEXTURE3);
                     glBindTexture(GL_TEXTURE_2D, d.tex);
                     glActiveTexture(GL_TEXTURE0);
                 }
             }
-            _ => glUniform4f(GL_DIM, 0.0, 0.0, 0.0, 0.0),
+            _ => glUniform4f(gu.dim, 0.0, 0.0, 0.0, 0.0),
         }
         // THE PAGE WASH, as a delta, in the same slot of the same expression (`backdrop::Ground`):
         // the image keeps the wash it was drawn under and the composite owes this frame's
@@ -7808,29 +8324,29 @@ pub fn draw_blur_backdrop(
                 let [rx, ry, rw, rh] = d.rect;
                 // Snapshot UV -> screen UV (0..1 over the canvas) -> the wash's own frame.
                 let (kx, ky) = (SCR_W / rw.max(1.0), SCR_H / rh.max(1.0));
-                glUniform1f(GL_WASH_ON, 1.0);
-                glUniform4f(GL_WASH_UV, su * kx, sv * ky, ou * kx - rx / rw.max(1.0), ov * ky - ry / rh.max(1.0));
-                for (loc, k) in (*std::ptr::addr_of!(GL_WASH_K)).iter().zip(d.corners) {
+                glUniform1f(gu.wash_on, 1.0);
+                glUniform4f(gu.wash_uv, su * kx, sv * ky, ou * kx - rx / rw.max(1.0), ov * ky - ry / rh.max(1.0));
+                for (loc, k) in gu.wash_k.iter().zip(d.corners) {
                     glUniform3f(*loc, k[0], k[1], k[2]);
                 }
-                glUniform2f(GL_WASH_W, d.weight[0], d.weight[1]);
+                glUniform2f(gu.wash_w, d.weight[0], d.weight[1]);
             }
-            None => glUniform1f(GL_WASH_ON, 0.0),
+            None => glUniform1f(gu.wash_on, 0.0),
         }
         // The sharp grab below is off the finished framebuffer: the dim is in it already.
-        glUniform1f(GL_DIM_SHARP, 0.0);
+        glUniform1f(gu.dim_sharp, 0.0);
         // A live glass is never a morphing menu's: the join and the clear glass are OFF, so a
         // frozen menu's last draw (the uniforms are the program's) cannot reach this surface.
-        glUniform2f(GL_BOFF, 0.0, 0.0);
-        glUniform2f(GL_MRG_RK, 0.0, 0.0);
-        glUniform4f(GL_MRG_TINT, 0.0, 0.0, 0.0, 0.0);
-        glUniform1f(GL_CLEAR, 0.0);
+        glUniform2f(gu.boff, 0.0, 0.0);
+        glUniform2f(gu.mrg_rk, 0.0, 0.0);
+        glUniform4f(gu.mrg_tint, 0.0, 0.0, 0.0, 0.0);
+        glUniform1f(gu.clear, 0.0);
         // A BLUR is the slowest field the app produces, so the policy is the area test, per draw
         // — moving or not: a panel's glass is a fraction of the screen and the tile is one fetch,
         // and gating it on motion (one day, 2026-09-04) flickered the bands in and out on every
         // appear spring. It was `GLASS_NOISE` (½ LSB, uniform) feeding an unconditional sine
         // hash, then a constant set once at link.
-        glUniform1f(GL_DITHER_AMT, dither_for_field(w, h));
+        glUniform1f(gu.dither_amt, dither_for_field(w, h));
         glBindTexture(GL_TEXTURE_2D, c.out);
         // **Per DRAW, not per init.** This is the UV travelled by one authored screen pixel, and it
         // is what turns the lens's displacement (in px) into a texture offset. It was a boot-time
@@ -7839,7 +8355,7 @@ pub fn draw_blur_backdrop(
         // the 38px lens would have silently become a ~15px one — the rim would still refract, just
         // less, with nothing anywhere to say so.
         glUniform2f(
-            GL_UVPX,
+            gu.uvpx,
             span[0] / c.reg[2],
             if c.bottom_up {
                 -span[1] / c.reg[3]
@@ -7915,10 +8431,10 @@ pub fn draw_blur_backdrop(
             glActiveTexture(GL_TEXTURE0);
         }
         let suv = blur_uv_rect(x, y, w, h, sreg, sspan, true);
-        glUniform4f(GL_SHARP_RECT, suv[0], suv[1], suv[2], suv[3]);
-        glUniform2f(GL_SHARP_PX, sspan[0] / sreg[2], -sspan[1] / sreg[3]);
-        glUniform1f(GL_SHARPW, sharpw);
-        glUniform1f(GL_RIMCLEAR, rim.rimclear());
+        glUniform4f(gu.sharp_rect, suv[0], suv[1], suv[2], suv[3]);
+        glUniform2f(gu.sharp_px, sspan[0] / sreg[2], -sspan[1] / sreg[3]);
+        glUniform1f(gu.sharpw, sharpw);
+        glUniform1f(gu.rimclear, rim.rimclear());
         // `deep` is authored px; the snapshot's own UV-per-authored-pixel is already in hand, and
         // its v may be negative, so the radius is taken on the ABSOLUTE step or the cross collapses
         // to a line on one axis.
@@ -7926,7 +8442,7 @@ pub fn draw_blur_backdrop(
         // **BOTH axes, and it was one for a while.** The cross was offset by `vec2(d, d)` from the
         // U step alone, but an authored pixel is `1/SCR_W` of the texture across and `1/SCR_H` of it
         // down — so the four extra taps landed the full radius sideways and 56% of it vertically,
-        // and the "softer material" was squashed. `GL_UVPX` two lines up already computes the pair;
+        // and the "softer material" was squashed. `gu.uvpx` two lines up already computes the pair;
         // this is the same expression, rectified. The shader reads the ON/OFF state off `.x` now,
         // which is why there is no flag component left to carry.
         let dpx = if deep > 0.0 {
@@ -7935,7 +8451,7 @@ pub fn draw_blur_backdrop(
             0.0
         };
         glUniform2f(
-            GL_DEEP,
+            gu.deep,
             dpx * (span[0] / c.reg[2]).abs(),
             dpx * (span[1] / c.reg[3]).abs(),
         );
@@ -7947,19 +8463,19 @@ pub fn draw_blur_backdrop(
             glActiveTexture(GL_TEXTURE0);
         }
         let (bevel, lens, spec) = rim.params();
-        glUniform1f(GL_BEVEL, bevel);
-        glUniform1f(GL_LENS, lens);
-        glUniform4fv(GL_SPEC, 1, spec.as_ptr());
-        glUniform4fv(GL_TINT, 1, tint);
-        glUniform4fv(GL_SCRIM_TOP, 1, face.scrim_top.as_ptr());
-        glUniform4fv(GL_SCRIM_BOT, 1, face.scrim_bot.as_ptr());
-        glUniform4fv(GL_RIMCOL_G, 1, face.rim.as_ptr());
-        glUniform4fv(GL_RIMLIT_G, 1, face.rim_lit.as_ptr());
-        glUniform1f(GL_RIMW_G, face.rim_w);
-        glUniform4f(GL_UVRECT, uv[0], uv[1], uv[2], uv[3]);
-        glUniform1f(GL_RADIUS, radius);
-        glUniform2f(GL_CH, w * 0.5, h * 0.5);
-        let ext = set_rect(GL_RECT, x, y, w, h);
+        glUniform1f(gu.bevel, bevel);
+        glUniform1f(gu.lens, lens);
+        glUniform4fv(gu.spec, 1, spec.as_ptr());
+        glUniform4fv(gu.tint, 1, tint);
+        glUniform4fv(gu.scrim_top, 1, face.scrim_top.as_ptr());
+        glUniform4fv(gu.scrim_bot, 1, face.scrim_bot.as_ptr());
+        glUniform4fv(gu.rimcol, 1, face.rim.as_ptr());
+        glUniform4fv(gu.rimlit, 1, face.rim_lit.as_ptr());
+        glUniform1f(gu.rimw, face.rim_w);
+        glUniform4f(gu.uvrect, uv[0], uv[1], uv[2], uv[3]);
+        glUniform1f(gu.radius, radius);
+        glUniform2f(gu.ch, w * 0.5, h * 0.5);
+        let ext = set_rect(gu.rect, x, y, w, h);
         profile::phase("glass.composite", || {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         });
@@ -7971,18 +8487,22 @@ pub fn draw_blur_backdrop(
 /// [`draw_blur_backdrop`] (the face gradient, the rim, the lit edge, the lens), fed two pictures
 /// the frame already holds instead of a blur chain: `ground`, the latched underlay field
 /// (`ui::underlay`'s 60x32 reconstruction of the undimmed host page, mapped over the whole screen
-/// top-down), as the backdrop the panel's body shows, and `sharp`, the host snapshot
-/// (`ui::popover::host`'s one page-sized capture, bottom-up as [`FrameCache`] holds it), as the
-/// rim's sharp source. Neither is taken here and neither is a function of this frame's page:
+/// top-down), as the backdrop the panel's body shows (unless a `frost` stands in for it, below), and
+/// `sharp`, the host snapshot (`ui::popover::host`'s one page-sized capture, bottom-up as
+/// [`FrameCache`] holds it), as the rim's sharp source. Neither is taken here and neither is a function of this frame's page:
 /// nothing is copied off the framebuffer, no source pass runs and no backdrop entry is requested,
 /// so a menu standing over its host costs one panel quad however long it stands, and its morph or
 /// slide moves that quad over pictures that do not change.
 ///
-/// Both pictures are UNDIMMED, so the modal dim the frame drew under the panel is applied to both
-/// at composite (`dim`, the [`backdrop::Dim`] a glass over a live band applies the same way):
-/// blur is linear and the dim's ink is a smooth field, so the panel shows the dimmed page it
-/// stands on. `sharp` 0 draws the single-source material (the host holds no undimmed page this
-/// frame).
+/// Without a `frost`, both pictures are UNDIMMED, so the modal dim the frame drew under the panel
+/// is applied to both at composite (`dim`, the [`backdrop::Dim`] a glass over a live band applies
+/// the same way): blur is linear and the dim's ink is a smooth field, so the panel shows the dimmed
+/// page it stands on. With a `frost` ([`GlassFrost`]: the host's retained blur of its page, on the
+/// frost variant of the glass program) the body is that texture instead of `ground`, the BAKED body
+/// ([`FrameCache::frost_bake_owed`]): already dimmed by the frame's lowest modal dim and held
+/// under its ceiling, so the composite dims only `sharp` (`ground` is still required, and is the
+/// body again when the frost variant did not link). `sharp` 0 draws the single-source material
+/// (the host holds no undimmed page this frame).
 ///
 /// Returns whether the material was handled, a culled or `drawmask`ed quad included (as
 /// [`draw_field_panel`] answers). `false` — no glass program, no ground, a video-plane frame —
@@ -8017,6 +8537,7 @@ pub fn draw_glass_frozen(
     rim: GlassRim,
     face: GlassFace,
     morph: GlassMorph,
+    frost: GlassFrost,
 ) -> bool {
     if ground == 0 || unsafe { GPROG } == 0 || unsafe { BLUR_OFF } {
         return false;
@@ -8037,80 +8558,102 @@ pub fn draw_glass_frozen(
         return true;
     }
     unsafe {
-        use_prog(GPROG);
-        glUniform1f(GL_SOURCE_ALPHA, 1.0);
+        // The body's picture: the menu's FROST (a retained blur of its page, drawn through a UV
+        // window of its region) or the latched field. Unit 0 is whichever, so the dim's field is its
+        // own texture (mode 1) over a frost and the body's own texel (mode 2) over the field. Only a
+        // draw WITH a frost takes the frost variant of the glass program (the one that draws the
+        // baked body as it is); every other glass draw keeps the plain program, and a driver that
+        // refused the variant leaves a frost nobody can draw, so it falls back to the field here too.
+        let (gu, framed) =
+            glass_program(frost.tex != 0 && frost.rect[2] > 0.0 && frost.rect[3] > 0.0);
+        let body = if framed { frost.tex } else { ground };
+        // A frost body is the BAKED texel (`FrameCache::frost_bake_owed`): its dim and its ceiling are in
+        // it, and the variant's composite carries neither. The dim set below is for the SHARP source
+        // (the rim band and the clear face), which is the undimmed page.
+        glUniform1f(gu.source_alpha, 1.0);
         let g = tokens::CLEAR_RGB;
-        glUniform3f(GL_SOURCE_GROUND, g.0, g.1, g.2);
+        glUniform3f(gu.source_ground, g.0, g.1, g.2);
         // `v_cuv` IS the screen point over the screen, top-down (the field's own mapping), so the
         // dim's field is read at `v_cuv` itself.
         match dim {
             Some(d) if d.tint[3] > 0.0 => {
-                glUniform4f(GL_DIM, d.tint[0], d.tint[1], d.tint[2], d.tint[3]);
-                let mode = frozen_dim_field(ground, d.tex);
-                glUniform1f(GL_DIM_FIELD, mode);
+                glUniform4f(gu.dim, d.tint[0], d.tint[1], d.tint[2], d.tint[3]);
+                let mode = frozen_dim_field(body, d.tex);
+                glUniform1f(gu.dim_field, mode);
                 if mode == 1.0 {
-                    glUniform4f(GL_DIM_UV, 1.0, 1.0, 0.0, 0.0);
+                    let u = if framed { snapshot_to_screen(frost.rect, [1.0, 1.0], FROST_BOTTOM_UP) } else { [1.0, 1.0, 0.0, 0.0] };
+                    glUniform4f(gu.dim_uv, u[0], u[1], u[2], u[3]);
                     glActiveTexture(GL_TEXTURE3);
                     glBindTexture(GL_TEXTURE_2D, d.tex);
                     glActiveTexture(GL_TEXTURE0);
                 }
             }
-            _ => glUniform4f(GL_DIM, 0.0, 0.0, 0.0, 0.0),
+            _ => glUniform4f(gu.dim, 0.0, 0.0, 0.0, 0.0),
         }
         // A frozen page carries its wash in the snapshot: no delta (the uniform is the program's,
         // so the last live glass's `1` would otherwise stay).
-        glUniform1f(GL_WASH_ON, 0.0);
-        glUniform1f(GL_DIM_SHARP, if sharp != 0 { 1.0 } else { 0.0 });
-        glUniform1f(GL_DITHER_AMT, dither_for_field(q.w, q.h));
-        glBindTexture(GL_TEXTURE_2D, ground);
-        glUniform2f(GL_UVPX, 1.0 / SCR_W, 1.0 / SCR_H);
+        glUniform1f(gu.wash_on, 0.0);
+        glUniform1f(gu.dim_sharp, if sharp != 0 { 1.0 } else { 0.0 });
+        glUniform1f(gu.dither_amt, dither_for_field(q.w, q.h));
+        glBindTexture(GL_TEXTURE_2D, body);
+        if framed {
+            let sy = if FROST_BOTTOM_UP { -1.0 } else { 1.0 };
+            glUniform2f(gu.uvpx, 1.0 / frost.rect[2], sy / frost.rect[3]);
+        } else {
+            glUniform2f(gu.uvpx, 1.0 / SCR_W, 1.0 / SCR_H);
+        }
         let sharpw = if sharp != 0 { rim.sharp() } else { 0.0 };
         // The snapshot is the whole drawable, bottom-up: its window is the screen rect over the
         // screen, with the row order flipped (`frame_cache_uv`).
         let full = [0.0, 0.0, SCR_W, SCR_H];
         let suv = blur_uv_rect(x, y, w, h, full, [1.0, 1.0], true);
-        glUniform4f(GL_SHARP_RECT, suv[0], suv[1], suv[2], suv[3]);
-        glUniform2f(GL_SHARP_PX, 1.0 / SCR_W, -1.0 / SCR_H);
-        glUniform1f(GL_SHARPW, sharpw);
+        glUniform4f(gu.sharp_rect, suv[0], suv[1], suv[2], suv[3]);
+        glUniform2f(gu.sharp_px, 1.0 / SCR_W, -1.0 / SCR_H);
+        glUniform1f(gu.sharpw, sharpw);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, if sharp != 0 { sharp } else { ground });
         glActiveTexture(GL_TEXTURE0);
-        glUniform1f(GL_RIMCLEAR, rim.rimclear());
+        glUniform1f(gu.rimclear, rim.rimclear());
         // The field is already the softest picture of the page there is: no deep cross.
-        glUniform2f(GL_DEEP, 0.0, 0.0);
+        glUniform2f(gu.deep, 0.0, 0.0);
         let (bevel, lens, spec) = rim.params();
-        glUniform1f(GL_BEVEL, bevel);
-        glUniform1f(GL_LENS, lens);
-        glUniform4fv(GL_SPEC, 1, spec.as_ptr());
-        glUniform4fv(GL_TINT, 1, tint);
-        glUniform4fv(GL_SCRIM_TOP, 1, face.scrim_top.as_ptr());
-        glUniform4fv(GL_SCRIM_BOT, 1, face.scrim_bot.as_ptr());
-        glUniform4fv(GL_RIMCOL_G, 1, face.rim.as_ptr());
-        glUniform4fv(GL_RIMLIT_G, 1, face.rim_lit.as_ptr());
-        glUniform1f(GL_RIMW_G, face.rim_w);
-        glUniform4f(GL_UVRECT, q.x / SCR_W, q.y / SCR_H, q.w / SCR_W, q.h / SCR_H);
-        glUniform1f(GL_RADIUS, radius);
-        glUniform2f(GL_CH, w * 0.5, h * 0.5);
+        glUniform1f(gu.bevel, bevel);
+        glUniform1f(gu.lens, lens);
+        glUniform4fv(gu.spec, 1, spec.as_ptr());
+        glUniform4fv(gu.tint, 1, tint);
+        glUniform4fv(gu.scrim_top, 1, face.scrim_top.as_ptr());
+        glUniform4fv(gu.scrim_bot, 1, face.scrim_bot.as_ptr());
+        glUniform4fv(gu.rimcol, 1, face.rim.as_ptr());
+        glUniform4fv(gu.rimlit, 1, face.rim_lit.as_ptr());
+        glUniform1f(gu.rimw, face.rim_w);
+        if framed {
+            let uv = blur_uv_rect(q.x, q.y, q.w, q.h, frost.rect, [1.0, 1.0], FROST_BOTTOM_UP);
+            glUniform4f(gu.uvrect, uv[0], uv[1], uv[2], uv[3]);
+        } else {
+            glUniform4f(gu.uvrect, q.x / SCR_W, q.y / SCR_H, q.w / SCR_W, q.h / SCR_H);
+        }
+        glUniform1f(gu.radius, radius);
+        glUniform2f(gu.ch, w * 0.5, h * 0.5);
         // The join and the clarity, set on EVERY draw (the program's state): the panel's centre in
         // the quad's own frame, the joined shape's centre, half-size, radius and reach (`k` 0 = no
         // join), the colour the joined shape wears (amount 0 = none), and the clarity, which needs
         // a sharp source to show.
         let (qcx, qcy) = (q.x + q.w * 0.5, q.y + q.h * 0.5);
-        glUniform2f(GL_BOFF, x + w * 0.5 - qcx, y + h * 0.5 - qcy);
+        glUniform2f(gu.boff, x + w * 0.5 - qcx, y + h * 0.5 - qcy);
         match merge {
             Some(m) => {
-                glUniform4f(GL_MRG, m.rect.x + m.rect.w * 0.5 - qcx, m.rect.y + m.rect.h * 0.5 - qcy, m.rect.w * 0.5, m.rect.h * 0.5);
-                glUniform2f(GL_MRG_RK, m.radius, m.k);
-                glUniform4f(GL_MRG_TINT, m.tint[0], m.tint[1], m.tint[2], m.tint[3].clamp(0.0, 1.0));
+                glUniform4f(gu.mrg, m.rect.x + m.rect.w * 0.5 - qcx, m.rect.y + m.rect.h * 0.5 - qcy, m.rect.w * 0.5, m.rect.h * 0.5);
+                glUniform2f(gu.mrg_rk, m.radius, m.k);
+                glUniform4f(gu.mrg_tint, m.tint[0], m.tint[1], m.tint[2], m.tint[3].clamp(0.0, 1.0));
             }
             None => {
-                glUniform4f(GL_MRG, 0.0, 0.0, 0.0, 0.0);
-                glUniform2f(GL_MRG_RK, 0.0, 0.0);
-                glUniform4f(GL_MRG_TINT, 0.0, 0.0, 0.0, 0.0);
+                glUniform4f(gu.mrg, 0.0, 0.0, 0.0, 0.0);
+                glUniform2f(gu.mrg_rk, 0.0, 0.0);
+                glUniform4f(gu.mrg_tint, 0.0, 0.0, 0.0, 0.0);
             }
         }
-        glUniform1f(GL_CLEAR, if sharp != 0 { morph.clear.clamp(0.0, 1.0) } else { 0.0 });
-        let ext = set_rect(GL_RECT, q.x, q.y, q.w, q.h);
+        glUniform1f(gu.clear, if sharp != 0 { morph.clear.clamp(0.0, 1.0) } else { 0.0 });
+        let ext = set_rect(gu.rect, q.x, q.y, q.w, q.h);
         profile::phase("glass.frozen", || {
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
         });
@@ -9318,6 +9861,7 @@ mod tests {
             ("fs_field.frag", FS_FIELD),
             ("fs_field_panel.frag", FS_FIELD_PANEL),
             ("fs_glass.frag", FS_GLASS),
+            ("fs_glass.frag (frost)", FS_GLASS_FROST),
             ("fs_art_wash.frag", FS_ART_WASH),
         ] {
             let code = shader_code(src);
@@ -11328,6 +11872,198 @@ mod tests {
         assert!(body("impl Drop for DirectPass {").contains("rclip_set(None)"), "the direct pass leaves with none");
     }
 
+    /// **The plain glass program carries nothing of the frost; the frost program's composite has no
+    /// body dim and no cap.** The frost variant is `#ifdef PLX_FROST` in `fs_glass.frag`: its body is the
+    /// BAKED texel (`fs_frost_bake.frag`), so `srcRGB` ends `return c;` with no `dimRGB` call and the cap's
+    /// uniform and code are gone from the composite altogether (measured: 0.38M cycles executing, 0.31M
+    /// more paid even switched off, and 0.27M for the body's dim fetch). Preprocessed WITHOUT the macro
+    /// no word of the frost is left (so a compiler that rejects the variant can only cost the menus
+    /// their frost, `GLASS_FROST` being an optional link); WITH it the text is the plain text with that
+    /// one return swapped, and `dimRGB` itself stays for the sharp source (rim band, clear face).
+    #[test]
+    fn the_plain_glass_program_carries_no_frost_and_the_variant_composite_has_no_cap_and_no_body_dim() {
+        let file = include_str!("shaders/fs_glass.frag");
+        let plain = preprocess(file, &[]);
+        for needle in ["frost", "PLX_FROST", "u_frost_cap"] {
+            assert!(!plain.contains(needle), "the plain glass program names `{needle}`");
+        }
+        assert!(plain.contains("  return dimRGB(c, uv, g);\n"), "the plain srcRGB ends as it always did");
+        let frost = preprocess(file, &["PLX_FROST"]);
+        for needle in ["u_frost_cap", "frost_cap", "max(c.r, max(c.g, c.b))", "o / (o + "] {
+            assert!(!frost.contains(needle), "the frost composite carries no cap code: `{needle}`");
+        }
+        let body_fetch = |src: &str| {
+            let from = src.find("vec3 srcRGB(").expect("srcRGB");
+            src[from..from + src[from..].find("highp float sdBox").expect("the end of srcRGB")].to_string()
+        };
+        assert!(!body_fetch(&frost).contains("dimRGB("), "the frost body takes no dim: it is baked");
+        assert!(body_fetch(&plain).contains("dimRGB("), "the plain body still does");
+        assert!(frost.contains("dimRGB(sharp, v_cuv"), "the sharp source keeps its dim (the rim band and the clear face)");
+        assert_eq!(
+            frost,
+            plain.replace("  return dimRGB(c, uv, g);\n", "  return c;\n"),
+            "the frost program is the plain one with the body's return bare, nothing else"
+        );
+        let (plain_src, frost_src) = (FS_GLASS.to_str().unwrap(), FS_GLASS_FROST.to_str().unwrap());
+        assert!(!plain_src.contains("#define PLX_FROST"), "the plain program never defines the macro");
+        assert_eq!(
+            frost_src.strip_prefix("#define PLX_FROST\n"),
+            Some(plain_src),
+            "the variant is the plain source behind the one define, in front of the dither prelude"
+        );
+    }
+
+    /// **The bake program has what the composite lost, in the pinned order.** `fs_frost_bake.frag`
+    /// applies the dim (flat ink or the field texel at the screen point, `fs_glass.frag`'s `dimRGB`
+    /// modes 0 and 1) and THEN the cap, with the former composite's cap statements verbatim, and writes an
+    /// opaque body. Capping before the dim would let the ink raise the body past the ceiling the ink
+    /// floors were derived from (`ui::popover_glass`'s tertiary-ink test grades the order).
+    #[test]
+    fn the_bake_program_dims_then_caps_with_the_statements_the_composite_dropped() {
+        let bake = shader_code(FS_FROST_BAKE);
+        let dim = bake.find("c = mix(c, ink, a);").expect("the bake dims the body");
+        let cap = bake.find("if (u_frost_cap.y > 0.0) {").expect("the bake caps the body");
+        assert!(dim < cap, "dim, THEN cap");
+        assert!(bake.contains("texture2D(u_dim_tex, v_cuv * u_dim_uv.xy + u_dim_uv.zw)"), "the field at the screen point");
+        for line in [
+            "float m = max(c.r, max(c.g, c.b));",
+            "float o = max(m - u_frost_cap.x, 0.0);",
+            "float y = min(m, u_frost_cap.x) + u_frost_cap.y * (o / (o + u_frost_cap.y));",
+            "c *= y / max(m, 0.0001);",
+        ] {
+            assert!(bake.contains(line), "the cap is the composite's own: `{line}`");
+        }
+        assert!(bake.contains("gl_FragColor = vec4(c, 1.0);"), "an opaque body");
+        let src = include_str!("gfx.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the unit tests")];
+        assert!(
+            prod.contains("link_optional_program(VS_IMG.as_ptr(), FS_FROST_BAKE.as_ptr())"),
+            "the bake is an optional link on the blur chain's vertex half"
+        );
+        assert!(
+            prod.contains("glUniform4f(b.uvrect, 0.0, 1.0, 1.0, -1.0)"),
+            "the pass's flip is undone by its UV window: the body is stored the way the frost is (FROST_BOTTOM_UP)"
+        );
+        assert!(prod.contains("let bake = FrostBake::link()?;"), "no bake, no frost variant: menus keep the field ground");
+        assert!(prod.contains("profile::phase(\"glass.bake\""), "the bake has its own profiler phase");
+    }
+
+    /// CPU model of one grey channel through `fs_frost_bake.frag`: the dim (`mix(c, ink, a)`) and then
+    /// the cap (`GlassFrost::cap`).
+    fn bake_model(f: &GlassFrost, c: f32, ink: f32, a: f32) -> f32 {
+        f.cap(c + (ink - c) * a)
+    }
+
+    /// **The baked body, magnified as the composite samples it, against today's per-pixel body.**
+    /// Today (before the bake) the glass bilinear-sampled the 8-bit frost at each fragment, dimmed
+    /// that by the field's ink AT THE FRAGMENT, and capped the result. The bake dims and caps each 1/8
+    /// texel once at the texel's centre, stores it in 8 bits, and the composite bilinear-samples that.
+    /// Over one row of 240 texels (the canvas at 1/8) against a 60-cell field that is linear between
+    /// cell centres (the 60x32 field, GL_LINEAR), the two differ by, at most:
+    ///   * storage: 0.5/255, one 8-bit rounding of the stored texel, which bilinear cannot grow;
+    ///   * the dim: it is AFFINE in the frost value and in the ink, so the interpolation of baked
+    ///     texels reproduces it exactly except across a cell-centre kink of the field, where sampling
+    ///     at texel centres and interpolating misses by at most `|slope change| * h / 4` (`h` = 8 px),
+    ///     scaled by the dim's alpha;
+    ///   * the cap: concave (`y'' = -2d^2/(o+d)^3`, so `|y''| <= 2/d` for headroom `d`), hence the
+    ///     blend of capped texels is NEVER above the cap of the blend (Jensen) and below it by at most
+    ///     `h_v^2 / 8 * 2/d = h_v^2/(4d)`, `h_v` the largest step between neighbouring dimmed texels.
+    /// A white or black frost is flat: its bound is the storage term alone.
+    #[test]
+    fn the_baked_body_magnified_is_the_per_pixel_body_within_storage_kink_and_concavity() {
+        let ceiling = 0.333_f32;
+        let f = GlassFrost { tex: 1, rect: [0.0; 4], knee: 0.9 * ceiling, ceiling, rev: 0 };
+        let d = ceiling - 0.9 * ceiling;
+        let store = 0.5 / 255.0;
+        // The field's ink at a pixel: linear between cell centres (32 px cells), clamped at the ends.
+        let cells: Vec<f32> = (0..60).map(|i| 0.55 + 0.25 * (i as f32 * 0.37).sin()).collect();
+        let ink = |x: f32| {
+            let t = (x / 32.0 - 0.5).clamp(0.0, 58.999);
+            let (i, u) = (t.floor() as usize, t.fract());
+            cells[i] + (cells[i + 1] - cells[i]) * u
+        };
+        let kink = (1..59).map(|i| (cells[i + 1] - 2.0 * cells[i] + cells[i - 1]).abs() / 32.0).fold(0.0_f32, f32::max) * 8.0 / 4.0;
+        let a = 0.30_f32;
+        let rows: [(&str, Vec<f32>); 4] = [
+            ("gradient", (0..240).map(|i| (i as f32 / 239.0 * 255.0).round() / 255.0).collect()),
+            ("white", vec![1.0; 240]),
+            ("black", vec![0.0; 240]),
+            ("steep", (0..240).map(|i| if i < 120 { 0.9 } else { 0.5 }).collect()),
+        ];
+        for (name, frost) in rows {
+            let baked: Vec<f32> = (0..240)
+                .map(|i| (bake_model(&f, frost[i], ink((i as f32 + 0.5) * 8.0), a) * 255.0).round() / 255.0)
+                .collect();
+            let dimmed: Vec<f32> = (0..240).map(|i| frost[i] + (ink((i as f32 + 0.5) * 8.0) - frost[i]) * a).collect();
+            let step = (0..239).map(|i| (dimmed[i + 1] - dimmed[i]).abs()).fold(0.0_f32, f32::max);
+            let (dim_gap, cap_gap) = (a * kink, step * step / (4.0 * d));
+            let lerp = |row: &[f32], x: f32| {
+                let t = (x / 8.0 - 0.5).clamp(0.0, 238.999);
+                let (i, u) = (t.floor() as usize, t.fract());
+                row[i] + (row[i + 1] - row[i]) * u
+            };
+            for x in 0..1920 {
+                let x = x as f32 + 0.5;
+                let today = f.cap(lerp(&frost, x) + (ink(x) - lerp(&frost, x)) * a);
+                let now = lerp(&baked, x);
+                assert!(
+                    now - today <= store + dim_gap + 1e-5,
+                    "{name} @{x}: the baked body is never brighter than today's beyond storage and the kink: {now} vs {today}"
+                );
+                assert!(
+                    today - now <= store + dim_gap + cap_gap + 1e-5,
+                    "{name} @{x}: and is below it by at most storage + kink + concavity ({}): {now} vs {today}",
+                    store + dim_gap + cap_gap
+                );
+                // A blend of capped texels cannot pass the ceiling (storage may round up by half a code).
+                assert!(now <= ceiling + store + 1e-6, "{name} @{x}: {now} passes the ceiling {ceiling}");
+            }
+            if name == "white" || name == "black" {
+                assert!(dim_gap + cap_gap <= 0.003, "{name}: a flat frost's bound is the kink alone, {}", dim_gap + cap_gap);
+            }
+        }
+        // Concavity itself: any two capped values blend under the cap of their blend, and under the ceiling.
+        for (u, v) in [(0.0_f32, 1.0), (0.2, 0.9), (0.3, 0.31), (0.6, 1.0)] {
+            for t in [0.1_f32, 0.5, 0.9] {
+                let blend = f.cap(u) * (1.0 - t) + f.cap(v) * t;
+                assert!(blend <= f.cap(u * (1.0 - t) + v * t) + 1e-6, "capped texels blend under the cap of the blend");
+                assert!(blend < ceiling, "{blend} passes the ceiling");
+            }
+        }
+    }
+
+    /// The frost program's wiring, which no host test can drive. It is an OPTIONAL link at boot (a
+    /// driver that refuses it logs `glass frost prog unavailable` and leaves every glass on the plain
+    /// program: never an exit, never a lost program), it owns its own uniform locations
+    /// (`GlassUniforms::of`, not the plain program's), only a draw that has a frost asks for it, the
+    /// live glass never does, and with it missing no frost is built, so menus keep the field ground
+    /// and the heavier face.
+    #[test]
+    fn the_glass_frost_program_is_an_optional_link_only_a_frosted_draw_takes() {
+        let src = include_str!("gfx.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the unit tests")];
+        let body = |head: &str| {
+            let from = prod.find(head).unwrap_or_else(|| panic!("`{head}` is gone"));
+            let rest = &prod[from..];
+            &rest[..rest.find("\n}\n").expect("the end of the function")]
+        };
+        assert!(
+            prod.contains("GLASS_FROST = link_optional_program(VS_IMG_DITHERED.as_ptr(), FS_GLASS_FROST.as_ptr())"),
+            "the frost glass is fs_glass.frag behind PLX_FROST on the glass's own vertex shader, an optional link"
+        );
+        assert!(prod.contains("log(\"glass frost prog unavailable"), "a refusal logs one line");
+        assert!(prod.contains("let u = GlassUniforms::of(program);"), "the variant looks its own locations up");
+        assert!(
+            body("pub fn draw_glass_frozen(").contains("glass_program(frost.tex != 0 && frost.rect[2] > 0.0 && frost.rect[3] > 0.0)"),
+            "a frozen glass asks for the variant only when it has a frost"
+        );
+        assert!(body("pub fn draw_blur_backdrop(").contains("glass_program(false)"), "the live glass never does");
+        assert!(!body("pub fn draw_glass_frozen(").contains("use_prog(GPROG)"), "the frozen glass binds through glass_program");
+        assert!(prod.contains("!self.off && !self.fbo_off && !self.frost_off && glass_frost_linked()"), "no variant, no frost owed");
+        assert!(prod.contains("|| !blur_lazy_init() || !glass_frost_linked()"), "and none built");
+        assert!(!prod.contains("static mut GL_"), "the glass's locations are GlassUniforms, not a static per uniform");
+    }
+
     /// Under a live rounded clip a flat or ramp rect is the rect program's SDF fill (its flat fast
     /// path is the same expression), because the dedicated `fs_flat` / `fs_ramp` stay branch-free
     /// and unmasked; every other rect keeps its program, and nothing changes while no clip is live.
@@ -12351,5 +13087,58 @@ mod card_split_tests {
             );
             assert!(of_quad > 0.60 && of_card > 0.70, "{name}: {of_quad} {of_card}");
         }
+    }
+}
+
+#[cfg(test)]
+mod frost_tests {
+    use super::*;
+
+    /// The region is the panel grown by the reach, aligned OUT to whole 1/8 texels and clamped to the canvas.
+    #[test]
+    fn the_frost_region_is_the_panel_plus_its_reach_aligned_to_eighths() {
+        let r = frost_region([630.0, 270.0, 660.0, 540.0]);
+        assert_eq!(r, [504, 144, 912, 792], "{r:?}");
+        let r = frost_region([13.0, 7.0, 101.0, 55.0]);
+        assert_eq!((r[0], r[1]), (0, 0), "clamped at the canvas origin: {r:?}");
+        for r in [r, frost_region([1800.0, 1000.0, 120.0, 80.0]), frost_region([0.0, 0.0, SCR_W, SCR_H])] {
+            assert!(r.iter().all(|v| v % 8 == 0), "whole 1/8 texels: {r:?}");
+            assert!(r[0] + r[2] <= SCR_W as c_int && r[1] + r[3] <= SCR_H as c_int, "inside the canvas: {r:?}");
+        }
+    }
+
+    /// **The knee is the identity below it, bends with a continuous slope above it, and the ceiling is
+    /// HARD** (nothing reaches it, a full white body lands just under). The knee sits at 0.9 of the
+    /// ceiling (`ui::theme::FROST_BODY_KNEE_AT`), so a body at 0.85 of it comes through unchanged and
+    /// only the last tenth bends. The slope is 1 on both sides of the knee: a curve that steepens
+    /// above it (a normalisation that made white land ON the ceiling did) is a kink, not a knee.
+    #[test]
+    fn the_frost_cap_is_a_soft_knee_under_a_hard_ceiling() {
+        let ceiling = 0.333;
+        let f = GlassFrost { tex: 1, rect: [0.0, 0.0, 8.0, 8.0], knee: 0.9 * ceiling, ceiling, rev: 0 };
+        for i in 0..=100 {
+            let m = f.knee * i as f32 / 100.0;
+            assert!((f.cap(m) - m).abs() <= 1e-6, "untouched below the knee at {m}: {}", f.cap(m));
+        }
+        assert!((f.cap(0.85 * ceiling) - 0.85 * ceiling).abs() <= 1.0 / 255.0, "0.85 of the ceiling passes through");
+        let e = 1e-4;
+        let slope = (f.cap(f.knee + e) - f.cap(f.knee)) / e;
+        assert!((0.98..=1.005).contains(&slope), "the slope is continuous at the knee (1 below it): {slope}");
+        let white = f.cap(1.0);
+        assert!(white < ceiling && white > ceiling - 1.0 / 255.0, "white lands just under the ceiling: {white}");
+        let mut last = 0.0;
+        for i in 0..=100 {
+            let y = f.cap(i as f32 / 100.0);
+            assert!(y >= last && y < ceiling, "monotone and under the ceiling at {i}: {y}");
+            last = y;
+        }
+        assert_eq!(GlassFrost::NONE.cap(0.9), 0.9, "no frost, no cap");
+    }
+
+    /// The retained frost is stored the way the passes leave it: four flips from the bottom-up snapshot.
+    #[test]
+    fn the_frost_is_stored_bottom_up_after_four_flips() {
+        assert!(FROST_BOTTOM_UP);
+        assert_eq!(FROST_TAPS.iter().map(|d| d * d + 0.25).sum::<f32>(), 9.0, "sigma 3 texels = 24 px at 1/8");
     }
 }

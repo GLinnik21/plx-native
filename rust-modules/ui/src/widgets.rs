@@ -139,8 +139,9 @@ pub fn declare_chrome_glass_for_test(p: Painter, rects: &[Rect]) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ground {
     /// A MENU (Sort & Filter, the account menu, the item hold menu): glass on the frozen ground
-    /// (`popover_glass`: the latched field and the host snapshot), the latched-field ground only
-    /// when there is nothing frozen to stand on.
+    /// (`popover_glass`: a frost of the host snapshot, the latched field as its fallback body, and
+    /// the snapshot itself for the rim), the latched-field ground only when there is nothing frozen
+    /// to stand on.
     Menu,
     /// Everything else that stands on a panel (alerts, About, Tracks, the person bio, the decision
     /// alert): the pre-DS6 ground, the latched underlay field under the frost. Never glass.
@@ -173,8 +174,8 @@ pub enum Ground {
 /// **DS6 put glass back on MENUS, and only menus** (owner decision, wave 2 review): the caller
 /// states which ground it wants with a [`Ground`], per call, and there is no global switch.
 /// [`Ground::Menu`] runs `popover_glass::draw` first and wins whenever the field is latched; that
-/// glass stands on the same frozen pictures (this field, and the host snapshot for its rim) and
-/// reads no framebuffer either. Everything described above is the ground of [`Ground::Sheet`]
+/// glass stands on frozen pictures (the host's frost of the page for its body, this field as the
+/// body's fallback, and the host snapshot for its rim) and reads no framebuffer either. Everything described above is the ground of [`Ground::Sheet`]
 /// (alerts, About, Tracks, the person bio, the decision alert) and the FALLBACK ground of a menu
 /// with nothing frozen to stand on. The chrome (the top bar's track, the profile chip's capsule,
 /// the hold hint) is the only live-blur user.
@@ -185,15 +186,17 @@ pub fn panel_ground(
     field: Option<&crate::underlay::UnderlayField>,
     ground: Ground,
 ) {
-    panel_ground_shadowed(p, r, radius, field, ground, 1.0, plx_gfx::gfx::GlassMorph::NONE);
+    panel_ground_shadowed(p, r, r, radius, field, ground, 1.0, plx_gfx::gfx::GlassMorph::NONE);
 }
 
 /// [`panel_ground`] with a menu glass's drop shadow at `shadow` of the painter's opacity
-/// ([`crate::popover_glass::draw_shadowed`]) and a morph's join and clarity (`morph`, which only the
-/// glass wears: the field ground casts no shadow and has neither, so it is unchanged).
+/// ([`crate::popover_glass::draw_shadowed`]) and a morph's join (`morph`, which only the glass wears:
+/// the field ground casts no shadow and has no join, so it is unchanged).
+#[allow(clippy::too_many_arguments)]
 pub fn panel_ground_shadowed(
     p: Painter,
     r: Rect,
+    settled: Rect,
     radius: f32,
     field: Option<&crate::underlay::UnderlayField>,
     ground: Ground,
@@ -203,7 +206,7 @@ pub fn panel_ground_shadowed(
     // DS6: a menu is glass on the frozen ground (`popover_glass`); the field ground below is the
     // fallback when there is nothing frozen to stand on. A sheet never takes this branch.
     if ground == Ground::Menu
-        && crate::profile::phase("panel.glass", || crate::popover_glass::draw_shadowed(p, r, radius, field, shadow, morph))
+        && crate::profile::phase("panel.glass", || crate::popover_glass::draw_shadowed(p, r, settled, radius, field, shadow, morph))
     {
         return;
     }
@@ -2932,7 +2935,8 @@ fn glass_capsule(
             // the frosted material: the field behind the body, the snapshot behind the rim
             LiftGround::Field(field) =>
                 (field, crate::popover::host::page_tex().unwrap_or(0), plx_gfx::gfx::GlassMorph::NONE),
-            // CLEAR glass (`GlassMorph::clear`, the morphing menu's own): the body shows the sharp
+            // CLEAR glass (`GlassMorph::clear`, which only this lift draws now: a morphing menu's own
+            // glass is frosted on every frame): the body shows the sharp
             // snapshot through `sharp`, whose window is the one flipped the way the snapshot is held;
             // the texture in the `ground` slot is only the program's required non-zero binding, and
             // `u_clear` 1 mixes every texel of it away
@@ -3181,7 +3185,8 @@ pub enum LiftGround {
     /// drawn above the dim), the host snapshot behind its rim.
     Field(u32),
     /// The host snapshot, before the field has latched: the same capsule drawn CLEAR over the
-    /// undimmed page it was taken of, the morphing menu's own opening material. The field is read
+    /// undimmed page it was taken of (the opener's own cap, which is whole on these frames; the menu's
+    /// glass beside it is frosted, never clear). The field is read
     /// back from the GPU a frame or two after the menu mounts; the snapshot is taken in the mount
     /// frame's own page pass, before the lift.
     Snapshot(u32),

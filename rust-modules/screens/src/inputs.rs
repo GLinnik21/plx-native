@@ -60,6 +60,18 @@ impl Default for ScreenInputs {
             install_language: Default::default(), running_language: Default::default(), player_presentation: Default::default() }
     }
 }
+/// **Did a setting a page draws from move since the page last held it?** Settings changes a
+/// setting while it covers a page, and nothing else tells the page: it keeps what it last drew from
+/// in `held`, reads the setting again at the head of its next `step` (whichever event comes first)
+/// and asks here. `true` is what the page answers with page damage (`Effects::invalidate`): a page
+/// coming back from under a cover raises none of its own, and typed page damage is what retakes a
+/// frozen host's snapshot.
+pub fn moved<T: PartialEq>(held: &mut T, now: T) -> bool {
+    let changed = *held != now;
+    *held = now;
+    changed
+}
+
 impl ScreenInputs {
     pub fn preference<S: plx_plex::plex::session::ProfileSetting>(&self) -> S::Value {
         if let Some(value) = self.preferences.as_ref().and_then(S::own) { return value; }

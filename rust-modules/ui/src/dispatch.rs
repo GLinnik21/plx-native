@@ -1217,6 +1217,16 @@ where
         captured
     }
 
+    /// [`modal_presentation`](Self::modal_presentation) carrying the frame's lowest modal dim
+    /// ([`ModalStack::first_dim`](super::containers::modal::ModalStack::first_dim)) at the route
+    /// transition's `nav_page_alpha`, the value `draw_scrims` is handed: what the host's frost body is
+    /// baked from at the head of the frame.
+    pub fn modal_presentation_at(&self, nav_page_alpha: f32) -> super::containers::modal::ModalPresentation {
+        let mut captured = self.modal_presentation();
+        captured.dim = self.nav.modals.first_dim(nav_page_alpha);
+        captured
+    }
+
     pub fn top_screen(&self) -> Option<&dyn super::screen::Screen<H>> {
         self.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| &*i.screen)
     }

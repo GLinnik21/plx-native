@@ -987,10 +987,19 @@ impl Screen<FixtureHost> for FixtureModal {
         self.bar_opener
     }
     fn opener_alpha(&self) -> f32 {
-        self.opener_alpha
+        // a surface that owns a popover answers its morph's (a menu's opener is consumed by it); one
+        // without keeps the alpha a test states
+        self.popover.as_ref().map_or(self.opener_alpha, |p| p.opener_alpha())
+    }
+    fn handed_back(&self) -> bool {
+        self.popover.as_ref().is_some_and(|p| p.handed_back())
     }
     fn opener_rect(&mut self, drawn: super::Rect) {
         self.opener_seen.push(drawn);
+        // the menus' own `opener_rect`: the morph starts and ends on the opener's live drawn rect
+        if let Some(pop) = self.popover.as_mut() {
+            pop.track_opener(drawn);
+        }
     }
     fn draw_held(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
         self.held_faces.push(!f.painter.records());

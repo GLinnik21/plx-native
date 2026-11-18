@@ -1684,3 +1684,27 @@ fn the_edge_glide_moves_the_results_by_poster_rows_and_a_wheel_notch_by_a_table_
     assert!((screen.stack.target() - glided - plx_ui::table::ROW_H).abs() < 0.01,
         "a wheel notch moves one table row: {} -> {}", glided, screen.stack.target());
 }
+
+/// **Search, covered, notices that Settings changed what its poster rows draw under the posters**
+/// (`step`'s head): a page returning from under a cover raises no damage of its own, and typed page
+/// damage is what retakes a frozen host's snapshot.
+#[test]
+fn search_damages_the_page_when_the_under_posters_setting_moved_under_a_cover() {
+    use crate::registry::captions::{PolicyPin, FIXTURE_TITLE_ON};
+    use plx_plex::plex::session::UnderPosters;
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::new();
+    let mut screen = fixture.screen();
+    let mut uncover_under = |setting: UnderPosters| {
+        let _pin = PolicyPin::set(setting);
+        let cx = fixture.cx(None);
+        let mut out = Vec::new();
+        let mut present = Present::new();
+        Machine::<HostFixture>::step(&mut screen, &ScreenEvent::Uncover, &cx,
+            &mut Effects::new(&mut out, MachineId::Instance(INSTANCE), &mut present));
+        present.page_damaged()
+    };
+    assert!(!uncover_under(UnderPosters::DEFAULT), "control: an unchanged setting damages nothing");
+    assert!(uncover_under(FIXTURE_TITLE_ON), "the Title switch moved the caption policy");
+    assert!(!uncover_under(FIXTURE_TITLE_ON), "...once");
+}

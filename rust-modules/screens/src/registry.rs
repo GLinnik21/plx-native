@@ -26,7 +26,7 @@
 
 pub use crate::family::SettingsPage;
 pub use crate::family::InnerViews;
-pub use crate::inputs::{GrantInputs, RuntimePolicy, ScreenInputs};
+pub use crate::inputs::{moved, GrantInputs, RuntimePolicy, ScreenInputs};
 #[cfg(test)]
 pub(crate) use crate::inputs::{capture_fixture, caption_fixture, empty_fixture, publication_fixture};
 /// The stored Under posters setting as the ui caption policy: the shared door a screen outside

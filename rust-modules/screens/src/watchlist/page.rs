@@ -828,6 +828,13 @@ pub struct WatchlistScreen {
     /// answers, so the page cannot refuse it: it puts the reader's focus back when it arrives
     /// (see [`step`](Machine::step)).
     stale_enters: u8,
+    /// The Under posters policy the tiles' captions were last drawn with: what `step` compares, as
+    /// Settings changes the setting while it covers the page. Decoration, never canon.
+    caption_policy: plx_ui::caption_policy::CaptionPolicy,
+    /// The page's revision ([`Page::rev`]) as `step` last saw it: a tile landing, an option change or
+    /// a count released moves it, and it is what the page draws that a cover can have hidden.
+    /// Decoration, never canon.
+    seen_rev: u64,
 }
 
 impl WatchlistScreen {
@@ -905,6 +912,8 @@ impl WatchlistScreen {
             seat: None,
             own_enters: 0,
             stale_enters: 0,
+            caption_policy: crate::registry::caption_policy_of(plx_plex::plex::session::UnderPosters::DEFAULT),
+            seen_rev: 0,
         }
     }
 
@@ -1515,6 +1524,16 @@ impl<H: ContentLike> Machine<H> for WatchlistScreen {
     type Ev = ScreenEvent<H>;
 
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        // **The page damages itself for what it draws that moved, and for nothing else.** A page that
+        // comes back from under a cover (`Uncover`, `Enter(Restored)`, a focus restored onto the
+        // key it already holds) raises none: typed page damage retakes a frozen host's snapshot, which
+        // is the cost a glass menu's BACK paid. What a covered page can have missed is its tiles and
+        // options (`rev`, moved by `input` and the count's release) and the Under posters setting
+        // (`policy_for`, read at draw), and both are answered here, on whichever event comes first.
+        let policy = crate::registry::moved(&mut self.caption_policy, crate::registry::captions::policy_for(H::screen_inputs(cx)));
+        if crate::registry::moved(&mut self.seen_rev, self.page.rev) | policy {
+            fx.invalidate(Provenance::Nav);
+        }
         let card = match self.stack.on(&self.page, ev, cx, fx) {
             Some(StackEvent::Card(_, card)) => Some(card),
             _ => None,
@@ -1562,14 +1581,25 @@ impl<H: ContentLike> Machine<H> for WatchlistScreen {
                         self.stale_enters = self.own_enters;
                     }
                 }
-                fx.invalidate(Provenance::Nav);
+                // A page that ARRIVES paints. One that returns (a modal's dismissal, BACK onto it) is
+                // the page it was, and paints again only for what `step`'s head found moved.
+                if matches!(enter, Enter::Fresh { .. }) {
+                    fx.invalidate(Provenance::Nav);
+                }
                 Handled::Yes
             }
-            ScreenEvent::Uncover => {
-                fx.invalidate(Provenance::Nav);
+            // Nothing the page draws changed by being uncovered: `rev` and the policy, read above, are
+            // what a cover can have hidden.
+            ScreenEvent::Uncover => Handled::Yes,
+            // A focus that did not move repaints nothing: a modal's dismissal re-enters the page, and
+            // `FocusEngine::enter` announces the key it already holds as `from == to`.
+            ScreenEvent::FocusMoved { from, to, .. } => {
+                if from.as_ref() != Some(to) {
+                    fx.invalidate(Provenance::Input);
+                }
                 Handled::Yes
             }
-            ScreenEvent::FocusMoved { .. } | ScreenEvent::StoreChanged(..) => {
+            ScreenEvent::StoreChanged(..) => {
                 fx.invalidate(Provenance::Input);
                 Handled::Yes
             }

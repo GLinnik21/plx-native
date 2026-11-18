@@ -514,6 +514,11 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
     fn opener_alpha(&self) -> f32 {
         self.popover.opener_alpha()
     }
+    /// The droplet has drained into the chip: the surface, and the lift that holds the chip above
+    /// it, end on this frame (`Screen::handed_back`), not when the container's spring comes to rest.
+    fn handed_back(&self) -> bool {
+        self.popover.handed_back()
+    }
     /// The modal dim: the COMPACT role, as every menu hung off a chip: how dark the page goes behind
     /// this menu. The role sets only the PEAK; the morph ramps it (`Popover::dim` ->
     /// `Scrim::following`): in as the glass grows, out with the slab.

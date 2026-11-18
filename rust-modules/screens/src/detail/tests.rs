@@ -33,7 +33,7 @@ impl ScreenArg for TestArg {
 pub(super) struct TestHost;
 
 impl crate::registry::ScreenInputsLike for TestHost {
-    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::empty_fixture() }
+    fn screen_inputs<'a>(_: &Cx<'a, Self>) -> &'a crate::registry::ScreenInputs { crate::registry::caption_fixture() }
 }
 
 impl crate::registry::PlayerLike for TestHost {
@@ -252,6 +252,34 @@ fn install(d: Detail) -> plx_base::testlock::Serial {
     let guard = plx_base::testlock::serial();
     plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d));
     guard
+}
+
+/// **A detail page, covered, notices that Settings changed what its poster shelves draw under the
+/// posters** (`step`'s head): a page returning from under a cover raises no damage of its own, and
+/// typed page damage is what retakes a frozen host's snapshot.
+#[test]
+fn the_detail_damages_the_page_when_the_under_posters_setting_moved_under_a_cover() {
+    use crate::registry::captions::{PolicyPin, FIXTURE_TITLE_ON};
+    use plx_plex::plex::session::UnderPosters;
+    let _guard = install(Detail { sid: ServerId::UNSET, rk: "page".into(), ..Default::default() });
+    let mut screen = bare_held(ServerId::UNSET, "page");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let mut uncover_under = |setting: UnderPosters| {
+        let _pin = PolicyPin::set(setting);
+        screen.sync_keys(test_store().view());
+        let mut effects = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        {
+            let mut sink = Effects::new(&mut effects,
+                plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)), &mut present);
+            Machine::<TestHost>::step(&mut screen, &ScreenEvent::Uncover, &cx(&measure, None), &mut sink);
+        }
+        present.page_damaged()
+    };
+    assert!(!uncover_under(UnderPosters::DEFAULT), "control: an unchanged setting damages nothing");
+    assert!(uncover_under(FIXTURE_TITLE_ON), "the Title switch moved the caption policy");
+    assert!(!uncover_under(FIXTURE_TITLE_ON), "...once");
+    clear();
 }
 
 fn clear() {

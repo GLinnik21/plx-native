@@ -222,10 +222,15 @@ impl Bridge<'_> {
 }
 
 impl World {
+    /// The one entry of every constructor: the serial lock, the scratch session, and a registry and
+    /// collections probe reset ON ENTRY (not only on drop: a test that panics on purpose,
+    /// `#[should_panic]`, never reaches its own closing reset and leaves its servers for the next world).
     fn lock(name: &str) -> (plx_base::testlock::Serial, plx_plex::plex::session::TempSession) {
         let serial = plx_base::testlock::serial();
         let session = plx_plex::plex::session::TempSession::new(name);
         session.watching(&format!("u-{name}"));
+        plx_plex::plex::reset_servers_for_test();
+        crate::app::collections_probe::clear_seeds_for_test();
         (serial, session)
     }
 
@@ -246,8 +251,6 @@ impl World {
     /// left as a section nothing has published for yet: the Recommended page's FIRST publication.
     fn build_shelves(name: &str, two_libraries: bool, answered: bool, shelved: bool) -> World {
         let (serial, session) = Self::lock(name);
-        plx_plex::plex::reset_servers_for_test();
-        crate::app::collections_probe::clear_seeds_for_test();
         let own = plx_plex::plex::register_for_test("route-own", "127.0.0.1", 9, "synthetic", "fixture");
         let shared = plx_plex::plex::register_for_test("route-shared", "127.0.0.1", 10, "synthetic", "fixture");
         plx_plex::plex::set_current(own);
@@ -925,4 +928,23 @@ impl Bridge<'_> {
         };
         session::publish_profile_for_test(Some(user), session::current_gen().wrapping_add(1));
     }
+}
+
+/// **A world starts over an empty server registry, whatever the test before it left in it.** The
+/// registry is process-wide and a `#[should_panic]` test cannot reach its closing
+/// `reset_servers_for_test()` (the hubs-dump discovery test registers one server and panics by
+/// design), so the next world built over a scripted plex.tv (`scripted`, `watchlist_built`) used to
+/// inherit that server: Home's heading rest then depended on which test won the serial lock between
+/// two of `a_resting_heading_is_always_clear_of_the_chrome`'s worlds. Every constructor resets on
+/// entry through [`World::lock`], and the test below leaks a server the way that test does.
+#[test]
+fn a_world_starts_over_an_empty_server_registry_whatever_a_panicking_test_left() {
+    {
+        let _serial = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        plx_plex::plex::register_for_test("left-by-a-panic", "127.0.0.1", 9, "synthetic", "cid");
+        assert_eq!(plx_plex::plex::server_count(), 1, "premise: a server is left registered, as a panic leaves it");
+    }
+    let _scripted = World::home_with_disc("world-clean-start-scripted", [7; 12]);
+    assert_eq!(plx_plex::plex::server_count(), 0, "a world over a scripted plex.tv registers none of its own and inherits none");
 }
