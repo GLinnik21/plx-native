@@ -70,7 +70,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Present;
 use plx_ui::screen::{
-    At, FocusSource, ReturnState, Screen, ScreenEvent,
+    At, ReturnState, Screen, ScreenEvent,
 };
 
 struct LibraryPageVisit {
