@@ -1508,6 +1508,15 @@ fn rect_fill(radius: f32, focus: f32, one_colour: bool) -> RectFill {
     }
 }
 
+/// The dedicated flat and ramp shaders emit only their input colour(s). Exact black blended
+/// over transparent black still has zero RGB at every alpha. Previously drawn colour keeps
+/// its existing conversion coverage, including where the black overlay changes its alpha.
+unsafe fn black_fill_extent(extent: straighten::Extent, top: *const f32, bottom: *const f32) -> straighten::Extent {
+    // Both uniforms point to four floats, as required by these draw calls.
+    let black = |c: *const f32| *c == 0.0 && *c.add(1) == 0.0 && *c.add(2) == 0.0;
+    if black(top) && black(bottom) { straighten::Extent::BlackFill } else { extent }
+}
+
 /// One colour over an axis-aligned quad through `shaders/fs_flat.frag` — the cheapest fragment this
 /// renderer has, and the one every full-screen scrim is. Falls back to the fill program's flat path
 /// (same pixels, ~2 shader words a fragment dearer) when the flat program failed to link.
@@ -1532,6 +1541,7 @@ unsafe fn draw_flat(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
     use_prog(FPROG); // u_screen is set once at init (uniforms are per-program state)
     let ext = set_rect(FL_RECT, x, y, w, h);
     glUniform4fv(FL_COL, 1, col);
+    let ext = black_fill_extent(ext, col, col);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
 }
 
@@ -1561,6 +1571,7 @@ unsafe fn draw_ramp(x: f32, y: f32, w: f32, h: f32, top: *const f32, bot: *const
     let ext = set_rect(RP_RECT, x, y, w, h);
     glUniform4fv(RP_TOP, 1, top);
     glUniform4fv(RP_BOT, 1, bot);
+    let ext = black_fill_extent(ext, top, bot);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4, ext);
 }
 
