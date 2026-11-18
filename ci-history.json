@@ -1,4 +1,4 @@
-{"updated":"2026-11-18T23:21:39Z",
+{"updated":"2026-11-18T23:29:46Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5434,7 +5434,8 @@
 {"id":44354938217,"at":"2026-11-18T17:06:44Z","sha":"dab26adb9","title":"Name the live arrival read in FirstInGroupAnimated's doc","pr":1461,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":264,"Linux simulator build + launch":294,"Windows launcher syntax":19,"macOS simulator build + launch":186}},
 {"id":44358831049,"at":"2026-11-18T17:27:11Z","sha":"63f2ba5cd","title":"Merge origin/main into fix/text-input-owner","pr":1428,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"macOS simulator build + launch":238,"Windows launcher syntax":23,"Linux simulator build + launch":371}},
 {"id":44402252617,"at":"2026-11-18T21:30:55Z","sha":"59a0bc690","title":"Merge upstream main (dab26adb) into feat/owp-protocol","pr":1462,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":222,"macOS tests against bundled FFmpeg and ASS":212,"Linux simulator build + launch":377,"Windows launcher syntax":20}},
-{"id":44417131421,"at":"2026-11-18T23:02:13Z","sha":"31349b00c","title":"URI: a Dolby Vision MKV before webOS 10 stays on Standard","pr":1399,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":20,"macOS simulator build + launch":338,"Linux simulator build + launch":291,"macOS tests against bundled FFmpeg and ASS":217}}
+{"id":44417131421,"at":"2026-11-18T23:02:13Z","sha":"31349b00c","title":"URI: a Dolby Vision MKV before webOS 10 stays on Standard","pr":1399,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":20,"macOS simulator build + launch":338,"Linux simulator build + launch":291,"macOS tests against bundled FFmpeg and ASS":217}},
+{"id":44419024457,"at":"2026-11-18T23:14:39Z","sha":"d8c959902","title":"OWP: media::check names the first rule a descriptor breaks","pr":1462,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":893,"macOS simulator build + launch":217,"Windows launcher syntax":21,"macOS tests against bundled FFmpeg and ASS":268}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
