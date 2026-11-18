@@ -1,4 +1,4 @@
-{"updated":"2026-11-18T01:59:18Z",
+{"updated":"2026-11-18T02:00:44Z",
 "ci":[
 {"id":32424110197,"at":"2026-08-20T22:24:27Z","sha":"360f904f0","title":"tests: fps:home-acct-glass had a floor it never once met","jobs":{"cross-build (armv7) + artifact assertions":91,"host checks (NOT a device gate)":100},"pr":null,"conclusion":"success","attempt":1},
 {"id":32482025443,"at":"2026-08-21T12:28:09Z","sha":"825cca60b","title":"glass: the up pass's radius was an accident of one allocation","jobs":{"host checks (NOT a device gate)":107,"cross-build (armv7) + artifact assertions":96},"pr":null,"conclusion":"success","attempt":1},
@@ -5389,6 +5389,7 @@
 {"id":44213252178,"at":"2026-11-18T01:06:46Z","sha":"98cd1fdca","title":"Include player menus in the 0.10.1 patch notes","pr":1453,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":284,"Windows launcher syntax":27,"macOS tests against bundled FFmpeg and ASS":231,"Linux simulator build + launch":299}},
 {"id":44214509027,"at":"2026-11-18T01:16:20Z","sha":"233a94839","title":"Reduce alpha conversion work in player menus","pr":1453,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":118,"macOS tests against bundled FFmpeg and ASS":313,"Linux simulator build + launch":378,"Windows launcher syntax":18}},
 {"id":44214597772,"at":"2026-11-18T01:27:53Z","sha":"c57ee40b3","title":"Reduce alpha conversion work in player menus","pr":1454,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"macOS tests against bundled FFmpeg and ASS":214,"Linux simulator build + launch":1063,"macOS simulator build + launch":182,"Windows launcher syntax":19},"wall":1717},
+{"id":44217858594,"at":"2026-11-18T01:42:32Z","sha":"c8083a57d","title":"Send consistent client identity on PMS metadata reads","pr":1456,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":315,"Windows launcher syntax":20,"Linux simulator build + launch":1082,"macOS simulator build + launch":115}},
 {"id":44219099534,"at":"2026-11-18T01:52:33Z","sha":"519b3c76d","title":"Exercise identity chip spacing with a playable video fixture","pr":1457,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":222,"macOS tests against bundled FFmpeg and ASS":242,"Windows launcher syntax":22,"Linux simulator build + launch":393}}
 ],
 "nightly":[
