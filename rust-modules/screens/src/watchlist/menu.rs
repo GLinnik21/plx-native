@@ -201,10 +201,15 @@ impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
     }
     /// The pill the panel grew out of: the page leaves it out of its pass (`DrawFrame::lifted`) and
     /// the host's opener lift (`WatchlistScreen::redraw_focused`) is its only copy, lit above the
-    /// scrim and the panel for as long as the menu is up (design review S12). Left on the page it
-    /// sat dimmed under the scrim; drawn by this surface it vanished once the panel settled.
+    /// scrim and the panel at the morph's `opener_alpha` (gone while the menu stands, back as the
+    /// droplet drains into it). Left on the page it sat dimmed under the scrim.
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<u32>>)> {
         Some((self.arg.host, Some(FocusKey { entry: self.arg.host, elem: super::page::PILL_ELEM })))
+    }
+    /// The opener is CONSUMED by the morph (`popover_morph`): the lift paints it at the morph's
+    /// `opener_alpha`, out as the glass detaches from it and back in as it merges into it.
+    fn opener_alpha(&self) -> f32 {
+        self.menu.popover().opener_alpha()
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -220,7 +225,7 @@ impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
     }
     /// The COMPACT role (DS6's 30% scrim): a chip-shaped control on a live page opening a list.
     fn scrim(&self) -> Scrim {
-        Scrim::dim(plx_ui::theme::underlay::DIM_COMPACT)
+        self.menu.popover().dim(plx_ui::theme::underlay::DIM_COMPACT)
     }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
     /// The panel, growing out of the pill's rect (`OptionsMenu::draw`). Drawn on the frame painter,

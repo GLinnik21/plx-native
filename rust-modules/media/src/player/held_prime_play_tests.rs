@@ -349,3 +349,77 @@ fn held_prime_play_seek_prime_without_a_pause_is_inert() {
     fill_both_lanes(&mut rig);
     assert_prime_then_plays_once(&mut rig, plays, "seek prime, no Pause");
 }
+
+// ---------------------------------------------------------------------------------------------
+// The progressive stall hold (`ClockHold::ProgressiveRebuffer`): a direct-play stream at
+// Quality=Original whose link stopped keeping up.
+// ---------------------------------------------------------------------------------------------
+
+/// A running primed stream whose clock the progressive begin rule has paused: what
+/// `maybe_begin_progressive_rebuffer` leaves (the hold's Pause accepted, the Buffering mirror up, the
+/// Engine's prime armed). Built with the hooks the engine tests use for the same state, over the
+/// runner-started Engine.
+fn progressive_stall_hold(rig: &mut Rig) -> u64 {
+    let plays = running_stream(rig);
+    let token = FEED_SHARED
+        .prepare_progressive_rebuffer_pause(plx_play_feed::shared::vclock_ms())
+        .expect("a running clock takes the progressive hold");
+    assert_eq!(FEED_SHARED.complete_hls_rebuffer_pause(token, true), HlsPauseCompletion::Accepted);
+    let mut e = eng(rig);
+    e.prime_play = true;
+    e.max_fed_video_pts = e.seek_base_pts;
+    e.max_fed_audio_pts = e.seek_base_pts;
+    plays
+}
+
+/// The hold's own certificate is the end of the stream (the rig's host sink takes every access unit,
+/// so a queue cannot be left at its byte cap): the producer finishing releases it.
+fn release_progressive_hold(rig: &mut Rig) {
+    let mut e = eng(rig);
+    let video = &mut **e.aq_video.as_mut().expect("the video lane") as *mut plx_play_feed::aq::AuQueue;
+    plx_play_feed::aq::aq_set_eof(video);
+}
+
+fn assert_in_progressive_hold(rig: &mut Rig, what: &str) {
+    assert_eq!(rig.pa.backend_snapshot().phase, plx_playback_contract::Phase::Active,
+        "{what}: PRECONDITION: the common runner owns an Active attempt");
+    assert!(eng(rig).prime_play, "{what}: PRECONDITION: a prime is armed");
+    assert!(matches!(prime_kind(), Some(HlsPrimeKind::ProgressiveRebuffer { .. })),
+        "{what}: PRECONDITION: the clock is held by the progressive hold ({:?})", prime_kind());
+    assert!(FEED_SHARED.hls_rebuffering.load(Relaxed), "{what}: PRECONDITION: the Buffering mirror is up");
+}
+
+/// The viewer pauses inside a progressive hold and presses Play. The Play must reach the clock (it
+/// is still user-held after the Pause, so `reserve_hls_prime_play` would refuse the prime for good),
+/// the hold keeps its own certificate and still reads Buffering, and when the stream ends the hold's
+/// Play is the one physical Play.
+#[test]
+fn held_prime_play_progressive_rebuffer_with_a_viewer_pause_then_play() {
+    let mut rig = hls_rig(60);
+    let plays = progressive_stall_hold(&mut rig);
+    assert_in_progressive_hold(&mut rig, "progressive hold");
+
+    assert!(press(&mut rig, true), "the viewer's Pause is accepted");
+    assert!(user_held(), "the Pause landed on the progressive hold: the clock is user-held");
+    assert!(press(&mut rig, false), "the viewer's Play is accepted");
+
+    assert_play_reached_the_clock(&mut rig, plays, "progressive hold");
+    assert_in_progressive_hold(&mut rig, "progressive hold after the viewer's Play");
+    release_progressive_hold(&mut rig);
+    assert_prime_then_plays_once(&mut rig, plays, "progressive hold");
+    assert!(!FEED_SHARED.hls_rebuffering.load(Relaxed), "Buffering ends with the hold's Play");
+}
+
+#[test]
+fn held_prime_play_progressive_rebuffer_without_a_pause_is_inert() {
+    let mut rig = hls_rig(60);
+    let plays = progressive_stall_hold(&mut rig);
+    assert_in_progressive_hold(&mut rig, "progressive hold, no Pause");
+
+    assert!(press(&mut rig, false), "a Play on a playing viewer is already satisfied");
+    assert!(!user_held());
+    assert_eq!(play_calls_for_test(), plays);
+    assert_in_progressive_hold(&mut rig, "progressive hold, no Pause, after the key");
+    release_progressive_hold(&mut rig);
+    assert_prime_then_plays_once(&mut rig, plays, "progressive hold, no Pause");
+}

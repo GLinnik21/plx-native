@@ -578,7 +578,8 @@ fn a_control_its_menu_has_lifted_draws_no_focus_pill() {
     page.scroll.jump(0.0);
 }
 
-/// **Every header opener stays lit while its menu is open** (design review S12: one rule). Sort &
+/// **Every header opener is painted lit by the lift while its menu owns it** (design review S12: one
+/// rule; the glass then consumes it at the morph's `opener_alpha`). Sort &
 /// Filter and `+N` are both lifted out of the page's pass (no capsule, no label: the page draws
 /// none of the control) and the opener lift (`Screen::redraw_focused`) paints each as the focused
 /// control, the accent pill at the focused extent and every run of the face in the focused ink,

@@ -241,6 +241,35 @@ impl Spring {
         }
         false
     }
+    /// [`land`](Self::land) by the frame loop's own rest test: put the spring exactly on `target` (position and
+    /// velocity) once [`plx_machine::motion::moving`], the test every integrator reports `Motion` by, stops
+    /// calling it moving at the step's `dt`, and say whether it is there. A spring this lands is one the loop
+    /// was about to stop asking frames for, and a landed spring can never be woken by a later step: it is
+    /// exactly on its target with no velocity, whatever `dt` that step has.
+    ///
+    /// [`land`](Self::land)'s own threshold (about 1e-4) is far tighter than the loop's rest test (a quarter
+    /// pixel at most), which is why it cannot promise that. An UNDERdamped spring rings on below the loop's test
+    /// for many more frames, the loop sleeps, and the idle wake that follows steps it by up to
+    /// [`plx_machine::motion::FRAME_DT_CLAMP`], three times the travel the 16 ms test judged: the spring reports
+    /// motion again, one sub-pixel frame presents, the loop sleeps again. Landing at the `dt` of the very step
+    /// that stops reporting motion leaves no such gap; landing only when the test would pass at
+    /// [`FRAME_DT_CLAMP`](plx_machine::motion::FRAME_DT_CLAMP) would, since a spring still travelling more than
+    /// a quarter pixel in 50 ms but less in 16 ms is quiet, asleep and not landed.
+    ///
+    /// A spring that is not finite is never landed (a broken value must not look quiet), and one already
+    /// exactly on `target` reports nothing, like [`land`](Self::land).
+    #[inline]
+    pub fn land_if_still(&mut self, target: f32, dt: f32) -> bool {
+        if self.pos == target && self.vel == 0.0 {
+            return true;
+        }
+        let finite = self.pos.is_finite() && self.vel.is_finite() && target.is_finite() && dt.is_finite();
+        if finite && !plx_machine::motion::moving(self.pos, target, self.vel, dt) {
+            self.jump(target);
+            return true;
+        }
+        false
+    }
     /// Teleport, with no motion in between. Reports to [`plx_machine::idle`](plx_machine::idle) — a jump
     /// changes the drawn value without ever reaching a spring integrator, so nothing else would
     /// hear it.
@@ -2014,6 +2043,10 @@ impl Painter {
     /// its rim's sharp source and the frame's modal `dim` applied to both. `false` when the glass
     /// program or the ground is missing — the caller's cue for its field ground.
     /// `crate::popover_glass::draw` is the component; reach for that.
+    ///
+    /// `morph` is a morphing menu's join and clarity ([`plx_gfx::gfx::GlassMorph`]);
+    /// `GlassMorph::NONE` for everything else. Joined, the glass is drawn on the box around both
+    /// shapes, so that box (not `r`) is what the draw declares.
     #[allow(clippy::too_many_arguments)]
     pub fn glass_frozen(
         self,
@@ -2025,8 +2058,10 @@ impl Painter {
         tint: [f32; 4],
         rim: plx_gfx::gfx::GlassRim,
         face: plx_gfx::gfx::GlassFace,
+        morph: plx_gfx::gfx::GlassMorph,
     ) -> bool {
-        if self.declare(r, frame::backdrop::GLASS_FROZEN_COMMAND, |data| {
+        let quad = morph.quad(r.x, r.y, r.w, r.h);
+        if self.declare(quad, frame::backdrop::GLASS_FROZEN_COMMAND, |data| {
             use frame::backdrop::Value;
             rad.record(data);
             ground.record(data);
@@ -2036,11 +2071,21 @@ impl Painter {
             tint.record(data);
             face.scrim_top.record(data); face.scrim_bot.record(data);
             face.rim.record(data); face.rim_lit.record(data); face.rim_w.record(data);
+            let j = morph.merge.map_or([0.0; 4], |j| [j.rect.x, j.rect.y, j.rect.w, j.rect.h]);
+            j.record(data);
+            [morph.merge.map_or(0.0, |j| j.radius), morph.merge.map_or(0.0, |j| j.k), morph.clear, 0.0].record(data);
+            // the join's colour and amount: an amount, not an opacity, so it is recorded as it is and
+            // not through the painter's cascade (a different tint is a different draw)
+            morph.merge.map_or([0.0; 4], |j| j.tint).record(data);
         }) { return ground != 0; }
         if self.records() { return false; }
         let t = self.c(tint);
         let m = self.place(r);
-        plx_gfx::gfx::draw_glass_frozen(m.x, m.y, m.w, m.h, self.px(rad), ground, sharp, dim, t.as_ptr(), rim, face)
+        let morph = plx_gfx::gfx::GlassMorph {
+            merge: morph.merge.map(|j| plx_gfx::gfx::GlassMerge { rect: self.place(j.rect), radius: self.px(j.radius), k: self.px(j.k), tint: j.tint }),
+            ..morph
+        };
+        plx_gfx::gfx::draw_glass_frozen(m.x, m.y, m.w, m.h, self.px(rad), ground, sharp, dim, t.as_ptr(), rim, face, morph)
     }
     /// draw text at absolute (x,y) plus the cascade translate; returns width
     pub fn text(
@@ -2981,5 +3026,48 @@ mod spring_tests {
         assert!(!present.take(10_032), "already there: nothing to report");
         assert!(!Spring::at(1.5).land(1.0, 1.0 / 60.0), "a spring half a unit away has not arrived");
         assert!(!Spring { pos: 1.0, vel: 5.0 }.land(1.0, 1.0 / 60.0), "on the target but still travelling is not arrived");
+    }
+
+    /// [`Spring::land_if_still`] lands by the loop's own rest test, not by `land`'s tight threshold: a ringing
+    /// spring the loop would stop asking frames for lands, one it would still ask for is left alone.
+    #[test]
+    fn land_if_still_lands_exactly_where_the_frame_loops_rest_test_stops_calling_it_moving() {
+        let _g = plx_base::testlock::serial();
+        reset_for_test();
+        let dt = 1.0 / 60.0;
+        // 1.2e-3 off and drifting 1e-3 a frame: below the quarter-pixel rest test, far above `land`'s 1.2e-4.
+        let mut s = Spring { pos: 1.0 - 1.2e-3, vel: 0.06 };
+        assert!(!plx_machine::motion::moving(s.pos, 1.0, s.vel, dt), "the premise: the loop calls it at rest");
+        assert!(!s.land(1.0, dt), "the premise: land's own threshold has not caught it");
+        assert!(s.land_if_still(1.0, dt));
+        assert_eq!((s.pos, s.vel), (1.0, 0.0), "exactly on the target, with no velocity");
+        // The same spring at an idle wake's 50 ms is still travelling more than the test allows: left alone.
+        let mut wake = Spring { pos: 1.0 - 1.2e-3, vel: 0.06 };
+        assert!(plx_machine::motion::moving(wake.pos, 1.0, wake.vel, plx_machine::motion::FRAME_DT_CLAMP));
+        assert!(!wake.land_if_still(1.0, plx_machine::motion::FRAME_DT_CLAMP));
+        assert_eq!((wake.pos, wake.vel), (1.0 - 1.2e-3, 0.06), "a moving spring is not touched");
+        assert!(!Spring::at(1.5).land_if_still(1.0, dt), "half a unit away is moving");
+        assert!(!Spring { pos: 1.0, vel: 5.0 }.land_if_still(1.0, dt), "on the target but still travelling is moving");
+        for bad in [f32::NAN, f32::INFINITY] {
+            let mut broken = Spring { pos: bad, vel: 0.0 };
+            assert!(!broken.land_if_still(1.0, dt), "a broken value must never look quiet");
+            let mut broken = Spring { pos: 1.0, vel: bad };
+            assert!(!broken.land_if_still(1.0, dt));
+        }
+    }
+
+    /// Like [`Spring::land`], it reports to the present gate once when it moves something and not at all when
+    /// the spring is already exactly there.
+    #[test]
+    fn land_if_still_reports_only_when_it_moves_something() {
+        let _g = plx_base::testlock::serial();
+        reset_for_test();
+        let mut s = Spring { pos: 1.0 - 1.2e-3, vel: 0.06 };
+        frame_begin(1.0 / 60.0);
+        assert!(s.land_if_still(1.0, 1.0 / 60.0));
+        assert!(plx_machine::motion::report::read().jumped, "the landing is a change the frame must present");
+        frame_begin(1.0 / 60.0);
+        assert!(s.land_if_still(1.0, 1.0 / 60.0));
+        assert!(!plx_machine::motion::report::read().jumped, "already there: nothing to report");
     }
 }

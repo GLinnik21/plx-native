@@ -488,7 +488,8 @@ impl LibraryMenu {
             selected_library: None,
             pages: PageStack::new(),
             motion: PanelMotion::new().spring_all_edges(),
-            popover: Popover::new().morphing(),
+            // a header pill opens it: the close's blob whitens toward the pill's own focused fill
+            popover: Popover::new().morphing().opener_fill(plx_ui::page_header::OPENER_FILL),
             #[cfg(test)] draft_rebuilds: 0,
         }
     }
@@ -499,16 +500,16 @@ impl LibraryMenu {
         plx_ui::widgets::focus_pill(Rect::new(x, y, w, h))
     }
     /// Hugs its rows: width is the shared menu rule ([`TableView::menu_panel_width_from`]: the
-    /// rows, never narrower than the control's focused pill), hung off the opener's near edge
-    /// ([`plx_ui::popover::hang_x`]) and held inside the safe frame. ONE placement for every kind: the
-    /// "+N" list opens under its "+N" pill exactly as Sort & Filter does; it differs only in its
+    /// rows, never narrower than the control's focused pill), laid OVER the opener by the shared
+    /// rule ([`plx_ui::popover::cover_opener`]: top edges flush, the near edge hung off the
+    /// opener's outer edge) and held inside the safe frame. ONE placement for every kind: the
+    /// "+N" list opens over its "+N" pill exactly as Sort & Filter does; it differs only in its
     /// ceiling, because its rows are library NAMES a user chose: as wide as the widest, up to the
     /// safe width, never cut with room to spare.
     fn frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         self.motion.natural(self.form.table.layout_rev(), || self.measure_frame(measure))
     }
     fn measure_frame(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
-        let [_, y, _, h] = self.arg.anchor.map(f32::from_bits);
         let height = self.form.table.measured_height().clamp(120.0, 740.0);
         let pill = self.pill();
         let width = if self.kind == LibraryMenuKind::Sources {
@@ -516,13 +517,8 @@ impl LibraryMenu {
         } else {
             self.form.table.menu_panel_width_from(measure, pill)
         };
-        Rect::new(
-            // The shared rule: the panel's near edge is the opener's outer edge (NV1).
-            plx_ui::popover::hang_x(pill, width, plx_ui::consts::SAFE),
-            (y + h + 16.0).clamp(96.0, 984.0 - height),
-            width,
-            height,
-        )
+        // The shared rule: the panel covers its opener, top edges flush, near edges flush (NV1).
+        plx_ui::popover::cover_opener(pill, (width, height), plx_ui::consts::SAFE)
     }
     /// The panel as it reads: each section's heading and its rows' `(label, value)`, for a route
     /// test that compares the Library's words with the Watchlist's.
@@ -905,10 +901,15 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
 
     /// The header control the panel grew out of, for every kind of menu ("+N" included): the page
     /// leaves it out of its pass (`DrawFrame::lifted`) and the opener lift draws it focused above
-    /// the scrim (`LibraryScreen::draw_header_opener`), so the control the panel is about stays
-    /// lit while it is open (design review S12).
+    /// the scrim and the panel (`LibraryScreen::draw_header_opener`) at the morph's `opener_alpha`:
+    /// gone while the menu stands, back as the droplet drains into it.
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<u32>>)> {
         self.arg.opener.map(|(entry, control)| (entry, Some(FocusKey { entry, elem: control })))
+    }
+    /// The opener is CONSUMED by the morph (`popover_morph`): the lift paints it at the morph's
+    /// `opener_alpha`, out as the glass detaches from it and back in as it merges into it.
+    fn opener_alpha(&self) -> f32 {
+        self.popover.opener_alpha()
     }
     fn name(&self) -> &'static str {
         "library_menu"
@@ -925,7 +926,7 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
     /// chip-shaped control on a live page opening a list beside it. The page recedes (inheriting
     /// its own light through the container's field) and stays readable.
     fn scrim(&self) -> plx_ui::screen::Scrim {
-        plx_ui::screen::Scrim::dim(plx_ui::theme::underlay::DIM_COMPACT)
+        self.popover.dim(plx_ui::theme::underlay::DIM_COMPACT)
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);

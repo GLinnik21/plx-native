@@ -280,11 +280,11 @@ fn open_sources_refreshes_metadata_once_then_settles() {
     assert_eq!(menu.draft_rebuilds, 2);
 }
 
-/// S11 + S24: the +N list opens under its own pill (the same `frame` rule as Sort & Filter: the
-/// pill's near edge, 16 below it), and is as wide as its widest row up to the safe width, so a long
+/// S11 + S24: the +N list opens OVER its own pill (the same `frame` rule as Sort & Filter: the
+/// pill's near edge, its top edge), and is as wide as its widest row up to the safe width, so a long
 /// library name is read whole rather than cut in a 650 px panel with room to spare.
 #[test]
-fn the_plus_n_list_hangs_from_its_pill_and_fits_its_widest_row() {
+fn the_plus_n_list_covers_its_pill_and_fits_its_widest_row() {
     let _guard = plx_base::testlock::serial();
     let (groups, mut sections) = source_sections();
     sections[0].row.title = "A long library name that outgrows the shared".into();
@@ -295,10 +295,37 @@ fn the_plus_n_list_hangs_from_its_pill_and_fits_its_widest_row() {
         let frame = menu.frame(cx.measure);
         let widest = menu.form.table.measured_width(cx.measure);
         assert_eq!(frame.x, 648.0 - plx_ui::widgets::PILL_FOCUS_OUTSET, "the near edge is the +N pill's outer edge");
-        assert_eq!(frame.y, 148.0 + 56.0 + 16.0, "16 under the pill, as Sort & Filter");
+        assert_eq!(frame.y, menu.pill().y, "the panel's top edge is the +N pill's top edge, as Sort & Filter");
         assert!(widest > plx_ui::table::MENU_MAX_W, "the fixture name must outgrow the shared cap ({widest})");
         assert!(frame.w >= widest, "the panel fits its widest row ({} < {widest})", frame.w);
         let safe = plx_ui::consts::SAFE;
         assert!(frame.x + frame.w <= safe.x + safe.w + 0.5, "inside the safe frame");
     });
+}
+
+/// **Owner, 2026-11-17: the morphing menus open OVER their opener, as on iOS.** For both Library
+/// menus, the settled panel contains the opener's whole rect and its top edge IS the opener's top
+/// edge (the consumed opener leaves no empty slot under it), whatever the control's width: a panel
+/// never narrower than the pill, a wide pill (a long sort name) included.
+#[test]
+fn both_library_menus_open_over_their_opener_top_edges_flush() {
+    let _guard = plx_base::testlock::serial();
+    for (kind, anchor) in [
+        (LibraryMenuKind::SortFilter, [1589.0f32, 148.0, 190.0, 56.0]),
+        (LibraryMenuKind::SortFilter, [1380.0f32, 148.0, 400.0, 56.0]),
+        (LibraryMenuKind::Sources, [648.0f32, 148.0, 59.0, 56.0]),
+    ] {
+        let anchor = anchor.map(f32::to_bits);
+        let mut menu = LibraryMenu::new(EntryId(7), menu_arg(kind, anchor));
+        let (groups, sections) = source_sections();
+        menu.apply_draft(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>(), false));
+        with_cx(|cx| {
+            let (frame, pill) = (menu.frame(cx.measure), menu.pill());
+            assert_eq!(frame.y, pill.y, "{kind:?}: the panel's top is the opener's top");
+            assert!(frame.x <= pill.x + 0.01 && frame.x + frame.w >= pill.x + pill.w - 0.01, "{kind:?}: {frame:?} covers {pill:?} across");
+            assert!(frame.y + frame.h >= pill.y + pill.h, "{kind:?}: {frame:?} covers {pill:?} down");
+            let safe = plx_ui::consts::SAFE;
+            assert!(frame.y >= safe.y && frame.y + frame.h <= safe.y + safe.h + 0.01, "{kind:?}: inside the safe frame");
+        });
+    }
 }

@@ -1,0 +1,13 @@
+version = 1
+name = "PlxNative"
+
+[setup]
+script = ""
+
+[setup.darwin]
+script = """
+helper="$(git rev-parse --path-format=absolute --git-path hooks/plxnative-build-root.py)"
+if [ -f "$HOME/.config/plxnative/build-root" ] && [ -f "$helper" ]; then
+  python3 "$helper" prepare
+fi
+"""

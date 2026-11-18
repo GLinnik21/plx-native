@@ -5,6 +5,7 @@
     tools/pr-land.py wait  N --sha S [--timeout 45m]
     tools/pr-land.py merge N --sha S --subject T (--body-file F | --body-from-pr) [--timeout 45m]
     tools/pr-land.py restack --worktree W --upper BRANCH --lower PR [--dry-run] [--push]
+    tools/pr-land.py reviewed N --sha S --blockers B --majors M --minors K
 
 Run it from a checkout of the repository (`gh api` fills in {owner}/{repo} from it and the verify step
 fetches origin). Anything that can wait longer than a minute belongs in a Bash call with
@@ -31,6 +32,15 @@ check is skipping (3); not yet (4: no checks, one pending, a required one not re
 lag (4: UNKNOWN, BLOCKED or UNSTABLE with every row passing, or no required checks and a check list
 that changed since the last poll); and only then green. A head that moved is judged before the
 checks because those checks are about another commit.
+
+A review is evidence about one commit, like a check: `reviewed` records that the `pr-reviewer` agent
+read base...S, as a commit status named `pr-reviewer` on S itself (pass, or fail when --blockers is
+not 0), so a push leaves the new head with no record and the review has to be run again. It refuses
+(5) unless the PR's head is S. `gate`, `wait` and `merge` then read that row among the checks. A fail
+row is red like any failed check; re-record it after the owner has judged the blocker false. A head
+with no row is judged by PLX_REVIEW_GATE: `observe` (the default) stays green and says in the verdict
+line what `enforce` would have refused, so the misses can be counted before anybody is blocked;
+`enforce` refuses (3) a head that is otherwise green; `off` says nothing. Any other value is refused.
 
 `gate` re-polls only that GitHub-side lag, for about 60 s; a check still running is exit 4 at once.
 `wait` is the same judgment polled with a 30 s to 60 s backoff until --timeout. `merge` is wait, then
@@ -86,6 +96,7 @@ owner's authorization to merge is still needed.
 import argparse
 import importlib.util
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -108,6 +119,9 @@ GOOD_BUCKETS = ('pass', 'skipping')
 BAD_BUCKETS = ('fail', 'cancel')
 KNOWN_BUCKETS = GOOD_BUCKETS + BAD_BUCKETS + ('pending',)
 VIEW_FIELDS = 'headRefOid,state,isDraft,baseRefName,mergeStateStatus'
+REVIEW_CONTEXT = 'pr-reviewer'                    # the commit status `reviewed` writes and the gate reads
+REVIEW_MODES = ('off', 'observe', 'enforce')
+REVIEW_ENV = 'PLX_REVIEW_GATE'
 
 POLL_FIRST, POLL_MAX, POLL_GROWTH = 30, 60, 1.5   # seconds between polls: 30, 45, 60, 60, ...
 SETTLE_SECONDS = 60                               # how long `gate` re-polls GitHub-side lag
@@ -210,10 +224,18 @@ def names_of(rows):
     return ', '.join(sorted({c['name'] for c in rows}))
 
 
-def judge(view, checks, required, sha, previous):
+def review_mode(environ=None):
+    mode = (os.environ if environ is None else environ).get(REVIEW_ENV, 'observe')
+    if mode not in REVIEW_MODES:        # fail closed: a typo must not read as "off"
+        raise Refuse('%s is %r; it is one of %s' % (REVIEW_ENV, mode, ', '.join(REVIEW_MODES)))
+    return mode
+
+
+def judge(view, checks, required, sha, previous, review='off'):
     """The Verdict for one snapshot. Pure. `previous` is the identities of the poll before it (None
     on the first). One PR yields one code, by this order: refusals, the head, red, a skipping required
-    check (also a refusal), not-yet, GitHub-side lag, green. The module docstring says why."""
+    check (also a refusal), not-yet, GitHub-side lag, a head nobody reviewed (under `review` 'enforce'),
+    green. The module docstring says why."""
     base, head, status = view['baseRefName'], view['headRefOid'], view['mergeStateStatus']
     refusals = []
     if view['state'] != 'OPEN':
@@ -263,6 +285,14 @@ def judge(view, checks, required, sha, previous):
     summary = '%d checks, %d pass, %d skipping' % (len(checks), len(checks) - skipping, skipping)
     if required:
         summary += '; required: %s' % ', '.join(sorted(required))
+    if review != 'off':     # a fail row was red above, so a row here is a recorded review that passed
+        if any(c['bucket'] == 'pass' for c in by_name.get(REVIEW_CONTEXT, [])):
+            summary += '; review: recorded for this head'
+        elif review == 'enforce':
+            return Verdict(EXIT_REFUSED, ['no %s record on head %s: review base...head, then run '
+                                          '`tools/pr-land.py reviewed`' % (REVIEW_CONTEXT, head)])
+        else:
+            summary += '; review: NONE recorded for this head (observe: %s=enforce refuses it)' % REVIEW_ENV
     return Verdict(EXIT_OK, [summary])
 
 
@@ -271,6 +301,7 @@ class Poll:
 
     def __init__(self, number, sha):
         self.number, self.sha, self.rules, self.previous = number, sha, {}, None
+        self.review = review_mode()
 
     def once(self):
         view = read_pr(self.number, VIEW_FIELDS)
@@ -278,7 +309,7 @@ class Poll:
         base = view['baseRefName']
         if base not in self.rules:
             self.rules[base] = read_required(base)
-        verdict = judge(view, checks, self.rules[base], self.sha, self.previous)
+        verdict = judge(view, checks, self.rules[base], self.sha, self.previous, self.review)
         self.previous = identities(checks)
         verdict.view = view
         return verdict
@@ -446,6 +477,23 @@ def cmd_gate(args, env):
 
 def cmd_wait(args, env):
     return report(args.number, settle(Poll(args.number, args.sha), env, args.timeout))
+
+
+def cmd_reviewed(args, env):
+    """Record a finished review on the commit it read. The status lives on S, so it cannot follow a push."""
+    now = read_pr(args.number, 'headRefOid,state')
+    if now['headRefOid'] != args.sha:
+        say('HEAD MOVED #%d: the head is %s, not the reviewed %s; that review is about another commit'
+            % (args.number, now['headRefOid'], args.sha))
+        return EXIT_MOVED
+    state = 'failure' if args.blockers else 'success'
+    counts = '%d blocker, %d major, %d minor' % (args.blockers, args.majors, args.minors)
+    done = gh('api', 'repos/{owner}/{repo}/statuses/' + args.sha, '--method', 'POST', '-f', 'state=' + state,
+              '-f', 'context=' + REVIEW_CONTEXT, '-f', 'description=' + counts)
+    if done.returncode != 0:
+        raise Refuse('the review status was not written: %s' % (first_line(done.stderr) or 'gh api failed'))
+    say('REVIEWED #%d at %s: %s (%s)' % (args.number, args.sha, counts, state))
+    return EXIT_OK
 
 
 def cmd_merge(args, env):
@@ -617,7 +665,8 @@ def cmd_restack(args, env):
     return EXIT_OK
 
 
-COMMANDS = {'gate': cmd_gate, 'wait': cmd_wait, 'merge': cmd_merge, 'restack': cmd_restack}
+COMMANDS = {'gate': cmd_gate, 'wait': cmd_wait, 'merge': cmd_merge, 'restack': cmd_restack,
+            'reviewed': cmd_reviewed}
 
 
 def duration(text):
@@ -639,10 +688,16 @@ def branch_name(text):
     return text
 
 
+def count(text):
+    if not text.isdigit():
+        raise argparse.ArgumentTypeError('%r is not a count' % text)
+    return int(text)
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog='pr-land.py', description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = parser.add_subparsers(dest='cmd', required=True, metavar='{gate,wait,merge,restack}')
+    sub = parser.add_subparsers(dest='cmd', required=True, metavar='{gate,wait,merge,restack,reviewed}')
     subs = {}
     for name, summary in (('gate', 'read-only verdict'), ('wait', 'poll until the gate is green'),
                           ('merge', 'wait, squash-merge at --sha, verify')):
@@ -662,6 +717,13 @@ def build_parser():
                          help='the pull request below it, already squash-merged')   # `number`: what main() names on a refusal
     restack.add_argument('--dry-run', action='store_true', help='print the four merges, change nothing')
     restack.add_argument('--push', action='store_true', help='then push the stacked branch (never forced)')
+    reviewed = sub.add_parser('reviewed', help='record a pr-reviewer review on the commit it read',
+                              description='record that pr-reviewer read base...--sha, as a commit status on --sha')
+    reviewed.add_argument('number', type=int, help='pull request number')
+    reviewed.add_argument('--sha', type=full_sha, required=True, help='the head commit the review read')
+    for level in ('blockers', 'majors', 'minors'):
+        reviewed.add_argument('--' + level, type=count, required=True, help='how many %s the review reported'
+                              % level.upper()[:-1])
     merge = subs['merge']
     merge.add_argument('--subject', required=True, help='the squash commit subject, e.g. "Title (#N)"')
     body = merge.add_mutually_exclusive_group(required=True)

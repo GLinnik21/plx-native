@@ -19,8 +19,7 @@
 //! lives here ([`classify`] drops sessions carrying this client's identifier) so no consumer has to
 //! remember it, and nothing in this module touches a timeline, a stop or a resume point.
 
-use super::client::{pms_headers, Client, QueryBuilder};
-use super::identity::{device_name, DEVICE};
+use super::client::{Client, QueryBuilder};
 use plx_net::net::StreamEnd;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -358,21 +357,6 @@ impl NotifyEnd {
 }
 
 impl Client {
-    /// The identity headers the feed's request carries: who this device is, so the server groups
-    /// the connection under the one device it already knows. `X-Plex-Provides` is deliberately
-    /// absent: it would announce a controllable player, and this client is not one.
-    pub(super) fn notify_identity_headers(&self) -> Vec<String> {
-        vec![
-            format!("X-Plex-Client-Identifier: {}", self.client_id),
-            format!("X-Plex-Product: {}", self.product),
-            format!("X-Plex-Version: {}", self.version),
-            format!("X-Plex-Platform: {}", self.platform),
-            format!("X-Plex-Platform-Version: {}", super::identity::platform_version()),
-            format!("X-Plex-Device: {DEVICE}"),
-            format!("X-Plex-Device-Name: {}", device_name()),
-        ]
-    }
-
     /// Does this client hold a token? A blank slot (a profile switch in flight, a sign-out) has
     /// nothing to authenticate a stream with. The token itself never leaves the client.
     pub fn has_token(&self) -> bool {
@@ -403,8 +387,7 @@ impl Client {
         let path = self.with_token(
             &QueryBuilder::new("/:/eventsource/notifications").str("filters", FILTERS).build(),
         );
-        let mut owned = pms_headers(&[ACCEPT_EVENT_STREAM]);
-        owned.extend(self.notify_identity_headers());
+        let owned = self.pms_headers(&[ACCEPT_EVENT_STREAM]);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
         let mut parser = SseParser::new();
         let mut deliver = |bytes: &[u8]| {
@@ -693,7 +676,7 @@ mod tests {
     #[test]
     fn identity_headers_carry_the_persisted_client_id_and_no_provides() {
         let c = client(Origin::http("192.0.2.1", 32400), "tok");
-        let headers = c.notify_identity_headers();
+        let headers = c.pms_headers(&[ACCEPT_EVENT_STREAM]);
         assert!(headers.iter().any(|h| h == "X-Plex-Client-Identifier: cid-own"), "{headers:?}");
         for name in ["Product", "Version", "Platform", "Platform-Version", "Device", "Device-Name"] {
             assert!(headers.iter().any(|h| h.starts_with(&format!("X-Plex-{name}: "))), "{name}: {headers:?}");

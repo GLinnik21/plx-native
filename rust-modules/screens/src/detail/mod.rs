@@ -3117,10 +3117,8 @@ impl DetailScreen {
             parts.push(&d.rating);
         }
         if !d.edition.is_empty() { parts.insert(0, &d.edition); }
-        let resolution = match plx_media::route::detail_play_version(d) {
-            Some(v) => plx_ui::fmt::resolution(&v.resolution, v.width, v.height),
-            None => plx_ui::fmt::resolution(&d.video_resolution, d.width, d.height),
-        };
+        let resolution = plx_media::route::detail_played_video(d)
+            .and_then(|f| plx_ui::fmt::resolution(f.resolution, f.width, f.height));
         let chips: Vec<&str> = [
             (!d.subs.is_empty(), plx_platform::i18n::msg::widgets_badge_cc()),
             (d.subs.iter().any(|s| s.sdh), plx_platform::i18n::msg::widgets_badge_sdh()),
@@ -4729,7 +4727,7 @@ impl DetailScreen {
             match i {
                 Some(i) => self.play_episode_at(i, from_start, version, fx, meta),
                 None => self.play_episode_value(
-                    hero_episode_played(d),
+                    d.play_episode(),
                     d,
                     from_start,
                     version,
@@ -4842,15 +4840,10 @@ impl DetailScreen {
 
 }
 
-/// The episode a show page's hero Play plays: the one it is resuming, else the season's first.
-fn hero_episode_played(d: &Detail) -> Option<&plx_data::metadata::Episode> {
-    hero::hero_episode(d).or_else(|| d.episodes.first())
-}
-
 /// **The ratingKey a hero control acts on**: the accessibility `subject` of each control that plays a
 /// title or writes to one, so the harness's guard can make a press name the title it is about (the rule is
 /// never to press OK on a title whose ratingKey you have not read). It is what the activation itself
-/// reads, not the route's key: Play and Restart play [`hero_episode_played`] on a show page, the loaded
+/// reads, not the route's key: Play and Restart play [`Detail::play_episode`] on a show page, the loaded
 /// card (`selected`) or the page's item on any other; the watched toggle writes the on-deck episode of a
 /// show that has been started, else the page's item; the bookmark and the trailer act on the page's item.
 /// `None` for the controls that only navigate or open a menu or a panel (Go to Show, Also available, Play
@@ -4866,7 +4859,7 @@ pub(crate) fn hero_control_subject<'a>(
     use hero::HeroCtl;
     match ctl {
         HeroCtl::Play | HeroCtl::Restart => Some(if d.is_show {
-            hero_episode_played(d).map_or(d.rk.as_str(), |ep| ep.rk.as_str())
+            d.play_episode().map_or(d.rk.as_str(), |ep| ep.rk.as_str())
         } else {
             selected.map_or(d.rk.as_str(), |m| m.rk.as_str())
         }),
@@ -4887,7 +4880,7 @@ pub(crate) fn play_subject(d: &Detail) -> Option<&str> {
 /// own movie or episode, or on a show page the episode its Play plays.
 pub(crate) fn hero_versions(d: &Detail) -> &[plx_data::pms::MediaVersion] {
     if d.is_show {
-        hero_episode_played(d).map_or(&[], |ep| ep.versions.as_slice())
+        d.play_episode().map_or(&[], |ep| ep.versions.as_slice())
     } else {
         &d.versions
     }

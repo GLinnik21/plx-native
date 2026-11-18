@@ -432,6 +432,26 @@ pub fn aq_set_eof(q: *mut AuQueue) {
     }
 }
 
+/// The queue pointer an Engine's queue slot holds: null when the lane never opened (every `aq_*`
+/// reader answers a null queue as empty).
+pub fn queue_ptr(q: &mut Option<Box<AuQueue>>) -> *mut AuQueue {
+    q.as_mut().map_or(ptr::null_mut(), |q| &mut **q as *mut AuQueue)
+}
+
+/// Has the producer finished (`aq_set_eof`)? AUs may still be queued: this says nothing more will
+/// be pushed, not that the queue is drained.
+pub fn aq_producer_done(q: *mut AuQueue) -> bool {
+    if q.is_null() {
+        return false;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        let done = (*q).eof != 0;
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+        done
+    }
+}
+
 pub fn aq_abort(q: *mut AuQueue) {
     if q.is_null() {
         return;

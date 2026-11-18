@@ -303,6 +303,38 @@ pub struct LoadTick {
     pub speed_fallback: Option<&'static str>,
 }
 
+/// Which internal clock-hold rule the Feed applies to the stream it presents this tick. The route
+/// is the common player's fact; the Feed adds its own source (a looped local sample is never held)
+/// when it decides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoldRoute {
+    /// Segmented HLS: its worker's request or its measured reserve starts a hold.
+    SegmentedHls,
+    /// A progressive stream at Quality=Original (direct play or remux, no quality ceiling): the clock
+    /// debt, or a stopped native clock, starts a hold and the viewer reads Buffering.
+    ProgressiveOriginal,
+    /// Never held. A trailer preview (its stall ends the preview, never the player's read-out), a
+    /// stream Quality=Auto's Original supervisor watches (Auto's own Original -> HLS exit handles a
+    /// starved link, and a hold standing in front of it could hold the exit off), and a progressive
+    /// re-encode under a fixed quality ceiling.
+    Unheld,
+}
+
+impl HoldRoute {
+    /// The route's three facts: the delivery is segmented HLS; the session is a trailer preview;
+    /// the session is a progressive stream at Quality=Original that no Auto supervisor watches
+    /// (`route::is_progressive_original`). Segmented HLS keeps its own rule whatever else is true.
+    pub const fn of(segmented_hls: bool, preview: bool, progressive_original: bool) -> Self {
+        if segmented_hls {
+            Self::SegmentedHls
+        } else if progressive_original && !preview {
+            Self::ProgressiveOriginal
+        } else {
+            Self::Unheld
+        }
+    }
+}
+
 /// The physical presentation state after one tick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PresentationTick {
@@ -813,7 +845,7 @@ pub trait FeedLoad {
     /// Physical Load and Play transition. `no_audio` is the common player's no-audio arming.
     fn tick_load(&mut self, mt: &MainThread, now: u32, segmented_hls: bool,
         speed_deadline_ms: u32, no_audio: bool) -> LoadTick;
-    fn tick_presentation(&mut self, mt: &MainThread, segmented_hls: bool, immersive: bool)
+    fn tick_presentation(&mut self, mt: &MainThread, route: HoldRoute, immersive: bool)
         -> PresentationTick;
     /// Whether native construction is callable yet.
     fn ctor_gate(&mut self, mt: &MainThread) -> CtorGate;
@@ -1090,6 +1122,28 @@ mod tests {
     use super::*;
     use crate::test_support::FakeUriDriver;
     use crate::{DriverEvent, ReleaseStatus};
+
+    /// The hold route, over every combination of the three facts it is built from. Segmented HLS keeps
+    /// its own rule whatever else is true; a progressive stream is held only at Quality=Original and
+    /// never as a preview.
+    #[test]
+    fn the_hold_route_holds_segmented_hls_and_progressive_original_and_nothing_else() {
+        use HoldRoute::{ProgressiveOriginal, SegmentedHls, Unheld};
+        // (segmented_hls, preview, progressive_original) -> route
+        let table = [
+            (false, false, true, ProgressiveOriginal),
+            (false, true, true, Unheld),
+            (false, false, false, Unheld),
+            (false, true, false, Unheld),
+            (true, false, false, SegmentedHls),
+            (true, true, false, SegmentedHls),
+            (true, false, true, SegmentedHls),
+            (true, true, true, SegmentedHls),
+        ];
+        for (hls, preview, original, want) in table {
+            assert_eq!(HoldRoute::of(hls, preview, original), want, "hls={hls} preview={preview} original={original}");
+        }
+    }
 
     /// The set that installs no physical driver: every backend is absent, every dispatch is refused
     /// as unavailable, and there is no feed. It overrides none of [`PhysicalSet`]'s defaults, so the

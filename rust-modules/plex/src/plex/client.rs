@@ -53,18 +53,6 @@ pub(super) enum JsonStatusOutcome {
     Transport,
 }
 
-/// The headers shared by EVERY PMS operation, over either transport. `X-Plex-Language` belongs
-/// here rather than in [`Client::playback_identity`]: it selects server-returned metadata for
-/// browse/search reads too, not only playback protocol calls. Owned strings keep the optional
-/// locale value alive while `crate::http` borrows the slice.
-pub(super) fn pms_headers(headers: &[&str]) -> Vec<String> {
-    let mut out: Vec<String> = headers.iter().map(|h| (*h).to_string()).collect();
-    if let Some(language) = super::identity::language() {
-        out.push(format!("X-Plex-Language: {language}"));
-    }
-    out
-}
-
 /// Immutable after construction (apart from the token + its generation, both interior-mutable).
 /// Cheap to share by `&ref` across threads (poster workers, the timeline reporter, the detail
 /// loader all read it). Its address is an [`Origin`] — see the field, and `origin.rs` for why a
@@ -309,6 +297,29 @@ impl Client {
         self.resolve_pin.as_ref()
     }
 
+    /// Identity shared by PMS request headers and playback query parameters. A server can
+    /// use these fields to choose which media versions it returns for this client.
+    fn identity_fields(&self) -> [(&'static str, &str); 7] {
+        [
+            ("X-Plex-Client-Identifier", &self.client_id),
+            ("X-Plex-Product", &self.product),
+            ("X-Plex-Version", &self.version),
+            ("X-Plex-Platform", &self.platform),
+            ("X-Plex-Platform-Version", super::identity::platform_version()),
+            ("X-Plex-Device", DEVICE),
+            ("X-Plex-Device-Name", device_name()),
+        ]
+    }
+
+    pub(super) fn pms_headers(&self, headers: &[&str]) -> Vec<String> {
+        let mut out: Vec<_> = headers.iter().map(|h| (*h).to_owned()).collect();
+        out.extend(self.identity_fields().map(|(name, value)| format!("{name}: {value}")));
+        if let Some(language) = super::identity::language() {
+            out.push(format!("X-Plex-Language: {language}"));
+        }
+        out
+    }
+
     /// Append the full playback identity to a query — every playback-protocol request
     /// (decision/start/stop/playQueues/timeline/direct-play GET) carries it.
     ///
@@ -337,20 +348,13 @@ impl Client {
     ///   issue #22's lesson exactly: a claim true of the development environment asserted as
     ///   universal.
     ///
-    /// `X-Plex-Language` is broader than this PLAYBACK-only query identity: [`pms_headers`]
+    /// `X-Plex-Language` is broader than this PLAYBACK-only query identity: [`Self::pms_headers`]
     /// adds the resolved UI language to every PMS operation.
-    pub(super) fn playback_identity(&self, q: QueryBuilder) -> QueryBuilder {
-        q.str("X-Plex-Client-Identifier", &self.client_id)
-            .str("X-Plex-Product", &self.product)
-            .str("X-Plex-Version", &self.version)
-            .str("X-Plex-Platform", &self.platform)
-            .str(
-                "X-Plex-Platform-Version",
-                super::identity::platform_version(),
-            )
-            .str("X-Plex-Device", DEVICE)
-            .str("X-Plex-Device-Name", device_name())
-            .str("X-Plex-Model", MODEL)
+    pub(super) fn playback_identity(&self, mut q: QueryBuilder) -> QueryBuilder {
+        for (name, value) in self.identity_fields() {
+            q = q.str(name, value);
+        }
+        q.str("X-Plex-Model", MODEL)
             .str("X-Plex-Provides", PROVIDES)
     }
 
@@ -495,7 +499,7 @@ impl Client {
     #[track_caller]
     fn send(&self, path_no_token: &str, method: Method, headers: &[&str]) -> Option<http::Reply> {
         if !self.may_send() { return None; }
-        let owned = pms_headers(headers);
+        let owned = self.pms_headers(headers);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
         http::request(
             &self.origin,
@@ -519,7 +523,7 @@ impl Client {
         deadline: std::time::Instant,
     ) -> http::RequestOutcome {
         if !self.may_send() { return http::RequestOutcome::Transport(None); }
-        let owned = pms_headers(headers);
+        let owned = self.pms_headers(headers);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
         http::request_until_outcome(
             &self.origin,
@@ -547,7 +551,7 @@ impl Client {
     #[track_caller]
     fn send_bulk(&self, path_no_token: &str, headers: &[&str]) -> Option<http::Reply> {
         if !self.may_send() { return None; }
-        let owned = pms_headers(headers);
+        let owned = self.pms_headers(headers);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
         http::request_bulk(
             &self.origin,
@@ -687,7 +691,7 @@ impl Client {
     #[track_caller]
     pub(super) fn get_sidecar_bytes(&self, path_no_token: &str) -> Result<Vec<u8>, String> {
         if !self.may_send() { return Err("not sendable".into()); }
-        let owned = pms_headers(&[]);
+        let owned = self.pms_headers(&[]);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
         let r = http::request_probe(
             &self.origin, &self.with_token(path_no_token), Method::Get, &headers,
@@ -732,7 +736,7 @@ impl Client {
         }
         // NOT `body_2xx`, for the same reason this method exists at all: that helper appends the
         // token, and this path already ends in one.
-        let owned = pms_headers(&[]);
+        let owned = self.pms_headers(&[]);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
         match http::request_bulk(
             &self.origin,
@@ -1080,6 +1084,34 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn metadata_receives_versions_for_this_client() {
+        use plx_base::testnet::{serve_once, CLIENT_WAIT};
+        use std::io::{BufRead, BufReader, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = serve_once(listener, CLIENT_WAIT, |mut socket| {
+            socket.set_read_timeout(Some(CLIENT_WAIT)).unwrap();
+            let headers: Vec<_> = BufReader::new(&socket).lines().map(Result::unwrap)
+                .skip(1).take_while(|line| !line.is_empty()).collect();
+            let identified = ["X-Plex-Product: PlxNative", "X-Plex-Platform: webOS",
+                "X-Plex-Client-Identifier: cid"].iter().all(|h| headers.iter().any(|line| line == h));
+            let mut media = vec![serde_json::json!({"videoResolution": "1080"})];
+            if identified {
+                media.push(serde_json::json!({"videoResolution": "4k"}));
+            }
+            let body = serde_json::json!({"MediaContainer": {"Metadata": [{"ratingKey": "1", "Media": media}]}}).to_string();
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        let client = Client::new(ServerId::UNSET, "fixture", Origin::http("127.0.0.1", port.into()), "tok", "cid");
+        let item = client.metadata("1");
+        server.join().unwrap();
+        let versions: Vec<_> = item.unwrap().media.into_iter().map(|m| m.video_resolution).collect();
+        assert_eq!(versions, ["1080", "4k"]);
+    }
+
     /// IVA extra part keys already carry a query. Appending playback identity with a second
     /// `?` is a 400, which Auto reads as a failed capacity sample and answers with HLS. The
     /// preview then refuses that as "not a direct play" even though the file itself is a
@@ -1124,7 +1156,7 @@ mod tests {
             .playback_identity(QueryBuilder::new("/p"))
             .build()
             .contains("X-Plex-Client-Identifier=cid-42"));
-        let headers = pms_headers(&[ACCEPT_JSON]);
+        let headers = c.pms_headers(&[ACCEPT_JSON]);
         let sent = headers
             .iter()
             .find_map(|h| h.strip_prefix("X-Plex-Language: "));
@@ -1159,10 +1191,11 @@ mod tests {
     #[test]
     fn pms_headers_carry_the_literal_selected_ui_language_be_included() {
         use plx_platform::i18n::{language_on_this_thread_for_test};
+        let c = a_client("mach-A", "tok-a");
         for pref in plx_platform::i18n::SHIPPED {
             let tag = pref.tag();
             let _guard = language_on_this_thread_for_test(pref);
-            let headers = pms_headers(&[ACCEPT_JSON]);
+            let headers = c.pms_headers(&[ACCEPT_JSON]);
             let sent = headers.iter().find_map(|h| h.strip_prefix("X-Plex-Language: "));
             assert_eq!(sent, Some(tag), "PMS must see the exact tag the UI is set to, not a substitute");
         }

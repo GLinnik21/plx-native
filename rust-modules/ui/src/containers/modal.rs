@@ -319,6 +319,9 @@ pub struct ModalPresentation {
     pub read: plx_machine::machine::ModalRead,
     pub reflow: bool,
     key: ModalCacheKey,
+    /// The caching layers whose style kept the host live while open ([`Self::kept_host_live`]); not
+    /// part of the cache key, which is identity only.
+    live_hosts: Vec<EntryId>,
 }
 /// GL snapshot signature only. Never consulted for phase, policy, veil or input decisions.
 #[derive(Clone, Debug)]
@@ -330,9 +333,37 @@ impl ModalCacheKey {
     pub fn same_snapshot(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.owner, &other.owner) && self.layers == other.layers
     }
+    /// The layers that STARTED closing between this key and `other`, when `other` is this key's
+    /// stack with the same layers, some of which started closing and none of which came or went (a
+    /// layer is `(entry, closing)`); `None` for any other change. What a dismissal changes and
+    /// nothing else. Whether the host cache may then keep the page's snapshot is not the key's to
+    /// say (it holds identity only): `popover::host::bind_owner` asks the presentation, through
+    /// [`ModalPresentation::kept_host_live`], about each layer returned.
+    pub fn began_closing(&self, other: &Self) -> Option<Vec<EntryId>> {
+        if !std::sync::Arc::ptr_eq(&self.owner, &other.owner) || self.layers.len() != other.layers.len() {
+            return None;
+        }
+        let mut began = Vec::new();
+        for (a, b) in self.layers.iter().zip(&other.layers) {
+            // the same layer, which may only have STARTED closing (never un-closed)
+            if a.0 != b.0 || (a.1 && !b.1) {
+                return None;
+            }
+            if !a.1 && b.1 {
+                began.push(a.0);
+            }
+        }
+        Some(began)
+    }
 }
 impl ModalPresentation {
     pub fn cache_key(&self) -> ModalCacheKey { self.key.clone() }
+    /// Did the caching layer `id` keep the host LIVE while it was open (`surface_policy(style, Open,
+    /// _).0 == Live`, which is `Style::Compact`)? Then the page snapshot it leaves is as current as
+    /// the page, and its close may keep it. A Sheet, an Alert or an `Opaque` snapshot surface froze
+    /// the host, which got no Tick, so what it leaves is as old as the surface. False for a layer
+    /// this presentation does not hold, which `bind_owner` answers with the full `invalidate()`.
+    pub fn kept_host_live(&self, id: EntryId) -> bool { self.live_hosts.contains(&id) }
 }
 
 // Veil is captured by ModalStack::presentation before pages tick. Consumers read Cx.modal;
@@ -608,6 +639,18 @@ impl ModalUnderlay {
         self.held = Latched::Nothing;
         self.pending = None;
     }
+
+    /// The field as a stack that has read its page holds it: latched on texture `tex`, the read
+    /// landed. A host test has no framebuffer to read, and the fixture's surfaces declare no dim to
+    /// keep a latch alive (one would paint through GL, which a host test has no context for), so a
+    /// test states the field's condition at the top of a frame itself. `held` stays `Nothing`: the
+    /// frame's dim pass, with nobody dimming, then KEEPS the field (`latch_step`) through to the lift
+    /// pass, as a dimming surface's page source does on the device, instead of resetting it.
+    #[cfg(test)]
+    pub(crate) fn latch_for_test(&mut self, tex: u32) {
+        self.field = crate::underlay::UnderlayField::latched_for_test(tex);
+        self.held = Latched::Nothing;
+    }
 }
 
 impl Default for ModalUnderlay {
@@ -649,6 +692,10 @@ impl<H: Host> ModalStack<H> {
             key: ModalCacheKey { owner: self.presentation_owner.clone(),
                 layers: self.surfaces.iter().filter(|s| holders.contains(&s.entry.id))
                     .map(|s| (s.entry.id, s.phase == Phase::Closing)).collect() },
+            live_hosts: self.surfaces.iter()
+                .filter(|s| holders.contains(&s.entry.id)
+                    && surface_policy(s.style, Phase::Open, false).0 == HostUpdate::Live)
+                .map(|s| s.entry.id).collect(),
         }
     }
 
@@ -905,7 +952,8 @@ impl<H: Host> ModalStack<H> {
     /// `popover::host::live()` scope or a frozen page will refuse every fill.
     ///
     /// The dims only: a surface's LIFT (the element it was opened from) is drawn after every
-    /// surface, by the dispatcher's lift pass, so the panel's glass grows out from under it.
+    /// surface, by the dispatcher's lift pass, above the panel: whole for the item hold menu's
+    /// card, at the morph's `opener_alpha` for a morphing menu's opener (which the glass consumes).
     pub fn draw_scrims(&mut self, nav_page_alpha: f32, present: &mut plx_machine::present::Present) {
         let mut sink = GlDims::new(present);
         // Nothing is up: no dim to paint, and the field is not this frame's to touch.
@@ -991,7 +1039,7 @@ impl<H: Host> ModalStack<H> {
             }
             let Some(inst) = s.entry.inst.as_ref() else { continue };
             let scrim = inst.screen.scrim();
-            let a = scrim.alpha * s.motion.appear * nav_page_alpha;
+            let a = scrim.alpha * scrim.ramp.unwrap_or(s.motion.appear) * nav_page_alpha;
             if a > 0.0 {
                 out.push((s.entry.id, a));
             }
