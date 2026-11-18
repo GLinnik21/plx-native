@@ -211,16 +211,21 @@ uniform highp vec4 u_mrg;
 uniform highp vec2 u_mrg_rk;
 uniform vec4 u_mrg_tint;
 uniform float u_clear;
-// THE FROSTED BODY'S CEILING (`gfx::GlassFrost`), applied to what the body shows AFTER the modal dim:
-// `(knee, headroom)`, headroom 0 = no cap (the field ground and every live glass, bit for bit). The
-// blurred page under a thin face can be as bright as the page, which a white poster makes unreadable
-// under light ink; the brightest CHANNEL of the body is held under `knee + headroom` (a ceiling
+// THE FROSTED BODY'S CEILING, `#ifdef PLX_FROST` only: the FROST VARIANT of this program
+// (`gfx::FS_GLASS_FROST`, linked beside the plain one, drawn by a glass that has a `gfx::GlassFrost`).
+// The plain program has none of it: no uniform, no code, so a compiler that refuses the cap costs the
+// menus their frost and not every glass surface its program.
+// It applies to what the body shows AFTER the modal dim: `(knee, headroom)`. The blurred page under a
+// thin face can be as bright as the page, which a white poster makes unreadable under light ink; the
+// brightest CHANNEL of the body is held under `knee + headroom` (a ceiling
 // `ui::theme::FROST_BODY_CEILING` derives from the ink floors and the face's thinnest alpha). A body at
 // or below the knee (0.9 of the ceiling) is untouched; above it `knee + headroom * o / (o + headroom)`
 // (`o` the excess over the knee) leaves the knee at slope 1 and approaches the ceiling without reaching
 // it. The whole texel is scaled by the capped/uncapped ratio of that channel, so hue survives, and a
-// grey is the worst case the ceiling was derived for.
+// grey is the worst case the ceiling was derived for. Headroom 0 = no cap.
+#ifdef PLX_FROST
 uniform vec2 u_frost_cap;
+#endif
 
 // The composite-time modal dim over `c`, sampled at snapshot UV `uv` (see `u_dim`); `g` is the
 // `u_tex` texel already read at `uv`, the ink in mode 2.
@@ -261,6 +266,7 @@ vec3 srcRGB(highp vec2 uv, out vec4 g){
        * mix(u_wash_w.x, u_wash_w.y, w.y);
   }
   c = mix(u_source_ground, c, u_source_alpha);
+#ifdef PLX_FROST
   c = dimRGB(c, uv, g);
   if (u_frost_cap.y > 0.0) {
     float m = max(c.r, max(c.g, c.b));
@@ -269,6 +275,9 @@ vec3 srcRGB(highp vec2 uv, out vec4 g){
     c *= y / max(m, 0.0001);
   }
   return c;
+#else
+  return dimRGB(c, uv, g);
+#endif
 }
 
 highp float sdBox(highp vec2 p, highp vec2 b, highp float r){
